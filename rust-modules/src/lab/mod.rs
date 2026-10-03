@@ -27,7 +27,7 @@
 //!    `.claude/hooks/release-config-check.py` exists for, and the gating lives in two files
 //!    (`lab/mod.rs`, `labcfg/mod.rs`) instead of eight.
 //! 3. **Nothing enters the payload that is not already allowed on a photograph.** The envelope is
-//!    built from `Diag`, `webos::Info` and `devcaps::Caps` — numbers, bools, enums and short
+//!    built from `Diag`, `tv::device::Info` and `devcaps::Caps` — numbers, bools, enums and short
 //!    platform strings — under the same no-URL / no-credential / no-identity rule `app::diagnostics`
 //!    states at length, and every ring record passes [`snapshot::scrub`] on the way out on top of
 //!    the `redact_tokens` it already passed on the way in. See [`snapshot`].

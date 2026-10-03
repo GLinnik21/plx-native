@@ -1,5 +1,11 @@
 use super::*;
 #[test]
+fn the_webos_release_line_reads_unknown_rather_than_inventing_a_release() {
+    let known = crate::tv::device::Info { release: "4.10.2".into(), major: 4, ..Default::default() };
+    assert_eq!(webos_release_line(&known), "webOS 4.10.2");
+    assert_eq!(webos_release_line(&crate::tv::device::Info::default()), msg::browse_diagnostics_unknown_os());
+}
+#[test]
 fn locale_resolution_separates_language_from_formatting() {
     let regional = LocaleContext::resolve(Preference::System, Some("en-GB"), None, None, None);
     assert_eq!(regional.format_locale(), "en-GB");

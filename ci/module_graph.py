@@ -328,7 +328,9 @@ class Crate:
                     k = group_end(k) + 1; continue
                 # A macro-invocation item (`thread_local! { … }`) ends with its brace group, and
                 # takes no `;` after it.
-                if t == '!' and decided == k - 1 and at(k + 1) == '{': return group_end(k + 1)
+                if (t == '!' and at(k + 1) == '{' and decided is not None
+                        and all(u == '::' or WORD.match(u) for u in text[decided:k])):
+                    return group_end(k + 1)
                 if t == ';' or t == ',': return k
                 if t in CLOSERS: return k - 1
                 if decided is None and t not in QUALIFIERS and WORD.match(t):
@@ -421,6 +423,19 @@ class Crate:
                 else: break
             t = at(k)
             if t == 'static' and at(k + 1) == 'mut': k += 1
+            j = k
+            while at(j + 1) == '::' and at(j + 2) and WORD.match(text[j + 2]): j += 2
+            if at(j) == 'thread_local' and at(j + 1) == '!' and at(j + 2) in ('{', '('):
+                # `thread_local! { static NAME: T = …; }` declares its statics inside the group.
+                m, stop_at = j + 3, group_end(j + 2)
+                while m < stop_at:
+                    u = text[m]
+                    if u in OPENERS: m = group_end(m) + 1; continue
+                    if u == 'static' and m + 1 < stop_at and WORD.match(text[m + 1]):
+                        key = (mod, owner, text[m + 1])
+                        self.test_items.setdefault(key, TestItem(mod, owner, text[m + 1], rel, tok.line(m)))
+                    m += 1
+                return
             if t in NAMED_ITEMS and k + 1 < n and WORD.match(text[k + 1]):
                 key = (mod, owner, text[k + 1])
                 self.test_items.setdefault(key, TestItem(mod, owner, text[k + 1], rel, tok.line(k)))

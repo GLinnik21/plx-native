@@ -38,7 +38,7 @@ Five pieces of this feature already exist, and the design is mostly wiring them 
   bool or enum **by rule**: `app/diagnostics.rs`'s module doc is a written no-URL / no-credential /
   no-identity contract for exactly this data, because it is already photographed and posted into
   public issue threads. A snapshot built from `Diag` is redacted by construction.
-* **Device identity.** `webos::info()` (release, codename, api, name, from `/var/run/nyx/os_info.json`),
+* **Device identity.** `tv::device::info()` (release, codename, api, name, from `/var/run/nyx/os_info.json`),
   `devcaps::caps()` (the SoC's own codec table), `paths::app_id()`/`flavour()`,
   `env!("PLX_VERSION")` (the reported app version — `X.Y.Z` for a release build, and the next
   MINOR with the patch reset for every other one, `X.(Y+1).0-dev`; see `rust-modules/build.rs`).
@@ -261,7 +261,7 @@ buys nothing once the channel is confidential and endpoint-authenticated.
 ## 6. Redaction: three layers, none of which trusts the others
 
 1. **At logging time** — `redact_tokens` in `lib.rs`, already shipped, already unit-tested.
-2. **By construction** — the envelope is built from `Diag`, `webos::Info` and `devcaps::Caps`, all
+2. **By construction** — the envelope is built from `Diag`, `tv::device::Info` and `devcaps::Caps`, all
    of which are numbers/enums/short platform strings. No field of the envelope is a URL, a path, a
    title, an account id, a server name or a `machineIdentifier`. This is `app/diagnostics.rs`'s rule,
    applied to a second consumer, and it is enforced the same way: the envelope is built in one
@@ -475,7 +475,7 @@ not pretending the old filesystem contract exists.
 * **The ARM cross-build**: `make LAB=1 FLAVOR=debug` builds clean through the NDK, and
   `tools/fwcompat.py` is unchanged at OK 4.4.2 → 11.2.0 (see the LAB-ELF note below).
 * **The envelope's device block is real**: `status` read webOS 4.10.2 and the board and model
-  strings off the set, so `webos::device()`'s `device_info.json` parse works on hardware.
+  strings off the set, so `tv::device::device()`'s `device_info.json` parse works on hardware.
 * **The toast renders on the panel**, photographed over the who's-watching screen.
 * **The public leg**, via a phone off the LAN entirely — §12, which is the whole account.
 * And the **`fw-compat-reviewer`** pass `net.rs`'s new option warrants has been done: it found the

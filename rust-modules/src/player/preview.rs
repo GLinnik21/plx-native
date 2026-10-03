@@ -1039,9 +1039,9 @@ mod tests {
     /// touches engine-level `SHARED` atomics) and by device verification, not by this test.
     ///
     /// Gated on `hostsim`, like `player::engine`'s own `PlayerAdapter`-constructing tests
-    /// (`lifecycle_clock_tests`, `replay_after_stop_tests`): building one at all pulls in the
-    /// Starfish/ACB `dynlib!` symbols, which only resolve under that feature — `make check` runs
-    /// the full suite a second time with it on for exactly this class of test.
+    /// (`lifecycle_clock_tests`, `replay_after_stop_tests`): it needs the simulator's video sink
+    /// (`ffi_host::HostSink`) to hold a native session, which the default build's `NoSink` does
+    /// not — `make check` runs the full suite a second time with it on for exactly this class of test.
     #[test]
     #[cfg(feature = "hostsim")]
     fn seek_refuses_and_touches_no_user_seek_bookkeeping_with_no_live_preview() {

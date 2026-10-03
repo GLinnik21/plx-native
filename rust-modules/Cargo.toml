@@ -114,8 +114,8 @@ lab-diagnostics = []
 # The desktop UI simulator. OFF by default, so no ordinary `make`, `make check` or harness run is
 # affected in any way; `cargo build --features hostsim` selects it.
 #
-# It is an ADDITIVE feature in the cargo sense only by convention — it swaps `player::ffi`'s seam
-# for `ffi_host.rs` rather than adding to it. That is safe here because this crate is a leaf with
+# It is an ADDITIVE feature in the cargo sense only by convention — it makes `player::ffi_host` the
+# installed `VideoSink` instead of `player::ffi` rather than adding to it. That is safe here because this crate is a leaf with
 # no dependents, so feature unification can never enable it behind someone's back. Do not give it
 # a mutually-exclusive partner feature; the television is the DEFAULT, and the simulator opts in.
 #

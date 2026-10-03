@@ -1107,7 +1107,7 @@ impl FailureReadout {
     pub(crate) fn now(ps: &crate::route::PlaybackSession) -> Self {
         let mut e = crate::player::error_now(ps);
         if e.kind == crate::player::FailureKind::JailMissingRtkmem {
-            use crate::webos::jail_repair::State;
+            use crate::tv::sandbox::State;
             match ps.repair_status {
                 State::Idle => {}
                 State::Running => {
@@ -1286,8 +1286,8 @@ pub(crate) fn failure_row_drawn(busy: Busy) -> bool {
 }
 
 /// Product copy is resolved here; the worker's technical error identity stays unchanged.
-fn repair_failure_message(reason: crate::webos::jail_repair::Failure) -> &'static str {
-    use crate::webos::jail_repair::Failure;
+fn repair_failure_message(reason: crate::tv::sandbox::Failure) -> &'static str {
+    use crate::tv::sandbox::Failure;
     match reason {
         Failure::StartFailed => crate::i18n::msg::widgets_repair_start_failed(),
         Failure::HbcUnavailable => crate::i18n::msg::widgets_repair_hbc_unavailable(),

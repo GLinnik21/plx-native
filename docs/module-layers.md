@@ -2,17 +2,20 @@
 
 Status: target graph declared and gated 2026-10-02, and all fourteen migration steps (L1 to L14)
 are done: 0 of the 231 baseline entries remain, so no layer names a layer it may not use. That is
-not yet "extractable": 134 `cfg(test)` items are still named from another layer's tests, which a
-split hides from them, and the gate does not check impl coherence. Both are below ("Then the
-split"), and so is the split itself. Step L15, declared after them, fences the webOS code off
-behind a port, so that another TV OS can be a second port. It is open, and it does not hold up the
-split.
+not yet "extractable": 134 `cfg(test)` items were still named from another layer's tests after
+L14, which a split hides from them, and the gate does not check impl coherence. Both are below
+("Then the split"), and so is the split itself. Step L15, declared after them, fenced the webOS code
+off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
+entries are gone, and the gate fails on any reference from outside the port to a member of it. It
+is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
+up the split.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
-`ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, and its 44 entries now are
-L15's. Run `ci/check-module-layers.py --report` for current numbers. The graph findings and the
-migration table's figures are the baseline, before L1; the target-graph table is measured after
-L14.
+`ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
+its own and then removed them, so it is empty again and only shrinks. Run
+`ci/check-module-layers.py --report` for current numbers. The graph findings and the migration
+table's figures are the baseline, before L1; the target-graph table is measured after L14, so it
+does not count `tv` or `port`.
 
 ## Why this exists
 
@@ -39,10 +42,13 @@ formed one strongly connected component** from production references alone. Only
 `cbuf`, `checkpoint`, `fontcov`, `hwcnt`, `sha256`, `spki`, `svg` and the test-only modules sat
 outside it. `ci/check-module-layers.py --cycles` prints the current components, with the config's
 members (`ui::machine`, `diag::zlib`, …) as separate nodes. After L14 every production component
-sits inside one layer: media's `abr curlio ff hls player route`, data's eight modules, app's `app
+sat inside one layer: media's `abr curlio ff hls player route`, data's eight modules, app's `app
 dev textinput`, platform's `i18n storage webos`, gfx's `gfx gpu_timer ui::overdraw`, plex's `http
-plex`, telemetry's `diag telemetry` and machine's `ui::machine ui::present`. A cycle inside a layer
-stays inside one crate, so none of them blocks the split.
+plex`, telemetry's `diag telemetry` and machine's `ui::machine ui::present`. L15 took the platform
+one apart (`webos` is behind the port, and `tv` names neither `i18n` nor `storage`: the release
+line is `i18n::webos_release_line`, and the port installs the storage helper's activator through
+`storage::client::install_activator`), so seven components remain, the others unchanged. A cycle
+inside a layer stays inside one crate, so none of them blocks the split.
 
 That component looked like one tangle but came from a short list of misplaced items, each now cut:
 
@@ -86,7 +92,7 @@ base
 |---|---|---:|---:|
 | base | `eventlog paths task cbuf sha256 b64 spki dynlib checkpoint storage_worker fontcov surface tile devtrig diag::{zlib,spans,heartbeat} testlock testnet` | 9k | everything |
 | machine | `ui::{machine,present,idle,landgate,landing,motion}` | 4k | 97% |
-| platform | `webos storage keymanager devcaps imgcache i18n labcfg` | 11k | 96% |
+| platform | `webos storage keymanager devcaps imgcache i18n labcfg tv` | 11k | 96% |
 | gfx | `gfx egl text img svg gpu_timer hwcnt ui::overdraw` | 15k | 68% |
 | net | `net stream` | 6k | 74% |
 | plex | `plex http` | 26k | 72% |
@@ -97,7 +103,7 @@ base
 | media | `ff aq abr hls curlio player route` | 56k | 49% |
 | appkit | `appkit` (the player panels and the Sources row several screens draw) | 13k | 32% |
 | screens | `screens` | 54k | 28% |
-| app | `crate app dev lab capture remote focusprobe shot coldstart textinput system release_line` | 42k | 12% |
+| app | `crate app dev lab capture remote focusprobe shot coldstart textinput system release_line port` | 42k | 12% |
 
 "Prod lines" counts files that are not wholly `cfg(test)`, measured after L14. The last column is
 the share of all production lines in that layer plus every layer above it. Line counts stand in
@@ -122,11 +128,12 @@ Four choices that were not obvious:
   name `route`, `player`, `metadata`, `plex` and `stores`, so they cannot stay in `ui` either.
   `appkit` may name everything below `screens`; `screens` and `app` may name it.
 - **The webOS port is a fence, not a layer.** `[port webos]` lists `webos`, `keymanager`,
-  `system` and `player::ffi`, which stay in `platform`, `app` and `media` above, and nothing
-  outside the port may name them. A layer on top would say the same thing, but then the modules in
-  `platform`, `plex` and `telemetry` that name webOS today would hold up those layers' extraction
-  until L15 is finished, video sink and all. As a fence it holds the line without blocking the
-  split. Once nothing outside names the port, it can become a crate on top (step L15).
+  `system`, `player::ffi` and `port`, which stay in `platform`, `app` and `media` above, and
+  nothing outside the port may name them. A layer on top would say the same thing, but then the
+  modules in `platform`, `plex` and `telemetry` that named webOS before L15 would have held up
+  those layers' extraction until it was finished, video sink and all. As a fence it held the line
+  without blocking the split. The gate no longer sees a reference into the port from outside, so
+  it can become a crate on top. L15b is the open step that makes it a port another OS could fill.
 
 This agrees with the hand-written rules already gated by `ci/check-deps.sh` (the tables in
 `ui/CLAUDE.md` and `screens/CLAUDE.md`). `ui` names no application type, `screens` never names
@@ -143,8 +150,9 @@ tables say so, but `check-deps.sh`'s `layer` gate scans only `screens/`.
 
 - a reference, production **or** `cfg(test)`, names a layer its own layer does not `use`, and
   `ci/allow/layers.txt` has no entry for that (file, member) pair;
-- a reference from outside a port names one of the port's members, with no entry either. A port
-  (`[port webos]`, step L15) is not a layer, and its entries do not hold up the split;
+- a reference from outside a port names one of the port's members, with no entry either, and the
+  list is empty. A port (`[port webos]`, step L15) is not a layer, and a port reference never held
+  up the split;
 - an allowlist entry has gone stale. `--prune` drops fixed entries, and `tests/test_harness.py`
   pins the count;
 - a module belongs to no layer. A new top-level module has to be placed in the config;
@@ -160,8 +168,9 @@ lists every one; "Then the split" says what each needs.
 SET of top-level modules on the big cycle and fails when a module joins it, so it catches a cycle
 forming between modules this config puts in one layer. This gate is the fine one: it checks each
 reference against the target graph. They agree on direction. When a step shrinks the cycle, run
-`ci/check-module-cycle.py --update-baseline` in the same change. After L14 its baseline holds 13
-modules (44 at baseline): it sees `ui` and `diag` as one node each, so the machine-layer and
+`ci/check-module-cycle.py --update-baseline` in the same change. After L14 its baseline held 13
+modules (44 at baseline), and `ci/module-cycle-baseline.json` has the current set. It sees `ui` and
+`diag` as one node each, so the machine-layer and
 gfx-layer parts of `ui` and the base-layer parts of `diag` still close a cycle there with the
 layers that may name them. This gate, which sees the members, finds no upward reference.
 
@@ -189,8 +198,8 @@ item 5, and moved when a file that already has entries is **renamed or split**: 
 path, so the gate reports the old key as stale and the new path as unlisted. Move the entry to the
 new path in the same diff, and do not run `--prune` first (it would delete the old key and leave the
 new one failing). A split that keeps the upward name on both sides needs one line per new file, and
-raises the pin in `tests/test_harness.py` by the same number. Since L14 only L15's entries are left,
-so a new upward reference is always a fix, and only a file that names the port has entries to carry.
+raises the pin in `tests/test_harness.py` by the same number. Since L15 the list is empty (the pin
+is 0), so a new upward reference is always a fix, and there are no entries to carry.
 
 ## The migration
 
@@ -198,7 +207,8 @@ Each step deletes its entries from `ci/allow/layers.txt` (every entry names its 
 gate proves the step is done. The numbers are entries / references at baseline, except L15's, which
 are from when it was declared, after L14. L1 to L14 are done; L10 and L13 each landed in two parts
 (a and b). Those steps were independent, since each one only removed edges, and where a step
-landed differently from its plan the row says what actually moved. L15 is open.
+landed differently from its plan the row says what actually moved. L15 is gate-complete, which
+proves the references are gone and nothing more; L15b is open.
 
 | step | entries / refs | what moved |
 |---|---:|---|
@@ -216,73 +226,130 @@ landed differently from its plan the row says what actually moved. L15 is open.
 | **L12** media owns its lifecycle seams — **done** | 7 / 28 | The foreground-resume reducer and the transport-pause contract are `player::lifecycle` (`app::lifecycle` re-exports them), the stats switch is `player::DIAG_READOUT_ON`, `Venc::open` takes the capture socket writer as an argument, and `route` takes the HUD context line as a parameter, with the up-next still prefetch a hook the app installs. |
 | **L13** tests move up to the layer that owns their parts — **done** | 41 / 96 | Part a moved the auth, plex, i18n, task and fontcov tests that named upper layers to `app/` (`session_*_tests.rs`), `screens/login_text_fit_tests.rs`, `plex`, `auth::owner` and `storage::client`, and moved `fontcov`'s `Measure` impl beside the trait, with `ui::machine`'s new `BareArg`/`BareMeasure` fixtures for the rest; part b moved the data, media and ui ones to `app/` (`dispatch_return_tests.rs`, `overscan_audit_tests.rs`) and `screens/` (`plaintext_question`, `library/labels_tests.rs`, `search/tests.rs`, `player`), and rewrote two against their own layer. |
 | **L14** session-layer presentation to screens — **done** | 2 / 4 | `auth::signed_in_reason` is a private fn of `screens::login`, its only caller, with its two tests; `auth` already handed over the plain account name. |
-| **L15** the webOS port | 44 / 205 | Everything outside `[port webos]` reaches the television through interfaces in `platform` that the port fills at boot. The engine, pump and threads drive a platform video sink instead of `player::ffi`'s Starfish verbs, and `plex_run` moves into the port. The next section has the list. |
+| **L15** the webOS port — **gate-complete** | 44 / 205 | Everything outside `[port webos]` reaches the television through the `tv` interfaces in `platform` that the port fills at boot: `tv::{device, sandbox, secure, home, toast, window}`, `devcaps::dv`, and `tv::sink::VideoSink`, a Starfish-shaped verb trait that `player::ffi::StarfishSink` and `player::ffi_host::HostSink` implement. `plex_run` is `port::plex_run`. The allowlist is empty. Not "done": the sink is not OS-neutral and the simulator is not its own port (L15b). |
+| **L15b** the OS-neutral port — **open** | — | An OS-neutral video sink with the ACB bind sequence behind it, the simulator as its own port, and the webOS facts the gate cannot see. See below. |
 
 ### L15: the webOS port
 
-L1 to L14 gave the crate a direction, but webOS is still spread through it. The four modules that
-exist only because the target is webOS (`webos`, `keymanager`, `system` and `player::ffi`) are
-named from 29 production files in 8 layers, from `platform` up to `app`, so supporting another
-television OS would mean edits in all of them. `[port webos]` fences them off: the gate fails on a
-new reference from outside, and the ones that were there when the port was declared are L15's 44
-entries, 205 references of which 95 are in production code. The port's members stay in their
-layers, so none of this holds up the split.
+L1 to L14 gave the crate a direction, but webOS was still spread through it. The modules that exist
+only because the target is webOS (`webos`, `keymanager`, `system` and `player::ffi`) were named
+from 29 production files in 8 layers, from `platform` up to `app`, so supporting another
+television OS would have meant edits in all of them. `[port webos]` fences them off: the gate fails
+on a new reference from outside, and the ones that were there when the port was declared were
+L15's 44 entries, 205 references of which 95 were in production code. The port's members stay in
+their layers, so none of this held up the split.
 
-Each entry becomes an interface in `platform` that the port fills at boot, by passing the value in
-or by installing a hook:
+L15 moved every one of those references behind an interface in `platform`'s new `tv` module that
+the port fills at boot. `tv::Port` is a table of function pointers, installed once as the first
+statement of `port::plex_run`, before anything that reads it. With no port installed (host unit
+tests, where nothing calls `plex_run`) `tv::ABSENT` answers what the host arms answered before; a
+shipping build that reaches it logs `tv: port not installed - using the no-port defaults` once.
+Only `tv`'s own modules read the table. The one thing that leaves it is the sink, through
+`tv::sink::installed()`, and `ci/check-deps.sh` (rule `sink`) fails on that name or `VideoSink`
+outside `player/`, `tv/`, `tv.rs` and `port.rs`.
+Lazily computed facts (device identity, the sandbox verdict, the Dolby Vision capability) are
+published values rather than hooks: the webOS code writes them into `tv::device`, `tv::sandbox` and
+`devcaps::dv` at the same boot moment as before, so readers keep their `OnceLock` semantics.
 
-| interface | today | named from |
+| interface | where it went | named from |
 |---|---|---|
-| device identity | `webos::{probe, info, device, Info, Hardware, rtkmem_context}` | `telemetry`, `diag::schema`, `plex::identity`, `plex::session`'s tests, `screens::login`, `lab::snapshot`, `app`, `player` |
-| playback capability | `webos::caps::{capability, start_probe, DvCapability}` | `metadata`, `route`, `player::engine`, `app`. The `DvCapability` type moves into `devcaps`. |
-| native-video availability and repair | `webos::{jail_repair, jail_blocks_native_video, FORCE_JAIL_BLOCKED}` | `player`, `route`, `appkit::player_hud`, `screens::player`, `app::playback` |
-| video sink | `player::ffi`'s Starfish/ACB verbs | `player::{engine, pump, threads}`, `player::claim_hold`'s tests |
-| secure store | `keymanager::{seal, open, Sealed}` | `plex::session` |
-| storage backend | `webos::activate_storage_helper` | `storage::client` |
-| locale | `webos::ls2` | `i18n` |
-| window, surface, video plane and bus pump | `webos::bind_window`, `system` | `app::boot`, `app::run`, `app/mod.rs` |
-| home key | `webos::{go_home, poll_home, take_root_press, release_root_press}` | `app::input`, `app::run`, `app::adapters::session`, `app::lifecycle`'s tests |
-| system toast | `webos::toast` | `app::clock_notice`, `dev::scenarios::toast_probe` |
+| device identity | `tv::device::{info, device, Info, Hardware}`, published by `webos::probe` | `telemetry`, `diag::schema`, `plex::identity`, `plex::session`'s tests, `screens::login`, `lab::snapshot`, `app`, `player` |
+| playback capability | `devcaps::dv::{capability, probe, DvCapability}`, published by `webos::caps`; `tv::start_capability_probe` starts the probe | `metadata`, `route`, `player::engine`, `app` |
+| native-video availability and repair | `tv::sandbox::{blocks_native_video, context, repair, Verdict, State, Failure, FORCE_BLOCKED}`; the verdict is published by `webos::probe` and the repair is a port hook | `player`, `route`, `appkit::player_hud`, `screens::player`, `app::playback` |
+| video sink | `tv::sink::VideoSink`, implemented by `player::ffi::StarfishSink` and `player::ffi_host::HostSink`, installed in `Port.sink` and read through `tv::sink::installed` | `player::{engine, pump, threads}`, `player::claim_hold`'s tests |
+| secure store | `tv::secure::{seal, open, remove, Sealed, Backend}` | `plex::session` |
+| storage backend | `storage::client::install_activator`, which the port calls with `webos::activate_storage_helper` | `port::plex_run` |
+| locale | `tv::system_locale` and `tv::LocaleReply`; `i18n` still owns the parse and the log lines | `i18n` |
+| window, surface, video plane, bus pump and frame probe | `tv::window` | `app::boot`, `app::run`, `app/mod.rs` |
+| home key | `tv::home::{go_home, poll, take_root_press, release_root_press}` | `app::input`, `app::run`, `app::adapters::session`, `app::lifecycle`'s tests |
+| system toast | `tv::toast::{toast, send, Identity, Outcome, Sent}` | `app::clock_notice`, `dev::scenarios::toast_probe` |
 
-The video sink is the hard one. `engine`, `pump` and `threads` already carry no platform `cfg` of
-their own: `player::ffi` swaps its declarations for `ffi_host.rs` under `hostsim`, and the wrappers
-above them are shared. But the verbs are Starfish's: a load payload, `sf_feed`, and the ACB bind
-sequence that `pump`'s `Stage` machine walks. A sink another OS can implement takes codec
-configuration and timestamped access units, and it seeks, flushes, pauses and reports events. The
-bind sequence moves behind it into the port. `player::ffi` and `system` also carry the
-simulator's stand-ins behind `hostsim`. Those become the simulator's own port, a second
-implementation of the same interfaces, which keeps them honest.
+`tv` may name only `base`, `machine` and `platform`. `port.rs` holds `plex_run` and the `PORT` table
+that points each hook at the `webos`, `keymanager` and `system` function behind it. The C shim and
+the simulator both enter through `port::plex_run`; `app::run_application` is the two-line body it
+hands over to. `lib.rs` declares the port but re-exports nothing from it, because a re-export would
+be a reference from the crate root into the port, which the gate refuses.
 
-The gate cannot see the webOS facts that are literals, or that sit in modules that stay where they
-are. The port takes these too:
+The video sink landed as a verb-level cut. `tv::sink::VideoSink` has one method per verb of the
+Starfish seam, 29 of them, with the C return values and the `&MainThread` token on every method but
+`load`, `window_mode` and `window_id`. It is **Starfish-shaped**: a load payload, `feed`, and the
+ACB bind verbs that `pump` walks. Another TV OS cannot implement it as it stands. `player::ffi`
+keeps its `extern "C"` block unchanged and implements the trait as `StarfishSink`; `engine`, `pump`
+and `threads` call it through `player::sink()`. `player/ffi_host.rs` is no longer swapped in under
+`player::ffi`. It is `player::ffi_host`, the simulator's own `VideoSink` (`HostSink`), outside the
+fence. Call order, arguments and log text did not change. The deeper cut is L15b.
 
-- `devcaps` reads webOS's own table, `/etc/umediaserver/device_codec_capability_config.json`.
-  The parsed model stays and the reader moves.
-- The libraries the app loads at run time are the television's: `libcurl` (`net`, `curlio`) and
-  `libEGLfk` (`egl`). The bundled FFmpeg in `ff` is loaded by absolute path and is not one of them.
-- `plex::identity`'s platform constant and client headers.
-- The Magic Remote's key codes and pointer in `app::{input, boot, events}`.
-- `paths`'s fallback install prefix.
-- Outside `rust-modules/src`: `src/starfish.c`, `src/main.c`'s boot shim, the storage helper
-  crate (`rust-modules/storage`, an LS2 service over DB8), and the Makefile's NDK cross-build and
-  `.ipk` packaging.
+The verb cut was taken first because the bind sequence cannot be moved safely from here. It lives in
+`pump`'s `Stage` machine, is gated on state the firmware callback writes (`SHARED`) and interleaves
+with seek re-anchoring, the auto-rebuffer pause and the claim hold. `ffi_host` deliberately never
+models ACB (it reports `VP_EXPORTED`, which skips the bind stages), so no host test covers the bind
+order or its interleaving, and its log lines are graded on the television. A verb-for-verb move
+can be graded by comparing the television's log before and after; a redesign that changes where
+those stages run, and when, is its own step's scope and risk.
 
-L15 is done when no entry carries its tag and `plex_run`, which the C shim calls, lives in the
-port. The port can then leave its layers for a crate of its own on top: it names `app` to start it,
-and nothing names it. `plxnative-modules` stays the staticlib the Makefile links, now holding the
-port. Another TV OS is another port in that position. The simulator binary, `src/bin/sim.rs`, is
-already a separate crate there.
+The simulator runs the same table. Under `hostsim` `port.rs` installs a `PORT` whose fields point
+at the same `webos`, `keymanager` and `system` functions, whose `hostsim` arms answer on the host,
+and whose sink is `HostSink`. So the simulator behaves as it did, but it is not yet a second
+implementation of the interfaces.
+
+L15 is gate-complete: no entry carries its tag, `plex_run`, which the C shim calls, lives in the
+port, and the gate fails on a new reference into it. That is all the gate can see. L15 also set out
+to put an OS-neutral sink with the bind sequence behind it and the simulator's stand-ins in their
+own port. Neither landed, so L15 is not called done. They are L15b.
+
+### L15b: the OS-neutral port
+
+Open. L15 made every reference to the webOS code visible and one-directional. It did not make the
+interfaces something another OS could implement, because the verbs and several types in them are
+still webOS's. Three things are left:
+
+1. **An OS-neutral video sink.** A sink another OS can implement takes codec configuration and
+   timestamped access units, and it seeks, flushes, pauses and reports events. The ACB bind
+   sequence that `pump`'s `Stage` machine walks, the callback decode in
+   `sf_on_event`/`acb_on_event` and `sink_counter_kind(ty, major)` in `player/mod.rs` move behind
+   it, into the port. This changes where the stages and the callback decode live and when they
+   run, so it needs the television: see the reasons above.
+2. **The simulator as its own port.** `ffi_host` and the `hostsim` arms of `webos`, `system` and
+   `keymanager` become a second `Port` table, a second implementation of the same interfaces,
+   instead of the webOS table running its host arms. That keeps both honest. The webOS-shaped types
+   in `tv` also need neutral shapes then: `tv::secure::Backend` names the two webOS key managers
+   and is part of the on-disk envelope, and `tv::sandbox`'s verdict and repair describe webOS's
+   own device jail.
+3. **The webOS facts the gate cannot see.** The gate sees names, not literals, and not modules
+   that stay where they are. The port takes these too:
+
+   - `devcaps` reads webOS's own table, `/etc/umediaserver/device_codec_capability_config.json`.
+     The parsed model stays and the reader moves.
+   - The libraries the app loads at run time are the television's: `libcurl` (`net`, `curlio`) and
+     `libEGLfk` (`egl`). The bundled FFmpeg in `ff` is loaded by absolute path and is not one of
+     them.
+   - `plex::identity`'s platform constant and client headers.
+   - The Magic Remote's key codes and pointer in `app::{input, boot, events}`.
+   - `paths`'s fallback install prefix.
+   - Outside `rust-modules/src`: `src/starfish.c`, `src/main.c`'s boot shim, the storage helper
+     crate (`rust-modules/storage`, an LS2 service over DB8), and the Makefile's NDK cross-build
+     and `.ipk` packaging.
+
+L15b is done when the sink is OS-neutral, the simulator is its own port, and these facts are the
+port's. The port can then leave its layers for a crate of its own on top: it names `app` to start
+it, and nothing names it. `plxnative-modules` stays the staticlib the Makefile links, now holding
+the port. Another TV OS is another port in that position. The simulator binary, `src/bin/sim.rs`,
+is already a separate crate there, and enters through `port::plex_run`.
 
 ### Then the split
 
 `--report` ends with an "extractable as a crate" list. A layer is ready when neither it nor anything
-it uses has entries left (L15's port entries do not count), **and** no other layer's tests name a
-`cfg(test)` item of it or of a layer below it. Since L14 the first half holds for every layer and
-the second for none: `--report` lists 134 such items (8 in `base`, 11 `machine`, 13 `platform`, 8
-`gfx`, 10 `net`, 21 `plex`, 8 `telemetry`, 12 `ui`, 25 `data`, 4 `session`, 6 `media`, 4 `appkit`, 4
-`screens`). The gate cannot see either remaining hazard on its own, because it checks names, not
-`cfg(test)`-ness of the item named or impl coherence. Extract bottom-up: `base`, then `machine`,
-`platform`, and so on. Each extraction:
+it uses has entries left, **and** no other layer's tests name a `cfg(test)` item of it or of a
+layer below it. Since L14 the first half holds for every layer and the second for none: `--report`
+listed 134 such items after L14 (8 in `base`, 11 `machine`, 13 `platform`, 8 `gfx`, 10 `net`, 21
+`plex`, 8 `telemetry`, 12 `ui`, 25 `data`, 4 `session`, 6 `media`, 4 `appkit`, 4 `screens`). L15
+replaced `webos::FORCE_JAIL_BLOCKED`, `webos::home_requests` and `keymanager::RPC_FOR_TEST` with
+`cfg(test)` seams of `tv` (`sandbox::FORCE_BLOCKED`, `home::home_requests`,
+`secure::{STORE_FOR_TEST, TestStore}`) that other layers' tests still name, so `--report` now lists
+136 (15 in `platform`, the rest as above); run it for the current count. The
+gate cannot see either remaining hazard on its own, because it checks names, not `cfg(test)`-ness
+of the item named or impl coherence. Extract bottom-up: `base`, then `machine`, `platform`, and so
+on. Each extraction:
 
 - creates `rust-modules/<layer>/` as a workspace member (the storage helper in `storage/` is the
   existing example), moves the files, and turns `crate::x::` into `plx_<layer>::x::` in the layers

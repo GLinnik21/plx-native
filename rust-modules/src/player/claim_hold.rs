@@ -122,7 +122,7 @@ pub(crate) fn clear() {
 mod tests {
     use super::*;
     use crate::player::shared::{HlsPlayCompletion, HlsPrimeKind};
-    use crate::player::{ffi, SHARED, TX};
+    use crate::player::{SHARED, TX};
     use std::sync::atomic::Ordering::Acquire;
 
     const CLAIM_OFFSET_NS: i64 = 100_000_000_000;
@@ -136,12 +136,12 @@ mod tests {
         /// A playing stream at the claim offset on the host sink.
         fn playing() -> Rig {
             let serial = crate::testlock::serial();
-            ffi::force_clocksink_for_test(true);
+            crate::player::ffi_host::force_clocksink_for_test(true);
             TX.reset();
             SHARED.reset_hls_clock_for_test();
             SHARED.seeking.store(false, std::sync::atomic::Ordering::Relaxed);
             clear();
-            ffi::clock_run_for_test(CLAIM_OFFSET_NS);
+            crate::player::ffi_host::clock_run_for_test(CLAIM_OFFSET_NS);
             Rig {
                 _serial: serial,
                 pa: super::super::adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() }),
@@ -153,7 +153,7 @@ mod tests {
             rig
         }
         fn position(&self) -> (i64, bool) {
-            ffi::clock_state_for_test()
+            crate::player::ffi_host::clock_state_for_test()
         }
         fn wait(&self) {
             std::thread::sleep(std::time::Duration::from_millis(60));
@@ -166,7 +166,7 @@ mod tests {
             crate::route::reset_player_control_for_test(&crate::route::PlaybackSession::IDLE);
             TX.reset();
             SHARED.reset_hls_clock_for_test();
-            ffi::force_clocksink_for_test(false);
+            crate::player::ffi_host::force_clocksink_for_test(false);
         }
     }
 
@@ -202,10 +202,10 @@ mod tests {
         assert!(SHARED.arm_initial_clock_hold(TX.paused.load(Acquire), false));
         assert_eq!(SHARED.hls_prime_kind(), Some(HlsPrimeKind::Fresh), "the new stream is held for its Initial prime");
 
-        let plays = ffi::play_calls_for_test();
+        let plays = crate::player::ffi_host::play_calls_for_test();
         release(&mut rig.pa, take(7));
         assert!(!TX.paused.load(Acquire), "play state not restored after an accepted claim");
-        assert_eq!(ffi::play_calls_for_test(), plays, "the Deferred resume must leave the physical Play to the prime");
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), plays, "the Deferred resume must leave the physical Play to the prime");
         assert!(!rig.position().1, "the sink clock must wait for the Initial prime");
 
         // The Initial prime's Play (`engine::try_prime`): reserve, issue, complete.
@@ -213,9 +213,9 @@ mod tests {
         let (token, _) = SHARED
             .reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, SHARED.hls_recovery())
             .expect("the Initial prime is owed the Play once the viewer hold is released");
-        assert_ne!(unsafe { ffi::sf_play(rig.pa.mt()) }, 0);
+        assert_ne!(unsafe { crate::player::sink().play(rig.pa.mt()) }, 0);
         assert!(matches!(SHARED.complete_hls_prime_play(token, true), HlsPlayCompletion::Accepted { .. }));
-        assert_eq!(ffi::play_calls_for_test(), plays + 1);
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), plays + 1);
         assert!(rig.position().1, "the sink clock is running again");
     }
 
@@ -235,11 +235,11 @@ mod tests {
     #[test]
     fn a_stream_the_viewer_had_paused_stays_paused_through_the_claim() {
         let mut rig = Rig::paused();
-        let plays = ffi::play_calls_for_test();
+        let plays = crate::player::ffi_host::play_calls_for_test();
         engage(&mut rig.pa, 7);
         release(&mut rig.pa, take(7));
         assert!(TX.paused.load(Acquire), "the pre-claim pause must survive");
-        assert_eq!(ffi::play_calls_for_test(), plays, "no Play was issued");
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), plays, "no Play was issued");
         assert!(!rig.position().1);
     }
 
@@ -249,10 +249,10 @@ mod tests {
         engage(&mut rig.pa, 7);
         // Pause pressed while the hold's own pause is standing.
         assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, true));
-        let plays = ffi::play_calls_for_test();
+        let plays = crate::player::ffi_host::play_calls_for_test();
         release(&mut rig.pa, take(7));
         assert!(TX.paused.load(Acquire), "the landing resumed a stream the viewer paused");
-        assert_eq!(ffi::play_calls_for_test(), plays);
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), plays);
     }
 
     #[test]
@@ -310,10 +310,10 @@ mod tests {
         // Applying that press is the viewer's Pause: it becomes THEIR intent, so the landing
         // must not give play back.
         assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, target));
-        let plays = ffi::play_calls_for_test();
+        let plays = crate::player::ffi_host::play_calls_for_test();
         release(&mut rig.pa, take(7));
         assert!(TX.paused.load(Acquire), "the viewer's Pause was overridden by the hold's restore");
-        assert_eq!(ffi::play_calls_for_test(), plays);
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), plays);
     }
 
     #[test]
@@ -321,11 +321,11 @@ mod tests {
         let mut rig = Rig::playing();
         engage(&mut rig.pa, 7);
         crate::route::force_applying_for_test(7);
-        let plays = ffi::play_calls_for_test();
+        let plays = crate::player::ffi_host::play_calls_for_test();
 
         crate::player::lifecycle::resume_if_paused(&mut rig.pa);
         assert!(TX.paused.load(Acquire), "Skip Intro / SeekTo / From Beginning resumed the hold's pause");
-        assert_eq!(ffi::play_calls_for_test(), plays);
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), plays);
         assert!(!rig.position().1);
 
         // The hold still owes its restore: the seek was carried past the reload, and Play lands after.
@@ -353,10 +353,10 @@ mod tests {
         let mut rig = Rig::playing();
         engage(&mut rig.pa, 7);
         crate::route::force_applying_for_test(7);
-        let plays = ffi::play_calls_for_test();
+        let plays = crate::player::ffi_host::play_calls_for_test();
         assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, false));
         assert!(TX.paused.load(Acquire), "PLAY during the hold resumed the old stream mid-flight");
-        assert_eq!(ffi::play_calls_for_test(), plays);
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), plays);
         assert!(!rig.position().1);
         assert!(owns_pause(), "the hold's restore was dropped by the PLAY");
         release(&mut rig.pa, take(7));

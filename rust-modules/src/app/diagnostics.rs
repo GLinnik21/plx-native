@@ -5,7 +5,7 @@
 //! # Where this lives, and why it is not a screen (restructure phase 10)
 //!
 //! It was `ui/stats.rs` and nine `static mut`s. It is `app/` because of what it is WRITTEN FROM —
-//! `player::Diag`, `route`, `plex::identity`, `webos`, `devcaps`, `surface`: application facts, not
+//! `player::Diag`, `route`, `plex::identity`, `tv`, `devcaps`, `surface`: application facts, not
 //! a design-system vocabulary — and its state is now one `App` field, [`Diagnostics`]. `ui/` keeps
 //! what it always drew with (`widgets::FieldList` is still the list primitive).
 //!
@@ -458,7 +458,7 @@ impl Diagnostics {
 /// firmware where the failure reason should have been. Both facts are now wrapped independently
 /// and drawn in full, so the array's length remains the semantic contract.
 fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32) -> [String; 2] {
-    let w = crate::webos::info();
+    let w = crate::tv::device::info();
     let os = if w.major == 0 {
         crate::i18n::msg::browse_diagnostics_unknown_os().to_string()
     } else {
@@ -476,7 +476,7 @@ fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32)
             } else {
                 crate::i18n::msg::browse_diagnostics_build_release()
             },
-            crate::webos::caps::capability().compact_display(),
+            crate::devcaps::dv::capability().compact_display(),
             &vh.to_string(),
             &os,
             crate::plex::identity::PRODUCT,
@@ -551,14 +551,14 @@ fn never_played(d: &crate::player::Diag, st: crate::player::PlaybackState) -> bo
 /// say nothing about a household. `lab::snapshot`'s envelope has carried the same three fields
 /// since it was written; this is the same rule reaching the surface a stranger can actually use.
 fn device_rows() -> Vec<Field> {
-    let hw = crate::webos::device();
-    let i = crate::webos::info();
+    let hw = crate::tv::device::device();
+    let i = crate::tv::device::info();
     let c = crate::devcaps::caps();
     let mut v = Vec::with_capacity(6);
 
     // WHICH SET. The question every report from hardware nobody here owns opens with, and the one
     // no log a stranger can reach has ever answered. Empty when nyx did not answer — never a
-    // plausible default, which is `webos::Hardware`'s own rule for the same reason.
+    // plausible default, which is `tv::device::Hardware`'s own rule for the same reason.
     let set = hw.set_line();
     let set_unknown = set.is_empty();
     v.push(
@@ -612,10 +612,10 @@ fn device_rows() -> Vec<Field> {
     );
     v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_audio(), c.audio.clone()));
 
-    let dv = crate::webos::caps::probe();
+    let dv = crate::devcaps::dv::probe();
     v.push(
         Field::new(crate::i18n::msg::browse_diagnostics_field_dolby_vision(), dv.full_state())
-            .fault(dv.capability == crate::webos::caps::DvCapability::Unknown),
+            .fault(dv.capability == crate::devcaps::dv::DvCapability::Unknown),
     );
 
     // The same row the pipeline block leads with, minus the direct-play/transcode half that has no
@@ -2380,7 +2380,7 @@ mod tests {
     }
 
     /// The device block obeys the same one-line rule as the pipeline block, and says what it does
-    /// NOT know rather than inventing it — `webos`/`devcaps` are unprobed under `cargo test`, so
+    /// NOT know rather than inventing it — `tv`/`devcaps` are unprobed under `cargo test`, so
     /// this runs in exactly the all-empty state a set whose nyx and codec table are unreadable
     /// would produce.
     #[test]
@@ -3137,7 +3137,7 @@ mod tests {
             23.976,
             dovi,
             false,
-            crate::webos::caps::DvCapability::Supported,
+            crate::devcaps::dv::DvCapability::Supported,
         ));
         let video = rows(&ps, &crate::player::Diag::default(), (0, 0, 0), 1_000)
             .into_iter()
@@ -3196,7 +3196,7 @@ mod tests {
         // The firmware rides the IDENTITY line now (head[0]); head[1] is the verdict, and the two
         // being one array is what stops the firmware taking the verdict's slot again.
         let line = &head[0];
-        if crate::webos::info().major == 0 {
+        if crate::tv::device::info().major == 0 {
             assert!(line.contains("unknown"), "{line}");
         } else {
             assert!(line.contains("webOS "), "{line}");

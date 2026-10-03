@@ -3,7 +3,7 @@
 //!
 //! `net::keypin` publishes the fact ([`keypin::engaged`], and a [`keypin::revision`] that moves
 //! when any fact changes); this is the one consumer that acts on it, through the television's own
-//! toast ([`crate::webos::toast`]). It is polled from the frame loop, so it works on every route:
+//! toast ([`crate::tv::toast`]). It is polled from the frame loop, so it works on every route:
 //! at an offline cold boot key mode first engages during the startup connect, long before any
 //! screen could carry a read-out of its own.
 //!
@@ -75,7 +75,7 @@ fn message(year: Option<i64>) -> String {
 /// Raise `message` off the frame thread and log what became of it, once.
 fn send(message: String) {
     crate::task::spawn_small("clock notice", move || {
-        let outcome = crate::webos::toast::toast(&message);
+        let outcome = crate::tv::toast::toast(&message);
         crate::eventlog::log(&format!("clock notice: toast {outcome:?}"));
     });
 }

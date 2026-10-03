@@ -132,6 +132,22 @@ class Resolution(unittest.TestCase):
             'fn after() { crate::b::z(); }']), 'b.rs': '', 'c.rs': ''})
         self.assertEqual(found, {('a::t', 'c', True), ('a', 'b', False)})
 
+    def test_a_cfg_test_thread_local_records_the_statics_it_declares(self):
+        # The item is the macro call, not the statics: `std::thread_local! { … }` must still end at
+        # its brace group, and each `static` inside it is a cfg(test) item of the module.
+        with Tree({'lib.rs': LIB, 'b.rs': '', 'c.rs': '', 'a.rs': '\n'.join([
+                '#[cfg(test)]\nstd::thread_local! {',
+                '    pub(crate) static HOOK: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };',
+                '    static OTHER: u8 = 0;',
+                '}',
+                '#[cfg(test)] thread_local! { static BARE: u8 = 0; }',
+                'thread_local! { static REAL: u8 = 0; }',
+                'fn after() { crate::b::z(); }'])}) as tree:
+            crate = module_graph.Crate(tree.root)
+        self.assertEqual(set(crate.test_items), {
+            (('a',), None, 'HOOK'), (('a',), None, 'OTHER'), (('a',), None, 'BARE')})
+        self.assertEqual({(r.source, r.target, r.test) for r in crate.refs}, {(('a',), ('b',), False)})
+
     def test_cfg_test_items_of_production_modules_are_recorded_with_their_owner(self):
         with Tree({'lib.rs': LIB, 'b.rs': '', 'c.rs': '', 'a.rs': '\n'.join([
                 '#[cfg(test)] pub(crate) fn helper() {}',

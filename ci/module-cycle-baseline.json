@@ -4,18 +4,14 @@
     "gfx",
     "gpu_timer",
     "http",
-    "i18n",
     "img",
-    "keymanager",
     "plex",
-    "storage",
     "telemetry",
     "text",
-    "ui",
-    "webos"
+    "ui"
   ],
-  "size": 13,
-  "outside_count": 50,
+  "size": 9,
+  "outside_count": 56,
   "other_cycles": [
     [
       "browse",

@@ -294,7 +294,7 @@ pub(crate) struct UsageContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip_version: Option<String>,
     /// issue #74: the k5lp/k3lp `/dev/rtkmem` sandbox pre-flight — `ok` / `missing` / `n/a` — the
-    /// SAME closed enum [`crate::webos::rtkmem_context`] reports, never a free-text probe result.
+    /// SAME closed enum [`crate::tv::sandbox::context`] reports, never a free-text probe result.
     /// Present on every event so a chassis's crash-at-start rate is queryable by sandbox rather
     /// than only discoverable from a single reported issue.
     #[serde(default = "rtkmem_default")]
@@ -332,7 +332,7 @@ impl Default for UsageContext {
 }
 
 impl UsageContext {
-    /// Read the already-probed platform inventory. `webos::probe` runs before telemetry boot and
+    /// Read the already-probed platform inventory. `tv::probe_device` runs before telemetry boot and
     /// before the first usage event; an unavailable field is reported honestly as `unknown`. This
     /// is the server-LESS form — a generic screen or app event has no one server when an account
     /// owns N of them, so it OMITS `server_connection`/`ip_version` entirely rather than
@@ -356,8 +356,8 @@ impl UsageContext {
     }
 
     fn build(connection: Option<(Option<crate::plex::probe::Location>, Option<crate::plex::IpVersion>)>) -> Self {
-        let os = crate::webos::info();
-        let hw = crate::webos::device();
+        let os = crate::tv::device::info();
+        let hw = crate::tv::device::device();
         let connection = connection.map(|(link, ip)| {
             let connection = match link {
                 Some(crate::plex::probe::Location::Local) => "local",
@@ -382,7 +382,7 @@ impl UsageContext {
             hardware_revision: dimension(&hw.hw_revision),
             server_connection: connection.map(|(c, _)| c.to_string()),
             ip_version: connection.map(|(_, ip)| ip.to_string()),
-            rtkmem: crate::webos::rtkmem_context().into(),
+            rtkmem: crate::tv::sandbox::context().into(),
             install: crate::paths::install_kind().into(),
         }
     }

@@ -128,7 +128,7 @@ mod root_back_tests {
     //! [`back_at_root`] is driven for real — it is the app's whole answer to "there is nowhere
     //! further back to go", and the regression to catch is a future edit putting `running = false`,
     //! or a modal question, back where the platform call now goes. [`after_cancel`] is pure,
-    //! because its callers reach `auth`/`webos`, neither of which a unit test wants to drive.
+    //! because its callers reach `auth`/`tv`, neither of which a unit test wants to drive.
     //!
     //! **Phase 6 retired the other half this module doc used to describe** — `onboarding_back`,
     //! `OnboardBack` and their five tests, which pinned issues #16-#18's rule as it was reached from
@@ -141,7 +141,7 @@ mod root_back_tests {
     //! screens that make the decision, not here.
     //!
     //! What NO host test can say is that the television actually shows its launcher and that the
-    //! process survives it. That is `webos::go_home`'s device half — `gohome: SAM accepted`, a
+    //! process survives it. That is the port's device half of `tv::home::go_home` — `gohome: SAM accepted`, a
     //! capture of the launcher (on webOS 4 a RIBBON over the still-running app, so no lifecycle
     //! event at all) and `fuser` reporting one pid throughout — and it is why this file's
     //! `home_requests` counter grades the DECISION and never the outcome.
@@ -154,15 +154,15 @@ mod root_back_tests {
     #[test]
     fn back_at_home_root_shows_the_platform_home() {
         let _g = crate::testlock::serial();
-        crate::webos::release_root_press();
-        let before = crate::webos::home_requests();
+        crate::tv::home::release_root_press();
+        let before = crate::tv::home::home_requests();
         back_at_root();
         assert_eq!(
-            crate::webos::home_requests(),
+            crate::tv::home::home_requests(),
             before + 1,
             "BACK at Home's root must ask webOS for its Home screen"
         );
-        crate::webos::release_root_press();
+        crate::tv::home::release_root_press();
     }
 
     /// **A refused root BACK leaves the sign-in it refused to leave RUNNING, and asks for the
@@ -204,8 +204,8 @@ mod root_back_tests {
     #[test]
     fn owned_home_root_back_reaches_platform_home_without_moving_the_root() {
         let _guard = crate::testlock::serial();
-        crate::webos::release_root_press();
-        let before = crate::webos::home_requests();
+        crate::tv::home::release_root_press();
+        let before = crate::tv::home::home_requests();
         let mut d = crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
         let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
         crate::app::bridge::nav_root(&mut d, crate::screens::registry::AppArg::Home);
@@ -224,10 +224,10 @@ mod root_back_tests {
         for request in requests {
             assert!(crate::app::run::reduce_navigation_request(request, &mut d).is_ok());
         }
-        assert_eq!(crate::webos::home_requests(), before + 1);
+        assert_eq!(crate::tv::home::home_requests(), before + 1);
         assert_eq!(d.nav.top_page().map(|page| page.id), Some(entry));
         assert_eq!(d.nav.instance_of(entry), Some(instance));
-        crate::webos::release_root_press();
+        crate::tv::home::release_root_press();
     }
 
     /// A BACK on an actual non-root Detail page is the page's typed `ContentReq::Back`, never the
@@ -236,8 +236,8 @@ mod root_back_tests {
     #[test]
     fn nonroot_owned_page_back_never_reaches_platform_home() {
         let _guard = crate::testlock::serial();
-        crate::webos::release_root_press();
-        let before = crate::webos::home_requests();
+        crate::tv::home::release_root_press();
+        let before = crate::tv::home::home_requests();
         let mut d = crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
         let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
         crate::app::bridge::nav_root(&mut d, crate::screens::registry::AppArg::Home);
@@ -261,9 +261,9 @@ mod root_back_tests {
             (crate::ui::machine::MachineId::Instance(instance),
                 crate::screens::registry::ContentReq::Back) if *instance == detail_instance
         )));
-        assert_eq!(crate::webos::home_requests(), before);
+        assert_eq!(crate::tv::home::home_requests(), before);
         assert_eq!(d.nav.instance_of(detail_entry), Some(detail_instance));
-        crate::webos::release_root_press();
+        crate::tv::home::release_root_press();
     }
 
     /// First-run BACK starts as a request from the real `OnboardScreen`, then runs the exact

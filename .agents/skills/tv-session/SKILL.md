@@ -398,7 +398,7 @@ the TV is signed in as whatever the automation chose.
   split separates the app directories and the runtime roots, and nothing else: one panel,
   one video plane, one capture service, one set of luna calls. Run `tv-session.sh down`
   (or just stop the streamer) first.
-- **`BACK` at a ROOT hands the screen to the LG launcher** (`webos::go_home`) — Home's root, the
+- **`BACK` at a ROOT hands the screen to the LG launcher** (`tv::home::go_home`) — Home's root, the
   who's-watching picker and the QR sign-in all do this since 2026-09-03, and none of them ends the
   session. The consequence for a driver: a stray `back` at a root puts the **LG launcher RIBBON
   over the still-running, still-drawing app** — on this webOS 4 set the launcher is an overlay, so

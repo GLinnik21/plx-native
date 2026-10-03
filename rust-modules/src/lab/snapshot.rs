@@ -7,7 +7,7 @@
 //!
 //! # What may appear, and what may not
 //!
-//! The envelope is assembled from [`crate::player::Diag`], [`crate::webos`] and
+//! The envelope is assembled from [`crate::player::Diag`], [`crate::tv::device`] and
 //! [`crate::devcaps`], whose fields are numbers, bools, enums and short platform strings.
 //! `app::diagnostics`'s module doc states the rule those types already live under and the reasoning
 //! behind each clause; it applies here unchanged and for a stronger reason, since an upload
@@ -269,8 +269,8 @@ pub(crate) fn body(
 }
 
 fn device() -> Device {
-    let i = crate::webos::info();
-    let d = crate::webos::device();
+    let i = crate::tv::device::info();
+    let d = crate::tv::device::device();
     Device {
         webos_release: i.release.clone(),
         webos_codename: i.codename.clone(),

@@ -192,7 +192,7 @@ past `press::LONG_MS`), and `shot` (simulator only).
 A desktop keyboard also works directly in `make sim-macos-run`: arrows, RETURN, ESC (`is_ok`/`is_back`
 have always accepted keyboard keys), plus space=pause, `p`=play, `s`=stop, backspace=BACK.
 
-**`back` at a ROOT is the platform's root press** (`webos::go_home`) — Home's root, the
+**`back` at a ROOT is the platform's root press** (`tv::home::go_home`) — Home's root, the
 who's-watching picker and the QR sign-in — and it does not end the process. **On the simulator it
 is a LOG LINE and nothing else** (`gohome: no LS2 bus off-device …`): there is no webOS launcher to
 hand a Mac window to, so the screen does not change and a `back` too many looks like a key that did

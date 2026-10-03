@@ -21,7 +21,7 @@ pub(crate) fn load_thread(
     route_start: Option<crate::route::RouteStartAttempt>,
 ) {
     super::log("SMP: calling Load (uid=NULL)");
-    let ok = unsafe { super::ffi::sf_load(payload.0, native_epoch) };
+    let ok = unsafe { super::sink().load(payload.0, native_epoch) };
     super::log(&format!("SMP: Load returned ok={ok}"));
     // `/tmp/plxnative-holdload[=ms]`: on demand, hold the flip below so issue #74 D.1's budget
     // (the pump's "deferring" line, then, past `NATIVE_LOAD_BUDGET`, the failure read-out) is

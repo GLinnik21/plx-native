@@ -3599,7 +3599,7 @@ const SECURE_FORMAT: &str = "plxnative-secure-session";
 struct SecureEnvelope {
     format: String,
     version: u8,
-    sealed: crate::keymanager::Sealed,
+    sealed: crate::tv::secure::Sealed,
 }
 
 enum ReadState {
@@ -3764,7 +3764,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
         }
         if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
             if envelope.format == SECURE_FORMAT && envelope.version == 1 {
-                let Some(plain) = crate::keymanager::open(&envelope.sealed) else {
+                let Some(plain) = crate::tv::secure::open(&envelope.sealed) else {
                     crate::eventlog::log("session: secure file is present but its device key is unavailable");
                     return ReadState::Locked { language: install_preferences::load().unwrap_or_default() };
                 };
@@ -4359,7 +4359,7 @@ fn save_legacy_fallback_locked(
         crate::eventlog::log("session: preserving the existing protected record; refusing an unprotected downgrade");
         return None;
     }
-    if let Some(sealed) = crate::keymanager::seal(&serde_json::to_vec_pretty(s).ok()?) {
+    if let Some(sealed) = crate::tv::secure::seal(&serde_json::to_vec_pretty(s).ok()?) {
         let envelope = SecureEnvelope {
             format: SECURE_FORMAT.to_string(),
             version: 1,
@@ -4443,8 +4443,7 @@ fn save_legacy_locked(s: &Session) -> Option<bool> {
     let Ok(json) = serde_json::to_vec_pretty(s) else {
         return None;
     };
-    crate::keymanager::reset_for_test();
-    if let Some(sealed) = crate::keymanager::seal(&json) {
+    if let Some(sealed) = crate::tv::secure::seal(&json) {
         let envelope = SecureEnvelope {
             format: SECURE_FORMAT.to_string(),
             version: 1,
@@ -4974,7 +4973,7 @@ pub(crate) fn clear_for_erase(all_local: bool, retry_language: Option<crate::i18
         if let Some(bytes) = read_owned_regular(&path) {
             if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
                 if envelope.format == SECURE_FORMAT && envelope.version == 1 {
-                    crate::keymanager::remove(&envelope.sealed.backend, &envelope.sealed.key);
+                    crate::tv::secure::remove(&envelope.sealed.backend, &envelope.sealed.key);
                 }
             }
         }

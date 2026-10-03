@@ -83,7 +83,7 @@ pub(crate) struct PlaybackSession {
     /// Cleared with the playback verdict on exit/reset, never a process-global error latch.
     pub(crate) jail_load_blocked: bool,
     /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
-    pub(crate) repair_status: crate::webos::jail_repair::State,
+    pub(crate) repair_status: crate::tv::sandbox::State,
     /// The request which produced this attempt, retained for terminal Retry / Choose quality.
     /// Written synchronously by [`request_play`] rather than by [`apply_plan`], because the
     /// server can refuse before a playable plan exists.
@@ -384,7 +384,7 @@ impl PlaybackSession {
     pub(crate) const IDLE: PlaybackSession = PlaybackSession {
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
-        repair_status: crate::webos::jail_repair::State::Idle,
+        repair_status: crate::tv::sandbox::State::Idle,
         request: None,
         requested_resume_ns: 0,
         url: String::new(),
@@ -4592,7 +4592,7 @@ pub(crate) fn set_stream_declaration(
         fps,
         dovi,
         immersive,
-        crate::webos::caps::capability(),
+        crate::devcaps::dv::capability(),
     )
 }
 
@@ -4603,7 +4603,7 @@ fn set_stream_declaration_with_capability(
     fps: f64,
     dovi: crate::metadata::Dovi,
     immersive: bool,
-    capability: crate::webos::caps::DvCapability,
+    capability: crate::devcaps::dv::DvCapability,
 ) -> bool {
     let decision = crate::metadata::DvDecision {
         capability,
@@ -4640,7 +4640,7 @@ pub(crate) fn set_stream_declaration_for_test(
     fps: f64,
     dovi: crate::metadata::Dovi,
     immersive: bool,
-    capability: crate::webos::caps::DvCapability,
+    capability: crate::devcaps::dv::DvCapability,
 ) -> bool {
     set_stream_declaration_with_capability(ps, vc, ac, fps, dovi, immersive, capability)
 }
@@ -6204,7 +6204,7 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
 
 fn playback_preview_with_capability(
     d: &crate::metadata::Detail,
-    capability: Option<crate::webos::caps::DvCapability>,
+    capability: Option<crate::devcaps::dv::DvCapability>,
 ) -> Option<Preview> {
     // A SHOW's container carries no file of its own, so the page answers for the episode its Play
     // button would start — the one the hero is already about. Its frame size and audio list are
@@ -6260,7 +6260,7 @@ fn playback_preview_with_capability(
 #[cfg(test)]
 pub(crate) fn playback_preview_with_capability_for_test(
     d: &crate::metadata::Detail,
-    capability: crate::webos::caps::DvCapability,
+    capability: crate::devcaps::dv::DvCapability,
 ) -> Option<Preview> {
     playback_preview_with_capability(d, Some(capability))
 }
@@ -6999,7 +6999,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
         *s = PlaybackSession {
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
-            repair_status: crate::webos::jail_repair::State::Idle,
+            repair_status: crate::tv::sandbox::State::Idle,
             request,
             requested_resume_ns,
             url: plan.url,
@@ -8557,7 +8557,7 @@ pub(crate) fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSessio
         },
         dv_decision: if route.dv_declared {
             crate::metadata::DvDecision {
-                capability: crate::webos::caps::DvCapability::Supported,
+                capability: crate::devcaps::dv::DvCapability::Supported,
                 presentation: crate::metadata::DvPresentation::Declare(crate::metadata::DolbyHdrInfo {
                     profile_id: 8,
                     track_type: "single",

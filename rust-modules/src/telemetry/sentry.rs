@@ -535,8 +535,8 @@ pub(crate) fn attach_user(body: &mut serde_json::Value, errors_id: Option<&str>)
 /// `playback` context sits beside these, not under them) rather than replacing it — and creates one
 /// if the body had none yet.
 pub(crate) fn attach_hardware_context(body: &mut serde_json::Value) {
-    let webos = crate::webos::info();
-    let hw = crate::webos::device();
+    let webos = crate::tv::device::info();
+    let hw = crate::tv::device::device();
     let contexts = body
         .as_object_mut()
         .expect("event body is always a JSON object")
@@ -554,7 +554,7 @@ pub(crate) fn attach_hardware_context(body: &mut serde_json::Value) {
         "model": hw.model,
         "soc": hw.board,
         "revision": hw.hw_revision,
-        "rtkmem": crate::webos::rtkmem_context(),
+        "rtkmem": crate::tv::sandbox::context(),
         "install": crate::paths::install_kind(),
     });
 }

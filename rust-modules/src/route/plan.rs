@@ -1061,7 +1061,7 @@ pub(crate) struct ResolveEnv {
     /// Test-only replacement for the process cache. Capability is an explicit policy input in
     /// regressions; no test mutates the production `OnceLock` or makes the whole host a DV set.
     #[cfg(test)]
-    pub(super) dv_capability: Option<crate::webos::caps::DvCapability>,
+    pub(super) dv_capability: Option<crate::devcaps::dv::DvCapability>,
 }
 
 

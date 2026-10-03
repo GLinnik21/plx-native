@@ -445,7 +445,7 @@ fn commit_session(
         session,
         migration,
         authority,
-        crate::webos::info().major,
+        crate::tv::device::info().major,
         &mut client::NativeTransport,
     )
 }
@@ -1393,7 +1393,7 @@ pub(crate) fn bootstrap(opener: &mut dyn LegacyOpener) -> Bootstrap {
         bootstrap_with(
             &mut HelperMigration {
                 transport: &mut client::NativeTransport,
-                major: crate::webos::info().major,
+                major: crate::tv::device::info().major,
             },
             opener,
             &candidates,

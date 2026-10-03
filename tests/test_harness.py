@@ -5657,6 +5657,28 @@ impl PersonOwnerGateFixture {
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("ok — tmppath", out)
 
+    def test_sink_gate_catches_the_video_sink_named_outside_the_player(self):
+        """Step L15: the Starfish/ACB verbs are the player's alone. RED: a module outside
+        `player/`, `port.rs` and `tv/` that reaches `tv::sink::installed()` must fail `sink`."""
+        r = self._plant(
+            "_check_deps_selftest_sink_out.rs",
+            "pub fn pause_it() {\n    let _ = crate::tv::sink::installed();\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("sink:", out)
+        self.assertIn("_check_deps_selftest_sink_out.rs", out)
+
+    def test_sink_gate_allows_the_player_to_name_the_video_sink(self):
+        """GREEN: the same call from a file under `player/` leaves `sink` (and the script) green."""
+        r = self._plant(
+            "player/_check_deps_selftest_sink_in.rs",
+            "pub fn pause_it() {\n    let _ = crate::tv::sink::installed();\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — sink", out)
+
     def test_textmeasure_gate_catches_a_bare_call_outside_the_seam(self):
         """Phase 12, D4: `textmeasure` went from an allowlist to zero-tolerance. RED: a raw
         `crate::text::text_width(` call in a file that is neither one of the three seam files
@@ -5777,8 +5799,9 @@ impl PersonOwnerGateFixture {
         # remaining 159 that steps L2-L14 cleared: 231 - 72 - 159 = 0. Then `[port webos]` was
         # declared (step L15), and the 42 (file, member) pairs that name it from outside became
         # that step's entries: 0 + 42 = 42. Merging main brought main's system toast (#392) and its
-        # two callers: 42 + 2 = 44.
-        "layers.txt": 44,
+        # two callers: 42 + 2 = 44. Step L15 moved all 44 behind the `tv` interfaces and the port:
+        # 44 - 44 = 0.
+        "layers.txt": 0,
         "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs
         "mutators.txt": 0,
         "nav.txt": 0,

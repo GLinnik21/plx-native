@@ -564,9 +564,9 @@ pub(crate) unsafe fn construct(
     // thread (`egl::current_with`), which is what makes it safe on a GLX-backed Linux simulator.
     crate::egl::probe();
     crate::textinput::bind(win);
-    // …and the same handshake for the ROOT press: `webos::go_home`'s fallback leg minimizes
+    // …and the same handshake for the ROOT press: `tv::home::go_home`'s fallback leg minimizes
     // this window, and the window is created here, a long way from where BACK is decided.
-    crate::webos::bind_window(win);
+    crate::tv::window::bind_window(win);
     let wflags = SDL_GetWindowFlags(win);
     log(&format!(
         "keyboard: support={} active={} focus={} winflags=0x{wflags:x}",
@@ -575,11 +575,11 @@ pub(crate) unsafe fn construct(
         i32::from(wflags & SDL_WINDOW_INPUT_FOCUS != 0)
     ));
 
-    crate::system::sys_grab_wayland(win);
+    crate::tv::window::grab(win);
     // EXPERIMENT (`/tmp/plxnative-opaque`), no-op without the trigger: build the full-surface
     // wl_region once, so `opaque_route` below can declare the UI plane opaque on every screen
     // that has nothing behind it. See `system.rs`'s section on it.
-    crate::system::opaque_region_init();
+    crate::tv::window::arm_opaque_region();
     crate::gfx::init_gl();
     crate::text::init_text();
     crate::gfx::init_image();
@@ -1304,7 +1304,7 @@ pub(crate) unsafe fn construct(
         fps_shown,
         play_prev,
         running,
-        window_activity: crate::system::WindowActivity::new(),
+        window_activity: super::window_activity::WindowActivity::new(),
         #[cfg(feature = "devtools")]
         buffer_flip_count,
         down_sym,

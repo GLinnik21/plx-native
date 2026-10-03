@@ -321,7 +321,8 @@ def source_paths(root: Path):
             if path.name not in FIXTURES and not any('test' in part for part in path.relative_to(src).parts): yield path
     for rel in ('app/chrome.rs', 'app/diagnostics.rs', 'app/playback.rs', 'auth/owner.rs',
                 'metadata.rs', 'person.rs', 'player/ass.rs', 'player/mod.rs', 'player/shared.rs',
-                'player/sidecar.rs', 'route/decision.rs', 'route/plan.rs', 'webos.rs', 'lab/toast.rs'):
+                'player/sidecar.rs', 'route/decision.rs', 'route/plan.rs', 'webos.rs', 'lab/toast.rs',
+                'tv/device.rs', 'devcaps/dv.rs'):
         yield src / rel
 
 

@@ -748,7 +748,7 @@ struct Note {
 /// on a deduplicated retry even when the report's already-resolved context and receipt stay put.
 fn support_line(offer: &auth::owner::IncidentOffer) -> String {
     use crate::telemetry::incident::LinkClass;
-    let set = crate::webos::device().set_line();
+    let set = crate::tv::device::device().set_line();
     let set = if set.is_empty() { crate::i18n::msg::settings_login_unknown_device().to_string() } else { set };
     let code = match offer.key.link {
         LinkClass::Unknown => offer.key.kind.code().to_string(),
@@ -769,7 +769,7 @@ fn support_line(offer: &auth::owner::IncidentOffer) -> String {
         "{} {} \u{b7} {} \u{b7} {} \u{b7} {}{} \u{b7} {}",
         crate::plex::identity::PRODUCT,
         crate::plex::identity::VERSION,
-        crate::webos::info().release_line(),
+        crate::i18n::webos_release_line(crate::tv::device::info()),
         set,
         code,
         discovery,

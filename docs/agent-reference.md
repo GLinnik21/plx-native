@@ -570,7 +570,7 @@ Two planes are composited by the TV: the app's **GLES/graphics plane** (UI, draw
 over the hardware **VIDEO overlay plane** (decoded frames). The UI plane is made non-opaque so
 video shows through.
 
-**UI (the Rust app core — the frame loop in `app/run.rs::run`, entered via `plex_run()` in `app/mod.rs` after `app/boot.rs::boot()`):** SDL2 window + GLES2
+**UI (the Rust app core — the frame loop in `app/run.rs::run`, entered via `plex_run()` in `port.rs`, which installs the port and runs `app::run_application`, after `app/boot.rs::boot()`):** SDL2 window + GLES2
 context. All UI is drawn with two tiny shaders — an SDF rounded-rect/triangle shader (cards, focus
 glow, HUD widgets, seven-segment FPS) and a text shader that samples SDL2_ttf-rendered glyph
 textures (cached by string+size). Critically-damped springs animate focus scale and shelf scroll.
@@ -601,9 +601,9 @@ which the linking section explains is load-bearing rather than tidy.
 The intended layering is gfx/text/i18n < ui < screens < app and plex < route/player < app
 (`ci/module-layers.ini` is the full target, gated per reference by `ci/check-module-layers.py`). A
 few thin upward references once closed one strongly connected component of top-level modules
-holding 44 of them; the module-layer migration (`docs/module-layers.md`) cut it to 13, which is
-this tool's coarse view of edges the layer gate allows: it sees `ui` and `diag` as one node each,
-while `ui::machine`/`ui::idle`/`ui::overdraw` and `diag::{zlib,spans,heartbeat}` sit in lower
+holding 44 of them; the module-layer migration (`docs/module-layers.md`) cut it to 13 by step L14
+(`ci/module-cycle-baseline.json` has the current set), which is this tool's coarse view of edges
+the layer gate allows: it sees `ui` and `diag` as one node each, while `ui::machine`/`ui::idle`/`ui::overdraw` and `diag::{zlib,spans,heartbeat}` sit in lower
 layers. The gate does not untangle it; it stops it absorbing more modules. It builds the module graph from production code only (the
 module tree walked from `lib.rs`, `#[cfg(test)]` items and test-only files skipped, comments and
 strings blanked; the docstring lists what it cannot see), compares the cycle's members with
@@ -625,8 +625,8 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - `Makefile` — build/deploy/run/ipk; toolchain, the bundled-FFmpeg build + staging + its ABI gate
   (one header tree, not the old dual one), TV ssh creds.
 - `src/main.c` — the **boot shim** (event-log/stderr setup, process bring-up); calls the Rust
-  `plex_run()`. `src/crashtrace.c` (+ `crashtrace.h`) — the **fatal-signal tracer**, its own TU so
-  the signal path can be tested; `src/crashfmt.h` is its pure half. **Both halves are host-tested in
+  `plex_run()` (`rust-modules/src/port.rs`, which runs `app::run_application`). `src/crashtrace.c`
+  (+ `crashtrace.h`) — the **fatal-signal tracer**, its own TU so the signal path can be tested; `src/crashfmt.h` is its pure half. **Both halves are host-tested in
   `make check`** — `ci/crashfmt-test.c` grades the parsing, `ci/crashtrace-test.c` crashes seven
   processes on purpose and checks the record AND the exit status. `src/starfish.c` — the
   StarfishMediaAPIs C++/ACB seam. `src/svg.c` — nanosvg rasterizer. `src/sentry_context.c` — the
@@ -637,7 +637,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   panics inside an `extern "C"` callback, and `unwind` panics straight in `crash_on_purpose` so the
   unwind crosses `plex_run`'s own frame (`rust-modules/src/dev.rs`'s `crash_on_purpose` doc comment
   has the detail).
-- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `plex_run` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
+- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
   pinned** libavformat shipped beside the binary, *not* the TV's), `stream.rs`/`aq.rs` (HTTP socket
@@ -1990,7 +1990,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   scrub-seek, **BACK/Stop** returns. The strip's **last pill is Search** (a mark, not a word) — a
   peer of Home and the Library, not a page stacked over them, so BACK from it returns to Home. BACK
   at **Home's own root** is the end of that chain and hands the screen back to the TELEVISION
-  (`app::input::back_at_root` → `webos::go_home`), with the app still running — which is what the
+  (`app::input::back_at_root` → `tv::home::go_home`), with the app still running — which is what the
   platform itself does at an app's entry page on this firmware, and what LG's submission rules
   require. **The same rule covers three roots** — Home, the who's-watching picker and the QR
   sign-in — which is what issues #16–#18 were: the latter two used to DROP a root BACK, because
@@ -2001,7 +2001,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   distinguish "stepped back a stage" from "the platform took the screen" — so the loop's BACK arm
   had nothing to key the root press on. The owned replacement (`screens::consent.rs`) answers with
   a request instead of a bool: BACK at the first stage asks the loop for `LoopReq::BackAtRoot`
-  (`app::input::back_at_root` → `webos::go_home`, the same call the other three roots use) rather
+  (`app::input::back_at_root` → `tv::home::go_home`, the same call the other three roots use) rather
   than stepping or dismissing, and doing so does NOT answer or dismiss the question — selecting the
   app's tile again lands straight back on it, exactly as Home, the picker and QR sign-in do at
   theirs (`app/bridge.rs`'s `back_at_the_first_consent_stage_is_the_root_press_and_leaves_the_question_up`

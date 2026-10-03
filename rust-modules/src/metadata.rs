@@ -496,7 +496,7 @@ impl Dovi {
     ///
     /// `signal` retains `nodv`'s diagnostic asymmetry: it withholds a Profile-5-style declaration,
     /// but does not suppress a compatible Profile 8 on a supported set. `capability` must be a
-    /// definite [`Supported`](crate::webos::caps::DvCapability::Supported), and
+    /// definite [`Supported`](crate::devcaps::dv::DvCapability::Supported), and
     /// `video_is_hevc` closes the old Profile 9 disagreement where the gate declared AVC and the
     /// payload's H265 guard silently discarded the node.
     ///
@@ -529,7 +529,7 @@ impl Dovi {
     pub(crate) fn presentation(
         &self,
         signal: bool,
-        capability: crate::webos::caps::DvCapability,
+        capability: crate::devcaps::dv::DvCapability,
         video_is_hevc: bool,
     ) -> DvPresentation {
         if !self.present {
@@ -541,7 +541,7 @@ impl Dovi {
         // Presence of our node enables libpf's DV path even on a television which cannot display
         // it. libplayerAPIs' own platform metadata does not protect that seam, so only this app's
         // affirmative configd result may make the declaration eligible.
-        let declare = capability == crate::webos::caps::DvCapability::Supported
+        let declare = capability == crate::devcaps::dv::DvCapability::Supported
             && video_is_hevc
             && (signal || !self.base_layer_unusable());
         if !declare || self.profile <= 0 {
@@ -568,13 +568,13 @@ impl Dovi {
     pub(crate) fn presentation_now(&self, video_is_hevc: bool) -> DvPresentation {
         self.presentation(
             !dv_withheld(),
-            crate::webos::caps::capability(),
+            crate::devcaps::dv::capability(),
             video_is_hevc,
         )
     }
 
     pub(crate) fn decision_now(&self, video_is_hevc: bool) -> DvDecision {
-        let capability = crate::webos::caps::capability();
+        let capability = crate::devcaps::dv::capability();
         DvDecision {
             capability,
             presentation: self.presentation(!dv_withheld(), capability, video_is_hevc),
@@ -623,13 +623,13 @@ pub(crate) enum DvPresentation {
 /// copyable so reload, recovery and rollback preserve the installed decision exactly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct DvDecision {
-    pub(crate) capability: crate::webos::caps::DvCapability,
+    pub(crate) capability: crate::devcaps::dv::DvCapability,
     pub(crate) presentation: DvPresentation,
 }
 
 impl DvDecision {
     pub(crate) const NONE: Self = Self {
-        capability: crate::webos::caps::DvCapability::Unknown,
+        capability: crate::devcaps::dv::DvCapability::Unknown,
         presentation: DvPresentation::NotDv,
     };
 }

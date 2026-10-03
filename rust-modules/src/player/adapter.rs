@@ -21,7 +21,7 @@
 //! live `&mut` to the engine no longer requires a convention: it does not compile.
 //!
 //! The rest of `player/engine.rs` keeps its `mt: &MainThread` parameters unchanged. They gate a
-//! DIFFERENT thing — the ACB/Starfish seam (`player::ffi`'s wrappers, whose bind order is a
+//! DIFFERENT thing — the ACB/Starfish seam (`tv::sink::VideoSink`'s methods, whose bind order is a
 //! sequence of calls with no locking behind it) — and that surface is not this module's.
 
 use super::engine::Engine;
@@ -34,7 +34,7 @@ pub(crate) struct PlayerAdapter {
     mt: MainThread,
     /// The live native session, or `None` between playbacks.
     engine: Option<Engine>,
-    repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), crate::webos::jail_repair::Failure>>)>,
+    repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), crate::tv::sandbox::Failure>>)>,
     /// A timed-out native `Load` whose media thread had not returned when its Engine was torn
     /// down. Owned here, not by a static, for the same reason the Engine is: releasing it calls
     /// the Starfish seam, which only the main thread may do. See `engine::AbandonedLoad`.
@@ -57,11 +57,11 @@ impl PlayerAdapter {
         let Some(token) = owner.begin(supported) else { return; };
         let (tx, rx) = std::sync::mpsc::channel();
         if crate::task::spawn_small("jail repair", move || {
-            let _ = tx.send(crate::webos::jail_repair::execute());
+            let _ = tx.send(crate::tv::sandbox::repair());
         }) {
             self.repair = Some((token, rx));
         } else {
-            owner.complete(token, Err(crate::webos::jail_repair::Failure::StartFailed));
+            owner.complete(token, Err(crate::tv::sandbox::Failure::StartFailed));
         }
     }
 
@@ -71,7 +71,7 @@ impl PlayerAdapter {
         let result = match rx.try_recv() {
             Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(crate::webos::jail_repair::Failure::StartFailed),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(crate::tv::sandbox::Failure::StartFailed),
         };
         let changed = owner.complete(*token, result);
         self.repair = None;
@@ -126,7 +126,7 @@ impl PlayerAdapter {
         self.abandoned_load.take()
     }
 
-    /// The token, for the ACB/Starfish seam. `player::ffi`'s wrappers still take one — see the
+    /// The token, for the ACB/Starfish seam. `tv::sink::VideoSink`'s methods still take one — see the
     /// module doc for why that surface keeps its own argument.
     #[inline]
     pub(crate) fn mt(&self) -> &MainThread {
@@ -150,7 +150,7 @@ impl PlayerAdapter {
 #[cfg(test)]
 mod repair_receipt_tests {
     use super::*;
-    use crate::webos::jail_repair::{Failure, State};
+    use crate::tv::sandbox::{Failure, State};
     #[test]
     fn a_receipt_lands_without_a_player_screen_and_cannot_rearm_the_attempt() {
         let mut owner = super::super::machine::RepairAttempt::new();

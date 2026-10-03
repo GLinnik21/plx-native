@@ -259,24 +259,25 @@ pub(crate) fn install_activation_hint(hint: fn(&str)) -> Result<(), fn(&str)> {
     ACTIVATION_HINT.set(hint)
 }
 
-/// The helper is a dynamic LS2 service: nothing starts it but a call to it (0.6.6's
-/// `activate_storage_helper`). Without this a television with no running helper never answers.
-#[cfg(all(
-    target_os = "linux",
-    target_arch = "arm",
-    not(feature = "hostsim"),
-    not(test)
-))]
-fn activate(service: &str) -> failure::Detail {
-    crate::webos::activate_storage_helper(service)
+/// The platform's way to wake the helper, installed by the port at boot. With none installed (a
+/// host, the simulator) activation is [`Stage::Unsupported`].
+#[cfg(target_os = "linux")]
+static ACTIVATOR: std::sync::OnceLock<fn(&str) -> failure::Detail> = std::sync::OnceLock::new();
+#[cfg(target_os = "linux")]
+pub(crate) fn install_activator(
+    activator: fn(&str) -> failure::Detail,
+) -> Result<(), fn(&str) -> failure::Detail> {
+    ACTIVATOR.set(activator)
 }
 
-#[cfg(all(
-    target_os = "linux",
-    not(all(target_arch = "arm", not(feature = "hostsim"), not(test)))
-))]
-fn activate(_service: &str) -> failure::Detail {
-    failure::Detail::new(Stage::Unsupported, None)
+/// The helper is a dynamic LS2 service: nothing starts it but a call to it (0.6.6's
+/// `activate_storage_helper`). Without this a television with no running helper never answers.
+#[cfg(target_os = "linux")]
+fn activate(service: &str) -> failure::Detail {
+    match ACTIVATOR.get() {
+        Some(activator) => activator(service),
+        None => failure::Detail::new(Stage::Unsupported, None),
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

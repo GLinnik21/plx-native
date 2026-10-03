@@ -220,6 +220,17 @@ pub(crate) fn normalize(s: &str) -> Option<String> {
     let l = base.parse::<Locale>().ok()?;
     (l.id.language.as_str() != "und").then(|| l.to_string())
 }
+/// `webOS 4.10.2`, or the UI language's "webOS unknown" read-out when the firmware file could not
+/// be read — the release is the one field a stranger's report needs, and "unknown" is the honest
+/// reading of an empty one rather than a plausible default. Shared by the support lines of the
+/// failure read-out and of the sign-in report.
+pub(crate) fn webos_release_line(info: &crate::tv::device::Info) -> String {
+    if info.major == 0 {
+        msg::browse_diagnostics_unknown_os().to_string()
+    } else {
+        format!("webOS {}", info.release)
+    }
+}
 static CURRENT: OnceLock<LocaleContext> = OnceLock::new();
 static SAVED_PREFERENCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
@@ -373,7 +384,6 @@ struct SystemLocale {
     fmt: Option<String>,
     clock: Option<String>,
 }
-#[cfg(any(test, not(feature = "hostsim")))]
 fn parse_reply(raw: &str) -> Option<SystemLocale> {
     let v: serde_json::Value = serde_json::from_str(raw).ok()?;
     if v["returnValue"].as_bool() != Some(true) {
@@ -389,34 +399,22 @@ fn parse_reply(raw: &str) -> Option<SystemLocale> {
         clock: info["clock"].as_str().map(str::to_string),
     })
 }
-#[cfg(all(not(test), not(feature = "hostsim")))]
+#[cfg(not(test))]
 fn platform_locale() -> Option<SystemLocale> {
-    let result = crate::webos::ls2::register()
-        .map_err(crate::webos::ls2::Fail::from)
-        .and_then(|client| {
-            client.call(
-                "luna://com.webos.settingsservice/getSystemSettings",
-                r#"{"keys":["localeInfo"]}"#,
-                std::time::Duration::from_millis(600),
-            )
-        });
-    match result {
-        Ok(raw) => {
+    match crate::tv::system_locale() {
+        crate::tv::LocaleReply::NoPlatform => None,
+        crate::tv::LocaleReply::Reply(raw) => {
             let info = parse_reply(&raw);
             if info.is_none() {
                 crate::eventlog::log("locale: settings refused or returned malformed localeInfo");
             }
             info
         }
-        Err(_) => {
+        crate::tv::LocaleReply::Unavailable => {
             crate::eventlog::log("locale: settings unavailable; using fallback");
             None
         }
     }
-}
-#[cfg(all(not(test), feature = "hostsim"))]
-fn platform_locale() -> Option<SystemLocale> {
-    None
 }
 
 // Every generated key has str/CStr and explicit-context variants; not every consumer needs all

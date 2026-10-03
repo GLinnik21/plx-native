@@ -52,7 +52,17 @@
 //! It reports [`VP_EXPORTED`](super::VP_EXPORTED), the webOS 5+ path, because that one binds video
 //! through an exported window id and never touches ACB — so the whole ACB stage sequence stays
 //! skipped rather than faked.
+//!
+//! # How it is reached
+//!
+//! The verbs below are private; [`HostSink`] is the simulator's own `tv::sink::VideoSink`, one
+//! method per verb, installed by `port.rs` for the `hostsim` build and returned directly by
+//! `player::sink()` in the hostsim tests. The `*_for_test` hooks stay here, next to the statics
+//! they touch, and the tests reach them as `crate::player::ffi_host::<hook>`.
 
+use crate::task::MainThread;
+use crate::tv::sink::VideoSink;
+use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering::Relaxed};
 #[cfg(test)]
@@ -161,6 +171,30 @@ pub(super) fn in_flight_verb_for_test() -> Option<&'static str> {
 pub(super) fn set_load_in_flight_for_test(on: bool) {
     LOAD_IN_FLIGHT.store(on, Relaxed);
 }
+/// Whether the host `sf_load` is currently inside its in-flight window (`loadCompleted` emitted,
+/// not yet returned).
+#[cfg(test)]
+pub(super) fn load_in_flight_for_test() -> bool {
+    LOAD_IN_FLIGHT.load(Relaxed)
+}
+/// **Test-only: force the host clock sink on.** The override reaches tests through a hook here
+/// rather than by widening the visibility of [`FORCE_ENABLED`].
+#[cfg(test)]
+pub(super) fn force_clocksink_for_test(on: bool) {
+    FORCE_ENABLED.store(on, Relaxed);
+}
+#[cfg(test)]
+pub(super) fn force_play_result_for_test(result: Option<c_int>) {
+    FORCE_PLAY_RESULT.store(result.unwrap_or(i32::MIN), Relaxed);
+}
+#[cfg(test)]
+pub(super) fn play_calls_for_test() -> u64 {
+    PLAY_CALLS.load(Relaxed)
+}
+#[cfg(test)]
+pub(super) fn force_pause_result_for_test(result: Option<c_int>) {
+    FORCE_PAUSE_RESULT.store(result.unwrap_or(i32::MIN), Relaxed);
+}
 
 /// Is the clock sink armed? Read once, at the first seam call, and latched.
 ///
@@ -186,16 +220,13 @@ fn enabled() -> bool {
     })
 }
 
-/// **This file is included as `player::ffi::sys`, so `super` is `ffi` and not `player`.** These two
-/// hop the extra level once, here, instead of at eight call sites where the reader would have to
-/// count colons to see which module is meant.
 fn now_ms() -> i64 {
-    i64::from(super::super::vclock_ms())
+    i64::from(super::vclock_ms())
 }
 /// The rebase `sf_on_event` applies to a reported position (`playpos = fed - pts_shift +
 /// disp_base`), inverted: the fed PTS at which the app will read `media_ns`.
 fn media_to_fed(media_ns: i64) -> i64 {
-    let shared = &super::super::SHARED;
+    let shared = &super::SHARED;
     media_ns
         .saturating_add(shared.pts_shift.load(Relaxed))
         .saturating_sub(shared.disp_base.load(Relaxed))
@@ -213,7 +244,7 @@ fn media_to_fed(media_ns: i64) -> i64 {
 /// the picture `sim_video` shows, the clock readout and the playhead are identical from run to
 /// run. A stall of the sink's own making, like the fed-ceiling clamp above: the app sees a
 /// pipeline that has not presented past that point yet, which is a shape it already handles.
-pub(super) fn stop_clock_at(media_ns: Option<i64>) -> bool {
+pub(crate) fn stop_clock_at(media_ns: Option<i64>) -> bool {
     let Some(media_ns) = media_ns else {
         STOP_AT_MEDIA_NS.store(i64::MAX, Relaxed);
         return false;
@@ -229,7 +260,7 @@ fn report_position(pts_ns: i64) {
     let epoch = ACTIVE_EPOCH.load(Relaxed);
     if epoch != 0 && !CALLBACK_GATE_RETIRED.load(Relaxed) {
         CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);
-        super::super::sf_on_event(epoch, 0, pts_ns, std::ptr::null());
+        super::sf_on_event(epoch, 0, pts_ns, std::ptr::null());
     }
 }
 
@@ -398,7 +429,7 @@ impl Clock {
     }
 }
 
-pub(super) unsafe fn sf_load(payload: *const c_char, epoch: u32) -> c_int {
+unsafe fn sf_load(payload: *const c_char, epoch: u32) -> c_int {
     if !enabled() || epoch == 0 || OBJECT_READY.load(Relaxed) || LIFECYCLE_BLOCKED.load(Relaxed) {
         return 0; // "pipeline could not be constructed" — the engine's existing failure path
     }
@@ -436,7 +467,7 @@ pub(super) unsafe fn sf_load(payload: *const c_char, epoch: u32) -> c_int {
             (18, 601, c"Resource Allocation Error"),
         ] {
             CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);
-            super::super::sf_on_event(epoch, ty, num, s.as_ptr());
+            super::sf_on_event(epoch, ty, num, s.as_ptr());
         }
         return 1;
     }
@@ -444,7 +475,7 @@ pub(super) unsafe fn sf_load(payload: *const c_char, epoch: u32) -> c_int {
     // through the real callback rather than setting the flag, so the parse is exercised. Type 2 is
     // benign: the harness greps `smp_cb type=18` for a playback error and this is not one.
     CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);
-    super::super::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
+    super::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
     // issue #74 D.1 test seam: on the real (v0.6.0) seam this is the exact window between
     // `SMP_SET_READY(1)` and the real, blocking Load call returning — `loadCompleted` has
     // already fired (LG's pipeline can signal it from inside `Load()`) but the call has not come
@@ -498,15 +529,15 @@ fn take_refusal() -> bool {
         }
     }
 }
-pub(super) unsafe fn sf_ready() -> c_int {
+unsafe fn sf_ready() -> c_int {
     c_int::from(enabled() && OBJECT_READY.load(Relaxed))
 }
-pub(super) unsafe fn sf_is_load_completed() -> c_int {
+unsafe fn sf_is_load_completed() -> c_int {
     #[cfg(test)]
     note_dispatch("sf_is_load_completed");
     c_int::from(enabled() && LOADED.load(Relaxed))
 }
-pub(super) unsafe fn sf_play() -> c_int {
+unsafe fn sf_play() -> c_int {
     #[cfg(test)]
     {
         note_dispatch("sf_play");
@@ -522,7 +553,7 @@ pub(super) unsafe fn sf_play() -> c_int {
     Clock::resume();
     1
 }
-pub(super) unsafe fn sf_pause() -> c_int {
+unsafe fn sf_pause() -> c_int {
     #[cfg(test)]
     {
         note_dispatch("sf_pause");
@@ -537,7 +568,7 @@ pub(super) unsafe fn sf_pause() -> c_int {
     Clock::hold();
     1
 }
-pub(super) unsafe fn sf_flush() -> c_int {
+unsafe fn sf_flush() -> c_int {
     #[cfg(test)]
     note_dispatch("sf_flush");
     if !enabled() {
@@ -547,22 +578,22 @@ pub(super) unsafe fn sf_flush() -> c_int {
     crate::player::sim_video::flush();
     1
 }
-pub(super) unsafe fn sf_push_eos() -> c_int {
+unsafe fn sf_push_eos() -> c_int {
     #[cfg(test)]
     note_dispatch("sf_push_eos");
     c_int::from(enabled())
 }
-pub(super) unsafe fn sf_set_time_to_decode(_position_ns: i64) -> c_int {
+unsafe fn sf_set_time_to_decode(_position_ns: i64) -> c_int {
     #[cfg(test)]
     note_dispatch("sf_set_time_to_decode");
     c_int::from(enabled())
 }
-pub(super) unsafe fn sf_set_content_info(_position_ns: i64) -> c_int {
+unsafe fn sf_set_content_info(_position_ns: i64) -> c_int {
     #[cfg(test)]
     note_dispatch("sf_set_content_info");
     c_int::from(enabled())
 }
-pub(super) unsafe fn sf_send_segment() -> c_int {
+unsafe fn sf_send_segment() -> c_int {
     #[cfg(test)]
     note_dispatch("sf_send_segment");
     c_int::from(enabled())
@@ -578,7 +609,7 @@ pub(super) unsafe fn sf_send_segment() -> c_int {
 /// buffer to fill — the app's backpressure is upstream, in the AU queues' byte caps and the
 /// feed-ahead throttle, and those are exactly what this exists to exercise. Returning `'B'` here
 /// would add a second, fictional one.
-pub(super) unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_char {
+unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_char {
     #[cfg(test)]
     note_dispatch("sf_feed");
     if !enabled() {
@@ -592,7 +623,7 @@ pub(super) unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_in
     }
     FEED_OK
 }
-pub(super) unsafe fn sf_unload() {
+unsafe fn sf_unload() {
     #[cfg(test)]
     note_dispatch("sf_unload");
     let epoch = ACTIVE_EPOCH.load(Relaxed);
@@ -600,13 +631,13 @@ pub(super) unsafe fn sf_unload() {
         // Firmware emits this synthetic lifecycle callback before Unload returns. It bypasses the
         // callbackFunctionHook interposer, so it does not contribute to CALLBACK_INTERCEPTS.
         NATIVE_UNLOAD_COMPLETED.store(true, Relaxed);
-        super::super::sf_on_event(epoch, 23, 0, std::ptr::null());
+        super::sf_on_event(epoch, 23, 0, std::ptr::null());
     }
     LOADED.store(false, Relaxed);
     Clock::rewind();
     crate::player::sim_video::stop();
 }
-pub(super) unsafe fn sf_callback_gate_retire() -> c_int {
+unsafe fn sf_callback_gate_retire() -> c_int {
     #[cfg(test)]
     note_dispatch("sf_callback_gate_retire");
     CALLBACK_GATE_RETIRED.store(true, Relaxed);
@@ -616,10 +647,10 @@ pub(super) unsafe fn sf_callback_gate_retire() -> c_int {
             && CALLBACK_INTERCEPTS.load(Relaxed) != 0,
     )
 }
-pub(super) unsafe fn sf_callback_intercepts() -> c_uint {
+unsafe fn sf_callback_intercepts() -> c_uint {
     CALLBACK_INTERCEPTS.load(Relaxed)
 }
-pub(super) unsafe fn sf_destroy() -> c_int {
+unsafe fn sf_destroy() -> c_int {
     #[cfg(test)]
     note_dispatch("sf_destroy");
     let safe = OBJECT_READY.load(Relaxed)
@@ -638,7 +669,7 @@ pub(super) unsafe fn sf_destroy() -> c_int {
     crate::player::sim_video::stop();
     1
 }
-pub(super) unsafe fn sf_quarantine() {
+unsafe fn sf_quarantine() {
     #[cfg(test)]
     note_dispatch("sf_quarantine");
     CALLBACK_GATE_RETIRED.store(true, Relaxed);
@@ -655,14 +686,14 @@ pub(super) unsafe fn sf_quarantine() {
 /// With the clock sink armed this becomes `VP_EXPORTED`, the webOS 5+ path: video binds through an
 /// exported window id and ACB is never touched, so the engine's ACB stage sequence stays SKIPPED
 /// rather than faked. Faking ACB would mean modelling a bind order this file cannot verify.
-pub(super) unsafe fn vp_mode() -> c_int {
+unsafe fn vp_mode() -> c_int {
     if enabled() {
-        super::VP_EXPORTED
+        crate::tv::sink::VP_EXPORTED
     } else {
-        super::VP_NONE
+        crate::tv::sink::VP_NONE
     }
 }
-pub(super) unsafe fn vp_create_window() -> *const c_char {
+unsafe fn vp_create_window() -> *const c_char {
     if enabled() {
         c"clocksink-window".as_ptr()
     } else {
@@ -671,14 +702,14 @@ pub(super) unsafe fn vp_create_window() -> *const c_char {
 }
 /// Never NUL — contracted to return a valid string even when no window exists, and `ui::stats`
 /// reads it unconditionally.
-pub(super) unsafe fn vp_window_id() -> *const c_char {
+unsafe fn vp_window_id() -> *const c_char {
     if enabled() {
         c"clocksink-window".as_ptr()
     } else {
         c"".as_ptr()
     }
 }
-pub(super) unsafe fn vp_place(
+unsafe fn vp_place(
     _src_w: c_int,
     _src_h: c_int,
     _dst_x: c_int,
@@ -688,42 +719,158 @@ pub(super) unsafe fn vp_place(
 ) -> c_int {
     c_int::from(enabled())
 }
-pub(super) unsafe fn vp_destroy_window() {}
+unsafe fn vp_destroy_window() {}
 
-pub(super) unsafe fn acb_create(_app_id: *const c_char, _player_type: c_int) -> c_long {
+unsafe fn acb_create(_app_id: *const c_char, _player_type: c_int) -> c_long {
     #[cfg(test)]
     note_dispatch("acb_create");
     0 // 0 = failed, per starfish.h. Unreached under VP_EXPORTED, and not faked for the same reason.
 }
-pub(super) unsafe fn acb_bind(_media_id: *const c_char) {
+unsafe fn acb_bind(_media_id: *const c_char) {
     #[cfg(test)]
     note_dispatch("acb_bind");
 }
-pub(super) unsafe fn acb_send_video_data(_source_info: *const c_char) -> c_int {
+unsafe fn acb_send_video_data(_source_info: *const c_char) -> c_int {
     #[cfg(test)]
     note_dispatch("acb_send_video_data");
     -1 // -1 = rejected, per starfish.h
 }
-pub(super) unsafe fn acb_send_atmos(_media_id: *const c_char) -> c_int {
+unsafe fn acb_send_atmos(_media_id: *const c_char) -> c_int {
     #[cfg(test)]
     note_dispatch("acb_send_atmos");
     0 // 0 = no ACB / no symbol, which is exactly the host's situation
 }
-pub(super) unsafe fn acb_start(_x: c_long, _y: c_long, _w: c_long, _h: c_long) {
+unsafe fn acb_start(_x: c_long, _y: c_long, _w: c_long, _h: c_long) {
     #[cfg(test)]
     note_dispatch("acb_start");
 }
-pub(super) unsafe fn acb_unload() {
+unsafe fn acb_unload() {
     #[cfg(test)]
     note_dispatch("acb_unload");
 }
-pub(super) unsafe fn acb_pause() {
+unsafe fn acb_pause() {
     #[cfg(test)]
     note_dispatch("acb_pause");
 }
-pub(super) unsafe fn acb_resume() {
+unsafe fn acb_resume() {
     #[cfg(test)]
     note_dispatch("acb_resume");
+}
+
+/// The simulator's [`VideoSink`]: every method is the verb of the same name above.
+pub(crate) struct HostSink;
+
+impl VideoSink for HostSink {
+    unsafe fn load(&self, payload: *const c_char, epoch: u32) -> c_int {
+        sf_load(payload, epoch)
+    }
+    unsafe fn ready(&self, _: &MainThread) -> c_int {
+        sf_ready()
+    }
+    unsafe fn is_load_completed(&self, _: &MainThread) -> c_int {
+        sf_is_load_completed()
+    }
+    unsafe fn play(&self, _: &MainThread) -> c_int {
+        sf_play()
+    }
+    unsafe fn pause(&self, _: &MainThread) -> c_int {
+        sf_pause()
+    }
+    unsafe fn flush(&self, _: &MainThread) -> c_int {
+        sf_flush()
+    }
+    unsafe fn push_eos(&self, _: &MainThread) -> c_int {
+        sf_push_eos()
+    }
+    unsafe fn set_time_to_decode(&self, _: &MainThread, position_ns: i64) -> c_int {
+        sf_set_time_to_decode(position_ns)
+    }
+    unsafe fn set_content_info(&self, _: &MainThread, position_ns: i64) -> c_int {
+        sf_set_content_info(position_ns)
+    }
+    unsafe fn send_segment(&self, _: &MainThread) -> c_int {
+        sf_send_segment()
+    }
+    unsafe fn feed(
+        &self,
+        _: &MainThread,
+        p: *const u8,
+        size: c_uint,
+        pts: i64,
+        es_data: c_int,
+    ) -> c_char {
+        sf_feed(p, size, pts, es_data)
+    }
+    unsafe fn unload(&self, _: &MainThread) {
+        sf_unload()
+    }
+    unsafe fn callback_gate_retire(&self, _: &MainThread) -> c_int {
+        sf_callback_gate_retire()
+    }
+    unsafe fn callback_intercepts(&self, _: &MainThread) -> u32 {
+        sf_callback_intercepts()
+    }
+    unsafe fn destroy(&self, _: &MainThread) -> c_int {
+        sf_destroy()
+    }
+    unsafe fn quarantine(&self, _: &MainThread) {
+        sf_quarantine()
+    }
+    fn window_mode(&self) -> c_int {
+        unsafe { vp_mode() }
+    }
+    fn window_id(&self) -> &'static CStr {
+        // SAFETY: `vp_window_id` is never null and returns a static, NUL-terminated literal.
+        unsafe { CStr::from_ptr(vp_window_id()) }
+    }
+    unsafe fn create_window(&self, _: &MainThread) -> *const c_char {
+        vp_create_window()
+    }
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn place_window(
+        &self,
+        _: &MainThread,
+        src_w: c_int,
+        src_h: c_int,
+        dst_x: c_int,
+        dst_y: c_int,
+        dst_w: c_int,
+        dst_h: c_int,
+    ) -> c_int {
+        vp_place(src_w, src_h, dst_x, dst_y, dst_w, dst_h)
+    }
+    unsafe fn destroy_window(&self, _: &MainThread) {
+        vp_destroy_window()
+    }
+    unsafe fn plane_create(
+        &self,
+        _: &MainThread,
+        app_id: *const c_char,
+        player_type: c_int,
+    ) -> c_long {
+        acb_create(app_id, player_type)
+    }
+    unsafe fn plane_bind(&self, _: &MainThread, media_id: *const c_char) {
+        acb_bind(media_id)
+    }
+    unsafe fn plane_send_video_data(&self, _: &MainThread, source_info: *const c_char) -> c_int {
+        acb_send_video_data(source_info)
+    }
+    unsafe fn plane_send_atmos(&self, _: &MainThread, media_id: *const c_char) -> c_int {
+        acb_send_atmos(media_id)
+    }
+    unsafe fn plane_start(&self, _: &MainThread, x: c_long, y: c_long, w: c_long, h: c_long) {
+        acb_start(x, y, w, h)
+    }
+    unsafe fn plane_unload(&self, _: &MainThread) {
+        acb_unload()
+    }
+    unsafe fn plane_pause(&self, _: &MainThread) {
+        acb_pause()
+    }
+    unsafe fn plane_resume(&self, _: &MainThread) {
+        acb_resume()
+    }
 }
 
 #[cfg(test)]
@@ -747,7 +894,7 @@ mod tests {
         let _g = lock();
         fresh();
         // The fed timeline is rebased onto the movie's: playpos = fed - pts_shift + disp_base.
-        let shared = &super::super::super::SHARED;
+        let shared = &super::super::SHARED;
         shared.pts_shift.store(2_000_000_000, Relaxed);
         shared.disp_base.store(435_000_000_000, Relaxed);
         FED_MAX_NS.store(600_000_000_000, Relaxed);

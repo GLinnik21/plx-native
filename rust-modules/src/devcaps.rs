@@ -41,6 +41,8 @@
 //! everything on a healthy 4K panel is as wrong as one that direct-plays HEVC to a SoC without it.
 use std::sync::OnceLock;
 
+pub(crate) mod dv;
+
 /// The AUDIO codec set the buffer-feed PIPELINE decodes. This is the software half of a
 /// two-sided test — what our demuxer/payload path can feed, before asking whether this
 /// particular SoC can decode it. The live set is [`Caps::audio`] (this list ∩ the device's own
@@ -57,7 +59,7 @@ pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3,dts";
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
 
 /// The decode-capability snapshot the playback stack derives from. `OnceLock` for the same
-/// reason as `webos::Info`: written exactly once, at boot, then read on every play decision.
+/// reason as `tv::device::Info`: written exactly once, at boot, then read on every play decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Caps {
     /// The SoC decodes HEVC. Gates the `hevc` arm of route.rs's direct-play test and the

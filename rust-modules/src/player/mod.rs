@@ -24,7 +24,10 @@ pub(crate) mod lifecycle;
 pub(crate) mod machine;
 pub(crate) mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
 pub(crate) mod preview;
-mod ffi;
+#[cfg(all(not(feature = "hostsim"), not(test)))]
+pub(crate) mod ffi;
+#[cfg(feature = "hostsim")]
+pub(crate) mod ffi_host;
 mod pump;
 pub(crate) mod report;
 mod shared;
@@ -46,6 +49,19 @@ use shared::{
     Transport,
 };
 
+/// The video sink every seam call goes through. The port installs the television's
+/// (`player::ffi::StarfishSink`) or the simulator's (`player::ffi_host::HostSink`) once at boot; a
+/// hostsim test binary reads the host sink directly, so it needs no port. Everything in `player/`
+/// reaches the seam as `sink().<verb>(mt, ..)`, and nothing branches on which platform it is.
+#[cfg(not(all(test, feature = "hostsim")))]
+fn sink() -> &'static dyn crate::tv::sink::VideoSink {
+    crate::tv::sink::installed()
+}
+#[cfg(all(test, feature = "hostsim"))]
+fn sink() -> &'static dyn crate::tv::sink::VideoSink {
+    &ffi_host::HostSink
+}
+
 /// `/tmp/plxnative-tracknames[=<audio>;<subs>]` — **stand in for the container's own track names**,
 /// which nothing off-device can read.
 ///
@@ -53,7 +69,7 @@ use shared::{
 /// identical: the data comes from a source no automated or host run can reach, so without a seed
 /// every headless look at the screen shows the degenerate state. Here the source is the DEMUXER —
 /// `ff::track_names` publishes these when it opens a part — and the desktop simulator has no
-/// demuxer at all (the bundled FFmpeg is ARM, and `player::ffi`'s host arm has no video path), so
+/// demuxer at all (the bundled FFmpeg is ARM, and `player::ffi_host` has no video path), so
 /// the picker there can only ever draw what PMS sent. Which, for the MP4 this exists to fix, is a
 /// column of identical language names.
 ///
@@ -254,7 +270,7 @@ pub(crate) fn pause(pa: &mut adapter::PlayerAdapter) -> bool {
             return true;
         }
         Some(HlsUserPause::Issue(token)) => {
-            let accepted = unsafe { ffi::sf_pause(pa.mt()) } != 0;
+            let accepted = unsafe { sink().pause(pa.mt()) } != 0;
             match SHARED.complete_hls_user_pause(token, accepted) {
                 HlsPauseCompletion::Accepted => {}
                 HlsPauseCompletion::Refused => {
@@ -308,7 +324,7 @@ pub(crate) fn resume(pa: &mut adapter::PlayerAdapter) -> bool {
             true
         }
         Some(HlsUserResume::Issue(token)) => {
-            let accepted = unsafe { ffi::sf_play(pa.mt()) } != 0;
+            let accepted = unsafe { sink().play(pa.mt()) } != 0;
             match SHARED.complete_hls_prime_play(token, accepted) {
                 HlsPlayCompletion::Accepted { resume_acb } => {
                     if TX.seek_preroll_active() {
@@ -367,12 +383,12 @@ pub(crate) fn finish_paused_seek(pa: &mut adapter::PlayerAdapter) -> bool {
 
 #[cfg(all(test, feature = "hostsim"))]
 pub(crate) fn force_pause_result_for_test(result: Option<c_int>) {
-    ffi::force_pause_result_for_test(result);
+    ffi_host::force_pause_result_for_test(result);
 }
 
 #[cfg(all(test, feature = "hostsim"))]
 pub(crate) fn force_play_result_for_test(result: Option<c_int>) {
-    ffi::force_play_result_for_test(result);
+    ffi_host::force_play_result_for_test(result);
 }
 
 /// Kodi parity: mirror the ACB PLAYSTATE on transport pause/resume (the pipeline Pause/Play alone
@@ -401,9 +417,9 @@ pub(super) fn acb_mirror_playstate_at(mt: &MainThread, stage: shared::Stage, pla
     }
     unsafe {
         if playing {
-            ffi::acb_resume(mt);
+            sink().plane_resume(mt);
         } else {
-            ffi::acb_pause(mt);
+            sink().plane_pause(mt);
         }
     }
 }
@@ -575,19 +591,19 @@ pub(crate) fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState
 /// name a file.
 pub(crate) fn support_line(kind: FailureKind) -> String {
     support_line_of(
-        crate::webos::info(),
-        crate::webos::device(),
+        crate::tv::device::info(),
+        crate::tv::device::device(),
         kind,
     )
 }
-fn support_line_of(i: &crate::webos::Info, hw: &crate::webos::Hardware, kind: FailureKind) -> String {
+fn support_line_of(i: &crate::tv::device::Info, hw: &crate::tv::device::Hardware, kind: FailureKind) -> String {
     let set = hw.set_line();
     let set: &str = if set.is_empty() { crate::i18n::msg::settings_login_unknown_device() } else { &set };
     format!(
         "{} {} · {} · {} · {}",
         crate::plex::identity::PRODUCT,
         crate::plex::identity::VERSION,
-        i.release_line(),
+        crate::i18n::webos_release_line(i),
         set,
         kind.code()
     )
@@ -652,7 +668,7 @@ pub(crate) enum FailureKind {
     TvPipeline,
     /// This device's jail is missing `/dev/rtkmem` on a SoC where that is a known cause of
     /// native A/V crashes — the Load was never attempted. Community-tier finding: see
-    /// [`crate::webos::jail_blocks_native_video`]'s doc.
+    /// [`crate::tv::sandbox::blocks_native_video`]'s doc.
     JailMissingRtkmem,
     /// Issue #74 D.1.4's `NATIVE_LOAD_BUDGET` fired — either the native `Load` call never
     /// returned, or it returned but `loadCompleted` never arrived. Distinct from
@@ -785,7 +801,7 @@ pub(crate) fn failure_context(ps: &crate::route::PlaybackSession) -> FailureCont
     FailureContext {
         forced: crate::route::forced_direct_play(ps) || failtest_forced(),
         can_retry: crate::route::can_retry_current_play(ps),
-        repair_idle: ps.repair_status == crate::webos::jail_repair::State::Idle,
+        repair_idle: ps.repair_status == crate::tv::sandbox::State::Idle,
     }
 }
 
@@ -872,9 +888,9 @@ fn runtime_failure(
 /// [`error_shape`], because it precedes route resolution entirely: it names a device finding, not
 /// a decision the server or the runtime made. Phrased as a FINDING throughout — "found... known
 /// to..." — never as a certain diagnosis, matching the community-tier evidence it is built on
-/// (see [`crate::webos::jail_blocks_native_video`]'s doc). Caption and readout are kept short for
+/// (see [`crate::tv::sandbox::blocks_native_video`]'s doc). Caption and readout are kept short for
 /// legibility from a phone photograph, same bar as every other arm here; the remedy's detail goes
-/// in `detail`. `Player.repair` (see `webos::jail_repair`) can actually attempt the Homebrew
+/// in `detail`. `Player.repair` (see `tv::sandbox`) can actually attempt the Homebrew
 /// Channel service call that patches the jail profile, so the remedy text points at that confirmed
 /// in-app repair rather than at a bare reinstall.
 fn jail_error_shape() -> ErrorShape {
@@ -1179,9 +1195,10 @@ pub(crate) use engine::aq_caps;
 /// value, deliberately, so the plant grading the controller is not the controller agreeing with
 /// itself.
 pub(crate) use engine::feed_leads_ms;
-pub(crate) use ffi::{VP_ACB, VP_EXPORTED, VP_NONE};
+pub(crate) use crate::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
 #[cfg(feature = "hostsim")]
-pub(crate) use ffi::stop_sim_clock_at;
+/// The simulator's clock-sink stop; the television's pipeline has no such control.
+pub(crate) use ffi_host::stop_clock_at as stop_sim_clock_at;
 
 /// One consistent read of everything the on-screen diagnostics overlay shows (`app::diagnostics`).
 ///
@@ -1356,11 +1373,9 @@ impl Diag {
 
 pub(crate) fn diag(ps: &crate::route::PlaybackSession) -> Diag {
     let (fed_v, fed_a) = engine::fed_totals();
-    // `vp_window_id` hands back the seam's own static buffer — never NULL, "" when no window was
+    // The sink hands back the seam's own static buffer — never NULL, "" when no window was
     // created — so this is a copy of a bounded char[64], not a borrow with a lifetime to reason about.
-    let window_id = unsafe { std::ffi::CStr::from_ptr(ffi::vp_window_id()) }
-        .to_string_lossy()
-        .into_owned();
+    let window_id = sink().window_id().to_string_lossy().into_owned();
     let load_a = SHARED.dg_load_a.load(Relaxed);
     let playable_buffer_ms = playable_buffer_ms(
         SHARED.hls_video_tail_ns.load(Relaxed),
@@ -1371,7 +1386,7 @@ pub(crate) fn diag(ps: &crate::route::PlaybackSession) -> Diag {
     );
     let (video_w, video_h) = SHARED.video_raster();
     Diag {
-        vp_mode: ffi::vp_mode(),
+        vp_mode: sink().window_mode(),
         window_id,
         acb_ok: ACB_OK.load(Relaxed),
         place_rv: SHARED.dg_place_rv.load(Relaxed),
@@ -2182,7 +2197,7 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
         // callback numbering shifts by two between webOS 4 and 5+ (`docs/webos5-port.md` §5):
         // 46/47 on this set are 48/49 on a webOS 5+ set. The harness reads THIS line, never
         // the raw type.
-        match sink_counter_kind(ty, crate::webos::info().major) {
+        match sink_counter_kind(ty, crate::tv::device::info().major) {
             Some(SinkCounter::Displayed) => log(&format!("sink: displayed={num} (type={ty})")),
             Some(SinkCounter::Dropped) => log(&format!("sink: dropped={num} (type={ty})")),
             None => {}
@@ -2595,12 +2610,12 @@ mod tests {
 
     #[test]
     fn the_support_line_names_version_firmware_set_and_code_and_nothing_free_text() {
-        let i = crate::webos::Info {
+        let i = crate::tv::device::Info {
             release: "4.10.2".into(),
             major: 4,
             ..Default::default()
         };
-        let hw = crate::webos::Hardware {
+        let hw = crate::tv::device::Hardware {
             model: "43LM6300PVB".into(),
             board: "m3r".into(),
             hw_revision: String::new(),
@@ -2614,8 +2629,8 @@ mod tests {
             )
         );
         let bare = support_line_of(
-            &crate::webos::Info::default(),
-            &crate::webos::Hardware::default(),
+            &crate::tv::device::Info::default(),
+            &crate::tv::device::Hardware::default(),
             FailureKind::Unspecified,
         );
         assert!(bare.contains(&format!(
@@ -2821,13 +2836,13 @@ mod tests {
             }
         }
         let _restore = Restore(old_paused);
-        let before = ffi::play_calls_for_test();
+        let before = ffi_host::play_calls_for_test();
         let mut pa = adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() });
 
         assert!(resume(&mut pa));
 
         assert_eq!(
-            ffi::play_calls_for_test(),
+            ffi_host::play_calls_for_test(),
             before,
             "ordinary Resume called Starfish while the measured-runway gate still owned the clock",
         );
@@ -3641,7 +3656,7 @@ mod native_failure_regressions {
     use super::*;
     struct JailGuard;
     impl Drop for JailGuard {
-        fn drop(&mut self) { crate::webos::FORCE_JAIL_BLOCKED.store(false, Relaxed); }
+        fn drop(&mut self) { crate::tv::sandbox::FORCE_BLOCKED.store(false, Relaxed); }
     }
     #[test]
     fn jail_refusal_enters_error_without_engine_and_retires_on_exit() {
@@ -3651,7 +3666,7 @@ mod native_failure_regressions {
         crate::route::reset_player_control_for_test(&ps);
         SHARED.reset_session();
         let mut pa = adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() });
-        crate::webos::FORCE_JAIL_BLOCKED.store(true, Relaxed);
+        crate::tv::sandbox::FORCE_BLOCKED.store(true, Relaxed);
         assert!(start_bufferfeed(&mut ps, &mut pa));
         assert!(!pa.is_live());
         assert_eq!(state(&ps), PlaybackState::Error);

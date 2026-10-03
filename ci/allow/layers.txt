@@ -1,4 +1,4 @@
-# count: 44
+# count: 0
 # The module-layer gate's MIGRATION list (ci/check-module-layers.py, docs/module-layers.md): one
 # entry per (file, member) where a file names a module in a layer its own layer may not use, as
 # `path<TAB>named member<TAB>plan step`. Every entry is a reference that must move before the
@@ -8,47 +8,3 @@
 # are added only by a design change that re-layers modules, or declares a port, that other code
 # already names: as the change's own new step, in the same diff as the ini (step L15). The one
 # re-keying allowed: a renamed or split file takes its entries to its new path in the same diff.
-rust-modules/src/app/adapters/session.rs	webos	L15 reach the home key through platform, not webos
-rust-modules/src/app/boot.rs	system	L15 set up the surface and video plane through platform, not system
-rust-modules/src/app/boot.rs	webos	L15 reach window setup through platform, not webos
-rust-modules/src/app/clock_notice.rs	webos	L15 reach the system toast through platform, not webos
-rust-modules/src/app/diagnostics.rs	webos	L15 reach device identity, the playback capability, the Dolby Vision capability type through platform, not webos
-rust-modules/src/app/input.rs	webos	L15 reach the home key through platform, not webos
-rust-modules/src/app/lifecycle.rs	webos	L15 reach the home key through platform, not webos (cfg(test) only)
-rust-modules/src/app/mod.rs	system	L15 set up the surface and video plane through platform, not system
-rust-modules/src/app/mod.rs	webos	L15 reach the boot probe, the playback capability through platform, not webos
-rust-modules/src/app/playback.rs	webos	L15 reach native-video repair through platform, not webos
-rust-modules/src/app/run.rs	system	L15 set up the surface and video plane through platform, not system
-rust-modules/src/app/run.rs	webos	L15 reach the home key through platform, not webos
-rust-modules/src/appkit/player_hud.rs	webos	L15 reach native-video repair through platform, not webos
-rust-modules/src/dev/scenarios/toast_probe.rs	webos	L15 reach the system toast through platform, not webos
-rust-modules/src/diag/schema.rs	webos	L15 reach device identity through platform, not webos
-rust-modules/src/i18n/mod.rs	webos	L15 reach the locale query through platform, not webos
-rust-modules/src/lab/snapshot.rs	webos	L15 reach device identity through platform, not webos
-rust-modules/src/metadata.rs	webos	L15 reach the Dolby Vision capability type, the playback capability through platform, not webos
-rust-modules/src/metadata_dolby_vision_tests.rs	webos	L15 reach the Dolby Vision capability type, the playback capability through platform, not webos (cfg(test) only)
-rust-modules/src/player/adapter.rs	webos	L15 reach native-video repair through platform, not webos
-rust-modules/src/player/claim_hold.rs	player::ffi	L15 drive a platform video sink, not the Starfish verbs (cfg(test) only)
-rust-modules/src/player/engine.rs	player::ffi	L15 drive a platform video sink, not the Starfish verbs
-rust-modules/src/player/engine.rs	webos	L15 reach native-video repair, the Dolby Vision capability type through platform, not webos
-rust-modules/src/player/machine.rs	webos	L15 reach native-video repair through platform, not webos
-rust-modules/src/player/mod.rs	webos	L15 reach device identity, native-video repair through platform, not webos
-rust-modules/src/player/pump.rs	player::ffi	L15 drive a platform video sink, not the Starfish verbs
-rust-modules/src/player/threads.rs	player::ffi	L15 drive a platform video sink, not the Starfish verbs
-rust-modules/src/plex/identity.rs	webos	L15 reach device identity through platform, not webos
-rust-modules/src/plex/session.rs	keymanager	L15 seal through a platform secure store, not the LS2 key stores
-rust-modules/src/plex/session/persistence.rs	webos	L15 reach device identity through platform, not webos
-rust-modules/src/plex/session_persistence_tests.rs	keymanager	L15 seal through a platform secure store, not the LS2 key stores (cfg(test) only)
-rust-modules/src/route/decision.rs	webos	L15 reach native-video repair, the playback capability, the Dolby Vision capability type through platform, not webos
-rust-modules/src/route/decision_direct_play_mode_tests.rs	webos	L15 reach the Dolby Vision capability type through platform, not webos (cfg(test) only)
-rust-modules/src/route/decision_plan_tests.rs	webos	L15 reach the Dolby Vision capability type through platform, not webos (cfg(test) only)
-rust-modules/src/route/decision_quality_recovery_tests.rs	webos	L15 reach the Dolby Vision capability type through platform, not webos (cfg(test) only)
-rust-modules/src/route/decision_resolve_route_tests.rs	webos	L15 reach the Dolby Vision capability type through platform, not webos (cfg(test) only)
-rust-modules/src/route/plan.rs	webos	L15 reach the Dolby Vision capability type through platform, not webos (cfg(test) only)
-rust-modules/src/route/plan_audio_enhancement_tests.rs	webos	L15 reach the Dolby Vision capability type through platform, not webos (cfg(test) only)
-rust-modules/src/route/plan_dolby_vision_tests.rs	webos	L15 reach the Dolby Vision capability type through platform, not webos (cfg(test) only)
-rust-modules/src/screens/login.rs	webos	L15 reach device identity through platform, not webos
-rust-modules/src/screens/player/mod.rs	webos	L15 reach native-video repair through platform, not webos
-rust-modules/src/storage/client.rs	webos	L15 reach the storage backend through platform, not webos
-rust-modules/src/telemetry/native.rs	webos	L15 reach device identity through platform, not webos
-rust-modules/src/telemetry/sentry.rs	webos	L15 reach device identity through platform, not webos

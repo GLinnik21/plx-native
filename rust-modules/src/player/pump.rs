@@ -5,7 +5,7 @@ use super::engine::{
     arm_live_clock_prime, drain_aq, feed_both_lanes, feed_sample, Engine, Source,
 };
 use super::shared::{HlsPauseCompletion, HlsPrimeKind, HlsSeekPause, Stage};
-use super::{ffi, ACB_OK, SHARED, TX};
+use super::{ACB_OK, SHARED, TX};
 use crate::task::MainThread;
 use std::os::raw::c_char;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -301,7 +301,7 @@ fn maybe_begin_hls_rebuffer(ps: &crate::route::PlaybackSession, mt: &MainThread,
         super::log("hls: auto-rebuffer pause deferred by clock transition; will retry");
         return;
     };
-    let paused = unsafe { ffi::sf_pause(mt) };
+    let paused = unsafe { super::sink().pause(mt) };
     match SHARED.complete_hls_rebuffer_pause(pause_token, paused != 0) {
         HlsPauseCompletion::Accepted => {}
         HlsPauseCompletion::Refused => {
@@ -341,12 +341,12 @@ fn maybe_begin_hls_rebuffer(ps: &crate::route::PlaybackSession, mt: &MainThread,
 /// knows it for certain; before it has published, the canvas is the least-wrong fallback and the
 /// caller re-places once the real one arrives.
 fn place_exported(mt: &MainThread, eng: &mut super::engine::Engine) {
-    if ffi::vp_mode() != ffi::VP_EXPORTED {
+    if super::sink().window_mode() != super::VP_EXPORTED {
         return;
     }
     let (w, h) = SHARED.video_raster();
     let src = if w > 0 && h > 0 { (w, h) } else { (1920, 1080) };
-    let rv = unsafe { ffi::vp_place(mt, src.0, src.1, 0, 0, 1920, 1080) };
+    let rv = unsafe { super::sink().place_window(mt, src.0, src.1, 0, 0, 1920, 1080) };
     eng.placed_src = src;
     // RECORD it, do not merely log it. These three fields had no writer anywhere in the tree, so
     // `dg_place_rv` sat at its `i32::MIN` "never called" sentinel for the life of the process and
@@ -829,7 +829,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
         return;
     }
     // wait for the media-thread ctor
-    if unsafe { ffi::sf_ready(mt) } == 0 {
+    if unsafe { super::sink().ready(mt) } == 0 {
         // Same `!eng.preview_abandon` reasoning as the loadCompleted arms below: an abandoned
         // trailer-preview Load must not drive the D.1.4 deferral logging/budget clock just
         // because this earlier ctor-wait poll happens to run first.
@@ -1249,7 +1249,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
         match SHARED.prepare_seek_pause() {
             Some(HlsSeekPause::AlreadyHeld) => {}
             Some(HlsSeekPause::Issue(token)) => {
-                let accepted = unsafe { ffi::sf_pause(mt) } != 0;
+                let accepted = unsafe { super::sink().pause(mt) } != 0;
                 match SHARED.complete_seek_pause(token, accepted) {
                     HlsPauseCompletion::Accepted => {}
                     HlsPauseCompletion::Refused => {
@@ -1295,7 +1295,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
         // would let pre-seek ABR evidence publish while queues are already being reset.
         crate::route::commit_user_seek();
         unsafe {
-            ffi::sf_flush(mt); // drop decoded/queued frames only after the clock is really held
+            super::sink().flush(mt); // drop decoded/queued frames only after the clock is really held
         }
         drain_aq(eng);
         // in-place direct-play seek: publish the target and let the DEMUX THREAD av_seek_frame
@@ -1356,7 +1356,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
     if eng.stage == Stage::Loading
         && !eng.preview_abandon
         && native_load_gate_ready(eng.native_epoch)
-        && (SHARED.load_completed.load(Relaxed) || unsafe { ffi::sf_is_load_completed(mt) } != 0)
+        && (SHARED.load_completed.load(Relaxed) || unsafe { super::sink().is_load_completed(mt) } != 0)
     {
         // "native: Load returned after Nms" is logged unconditionally at the gate transition
         // itself (`threads::load_thread`, right where `mark_native_load_returned` flips it), not
@@ -1382,7 +1382,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
         // BINDING already happened via `option.windowId` in the Load payload, and this call is
         // pure geometry.
         place_exported(mt, eng);
-        if ffi::vp_mode() == ffi::VP_EXPORTED {
+        if super::sink().window_mode() == super::VP_EXPORTED {
             // Playing -> Streaming directly: there is no bind sequence to sit in the middle of.
             // The transition is load-bearing beyond bookkeeping — `pushEOS` is gated on
             // `>= Streaming`, so without it the last frames never drain and Up Next never fires.
@@ -1403,7 +1403,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
             if let Some((token, _)) =
                 SHARED.reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, recovery)
             {
-                let accepted = unsafe { ffi::sf_play(mt) } != 0;
+                let accepted = unsafe { super::sink().play(mt) } != 0;
                 match SHARED.complete_hls_prime_play(token, accepted) {
                     super::shared::HlsPlayCompletion::Accepted { resume_acb } => {
                         if resume_acb {
@@ -1478,7 +1478,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
     if eng.stage == Stage::Playing && ACB_OK.load(Relaxed) {
         let id = SHARED.media_id.lock().unwrap().clone();
         if let Some(id) = id {
-            unsafe { ffi::acb_bind(mt, id.as_ptr()) };
+            unsafe { super::sink().plane_bind(mt, id.as_ptr()) };
             super::log(&format!("SMP ACB bound id={}", id.to_string_lossy()));
             // **Dolby Atmos, to ACB, exactly here** — this is where LG's own client fires it
             // (`libcbe` 0x1b98d78, on LOADCOMPLETED): after setMediaId, and BEFORE the
@@ -1499,7 +1499,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
             // television's own read-out — "Dolby Vision / Dolby Atmos", both lines — photographed
             // in a DISPLAY capture at 11 s. `/tmp/plxnative-noatmosacb` is the way back out.
             if crate::route::stream_immersive(ps) && !crate::devtrig::flag("noatmosacb") {
-                let rv = unsafe { ffi::acb_send_atmos(mt, id.as_ptr()) };
+                let rv = unsafe { super::sink().plane_send_atmos(mt, id.as_ptr()) };
                 super::log(&format!("atmos: acb setMediaAudioData rv={rv}"));
             }
             eng.stage = Stage::Bound;
@@ -1511,7 +1511,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
     if eng.stage == Stage::Bound && !eng.video_info_sent && SHARED.frames.load(Relaxed) >= 2 {
         let bytes = SHARED.source_info.lock().unwrap().clone();
         if let Some(bytes) = bytes {
-            let rv = unsafe { ffi::acb_send_video_data(mt, bytes.as_ptr() as *const c_char) };
+            let rv = unsafe { super::sink().plane_send_video_data(mt, bytes.as_ptr() as *const c_char) };
             super::log(&format!(
                 "setMediaVideoData rv={rv} frames={}",
                 SHARED.frames.load(Relaxed)
@@ -1519,7 +1519,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
             if rv != -1 {
                 // -1 = client-side isJsonError reject; else accepted
                 eng.video_info_sent = true;
-                unsafe { ffi::acb_start(mt, 0, 0, 1920, 1080) };
+                unsafe { super::sink().plane_start(mt, 0, 0, 1920, 1080) };
                 eng.stage = Stage::Streaming;
                 super::log("setMediaVideoData sent → window+PLAYING");
             }

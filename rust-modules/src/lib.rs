@@ -4,13 +4,13 @@
 //! Not affiliated with, endorsed by, or sponsored by Plex GmbH or LG Electronics.
 //!
 //! plxnative-modules — the Rust app core, built as a staticlib and linked into the C
-//! boot shim. The crate's C surface is tiny: C calls `plex_run` (app.rs), writes the fallback
+//! boot shim. The crate's C surface is tiny: C calls `plex_run` (port.rs), writes the fallback
 //! image marker through `plx_crash_write_image_marker`, re-enters the native-crash spool through
 //! `plx_sentry_spool_external`, and forwards the two Starfish callbacks (`sf_on_event`/
 //! `acb_on_event`, player/mod.rs). Everything else is Rust-internal (the per-module `repr(C)`
 //! shapes are migration legacy, not ABI).
 mod abr; // client-managed fixed-session HLS controller: estimate, propose, prime, then commit
-mod app; // plex_run — the Rust app core / event loop (the entry inverted from main.c)
+mod app; // run_application — the Rust app core / event loop (the entry inverted from main.c; port.rs's `plex_run` hands over to it)
 mod appkit; // widgets shared by several screens, composed from `ui` over application types (the player HUD, the track menus, the Sources row model)
 mod aq;
 mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
@@ -77,6 +77,7 @@ mod system;
 mod task; // the one spawn: a refused thread is a return value, not a panic that kills the app
 mod telemetry; // the opt-in crash + usage channels: consent, the spool, the worker, the two wire formats
 mod tile; // `Tile`: the shelf-tile trait `pms::PmsMovie` implements and `ui::widgets` draws through
+mod tv; // the television as everything outside the port sees it: the interfaces the webOS port fills at boot (step L15)
 mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
 
 #[cfg(test)]
@@ -328,13 +329,17 @@ pub fn sim_events_log() -> std::path::PathBuf {
     eventlog::events_log()
 }
 
-/// Re-exported so the simulator binary calls the SAME entry the C shim calls, by name, with the
-/// compiler checking the signature. It previously re-declared `plex_run` in its own `extern "C"`
+/// The port holds `plex_run`, the C entry the simulator binary calls too. It is reached by path
+/// (`plxnative_modules::port::plex_run`) so the SAME entry the C shim calls is the one called, with
+/// the compiler checking the signature. It previously re-declared `plex_run` in its own `extern "C"`
 /// block, which meant the one binary whose whole premise is "cannot drift from the shipped boot
 /// path" was the one place a signature change would become a silent ABI mismatch instead of a
-/// compile error.
+/// compile error. There is deliberately no `pub use` here: a re-export would be a reference from
+/// the crate root into the port.
 #[cfg(feature = "hostsim")]
-pub use app::plex_run;
+pub mod port;
+#[cfg(not(feature = "hostsim"))]
+mod port;
 #[cfg(feature = "hostsim")]
 pub use app::synthetic_home_initial;
 

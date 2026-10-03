@@ -14,6 +14,8 @@
 #   present  — the present gate's worker door: ONE atomic static in ui/present.rs and ONE
 #              `wake_from_worker`.
 #   effect   — `Effect::` spelled nowhere (the enum is `Fx::`, the app's `AppFx::`).
+#   sink     — `tv::sink::installed` and `VideoSink` only under player/, tv/, tv.rs and port.rs
+#              (step L15: the Starfish/ACB verbs are the player's alone).
 #
 # Phase 4 rule (D3 rewrite, phase 12):
 #   mutators — a screen (ui/, screens/) or the loop (app/) never calls a data module's MUTATOR directly
@@ -800,7 +802,7 @@ gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub)_hit\(' "$SRC/a
 # frame: the three privileged OS-primitive calls, ZERO-TOLERANCE outside `app/run.rs` (D4) — no
 # allowlist file, because there is exactly one legitimate home once D1 lands: `app/run.rs` is the
 # frame loop, and `app/bridge.rs`'s `Rig` impl delegates to `run::rig_opaque_route`/
-# `rig_clear_opaque_region` (a one-line pass-through) rather than naming `crate::system::` itself,
+# `rig_clear_opaque_region` (a one-line pass-through) rather than naming `crate::tv::window::` itself,
 # which is what keeps this gate's text out of bridge.rs without splitting the `impl Rig<AppHost>
 # for Bridge` block (a trait's impl for a type is one syntactic unit; it carries two dozen other
 # methods beside these three). A self-test that spells two of the three call shapes as STRING
@@ -811,7 +813,7 @@ gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub)_hit\(' "$SRC/a
 # double-quote-depth tracking `tmppath` below uses), rather than exempting files by name: an
 # actual call typed outside a string still fails this gate. `// `-prefixed comment lines (`app/run.rs` keeps one, describing where a call
 # used to live) are stripped the same way `grep_code` above does for every other rule.
-frame_pat='crate::system::(ls2_pump|opaque_route|clear_opaque_region)\('
+frame_pat='crate::tv::window::(pump_bus|opaque_route|clear_opaque_region)\('
 frame_bad=0
 while IFS= read -r f; do
   [ "$f" = "$SRC/app/run.rs" ] && continue
@@ -831,6 +833,22 @@ done < <(grep -rlE --include='*.rs' "$frame_pat" "$SRC" 2>/dev/null | sort)
 if [ "$frame_bad" -eq 0 ]; then ok "frame"
 else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside app/run.rs"; fi
 
+# sink: the Starfish/ACB verbs (`tv::sink::VideoSink`) are the player's alone (step L15). Only
+# `player/` (including `player/ffi*.rs`, which implement the trait), `port.rs` (which installs one)
+# and `tv.rs` with `tv/` (which hold it) name `tv::sink::installed` or `VideoSink`; every other module reaches
+# the television through the narrower `tv` interfaces. Wholly-test files are skipped like inline
+# `#[cfg(test)]` blocks. Zero, no allowlist.
+sink_bad=0
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  p="${line%%:*}"
+  case "$p" in "$SRC"/player/*|"$SRC"/tv/*|"$SRC"/tv.rs|"$SRC"/port.rs) continue ;; esac
+  if is_wholly_test "$p"; then continue; fi
+  echo "    $line"; sink_bad=$((sink_bad+1))
+done < <(grep_code 'tv::sink::installed|\bVideoSink\b' "$SRC")
+if [ "$sink_bad" -eq 0 ]; then ok "sink"
+else fail "sink: $sink_bad line(s) naming the video sink outside player/, port.rs, tv.rs and tv/"; fi
+
 # route: `Route::` in app/ = 0, and `enum Route` gone from the whole tree (D1/D4). No allowlist:
 # the type is meant to be retired, not narrowed.
 route_app=$(grep_code 'Route::' "$SRC/app")
@@ -843,7 +861,8 @@ else
   fail "route: enum Route re-declared — the page alphabet is \`AppArg\` (D1)"
 fi
 
-# fnlen: app/run.rs::run <= 200 lines, plex_run (app/mod.rs) <= 10 lines (D4) — counted by brace
+# fnlen: app/run.rs::run <= 200 lines, run_application (app/mod.rs, the D4 skeleton) <= 10 and
+# plex_run (port.rs: install, then hand over) <= 10 — counted by brace
 # depth from the `fn` line to its matching close, not by grep pattern.
 fn_body_lines() {
   # fn_body_lines <file> <fn-name-pattern> — prints the line count of the first matching fn's body
@@ -859,9 +878,12 @@ fn_body_lines() {
 run_len=$(fn_body_lines "$SRC/app/run.rs" 'run')
 if [ -n "$run_len" ] && [ "$run_len" -le 200 ]; then ok "fnlen: app/run.rs::run ($run_len lines)"
 else fail "fnlen: app/run.rs::run is ${run_len:-unknown} lines, budget 200 — a phase of the frame belongs in its own function (see run.rs's own doc)"; fi
-plexrun_len=$(fn_body_lines "$SRC/app/mod.rs" 'plex_run')
-if [ -n "$plexrun_len" ] && [ "$plexrun_len" -le 10 ]; then ok "fnlen: plex_run ($plexrun_len lines)"
-else fail "fnlen: plex_run is ${plexrun_len:-unknown} lines, budget 10"; fi
+runapp_len=$(fn_body_lines "$SRC/app/mod.rs" 'run_application')
+if [ -n "$runapp_len" ] && [ "$runapp_len" -le 10 ]; then ok "fnlen: run_application (app/mod.rs) ($runapp_len lines)"
+else fail "fnlen: run_application (app/mod.rs) is ${runapp_len:-unknown} lines, budget 10"; fi
+plexrun_len=$(fn_body_lines "$SRC/port.rs" 'plex_run')
+if [ -n "$plexrun_len" ] && [ "$plexrun_len" -le 10 ]; then ok "fnlen: plex_run (port.rs) ($plexrun_len lines)"
+else fail "fnlen: plex_run (port.rs) is ${plexrun_len:-unknown} lines, budget 10"; fi
 
 # testmod: `#[cfg(test)] mod` count in app/mod.rs = 0 (D4/D8) — every test module named in D8's
 # table is meant to have moved to its subject's own file by the time this gate is added.

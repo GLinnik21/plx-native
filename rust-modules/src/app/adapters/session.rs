@@ -937,7 +937,7 @@ impl SessionAdapter {
     pub(crate) fn claim_root_press(&mut self) -> bool {
         if self.controlled_home { return false; }
         match &mut self.resources {
-            Resources::Live { .. } => crate::webos::take_root_press(),
+            Resources::Live { .. } => crate::tv::home::take_root_press(),
             #[cfg(test)]
             Resources::Fixture(resources) => std::mem::replace(&mut resources.root_press_available, false),
         }
@@ -948,8 +948,8 @@ impl SessionAdapter {
         match &mut self.resources {
             Resources::Live { .. } => {
                 match super::super::input::after_cancel(resumed) {
-                    super::super::input::AfterCancel::BackedOut => crate::webos::release_root_press(),
-                    super::super::input::AfterCancel::Home => crate::webos::go_home(),
+                    super::super::input::AfterCancel::BackedOut => crate::tv::home::release_root_press(),
+                    super::super::input::AfterCancel::Home => crate::tv::home::go_home(),
                 }
             }
             #[cfg(test)]
@@ -1963,7 +1963,7 @@ mod tests {
         };
 
         // Plant the v1 SecureEnvelope this host's key service cannot open — the exact shape
-        // `plex/session.rs`'s `SecureEnvelope`/`keymanager::Sealed` serialize as (constructed here
+        // `plex/session.rs`'s `SecureEnvelope`/`tv::secure::Sealed` serialize as (constructed here
         // as raw JSON since both types are private to `plex::session`/`keymanager`).
         let envelope = br#"{"format":"plxnative-secure-session","version":1,"sealed":{"backend":"keymanager3","key":"plxnative.session.v1","iv":"AAAAAAAAAAAAAAAAAAAAAA==","data":"c2VjcmV0"}}"#;
         std::fs::write(&fallback_path, envelope).expect("plant the unopenable legacy envelope");

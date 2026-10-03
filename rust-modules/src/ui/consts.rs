@@ -287,7 +287,7 @@ pub enum Key {
     PlayPause,
     Stop,
     /// The remote's EXIT key, and since 2026-09-03 the ONLY key that ends the process. BACK at a
-    /// root hands the screen back to the television and leaves the app running (`webos::go_home`),
+    /// root hands the screen back to the television and leaves the app running (`tv::home::go_home`),
     /// because a press people lean on must not be able to quit by accident; a key labelled EXIT
     /// carries no such ambiguity.
     Exit,

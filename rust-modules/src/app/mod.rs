@@ -1,9 +1,10 @@
-//! plex_run — the Rust app core (was the body of src/main.c). Owns SDL init, the
+//! run_application — the Rust app core (was the body of src/main.c). Owns SDL init, the
 //! event loop, input decode, the per-frame tick, draw orchestration, app lifecycle,
 //! the buffer-feed pump orchestration, and the dev triggers. The C boot shim
 //! (main.c) sets up the log and fallback crash tracer, calls the Rust image-marker and native-spool
-//! entries when required, then calls `plex_run`. The only application subsystem left in C is the
-//! starfish.c C++/ACB seam (the engine itself is Rust: crate::player).
+//! entries when required, then calls `plex_run` (port.rs), which hands over to `run_application`.
+//! The only application subsystem left in C is the starfish.c C++/ACB seam (the engine itself is
+//! Rust: crate::player).
 #![allow(non_upper_case_globals)]
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::Ordering::Relaxed;
@@ -106,22 +107,23 @@ extern "C" {
     fn SDL_GetDisplayUsableBounds(display: c_int, rect: *mut c_int) -> c_int;
 }
 
-// Phase 1a of the UI restructure split this file: everything above `plex_run` moved into the
-// submodules below as a PURE move (`pub(crate)` widening only), glob-imported here so the
-// loop body reads exactly as before. `plex_run` itself is phase 1b.
+// Phase 1a of the UI restructure split this file: everything above `run_application` moved into
+// the submodules below as a PURE move (`pub(crate)` widening only), glob-imported here so the
+// loop body reads exactly as before. `run_application` itself is phase 1b.
 pub(crate) mod adapters;
 pub(crate) mod boot;
 pub(crate) mod bootstrap;
 #[cfg(test)]
 pub(crate) use bootstrap::HomeIo;
 /// **"Stats for nerds"** — the diagnostics read-out (phase 10, was `ui/stats.rs`). Here rather
-/// than in `ui/` because it is written from `player::Diag`, `route`, `plex::identity`, `webos`
+/// than in `ui/` because it is written from `player::Diag`, `route`, `plex::identity`, `tv`
 /// and `devcaps` — application facts — and because its state is now an `App` field.
 pub(crate) mod diagnostics;
 pub(crate) mod words;
 pub(crate) mod clock;
 mod clock_notice;
 mod recorder;
+mod window_activity;
 pub(crate) mod events;
 pub(crate) mod lifecycle;
 pub(crate) mod playback;
@@ -215,9 +217,9 @@ pub(crate) struct Adapters {
     pub(crate) player: crate::player::adapter::PlayerAdapter,
 }
 
-/// The app core's state, gathered from `plex_run`'s loop-locals (UI restructure spec v4 §13,
-/// phase 1b-i: FIELDS ONLY — `plex_run` keeps its shape and reads `app.<field>` where it read a
-/// local). Phase 1b-ii extracts the coordinator's functions over `&mut App`; the machines of §2.2
+/// The app core's state, gathered from `run_application`'s loop-locals (UI restructure spec v4
+/// §13, phase 1b-i: FIELDS ONLY — `run_application` keeps its shape and reads `app.<field>` where
+/// it read a local). Phase 1b-ii extracts the coordinator's functions over `&mut App`; the machines of §2.2
 /// replace these fields one phase at a time. Every field was a `let mut` before the `while
 /// running` loop; the immutable boot-time values (dev flags, closures, the window) stay locals.
 ///
@@ -235,7 +237,7 @@ pub(crate) struct App {
     fps_shown: i32,
     play_prev: Option<(i64, u32)>,
     running: bool,
-    window_activity: crate::system::WindowActivity,
+    window_activity: window_activity::WindowActivity,
     #[cfg(feature = "devtools")]
     buffer_flip_count: u8,
     /// The sym we believe is PHYSICALLY DOWN right now — set by a fresh key-down, cleared by its
@@ -386,16 +388,16 @@ impl App {
     }
 }
 
-/// Everything `plex_run` does before minting the main-thread token — every probe, gate and
+/// Everything `run_application` does before minting the main-thread token — every probe, gate and
 /// dev-trigger arm that has to run BEFORE `boot()`, in the order this doc explains one by one.
-/// Extracted so `plex_run` itself stays a ten-line skeleton (D4): this is not a phase-function
-/// split of ONGOING per-frame work like `app/run.rs`'s, but the one-shot bring-up sequence, and
+/// Extracted so `run_application` itself stays a ten-line skeleton (D4): this is not a
+/// phase-function split of ONGOING per-frame work like `app/run.rs`'s, but the one-shot bring-up sequence, and
 /// splitting it out changes nothing about when any of it runs.
 ///
 /// Returns the telemetry guard, which MUST outlive the whole process — `crate::telemetry::boot`'s
 /// own doc: the crash channel's scope is snapshotted here, and `diag::event` reads its live
 /// published decision for the rest of the run, not only for as long as this function's own stack
-/// frame exists. `plex_run` binds it as `_telemetry_guard` for exactly that reason: a bare
+/// frame exists. `run_application` binds it as `_telemetry_guard` for exactly that reason: a bare
 /// `pre_boot_diagnostics();` would drop it at the end of THIS call, before a single frame ran.
 fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
     install_panic_logger();
@@ -442,7 +444,7 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
     // leaves only `Linux 4.4.84`, which does not distinguish webOS releases at all. This reads one
     // flat platform file and cannot fail the boot. The crash channel receives only the reviewed
     // compatibility fields (webOS/API/model/SoC/hardware revision), never device identifiers.
-    crate::webos::probe();
+    crate::tv::probe_device();
     // libwayland reads `WAYLAND_DEBUG` when SDL connects the display: same "before anything can
     // read it" rule. It writes the environment, so it runs BEFORE `telemetry::boot`: sentry-native's
     // `sentry_init` starts its own "sentry-tele" worker threads (logs/metrics are on by default in
@@ -487,13 +489,13 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
     crate::dev::scenarios::pre_boot();
     // Last: the worker must observe every boot-time environment/trigger mutation above, while a
     // controlled replay which deliberately skips this preflight keeps the conservative Unknown.
-    crate::webos::caps::start_probe();
+    crate::tv::start_capability_probe();
     telemetry_guard
 }
 
-/// The run+teardown sequence `plex_run` hands the mounted `App` to, split out for the same reason
-/// as [`pre_boot_diagnostics`] (D4): `plex_run` stays a ten-line skeleton naming only the THREE
-/// real phases (pre-boot diagnostics, `boot`, this), never the steps inside any one of them.
+/// The run+teardown sequence `run_application` hands the mounted `App` to, split out for the same
+/// reason as [`pre_boot_diagnostics`] (D4): `run_application` stays a ten-line skeleton naming only
+/// the THREE real phases (pre-boot diagnostics, `boot`, this), never the steps inside any one of them.
 unsafe fn run_and_shutdown(app: &mut App) -> c_int {
     run::run(app);
     let failed = finish_recording(&mut app.rec, app.bridge.landgate())
@@ -555,15 +557,14 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
 }
 
 /// The ten-line public skeleton: preflight/construction, then the ordinary loop and teardown.
-#[no_mangle]
-pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
+pub(crate) fn run_application(pms_host: *const c_char, pms_port: c_int) -> c_int {
     let mut app = match enter_application(pms_host,pms_port) { Ok(app) => app, Err(code) => return code };
     unsafe { run_and_shutdown(&mut app) }
 }
 
 
 // **Four `#[cfg(test)] mod` blocks stood here** and D8 gives each one the home of the thing it
-// grades, so that `plex_run`'s module reads as the entry point it is (`ci/check-deps.sh`'s
+// grades, so that `run_application`'s module reads as the entry point it is (`ci/check-deps.sh`'s
 // `testmod` gate is zero here now):
 //
 // * `player_return_tests` — "where playback returns to", over an `Origin::From(Node)` and a
