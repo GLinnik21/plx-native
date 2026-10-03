@@ -161,7 +161,7 @@ impl RowStyle {
 }
 
 /// Per-row animation state: a focus-scale spring per cell + the horizontal scroll spring. `Copy` so
-/// a grid can hold `[CardRow; N]` and copy-init it.
+/// a grid can build `vec![CardRow::new(); n]` and carry a surviving row over by value.
 #[derive(Clone, Copy)]
 pub(crate) struct CardRow {
     scale: [Spring; MAX_ROW_ITEMS],

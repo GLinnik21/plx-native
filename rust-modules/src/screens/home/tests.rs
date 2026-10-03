@@ -8,6 +8,9 @@ use plx_machine::machine::{
 };
 use crate::ui::screen::{ScreenArg, ScreenEvent};
 
+/// How many rows the layout sweeps cover: past the data layer's own cap, which is not Home's.
+const SWEEP_ROWS: usize = 40;
+
 #[derive(Clone, PartialEq, Eq)]
 struct TestArg;
 
@@ -102,14 +105,6 @@ fn has_home(out: &[Stamped<TestHost>], pred: impl Fn(&HomeReq) -> bool) -> bool 
         Fx::App(AppFx::Home(req)) => pred(req),
         _ => false,
     })
-}
-
-#[test]
-fn n_hubs_clamps_the_server_count_to_the_shelf_array() {
-    assert_eq!(n_hubs_of(0), 0);
-    assert_eq!(n_hubs_of(3), 3);
-    assert_eq!(n_hubs_of(MAX_HUBS + 1), MAX_HUBS);
-    assert_eq!(n_hubs_of(200), MAX_HUBS);
 }
 
 #[test]
@@ -244,12 +239,6 @@ fn step_row_stays_inside_the_addressable_rows() {
         Focusable::<TestHost>::neighbour(&s, last, Dir::Right, &cx(snapshot.view(), Some(last))),
         Step::Edge
     ));
-}
-
-#[test]
-fn vert_cannot_walk_past_the_shelf_array() {
-    assert_eq!(n_hubs_of(MAX_HUBS), MAX_HUBS);
-    assert_eq!(n_hubs_of(MAX_HUBS + 50), MAX_HUBS);
 }
 
 #[test]
@@ -474,7 +463,7 @@ fn no_shelves_means_no_grid_snap() {
     assert_eq!(pinned_snap(0.0, 0), 0.0);
     assert_eq!(pinned_snap(1.0, 1), 1.0);
     assert_eq!(pinned_snap(0.0, 1), 0.0);
-    assert_eq!(pinned_snap(1.0, MAX_HUBS), 1.0);
+    assert_eq!(pinned_snap(1.0, SWEEP_ROWS), 1.0);
 }
 
 #[test]
@@ -1024,7 +1013,7 @@ fn the_first_shelfs_raised_heading_settles_clear_of_the_profile_chip() {
 #[test]
 fn no_shelf_heading_settles_inside_the_shared_top_band() {
     const HEADING_MAX_H: f32 = 2.0 * theme::size::HEADLINE as f32;
-    for rows in 1..=MAX_HUBS {
+    for rows in 1..=SWEEP_ROWS {
         for focus_row in 0..rows {
             let scrolls = [
                 settled_scroll(rows, focus_row, 0.0),
@@ -1044,7 +1033,7 @@ fn no_shelf_heading_settles_inside_the_shared_top_band() {
 
 #[test]
 fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
-    for rows in 1..=MAX_HUBS {
+    for rows in 1..=SWEEP_ROWS {
         for focus_row in 0..rows {
             for scroll in [
                 settled_scroll(rows, focus_row, 0.0),
@@ -1600,6 +1589,29 @@ fn shelf_viewports_follow_identity_across_a_catalog_reorder() {
     assert_eq!(s.rows[1].identity, identity);
     assert_eq!(s.grid.shelves[1].scroll_x(), 900.0);
     assert_eq!(s.grid.shelves[0].scroll_x(), 0.0);
+}
+
+#[test]
+fn the_grid_holds_one_motion_row_per_published_row() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_grid_for_test(&mut state, &adapter, 5, 24);
+    let five = crate::pms::hubs_snapshot(&state);
+    let mut s = screen(five.view());
+    assert_eq!(s.rows.len(), 5);
+    assert_eq!(s.grid.shelves.len(), s.rows.len());
+    let kept = s.rows[1].identity.clone();
+    s.grid.shelves[1].restore_scroll(900.0, 24, &RowStyle::HOME);
+    crate::pms::seed_grid_for_test(&mut state, &adapter, 3, 24);
+    let three = crate::pms::hubs_snapshot(&state);
+    s.sync_catalog(&cx(three.view(), None));
+    assert_eq!(s.rows.len(), 3);
+    assert_eq!(s.grid.shelves.len(), 3, "the grid shrinks with the published rows");
+    assert_eq!(s.rows[1].identity, kept);
+    assert_eq!(s.grid.shelves[1].scroll_x(), 900.0, "a surviving row keeps its motion");
+    assert_eq!(s.grid.shelves[0].scroll_x(), 0.0);
+    assert_eq!(s.grid.shelf(9).scroll_x(), 0.0, "a stale row index reads a resting row");
 }
 
 #[test]
