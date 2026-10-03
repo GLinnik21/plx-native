@@ -1,7 +1,7 @@
 //! Language persistence is install-wide; selection must not change this launch's locale.
 use super::*;
 use super::test_support::*;
-use crate::i18n::Preference;
+use plx_platform::i18n::Preference;
 use crate::ui::form::FormId;
 use plx_machine::machine::{Edge, InputEvent, InputKind, Source};
 use plx_machine::present::Present;
@@ -20,10 +20,10 @@ fn contribute() -> u32 { LangId::Contribute.key().0 }
 
 struct SavedLanguage(Preference);
 impl SavedLanguage {
-    fn new(value: Preference) -> Self { Self(crate::i18n::saved_preference_for_test(value)) }
+    fn new(value: Preference) -> Self { Self(plx_platform::i18n::saved_preference_for_test(value)) }
 }
 impl Drop for SavedLanguage {
-    fn drop(&mut self) { crate::i18n::saved_preference_for_test(self.0); }
+    fn drop(&mut self) { plx_platform::i18n::saved_preference_for_test(self.0); }
 }
 
 fn save_request(effects: Vec<Stamped<InnerHost>>) -> (Preference, std::sync::mpsc::Sender<bool>) {
@@ -40,7 +40,7 @@ fn save_request(effects: Vec<Stamped<InnerHost>>) -> (Preference, std::sync::mps
 fn language_selection_waits_for_durable_receipt_and_keeps_running_locale() {
     let _guard = plx_base::testlock::serial();
     let _saved = SavedLanguage::new(Preference::System);
-    let running = crate::i18n::current().language().tag();
+    let running = plx_platform::i18n::current().language().tag();
     let mut page = LanguagePage::new(EntryId(0));
     let before = page.state.hash();
     let (requested, reply) = save_request(activate(&mut page, lang(Preference::Be)));
@@ -54,8 +54,8 @@ fn language_selection_waits_for_durable_receipt_and_keeps_running_locale() {
     assert!(page.poll_save());
     assert_eq!(page.state.selected, Preference::Be);
     assert!(!page.state.busy && !page.state.failed);
-    assert_eq!(crate::i18n::current().language().tag(), running);
-    assert_eq!(page.pending(), Preference::Be != crate::i18n::current().preference());
+    assert_eq!(plx_platform::i18n::current().language().tag(), running);
+    assert_eq!(page.pending(), Preference::Be != plx_platform::i18n::current().preference());
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn contribution_is_focusable_and_right_opens_the_guide() {
     page.step(&ScreenEvent::Input(InputEvent { at: Tick::default(), source: Source::Sdl,
         kind: InputKind::Key { key: Key::Right, sym: 0, wcode: 0, edge: Edge::Down, at_edge: true } }), &cx, &mut fx);
     assert!(out.iter().any(|effect| matches!(effect.fx, Fx::Nav(NavOp::Push(SettingsPage::Contribute)))));
-    assert!(crate::ui::qr::QrCode::new(crate::i18n::CONTRIBUTE_URL).is_ok());
+    assert!(crate::ui::qr::QrCode::new(plx_platform::i18n::CONTRIBUTE_URL).is_ok());
 }
 
 #[test]

@@ -39,10 +39,10 @@
 //! shell, read a file, call an arbitrary URL or control webOS outside this SDL process. Both
 //! directions are initiated by the television as pinned, authenticated HTTPS POSTs.
 
-// `lab.json`'s reader, `is_trigger_key` and `menu_row_enabled` live in `crate::labcfg` (platform):
+// `lab.json`'s reader, `is_trigger_key` and `menu_row_enabled` live in `plx_platform::labcfg` (platform):
 // `ui/` and `screens/` ask those two questions and may not name this module.
 #[cfg(feature = "lab-diagnostics")]
-use crate::labcfg::config;
+use plx_platform::labcfg::config;
 
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod control;
@@ -117,7 +117,7 @@ pub(crate) fn command_done(_id: u32, _ok: bool) {
 pub(crate) fn key_press(_sym: u32, _wcode: u32, _ps: &crate::route::PlaybackSession) -> bool {
     #[cfg(feature = "lab-diagnostics")]
     {
-        if crate::labcfg::is_trigger_key(_sym, _wcode) {
+        if plx_platform::labcfg::is_trigger_key(_sym, _wcode) {
             request_upload("key", _ps);
             return true;
         }

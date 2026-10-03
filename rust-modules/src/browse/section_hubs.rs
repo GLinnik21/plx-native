@@ -1078,7 +1078,7 @@ mod tests {
     /// against a plain `hub.title.clone()` before the override was wired in.
     #[test]
     fn a_be_ui_localizes_the_section_recently_added_hub_and_leaves_an_unknown_one_alone() {
-        let _thread_locale = crate::i18n::language_on_this_thread_for_test(crate::i18n::Preference::Be);
+        let _thread_locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::Be);
         let json = r#"{"MediaContainer":{"Hub":[
           {"hubIdentifier":"tv.recentlyadded.1","title":"Recently Added","type":"mixed",
            "Metadata":[{"ratingKey":"2001","type":"show","title":"Beta","thumb":"/t/2001"}]},

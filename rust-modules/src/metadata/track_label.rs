@@ -45,10 +45,10 @@ impl Kind {
     /// track without a name of its own reads the same way. Catalog text: this is drawn.
     pub(crate) fn fallback_label(self) -> &'static str {
         match self {
-            Kind::Full => crate::i18n::msg::widgets_tracks_kind_full(),
-            Kind::Sdh => crate::i18n::msg::widgets_badge_sdh(),
-            Kind::Forced => crate::i18n::msg::widgets_tracks_forced(),
-            Kind::Commentary => crate::i18n::msg::widgets_tracks_kind_commentary(),
+            Kind::Full => plx_platform::i18n::msg::widgets_tracks_kind_full(),
+            Kind::Sdh => plx_platform::i18n::msg::widgets_badge_sdh(),
+            Kind::Forced => plx_platform::i18n::msg::widgets_tracks_forced(),
+            Kind::Commentary => plx_platform::i18n::msg::widgets_tracks_kind_commentary(),
         }
     }
 }
@@ -346,7 +346,7 @@ pub(crate) fn track_name(pms: &str, container: &str, lang: &str) -> String {
 /// region this table does not know simply contributes no fallback, exactly as the mock's own
 /// `try`/`catch` around a `DisplayNames` miss does.
 const REGIONS: &[(&str, fn() -> &'static str)] = {
-    use crate::i18n::msg as m;
+    use plx_platform::i18n::msg as m;
     &[
         ("GB", m::widgets_region_gb),
         ("US", m::widgets_region_us),

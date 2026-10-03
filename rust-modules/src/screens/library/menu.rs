@@ -218,7 +218,7 @@ fn source_draft(
 }
 
 fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDraft {
-    let mut section = MenuSection::new(crate::i18n::msg::browse_library_sort_by());
+    let mut section = MenuSection::new(plx_platform::i18n::msg::browse_library_sort_by());
     let mut stamp = Stamp::default();
     stamp.tag(7);
     stamp.u32(sort_index as u32);
@@ -279,7 +279,7 @@ fn listing_kind(
 
 /// The TYPE menu: every [`LibraryType`] the section's kind offers, the current one checked.
 fn type_draft(section_kind: SecKind, current: LibraryType) -> MenuDraft {
-    let mut section = MenuSection::new(crate::i18n::msg::browse_library_filter_by());
+    let mut section = MenuSection::new(plx_platform::i18n::msg::browse_library_filter_by());
     let mut selected = None;
     for &kind in LibraryType::offered(section_kind) {
         let identity = format!("type:{}", kind.code());
@@ -299,16 +299,16 @@ fn type_draft(section_kind: SecKind, current: LibraryType) -> MenuDraft {
 }
 
 fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: bool) -> MenuDraft {
-    let mut section = MenuSection::new(crate::i18n::msg::browse_library_filter()).item_keyed(
+    let mut section = MenuSection::new(plx_platform::i18n::msg::browse_library_filter()).item_keyed(
         "unwatched".into(),
         RowKey(0),
         RowKind::Toggle,
         Action::Edit(QueryEdit::Unwatched(!unwatched)),
-        Row::new(crate::i18n::msg::browse_library_unwatched_only()).toggle(unwatched),
+        Row::new(plx_platform::i18n::msg::browse_library_unwatched_only()).toggle(unwatched),
     );
     if genres_supported {
-        let mut row = Row::new(crate::i18n::msg::browse_library_genre())
-            .value(genre.map(|g| g.title.as_str()).unwrap_or(crate::i18n::msg::browse_library_all()))
+        let mut row = Row::new(plx_platform::i18n::msg::browse_library_genre())
+            .value(genre.map(|g| g.title.as_str()).unwrap_or(plx_platform::i18n::msg::browse_library_all()))
             .chevron(true);
         // A chosen genre is the server's tag title; "All" is the app's.
         if genre.is_some() { row = row.server_value(); }
@@ -332,10 +332,10 @@ fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: b
 
 fn genre_draft(genres: &[GenreEntry], current: Option<&GenreEntry>) -> MenuDraft {
     let mut section = choice(
-        MenuSection::new(crate::i18n::msg::browse_library_genre()),
+        MenuSection::new(plx_platform::i18n::msg::browse_library_genre()),
         "genre:all".into(),
         Action::Edit(QueryEdit::Genre(None)),
-        Row::new(crate::i18n::msg::browse_library_all_genres()).checked(current.is_none()),
+        Row::new(plx_platform::i18n::msg::browse_library_all_genres()).checked(current.is_none()),
     );
     let mut stamp = Stamp::default();
     stamp.tag(10);
@@ -443,11 +443,11 @@ impl LibraryMenu {
         directory: crate::stores::browse::DirectoryView<'_>,
     ) -> MenuDraft {
         let title = match self.kind {
-            LibraryMenuKind::Type => crate::i18n::msg::browse_library_filter_by(),
-            LibraryMenuKind::Sort => crate::i18n::msg::browse_library_sort_by(),
-            LibraryMenuKind::Filter => crate::i18n::msg::browse_library_filter(),
-            LibraryMenuKind::Genre => crate::i18n::msg::browse_library_genre(),
-            LibraryMenuKind::Sources => crate::i18n::msg::browse_library_libraries(),
+            LibraryMenuKind::Type => plx_platform::i18n::msg::browse_library_filter_by(),
+            LibraryMenuKind::Sort => plx_platform::i18n::msg::browse_library_sort_by(),
+            LibraryMenuKind::Filter => plx_platform::i18n::msg::browse_library_filter(),
+            LibraryMenuKind::Genre => plx_platform::i18n::msg::browse_library_genre(),
+            LibraryMenuKind::Sources => plx_platform::i18n::msg::browse_library_libraries(),
         };
         let mut section = MenuSection::new(title);
         match self.kind {
@@ -479,7 +479,7 @@ impl LibraryMenu {
                     section,
                     "recheck".into(),
                     Action::Recheck,
-                    Row::new(crate::i18n::msg::browse_library_check_shares()),
+                    Row::new(plx_platform::i18n::msg::browse_library_check_shares()),
                 );
             }
         }
@@ -1212,7 +1212,7 @@ mod tests {
     /// popover actually gets.
     #[test]
     fn every_type_row_fits_the_popover_in_every_language() {
-        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
         let mut out = Vec::new();
         for language in SHIPPED {
@@ -1234,11 +1234,11 @@ mod tests {
     /// client-side Plays entry (app text); Filter covers both the "All" value and a chosen genre.
     #[test]
     fn every_sort_filter_and_genre_row_fits_the_popover_in_every_language() {
-        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let sorts = vec![
             SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false },
             SortEntry { key: crate::browse::PLAYS_SORT_KEY.into(), desc_key: String::new(),
-                title: crate::i18n::msg::browse_library_plays().into(), default_desc: true },
+                title: plx_platform::i18n::msg::browse_library_plays().into(), default_desc: true },
         ];
         let genres = vec![GenreEntry { id: "1".into(), title: "Drama".into() }];
         let measure = plx_base::fontcov::advances::ShippedMeasure;

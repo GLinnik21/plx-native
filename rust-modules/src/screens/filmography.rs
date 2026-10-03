@@ -60,7 +60,7 @@ fn route_layout(measure: &dyn Measure) -> RouteLayout {
     RouteLayout::screen_for_title(
         COPY_W,
         RouteLayout::screen().content.w,
-        crate::i18n::msg::browse_person_filmography(),
+        plx_platform::i18n::msg::browse_person_filmography(),
         measure,
     )
 }
@@ -517,7 +517,7 @@ impl FilmographyScreen {
         self.tab_c = self
             .model
             .iter()
-            .map(|d| CString::new(format!("{} · {}", d.title, crate::i18n::current().number(d.total as i64))).unwrap_or_default())
+            .map(|d| CString::new(format!("{} · {}", d.title, plx_platform::i18n::current().number(d.total as i64))).unwrap_or_default())
             .collect();
         let sel = self
             .current_row(focus)
@@ -679,8 +679,8 @@ impl FilmographyScreen {
         self.ground_ready = opaque_ground_ready(f.page_alpha);
         let layout = route_layout(f.measure);
         let total: usize = self.model.iter().map(|d| d.total).sum();
-        let title = crate::i18n::msg::browse_person_filmography();
-        let copy = crate::i18n::msg::browse_person_credits(total as i64);
+        let title = plx_platform::i18n::msg::browse_person_filmography();
+        let copy = plx_platform::i18n::msg::browse_person_credits(total as i64);
         layout.draw_narrative(
             p,
             Some(&self.name),
@@ -1759,7 +1759,7 @@ mod tests {
     #[test]
     fn every_credit_row_fits_the_table_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
-        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let credits = [
             credit("A Film With A Rather Long Title Indeed", "An Unusually Long Role Name", 2020, None),
             credit("Undated", "", 0, None),

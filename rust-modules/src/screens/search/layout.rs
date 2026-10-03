@@ -89,7 +89,7 @@ pub(super) fn recent(slot: usize, scroll: f32) -> Rect {
 }
 pub(super) fn clear(terms: usize, scroll: f32, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let width = crate::ui::widgets::Button::pill_w_measured(
-        crate::i18n::msg::browse_search_clear_c(),
+        plx_platform::i18n::msg::browse_search_clear_c(),
         crate::ui::theme::size::BODY,
         false,
         false,

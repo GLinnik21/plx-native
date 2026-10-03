@@ -256,7 +256,7 @@ const MINIMAL_PROTECTED_AUTH: &str = r#"{"format":"plxnative-session-auth","vers
 /// `preferences` blob must not silently turn the hero trailer off.
 #[test]
 fn join_canonical_with_null_preferences_keeps_trailer_autoplay_on() {
-    let public = crate::storage::state::PublicPayload::default();
+    let public = plx_platform::storage::state::PublicPayload::default();
     assert_eq!(public.preferences, Value::Null);
     let session = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
     assert!(session.trailer_autoplay());
@@ -264,7 +264,7 @@ fn join_canonical_with_null_preferences_keeps_trailer_autoplay_on() {
 
 #[test]
 fn join_canonical_with_explicit_false_keeps_trailer_autoplay_off() {
-    let mut public = crate::storage::state::PublicPayload::default();
+    let mut public = plx_platform::storage::state::PublicPayload::default();
     public.preferences = serde_json::json!({"trailer_autoplay": false});
     let session = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
     assert!(!session.trailer_autoplay());
@@ -274,7 +274,7 @@ fn join_canonical_with_explicit_false_keeps_trailer_autoplay_off() {
 /// same public preference even though it never sees the decrypted credentials.
 #[test]
 fn public_session_with_null_preferences_keeps_trailer_autoplay_on() {
-    let public = crate::storage::state::PublicPayload::default();
+    let public = plx_platform::storage::state::PublicPayload::default();
     assert_eq!(public.preferences, Value::Null);
     let session = public_session(&public);
     assert!(session.trailer_autoplay());
@@ -282,7 +282,7 @@ fn public_session_with_null_preferences_keeps_trailer_autoplay_on() {
 
 #[test]
 fn public_session_with_explicit_false_keeps_trailer_autoplay_off() {
-    let mut public = crate::storage::state::PublicPayload::default();
+    let mut public = plx_platform::storage::state::PublicPayload::default();
     public.preferences = serde_json::json!({"trailer_autoplay": false});
     let session = public_session(&public);
     assert!(!session.trailer_autoplay());
@@ -389,7 +389,7 @@ fn the_subtitle_tone_survives_the_canonical_split() {
     assert_eq!(joined.subtitle_tone(), SubtitleTone::DarkGrey);
     assert_eq!(public_session(&public).subtitle_tone(), SubtitleTone::DarkGrey);
     // …and a null preferences blob is white, not a failure
-    let empty = crate::storage::state::PublicPayload::default();
+    let empty = plx_platform::storage::state::PublicPayload::default();
     assert_eq!(public_session(&empty).subtitle_tone(), SubtitleTone::White);
 }
 
@@ -538,7 +538,7 @@ fn the_session_file_carries_no_subtitle_offset() {
 // `plex`) cannot name `Session`.
 #[test]
 fn preferences_soft_parse_without_losing_the_session() {
-    use crate::i18n::Preference;
+    use plx_platform::i18n::Preference;
     for raw in [
         r#"{}"#,
         r#"{"language":"future"}"#,

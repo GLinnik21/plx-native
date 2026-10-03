@@ -89,7 +89,7 @@ pub(crate) enum Fault {
 
 impl Fault {
     pub(crate) fn message(self) -> &'static str {
-        use crate::i18n::msg;
+        use plx_platform::i18n::msg;
         match self {
             Fault::StartFailed => msg::widgets_ass_start_failed(),
             Fault::InvalidFile => msg::widgets_ass_invalid_file(),

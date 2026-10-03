@@ -639,7 +639,7 @@ mod composed {
 #[test]
 fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
     use plx_machine::machine::Measure;
-    use crate::i18n::{msg, LocaleContext, Preference};
+    use plx_platform::i18n::{msg, LocaleContext, Preference};
     struct ReadingMeasure;
     impl Measure for ReadingMeasure {
         fn width(&self, text: &core::ffi::CStr, size: i32, _bold: bool) -> f32 {

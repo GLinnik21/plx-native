@@ -57,8 +57,8 @@ enum Failure {
 impl Failure {
     fn message(self) -> &'static str {
         match self {
-            Failure::Fetch => crate::i18n::msg::widgets_sidecar_fetch_failed(),
-            Failure::Empty => crate::i18n::msg::widgets_sidecar_empty(),
+            Failure::Fetch => plx_platform::i18n::msg::widgets_sidecar_fetch_failed(),
+            Failure::Empty => plx_platform::i18n::msg::widgets_sidecar_empty(),
         }
     }
 }

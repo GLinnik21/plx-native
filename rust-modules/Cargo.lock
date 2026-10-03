@@ -581,8 +581,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "plxnative-modules"
-version = "0.7.0"
+name = "plx_platform"
+version = "0.0.0"
 dependencies = [
  "icu_calendar",
  "icu_datetime",
@@ -590,10 +590,22 @@ dependencies = [
  "icu_locale",
  "icu_plurals",
  "icu_provider",
+ "libc",
+ "plx_base",
+ "plx_machine",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plxnative-modules"
+version = "0.7.0"
+dependencies = [
  "image",
  "libc",
  "plx_base",
  "plx_machine",
+ "plx_platform",
  "qrcodegen",
  "rcgen",
  "rustls",

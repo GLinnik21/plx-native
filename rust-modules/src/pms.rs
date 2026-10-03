@@ -950,7 +950,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
         new_hubs.push(HubRow {
             // the hub id the rest of the module matches on (hero-pool eligibility,
             // `hub_is_continue`), rather than the dedicated hub's own "continueWatching"
-            title: crate::i18n::msg::browse_home_continue_watching().to_string(),
+            title: plx_platform::i18n::msg::browse_home_continue_watching().to_string(),
             hub_id: "home.continue".to_string(),
             key: String::new(),
             source: String::new(),

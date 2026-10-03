@@ -816,7 +816,7 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # rule would leave every later `make` linking a library built by the OLD one. Cargo's own
 # `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
 # all, and this target is an ordinary timestamp comparison.
-RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/build_support locales assets -type f 2>/dev/null)
+RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/platform rust-modules/build_support locales assets -type f 2>/dev/null)
 $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile ci/check-staticlib-artifact.py $(FFABI_STAMP)
 	@# BEFORE the mkdir: the seed is only ever cloned into a target dir that does not exist yet.
 	$(CARGO_SEED) restore $(RUST_TDIR) rust-modules/$(RUST_TDIR)
@@ -851,11 +851,11 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 STORAGE_TDIR = $(RUST_TDIR)-storage
 # The helper is its own cargo package (rust-modules/storage) that does NOT depend on the app crate,
 # so the `cargo rustc -p plxnative-storage` below compiles only it, not the application library. What
-# it does read of the app tree is the handful of files it shares by `#[path]` (storage_service/ and
-# storage/state.rs) and the install-identity generator in build_support/; that is all it names here,
-# so an edit to the UI no longer relinks it. `ci/test_storage_package_isolated.py` holds the
+# it does read of the platform layer crate is the handful of files it shares by `#[path]`
+# (platform/src/storage_service/ and platform/src/storage/state.rs) and the install-identity
+# generator in build_support/; that is all it names here, so an edit to the UI no longer relinks it. `ci/test_storage_package_isolated.py` holds the
 # "no app library" line.
-STORAGE_INPUTS := $(shell find rust-modules/storage rust-modules/build_support rust-modules/src/storage_service -type f 2>/dev/null) rust-modules/src/storage/state.rs rust-modules/.cargo/config.toml
+STORAGE_INPUTS := $(shell find rust-modules/storage rust-modules/build_support rust-modules/platform/src/storage_service -type f 2>/dev/null) rust-modules/platform/src/storage/state.rs rust-modules/.cargo/config.toml
 STORAGE_BIN = rust-modules/$(STORAGE_TDIR)/$(RUST_TARGET)/release/plxnative-storage
 pkg/plxnative-storage: LICENSE $(STORAGE_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock ci/install-identities.json Makefile ci/arm-cc.py ci/check-link-evidence.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
@@ -1358,7 +1358,7 @@ check-cargo-lint: lint
 	@# gate has nothing to reuse a cache for. No `pkg/lab.json` is involved — that file is `make
 	@# LAB=1`'s requirement (a live session secret), not the compiler's.
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_NIGHTLY) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine --features lab-diagnostics
+	  cargo +$(RUST_NIGHTLY) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform --features lab-diagnostics
 
 # The default-feature unit suite and everything that drives cargo through ci/ self-tests.
 check-cargo-unit-default:
@@ -1385,7 +1385,7 @@ check-cargo-unit-default:
 	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
-	  cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine
+	  cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_service_package.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test -p plxnative-storage --bin plxnative-storage
 	@# The helper is its own package, so building it compiles no copy of the app library; this reads
@@ -1418,7 +1418,7 @@ check-cargo-unit-hostsim:
 	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
-	  cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine --features hostsim
+	  cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform --features hostsim
 
 # OPT-IN incremental inner loop: the default-feature unit suite (the same `cargo test --lib` as
 # `check-cargo-unit-default`, same throwaway runtime root and telemetry env) with
@@ -1441,7 +1441,7 @@ test-fast:
 	cd rust-modules && CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=$(TEST_FAST_TDIR) \
 	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
-	  cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine $(if $(T),'$(T)')
+	  cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform $(if $(T),'$(T)')
 
 # `make build-bench [ARGS='--runs 5 --json out.json']` -- the repeatable local build benchmark
 # (tools/build-bench.py; docs/agent-reference.md says what it measures and when a PR must paste its

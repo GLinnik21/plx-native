@@ -89,9 +89,9 @@ fn meta_key(collection: &Collection) -> (i64, bool) {
 /// server stated one.
 fn order_note(collection: &Collection) -> &'static str {
     match collection.order {
-        Some(CollectionOrder::Release) => crate::i18n::msg::browse_collection_order_release(),
-        Some(CollectionOrder::Title) => crate::i18n::msg::browse_collection_order_title(),
-        Some(CollectionOrder::Custom) => crate::i18n::msg::browse_collection_order_custom(),
+        Some(CollectionOrder::Release) => plx_platform::i18n::msg::browse_collection_order_release(),
+        Some(CollectionOrder::Title) => plx_platform::i18n::msg::browse_collection_order_title(),
+        Some(CollectionOrder::Custom) => plx_platform::i18n::msg::browse_collection_order_custom(),
         None => "",
     }
 }
@@ -106,15 +106,15 @@ fn head_alpha(scroll: f32) -> f32 {
 /// The header's meta line — "Collection · N items", or the kind alone ([`meta_key`]).
 fn meta_line(collection: &Collection) -> CString {
     match meta_key(collection) {
-        (_, true) => crate::i18n::msg::browse_collection_kind_c().to_owned(),
-        (count, false) => CString::new(crate::i18n::msg::browse_collection_meta(&crate::ui::fmt::item_count(count)))
+        (_, true) => plx_platform::i18n::msg::browse_collection_kind_c().to_owned(),
+        (count, false) => CString::new(plx_platform::i18n::msg::browse_collection_meta(&crate::ui::fmt::item_count(count)))
             .unwrap_or_default(),
     }
 }
 
 pub(crate) fn member_label(item: &PmsMovie) -> String {
     match item.kind {
-        2 if item.season_index > 0 => crate::i18n::msg::browse_collection_season_mark(item.season_index as i64),
+        2 if item.season_index > 0 => plx_platform::i18n::msg::browse_collection_season_mark(item.season_index as i64),
         3 => crate::ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64),
         _ => String::new(),
     }
@@ -341,14 +341,14 @@ impl CollectionScreen {
     fn status_overlay<'a>(collection: Option<&Collection>, tick: u32,
         measure: &dyn plx_machine::machine::Measure) -> StatusOverlay<'a> {
         match collection.map(|c| c.status).unwrap_or(CollectionStatus::Loading) {
-            CollectionStatus::Loading => StatusOverlay::new(Self::status_frame(), crate::i18n::msg::browse_collection_loading_c(), StatusKind::Working).phase(tick),
-            CollectionStatus::Empty => StatusOverlay::new(Self::status_frame(), crate::i18n::msg::browse_collection_empty_c(), StatusKind::Empty),
-            CollectionStatus::Unavailable => StatusOverlay::new(Rect::FULL, crate::i18n::msg::browse_collection_unavailable_c(), StatusKind::Failed)
+            CollectionStatus::Loading => StatusOverlay::new(Self::status_frame(), plx_platform::i18n::msg::browse_collection_loading_c(), StatusKind::Working).phase(tick),
+            CollectionStatus::Empty => StatusOverlay::new(Self::status_frame(), plx_platform::i18n::msg::browse_collection_empty_c(), StatusKind::Empty),
+            CollectionStatus::Unavailable => StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::browse_collection_unavailable_c(), StatusKind::Failed)
                 .page(crate::ui::icons::Icon::PersonBadgeXmark)
-                .reason(crate::i18n::msg::browse_collection_unavailable_reason_c()),
+                .reason(plx_platform::i18n::msg::browse_collection_unavailable_reason_c()),
             CollectionStatus::Failed => {
-                let overlay = StatusOverlay::new(Rect::FULL, crate::i18n::msg::browse_home_failed_c(), StatusKind::Failed)
-                    .page(crate::ui::icons::Icon::ServerBadgeMinus).action(crate::i18n::msg::browse_action_retry_c());
+                let overlay = StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::browse_home_failed_c(), StatusKind::Failed)
+                    .page(crate::ui::icons::Icon::ServerBadgeMinus).action(plx_platform::i18n::msg::browse_action_retry_c());
                 match collection {
                     Some(c) => overlay.glyph_ceiling(Self::header_text_bottom(c, measure)),
                     None => overlay,
@@ -462,7 +462,7 @@ impl CollectionScreen {
                 fan_name, theme::CARD_RING_RAD, false, 1.0, 0.0);
         }
         if collection.status == CollectionStatus::Ready {
-            card_row::draw_heading(p, crate::i18n::msg::browse_collection_items(), order_note(collection),
+            card_row::draw_heading(p, plx_platform::i18n::msg::browse_collection_items(), order_note(collection),
                 MARGIN_X, ITEMS_HEADING_Y + dy, SCR_W - 2.0 * MARGIN_X, measure);
         }
         let title = measure.fit_line(name, TEXT_W, theme::size::DISPLAY, true);
@@ -915,7 +915,7 @@ mod tests {
         let overlay = CollectionScreen::status_overlay(Some(c), 0, &FixtureMeasure);
         let f = overlay.frame;
         assert_eq!((f.x, f.y, f.w, f.h), (96.0, 460.0, 1728.0, 475.0));
-        assert_eq!(overlay.caption, crate::i18n::msg::browse_collection_empty_c());
+        assert_eq!(overlay.caption, plx_platform::i18n::msg::browse_collection_empty_c());
     }
 
     /// C4b: an unavailable collection is the page-filling Failed verdict at the shared anchor
@@ -1036,7 +1036,7 @@ mod tests {
     fn the_collection_pages_fixed_slots_fit_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
-        use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
         use plx_machine::machine::Measure;
         let m = ShippedMeasure;
         let mark_budget = (CARD_W - 2.0 * 16.0) * HEADROOM;
@@ -1075,7 +1075,7 @@ mod tests {
     fn every_app_owned_run_on_the_collection_page_comes_from_the_catalog() {
         use crate::ui::screen::DrawFrame;
         let _serial = plx_base::testlock::serial();
-        let _pseudo = crate::i18n::pseudo_on_this_thread_for_test();
+        let _pseudo = plx_platform::i18n::pseudo_on_this_thread_for_test();
         let server = ["Set", "Qwerty", "Zzyzx", "Vlox"];
         let season = PmsMovie { rk: "s".into(), kind: 2, season_index: 3, title: "Zzyzx".into(),
             show_title: "Vlox".into(), ..Default::default() };

@@ -533,8 +533,8 @@ fn scroll_for_page(person: &Person, page: usize) -> f32 {
 pub(crate) fn meta_runs(roles: &str, born: &str, died: &str, birthplace: &str) -> Vec<String> {
     let mut runs = Vec::new();
     if !roles.trim().is_empty() { runs.push(roles.trim().to_owned()); }
-    if !born.trim().is_empty() { runs.push(crate::i18n::msg::browse_person_born(born.trim())); }
-    if !died.trim().is_empty() { runs.push(crate::i18n::msg::browse_person_died(died.trim())); }
+    if !born.trim().is_empty() { runs.push(plx_platform::i18n::msg::browse_person_born(born.trim())); }
+    if !died.trim().is_empty() { runs.push(plx_platform::i18n::msg::browse_person_died(died.trim())); }
     if !birthplace.trim().is_empty() { runs.push(birthplace.trim().to_owned()); }
     runs
 }
@@ -554,10 +554,10 @@ pub(crate) fn meta_runs(roles: &str, born: &str, died: &str, birthplace: &str) -
 pub(crate) fn library_line(films: usize, shows: usize) -> Option<String> {
     match (films, shows) {
         (0, 0) => None,
-        (films, 0) => Some(crate::i18n::msg::browse_person_library_one(&crate::i18n::msg::browse_person_films(films as i64))),
-        (0, shows) => Some(crate::i18n::msg::browse_person_library_one(&crate::i18n::msg::browse_person_shows(shows as i64))),
-        (films, shows) => Some(crate::i18n::msg::browse_person_library_both(
-            &crate::i18n::msg::browse_person_films(films as i64), &crate::i18n::msg::browse_person_shows(shows as i64))),
+        (films, 0) => Some(plx_platform::i18n::msg::browse_person_library_one(&plx_platform::i18n::msg::browse_person_films(films as i64))),
+        (0, shows) => Some(plx_platform::i18n::msg::browse_person_library_one(&plx_platform::i18n::msg::browse_person_shows(shows as i64))),
+        (films, shows) => Some(plx_platform::i18n::msg::browse_person_library_both(
+            &plx_platform::i18n::msg::browse_person_films(films as i64), &plx_platform::i18n::msg::browse_person_shows(shows as i64))),
     }
 }
 
@@ -567,7 +567,7 @@ pub(crate) fn library_line(films: usize, shows: usize) -> Option<String> {
 /// head ladder ([`theme::alert`]), the same flow [`head_h`] measures.
 fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::machine::Measure) {
     let mut y = c.y;
-    Label::new(crate::i18n::msg::browse_person_eyebrow_c().as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+    Label::new(plx_platform::i18n::msg::browse_person_eyebrow_c().as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
         .bold().h(theme::alert::TEXT_ALIGN).v(VAlign::CapTop).draw(p, Rect::new(c.x, y, c.w, 0.0));
     y += theme::alert::EYEBROW_LEAD + theme::alert::GAP_EYEBROW_TITLE;
 
@@ -666,7 +666,7 @@ fn draw_foot(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::ma
     }
     // …and the hint, right-anchored: the widget measures itself, so the whole run ends on the
     // content box's right edge — the same edge the rail and the hairlines end on.
-    let hint = widgets::KeyHint::translated(crate::i18n::msg::widgets_hint_return("\u{fffc}"), HINT_KEY);
+    let hint = widgets::KeyHint::translated(plx_platform::i18n::msg::widgets_hint_return("\u{fffc}"), HINT_KEY);
     hint.draw(p, c.x + c.w - hint.width(measure), cy, measure);
 }
 

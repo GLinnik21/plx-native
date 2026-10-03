@@ -185,38 +185,38 @@ fn consent_form(mode: Mode, draft: (bool, bool)) -> Form<RowId, Act, SettingsPag
             Form::new().section(
                 FormSection::new("")
                     .item_keyed(first, RowKey(0), preview(label), Act::Open,
-                        Row::new(crate::i18n::msg::settings_consent_example()).chevron(true))
+                        Row::new(plx_platform::i18n::msg::settings_consent_example()).chevron(true))
                     .item_keyed(RowId::Policy, RowKey(1), preview(PreviewKind::Policy), Act::Open,
-                        Row::new(crate::i18n::msg::settings_consent_policy()).chevron(true)),
+                        Row::new(plx_platform::i18n::msg::settings_consent_policy()).chevron(true)),
             )
         }
         Mode::Settings => {
             let (errors, usage) = draft;
             Form::new()
                 .section(
-                    FormSection::new(crate::i18n::msg::settings_consent_reporting())
+                    FormSection::new(plx_platform::i18n::msg::settings_consent_reporting())
                         .item(RowId::Errors, RowKind::Toggle, Act::FlipErrors,
-                            Row::new(crate::i18n::msg::settings_consent_crash_row()).detail(crate::i18n::msg::settings_consent_crash_detail()).toggle(errors))
+                            Row::new(plx_platform::i18n::msg::settings_consent_crash_row()).detail(plx_platform::i18n::msg::settings_consent_crash_detail()).toggle(errors))
                         .item(RowId::Usage, RowKind::Toggle, Act::FlipUsage,
-                            Row::new(crate::i18n::msg::settings_consent_usage_row()).detail(crate::i18n::msg::settings_consent_usage_detail()).toggle(usage)),
+                            Row::new(plx_platform::i18n::msg::settings_consent_usage_row()).detail(plx_platform::i18n::msg::settings_consent_usage_detail()).toggle(usage)),
                 )
                 .section(
-                    FormSection::new(crate::i18n::msg::settings_consent_information())
+                    FormSection::new(plx_platform::i18n::msg::settings_consent_information())
                         .item(RowId::PreviewCrash, preview(PreviewKind::Crash), Act::Open,
-                            Row::new(crate::i18n::msg::settings_consent_crash_document()).detail(crate::i18n::msg::settings_consent_preview_crash()).chevron(true))
+                            Row::new(plx_platform::i18n::msg::settings_consent_crash_document()).detail(plx_platform::i18n::msg::settings_consent_preview_crash()).chevron(true))
                         .item(RowId::PreviewUsage, preview(PreviewKind::Usage), Act::Open,
-                            Row::new(crate::i18n::msg::settings_consent_usage_document()).detail(crate::i18n::msg::settings_consent_preview_usage()).chevron(true))
+                            Row::new(plx_platform::i18n::msg::settings_consent_usage_document()).detail(plx_platform::i18n::msg::settings_consent_preview_usage()).chevron(true))
                         .item(RowId::Policy, preview(PreviewKind::Policy), Act::Open,
-                            Row::new(crate::i18n::msg::settings_consent_policy()).detail(crate::i18n::msg::settings_consent_preview_policy()).chevron(true))
+                            Row::new(plx_platform::i18n::msg::settings_consent_policy()).detail(plx_platform::i18n::msg::settings_consent_preview_policy()).chevron(true))
                         .item(RowId::ErrorsId, preview(PreviewKind::ErrorsId), Act::Open,
-                            Row::new(crate::i18n::msg::settings_consent_crash_id()).detail(crate::i18n::msg::settings_consent_preview_errors_id()).chevron(true))
+                            Row::new(plx_platform::i18n::msg::settings_consent_crash_id()).detail(plx_platform::i18n::msg::settings_consent_preview_errors_id()).chevron(true))
                         .item(RowId::AnalyticsId, preview(PreviewKind::AnalyticsId), Act::Open,
-                            Row::new(crate::i18n::msg::settings_consent_analytics_id()).detail(crate::i18n::msg::settings_consent_preview_analytics_id()).chevron(true)),
+                            Row::new(plx_platform::i18n::msg::settings_consent_analytics_id()).detail(plx_platform::i18n::msg::settings_consent_preview_analytics_id()).chevron(true)),
                 )
                 .section(
-                    FormSection::new(crate::i18n::msg::settings_consent_on_tv()).item(
+                    FormSection::new(plx_platform::i18n::msg::settings_consent_on_tv()).item(
                         RowId::Delete, RowKind::Button, Act::Delete,
-                        Row::new(crate::i18n::msg::settings_consent_delete()).detail(crate::i18n::msg::settings_consent_delete_detail()).chevron(true),
+                        Row::new(plx_platform::i18n::msg::settings_consent_delete()).detail(plx_platform::i18n::msg::settings_consent_delete_detail()).chevron(true),
                     ),
                 )
         }
@@ -315,23 +315,23 @@ impl ConsentPage {
 
     fn title(&self) -> &'static str {
         match self.mode {
-            Mode::Settings => crate::i18n::msg::settings_privacy_title(),
-            Mode::FirstRun { product: false, .. } => crate::i18n::msg::settings_consent_crash_title(),
-            Mode::FirstRun { product: true, .. } => crate::i18n::msg::settings_consent_product_title(),
+            Mode::Settings => plx_platform::i18n::msg::settings_privacy_title(),
+            Mode::FirstRun { product: false, .. } => plx_platform::i18n::msg::settings_consent_crash_title(),
+            Mode::FirstRun { product: true, .. } => plx_platform::i18n::msg::settings_consent_product_title(),
         }
     }
     fn body(&self) -> &'static str {
         match self.mode {
-            Mode::Settings => crate::i18n::msg::settings_consent_settings_copy(),
-            Mode::FirstRun { product: false, .. } => crate::i18n::msg::settings_consent_crash_body(),
-            Mode::FirstRun { product: true, .. } => crate::i18n::msg::settings_consent_product_body(),
+            Mode::Settings => plx_platform::i18n::msg::settings_consent_settings_copy(),
+            Mode::FirstRun { product: false, .. } => plx_platform::i18n::msg::settings_consent_crash_body(),
+            Mode::FirstRun { product: true, .. } => plx_platform::i18n::msg::settings_consent_product_body(),
         }
     }
     fn crumb(&self) -> Option<&'static str> {
         match self.mode {
-            Mode::Settings => Some(crate::i18n::msg::settings_title()),
+            Mode::Settings => Some(plx_platform::i18n::msg::settings_title()),
             Mode::FirstRun { product: false, .. } => None,
-            Mode::FirstRun { product: true, .. } => Some(crate::i18n::msg::settings_consent_crash_title()),
+            Mode::FirstRun { product: true, .. } => Some(plx_platform::i18n::msg::settings_consent_crash_title()),
         }
     }
     fn copy_size(&self) -> std::os::raw::c_int {
@@ -347,16 +347,16 @@ impl ConsentPage {
         match self.mode {
             Mode::Settings => {
                 if self.draft != self.base {
-                    vec![crate::i18n::msg::settings_done_c()]
+                    vec![plx_platform::i18n::msg::settings_done_c()]
                 } else {
                     Vec::new()
                 }
             }
             Mode::FirstRun { product, .. } => {
                 if product {
-                    vec![crate::i18n::msg::settings_consent_share_analytics_c(), crate::i18n::msg::settings_consent_do_not_share_c()]
+                    vec![plx_platform::i18n::msg::settings_consent_share_analytics_c(), plx_platform::i18n::msg::settings_consent_do_not_share_c()]
                 } else {
-                    vec![crate::i18n::msg::settings_consent_share_reports_c(), crate::i18n::msg::settings_consent_do_not_share_c()]
+                    vec![plx_platform::i18n::msg::settings_consent_share_reports_c(), plx_platform::i18n::msg::settings_consent_do_not_share_c()]
                 }
             }
         }
@@ -482,7 +482,7 @@ impl ConsentPage {
             }
             None | Some(Act::Open) => {}
             Some(Act::Delete) => {
-                self.alert.open_with_body(crate::i18n::msg::settings_consent_delete_question_c(), crate::i18n::msg::settings_consent_delete_scope());
+                self.alert.open_with_body(plx_platform::i18n::msg::settings_consent_delete_question_c(), plx_platform::i18n::msg::settings_consent_delete_scope());
                 self.state.alert_scroll = 0;
                 self.state.alert = true;
                 // the alert traps focus: seat the engine on its answers
@@ -930,7 +930,7 @@ impl Screen<InnerHost> for ConsentPage {
         // engine seats on while it is open
         if self.alert.visible() {
             self.alert.draw_scrim();
-            self.alert.draw(crate::i18n::msg::settings_cancel_c(), crate::i18n::msg::settings_delete_c(), f.measure);
+            self.alert.draw(plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::settings_delete_c(), f.measure);
             let frames = self.alert.frames(f.measure);
             self.alert_frames.set(Some(frames));
             // **Register the two hit stops only once the entrance spring has actually arrived.**
@@ -1029,29 +1029,29 @@ impl PreviewPage {
     pub(crate) fn new(entry: EntryId, which: u8) -> Self {
         let kind = PreviewKind::ALL[(which & 0x0f) as usize % PreviewKind::ALL.len()];
         let (crumb, word) = if which & FIRST_RUN_CRASH != 0 {
-            (crate::i18n::msg::settings_consent_crash_title(), word::CONSENT)
+            (plx_platform::i18n::msg::settings_consent_crash_title(), word::CONSENT)
         } else if which & FIRST_RUN_PRODUCT != 0 {
-            (crate::i18n::msg::settings_consent_product_title(), word::CONSENT)
+            (plx_platform::i18n::msg::settings_consent_product_title(), word::CONSENT)
         } else {
-            (crate::i18n::msg::settings_privacy_title(), word::PRIVACY)
+            (plx_platform::i18n::msg::settings_privacy_title(), word::PRIVACY)
         };
         let (title, subtitle): (&str, &str) = match kind {
             PreviewKind::ErrorsId => (
-                crate::i18n::msg::settings_consent_crash_id(),
-                crate::i18n::msg::settings_consent_errors_subtitle(),
+                plx_platform::i18n::msg::settings_consent_crash_id(),
+                plx_platform::i18n::msg::settings_consent_errors_subtitle(),
             ),
             PreviewKind::AnalyticsId => (
-                crate::i18n::msg::settings_consent_analytics_id(),
-                crate::i18n::msg::settings_consent_analytics_subtitle(),
+                plx_platform::i18n::msg::settings_consent_analytics_id(),
+                plx_platform::i18n::msg::settings_consent_analytics_subtitle(),
             ),
-            PreviewKind::Policy => (crate::i18n::msg::settings_consent_policy(), crate::i18n::msg::settings_consent_policy_subtitle()),
+            PreviewKind::Policy => (plx_platform::i18n::msg::settings_consent_policy(), plx_platform::i18n::msg::settings_consent_policy_subtitle()),
             PreviewKind::Crash => (
-                crate::i18n::msg::settings_consent_crash_document(),
-                crate::i18n::msg::settings_consent_crash_subtitle(),
+                plx_platform::i18n::msg::settings_consent_crash_document(),
+                plx_platform::i18n::msg::settings_consent_crash_subtitle(),
             ),
             PreviewKind::Usage => (
-                crate::i18n::msg::settings_consent_usage_document(),
-                crate::i18n::msg::settings_consent_usage_subtitle(),
+                plx_platform::i18n::msg::settings_consent_usage_document(),
+                plx_platform::i18n::msg::settings_consent_usage_subtitle(),
             ),
         };
         let text = match kind {
@@ -1167,8 +1167,8 @@ impl Screen<InnerHost> for PreviewPage {
 /// mock-up: a field added to any of these schemas appears here, in front of the person being asked
 /// to consent to it, the same argument the old combined `preview` made.
 pub(crate) fn preview_crash() -> String {
-    let mut out = String::from(crate::i18n::msg::settings_consent_preview_crash_intro());
-    out.push_str(crate::i18n::msg::settings_consent_preview_native());
+    let mut out = String::from(plx_platform::i18n::msg::settings_consent_preview_crash_intro());
+    out.push_str(plx_platform::i18n::msg::settings_consent_preview_native());
     let crash = crate::telemetry::native::preview_event();
     let crash_text = serde_json::from_slice::<serde_json::Value>(&crash)
         .ok()
@@ -1178,21 +1178,21 @@ pub(crate) fn preview_crash() -> String {
     for (label, body) in crate::telemetry::crashreport::preview_events() {
         out.push_str("\n\n");
         out.push_str(label);
-        out.push_str(crate::i18n::msg::settings_consent_preview_fallback());
+        out.push_str(plx_platform::i18n::msg::settings_consent_preview_fallback());
         let text = serde_json::from_slice::<serde_json::Value>(&body)
             .ok()
             .and_then(|v| serde_json::to_string_pretty(&v).ok())
             .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
         out.push_str(&text);
     }
-    out.push_str(crate::i18n::msg::settings_consent_preview_handled());
+    out.push_str(plx_platform::i18n::msg::settings_consent_preview_handled());
     let handled = crate::telemetry::playback::preview_event();
     let handled_text = serde_json::from_slice::<serde_json::Value>(&handled)
         .ok()
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| String::from_utf8_lossy(&handled).into_owned());
     out.push_str(&handled_text);
-    out.push_str(crate::i18n::msg::settings_consent_preview_incident());
+    out.push_str(plx_platform::i18n::msg::settings_consent_preview_incident());
     let incident = crate::telemetry::incident::preview_event();
     let incident_text = serde_json::from_slice::<serde_json::Value>(&incident)
         .ok()
@@ -1213,8 +1213,8 @@ pub(crate) fn preview_crash() -> String {
 /// minted only when product analytics is enabled; error-only consent creates none.
 pub(crate) fn preview_usage() -> String {
     use crate::diag::schema::DiagEvent;
-    let mut out = String::from(crate::i18n::msg::settings_consent_preview_usage_intro());
-    out.push_str(crate::i18n::msg::settings_consent_preview_usage_heading());
+    let mut out = String::from(plx_platform::i18n::msg::settings_consent_preview_usage_intro());
+    out.push_str(plx_platform::i18n::msg::settings_consent_preview_usage_heading());
     for e in [
         DiagEvent::AppLaunch,
         DiagEvent::RouteEntered { screen: "home" },
@@ -1328,7 +1328,7 @@ fn localize_placeholders(text: &str) -> String {
 
 /// A preview placeholder's words, or `None` for text that is not one of them.
 fn placeholder(token: &str) -> Option<&'static str> {
-    use crate::i18n::msg;
+    use plx_platform::i18n::msg;
     Some(match token {
         "address" => msg::settings_consent_placeholder_address(),
         "flags" => msg::settings_consent_placeholder_flags(),
@@ -1410,8 +1410,8 @@ fn preview() -> String {
 /// ever turned back on, so "off" really does mean the old handle is gone.
 fn analytics_id_document() -> String {
     match consent::current().and_then(|c| c.install_id).as_deref() {
-        Some(id) => crate::i18n::msg::settings_consent_analytics_present(CONTACT_EMAIL, id),
-        None => crate::i18n::msg::settings_consent_analytics_absent(CONTACT_EMAIL),
+        Some(id) => plx_platform::i18n::msg::settings_consent_analytics_present(CONTACT_EMAIL, id),
+        None => plx_platform::i18n::msg::settings_consent_analytics_absent(CONTACT_EMAIL),
     }
 }
 
@@ -1427,8 +1427,8 @@ fn analytics_id_document() -> String {
 /// owed the reason.
 fn errors_id_document() -> String {
     match consent::current().and_then(|c| c.errors_id).as_deref() {
-        Some(id) => crate::i18n::msg::settings_consent_errors_present(CONTACT_EMAIL, id),
-        None => crate::i18n::msg::settings_consent_errors_absent(CONTACT_EMAIL),
+        Some(id) => plx_platform::i18n::msg::settings_consent_errors_present(CONTACT_EMAIL, id),
+        None => plx_platform::i18n::msg::settings_consent_errors_absent(CONTACT_EMAIL),
     }
 }
 

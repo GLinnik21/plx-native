@@ -905,9 +905,9 @@ pub(crate) fn focused_caption(m: &TileFacts<'_>, is_continue: bool) -> Option<st
         crate::ui::fmt::item_count(m.child_count)
     } else if m.kind == TileKind::Episode && m.ep_index > 0 {
         if m.season_index > 0 {
-            crate::i18n::msg::widgets_card_season_episode(m.ep_index as i64, m.season_index as i64)
+            plx_platform::i18n::msg::widgets_card_season_episode(m.ep_index as i64, m.season_index as i64)
         } else {
-            crate::i18n::msg::widgets_card_episode(m.ep_index as i64)
+            plx_platform::i18n::msg::widgets_card_episode(m.ep_index as i64)
         }
     } else if m.year > 0 {
         m.year.to_string()
@@ -942,9 +942,9 @@ fn cw_caption(m: &TileFacts<'_>) -> Option<std::ffi::CString> {
     } else if m.kind == TileKind::Episode {
         // next-up episode: no resume point, so no bar and no time — just the "New episode" cue
         if show.is_empty() {
-            crate::i18n::msg::widgets_card_new_episode().to_string()
+            plx_platform::i18n::msg::widgets_card_new_episode().to_string()
         } else {
-            crate::i18n::msg::widgets_card_show_new_episode(show)
+            plx_platform::i18n::msg::widgets_card_show_new_episode(show)
         }
     } else {
         return None;

@@ -559,7 +559,7 @@ pub(crate) fn player_requests(
             }
             PlayerReq::RepairSandbox => {
                 if ps.jail_load_blocked {
-                    pa.repair_sandbox(repair, crate::tv::sandbox::blocks_native_video());
+                    pa.repair_sandbox(repair, plx_platform::tv::sandbox::blocks_native_video());
                     ps.repair_status = repair.state();
                     plx_machine::idle::invalidate();
                 }

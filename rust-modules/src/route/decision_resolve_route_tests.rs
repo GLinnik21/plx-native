@@ -2117,7 +2117,7 @@ fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
     assert_eq!(
         playback_preview_with_capability_for_test(
             &show,
-            crate::devcaps::dv::DvCapability::Supported,
+            plx_platform::devcaps::dv::DvCapability::Supported,
         ),
         Some(Preview::DirectPlay),
     );
@@ -2125,7 +2125,7 @@ fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
     assert_eq!(
         playback_preview_with_capability_for_test(
             &show,
-            crate::devcaps::dv::DvCapability::Supported,
+            plx_platform::devcaps::dv::DvCapability::Supported,
         ),
         Some(Preview::Converts),
         "the test must prove the selected episode codec reaches DV policy",

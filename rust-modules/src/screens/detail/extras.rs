@@ -92,7 +92,7 @@ pub(crate) fn draw(
     }
     let lift = row.lift();
     p.text(
-        crate::i18n::msg::browse_detail_extras_c().as_ptr(),
+        plx_platform::i18n::msg::browse_detail_extras_c().as_ptr(),
         crate::ui::consts::MARGIN_X,
         top - lift,
         theme::size::HEADLINE,

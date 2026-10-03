@@ -11,7 +11,7 @@
 
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure;
-use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
 use crate::ui::route_screen::RouteLayout;
 use crate::ui::table::TableView;
 
@@ -27,7 +27,7 @@ fn base_root_inputs() -> RootInputs {
     RootInputs {
         signed_in: true, multi_user: false, library_count: 0,
         auto_sign_in: false, trailer_autoplay: true,
-        language: crate::i18n::Preference::System, plaintext: Vec::new(),
+        language: plx_platform::i18n::Preference::System, plaintext: Vec::new(),
     }
 }
 
@@ -83,7 +83,7 @@ fn every_settings_row_fits_its_column_in_every_language() {
                         &RootInputs { plaintext: vec![PlaintextRowInput {
                             machine: ServerMachineId("machine".into()),
                             name: if named { "some-server-machine-name-that-is-very-long".into() }
-                                  else { crate::i18n::msg::settings_plaintext_server().into() },
+                                  else { plx_platform::i18n::msg::settings_plaintext_server().into() },
                             named, on, connected,
                         }], ..base_root_inputs() }, &mut out);
                 }

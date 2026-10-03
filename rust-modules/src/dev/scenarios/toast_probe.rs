@@ -13,7 +13,7 @@
 //! and [`GAP`] apart, so a screenshot can be timed against the log (a toast lives only a few
 //! seconds). Read once at boot; absent from shipping builds with the rest of the trigger surface.
 
-use crate::tv::toast::{probe_line, send, Identity};
+use plx_platform::tv::toast::{probe_line, send, Identity};
 use std::time::Duration;
 
 /// Boot settle time before the first attempt, so the first toast is not behind the splash.

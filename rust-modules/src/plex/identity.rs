@@ -50,7 +50,7 @@ pub(crate) const VERSION: &str = env!("PLX_VERSION");
 
 pub(crate) const PLATFORM: &str = "webOS";
 
-/// The OS version — the REAL one, read off the set at boot ([`crate::tv::device`]), because the
+/// The OS version — the REAL one, read off the set at boot ([`plx_platform::tv::device`]), because the
 /// app runs on webOS 4 through 11 now and a literal is wrong on every set but one. This was
 /// `const … = "4.5"` while the app was packaged `>=4.0, <5.0`; the webosbrew reviewer flagged it
 /// reporting 4.5 from a 6.5.2 television (issue #22). PMS augments our named Generic profile
@@ -61,7 +61,7 @@ pub(crate) const PLATFORM: &str = "webOS";
 /// empty-string case no server has ever been shown. Safe by boot order: `tv::probe_device()` runs
 /// before any PMS request, so none can precede the read.
 pub(crate) fn platform_version() -> &'static str {
-    let r = &crate::tv::device::info().release;
+    let r = &plx_platform::tv::device::info().release;
     if r.is_empty() {
         "4.5"
     } else {
@@ -71,7 +71,7 @@ pub(crate) fn platform_version() -> &'static str {
 
 /// The resolved UI language for this launch, also requested from Plex metadata endpoints.
 pub(crate) fn language() -> Option<&'static str> {
-    Some(crate::i18n::current().language().tag())
+    Some(plx_platform::i18n::current().language().tag())
 }
 
 /// Device CLASS — what kind of thing this is. Generic on purpose: this app runs on any rooted
@@ -267,18 +267,18 @@ mod tests {
     #[test]
     fn a_process_locale_becomes_a_safe_plex_language_tag() {
         assert_eq!(
-            crate::i18n::normalize("en_US.UTF-8"),
+            plx_platform::i18n::normalize("en_US.UTF-8"),
             Some("en-US".into())
         );
         assert_eq!(
-            crate::i18n::normalize("mn_Cyrl_MN.UTF-8"),
+            plx_platform::i18n::normalize("mn_Cyrl_MN.UTF-8"),
             Some("mn-Cyrl-MN".into())
         );
-        assert_eq!(crate::i18n::normalize("pt-BR"), Some("pt-BR".into()));
-        assert_eq!(crate::i18n::normalize("C.UTF-8"), None);
-        assert_eq!(crate::i18n::normalize("POSIX"), None);
+        assert_eq!(plx_platform::i18n::normalize("pt-BR"), Some("pt-BR".into()));
+        assert_eq!(plx_platform::i18n::normalize("C.UTF-8"), None);
+        assert_eq!(plx_platform::i18n::normalize("POSIX"), None);
         assert_eq!(
-            crate::i18n::normalize("en_US\r\nX-Plex-Token: stolen"),
+            plx_platform::i18n::normalize("en_US\r\nX-Plex-Token: stolen"),
             None
         );
     }

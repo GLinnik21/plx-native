@@ -203,7 +203,7 @@ fn group_of(s: &Stream, i: usize, lang: &str) -> (LangGroup, Option<Cow<'static,
 /// groups by the same name it shows.
 fn display_lang(s: &Stream) -> String {
     if s.lang.trim().is_empty() {
-        crate::i18n::msg::widgets_tracks_unknown().to_string()
+        plx_platform::i18n::msg::widgets_tracks_unknown().to_string()
     } else {
         s.lang.clone()
     }

@@ -64,7 +64,7 @@ pub(crate) enum Action {
     /// button (BLUE, `wcode` 489 on the dev set), and an LG Cloud Test Lab virtual remote may not
     /// offer colour buttons at all — nor is that code guaranteed on a set nobody here has touched
     /// (`docs/lab-diagnostics.md` §7). Never offered in any other build —
-    /// [`crate::labcfg::menu_row_enabled`] is `false` at compile time.
+    /// [`plx_platform::labcfg::menu_row_enabled`] is `false` at compile time.
     SendDiagnostics,
 }
 
@@ -105,7 +105,7 @@ struct AccountInputs {
     /// *Change profile* is on offer: plex.tv can serve a roster and the Session has not refused this
     /// identity one (`switch_refused`, [`crate::auth::owner::SessionSnapshot::switch_refused`]).
     can_switch: bool,
-    /// The lab-only *Send diagnostics* row ([`crate::labcfg::menu_row_enabled`], compile-time `false`
+    /// The lab-only *Send diagnostics* row ([`plx_platform::labcfg::menu_row_enabled`], compile-time `false`
     /// outside lab builds).
     lab: bool,
 }
@@ -125,7 +125,7 @@ impl AccountInputs {
             name: acc.name.clone(),
             signed_in: acc.signed_in,
             can_switch: acc.can_switch && !switch_refused,
-            lab: crate::labcfg::menu_row_enabled(),
+            lab: plx_platform::labcfg::menu_row_enabled(),
         }
     }
 }
@@ -149,18 +149,18 @@ impl AccountInputs {
 pub(crate) fn chip_label(acc: &Account) -> String {
     match (&acc.name, acc.signed_in) {
         (Some(n), _) => n.clone(),
-        (None, true) => crate::i18n::msg::settings_account_title().to_string(),
+        (None, true) => plx_platform::i18n::msg::settings_account_title().to_string(),
         (None, false) => label(Action::SignIn).to_string(),
     }
 }
 
 fn label(a: Action) -> &'static str {
     match a {
-        Action::ChangeProfile => crate::i18n::msg::settings_account_change_profile(),
-        Action::SignIn => crate::i18n::msg::settings_account_sign_in(),
-        Action::SignOut => crate::i18n::msg::settings_account_sign_out(),
-        Action::Settings => crate::i18n::msg::settings_account_settings(),
-        Action::SendDiagnostics => crate::i18n::msg::settings_account_diagnostics(),
+        Action::ChangeProfile => plx_platform::i18n::msg::settings_account_change_profile(),
+        Action::SignIn => plx_platform::i18n::msg::settings_account_sign_in(),
+        Action::SignOut => plx_platform::i18n::msg::settings_account_sign_out(),
+        Action::Settings => plx_platform::i18n::msg::settings_account_settings(),
+        Action::SendDiagnostics => plx_platform::i18n::msg::settings_account_diagnostics(),
     }
 }
 
@@ -172,7 +172,7 @@ fn account_form(inputs: &AccountInputs) -> (String, Form<Action, Action, Infalli
     let header = inputs
         .name
         .clone()
-        .unwrap_or_else(|| crate::i18n::msg::settings_account_title().to_string());
+        .unwrap_or_else(|| plx_platform::i18n::msg::settings_account_title().to_string());
     let mut head = Section::new(header.clone());
     if inputs.name.is_some() {
         head = head.server_header();
@@ -245,7 +245,7 @@ impl AccountMenuScreen {
     pub(crate) fn new(entry: EntryId) -> Self {
         Self {
             entry,
-            header: crate::i18n::msg::settings_account_title().to_string(),
+            header: plx_platform::i18n::msg::settings_account_title().to_string(),
             form: FormTable::new(crate::screens::registry::BAND),
             built: false,
             session_watch: Default::default(),
@@ -675,7 +675,7 @@ mod tests {
         let acc = s.account(active);
         let rows = rows_of(&acc, false);
         (
-            acc.name.unwrap_or_else(|| crate::i18n::msg::settings_account_title().to_string()),
+            acc.name.unwrap_or_else(|| plx_platform::i18n::msg::settings_account_title().to_string()),
             rows.iter().map(|a| label(*a)).collect(),
         )
     }
@@ -819,7 +819,7 @@ mod tests {
             ..Default::default()
         })
         .account(None);
-        assert_eq!(chip_label(&nameless), crate::i18n::msg::settings_account_title());
+        assert_eq!(chip_label(&nameless), plx_platform::i18n::msg::settings_account_title());
 
         // Signed out: the chip says exactly what the ACCOUNT row behind it says. That row is
         // first, and the assertion is on `[0]` rather than on the whole set — the set also carries
@@ -923,7 +923,7 @@ mod tests {
     /// compact table `build` draws, at the shared menu cap.
     #[test]
     fn every_app_owned_run_fits_the_panel_in_every_language() {
-        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let mut out = Vec::new();
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);

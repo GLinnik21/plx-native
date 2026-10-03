@@ -264,7 +264,7 @@ pub(crate) struct PersistenceWarning {
     pub key: PersistenceWarningKey,
     pub site: PersistenceWarningSite,
     #[serde(default)]
-    pub helper: Option<crate::storage::wire::failure::HelperFailure>,
+    pub helper: Option<plx_platform::storage::wire::failure::HelperFailure>,
     #[serde(default)]
     pub candidate_errnos: [Option<i32>; 8],
     /// Closed evidence for the warning; retained independently of the consent-gated report.
@@ -275,7 +275,7 @@ pub(crate) struct PersistenceWarning {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PersistenceEvidence {
     class: crate::telemetry::incident::PersistenceFailure,
-    keymanager_stage: Option<crate::storage::wire::KeymanagerStage>,
+    keymanager_stage: Option<plx_platform::storage::wire::KeymanagerStage>,
     service_error_code: Option<i32>,
 }
 
@@ -358,10 +358,10 @@ pub(crate) enum DevCommitDelta { Activated, StartAccount { login_req: u32 } }
 /// The picker's read-outs when it has no tiles and cannot get any. Neutral wording, drawn as a
 /// failed read-out on the picker itself (`screens/profiles.rs`), never as a sign-in failure.
 pub(crate) fn roster_unreachable() -> &'static str {
-    crate::i18n::msg::browse_auth_roster_unreachable()
+    plx_platform::i18n::msg::browse_auth_roster_unreachable()
 }
 pub(crate) fn roster_refused() -> &'static str {
-    crate::i18n::msg::browse_auth_roster_refused()
+    plx_platform::i18n::msg::browse_auth_roster_refused()
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -795,7 +795,7 @@ impl SessionInit {
     /// a name left by an earlier failure can never sit under another reason.
     fn readout_account(&self) -> Option<&str> {
         self.signin_account.as_deref().filter(|_| self.phase == Phase::Error
-            && self.error == crate::i18n::msg::browse_auth_no_servers())
+            && self.error == plx_platform::i18n::msg::browse_auth_no_servers())
     }
     fn switch_refused(&self) -> bool {
         self.switch_refused_for.as_ref().is_some_and(|id| id.matches(&self.persisted))
@@ -910,7 +910,7 @@ pub(super) fn write_persisted(w: &mut Canon, s: &PersistedSession) {
     // Include their exact captured values in init/canonical state even though patches never write
     // them over a newer store-owned value.
     w.bool(s.auto_sign_in());
-    if s.language != crate::i18n::Preference::System {
+    if s.language != plx_platform::i18n::Preference::System {
         w.str("language").str(s.language.tag());
     }
     w.seq(s.recent_searches.len());
@@ -1339,7 +1339,7 @@ impl SessionMachine {
         let Some(req) = self.allocate(SessionOp::Ready, None) else {
             self.state.phase = Phase::Profiles;
             self.state.apply_pending = false;
-            self.state.error = crate::i18n::msg::browse_auth_switch_retry().into();
+            self.state.error = plx_platform::i18n::msg::browse_auth_switch_retry().into();
             self.replace_publication();
             return true;
         };
@@ -1529,18 +1529,18 @@ impl SessionMachine {
             }
             let op = self.state.pending.remove(&reply.req).unwrap().key.op;
             match op {
-                SessionOp::Login | SessionOp::Rediscover => self.fail_login(crate::i18n::msg::browse_auth_finish_failed(),
+                SessionOp::Login | SessionOp::Rediscover => self.fail_login(plx_platform::i18n::msg::browse_auth_finish_failed(),
                     Some(IncidentContext::internal(InternalClass::CommitRefused)), emit),
                 SessionOp::ProfileSwitch | SessionOp::Ready => {
                     self.state.phase = Phase::Profiles;
                     self.state.apply_pending = false;
-                    self.state.error = crate::i18n::msg::browse_auth_switch_failed().into();
+                    self.state.error = plx_platform::i18n::msg::browse_auth_switch_failed().into();
                 }
                 SessionOp::HomeRoster | SessionOp::ServerRoster | SessionOp::Endpoint(_) | SessionOp::Picker => {}
                 SessionOp::DevBoundary => {
                     self.state.phase = Phase::Error;
                     self.state.apply_pending = false;
-                    self.state.error = crate::i18n::msg::browse_auth_authority_failed().into();
+                    self.state.error = plx_platform::i18n::msg::browse_auth_authority_failed().into();
                 }
             }
             emit(SessionFx::Retire { req: reply.req });
@@ -1698,13 +1698,13 @@ impl SessionMachine {
             // This is an unsequenced, never-admitted refusal. Accepted requests (including ones
             // without a first observation) cannot enter this branch.
             match pending.key.op {
-                SessionOp::Login => self.fail_login(crate::i18n::msg::browse_auth_start_failed(),
+                SessionOp::Login => self.fail_login(plx_platform::i18n::msg::browse_auth_start_failed(),
                     Some(IncidentContext::internal(InternalClass::AdmissionRefused)), emit),
-                SessionOp::Rediscover => self.fail_login(crate::i18n::msg::browse_auth_rediscover_failed(),
+                SessionOp::Rediscover => self.fail_login(plx_platform::i18n::msg::browse_auth_rediscover_failed(),
                     Some(IncidentContext::internal(InternalClass::AdmissionRefused)), emit),
                 SessionOp::ProfileSwitch => {
                     self.state.phase = Phase::Profiles;
-                    self.state.error = crate::i18n::msg::browse_auth_switch_retry().into();
+                    self.state.error = plx_platform::i18n::msg::browse_auth_switch_retry().into();
                 }
                 SessionOp::HomeRoster => self.fail_empty_home_roster(roster_unreachable()),
                 _ => {}
@@ -1855,7 +1855,7 @@ impl SessionMachine {
         if self.state.pending_erase.is_some() { return false; }
         if self.advance_epoch(emit).is_none() { return false; }
         if self.state.persisted.account_token.is_empty() {
-            self.fail_login(crate::i18n::msg::browse_auth_signed_out(), None, emit);
+            self.fail_login(plx_platform::i18n::msg::browse_auth_signed_out(), None, emit);
             self.replace_publication();
             return true;
         }
@@ -2065,7 +2065,7 @@ impl SessionMachine {
                 return true;
             }
             (CaptureIntent::Login, SessionReadValue::LoginClientId(_)) => {
-                self.fail_login(crate::i18n::msg::browse_auth_start_failed(),
+                self.fail_login(plx_platform::i18n::msg::browse_auth_start_failed(),
                     Some(IncidentContext::internal(InternalClass::ClientIdUnavailable)), emit);
                 self.retire(req, emit);
                 self.replace_publication();
@@ -2121,7 +2121,7 @@ impl SessionMachine {
             if pending.key.op == SessionOp::ProfileSwitch && pending.phase == StreamPhase::Running {
                 self.state.phase = Phase::Profiles;
                 self.state.pin_denied = false;
-                self.state.error = crate::i18n::msg::browse_auth_switch_retry().into();
+                self.state.error = plx_platform::i18n::msg::browse_auth_switch_retry().into();
             } else if pending.key.op == SessionOp::HomeRoster {
                 self.fail_empty_home_roster(roster_unreachable());
             }
@@ -2573,9 +2573,9 @@ impl SessionMachine {
                 if !envelope.terminal { return false; }
                 let (message, class) = match (envelope.key.op, &envelope.outcome) {
                     (SessionOp::Rediscover, SessionArrival::Refused) =>
-                        (crate::i18n::msg::browse_auth_rediscover_failed(), InternalClass::WorkerRefused),
-                    (_, SessionArrival::Refused) => (crate::i18n::msg::browse_auth_start_failed(), InternalClass::WorkerRefused),
-                    _ => (crate::i18n::msg::browse_auth_finish_failed(), InternalClass::WorkerDropped),
+                        (plx_platform::i18n::msg::browse_auth_rediscover_failed(), InternalClass::WorkerRefused),
+                    (_, SessionArrival::Refused) => (plx_platform::i18n::msg::browse_auth_start_failed(), InternalClass::WorkerRefused),
+                    _ => (plx_platform::i18n::msg::browse_auth_finish_failed(), InternalClass::WorkerDropped),
                 };
                 self.fail_login(message, Some(IncidentContext::internal(class)), emit);
             }
@@ -2606,7 +2606,7 @@ impl SessionMachine {
                     LoginProgress::CodeReady { code, qr_png, .. } => {
                         if envelope.key.op != SessionOp::Login { return false; }
                         let Some(next) = self.state.next_qr.checked_add(1) else {
-                            self.fail_login(crate::i18n::msg::browse_auth_start_failed(),
+                            self.fail_login(plx_platform::i18n::msg::browse_auth_start_failed(),
                                 Some(IncidentContext::internal(InternalClass::Exhausted)), emit);
                             self.state.pending.remove(&req);
                             emit(SessionFx::Cancel { requests: vec![req], epoch: self.state.epoch });
@@ -2822,7 +2822,7 @@ mod tests {
         use plx_machine::machine::LogicalState;
         let a = SessionInit::captured(PersistedSession::default());
         let mut b = a.clone();
-        b.persisted.language = crate::i18n::Preference::Be;
+        b.persisted.language = plx_platform::i18n::Preference::Be;
         assert_ne!(a.hash(), b.hash());
     }
 
@@ -3212,9 +3212,9 @@ mod tests {
     fn declined_warning_reconstructs_every_persistence_class_and_its_evidence() {
         use crate::plex::session::async_persistence::{CompletionOutcome as O, Failure as F, Operation, PersistOutcome};
         use crate::plex::session::persistence::ProtectionFailure;
-        use crate::storage::wire::{AuthPreservation, ErrorCode, KeymanagerFailure, KeymanagerFailureCategory,
+        use plx_platform::storage::wire::{AuthPreservation, ErrorCode, KeymanagerFailure, KeymanagerFailureCategory,
             KeymanagerOperation, KeymanagerStage};
-        use crate::storage::wire::failure::{HelperFailure, Stage};
+        use plx_platform::storage::wire::failure::{HelperFailure, Stage};
         use crate::telemetry::incident::{IncidentKind, PersistenceFailure as P};
         let protection = ProtectionFailure {
             failure: KeymanagerFailure { operation: KeymanagerOperation::Seal, stage: KeymanagerStage::Finish,
@@ -3227,10 +3227,10 @@ mod tests {
         for (outcome, class) in [
             (O::Failed(F::Admission(plx_base::storage_worker::SubmitError::Full)), P::Admission),
             (O::Failed(F::Persistence(PersistOutcome::WriteFailed)), P::WriteFailed),
-            (O::Failed(F::Storage(crate::storage::StoreError::HelperUnavailable)), P::Storage),
+            (O::Failed(F::Storage(plx_platform::storage::StoreError::HelperUnavailable)), P::Storage),
             (O::Failed(F::Helper(helper, errnos)), P::Storage),
-            (O::Uncertain { stage: crate::storage::CommitStage::Readback, errno: 0, helper: Some((helper, errnos)) }, P::CommitUncertain),
-            (O::Uncertain { stage: crate::storage::CommitStage::ParentSync, errno: 5, helper: None }, P::CommitUncertain),
+            (O::Uncertain { stage: plx_platform::storage::CommitStage::Readback, errno: 0, helper: Some((helper, errnos)) }, P::CommitUncertain),
+            (O::Uncertain { stage: plx_platform::storage::CommitStage::ParentSync, errno: 5, helper: None }, P::CommitUncertain),
             (O::Failed(F::Protection(protection)), P::Protection),
             (O::ProtectionUncertain(ProtectionFailure { preservation: AuthPreservation::Uncertain, ..protection }), P::ProtectionUncertain),
             (O::Failed(F::WorkerDropped), P::WorkerDropped),
@@ -3284,7 +3284,7 @@ mod tests {
     #[test]
     fn uncertain_db8_reply_reaches_the_warning_and_incident_report() {
         use crate::plex::session::{persistence, async_persistence::{CompletionOutcome, PersistenceCompletion}};
-        use crate::storage::wire::failure::{Detail, Stage};
+        use plx_platform::storage::wire::failure::{Detail, Stage};
         for reconcile in [false, true] {
             let mut owner = SessionMachine::from_init(discovering_after_authorization());
             let req = owner.state.next_req;
@@ -3331,7 +3331,7 @@ mod tests {
     #[test]
     fn helper_failure_warning_and_one_off_are_bound_to_the_completion() {
         use crate::plex::session::async_persistence::{CompletionOutcome, Failure, PersistenceCompletion};
-        use crate::storage::wire::failure::{HelperFailure, Stage};
+        use plx_platform::storage::wire::failure::{HelperFailure, Stage};
         for permission in [crate::telemetry::consent::Permission::NotDetermined,
             crate::telemetry::consent::Permission::Declined] {
             let mut owner = SessionMachine::from_init(discovering_after_authorization());
@@ -3392,7 +3392,7 @@ mod tests {
                 revision: 1, purpose: PersistencePurpose::Discovery,
             } }));
         let failed = CompletionOutcome::Failed(Failure::Storage(
-            crate::storage::StoreError::HelperUnavailable));
+            plx_platform::storage::StoreError::HelperUnavailable));
         step(&mut owner, SessionEvent::Persistence(PersistenceCompletion {
             req, epoch, arrival: 1, revision: 1,
             purpose: PersistencePurpose::Discovery, outcome: failed,
@@ -3466,7 +3466,7 @@ mod tests {
                 revision: 1, purpose: PersistencePurpose::Discovery,
             } }));
         let failed = CompletionOutcome::Failed(Failure::Storage(
-            crate::storage::StoreError::HelperUnavailable));
+            plx_platform::storage::StoreError::HelperUnavailable));
         step(&mut owner, SessionEvent::Persistence(PersistenceCompletion {
             req, epoch, arrival: 1, revision: 1,
             purpose: PersistencePurpose::Discovery, outcome: failed,

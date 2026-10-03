@@ -631,9 +631,9 @@ impl PlayerScreen {
             A::TryAgain => Self::ask(fx, PlayerReq::RetryPlayback),
             A::ChangeQuality => Self::ask(fx, PlayerReq::OpenOverlay(overlay::OverlayKind::More { quality: true })),
             A::Repair => {
-                if ps.repair_status == crate::tv::sandbox::State::Idle && !self.repair_alert.visible() {
+                if ps.repair_status == plx_platform::tv::sandbox::State::Idle && !self.repair_alert.visible() {
                     self.repair_scroll = 0;
-                    self.repair_alert.open_with_body(crate::i18n::msg::widgets_repair_question_c(), crate::i18n::msg::widgets_repair_body());
+                    self.repair_alert.open_with_body(plx_platform::i18n::msg::widgets_repair_question_c(), plx_platform::i18n::msg::widgets_repair_body());
                     Self::repair_focus(fx, GROUP_REPAIR);
                 }
             }
@@ -1365,7 +1365,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         crate::appkit::player_hud::draw_readout(ps, self.busy, now, self.failure_sel, f.measure);
         if self.repair_alert.visible() {
             self.repair_alert.draw_scrim();
-            self.repair_alert.draw(crate::i18n::msg::settings_cancel_c(), crate::i18n::msg::widgets_repair_action_c(), f.measure);
+            self.repair_alert.draw(plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::widgets_repair_action_c(), f.measure);
         }
         self.record_stops(f, hud_drawn);
     }
@@ -2643,7 +2643,7 @@ mod repair_confirmation_tests {
         std::fs::write(&path, "jail").unwrap();
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::reset_player_control_for_test(&ps);
-        let hardware_verdict = crate::tv::sandbox::blocks_native_video();
+        let hardware_verdict = plx_platform::tv::sandbox::blocks_native_video();
         crate::player::failure_fixture(&mut ps);
         let mut page = PlayerScreen::new(EntryId(1));
         assert!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)).is_empty());
@@ -2651,7 +2651,7 @@ mod repair_confirmation_tests {
         assert!(deliver(&mut page, &ps, Some(REPAIR_CANCEL), ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_000 })).is_empty());
         assert!(page.repair_alert.is_open(), "Tick must not retire the jail fixture confirmation");
         assert!(ps.jail_load_blocked);
-        assert_eq!(crate::tv::sandbox::blocks_native_video(), hardware_verdict, "the fixture must not alter the cached hardware verdict");
+        assert_eq!(plx_platform::tv::sandbox::blocks_native_video(), hardware_verdict, "the fixture must not alter the cached hardware verdict");
         ps.jail_load_blocked = false;
         deliver(&mut page, &ps, None, ScreenEvent::Tick(Tick { ms: 32, dt_us: 16_000 }));
         assert!(!page.repair_alert.is_open(), "retiring the session still closes its confirmation");
@@ -2696,7 +2696,7 @@ mod repair_confirmation_tests {
     /// `player` may not name `screens`. The attempt is the `Player` machine's, not the screen's.
     #[test]
     fn repair_survives_screen_and_session_recreation_and_rejects_stale_completions() {
-        use crate::tv::sandbox::{Failure, State};
+        use plx_platform::tv::sandbox::{Failure, State};
         let mut player = crate::player::machine::Player::new();
         let token = player.repair.begin(true).unwrap();
         assert!(!player.repair.complete(token + 1, Ok(())));
@@ -2712,7 +2712,7 @@ mod repair_confirmation_tests {
     #[test]
     fn accepted_attempt_hides_forward_action_after_screen_recreation() {
         let _g = plx_base::testlock::serial();
-        for state in [crate::tv::sandbox::State::Running, crate::tv::sandbox::State::Repaired, crate::tv::sandbox::State::Failed(crate::tv::sandbox::Failure::Timeout)] {
+        for state in [plx_platform::tv::sandbox::State::Running, plx_platform::tv::sandbox::State::Repaired, plx_platform::tv::sandbox::State::Failed(plx_platform::tv::sandbox::Failure::Timeout)] {
             let mut ps = blocked(); ps.repair_status = state;
             crate::route::reset_player_control_for_test(&ps);
             let row = crate::appkit::player_hud::FailureReadout::now(&ps).actions().to_vec();

@@ -869,7 +869,7 @@ mod tests {
             fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
         }
         let _cleanup = Cleanup(root.clone());
-        std::fs::write(root.join(crate::storage::diagnostics::NAME), b"schema=1\n").unwrap();
+        std::fs::write(root.join(plx_platform::storage::diagnostics::NAME), b"schema=1\n").unwrap();
         let entry = std::fs::read_dir(&root).unwrap().next().unwrap().unwrap();
         assert!(!super::is_armed_trigger(&entry));
         assert!(super::armed_triggers_in(&root).is_empty());

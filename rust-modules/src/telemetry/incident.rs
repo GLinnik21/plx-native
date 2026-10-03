@@ -33,7 +33,7 @@
 use super::consent::{self, Permission, ONBOARDING_REPORT_SCOPE};
 use crate::net::{RequestError, RequestFailure};
 use crate::plex::session::async_persistence::{CompletionOutcome, Failure};
-use crate::storage::wire::KeymanagerStage;
+use plx_platform::storage::wire::KeymanagerStage;
 use serde_json::Value;
 
 /// Why server discovery ended with nothing to connect to.
@@ -368,7 +368,7 @@ pub(crate) struct IncidentContext {
     pub code_generation: Option<u8>,
     pub persistence: Option<PersistenceFailure>,
     #[serde(default)]
-    pub helper: Option<crate::storage::wire::failure::HelperFailure>,
+    pub helper: Option<plx_platform::storage::wire::failure::HelperFailure>,
     #[serde(default)]
     pub candidate_errnos: [Option<i32>; 8],
     /// The key-service stage a protection failure stopped at.
@@ -1059,9 +1059,9 @@ mod tests {
 
     #[test]
     fn helper_failure_report_has_closed_stage_and_candidate_errnos() {
-        use crate::storage::wire::failure::{HelperFailure, Stage};
+        use plx_platform::storage::wire::failure::{HelperFailure, Stage};
         let mut failure = HelperFailure::new(Stage::Connect, Some(libc::ECONNREFUSED));
-        failure.activation = Some(crate::storage::wire::failure::Detail::new(Stage::ActivationRegister, Some(-13)));
+        failure.activation = Some(plx_platform::storage::wire::failure::Detail::new(Stage::ActivationRegister, Some(-13)));
         let mut errnos = [None; 8];
         errnos[0] = Some(libc::EACCES);
         let context = IncidentContext::new(IncidentKind::SaveFailed, None)
@@ -1151,7 +1151,7 @@ mod tests {
     }
 
     fn protection_failure(service_code: Option<i32>) -> crate::plex::session::persistence::ProtectionFailure {
-        use crate::storage::wire::{
+        use plx_platform::storage::wire::{
             AuthPreservation, ErrorCode, KeymanagerFailure, KeymanagerFailureCategory,
             KeymanagerOperation,
         };
@@ -1190,7 +1190,7 @@ mod tests {
         assert_eq!(write.keymanager_stage, None);
         assert_eq!(
             ctx().with_persistence(&CompletionOutcome::Uncertain {
-                stage: crate::storage::CommitStage::Rename,
+                stage: plx_platform::storage::CommitStage::Rename,
                 errno: 5,
                 helper: None,
             })

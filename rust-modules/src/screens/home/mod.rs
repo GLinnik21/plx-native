@@ -1299,7 +1299,7 @@ impl HomeScreen {
         press_scale: f32,
     ) {
         let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
-        let label = if resumes { crate::i18n::msg::browse_home_continue_c() } else { crate::i18n::msg::browse_detail_play_c() };
+        let label = if resumes { plx_platform::i18n::msg::browse_home_continue_c() } else { plx_platform::i18n::msg::browse_detail_play_c() };
         let pill = Rect::new(
             MARGIN_X,
             HERO_ROW_Y,
@@ -2054,7 +2054,7 @@ impl HomeScreen {
         }
         let hero = self.selected_hero(view)?.item;
         let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
-        let label = if resumes { crate::i18n::msg::browse_home_continue_c() } else { crate::i18n::msg::browse_detail_play_c() };
+        let label = if resumes { plx_platform::i18n::msg::browse_home_continue_c() } else { plx_platform::i18n::msg::browse_detail_play_c() };
         let pill = Rect::new(
             MARGIN_X,
             HERO_ROW_Y,
@@ -2395,17 +2395,17 @@ fn status_read(
     }
     Some(match view.state {
         crate::pms::HubState::Loading => {
-            (crate::i18n::msg::browse_home_loading_c(), StatusKind::Working, None)
+            (plx_platform::i18n::msg::browse_home_loading_c(), StatusKind::Working, None)
         }
         crate::pms::HubState::Failed => (
-            crate::i18n::msg::browse_home_failed_c(),
+            plx_platform::i18n::msg::browse_home_failed_c(),
             StatusKind::Failed,
-            Some(crate::i18n::msg::browse_action_retry_c()),
+            Some(plx_platform::i18n::msg::browse_action_retry_c()),
         ),
         crate::pms::HubState::Ready => (
-            crate::i18n::msg::browse_home_empty_c(),
+            plx_platform::i18n::msg::browse_home_empty_c(),
             StatusKind::Empty,
-            Some(crate::i18n::msg::browse_home_refresh_c()),
+            Some(plx_platform::i18n::msg::browse_home_refresh_c()),
         ),
     })
 }
@@ -2661,10 +2661,10 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
     } else {
         format!(
             "{} \u{b7} {} \u{b7} {}",
-            if hero.kind == 1 { crate::i18n::msg::browse_kind_show() } else { crate::i18n::msg::browse_kind_movie() },
+            if hero.kind == 1 { plx_platform::i18n::msg::browse_kind_show() } else { plx_platform::i18n::msg::browse_kind_movie() },
             hero.year,
             if hero.rating.is_empty() {
-                crate::i18n::msg::browse_detail_unrated()
+                plx_platform::i18n::msg::browse_detail_unrated()
             } else {
                 &hero.rating
             }

@@ -33,7 +33,7 @@
 //!   dispatcher does not yet run a phase this early in the frame). `opaque_route` and
 //!   `clear_opaque_region` stopped being no-ops in phase 9 — the rig's hooks are real, but they
 //!   delegate to `app/run.rs::rig_opaque_route`/`rig_clear_opaque_region` rather than naming
-//!   `crate::tv::window::` here, which is what keeps the OS-facing call text in one file (D4;
+//!   `plx_platform::tv::window::` here, which is what keeps the OS-facing call text in one file (D4;
 //!   `ci/check-deps.sh`'s `frame` gate).
 
 use std::ffi::CStr;
@@ -1504,7 +1504,7 @@ impl Rig<AppHost> for Bridge {
     /// `PresentEvent::VideoPlane`, and `tv::window::opaque_route` only sends a wayland request when
     /// the answer CHANGES — so the loop's own call beside it (`app/run.rs`, from the same bit) is
     /// a `static` read and a return, not a second claim. Delegates to `run::rig_opaque_route`
-    /// (D4) rather than naming `crate::tv::window::opaque_route` here directly — see that function's
+    /// (D4) rather than naming `plx_platform::tv::window::opaque_route` here directly — see that function's
     /// doc for why.
     fn opaque_route(&mut self, video_plane_bound: bool) {
         super::run::rig_opaque_route(video_plane_bound);

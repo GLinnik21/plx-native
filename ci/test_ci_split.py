@@ -51,16 +51,16 @@ def rule(target):
 # Each cargo gate, as a regex over a target's whole (comment-free) recipe, and the one target that
 # owns it. `lint` is a prerequisite rather than a recipe line, handled separately.
 GATES = {
-    "check-cargo-lint": [r"cargo \+\$\(RUST_NIGHTLY\) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine --features lab-diagnostics"],
+    "check-cargo-lint": [r"cargo \+\$\(RUST_NIGHTLY\) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform --features lab-diagnostics"],
     "check-cargo-unit-default": [
-        r"cargo \+\$\(RUST_NIGHTLY\) test --lib -p plxnative-modules -p plx_base -p plx_machine\n",
+        r"cargo \+\$\(RUST_NIGHTLY\) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform\n",
         r"ci/test_storage_service_package\.py",
         r"test -p plxnative-storage --bin plxnative-storage",
         r"ci/test_storage_package_isolated\.py",
         r"ci/test_no_host_staticlib\.py",
         r"ci/test_build_not_always_dirty\.py",
     ],
-    "check-cargo-unit-hostsim": [r"cargo \+\$\(RUST_NIGHTLY\) test --lib -p plxnative-modules -p plx_base -p plx_machine --features hostsim"],
+    "check-cargo-unit-hostsim": [r"cargo \+\$\(RUST_NIGHTLY\) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform --features hostsim"],
 }
 
 

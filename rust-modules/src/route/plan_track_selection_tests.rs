@@ -750,7 +750,7 @@ fn account_subtitles_skip_unrenderable_tracks_without_enabling_a_burn() {
 
 #[test]
 fn known_audio_channels_cannot_fall_back_to_an_unknown_codec_default() {
-    let caps = crate::devcaps::Caps { audio_channels: [("aac".into(), 6)].into(), ..crate::devcaps::Caps::assumed() };
+    let caps = plx_platform::devcaps::Caps { audio_channels: [("aac".into(), 6)].into(), ..plx_platform::devcaps::Caps::assumed() };
     let mut track = trk(1, "aac", "eng", false);
     track.channels = 8;
     assert!(caps.audio_supports("aac", 0), "legacy unknown remains compatible");

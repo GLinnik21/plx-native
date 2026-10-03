@@ -153,11 +153,11 @@ fn a_non_durable_write_drops_the_cache() {
     // Force the canonical commit under test to come back `Uncertain` at `ParentSync` — after the
     // record has actually been renamed into place (the real production seam; see
     // `storage::JsonStore::commit`), so `save_locked_with_authority` takes the `!durable` branch.
-    crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::ParentSync);
+    plx_platform::storage::inject_next_commit_failure_for_test(plx_platform::storage::CommitStage::ParentSync);
     let mut next = signed_in();
     next.trailer_autoplay = true;
     save(&next);
-    crate::storage::clear_injected_commit_failure_for_test();
+    plx_platform::storage::clear_injected_commit_failure_for_test();
 
     assert!(
         cache_is_empty_for_test(),
@@ -430,9 +430,9 @@ fn an_uncertain_clear_cannot_be_undone_by_a_queued_preference_or_load() {
     save(&signed_in());
     let record = _root.dir.join("session.json");
     let previous = std::fs::read(&record).unwrap();
-    crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::ParentSync);
+    plx_platform::storage::inject_next_commit_failure_for_test(plx_platform::storage::CommitStage::ParentSync);
     assert_eq!(clear(), ClearOutcome::NotDurable);
-    crate::storage::clear_injected_commit_failure_for_test();
+    plx_platform::storage::clear_injected_commit_failure_for_test();
     // An uncertain parent sync cannot prove which rename survives. Exercise the permitted
     // old-record outcome rather than assuming that this process's current rename is durable.
     std::fs::write(&record, previous).unwrap();

@@ -83,7 +83,7 @@ pub(crate) struct PlaybackSession {
     /// Cleared with the playback verdict on exit/reset, never a process-global error latch.
     pub(crate) jail_load_blocked: bool,
     /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
-    pub(crate) repair_status: crate::tv::sandbox::State,
+    pub(crate) repair_status: plx_platform::tv::sandbox::State,
     /// The request which produced this attempt, retained for terminal Retry / Choose quality.
     /// Written synchronously by [`request_play`] rather than by [`apply_plan`], because the
     /// server can refuse before a playable plan exists.
@@ -384,7 +384,7 @@ impl PlaybackSession {
     pub(crate) const IDLE: PlaybackSession = PlaybackSession {
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
-        repair_status: crate::tv::sandbox::State::Idle,
+        repair_status: plx_platform::tv::sandbox::State::Idle,
         request: None,
         requested_resume_ns: 0,
         url: String::new(),
@@ -2995,7 +2995,7 @@ impl HlsAbrControl {
 /// what raster the source actually has. Neither is a preference and neither belongs in a utility
 /// weight — a candidate outside these bounds is removed before anything is scored.
 fn auto_catalog(ps: &PlaybackSession) -> crate::abr::HlsActuatorCatalog {
-    let caps = crate::devcaps::caps();
+    let caps = plx_platform::devcaps::caps();
     let device = (
         u16::try_from(caps.hevc_max.0).unwrap_or(u16::MAX),
         u16::try_from(caps.hevc_max.1).unwrap_or(u16::MAX),
@@ -4592,7 +4592,7 @@ pub(crate) fn set_stream_declaration(
         fps,
         dovi,
         immersive,
-        crate::devcaps::dv::capability(),
+        plx_platform::devcaps::dv::capability(),
     )
 }
 
@@ -4603,7 +4603,7 @@ fn set_stream_declaration_with_capability(
     fps: f64,
     dovi: crate::metadata::Dovi,
     immersive: bool,
-    capability: crate::devcaps::dv::DvCapability,
+    capability: plx_platform::devcaps::dv::DvCapability,
 ) -> bool {
     let decision = crate::metadata::DvDecision {
         capability,
@@ -4640,7 +4640,7 @@ pub(crate) fn set_stream_declaration_for_test(
     fps: f64,
     dovi: crate::metadata::Dovi,
     immersive: bool,
-    capability: crate::devcaps::dv::DvCapability,
+    capability: plx_platform::devcaps::dv::DvCapability,
 ) -> bool {
     set_stream_declaration_with_capability(ps, vc, ac, fps, dovi, immersive, capability)
 }
@@ -5267,7 +5267,7 @@ impl Quality {
     /// Display text in the UI language with its regional digits; a log line names the rung by
     /// `{:?}` instead, so the log does not depend on the viewer's language.
     pub(crate) fn label(self) -> String {
-        use crate::i18n::{current, msg};
+        use plx_platform::i18n::{current, msg};
         let (lines, kbps): (i64, i64) = match self {
             Quality::Auto => return msg::settings_playback_auto().to_owned(),
             Quality::Original => return msg::widgets_quality_original().to_owned(),
@@ -6204,7 +6204,7 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
 
 fn playback_preview_with_capability(
     d: &crate::metadata::Detail,
-    capability: Option<crate::devcaps::dv::DvCapability>,
+    capability: Option<plx_platform::devcaps::dv::DvCapability>,
 ) -> Option<Preview> {
     // A SHOW's container carries no file of its own, so the page answers for the episode its Play
     // button would start — the one the hero is already about. Its frame size and audio list are
@@ -6260,7 +6260,7 @@ fn playback_preview_with_capability(
 #[cfg(test)]
 pub(crate) fn playback_preview_with_capability_for_test(
     d: &crate::metadata::Detail,
-    capability: crate::devcaps::dv::DvCapability,
+    capability: plx_platform::devcaps::dv::DvCapability,
 ) -> Option<Preview> {
     playback_preview_with_capability(d, Some(capability))
 }
@@ -6999,7 +6999,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
         *s = PlaybackSession {
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
-            repair_status: crate::tv::sandbox::State::Idle,
+            repair_status: plx_platform::tv::sandbox::State::Idle,
             request,
             requested_resume_ns,
             url: plan.url,
@@ -7417,7 +7417,7 @@ fn retranscode_fallback_codecs(
         ("h264".to_owned(), "aac".to_owned())
     } else {
         (
-            crate::devcaps::caps().encode_vcodec().to_owned(),
+            plx_platform::devcaps::caps().encode_vcodec().to_owned(),
             "ac3".to_owned(),
         )
     }
@@ -8557,7 +8557,7 @@ pub(crate) fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSessio
         },
         dv_decision: if route.dv_declared {
             crate::metadata::DvDecision {
-                capability: crate::devcaps::dv::DvCapability::Supported,
+                capability: plx_platform::devcaps::dv::DvCapability::Supported,
                 presentation: crate::metadata::DvPresentation::Declare(crate::metadata::DolbyHdrInfo {
                     profile_id: 8,
                     track_type: "single",

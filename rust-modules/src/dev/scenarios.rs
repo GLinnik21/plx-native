@@ -1129,7 +1129,7 @@ fn collection_arm(app: &mut App, fr: &mut Frame) -> bool {
     };
     crate::app::bridge::nav_push(&mut app.pages, AppArg::Content(
         crate::screens::registry::ContentArg::Collection(crate::plex::collections::CollectionRef::by_rk(
-            sid, &rk, 0, crate::i18n::msg::browse_collection_kind()))));
+            sid, &rk, 0, plx_platform::i18n::msg::browse_collection_kind()))));
     #[cfg(feature = "devtriggers")]
     plx_base::eventlog::log(&format!("plxnative-collection: rk={rk} server={} start", sid.raw()));
     true

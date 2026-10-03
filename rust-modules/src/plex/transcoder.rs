@@ -24,15 +24,15 @@ use super::probe::Location;
 // here, so the profile string below and `plex::DP_AUDIO_CODECS` keep naming it. The live set is
 // `devcaps::Caps::audio`; normal routing uses [`is_dp_audio_track`] for membership and channel
 // bounds, shared with the device profile.
-pub use crate::devcaps::DP_AUDIO_CODECS;
+pub use plx_platform::devcaps::DP_AUDIO_CODECS;
 pub fn is_dp_audio(codec: &str) -> bool {
-    crate::devcaps::caps().audio_has(codec)
+    plx_platform::devcaps::caps().audio_has(codec)
 }
 
 /// Codec and channel check for an actual selected track. Codec-only membership is insufficient
 /// on devices whose DTS decoder stops at 5.1 or whose AAC decoder stops at stereo.
 pub fn is_dp_audio_track(codec: &str, channels: i64) -> bool {
-    crate::devcaps::caps().audio_supports(codec, channels)
+    plx_platform::devcaps::caps().audio_supports(codec, channels)
 }
 
 /// Subtitle codecs Original client-renders (`ff.rs` / the track menu). This is the
@@ -182,7 +182,7 @@ pub fn link_policy(link: Option<Location>) -> LinkPolicy {
 ///
 /// The Load payload cannot drift whatever PMS chooses: `route.rs` reads the OUTPUT codecs off
 /// the /decision response (`decision_codecs`) and describes those, not the profile's wish.
-fn profile_for_delivery(caps: &crate::devcaps::Caps, delivery: TranscodeDelivery) -> String {
+fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeDelivery) -> String {
     let dp_video = if caps.hevc { "h264,hevc" } else { "h264" };
     // The chain's head is the ONE encode-target definition, `Caps::encode_vcodec` — the same
     // accessor route.rs's /decision-unreachable Load-payload guess and retranscode read, so the
@@ -237,13 +237,13 @@ fn profile_for_delivery(caps: &crate::devcaps::Caps, delivery: TranscodeDelivery
     )
 }
 
-fn profile_for(caps: &crate::devcaps::Caps) -> String {
+fn profile_for(caps: &plx_platform::devcaps::Caps) -> String {
     profile_for_delivery(caps, TranscodeDelivery::ProgressiveMkv)
 }
 
 /// The profile for THIS device — [`profile_for`] over the boot-probed caps snapshot.
 fn profile_extra(delivery: TranscodeDelivery) -> String {
-    profile_for_delivery(crate::devcaps::caps(), delivery)
+    profile_for_delivery(plx_platform::devcaps::caps(), delivery)
 }
 
 fn forced_direct_profile() -> String {
@@ -577,7 +577,7 @@ mod tests {
     use super::{
         link_policy, Ceiling, Client, LinkPolicy, Location, TranscodeDelivery, TranscodeSpec,
     };
-    use crate::devcaps::Caps;
+    use plx_platform::devcaps::Caps;
     use crate::plex::{AudioEnhancements, EncodeContract, Origin, ServerId};
 
     // ---- the universal-transcoder query: who is allowed to COPY ---------------------------
@@ -1128,7 +1128,7 @@ mod tests {
             "no subscription-free video fallback in {video:?} — a free server drops the video track");
         assert_eq!(video.first().map(String::as_str), Some("hevc"),
             "hevc must stay FIRST: order is preference, and hevc is what keeps 4K+HDR10 through a re-encode");
-        for c in crate::devcaps::Caps::assumed().audio.split(',') {
+        for c in plx_platform::devcaps::Caps::assumed().audio.split(',') {
             assert!(list_of(target, "audioCodec=").contains(&c.to_string()),
                 "{c} is direct-playable but absent from the target — the server would re-encode a track we decode natively");
         }

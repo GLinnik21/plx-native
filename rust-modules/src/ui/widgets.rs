@@ -861,8 +861,8 @@ pub(crate) fn row_watch_state<T: crate::ui::tile::Tile + ?Sized>(m: &T) -> Poste
 ///
 /// Each names the OUTCOME its press produces, never the state the item is in — which is what lets
 /// a part-watched item show both at once without either being a lie.
-pub(crate) fn mark_watched_verb() -> &'static str { crate::i18n::msg::widgets_action_mark_watched() }
-pub(crate) fn mark_unwatched_verb() -> &'static str { crate::i18n::msg::widgets_action_mark_unwatched() }
+pub(crate) fn mark_watched_verb() -> &'static str { plx_platform::i18n::msg::widgets_action_mark_watched() }
+pub(crate) fn mark_unwatched_verb() -> &'static str { plx_platform::i18n::msg::widgets_action_mark_unwatched() }
 
 /// …and the third verb the same two surfaces share: **play this from 00:00, ignoring the resume
 /// point.** The detail hero's disc and the card menu's row are one action, so they carry one WORD —
@@ -876,8 +876,8 @@ pub(crate) fn mark_unwatched_verb() -> &'static str { crate::i18n::msg::widgets_
 /// resembling a play mark. The two were reconciled onto one glyph for a day and it was wrong;
 /// `Icon::Restart`'s doc is the argument. One action, one word, and the mark chosen per surface for
 /// what that surface has to tell apart.
-pub(crate) fn play_from_start_verb() -> &'static str { crate::i18n::msg::widgets_action_play_start() }
-pub(crate) fn play_trailer_verb() -> &'static str { crate::i18n::msg::widgets_action_play_trailer() }
+pub(crate) fn play_from_start_verb() -> &'static str { plx_platform::i18n::msg::widgets_action_play_start() }
+pub(crate) fn play_trailer_verb() -> &'static str { plx_platform::i18n::msg::widgets_action_play_trailer() }
 
 /// The **watched tick** on a poster, as fractions of the tile's DRAWN width: the tick's box, its
 /// corner inset, then the veil's box. Anchored on the design system's `ArtTile` — a 26px tick inset

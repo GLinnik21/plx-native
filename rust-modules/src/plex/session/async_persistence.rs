@@ -5,8 +5,8 @@
 
 use super::persistence::{self, CanonicalCommit, HelperEvidence, ProtectionFailure};
 use super::{SaveAuthority, Session};
-use crate::storage::wire::{AuthPreservation, ProtectionOutcome};
-use crate::storage::{CommitStage, StoreError};
+use plx_platform::storage::wire::{AuthPreservation, ProtectionOutcome};
+use plx_platform::storage::{CommitStage, StoreError};
 use plx_base::storage_worker::SubmitError;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -102,7 +102,7 @@ pub(crate) enum Failure {
     Admission(SubmitError),
     Persistence(PersistOutcome),
     Storage(StoreError),
-    Helper(crate::storage::wire::failure::HelperFailure, [Option<i32>; 8]),
+    Helper(plx_platform::storage::wire::failure::HelperFailure, [Option<i32>; 8]),
     Protection(ProtectionFailure),
     WorkerDropped,
     Superseded,
@@ -125,7 +125,7 @@ pub(crate) enum CompletionOutcome {
 impl CompletionOutcome {
     /// The warning and report consume the same completion-owned diagnostic, regardless of
     /// whether the helper failed outright or could not establish the commit's durability.
-    pub(crate) fn helper_evidence(&self) -> (Option<crate::storage::wire::failure::HelperFailure>, [Option<i32>; 8]) {
+    pub(crate) fn helper_evidence(&self) -> (Option<plx_platform::storage::wire::failure::HelperFailure>, [Option<i32>; 8]) {
         match self {
             Self::Uncertain { helper: Some((failure, errnos)), .. }
             | Self::Failed(Failure::Helper(failure, errnos)) => (Some(*failure), *errnos),
@@ -466,7 +466,7 @@ pub(crate) struct LiveWrite {
     /// The canonical authority's own verdict, when this path consulted it. `None` only where the
     /// canonical store was deliberately bypassed (the `TEST_FILE` legacy-fixture path).
     pub(crate) commit: Option<CanonicalCommit>,
-    helper_failure: Option<crate::storage::wire::failure::HelperFailure>,
+    helper_failure: Option<plx_platform::storage::wire::failure::HelperFailure>,
     candidate_errnos: [Option<i32>; 8],
 }
 
@@ -489,7 +489,7 @@ impl LiveWrite {
         }
     }
 
-    pub(crate) fn with_helper_failure(mut self, failure: Option<crate::storage::wire::failure::HelperFailure>) -> Self {
+    pub(crate) fn with_helper_failure(mut self, failure: Option<plx_platform::storage::wire::failure::HelperFailure>) -> Self {
         self.helper_failure = failure;
         self
     }
@@ -1137,7 +1137,7 @@ fn execute_write(snapshot: Session, authority: SaveAuthority) -> DiskOutcome {
             protection,
             verified,
             outcome: if protection.is_some_and(|outcome| {
-                outcome.class == crate::storage::wire::ProtectionClass::Keymanager
+                outcome.class == plx_platform::storage::wire::ProtectionClass::Keymanager
             }) {
                 PersistOutcome::PersistedSealed
             } else {
@@ -1210,7 +1210,7 @@ mod tests {
 
     #[test]
     fn uncertain_write_and_clear_keep_helper_evidence_without_becoming_failed_or_durable() {
-        use crate::storage::wire::failure::{HelperFailure, Stage};
+        use plx_platform::storage::wire::failure::{HelperFailure, Stage};
         let helper = Some((HelperFailure::new(Stage::Db8, Some(-3963)), [None; 8]));
         let commit = CommitDetail::Uncertain { stage: CommitStage::Readback, errno: 0, helper };
         for disk in [
@@ -2033,12 +2033,12 @@ mod tests {
         }
     }
 
-    fn keymanager_failure() -> crate::storage::wire::KeymanagerFailure {
-        crate::storage::wire::KeymanagerFailure {
-            operation: crate::storage::wire::KeymanagerOperation::Seal,
-            stage: crate::storage::wire::KeymanagerStage::Finish,
-            code: crate::storage::wire::ErrorCode::Unavailable,
-            category: crate::storage::wire::KeymanagerFailureCategory::Unavailable,
+    fn keymanager_failure() -> plx_platform::storage::wire::KeymanagerFailure {
+        plx_platform::storage::wire::KeymanagerFailure {
+            operation: plx_platform::storage::wire::KeymanagerOperation::Seal,
+            stage: plx_platform::storage::wire::KeymanagerStage::Finish,
+            code: plx_platform::storage::wire::ErrorCode::Unavailable,
+            category: plx_platform::storage::wire::KeymanagerFailureCategory::Unavailable,
             service_code: None,
         }
     }

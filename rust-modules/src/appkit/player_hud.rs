@@ -1078,7 +1078,7 @@ pub(crate) struct FailureReadout {
 /// A control's label. Sentence case, as every `StatusOverlay` row is (the sign-in read-out's *Try
 /// again*): these are capsule buttons, not the ALL-CAPS clickable TEXT marks.
 pub(crate) fn failure_action_label(a: crate::player::FailureAction) -> &'static std::ffi::CStr {
-    use crate::i18n::msg;
+    use plx_platform::i18n::msg;
     use crate::player::FailureAction as A;
     match a {
         A::PlayAutomatically => msg::widgets_failure_play_auto_c(),
@@ -1107,19 +1107,19 @@ impl FailureReadout {
     pub(crate) fn now(ps: &crate::route::PlaybackSession) -> Self {
         let mut e = crate::player::error_now(ps);
         if e.kind == crate::player::FailureKind::JailMissingRtkmem {
-            use crate::tv::sandbox::State;
+            use plx_platform::tv::sandbox::State;
             match ps.repair_status {
                 State::Idle => {}
                 State::Running => {
-                    e.readout = crate::i18n::msg::widgets_repair_running();
-                    e.detail = crate::i18n::msg::widgets_repair_wait().into();
+                    e.readout = plx_platform::i18n::msg::widgets_repair_running();
+                    e.detail = plx_platform::i18n::msg::widgets_repair_wait().into();
                 }
                 State::Repaired => {
-                    e.readout = crate::i18n::msg::widgets_repair_completed();
-                    e.detail = crate::i18n::msg::widgets_repair_reopen().into();
+                    e.readout = plx_platform::i18n::msg::widgets_repair_completed();
+                    e.detail = plx_platform::i18n::msg::widgets_repair_reopen().into();
                 }
                 State::Failed(reason) => {
-                    e.readout = crate::i18n::msg::widgets_repair_failed();
+                    e.readout = plx_platform::i18n::msg::widgets_repair_failed();
                     e.detail = repair_failure_message(reason).into();
                 }
             }
@@ -1146,7 +1146,7 @@ impl FailureReadout {
         let policy = e.kind == FailureKind::PlaybackPolicy && !e.detail.is_empty();
         let reason: &str = if policy { &e.detail } else { e.readout };
         let note: Option<String> = if e.no_pass {
-            Some(crate::i18n::msg::widgets_failure_no_pass(PLEX_PASS))
+            Some(plx_platform::i18n::msg::widgets_failure_no_pass(PLEX_PASS))
         } else if policy || e.detail.is_empty() {
             None
         } else {
@@ -1182,7 +1182,7 @@ impl FailureReadout {
     }
 
     fn overlay(&self, labels: &[&'static std::ffi::CStr], focus: Option<usize>) -> StatusOverlay<'_> {
-        StatusOverlay::new(Rect::FULL, crate::i18n::msg::widgets_status_failed_c(), StatusKind::Failed)
+        StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::widgets_status_failed_c(), StatusKind::Failed)
             .page(self.glyph)
             .reason(&self.reason)
             .row(labels)
@@ -1263,7 +1263,7 @@ pub(crate) fn ctrl_row_hit_rect() -> Rect {
 
 /// One bottom tab's rect, matching the left-to-right layout [`draw_hud`] lays the pills out with.
 pub(crate) fn tab_hit_rect(idx: i32, has_chapters: bool, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
-    let tabs: &[&str] = if has_chapters { &[crate::i18n::msg::widgets_player_info(), crate::i18n::msg::widgets_player_chapters()] } else { &[crate::i18n::msg::widgets_player_info()] };
+    let tabs: &[&str] = if has_chapters { &[plx_platform::i18n::msg::widgets_player_info(), plx_platform::i18n::msg::widgets_player_chapters()] } else { &[plx_platform::i18n::msg::widgets_player_info()] };
     let label = *tabs.get(idx as usize)?;
     let ph = BTN_S;
     let py = (SB_Y + SCR_H) * 0.5 - ph * 0.5;
@@ -1286,16 +1286,16 @@ pub(crate) fn failure_row_drawn(busy: Busy) -> bool {
 }
 
 /// Product copy is resolved here; the worker's technical error identity stays unchanged.
-fn repair_failure_message(reason: crate::tv::sandbox::Failure) -> &'static str {
-    use crate::tv::sandbox::Failure;
+fn repair_failure_message(reason: plx_platform::tv::sandbox::Failure) -> &'static str {
+    use plx_platform::tv::sandbox::Failure;
     match reason {
-        Failure::StartFailed => crate::i18n::msg::widgets_repair_start_failed(),
-        Failure::HbcUnavailable => crate::i18n::msg::widgets_repair_hbc_unavailable(),
-        Failure::NotRoot => crate::i18n::msg::widgets_repair_not_root(),
-        Failure::CommandFailed => crate::i18n::msg::widgets_repair_command_failed(),
-        Failure::Timeout => crate::i18n::msg::widgets_repair_timeout(),
-        Failure::Unreadable => crate::i18n::msg::widgets_repair_unreadable(),
-        Failure::Unsupported => crate::i18n::msg::widgets_repair_unsupported(),
+        Failure::StartFailed => plx_platform::i18n::msg::widgets_repair_start_failed(),
+        Failure::HbcUnavailable => plx_platform::i18n::msg::widgets_repair_hbc_unavailable(),
+        Failure::NotRoot => plx_platform::i18n::msg::widgets_repair_not_root(),
+        Failure::CommandFailed => plx_platform::i18n::msg::widgets_repair_command_failed(),
+        Failure::Timeout => plx_platform::i18n::msg::widgets_repair_timeout(),
+        Failure::Unreadable => plx_platform::i18n::msg::widgets_repair_unreadable(),
+        Failure::Unsupported => plx_platform::i18n::msg::widgets_repair_unsupported(),
     }
 }
 
@@ -1865,9 +1865,9 @@ pub(crate) fn draw_hud(
 
     // bottom tabs as pills — Chapters only appears when the item actually has chapters
     let tabs: &[&str] = if crate::appkit::chapters_panel::has_chapters(meta) {
-        &[crate::i18n::msg::widgets_player_info(), crate::i18n::msg::widgets_player_chapters()]
+        &[plx_platform::i18n::msg::widgets_player_info(), plx_platform::i18n::msg::widgets_player_chapters()]
     } else {
-        &[crate::i18n::msg::widgets_player_info()]
+        &[plx_platform::i18n::msg::widgets_player_info()]
     };
     // tabs match the transport control buttons' height (BTN_S), centred vertically between the
     // play bar (scrubber, at SB_Y) and the bottom edge of the screen
@@ -2578,7 +2578,7 @@ mod tests {
     fn every_failure_row_fits_the_screen_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
-        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         use crate::player::FailureAction as A;
         let rows: [&[A]; 3] = [
             &[A::PlayAutomatically, A::TryAgain, A::Back],
@@ -2608,7 +2608,7 @@ mod tests {
     fn every_forced_verdict_fits_the_reason_slot_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
-        use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
         let mut out = Vec::new();
         for language in [Preference::En, Preference::Es, Preference::Be] {
             let _guard = language_on_this_thread_for_test(language);

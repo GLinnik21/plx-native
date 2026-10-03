@@ -25,7 +25,7 @@ fn paint(w: plx_base::task::runtime_check::Warning) {
     let r = Rect::new(SAFE.x, SAFE.y + SAFE.h - 80.0, SAFE.w, 80.0);
     let p = Painter::root();
     p.rect(r, theme::space::SM, theme::RUNTIME_WARNING, theme::RUNTIME_WARNING, 0.0);
-    if let Ok(text) = CString::new(crate::i18n::msg::widgets_runtime_main_thread(w.kind, w.label, i64::try_from(w.ms).unwrap_or(i64::MAX))) {
+    if let Ok(text) = CString::new(plx_platform::i18n::msg::widgets_runtime_main_thread(w.kind, w.label, i64::try_from(w.ms).unwrap_or(i64::MAX))) {
         Label::new(text.as_ptr(), theme::size::BODY, theme::TEXT_PRIMARY).bold().draw(
             p, Rect::new(r.x + theme::space::MD, r.y, r.w - 2.0 * theme::space::MD, r.h));
     }

@@ -324,7 +324,7 @@ fn draw_cell(
     let (date_y, summary_y, content_h_with_pad) = meta_layout(ep, measure);
     let text_x = x + PLATTER_PAD;
     let labels = |p: Painter| {
-        if let Ok(kicker) = CString::new(crate::i18n::msg::browse_detail_episode_number(ep.index as i64)) {
+        if let Ok(kicker) = CString::new(plx_platform::i18n::msg::browse_detail_episode_number(ep.index as i64)) {
             p.text(
                 kicker.as_ptr(),
                 text_x,

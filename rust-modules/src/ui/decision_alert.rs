@@ -482,9 +482,9 @@ mod tests {
     fn belarusian_delete_question_and_complete_scope_wrap_at_the_existing_text_sizes() {
         let _guard = plx_base::testlock::serial();
         let measure = DisclosureMeasure;
-        let locale = crate::i18n::LocaleContext::resolve(crate::i18n::Preference::Be, None, None, None, None);
-        let question = crate::i18n::msg::settings_consent_delete_question_in(&locale);
-        let body = crate::i18n::msg::settings_consent_delete_scope_in(&locale);
+        let locale = plx_platform::i18n::LocaleContext::resolve(plx_platform::i18n::Preference::Be, None, None, None, None);
+        let question = plx_platform::i18n::msg::settings_consent_delete_question_in(&locale);
+        let body = plx_platform::i18n::msg::settings_consent_delete_scope_in(&locale);
         assert!(body.contains("серверы Plex") && body.contains("Sentry") && body.contains("PostHog"));
         let question_view = DecisionAlert::question_view(question).with_measure(&measure);
         let body_view = DecisionAlert::body_view(body).with_measure(&measure);
@@ -493,7 +493,7 @@ mod tests {
         assert!(question_view.measure_h(BODY_W) > measure.line_h(theme::size::TITLE));
         assert!(body_view.measure_h(BODY_W) > 4.0 * measure.line_h(theme::size::BODY));
         let mut alert = DecisionAlert::new();
-        alert.open_with_body(crate::i18n::msg::settings_consent_delete_question_c_in(&locale), body);
+        alert.open_with_body(plx_platform::i18n::msg::settings_consent_delete_question_c_in(&locale), body);
         let l = alert.measured(&measure);
         assert_eq!(alert.choice(), Choice::Cancel);
         assert_eq!(l.question.w, 564.0);

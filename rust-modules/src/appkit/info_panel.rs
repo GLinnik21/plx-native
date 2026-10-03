@@ -379,13 +379,13 @@ impl InfoPanelState {
                 push(tag, ChipKind::Badge);
             }
             if !subs.is_empty() {
-                push(crate::i18n::msg::widgets_badge_cc().to_string(), ChipKind::Badge);
+                push(plx_platform::i18n::msg::widgets_badge_cc().to_string(), ChipKind::Badge);
             }
             if subs.iter().any(|s| s.sdh) {
-                push(crate::i18n::msg::widgets_badge_sdh().to_string(), ChipKind::Badge);
+                push(plx_platform::i18n::msg::widgets_badge_sdh().to_string(), ChipKind::Badge);
             }
             if audio.iter().any(|s| s.ad) {
-                push(crate::i18n::msg::widgets_badge_ad().to_string(), ChipKind::Badge);
+                push(plx_platform::i18n::msg::widgets_badge_ad().to_string(), ChipKind::Badge);
             }
 
             let n = chips_that_fit(chips.iter().map(|c| (c.w, c.gap_before)), tw);
@@ -600,11 +600,11 @@ fn is_episode(meta: metadata::MetadataView<'_>) -> bool {
 /// is drawn ([`InfoPanelState::draw`]).
 fn actions(meta: metadata::MetadataView<'_>) -> [&'static str; 2] {
     [
-        crate::i18n::msg::widgets_info_from_beginning(),
+        plx_platform::i18n::msg::widgets_info_from_beginning(),
         if is_episode(meta) {
-            crate::i18n::msg::widgets_info_go_show()
+            plx_platform::i18n::msg::widgets_info_go_show()
         } else {
-            crate::i18n::msg::widgets_info_go_movie()
+            plx_platform::i18n::msg::widgets_info_go_movie()
         },
     ]
 }
@@ -627,9 +627,9 @@ fn card_geometry() -> (Rect, f32) {
 fn button_rect(i: usize, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let (card, pad) = card_geometry();
     let labels = [
-        crate::i18n::msg::widgets_info_from_beginning_c(),
-        crate::i18n::msg::widgets_info_go_show_c(),
-        crate::i18n::msg::widgets_info_go_movie_c(),
+        plx_platform::i18n::msg::widgets_info_from_beginning_c(),
+        plx_platform::i18n::msg::widgets_info_go_show_c(),
+        plx_platform::i18n::msg::widgets_info_go_movie_c(),
     ];
     let bw = labels.iter().map(|label| {
         crate::ui::widgets::Button::pill_w_measured(label, theme::size::BODY, true, false, measure)
@@ -735,17 +735,17 @@ pub(crate) fn playback_now(
         return None;
     }
     if !transcoding {
-        return Some(crate::i18n::msg::widgets_playback_direct_play().to_string());
+        return Some(plx_platform::i18n::msg::widgets_playback_direct_play().to_string());
     }
     if remux {
-        return Some(crate::i18n::msg::widgets_playback_direct_stream().to_string());
+        return Some(plx_platform::i18n::msg::widgets_playback_direct_stream().to_string());
     }
     let name = video_codec_name(vcodec);
     // a re-encode whose output codec we somehow do not know still converted — say that much
     Some(if name.is_empty() {
-        crate::i18n::msg::widgets_playback_converting().to_string()
+        plx_platform::i18n::msg::widgets_playback_converting().to_string()
     } else {
-        crate::i18n::msg::widgets_playback_converting_codec(&name)
+        plx_platform::i18n::msg::widgets_playback_converting_codec(&name)
     })
 }
 

@@ -335,16 +335,16 @@ impl LibraryType {
     }
 
     pub(crate) fn title(self, kind: SecKind) -> &'static str {
-        self.title_in(kind, crate::i18n::current())
+        self.title_in(kind, plx_platform::i18n::current())
     }
 
-    fn title_in(self, kind: SecKind, locale: &crate::i18n::LocaleContext) -> &'static str {
+    fn title_in(self, kind: SecKind, locale: &plx_platform::i18n::LocaleContext) -> &'static str {
         match (self, kind) {
-            (Self::Primary, SecKind::Movie) => crate::i18n::msg::browse_kind_movies_in(locale),
-            (Self::Primary, SecKind::Show) => crate::i18n::msg::browse_kind_tv_shows_in(locale),
-            (Self::Seasons, _) => crate::i18n::msg::browse_kind_seasons_in(locale),
-            (Self::Episodes, _) => crate::i18n::msg::browse_kind_episodes_in(locale),
-            (Self::Collections, _) => crate::i18n::msg::browse_kind_collections_in(locale),
+            (Self::Primary, SecKind::Movie) => plx_platform::i18n::msg::browse_kind_movies_in(locale),
+            (Self::Primary, SecKind::Show) => plx_platform::i18n::msg::browse_kind_tv_shows_in(locale),
+            (Self::Seasons, _) => plx_platform::i18n::msg::browse_kind_seasons_in(locale),
+            (Self::Episodes, _) => plx_platform::i18n::msg::browse_kind_episodes_in(locale),
+            (Self::Collections, _) => plx_platform::i18n::msg::browse_kind_collections_in(locale),
         }
     }
 
@@ -353,11 +353,11 @@ impl LibraryType {
     /// order differ by language.
     pub(crate) fn empty_readout(self, kind: SecKind, library: &str) -> String {
         match (self, kind) {
-            (Self::Primary, SecKind::Movie) => crate::i18n::msg::browse_library_no_movies(library),
-            (Self::Primary, SecKind::Show) => crate::i18n::msg::browse_library_no_shows(library),
-            (Self::Seasons, _) => crate::i18n::msg::browse_library_no_seasons(library),
-            (Self::Episodes, _) => crate::i18n::msg::browse_library_no_episodes(library),
-            (Self::Collections, _) => crate::i18n::msg::browse_library_no_collections(library),
+            (Self::Primary, SecKind::Movie) => plx_platform::i18n::msg::browse_library_no_movies(library),
+            (Self::Primary, SecKind::Show) => plx_platform::i18n::msg::browse_library_no_shows(library),
+            (Self::Seasons, _) => plx_platform::i18n::msg::browse_library_no_seasons(library),
+            (Self::Episodes, _) => plx_platform::i18n::msg::browse_library_no_episodes(library),
+            (Self::Collections, _) => plx_platform::i18n::msg::browse_library_no_collections(library),
         }
     }
 
@@ -2668,8 +2668,8 @@ impl SecKind {
     /// The same thing as a standalone label ("Films"), for a row whose count has not landed yet.
     pub(crate) fn plural(self) -> &'static str {
         match self {
-            SecKind::Movie => crate::i18n::msg::browse_kind_films(),
-            SecKind::Show => crate::i18n::msg::browse_kind_tv_shows_sentence(),
+            SecKind::Movie => plx_platform::i18n::msg::browse_kind_films(),
+            SecKind::Show => plx_platform::i18n::msg::browse_kind_tv_shows_sentence(),
         }
     }
 }
@@ -2698,7 +2698,7 @@ fn kind_offers_plays_sort(kind: SecKind) -> bool {
 /// feature exists for.
 fn with_plays_sort(mut sorts: Vec<SortEntry>, kind: SecKind) -> Vec<SortEntry> {
     if kind_offers_plays_sort(kind) && !sorts.iter().any(|sort| sort.key == PLAYS_SORT_KEY) {
-        sorts.push(plays_sort_entry(crate::i18n::msg::browse_library_plays().into()));
+        sorts.push(plays_sort_entry(plx_platform::i18n::msg::browse_library_plays().into()));
     }
     sorts
 }
@@ -2870,8 +2870,8 @@ pub(crate) struct SrcRow {
 fn count_line(count: i64, kind: SecKind) -> String {
     if count >= 0 {
         match kind {
-            SecKind::Movie => crate::i18n::msg::browse_person_films(count),
-            SecKind::Show => crate::i18n::msg::browse_person_shows(count),
+            SecKind::Movie => plx_platform::i18n::msg::browse_person_films(count),
+            SecKind::Show => plx_platform::i18n::msg::browse_person_shows(count),
         }
     } else {
         kind.plural().to_string()
@@ -3415,7 +3415,7 @@ mod localized_type_tests {
 
     #[test]
     fn library_type_titles_translate_without_changing_the_pms_query_type() {
-        use crate::i18n::{LocaleContext, Preference};
+        use plx_platform::i18n::{LocaleContext, Preference};
         for (preference, expected) in [
             (Preference::En, ["Movies", "Collections", "TV Shows", "Seasons", "Episodes", "Collections"]),
             (Preference::Es, ["Películas", "Colecciones", "Series", "Temporadas", "Episodios", "Colecciones"]),

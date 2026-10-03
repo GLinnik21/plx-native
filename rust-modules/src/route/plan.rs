@@ -892,7 +892,7 @@ pub(crate) enum ForcedFailure {
 impl PlayVerdict {
     /// The read-out's sentence: the server's verbatim, or the app's own from the catalog.
     pub(crate) fn text(&self) -> &str {
-        use crate::i18n::msg;
+        use plx_platform::i18n::msg;
         match self {
             Self::Server(sentence, _) => sentence,
             Self::DirectPlayDisabled => msg::widgets_verdict_direct_play_disabled(),
@@ -1061,7 +1061,7 @@ pub(crate) struct ResolveEnv {
     /// Test-only replacement for the process cache. Capability is an explicit policy input in
     /// regressions; no test mutates the production `OnceLock` or makes the whole host a DV set.
     #[cfg(test)]
-    pub(super) dv_capability: Option<crate::devcaps::dv::DvCapability>,
+    pub(super) dv_capability: Option<plx_platform::devcaps::dv::DvCapability>,
 }
 
 
@@ -1377,7 +1377,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     let dv_decision = dovi.decision_now(vcodec == "hevc");
     let dv = dv_decision.presentation;
     let video_dp = if forced { video_feed_supported(vcodec, dv) } else {
-        video_direct_plays(vcodec, src_w, src_h, dv, crate::devcaps::caps())
+        video_direct_plays(vcodec, src_w, src_h, dv, plx_platform::devcaps::caps())
     };
     // Carried to the session so the quality menu can say whether "Original" means anything for
     // this item without evaluating the gate a second time against a different set of facts.
@@ -1735,8 +1735,8 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // `abr::bootstrap` owns the policy; this site owns only the facts it needs.
     let bootstrap_catalog = crate::abr::HlsActuatorCatalog::measured().limited_to(
         (
-            u16::try_from(crate::devcaps::caps().hevc_max.0).unwrap_or(u16::MAX),
-            u16::try_from(crate::devcaps::caps().hevc_max.1).unwrap_or(u16::MAX),
+            u16::try_from(plx_platform::devcaps::caps().hevc_max.0).unwrap_or(u16::MAX),
+            u16::try_from(plx_platform::devcaps::caps().hevc_max.1).unwrap_or(u16::MAX),
         ),
         (
             u16::try_from(src_w).unwrap_or(u16::MAX),
@@ -1965,7 +1965,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         plan.vcodec = "h264".into();
         plan.acodec = "aac".into();
     } else {
-        plan.vcodec = crate::devcaps::caps().encode_vcodec().into();
+        plan.vcodec = plx_platform::devcaps::caps().encode_vcodec().into();
         plan.acodec = "ac3".into();
     }
     // Carry the SOURCE track this path will PUT and name on start.mkv. The demuxer is NOT
@@ -2673,7 +2673,7 @@ pub(super) fn video_direct_plays(
     src_w: i64,
     src_h: i64,
     dv: crate::metadata::DvPresentation,
-    caps: &crate::devcaps::Caps,
+    caps: &plx_platform::devcaps::Caps,
 ) -> bool {
     let codec_ok = vcodec == "h264" || (vcodec == "hevc" && caps.hevc);
     let (bw, bh) = caps.hevc_max;
@@ -2725,7 +2725,7 @@ pub(crate) fn playback_preview_of(
     if part.is_empty() {
         return None; // nothing playable loaded (a show still resolving its episode)
     }
-    let video = video_direct_plays(vcodec, width, height, dv, crate::devcaps::caps());
+    let video = video_direct_plays(vcodec, width, height, dv, plx_platform::devcaps::caps());
     let audio = audio_streams
         .iter()
         .any(|a| crate::plex::is_dp_audio_track(&a.codec, a.channels));

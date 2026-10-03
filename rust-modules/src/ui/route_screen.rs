@@ -1085,16 +1085,16 @@ mod tests {
         }
         let measure = TitleMeasure;
         let min_content = RouteLayout::screen().content.w;
-        for preference in [crate::i18n::Preference::En, crate::i18n::Preference::Es, crate::i18n::Preference::Be] {
-            let locale = crate::i18n::LocaleContext::resolve(preference, None, None, None, None);
-            let title = crate::i18n::msg::browse_person_filmography_in(&locale);
+        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be] {
+            let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            let title = plx_platform::i18n::msg::browse_person_filmography_in(&locale);
             let layout = RouteLayout::screen_for_title(480.0, min_content, title, &measure);
             let full_width = measure.width_str(title, theme::size::HERO, true);
             assert!(layout.narrative.w >= full_width, "route label must fit in full: {title}");
             assert!(layout.content.w >= min_content);
             assert!(inside_safe(layout.content));
             assert!(inside_safe(layout.narrative));
-            if preference == crate::i18n::Preference::Be {
+            if preference == plx_platform::i18n::Preference::Be {
                 assert!(layout.narrative.w > 480.0, "exercise the clipped screenshot's narrow column");
             }
         }
@@ -1147,10 +1147,10 @@ mod tests {
         }
         let measure = QuestionMeasure;
         let layout = RouteLayout::screen();
-        for preference in [crate::i18n::Preference::En, crate::i18n::Preference::Es, crate::i18n::Preference::Be] {
-            let locale = crate::i18n::LocaleContext::resolve(preference, None, None, None, None);
-            for question in [crate::i18n::msg::settings_consent_crash_title_in(&locale),
-                crate::i18n::msg::settings_consent_product_title_in(&locale)] {
+        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be] {
+            let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            for question in [plx_platform::i18n::msg::settings_consent_crash_title_in(&locale),
+                plx_platform::i18n::msg::settings_consent_product_title_in(&locale)] {
                 let title = RouteLayout::narrative_title(question).with_measure(&measure);
                 assert!(!title.truncates(layout.narrative.w), "question was elided: {question}");
                 let height = title.measure_h(layout.narrative.w);

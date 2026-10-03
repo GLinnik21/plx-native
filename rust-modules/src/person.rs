@@ -1713,7 +1713,7 @@ pub(crate) fn filmography(p: &Person) -> Vec<Department> {
     };
     let mut kept: Vec<Department> = Vec::new();
     let mut other = Department {
-        title: crate::i18n::msg::browse_person_other().to_string(),
+        title: plx_platform::i18n::msg::browse_person_other().to_string(),
         total: 0,
         rows: Vec::new(),
     };

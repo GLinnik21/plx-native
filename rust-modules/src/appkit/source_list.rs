@@ -114,9 +114,9 @@ fn state_word(s: SourceState) -> Option<&'static str> {
 /// a router for something no router was ever part of. The remedy is in this same panel, one row
 /// down: *Check for shared libraries* is the `/api/v2/resources` refetch that reissues the per-(user,
 /// server) `accessToken`, which is why this run does not have to carry an instruction as well.
-fn unauthorized() -> &'static str { crate::i18n::msg::widgets_source_unauthorized() }
+fn unauthorized() -> &'static str { plx_platform::i18n::msg::widgets_source_unauthorized() }
 /// Did not answer at all — refused, timed out, or unresolvable.
-fn unreachable() -> &'static str { crate::i18n::msg::widgets_source_unreachable() }
+fn unreachable() -> &'static str { plx_platform::i18n::msg::widgets_source_unreachable() }
 /// Answered, verified as the right machine, but only over a transport this build may not put a
 /// credential on without the person's consent (issue #95, PLX-NATIVE-10). A different kind of fault from [`unreachable`] again — the server IS
 /// there, it is the connection to it that has to change (HTTPS), not the server itself.
@@ -124,7 +124,7 @@ fn unreachable() -> &'static str { crate::i18n::msg::widgets_source_unreachable(
 /// Deliberately NOT the consent flow's "without encryption" wording: this row names a state no
 /// question can change (the server was ineligible, or not yet offered); an eligible server is
 /// asked through `screens::plaintext_question`, and a granted one reads as connected.
-fn insecure_only() -> &'static str { crate::i18n::msg::widgets_source_insecure() }
+fn insecure_only() -> &'static str { plx_platform::i18n::msg::widgets_source_insecure() }
 
 /// The word a WORKING group's connection tier is said in — `None` when there is nothing worth
 /// saying.
@@ -142,8 +142,8 @@ fn insecure_only() -> &'static str { crate::i18n::msg::widgets_source_insecure()
 fn tier_word(t: Location) -> Option<&'static str> {
     match t {
         Location::Local => None,
-        Location::Remote => Some(crate::i18n::msg::widgets_source_remote()),
-        Location::Relay => Some(crate::i18n::msg::widgets_source_relay()),
+        Location::Remote => Some(plx_platform::i18n::msg::widgets_source_remote()),
+        Location::Relay => Some(plx_platform::i18n::msg::widgets_source_relay()),
     }
 }
 
@@ -264,7 +264,7 @@ pub(crate) fn form(
                         // is the library that works.
                         .value_dim(r.last_pinned)
                         .detail(if r.last_pinned {
-                            crate::i18n::msg::widgets_source_needs_library().to_string()
+                            plx_platform::i18n::msg::widgets_source_needs_library().to_string()
                         } else {
                             r.count_line.clone()
                         });
@@ -286,7 +286,7 @@ pub(crate) fn form(
                 SrcTarget::Recheck,
                 RowKind::Button,
                 SrcTarget::Recheck,
-                Row::new(crate::i18n::msg::widgets_source_new_shares()),
+                Row::new(plx_platform::i18n::msg::widgets_source_new_shares()),
             ));
         }
     }
@@ -440,7 +440,7 @@ mod tests {
     /// table width (`RouteLayout::screen().sectioned_table()`, `screens::onboard`).
     #[test]
     fn every_app_owned_run_fits_its_column_in_every_language() {
-        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         use crate::ui::route_screen::RouteLayout;
         use crate::ui::table::TableView;
         let widths = [
@@ -503,7 +503,7 @@ mod tests {
     /// the app's state words, with and without a handle, must still fit it in every language.
     #[test]
     fn the_state_words_fit_beside_a_long_machine_name_in_every_language() {
-        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         use crate::ui::table::TableView;
         let name = "a-very-long-shared-server-machine-name-that-keeps-going";
         let mut out = Vec::new();

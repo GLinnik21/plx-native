@@ -5,16 +5,16 @@
 //! files are consulted only when `consent.json` is genuinely absent.
 
 use super::consent::Consent;
-use crate::storage::{Record, RecordKey, RecordState, RecordStore};
+use plx_platform::storage::{Record, RecordKey, RecordState, RecordStore};
 #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
-use crate::storage::StoreError;
+use plx_platform::storage::StoreError;
 use std::path::{Path, PathBuf};
 
 #[cfg(any(
     all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
     test
 ))]
-use crate::storage::{
+use plx_platform::storage::{
     client::{self, Load as HelperLoad},
     state::{self, Generation, MigrationProgress},
     wire::{CommitStatus, Domain, MigrationMutation, Response, WireMutation},
@@ -110,12 +110,12 @@ pub(crate) fn forget() -> PersistOutcome {
 
 #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
 fn store() -> Result<impl RecordStore, StoreError> {
-    crate::storage::open(root())
+    plx_platform::storage::open(root())
 }
 
 #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
 fn store_at(root: PathBuf) -> Result<impl RecordStore, StoreError> {
-    crate::storage::open(root)
+    plx_platform::storage::open(root)
 }
 
 #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
@@ -153,13 +153,13 @@ fn remove_legacy_sources(paths: impl IntoIterator<Item = PathBuf>) -> CleanupRes
     let mut parents = std::collections::BTreeSet::new();
     let mut result = CleanupResult::Complete;
     for path in paths {
-        match crate::storage::remove_file_or_prove_absent(&path) {
-            Ok(crate::storage::RemoveDisposition::Removed) => {
+        match plx_platform::storage::remove_file_or_prove_absent(&path) {
+            Ok(plx_platform::storage::RemoveDisposition::Removed) => {
                 if let Some(parent) = path.parent() {
                     parents.insert(parent.to_path_buf());
                 }
             }
-            Ok(crate::storage::RemoveDisposition::Absent) => {}
+            Ok(plx_platform::storage::RemoveDisposition::Absent) => {}
             Err(error) => {
                 log_cleanup_failure("remove_legacy", &path, &error);
                 result = CleanupResult::Failed;
@@ -323,7 +323,7 @@ fn helper_commit(
             conflict: false,
         },
         Ok(Response::Reconcile {
-            status: crate::storage::wire::ReconcileStatus::Applied,
+            status: plx_platform::storage::wire::ReconcileStatus::Applied,
             applied: Some(_),
             ..
         }) => HelperCommit {
@@ -336,7 +336,7 @@ fn helper_commit(
             ..
         })
         | Ok(Response::Reconcile {
-            status: crate::storage::wire::ReconcileStatus::Unknown,
+            status: plx_platform::storage::wire::ReconcileStatus::Unknown,
             ..
         }) => HelperCommit {
             result: PersistResult::Uncertain,
@@ -418,7 +418,7 @@ fn previous_canonical_consent_at(root: PathBuf) -> PreviousCanonical {
         Err(_) => PreviousCanonical::Blocked,
         Ok(metadata) if !metadata.is_dir() => PreviousCanonical::Blocked,
         Ok(_) => {
-            let Ok(store) = crate::storage::open(root) else {
+            let Ok(store) = plx_platform::storage::open(root) else {
                 return PreviousCanonical::Blocked;
             };
             match store.load(RecordKey::Consent) {
@@ -602,7 +602,7 @@ enum LegacyRead {
 }
 
 fn read_legacy(path: &Path) -> LegacyRead {
-    match crate::storage::read_owned_bytes(path) {
+    match plx_platform::storage::read_owned_bytes(path) {
         Ok(None) => LegacyRead::Missing,
         Ok(Some((bytes, trusted))) if trusted => {
             let Ok(consent) = serde_json::from_slice::<Consent>(&bytes) else {
@@ -625,8 +625,8 @@ fn load_legacy_and_migrate(store: &impl RecordStore, legacy: &[PathBuf]) -> Cons
             LegacyRead::Untrusted => {
                 let barrier = store.commit(RecordKey::Consent, &Record::cleared(1));
                 let write = match barrier {
-                    Ok(crate::storage::CommitReceipt::Durable) => PersistResult::Durable,
-                    Ok(crate::storage::CommitReceipt::Uncertain { .. }) => PersistResult::Uncertain,
+                    Ok(plx_platform::storage::CommitReceipt::Durable) => PersistResult::Durable,
+                    Ok(plx_platform::storage::CommitReceipt::Uncertain { .. }) => PersistResult::Uncertain,
                     Err(_) => PersistResult::Failed,
                 };
                 let cleanup = if write == PersistResult::Durable {
@@ -684,8 +684,8 @@ fn load_legacy_and_migrate(store: &impl RecordStore, legacy: &[PathBuf]) -> Cons
     };
     let record = Record::data(1, payload);
     let write = match store.commit(RecordKey::Consent, &record) {
-        Ok(crate::storage::CommitReceipt::Durable) => PersistResult::Durable,
-        Ok(crate::storage::CommitReceipt::Uncertain { .. }) => PersistResult::Uncertain,
+        Ok(plx_platform::storage::CommitReceipt::Durable) => PersistResult::Durable,
+        Ok(plx_platform::storage::CommitReceipt::Uncertain { .. }) => PersistResult::Uncertain,
         Err(_) => PersistResult::Failed,
     };
     if write != PersistResult::Durable {
@@ -792,8 +792,8 @@ pub(super) fn record_at(
         }
     };
     let result = match store.commit(RecordKey::Consent, &Record::data(revision, payload)) {
-        Ok(crate::storage::CommitReceipt::Durable) => PersistResult::Durable,
-        Ok(crate::storage::CommitReceipt::Uncertain { .. }) => PersistResult::Uncertain,
+        Ok(plx_platform::storage::CommitReceipt::Durable) => PersistResult::Durable,
+        Ok(plx_platform::storage::CommitReceipt::Uncertain { .. }) => PersistResult::Uncertain,
         Err(_) => PersistResult::Failed,
     };
     let temp_cleanup = if result == PersistResult::Durable {
@@ -948,8 +948,8 @@ pub(super) fn forget_at(legacy: &[PathBuf], canonical_root: PathBuf) -> PersistO
         None => 1,
     };
     let result = match store.commit(RecordKey::Consent, &Record::cleared(revision)) {
-        Ok(crate::storage::CommitReceipt::Durable) => PersistResult::Durable,
-        Ok(crate::storage::CommitReceipt::Uncertain { .. }) => PersistResult::Uncertain,
+        Ok(plx_platform::storage::CommitReceipt::Durable) => PersistResult::Durable,
+        Ok(plx_platform::storage::CommitReceipt::Uncertain { .. }) => PersistResult::Uncertain,
         Err(_) => PersistResult::Failed,
     };
     let temp_cleanup = if result == PersistResult::Durable {
@@ -982,7 +982,7 @@ pub(super) fn forget_at(legacy: &[PathBuf], canonical_root: PathBuf) -> PersistO
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::JsonStore;
+    use plx_platform::storage::JsonStore;
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
 
@@ -1125,7 +1125,7 @@ mod tests {
                 RecordKey::Consent,
                 &Record::data(4, serde_json::to_string(&old_yes()).unwrap()),
             ),
-            Ok(crate::storage::CommitReceipt::Durable)
+            Ok(plx_platform::storage::CommitReceipt::Durable)
         );
         match previous_canonical_consent_at(fixture.root.clone()) {
             PreviousCanonical::Data(consent) => assert_eq!(consent, old_yes()),
@@ -1133,7 +1133,7 @@ mod tests {
         }
         assert_eq!(
             store.commit(RecordKey::Consent, &Record::cleared(5)),
-            Ok(crate::storage::CommitReceipt::Durable)
+            Ok(plx_platform::storage::CommitReceipt::Durable)
         );
         assert!(matches!(
             previous_canonical_consent_at(fixture.root.clone()),
@@ -1150,7 +1150,7 @@ mod tests {
         let store = JsonStore::new(fixture.root.clone()).unwrap();
         assert_eq!(
             store.commit(RecordKey::Consent, &Record::cleared(9)),
-            Ok(crate::storage::CommitReceipt::Durable)
+            Ok(plx_platform::storage::CommitReceipt::Durable)
         );
         let loaded = load(std::slice::from_ref(&source));
         assert!(!loaded.any() && !loaded.answered());
@@ -1248,7 +1248,7 @@ mod tests {
 #[cfg(test)]
 mod upgrade_tests {
     use super::*;
-    use crate::storage::wire::{ErrorCode, Request};
+    use plx_platform::storage::wire::{ErrorCode, Request};
     use serde_json::Value;
     use std::os::unix::fs::PermissionsExt;
 
@@ -1292,7 +1292,7 @@ mod upgrade_tests {
         puts: usize,
         refuse_puts: bool,
     }
-    impl crate::storage::keymanager::Rpc for Db8 {
+    impl plx_platform::storage::keymanager::Rpc for Db8 {
         fn call(&mut self, uri: &str, payload: &Value) -> Result<Value, ErrorCode> {
             match uri {
                 "luna://com.palm.db/get" => Ok(
@@ -1312,13 +1312,13 @@ mod upgrade_tests {
         }
     }
 
-    fn backend(record: Option<Value>) -> crate::storage::backend::Backend<Db8> {
-        crate::storage::backend::Backend::new(
+    fn backend(record: Option<Value>) -> plx_platform::storage::backend::Backend<Db8> {
+        plx_platform::storage::backend::Backend::new(
             Db8 {
                 record,
                 ..Default::default()
             },
-            crate::storage::state::Flavor::Stable,
+            plx_platform::storage::state::Flavor::Stable,
             "com.beb.plxnative.storage".into(),
         )
     }
@@ -1327,12 +1327,12 @@ mod upgrade_tests {
         serde_json::from_str(DB8_066).unwrap()
     }
 
-    fn helper_load(b: &mut crate::storage::backend::Backend<Db8>, legacy: &[PathBuf]) -> Consent {
+    fn helper_load(b: &mut plx_platform::storage::backend::Backend<Db8>, legacy: &[PathBuf]) -> Consent {
         let mut transport = |request: Request| Ok(b.dispatch(request));
         load_helper(&mut transport, legacy)
     }
 
-    fn helper_record(b: &mut crate::storage::backend::Backend<Db8>, consent: &Consent) -> PersistOutcome {
+    fn helper_record(b: &mut plx_platform::storage::backend::Backend<Db8>, consent: &Consent) -> PersistOutcome {
         let mut transport = |request: Request| Ok(b.dispatch(request));
         record_helper(&mut transport, consent, &[])
     }
@@ -1465,29 +1465,29 @@ mod upgrade_tests {
     /// Commit `interfering` through the same helper immediately before the first consent commit
     /// reaches it, the way a Session worker commit can land between consent's read and write.
     fn record_racing(
-        b: &mut crate::storage::backend::Backend<Db8>,
+        b: &mut plx_platform::storage::backend::Backend<Db8>,
         consent: &Consent,
-        interfering: fn(&crate::storage::client::Snapshot) -> crate::storage::wire::WireMutation,
+        interfering: fn(&plx_platform::storage::client::Snapshot) -> plx_platform::storage::wire::WireMutation,
     ) -> PersistOutcome {
         let mut raced = false;
         let mut transport = |request: Request| {
             if !raced && matches!(request, Request::Commit { .. }) {
                 raced = true;
                 let mut inner = |r: Request| Ok(b.dispatch(r));
-                let crate::storage::client::Load::Present(snapshot) =
-                    crate::storage::client::load_with(&mut inner).unwrap()
+                let plx_platform::storage::client::Load::Present(snapshot) =
+                    plx_platform::storage::client::load_with(&mut inner).unwrap()
                 else {
                     panic!("fixture is present")
                 };
-                let other = crate::storage::client::commit_with(
+                let other = plx_platform::storage::client::commit_with(
                     &mut inner,
                     Some((&snapshot.db_rev, snapshot.state.expected())),
-                    crate::storage::state::Generation::random().unwrap(),
+                    plx_platform::storage::state::Generation::random().unwrap(),
                     interfering(&snapshot),
                 );
                 assert!(matches!(
                     other,
-                    Ok(crate::storage::wire::Response::Commit { applied: Some(_), .. })
+                    Ok(plx_platform::storage::wire::Response::Commit { applied: Some(_), .. })
                 ));
             }
             Ok(b.dispatch(request))
@@ -1505,15 +1505,15 @@ mod upgrade_tests {
         let outcome = record_racing(&mut b, &next, |snapshot| {
             let mut public = snapshot.state.public.clone();
             public.preferences["playback_quality"] = "original".into();
-            crate::storage::wire::WireMutation::UpdatePreferences {
+            plx_platform::storage::wire::WireMutation::UpdatePreferences {
                 payload: serde_json::to_value(public).unwrap(),
             }
         });
         assert_eq!(outcome.write, PersistResult::Durable, "a same-tenure conflict is retried");
         assert_eq!(helper_load(&mut b, &[]), next, "the withdrawal survives the next launch");
         let mut transport = |request: Request| Ok(b.dispatch(request));
-        let crate::storage::client::Load::Present(snapshot) =
-            crate::storage::client::load_with(&mut transport).unwrap()
+        let plx_platform::storage::client::Load::Present(snapshot) =
+            plx_platform::storage::client::load_with(&mut transport).unwrap()
         else {
             panic!("present")
         };
@@ -1527,7 +1527,7 @@ mod upgrade_tests {
         let mut b = backend(Some(db8_066()));
         let loaded = helper_load(&mut b, &[]);
         let next = super::super::consent::apply(&loaded, true, true, || Some("f".repeat(32)));
-        let outcome = record_racing(&mut b, &next, |_| crate::storage::wire::WireMutation::ClearTenure {});
+        let outcome = record_racing(&mut b, &next, |_| plx_platform::storage::wire::WireMutation::ClearTenure {});
         assert_ne!(outcome.write, PersistResult::Durable);
         let after = helper_load(&mut b, &[]);
         assert!(!after.answered() && after.errors_id.is_none() && after.install_id.is_none());
@@ -1550,10 +1550,10 @@ mod upgrade_tests {
             public.consent = snapshot.state.public.consent.clone();
             public.scopes = snapshot.state.public.scopes.clone();
             public.ids = snapshot.state.public.ids.clone();
-            crate::storage::wire::WireMutation::ReplaceAuth {
+            plx_platform::storage::wire::WireMutation::ReplaceAuth {
                 public: serde_json::to_value(public).unwrap(),
-                payload: crate::storage::wire::SecretString(protected),
-                protection: crate::storage::wire::ProtectionRequest::Db8AclOnlyExplicit,
+                payload: plx_platform::storage::wire::SecretString(protected),
+                protection: plx_platform::storage::wire::ProtectionRequest::Db8AclOnlyExplicit,
             }
         });
         assert_ne!(outcome.write, PersistResult::Durable);
@@ -1567,20 +1567,20 @@ mod upgrade_tests {
         let dir = Dir::new("db8-cleared");
         let mut b = backend(Some(db8_066()));
         let mut transport = |request: Request| Ok(b.dispatch(request));
-        let crate::storage::client::Load::Present(snapshot) =
-            crate::storage::client::load_with(&mut transport).unwrap()
+        let plx_platform::storage::client::Load::Present(snapshot) =
+            plx_platform::storage::client::load_with(&mut transport).unwrap()
         else {
             panic!("fixture is present")
         };
-        let cleared = crate::storage::client::commit_with(
+        let cleared = plx_platform::storage::client::commit_with(
             &mut transport,
             Some((&snapshot.db_rev, snapshot.state.expected())),
-            crate::storage::state::Generation::random().unwrap(),
-            crate::storage::wire::WireMutation::ClearTenure {},
+            plx_platform::storage::state::Generation::random().unwrap(),
+            plx_platform::storage::wire::WireMutation::ClearTenure {},
         );
         assert!(matches!(
             cleared,
-            Ok(crate::storage::wire::Response::Commit { applied: Some(_), .. })
+            Ok(plx_platform::storage::wire::Response::Commit { applied: Some(_), .. })
         ));
         let source = dir.legacy(GENERATED_DECLINE_065);
         let after = helper_load(&mut b, std::slice::from_ref(&source));

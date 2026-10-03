@@ -34,7 +34,7 @@ pub(crate) struct PlayerAdapter {
     mt: MainThread,
     /// The live native session, or `None` between playbacks.
     engine: Option<Engine>,
-    repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), crate::tv::sandbox::Failure>>)>,
+    repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), plx_platform::tv::sandbox::Failure>>)>,
     /// A timed-out native `Load` whose media thread had not returned when its Engine was torn
     /// down. Owned here, not by a static, for the same reason the Engine is: releasing it calls
     /// the Starfish seam, which only the main thread may do. See `engine::AbandonedLoad`.
@@ -57,11 +57,11 @@ impl PlayerAdapter {
         let Some(token) = owner.begin(supported) else { return; };
         let (tx, rx) = std::sync::mpsc::channel();
         if plx_base::task::spawn_small("jail repair", move || {
-            let _ = tx.send(crate::tv::sandbox::repair());
+            let _ = tx.send(plx_platform::tv::sandbox::repair());
         }) {
             self.repair = Some((token, rx));
         } else {
-            owner.complete(token, Err(crate::tv::sandbox::Failure::StartFailed));
+            owner.complete(token, Err(plx_platform::tv::sandbox::Failure::StartFailed));
         }
     }
 
@@ -71,7 +71,7 @@ impl PlayerAdapter {
         let result = match rx.try_recv() {
             Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(crate::tv::sandbox::Failure::StartFailed),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(plx_platform::tv::sandbox::Failure::StartFailed),
         };
         let changed = owner.complete(*token, result);
         self.repair = None;
@@ -150,7 +150,7 @@ impl PlayerAdapter {
 #[cfg(test)]
 mod repair_receipt_tests {
     use super::*;
-    use crate::tv::sandbox::{Failure, State};
+    use plx_platform::tv::sandbox::{Failure, State};
     #[test]
     fn a_receipt_lands_without_a_player_screen_and_cannot_rearm_the_attempt() {
         let mut owner = super::super::machine::RepairAttempt::new();

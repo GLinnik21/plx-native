@@ -53,9 +53,9 @@ pub(crate) fn draw(stats: Option<Rect>) {
         return;
     }
     let (title, ink) = match upload::phase() {
-        upload::PHASE_SENDING => (crate::i18n::msg::widgets_diagnostics_uploading(), theme::TEXT_PRIMARY),
-        upload::PHASE_OK => (crate::i18n::msg::widgets_diagnostics_uploaded(), theme::TEXT_PRIMARY),
-        _ => (crate::i18n::msg::widgets_diagnostics_failed(), theme::DANGER),
+        upload::PHASE_SENDING => (plx_platform::i18n::msg::widgets_diagnostics_uploading(), theme::TEXT_PRIMARY),
+        upload::PHASE_OK => (plx_platform::i18n::msg::widgets_diagnostics_uploaded(), theme::TEXT_PRIMARY),
+        _ => (plx_platform::i18n::msg::widgets_diagnostics_failed(), theme::DANGER),
     };
     let r = frame_for(stats);
     let p = Painter::root();

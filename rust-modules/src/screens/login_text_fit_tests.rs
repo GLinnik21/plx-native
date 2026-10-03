@@ -9,7 +9,7 @@
 
 use plx_base::fontcov::advances::ShippedMeasure;
 use crate::ui::fit::HEADROOM;
-use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
+use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
 use crate::ui::widgets::StatusOverlay;
 use std::ffi::CString;
 
@@ -220,7 +220,7 @@ fn every_insecure_only_reason_fits_two_lines_and_names_its_action() {
 #[test]
 fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action() {
     use crate::auth::{plaintext_copy_in, ReadoutSurface};
-    use crate::i18n::LocaleContext;
+    use plx_platform::i18n::LocaleContext;
     use crate::plex::grant::PlaintextVerdict;
     use crate::plex::probe::PlaintextEligibility;
     use crate::plex::session::PlaintextChoice;

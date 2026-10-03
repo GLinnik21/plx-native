@@ -1119,7 +1119,7 @@ mod tests {
     /// rather than inventing a client-side substitute catalog for server-owned strings.
     #[test]
     fn pms_headers_carry_the_literal_selected_ui_language_be_included() {
-        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         for (pref, tag) in [(Preference::En, "en"), (Preference::Es, "es"), (Preference::Be, "be")] {
             let _guard = language_on_this_thread_for_test(pref);
             let headers = pms_headers(&[ACCEPT_JSON]);

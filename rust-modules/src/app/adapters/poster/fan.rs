@@ -9,7 +9,7 @@
 //! never baked.
 //!
 //! **Rendered once.** The poster worker bakes on the CPU into ONE image, persists it as PNG under
-//! a stamp-keyed [`crate::imgcache::classify_baked`] entry, and delivers it as an ordinary
+//! a stamp-keyed [`plx_platform::imgcache::classify_baked`] entry, and delivers it as an ordinary
 //! decoded poster through the store's normal admission, upload and LRU. The members' pixels live
 //! only for the duration of one bake on one worker (three ~375 KB decodes plus the 540 KB output)
 //! and never become GL textures. A warm disk hit decodes the baked PNG and fetches nothing.

@@ -88,7 +88,7 @@ pub(crate) enum PreferenceCmd {
     SkipInterval { interval: crate::plex::session::SkipInterval, reply: std::sync::mpsc::Sender<bool> },
     SubtitleSize { size: crate::plex::session::SubtitleSize, reply: std::sync::mpsc::Sender<bool> },
     SubtitlePosition { position: crate::plex::session::SubtitlePosition, reply: std::sync::mpsc::Sender<bool> },
-    Language { language: crate::i18n::Preference, reply: std::sync::mpsc::Sender<bool> },
+    Language { language: plx_platform::i18n::Preference, reply: std::sync::mpsc::Sender<bool> },
 }
 
 /// **What the item context menu asks of the loop**, once its own `step` has resolved the pressed

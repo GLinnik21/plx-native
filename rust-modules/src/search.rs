@@ -131,11 +131,11 @@ impl Kind {
     /// The shelf heading.
     pub(crate) fn title(self) -> &'static str {
         match self {
-            Kind::Movie => crate::i18n::msg::browse_kind_movies(),
-            Kind::Show => crate::i18n::msg::browse_kind_tv_shows(),
-            Kind::Episode => crate::i18n::msg::browse_kind_episodes(),
-            Kind::Person => crate::i18n::msg::browse_detail_cast(),
-            Kind::Collection => crate::i18n::msg::browse_kind_collections(),
+            Kind::Movie => plx_platform::i18n::msg::browse_kind_movies(),
+            Kind::Show => plx_platform::i18n::msg::browse_kind_tv_shows(),
+            Kind::Episode => plx_platform::i18n::msg::browse_kind_episodes(),
+            Kind::Person => plx_platform::i18n::msg::browse_detail_cast(),
+            Kind::Collection => plx_platform::i18n::msg::browse_kind_collections(),
         }
     }
     /// The count read-out beside it — how many RESULTS are on this shelf, as one complete
@@ -146,8 +146,8 @@ impl Kind {
     /// answered by two different formatters.
     pub(crate) fn count_label(self, n: usize) -> String {
         match self {
-            Kind::Person => crate::i18n::msg::browse_search_people(n as i64),
-            _ => crate::i18n::msg::browse_search_count(n as i64),
+            Kind::Person => plx_platform::i18n::msg::browse_search_people(n as i64),
+            _ => plx_platform::i18n::msg::browse_search_count(n as i64),
         }
     }
     /// Which hub identifiers feed this shelf.

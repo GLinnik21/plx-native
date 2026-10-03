@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[serde(deny_unknown_fields)]
 struct Saved {
     version: u8,
-    language: crate::i18n::Preference,
+    language: plx_platform::i18n::Preference,
 }
 
 fn candidates() -> Vec<PathBuf> {
@@ -25,7 +25,7 @@ fn candidates() -> Vec<PathBuf> {
     paths
 }
 
-pub(super) fn load() -> Option<crate::i18n::Preference> {
+pub(super) fn load() -> Option<plx_platform::i18n::Preference> {
     candidates().into_iter().find_map(|path| {
         let bytes = read_owned_regular(&path)?;
         let saved: Saved = serde_json::from_slice(&bytes).ok()?;
@@ -34,9 +34,9 @@ pub(super) fn load() -> Option<crate::i18n::Preference> {
 }
 
 /// Called under Session IO on the persistence worker, before credentials are cleared.
-pub(super) fn save(language: crate::i18n::Preference) -> bool {
+pub(super) fn save(language: plx_platform::i18n::Preference) -> bool {
     // Absence already means System, and need not create a file on a fresh installation.
-    if language == crate::i18n::Preference::System && load().is_none() { return true; }
+    if language == plx_platform::i18n::Preference::System && load().is_none() { return true; }
     let bytes = serde_json::to_vec(&Saved { version: 1, language }).expect("language serialization");
     for path in candidates() {
         if write_atomic(&path, &bytes).is_ok()
@@ -52,7 +52,7 @@ pub(super) fn save(language: crate::i18n::Preference) -> bool {
 /// Delete every candidate, including a stale earlier fallback. No credential resource is read.
 pub(super) fn erase() -> Vec<String> {
     candidates().into_iter().filter_map(|path| {
-        crate::storage::remove_file_or_prove_absent(&path)
+        plx_platform::storage::remove_file_or_prove_absent(&path)
             .err().map(|error| format!("{}: {error}", path.display()))
     }).collect()
 }
