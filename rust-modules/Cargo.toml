@@ -1,12 +1,12 @@
 # A cargo workspace with this package as its ROOT; the other members are the storage helper and the
-# layer crates split out of the application so far (base/, machine/, platform/, gfx/;
+# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/;
 # docs/module-layers.md).
 # The root keeps the literal `version` below (release tooling reads it), `make`/CI run their usual
 # commands from this directory against this package (a bare `cargo test`/`check`/`build` here still
 # means the app only), and the helper is built with an explicit `-p plxnative-storage`. One
 # `Cargo.lock`, one `.cargo/config.toml` and the same target directories serve both.
 [workspace]
-members = ["base", "machine", "platform", "gfx", "storage"]
+members = ["base", "machine", "net", "platform", "gfx", "storage"]
 resolver = "2"
 
 [package]
@@ -70,7 +70,7 @@ devtools = ["plx_gfx/devtools"]
 # Nothing in the dev loop constrains this: `make run`/`run-stream` touch `/tmp` only to clear and
 # read back the event log, and `tests/run.py` builds with plain `make` — the harness never builds
 # a release binary, so gating the whole surface costs it nothing.
-devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_platform/devtriggers", "plx_gfx/devtriggers"]
+devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_net/devtriggers", "plx_platform/devtriggers", "plx_gfx/devtriggers"]
 # The one deliberate behavioural difference of dev builds: make main-thread violations LOUDER
 # (abort/warning), never change a code path that succeeds. Dropped by --no-default-features.
 threadcheck = ["plx_base/threadcheck"]
@@ -86,7 +86,7 @@ threadcheck = ["plx_base/threadcheck"]
 # it adds: a bounded in-memory copy of the lines `crate::log` already writes, one key arm, one row
 # in two menus, one overlay, pinned diagnostic POSTs and an opt-in pinned HTTPS long-poll worker.
 # Everything else compiles identically.
-lab-diagnostics = ["plx_base/lab-diagnostics", "plx_platform/lab-diagnostics"]
+lab-diagnostics = ["plx_base/lab-diagnostics", "plx_net/lab-diagnostics", "plx_platform/lab-diagnostics"]
 
 # **There is no `telemetry` cargo feature, and this comment is here so nobody adds one back.**
 #
@@ -184,6 +184,9 @@ plx_platform = { path = "platform" }
 # vector-icon rasterizer FFI and the GPU instruments. It declares the GL/SDL_ttf/nanosvg symbols and
 # links nothing on the television; the Makefile links them.
 plx_gfx = { path = "gfx" }
+# The net layer (ci/module-layers.ini `[net]`): libcurl HTTPS and the plaintext socket stream. Its
+# fixtures need `rcgen` and `rustls`, which therefore left this crate's dev-dependencies.
+plx_net = { path = "net" }
 # safe pure-Rust JPEG/PNG decoders — replaces vendored stb_image.h (~8k lines C)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # raw socket/libc FFI for the stream module (correct constants + struct layouts)
@@ -209,5 +212,5 @@ plx_machine = { path = "machine", features = ["test-support"] }
 plx_platform = { path = "platform", features = ["test-support"] }
 # Likewise the gfx layer's seams (`text`'s prewarm and capture hooks, `gfx::backdrop::commit`, ...).
 plx_gfx = { path = "gfx", features = ["test-support"] }
-rcgen = "0.14.10"
-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+# Likewise the net layer's loopback PMS fixtures, `keypin`/`resolve` seams and canned responses.
+plx_net = { path = "net", features = ["test-support"] }

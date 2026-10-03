@@ -445,7 +445,7 @@ fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason(
 /// and the *Try again* stop is the pill the same frame draws.
 #[test]
 fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
-    use crate::net::keypin::{self, Blocked};
+    use plx_net::net::keypin::{self, Blocked};
     use crate::ui::icons::Icon;
     use crate::ui::widgets::StatusOverlay;
     let _guard = plx_base::testlock::serial();
@@ -531,7 +531,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
 /// server's expired certificate leaves it alone, and a fact for the source's own machine shows.
 #[test]
 fn a_failed_source_ignores_a_clock_fact_about_another_server() {
-    use crate::net::keypin;
+    use plx_net::net::keypin;
     use crate::ui::icons::Icon;
     let _guard = plx_base::testlock::serial();
     crate::plex::grant::reset_for_test();

@@ -683,6 +683,86 @@ layer run in their own binary. What it taught beyond the recipe:
   `make build-bench` has a `gfx` scenario ("Edit leaf (plx_gfx overdraw.rs)"). The `--no-default-features`
   and `cargo check --target arm-unknown-linux-gnueabi --lib` gates pass.
 
+### Split 5 (net)
+
+`net` was extracted fifth: `rust-modules/net/` is the workspace member `plx_net` (an `rlib`), holding
+`net` (`net.rs`, `net/origin.rs`, the HTTP/2 reset fixture script `net/h2_reset_fixture.py`) and
+`stream` (`stream.rs`, `stream_redirect.rs` and the six `stream_*_tests.rs` files plus
+`stream_test_support.rs`, all declared by `#[path]` from `stream.rs`). It depends on `plx_base` and
+nothing else: `[net] uses = base platform` still allows `platform`, but no line of the layer names
+it, so the crate does not depend on it. It has no build script and links nothing (libcurl is
+`dlopen`ed through `plx_base::dynlib!`; the final link line stays the application crate's and the
+Makefile's `LIBS_REAL`; `ci/expected-dt-needed.txt` did not change). The references were rewritten
+by script (`crate::net` and `crate::stream` to `plx_net::net` and `plx_net::stream`, 44 files) and
+`pub(crate)` became `pub` across the moved files. Features: `devtriggers` and `lab-diagnostics` are
+forwarded, `test-support` is new and enables `plx_base`'s. The 127 tests of the layer run in their
+own binary: the suite is 5603 before and after (157 + 66 + 218 + 127 + 5035). What it taught beyond
+the recipe and Splits 1 to 3:
+
+- **A `dynlib!` table is `pub(crate)` in the crate that expands it, and a layer's callers are in
+  another crate.** `curlio` (in `media`) drives libcurl's easy API through `net`'s own table:
+  `curl_easy_init`, `curl_easy_cleanup`, `curl_easy_setopt_{ptr,long}`, `curl_slist_{append,free_all}`
+  and the `curl` module's `curl_easy_init` cell. They cannot be re-exported (E0364: a `pub(crate)`
+  item cannot be `pub use`d), and wrapping them would add a second layer of calls to the variadic
+  ones. `dynlib!` gained a `pub` form instead, `dynlib! { pub curl: [...] { ... } }`, implemented as
+  an internal `@emit [$vis:vis]` rule that the old form forwards to with `pub(crate)`. Every other
+  table (`ff.rs`, `curlio.rs`, `player/ass.rs`, `diag::zlib`) expands token for token as before.
+  The visibility has to be a single `$vis:vis` fragment: a `$($vis:tt)+` repetition cannot be
+  used inside the per-function repetition ("meta-variable `vis` repeats 1 time, but `fname`
+  repeats 12 times"). Check for this whenever a layer owns a `dynlib!` table the layers above call.
+- **`--report`'s 10 items were again not the whole surface.** It does not see a `pub use` of a
+  `cfg(test)` module's items (`net::{mint_cert, spawn_dual_protocol, spawn_observed, TestCert,
+  TestCaGuard, curl_ready, ...}`, which `curlio`'s tests, `auth_discovery_tests` and the
+  `tls-selftest` dev trigger's tests use), an associated function called through a type
+  (`ResolvePin::for_test`, from `http`'s and `curlio`'s tests), or behaviour: `request_result`
+  honours `test_ca_bundle` only `cfg(test)`, which is what lets a loopback HTTPS server be
+  trusted, so the bypass is `cfg(any(test, feature = "test-support"))` along with the module. The
+  compiler found the first two (`cargo check --lib --tests`); only reading the code finds the
+  third. The seams that only this crate's tests use (`keypin::reset_facts_for_test`, the `*_tests`
+  modules) stay `cfg(test)`.
+- **A fixture can live inside a test module.** `with_test_response` and `with_h2_reset_failure`
+  were thin wrappers over functions inside `request_tests`, a `cfg(test)` module that also holds
+  `#[test]`s, and `test-support` does not build tests. The two helpers moved to a module of their
+  own, `wire_fixtures`, gated like the wrappers; `request_tests` imports them back.
+- **Fixtures that need crates make those crates dependencies.** `loopback_pms` mints certificates
+  (`rcgen`) and runs a TLS server (`rustls`), and the H2 fixture reads its startup line as JSON
+  (`serde_json`). They left the application's `[dev-dependencies]`; in `plx_net` they are
+  `optional` dependencies behind `test-support` (`dep:`) *and* ordinary dev-dependencies, because
+  the crate's own tests build with `cfg(test)` and without the feature. No shipped build sees them.
+- **A gate that recognised one spelling of "this is test code".** The `threads` rule in
+  `ci/check-deps.sh` skips a `thread::spawn` inside a `#[cfg(test)] mod` block by matching exactly
+  that attribute on the line before `mod`. `loopback_pms` is `cfg(any(test, feature =
+  "test-support"))` now (its helpers are used from other crates), and its mock servers spawn
+  threads. The rule accepts the second spelling. `ci/rust_test_modules.py` does not treat that
+  attribute as test-only (an `any(...)` containing an unknown feature may be on), which is right:
+  the whole-file exemption applies to the `stream_*_tests.rs` files, which stay bare `cfg(test)`.
+- **A `cargo:rustc-env` was not needed, and a path was.** Nothing in the layer reads a `PLX_*`
+  variable. `net.rs` spawns the H2 fixture from `concat!(env!("CARGO_MANIFEST_DIR"),
+  "/src/net/h2_reset_fixture.py")`; `CARGO_MANIFEST_DIR` is the manifest of the crate being
+  compiled, so it is `rust-modules/net` now and the script moved with the module (one `src/net/`
+  directory below it). Any `include_str!`/`env!("CARGO_MANIFEST_DIR")` in a moved file needs the
+  same check.
+- **Scrub, budgets and the private tree copy.** The eventlog scrub test's root list gained
+  `../net/src` (these are the files that handle URLs and tokens, so the privacy scan matters most
+  here), `tests/test_harness.py`'s `TREE_INPUTS` gained the crate's source and manifest, and
+  `ci/check-deps.sh` reads `SRC_NET` wherever it reads `SRC_PLATFORM` except the video-sink rule.
+  The module-cycle baseline moved from 43 modules outside the cycle to 33 (`net` and `stream` were
+  never on it); `ci/check-module-cycle.py --update-baseline` records it.
+- **Tooling that knows the tree's shape**: the `-p` lists (`-p plxnative-modules -p plx_base -p
+  plx_machine -p plx_platform -p plx_net`) in the Makefile, the workflow, `tools/build-bench.py` and
+  the tests that pin them; `--src rust-modules/net/src` for the line budget; `RUST_INPUTS`;
+  `tools/cargo-seed.py` keys on the new manifest; `ci/test_no_host_staticlib.py` holds the crate to
+  `rlib`; the release-configuration hook treats an edit in `net/src` as a shipping-feature risk; the
+  `fw-compat-reviewer` prompt names the moved file; and `make build-bench` has a `net` scenario
+  ("Edit leaf (plx_net stream_redirect.rs)").
+- **FFI moved byte for byte.** `net.rs` has no `#[link]` and no plain `extern "C"` block; its
+  libcurl table is one `dynlib!` invocation, whose only change is the `pub` in front of `curl`, and
+  its two `extern "C"` callbacks (`write_cb`, `legacy_crypto_lock`)
+  differ from their old text in `pub(crate)` alone. `stream.rs` calls `libc` only.
+
+Measured effect: not measured in this lane; the integrator records the `make build-bench` table
+for the combined change.
+
 ## Limits of the analysis
 
 - `cfg` predicates other than `test` count as possibly on, so the graph is the union of every

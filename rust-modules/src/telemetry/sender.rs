@@ -128,10 +128,10 @@ const POSTHOG_KEY: Option<&str> = if HAS_PROD {
 /// environment variable nobody reads.
 const POSTHOG_HOST: &str = "https://eu.i.posthog.com";
 
-/// Deadlines for a background flush. Deliberately shorter than [`net::API`](crate::net::API), which
+/// Deadlines for a background flush. Deliberately shorter than [`net::API`](plx_net::net::API), which
 /// is tuned for a call somebody is waiting on: a worker holding a thread for 25 s to report a crash
 /// that already happened has the priority backwards.
-const TIMEOUTS: crate::net::Timeouts = crate::net::Timeouts {
+const TIMEOUTS: plx_net::net::Timeouts = plx_net::net::Timeouts {
     connect_s: 6,
     total_s: 12,
     total_ms: 0,
@@ -367,7 +367,7 @@ pub(crate) fn send_one(r: &Record) -> (Verdict, Option<u64>) {
         ));
         return (Verdict::Hopeless, None);
     }
-    match crate::net::post_ca(&url, &headers, &body, TIMEOUTS) {
+    match plx_net::net::post_ca(&url, &headers, &body, TIMEOUTS) {
         Some(resp) => {
             let v = classify(resp.status);
             // The response body is bounded and kept precisely so a rejection can be logged with the
@@ -689,7 +689,7 @@ mod tests {
     /// A background flush must not hold a worker as long as a call somebody is waiting on.
     #[test]
     fn a_background_flush_gives_up_sooner_than_an_interactive_call() {
-        assert!(TIMEOUTS.total_s < crate::net::API.total_s);
-        assert!(TIMEOUTS.connect_s <= crate::net::API.connect_s);
+        assert!(TIMEOUTS.total_s < plx_net::net::API.total_s);
+        assert!(TIMEOUTS.connect_s <= plx_net::net::API.connect_s);
     }
 }

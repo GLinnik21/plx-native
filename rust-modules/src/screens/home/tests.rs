@@ -309,7 +309,7 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
 /// reason having moved the action row.
 #[test]
 fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
-    use crate::net::keypin::{self, Blocked};
+    use plx_net::net::keypin::{self, Blocked};
     use crate::ui::icons::Icon;
     let _guard = plx_base::testlock::serial();
     crate::plex::grant::reset_for_test();
@@ -392,7 +392,7 @@ fn current_server_for_test(machine: &str) -> impl Drop {
 /// `net::keypin::blocked_for` about the current server only.
 #[test]
 fn a_failed_home_ignores_a_clock_fact_about_another_server() {
-    use crate::net::keypin;
+    use plx_net::net::keypin;
     let _guard = plx_base::testlock::serial();
     crate::plex::grant::reset_for_test();
     let elsewhere = keypin::key_of("home-elsewhere.invalid", 32400);

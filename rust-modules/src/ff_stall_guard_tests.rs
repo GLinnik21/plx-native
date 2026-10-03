@@ -181,9 +181,9 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
             .store(false, std::sync::atomic::Ordering::Release);
         let host = CString::new("127.0.0.1").unwrap();
         let path = CString::new("/segment.ts").unwrap();
-        let mut hs = crate::stream::http_stream_boxed();
+        let mut hs = plx_net::stream::http_stream_boxed();
         assert_eq!(
-            crate::stream::http_open(
+            plx_net::stream::http_open(
                 &mut *hs,
                 host.as_ptr(),
                 port as c_int,
@@ -224,7 +224,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
         SHARED
             .hls_rebuffering
             .store(false, std::sync::atomic::Ordering::Release);
-        crate::stream::http_close(&mut *hs);
+        plx_net::stream::http_close(&mut *hs);
         crate::aq::aq_destroy(&mut *aq);
         server.join().expect("loopback server");
         aborted
@@ -749,7 +749,7 @@ fn demux_against_when(
     let (answers_tx, answers) = std::sync::mpsc::sync_channel(256);
     acquisition::observe::watch_this_thread(answers_tx);
     let (segment, auth) = segment_on(pms.port);
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
     let (hs_addr, aq_addr) = (
         &mut *hs as *mut HttpStream as usize,
@@ -769,7 +769,7 @@ fn demux_against_when(
         let torn_down = done_rx.recv_timeout(TEARDOWN_AFTER).is_err();
         if torn_down {
             crate::aq::aq_abort(aq_addr as *mut AuQueue);
-            crate::stream::http_shutdown(hs_addr as *mut HttpStream);
+            plx_net::stream::http_shutdown(hs_addr as *mut HttpStream);
         }
         (saw_get.then_some(fired_at), torn_down, seen)
     });
@@ -796,7 +796,7 @@ fn demux_against_when(
     let (fired_at, torn_down, seen) = publisher.join().expect("publisher");
     acquisition::observe::unwatch();
     pms.seen = Some(seen);
-    crate::stream::http_close(&mut *hs);
+    plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
     DemuxRun {
         result,
@@ -913,9 +913,9 @@ fn blocked_body_read(
     let pms = ScriptedPms::start(|_| REPLY.lock().unwrap().expect("scripted reply"));
     let host = CString::new("127.0.0.1").unwrap();
     let path = CString::new("/segment.ts").unwrap();
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     assert_eq!(
-        crate::stream::http_open(
+        plx_net::stream::http_open(
             &mut *hs,
             host.as_ptr(),
             pms.port as c_int,
@@ -959,7 +959,7 @@ fn blocked_body_read(
         let torn_down = done_rx.recv_timeout(TEARDOWN_AFTER).is_err();
         if torn_down {
             crate::aq::aq_abort(aq_addr as *mut AuQueue);
-            crate::stream::http_shutdown(hs_addr as *mut HttpStream);
+            plx_net::stream::http_shutdown(hs_addr as *mut HttpStream);
         }
         assert!(
             continued,
@@ -974,7 +974,7 @@ fn blocked_body_read(
     let third = (second > 0).then(|| read_cb(op, dst.as_mut_ptr(), 4));
     let latched = avio_stall_aborted(&state);
     drop(state);
-    crate::stream::http_close(&mut *hs);
+    plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
     let accepts = pms.accepts();
     drop(pms);
@@ -1292,7 +1292,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
     });
     let (segment, auth) = segment_on(pms.port);
     let path = auth.request_path(&segment.resource).expect("fixture path");
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
     let (hs_addr, aq_addr) = (
         &mut *hs as *mut HttpStream as usize,
@@ -1316,7 +1316,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
         let torn_down = done_rx.recv_timeout(TEARDOWN_AFTER).is_err();
         if torn_down {
             crate::aq::aq_abort(aq_addr as *mut AuQueue);
-            crate::stream::http_shutdown(hs_addr as *mut HttpStream);
+            plx_net::stream::http_shutdown(hs_addr as *mut HttpStream);
         }
         torn_down
     });
@@ -1344,7 +1344,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
         .map(|(_, size, _)| *size)
         .map_err(|e| format!("{e:?}"));
     drop(opened);
-    crate::stream::http_close(&mut *hs);
+    plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
 
     assert!(
@@ -1619,13 +1619,13 @@ fn read_across_a_hold_with_the_body(
     });
 
     let mut aq = crate::aq::aq_new(1 << 20);
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     let src = match transport {
         HeldTransport::Socket => {
             let host = CString::new("127.0.0.1").unwrap();
             let path = CString::new("/segment.ts").unwrap();
             assert_eq!(
-                crate::stream::http_open(
+                plx_net::stream::http_open(
                     &mut *hs,
                     host.as_ptr(),
                     port as c_int,
@@ -1672,7 +1672,7 @@ fn read_across_a_hold_with_the_body(
     let stall_aborted = avio_stall_aborted(&state);
     drop(state);
     let _ = finish.send(());
-    crate::stream::http_close(&mut *hs);
+    plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
     server.join().expect("loopback server");
     Some(HeldBodyRead {
@@ -1852,11 +1852,11 @@ fn a_non_stepping_receipt_contributes_nothing_only_the_read_does() {
         std::thread::sleep(std::time::Duration::from_millis(200));
     });
     let mut aq = crate::aq::aq_new(1 << 20);
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     let host = CString::new("127.0.0.1").unwrap();
     let path = CString::new("/segment.ts").unwrap();
     assert_eq!(
-        crate::stream::http_open(
+        plx_net::stream::http_open(
             &mut *hs,
             host.as_ptr(),
             port as c_int,
@@ -1888,7 +1888,7 @@ fn a_non_stepping_receipt_contributes_nothing_only_the_read_does() {
         "a non-stepping receipt must contribute nothing; only the 7us read may land",
     );
     drop(state);
-    crate::stream::http_close(&mut *hs);
+    plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
     server.join().expect("loopback server");
 }

@@ -199,9 +199,9 @@ mod seam_order_tests {
             .expect("construct")
             .1;
         let user_agent = body
-            .find(concat!("crate::net::", "set_user_agent("))
+            .find(concat!("plx_net::net::", "set_user_agent("))
             .expect("construct must install the User-Agent");
-        let init = body.find(concat!("crate::net::", "global_init()")).expect("construct's libcurl init");
+        let init = body.find(concat!("plx_net::net::", "global_init()")).expect("construct's libcurl init");
         assert!(user_agent < init, "set_user_agent must come before net::global_init");
     }
 }
@@ -629,11 +629,11 @@ pub(crate) unsafe fn construct(
     plx_gfx::gfx::init_blur();
     // The transport takes the client's `User-Agent` as a value (it names no Plex layer): hand it
     // over before any request can be made, so the first one already carries it.
-    crate::net::set_user_agent(crate::plex::identity::user_agent());
+    plx_net::net::set_user_agent(crate::plex::identity::user_agent());
     // One-time libcurl bind + init (main thread) before any threaded HTTPS call. A false here
     // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
     // still runs, and `net::global_init` has already said so in the event log.
-    let _ = crate::net::global_init();
+    let _ = plx_net::net::global_init();
     // Drain whatever the LAST session left behind, on a worker — and **after `global_init`,
     // which is the whole reason this line is here and not beside `telemetry::boot()` 170 lines
     // up.** It was there first, and the end-to-end run showed why that was wrong: the worker

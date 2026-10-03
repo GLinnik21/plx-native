@@ -89,7 +89,7 @@ fn a_downshift_remains_available_because_it_is_the_recovery_edge() {
 #[test]
 fn teardown_wins_over_an_expired_plaintext_open_snapshot() {
     assert!(matches!(
-        classify_plaintext_open_failure(crate::stream::HttpOpenError::Aborted),
+        classify_plaintext_open_failure(plx_net::stream::HttpOpenError::Aborted),
         HlsExit::Aborted
     ));
 }
