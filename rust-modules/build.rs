@@ -5,8 +5,8 @@
 //!
 //! Version generation runs for EVERY build. Host link configuration is a **no-op for the build
 //! that ships**: the television binary is linked by the Makefile, not by cargo (the ARM archive is a
-//! staticlib; a staticlib has no link step), so the ARM cross build reaches the early return below
-//! and emits nothing further.
+//! staticlib; a staticlib has no link step), so the ARM cross build reaches the early return in
+//! `build_support/host_link.rs` (`host_link::emit`) and emits nothing further.
 //!
 //! **The gate is the TARGET, not the `hostsim` feature, and that distinction was paid for.** It
 //! used to be the feature, on the reasoning that the simulator is "the only configuration that

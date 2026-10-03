@@ -8,10 +8,11 @@ L14, which a split hides from them, and the gate does not check impl coherence. 
 off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
 entries are gone, and the gate fails on any reference from outside the port to a member of it. It
 is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
-up the split. **The split has started: `base`, `machine` and `platform` are their own crates,
-`plx_base`, `plx_machine` and `plx_platform`** (`rust-modules/base/`, `rust-modules/machine/` and
-`rust-modules/platform/`, "Split 1: base", "Split 2: machine" and "Split 3: platform" below); the
-other eleven layers are still modules of `plxnative-modules`.
+up the split. **The split has started: `base`, `machine`, `platform`, `gfx` and `net` are their own
+crates, `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx` and `plx_net`** (`rust-modules/base/`,
+`machine/`, `platform/`, `gfx/` and `net/`; "Split 1: base", "Split 2: machine", "Split 3:
+platform", "Split 4 (gfx)" and "Split 5 (net)" below); the other nine layers are still modules of
+`plxnative-modules`.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
@@ -141,8 +142,8 @@ Four choices that were not obvious:
 This agrees with the hand-written rules already gated by `ci/check-deps.sh` (the tables in
 `ui/CLAUDE.md` and `screens/CLAUDE.md`). `ui` names no application type, `screens` never names
 `app`, and `stores` names `ui::machine`, which is now its own layer. It is stricter in two places.
-The six files of the `machine` layer, and `ui/overdraw.rs` in `gfx`, may no longer name the rest
-of `ui/`, and the machine files may also not name `gfx`, `text` or `i18n`, which the `ui/` row of
+The six files of the `machine` layer, and `overdraw.rs` in `gfx` (it was `ui/overdraw.rs`), may no
+longer name the rest of `ui/`, and the machine files may also not name `gfx`, `text` or `i18n`, which the `ui/` row of
 that table allows. And `appkit` never naming `screens` or `app` is this gate's rule alone: the
 tables say so, but `check-deps.sh`'s `layer` gate scans only `screens/`.
 
@@ -604,7 +605,7 @@ and above, which carry the line count.
 ### Split 4 (gfx)
 
 `gfx` was extracted fourth: `rust-modules/gfx/` is the workspace member `plx_gfx` (an `rlib`,
-`uses = base machine`), holding `gfx` (with `backdrop`, `geom`, `profile`, `tokens`), `egl`, `text`,
+`uses = base machine platform`; the manifest depends on `plx_base` and `plx_machine` only), holding `gfx` (with `backdrop`, `geom`, `profile`, `tokens`), `egl`, `text`,
 `img`, `svg`, `gpu_timer`, `hwcnt` and `overdraw` (which was `ui::overdraw`), and the `shaders/`
 directory the renderer embeds. The module paths are `plx_gfx::<member>::` (a path
 `plx_gfx::gfx::draw_rect` names module `gfx`), so `ci/module-layers.ini` lists `overdraw` where it
@@ -669,7 +670,7 @@ layer run in their own binary. What it taught beyond the recipe:
   dependency would have caused.
 - **No orphan-rule hazard and no dead code appeared.** No `impl` in the application has both its
   trait and its type in `plx_gfx`; the compiler is the checker.
-- **Tooling that knows the tree's shape**: the `-p` lists (`... -p plx_platform -p plx_gfx`) in the
+- **Tooling that knows the tree's shape**: the `-p` lists (`... -p plx_platform -p plx_gfx -p plx_net`, with Split 5) in the
   Makefile, the workflow, `tools/build-bench.py` and the tests that pin them;
   `--src rust-modules/gfx/src` for the line budget; `RUST_INPUTS`; `tools/cargo-seed.py` keys on the
   new manifest; the eventlog scrub test's root list gained `../gfx/src` (a log call in `gfx` would
@@ -696,7 +697,8 @@ Makefile's `LIBS_REAL`; `ci/expected-dt-needed.txt` did not change). The referen
 by script (`crate::net` and `crate::stream` to `plx_net::net` and `plx_net::stream`, 44 files) and
 `pub(crate)` became `pub` across the moved files. Features: `devtriggers` and `lab-diagnostics` are
 forwarded, `test-support` is new and enables `plx_base`'s. The 127 tests of the layer run in their
-own binary: the suite is 5603 before and after (157 + 66 + 218 + 127 + 5035). What it taught beyond
+own binary: the suite is 5603 before and after (with Split 4 landed in the same change: 157 + 66 +
+218 + 90 + 127 + 4945). What it taught beyond
 the recipe and Splits 1 to 3:
 
 - **A `dynlib!` table is `pub(crate)` in the crate that expands it, and a layer's callers are in
@@ -746,10 +748,12 @@ the recipe and Splits 1 to 3:
   `../net/src` (these are the files that handle URLs and tokens, so the privacy scan matters most
   here), `tests/test_harness.py`'s `TREE_INPUTS` gained the crate's source and manifest, and
   `ci/check-deps.sh` reads `SRC_NET` wherever it reads `SRC_PLATFORM` except the video-sink rule.
-  The module-cycle baseline moved from 43 modules outside the cycle to 33 (`net` and `stream` were
-  never on it); `ci/check-module-cycle.py --update-baseline` records it.
+  The module-cycle baseline moved from 43 modules outside the cycle to 26 with Splits 4 and 5
+  together, and the cycle itself is the same 8 modules (no moved module was on it; the smaller
+  `gfx`/`text`/`ui` component the baseline also listed is gone with `gfx`);
+  `ci/check-module-cycle.py --update-baseline` records it.
 - **Tooling that knows the tree's shape**: the `-p` lists (`-p plxnative-modules -p plx_base -p
-  plx_machine -p plx_platform -p plx_net`) in the Makefile, the workflow, `tools/build-bench.py` and
+  plx_machine -p plx_platform -p plx_gfx -p plx_net`) in the Makefile, the workflow, `tools/build-bench.py` and
   the tests that pin them; `--src rust-modules/net/src` for the line budget; `RUST_INPUTS`;
   `tools/cargo-seed.py` keys on the new manifest; `ci/test_no_host_staticlib.py` holds the crate to
   `rlib`; the release-configuration hook treats an edit in `net/src` as a shipping-feature risk; the
@@ -760,8 +764,46 @@ the recipe and Splits 1 to 3:
   its two `extern "C"` callbacks (`write_cb`, `legacy_crypto_lock`)
   differ from their old text in `pub(crate)` alone. `stream.rs` calls `libc` only.
 
-Measured effect: not measured in this lane; the integrator records the `make build-bench` table
-for the combined change.
+### Splits 4 and 5 together: what the combination needed, and the measurement
+
+The two splits were made in parallel from the same commit and landed as one change. Combining them:
+
+- **The files both touched are lists, and the union is mechanical.** 22 files conflicted (the `-p`
+  lists, `SRC_*` roots, scrub roots, workspace members, feature forwards, bench scenarios, the
+  pinned tests, the docs that quote them) and none in the moved code: a token-level three-way merge
+  that lets both sides insert at the same point resolved all but one hunk (the application's
+  `[dev-dependencies]`, where one side added a line and the other removed two). Both rewrite
+  scripts were re-run on the result and on a `main` that had moved meanwhile, and changed nothing.
+- **Both gates still fire.** Proven by a temporary violating edit, not by reading: a
+  `plx_gfx::text::text_width(` call in `coldstart.rs` fails `textmeasure`; a `thread::spawn`, an
+  `SDL_GetTicks(` and a `/tmp/plxnative-` literal in `net/src/stream_redirect.rs` fail `threads`,
+  `ticks` and `tmppath`; `SDL_GetTicks(` and `Effect::` in `gfx/src/overdraw.rs` fail `ticks` and
+  `effect`; and a `log(&format!(.., d.title))` in either crate fails the eventlog scrub scan.
+- **The `pub` `dynlib!` table stands.** The alternative, a narrower wrapper API exported from
+  `plx_net`, is not a small cut: `curlio` is a second libcurl client that drives the easy handle
+  directly (two dozen `curl_easy_setopt_{ptr,long}` calls with its own option set, slists and
+  callbacks), so the wrapper would be either a pass-through with the same surface or a redesign of
+  the media transport. A second `dynlib!` table in the application would bind the same library
+  twice. What is `pub` is visible to this workspace's crates only; nothing is exported from the
+  staticlib. The non-`pub` form expands to the same tokens as before (the `@emit` arm's body
+  differs from the old single arm only in `$vis` for `pub(crate)`), the variadic arm of
+  `dynlib_wrapper!` is unchanged, and an existing table cannot select the `pub` arm.
+- **`uses` is a ceiling.** `ci/module-layers.ini` keeps `gfx uses base machine platform` and `net
+  uses base platform`; neither crate names `platform`, so neither manifest depends on
+  `plx_platform`, and an edit there rebuilds neither (the bench rows below show it).
+
+Measured effect (`make build-bench`, same machine, 3 interleaved runs, no load warning in either
+set; non-incremental). Before, on `464ceb33` (the commit before `main`'s current tip, which
+differs from it by a Home change only): an edit in `plx_base` 30.7 s (min 30.4), in `plx_machine`
+30.4 s (min 30.1), in `plx_platform` 30.3 s (min 30.1), of the application crate 28.4 s (min 28.1),
+the hub edit 29.2 s (min 28.1), the unit suite 62.3 s (min 61.7) with 5603 tests. After: an edit in
+`plx_base` 29.3 s (min 29.3), in `plx_machine` 29.2 s (min 29.2), in `plx_platform` 28.9 s (min
+28.6), in `plx_gfx` 27.7 s (min 27.6), in `plx_net` 27.3 s (min 27.1), of the application crate
+26.7 s (min 26.6), the hub edit 26.8 s (min 26.6), and the unit suite 67.7 s (min 67.5) with 5606
+tests (the base moved: 3 new Home tests). Every edit is 1.4 to 2.4 s faster, which is what 25k of
+450k lines leaving the application crate buys; the application crate is still about 27 s of every
+row. The unit suite is 5 s slower: six test binaries are linked and started where four were, and
+the two new ones link SDL/GL (`plx_gfx`) and build the TLS fixtures (`plx_net`).
 
 ## Limits of the analysis
 

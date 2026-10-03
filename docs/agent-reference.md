@@ -640,8 +640,8 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
-  pinned** libavformat shipped beside the binary, *not* the TV's), `stream.rs`/`aq.rs` (HTTP socket
-  → AU pipeline), `net.rs` (libcurl/TLS), and the Plex data layer (`plex/` — **its own
+  pinned** libavformat shipped beside the binary, *not* the TV's), `aq.rs` (the AU pipeline behind
+  `plx_net`'s HTTP socket, `rust-modules/net/src/stream.rs`; libcurl/TLS is `rust-modules/net/src/net.rs`), and the Plex data layer (`plex/` — **its own
   `rust-modules/src/plex/CLAUDE.md`**, which the rest of this file never pointed at: read it before
   adding a PMS query, and before assuming there is one server. There is a REGISTRY behind
   `client()` now — the app can hold a friend's shared server beside your own, each with its own
