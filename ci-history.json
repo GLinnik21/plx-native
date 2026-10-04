@@ -1,4 +1,4 @@
-{"updated":"2026-10-04T00:10:18Z",
+{"updated":"2026-10-04T00:27:19Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -276,7 +276,8 @@
 {"id":37155099954,"at":"2026-10-03T21:26:19Z","sha":"464ceb339","title":"mock_pms: --home-hubs N serves an arbitrary number of Home hubs","pr":404,"jobs":{"host unit tests (default features)":309,"host lint + type-checks":201,"host python/shell/C gates":300,"cross-build (armv7) + artifact assertions":234,"host unit tests (hostsim)":244,"host checks (NOT a device gate)":11}},
 {"id":37156900255,"at":"2026-10-03T21:59:08Z","sha":"2ed544882","title":"Home: per-frame cost no longer follows the row count","pr":405,"jobs":{"host unit tests (default features)":310,"host unit tests (hostsim)":185,"cross-build (armv7) + artifact assertions":229,"host python/shell/C gates":308,"host lint + type-checks":203,"host checks (NOT a device gate)":3}},
 {"id":37162301147,"at":"2026-10-03T23:36:09Z","sha":"8667c0688","title":"Home: the grid is sized to the published rows, not a fixed 16-slot array","pr":408,"jobs":{"host unit tests (default features)":311,"host python/shell/C gates":311,"host lint + type-checks":160,"host unit tests (hostsim)":255,"cross-build (armv7) + artifact assertions":242,"host checks (NOT a device gate)":4}},
-{"id":37163809454,"at":"2026-10-04T00:04:55Z","sha":"c48324261","title":"Home: no shelf cap; a shelf is published whole or not at all","pr":409,"jobs":{"host python/shell/C gates":307,"cross-build (armv7) + artifact assertions":216,"host lint + type-checks":194,"host unit tests (default features)":307,"host unit tests (hostsim)":245,"host checks (NOT a device gate)":3}}
+{"id":37163809454,"at":"2026-10-04T00:04:55Z","sha":"c48324261","title":"Home: no shelf cap; a shelf is published whole or not at all","pr":409,"jobs":{"host python/shell/C gates":307,"cross-build (armv7) + artifact assertions":216,"host lint + type-checks":194,"host unit tests (default features)":307,"host unit tests (hostsim)":245,"host checks (NOT a device gate)":3}},
+{"id":37164708323,"at":"2026-10-04T00:21:40Z","sha":"b099d8b1f","title":"Split: the gfx and net layers are their own crates (plx_gfx, plx_net)","pr":407,"jobs":{"cross-build (armv7) + artifact assertions":230,"host lint + type-checks":195,"host unit tests (default features)":323,"host python/shell/C gates":303,"host unit tests (hostsim)":240,"host checks (NOT a device gate)":2}}
 ],
 "sim":[
 {"id":34841379409,"at":"2026-09-14T12:03:51Z","sha":"6073ae00c","title":"Add Windows WSLg and Linux simulator support","jobs":{"Linux simulator build + launch":126,"macOS simulator build + launch":161,"Windows launcher syntax":19},"pr":94},
