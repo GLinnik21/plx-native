@@ -239,8 +239,22 @@ serde_json = { version = "1", default-features = false, features = ["alloc", "st
 # derive(Deserialize) for the typed plex API response models (plex/src/plex/models.rs)
 serde = { version = "1", default-features = false, features = ["derive", "alloc", "rc"] }
 
+# The release profile (the ARM staticlib, the storage helper, `make sim-linux` and `make macapp`;
+# the host dev/test profile is untouched). `lto = "fat"` and `codegen-units = 1` are here because of
+# the crate split (docs/module-layers.md): with the default 16 codegen units and no LTO, a function
+# can no longer be inlined or dropped across a layer crate boundary, so every wave of the split grew
+# the shipped binary (11,304,028 B before the split, 12,553,756 B after wave 4, over the 12,426,000 B
+# budget in ci/build-budgets.json). Fat LTO with one codegen unit restores what the single crate
+# had, and measured in CI it gives 11,098,900 B for wave 4, below the pre-split size. It also gives
+# back the cross-crate inlining that the UI's per-frame code relied on.
+#
+# What it costs is build time, paid only by release-profile builds: CI's ARM library build went from
+# 2m40 to 4m15 and a local one from 44 s to 94 s. `make check` and the host tests run the dev profile
+# and do not pay it.
 [profile.release]
 opt-level = 2
+lto = "fat"
+codegen-units = 1
 
 [dev-dependencies]
 # The `cfg(test)` fixtures of the base layer (`testlock`, `testnet`, ...): a dependency is never

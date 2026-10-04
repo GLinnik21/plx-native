@@ -394,6 +394,10 @@ on. Each extraction:
   dependencies because `cargo metadata` unifies features across dependency kinds (host-lint job;
   the tool now reads `cargo tree`). Then
   `grep -rn "rust-modules/src/" tools ci tests Makefile .github` for each moved module name.
+- watches `binary_bytes` each wave. A crate boundary stops inlining and dead-code removal across it,
+  so the shipped binary grows with every layer unless the release profile pays it back; the CI
+  "Binary size budget" table of the cross-build job is where it shows ("What the split cost the
+  binary" below).
 
 ### Split 1: base
 
@@ -1493,6 +1497,34 @@ binaries (157 + 66 + 218 + 94 + 128 + 756 + 458 + 236 + 425 + 258 + 2841, seven 
 edit is 7.5 s faster and an edit in a layer 5 to 8 s: 54k lines (`data` and `session`) no
 longer recompile behind it, and an edit in `gfx` or `ui`, which neither new crate depends on,
 rebuilds the application only. The no-op build is 0.1 s in both.
+
+## What the split cost the binary, and how the release profile pays it back
+
+The split made the shipped binary bigger, wave by wave. Every layer crate is compiled on its own,
+and with the default release profile (no LTO, 16 codegen units) a function can no longer be inlined
+into, or dropped from, the crate above it when it lives behind a crate boundary. `binary_bytes` in
+`ci/build-budgets.json` is the stripped ARM `plxnative` that the cross-build job stages (default
+features, dev flavour), and CI's "Binary size budget" table reported:
+
+| After | binary_bytes |
+|---|---:|
+| before the split | 11,304,028 |
+| base | 11,422,940 |
+| machine | 11,398,388 |
+| gfx, net | 11,681,228 |
+| ui, plex | 12,115,476 |
+| telemetry | 12,148,252 |
+| data, session, no LTO | 12,553,756 |
+| data, session, `lto = "fat"` and `codegen-units = 1` | 11,098,900 |
+
+The last no-LTO figure is over the 12,426,000 limit, which is what made wave 4 red. The two
+`[profile.release]` keys in `rust-modules/Cargo.toml` take the result below the pre-split size,
+because whole-program optimisation with a single codegen unit sees the same code the single crate
+did. They also restore the cross-crate inlining the single crate had, which the per-frame UI code
+leans on. Only release-profile builds pay for it (the ARM staticlib and the storage helper, the
+Linux simulator of `make sim-linux` and `make macapp`); the dev profile that `make check`, the host
+tests and the macOS simulator use is untouched. The price is build time: CI's ARM library build
+went from 2m40 to 4m15, and a local one from 44 s to 94 s.
 
 ## Limits of the analysis
 
