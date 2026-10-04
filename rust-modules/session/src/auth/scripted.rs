@@ -32,7 +32,7 @@
 /// that family through `StatusOverlay`'s host geometry tests and its shared `page()` code path
 /// instead (the same function every case here also draws through).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ReadoutCase {
+pub enum ReadoutCase {
     PinCreate,
     PinExpired,
     Authorization,
@@ -47,7 +47,7 @@ pub(crate) enum ReadoutCase {
     SaveFailed,
 }
 
-pub(crate) fn readout_case() -> Option<ReadoutCase> {
+pub fn readout_case() -> Option<ReadoutCase> {
     plx_base::devtrig::read("readout").and_then(|s| match s.trim() {
         "pin_create" => Some(ReadoutCase::PinCreate),
         "pin_expired" => Some(ReadoutCase::PinExpired),
@@ -74,7 +74,7 @@ impl ReadoutCase {
     /// The account name the canned failure carries to the screen (`LoginProgress::Failed::account`),
     /// the way a real no-server sign-in does: composed and measured there, not here. Only
     /// `discovery_no_servers` has one.
-    pub(crate) fn canned_account(self) -> Option<String> {
+    pub fn canned_account(self) -> Option<String> {
         if self != Self::DiscoveryNoServers { return None; }
         Some(plx_base::devtrig::read("readout-account").unwrap_or_else(|| MOCK_ACCOUNT.to_string()))
             .filter(|name| !name.trim().is_empty())
@@ -82,7 +82,7 @@ impl ReadoutCase {
     /// The canned caption + [`IncidentContext`](plx_telemetry::telemetry::incident::IncidentContext)
     /// `login_worker_with_output` feeds `output_failed_naming` (with [`Self::canned_account`]) in place of the real network calls — see
     /// [`readout_case`]'s doc.
-    pub(crate) fn canned_login_failure(
+    pub fn canned_login_failure(
         self,
     ) -> (std::borrow::Cow<'static, str>, plx_telemetry::telemetry::incident::IncidentContext) {
         use plx_platform::i18n::msg;
@@ -164,14 +164,14 @@ fn synthetic_dns_failure() -> plx_net::net::RequestFailure {
 }
 
 fn signinfail_spec() -> Option<String> {
-    if cfg!(test) { return None; }
+    if cfg!(any(test, feature = "test-support")) { return None; }
     plx_base::devtrig::read("signinfail")
 }
 
 /// `/tmp/plxnative-signinfail[=error]` — every sign-in code request fails as an unresolvable
 /// plex.tv would. Re-read at each attempt, so *Try again* fails the same way until it is removed.
 /// `None` means "make the real request".
-pub(crate) fn signin_trouble_create()
+pub fn signin_trouble_create()
     -> Option<Result<plx_plex::plex::account::Pin, plx_plex::plex::account::CallEvidence>> {
     match signinfail_spec()?.as_str() {
         "" | "error" => {
@@ -184,7 +184,7 @@ pub(crate) fn signin_trouble_create()
 
 /// `/tmp/plxnative-signinfail=stall` — the code is real, but every poll of it goes unanswered, so
 /// the wait reaches the stalled rule (`auth::LINK_TROUBLE_AFTER`) exactly as a dropped link would.
-pub(crate) fn signin_trouble_poll() -> Option<plx_plex::plex::account::PinPoll> {
+pub fn signin_trouble_poll() -> Option<plx_plex::plex::account::PinPoll> {
     (signinfail_spec()?.as_str() == "stall")
         .then(|| plx_plex::plex::account::PinPoll::Unreachable(Err(synthetic_dns_failure())))
 }
@@ -192,7 +192,7 @@ pub(crate) fn signin_trouble_poll() -> Option<plx_plex::plex::account::PinPoll> 
 /// `/tmp/plxnative-signinfail=resources|resources-blip` — fail the plex.tv resource listing on
 /// every attempt, or on its first attempt only. The latter exercises the in-place retry while the
 /// sign-in screen remains in Discovering.
-pub(crate) fn signin_trouble_resources()
+pub fn signin_trouble_resources()
     -> Option<Result<Vec<plx_plex::plex::account::Resource>, plx_plex::plex::account::CallEvidence>> {
     static BLIPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     match signinfail_spec()?.as_str() {

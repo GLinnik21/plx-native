@@ -85,7 +85,7 @@ fn p1_adapter_does_not_complete_an_erase_with_an_incomplete_sweep() {
     let completed = adapter.take_erased(&mut meta);
     plx_base::storage_worker::drain_for_test();
     let completed = completed.or_else(|| adapter.take_erased(&mut meta));
-    assert!(matches!(completed, Some(crate::auth::owner::SessionEvent::Erased { epoch: 1, .. })),
+    assert!(matches!(completed, Some(plx_session::auth::owner::SessionEvent::Erased { epoch: 1, .. })),
         "the same pending erase completes only after a successful retry");
     assert!(cache_revoked());
 }

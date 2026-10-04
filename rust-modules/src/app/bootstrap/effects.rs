@@ -250,7 +250,7 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
 }
 
 pub(crate) fn message(message: &AppMsg) -> Result<Value, &'static str> {
-    use crate::auth::owner::SessionEvent;
+    use plx_session::auth::owner::SessionEvent;
     Ok(match message {
         AppMsg::Session(event) => match event {
             SessionEvent::Command(command) => json!({"command":wire(command)?}),

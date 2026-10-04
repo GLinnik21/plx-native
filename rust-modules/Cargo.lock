@@ -647,6 +647,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_session"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "plx_base",
+ "plx_machine",
+ "plx_net",
+ "plx_platform",
+ "plx_plex",
+ "plx_telemetry",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plx_telemetry"
 version = "0.0.0"
 dependencies = [
@@ -686,6 +701,7 @@ dependencies = [
  "plx_net",
  "plx_platform",
  "plx_plex",
+ "plx_session",
  "plx_telemetry",
  "plx_ui",
  "serde",

@@ -355,7 +355,7 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     plx_plex::plex::grant::offered(plx_plex::plex::grant::scope(), verdict.clone());
     step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
-    let offer = crate::auth::plaintext_copy(Some(&verdict), crate::auth::ReadoutSurface::SignedIn);
+    let offer = plx_session::auth::plaintext_copy(Some(&verdict), plx_session::auth::ReadoutSurface::SignedIn);
     assert_eq!(overlay.reason.and_then(|r| r.to_str().ok()), Some(offer.as_ref()));
     assert_eq!((overlay.glyph, overlay.action), (Some(Icon::ServerBadgeMinus), Some(plaintext_question::connect())));
     plx_plex::plex::grant::reset_for_test();
@@ -2261,7 +2261,7 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     let measure = FixtureMeasure;
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!(overlay.action, Some(plaintext_question::connect()));
-    let reason = crate::auth::plaintext_copy(Some(&verdict), crate::auth::ReadoutSurface::SignedIn);
+    let reason = plx_session::auth::plaintext_copy(Some(&verdict), plx_session::auth::ReadoutSurface::SignedIn);
     assert_eq!(overlay.reason.and_then(|r| r.to_str().ok()), Some(reason.as_ref()));
     let drawn = overlay.action_frame_measured(&measure).unwrap();
     let hit = s.hero_button_rect(view, 0, &measure).unwrap();
@@ -2286,7 +2286,7 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     let connect = Some(FocusKey { entry, elem: PLAINTEXT_CONNECT_ELEM });
     let (_, answered, _) = step(&mut s, view, connect, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
     let answers: Vec<_> = answered.iter().filter_map(|st| match &st.fx {
-        Fx::App(AppFx::Session(crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }))
+        Fx::App(AppFx::Session(plx_session::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }))
             if machine_id == "lan-machine" => Some(*choice),
         _ => None,
     }).collect();

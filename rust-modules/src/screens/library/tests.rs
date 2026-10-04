@@ -877,7 +877,7 @@ fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
     page.step(&ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &fixture.cx(Some(page.key(PLAINTEXT_CONNECT))),
         &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
     let answers: Vec<_> = out.iter().filter_map(|e| match &e.fx {
-        Fx::App(AppFx::Session(crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, sid: target }))
+        Fx::App(AppFx::Session(plx_session::auth::SessionCmd::AnswerPlaintext { machine_id, choice, sid: target }))
             if machine_id == "lan-machine" => Some((*choice, *target)),
         _ => None,
     }).collect();

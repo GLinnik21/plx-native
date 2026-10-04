@@ -5,9 +5,9 @@
 //! (these four were `auth_session_worker_tests.rs`'s).
 
 use crate::app::adapters::session::SessionAdapter;
-use crate::auth::owner::{self, SessionArrival, SessionOp, SessionWorkKey};
-use crate::auth::test_support::cached_session;
-use crate::auth::{
+use plx_session::auth::owner::{self, SessionArrival, SessionOp, SessionWorkKey};
+use plx_session::auth::test_support::cached_session;
+use plx_session::auth::{
     discovery_insecure_only_message, observation, profile_switch_worker_with_io,
     profile_switch_worker_with_output, settled_probe_for_test, ProfileSwitchOutcomeProgress,
     ProfileSwitchProgress, ProfileWorkIo, SessionIdentity, SettledProbe, UserTile,

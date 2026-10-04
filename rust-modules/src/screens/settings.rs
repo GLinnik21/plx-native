@@ -1374,10 +1374,10 @@ impl RootPage {
 impl RootPage {
     /// The question was answered: send the one command it became (a *Connect* shows the switch
     /// on at once; Session records it and re-finds the server), and hand focus back to the table.
-    fn alert_answer(&mut self, cmd: Option<crate::auth::SessionCmd>, directory: plx_data::stores::browse::DirectoryView<'_>,
+    fn alert_answer(&mut self, cmd: Option<plx_session::auth::SessionCmd>, directory: plx_data::stores::browse::DirectoryView<'_>,
         fx: &mut Effects<'_, InnerHost>) {
         if let Some(cmd) = cmd {
-            if let crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. } = &cmd {
+            if let plx_session::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. } = &cmd {
                 if choice.allows() {
                     self.pending_plaintext = Some((machine_id.clone(), true));
                 }

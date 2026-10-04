@@ -149,7 +149,7 @@ fn screen_input_codec_retains_full_time_source_edge_and_hit_identity() {
 
 fn activate(bridge: &mut super::super::bridge::Bridge) {
     let mut dispatcher = plx_ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
-    super::super::bridge::execute_session_command(&mut dispatcher,crate::auth::SessionCmd::ActivateDevBootstrap);
+    super::super::bridge::execute_session_command(&mut dispatcher,plx_session::auth::SessionCmd::ActivateDevBootstrap);
     dispatcher.frame_with(bridge,Tick::default(),Vec::new(),Vec::new(),&mut plx_ui::dispatch::NoTap,false);
     assert!(bridge.take_session_ready().is_some());
 }

@@ -691,7 +691,7 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
     let connect = FocusKey { entry: EntryId(0), elem: super::super::registry::ALERT + 1 };
     root.step(&ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &cx(Some(connect)), &mut fx);
     let answers: Vec<_> = out.iter().filter_map(|st| match &st.fx {
-        Fx::App(super::super::registry::AppFx::Session(crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }))
+        Fx::App(super::super::registry::AppFx::Session(plx_session::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }))
             if machine_id == "lan-machine" => Some(*choice),
         _ => None,
     }).collect();

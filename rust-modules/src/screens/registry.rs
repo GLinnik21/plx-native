@@ -39,8 +39,8 @@ pub(crate) mod tile_facts;
 
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub(crate) enum AppFx {
-    Session(crate::auth::SessionCmd),
-    SessionEffect(crate::auth::owner::SessionFx),
+    Session(plx_session::auth::SessionCmd),
+    SessionEffect(plx_session::auth::owner::SessionFx),
     /// Account and install preference IO, admitted by the application before work starts.
     Preferences(PreferenceCmd),
     /// A store command, executed as a `Deliver` to the store machine in the same drain.
@@ -1033,7 +1033,7 @@ impl<H: LibraryLike> DirectoryLike for H {
 
 /// Session's immutable frame publication; playback retains its separate `session` view.
 pub(crate) trait AuthLike: AppLike + Sized {
-    fn auth<'a>(cx: &Cx<'a, Self>) -> crate::auth::SessionRead<'a>;
+    fn auth<'a>(cx: &Cx<'a, Self>) -> plx_session::auth::SessionRead<'a>;
 }
 
 /// An item's server reconciliation obligation. Detail owns this independently of its cancellable
@@ -1047,7 +1047,7 @@ pub(crate) enum DetailRefreshPhase {
 
 /// The application's messages (spec §3.1).
 pub(crate) enum AppMsg {
-    Session(crate::auth::owner::SessionEvent),
+    Session(plx_session::auth::owner::SessionEvent),
     Consent(ConsentCmd),
     RestartReply { correlation: u32, accepted: bool },
     SelectionReply { correlation: u32, accepted: bool, flow_epoch: u64 },
@@ -1097,7 +1097,7 @@ pub(crate) enum LoopReq {
     OnboardBack,
     /// **Phase 10, the profile menu's five rows.** `screens::account_menu` is a surface on the
     /// shared `ModalStack` and owns its own rows, cursor and dismissal — but not one of the five
-    /// things a row DOES. Three call `crate::auth` and then flip `app.route` (a screen may not
+    /// things a row DOES. Three call `plx_session::auth` and then flip `app.route` (a screen may not
     /// name `Route` at all, §2.1); one presents another surface, whose `Style` is the
     /// application's to choose and not a screen's (`Navigation::next_style`); and one reaches
     /// `crate::lab`. Each is therefore a request the loop performs, exactly as `LibraryReq` and
@@ -1773,7 +1773,7 @@ where
             AppArg::Profiles => {
                 let screen = crate::screens::profiles::ProfilesScreen::new(entry, H::auth(cx));
                 fx.push(plx_machine::machine::Fx::App(AppFx::Session(
-                    crate::auth::SessionCmd::DismissPinError,
+                    plx_session::auth::SessionCmd::DismissPinError,
                 )));
                 Box::new(screen)
             }

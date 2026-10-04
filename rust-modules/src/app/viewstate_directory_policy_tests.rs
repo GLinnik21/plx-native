@@ -384,7 +384,7 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
             &parts, &mut fx), Handled::Yes);
         drop(fx);
         assert_eq!(effects.iter().map(|effect| match &effect.fx {
-            Fx::App(AppFx::Session(crate::auth::SessionCmd::RequestEndpoint { sid })) => *sid,
+            Fx::App(AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid })) => *sid,
             _ => panic!("Hubs recovery was not preserved as a Session effect"),
         }).collect::<Vec<_>>(), [own],
             "the command must use the retained directory before landing or ticking");

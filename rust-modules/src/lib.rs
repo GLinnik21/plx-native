@@ -13,7 +13,6 @@ mod abr; // client-managed fixed-session HLS controller: estimate, propose, prim
 mod app; // run_application — the Rust app core / event loop (the entry inverted from main.c; port.rs's `plex_run` hands over to it)
 mod appkit; // widgets shared by several screens, composed from `ui` over application types (the player HUD, the track menus, the Sources row model)
 mod aq;
-mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
 mod coldstart; // retires old last-page bookmarks; authenticated cold boots now stay on Home
 mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)

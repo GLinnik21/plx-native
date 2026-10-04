@@ -5229,7 +5229,7 @@ class DepGates(unittest.TestCase):
         "ci",
         "rust-modules/src",
         # The layer crates split out of `src`: `ci/check-deps.sh` reads them as `SRC_BASE`,
-        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM`, `SRC_GFX`, `SRC_UI`, `SRC_PLEX`, `SRC_TELEMETRY` and `SRC_DATA`, so a copy without them grades a different
+        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM`, `SRC_GFX`, `SRC_UI`, `SRC_PLEX`, `SRC_TELEMETRY`, `SRC_DATA` and `SRC_SESSION`, so a copy without them grades a different
         # tree than the checkout.
         "rust-modules/base/src",
         "rust-modules/machine/src",
@@ -5240,12 +5240,14 @@ class DepGates(unittest.TestCase):
         "rust-modules/plex/src",
         "rust-modules/telemetry/src",
         "rust-modules/data/src",
+        "rust-modules/session/src",
         "rust-modules/Cargo.toml",
         "rust-modules/build.rs",
         "rust-modules/net/Cargo.toml",
         "rust-modules/plex/Cargo.toml",
         "rust-modules/telemetry/Cargo.toml",
         "rust-modules/data/Cargo.toml",
+        "rust-modules/session/Cargo.toml",
         "rust-modules/platform/Cargo.toml",
         "rust-modules/platform/build.rs",
         "rust-modules/gfx/Cargo.toml",
@@ -5301,7 +5303,7 @@ class DepGates(unittest.TestCase):
         """The untouched copy above cannot see an input that was left out of `TREE_INPUTS` -- a
         gate that scans nothing is green. So plant what the `fpflags` rule looks for in each file
         it scans, inside the copy, and require the rule to go red naming it."""
-        for rel in ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/plex/Cargo.toml", "rust-modules/telemetry/Cargo.toml", "rust-modules/data/Cargo.toml", "rust-modules/platform/Cargo.toml",
+        for rel in ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/plex/Cargo.toml", "rust-modules/telemetry/Cargo.toml", "rust-modules/data/Cargo.toml", "rust-modules/session/Cargo.toml", "rust-modules/platform/Cargo.toml",
                     "rust-modules/platform/build.rs", "rust-modules/gfx/Cargo.toml",
                     "rust-modules/gfx/build.rs", "rust-modules/ui/Cargo.toml", "rust-modules/ui/build.rs",
                     "rust-modules/storage/Cargo.toml",

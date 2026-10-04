@@ -1953,7 +1953,7 @@ pub(crate) fn controlled_each_frame(app: &mut App, fr: &mut Frame) -> bool {
 pub(crate) fn pickuser_tick(app: &mut App) {
     if !(matches!(app.route(), AppArg::Profiles)
         && app.scenarios.pick_user.is_some()
-        && app.bridge.auth_read().0.phase == crate::auth::Phase::Profiles
+        && app.bridge.auth_read().0.phase == plx_session::auth::Phase::Profiles
         && !app.bridge.auth_read().0.users.is_empty())
     {
         return;
@@ -1973,7 +1973,7 @@ pub(crate) fn pickuser_tick(app: &mut App) {
     } else {
         plx_base::eventlog::log(&format!("pickuser: auto-selecting roster index {idx}"));
         crate::app::bridge::execute_session_command(&mut app.pages,
-            crate::auth::SessionCmd::SelectProfile { index: idx, pin: None });
+            plx_session::auth::SessionCmd::SelectProfile { index: idx, pin: None });
     }
 }
 

@@ -153,7 +153,7 @@ pub(crate) enum Entropy {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Initial {
     pub version: u32,
-    pub session: crate::auth::SessionInit,
+    pub session: plx_session::auth::SessionInit,
     pub consent: plx_telemetry::telemetry::consent::Consent,
     pub home: plx_data::pms::initial::Initial,
     pub clock_start: u32,
@@ -193,7 +193,7 @@ impl Initial {
         let primary = plx_plex::plex::session::ServerRef { address:"127.0.0.1".into(), port:i64::from(port),
             origin_url:origin.base(),token:format!("s{:08x}",seed.wrapping_add(1)),
             tier:Some(plx_plex::plex::probe::Location::Local), ..Default::default() };
-        let initial = Self { version:1, session:crate::auth::SessionInit::captured_boot(saved,Some(primary),Vec::new()),
+        let initial = Self { version:1, session:plx_session::auth::SessionInit::captured_boot(saved,Some(primary),Vec::new()),
             consent:Default::default(),home:plx_data::pms::initial::Initial::fresh(),clock_start:0,
             entropy:Entropy::Seeded(seed),primary_client:1,automated:true,settings:settings.clone(),
             content:None, triggers:vec!["plxnative-app-init".into(),"plxnative-rec".into(),
@@ -215,7 +215,7 @@ impl Initial {
             tier: Some(plx_plex::plex::probe::configured_tier(host)), ..Default::default()
         });
         let initial = Self { version: 1,
-            session: crate::auth::SessionInit::captured_boot(saved, primary, Vec::new()),
+            session: plx_session::auth::SessionInit::captured_boot(saved, primary, Vec::new()),
             consent: plx_telemetry::telemetry::capture_initial(), clock_start: 0, entropy: Entropy::Captured(entropy),
             primary_client: plx_plex::plex::Client::capture_generation_seed(),
             automated: crate::dev::any_trigger_present(),
@@ -228,7 +228,7 @@ impl Initial {
         Ok((initial, Some(deferred)))
     }
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
-        use crate::auth::owner::BootstrapAuthority;
+        use plx_session::auth::owner::BootstrapAuthority;
         let s = &self.session;
         if self.version != 1 { return Err("unsupported initial version"); }
         if self.primary_client == 0 { return Err("invalid primary client binding"); }
@@ -236,7 +236,7 @@ impl Initial {
             return Err("unsupported initial consent route");
         }
         if !self.home.validate_boot() { return Err("unsupported populated Home initial state"); }
-        if s.phase != crate::auth::Phase::Idle || s.epoch != 1 || s.next_req != 0
+        if s.phase != plx_session::auth::Phase::Idle || s.epoch != 1 || s.next_req != 0
             || !s.pending.is_empty() || s.pending_commit.is_some() || s.pending_erase.is_some()
             || !s.inbox.is_empty() || s.pump_pending || s.signin_active || s.apply_pending
             || s.active_profile.is_some() || s.profile_scope.0 != 0 {
@@ -245,7 +245,7 @@ impl Initial {
         let BootstrapAuthority::DevPms { primary, extras } = &s.authority else {
             return Err("unsupported replay bootstrap authority");
         };
-        let reconstructed = crate::auth::SessionInit::captured_boot(s.persisted.clone(), Some(primary.clone()), extras.clone());
+        let reconstructed = plx_session::auth::SessionInit::captured_boot(s.persisted.clone(), Some(primary.clone()), extras.clone());
         if serde_json::to_value(&reconstructed).map_err(|_| "invalid initial Session")?
             != serde_json::to_value(s).map_err(|_| "invalid initial Session")? {
             return Err("incoherent initial Session");

@@ -1944,18 +1944,18 @@ fn loop_requests(app: &mut App) {
             // `enter_profiles_from_onboard`'s doc.
             crate::screens::registry::LoopReq::AccountChangeProfile => {
                 super::bridge::execute_session_command(&mut app.pages,
-                    crate::auth::SessionCmd::StartSwitch(crate::auth::Picker::ChangeProfile));
+                    plx_session::auth::SessionCmd::StartSwitch(plx_session::auth::Picker::ChangeProfile));
                 // **`switch_profile`, not a bare `Root(Profiles)`.** Every page of the outgoing
                 // profile is dropped with its `ReturnState` and its body — see
                 // `switching_profile_leaves_the_container_holding_nothing_of_the_previous_profile`.
                 super::bridge::switch_profile(&mut app.pages);
             }
             crate::screens::registry::LoopReq::AccountSignIn => {
-                super::bridge::execute_session_command(&mut app.pages, crate::auth::SessionCmd::StartLogin);
+                super::bridge::execute_session_command(&mut app.pages, plx_session::auth::SessionCmd::StartLogin);
                 super::bridge::nav_root(&mut app.pages, AppArg::Login);
             }
             crate::screens::registry::LoopReq::AccountSignOut => {
-                super::bridge::execute_session_command(&mut app.pages, crate::auth::SessionCmd::SignOut);
+                super::bridge::execute_session_command(&mut app.pages, plx_session::auth::SessionCmd::SignOut);
                 super::bridge::nav_root(&mut app.pages, AppArg::Login);
             }
             // The host route does NOT move: Settings is a surface presented over the same page,

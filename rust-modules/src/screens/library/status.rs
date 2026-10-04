@@ -88,8 +88,8 @@ impl LibraryScreen {
                 // A server discovery offers "Connect without encryption?" for says why instead,
                 // and names what *Connect* / *Try again* does (`auth::plaintext_copy`).
                 let reason = match self.plaintext.verdict() {
-                    Some(verdict) => Some(crate::auth::plaintext_copy(Some(verdict),
-                        crate::auth::ReadoutSurface::SignedIn).into_owned()),
+                    Some(verdict) => Some(plx_session::auth::plaintext_copy(Some(verdict),
+                        plx_session::auth::ReadoutSurface::SignedIn).into_owned()),
                     // else a wrong clock, then who shares the server.
                     None => match self.clock_cause() {
                         Some((reason, _)) => Some(reason.to_string_lossy().into_owned()),

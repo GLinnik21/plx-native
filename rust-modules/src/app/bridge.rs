@@ -97,7 +97,7 @@ fn refresh_chrome(
 
 #[derive(Clone, Copy)]
 pub(crate) struct AppViews<'a> {
-    pub(crate) auth: crate::auth::SessionRead<'a>,
+    pub(crate) auth: plx_session::auth::SessionRead<'a>,
     pub(crate) hubs: plx_data::pms::HubsView<'a>,
     pub(crate) listing: plx_data::stores::browse::ListingView<'a>,
     pub(crate) directory: plx_data::stores::browse::DirectoryView<'a>,
@@ -182,25 +182,25 @@ impl crate::screens::registry::CollectionLike for AppHost {
 }
 
 impl crate::screens::registry::AuthLike for AppHost {
-    fn auth<'a>(cx: &Cx<'a, Self>) -> crate::auth::SessionRead<'a> { cx.views.auth }
+    fn auth<'a>(cx: &Cx<'a, Self>) -> plx_session::auth::SessionRead<'a> { cx.views.auth }
 }
 
-impl crate::auth::owner::SessionHost for AppHost {
-    fn session_effect(effect: crate::auth::owner::SessionFx) -> AppFx {
+impl plx_session::auth::owner::SessionHost for AppHost {
+    fn session_effect(effect: plx_session::auth::owner::SessionFx) -> AppFx {
         AppFx::SessionEffect(effect)
     }
 }
 
 impl plx_data::stores::StoreEffectHost for AppHost {
     fn endpoint_refresh(request: plx_data::stores::EndpointRefresh) -> AppFx {
-        AppFx::Session(crate::auth::SessionCmd::RequestEndpoint { sid: request.sid })
+        AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid: request.sid })
     }
 }
 
 /// Queue an application command on the same drain as screen effects and worker observations.
-pub(crate) fn execute_session_command(d: &mut Dispatcher<AppHost>, command: crate::auth::SessionCmd) {
+pub(crate) fn execute_session_command(d: &mut Dispatcher<AppHost>, command: plx_session::auth::SessionCmd) {
     d.emit(MachineId::Nav, Fx::Deliver(MachineId::Session,
-        Delivery::Machine(AppMsg::Session(crate::auth::owner::SessionEvent::Command(command)))));
+        Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command)))));
 }
 
 pub(crate) fn execute_endpoint_outcomes(d: &mut Dispatcher<AppHost>, endpoints: plx_data::stores::EndpointRefreshSet) {
@@ -209,10 +209,10 @@ pub(crate) fn execute_endpoint_outcomes(d: &mut Dispatcher<AppHost>, endpoints: 
 
 fn execute_endpoint_outcomes_with(
     endpoints: plx_data::stores::EndpointRefreshSet,
-    mut execute: impl FnMut(crate::auth::SessionCmd),
+    mut execute: impl FnMut(plx_session::auth::SessionCmd),
 ) {
     for request in endpoints.iter() {
-        execute(crate::auth::SessionCmd::RequestEndpoint { sid: request.sid });
+        execute(plx_session::auth::SessionCmd::RequestEndpoint { sid: request.sid });
     }
 }
 
@@ -300,9 +300,9 @@ pub(crate) struct Bridge {
     home_io: Option<super::bootstrap::HomeIo>,
     recorded_clients: std::collections::BTreeMap<u32, &'static plx_plex::plex::Client>,
     initial_subhash: u64,
-    session: crate::auth::SessionMachine,
+    session: plx_session::auth::SessionMachine,
     session_adapter: super::adapters::session::SessionAdapter,
-    session_ready: Option<(u64, crate::auth::owner::ProfileScope, plx_plex::plex::session::ServerRef, String, crate::auth::owner::ReadyInstall)>,
+    session_ready: Option<(u64, plx_session::auth::owner::ProfileScope, plx_plex::plex::session::ServerRef, String, plx_session::auth::owner::ReadyInstall)>,
     consent_adapter: super::adapters::consent::ConsentAdapter,
     stores: plx_data::stores::Stores,
     mounter: AppMounter,
@@ -428,7 +428,7 @@ impl Bridge {
             failure: None, profile: bridge.session_adapter.profile_resource_view().expect("controlled publisher") });
         bridge
     }
-    pub(crate) fn new(now_us: fn() -> u64, init: crate::auth::SessionInit,
+    pub(crate) fn new(now_us: fn() -> u64, init: plx_session::auth::SessionInit,
         consent: plx_telemetry::telemetry::consent::Consent, mt: &plx_base::task::MainThread) -> Self {
         // A `static`, not `&TtfMeasure` inline: a unit-struct literal DOES const-promote to
         // `'static` today, but that is a rule about the expression rather than a promise about
@@ -446,13 +446,13 @@ impl Bridge {
     pub(crate) fn for_test(now_us: fn() -> u64) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_measure(&FIXTURE, now_us,
-            crate::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
+            plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), Default::default(),
             super::adapters::consent::ConsentAdapter::fixture())
     }
 
     fn with_measure(measure: &'static dyn Measure, now_us: fn() -> u64,
-        init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+        init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter) -> Self {
         let stores = plx_data::stores::Stores::default();
@@ -469,7 +469,7 @@ impl Bridge {
     }
 
     #[cfg(test)]
-    fn for_session_test(init: crate::auth::SessionInit) -> Self {
+    fn for_session_test(init: plx_session::auth::SessionInit) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         let adapter = super::adapters::session::SessionAdapter::fixture_with(init.persisted.clone());
         Self::with_publications(&FIXTURE, || 0, init, adapter, Default::default(),
@@ -485,7 +485,7 @@ impl Bridge {
     fn for_consent_test(consent: plx_telemetry::telemetry::consent::Consent) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_publications(&FIXTURE, || 0,
-            crate::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
+            plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), consent,
             super::adapters::consent::ConsentAdapter::fixture(), StorePublications {
                 hubs: plx_data::pms::HubsSnapshot::empty_for_test(),
@@ -499,7 +499,7 @@ impl Bridge {
     pub(crate) fn for_consent_resource_test(consent: plx_telemetry::telemetry::consent::Consent) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_publications(&FIXTURE, || 0,
-            crate::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
+            plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), consent,
             super::adapters::consent::ConsentAdapter::live(), StorePublications {
                 hubs: plx_data::pms::HubsSnapshot::empty_for_test(),
@@ -511,7 +511,7 @@ impl Bridge {
 
     #[cfg(test)]
     fn with_publications(measure: &'static dyn Measure, now_us: fn() -> u64,
-        init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+        init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications) -> Self {
@@ -520,7 +520,7 @@ impl Bridge {
     }
 
     fn with_publications_and_stores(measure: &'static dyn Measure, now_us: fn() -> u64,
-        init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+        init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications, stores: plx_data::stores::Stores) -> Self {
@@ -529,7 +529,7 @@ impl Bridge {
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
             initial_subhash: 0,
-            session: crate::auth::SessionMachine::from_init(init),
+            session: plx_session::auth::SessionMachine::from_init(init),
             session_adapter,
             session_ready: None,
             consent_adapter,
@@ -580,7 +580,7 @@ impl Bridge {
         std::mem::take(&mut self.reqs)
     }
 
-    pub(crate) fn auth_read(&self) -> crate::auth::SessionRead<'_> { self.session.read() }
+    pub(crate) fn auth_read(&self) -> plx_session::auth::SessionRead<'_> { self.session.read() }
 
     /// Cached logical Session hash, including pending work even when its UI read is unchanged.
     pub fn session_subhash(&self) -> u64 { self.session.subhash() }
@@ -591,12 +591,12 @@ impl Bridge {
     pub(crate) fn profile_resource_view(&self) -> Option<std::sync::Arc<plx_plex::plex::session::CurrentProfile>> {
         self.session_adapter.profile_resource_view()
     }
-    pub(crate) fn snapshot_session_init(&self) -> crate::auth::SessionInit { self.session.snapshot_init() }
+    pub(crate) fn snapshot_session_init(&self) -> plx_session::auth::SessionInit { self.session.snapshot_init() }
 
-    pub(crate) fn take_session_ready(&mut self) -> Option<crate::auth::ReadyCreds> {
+    pub(crate) fn take_session_ready(&mut self) -> Option<plx_session::auth::ReadyCreds> {
         let (epoch, scope, server, token, install) = self.session_ready.take()?;
         if !self.session.ready_is_current(epoch, scope) { return None; }
-        Some(crate::auth::ReadyCreds { origin: server.origin(), address: server.address.clone(),
+        Some(plx_session::auth::ReadyCreds { origin: server.origin(), address: server.address.clone(),
             token, install, tier: server.tier, pin: server.resolve_pin() })
     }
 
@@ -1329,13 +1329,13 @@ impl Rig<AppHost> for Bridge {
             return Handled::Yes;
         }
         if let AppMsg::Session(event) = msg {
-            use crate::auth::owner::SessionEvent;
+            use plx_session::auth::owner::SessionEvent;
             if to != MachineId::Session { return Handled::No; }
             match event {
                 SessionEvent::Result(envelope) if !self.session_adapter.admitted(envelope) => return Handled::No,
                 SessionEvent::Admission(reply) if !reply.accepted
                     && self.session_adapter.resource_admitted(reply) => return Handled::No,
-                SessionEvent::Command(crate::auth::owner::Command::BackAtRoot { .. })
+                SessionEvent::Command(plx_session::auth::owner::Command::BackAtRoot { .. })
                     if !self.session_adapter.claim_root_press() => return Handled::No,
                 _ => {}
             }
@@ -1349,7 +1349,7 @@ impl Rig<AppHost> for Bridge {
             let handled = self.session.step(event, &cx, fx);
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
             // existed before it mounted — so the one step that ENTERED it is announced here.
-            if let Some(line) = crate::auth::owner::roster_readout_entered(&publication, &self.session.publication()) {
+            if let Some(line) = plx_session::auth::owner::roster_readout_entered(&publication, &self.session.publication()) {
                 plx_base::eventlog::log(&line);
             }
             return handled;
@@ -1537,7 +1537,7 @@ impl Bridge {
         }
         match fx {
             AppFx::Session(command) => out.push(Fx::Deliver(MachineId::Session,
-                Delivery::Machine(AppMsg::Session(crate::auth::owner::SessionEvent::Command(command))))),
+                Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
             AppFx::Preferences(command) => super::preferences::execute(command),
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
@@ -1557,8 +1557,8 @@ impl Bridge {
 
     /// Resource execution returns typed deliveries to the existing FIFO. In particular a
     /// commit acknowledgement never recursively steps the owner outside drain/carry budgets.
-    fn session_effect(&mut self, effect: crate::auth::owner::SessionFx, out: &mut Effects<'_, AppHost>) {
-        use crate::auth::owner::{SessionEvent, SessionFx, AdmissionReply};
+    fn session_effect(&mut self, effect: plx_session::auth::owner::SessionFx, out: &mut Effects<'_, AppHost>) {
+        use plx_session::auth::owner::{SessionEvent, SessionFx, AdmissionReply};
         use plx_machine::machine::{Addr, RequestId};
         if let Some(io) = &mut self.home_io {
             if matches!(effect, SessionFx::Capture { .. } | SessionFx::Work { .. }
@@ -1633,10 +1633,10 @@ impl Bridge {
                 deliver(SessionEvent::IncidentReported { id, delivery });
             }
             SessionFx::Coordinator(action) => {
-                if matches!(action, crate::auth::owner::CoordinatorAction::LocalDataErased) {
+                if matches!(action, plx_session::auth::owner::CoordinatorAction::LocalDataErased) {
                     self.reqs.push(LoopReq::LocalDataErased);
                 }
-                if matches!(action, crate::auth::owner::CoordinatorAction::CloseTelemetry) {
+                if matches!(action, plx_session::auth::owner::CoordinatorAction::CloseTelemetry) {
                     self.consent.forget(&mut self.consent_adapter);
                 }
                 self.session_adapter.coordinator(action);
@@ -1701,7 +1701,7 @@ pub(crate) fn frame_with_tap(
 ) -> (&'static str, FrameReport) {
     let _frame_scope = plx_base::task::FrameScope::enter();
     if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) && rig.session.needs_ready_commit() {
-        execute_session_command(d, crate::auth::SessionCmd::TakeReady);
+        execute_session_command(d, plx_session::auth::SessionCmd::TakeReady);
     }
     frame_ingest(d, rig, tick, inputs, Bridge::take_live_results, tap)
 }
@@ -1744,10 +1744,10 @@ impl Bridge {
         // Landing sequence within auth is authoritative. Do not sort it by request ID:
         // profile Ready and its late roster can be separated by other requests' progress.
         let mut results: AppResults = self.session_adapter.take_results().into_iter()
-            .map(|envelope| (envelope.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope))))
+            .map(|envelope| (envelope.addr, AppMsg::Session(plx_session::auth::owner::SessionEvent::Result(envelope))))
             .collect();
         if let Some(reply) = self.session_adapter.take_capture() {
-            results.push((reply.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Read(reply))));
+            results.push((reply.addr, AppMsg::Session(plx_session::auth::owner::SessionEvent::Read(reply))));
         }
         self.session_adapter.cancel_superseded_commits(|req, epoch, arrival|
             self.session.commit_is_current(req, epoch, arrival));
@@ -1758,9 +1758,9 @@ impl Bridge {
             if let Some(permit) = self.session.commit_permit(completed.req, completed.epoch, completed.arrival) {
                 let reply = self.session_adapter.finish_commit(permit, completed);
                 let addr = plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(reply.req) };
-                results.push((addr, AppMsg::Session(crate::auth::owner::SessionEvent::Commit(reply))));
+                results.push((addr, AppMsg::Session(plx_session::auth::owner::SessionEvent::Commit(reply))));
                 if let Some(completion) = self.session_adapter.take_live_completion() {
-                    results.push((addr, AppMsg::Session(crate::auth::owner::SessionEvent::Persistence(completion))));
+                    results.push((addr, AppMsg::Session(plx_session::auth::owner::SessionEvent::Persistence(completion))));
                 }
             }
             // Losing the permit forbids registry/profile publication, not accounting for a
@@ -1775,7 +1775,7 @@ impl Bridge {
         // dropped.
         if let Some((id, delivery)) = self.session_adapter.take_incident_delivery() {
             results.push((plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(0) },
-                AppMsg::Session(crate::auth::owner::SessionEvent::IncidentReported { id, delivery })));
+                AppMsg::Session(plx_session::auth::owner::SessionEvent::IncidentReported { id, delivery })));
         }
         results.extend(self.take_hubs_results());
         if self.home_io.is_some() {
@@ -1873,7 +1873,7 @@ fn frame_ingest(
     // scope each (§4.4) now; the page's tick runs in none.
     let results = take(rig);
     let session_records: Vec<_> = results.iter().filter_map(|(addr, message)| match message {
-        AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope)) => Some((*addr, envelope.clone())),
+        AppMsg::Session(plx_session::auth::owner::SessionEvent::Result(envelope)) => Some((*addr, envelope.clone())),
         _ => None,
     }).collect();
     rig.session_adapter.validate_supplied(&session_records)
@@ -2574,8 +2574,8 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         match bridge.auth_read().0.phase {
             // A Ready decision can still await its queued disk/registry ACK. Keep the current
             // flow page until the exact owner handoff is available.
-            crate::auth::Phase::Ready => {}
-            crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
+            plx_session::auth::Phase::Ready => {}
+            plx_session::auth::Phase::Profiles | plx_session::auth::Phase::Switching => {
                 // No `enter()`-on-change guard any more (phase 6): the picker is an owned screen,
                 // so a route that is ALREADY `Profiles` mints nothing (`bridge::frame`'s
                 // `Some(_) => {}` arm) and the existing instance's state — the roster cursor, an

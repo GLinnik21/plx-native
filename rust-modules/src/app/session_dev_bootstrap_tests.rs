@@ -19,7 +19,7 @@ fn dev_fixture() -> Bridge {
 
 #[test]
 fn dev_revoke_resource_completes_before_carried_ack_and_stale_ack_after_erase_is_inert() {
-    use crate::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, SessionEvent};
+    use plx_session::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, SessionEvent};
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     let mut witnessed = false;
     // Cut the normal dispatcher budget at each nearby step; require the precise post-resource,
@@ -31,29 +31,29 @@ fn dev_revoke_resource_completes_before_carried_ack_and_stale_ack_after_erase_is
         let signal = Arc::clone(&ran);
         rig.session_adapter.inject_fixture_work(2, move |_, _| { signal.fetch_add(1, Ordering::AcqRel); });
         for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - remaining {
-            execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));
+            execute_session_command(&mut d, plx_session::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
-        execute_session_command(&mut d, crate::auth::SessionCmd::StartLogin);
+        execute_session_command(&mut d, plx_session::auth::SessionCmd::StartLogin);
         frame(&mut rig, &mut d);
         let revoked = rig.session_adapter.fixture_resources().registry_writes.iter()
-            .any(|p| matches!(p, crate::auth::owner::RegistryPlan::Revoke));
+            .any(|p| matches!(p, plx_session::auth::owner::RegistryPlan::Revoke));
         if !revoked || ran.load(Ordering::Acquire) != 0 { continue; }
         let state = rig.session.snapshot_init();
         let Some(commit) = state.pending_commit.as_ref() else { continue };
         witnessed = true;
         assert!(matches!(state.authority, BootstrapAuthority::DevPms { .. }));
-        assert_eq!(state.phase, crate::auth::Phase::Creating);
-        let restored: crate::auth::SessionInit = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
-        assert_eq!(crate::auth::SessionMachine::from_init(restored).subhash(), rig.session.subhash(),
+        assert_eq!(state.phase, plx_session::auth::Phase::Creating);
+        let restored: plx_session::auth::SessionInit = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(plx_session::auth::SessionMachine::from_init(restored).subhash(), rig.session.subhash(),
             "pending dev delta, reserved request and disk comparison survive init roundtrip");
         let ack = CommitReply { req: commit.req, epoch: commit.epoch, arrival: commit.arrival,
             admission: CommitAdmission::RegistryOnly };
         frame(&mut rig, &mut d);
         assert_eq!(ran.load(Ordering::Acquire), 1);
         assert!(matches!(rig.session.snapshot_init().authority, BootstrapAuthority::Account { .. }));
-        execute_session_command(&mut d, crate::auth::SessionCmd::EraseLocal);
+        execute_session_command(&mut d, plx_session::auth::SessionCmd::EraseLocal);
         frame(&mut rig, &mut d);
-        assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Deleted);
+        assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Deleted);
         let before = rig.session.subhash();
         d.emit(MachineId::Session, Fx::Deliver(MachineId::Session,
             Delivery::Machine(AppMsg::Session(SessionEvent::Commit(ack)))));
@@ -75,25 +75,25 @@ fn dev_login_preflights_both_request_slots_and_coalesces_pending_intent() {
         let mut rig = Bridge::for_session_test(init);
         let before = rig.session.subhash();
         let mut d = Dispatcher::<AppHost>::new();
-        execute_session_command(&mut d, crate::auth::SessionCmd::StartLogin);
+        execute_session_command(&mut d, plx_session::auth::SessionCmd::StartLogin);
         frame(&mut rig, &mut d);
         assert_eq!(rig.session.subhash(), before);
         assert!(rig.session_adapter.fixture_resources().registry_writes.is_empty());
     }
     let mut rig = dev_fixture();
     let mut d = Dispatcher::<AppHost>::new();
-    execute_session_command(&mut d, crate::auth::SessionCmd::StartLogin);
-    execute_session_command(&mut d, crate::auth::SessionCmd::StartLogin);
+    execute_session_command(&mut d, plx_session::auth::SessionCmd::StartLogin);
+    execute_session_command(&mut d, plx_session::auth::SessionCmd::StartLogin);
     frame(&mut rig, &mut d);
     assert_eq!(rig.auth_read().0.flow_epoch, 2);
     assert_eq!(rig.session.snapshot_init().next_req, 2);
     assert_eq!(rig.session_adapter.fixture_resources().registry_writes.iter()
-        .filter(|p| matches!(p, crate::auth::owner::RegistryPlan::Revoke)).count(), 1);
+        .filter(|p| matches!(p, plx_session::auth::owner::RegistryPlan::Revoke)).count(), 1);
 }
 
 #[test]
 fn dev_erase_and_signout_retire_pending_boundaries_without_reinstalling_grants() {
-    use crate::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, CoordinatorAction,
+    use plx_session::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, CoordinatorAction,
         SessionEvent, SessionWork};
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     for sign_out in [false, true] {
@@ -109,9 +109,9 @@ fn dev_erase_and_signout_retire_pending_boundaries_without_reinstalling_grants()
                     signal.fetch_add(1, Ordering::AcqRel);
                 });
             }
-            if boundary == 1 { execute_session_command(&mut d, crate::auth::SessionCmd::ActivateDevBootstrap); }
-            if boundary == 2 { execute_session_command(&mut d, crate::auth::SessionCmd::StartLogin); }
-            execute_session_command(&mut d, if sign_out { crate::auth::SessionCmd::SignOut } else { crate::auth::SessionCmd::EraseLocal });
+            if boundary == 1 { execute_session_command(&mut d, plx_session::auth::SessionCmd::ActivateDevBootstrap); }
+            if boundary == 2 { execute_session_command(&mut d, plx_session::auth::SessionCmd::StartLogin); }
+            execute_session_command(&mut d, if sign_out { plx_session::auth::SessionCmd::SignOut } else { plx_session::auth::SessionCmd::EraseLocal });
             frame(&mut rig, &mut d);
             let state = rig.session.snapshot_init();
             assert!(matches!(state.authority, BootstrapAuthority::Account { ref extras } if extras.is_empty()));
@@ -119,10 +119,10 @@ fn dev_erase_and_signout_retire_pending_boundaries_without_reinstalling_grants()
             assert!(state.disk_identity.account_token.is_empty());
             assert!(rig.session_adapter.fixture_resources().disk.account_token.is_empty());
             assert!(rig.session_adapter.fixture_resources().registry_writes.iter()
-                .all(|p| !matches!(p, crate::auth::owner::RegistryPlan::DevInstall { .. })),
+                .all(|p| !matches!(p, plx_session::auth::owner::RegistryPlan::DevInstall { .. })),
                 "cancelled activation cannot execute its registry grant");
             assert_eq!(ran.load(Ordering::Acquire), usize::from(sign_out));
-            assert_eq!(state.phase, if sign_out { crate::auth::Phase::Creating } else { crate::auth::Phase::Deleted });
+            assert_eq!(state.phase, if sign_out { plx_session::auth::Phase::Creating } else { plx_session::auth::Phase::Deleted });
             let events = &rig.session_adapter.fixture_resources().coordinator_events;
             assert!(matches!(events.first(), Some(CoordinatorAction::CloseTelemetry)));
             if sign_out { assert!(events.iter().any(|e| matches!(e, CoordinatorAction::SignInStarted))); }
@@ -149,18 +149,18 @@ fn carried_dev_ready_is_not_handed_off_after_erase() {
         let mut rig = dev_fixture();
         let mut d = Dispatcher::<AppHost>::new();
         for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - remaining {
-            execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));
+            execute_session_command(&mut d, plx_session::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
-        execute_session_command(&mut d, crate::auth::SessionCmd::ActivateDevBootstrap);
+        execute_session_command(&mut d, plx_session::auth::SessionCmd::ActivateDevBootstrap);
         frame(&mut rig, &mut d);
-        if rig.auth_read().0.phase != crate::auth::Phase::Ready || rig.session_ready.is_some() { continue; }
+        if rig.auth_read().0.phase != plx_session::auth::Phase::Ready || rig.session_ready.is_some() { continue; }
         witnessed = true;
-        execute_session_command(&mut d, crate::auth::SessionCmd::EraseLocal);
+        execute_session_command(&mut d, plx_session::auth::SessionCmd::EraseLocal);
         frame(&mut rig, &mut d);
-        assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Deleted);
+        assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Deleted);
         assert!(rig.take_session_ready().is_none());
         assert!(matches!(rig.session_adapter.fixture_resources().registry_writes.last(),
-            Some(crate::auth::owner::RegistryPlan::Revoke)));
+            Some(plx_session::auth::owner::RegistryPlan::Revoke)));
         break;
     }
     assert!(witnessed, "actual Ready effect must be carried after activation ACK");
@@ -168,7 +168,7 @@ fn carried_dev_ready_is_not_handed_off_after_erase() {
 
 #[test]
 fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
-    use crate::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, SessionEvent, SessionWork};
+    use plx_session::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, SessionEvent, SessionWork};
     use plx_plex::plex::session::{Session, ServerRef};
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
     let _lock = plx_base::testlock::serial();
@@ -182,8 +182,8 @@ fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
         for attempt in 0..failures {
             let state = rig.session.snapshot_init();
             let (command, epoch) = if attempt == 0 {
-                (crate::auth::SessionCmd::ActivateDevBootstrap, state.epoch)
-            } else { (crate::auth::SessionCmd::StartLogin, state.epoch + 1) };
+                (plx_session::auth::SessionCmd::ActivateDevBootstrap, state.epoch)
+            } else { (plx_session::auth::SessionCmd::StartLogin, state.epoch + 1) };
             execute_session_command(&mut d, command);
             // Inject an explicit negative resource reply through the real queue. No native
             // failure is claimed: this grades the ACK/UI protocol, not Revoke's infallible IO.
@@ -193,7 +193,7 @@ fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
                     admission: CommitAdmission::StaleAuthority,
                 })))));
             frame(&mut rig, &mut d);
-            assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Error);
+            assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Error);
             assert!(matches!(rig.session.snapshot_init().authority, BootstrapAuthority::DevPms { .. }));
             assert!(rig.session.snapshot_init().pending.is_empty());
         }
@@ -219,7 +219,7 @@ fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
         assert!(state.persisted.account_token.is_empty());
         assert!(state.committed_credentials.account_token.is_empty());
         assert!(rig.session_adapter.fixture_resources().registry_writes.iter()
-            .any(|p| matches!(p, crate::auth::owner::RegistryPlan::Revoke)));
+            .any(|p| matches!(p, plx_session::auth::owner::RegistryPlan::Revoke)));
     }
 }
 
@@ -227,8 +227,8 @@ struct Cleanup<'a>(&'a plx_base::task::MainThread);
 
 #[test]
 fn dev_retry_is_inert_outside_error_and_restart_wait_remains_account_only() {
-    use crate::auth::{Phase, SessionCmd};
-    use crate::auth::owner::ReplyTo;
+    use plx_session::auth::{Phase, SessionCmd};
+    use plx_session::auth::owner::ReplyTo;
     for phase in [Phase::Idle, Phase::Creating, Phase::Ready, Phase::Error] {
         let mut init = dev_fixture().session.snapshot_init();
         init.phase = phase;
@@ -244,7 +244,7 @@ fn dev_retry_is_inert_outside_error_and_restart_wait_remains_account_only() {
         // the state it started from, which is what the hash equality below still proves, less
         // the one fact the refusal is meant to leave behind: the dev identity's switch verdict,
         // which is what stops the account menu offering the same dead end again.
-        execute_session_command(&mut d, SessionCmd::StartSwitch(crate::auth::Picker::ChangeProfile));
+        execute_session_command(&mut d, SessionCmd::StartSwitch(plx_session::auth::Picker::ChangeProfile));
         execute_session_command(&mut d, SessionCmd::SelectProfile { index: 0, pin: None });
         execute_session_command(&mut d, SessionCmd::BackAtRoot { reply: ReplyTo { instance: 19, correlation: 2 } });
         execute_session_command(&mut d, SessionCmd::RefreshRoster);
@@ -253,7 +253,7 @@ fn dev_retry_is_inert_outside_error_and_restart_wait_remains_account_only() {
         frame(&mut rig, &mut d);
         let mut after = rig.session.snapshot_init();
         assert_eq!(after.switch_refused_for.take().is_some(), phase == Phase::Ready);
-        assert_eq!(crate::auth::owner::SessionMachine::from_init(after).subhash(), before);
+        assert_eq!(plx_session::auth::owner::SessionMachine::from_init(after).subhash(), before);
         assert!(rig.session.snapshot_init().pending.is_empty());
         assert_eq!(rig.session_adapter.fixture_resources().disk.account_token, "synthetic-saved-a");
         assert!(rig.session_adapter.fixture_resources().registry_writes.is_empty());
@@ -268,7 +268,7 @@ impl Drop for Cleanup<'_> {
 
 #[test]
 fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work() {
-    use crate::auth::owner::{BootstrapAuthority, ReadyInstall, SessionWork};
+    use plx_session::auth::owner::{BootstrapAuthority, ReadyInstall, SessionWork};
     use plx_plex::plex::session::{self, Session, ServerRef, SourceRef};
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
     let _lock = plx_base::testlock::serial();
@@ -296,7 +296,7 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
         let mut rig = Bridge::for_session_test(init);
         rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
         let mut d = Dispatcher::<AppHost>::new();
-        execute_session_command(&mut d, crate::auth::SessionCmd::ActivateDevBootstrap);
+        execute_session_command(&mut d, plx_session::auth::SessionCmd::ActivateDevBootstrap);
         assert_eq!(plx_plex::plex::server_ids().count(), 0);
         assert!(rig.take_session_ready().is_none());
         frame(&mut rig, &mut d);
@@ -320,7 +320,7 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
         assert_eq!(facts.owned, extra.owned);
         assert_eq!(std::fs::read(tmp.path()).ok(), before, "activation must neither save A/B nor mint a file");
         let scope = rig.auth_read().0.scope;
-        execute_session_command(&mut d, crate::auth::SessionCmd::ActivateDevBootstrap);
+        execute_session_command(&mut d, plx_session::auth::SessionCmd::ActivateDevBootstrap);
         frame(&mut rig, &mut d);
         assert_eq!(rig.auth_read().0.scope.0, scope.0);
         assert!(rig.take_session_ready().is_none());
@@ -334,12 +334,12 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
             let SessionWork::Login { client_id } = input else { panic!("dev exit must start clean Login") };
             assert_eq!(client_id, "synthetic-device");
             signal.store(true, Ordering::Release);
-            output.complete(crate::auth::LoginProgress::Failed { epoch, message: "synthetic stop".into(), incident: crate::auth::synthetic_incident(), plaintext: None, account: None }.into()).unwrap();
+            output.complete(plx_session::auth::LoginProgress::Failed { epoch, message: "synthetic stop".into(), incident: plx_session::auth::synthetic_incident(), plaintext: None, account: None }.into()).unwrap();
         });
         for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 1 {
-            execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));
+            execute_session_command(&mut d, plx_session::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
-        execute_session_command(&mut d, crate::auth::SessionCmd::StartLogin);
+        execute_session_command(&mut d, plx_session::auth::SessionCmd::StartLogin);
         frame(&mut rig, &mut d);
         assert!(!ran.load(Ordering::Acquire));
         assert!(rig.session.snapshot_init().pending_commit.is_some());
@@ -391,14 +391,14 @@ fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contra
         let mut d = Dispatcher::<AppHost>::new();
         // StartLogin also works before dev activation: it must still revoke before account work.
         rig.session_adapter.inject_fixture_work(2, |output, _| {
-            output.progress(crate::auth::LoginProgress::Authorized { epoch: 2,
+            output.progress(plx_session::auth::LoginProgress::Authorized { epoch: 2,
                 token: "synthetic-new-account".into() }.into()).unwrap();
-            output.complete(crate::auth::LoginProgress::SignedIn { epoch: 2,
+            output.complete(plx_session::auth::LoginProgress::SignedIn { epoch: 2,
                 server: ServerRef { address: "127.0.0.3".into(), port: 32400,
                     token: "synthetic-new-pms".into(), ..Default::default() },
                 sources: Vec::new(), users: Vec::new() }.into()).unwrap();
         });
-        execute_session_command(&mut d, crate::auth::SessionCmd::StartLogin);
+        execute_session_command(&mut d, plx_session::auth::SessionCmd::StartLogin);
         frame(&mut rig, &mut d);
         let records = rig.session_adapter.take_results();
         assert_eq!(records.len(), 2);
@@ -414,7 +414,7 @@ fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contra
             std::fs::create_dir(tmp.path()).unwrap();
         }
         let results = records.into_iter().map(|r| (r.addr,
-            AppMsg::Session(crate::auth::owner::SessionEvent::Result(r)))).collect();
+            AppMsg::Session(plx_session::auth::owner::SessionEvent::Result(r)))).collect();
         d.frame_with(&mut rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
         rig.settle_session_io_for_test(&mut d);
         let state = rig.session.snapshot_init();
@@ -427,14 +427,14 @@ fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contra
             // Routine write, and refuses — the external replacement survives, not the login.
             assert_eq!(session::peek().account_token, "synthetic-external-replacement");
             assert_eq!(state.disk_identity.account_token, "synthetic-account-a");
-            assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Error);
+            assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Error);
         } else {
             // A definitely failed fresh write (case 2) never replaced the record, so the owner's
             // disk identity stays on what is still there rather than on the account that never
             // landed; a durable one (case 0) re-bases on the new account.
             let on_disk = if disk_case == 2 { "synthetic-account-a" } else { "synthetic-new-account" };
             assert_eq!(state.disk_identity.account_token, on_disk);
-            assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Ready);
+            assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Ready);
             if disk_case == 0 {
                 let disk = session::peek();
                 assert_eq!(disk.account_token, "synthetic-new-account");
@@ -449,7 +449,7 @@ fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contra
                 // a `PersistenceWarning` once its real completion lands — the AUTH-03 surface a
                 // silently-accepted-but-unwritten fresh save must not skip.
                 assert_eq!(rig.auth_read().0.persistence_warning.map(|w| w.site),
-                    Some(crate::auth::owner::PersistenceWarningSite::Discovery),
+                    Some(plx_session::auth::owner::PersistenceWarningSite::Discovery),
                     "an unwritten fresh save must raise a Discovery persistence warning");
             }
         }

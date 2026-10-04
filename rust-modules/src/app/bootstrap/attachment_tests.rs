@@ -4,11 +4,11 @@ use plx_plex::plex::session::{self, Session};
 
 fn initial_for(saved: Session, entropy: Option<[u8; 16]>) -> Initial {
     let mut initial = Initial::synthetic_home(17, 32517, None).unwrap();
-    let crate::auth::owner::BootstrapAuthority::DevPms { primary, .. } = initial.session.authority
+    let plx_session::auth::owner::BootstrapAuthority::DevPms { primary, .. } = initial.session.authority
     else {
         unreachable!()
     };
-    initial.session = crate::auth::SessionInit::captured_boot(saved, Some(primary), Vec::new());
+    initial.session = plx_session::auth::SessionInit::captured_boot(saved, Some(primary), Vec::new());
     initial.entropy = Entropy::Captured(entropy);
     initial.validate().unwrap();
     initial

@@ -24,17 +24,17 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-pub(crate) mod owner;
-pub(crate) mod observation;
+pub mod owner;
+pub mod observation;
 mod scripted; // the dev triggers that script the sign-in worker's outcomes (`readout`, `signinfail`)
-pub(crate) use owner::{SessionInit, SessionMachine, SessionRead};
+pub use owner::{SessionInit, SessionMachine, SessionRead};
 
 /// Resource executor entry. Every credential and network-policy input is captured by the
 /// requesting owner/adapter; workers can only observe cancellation and publish stream facts.
 ///
 /// `ask` is the person's plaintext consent and the grant generations, captured by the adapter on
 /// main when it admitted this work (`plex::grant::PlaintextAsk`).
-pub(crate) fn run_session_work(key: owner::SessionWorkKey,
+pub fn run_session_work(key: owner::SessionWorkKey,
     input: owner::SessionWork, ask: PlaintextAsk, output: &dyn owner::ObservationSink) {
     fn identity(value: owner::Identity) -> SessionIdentity {
         SessionIdentity { client_id: value.client_id, account_token: value.account_token,
@@ -64,7 +64,7 @@ pub(crate) fn run_session_work(key: owner::SessionWorkKey,
 
 /// Shared endpoint worker body; only account/probe IO is injectable. Native lifecycle remains
 /// adapter metadata and only main can apply the terminal observation.
-pub(crate) fn endpoint_worker_with_io(epoch: u64, session: Session, expected: owner::Identity,
+pub fn endpoint_worker_with_io(epoch: u64, session: Session, expected: owner::Identity,
     lifecycle: owner::ServerLifecycle, machine_id: String, output: &dyn owner::ObservationSink,
     resources: impl FnMut(&AccountClient, Duration) -> Result<Vec<Resource>, CallEvidence>,
     probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe)) {
@@ -75,7 +75,7 @@ pub(crate) fn endpoint_worker_with_io(epoch: u64, session: Session, expected: ow
 
 /// Endpoint transport projection shared by the real worker and injected network-result tests.
 /// Admission, interest and native lifecycle validation remain in the adapter/owner protocol.
-pub(crate) fn endpoint_work_fact(epoch: u64, expected: owner::Identity,
+pub fn endpoint_work_fact(epoch: u64, expected: owner::Identity,
     lifecycle: owner::ServerLifecycle, machine_id: String, fresh: Option<SourceRef>,
     probe: Option<SettledProbe>) -> AuthProgress {
     AuthProgress::Endpoint(EndpointProgress { epoch,
@@ -85,7 +85,7 @@ pub(crate) fn endpoint_work_fact(epoch: u64, expected: owner::Identity,
 }
 
 /// Application commands are the concrete owner's domain vocabulary, not global operations.
-pub(crate) use owner::Command as SessionCmd;
+pub use owner::Command as SessionCmd;
 
 /// Which stage the flow is in — the Login/Profiles screens switch on this each frame.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
@@ -111,13 +111,13 @@ pub enum Phase {
     Deleted,
 }
 
-pub(crate) fn discovery_trouble() -> &'static str { plx_platform::i18n::msg::browse_auth_discovery_trouble() }
+pub fn discovery_trouble() -> &'static str { plx_platform::i18n::msg::browse_auth_discovery_trouble() }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum DiscoveryRetryRun { Resources, HomeUsers }
+pub enum DiscoveryRetryRun { Resources, HomeUsers }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DiscoveryRetryProgress {
+pub struct DiscoveryRetryProgress {
     pub run: DiscoveryRetryRun,
     pub misses: u32,
     pub elapsed_ms: u32,
@@ -238,7 +238,7 @@ impl UserTile {
 
 /// PMS credentials the main loop installs once the flow resolves.
 pub struct ReadyCreds {
-    pub(crate) install: owner::ReadyInstall,
+    pub install: owner::ReadyInstall,
     /// **Where the primary server is** — an [`Origin`], not a `(host, port)` pair, because the
     /// pair cannot say `https` and the host a certificate is issued for is not the address behind
     /// it (`plex::origin`). Read straight off the stored [`session::ServerRef`], which is the
@@ -494,15 +494,15 @@ fn home_roster_with_io_and_clock(ac: &AccountClient, clock: &mut impl RetryClock
 /// observations patch the latest controller/disk value field-by-field and never write this stale
 /// snapshot back over preferences that changed while the request was in flight.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SessionIdentity {
+pub struct SessionIdentity {
     client_id: String,
     account_token: String,
     profile_uuid: String,
 }
 
 impl SessionIdentity {
-    #[cfg(test)]
-    pub(crate) fn of(s: &Session) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn of(s: &Session) -> Self {
         Self {
             client_id: s.client_id.clone(),
             account_token: s.account_token.clone(),
@@ -516,7 +516,7 @@ impl SessionIdentity {
 /// credential and link facts the old worker-side `activate_candidate` call used; applying them is
 /// delayed until the main thread accepts the epoch/session identity.
 #[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct CandidateActivation {
+pub struct CandidateActivation {
     machine_id: String,
     token: String,
     name: String,
@@ -538,7 +538,7 @@ pub(crate) struct CandidateActivation {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) enum RegistryProgress {
+pub enum RegistryProgress {
     Activate {
         epoch: u64,
         expected: Option<SessionIdentity>,
@@ -558,21 +558,21 @@ pub(crate) enum RegistryProgress {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct HomeRosterProgress {
+pub struct HomeRosterProgress {
     epoch: u64,
     expected: SessionIdentity,
     users: Option<Vec<UserTile>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct ServerRosterProgress {
+pub struct ServerRosterProgress {
     epoch: u64,
     expected: SessionIdentity,
     outcome: ServerRosterOutcome,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) enum ServerRosterOutcome {
+pub enum ServerRosterOutcome {
     Unreachable,
     /// Nothing was found to REGISTER, but at least the probes themselves ran (R2/A5) — `settled`
     /// carries every one, empty only when there was truly nothing to probe (no server named at
@@ -590,7 +590,7 @@ pub(crate) enum ServerRosterOutcome {
     },
 }
 
-pub(crate) struct EndpointProgress {
+pub struct EndpointProgress {
     epoch: u64,
     expected: SessionIdentity,
     id: ServerId,
@@ -604,21 +604,21 @@ pub(crate) struct EndpointProgress {
 /// `machine_id` survive a re-point and a profile retoken, so neither can prove that a late route
 /// result still belongs to the client/token that launched it.
 #[derive(Clone, Copy)]
-pub(crate) struct ClientLifecycle {
+pub struct ClientLifecycle {
     client: &'static plx_plex::plex::Client,
     token_gen: u32,
 }
 
 impl ClientLifecycle {
-    pub(crate) fn machine_id(self) -> &'static str { self.client.machine_id() }
+    pub fn machine_id(self) -> &'static str { self.client.machine_id() }
 
-    pub(crate) fn capture(client: &'static plx_plex::plex::Client) -> Self {
+    pub fn capture(client: &'static plx_plex::plex::Client) -> Self {
         Self { client, token_gen: client.token_gen() }
     }
-    pub(crate) fn logical(self, sid: u16) -> owner::ServerLifecycle {
+    pub fn logical(self, sid: u16) -> owner::ServerLifecycle {
         owner::ServerLifecycle { sid, instance_gen: self.client.instance_gen(), token_gen: self.token_gen }
     }
-    pub(crate) fn is_current(self, expected: owner::ServerLifecycle) -> bool {
+    pub fn is_current(self, expected: owner::ServerLifecycle) -> bool {
         self.logical(expected.sid) == expected && plx_plex::plex::commit_if_current(
             ServerId::from_raw(expected.sid), self.client, self.token_gen, || ()).is_some()
     }
@@ -626,7 +626,7 @@ impl ClientLifecycle {
 
 /// Native registry effects executed only by the Session resource adapter, after its borrowed
 /// owner permit and (for an endpoint) exact captured Client lifecycle have been validated.
-pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan, client_id: &str) -> bool {
+pub fn execute_session_registry(plan: &owner::RegistryPlan, client_id: &str) -> bool {
     match plan {
         owner::RegistryPlan::DevInstall { primary, extras, client_id } => {
             install_captured_registry(&primary.origin(), &primary.address, &primary.token,
@@ -725,7 +725,7 @@ fn retire_grant_on_https(machine_id: &str, origin: &Origin) {
 /// usually a `plex.direct` certificate NAME that `IpVersion::of_host` cannot parse, so deriving
 /// the IP family from it silently produced `None` on every real boot. The stored/advertised
 /// address is the one value that is actually a literal.
-pub(crate) fn install_captured_registry(origin: &Origin, address: &str, token: &str,
+pub fn install_captured_registry(origin: &Origin, address: &str, token: &str,
     tier: Option<probe::Location>, pin: Option<&plx_plex::plex::ResolvePin>, extras: &[SourceRef],
     client_id: Option<&str>) {
     // Applies `connection` atomically, inside the same registration write, on whichever branch
@@ -759,15 +759,15 @@ pub(crate) fn install_captured_registry(origin: &Origin, address: &str, token: &
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ProfileDelta {
+pub struct ProfileDelta {
     server: ServerRef,
     sources: Vec<SourceRef>,
-    pub(crate) user: UserRef,
+    pub user: UserRef,
     cache: Option<ProfileCreds>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) enum ProfileSwitchOutcomeProgress {
+pub enum ProfileSwitchOutcomeProgress {
     Failed {
         error: String,
         pin_denied: bool,
@@ -779,14 +779,14 @@ pub(crate) enum ProfileSwitchOutcomeProgress {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct ProfileSwitchProgress {
-    pub(crate) epoch: u64,
+pub struct ProfileSwitchProgress {
+    pub epoch: u64,
     expected: SessionIdentity,
-    pub(crate) outcome: ProfileSwitchOutcomeProgress,
+    pub outcome: ProfileSwitchOutcomeProgress,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct ProfileRosterProgress {
+pub struct ProfileRosterProgress {
     epoch: u64,
     expected: SessionIdentity,
     #[serde(with = "observation::resources")]
@@ -798,7 +798,7 @@ pub(crate) struct ProfileRosterProgress {
 /// The one ordered auth stream. `Login` is the already-shipped multi-observation QR protocol;
 /// R2A adds the remaining immutable worker observations beside it without changing its variants or
 /// terminal ordering.
-pub(crate) enum AuthProgress {
+pub enum AuthProgress {
     Login(LoginProgress),
     Registry(RegistryProgress),
     HomeRoster(HomeRosterProgress),
@@ -818,7 +818,7 @@ impl From<LoginProgress> for AuthProgress {
 /// request and admission identity. The owner revalidates at FIFO head after prior commit ACKs;
 /// the worker's cancellation read is only a courtesy, never permission to mutate resources.
 #[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) enum LoginProgress {
+pub enum LoginProgress {
     /// The code on screen just died (its own lifetime, or plex.tv answering [`PinPoll::Gone`]) and
     /// [`mint_pin`] is about to replace it. Mirrors the write `mint_pin` used to make directly for
     /// every generation after the first: clear the dead code and flag it replaced before the
@@ -922,8 +922,8 @@ fn merge_profile_delta(session: &mut Session, delta: ProfileDelta) {
 // ---- worker threads ----
 
 /// A failure's evidence for a test that is not about the incident offer.
-#[cfg(test)]
-pub(crate) fn synthetic_incident() -> IncidentContext {
+#[cfg(any(test, feature = "test-support"))]
+pub fn synthetic_incident() -> IncidentContext {
     IncidentContext::new(IncidentKind::PinCreate, None)
 }
 
@@ -1779,12 +1779,12 @@ struct PlexTvFailure {
 /// cannot say two different things about the same verdict (plan §4).
 ///
 /// The English catalog preserves the approved wording; translations retain its remedy.
-pub(crate) fn discovery_insecure_only_message() -> &'static str { plx_platform::i18n::msg::browse_auth_insecure() }
+pub fn discovery_insecure_only_message() -> &'static str { plx_platform::i18n::msg::browse_auth_insecure() }
 
 /// Which read-out a [`plaintext_copy`] is for: the two differ only in where an answered question
 /// can be changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ReadoutSurface {
+pub enum ReadoutSurface {
     /// The sign-in read-out. Settings is out of reach before sign-in, so its *Try again* is how a
     /// person who said *Not now* is asked again (`auth::owner`'s retry).
     SignIn,
@@ -1810,13 +1810,13 @@ pub(crate) enum ReadoutSurface {
 ///
 /// A SHARED server is named by its owner ([`PlaintextVerdict::shared_by`]) — on screen only; the
 /// report never carries it.
-pub(crate) fn plaintext_copy(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface) -> std::borrow::Cow<'static, str> {
+pub fn plaintext_copy(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface) -> std::borrow::Cow<'static, str> {
     plaintext_copy_in(verdict, surface, plx_platform::i18n::current())
 }
 
 // Explicit locale keeps the entire verdict testable without changing the process locale.
 // Each catalog sentence owns the server/owner grammar and the named action.
-pub(crate) fn plaintext_copy_in(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface,
+pub fn plaintext_copy_in(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface,
     locale: &plx_platform::i18n::LocaleContext) -> std::borrow::Cow<'static, str> {
     use plx_platform::i18n::msg;
     use std::borrow::Cow;
@@ -1854,13 +1854,13 @@ pub(crate) fn plaintext_copy_in(verdict: Option<&PlaintextVerdict>, surface: Rea
 
 /// The sign-in read-out's copy for an insecure-only verdict: [`plaintext_copy`] on
 /// [`ReadoutSurface::SignIn`].
-pub(crate) fn insecure_only_copy(verdict: Option<&PlaintextVerdict>) -> std::borrow::Cow<'static, str> {
+pub fn insecure_only_copy(verdict: Option<&PlaintextVerdict>) -> std::borrow::Cow<'static, str> {
     plaintext_copy(verdict, ReadoutSurface::SignIn)
 }
 
 /// The consent outcome a report carries for an insecure-only verdict — a closed code, never the
 /// server. `None` when the verdict was never offered (not eligible).
-pub(crate) fn plaintext_consent_code(verdict: &PlaintextVerdict) -> Option<plx_telemetry::telemetry::incident::PlaintextConsentOutcome> {
+pub fn plaintext_consent_code(verdict: &PlaintextVerdict) -> Option<plx_telemetry::telemetry::incident::PlaintextConsentOutcome> {
     use plx_telemetry::telemetry::incident::PlaintextConsentOutcome as O;
     verdict.offers().then_some(match verdict.choice {
         PlaintextChoice::Undecided => O::Offered,
@@ -2002,7 +2002,7 @@ fn classify(status: i32, body: &[u8], want_machine_id: &str) -> Outcome {
 /// custom host behind a proxy with its own certificate would otherwise rewrite its one stored
 /// key on every discovery. This is the only place the rule is spelled: [`ProbeReply::peer_pin`]
 /// is `Some` exactly when it held.
-pub(crate) fn get_identity(
+pub fn get_identity(
     origin: &Origin,
     pin: Option<&plx_plex::plex::ResolvePin>,
     budget: Duration,
@@ -2034,7 +2034,7 @@ pub(crate) fn get_identity(
 /// evidence the transport kept. Never collapsed to a sentinel status — the failure's `CURLcode` is
 /// what an insecure-only verdict names per route.
 #[derive(Debug)]
-pub(crate) enum ProbeReply {
+pub enum ProbeReply {
     /// `peer_pin` is the pin of the leaf certificate a strictly verified TLS connection presented
     /// (`plx_plex::http::Reply::peer_pin`); `None` over plaintext, for an origin without a
     /// `ResolvePin` (see [`get_identity`]) and on every test seam.
@@ -2083,7 +2083,7 @@ impl From<(i32, Vec<u8>)> for ProbeReply {
 /// deliberately not transport settings: ordinary PMS requests and media reads have different
 /// timeout contracts, while discovery alone distinguishes a local path from a remote one.
 #[derive(Clone, Copy)]
-struct ProbeDeadlines {
+pub struct ProbeDeadlines {
     local: Duration,
     remote: Duration,
 }
@@ -2560,7 +2560,7 @@ fn candidate_activation(
 /// probe failure is not authority to register an unverified endpoint. A retained/offline source,
 /// however, is already registered from its cached verified origin and receives the new state.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SettledProbe {
+pub struct SettledProbe {
     machine_id: String,
     #[serde(with = "observation::outcome")]
     outcome: Outcome,
@@ -2573,7 +2573,7 @@ pub(crate) struct SettledProbe {
     address: Option<String>,
 }
 
-pub(crate) fn settled_probe(
+pub fn settled_probe(
     plan: &ProbePlan,
     outcome: Outcome,
     tier: Option<probe::Location>,
@@ -2590,8 +2590,8 @@ pub(crate) fn settled_probe(
 /// Test-only convenience: build a [`SettledProbe`] directly by machine id, for fixtures that have
 /// a `SourceRef`/machine id in hand but no [`ProbePlan`] worth constructing just to read one field
 /// off it.
-#[cfg(test)]
-pub(crate) fn settled_probe_for_test(
+#[cfg(any(test, feature = "test-support"))]
+pub fn settled_probe_for_test(
     machine_id: &str,
     outcome: Outcome,
     tier: Option<probe::Location>,
@@ -2723,7 +2723,7 @@ fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> R
 
 /// One insecure-only server, as the read-out needs it — `plex::grant` owns the type, because the
 /// consent surfaces outside sign-in read it from the grant table's offers.
-pub(crate) use plx_plex::plex::grant::PlaintextVerdict;
+pub use plx_plex::plex::grant::PlaintextVerdict;
 
 /// **A verified plaintext answer becomes usable only under a grant.** The race holds plaintext
 /// aside until every HTTPS route, the relay included, has settled ([`probe_server_racing`]); what
@@ -3912,7 +3912,7 @@ fn seated_uuid(u: &plx_plex::plex::account::SwitchedUser, tile: &UserTile) -> St
 
 /// What a profile pick resolves to with plex.tv out of reach — decided from the stored session
 /// alone, so it can be graded on the host.
-pub(crate) enum OfflineSwitch {
+pub enum OfflineSwitch {
     /// Seat this session: the cached credentials, under the stored account and roster.
     Seat(Box<Session>),
     /// A protected profile whose PIN does not match this television's record.
@@ -4009,7 +4009,7 @@ fn offline_switch_outcome(
 
 /// Transport boundary for the profile worker. Implementations supply account/probe observations
 /// and pacing only; cache/PIN/grant/Ready/late-roster decisions stay in the shared worker body.
-pub(crate) trait ProfileWorkIo {
+pub trait ProfileWorkIo {
     fn switch(&mut self, account: &AccountClient, uuid: &str, pin: Option<&str>) -> SwitchOutcome;
     fn resources(&mut self, account: &AccountClient) -> Result<Vec<Resource>, CallEvidence>;
     fn probe(&mut self, resource: &Resource, household: &[i64]) -> (Option<SourceRef>, SettledProbe);
@@ -4021,9 +4021,9 @@ pub(crate) trait ProfileWorkIo {
         -> Option<(Option<SourceRef>, SettledProbe)> {
         None
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     fn admit(&mut self, source: &SourceRef, client_id: &str) -> plx_plex::plex::EndpointAdmission;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn admit(&mut self, _: &SourceRef, _: &str) -> plx_plex::plex::EndpointAdmission {
         plx_plex::plex::EndpointAdmission::Usable
     }
@@ -4091,7 +4091,7 @@ impl<S: FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome> ProfileWork
 }
 
 /// Both the live resource executor and preserved worker-policy tests enter this same body.
-pub(crate) fn profile_switch_worker_with_output(
+pub fn profile_switch_worker_with_output(
     epoch: u64,
     expected: SessionIdentity,
     stored: Session,
@@ -4106,7 +4106,7 @@ pub(crate) fn profile_switch_worker_with_output(
         output, &mut LiveProfileWorkIo { switch: Some(switch), ask: ask.clone() });
 }
 
-pub(crate) fn profile_switch_worker_with_io(
+pub fn profile_switch_worker_with_io(
     epoch: u64,
     expected: SessionIdentity,
     stored: Session,
@@ -4405,9 +4405,9 @@ fn settle_signin(active: &mut bool) -> bool {
     std::mem::take(active)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[path = "auth_test_support.rs"]
-pub(crate) mod test_support;
+pub mod test_support;
 
 #[cfg(test)]
 #[path = "auth_discovery_tests.rs"]

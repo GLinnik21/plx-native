@@ -3,8 +3,8 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::auth::owner::{SessionEnvelope, SessionEvent, SessionWork};
-    use crate::auth::{Phase, SessionCmd};
+    use plx_session::auth::owner::{SessionEnvelope, SessionEvent, SessionWork};
+    use plx_session::auth::{Phase, SessionCmd};
     use plx_plex::plex::session::{self, ProfileCreds, ServerRef, Session, SourceRef, UserRef};
 
     struct ResourceCleanup<'a>(&'a plx_base::task::MainThread);
@@ -21,7 +21,7 @@ mod tests {
     struct Online {
         probes: usize,
     }
-    impl crate::auth::ProfileWorkIo for Online {
+    impl plx_session::auth::ProfileWorkIo for Online {
         fn switch(
             &mut self,
             _: &plx_plex::plex::account::AccountClient,
@@ -55,7 +55,7 @@ mod tests {
             &mut self,
             resource: &plx_plex::plex::account::Resource,
             _: &[i64],
-        ) -> (Option<SourceRef>, crate::auth::SettledProbe) {
+        ) -> (Option<SourceRef>, plx_session::auth::SettledProbe) {
             assert_eq!(
                 resource.client_identifier,
                 if self.probes == 0 {
@@ -82,7 +82,7 @@ mod tests {
                     origin_url: format!("http://{address}:32400"),
                     ..Default::default()
                 }),
-                crate::auth::settled_probe(
+                plx_session::auth::settled_probe(
                     &plx_plex::plex::probe::plan(resource, plx_plex::plex::CredentialPolicy::HttpsOnly),
                     plx_plex::plex::probe::Outcome::Reachable,
                     Some(plx_plex::plex::probe::Location::Local),
@@ -114,10 +114,10 @@ mod tests {
                 "synthetic-admin-token",
                 "synthetic-resource-client",
             );
-            let mut init = crate::auth::SessionInit::captured(saved);
+            let mut init = plx_session::auth::SessionInit::captured(saved);
             init.phase = Phase::Profiles;
             init.epoch = u64::from(u32::MAX) + 80;
-            init.users = vec![crate::auth::UserTile {
+            init.users = vec![plx_session::auth::UserTile {
                 uuid: "kid".into(),
                 title: "Kid".into(),
                 ..Default::default()
@@ -139,8 +139,8 @@ mod tests {
                         else {
                             panic!("wrong worker family")
                         };
-                        let expected = crate::auth::SessionIdentity::of(&session);
-                        crate::auth::profile_switch_worker_with_io(
+                        let expected = plx_session::auth::SessionIdentity::of(&session);
+                        plx_session::auth::profile_switch_worker_with_io(
                             epoch,
                             expected,
                             session,
@@ -236,7 +236,7 @@ mod tests {
         }
     }
 
-    impl crate::auth::ProfileWorkIo for Offline {
+    impl plx_session::auth::ProfileWorkIo for Offline {
         fn switch(
             &mut self,
             _: &plx_plex::plex::account::AccountClient,
@@ -255,7 +255,7 @@ mod tests {
             &mut self,
             _: &plx_plex::plex::account::Resource,
             _: &[i64],
-        ) -> (Option<SourceRef>, crate::auth::SettledProbe) {
+        ) -> (Option<SourceRef>, plx_session::auth::SettledProbe) {
             panic!("offline worker probed")
         }
         fn gap(&mut self) {
@@ -346,9 +346,9 @@ mod tests {
     #[test]
     fn admitted_failure_payload_preserves_arbitrary_error_and_denial() {
         // Observation contract, deliberately NOT a claim about the worker's failure policy.
-        let mut init = crate::auth::SessionInit::captured(stored());
+        let mut init = plx_session::auth::SessionInit::captured(stored());
         init.phase = Phase::Profiles;
-        init.users = vec![crate::auth::UserTile {
+        init.users = vec![plx_session::auth::UserTile {
             uuid: "kid".into(),
             ..Default::default()
         }];
@@ -360,12 +360,12 @@ mod tests {
                     panic!("wrong work")
                 };
                 let payload = serde_json::from_value(serde_json::json!({
-                    "epoch": epoch, "expected": crate::auth::SessionIdentity::of(&session),
+                    "epoch": epoch, "expected": plx_session::auth::SessionIdentity::of(&session),
                     "outcome": { "Failed": { "error": "synthetic switch refusal", "pin_denied": true } }
                 }))
                 .expect("valid serialized observation contract");
                 assert!(output
-                    .complete(crate::auth::AuthProgress::ProfileSwitch(payload))
+                    .complete(plx_session::auth::AuthProgress::ProfileSwitch(payload))
                     .is_ok());
             });
         let mut d = Dispatcher::<AppHost>::new();
@@ -409,10 +409,10 @@ mod tests {
             );
             let client = plx_plex::plex::client_for(id).unwrap();
             let generation = client.token_gen();
-            let mut init = crate::auth::SessionInit::captured(saved);
+            let mut init = plx_session::auth::SessionInit::captured(saved);
             init.phase = Phase::Profiles;
             init.epoch = u64::from(u32::MAX) + 40;
-            init.users = vec![crate::auth::UserTile {
+            init.users = vec![plx_session::auth::UserTile {
                 uuid: "kid".into(),
                 title: "Kid".into(),
                 ..Default::default()
@@ -434,8 +434,8 @@ mod tests {
                         else {
                             panic!("wrong worker family")
                         };
-                        let expected = crate::auth::SessionIdentity::of(&session);
-                        crate::auth::profile_switch_worker_with_io(
+                        let expected = plx_session::auth::SessionIdentity::of(&session);
+                        plx_session::auth::profile_switch_worker_with_io(
                             epoch,
                             expected,
                             session,
@@ -521,11 +521,11 @@ mod tests {
                             tier: Some(plx_plex::plex::probe::Location::Local),
                             ..session.sources[0].clone()
                         };
-                        let probe = crate::auth::settled_probe_for_test(&machine_id,
+                        let probe = plx_session::auth::settled_probe_for_test(&machine_id,
                             plx_plex::plex::probe::Outcome::Reachable,
                             Some(plx_plex::plex::probe::Location::Local), Some(address.into()));
                         assert!(output
-                            .complete(crate::auth::endpoint_work_fact(
+                            .complete(plx_session::auth::endpoint_work_fact(
                                 flow_epoch,
                                 expected,
                                 lifecycle,
@@ -583,7 +583,7 @@ mod tests {
         const EPOCH: u64 = u32::MAX as u64 + 120;
 
         fn live(saved: Session, mt: &plx_base::task::MainThread) -> Bridge {
-            let mut init = crate::auth::SessionInit::captured(saved);
+            let mut init = plx_session::auth::SessionInit::captured(saved);
             init.epoch = EPOCH;
             let mut rig = Bridge::for_session_test(init);
             rig.session_adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(mt, false);
@@ -614,7 +614,7 @@ mod tests {
             let candidate_origin = origin.base();
             rig.session_adapter.inject_fixture_work(1, move |output, input| {
                 let SessionWork::ServerRoster { session, .. } = input else { panic!("expected roster work") };
-                let expected = crate::auth::SessionIdentity::of(&session);
+                let expected = plx_session::auth::SessionIdentity::of(&session);
                 // Existing serialized observation seam; unlike the old unsolicited Registry event,
                 // this nonterminal belongs to the actual RefreshRoster request and captured identity.
                 let activation = serde_json::from_value(serde_json::json!({"Activate": {
@@ -623,7 +623,7 @@ mod tests {
                         "credit":"", "owned":true, "origin":candidate_origin, "address":"192.0.2.10",
                         "location":plx_plex::plex::probe::Location::Local, "ipv6":false}
                 }})).unwrap();
-                output.progress(crate::auth::AuthProgress::Registry(activation)).unwrap();
+                output.progress(plx_session::auth::AuthProgress::Registry(activation)).unwrap();
                 // Synthetic activation-contract proof, not a successful network-roster policy.
                 // Return without terminal: the actual launch completion guard emits Dropped.
             });
@@ -633,7 +633,7 @@ mod tests {
             assert_eq!(records.len(), 2);
             for record in &records { assert_receipt(&rig, record, 1); }
             assert!(!records[0].terminal && records[1].terminal);
-            assert!(matches!(records[1].outcome, crate::auth::owner::SessionArrival::Dropped));
+            assert!(matches!(records[1].outcome, plx_session::auth::owner::SessionArrival::Dropped));
             assert_eq!(plx_plex::plex::server_ids().count(), 0, "worker has no registry write authority");
             assert_eq!(std::fs::read(tmp.path()).unwrap(), before);
             let terminal = records.pop().unwrap();
@@ -668,14 +668,14 @@ mod tests {
                     panic!("expected roster work")
                 };
                 let activation = serde_json::from_value(serde_json::json!({"Activate": {
-                    "epoch": EPOCH, "expected": crate::auth::SessionIdentity::of(&session),
+                    "epoch": EPOCH, "expected": plx_session::auth::SessionIdentity::of(&session),
                     "candidate": {"machine_id":"account-server", "token":"account-grant",
                         "name":"Account server", "credit":"", "owned":true,
                         "origin":"https://192-0-2-10.h.plex.direct:32400",
                         "address":"192.0.2.10", "location":plx_plex::plex::probe::Location::Local,
                         "ipv6":false}
                 }})).unwrap();
-                output.progress(crate::auth::AuthProgress::Registry(activation)).unwrap();
+                output.progress(plx_session::auth::AuthProgress::Registry(activation)).unwrap();
             });
             let mut d = Dispatcher::<AppHost>::new();
             command(&mut rig, &mut d, SessionCmd::RefreshRoster);
@@ -710,10 +710,10 @@ mod tests {
                 let stale = SourceRef { address: "127.0.0.9".into(),
                     origin_url: "http://127.0.0.9:32400".into(),
                     token: "account-token-not-authoritative".into(), ..session.sources[0].clone() };
-                let probe = crate::auth::settled_probe_for_test(&machine_id,
+                let probe = plx_session::auth::settled_probe_for_test(&machine_id,
                     plx_plex::plex::probe::Outcome::Reachable,
                     Some(plx_plex::plex::probe::Location::Local), Some("127.0.0.9".into()));
-                output.complete(crate::auth::endpoint_work_fact(EPOCH, expected, lifecycle,
+                output.complete(plx_session::auth::endpoint_work_fact(EPOCH, expected, lifecycle,
                     machine_id, Some(stale), Some(probe))).unwrap();
             });
             let mut d = Dispatcher::<AppHost>::new();
@@ -788,7 +788,7 @@ mod tests {
                     panic!("RefreshRoster must capture real roster work");
                 };
                 assert!(expected.matches(&session));
-                let mut identity = serde_json::to_value(crate::auth::SessionIdentity::of(&session)).unwrap();
+                let mut identity = serde_json::to_value(plx_session::auth::SessionIdentity::of(&session)).unwrap();
                 if wrong { identity["account_token"] = "another-account".into(); }
                 let resources: Vec<_> = found.iter().map(|source| serde_json::json!({
                     "clientIdentifier":source.machine_id, "name":source.name, "provides":"server",
@@ -804,7 +804,7 @@ mod tests {
                         "admitted_machine_id":admitted_machine_id, "household":[], "settled":[]
                     }}
                 })).unwrap();
-                output.complete(crate::auth::AuthProgress::ServerRoster(progress)).unwrap();
+                output.complete(plx_session::auth::AuthProgress::ServerRoster(progress)).unwrap();
             });
             command(rig, d, SessionCmd::RefreshRoster);
             let records = rig.session_adapter.take_results();
@@ -815,7 +815,7 @@ mod tests {
             });
             assert_eq!(record.key.epoch, epoch);
             assert!(epoch > u64::from(u32::MAX));
-            assert!(record.key.op == crate::auth::owner::SessionOp::ServerRoster);
+            assert!(record.key.op == plx_session::auth::owner::SessionOp::ServerRoster);
             assert!(record.terminal && rig.session_adapter.admitted(&record));
             frame(rig, d, records);
             // Deliberately no wrong-terminal pending-count assertion: core owns that retirement fix.
@@ -829,10 +829,10 @@ mod tests {
 
         #[test]
         fn a_refresh_reconciles_the_picker_snapshot_before_take_ready_can_save_it() {
-            let mut init = crate::auth::SessionInit::captured(stored_admin());
+            let mut init = plx_session::auth::SessionInit::captured(stored_admin());
             init.phase = Phase::Profiles;
             init.epoch = u64::from(u32::MAX) + 160;
-            init.users = vec![crate::auth::UserTile { uuid: "admin".into(), protected: false,
+            init.users = vec![plx_session::auth::UserTile { uuid: "admin".into(), protected: false,
                 ..Default::default() }];
             let mut rig = Bridge::for_session_test(init);
             let mut d = Dispatcher::<AppHost>::new();
@@ -889,7 +889,7 @@ mod tests {
 
         #[test]
         fn kid_seated_picker_refresh_does_not_take_the_account_grant() {
-            let mut init = crate::auth::SessionInit::captured(stored());
+            let mut init = plx_session::auth::SessionInit::captured(stored());
             init.phase = Phase::Profiles;
             init.epoch = u64::from(u32::MAX) + 161;
             let mut rig = Bridge::for_session_test(init);

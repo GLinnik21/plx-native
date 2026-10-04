@@ -64,20 +64,20 @@ use serde::{Deserialize, Serialize};
 
 /// Which onboarding flow an incident belongs to. Only sign-in raises one in this stage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum IncidentFlow {
+pub enum IncidentFlow {
     SignIn,
 }
 
 /// The per-launch dedup key: the same failure over the same kind of link is one question.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct IncidentKey {
+pub struct IncidentKey {
     pub flow: IncidentFlow,
     pub kind: IncidentKind,
     pub link: LinkClass,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum IncidentState {
+pub enum IncidentState {
     /// Raised, not yet resolved against the consent decision — nothing is shown for it yet.
     Pending,
     /// The alert is being offered, as resolved at this `consent::revision`.
@@ -110,7 +110,7 @@ pub(crate) enum IncidentState {
 
 /// One incident and where its report has got to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct IncidentOffer {
+pub struct IncidentOffer {
     /// Owner-allocated, never reused in a launch — fences a reply for a superseded offer.
     pub id: u32,
     pub key: IncidentKey,
@@ -125,12 +125,12 @@ pub(crate) struct IncidentOffer {
 
 impl IncidentOffer {
     /// The current failure facts shown by Details, independently of the report offer's lifecycle.
-    pub(crate) fn readout_context(&self) -> Option<&IncidentContext> {
+    pub fn readout_context(&self) -> Option<&IncidentContext> {
         self.readout_context.as_ref().or(self.context.as_ref())
     }
 
     /// Whether a person's Send report press is accepted in this state.
-    pub(crate) fn sendable(&self) -> bool {
+    pub fn sendable(&self) -> bool {
         matches!(
             self.state,
             IncidentState::Pending
@@ -145,14 +145,14 @@ impl IncidentOffer {
 
 /// Which lane a report leaves by: the standing Errors lane (Granted, no press) or a one-off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum IncidentLane {
+pub enum IncidentLane {
     Standing,
     OneOff,
 }
 
 /// What a report is built from when the adapter executes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum IncidentReport {
+pub enum IncidentReport {
     /// The evidence captured when the failure happened.
     Retained(IncidentContext),
     /// Nothing was kept (the decision was No): the adapter builds a context now, from the key.
@@ -161,7 +161,7 @@ pub(crate) enum IncidentReport {
 
 /// The adapter's answer for one [`SessionFx::Incident`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum IncidentDelivery {
+pub enum IncidentDelivery {
     /// The standing report's event id once the spool took it; `None` when nothing was queued.
     Standing { receipt: Option<String> },
     /// The one-off's event id once its lane took it; `None` when nothing was.
@@ -189,11 +189,11 @@ fn is_settled(offer: &IncidentOffer) -> bool {
     )
 }
 
-pub(super) fn write_kind(w: &mut Canon, kind: IncidentKind) {
+pub fn write_kind(w: &mut Canon, kind: IncidentKind) {
     w.str(kind.code());
 }
 
-pub(super) fn write_key(w: &mut Canon, key: &IncidentKey) {
+pub fn write_key(w: &mut Canon, key: &IncidentKey) {
     w.u8(match key.flow {
         IncidentFlow::SignIn => 0,
     });
@@ -201,7 +201,7 @@ pub(super) fn write_key(w: &mut Canon, key: &IncidentKey) {
     w.str(key.link.code());
 }
 
-pub(super) fn write_context(w: &mut Canon, c: &IncidentContext) {
+pub fn write_context(w: &mut Canon, c: &IncidentContext) {
     use plx_telemetry::telemetry::incident::keymanager_stage_code;
     write_kind(w, c.kind);
     w.str(c.link.code());
@@ -238,7 +238,7 @@ pub(super) fn write_context(w: &mut Canon, c: &IncidentContext) {
     }
 }
 
-pub(super) fn write_offer(w: &mut Canon, offer: &IncidentOffer) {
+pub fn write_offer(w: &mut Canon, offer: &IncidentOffer) {
     w.u32(offer.id);
     write_key(w, &offer.key);
     w.option(offer.context.as_ref(), |w, c| write_context(w, c));
@@ -284,7 +284,7 @@ impl SessionMachine {
     /// A producer's failure, with its closed evidence. See the module doc for the rules: the
     /// failure already held keeps its offer and its answer; anything else supersedes what is
     /// held — a key this launch has already resolved included, which is then resolved quietly.
-    pub(super) fn raise_incident(&mut self, flow: IncidentFlow, context: IncidentContext) {
+    pub fn raise_incident(&mut self, flow: IncidentFlow, context: IncidentContext) {
         let key = IncidentKey { flow, kind: context.kind, link: context.link };
         if let Some(held) = self.state.incident.as_mut().filter(|held| held.key == key) {
             // The same failure again. Unresolved (a second stalled report in one wait): keep the
@@ -307,7 +307,7 @@ impl SessionMachine {
     }
 
     /// The offer's permission, derived by the presenting screen at `revision`.
-    pub(super) fn resolve_incident(
+    pub fn resolve_incident(
         &mut self,
         id: u32,
         permission: Permission,
@@ -351,7 +351,7 @@ impl SessionMachine {
     }
 
     /// The person's Send report — from the alert, or from Details afterwards.
-    pub(super) fn report_incident(&mut self, id: u32, emit: &mut impl FnMut(SessionFx)) -> bool {
+    pub fn report_incident(&mut self, id: u32, emit: &mut impl FnMut(SessionFx)) -> bool {
         let Some(held) = self.state.incident.as_mut().filter(|held| held.id == id && held.sendable()) else {
             return false;
         };
@@ -373,7 +373,7 @@ impl SessionMachine {
     }
 
     /// The person's Not now. Only an offer on screen can be answered.
-    pub(super) fn decline_incident(&mut self, id: u32) -> bool {
+    pub fn decline_incident(&mut self, id: u32) -> bool {
         let Some(held) = self.state.incident.as_mut().filter(|held| held.id == id) else { return false };
         if !matches!(held.state, IncidentState::Offered { .. }) {
             return false;
@@ -385,7 +385,7 @@ impl SessionMachine {
     /// The adapter's answer. Fenced by id: a reply for a superseded offer changes nothing. What
     /// became of a queued report is fenced by its receipt as well — a different receipt is a report
     /// this offer no longer shows.
-    pub(super) fn incident_reported(&mut self, id: u32, delivery: &IncidentDelivery) -> bool {
+    pub fn incident_reported(&mut self, id: u32, delivery: &IncidentDelivery) -> bool {
         let Some(held) = self.state.incident.as_mut().filter(|held| held.id == id) else { return false };
         let shown = match &held.state {
             IncidentState::Queued { receipt } | IncidentState::Saved { receipt } => Some(receipt.as_str()),
@@ -413,7 +413,7 @@ impl SessionMachine {
     }
 
     /// Sign-out and Delete all local data: every incident, and what this launch has seen.
-    pub(super) fn forget_incidents(&mut self) {
+    pub fn forget_incidents(&mut self) {
         self.state.incident = None;
         self.state.incidents_seen.clear();
         self.state.link_trouble = false;
@@ -429,7 +429,7 @@ impl SessionMachine {
         self.state.incidents_seen.push(key);
     }
 
-    pub(super) fn step_incident_command(
+    pub fn step_incident_command(
         &mut self,
         command: &Command,
         emit: &mut impl FnMut(SessionFx),

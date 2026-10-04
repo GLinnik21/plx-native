@@ -1911,7 +1911,7 @@ mod tests {
         rec.end_frame(&||0);
         rec.finish(plx_machine::landgate::fixture_gate());
         assert_eq!(*segments.borrow(), bytes, "later frames/shutdown cannot recreate recording bytes");
-        assert_eq!(bridge.auth_read().0.phase, crate::auth::Phase::Deleted);
+        assert_eq!(bridge.auth_read().0.phase, plx_session::auth::Phase::Deleted);
     }
 
     #[test]
@@ -1945,7 +1945,7 @@ mod tests {
             let mut pages = plx_ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
             assert!(super::super::run::request_local_erasure(&mut rec,&mut bridge,&mut pages));
             pages.frame_with(&mut bridge, Tick::default(), Vec::new(), Vec::new(), &mut rec, false);
-            assert_eq!(bridge.auth_read().0.phase, crate::auth::Phase::Deleted);
+            assert_eq!(bridge.auth_read().0.phase, plx_session::auth::Phase::Deleted);
             assert_eq!(bridge.auth_read().0.delete_leftovers, 1, "retirement failure joins the existing erase ACK");
         }
     }
@@ -2514,7 +2514,7 @@ mod tests {
         parsed
     }
 
-    fn session_command(bridge: &mut super::super::bridge::Bridge, command: crate::auth::SessionCmd) {
+    fn session_command(bridge: &mut super::super::bridge::Bridge, command: plx_session::auth::SessionCmd) {
         let mut d = plx_ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
         super::super::bridge::execute_session_command(&mut d, command);
         d.frame_with(bridge, Tick::default(), Vec::new(), Vec::new(), &mut plx_ui::dispatch::NoTap, false);
@@ -2529,10 +2529,10 @@ mod tests {
         let hash = record_session_frame(&base).frames[0].st.unwrap();
         assert_eq!(initial, other.session_subhash());
         assert_eq!(hash, record_session_frame(&other).frames[0].st.unwrap());
-        session_command(&mut other, crate::auth::SessionCmd::DismissPinError);
+        session_command(&mut other, plx_session::auth::SessionCmd::DismissPinError);
         assert_eq!(initial, other.session_subhash(), "no-op Session command retains cached hash");
         assert_eq!(hash, record_session_frame(&other).frames[0].st.unwrap());
-        session_command(&mut other, crate::auth::SessionCmd::NoteDeleteLeftovers(1));
+        session_command(&mut other, plx_session::auth::SessionCmd::NoteDeleteLeftovers(1));
         assert_ne!(initial, other.session_subhash(), "real owner transition changes logical Session");
         assert_ne!(hash, record_session_frame(&other).frames[0].st.unwrap(),
             "same press/route/overlay/focus/tree cannot hide a changed Session");
@@ -2544,7 +2544,7 @@ mod tests {
         let base = super::super::bridge::Bridge::for_test(|| 0);
         let mut other = super::super::bridge::Bridge::for_test(|| 0);
         for changed in [false, true] {
-            if changed { session_command(&mut other, crate::auth::SessionCmd::NoteDeleteLeftovers(1)); }
+            if changed { session_command(&mut other, plx_session::auth::SessionCmd::NoteDeleteLeftovers(1)); }
             let mut replay = Recplay::Replaying(Replay {
                 resolution:Default::default(),
                 rec: record_session_frame(&base), at: 0, graded: 0, diverged: 0,

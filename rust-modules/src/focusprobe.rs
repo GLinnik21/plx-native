@@ -97,7 +97,7 @@ pub(crate) enum Screen {
     /// with no further grammar to decode — the same one-element shortcut `Screen::Login`'s
     /// sibling used to take before phase 6 gave it several.
     Login {
-        phase: crate::auth::Phase,
+        phase: plx_session::auth::Phase,
         has_control: bool,
     },
     /// The who's-watching picker (`screens::profiles`), an OWNED screen since phase 6 — so, like
@@ -410,8 +410,8 @@ mod tests {
             // both "no control on screen" and "the control has focus", because the two print
             // different values through one grammar — same reason `Screen::Profiles`'s two
             // entries exist, and the exact gap `Screen::Login`'s own doc says this used to leave
-            ("login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: false }),
-            ("login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: true }),
+            ("login", Screen::Login { phase: plx_session::auth::Phase::Idle, has_control: false }),
+            ("login", Screen::Login { phase: plx_session::auth::Phase::Idle, has_control: true }),
             // both a real cursor and "nothing focused yet", because the two print different
             // values through one grammar — same reason `Screen::Onboard`'s two entries exist
             ("profiles", Screen::Profiles { elem: 2 }),
@@ -603,8 +603,8 @@ mod tests {
     fn the_login_screens_stalled_control_appearing_is_observable() {
         let ps = crate::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
-        let without = fingerprint(&ps, "login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: false }, hud(), ControlSlot::Discs, test_store().view());
-        let with = fingerprint(&ps, "login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: true }, hud(), ControlSlot::Discs, test_store().view());
+        let without = fingerprint(&ps, "login", Screen::Login { phase: plx_session::auth::Phase::Idle, has_control: false }, hud(), ControlSlot::Discs, test_store().view());
+        let with = fingerprint(&ps, "login", Screen::Login { phase: plx_session::auth::Phase::Idle, has_control: true }, hud(), ControlSlot::Discs, test_store().view());
         assert_ne!(
             without, with,
             "the login screen's escape/retry/restart control appearing is not observable"

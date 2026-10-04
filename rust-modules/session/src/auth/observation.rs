@@ -5,7 +5,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
-pub(crate) enum Observation {
+pub enum Observation {
     Login(LoginProgress),
     Registry(RegistryProgress),
     HomeRoster(HomeRosterProgress),
@@ -16,7 +16,7 @@ pub(crate) enum Observation {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct EndpointFact {
+pub struct EndpointFact {
     pub epoch: u64,
     pub expected: SessionIdentity,
     pub sid: u16,
@@ -30,7 +30,7 @@ pub(crate) struct EndpointFact {
 }
 
 impl Observation {
-    pub(crate) fn write(&self, w: &mut plx_machine::machine::Canon) {
+    pub fn write(&self, w: &mut plx_machine::machine::Canon) {
         use owner::{write_profile, write_server, write_sources, write_tile, write_user};
         match self {
             Self::Login(progress) => {
@@ -143,7 +143,7 @@ impl Observation {
         }
     }
 
-    pub(crate) fn matches_request(&self, pending: &owner::Pending, terminal: bool) -> bool {
+    pub fn matches_request(&self, pending: &owner::Pending, terminal: bool) -> bool {
         use owner::{SessionOp, StreamPhase};
         let (epoch, expected, compatible) = match self {
             Self::Login(p) => {
@@ -190,7 +190,7 @@ impl Observation {
                 && expected.profile_uuid == pending.expected.profile_uuid)
     }
 
-    pub(crate) fn from_transport(value: AuthProgress) -> (Self, Option<ClientLifecycle>) {
+    pub fn from_transport(value: AuthProgress) -> (Self, Option<ClientLifecycle>) {
         let observation = match value {
             AuthProgress::Login(p) => Self::Login(p),
             AuthProgress::Registry(p) => Self::Registry(p),
@@ -272,7 +272,7 @@ fn write_resources(w: &mut plx_machine::machine::Canon, resources: &[Resource]) 
 
 /// The account parser remains authoritative. Serialize its complete existing data shape without
 /// changing account.rs or substituting a smaller grant model for its real policy inputs.
-pub(super) mod resources {
+pub mod resources {
     use super::*;
     use serde::ser::{SerializeSeq, SerializeStruct};
 
@@ -330,7 +330,7 @@ pub(super) mod resources {
     }
 }
 
-pub(super) mod origin {
+pub mod origin {
     use super::*;
     pub fn serialize<S: serde::Serializer>(value: &Origin, serializer: S) -> Result<S::Ok, S::Error> {
         value.base().serialize(serializer)
@@ -341,7 +341,7 @@ pub(super) mod origin {
     }
 }
 
-pub(super) mod outcome {
+pub mod outcome {
     use super::*;
     pub fn serialize<S: serde::Serializer>(value: &Outcome, serializer: S) -> Result<S::Ok, S::Error> {
         let tag: u8 = match value {
@@ -361,7 +361,7 @@ pub(super) mod outcome {
     }
 }
 
-pub(super) mod arc {
+pub mod arc {
     use super::*;
     pub fn serialize<S: serde::Serializer>(value: &Arc<Observation>, serializer: S) -> Result<S::Ok, S::Error> {
         value.as_ref().serialize(serializer)
@@ -371,7 +371,7 @@ pub(super) mod arc {
     }
 }
 
-pub(super) mod address {
+pub mod address {
     use serde::{Deserialize, Serialize};
     use plx_machine::machine::{Addr, InstanceId, MachineId, RequestId, StoreOrd};
     pub fn serialize<S: serde::Serializer>(value: &Addr, serializer: S) -> Result<S::Ok, S::Error> {
@@ -397,7 +397,7 @@ pub(super) mod address {
     }
 }
 
-pub(super) mod server_id {
+pub mod server_id {
     use super::*;
     pub fn serialize<S: serde::Serializer>(value: &ServerId, serializer: S) -> Result<S::Ok, S::Error> {
         value.raw().serialize(serializer)
@@ -408,7 +408,7 @@ pub(super) mod server_id {
 }
 
 /// [`server_id`] for an optional slot.
-pub(super) mod optional_server_id {
+pub mod optional_server_id {
     use super::*;
     pub fn serialize<S: serde::Serializer>(value: &Option<ServerId>, serializer: S) -> Result<S::Ok, S::Error> {
         value.map(ServerId::raw).serialize(serializer)

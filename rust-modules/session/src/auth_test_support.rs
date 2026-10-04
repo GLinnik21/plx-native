@@ -1,11 +1,11 @@
 //! Shared fixtures and helpers for the `auth` test modules split out below.
 
 use super::*;
-pub(super) use plx_plex::plex::probe::Scheme;
-pub(super) use std::cell::RefCell;
-pub(super) use std::sync::Mutex;
+pub use plx_plex::plex::probe::Scheme;
+pub use std::cell::RefCell;
+pub use std::sync::Mutex;
 
-pub(super) fn resource(json: &str) -> Resource {
+pub fn resource(json: &str) -> Resource {
     serde_json::from_str(json).expect("fixture parses")
 }
 
@@ -14,7 +14,7 @@ pub(super) fn resource(json: &str) -> Resource {
 /// transport resolves, and two public IPv4s so "the first one answered as somebody else" has a
 /// second one to fall through to. Shaped on the live capture of 2026-08-11
 /// (`docs/shared-servers.md` §2); the addresses are stand-ins, the arrangement is not.
-pub(super) fn a_share() -> Resource {
+pub fn a_share() -> Resource {
     resource(
         r#"{"name":"nas-home","clientIdentifier":"bbbb2222","provides":"server","owned":false,
             "sourceTitle":"friend","publicAddressMatches":false,"httpsRequired":false,
@@ -31,7 +31,7 @@ pub(super) fn a_share() -> Resource {
 }
 
 /// A JSON `/identity` body naming `mid` — what a PMS answers a probe with.
-pub(super) fn identity_json(mid: &str) -> Vec<u8> {
+pub fn identity_json(mid: &str) -> Vec<u8> {
     format!(
         r#"{{"MediaContainer":{{"size":0,"machineIdentifier":"{mid}","version":"1.43.3"}}}}"#
     )
@@ -40,13 +40,13 @@ pub(super) fn identity_json(mid: &str) -> Vec<u8> {
 
 /// A recording dial. Returns whatever the script says for an address, and remembers the order
 /// it was asked — which is how "it stopped" and "it never tried that one" become assertions.
-pub(super) struct Dialled {
+pub struct Dialled {
     seen: RefCell<Vec<String>>,
     answers: Vec<(&'static str, i32, Vec<u8>)>,
 }
 
 impl Dialled {
-    pub(super) fn new(answers: Vec<(&'static str, i32, Vec<u8>)>) -> Dialled {
+    pub fn new(answers: Vec<(&'static str, i32, Vec<u8>)>) -> Dialled {
         Dialled {
             seen: RefCell::new(Vec::new()),
             answers,
@@ -60,7 +60,7 @@ impl Dialled {
     ///
     /// `seen` records `Origin::log_form` — the bare authority for plaintext, the whole URL for
     /// TLS — so a probe order that reads plausibly cannot hide which transport each step took.
-    pub(super) fn dial(&self, o: &Origin) -> (i32, Vec<u8>) {
+    pub fn dial(&self, o: &Origin) -> (i32, Vec<u8>) {
         self.seen.borrow_mut().push(o.log_form());
         match self.answers.iter().find(|(h, _, _)| *h == o.host()) {
             Some((s, st, b)) => {
@@ -70,12 +70,12 @@ impl Dialled {
             None => (0, Vec::new()), // nothing answered at that address
         }
     }
-    pub(super) fn seen(&self) -> Vec<String> {
+    pub fn seen(&self) -> Vec<String> {
         self.seen.borrow().clone()
     }
 }
 
-pub(super) fn race_plan() -> ProbePlan {
+pub fn race_plan() -> ProbePlan {
     let candidate = |url: &str, address: &str, location: probe::Location| {
         let scheme = if url.starts_with("https://") {
             Scheme::Https
@@ -117,30 +117,40 @@ pub(super) fn race_plan() -> ProbePlan {
 /// A [`ProbeDial`] scripted in the legacy `(status, body)` shape — status `0` is "nothing
 /// answered", with no transport evidence (`ProbeReply::from`). For the racing fixtures that are
 /// about completion order and acceptance, not about how a failure is named.
-pub(super) fn status_dial(
+pub fn status_dial(
     f: impl Fn(&Origin, Option<&plx_plex::plex::ResolvePin>, Duration) -> (i32, Vec<u8>) + Send + Sync + 'static,
 ) -> ProbeDial {
     Arc::new(move |origin, pin, budget| ProbeReply::from(f(origin, pin, budget)))
 }
 
-pub(super) fn test_policy() -> ProbeDeadlines {
+pub fn test_policy() -> ProbeDeadlines {
     ProbeDeadlines {
         local: Duration::from_secs(1),
         remote: Duration::from_secs(1),
     }
 }
 
-pub(super) fn threaded_spawn(_: usize, job: ProbeJob) -> bool {
-    std::thread::spawn(job);
-    true
+// Not a bare `pub fn`: `ci/check-deps.sh`'s `threads` gate recognises test-only code by a
+// `#[cfg(test)]` / `#[cfg(any(test, feature = "test-support"))]` line directly above a non-`pub`
+// `mod`, and this file is mounted under the second form, which it cannot read from the mount (the
+// same convention as `plx_net`'s `loopback_pms`). The module is private and re-exported below.
+#[cfg(any(test, feature = "test-support"))]
+mod spawner {
+    use super::ProbeJob;
+
+    pub fn threaded_spawn(_: usize, job: ProbeJob) -> bool {
+        std::thread::spawn(job);
+        true
+    }
 }
+pub use spawner::threaded_spawn;
 
 /// The account this feature exists for, as `/api/v2/resources` really returns it: OUR server
 /// (owned, LAN + public + relay) and the SHARE (not owned, the owner's 172.20 LAN, an internal
 /// hostname, and one public IPv4). Shaped on the live capture of 2026-08-11
 /// (`docs/shared-servers.md` §2) — the addresses are stand-ins, the arrangement is not, and the
 /// share is listed FIRST because plex.tv's order is not ours to rely on.
-pub(super) fn a_two_server_account() -> Vec<Resource> {
+pub fn a_two_server_account() -> Vec<Resource> {
     serde_json::from_str(
         r#"[
           {"name":"nas-home","clientIdentifier":"bbbb2222","provides":"server","owned":false,
@@ -174,7 +184,7 @@ pub(super) fn a_two_server_account() -> Vec<Resource> {
 /// assert about registration and re-keying runs through `SourceRef::origin`'s fallback.
 // ---- the offline profile seat, decided from the stored session alone ----
 
-pub(crate) fn cached_session(protected_pin: Option<&str>) -> Session {
+pub fn cached_session(protected_pin: Option<&str>) -> Session {
     let mut s = Session {
         client_id: "cid".into(),
         account_token: "acct".into(),
@@ -222,7 +232,7 @@ pub(crate) fn cached_session(protected_pin: Option<&str>) -> Session {
     s
 }
 
-pub(super) fn tile(uuid: &str, protected: bool) -> UserTile {
+pub fn tile(uuid: &str, protected: bool) -> UserTile {
     UserTile {
         uuid: uuid.into(),
         title: uuid.into(),
@@ -231,7 +241,7 @@ pub(super) fn tile(uuid: &str, protected: bool) -> UserTile {
     }
 }
 
-pub(super) fn source(machine_id: &str, owned: bool, token: &str) -> SourceRef {
+pub fn source(machine_id: &str, owned: bool, token: &str) -> SourceRef {
     SourceRef {
         machine_id: machine_id.into(),
         name: machine_id.into(),
@@ -249,7 +259,7 @@ pub(super) fn source(machine_id: &str, owned: bool, token: &str) -> SourceRef {
 }
 
 /// The primary in the **LEGACY shape** — see [`source`] above.
-pub(super) fn primary(machine_id: &str, address: &str, port: i64, token: &str) -> ServerRef {
+pub fn primary(machine_id: &str, address: &str, port: i64, token: &str) -> ServerRef {
     ServerRef {
         name: "Mac mini".into(),
         machine_id: machine_id.into(),
@@ -262,7 +272,7 @@ pub(super) fn primary(machine_id: &str, address: &str, port: i64, token: &str) -
 
 /// A signed-in device in the ordinary Plex Home arrangement: the adult profile carries the PIN,
 /// the child's does not, and `uuid` picks which of them the stored session would resume as.
-pub(super) fn signed_in_as(uuid: &str) -> Session {
+pub fn signed_in_as(uuid: &str) -> Session {
     Session {
         client_id: "cid".into(),
         account_token: "acct".into(),
@@ -304,7 +314,7 @@ pub(super) fn signed_in_as(uuid: &str) -> Session {
 /// placeholder braces are balanced on their own and would otherwise silently agree with a real
 /// count by coincidence; skipping string contents removes the coincidence instead of relying on
 /// it.
-pub(super) fn extract_fn_body<'a>(src: &'a str, name: &str) -> &'a str {
+pub fn extract_fn_body<'a>(src: &'a str, name: &str) -> &'a str {
     let needle = format!("fn {name}(");
     let start = src
         .find(&needle)
@@ -357,7 +367,7 @@ pub(super) fn extract_fn_body<'a>(src: &'a str, name: &str) -> &'a str {
 /// `set_pin_denied_for_test` — all share a `set_` prefix, so a FOURTH one sharing the
 /// convention (a `set_phase`, say) is refused here by the family it belongs to, on the commit
 /// that adds it, rather than only once someone remembers to type its exact name into a list.
-pub(super) fn calls_a_function_prefixed(body: &str, prefix: &str) -> bool {
+pub fn calls_a_function_prefixed(body: &str, prefix: &str) -> bool {
     let bytes = body.as_bytes();
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     let mut i = 0;

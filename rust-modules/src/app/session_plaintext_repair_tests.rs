@@ -6,7 +6,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::auth::owner::{SessionEvent, SessionWork};
+    use plx_session::auth::owner::{SessionEvent, SessionWork};
     use plx_plex::plex::session::{self, ProfileCreds, Session, ServerRef, SourceRef, UserRef};
 
     struct Cleanup<'a>(&'a plx_base::task::MainThread);
@@ -17,7 +17,7 @@ mod tests {
         }
     }
 
-    fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<crate::auth::owner::SessionEnvelope>) {
+    fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<plx_session::auth::owner::SessionEnvelope>) {
         let results = records.into_iter().map(|r| (r.addr, AppMsg::Session(SessionEvent::Result(r)))).collect();
         d.frame_with(rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
         rig.settle_session_io_for_test(d);
@@ -62,7 +62,7 @@ mod tests {
 
         let id = plx_plex::plex::register_for_test("synthetic-server", "192.0.2.10", 32400,
             "synthetic-token", "synthetic-client");
-        let mut init = crate::auth::SessionInit::captured(saved);
+        let mut init = plx_session::auth::SessionInit::captured(saved);
         init.epoch = u64::from(u32::MAX) + 91;
         let epoch = init.epoch;
         let mut rig = Bridge::for_session_test(init);
@@ -71,7 +71,7 @@ mod tests {
             std::thread::spawn(move || {
                 let SessionWork::Endpoint { session, expected, lifecycle, machine_id } = input
                     else { panic!("wrong worker family") };
-                crate::auth::endpoint_worker_with_io(epoch, session, expected, lifecycle, machine_id, &output,
+                plx_session::auth::endpoint_worker_with_io(epoch, session, expected, lifecycle, machine_id, &output,
                     |_, _| Ok(vec![serde_json::from_value(serde_json::json!({
                         "clientIdentifier": "synthetic-server", "provides": "server"
                     })).unwrap()]),
@@ -85,7 +85,7 @@ mod tests {
                             tier: Some(plx_plex::plex::probe::Location::Local),
                             ..SourceRef::default()
                         };
-                        (Some(fresh), crate::auth::settled_probe(
+                        (Some(fresh), plx_session::auth::settled_probe(
                             &plx_plex::plex::probe::plan(resource, plx_plex::plex::CredentialPolicy::HttpsOnly),
                             plx_plex::plex::probe::Outcome::Reachable,
                             Some(plx_plex::plex::probe::Location::Local),
@@ -95,7 +95,7 @@ mod tests {
         });
 
         let mut d = Dispatcher::<AppHost>::new();
-        execute_session_command(&mut d, crate::auth::SessionCmd::RequestEndpoint { sid: id });
+        execute_session_command(&mut d, plx_session::auth::SessionCmd::RequestEndpoint { sid: id });
         frame(&mut rig, &mut d, Vec::new());
         let records = rig.session_adapter.take_results();
         assert_eq!(records.len(), 1);

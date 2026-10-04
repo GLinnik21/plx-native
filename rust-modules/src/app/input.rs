@@ -889,7 +889,7 @@ pub(crate) fn after_cancel(backed_out: bool) -> AfterCancel {
 /// `AppMounter::mount` constructs a new `ProfilesScreen` the moment the tree follows this route.
 pub(crate) fn enter_profiles_from_onboard(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     super::bridge::execute_session_command(pages,
-        crate::auth::SessionCmd::StartSwitch(crate::auth::Picker::ChangeProfile));
+        plx_session::auth::SessionCmd::StartSwitch(plx_session::auth::Picker::ChangeProfile));
     super::bridge::nav_root_if_unsettled(pages, AppArg::Profiles);
 }
 
@@ -1394,5 +1394,5 @@ pub(crate) fn back_at_root() {
 /// The SURFACE is dismissed by the caller, not here: the screen under it is going, and there is no
 /// host left for a fade to run over (what `settings::hide()` used to say).
 pub(crate) fn delete_all_local_data_and_sign_out(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
-    super::bridge::execute_session_command(pages, crate::auth::SessionCmd::EraseLocal);
+    super::bridge::execute_session_command(pages, plx_session::auth::SessionCmd::EraseLocal);
 }

@@ -1,7 +1,7 @@
 //! Stored-home observation contracts through the real owner and actual disk/registry resources.
 //! Synthetic admitted observations here do not claim account discovery/network policy coverage.
 use super::*;
-use crate::auth::owner::{SessionEnvelope, SessionEvent, SessionWork};
+use plx_session::auth::owner::{SessionEnvelope, SessionEvent, SessionWork};
 use plx_plex::plex::session::{self, Session, SourceRef, ServerRef, UserRef};
 
 struct Cleanup<'a>(&'a plx_base::task::MainThread);
@@ -33,17 +33,17 @@ fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<SessionEnve
         rig.settle_session_io_for_test(d);
 }
 
-fn command(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, cmd: crate::auth::SessionCmd) {
+fn command(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, cmd: plx_session::auth::SessionCmd) {
     execute_session_command(d, cmd);
     frame(rig, d, Vec::new());
 }
 
-fn inject_roster(rig: &mut Bridge, expected: crate::auth::SessionIdentity) {
+fn inject_roster(rig: &mut Bridge, expected: plx_session::auth::SessionIdentity) {
     inject_roster_terminal(rig, expected.clone(), expected);
 }
 
-fn inject_roster_terminal(rig: &mut Bridge, expected: crate::auth::SessionIdentity,
-    terminal_expected: crate::auth::SessionIdentity) {
+fn inject_roster_terminal(rig: &mut Bridge, expected: plx_session::auth::SessionIdentity,
+    terminal_expected: plx_session::auth::SessionIdentity) {
     let req = rig.session.snapshot_init().next_req + 1;
     let epoch = rig.auth_read().0.flow_epoch;
     rig.session_adapter.inject_fixture_work(req, move |output, input| {
@@ -51,9 +51,9 @@ fn inject_roster_terminal(rig: &mut Bridge, expected: crate::auth::SessionIdenti
         let resource: plx_plex::plex::account::Resource = serde_json::from_value(serde_json::json!({
             "clientIdentifier":"stored-machine", "provides":"server"
         })).unwrap();
-        output.progress(crate::auth::AuthProgress::Registry(crate::auth::RegistryProgress::Settled {
+        output.progress(plx_session::auth::AuthProgress::Registry(plx_session::auth::RegistryProgress::Settled {
             epoch, expected: Some(expected.clone()),
-            probe: crate::auth::settled_probe(
+            probe: plx_session::auth::settled_probe(
                 &plx_plex::plex::probe::plan(&resource, plx_plex::plex::CredentialPolicy::HttpsOnly),
                 plx_plex::plex::probe::Outcome::Reachable, Some(plx_plex::plex::probe::Location::Local),
                 Some("127.0.0.4".into())),
@@ -67,7 +67,7 @@ fn inject_roster_terminal(rig: &mut Bridge, expected: crate::auth::SessionIdenti
                 "admitted_machine_id":"stored-machine", "household":[], "settled":[]
             }}
         })).unwrap();
-        output.complete(crate::auth::AuthProgress::ServerRoster(roster)).unwrap();
+        output.complete(plx_session::auth::AuthProgress::ServerRoster(roster)).unwrap();
     });
 }
 
@@ -88,22 +88,22 @@ fn prove_home_observations(conflicting_owner: bool) {
         owner_input.account_token = "different-account".into();
         owner_input.user.uuid = "different-profile".into();
     }
-    let mut init = crate::auth::SessionInit::captured(owner_input);
+    let mut init = plx_session::auth::SessionInit::captured(owner_input);
     init.epoch = u64::from(u32::MAX) + 97;
-    if conflicting_owner { init.phase = crate::auth::Phase::Ready; }
+    if conflicting_owner { init.phase = plx_session::auth::Phase::Ready; }
     let mut rig = Bridge::for_session_test(init);
     rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
     let mut d = Dispatcher::<AppHost>::new();
     if !conflicting_owner {
-        command(&mut rig, &mut d, crate::auth::SessionCmd::ResumeStored);
+        command(&mut rig, &mut d, plx_session::auth::SessionCmd::ResumeStored);
         assert!(rig.take_session_ready().is_some());
         assert!(rig.take_session_ready().is_none());
         assert_eq!(std::fs::read(tmp.path()).unwrap(), before);
     }
     // Deliberately use old disk identity in the conflicting case: an observation-contract test,
     // not a claim that the correctly captured worker would fabricate this payload.
-    inject_roster(&mut rig, crate::auth::SessionIdentity::of(&disk));
-    command(&mut rig, &mut d, crate::auth::SessionCmd::RefreshRoster);
+    inject_roster(&mut rig, plx_session::auth::SessionIdentity::of(&disk));
+    command(&mut rig, &mut d, plx_session::auth::SessionCmd::RefreshRoster);
     let mut records = rig.session_adapter.take_results();
     assert_eq!(records.len(), 2);
     let roster = records.pop().unwrap();
@@ -122,17 +122,17 @@ fn prove_home_observations(conflicting_owner: bool) {
 
     let req = rig.session.snapshot_init().next_req + 1;
     let epoch = rig.auth_read().0.flow_epoch;
-    let wrong_identity = crate::auth::owner::Identity::of(&disk);
+    let wrong_identity = plx_session::auth::owner::Identity::of(&disk);
     rig.session_adapter.inject_fixture_work(req, move |output, input| {
         let SessionWork::Endpoint { expected, lifecycle, machine_id, .. } = input else { panic!("endpoint capture") };
-        let probe = crate::auth::settled_probe_for_test(&machine_id,
+        let probe = plx_session::auth::settled_probe_for_test(&machine_id,
             plx_plex::plex::probe::Outcome::Reachable,
             Some(plx_plex::plex::probe::Location::Local), Some("127.0.0.3".into()));
-        output.complete(crate::auth::endpoint_work_fact(epoch,
+        output.complete(plx_session::auth::endpoint_work_fact(epoch,
             if conflicting_owner { wrong_identity } else { expected }, lifecycle, machine_id,
             Some(source("127.0.0.3", "account-token-not-authoritative")), Some(probe))).unwrap();
     });
-    command(&mut rig, &mut d, crate::auth::SessionCmd::RequestEndpoint { sid: id });
+    command(&mut rig, &mut d, plx_session::auth::SessionCmd::RequestEndpoint { sid: id });
     let records = rig.session_adapter.take_results();
     assert_eq!(records.len(), 1);
     let original = records[0].clone();
@@ -149,7 +149,7 @@ fn prove_home_observations(conflicting_owner: bool) {
                 3 => bad.admission.0 += 100,
                 4 => bad.lifecycle = None,
                 5 => bad.terminal = false,
-                _ => bad.key.op = crate::auth::owner::SessionOp::HomeRoster,
+                _ => bad.key.op = plx_session::auth::owner::SessionOp::HomeRoster,
             }
             frame(&mut rig, &mut d, vec![bad]);
             assert!(rig.session.snapshot_init().pending.contains_key(&req), "variant {variant}");
@@ -170,7 +170,7 @@ fn prove_home_observations(conflicting_owner: bool) {
         "a rejected but matching terminal must release its own endpoint flight");
     assert!(rig.session.snapshot_init().pending.is_empty());
     if conflicting_owner {
-        command(&mut rig, &mut d, crate::auth::SessionCmd::RequestEndpoint { sid: id });
+        command(&mut rig, &mut d, plx_session::auth::SessionCmd::RequestEndpoint { sid: id });
         let successor = rig.session.snapshot_init().next_req;
         assert!(successor > req);
         assert!(rig.session.snapshot_init().pending.contains_key(&successor));
@@ -209,27 +209,27 @@ fn admitted_endpoint_lifecycle_and_nonterminal_rejections_preserve_current_inter
         let before = std::fs::read(tmp.path()).unwrap();
         let id = plx_plex::plex::register_for_test("stored-machine", "127.0.0.1", 32400,
             "profile-token-a", "synthetic-client");
-        let mut rig = Bridge::for_session_test(crate::auth::SessionInit::captured(disk));
+        let mut rig = Bridge::for_session_test(plx_session::auth::SessionInit::captured(disk));
         rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
         let mut d = Dispatcher::<AppHost>::new();
         let req = rig.session.snapshot_init().next_req + 1;
         let epoch = rig.auth_read().0.flow_epoch;
         rig.session_adapter.inject_fixture_work(req, move |output, input| {
             let SessionWork::Endpoint { expected, lifecycle, machine_id, .. } = input else { panic!("endpoint capture") };
-            let probe = crate::auth::settled_probe_for_test(&machine_id,
+            let probe = plx_session::auth::settled_probe_for_test(&machine_id,
                 plx_plex::plex::probe::Outcome::Reachable,
                 Some(plx_plex::plex::probe::Location::Local), Some("127.0.0.9".into()));
-            output.complete(crate::auth::endpoint_work_fact(epoch, expected, lifecycle, machine_id,
+            output.complete(plx_session::auth::endpoint_work_fact(epoch, expected, lifecycle, machine_id,
                 Some(source("127.0.0.9", "unused-payload-token")), Some(probe))).unwrap();
         });
-        command(&mut rig, &mut d, crate::auth::SessionCmd::RequestEndpoint { sid: id });
+        command(&mut rig, &mut d, plx_session::auth::SessionCmd::RequestEndpoint { sid: id });
         let mut records = rig.session_adapter.take_results();
         assert_eq!(records.len(), 1);
         let mut bad = records.pop().unwrap();
-        let receipt = crate::auth::owner::Receipt::of(&bad);
+        let receipt = plx_session::auth::owner::Receipt::of(&bad);
         let admission = bad.admission;
         if nonterminal { bad.terminal = false; } else { bad.lifecycle = None; }
-        assert!(crate::auth::owner::Receipt::of(&bad) == receipt);
+        assert!(plx_session::auth::owner::Receipt::of(&bad) == receipt);
         assert!(bad.admission == admission);
         assert!(rig.session_adapter.admitted(&bad), "must reach owner, not fail Bridge admission");
         frame(&mut rig, &mut d, vec![bad.clone()]);
@@ -242,7 +242,7 @@ fn admitted_endpoint_lifecycle_and_nonterminal_rejections_preserve_current_inter
         assert!(rig.take_session_ready().is_none());
         // This receipt was consumed; do not relabel/reuse it as a valid terminal. Real restart
         // retires the remaining logical interest (physical producer already returned above).
-        command(&mut rig, &mut d, crate::auth::SessionCmd::StartLogin);
+        command(&mut rig, &mut d, plx_session::auth::SessionCmd::StartLogin);
         assert!(!rig.session.snapshot_init().pending.contains_key(&req));
     }
 }
@@ -252,19 +252,19 @@ fn rejected_terminal_waits_in_owner_fifo_until_preceding_commit_ack() {
     let mut witnessed = false;
     for remaining in 1..20 {
         let disk = saved();
-        let mut rig = Bridge::for_session_test(crate::auth::SessionInit::captured(disk.clone()));
+        let mut rig = Bridge::for_session_test(plx_session::auth::SessionInit::captured(disk.clone()));
         rig.session_adapter.fixture_resources().disk = disk.clone();
         let mut d = Dispatcher::<AppHost>::new();
         let mut wrong = disk.clone();
         wrong.account_token = "different-account".into();
-        inject_roster_terminal(&mut rig, crate::auth::SessionIdentity::of(&disk),
-            crate::auth::SessionIdentity::of(&wrong));
-        command(&mut rig, &mut d, crate::auth::SessionCmd::RefreshRoster);
+        inject_roster_terminal(&mut rig, plx_session::auth::SessionIdentity::of(&disk),
+            plx_session::auth::SessionIdentity::of(&wrong));
+        command(&mut rig, &mut d, plx_session::auth::SessionCmd::RefreshRoster);
         let records = rig.session_adapter.take_results();
         assert_eq!(records.len(), 2);
         let req = records[0].addr.req.0;
         for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - remaining {
-            execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));
+            execute_session_command(&mut d, plx_session::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
         frame(&mut rig, &mut d, records.clone());
         let state = rig.session.snapshot_init();
@@ -282,7 +282,7 @@ fn rejected_terminal_waits_in_owner_fifo_until_preceding_commit_ack() {
         assert!(resources.registry_writes.len() >= writes_before);
         assert_eq!(resources.disk.sources[0].address, "127.0.0.1");
         assert!(resources.registry_writes.iter().all(|plan|
-            matches!(plan, crate::auth::owner::RegistryPlan::Probe(_))));
+            matches!(plan, plx_session::auth::owner::RegistryPlan::Probe(_))));
         assert!(rig.take_session_ready().is_none());
         break;
     }
