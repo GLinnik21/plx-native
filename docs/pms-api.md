@@ -255,6 +255,13 @@ Verified hub list (`MediaContainer.Hub[]`), each hub has
 | `movie.recentlyadded.1` (promoted) | Recently Added in Movies | `/library/sections/1/all?sort=addedAt:desc` |
 | `custom.collection.*` | collection shelves | `/library/collections/{id}/children` |
 
+**`/hubs` has no paging** (`docs/plex-openapi.json`: its only parameters are `count`, `onlyTransient`
+and `identifier`), so a server that promotes many libraries and collections answers with all of them
+in one response and the client cannot ask for "the next page of hubs". Home therefore takes every
+hub the server sends, 12 cards per hub (`count=12`), and bounds only the merged catalog:
+`pms.rs::HOME_CARDS_MAX` = 2,048 cards (about 170 full rows), whole shelves dropped from the tail of
+a source when it is exceeded, logged as `hubs: card bound 2048 reached`.
+
 Verified Continue Watching item (movie, trimmed):
 
 ```json

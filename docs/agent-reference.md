@@ -1456,7 +1456,7 @@ A bare **`./tests/run.py`** now runs the SYNTHETIC tier (generated clips, no Ple
 yourself with `./tests/run.py --list`, which is the only census that cannot rot; the number written
 here went stale inside the branch that wrote it, in one commit); the
 library-backed cases everything above describes are **`./tests/run.py --server`**, and `--fps` /
-`--fps-player` imply `--server` because those scenes navigate a real signed-in Home. `--pipeline`
+`--fps-player` imply `--server` (not with `--mock`, which refuses `--server` and runs the scenes against `tests/mock_pms.py`) because those scenes navigate a real signed-in Home. `--pipeline`
 still parses (it names the default); pairing it with `--server`/`--fps` is refused rather than
 silently resolved. The inversion is about what the obvious command should mean: the default has to
 be the thing that runs for everybody, needs no credentials, touches nobody's watch history, and

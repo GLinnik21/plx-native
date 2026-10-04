@@ -31,9 +31,24 @@ use std::sync::{Arc, LazyLock, Mutex};
 pub(crate) mod record;
 pub(crate) mod initial;
 
-/// Catalog rows Home holds at most, across EVERY source. A hard ceiling on the store the whole
+/// Cards Home holds at most, across EVERY source: a distant ceiling on the one catalog the whole
 /// screen indexes into, not a per-server one — see [`allot`] for how the sources divide it.
-const PMS_MAX_MOVIES: usize = 256;
+///
+/// A bound exists because the catalog is resident memory on a TV with a few hundred MB for the
+/// whole app, and `/hubs` has no paging (`docs/pms-api.md` §3), so nothing else limits what a
+/// server (or a household of shares) may send. 2,048 is about 170 full rows of 12, an order of
+/// magnitude past any Home a person scrolls and measured on the TV (`home-grid-deep`, issue #395)
+/// at 2,040 cards, about 1,343 KB of catalog (about 0.65 KB a card, 170 hubs); the `hubs: landed`
+/// log line reports the live figure. It used to be 256, which cut a Home of more than about 21 rows
+/// off in the middle.
+///
+/// It is applied in exactly one place: [`merge_with_scope`], AFTER the pin filter and the
+/// per-shelf [`MAX_SHELF_ITEMS`] ceiling, through [`allot`] and the whole-shelf rule — so an
+/// unpinned library spends none of it, and what falls past it is whole shelves from the tail of a
+/// source, never a truncated row. [`project`] does not truncate: one source's [`SourceBuild`] is
+/// bounded by what that server sends (12 cards per shelf, [`HUB_FETCH_COUNT`], times its hubs).
+/// Rows dropped by the bound are logged by [`pump`].
+const HOME_CARDS_MAX: usize = 2048;
 
 /// Cards one shelf holds at most — the number the grid can address (the owned Home's `MAX_ITEMS` is this
 /// constant).
@@ -908,6 +923,67 @@ fn merge(srcs: &[Src]) -> HubBuild {
     merge_with_scope(srcs, &BrowseScope::standalone())
 }
 
+/// What each live source's shelves would publish with an unlimited budget: every pinned card, at
+/// most [`MAX_SHELF_ITEMS`] per shelf. One function so the demand handed to [`allot`], the cards
+/// emitted and the overflow [`bound_overflow`] reports cannot disagree.
+fn publishable_shelves<'a>(
+    live: &[(&str, &'a SourceBuild)],
+    pins: &[(ServerId, i64, bool)],
+) -> Vec<Vec<Vec<&'a Arc<PmsMovie>>>> {
+    live.iter()
+        .map(|(_, b)| {
+            b.shelves
+                .iter()
+                .map(|sh| {
+                    sh.items
+                        .iter()
+                        .filter(|m| item_pinned(pins, m))
+                        .take(MAX_SHELF_ITEMS)
+                        .collect()
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// `(shelves, cards)` the sources offered that [`HOME_CARDS_MAX`] left out of `build`: the whole
+/// shelves dropped from the tail of a source. `(0, 0)` on every Home under the bound.
+fn bound_overflow(srcs: &[Src], scope: &BrowseScope, build: &HubBuild) -> (usize, usize) {
+    let live: Vec<(&str, &SourceBuild)> = srcs
+        .iter()
+        .filter_map(|s| s.last.as_ref().map(|b| (s.handle.as_str(), b)))
+        .collect();
+    let (mut offered_shelves, mut offered_cards) = (0, 0);
+    for items in publishable_shelves(&live, &scope.pins).iter().flatten() {
+        if !items.is_empty() {
+            offered_shelves += 1;
+            offered_cards += items.len();
+        }
+    }
+    let deck = build.1.first().filter(|h| h.hub_id == "home.continue");
+    let published_shelves = build.1.len() - usize::from(deck.is_some());
+    let published_cards = build.0.len() - deck.map_or(0, |h| h.len);
+    (offered_shelves - published_shelves, offered_cards - published_cards)
+}
+
+/// Approximate resident bytes of a catalog: each card's struct plus the heap its strings own.
+/// Counted per catalog entry, so a card two shelves share is counted twice — a ceiling on what the
+/// catalog holds, which is the side a memory bound wants to err on.
+fn catalog_bytes(cat: &[Arc<PmsMovie>]) -> usize {
+    cat.iter()
+        .map(|m| {
+            std::mem::size_of::<PmsMovie>()
+                + [
+                    &m.title, &m.rating, &m.part, &m.thumb, &m.still, &m.art, &m.summary, &m.rk,
+                    &m.vcodec, &m.acodec, &m.show_rk, &m.show_title, &m.aired,
+                ]
+                .iter()
+                .map(|s| s.capacity())
+                .sum::<usize>()
+        })
+        .sum()
+}
+
 fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     let pins = &scope.pins;
     let live: Vec<(&str, &SourceBuild)> = srcs
@@ -957,26 +1033,12 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     // library cannot spend a pinned one's row budget (nor can items past the cap, which are never
     // drawn), and a shelf left with nothing contributes no `HubRow` below, which is how an unpinned
     // library's whole shelf disappears rather than becoming an empty heading.
-    let publishable: Vec<Vec<Vec<&Arc<PmsMovie>>>> = live
-        .iter()
-        .map(|(_, b)| {
-            b.shelves
-                .iter()
-                .map(|sh| {
-                    sh.items
-                        .iter()
-                        .filter(|m| item_pinned(pins, m))
-                        .take(MAX_SHELF_ITEMS)
-                        .collect()
-                })
-                .collect()
-        })
-        .collect();
+    let publishable = publishable_shelves(&live, pins);
     let row_want: Vec<usize> = publishable
         .iter()
         .map(|shelves| shelves.iter().map(Vec::len).sum())
         .collect();
-    let rows_for = allot(PMS_MAX_MOVIES - new_cat.len(), &row_want);
+    let rows_for = allot(HOME_CARDS_MAX - new_cat.len(), &row_want);
 
     for (i, (handle, b)) in live.iter().enumerate() {
         let mut rows_left = rows_for[i];
@@ -1934,7 +1996,13 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     // beyond the rebuilt catalog. Cheap enough to run on a generation change rather than to try to
     // predict which changes matter.
     let scope_moved = browse_scope_moved(state, scope);
-    let build = (dirty || scope_moved).then(|| merge_with_scope(&srcs, scope));
+    let build = (dirty || scope_moved).then(|| {
+        let t0 = std::time::Instant::now();
+        let build = merge_with_scope(&srcs, scope);
+        let took = t0.elapsed();
+        let over = bound_overflow(&srcs, scope, &build);
+        (build, took, over)
+    });
     state.srcs = srcs;
     if any_landed {
         // A landing that COMMITS repaints from inside `commit`; this is the one that does not —
@@ -1942,12 +2010,21 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         // may have gone idle with nothing else on it to move.
         plx_machine::idle::invalidate();
     }
-    if let Some(build) = build {
+    if let Some((build, took, (over_shelves, over_cards))) = build {
+        let bytes = catalog_bytes(&build.0);
         let n = commit(state, build);
+        // The harness (`tests/mock_fps.py`) reads the first two numbers; new fields go AFTER them.
         plx_base::eventlog::log(&format!(
-            "hubs: landed — {n} items, {} shelves",
-            hub_count(state)
+            "hubs: landed — {n} items, {} shelves (merge {} us, catalog ~{} KB)",
+            hub_count(state),
+            took.as_micros(),
+            bytes / 1024
         ));
+        if over_shelves > 0 {
+            plx_base::eventlog::log(&format!(
+                "hubs: card bound {HOME_CARDS_MAX} reached — {over_shelves} shelves, {over_cards} cards left off"
+            ));
+        }
     }
     endpoints
 }

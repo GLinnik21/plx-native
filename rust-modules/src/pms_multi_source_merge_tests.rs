@@ -799,7 +799,8 @@ fn the_reporters_seventeen_rows_all_reach_home() {
 fn no_shelf_is_published_partially() {
     let cw: Vec<(i64, String)> = (0..24).map(|i| (100 - i, format!("cw{i}"))).collect();
     let cw: Vec<(i64, &str)> = cw.iter().map(|(t, r)| (*t, r.as_str())).collect();
-    let shelves: Vec<Shelf> = (0..25)
+    let whole = (HOME_CARDS_MAX - 24) / 12;
+    let shelves: Vec<Shelf> = (0..whole + 1)
         .map(|s| {
             let keys: Vec<String> = (0..12).map(|i| format!("s{s}-{i}")).collect();
             shelf(0, &format!("Shelf {s}"), &format!("x.{s}"),
@@ -809,8 +810,9 @@ fn no_shelf_is_published_partially() {
     let (items, hubs, _) = merge(&[src(0, "", HubState::Ready, Some(built(0, &cw, shelves)))]);
     assert_eq!(hubs[0].len, 24);
     assert!(hubs[1..].iter().all(|h| h.len == 12), "no shelf is cut short");
-    assert_eq!(hubs.len(), 20, "24 + 19 x 12 = 252 cards; the 20th shelf would be 264");
-    assert_eq!(items.len(), 252);
+    assert_eq!(hubs.len(), 1 + whole, "the deck and every shelf that fits whole; one more would not");
+    assert_eq!(items.len(), 24 + whole * 12);
+    assert!(items.len() + 12 > HOME_CARDS_MAX, "the next shelf would have crossed the bound");
 }
 
 /// The budget is split, not raced for. Whoever is asked first used to spend it — and `/hubs`
@@ -849,7 +851,7 @@ fn the_budget_is_shared_so_neither_source_starves_the_other() {
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let many = |slot: u16, tag: &str| {
-        (0..300)
+        (0..HOME_CARDS_MAX + 100)
             .map(|i| shelf(slot, &format!("{tag}{i}"), "x", &["r"]))
             .collect::<Vec<_>>()
     };
@@ -862,10 +864,10 @@ fn the_budget_is_shared_so_neither_source_starves_the_other() {
             Some(built(1, &[], many(1, "b"))),
         ),
     ]);
-    // one-card shelves, so the card budget is what binds: no shelf cap, 128 cards (= shelves) each
+    // one-card shelves, so the card budget is what binds: no shelf cap, half the bound (= shelves) each
     assert_eq!(
         hub_count(&o.state),
-        PMS_MAX_MOVIES,
+        HOME_CARDS_MAX,
         "the card cap is the only ceiling"
     );
     let theirs = (0..hub_count(&o.state))
@@ -873,7 +875,7 @@ fn the_budget_is_shared_so_neither_source_starves_the_other() {
         .count();
     assert_eq!(
         theirs,
-        PMS_MAX_MOVIES / 2,
+        HOME_CARDS_MAX / 2,
         "and the share gets its half rather than the leftovers"
     );
     reset(&mut o.state, &o.adapter);
@@ -945,8 +947,8 @@ fn shelves_in(slot: u16, sec: i64, n: usize, per: usize) -> Vec<Shelf> {
 #[test]
 fn an_unpinned_library_spends_no_card_budget() {
     let srcs = [
-        src(0, "", HubState::Ready, Some(built(0, &[], shelves_in(0, 1, 30, 12)))),
-        src(1, "friend", HubState::Ready, Some(built(1, &[], shelves_in(1, 1, 30, 12)))),
+        src(0, "", HubState::Ready, Some(built(0, &[], shelves_in(0, 1, 200, 12)))),
+        src(1, "friend", HubState::Ready, Some(built(1, &[], shelves_in(1, 1, 200, 12)))),
     ];
     let scope = BrowseScope {
         sections_gen: 0,
@@ -954,7 +956,11 @@ fn an_unpinned_library_spends_no_card_budget() {
     };
     let (items, hubs, _) = merge_with_scope(&srcs, &scope);
     assert!(hubs.iter().all(|h| h.source.is_empty()), "nothing of the unpinned library is drawn");
-    assert_eq!(items.len(), 252, "source 0 fills the budget alone: 21 whole shelves of 12");
+    assert_eq!(
+        items.len(),
+        HOME_CARDS_MAX / 12 * 12,
+        "source 0 fills the budget alone, in whole shelves of 12"
+    );
 }
 
 /// A shelf longer than the per-shelf ceiling only ever publishes `MAX_SHELF_ITEMS`, so that is all
@@ -964,25 +970,79 @@ fn a_long_shelf_claims_only_what_it_can_publish() {
     let long = shelves_in(0, 1, 1, 200);
     let srcs = [
         src(0, "", HubState::Ready, Some(built(0, &[], long))),
-        src(1, "friend", HubState::Ready, Some(built(1, &[], shelves_in(1, 1, 25, 12)))),
+        src(1, "friend", HubState::Ready, Some(built(1, &[], shelves_in(1, 1, 200, 12)))),
     ];
     let (_, hubs, _) = merge_with_scope(&srcs, &BrowseScope::standalone());
     let theirs: usize = hubs.iter().filter(|h| h.source == "friend").map(|h| h.len).sum();
     assert_eq!(
-        theirs, 228,
-        "256 - 24 left for the friend: 19 whole shelves, not the 128-card half"
+        theirs,
+        (HOME_CARDS_MAX - MAX_SHELF_ITEMS) / 12 * 12,
+        "what the long shelf leaves goes to the friend, in whole shelves, not the half"
     );
 }
 
-/// The same split over catalog ROWS, which is the cap the shelves' items come out of.
+/// Two sources that each want more than the WHOLE bound get equal whole-shelf shares of it, and
+/// the total never crosses it.
+#[test]
+fn the_card_bound_is_shared_between_sources() {
+    let shelves = HOME_CARDS_MAX / 12 + 30; // each source alone wants more than the bound
+    let srcs = [
+        src(0, "", HubState::Ready, Some(built(0, &[], shelves_in(0, 1, shelves, 12)))),
+        src(1, "friend", HubState::Ready, Some(built(1, &[], shelves_in(1, 1, shelves, 12)))),
+    ];
+    let (items, hubs, _) = merge_with_scope(&srcs, &BrowseScope::standalone());
+    let per = |who: &str| -> usize { hubs.iter().filter(|h| h.source == who).map(|h| h.len).sum() };
+    let share = HOME_CARDS_MAX / 2 / 12 * 12;
+    assert_eq!((per(""), per("friend")), (share, share), "equal whole-shelf shares");
+    assert!(items.len() <= HOME_CARDS_MAX);
+    assert_eq!(items.len(), 2 * share);
+}
+
+/// Issue #395 at its distant bound: 170 shelves of 12 from one server all publish, so the reporter's
+/// Home no longer loses rows from the tail. With a 12-card deck in front the 170th no longer fits
+/// (12 + 170 x 12 = 2,052 > 2,048): exactly 169 shelves and the deck land, the 170th is left off
+/// whole, and the overflow reports it.
+#[test]
+fn a_hundred_and_seventy_shelves_reach_home() {
+    let no_deck = [src(0, "", HubState::Ready, Some(built(0, &[], shelves_in(0, 1, 170, 12))))];
+    let (items, hubs, _) = merge_with_scope(&no_deck, &BrowseScope::standalone());
+    assert_eq!((hubs.len(), items.len()), (170, 2040), "all 170 shelves fit alone: 2,040 cards");
+    assert_eq!(bound_overflow(&no_deck, &BrowseScope::standalone(), &(items, hubs, vec![])), (0, 0));
+
+    let cw: Vec<(i64, String)> = (0..12).map(|i| (100 - i, format!("cw{i}"))).collect();
+    let cw: Vec<(i64, &str)> = cw.iter().map(|(t, r)| (*t, r.as_str())).collect();
+    let with_deck = [src(0, "", HubState::Ready, Some(built(0, &cw, shelves_in(0, 1, 170, 12))))];
+    let build = merge_with_scope(&with_deck, &BrowseScope::standalone());
+    assert_eq!(build.1.len(), 1 + 169, "the deck and 169 shelves");
+    assert_eq!(build.0.len(), 12 + 169 * 12, "2,040 cards, 8 under the bound");
+    assert_eq!(
+        bound_overflow(&with_deck, &BrowseScope::standalone(), &build),
+        (1, 12),
+        "the 170th shelf, whole"
+    );
+}
+
+/// The approximate-bytes figure the landed line carries: the struct plus each string's capacity.
+#[test]
+fn catalog_bytes_counts_the_struct_and_its_strings() {
+    let mut m = PmsMovie::default();
+    m.title = String::with_capacity(100);
+    m.summary = "x".repeat(50);
+    let one = std::mem::size_of::<PmsMovie>();
+    assert_eq!(catalog_bytes(&[]), 0);
+    assert_eq!(catalog_bytes(&[Arc::new(PmsMovie::default())]), one);
+    assert_eq!(catalog_bytes(&[Arc::new(m)]), one + 100 + 50);
+}
+
+/// The same split over catalog CARDS, the budget the shelves' items come out of.
 #[test]
 fn the_row_budget_is_shared_too() {
     let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
-    // enough shelves, each already at the per-shelf ceiling, that the ROW cap is what binds
+    // enough shelves, each already at the per-shelf ceiling, that the card budget is what binds
     let fat = |slot: u16, tag: &str| {
-        (0..20)
+        (0..HOME_CARDS_MAX / MAX_SHELF_ITEMS + 5)
             .map(|s| {
                 let keys: Vec<String> = (0..MAX_SHELF_ITEMS)
                     .map(|i| format!("{tag}-{s}-{i}"))
@@ -1005,7 +1065,7 @@ fn the_row_budget_is_shared_too() {
             Some(built(1, &[], fat(1, "b"))),
         ),
     ]);
-    // each source's share is 128 cards, and a shelf is whole or absent: 5 shelves of 24 = 120
+    // each source's share is half the bound, and a shelf is whole or absent
     let per_source = |who: &str| -> usize {
         (0..hub_count(&o.state))
             .filter(|&i| hub_source(&o.state, i) == who)
@@ -1014,9 +1074,9 @@ fn the_row_budget_is_shared_too() {
     };
     let (ours, theirs) = (per_source(""), per_source("friend"));
     assert_eq!(ours, theirs, "equal shares, not the leftovers");
-    assert_eq!(theirs, (PMS_MAX_MOVIES / 2 / MAX_SHELF_ITEMS) * MAX_SHELF_ITEMS);
-    assert_eq!(theirs, 120);
-    assert!(catalog(&o.state).len() <= PMS_MAX_MOVIES, "the total cap still holds");
+    assert_eq!(theirs, (HOME_CARDS_MAX / 2 / MAX_SHELF_ITEMS) * MAX_SHELF_ITEMS);
+    assert_eq!(theirs, 42 * MAX_SHELF_ITEMS, "1,024 / 24 = 42 whole shelves");
+    assert!(catalog(&o.state).len() <= HOME_CARDS_MAX, "the total cap still holds");
     assert_eq!(catalog(&o.state).len(), ours + theirs);
     reset(&mut o.state, &o.adapter);
 }
