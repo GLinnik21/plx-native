@@ -7,9 +7,9 @@
       "unit": "bytes",
       "mode": "fail",
       "limit": 12426000,
-      "measured": 11295620,
-      "measured_on": "2026-10-02",
-      "headroom": "10%"
+      "measured": 11098900,
+      "measured_on": "2026-10-04",
+      "headroom": "12%"
     },
     "packages_default": {
       "what": "Third-party (registry/git) packages the app crate compiles for arm-unknown-linux-gnueabi with its DEFAULT features: normal + build dependencies, dev-dependencies excluded, workspace members excluded.",
