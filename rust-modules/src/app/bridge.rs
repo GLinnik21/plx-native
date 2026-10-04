@@ -1415,6 +1415,10 @@ impl Rig<AppHost> for Bridge {
                 self.collection_run(command.clone());
                 return Handled::Yes;
             }
+            AppMsg::Store(StoreCmd::SubtitleSearch(command)) => {
+                self.stores.subtitle_search_run(command.clone());
+                return Handled::Yes;
+            }
             AppMsg::Store(StoreCmd::ViewState(command)) => {
                 self.viewstate_run(command.clone());
                 return Handled::Yes;
@@ -1463,6 +1467,10 @@ impl Rig<AppHost> for Bridge {
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Search { dt_us }) => {
                 self.stores.search_pump(*dt_us as f32 / 1_000_000.0, self.directory.view());
+                Handled::Yes
+            }
+            AppMsg::StoreWork(plx_data::stores::StoreWork::SubtitleSearch) => {
+                self.stores.subtitle_search_pump();
                 Handled::Yes
             }
             _ => Handled::No,
@@ -1669,6 +1677,7 @@ fn step_store(cmd: &StoreCmd, _cx: &Cx<'_, AppHost>, _fx: &mut Effects<'_, AppHo
         StoreCmd::Person(_) => unreachable!("Person is stepped by Bridge's owned store"),
         StoreCmd::Collection(_) => unreachable!("Collection is stepped by Bridge's owned store"),
         StoreCmd::ViewState(_) => unreachable!("ViewState is stepped by Bridge with its Browse owner"),
+        StoreCmd::SubtitleSearch(_) => unreachable!("SubtitleSearch is stepped by Bridge's owned store"),
     }
 }
 

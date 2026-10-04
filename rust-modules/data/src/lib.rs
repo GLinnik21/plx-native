@@ -17,6 +17,7 @@ pub mod collection; // collection page model: tag resolution, header metadata an
 pub mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
 pub mod person; // person/actor page data layer: the header handed in by the cast row + /library/people/{id}/media
 pub mod pms; // the Home catalog: hubs merged across every source
+pub mod subsearch; // the player's subtitle search & download: agent search, install, install poll
 pub mod search; // Search data layer: /hubs/search fanned out across every source, merged into typed shelves
 pub mod stores; // stores as machines (restructure phase 4): one command vocabulary + one step per data store
 pub mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread

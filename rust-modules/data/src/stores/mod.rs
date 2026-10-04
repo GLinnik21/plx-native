@@ -51,6 +51,7 @@ pub mod metadata;
 pub mod person;
 pub mod collection;
 pub mod search;
+pub mod subsearch;
 pub mod tape;
 pub mod viewstate;
 
@@ -66,6 +67,8 @@ pub struct Stores {
     pub person: person::PersonStore,
     pub collection: collection::CollectionStore,
     pub search: search::SearchStore,
+    /// The player's subtitle search & download (`crate::subsearch`). Appended last.
+    pub subtitle_search: subsearch::SubSearchStore,
     pub viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
 }
 
@@ -80,6 +83,7 @@ impl Default for Stores {
             person: person::PersonStore::default(),
             collection: collection::CollectionStore::default(),
             search: search::SearchStore::default(),
+            subtitle_search: subsearch::SubSearchStore::default(),
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
         }
     }
@@ -107,6 +111,16 @@ impl Stores {
 
     pub fn collection_view(&self) -> crate::collection::CollectionView<'_> {
         self.collection.view()
+    }
+
+    pub fn subtitle_search_run(&mut self, cmd: subsearch::SubSearchCmd) -> bool {
+        self.subtitle_search.run(cmd)
+    }
+
+    pub fn subtitle_search_pump(&mut self) -> bool { self.subtitle_search.pump(&self.landgate) }
+
+    pub fn subtitle_search_view(&self) -> crate::subsearch::SubSearchView<'_> {
+        self.subtitle_search.view()
     }
 
     pub fn person_pump(&mut self) -> bool {
@@ -225,6 +239,7 @@ impl Stores {
             StoreId::Metadata => self.metadata.gen(),
             StoreId::Person => self.person.gen(),
             StoreId::Search => self.search.gen(),
+            StoreId::SubtitleSearch => self.subtitle_search.gen(),
             StoreId::ViewState => self.viewstate.borrow().gen(),
         }
     }
@@ -249,6 +264,9 @@ impl Stores {
         if let Some(generation) = self.search.take_notice() {
             notices.push((StoreId::Search, generation));
         }
+        if let Some(generation) = self.subtitle_search.take_notice() {
+            notices.push((StoreId::SubtitleSearch, generation));
+        }
         if let Some(generation) = self.viewstate.borrow().take_notice() {
             notices.push((StoreId::ViewState, generation));
         }
@@ -267,6 +285,8 @@ pub enum StoreId {
     ViewState,
     /// Appended so every pre-collection store keeps its recorded ordinal.
     Collection,
+    /// Appended for the same reason: every earlier store keeps its recorded ordinal.
+    SubtitleSearch,
 }
 
 /// Route-scoped background work, distinct from a user command. Polling an idle store must not
@@ -280,17 +300,19 @@ pub enum StoreWork {
     /// Search debounce, worker spawning and result landings. The originating delta survives
     /// the dispatcher's bounded drain carrying this work into a later frame.
     Search { dt_us: u32 },
+    /// Subtitle search, download and install poll. Frame-counted, so it carries no delta.
+    SubtitleSearch,
 }
 
 impl StoreWork {
     pub fn store(self) -> StoreId {
         match self { Self::Hubs => StoreId::Hubs, Self::BrowseDiscovery | Self::Browse => StoreId::Browse,
-            Self::Search { .. } => StoreId::Search }
+            Self::Search { .. } => StoreId::Search, Self::SubtitleSearch => StoreId::SubtitleSearch }
     }
 }
 
 impl StoreId {
-    pub const ALL: [StoreId; 7] = [
+    pub const ALL: [StoreId; 8] = [
         StoreId::Browse,
         StoreId::Hubs,
         StoreId::Metadata,
@@ -298,6 +320,7 @@ impl StoreId {
         StoreId::Person,
         StoreId::ViewState,
         StoreId::Collection,
+        StoreId::SubtitleSearch,
     ];
 
     /// The library's ordinal for this store (spec §5.1: the library never names `StoreId`).
@@ -316,6 +339,7 @@ impl StoreId {
             StoreId::Hubs => "hubs",
             StoreId::Metadata => "metadata",
             StoreId::Search => "search",
+            StoreId::SubtitleSearch => "subsearch",
             StoreId::Person => "person",
             StoreId::ViewState => "viewstate",
         }
@@ -333,6 +357,7 @@ pub enum StoreCmd {
     Person(person::PersonCmd),
     Collection(collection::CollectionCmd),
     ViewState(viewstate::ViewStateCmd),
+    SubtitleSearch(subsearch::SubSearchCmd),
 }
 
 impl StoreCmd {
@@ -345,6 +370,7 @@ impl StoreCmd {
             StoreCmd::Person(_) => StoreId::Person,
             StoreCmd::Collection(_) => StoreId::Collection,
             StoreCmd::ViewState(_) => StoreId::ViewState,
+            StoreCmd::SubtitleSearch(_) => StoreId::SubtitleSearch,
         }
     }
 }
@@ -495,6 +521,6 @@ mod tests {
         for id in StoreId::ALL {
             assert_eq!(StoreId::from_ord(id.ord()), Some(id));
         }
-        assert_eq!(StoreId::from_ord(StoreOrd(7)), None);
+        assert_eq!(StoreId::from_ord(StoreOrd(8)), None);
     }
 }
