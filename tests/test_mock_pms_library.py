@@ -239,6 +239,79 @@ class HomeHubsFlag(unittest.TestCase):
                          ["home.continue", "home.movies.recent", "home.television.recent"])
 
 
+class SectionHubsFlag(unittest.TestCase):
+    """#412: `--section-hubs N` makes `/hubs/sections/<id>` answer exactly N hubs and
+    `--section-hubs-linked M` makes M of them promoted collections, so the Library's shelf bound
+    can be exercised at 170 shelves."""
+    PATH = "/hubs/sections/1"
+
+    @staticmethod
+    def _pms(n, linked=0):
+        pms = MockPms(Library())
+        pms.section_hubs, pms.section_hubs_linked = n, linked
+        return pms
+
+    def test_default_leaves_the_response_unchanged(self):
+        pms = MockPms(Library())
+        self.assertEqual((pms.section_hubs, pms.section_hubs_linked), (0, 0))
+        hubs = get(pms, self.PATH)["Hub"]
+        self.assertEqual([h["hubIdentifier"] for h in hubs],
+                         ["movie.inprogress.1", "movie.recentlyadded.1"])
+
+    def test_serves_exactly_n_distinct_hubs_each_with_items(self):
+        pms = self._pms(170)
+        hubs = get(pms, self.PATH)["Hub"]
+        self.assertEqual(len(hubs), 170)
+        self.assertEqual(len({h["hubIdentifier"] for h in hubs}), 170)
+        self.assertEqual(len({h["title"] for h in hubs[2:]}), 168)
+        for h in hubs[2:]:
+            self.assertTrue(h["hubIdentifier"].startswith("mock.section.1.shelf."))
+            self.assertTrue(h["Metadata"])
+            self.assertEqual(h["size"], len(h["Metadata"]))
+        shelf = hubs[5]
+        self.assertEqual(shelf["key"], f"/hubs/mock/section/1/shelf/{5 - 1}")
+        self.assertEqual(get(pms, shelf["key"])["Metadata"][:12], shelf["Metadata"])
+        # the second section pads too, with its own kind
+        self.assertEqual(len(get(pms, "/hubs/sections/2")["Hub"]), 170)
+
+    def test_linked_hubs_are_promoted_collections_the_mock_resolves(self):
+        pms = self._pms(170, 40)
+        hubs = get(pms, self.PATH)["Hub"]
+        self.assertEqual(len(hubs), 170)
+        linked = [h for h in hubs if h["hubIdentifier"].startswith("custom.collection.")]
+        self.assertEqual(len(linked), 40)
+        self.assertEqual(len({h["hubIdentifier"] for h in hubs}), 170)
+        for h in linked:
+            # the shape plx_plex's promoted_collection_link accepts: section 1, a rating key, and
+            # a listing key naming that same collection
+            _, _, section, rk, _ = h["hubIdentifier"].split(".")
+            self.assertEqual(section, "1")
+            self.assertEqual(h["key"], f"/library/collections/{rk}/children")
+            self.assertTrue(h["Metadata"])
+            self.assertEqual(get(pms, h["key"])["Metadata"][:len(h["Metadata"])], h["Metadata"])
+        # spread through the list, not bunched at the end
+        first = next(i for i, h in enumerate(hubs) if h in linked)
+        self.assertLess(first, 10)
+
+    def test_the_shipped_scene_arguments_hold(self):
+        # tests/manifest.json library-shelves-deep: 170 hubs, 40 of them linked
+        pms = self._pms(170, 40)
+        hubs = get(pms, self.PATH)["Hub"]
+        self.assertEqual(sum(h["hubIdentifier"].startswith("custom.collection.") for h in hubs), 40)
+
+    def test_the_flags_reach_the_server_and_the_cli_refuses_nonsense(self):
+        server, pms = serve(0, section_hubs=9, section_hubs_linked=3)
+        try:
+            self.assertEqual((pms.section_hubs, pms.section_hubs_linked), (9, 3))
+        finally:
+            server.shutdown()
+            server.server_close()
+        for argv in (["--section-hubs", "-1"], ["--section-hubs", "2", "--section-hubs-linked", "3"]):
+            p = subprocess.run(["python3", str(pathlib.Path(__file__).with_name("mock_pms.py")),
+                                "--port", "0", *argv], capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(p.returncode, 0, argv)
+
+
 class DoviAndExtraMedia(unittest.TestCase):
     """The DOVI*/container derivation `--extra-media` relies on — the field NAMES a real PMS
     sends (docs/pms-api.md, verified live 2026-08-21), mapped from ffprobe's own "DOVI

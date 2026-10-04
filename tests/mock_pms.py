@@ -1430,10 +1430,49 @@ def plaintext_only_lan_resources(lib, ip, http_port, fail_port, access_token):
 # ---------------------------------------------------------------- the server ----------------
 
 class MockPms:
+    def section_pad_hubs(self, key, kind, count, rows=12):
+        """`count` synthetic hubs for `/hubs/sections/<key>` (#412), after the library's own.
+
+        Plain ones are `mock.section.<key>.shelf.<i>`, listed by `/hubs/mock/section/<key>/shelf/<i>`.
+        `section_hubs_linked` of them (spread evenly through the run; movie section only, where the
+        collections live) are promoted collections the way a real server publishes one,
+        `custom.collection.<section>.<rk>.<n>` keyed `/library/collections/<rk>/children`, which the
+        app links the shelf heading to (`promoted_collection_link`) and the mock resolves. The
+        last identifier segment is the hub's own number, not the rating key a server repeats there,
+        so every hub keeps a distinct identity while the few collections the library has are reused.
+        """
+        lib = self.lib
+        recent = lib.recent(kind, rows)
+        collections = [c for c in lib.collections.values()
+                       if kind == "movie" and any(it["librarySectionID"] == int(key)
+                                                  for it in lib.collection_rows(c["id"]))]
+        linked = self.section_hubs_linked if collections else 0
+        hubs, made = [], 0
+        for i in range(1, count + 1):
+            if linked and i * linked // count > (i - 1) * linked // count:
+                c = collections[made % len(collections)]
+                made += 1
+                members = [it for it in lib.collection_rows(c["id"])
+                           if it["librarySectionID"] == int(key)][:rows]
+                hubs.append({"title": c["tag"], "type": kind, "size": len(members),
+                             "hubIdentifier": f"custom.collection.{key}.{c['ratingKey']}.{i}",
+                             "key": f"/library/collections/{c['ratingKey']}/children",
+                             "Metadata": members})
+            else:
+                hubs.append({"title": f"Mock Shelf {i}", "type": kind, "size": len(recent),
+                             "hubIdentifier": f"mock.section.{key}.shelf.{i}",
+                             "key": f"/hubs/mock/section/{key}/shelf/{i}",
+                             "more": False, "Metadata": recent})
+        return hubs
+
     def __init__(self, lib):
         self.lib = lib
         # `--home-hubs N` (#395): `/hubs` answers exactly N hubs; 0 keeps the library's own.
         self.home_hubs = 0
+        # `--section-hubs N` (#412): `/hubs/sections/<id>` answers exactly N hubs; 0 keeps the
+        # library's own. `--section-hubs-linked M` makes M of the padding hubs promoted collections.
+        self.section_hubs = 0
+        self.section_hubs_linked = 0
         self.lock = threading.Lock()
         self.requests = []  # (path, status) in arrival order, for the harness
         self.unknown = []
@@ -1775,7 +1814,16 @@ class MockPms:
                 # A real server lists the library's collections as shelves of their own after
                 # these (docs/pms-api.md, 3a), so the catalog's do the same.
                 hubs += lib.section_collection_hubs(int(key), kind)
+            if self.section_hubs:
+                # #412: pad the section's shelves up to exactly `--section-hubs` hubs.
+                hubs = hubs[:self.section_hubs]
+                hubs += self.section_pad_hubs(key, kind, self.section_hubs - len(hubs))
             return j(self.container(Hub=hubs))
+        if len(segs) == 6 and segs[:3] == ["hubs", "mock", "section"] and segs[4] == "shelf" \
+                and self.section_hubs:
+            kind = {"1": "movie", "2": "show"}.get(segs[3], "movie")
+            page, extra = paged(lib.recent(kind, 1000))
+            return j(self.container(Metadata=page, **extra))
         if p == "/hubs/search":
             lim = q.get("limit", "")
             return j(self.container(Hub=lib.search(q.get("query", ""), int(lim) if lim.isdigit() else 3,
@@ -2062,7 +2110,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           plaintext_only_lan=False, advertise_ip=None, insecure_fail_mode="handshake",
           authorize_after=None, plex_pass=True, loudness_analysis=True,
           refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
-          home_hubs=0):
+          home_hubs=0, section_hubs=0, section_hubs_linked=0):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -2095,6 +2143,8 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     pms = MockPms(lib)
     pms.plex_pass = plex_pass
     pms.home_hubs = home_hubs
+    pms.section_hubs = section_hubs
+    pms.section_hubs_linked = section_hubs_linked
     pms.refuse_enhancements = refuse_enhancements
     pms.ignore_enhancements = ignore_enhancements
     pms.transcode_fixture = pathlib.Path(transcode_fixture) if transcode_fixture else None
@@ -2300,6 +2350,7 @@ def selftest():
     tmp.cleanup()
 
     _selftest_plaintext_only_lan()
+    _selftest_section_hubs()
     print("mock_pms selftest: ok")
 
 
@@ -2308,6 +2359,32 @@ def _teardown(srv):
     srv.server_close()
     if srv.insecure_fail_listener is not None:
         srv.insecure_fail_listener.close()
+
+
+def _selftest_section_hubs():
+    """#412: `--section-hubs N` pads `/hubs/sections/1` to exactly N hubs, `--section-hubs-linked M`
+    makes M of them promoted collections, and each hub's own key lists its items."""
+    import urllib.request
+
+    srv, _ = serve(0, seed=7, section_hubs=20, section_hubs_linked=5)
+    try:
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+
+        def jget(path):
+            with urllib.request.urlopen(base + path, timeout=5) as r:
+                return json.loads(r.read())["MediaContainer"]
+
+        hubs = jget("/hubs/sections/1")["Hub"]
+        assert len(hubs) == 20, len(hubs)
+        linked = [h for h in hubs if h["hubIdentifier"].startswith("custom.collection.1.")]
+        assert len(linked) == 5, len(linked)
+        assert len({h["hubIdentifier"] for h in hubs}) == 20
+        for h in hubs[2:]:
+            assert h["Metadata"], h["hubIdentifier"]
+            assert jget(h["key"])["Metadata"], h["key"]
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 def _selftest_plaintext_only_lan():
@@ -2413,6 +2490,12 @@ def main():
     ap.add_argument("--home-hubs", type=int, default=0, metavar="N",
                     help="#395: make /hubs answer exactly N hubs (synthetic 'Mock Shelf i' rows pad "
                          "the library's own); 0 (default) leaves them as they are")
+    ap.add_argument("--section-hubs", type=int, default=0, metavar="N",
+                    help="#412: make /hubs/sections/<id> answer exactly N hubs (synthetic 'Mock Shelf i' "
+                         "rows pad the library's own); 0 (default) leaves them as they are")
+    ap.add_argument("--section-hubs-linked", type=int, default=0, metavar="M",
+                    help="with --section-hubs: make M of the padding hubs promoted collections "
+                         "(custom.collection.<section>.<rk>.<n>), whose headings link to the collection")
     ap.add_argument("--hero", help="with --catalog: the film at the head of Continue Watching (the hero)")
     ap.add_argument("--plaintext-only-lan", action="store_true",
                     help="PLX-NATIVE-10: /api/v2/resources answers with ONE owned server, no "
@@ -2463,6 +2546,10 @@ def main():
         ap.error("--hero needs --catalog")
     if a.home_hubs < 0:
         ap.error("--home-hubs must not be negative")
+    if a.section_hubs < 0 or a.section_hubs_linked < 0:
+        ap.error("--section-hubs and --section-hubs-linked must not be negative")
+    if a.section_hubs_linked > a.section_hubs:
+        ap.error("--section-hubs-linked must not exceed --section-hubs")
     if not 0 <= a.movies <= 1000:
         ap.error("--movies must be between 0 and 1000")
     if (a.advertise_ip or a.insecure_fail_mode != "handshake") and not a.plaintext_only_lan:
@@ -2482,7 +2569,9 @@ def main():
                          loudness_analysis=not a.no_loudness_analysis,
                          refuse_enhancements=a.refuse_enhancements,
                          ignore_enhancements=a.ignore_enhancements,
-                         transcode_fixture=a.transcode_fixture, home_hubs=a.home_hubs)
+                         transcode_fixture=a.transcode_fixture, home_hubs=a.home_hubs,
+                         section_hubs=a.section_hubs,
+                         section_hubs_linked=a.section_hubs_linked)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"

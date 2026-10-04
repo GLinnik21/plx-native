@@ -440,7 +440,7 @@ cast+about / info-panel regressions.
 # No Plex account: no PMS_TOKEN, no manifest.local.json, no plex.tv call. Needs .tv-host and
 # src/config.local.h with PMS_HOST/PMS_PORT (the address the debug binary was built against).
 tools/tv-lock.sh with --why "fps mock" -- ./tests/run.py --fps --mock --filter home-grid-deep
-./tests/run.py --fps --mock    # every scene that declares a `mock` block: home-grid, home-grid-deep
+./tests/run.py --fps --mock    # every scene that declares a `mock` block: home-grid, home-grid-deep, library-shelves-deep
 ```
 
 `--mock` starts `tests/mock_pms.py` itself for each scene, on the `PMS_HOST`/`PMS_PORT` of
@@ -469,8 +469,26 @@ bounds the cards lands fewer rows and the scene walks those. Grading is `home-gr
 to the window between the first and last key (plus two heartbeats): `loop_floor` 50 on the
 2nd-lowest `loop=`, `fps_floor` 20 on the median `fps=`. `frame_gt33`, the worst frame, p99 and
 the peak `fps=` (which shows a 60 versus 50 Hz panel state) are printed in the result and **not**
-graded. `run_secs` must cover `2 * max_rows * key_gap_s` plus the waits (a harness test holds every
-`walk` scene to that).
+graded. `run_secs` must cover `2 * max_rows * key_gap_s` plus the waits, the walk's own 10 s launch
+wait included (a harness test holds every `walk` scene to that).
+
+`library-shelves-deep` is the Library counterpart (#412): the mock is started with
+`--section-hubs 170 --section-hubs-linked 40`, so `/hubs/sections/<id>` answers exactly 170 hubs
+(`mock.section.<key>.shelf.<i>`, each listing the recent items of its kind; the default 48-movie
+library is unchanged), 40 of them promoted collections (`custom.collection.<section>.<rk>.<n>`
+keyed `/library/collections/<rk>/children`, which the mock resolves) whose headings the app links.
+Without the flags `/hubs/sections/<id>` is byte-for-byte what it was. The scene arms
+`plxnative-library` (the preferred Movies library), `plxnative-framedrop` and `plxnative-focus`,
+and the walk (`"landed": "library"`) is sized from the **seated section's**
+`libhubs: section N landed S shelves` line (index 0 for Movies; `plxnative-library` content `1`
+seats Shows, index 1 — the last landing of that section, not the last such line in the log):
+**Down once per shelf, a second time for each linked shelf** (its heading is a stop of its own,
+then its row), and `extra_rows` more (6) to cross the toolbar into the grid, then **Up** back. It
+grades keys sent against that count, a `focus route=library … region=grid` fingerprint inside the
+walk window (the turn-around), `loop_floor` 50 and `fps_floor` 30; frame drops are reported, not
+graded. This is the instrument for #412: a build that still bounds each section at twelve shelves
+lands 12 and passes on those 12 (the walk follows what landed; no `walk.min_landed` is graded
+yet). The linked-shelf count is derived from the mock's own arguments, not read from the app.
 
 The finite `poster-scroll-settle`, `poster-eviction-reversal` and `poster-hero-grid-dive`
 scenes additionally grade `poster-gate:` telemetry. Run them with `--fps --only poster-`.
