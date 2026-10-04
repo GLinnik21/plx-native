@@ -27,10 +27,16 @@ looking at:
   release build** by dropping the `devtriggers` cargo feature, and `ci/check-elf.sh` measures that
   on the shipped bytes rather than asserting it. A release binary that still carries any of it is a
   valid report, and a serious one.
-- **The event log.** `plxnative-events.log` is created 0600 and every line goes through
-  `eventlog::scrub::scrub_local` before the write. A line that reaches it carrying a credential, a Plex
-  token, a `plex.direct` hostname, a household name or anything about what is being watched is a
-  valid report — see [PRIVACY.md](PRIVACY.md) for the contract that is meant to hold.
+- **The event log.** `plxnative-events.log` — like `plxnative-crash.log` and `plxnative-stderr.log`
+  beside it — is created 0640 (owner read/write, the app's own group read, never world-readable),
+  so that a Developer Mode user can fetch it with webOS Dev Manager on a television that is not
+  rooted. Every event-log line goes through `eventlog::scrub::scrub_local` before the write. A line
+  that reaches it carrying a credential, a Plex token, a `plex.direct` hostname, a household name or
+  anything about what is being watched is a valid report — see [PRIVACY.md](PRIVACY.md) for the
+  contract that is meant to hold. Stated plainly, the residual exposure: another native app on the
+  same television that runs in the app's group can read all three files, and the crash and stderr
+  logs (a faulting address; whatever aborts and the television's own libraries print) are not passed
+  through that scrubber. A credential in either is a valid report too.
 - **TLS.** Certificate verification is on for every HTTPS request, with one bounded exception: when
   a Plex server's certificate fails only its validity-date check (the television has no
   battery-backed clock) and a public key was remembered for that exact host and port from an

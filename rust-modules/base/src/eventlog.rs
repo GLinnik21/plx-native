@@ -60,12 +60,32 @@ pub fn events_log() -> std::path::PathBuf {
     crate::paths::in_runtime_dir(crate::paths::runtime_file::EVENTS)
 }
 
-fn open_private_log_append(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+/// The mode of the event log and its two siblings (`plxnative-crash.log`, `plxnative-stderr.log`,
+/// which `src/main.c`'s `open_fd_log` opens at the same mode): owner read/write, the app's own
+/// group (gid 5000 on the television) read, nothing for anyone else.
+///
+/// **Group read, not 0600, so a Developer Mode user can fetch it.** A television that is not
+/// rooted gives its owner one tool, webOS Dev Manager, and it reads files as an unprivileged user
+/// that is in the app's group but is not the app's uid; at 0600 the logs were unreadable to the one
+/// person who needs them. `plxnative-diag.log` has always shipped 0640 for the same reason.
+///
+/// **Why that is acceptable where 0644 in the shared, mode-1777 `/tmp` was not** (the 2026-08-29
+/// closed entry in `docs/distribution.md`): "other" still gets nothing, and the content is no
+/// longer what it was — [`log`] passes every line through [`scrub::scrub_local`] before the write.
+/// What stays open is that another native app in gid 5000 on the same television can read these
+/// files; `docs/distribution.md` §6.9 states that residual risk and the audit behind it.
+const LOG_MODE: u32 = 0o640;
+
+/// Open the event log for append at [`LOG_MODE`], refusing anything but a regular file this process
+/// owns (`O_NOFOLLOW` rejects a symlink planted in the shared `/tmp`). The mode is set with
+/// `fchmod` rather than trusted to `open(2)`, so it does not depend on the umask and an append
+/// target that survived from a 0600 release is corrected on its first write.
+fn open_log_append(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .mode(0o600)
+        .mode(LOG_MODE)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(path)?;
     let meta = file.metadata()?;
@@ -75,8 +95,8 @@ fn open_private_log_append(path: &std::path::Path) -> std::io::Result<std::fs::F
             "unsafe log sink",
         ));
     }
-    if meta.permissions().mode() & 0o777 != 0o600 {
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    if meta.permissions().mode() & 0o777 != LOG_MODE {
+        file.set_permissions(std::fs::Permissions::from_mode(LOG_MODE))?;
     }
     Ok(file)
 }
@@ -116,7 +136,7 @@ pub fn log(m: &str) {
     // Compiled out without the `lab-diagnostics` feature — see `lab`.
     #[cfg(feature = "lab-diagnostics")]
     crate::eventlog::ring::record(&line);
-    if let Ok(mut f) = open_private_log_append(&p) {
+    if let Ok(mut f) = open_log_append(&p) {
         let _ = write_log_line(&mut f, &line);
     }
 }
@@ -182,8 +202,8 @@ mod redact_tests {
 }
 
 #[cfg(test)]
-mod private_log_tests {
-    use super::{open_private_log_append, write_log_line};
+mod log_sink_tests {
+    use super::{open_log_append, write_log_line};
     use std::io::Write;
     use std::os::unix::fs::{symlink, PermissionsExt};
 
@@ -197,22 +217,104 @@ mod private_log_tests {
         let _ = std::fs::remove_file(&sink);
         std::fs::write(&victim, b"unchanged").unwrap();
         symlink(&victim, &sink).unwrap();
-        assert!(open_private_log_append(&sink).is_err());
+        assert!(open_log_append(&sink).is_err());
         assert_eq!(std::fs::read(&victim).unwrap(), b"unchanged");
         let _ = std::fs::remove_file(&sink);
 
         std::fs::write(&sink, b"").unwrap();
         std::fs::set_permissions(&sink, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let mut file = open_private_log_append(&sink).unwrap();
+        let mut file = open_log_append(&sink).unwrap();
         file.write_all(b"safe").unwrap();
         assert_eq!(
             std::fs::metadata(&sink).unwrap().permissions().mode() & 0o777,
-            0o600
+            0o640,
+            "an append target left at 0644 is corrected to 0640"
         );
 
         let _ = std::fs::remove_file(sink);
         let _ = std::fs::remove_file(victim);
         let _ = std::fs::remove_dir(dir);
+    }
+
+    /// A umask is PROCESS-wide, so the body runs in a CHILD copy of the test binary (selected by
+    /// `CHILD_ENV`) whose umask is its own — the technique, and the reason, of
+    /// `storage::diagnostics`' `publication_is_0640_even_under_a_restrictive_umask`: setting a
+    /// restrictive umask here would silently change the mode of every file another test creates
+    /// during the window.
+    ///
+    /// The contract is the one `plxnative-diag.log` already ships: **0640** whatever the creating
+    /// process's umask says — group read, so a Dev Mode user (whose only tool is webOS Dev Manager,
+    /// reading as an unprivileged user in the app's group) can download the file, and nothing at
+    /// all for anyone outside that group. Three starting states, because each reaches the mode by
+    /// a different route: a fresh create (the umask masks `open(2)`'s mode, so only the explicit
+    /// chmod can give 0640), a target left at 0600 by the previous release, and one left at 0666.
+    #[test]
+    fn the_event_log_is_0640_even_under_a_restrictive_umask() {
+        use std::os::unix::fs::MetadataExt;
+        const CHILD_ENV: &str = "PLX_EVENTLOG_UMASK_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // libtest names a test without its crate: `eventlog::log_sink_tests::…`.
+            let name = format!(
+                "{}::the_event_log_is_0640_even_under_a_restrictive_umask",
+                module_path!().split_once("::").unwrap().1
+            );
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--test-threads=1"])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && stdout.contains("1 passed"),
+                "the child run failed or ran nothing:\n{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("plx-rust-log-umask-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        // Only ever reached in the child process: this changes ITS umask, never the suite's.
+        for restrictive in [0o077, 0o777] {
+            unsafe {
+                libc::umask(restrictive);
+            }
+            let fresh = dir.join(format!("fresh-{restrictive:o}"));
+            drop(open_log_append(&fresh).unwrap());
+            let meta = std::fs::metadata(&fresh).unwrap();
+            assert_eq!(meta.mode() & 0o7777, 0o640, "fresh create under umask {restrictive:o}");
+            // No gid assertion, on purpose: the group is the kernel's choice (the process's egid on
+            // Linux, where /tmp is not setgid, so 5000 on the television; the DIRECTORY's group on
+            // a BSD/macOS host) and nothing here chowns. The mode is the contract.
+        }
+        for (name, previous) in [("from-0600", 0o600), ("from-0666", 0o666)] {
+            let path = dir.join(name);
+            std::fs::write(&path, b"kept").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(previous)).unwrap();
+            let mut file = open_log_append(&path).unwrap();
+            file.write_all(b" and appended").unwrap();
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().mode() & 0o7777,
+                0o640,
+                "pre-existing {name} target"
+            );
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                b"kept and appended",
+                "the existing contents are appended to, never truncated"
+            );
+        }
+        // Group read, never world: no `other` bit on any outcome above.
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let mode = entry.unwrap().metadata().unwrap().mode();
+            assert_eq!(mode & 0o007, 0, "no other-class permission bit, got {mode:o}");
+        }
+        // The refusals are unchanged: only a regular file is ever a sink.
+        assert!(
+            open_log_append(std::path::Path::new("/dev/null")).is_err(),
+            "a device node is not a log sink"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

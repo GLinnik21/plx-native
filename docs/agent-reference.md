@@ -1120,7 +1120,10 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   `SDL_GetTicks`** timestamps (and the SAM `exit_status`), not pmlog time.
 - **Storage diagnostics:** every flavour publishes `plxnative-diag.log` in its runtime root.
   This is a schema-versioned, at-most-16-KiB snapshot, atomically replaced at mode **0640**;
-  events, crash and stderr remain **0600**. It contains build/uid/gid identity, supplementary
+  events, crash and stderr are **0640** too (owner rw, the app's group r, never world-readable —
+  `src/main.c`'s `open_fd_log` and `eventlog::open_log_append`; they were 0600 until 2026-10-04, and
+  a Developer Mode user on an unrooted set could not fetch them with webOS Dev Manager at that
+  mode; `docs/distribution.md` §4 and §6.9 hold the reasoning and the residual risk). It contains build/uid/gid identity, supplementary
   groups, fixed-label directory probes, activation status and the latest helper stage outcome.
   Activation is only the best-effort LS2 wake hint: `activation-rejected`,
   `activation-timeout` or an activation setup stage does not mean storage failed when
