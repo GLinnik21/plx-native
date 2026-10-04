@@ -923,6 +923,13 @@ fn merge(srcs: &[Src]) -> HubBuild {
     merge_with_scope(srcs, &BrowseScope::standalone())
 }
 
+/// The sources that have answered, as `(handle, last projection)`, in roster order.
+fn live_sources(srcs: &[Src]) -> Vec<(&str, &SourceBuild)> {
+    srcs.iter()
+        .filter_map(|s| s.last.as_ref().map(|b| (s.handle.as_str(), b)))
+        .collect()
+}
+
 /// What each live source's shelves would publish with an unlimited budget: every pinned card, at
 /// most [`MAX_SHELF_ITEMS`] per shelf. One function so the demand handed to [`allot`], the cards
 /// emitted and the overflow [`bound_overflow`] reports cannot disagree.
@@ -949,10 +956,7 @@ fn publishable_shelves<'a>(
 /// `(shelves, cards)` the sources offered that [`HOME_CARDS_MAX`] left out of `build`: the whole
 /// shelves dropped from the tail of a source. `(0, 0)` on every Home under the bound.
 fn bound_overflow(srcs: &[Src], scope: &BrowseScope, build: &HubBuild) -> (usize, usize) {
-    let live: Vec<(&str, &SourceBuild)> = srcs
-        .iter()
-        .filter_map(|s| s.last.as_ref().map(|b| (s.handle.as_str(), b)))
-        .collect();
+    let live = live_sources(srcs);
     let (mut offered_shelves, mut offered_cards) = (0, 0);
     for items in publishable_shelves(&live, &scope.pins).iter().flatten() {
         if !items.is_empty() {
@@ -986,10 +990,7 @@ fn catalog_bytes(cat: &[Arc<PmsMovie>]) -> usize {
 
 fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     let pins = &scope.pins;
-    let live: Vec<(&str, &SourceBuild)> = srcs
-        .iter()
-        .filter_map(|s| s.last.as_ref().map(|b| (s.handle.as_str(), b)))
-        .collect();
+    let live = live_sources(srcs);
 
     let mut new_cat: Vec<Arc<PmsMovie>> = Vec::new();
     let mut new_hubs: Vec<HubRow> = Vec::new();
