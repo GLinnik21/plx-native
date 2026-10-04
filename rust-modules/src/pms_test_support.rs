@@ -140,6 +140,16 @@ pub(super) fn shelf(slot: u16, title: &str, hub_id: &str, rks: &[&str]) -> Shelf
     }
 }
 
+/// [`shelf`] whose items belong to library `sec` of the server, which [`row`] leaves at 0 (the
+/// server named no library, which the pin filter always lets through).
+pub(super) fn shelf_in(slot: u16, sec: i64, title: &str, hub_id: &str, rks: &[&str]) -> Shelf {
+    let mut sh = shelf(slot, title, hub_id, rks);
+    for m in &mut sh.items {
+        m.sec = sec;
+    }
+    sh
+}
+
 /// A source's projection: `(lastViewedAt, rk)` deck entries plus whole shelves.
 pub(super) fn built(slot: u16, cw: &[(i64, &str)], shelves: Vec<Shelf>) -> SourceBuild {
     SourceBuild {
