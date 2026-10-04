@@ -677,7 +677,8 @@ pub(crate) struct HomeItemKey {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct HomeMemory {
     pub(crate) groups: Vec<HomeGroupKey>,
-    pub(crate) items: Vec<HomeItemKey>,
+    /// Shared with the screen that took it; see `HomeScreen::items`.
+    pub(crate) items: Arc<Vec<HomeItemKey>>,
     pub(crate) next_group: u32,
     pub(crate) next_elem: u32,
     pub(crate) carousel: Option<(crate::plex::ServerId, String)>,
@@ -742,7 +743,7 @@ impl plx_machine::machine::LogicalState for PageMemory {
                     c.u32(key.group);
                 }
                 c.seq(memory.items.len());
-                for key in &memory.items {
+                for key in memory.items.iter() {
                     match &key.identity {
                         HomeItemIdentity::Item { hub, sid, rk } => {
                             c.u32(0);
