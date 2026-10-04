@@ -204,12 +204,12 @@ fn every_field_reports_the_page_whose_list_shows_it() {
 /// with the live one checked, and choosing Play asks the app to save exactly that.
 #[test]
 fn the_continue_watching_row_defaults_to_open_details_and_its_picker_saves_the_pick() {
-    use crate::route::DeckPress;
+    use plx_media::route::DeckPress;
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("pref-deck-press");
-    let prior = crate::route::deck_press();
-    crate::route::restore_deck_press(DeckPress::Details);
-    assert_eq!(crate::route::deck_press(), DeckPress::Details);
+    let prior = plx_media::route::deck_press();
+    plx_media::route::restore_deck_press(DeckPress::Details);
+    assert_eq!(plx_media::route::deck_press(), DeckPress::Details);
 
     let prefs = AudioPreferences::default();
     let readout = field_readout(PickerKind::DeckPress, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
@@ -222,7 +222,7 @@ fn the_continue_watching_row_defaults_to_open_details_and_its_picker_saves_the_p
 
     let mut picker = PickerPage::new(EntryId(0), PickerKind::DeckPress);
     let emitted = drive(&mut picker, ScreenEvent::Activate(1), 1);
-    crate::route::restore_deck_press(prior);
+    plx_media::route::restore_deck_press(prior);
     let saved = emitted.into_iter().find_map(|e| match e.fx {
         Fx::App(AppFx::Preferences(PreferenceCmd::DeckPress { mode, .. })) => Some(mode),
         _ => None,

@@ -1360,7 +1360,7 @@ impl HomeScreen {
                     .rows
                     .get(row)
                     .is_some_and(|h| h.identity == HomeHubIdentity::ContinueWatching)
-                    && crate::route::deck_press().press_plays()
+                    && plx_media::route::deck_press().press_plays()
                 {
                     let resume_ns =
                         plx_data::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000);
@@ -2893,7 +2893,7 @@ mod tests;
 /// Watching card plays (`DeckPress::Play`): the triangle promises the press, so when OK opens the
 /// page there is none (`widgets::still_line`'s rule).
 fn deck_label(is_deck: bool, title: &str) -> card_row::TileLabel {
-    if is_deck && crate::route::deck_press().press_plays() {
+    if is_deck && plx_media::route::deck_press().press_plays() {
         card_row::TileLabel::played(title)
     } else {
         card_row::TileLabel::title(title)

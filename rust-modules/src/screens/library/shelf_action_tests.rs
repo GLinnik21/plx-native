@@ -1,6 +1,6 @@
 //! Activation ports: a deck promises playback only under `DeckPress::Play`; discovery, even an episode, never does.
 use super::*;
-use crate::route::DeckPress;
+use plx_media::route::DeckPress;
 use plx_ui::fixture::{FixtureArg, FixtureMeasure};
 use plx_ui::focus::FocusEngine;
 use plx_machine::machine::{Host, InputOwner, PressId, PressRead, Tick};
@@ -104,12 +104,12 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
             (DeckPress::Play, true),
             (DeckPress::Details, true),
         ] {
-            let prior = crate::route::deck_press();
-            crate::route::restore_deck_press(mode);
+            let prior = plx_media::route::deck_press();
+            plx_media::route::restore_deck_press(mode);
             struct Back(DeckPress);
             impl Drop for Back {
                 fn drop(&mut self) {
-                    crate::route::restore_deck_press(self.0);
+                    plx_media::route::restore_deck_press(self.0);
                 }
             }
             let _back = Back(prior);

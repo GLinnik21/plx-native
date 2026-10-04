@@ -1478,7 +1478,7 @@ fn memory_round_trip_preserves_registries_and_carousel_identity() {
 #[test]
 fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
     let _guard = plx_base::testlock::serial();
-    let _press = deck_press_is(crate::route::DeckPress::Play);
+    let _press = deck_press_is(plx_media::route::DeckPress::Play);
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
@@ -1679,21 +1679,21 @@ fn visible_tick_emits_both_store_work_requests_after_the_step() {
 
 /// Sets the Continue Watching setting for one test and puts the prior value back. The caller
 /// holds `testlock::serial()`, which `restore_deck_press` asserts.
-struct DeckPressGuard(crate::route::DeckPress);
+struct DeckPressGuard(plx_media::route::DeckPress);
 impl Drop for DeckPressGuard {
     fn drop(&mut self) {
-        crate::route::restore_deck_press(self.0);
+        plx_media::route::restore_deck_press(self.0);
     }
 }
-fn deck_press_is(mode: crate::route::DeckPress) -> DeckPressGuard {
-    let prior = DeckPressGuard(crate::route::deck_press());
-    crate::route::restore_deck_press(mode);
+fn deck_press_is(mode: plx_media::route::DeckPress) -> DeckPressGuard {
+    let prior = DeckPressGuard(plx_media::route::deck_press());
+    plx_media::route::restore_deck_press(mode);
     prior
 }
 
 #[test]
 fn continue_watching_commit_follows_the_setting_while_an_ordinary_shelf_opens_detail() {
-    use crate::route::DeckPress;
+    use plx_media::route::DeckPress;
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
@@ -1728,7 +1728,7 @@ fn continue_watching_commit_follows_the_setting_while_an_ordinary_shelf_opens_de
 /// The amber ▶ promises the press plays, so the deck's title line carries it in Play mode only.
 #[test]
 fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
-    use crate::route::DeckPress;
+    use plx_media::route::DeckPress;
     let _guard = plx_base::testlock::serial();
     {
         let _press = deck_press_is(DeckPress::Play);
@@ -1824,7 +1824,7 @@ fn drawn_stops_feed_the_real_hit_map_with_scoped_card_keys() {
 #[test]
 fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint() {
     let _guard = plx_base::testlock::serial();
-    let _press = deck_press_is(crate::route::DeckPress::Play);
+    let _press = deck_press_is(plx_media::route::DeckPress::Play);
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);

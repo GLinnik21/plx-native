@@ -47,7 +47,7 @@ use std::convert::Infallible;
 use std::os::raw::c_int;
 
 use plx_data::pms::PmsMovie;
-use crate::route::DeckPress;
+use plx_media::route::DeckPress;
 use crate::screens::registry::{tile_facts, RepeatGate, PANEL_REPEAT_MS};
 use crate::screens::registry::{AppFx, AppLike, ItemMenuArg, ItemMenuKind, ItemMenuReq};
 use plx_ui::consts::*;
@@ -542,7 +542,7 @@ impl ItemMenuScreen {
         let form = match &self.arg.kind {
             ItemMenuKind::Card { row, from_deck } => {
                 let trailer = cached_trailer(self.arg.sid, row, meta);
-                build_with(row, *from_deck, crate::route::deck_press(), trailer.as_ref())
+                build_with(row, *from_deck, plx_media::route::deck_press(), trailer.as_ref())
             }
             ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark),
             ItemMenuKind::Season { mark } => build_season(&self.arg.rk, *mark),

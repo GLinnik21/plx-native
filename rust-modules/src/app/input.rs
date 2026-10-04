@@ -347,9 +347,9 @@ mod activate_card_tests {
     fn the_menu_play_row_on_a_show_or_season_card_takes_the_want_play_path() {
         use crate::screens::item_menu::Action;
         let _guard = plx_base::testlock::serial();
-        let mut ps = crate::route::PlaybackSession::default();
+        let mut ps = plx_media::route::PlaybackSession::default();
         let mt = unsafe { plx_base::task::MainThread::assume() };
-        let mut pa = crate::player::adapter::PlayerAdapter::new(mt);
+        let mut pa = plx_media::player::adapter::PlayerAdapter::new(mt);
         let mut pages = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
         let mut bridge = super::bridge::Bridge::for_test(|| 0);
 
