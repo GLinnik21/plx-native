@@ -323,6 +323,33 @@ fn a_plex_direct_name_in_the_userinfo_never_uses_the_bundle() {
     assert!(!keypin::is_roots_latched(&key), "nothing was served against the bundle");
 }
 
+/// A bundle that is on disk but cannot verify anything — empty, or unreadable — is not a bundle: with
+/// it the fallback would hand libcurl a `CURLOPT_CAINFO` it cannot load (rc 77 on every plex.direct
+/// request whose strict attempt lacked an issuer), where without it the request fails as it always did
+/// (rc 60 with the verify result that says why). So `roots_bundle` is only a non-empty readable file.
+#[test]
+fn an_empty_or_unreadable_bundle_is_no_bundle() {
+    use std::os::unix::fs::PermissionsExt;
+    let _serial = plx_base::testlock::serial();
+    let key = keypin::key_of(PLEX_DIRECT, 41020);
+    let _scoped = keypin::Scoped::watch(&key);
+    let decides = || keypin::after_strict_failure(&key, 60, Some(20));
+    {
+        let _empty = keypin::test_roots::Guard::install("", "roots-empty");
+        assert_eq!(decides(), None, "an empty file");
+    }
+    // Unreadable: root reads anything, so this half only means something for an ordinary user.
+    if unsafe { libc::geteuid() } != 0 {
+        let guard = keypin::test_roots::Guard::install(&mint_cert(&["unreadable.invalid"]).pem, "roots-unreadable");
+        let path = keypin::test_roots::get().expect("installed");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(decides(), None, "an unreadable file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(decides().is_some(), "and readable again");
+        drop(guard);
+    }
+}
+
 #[test]
 fn is_plex_direct_is_a_suffix_rule_on_a_clean_host_name() {
     for host in [PLEX_DIRECT, "A.B.PLEX.DIRECT", "a.plex.direct.", "192-168-0-10.abc.plex.direct"] {

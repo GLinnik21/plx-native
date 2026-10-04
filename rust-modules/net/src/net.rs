@@ -1121,7 +1121,7 @@ mod loopback_pms {
     /// [`crate::curlio::CurlSource`] can open, seek and reopen against it. One request per
     /// connection (`Connection: close`); [`spawn_observed_keepalive`] is the persistent twin.
     pub fn spawn_observed(cert: Arc<TestCert>, body: Vec<u8>) -> Observed {
-        spawn_observed_conn(cert, body, false)
+        spawn_observed_conn(cert, body, false, None)
     }
 
     /// [`spawn_observed`] speaking persistent HTTP/1.1: every reply carries a `Content-Length` and
@@ -1129,10 +1129,17 @@ mod loopback_pms {
     /// real media server does, and the only double in which a libcurl connection cache can be seen
     /// handing one connection to a second transfer.
     pub fn spawn_observed_keepalive(cert: Arc<TestCert>, body: Vec<u8>) -> Observed {
-        spawn_observed_conn(cert, body, true)
+        spawn_observed_conn(cert, body, true, None)
     }
 
-    fn spawn_observed_conn(cert: Arc<TestCert>, body: Vec<u8>, keep_alive: bool) -> Observed {
+    /// [`spawn_observed`] answering EVERY request with a `302` to `location` instead of the body: the
+    /// media server that sends a presigned CDN URL (`stream_redirect`'s case), for a test that
+    /// grades which trust store verifies the hop that follows.
+    pub fn spawn_redirecting(cert: Arc<TestCert>, location: &str) -> Observed {
+        spawn_observed_conn(cert, Vec::new(), false, Some(location.to_owned()))
+    }
+
+    fn spawn_observed_conn(cert: Arc<TestCert>, body: Vec<u8>, keep_alive: bool, redirect: Option<String>) -> Observed {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind observed listener");
         let port = listener.local_addr().unwrap().port();
         let tls_cfg = tls_config(&cert);
@@ -1144,7 +1151,7 @@ mod loopback_pms {
             for stream in listener.incoming() {
                 let Ok(mut sock) = stream else { continue };
                 count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                let (tls_cfg, body, log) = (Arc::clone(&tls_cfg), body.clone(), Arc::clone(&log));
+                let (tls_cfg, body, log, redirect) = (Arc::clone(&tls_cfg), body.clone(), Arc::clone(&log), redirect.clone());
                 std::thread::spawn(move || {
                     let Ok(mut conn) = rustls::ServerConnection::new(tls_cfg) else { return };
                     let mut tls = rustls::Stream::new(&mut conn, &mut sock);
@@ -1161,6 +1168,11 @@ mod loopback_pms {
                             .and_then(|v| v.trim().parse::<usize>().ok());
                         log.lock().unwrap_or_else(|e| e.into_inner()).push(request);
                         let reply = match start {
+                            _ if redirect.is_some() => format!(
+                                "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\n{connection}\r\n",
+                                redirect.as_deref().unwrap_or_default()
+                            )
+                            .into_bytes(),
                             Some(at) if at < body.len() => {
                                 let tail = &body[at..];
                                 let mut out = format!(
@@ -1279,7 +1291,7 @@ mod loopback_pms {
     }
 }
 #[cfg(any(test, feature = "test-support"))]
-pub use loopback_pms::{dead_port, mint_ca_issued_cert, mint_cert, spawn_dual_protocol, spawn_observed, spawn_observed_keepalive, spawn_plain_only, ymd_from_now, TestCaGuard, TestCert};
+pub use loopback_pms::{dead_port, mint_ca_issued_cert, mint_cert, spawn_dual_protocol, spawn_observed, spawn_observed_keepalive, spawn_plain_only, spawn_redirecting, ymd_from_now, TestCaGuard, TestCert};
 #[cfg(any(test, feature = "test-support"))]
 pub use loopback_pms::{curl_ready, expired_leaf, identity_request, key_of_port, leaf_pin, remember};
 
@@ -2376,20 +2388,27 @@ pub mod keypin {
 
     /// The shipped roots bundle, when there is one to use: `ROOTS_FILE` in the app directory (a
     /// root-owned, read-only location on the television, which is why it is a safer place for a
-    /// trust anchor than anything under `/tmp`). A missing or unreadable file is `None` and the
-    /// fallback simply does not engage; that is said once per process, since it does not change
-    /// between requests.
+    /// trust anchor than anything under `/tmp`), **as a non-empty file this process can read**. A
+    /// missing, empty or unreadable file is `None` and the fallback simply does not engage — the
+    /// request then fails as it always did, with the strict attempt's own verify result, instead of
+    /// handing libcurl a `CURLOPT_CAINFO` it cannot load (rc 77 on every `*.plex.direct` request
+    /// that lacked an issuer). Fail-closed either way; said once per process, since it does not
+    /// change between requests.
     fn roots_bundle() -> Option<String> {
         #[cfg(any(test, feature = "test-support"))]
         let path = test_roots::get().map_or_else(|| plx_base::paths::in_app_dir(ROOTS_FILE), std::path::PathBuf::from);
         #[cfg(not(any(test, feature = "test-support")))]
         let path = plx_base::paths::in_app_dir(ROOTS_FILE);
-        let found = path.is_file().then(|| path.to_str().map(str::to_owned)).flatten();
+        // Opened, then asked of the descriptor: readable and a regular, non-empty file in one look.
+        let usable = std::fs::File::open(&path)
+            .and_then(|f| f.metadata())
+            .is_ok_and(|m| m.is_file() && m.len() > 0);
+        let found = usable.then(|| path.to_str().map(str::to_owned)).flatten();
         if found.is_none() {
             static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if !SAID.swap(true, Ordering::Relaxed) {
                 plx_base::eventlog::log(&format!(
-                    "net: no {ROOTS_FILE} beside the binary — the bundled public roots are not available as a fallback"
+                    "net: no usable {ROOTS_FILE} beside the binary (missing, empty or unreadable) — the bundled public roots are not available as a fallback"
                 ));
             }
         }

@@ -1549,7 +1549,20 @@ if data_blob is not None:
         modes = {Path(m.name).name: m.mode & 0o777 for m in members}
         paths = {m.name.lstrip("./") for m in members}
         owners = {(m.uname, m.gname) for m in members}
+        shipped_roots = [t.extractfile(m).read() for m in members if Path(m.name).name == "le-roots.pem"]
     check(expected <= names, f"payload carries all {len(expected)} app files")
+    # The roots bundle is graded in the REPO above, but what a television trusts is the member of
+    # the BUILT archive: a stale or hand-edited copy staged by the Makefile would pass every check of
+    # `pkg/le-roots.pem`. Same four roots, and byte-identical to the repo file.
+    check(len(shipped_roots) == 1 and _roots_pem.exists()
+          and _hashlib.sha256(shipped_roots[0]).hexdigest() == _hashlib.sha256(_roots_pem.read_bytes()).hexdigest(),
+          "the ipk's le-roots.pem is byte-identical to pkg/le-roots.pem (same SHA-256)")
+    if len(shipped_roots) == 1:
+        _member_got = [_hashlib.sha256(_b64.b64decode("".join(m.split()))).hexdigest()
+                       for m in _re.findall(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----",
+                                            shipped_roots[0].decode("ascii", "replace"), _re.S)]
+        check(sorted(_member_got) == sorted(_LE_ROOTS),
+              "the ipk's le-roots.pem holds exactly ISRG Root X1, X2, YR and YE (by SHA-256 of each certificate)")
     check(modes.get("plxnative") == 0o755,
           "native app is executable by its jailed runtime uid")
     check(modes.get("sentry-crash") == 0o755,

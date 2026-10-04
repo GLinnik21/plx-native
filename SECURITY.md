@@ -33,16 +33,30 @@ looking at:
   rooted. Every event-log line goes through `eventlog::scrub::scrub_local` before the write. A line
   that reaches it carrying a credential, a Plex token, a `plex.direct` hostname, a household name or
   anything about what is being watched is a valid report — see [PRIVACY.md](PRIVACY.md) for the
-  contract that is meant to hold. Stated plainly, the residual exposure: another native app on the
-  same television that runs in the app's group can read all three files, and the crash and stderr
-  logs (a faulting address; whatever aborts and the television's own libraries print) are not passed
-  through that scrubber. A credential in either is a valid report too.
-- **TLS.** Certificate verification is on for every HTTPS request, with one bounded exception: when
-  a Plex server's certificate fails only its validity-date check (the television has no
-  battery-backed clock) and a public key was remembered for that exact host and port from an
-  earlier fully verified connection, the request is repeated with the chain-and-date check
-  replaced by a pin on that key; the name check stays on. plex.tv, telemetry and any host with no
-  remembered key never take this path (`net.rs`, `net::keypin`). Stable builds refuse
+  contract that is meant to hold. The panic text the Rust panic hook appends to the crash log goes
+  through the same scrubber. All three files are opened with `O_NOFOLLOW` as a regular file this app
+  owns with exactly one link, so a symlink or a hard link planted at their names in the shared
+  `/tmp` is refused and never chmod'ed or truncated. Stated plainly, the residual exposure: another
+  native app on the same television that runs in the app's group can read all three files, and the
+  stderr log (whatever aborts and the television's own libraries print), the crash log's C-side
+  records (a faulting address, registers, one memory-map line) and the C-side lines the shim and
+  the Starfish seam write into the event log are not passed through that scrubber. A credential in
+  any of them is a valid report too.
+- **TLS.** Certificate verification is on for every HTTPS request, with one bounded exception and
+  one fallback that relaxes nothing. The exception: when a Plex server's certificate fails only its
+  validity-date check (the television has no battery-backed clock) and a public key was remembered
+  for that exact host and port from an earlier fully verified connection, the request is repeated
+  with the chain-and-date check replaced by a pin on that key; the name check stays on. plex.tv,
+  telemetry and any host with no remembered key never take this path (`net.rs`, `net::keypin`).
+  The fallback: when a `*.plex.direct` server's certificate fails because the television's own
+  trust store lacks its issuer (Let's Encrypt's 2025 roots on a 2020 firmware), the request is
+  repeated once with the CA file set to `le-roots.pem`, the four public ISRG roots shipped in the
+  package. Chain, dates and name are all still verified, against a different root set. It is
+  offered only for a host name that is a `*.plex.direct` name (a URL whose userinfo merely names
+  one does not count), never for plex.tv or telemetry; a redirect that such a request follows is
+  verified against the same bundle, because libcurl takes the CA file per request and not per hop.
+  When the bundle verifies the chain and only the dates fail (a wrong clock too), the remembered
+  key above is still tried. Stable builds refuse
   any PMS control or media URL that would carry a Plex token over plaintext HTTP, with one
   consented exception: a server that answers only unencrypted at a numeric private address on the
   television's own network, where the person answered "Connect without encryption?" for that
@@ -55,8 +69,9 @@ looking at:
   Only an explicit developer-trigger build can otherwise allow the lab path, and it logs the
   exception without the URL.
   Anything that disables, downgrades or bypasses these rules is in scope — including a key-mode
-  request that accepts a different key or a wrong name; so is any path where a failure to *set* a
-  security option results in a request going out anyway.
+  request that accepts a different key or a wrong name, or a bundled-roots request that accepts a
+  certificate those roots do not verify or is offered for a host that is not a `*.plex.direct` name;
+  so is any path where a failure to *set* a security option results in a request going out anyway.
 - **The session file.** `<id>-auth.json` holds one access token per server your account can reach.
   It is encrypted with the firmware's authenticated Key Manager where
   `com.webos.service.keymanager3` is available and permitted, with a 0600 plaintext compatibility

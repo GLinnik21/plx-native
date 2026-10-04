@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use plx_net::net::origin::ResolvePin;
-use plx_net::net::{curl_ready, keypin, mint_ca_issued_cert, mint_cert, resolve, spawn_observed, ymd_from_now, TestCaGuard};
+use plx_net::net::{curl_ready, keypin, mint_ca_issued_cert, mint_cert, resolve, spawn_observed, spawn_redirecting, ymd_from_now, TestCaGuard};
 
 fn media_body() -> Vec<u8> {
     (0..5000u32).map(|i| (i % 253) as u8).collect()
@@ -220,4 +220,51 @@ fn a_media_open_with_a_plex_direct_name_in_the_userinfo_never_uses_the_bundle() 
         .expect("the bundle is for *.plex.direct hosts, and the host dialled is 127.0.0.1");
     assert_eq!(err, crate::curlio::OpenErr::Transport(60));
     assert!(!keypin::is_roots_latched(&key));
+}
+
+/// **What a redirect does under roots mode, pinned as documented** (`THIRD-PARTY-NOTICES.md` §2.7,
+/// `plex/CLAUDE.md`): `CURLOPT_CAINFO` is per handle, not per hop, and `curlio` follows redirects in
+/// libcurl (`stream_redirect` hands an https hop over without going back through `keypin`). So once a
+/// `*.plex.direct` open is in roots mode, the hop it is redirected to is verified against the
+/// BUNDLE, not the device store: verification stays fully on for that hop's chain and name, but a
+/// target whose issuer only the device store holds is refused, and one whose issuer the bundle holds
+/// is accepted. The bundle is therefore consulted for a redirect target of a `*.plex.direct`
+/// request, and for no other request.
+#[test]
+fn a_redirect_under_roots_mode_is_verified_against_the_bundle_not_the_device_store() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    // One CA issues a leaf for BOTH the household server (a plex.direct name, which 302s) and the
+    // redirect target (the loopback address), so a one-certificate bundle can verify both hops.
+    let cert = Arc::new(mint_ca_issued_cert(&[PLEX_DIRECT, "127.0.0.1"], ymd_from_now(-1), ymd_from_now(30)));
+    let target = spawn_observed(Arc::clone(&cert), media_body());
+    let redirecting = spawn_redirecting(Arc::clone(&cert), &format!("https://127.0.0.1:{}/video.mkv", target.port));
+    pin_to_loopback(PLEX_DIRECT, redirecting.port);
+    let key = keypin::key_of(PLEX_DIRECT, i32::from(redirecting.port));
+    let _watch = keypin::Scoped::watch(&key);
+    let url = format!("https://{PLEX_DIRECT}:{}/video.mkv", redirecting.port);
+
+    // The device store holds NOTHING relevant, so the hop can only be verified by the bundle: it is.
+    {
+        let _device = TestCaGuard::install(&mint_cert(&["unrelated.invalid"]).pem, "roots-media-redirect-ok");
+        let _roots = keypin::test_roots::Guard::install(&cert.pem, "roots-media-redirect-ok");
+        let src = crate::curlio::CurlSource::open(&url, 0)
+            .expect("both hops are verified against the bundle, which holds their issuer");
+        assert_eq!(src.status(), 200);
+    }
+    // A hop whose issuer only the DEVICE store holds is refused: the device store is not consulted
+    // for it once the open is in roots mode. (60 on the television's OpenSSL; this host's libcurl
+    // reports a refused hop certificate as 35. What is graded is the contrast with the open above.)
+    {
+        let other = Arc::new(mint_ca_issued_cert(&["127.0.0.1"], ymd_from_now(-1), ymd_from_now(30)));
+        let elsewhere = spawn_observed(Arc::clone(&other), media_body());
+        let hopping = spawn_redirecting(Arc::clone(&cert), &format!("https://127.0.0.1:{}/video.mkv", elsewhere.port));
+        pin_to_loopback(PLEX_DIRECT, hopping.port);
+        let _device = TestCaGuard::install(&other.pem, "roots-media-redirect-refused");
+        let _roots = keypin::test_roots::Guard::install(&cert.pem, "roots-media-redirect-refused");
+        let err = crate::curlio::CurlSource::open(&format!("https://{PLEX_DIRECT}:{}/video.mkv", hopping.port), 0)
+            .err()
+            .expect("the hop is verified against the bundle, which does not hold its issuer");
+        assert!(matches!(err, crate::curlio::OpenErr::Transport(60 | 35)), "{err:?}");
+    }
 }

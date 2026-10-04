@@ -19,6 +19,7 @@ on:
       - 'vendor/nanosvg/**'
       - 'pkg/appfont*.ttf'
       - 'pkg/OFL.txt'
+      - 'pkg/le-roots.pem'
       - 'LICENSE'
       - 'ci/build-ffmpeg.sh'
       - 'ci/stage-host-ffmpeg.sh'
