@@ -5,10 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="PlxNative is an independent, native Plex client for LG webOS TVs (4.0+): a fast, fluid interface for your Plex Media Server. Open source, no root required."
+      content="PlxNative is an unofficial, open-source Plex app for LG webOS TVs (4.0+): a fast native client for your Plex Media Server. Install without root."
     />
     <meta name="robots" content="index,follow,max-image-preview:large" />
-    <title>PlxNative — Native Plex Client for LG webOS TVs</title>
+    <title>Plex for webOS — PlxNative, an Unofficial Native Plex Client for LG TVs</title>
     <link rel="canonical" href="https://plxnative.com/" />
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="48x48" href="icons/favicon-48.png" />
@@ -20,10 +20,10 @@
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="PlxNative" />
     <meta property="og:url" content="https://plxnative.com/" />
-    <meta property="og:title" content="PlxNative — Native Plex Client for LG webOS TVs" />
+    <meta property="og:title" content="Plex for webOS — PlxNative, an Unofficial Native Plex Client for LG TVs" />
     <meta
       property="og:description"
-      content="PlxNative is an independent, native Plex client for LG webOS TVs (4.0+): a fast, fluid interface for your Plex Media Server. Open source, no root required."
+      content="PlxNative is an unofficial, open-source Plex app for LG webOS TVs (4.0+): a fast native client for your Plex Media Server. Install without root."
     />
     <meta property="og:image" content="https://plxnative.com/media/og-card.jpg" />
     <meta property="og:image:type" content="image/jpeg" />
@@ -32,10 +32,10 @@
     <meta property="og:image:alt" content="PlxNative home screen on an LG TV, next to the headline: Plex that feels fast on LG TVs." />
     <meta property="og:locale" content="en_US" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="PlxNative — Native Plex Client for LG webOS TVs" />
+    <meta name="twitter:title" content="Plex for webOS — PlxNative, an Unofficial Native Plex Client for LG TVs" />
     <meta
       name="twitter:description"
-      content="PlxNative is an independent, native Plex client for LG webOS TVs (4.0+): a fast, fluid interface for your Plex Media Server. Open source, no root required."
+      content="PlxNative is an unofficial, open-source Plex app for LG webOS TVs (4.0+): a fast native client for your Plex Media Server. Install without root."
     />
     <meta name="twitter:image" content="https://plxnative.com/media/og-card.jpg" />
     <meta name="twitter:image:alt" content="PlxNative home screen on an LG TV, next to the headline: Plex that feels fast on LG TVs." />
@@ -52,9 +52,49 @@
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Is there a Plex app for webOS?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. PlxNative is an unofficial, open-source Plex client for LG webOS TVs (webOS 4.0 and newer). It connects to your own Plex Media Server and runs as a native app, not a web page."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How do I install Plex on an LG webOS TV?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Install PlxNative from your computer through LG Developer Mode (no root required), or open Homebrew Channel on your TV and install it from the catalogue. The step-by-step guide covers both."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does PlxNative need a rooted TV?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "No. Developer Mode installation works on a regular LG webOS TV. Homebrew Channel is optional and only needed for catalogue installs and updates."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Is PlxNative made by Plex or LG?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "No. It is an independent, unofficial project and is not affiliated with or endorsed by Plex GmbH or LG Electronics."
+            }
+          }
+        ]
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
         "@type": "SoftwareApplication",
         "name": "PlxNative",
-        "description": "PlxNative is an independent, native Plex client for LG webOS TVs (4.0+): a fast, fluid interface for your Plex Media Server. Open source, no root required.",
+        "description": "PlxNative is an unofficial, open-source Plex app for LG webOS TVs (4.0+): a fast native client for your Plex Media Server. Install without root.",
         "operatingSystem": "LG webOS 4.0 or later",
         "applicationCategory": "MultimediaApplication",
         "offers": {
@@ -162,14 +202,14 @@
 
         <section class="hero" id="top" aria-labelledby="hero-title">
           <h1 id="hero-title">
-            <span class="hero-kicker" data-intro>Native Plex client for LG webOS TVs</span>
+            <span class="hero-kicker" data-intro>Plex for webOS: a native Plex app for LG TVs</span>
             <span class="hero-line hero-line--lead" data-intro>Your Plex library.</span>
             <span class="hero-line hero-line--sub" data-intro><span class="hero-shine">A pleasure to explore.</span></span>
           </h1>
           <div class="hero-copy">
             <p class="hero-lede" data-intro>
-              PlxNative is an independent client for Plex Media Server. Explore your library through
-              a fast, fluid interface designed for LG webOS TVs.
+              PlxNative is an independent Plex app for webOS. Explore your Plex Media Server library
+              through a fast, fluid native interface designed for LG webOS TVs.
             </p>
             <div class="hero-actions" data-intro>
               <a class="button button-primary" href="#install">Install PlxNative</a>
@@ -446,6 +486,30 @@
             <div data-reveal>
               <h3>Privacy</h3>
               <p>At first launch, PlxNative asks whether you'd like to share crash reports and usage analytics. You can opt in to either one, both, or neither.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="notes-section" id="faq" aria-labelledby="faq-title">
+          <div class="notes-heading" data-reveal>
+            <h2 id="faq-title">Plex on LG webOS: common questions</h2>
+          </div>
+          <div class="notes-grid">
+            <div data-reveal>
+              <h3>Is there a Plex app for webOS?</h3>
+              <p>Yes. PlxNative is an unofficial, open-source Plex client for LG webOS TVs (webOS 4.0 and newer). It connects to your own Plex Media Server and runs as a native app, not a web page.</p>
+            </div>
+            <div data-reveal>
+              <h3>How do I install Plex on an LG webOS TV?</h3>
+              <p>Install PlxNative from your computer through LG Developer Mode (no root required), or open Homebrew Channel on your TV and install it from the catalogue. The step-by-step guide covers both.</p>
+            </div>
+            <div data-reveal>
+              <h3>Does PlxNative need a rooted TV?</h3>
+              <p>No. Developer Mode installation works on a regular LG webOS TV. Homebrew Channel is optional and only needed for catalogue installs and updates.</p>
+            </div>
+            <div data-reveal>
+              <h3>Is PlxNative made by Plex or LG?</h3>
+              <p>No. It is an independent, unofficial project and is not affiliated with or endorsed by Plex GmbH or LG Electronics.</p>
             </div>
           </div>
         </section>
