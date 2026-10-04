@@ -142,6 +142,15 @@ fn write_log_line(writer: &mut impl std::io::Write, line: &str) -> std::io::Resu
     }
 }
 
+/// Append one complete, newline-terminated record to the log sink at `path`: [`open_log_append`]'s
+/// discipline, then [`write_log_line`]'s single `write`. The ONE way a Rust-side sink is written,
+/// shared by [`log`] and the panic hook's crash log (`app::boot`), so no sink is opened with less
+/// care than the event log. The caller passes the line already redacted
+/// ([`scrub::scrub_local`]); this adds no scrubbing of its own.
+pub fn append_record(path: &std::path::Path, line: &str) -> std::io::Result<()> {
+    write_log_line(&mut open_log_append(path)?, line)
+}
+
 /// Append one line to the on-device event log (`/tmp/plxnative-events.log`) — the primary debugging
 /// surface (`make run` fetches it). The ONE shared sink; modules bring it in as `use crate::eventlog::log;`.
 ///
@@ -161,9 +170,7 @@ pub fn log(m: &str) {
     // Compiled out without the `lab-diagnostics` feature — see `lab`.
     #[cfg(feature = "lab-diagnostics")]
     crate::eventlog::ring::record(&line);
-    if let Ok(mut f) = open_log_append(&p) {
-        let _ = write_log_line(&mut f, &line);
-    }
+    let _ = append_record(&p, &line);
 }
 
 /// The log's credential backstop. These run on the pure function, so they need no filesystem.
