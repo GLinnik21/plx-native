@@ -241,6 +241,7 @@ serde = { version = "1", default-features = false, features = ["derive", "alloc"
 
 [profile.release]
 opt-level = 2
+codegen-units = 1
 
 [dev-dependencies]
 # The `cfg(test)` fixtures of the base layer (`testlock`, `testnet`, ...): a dependency is never
