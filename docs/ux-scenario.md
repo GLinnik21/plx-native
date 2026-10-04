@@ -191,8 +191,10 @@ DOWN from the hero enters the shelves; DOWN again steps between them; LEFT/RIGHT
 The focused card grows, and its title and a status line appear beneath it — here *"8 min
 left"*, which is the resume state. A watched item carries a check mark in its corner.
 
-**OK on a card in *Continue Watching* plays it directly**, and the amber ▶ on the card is what
-announces that. **Every other card opens a page, an episode included**: an episode tile on a
+**OK on a card in *Continue Watching* opens its page by default** (Settings → Playback →
+Continue Watching: *Open details*); set to *Play*, OK plays it directly and the amber ▶ on the card is
+what announces that — the ▶ is drawn only in that mode, and in the default the card's menu leads
+with Play instead. **Every other card opens a page, an episode included**: an episode tile on a
 discovery shelf ("Recently Released Episodes", "Recently Added…") opens that EPISODE's own page and
 carries no ▶, precisely so nothing on it promises playback. The difference is intentional: the deck
 is a list of things already in progress, and one press is the whole point of it — everywhere else,

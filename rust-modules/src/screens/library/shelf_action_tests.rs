@@ -1,5 +1,6 @@
 //! Activation ports: a deck promises playback; discovery, even an episode, does not.
 use super::*;
+use crate::route::DeckPress;
 use plx_ui::fixture::{FixtureArg, FixtureMeasure};
 use plx_ui::focus::FocusEngine;
 use plx_machine::machine::{Host, InputOwner, PressId, PressRead, Tick};
@@ -95,7 +96,23 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
         assert_eq!(hubs.view().shelves()[row].is_continue, from_deck);
         let key = page.key(page.shelves[row].elems[1]);
         engine.set(owner, key, Some(page.shelves[row].group), By::Restore);
-        for held in [false, true] {
+        // OK on a deck card plays only under the Play setting (the default opens the page); the
+        // hold's menu is the same request either way.
+        for (mode, held) in [
+            (DeckPress::Play, false),
+            (DeckPress::Details, false),
+            (DeckPress::Play, true),
+            (DeckPress::Details, true),
+        ] {
+            let prior = crate::route::deck_press();
+            crate::route::restore_deck_press(mode);
+            struct Back(DeckPress);
+            impl Drop for Back {
+                fn drop(&mut self) {
+                    crate::route::restore_deck_press(self.0);
+                }
+            }
+            let _back = Back(prior);
             let mut out = Vec::new();
             let mut present = plx_machine::present::Present::new();
             let event = if held {
@@ -122,7 +139,7 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
                     rk: item.rk.clone(),
                     from_deck,
                 }
-            } else if from_deck {
+            } else if from_deck && mode.press_plays() {
                 LibraryReq::Play {
                     sid: item.sid,
                     rk: item.rk.clone(),

@@ -53,6 +53,12 @@ pub(super) fn execute(command: PreferenceCmd) {
                 plx_machine::idle::invalidate();
             });
         }
+        PreferenceCmd::DeckPress { mode, reply } => {
+            let _ = plx_base::storage_worker::submit_retained(move || {
+                let _ = reply.send(crate::route::set_deck_press(mode));
+                plx_machine::idle::invalidate();
+            });
+        }
         PreferenceCmd::SkipInterval { interval, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
                 let _ = reply.send(plx_media::route::set_skip_interval(interval));

@@ -1478,6 +1478,7 @@ fn memory_round_trip_preserves_registries_and_carousel_identity() {
 #[test]
 fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
     let _guard = plx_base::testlock::serial();
+    let _press = deck_press_is(crate::route::DeckPress::Play);
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
@@ -1676,8 +1677,23 @@ fn visible_tick_emits_both_store_work_requests_after_the_step() {
     assert_eq!(work, vec![StoreWork::Hubs, StoreWork::BrowseDiscovery]);
 }
 
+/// Sets the Continue Watching setting for one test and puts the prior value back. The caller
+/// holds `testlock::serial()`, which `restore_deck_press` asserts.
+struct DeckPressGuard(crate::route::DeckPress);
+impl Drop for DeckPressGuard {
+    fn drop(&mut self) {
+        crate::route::restore_deck_press(self.0);
+    }
+}
+fn deck_press_is(mode: crate::route::DeckPress) -> DeckPressGuard {
+    let prior = DeckPressGuard(crate::route::deck_press());
+    crate::route::restore_deck_press(mode);
+    prior
+}
+
 #[test]
-fn continue_watching_commit_plays_while_an_ordinary_shelf_opens_detail() {
+fn continue_watching_commit_follows_the_setting_while_an_ordinary_shelf_opens_detail() {
+    use crate::route::DeckPress;
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
@@ -1685,30 +1701,43 @@ fn continue_watching_commit_plays_while_an_ordinary_shelf_opens_detail() {
     let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let card = first_card(&s);
-    let (_, play, _) = step(
-        &mut s,
-        snapshot.view(),
-        Some(card),
-        &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)),
-    );
-    assert!(has_home(
-        &play,
-        |r| matches!(r, HomeReq::Play { rk, .. } if rk == "1")
-    ));
+    let commit = |s: &mut HomeScreen, id| {
+        step(s, snapshot.view(), Some(card), &ScreenEvent::PressCommit(plx_machine::machine::PressId(id))).1
+    };
+    {
+        let _press = deck_press_is(DeckPress::Play);
+        let play = commit(&mut s, 1);
+        assert!(has_home(&play, |r| matches!(r, HomeReq::Play { rk, .. } if rk == "1")));
+    }
+    {
+        // the default: OK on a deck card opens the page, exactly as on any other shelf
+        let _press = deck_press_is(DeckPress::Details);
+        let detail = commit(&mut s, 2);
+        assert!(has_home(&detail, |r| matches!(r, HomeReq::Detail { rk, .. } if rk == "1")));
+        assert!(!has_home(&detail, |r| matches!(r, HomeReq::Play { .. })));
+    }
+    let _press = deck_press_is(DeckPress::Play);
     s.rows[0].identity = HomeHubIdentity::Key {
         sid: plx_plex::plex::ServerId::UNSET,
         key: "/hubs/recent".into(),
     };
-    let (_, detail, _) = step(
-        &mut s,
-        snapshot.view(),
-        Some(card),
-        &ScreenEvent::PressCommit(plx_machine::machine::PressId(2)),
-    );
-    assert!(has_home(
-        &detail,
-        |r| matches!(r, HomeReq::Detail { rk, .. } if rk == "1")
-    ));
+    let detail = commit(&mut s, 3);
+    assert!(has_home(&detail, |r| matches!(r, HomeReq::Detail { rk, .. } if rk == "1")));
+}
+
+/// The amber ▶ promises the press plays, so the deck's title line carries it in Play mode only.
+#[test]
+fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
+    use crate::route::DeckPress;
+    let _guard = plx_base::testlock::serial();
+    {
+        let _press = deck_press_is(DeckPress::Play);
+        assert!(deck_label(true, "Show").glyph);
+        assert!(!deck_label(false, "Show").glyph, "a shelf that navigates never carries it");
+    }
+    let _press = deck_press_is(DeckPress::Details);
+    assert!(!deck_label(true, "Show").glyph);
+    assert!(!deck_label(false, "Show").glyph);
 }
 
 #[test]
@@ -1795,6 +1824,7 @@ fn drawn_stops_feed_the_real_hit_map_with_scoped_card_keys() {
 #[test]
 fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint() {
     let _guard = plx_base::testlock::serial();
+    let _press = deck_press_is(crate::route::DeckPress::Play);
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);

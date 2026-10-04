@@ -385,10 +385,11 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
         ps: &mut plx_media::route::PlaybackSession,
         pa: &mut plx_media::player::adapter::PlayerAdapter,
         item: &plx_data::pms::PmsMovie,
+        from_start: bool,
         pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
         bridge: &mut super::bridge::Bridge,
     ) {
-        super::playback::play_item_now_with(ps, pa, item, true, Origin::Here, HUD_LINGER_MS,
+        super::playback::play_item_now_with(ps, pa, item, from_start, Origin::Here, HUD_LINGER_MS,
             None, pages, bridge, self.0);
     }
 }
@@ -515,6 +516,14 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
                 detail: None, guid: String::new(),
             });
         }
+        // The deck card's Play row (OK opens the page): the same captured-row launch as Play from
+        // Start, resuming instead of restarting. The row only exists on a Card menu, never on the
+        // filmstrip, so there is no loaded-episode path.
+        Action::Play(rk) => {
+            if let Some(mm) = item.as_ref().filter(|m| m.rk == rk) {
+                playback.captured_card(ps, pa, mm, false, pages, bridge);
+            }
+        }
         Action::PlayFromStart(rk) => {
             // On the detail page the target is an episode of the LOADED SEASON, which the hub
             // catalog usually doesn't hold at all (only the one Continue Watching is showing
@@ -540,7 +549,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // own key, so playing a row that does not carry it would be this dispatch disagreeing
             // with itself.
             if let Some(mm) = item.as_ref().filter(|m| m.rk == rk) {
-                playback.captured_card(ps, pa, mm, pages, bridge);
+                playback.captured_card(ps, pa, mm, true, pages, bridge);
             }
         }
         Action::PlayTrailer {

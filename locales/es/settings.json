@@ -168,6 +168,9 @@
   "settings.playback.next_episode.countdown": "Cuenta atrás de A continuación",
   "settings.playback.next_episode.after_credits": "Después de los créditos",
   "settings.playback.next_episode.off": "Desactivado",
+  "settings.playback.deck_press": "Continuar viendo",
+  "settings.playback.deck_press.details": "Abrir detalles",
+  "settings.playback.deck_press.play": "Reproducir",
   "settings.playback.skip_interval": "Intervalo de salto",
   "settings.playback.skip_interval.seconds": {
     "one": "{count} segundo",
@@ -187,6 +190,7 @@
   "settings.playback.subtitle_size.copy": "El tamaño del texto de los subtítulos. Los subtítulos de imagen y con estilo mantienen el suyo. También en Estilo, dentro del menú Subtítulos del reproductor.",
   "settings.playback.subtitle_position.copy": "A qué altura aparecen los subtítulos en la imagen. Los de imagen y con estilo mantienen su posición. También en Estilo, dentro del menú Subtítulos del reproductor.",
   "settings.playback.next_episode.copy": "Cuenta atrás de A continuación muestra un botón Siguiente episodio al empezar los créditos. Después de los créditos los deja terminar e inicia el siguiente episodio. Desactivado cierra el reproductor.",
+  "settings.playback.deck_press.copy": "Abrir detalles muestra la página de la película o del episodio al pulsar OK en una tarjeta de Continuar viendo. Reproducir la inicia o la reanuda al instante. El menú de la tarjeta, que se abre manteniendo pulsado OK, siempre ofrece la otra opción.",
   "settings.playback.skip_interval.copy": "Cuánto salta el reproductor con cada pulsación de Izquierda o Derecha.",
   "settings.playback.enable_force": "Forzar",
   "settings.playback.force_question": "¿Forzar la reproducción directa?",

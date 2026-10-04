@@ -7,10 +7,13 @@
 //! separator between the navigation actions and the state actions. Plex's own version is a
 //! full-screen sheet; that is deliberately not what this is.
 //!
-//! It exists because OK on a Continue Watching tile **resumes immediately, by design** — the amber
-//! play badge on the card is the affordance that says so. The hold is the *other* half of that
-//! interaction, and until it existed Go-to-Show, per-item Mark-as-Watched and Play-from-Start had
-//! nowhere to live (`docs/parity-gaps.md` §1.2/§1.3, §5a).
+//! It exists because OK on a Continue Watching tile can **resume immediately** (the Playback
+//! setting [`DeckPress::Play`]; the amber play badge on the card is the affordance that says so).
+//! The hold is the *other* half of that interaction, and until it existed Go-to-Show, per-item
+//! Mark-as-Watched and Play-from-Start had nowhere to live (`docs/parity-gaps.md` §1.2/§1.3, §5a).
+//! Under the default, [`DeckPress::Details`], OK opens the page instead and the deck card's menu
+//! leads with the Play row that press gave up (and drops the Go to Movie / Episode row it now
+//! duplicates).
 //!
 //! **Every card surface opens it** — a home shelf, the Library browse grid, a Search result shelf,
 //! a person's filmography and the detail page's Related shelf present [`ItemMenuKind::Card`]; the
@@ -44,6 +47,7 @@ use std::convert::Infallible;
 use std::os::raw::c_int;
 
 use plx_data::pms::PmsMovie;
+use crate::route::DeckPress;
 use crate::screens::registry::{tile_facts, RepeatGate, PANEL_REPEAT_MS};
 use crate::screens::registry::{AppFx, AppLike, ItemMenuArg, ItemMenuKind, ItemMenuReq};
 use plx_ui::consts::*;
@@ -77,6 +81,9 @@ pub(crate) enum Action {
     MarkWatched(String),
     /// `/:/unscrobble` — the − row. Twin of [`Action::MarkWatched`].
     MarkUnwatched(String),
+    /// play this leaf, resuming where it left off when it has a resume point — the Continue
+    /// Watching card's first row while OK on that card opens the page ([`DeckPress::Details`])
+    Play(String),
     /// play this leaf ignoring its resume point
     PlayFromStart(String),
     /// play the item's already-loaded trailer extra — never the parent, never a PMS fetch
@@ -119,6 +126,7 @@ impl Action {
             | Action::GoToShow(rk, _)
             | Action::MarkWatched(rk)
             | Action::MarkUnwatched(rk)
+            | Action::Play(rk)
             | Action::PlayFromStart(rk)
             | Action::RemoveFromDeck(rk) => rk,
             Action::PlayTrailer { rk, .. } => rk,
@@ -135,6 +143,7 @@ impl Action {
             Action::PlayFromStart(_) => 5,
             Action::RemoveFromDeck(_) => 6,
             Action::PlayTrailer { .. } => 7,
+            Action::Play(_) => 8,
         };
         c.u32(tag).str(self.rk());
         if let Action::GoToShow(_, season) = self {
@@ -189,6 +198,7 @@ pub(crate) enum ItemRow {
     PlayFromStart,
     PlayTrailer,
     RemoveFromDeck,
+    Play,
 }
 
 impl ItemRow {
@@ -209,6 +219,7 @@ impl FormId for ItemRow {
             ItemRow::PlayFromStart => 5,
             ItemRow::PlayTrailer => 6,
             ItemRow::RemoveFromDeck => 7,
+            ItemRow::Play => 8,
         })
     }
 }
@@ -224,12 +235,40 @@ type ItemForm = Form<ItemRow, Action, Infallible>;
 /// state group is one row or two off [`state_rows`], so this list has no fixed length.
 #[cfg(test)]
 fn build(m: &PmsMovie, from_deck: bool) -> ItemForm {
-    build_with(m, from_deck, None)
+    build_with(m, from_deck, DeckPress::Play, None)
 }
 
-fn build_with(m: &PmsMovie, from_deck: bool, trailer: Option<&plx_data::metadata::Extra>) -> ItemForm {
+/// `deck_press` is the Continue Watching setting. It changes this menu for a card FROM the deck
+/// only, and only while OK there opens the page ([`DeckPress::Details`]): the menu then leads with
+/// Play (the opening row — the press that used to play now lives here) and drops Go to
+/// Movie / Go to Episode, which is what OK on the card already does. Any other card, and a deck
+/// card while OK plays, gets the menu it always had.
+fn build_with(
+    m: &PmsMovie,
+    from_deck: bool,
+    deck_press: DeckPress,
+    trailer: Option<&plx_data::metadata::Extra>,
+) -> ItemForm {
     let leaf = m.kind == 0 || m.kind == 3;
+    let opens_details = from_deck && !deck_press.press_plays();
     let mut sec = FormSection::new(""); // no header: the card behind the panel IS the title
+
+    // ---- the deck card's own press, when OK no longer plays ----
+    // First, so it is where the menu opens. It resumes when there is a resume point and the label
+    // says which, in the words the hero's pill uses.
+    let resumes = crate::metadata::resume_ns(m.resume_ms, m.dur_ns / 1_000_000) > 0;
+    sec = sec.item_if(
+        opens_details && leaf,
+        ItemRow::Play,
+        RowKind::Button,
+        Action::Play(m.rk.clone()),
+        Row::new(if resumes {
+            plx_platform::i18n::msg::browse_home_continue()
+        } else {
+            plx_platform::i18n::msg::browse_detail_play()
+        })
+        .licon(Icon::Play),
+    );
 
     // ---- navigation: this tile's own page, then the show it belongs to ----
     // A row whose TARGET is missing is simply absent: a hub row can arrive without a
@@ -245,7 +284,9 @@ fn build_with(m: &PmsMovie, from_deck: bool, trailer: Option<&plx_data::metadata
     let mut nav = Vec::new();
     match m.kind {
         3 => {
-            nav.push(go_item(plx_platform::i18n::msg::browse_menu_go_episode()));
+            if !opens_details {
+                nav.push(go_item(plx_platform::i18n::msg::browse_menu_go_episode()));
+            }
             if has_show {
                 nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_show(), &m.show_rk, m.season_index));
             }
@@ -255,6 +296,7 @@ fn build_with(m: &PmsMovie, from_deck: bool, trailer: Option<&plx_data::metadata
         2 if has_show => nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_season(), &m.show_rk, m.season_index)),
         2 => {}
         1 => nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_show(), &m.rk, 0)),
+        _ if opens_details => {}
         _ => nav.push(go_item(plx_platform::i18n::msg::browse_menu_go_movie())),
     }
     // the divider the design groups on — only when there IS a group above it
@@ -493,7 +535,7 @@ impl ItemMenuScreen {
         let form = match &self.arg.kind {
             ItemMenuKind::Card { row, from_deck } => {
                 let trailer = cached_trailer(self.arg.sid, row, meta);
-                build_with(row, *from_deck, trailer.as_ref())
+                build_with(row, *from_deck, crate::route::deck_press(), trailer.as_ref())
             }
             ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark),
             ItemMenuKind::Season { mark } => build_season(&self.arg.rk, *mark),
@@ -826,7 +868,11 @@ mod tests {
         built(super::build(m, from_deck))
     }
     fn build_with(m: &PmsMovie, from_deck: bool, trailer: Option<&plx_data::metadata::Extra>) -> Built {
-        built(super::build_with(m, from_deck, trailer))
+        built(super::build_with(m, from_deck, DeckPress::Play, trailer))
+    }
+    /// A menu built under the Continue Watching setting `mode`.
+    fn build_deck(m: &PmsMovie, from_deck: bool, mode: DeckPress) -> Built {
+        built(super::build_with(m, from_deck, mode, None))
     }
     fn build_episode(rk: &str, mark: PosterMark) -> Built {
         built(super::build_episode(rk, mark))
@@ -875,6 +921,67 @@ mod tests {
                 (label, menu.0.binding_at(i).and_then(|b| b.action.watch_write()))
             })
             .collect()
+    }
+
+    /// **Under "Open details" a deck card's menu leads with Play and opens on it**, drops the Go
+    /// to Movie / Episode row OK now does, and keeps every other row — and in Play mode and off
+    /// the deck the menu is exactly today's.
+    #[test]
+    fn a_deck_card_leads_with_play_when_ok_opens_the_page() {
+        // an episode: Play, Go to Show, separator, state, Remove last
+        let on = build_deck(&item(3, PosterMark::None), true, DeckPress::Details);
+        assert_eq!(
+            labels(&on),
+            ["Play", "Go to Show", "—", "Mark as Watched", "Play from Start", "Remove from Deck"]
+        );
+        assert_eq!(
+            on.ids(),
+            [ItemRow::Play, ItemRow::GoToShow, ItemRow::MarkWatched, ItemRow::PlayFromStart, ItemRow::RemoveFromDeck]
+        );
+        assert!(!on.offers(ItemRow::GoToItem), "OK on the card already opens that page");
+        assert_eq!(on.action(ItemRow::Play), Action::Play("42".into()));
+        assert_eq!(
+            on.0.opening_key(),
+            Some(ItemRow::Play.key()),
+            "the menu opens on Play"
+        );
+
+        // a movie: no navigation group at all, so no separator — not at the top, not under Play
+        let movie = build_deck(&item(0, PosterMark::None), true, DeckPress::Details);
+        assert_eq!(labels(&movie), ["Play", "Mark as Watched", "Play from Start", "Remove from Deck"]);
+        assert!(!movie.offers(ItemRow::GoToItem) && !movie.offers(ItemRow::GoToShow));
+        assert!(!labels(&movie).iter().any(|l| l == "—"), "{:?}", labels(&movie));
+
+        // an episode with no show row loses its whole group: still no stray separator
+        let mut orphan = item(3, PosterMark::None);
+        orphan.show_rk.clear();
+        let orphan = build_deck(&orphan, true, DeckPress::Details);
+        assert_eq!(labels(&orphan), ["Play", "Mark as Watched", "Play from Start", "Remove from Deck"]);
+
+        // an item with a resume point says so, in the hero pill's word
+        let resuming = build_deck(&item(0, PosterMark::InProgress), true, DeckPress::Details);
+        assert_eq!(labels(&resuming)[0], "Continue");
+    }
+
+    #[test]
+    fn the_play_mode_and_off_deck_menus_are_unchanged() {
+        for kind in [0, 3] {
+            let today = labels(&build(&item(kind, PosterMark::None), true));
+            assert!(!today.iter().any(|l| l == "Play" || l == "Continue"), "{today:?}");
+            assert_eq!(labels(&build_deck(&item(kind, PosterMark::None), true, DeckPress::Play)), today);
+            // off the deck the setting is not consulted at all
+            for mode in DeckPress::LADDER {
+                assert_eq!(
+                    labels(&build_deck(&item(kind, PosterMark::None), false, mode)),
+                    labels(&build(&item(kind, PosterMark::None), false)),
+                    "{kind} {mode:?}"
+                );
+            }
+        }
+        let play_mode = build_deck(&item(0, PosterMark::None), true, DeckPress::Play);
+        assert!(play_mode.offers(ItemRow::GoToItem) && !play_mode.offers(ItemRow::Play));
+        let off_deck = build_deck(&item(3, PosterMark::None), false, DeckPress::Details);
+        assert!(off_deck.offers(ItemRow::GoToItem) && !off_deck.offers(ItemRow::Play));
     }
 
     #[test]

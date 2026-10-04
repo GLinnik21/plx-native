@@ -1360,6 +1360,7 @@ impl HomeScreen {
                     .rows
                     .get(row)
                     .is_some_and(|h| h.identity == HomeHubIdentity::ContinueWatching)
+                    && crate::route::deck_press().press_plays()
                 {
                     let resume_ns =
                         plx_data::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000);
@@ -1624,11 +1625,7 @@ impl HomeScreen {
         };
         let (rect, scale) = self.drawn_card_geometry(row, col, press_scale);
         let cw = self.rows[row].identity == HomeHubIdentity::ContinueWatching;
-        let mut label = if cw {
-            card_row::TileLabel::played(&item.title)
-        } else {
-            card_row::TileLabel::title(&item.title)
-        };
+        let mut label = deck_label(cw, &item.title);
         label.caption = card_row::focused_caption(&tile_facts::of(item), cw);
         let count = hub.items.len().min(MAX_ITEMS);
         // The grid draws at `scroll_x * snap` ([`Grid::eff_scroll`]), so the lag it still owes does too.
@@ -2891,3 +2888,14 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
 
 #[cfg(test)]
 mod tests;
+
+/// A focused tile's title line. The deck's carries the amber ▶ only while OK on a Continue
+/// Watching card plays (`DeckPress::Play`): the triangle promises the press, so when OK opens the
+/// page there is none (`widgets::still_line`'s rule).
+fn deck_label(is_deck: bool, title: &str) -> card_row::TileLabel {
+    if is_deck && crate::route::deck_press().press_plays() {
+        card_row::TileLabel::played(title)
+    } else {
+        card_row::TileLabel::title(title)
+    }
+}

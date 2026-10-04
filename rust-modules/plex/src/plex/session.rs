@@ -627,6 +627,12 @@ pub struct Session {
     /// field — committed replay fixtures included — serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
     pub skip_interval: SkipInterval,
+    /// **What OK does on a Continue Watching card** — see [`DeckPress`]. Install-wide like
+    /// [`Session::playback_quality`]. Absence is Details, so a session written before the field
+    /// existed opens the page on OK. Skipped at the default so a session predating this field —
+    /// committed replay fixtures included — serializes exactly as it did before.
+    #[serde(default, deserialize_with = "de_soft_deck_press", skip_serializing_if = "is_default_deck_press")]
+    pub deck_press: DeckPress,
     /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
     /// rendered on this television, so a route in the Settings/first-run family that opens
     /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
@@ -736,6 +742,8 @@ struct CanonicalSessionPreferences {
     next_episode_mode: NextEpisodeMode,
     #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
     skip_interval: SkipInterval,
+    #[serde(default, deserialize_with = "de_soft_deck_press", skip_serializing_if = "is_default_deck_press")]
+    deck_press: DeckPress,
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     plaintext_consent: Vec<PlaintextConsent>,
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
@@ -773,6 +781,7 @@ impl Default for CanonicalSessionPreferences {
             subtitle_position: SubtitlePosition::Low,
             next_episode_mode: NextEpisodeMode::Countdown,
             skip_interval: SkipInterval::Seconds10,
+            deck_press: DeckPress::Details,
             plaintext_consent: Vec::new(),
             server_key_pins: Vec::new(),
             audio_enhancements: crate::plex::AudioEnhancements::NONE,
@@ -824,6 +833,7 @@ fn split_public(session: &Session) -> Result<plx_platform::storage::state::Publi
         subtitle_position: session.subtitle_position,
         next_episode_mode: session.next_episode_mode,
         skip_interval: session.skip_interval,
+        deck_press: session.deck_press,
         plaintext_consent: session.plaintext_consent.clone(),
         server_key_pins: session.server_key_pins.clone(),
         audio_enhancements: session.audio_enhancements,
@@ -897,6 +907,7 @@ pub fn join_canonical(
         subtitle_position: preferences.subtitle_position,
         next_episode_mode: preferences.next_episode_mode,
         skip_interval: preferences.skip_interval,
+        deck_press: preferences.deck_press,
         plaintext_consent: preferences.plaintext_consent,
         server_key_pins: preferences.server_key_pins,
         audio_enhancements: preferences.audio_enhancements,
@@ -929,6 +940,7 @@ fn public_session(public: &plx_platform::storage::state::PublicPayload) -> Sessi
         subtitle_position: preferences.subtitle_position,
         next_episode_mode: preferences.next_episode_mode,
         skip_interval: preferences.skip_interval,
+        deck_press: preferences.deck_press,
         plaintext_consent: preferences.plaintext_consent,
         server_key_pins: preferences.server_key_pins,
         audio_enhancements: preferences.audio_enhancements,
@@ -1371,6 +1383,40 @@ impl SkipInterval {
     /// The hop in nanoseconds, the unit every scrub position is in.
     pub fn ns(self) -> i64 {
         self.seconds() * 1_000_000_000
+    }
+}
+
+/// What OK does on a Continue Watching card — install-wide, like [`SubtitleTone`]. Absence is
+/// `Details`: OK opens the movie or episode page, exactly as on any other shelf, and the card's
+/// menu leads with Play (and the card draws no amber ▶, which promises a press that plays).
+/// `Play` is what every build before this preference did: OK plays or resumes at once.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeckPress {
+    #[default]
+    #[serde(rename = "details")]
+    Details,
+    #[serde(rename = "play")]
+    Play,
+}
+
+impl DeckPress {
+    /// Every option, the order the picker lists them in.
+    pub const LADDER: [DeckPress; 2] = [DeckPress::Details, DeckPress::Play];
+
+    /// An in-memory index back to an option — out of range is the default, for the reason
+    /// [`SubtitleTone::from_index`] gives: the ladder can grow or shrink.
+    pub fn from_index(i: u8) -> DeckPress {
+        Self::LADDER.get(i as usize).copied().unwrap_or_default()
+    }
+
+    pub fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&m| m == self).unwrap_or(0) as u8
+    }
+
+    /// Whether a press on a Continue Watching card starts the video — the one fact the deck's
+    /// triangle, its press and its menu's Play row are all derived from.
+    pub fn press_plays(self) -> bool {
+        self == DeckPress::Play
     }
 }
 
@@ -2240,6 +2286,22 @@ fn is_default_skip_interval(interval: &SkipInterval) -> bool {
     *interval == SkipInterval::default()
 }
 
+/// The deck-press mode is a preference too: a spelling this build does not know degrades to Details.
+fn de_soft_deck_press<'de, D>(d: D) -> Result<DeckPress, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(DeckPress::default());
+    };
+    Ok(serde_json::from_value::<DeckPress>(v).unwrap_or_default())
+}
+
+/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
+fn is_default_deck_press(mode: &DeckPress) -> bool {
+    *mode == DeckPress::default()
+}
+
 /// The audio-enhancement toggle is a preference too: an unknown shape degrades to both flags
 /// off rather than failing the enclosing [`Session`].
 fn de_soft_audio_enhancements<'de, D>(d: D) -> Result<crate::plex::AudioEnhancements, D::Error>
@@ -2467,6 +2529,16 @@ impl Session {
     pub fn with_skip_interval(&self, interval: SkipInterval) -> Self {
         let mut next = self.clone();
         next.skip_interval = interval;
+        next
+    }
+
+    pub fn deck_press(&self) -> DeckPress {
+        self.deck_press
+    }
+
+    pub fn with_deck_press(&self, mode: DeckPress) -> Self {
+        let mut next = self.clone();
+        next.deck_press = mode;
         next
     }
 
@@ -5523,6 +5595,58 @@ mod next_episode_mode_tests {
             let (public, protected) = split_canonical(&session).unwrap();
             assert_eq!(join_canonical(&public, &protected).unwrap().next_episode_mode(), mode);
             assert_eq!(public_session(&public).next_episode_mode(), mode);
+        }
+    }
+}
+
+/// `Session::deck_press`: soft-parse, omit-at-default (so committed replay fixtures and every
+/// session written before the field existed serialize unchanged) and round-trip.
+#[cfg(test)]
+mod deck_press_tests {
+    use super::*;
+
+    #[test]
+    fn absent_or_malformed_is_details() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"deck_press": null}),
+            serde_json::json!({"deck_press": "future"}),
+            serde_json::json!({"deck_press": 3}),
+        ] {
+            let session: Session = serde_json::from_value(value.clone())
+                .unwrap_or_else(|e| panic!("{value}: a bad preference must not fail the session: {e}"));
+            assert_eq!(session.deck_press(), DeckPress::Details, "{value}");
+        }
+    }
+
+    #[test]
+    fn the_default_is_not_serialized() {
+        let session = Session::default();
+        assert_eq!(session.deck_press(), DeckPress::Details);
+        assert!(!serde_json::to_string(&session).unwrap().contains("deck_press"));
+        let prefs = serde_json::to_string(&split_public(&session).unwrap().preferences).unwrap();
+        assert!(!prefs.contains("deck_press"), "{prefs}");
+    }
+
+    #[test]
+    fn a_pick_round_trips_through_both_formats() {
+        let session = Session::default().with_deck_press(DeckPress::Play);
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("deck_press"), "{json}");
+        let round: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(round.deck_press(), DeckPress::Play);
+
+        let (public, protected) = split_canonical(&session).unwrap();
+        assert_eq!(join_canonical(&public, &protected).unwrap().deck_press(), DeckPress::Play);
+        assert_eq!(public_session(&public).deck_press(), DeckPress::Play);
+    }
+
+    #[test]
+    fn only_play_presses_play() {
+        assert!(!DeckPress::Details.press_plays());
+        assert!(DeckPress::Play.press_plays());
+        for mode in DeckPress::LADDER {
+            assert_eq!(DeckPress::from_index(mode.index()), mode);
         }
     }
 }

@@ -470,6 +470,13 @@ fn removing_the_pressed_home_item_cancels_instead_of_activating_its_replacement(
 #[test]
 fn a_midframe_reorder_keeps_painted_keys_matched_and_a_click_activates_the_seen_item() {
     let _guard = plx_base::testlock::serial();
+    // the click lands on a Continue Watching card, whose press plays only under the Play setting
+    struct Back(crate::route::DeckPress);
+    impl Drop for Back {
+        fn drop(&mut self) { crate::route::restore_deck_press(self.0); }
+    }
+    let _back = Back(crate::route::deck_press());
+    crate::route::restore_deck_press(crate::route::DeckPress::Play);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.hubs.seed_for_test(3, plx_data::pms::HubState::Ready);

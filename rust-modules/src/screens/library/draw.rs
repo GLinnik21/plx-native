@@ -278,7 +278,7 @@ impl LibraryScreen {
             card_row::draw_tile(p, art, rect, scale, style, resume);
         }
         if shelf.landscape {
-            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), shelf.is_continue, f.measure);
+            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), shelf.is_continue && crate::route::deck_press().press_plays(), f.measure);
         }
     }
 
@@ -320,7 +320,7 @@ pub(super) fn shelf_label(shelf: &plx_data::browse::section_hubs::Shelf, col: us
         return if fact.is_empty() { card_row::TileLabel::title(&name) }
         else { card_row::TileLabel::titled(&name, &fact) };
     }
-    let mut label = if shelf.is_continue { card_row::TileLabel::played(&item.title) }
+    let mut label = if shelf.is_continue && crate::route::deck_press().press_plays() { card_row::TileLabel::played(&item.title) }
         else { card_row::TileLabel::title(&item.title) };
     label.caption = card_row::focused_caption(&tile_facts::of(item), shelf.is_continue);
     label
