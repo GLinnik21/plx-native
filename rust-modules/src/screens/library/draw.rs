@@ -33,7 +33,7 @@ fn document_band_visible(p: crate::ui::Painter, y: f32, height: f32, pop: f32) -
     let visible = bounds.intersect(Rect::FULL);
     visible.w > 0.0 && visible.h > 0.0
         && (crate::ui::frame::backdrop::discovering()
-            || !crate::gfx::culled(bounds.x, bounds.y, bounds.w, bounds.h))
+            || !plx_gfx::gfx::culled(bounds.x, bounds.y, bounds.w, bounds.h))
 }
 
 #[cfg(test)]
@@ -62,7 +62,7 @@ mod layer_tests {
         let _guard = plx_base::testlock::serial();
         let _discovery = crate::ui::frame::backdrop::discover(
             std::rc::Rc::new(std::cell::RefCell::new(Default::default())));
-        assert!(crate::gfx::culled(0.0, 0.0, 100.0, 100.0),
+        assert!(plx_gfx::gfx::culled(0.0, 0.0, 100.0, 100.0),
             "discovery suppresses GL draws without suppressing paint declarations");
         assert!(super::document_band_visible(crate::ui::Painter::root(),
             super::CONTENT_TOP, super::layout::GRID_HEAD_H, 1.0));
@@ -105,7 +105,7 @@ impl LibraryScreen {
         // read-out with `lb.shelves` inside it for the card rows alone; `lb.grid` is the poster
         // wall's windowed rows and `lb.rail` the letter rail.
         crate::ui::profile::phase("lb.clear", || {
-            crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
+            plx_gfx::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         });
         crate::ui::profile::phase("lb.ground", || {
             self.ground.draw(f.painter.alpha(f.page_alpha), Rect::FULL);

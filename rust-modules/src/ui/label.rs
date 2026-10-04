@@ -76,7 +76,7 @@ impl Label {
             HAlign::Center => (frame.cx(), 1),
             HAlign::Right => (frame.x + frame.w, 2),
         };
-        let (cap_top, baseline) = crate::text::text_cap_band(self.sz, self.bold);
+        let (cap_top, baseline) = plx_gfx::text::text_cap_band(self.sz, self.bold);
         let y = match self.v {
             VAlign::Middle => frame.y + frame.h * 0.5 - (cap_top + baseline) * 0.5,
             VAlign::CapTop => frame.y - cap_top,

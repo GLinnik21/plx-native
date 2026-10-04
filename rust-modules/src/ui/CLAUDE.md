@@ -136,7 +136,7 @@ can follow.
 
 | layer | may name |
 |---|---|
-| `ui/` — the LIBRARY | `crate::{gfx,text}` plus `plx_platform::i18n` and `plx_base::{paths,task,tile}` — **never an application type**. Except the `plx_machine` crate (`machine`, `present`, `idle`, `landgate`, `landing`, `motion`; `rust-modules/machine/`), which `ci/module-layers.ini` places BELOW the library (`docs/module-layers.md`): it names only `plx_base` and itself, never `gfx`/`text`/`i18n` or anything in `ui/` |
+| `ui/` — the LIBRARY | `plx_gfx::{gfx,text}` plus `plx_platform::i18n` and `plx_base::{paths,task,tile}` — **never an application type**. Except the `plx_machine` crate (`machine`, `present`, `idle`, `landgate`, `landing`, `motion`; `rust-modules/machine/`), which `ci/module-layers.ini` places BELOW the library (`docs/module-layers.md`): it names only `plx_base` and itself, never `gfx`/`text`/`i18n` or anything in `ui/` |
 | `appkit/` — widgets several screens share (`player_hud`, `track_menu`, `more_menu`, `info_panel`, `up_next`, `chapters_panel`, `timing_capsule`, `skip_pill`, `source_list`) | `ui/`, `stores/`, `plex/` types, `player/`, `route/` — never `screens/` or `app/`. They are compositions of `ui/` components over application types; they cannot live under `screens/` because the `sibling` gate forbids one screen family naming another |
 | `screens/` — the application's screens | `ui/`, `appkit/`, `stores/`, `plex/` types, `player/` — never a sibling screen |
 | `stores/` | data crates and `plx_machine::machine` only — never `screens/` |
@@ -145,8 +145,8 @@ can follow.
 `ci/check-module-cycle.py` holds which top-level modules sit on the crate's module cycle, not the
 references between them: a module outside the cycle (or a new one) that gains a path into it fails
 with `file:line` (see "Module-cycle ratchet" in `docs/agent-reference.md`). Another `ui` ->
-`screens`/`app` or `gfx`/`text` -> `ui` reference between modules already on the cycle passes that
-gate, so `ci/check-deps.sh` and review are what stop it; a green `module-cycle: ok` is not permission.
+`screens`/`app` reference between modules already on the cycle passes that
+gate (a `gfx`/`text` -> `ui` one no longer compiles: they are `plx_gfx`), so `ci/check-deps.sh` and review are what stop it; a green `module-cycle: ok` is not permission.
 
 `ui/` is generic over one application bundle and is compiled and tested against `FixtureHost`
 with no Plex type in scope (`fixture.rs`). If you find yourself reaching for `crate::plex` or

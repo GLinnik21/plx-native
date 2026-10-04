@@ -136,7 +136,7 @@ pub(crate) fn solve(w: f32, h: f32) -> Option<Pill> {
 }
 
 impl Pill {
-    /// The solved outline as `fs_src.frag` takes it — see [`crate::gfx::PillArgs`]. The trailing 1
+    /// The solved outline as `fs_src.frag` takes it — see [`plx_gfx::gfx::PillArgs`]. The trailing 1
     /// is the shader's switch, and it is part of the vector rather than a separate uniform so that
     /// "armed" and "the geometry" cannot be set apart from each other.
     pub(crate) fn args(&self) -> [f32; 8] {

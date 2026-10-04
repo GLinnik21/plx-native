@@ -54,7 +54,7 @@ use super::account::{Connection, Resource};
 /// resolving for every caller that reads it as a ranking axis.
 pub use super::origin::Scheme;
 use super::origin::{url_host, CredentialPolicy, Origin};
-use crate::net::{RequestError, RequestFailure};
+use plx_net::net::{RequestError, RequestFailure};
 use serde::{Deserialize, Serialize};
 
 /// Where an address sits relative to us. The ranking axis every Plex client agrees on, ordered
@@ -194,10 +194,10 @@ pub enum Outcome {
 
 /// A port this client could actually dial, narrowed to the `i32` the transport takes — `None` for
 /// anything outside `1..=65535`. The narrowing and its reasons are documented where it is defined,
-/// [`crate::net::origin::dial_port`]: it sits beside the `Origin` parsing that shares it, below
+/// [`plx_net::net::origin::dial_port`]: it sits beside the `Origin` parsing that shares it, below
 /// the Plex layer (`docs/module-layers.md`, step L6). Re-exported so `probe::dial_port` keeps
 /// resolving for every caller that turns an advertised port into a connection.
-pub use crate::net::origin::dial_port;
+pub use plx_net::net::origin::dial_port;
 
 /// Is there anything here to dial at all? Only the mechanical half lives here: an address and a
 /// valid port. Rule 1 is applied while candidates are emitted, because it keeps a connection's
@@ -1776,9 +1776,9 @@ mod tests {
     /// this classification reads.
     #[test]
     fn the_network_layer_reports_the_curl_code_the_classifier_reads() {
-        let dns = crate::net::test_response_failure(6, 0, 0, false).err().expect("a failure");
+        let dns = plx_net::net::test_response_failure(6, 0, 0, false).err().expect("a failure");
         assert_eq!(classify(Some(Err(dns))), (LinkClass::Dns, None, Some(6)));
-        let timeout = crate::net::test_response_failure(28, 0, 0, false).err().expect("a failure");
+        let timeout = plx_net::net::test_response_failure(28, 0, 0, false).err().expect("a failure");
         assert_eq!(classify(Some(Err(timeout))), (LinkClass::Timeout, None, Some(28)));
     }
 }

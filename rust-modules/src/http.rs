@@ -5,9 +5,9 @@
 //!
 //! The control plane has two request transports and they are not interchangeable:
 //!
-//! * [`crate::stream`] is a raw TCP socket. It resolves through `getaddrinfo` and dials either
+//! * [`plx_net::stream`] is a raw TCP socket. It resolves through `getaddrinfo` and dials either
 //!   address family, it is fast, and it speaks **cleartext only**.
-//! * [`crate::net`] is libcurl. It also validates certificates, and it is what plex.tv has always
+//! * [`plx_net::net`] is libcurl. It also validates certificates, and it is what plex.tv has always
 //!   been reached through.
 //!
 //! Media makes its own scheme decision under `ff.rs`: the same `stream.rs` socket for plaintext,
@@ -101,7 +101,7 @@ pub(crate) struct Reply {
     pub body: Vec<u8>,
     /// The peer leaf's `CURLOPT_PINNEDPUBLICKEY` string. Present only on the answer to a
     /// [`request_probe_learning_key`] over a strictly verified TLS connection (see
-    /// [`crate::net::Resp::peer_pin`]); `None` for every other request and always over plaintext.
+    /// [`plx_net::net::Resp::peer_pin`]); `None` for every other request and always over plaintext.
     pub peer_pin: Option<String>,
 }
 
@@ -112,10 +112,10 @@ pub(crate) struct Reply {
 pub(crate) enum RequestOutcome {
     Response(Reply),
     Deadline,
-    /// Nothing answered. Carries libcurl's [`crate::net::RequestFailure`] when the TLS transport
+    /// Nothing answered. Carries libcurl's [`plx_net::net::RequestFailure`] when the TLS transport
     /// ran and produced one; `None` from the plaintext transport and from a request refused
     /// before any transport ran.
-    Transport(Option<crate::net::RequestFailure>),
+    Transport(Option<plx_net::net::RequestFailure>),
 }
 
 impl RequestOutcome {
@@ -234,7 +234,7 @@ pub(crate) fn request_until_outcome(
 /// not encode the address it was persisted with gets no pin, and resolves through DNS exactly as
 /// before.
 ///
-/// `Err` is a transport failure, carrying libcurl's [`crate::net::RequestFailure`] when the TLS
+/// `Err` is a transport failure, carrying libcurl's [`plx_net::net::RequestFailure`] when the TLS
 /// arm produced one — the evidence a discovery verdict names per route
 /// (`plex::probe::RouteOutcome::of_failure`). `None` from the plaintext arm, which has no code.
 pub(crate) fn request_probe(
@@ -245,7 +245,7 @@ pub(crate) fn request_probe(
     max_body: usize,
     timeout_s: i32,
     pin: Option<&ResolvePin>,
-) -> Result<Reply, Option<crate::net::RequestFailure>> {
+) -> Result<Reply, Option<plx_net::net::RequestFailure>> {
     probe(origin, path, method, headers, max_body, timeout_s, pin, false)
 }
 
@@ -253,7 +253,7 @@ pub(crate) fn request_probe(
 /// [`Reply::peer_pin`] (issue #380, for the offline fallback of #378). The identity probe is its
 /// only caller, and only for a candidate that has a [`ResolvePin`] (`auth::get_identity`):
 /// reading the chain makes libcurl decode all of it, which no ordinary request should pay, and the
-/// key is only worth remembering when the same probe also learns WHICH machine answered. The rules for when a pin is present live on [`crate::net::Resp::peer_pin`]; over
+/// key is only worth remembering when the same probe also learns WHICH machine answered. The rules for when a pin is present live on [`plx_net::net::Resp::peer_pin`]; over
 /// plaintext it is always `None`.
 pub(crate) fn request_probe_learning_key(
     origin: &Origin,
@@ -263,7 +263,7 @@ pub(crate) fn request_probe_learning_key(
     max_body: usize,
     timeout_s: i32,
     pin: Option<&ResolvePin>,
-) -> Result<Reply, Option<crate::net::RequestFailure>> {
+) -> Result<Reply, Option<plx_net::net::RequestFailure>> {
     probe(origin, path, method, headers, max_body, timeout_s, pin, true)
 }
 
@@ -277,7 +277,7 @@ fn probe(
     timeout_s: i32,
     pin: Option<&ResolvePin>,
     learn_pin: bool,
-) -> Result<Reply, Option<crate::net::RequestFailure>> {
+) -> Result<Reply, Option<plx_net::net::RequestFailure>> {
     match request_with(
         origin,
         path,
@@ -384,7 +384,7 @@ fn plaintext_credential_report(
     (seen.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit == 0).then_some(line)
 }
 
-/// The plaintext arm: [`crate::stream`]'s raw socket.
+/// The plaintext arm: [`plx_net::stream`]'s raw socket.
 ///
 /// Open, read `hs_status`, drain, close — the composition the three deleted one-shot wrappers each
 /// did a lopped-off version of (module doc), and exactly what `auth::get_identity` used to perform
@@ -431,15 +431,15 @@ fn plaintext(
     let extra_c = std::ffi::CString::new(extra).ok();
     let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
 
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     let mut deadline_liveness = matches!(body_policy, BodyPolicy::Deadline { .. }).then(|| {
         std::time::Instant::now()
-            .checked_add(crate::stream::media_stall_budget())
+            .checked_add(plx_net::stream::media_stall_budget())
             .unwrap_or_else(std::time::Instant::now)
     });
     let mut response_status = None;
     let opened = match body_policy {
-        BodyPolicy::Probe { timeout_s, .. } => crate::stream::http_open_probe(
+        BodyPolicy::Probe { timeout_s, .. } => plx_net::stream::http_open_probe(
             &mut *hs,
             host_c.as_ptr(),
             origin.port(),
@@ -456,7 +456,7 @@ fn plaintext(
                 .map_or((at, DeadlineOwner::Caller), |liveness| {
                     effective_deadline(at, liveness)
                 });
-            match crate::stream::http_open_until_result(
+            match plx_net::stream::http_open_until_result(
                 &mut *hs,
                 host_c.as_ptr(),
                 origin.port(),
@@ -467,11 +467,11 @@ fn plaintext(
                 &mut plx_base::checkpoint::NoCheckpoint,
             ) {
                 Ok(()) => 0,
-                Err(crate::stream::HttpOpenError::Status(status)) => {
+                Err(plx_net::stream::HttpOpenError::Status(status)) => {
                     response_status = Some(status);
                     -1
                 }
-                Err(crate::stream::HttpOpenError::Deadline) => {
+                Err(plx_net::stream::HttpOpenError::Deadline) => {
                     return match owner {
                         DeadlineOwner::Caller => RequestOutcome::Deadline,
                         DeadlineOwner::Liveness => RequestOutcome::Transport(None),
@@ -479,15 +479,15 @@ fn plaintext(
                 }
                 // `Stopped` cannot occur: this request has no checkpoint.
                 Err(
-                    crate::stream::HttpOpenError::Aborted
-                    | crate::stream::HttpOpenError::Stopped
-                    | crate::stream::HttpOpenError::Transport,
+                    plx_net::stream::HttpOpenError::Aborted
+                    | plx_net::stream::HttpOpenError::Stopped
+                    | plx_net::stream::HttpOpenError::Transport,
                 ) => {
                     return RequestOutcome::Transport(None);
                 }
             }
         }
-        _ => crate::stream::http_open(
+        _ => plx_net::stream::http_open(
             &mut *hs,
             host_c.as_ptr(),
             origin.port(),
@@ -502,14 +502,14 @@ fn plaintext(
         // SO_RCVTIMEO do; connect/header latency cannot silently consume the body's watchdog.
         deadline_liveness = Some(
             std::time::Instant::now()
-                .checked_add(crate::stream::media_stall_budget())
+                .checked_add(plx_net::stream::media_stall_budget())
                 .unwrap_or_else(std::time::Instant::now),
         );
     }
     // Read the status BEFORE anything else: a non-2xx open has already closed the socket, and the
     // code survives on the struct (`http_open` says so where it closes). That is the whole reason
     // this arm is a composition rather than a wrapper call.
-    let status = response_status.unwrap_or_else(|| crate::stream::hs_status(&*hs));
+    let status = response_status.unwrap_or_else(|| plx_net::stream::hs_status(&*hs));
     let mut body = Vec::new();
     // The two non-positive returns are split rather than folded into one `n <= 0`: -1 is a recv
     // ERROR and 0 a clean end, and `note_short_body` needs them apart to say which ended the
@@ -539,7 +539,7 @@ fn plaintext(
                             effective_deadline(at, liveness)
                         });
                     (
-                        crate::stream::http_read_until(
+                        plx_net::stream::http_read_until(
                             &mut *hs,
                             chunk.as_mut_ptr(),
                             want as i32,
@@ -550,14 +550,14 @@ fn plaintext(
                     )
                 }
                 _ => (
-                    crate::stream::http_read(&mut *hs, chunk.as_mut_ptr(), want as i32),
+                    plx_net::stream::http_read(&mut *hs, chunk.as_mut_ptr(), want as i32),
                     None,
                 ),
             };
             if n < 0 {
                 recv_err = true;
                 if matches!(body_policy, BodyPolicy::Deadline { .. }) {
-                    deadline_failure = Some(if n == crate::stream::HTTP_READ_DEADLINE {
+                    deadline_failure = Some(if n == plx_net::stream::HTTP_READ_DEADLINE {
                         match read_deadline_owner.unwrap_or(DeadlineOwner::Caller) {
                             DeadlineOwner::Caller => RequestOutcome::Deadline,
                             DeadlineOwner::Liveness => RequestOutcome::Transport(None),
@@ -579,17 +579,17 @@ fn plaintext(
             if matches!(body_policy, BodyPolicy::Deadline { .. }) {
                 deadline_liveness = Some(
                     std::time::Instant::now()
-                        .checked_add(crate::stream::media_stall_budget())
+                        .checked_add(plx_net::stream::media_stall_budget())
                         .unwrap_or_else(std::time::Instant::now),
                 );
             }
         }
         if !overflowed {
-            crate::stream::note_short_body(method.as_str(), path, &hs, recv_err);
+            plx_net::stream::note_short_body(method.as_str(), path, &hs, recv_err);
         }
     }
-    let content_length = crate::stream::hs_content_length(&*hs);
-    crate::stream::http_close(&mut *hs);
+    let content_length = plx_net::stream::hs_content_length(&*hs);
+    plx_net::stream::http_close(&mut *hs);
     if let Some(failure) = deadline_failure {
         return failure;
     }
@@ -615,7 +615,7 @@ fn plaintext(
     }
 }
 
-/// The TLS arm: [`crate::net`]'s libcurl.
+/// The TLS arm: [`plx_net::net`]'s libcurl.
 ///
 /// The URL is `origin.base()` + `path`, so the authority is the one the origin PARSED — the
 /// `plex.direct` name a certificate is issued for, bracketed if it is a v6 literal — and never a
@@ -642,15 +642,15 @@ fn tls(
     let url = format!("{}{}", origin.base(), path);
     let resolve = pin
         .filter(|p| p.host() == origin.host() && p.port() == origin.port())
-        .map(crate::net::resolve::entry_of);
+        .map(plx_net::net::resolve::entry_of);
     let owned: Vec<String> = headers.iter().map(|h| (*h).to_string()).collect();
     // A POST carries a body even when that body is empty — the Plex control plane's POSTs put
     // their params in the query string — while GET and the body-less PUT carry none. `net` turns
     // the second shape into `CURLOPT_CUSTOMREQUEST`.
     let body: Option<&[u8]> = matches!(method, Method::Post).then_some(&[][..]);
     let (timeouts, max_body, caller_owns_timeout) = match body_policy {
-        BodyPolicy::Api => (crate::net::API, None, false),
-        BodyPolicy::Bulk => (crate::net::BULK, None, false),
+        BodyPolicy::Api => (plx_net::net::API, None, false),
+        BodyPolicy::Bulk => (plx_net::net::BULK, None, false),
         BodyPolicy::Deadline { at } => {
             let now = std::time::Instant::now();
             if now >= at {
@@ -662,20 +662,20 @@ fn tls(
                 .max(1)
                 .min(std::os::raw::c_long::MAX as u128))
                 as std::os::raw::c_long;
-            let api_ms = crate::net::API
+            let api_ms = plx_net::net::API
                 .total_s
                 .saturating_mul(1_000)
-                .max(crate::net::API.total_ms)
+                .max(plx_net::net::API.total_ms)
                 .max(1);
             let effective_ms = reserve_ms.min(api_ms);
             // Curl reports both connect and total expiry as code 28. The caller owns that code only
             // when its reserve is no later than BOTH ordinary ceilings; otherwise the issued fact
             // is ambiguous and must remain Transport rather than being relabelled from the clock.
-            let ordinary_connect_ms = crate::net::API.connect_s.saturating_mul(1_000).max(1);
+            let ordinary_connect_ms = plx_net::net::API.connect_s.saturating_mul(1_000).max(1);
             let caller_owns_timeout = reserve_ms <= api_ms && reserve_ms <= ordinary_connect_ms;
             (
-                crate::net::Timeouts {
-                    connect_s: crate::net::API
+                plx_net::net::Timeouts {
+                    connect_s: plx_net::net::API
                         .connect_s
                         .min((effective_ms.saturating_add(999) / 1_000).max(1)),
                     total_s: 0,
@@ -688,7 +688,7 @@ fn tls(
             )
         }
         BodyPolicy::Probe { max, timeout_s, .. } => (
-            crate::net::Timeouts {
+            plx_net::net::Timeouts {
                 connect_s: timeout_s as _,
                 total_s: timeout_s as _,
                 total_ms: 0,
@@ -702,7 +702,7 @@ fn tls(
     // PMS redirects are responses, never instructions: the path already carries a token. Keeping
     // `FOLLOWLOCATION` off also makes the TLS arm's 3xx semantics match the plaintext arm.
     let learn_pin = matches!(body_policy, BodyPolicy::Probe { learn_pin: true, .. });
-    match crate::net::request_result_evidence(
+    match plx_net::net::request_result_evidence(
         &url,
         &owned,
         method.as_str(),
@@ -718,7 +718,7 @@ fn tls(
             body: r.body,
             peer_pin: r.peer_pin,
         }),
-        Err(failure) if failure.cause == crate::net::RequestError::TimedOut && caller_owns_timeout => {
+        Err(failure) if failure.cause == plx_net::net::RequestError::TimedOut && caller_owns_timeout => {
             RequestOutcome::Deadline
         }
         Err(failure) => RequestOutcome::Transport(Some(failure)),
@@ -755,7 +755,7 @@ mod tests {
     #[test]
     fn a_pinned_tls_origin_is_dialled_at_the_pinned_address() {
         let _g = plx_base::testlock::serial();
-        if !crate::net::global_init() {
+        if !plx_net::net::global_init() {
             return;
         }
         let Ok(srv) = std::net::TcpListener::bind("127.0.0.1:0") else { return };
@@ -801,7 +801,7 @@ mod tests {
     #[test]
     fn request_probe_hands_the_pin_to_the_tls_path_only() {
         let _g = plx_base::testlock::serial();
-        if !crate::net::global_init() {
+        if !plx_net::net::global_init() {
             return;
         }
         let Ok(srv) = std::net::TcpListener::bind("127.0.0.1:0") else { return };

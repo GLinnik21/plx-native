@@ -13,7 +13,7 @@
 use super::shared::{HlsPlayCompletion, HlsPrimeKind, Stage};
 use super::{log, sink, threads, ACB_OK, PTYPE, SHARED, TX};
 use crate::aq::{AuNode, AuQueue};
-use crate::stream::HttpStream;
+use plx_net::stream::HttpStream;
 use plx_base::task::MainThread;
 use std::os::raw::{c_char, c_int, c_long, c_void};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -1251,7 +1251,7 @@ fn start_bufferfeed_inner(
     };
 
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     let mut aqv_box: Option<Box<AuQueue>> = None;
     let mut aqa_box: Option<Box<AuQueue>> = None;
     let mut stream_th = None;
@@ -1260,7 +1260,7 @@ fn start_bufferfeed_inner(
     if stream {
         let su = crate::plex::StreamUrl::parse(&url); // the typed layer's URL splitter
                                                       // **The whole ORIGIN goes down, not a `(host, port)` pair, because the SCHEME chooses the
-                                                      // transport**: `ff::demux` reads http through `crate::stream`'s cleartext socket and https
+                                                      // transport**: `ff::demux` reads http through `plx_net::stream`'s cleartext socket and https
                                                       // through `crate::curlio`. This used to REFUSE an https origin outright — cleartext to a
                                                       // TLS port is a hang or a garbage response with nothing in the log — and that refusal is
                                                       // what a remote QA reviewer, with no PMS on their LAN, would have hit on every Play.
@@ -1331,14 +1331,14 @@ fn start_bufferfeed_inner(
         }
         let p = SHARED.hs_ptr.swap(std::ptr::null_mut(), Ordering::AcqRel);
         if !p.is_null() {
-            crate::stream::http_shutdown(p);
+            plx_net::stream::http_shutdown(p);
         }
         crate::curlio::abort_active(); // the https demuxer's equivalent — see teardown
         if let Some(t) = stream_th.take() {
             plx_base::task::join("demux", t);
         }
         if !p.is_null() {
-            crate::stream::http_close(p); // sole owner now: the reader is joined
+            plx_net::stream::http_close(p); // sole owner now: the reader is joined
         }
         return Err(crate::route::RouteStartResult::StartFailed);
     }
@@ -1755,7 +1755,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             // shutdown, not close: the demux thread is still inside recv here and is joined
             // below. Closing now would free the fd number for another thread to claim while
             // this one is still reading it. The real close happens after the join.
-            crate::stream::http_shutdown(p);
+            plx_net::stream::http_shutdown(p);
         }
         // …and the same interrupt for the OTHER transport. An https demux is parked in
         // `curl_multi_wait`, where no `shutdown(2)` of ours can reach it — this writes a byte to
@@ -1789,7 +1789,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     if stream {
         let p = SHARED.hs_ptr.load(Ordering::Acquire);
         if !p.is_null() {
-            crate::stream::http_close(p);
+            plx_net::stream::http_close(p);
         }
     }
     // Final position report (state=stopped, so the server commits the resume point) + the
@@ -3320,7 +3320,7 @@ mod prime_livelock_tests {
             prime_play: true,
             aq_video: Some(crate::aq::aq_new(AQ_VIDEO_BYTES)),
             aq_audio: Some(crate::aq::aq_new(AQ_AUDIO_BYTES)),
-            hs: crate::stream::http_stream_boxed(),
+            hs: plx_net::stream::http_stream_boxed(),
             pending_video: None,
             pending_audio: None,
             payload: std::ffi::CString::new("").unwrap(),

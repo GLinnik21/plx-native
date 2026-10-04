@@ -2112,17 +2112,17 @@ fn a_video_plane_screen_replaces_its_host_and_takes_no_snapshot() {
     //
     // The draw arms the flag for its own length and restores it, so by here it is down again.
     assert!(
-        !crate::gfx::video_plane_frame(),
+        !plx_gfx::gfx::video_plane_frame(),
         "the flag is armed for the LENGTH OF THE DRAW and restored, like the page freeze",
     );
-    let was = crate::gfx::set_video_plane_frame(true);
+    let was = plx_gfx::gfx::set_video_plane_frame(true);
     assert!(
-        crate::gfx::video_plane_refuses("Glass::backdrop"),
+        plx_gfx::gfx::video_plane_refuses("Glass::backdrop"),
         "the one door must refuse while a video-plane frame is being drawn",
     );
-    crate::gfx::set_video_plane_frame(was);
+    plx_gfx::gfx::set_video_plane_frame(was);
     assert!(
-        !crate::gfx::video_plane_refuses("FrameCache::capture"),
+        !plx_gfx::gfx::video_plane_refuses("FrameCache::capture"),
         "and off such a frame it must be open again, or every other route loses its snapshots",
     );
 
@@ -2131,10 +2131,10 @@ fn a_video_plane_screen_replaces_its_host_and_takes_no_snapshot() {
     // Glass needs a GL context and `popover::host` needs both, so an assertion on their return
     // values would pass with the guard deleted. This cannot.
     for (file, door) in [
-        ("src/gfx.rs", "video_plane_refuses(\"FrameCache::capture\")"),
-        ("src/gfx.rs", "video_plane_refuses(\"Glass::backdrop\")"),
+        ("gfx/src/gfx.rs", "video_plane_refuses(\"FrameCache::capture\")"),
+        ("gfx/src/gfx.rs", "video_plane_refuses(\"Glass::backdrop\")"),
         ("src/ui/popover.rs", "video_plane_refuses(\"popover::host::begin_frame\")"),
-        ("src/gfx.rs", "video_plane_refuses(\"gfx::field_kick\")"),
+        ("gfx/src/gfx.rs", "video_plane_refuses(\"gfx::field_kick\")"),
     ] {
         let src =
             std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))

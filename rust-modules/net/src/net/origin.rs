@@ -426,8 +426,8 @@ impl ResolvePin {
     /// A pin for a host no zone would ever answer for — the loopback tests' way of proving that a
     /// name reached the wire through the pin and not through DNS. Production pins come only from
     /// [`ResolvePin::for_origin`].
-    #[cfg(test)]
-    pub(crate) fn for_test(host: &str, port: i32, addr: std::net::IpAddr) -> ResolvePin {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(host: &str, port: i32, addr: std::net::IpAddr) -> ResolvePin {
         ResolvePin {
             host: host.to_owned(),
             port,

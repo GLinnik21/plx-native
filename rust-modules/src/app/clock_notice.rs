@@ -16,7 +16,7 @@
 //! The toast call blocks for an LS2 round trip, so the message is built here, on the frame thread
 //! (the locale is read from it), and the call runs on a small worker.
 
-use crate::net::keypin;
+use plx_net::net::keypin;
 
 /// What the frame loop owns between polls.
 pub(crate) struct ClockNotice {

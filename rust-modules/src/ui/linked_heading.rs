@@ -179,7 +179,7 @@ impl<'a> LinkedHeading<'a> {
             ),
             Presentation::Heading => {
                 let (cap_top, cap_bottom) =
-                    crate::text::text_cap_band(theme::size::HEADLINE, 1);
+                    plx_gfx::text::text_cap_band(theme::size::HEADLINE, 1);
                 let cy = y + (cap_top + cap_bottom) * 0.5;
                 Rect::new(
                     x - SIDE_PAD,
@@ -357,7 +357,7 @@ fn draw_middle(
     p.text(
         text.as_ptr(),
         x,
-        crate::text::text_vcenter_y(size, i32::from(bold), cy),
+        plx_gfx::text::text_vcenter_y(size, i32::from(bold), cy),
         size,
         ink,
         0,
@@ -380,7 +380,7 @@ fn draw_cap(
     p.text(
         text.as_ptr(),
         x,
-        crate::text::baseline_y(size, i32::from(bold), theme::size::HEADLINE, 1, cap_y),
+        plx_gfx::text::baseline_y(size, i32::from(bold), theme::size::HEADLINE, 1, cap_y),
         size,
         ink,
         0,
@@ -481,7 +481,7 @@ mod tests {
         let rest = heading.face_rect(x, y, 0.0, &m);
         let focused = heading.face_rect(x, y, 1.0, &m);
         let (cap_top, cap_bottom) =
-            crate::text::text_cap_band(theme::size::HEADLINE, 1);
+            plx_gfx::text::text_cap_band(theme::size::HEADLINE, 1);
         assert_eq!(rest.x, 72.0);
         assert_eq!(focused.x, rest.x);
         assert!(focused.w > rest.w && focused.h > rest.h);

@@ -11,7 +11,7 @@
 
 use std::ffi::CStr;
 
-use crate::net::keypin::Blocked;
+use plx_net::net::keypin::Blocked;
 use crate::ui::icons::Icon;
 
 /// The reason line and glyph for why key mode cannot help, or `None` when nothing says it cannot.
@@ -36,13 +36,13 @@ impl ClockWatch {
     /// Re-read the fact about `machine` (`None`: the read-out speaks about no known server, so no
     /// server's fact applies); `true` when what the read-out shows changed.
     pub(crate) fn refresh(&mut self, machine: Option<&str>) -> bool {
-        let rev = crate::net::keypin::revision();
+        let rev = plx_net::net::keypin::revision();
         if matches!(&self.seen, Some((r, m)) if *r == rev && m.as_deref() == machine) {
             return false;
         }
         self.seen = Some((rev, machine.map(str::to_owned)));
         // The empty id names no server: only a dev-planted fact answers it.
-        let next = crate::net::keypin::blocked_for(machine.unwrap_or_default());
+        let next = plx_net::net::keypin::blocked_for(machine.unwrap_or_default());
         std::mem::replace(&mut self.held, next) != next
     }
 
@@ -64,7 +64,7 @@ mod tests {
     use plx_base::fontcov::advances::ShippedMeasure;
     use crate::ui::fit::HEADROOM;
     use plx_platform::i18n::{language_on_this_thread_for_test, msg};
-    use crate::net::keypin;
+    use plx_net::net::keypin;
     use crate::ui::widgets::StatusOverlay;
 
     #[test]

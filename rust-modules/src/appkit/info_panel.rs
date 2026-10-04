@@ -468,7 +468,7 @@ impl InfoPanelState {
                 match chip.kind {
                     ChipKind::Text { bold, col } => {
                         if let Ok(cs) = CString::new(chip.label.as_str()) {
-                            let y = crate::text::text_vcenter_y(theme::size::CAPTION, bold, my);
+                            let y = plx_gfx::text::text_vcenter_y(theme::size::CAPTION, bold, my);
                             p.text(cs.as_ptr(), mx, y, theme::size::CAPTION, col, 0, bold);
                         }
                     }
@@ -795,7 +795,7 @@ fn chip_gap(prev: Option<ChipKind>, cur: ChipKind) -> f32 {
 }
 
 /// **The chip row's pure fitting maths (issue #26).** Host-testable on purpose: no `Painter`, no
-/// `crate::text::text_width` — that needs a live SDL2_ttf font the host test binary never loads
+/// `plx_gfx::text::text_width` — that needs a live SDL2_ttf font the host test binary never loads
 /// (see `text.rs::text_width`'s own doc on why measurement is the "impure half"). `draw` measures
 /// every candidate chip FIRST — meta text (genres/year/duration), then the live playback fact,
 /// then the rating/audio/CC/SDH/AD badges, in that fixed priority order (see the call site for why

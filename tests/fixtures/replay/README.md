@@ -233,7 +233,7 @@ the commit's two behaviour changes switched off individually. Gating focus stops
 walk alone (`DrawFrame::records_stops`) left the divergence unchanged; disabling it instead made
 `12-filmography-detail-return` diverge on a second frame, ruling it out. Reverting the held
 surface's text-recording path — `PopoverMotion::tick` no longer extending its hold while
-`crate::text::prewarm_pending()` is true, and the surface loop drawing every surface with
+`plx_gfx::text::prewarm_pending()` is true, and the surface loop drawing every surface with
 `Painter::root()` again — reproduced SAME with every counter at zero on both anchors. That is the
 cause: the new hold extension changes how many frames a held Settings/Filmography surface stays at
 appear 0 before ramping, which moves `PopoverMotion`'s own state on exactly the frame the anchor

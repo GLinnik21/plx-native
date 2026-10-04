@@ -1,0 +1,43 @@
+[package]
+name = "plx_gfx"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "PlxNative gfx layer: the GLES2 renderer, the EGL probe, text rasterization, image decoding, the vector-icon rasterizer FFI and the GPU instruments (GPU timer, Mali counters, the overdraw ledger)."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+build = "build.rs"
+
+[lib]
+name = "plx_gfx"
+# An rlib the application crate links, never an archive of its own: the one staticlib is the
+# application crate's (ci/test_no_host_staticlib.py holds that line for this crate too).
+crate-type = ["rlib"]
+
+[features]
+default = []
+# Forwarded from the application crate, which is the only one that sets them. Each is named here
+# only because some code in this crate has a `cfg` on it. `devtools` is new to a layer crate: it
+# gates the seven-segment FPS counter in `gfx`, and no lower crate has it.
+devtools = []
+devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers"]
+hostsim = ["plx_base/hostsim", "plx_machine/hostsim"]
+# The `cfg(test)` seams other crates' tests use (see lib.rs) plus the test-mode behaviour that
+# `cfg(test)` alone cannot give a dependent. Enabled from the dependents' `[dev-dependencies]`;
+# never in a shipped build. It enables the lower layers' own `test-support` because the seams here
+# call into them (`testlock`, the idle gate's per-thread damage counter).
+test-support = ["plx_base/test-support", "plx_machine/test-support"]
+
+[dependencies]
+plx_base = { path = "../base" }
+plx_machine = { path = "../machine" }
+libc = "0.2"
+# safe pure-Rust JPEG/PNG decoders (img.rs) — replaces vendored stb_image.h
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[dev-dependencies]
+plx_base = { path = "../base", features = ["test-support"] }
+plx_machine = { path = "../machine", features = ["test-support"] }
+
+[lints]
+workspace = true

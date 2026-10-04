@@ -50,7 +50,7 @@ fn resolve(
     item: impl FnOnce(ServerId) -> crate::metadata::PlayingItem,
     setup: impl FnOnce(&mut ResolveEnv, &crate::plex::Client),
 ) -> Resolve {
-    assert!(crate::net::global_init() && crate::curlio::available());
+    assert!(plx_net::net::global_init() && crate::curlio::available());
     let (port, done, server) = enhancement_pms(mde, mode, media_bytes);
     let sid = crate::plex::register_for_test("enh-pms", "127.0.0.1", port, "token", "enh-client");
     let client = crate::plex::client_for(sid).unwrap();

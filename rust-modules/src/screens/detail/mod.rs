@@ -2032,9 +2032,9 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
         let _layout = self.pin_layout(meta, measure);
         let preview = crate::player::preview::view();
         if preview_punch_through(preview.picture) {
-            crate::gfx::frame_clear_through();
+            plx_gfx::gfx::frame_clear_through();
         } else {
-            crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
+            plx_gfx::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         }
         let p = f.painter;
         let nav_page_alpha = f.nav_page_alpha;
@@ -2301,7 +2301,7 @@ impl DetailScreen {
         let art = crate::ui::widgets::WashArt {
             tex: texture,
             rect: Rect::FULL.cover(width, height),
-            uv: crate::gfx::UV_FULL,
+            uv: plx_gfx::gfx::UV_FULL,
             tint: theme::with_a(theme::dim(theme::TINT_WHITE, 1.0 - sf * 0.55), art_alpha),
         };
         let visible = hero_alpha(self.scroll.pos, HERO_FADE);
@@ -2470,7 +2470,7 @@ impl DetailScreen {
         if x > crate::ui::consts::MARGIN_X {
             x += theme::space::SM;
         }
-        let (top, base) = crate::text::text_cap_band(theme::size::BODY, 0);
+        let (top, base) = plx_gfx::text::text_cap_band(theme::size::BODY, 0);
         let cy = y + (top + base) * 0.5;
         if let Some(res) = crate::ui::fmt::resolution(&d.video_resolution, d.width, d.height) {
             x += crate::ui::widgets::badge(
@@ -2502,7 +2502,7 @@ impl DetailScreen {
         y: f32,
         measure: &dyn plx_machine::machine::Measure,
     ) {
-        let (top, base) = crate::text::text_cap_band(theme::size::LABEL, 1);
+        let (top, base) = plx_gfx::text::text_cap_band(theme::size::LABEL, 1);
         let cy = y + (top + base) * 0.5;
         let mut x = crate::ui::consts::MARGIN_X;
         let mut i = 0;
@@ -2564,7 +2564,7 @@ impl DetailScreen {
         let palette = if picture {
             ControlPalette::default()
         } else {
-            crate::gfx::sample_control_ground(row, may_read)
+            plx_gfx::gfx::sample_control_ground(row, may_read)
                 .map(ControlPalette::ambient)
                 .unwrap_or_default()
         };
@@ -3923,7 +3923,7 @@ impl DetailScreen {
 }
 
 /// A presented preview must leave the framebuffer transparent. The player route punches this
-/// hole from the loop; this page stays mounted, so an opaque [`crate::gfx::frame_clear`] is a
+/// hole from the loop; this page stays mounted, so an opaque [`plx_gfx::gfx::frame_clear`] is a
 /// full-screen sheet over the plane (sound, no picture).
 fn preview_punch_through(picture: bool) -> bool {
     picture

@@ -98,7 +98,7 @@ impl PreferenceRequest {
     }
 
     fn request(&self, method: &str, path: &str, query: &str)
-        -> Result<crate::net::Resp, PreferenceError>
+        -> Result<plx_net::net::Resp, PreferenceError>
     {
         let base = super::plex_tv();
         let base = if path.ends_with("/profile") && base == super::PLEX_TV {
@@ -107,15 +107,15 @@ impl PreferenceRequest {
         let url = if query.is_empty() { format!("{base}{path}") }
             else { format!("{base}{path}?{query}") };
         let client = AccountClient::new(&self.client_id, Some(&self.credential));
-        let response = crate::net::request_evidence(&url, &client.headers(), method,
-            (method == "PUT").then_some(b"".as_slice()), crate::net::API, false, None, None);
+        let response = plx_net::net::request_evidence(&url, &client.headers(), method,
+            (method == "PUT").then_some(b"".as_slice()), plx_net::net::API, false, None, None);
         super::note_response_contact(&url, &response);
         response.map_err(preference_failure).and_then(accepted)
     }
 
     fn load_with<F, C>(&self, cache: &AudioPreferencesCache, io: &Mutex<()>, current: C,
         mut request: F) -> Result<PreferenceSnapshot, PreferenceError>
-    where F: FnMut(&str, &str, &str) -> Result<crate::net::Resp, PreferenceError>,
+    where F: FnMut(&str, &str, &str) -> Result<plx_net::net::Resp, PreferenceError>,
         C: Fn() -> bool
     {
         let _io = io.lock().unwrap_or_else(|e| e.into_inner());
@@ -141,7 +141,7 @@ impl PreferenceRequest {
     fn save_with<F, C>(&self, cache: &AudioPreferencesCache, io: &Mutex<()>,
         snapshot: &PreferenceSnapshot, update: PreferenceUpdate, current: C,
         mut request: F) -> Result<PreferenceSnapshot, PreferenceError>
-    where F: FnMut(&str, &str, &str) -> Result<crate::net::Resp, PreferenceError>,
+    where F: FnMut(&str, &str, &str) -> Result<plx_net::net::Resp, PreferenceError>,
         C: Fn() -> bool
     {
         let _io = io.lock().unwrap_or_else(|e| e.into_inner());
@@ -156,16 +156,16 @@ impl PreferenceRequest {
     }
 }
 
-fn preference_failure(failure: crate::net::RequestFailure) -> PreferenceError {
+fn preference_failure(failure: plx_net::net::RequestFailure) -> PreferenceError {
     // A validated final refusal remains authoritative even if its body was truncated or reset.
     if matches!(failure.status, Some(401 | 403)) {
         PreferenceError::Refused
-    } else if failure.cause == crate::net::RequestError::TimedOut {
+    } else if failure.cause == plx_net::net::RequestError::TimedOut {
         PreferenceError::TimedOut
     } else { PreferenceError::Unavailable }
 }
 
-fn accepted(response: crate::net::Resp) -> Result<crate::net::Resp, PreferenceError> {
+fn accepted(response: plx_net::net::Resp) -> Result<plx_net::net::Resp, PreferenceError> {
     match response.status {
         200..=299 => Ok(response),
         401 | 403 => Err(PreferenceError::Refused),
@@ -270,10 +270,10 @@ mod tests {
         PreferenceRequest { client_id: "fixture-client".into(), credential: "account-only-token".into(),
             key: AudioPreferencesKey::new(&user, 4), user }
     }
-    fn response(body: &str) -> crate::net::Resp {
-        crate::net::Resp { status: 200, body: body.as_bytes().to_vec(), peer_pin: None }
+    fn response(body: &str) -> plx_net::net::Resp {
+        plx_net::net::Resp { status: 200, body: body.as_bytes().to_vec(), peer_pin: None }
     }
-    fn fixture(method: &str, path: &str, query: &str) -> Result<crate::net::Resp, PreferenceError> {
+    fn fixture(method: &str, path: &str, query: &str) -> Result<plx_net::net::Resp, PreferenceError> {
         assert_eq!(method, "GET"); assert!(query.is_empty());
         Ok(match path {
             "/api/v2/user" => response(r#"{"id":7,"uuid":"profile-7"}"#),
@@ -290,8 +290,8 @@ mod tests {
     #[test]
     fn account_regression_incomplete_refusal_keeps_the_account_error() {
         for status in [401, 403] {
-            for cause in [crate::net::RequestError::TimedOut, crate::net::RequestError::Transport] {
-                let failure = crate::net::RequestFailure { status: Some(status), cause,
+            for cause in [plx_net::net::RequestError::TimedOut, plx_net::net::RequestError::Transport] {
+                let failure = plx_net::net::RequestFailure { status: Some(status), cause,
                     body_limit: None, curl_rc: Some(92) };
                 assert_eq!(preference_failure(failure), PreferenceError::Refused);
             }
@@ -359,7 +359,7 @@ mod tests {
         let result = request().save_with(&cache, &Mutex::new(()), &prior, patch(), || true,
             |method, path, query| {
                 assert_eq!((method, path, query), ("PUT", "/api/v2/user/profile", "autoSelectSubtitle=2"));
-                Ok(crate::net::Resp { status: 204, body: Vec::new(), peer_pin: None })
+                Ok(plx_net::net::Resp { status: 204, body: Vec::new(), peer_pin: None })
             }).unwrap();
         assert_eq!(result.preferences.subtitle_mode, 2);
     }

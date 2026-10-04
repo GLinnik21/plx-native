@@ -240,7 +240,7 @@ impl Rows {
                 theme::size::HEADLINE,
                 theme::TEXT_PRIMARY,
                 1,
-                &crate::text::elide_by(&d.title, card.w - 2.0 * CARD_PAD, false, |t| {
+                &plx_gfx::text::elide_by(&d.title, card.w - 2.0 * CARD_PAD, false, |t| {
                     measure.width_str(t, theme::size::HEADLINE, true)
                 }),
             );
@@ -252,7 +252,7 @@ impl Rows {
                     theme::size::CAPTION,
                     theme::TEXT_TERTIARY,
                     0,
-                    &crate::text::elide_by(&d.genres.join(", "), card.w - 2.0 * CARD_PAD, false, |t| {
+                    &plx_gfx::text::elide_by(&d.genres.join(", "), card.w - 2.0 * CARD_PAD, false, |t| {
                         measure.width_str(t, theme::size::CAPTION, false)
                     }),
                 );

@@ -60,7 +60,7 @@
 //! *right* shape for four corners and the wrong one for 120 cells. Catmull-Rom is C1, so the
 //! reconstruction is done on the CPU, once, into a texture that bilinear magnification then only
 //! has to smooth 32x further. 4x per axis is where the crease stops being findable.
-use crate::gfx;
+use plx_gfx::gfx;
 use crate::ui::theme;
 use crate::ui::widgets::AmbientWash;
 use crate::ui::{Painter, Rect};

@@ -181,7 +181,7 @@ impl<'a> HeroLogo<'a> {
         // its replay need the same measurement census even when the logo happened to be resident
         // in only one run; texture residency is paint state, not logical replay state.
         let (_, _, _, sz) = self.rung.bounds();
-        let line = crate::text::elide_by(self.title, band.w, false, |t| {
+        let line = plx_gfx::text::elide_by(self.title, band.w, false, |t| {
             measure.width_str(t, sz, true)
         });
         // The hero draws the item the shelf under it has focused, and that shelf is the server

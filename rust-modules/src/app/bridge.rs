@@ -400,7 +400,7 @@ impl Bridge {
     }
     pub(crate) fn controlled_home(now_us: fn() -> u64, initial: &super::bootstrap::Initial,
         mt: &plx_base::task::MainThread, replay: bool) -> Self {
-        static TTF: crate::text::TtfMeasure = crate::text::TtfMeasure;
+        static TTF: plx_gfx::text::TtfMeasure = plx_gfx::text::TtfMeasure;
         let preferences = initial.session.persisted.clone();
         let (state, adapter) = initial.home.restore(mt).expect("validated Home initial state");
         let mut stores = crate::stores::Stores::default();
@@ -434,7 +434,7 @@ impl Bridge {
         // `'static` today, but that is a rule about the expression rather than a promise about
         // this field, and a `static` states the lifetime outright. Same reasoning as the one
         // `screens::settings`'s test module writes out beside its own measure.
-        static TTF: crate::text::TtfMeasure = crate::text::TtfMeasure;
+        static TTF: plx_gfx::text::TtfMeasure = plx_gfx::text::TtfMeasure;
         Self::with_measure(&TTF, now_us, init, super::adapters::session::SessionAdapter::live(mt),
             consent, super::adapters::consent::ConsentAdapter::live())
     }

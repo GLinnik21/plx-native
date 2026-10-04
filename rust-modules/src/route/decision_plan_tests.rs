@@ -133,7 +133,7 @@ fn apply_plan_installs_contract_outcome_audio() {
 fn remux_review_probe_installs_effective_selection_before_decision_and_start() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    assert!(crate::net::global_init() && crate::curlio::available());
+    assert!(plx_net::net::global_init() && crate::curlio::available());
     restore_quality(Quality::Auto);
     // Cold client-rendered subtitles stay off server-side; an explicit burn remains a burn.
     for burn in [0, 9] {
@@ -176,7 +176,7 @@ fn remux_review_probe_installs_effective_selection_before_decision_and_start() {
 fn remux_review_http_200_refusal_never_gets_media() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    assert!(crate::net::global_init() && crate::curlio::available());
+    assert!(plx_net::net::global_init() && crate::curlio::available());
     let (port, done, server) = selection_probe_pms(true, 0);
     let sid = crate::plex::register_for_test("refused-probe", "127.0.0.1", port, "token", "refused-probe-client");
     let sample = measure_remote_remux(crate::plex::client_for(sid).unwrap(), "rk", "refused-session", 2, 0, 320, crate::plex::AudioEnhancements::NONE).sample;
@@ -602,7 +602,7 @@ fn remote_auto_truehd_remux_probes_start_mkv_not_the_part() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    if !crate::net::global_init() || !crate::curlio::available() {
+    if !plx_net::net::global_init() || !crate::curlio::available() {
         return;
     }
     restore_quality(Quality::Auto);
@@ -691,7 +691,7 @@ fn remote_auto_truehd_remux_probe_names_the_ac3_sibling_not_env_audio_sid() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    if !crate::net::global_init() || !crate::curlio::available() {
+    if !plx_net::net::global_init() || !crate::curlio::available() {
         return;
     }
     restore_quality(Quality::Auto);
@@ -1153,7 +1153,7 @@ fn remote_auto_failed_remux_sample_physical_stops_before_hls() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    if !crate::net::global_init() || !crate::curlio::available() {
+    if !plx_net::net::global_init() || !crate::curlio::available() {
         return;
     }
     restore_quality(Quality::Auto);

@@ -1,6 +1,6 @@
 //! **The HTTPS media plane: a byte range of a remote file, pulled on demand.**
 //!
-//! [`crate::stream`] is a raw TCP socket that speaks cleartext to a host name or address of either
+//! [`plx_net::stream`] is a raw TCP socket that speaks cleartext to a host name or address of either
 //! family. It is the right transport for a plaintext PMS, but it cannot carry an HTTPS origin.
 //! LG's QA reviewers will not have a Plex Media Server on their LAN — they sign in with an account
 //! we supply and stream from a server on the public internet, over https, at a `plex.direct`
@@ -15,7 +15,7 @@
 //! enum and dispatches, and **never learns curl-multi mechanics**. Every `curl_multi_*` call, the
 //! wake pipe, the header parse and the Range validation live behind this door.
 //!
-//! It is not a general HTTP client. [`crate::net`] is that, for the account/login calls, and it is
+//! It is not a general HTTP client. [`plx_net::net`] is that, for the account/login calls, and it is
 //! *blocking by design* — `curl_easy_perform` runs a whole request to completion. A media stream
 //! is the opposite shape: it must deliver bytes as they arrive, be seekable by byte offset, and be
 //! **interruptible at teardown**, which is what forces the multi interface here.
@@ -177,7 +177,7 @@ const CURLMSG_DONE: c_int = 1;
 const CURLM_OK: c_int = 0;
 const CURL_WAIT_POLLIN: i16 = 0x0001;
 const CURLE_OPERATION_TIMEDOUT: c_int = 28;
-use crate::net::keypin::TLS_VERIFY_FAILED;
+use plx_net::net::keypin::TLS_VERIFY_FAILED;
 
 // curl.h option ids. STRINGPOINT/OBJECTPOINT/CBPOINT/SLISTPOINT = 10000, FUNCTIONPOINT = 20000,
 // LONG = 0 — read off `curl/curl.h` rather than remembered.
@@ -401,7 +401,7 @@ impl Drop for OpenReservation {
 }
 
 /// **Teardown's entry point** — `player::engine::teardown` calls this beside
-/// `crate::stream::http_shutdown`, and exactly one of the two has anything to signal.
+/// `plx_net::stream::http_shutdown`, and exactly one of the two has anything to signal.
 ///
 /// Signals under the registry lock, which is also the lock [`CurlSource::drop`] deregisters under,
 /// so this can never write to a pipe whose owner has gone. Costs one non-blocking `write(2)` on
@@ -453,7 +453,7 @@ pub(crate) fn boot() {
 /// thread-safe and net's doc requires it on the main thread at boot; a demux thread calling it
 /// lazily is precisely the bug that doc is warning about.
 fn easy_ready() -> bool {
-    !crate::net::curl::curl_easy_init
+    !plx_net::net::curl::curl_easy_init
         .load(Ordering::Relaxed)
         .is_null()
 }
@@ -462,7 +462,7 @@ fn easy_ready() -> bool {
 /// must have the process locks that make concurrent control and media curl handles safe.
 pub(crate) fn available() -> bool {
     ensure_loaded();
-    MULTI_OK.load(Ordering::Acquire) && easy_ready() && crate::net::threaded_tls_ready()
+    MULTI_OK.load(Ordering::Acquire) && easy_ready() && plx_net::net::threaded_tls_ready()
 }
 
 // ---- the transfer ----------------------------------------------------------------------------
@@ -573,7 +573,7 @@ pub(crate) struct CurlSource {
     /// handle has been removed and cleaned, and it is abandoned together with the handles on
     /// `stop`'s catastrophic path (freeing it under a handle libcurl may still reference would be
     /// a use-after-free, which is the one thing that path exists to avoid).
-    resolve: *mut crate::net::curl_slist,
+    resolve: *mut plx_net::net::curl_slist,
     xfer: Box<Xfer>,
     abort: Arc<Abort>,
     /// Byte offset of the next byte [`CurlSource::read`] will deliver.
@@ -712,10 +712,10 @@ impl CurlSource {
         // The resolve pin, by this URL's host and port — see `net::resolve` for why the media
         // plane consults a table rather than carrying the pin. Looked up ONCE here; a seek reuses it.
         let (origin, _) = crate::plex::origin::split(url);
-        let resolve_entry = crate::net::resolve::entry_for(origin.host(), origin.port());
+        let resolve_entry = plx_net::net::resolve::entry_for(origin.host(), origin.port());
         // The offline reproduction (`/tmp/plxnative-nowan`): a name opens only with a pin.
         if resolve_entry.is_none()
-            && crate::net::refuse_name(origin.host(), crate::net::API.connect_s)
+            && plx_net::net::refuse_name(origin.host(), plx_net::net::API.connect_s)
         {
             return Err(OpenErr::Local);
         }
@@ -770,9 +770,9 @@ impl CurlSource {
             return Err(OpenErr::Local);
         }
         let (origin, _) = crate::plex::origin::split(url);
-        let resolve_entry = crate::net::resolve::entry_for(origin.host(), origin.port());
+        let resolve_entry = plx_net::net::resolve::entry_for(origin.host(), origin.port());
         if resolve_entry.is_none()
-            && crate::net::refuse_name(origin.host(), crate::net::API.connect_s)
+            && plx_net::net::refuse_name(origin.host(), plx_net::net::API.connect_s)
         {
             return Err(OpenErr::Local);
         }
@@ -822,7 +822,7 @@ impl CurlSource {
         deadline: Option<std::time::Instant>,
         checkpoint: &mut dyn Checkpoint,
     ) -> Result<(), OpenErr> {
-        use crate::net::keypin;
+        use plx_net::net::keypin;
         // Key mode is for a verified-https request only; a plaintext URL has no key.
         let key = keypin::key_of_url(self.url.to_str().unwrap_or_default());
         let mut mode = key.as_deref().map_or(keypin::Mode::Strict, keypin::begin);
@@ -866,10 +866,10 @@ impl CurlSource {
         range_end: Option<i64>,
         deadline: Option<std::time::Instant>,
         checkpoint: &mut dyn Checkpoint,
-        mode: &crate::net::keypin::Mode,
+        mode: &plx_net::net::keypin::Mode,
         key: Option<&str>,
     ) -> Result<Attempt, OpenErr> {
-        use crate::net::keypin;
+        use plx_net::net::keypin;
         self.stop();
         if self.multi_failed {
             // A CURLM error describes this multi handle, not the remote byte range. Rebuild the
@@ -892,7 +892,7 @@ impl CurlSource {
         if self.abort.is_set() {
             return Err(OpenErr::Aborted);
         }
-        let easy = unsafe { crate::net::curl_easy_init() };
+        let easy = unsafe { plx_net::net::curl_easy_init() };
         if easy.is_null() {
             return Err(OpenErr::Local);
         }
@@ -916,7 +916,7 @@ impl CurlSource {
                             "curlio: libcurl refused security option {} (rc={rc}); stream cancelled",
                             $name
                         ));
-                        crate::net::curl_easy_cleanup(easy);
+                        plx_net::net::curl_easy_cleanup(easy);
                         self.easy = std::ptr::null_mut();
                         self.free_resolve_list();
                         return Err(OpenErr::Local);
@@ -924,41 +924,41 @@ impl CurlSource {
                 }};
             }
             let xp = &mut *self.xfer as *mut Xfer as *mut c_void;
-            crate::net::curl_easy_setopt_ptr(easy, CURLOPT_URL, self.url.as_ptr() as *const c_void);
-            crate::net::curl_easy_setopt_ptr(
+            plx_net::net::curl_easy_setopt_ptr(easy, CURLOPT_URL, self.url.as_ptr() as *const c_void);
+            plx_net::net::curl_easy_setopt_ptr(
                 easy,
                 CURLOPT_WRITEFUNCTION,
                 write_cb as *const c_void,
             );
-            crate::net::curl_easy_setopt_ptr(easy, CURLOPT_WRITEDATA, xp);
-            crate::net::curl_easy_setopt_ptr(
+            plx_net::net::curl_easy_setopt_ptr(easy, CURLOPT_WRITEDATA, xp);
+            plx_net::net::curl_easy_setopt_ptr(
                 easy,
                 CURLOPT_HEADERFUNCTION,
                 header_cb as *const c_void,
             );
-            crate::net::curl_easy_setopt_ptr(easy, CURLOPT_HEADERDATA, xp);
-            crate::net::curl_easy_setopt_ptr(
+            plx_net::net::curl_easy_setopt_ptr(easy, CURLOPT_HEADERDATA, xp);
+            plx_net::net::curl_easy_setopt_ptr(
                 easy,
                 CURLOPT_USERAGENT,
                 self.ua.as_ptr() as *const c_void,
             );
             if let Some(r) = &self.range {
-                crate::net::curl_easy_setopt_ptr(easy, CURLOPT_RANGE, r.as_ptr() as *const c_void);
+                plx_net::net::curl_easy_setopt_ptr(easy, CURLOPT_RANGE, r.as_ptr() as *const c_void);
             }
             // The resolve pin, one list entry, owned by THIS easy handle (`stop` frees it after the
             // handle, or abandons both). Not `require_setopt!`: a libcurl without the option keeps
             // resolving the name itself, and that is a logged fact rather than a cancelled stream.
             if let Some(r) = &self.resolve_entry {
-                let l = crate::net::curl_slist_append(std::ptr::null_mut(), r.as_ptr());
+                let l = plx_net::net::curl_slist_append(std::ptr::null_mut(), r.as_ptr());
                 if l.is_null() {
-                    crate::net::curl_easy_cleanup(easy);
+                    plx_net::net::curl_easy_cleanup(easy);
                     self.easy = std::ptr::null_mut();
                     return Err(OpenErr::Local);
                 }
                 self.resolve = l;
-                let rc = crate::net::curl_easy_setopt_ptr(easy, CURLOPT_RESOLVE, l as *const c_void);
-                if crate::net::resolve::note_setopt(rc).is_err() {
-                    crate::net::curl_easy_cleanup(easy);
+                let rc = plx_net::net::curl_easy_setopt_ptr(easy, CURLOPT_RESOLVE, l as *const c_void);
+                if plx_net::net::resolve::note_setopt(rc).is_err() {
+                    plx_net::net::curl_easy_cleanup(easy);
                     self.easy = std::ptr::null_mut();
                     self.free_resolve_list();
                     return Err(OpenErr::Local);
@@ -971,20 +971,20 @@ impl CurlSource {
             // may lower `VERIFYPEER`, and only behind a key pin libcurl accepted
             // (`keypin::apply`); `VERIFYHOST` is never lowered.
             require_setopt!(
-                crate::net::curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYPEER, 1),
+                plx_net::net::curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYPEER, 1),
                 "CURLOPT_SSL_VERIFYPEER"
             );
             require_setopt!(
-                crate::net::curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYHOST, 2),
+                plx_net::net::curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYHOST, 2),
                 "CURLOPT_SSL_VERIFYHOST"
             );
             // The host suite's CA override, the twin of `net::request_result_evidence`'s: a test
             // that serves a certificate through a loopback TLS double must be able to make libcurl
             // trust the test CA. Compiled out of every non-test build.
             #[cfg(test)]
-            if let Some(bundle) = crate::net::test_ca_bundle::get() {
+            if let Some(bundle) = plx_net::net::test_ca_bundle::get() {
                 if let Ok(c) = CString::new(bundle) {
-                    crate::net::curl_easy_setopt_ptr(easy, crate::net::CURLOPT_CAINFO, c.as_ptr() as *const c_void);
+                    plx_net::net::curl_easy_setopt_ptr(easy, plx_net::net::CURLOPT_CAINFO, c.as_ptr() as *const c_void);
                 }
             }
             // **Key mode** (`net::keypin`, issue #378): the remembered key in place of the
@@ -1000,7 +1000,7 @@ impl CurlSource {
                     crate::player::log(&format!(
                         "curlio: this libcurl refuses the key-mode options (rc={rc}) — the stream stays strict"
                     ));
-                    crate::net::curl_easy_cleanup(easy);
+                    plx_net::net::curl_easy_cleanup(easy);
                     self.easy = std::ptr::null_mut();
                     self.free_resolve_list();
                     return Ok(Attempt::KeyRefused);
@@ -1008,13 +1008,13 @@ impl CurlSource {
             }
             // We are on a worker thread; curl must not install signal handlers. This is also what
             // makes DNS uncancellable on a synchronous resolver — see the module doc.
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_NOSIGNAL, 1);
+            plx_net::net::curl_easy_setopt_long(easy, CURLOPT_NOSIGNAL, 1);
             require_setopt!(
-                crate::net::curl_easy_setopt_long(easy, CURLOPT_FOLLOWLOCATION, 1),
+                plx_net::net::curl_easy_setopt_long(easy, CURLOPT_FOLLOWLOCATION, 1),
                 "CURLOPT_FOLLOWLOCATION"
             );
             require_setopt!(
-                crate::net::curl_easy_setopt_long(easy, CURLOPT_MAXREDIRS, 5),
+                plx_net::net::curl_easy_setopt_long(easy, CURLOPT_MAXREDIRS, 5),
                 "CURLOPT_MAXREDIRS"
             );
             // A redirect must not downgrade a TLS media request. On the television's libcurl
@@ -1024,7 +1024,7 @@ impl CurlSource {
             // request may remain TLS only.
             let redirect_protocols = allowed_redirect_protocols(self.url.as_bytes());
             require_setopt!(
-                crate::net::curl_easy_setopt_long(
+                plx_net::net::curl_easy_setopt_long(
                     easy,
                     CURLOPT_PROTOCOLS,
                     CURLPROTO_HTTP | CURLPROTO_HTTPS,
@@ -1032,28 +1032,28 @@ impl CurlSource {
                 "CURLOPT_PROTOCOLS"
             );
             require_setopt!(
-                crate::net::curl_easy_setopt_long(
+                plx_net::net::curl_easy_setopt_long(
                     easy,
                     CURLOPT_REDIR_PROTOCOLS,
                     redirect_protocols
                 ),
                 "CURLOPT_REDIR_PROTOCOLS"
             );
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_CONNECTTIMEOUT, CONNECT_TIMEOUT_S);
+            plx_net::net::curl_easy_setopt_long(easy, CURLOPT_CONNECTTIMEOUT, CONNECT_TIMEOUT_S);
             if let Some(at) = deadline {
                 let left_ms = at
                     .saturating_duration_since(std::time::Instant::now())
                     .as_millis()
                     .max(1)
                     .min(c_long::MAX as u128) as c_long;
-                crate::net::curl_easy_setopt_long(easy, CURLOPT_TIMEOUT_MS, left_ms);
+                plx_net::net::curl_easy_setopt_long(easy, CURLOPT_TIMEOUT_MS, left_ms);
                 setup_timeout_ms = Some(left_ms as u64);
             }
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_LOW_SPEED_LIMIT, 1);
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_LOW_SPEED_TIME, LOW_SPEED_TIME_S);
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_NOPROGRESS, 1);
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_TCP_NODELAY, 1);
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_BUFFERSIZE, 65536);
+            plx_net::net::curl_easy_setopt_long(easy, CURLOPT_LOW_SPEED_LIMIT, 1);
+            plx_net::net::curl_easy_setopt_long(easy, CURLOPT_LOW_SPEED_TIME, LOW_SPEED_TIME_S);
+            plx_net::net::curl_easy_setopt_long(easy, CURLOPT_NOPROGRESS, 1);
+            plx_net::net::curl_easy_setopt_long(easy, CURLOPT_TCP_NODELAY, 1);
+            plx_net::net::curl_easy_setopt_long(easy, CURLOPT_BUFFERSIZE, 65536);
             // NB no CURLOPT_TIMEOUT: a whole movie has no deadline. The low-speed pair above is
             // what bounds a stall, and unlike a total timeout it cannot kill a healthy transfer.
             // NB no CURLOPT_ACCEPT_ENCODING either — the demuxer wants the bytes the file has.
@@ -1131,9 +1131,9 @@ impl CurlSource {
             }
             match mode {
                 keypin::Mode::Strict if self.done && self.failed && self.rc == TLS_VERIFY_FAILED => {
-                    let verify = crate::net::verify_result(self.easy);
+                    let verify = plx_net::net::verify_result(self.easy);
                     if let Some(next) = keypin::after_strict_failure(key, self.rc, verify) {
-                        let why = crate::net::tls_failure_reason(self.easy, self.rc).unwrap_or_default();
+                        let why = plx_net::net::tls_failure_reason(self.easy, self.rc).unwrap_or_default();
                         self.stop();
                         return Ok(Attempt::Retry(next, why));
                     }
@@ -1165,7 +1165,7 @@ impl CurlSource {
             // an expired projection while the presentation clock is paused), so disarm the open
             // bound at the exact phase boundary.
             unsafe {
-                crate::net::curl_easy_setopt_long(self.easy, CURLOPT_TIMEOUT_MS, 0);
+                plx_net::net::curl_easy_setopt_long(self.easy, CURLOPT_TIMEOUT_MS, 0);
             }
         }
         Ok(Attempt::Done)
@@ -1187,7 +1187,7 @@ impl CurlSource {
             {
                 return Err(OpenErr::Deadline);
             }
-            let why = crate::net::tls_failure_reason(self.easy, self.rc)
+            let why = plx_net::net::tls_failure_reason(self.easy, self.rc)
                 .unwrap_or_else(|| curl_why(self.rc).to_owned());
             crate::player::log(&format!("curlio: transport failed rc={} — {why}", self.rc));
             return Err(OpenErr::Transport(self.rc));
@@ -1285,7 +1285,7 @@ impl CurlSource {
     /// Only ever AFTER the easy handle: libcurl holds the pointer for the handle's life.
     fn free_resolve_list(&mut self) {
         if !self.resolve.is_null() {
-            unsafe { crate::net::curl_slist_free_all(self.resolve) };
+            unsafe { plx_net::net::curl_slist_free_all(self.resolve) };
             self.resolve = std::ptr::null_mut();
         }
     }
@@ -1314,7 +1314,7 @@ impl CurlSource {
                     self.range = None;
                     return;
                 }
-                crate::net::curl_easy_cleanup(self.easy);
+                plx_net::net::curl_easy_cleanup(self.easy);
             }
             self.easy = std::ptr::null_mut();
             // After the handle, never before: the list must outlive the transfer.
@@ -1503,7 +1503,7 @@ impl CurlSource {
     /// buffered, it first takes the one non-blocking transfer step [`read_until`](Self::read_until)
     /// would take next, so bytes already in the socket count as received here exactly as they
     /// would there. `finished` is a successful DONE; a failed one is not an end.
-    pub(crate) fn body_receipt(&mut self) -> crate::stream::BodyReceipt {
+    pub(crate) fn body_receipt(&mut self) -> plx_net::stream::BodyReceipt {
         let stepped = self.xfer.pending() == 0
             && !self.done
             && self.readable
@@ -1512,7 +1512,7 @@ impl CurlSource {
         if stepped {
             let _ = self.perform();
         }
-        crate::stream::BodyReceipt {
+        plx_net::stream::BodyReceipt {
             ahead: self.xfer.pending() as i64,
             finished: self.done && !self.failed,
             stepped,
@@ -1925,7 +1925,7 @@ enum Attempt {
     /// A strict attempt failed with a date verify result and `net::keypin` holds a key for
     /// the host: try again in the given mode. Carries the strict failure's log phrase, to report
     /// with `OpenErr::Transport(TLS_VERIFY_FAILED)` should libcurl turn out not to support key mode.
-    Retry(crate::net::keypin::Mode, String),
+    Retry(plx_net::net::keypin::Mode, String),
     /// libcurl refused the key-mode options; the handle was discarded unrelaxed.
     KeyRefused,
 }
@@ -1974,7 +1974,7 @@ mod tests {
     /// `None` on a host with no libcurl at all, where these tests are vacuous and skip.
     fn curl_gate() -> Option<plx_base::testlock::Serial> {
         let g = plx_base::testlock::serial();
-        if crate::net::global_init() && available() {
+        if plx_net::net::global_init() && available() {
             Some(g)
         } else {
             None
@@ -2027,7 +2027,7 @@ mod tests {
     #[test]
     fn a_pinned_host_streams_through_the_resolve_table_without_dns() {
         let Some(_g) = curl_gate() else { return };
-        crate::net::resolve::clear();
+        plx_net::net::resolve::clear();
         with_server(RangeMode::Honour, |port, accepts, _requests| {
             let url = format!("http://no-such-host.invalid:{port}/f.mkv");
             assert!(
@@ -2040,7 +2040,7 @@ mod tests {
                 port as i32,
                 "127.0.0.1".parse().unwrap(),
             );
-            assert!(crate::net::resolve::add(&pin));
+            assert!(plx_net::net::resolve::add(&pin));
             let mut src = CurlSource::open_gated(&url, 0, true).expect("opens through the pin");
             let mut buf = [0u8; 16];
             let n = src.read(&mut buf);
@@ -2056,7 +2056,7 @@ mod tests {
             assert_eq!(accepts.load(Ordering::Acquire), 1);
             drop(src);
         });
-        crate::net::resolve::clear();
+        plx_net::net::resolve::clear();
     }
 
     fn with_server(mode: RangeMode, body: impl FnOnce(u16, &AtomicUsize, &AtomicUsize)) {
@@ -2976,7 +2976,7 @@ mod tests {
             Some(OpenErr::Unavailable),
             "no libcurl multi must be a return value, never a panic through a null pointer"
         );
-        let net_ok = crate::net::global_init();
+        let net_ok = plx_net::net::global_init();
         // A load that finds nothing publishes nothing (dynlib's own contract), so this cannot
         // disturb a table that is already live — which is precisely the claim being made.
         let v = plx_base::dynlib::load_into(
@@ -3133,7 +3133,7 @@ mod tests {
             );
             // The injected failure used an easy we KNOW was pre-detached above, so the test can
             // reclaim it. Production cannot know that and deliberately leaks this exceptional pair.
-            unsafe { crate::net::curl_easy_cleanup(real_easy) };
+            unsafe { plx_net::net::curl_easy_cleanup(real_easy) };
             src.multi = real_multi;
             assert!(
                 src.seek(4),
@@ -3156,7 +3156,7 @@ mod tests {
     fn libcurl_binds_on_this_host_so_the_tests_above_are_not_vacuous() {
         let _g = plx_base::testlock::serial();
         assert!(
-            crate::net::global_init(),
+            plx_net::net::global_init(),
             "net.rs could not bind any libcurl candidate on this host"
         );
         assert!(

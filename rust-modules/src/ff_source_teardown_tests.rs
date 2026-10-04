@@ -65,7 +65,7 @@ fn a_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             8,
             "a size query is not I/O — the guard belongs AFTER that branch"
         );
-        crate::stream::http_close(&mut *hs);
+        plx_net::stream::http_close(&mut *hs);
         crate::aq::aq_destroy(&mut *aq);
     });
 }
@@ -123,7 +123,7 @@ fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
             seeks.iter().all(|r| *r == -1),
             "every hop must refuse the seek: {seeks:?}"
         );
-        crate::stream::http_close(&mut *hs);
+        plx_net::stream::http_close(&mut *hs);
         crate::aq::aq_destroy(&mut *aq);
     });
 }
@@ -195,9 +195,9 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
 
     let host = CString::new("127.0.0.1").unwrap();
     let path = CString::new("/segment.ts").unwrap();
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     assert_eq!(
-        crate::stream::http_open(
+        plx_net::stream::http_open(
             &mut *hs,
             host.as_ptr(),
             port as c_int,
@@ -259,7 +259,7 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
     crate::player::TX
         .paused
         .store(old_paused, Ordering::Release);
-    crate::stream::http_close(&mut *hs);
+    plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
     server.join().expect("stall server");
 }
@@ -291,9 +291,9 @@ fn abort_while_a_playlist_body_is_blocked_wins_over_the_transport_result() {
 
     let host = CString::new("127.0.0.1").unwrap();
     let path = CString::new("/playlist.m3u8").unwrap();
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     assert_eq!(
-        crate::stream::http_open(
+        plx_net::stream::http_open(
             &mut *hs,
             host.as_ptr(),
             port as c_int,
@@ -317,7 +317,7 @@ fn abort_while_a_playlist_body_is_blocked_wins_over_the_transport_result() {
         scope.spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(30));
             crate::aq::aq_abort(aq_addr as *mut AuQueue);
-            crate::stream::http_shutdown(hs_addr as *mut HttpStream);
+            plx_net::stream::http_shutdown(hs_addr as *mut HttpStream);
         });
         hls_source_read(
             &mut src,
@@ -328,7 +328,7 @@ fn abort_while_a_playlist_body_is_blocked_wins_over_the_transport_result() {
     });
 
     assert!(matches!(outcome, Err(HlsExit::Aborted)), "got {outcome:?}");
-    crate::stream::http_close(&mut *hs);
+    plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
     server.join().expect("stall server");
 }

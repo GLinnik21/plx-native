@@ -1220,7 +1220,7 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32,
         pin.qr.clone()
     };
     if !output.live() { return None; }
-    let qr_png = crate::net::https_get_public(&qr_url)
+    let qr_png = plx_net::net::https_get_public(&qr_url)
         .filter(|r| r.ok())
         .map(|r| r.body)
         .unwrap_or_default();
@@ -1487,11 +1487,11 @@ fn discovery_retry_progress(run: DiscoveryRetryRun, misses: u32,
     }
 }
 
-fn account_timeouts(remaining: Duration) -> crate::net::Timeouts {
+fn account_timeouts(remaining: Duration) -> plx_net::net::Timeouts {
     let capped = remaining.min(Duration::from_secs(8));
     let millis = capped.as_millis().max(1).min(i32::MAX as u128) as _;
-    crate::net::Timeouts { total_ms: millis, connect_s: capped.as_secs().max(1) as _,
-        ..crate::net::API }
+    plx_net::net::Timeouts { total_ms: millis, connect_s: capped.as_secs().max(1) as _,
+        ..plx_net::net::API }
 }
 
 fn cancellable_wait_while(duration: Duration, live: impl Fn() -> bool) -> bool {
@@ -2039,7 +2039,7 @@ pub(crate) enum ProbeReply {
     /// (`crate::http::Reply::peer_pin`); `None` over plaintext, for an origin without a
     /// `ResolvePin` (see [`get_identity`]) and on every test seam.
     Answered { status: i32, body: Vec<u8>, peer_pin: Option<String> },
-    Failed(Option<crate::net::RequestFailure>),
+    Failed(Option<plx_net::net::RequestFailure>),
 }
 
 impl ProbeReply {

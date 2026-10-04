@@ -109,7 +109,7 @@ jobs:
         # (`cargo metadata` resolves; it compiles nothing), plus an informational line count.
         # The binary-size budget runs in cross-build, where the binary exists. Limits and how to
         # raise one deliberately: ci/build-budgets.json, docs/agent-reference.md.
-        run: python3 ci/check-build-budgets.py --graph --src rust-modules/src --src rust-modules/base/src --src rust-modules/machine/src --src rust-modules/platform/src
+        run: python3 ci/check-build-budgets.py --graph --src rust-modules/src --src rust-modules/base/src --src rust-modules/machine/src --src rust-modules/net/src --src rust-modules/platform/src --src rust-modules/gfx/src
 
       - name: Type-check the simulator feature set
         # The host simulator is a real build configuration with real users (the `ui-sim` skill, and
@@ -150,7 +150,7 @@ jobs:
         # for plxnative-modules both ways), so the `cargo test --lib` below finds everything built
         # and this step is where the compile happens, not an extra one. The upload below carries it.
         shell: bash
-        run: cd rust-modules && cargo "+$RUST_NIGHTLY" test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform --no-run --timings
+        run: cd rust-modules && cargo "+$RUST_NIGHTLY" test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net --no-run --timings
 
       - name: make check-cargo-unit-default
         # Teed to a file so the size step below can read the `test result:` lines this run already

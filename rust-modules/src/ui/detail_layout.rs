@@ -85,7 +85,7 @@ pub(crate) fn hero_chain(
     let facts_y = syn_y + syn_h.max(34.0) + theme::space::MD;
     // The facts row's own icons (`FACTS_GLYPH_D`/capsule) are sized to the `CAPTION` text itself,
     // unlike the two rows above, so its measured height is the plain cap band — read through the
-    // `Measure` seam (`check-deps.sh`'s "textmeasure" gate: raw `crate::text::cap_h` is not
+    // `Measure` seam (`check-deps.sh`'s "textmeasure" gate: raw `plx_gfx::text::cap_h` is not
     // reachable outside `text.rs`/`ui/text_view.rs`/`ui/text_buffer.rs`/a `Measure` impl body),
     // the same capability `compute_hero_chain`'s caller already threads down for the synopsis.
     let facts_h = measure.cap_h(theme::size::CAPTION);
