@@ -109,6 +109,12 @@ thread_local! {
 static PENDING_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 fn mutate_cache<R>(f: impl FnOnce(&mut TexCache<PosterKey>) -> R) -> R {
+    // `CACHE` is per thread but `PENDING_BYTES` is one process-wide cell: every mutation, from
+    // whichever test thread, republishes ITS thread's total into it. A host test that mutates
+    // the cache must hold the global test lock, or it lands in the middle of the test that
+    // asserts on the snapshot.
+    #[cfg(test)]
+    plx_base::testlock::assert_held("ui::tex PENDING_BYTES");
     CACHE.with(|c| {
         let mut cache = c.borrow_mut();
         let result = f(&mut cache);
@@ -1103,6 +1109,8 @@ mod tests {
     /// and the queue it must reflect is THIS one — the pixels `accept` parked for the upload step.
     #[test]
     fn has_queued_work_reflects_the_texture_queue() {
+        // `accept` republishes this thread's pending total into the process-wide PENDING_BYTES.
+        let _guard = plx_base::testlock::serial();
         let mut b = Budget::new();
         b.begin_frame(0);
         note_queued(&mut b);
