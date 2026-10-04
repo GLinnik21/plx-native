@@ -1491,7 +1491,7 @@
   },
   "browse.auth.servers_unreachable": {
     "value": "plex.tv listed your servers, but none of them answered. Make sure your Plex Media Server is on and online, then try again.",
-    "description": "browse auth servers_unreachable"
+    "description": "Reason line when plex.tv listed the account's servers and none of them answered: on the sign-in read-out (no server reachable after sign-in), and on Who's watching when a picked profile found no server answering (and none refused it or presented a certificate this TV does not trust: those have no_source_access and tls_untrusted). Two-line read-out slot, and one centred line on the picker, so keep the whole sentence at 125 characters or fewer."
   },
   "browse.auth.plex_tls": {
     "value": "This TV couldn't make a secure connection to plex.tv. Check the TV's date and time, then try again.",

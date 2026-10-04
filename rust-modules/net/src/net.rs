@@ -594,10 +594,24 @@ pub struct RequestFailure {
     /// the device in `telemetry::incident`'s link class; a DNS failure and a TLS refusal are the
     /// two answers a failed sign-in most needs told apart.
     pub curl_rc: Option<i32>,
+    /// [`CURLINFO_SSL_VERIFYRESULT`] of the failed handshake, read only for the one code that
+    /// carries it (`curl_rc` 60) and `None` for every other failure and for a backend that did not
+    /// report one. The OpenSSL `X509_V_ERR_*` number only, never a host, name or certificate field,
+    /// so like [`Self::curl_rc`] it may be named in the event log. It is what tells a certificate
+    /// this television's trust store cannot verify (2, 18, 19, 20, 21: [`Self::untrusted_chain`])
+    /// from a wrong clock (9, 10) and from a name mismatch, which all arrive as the same `60`.
+    pub verify: Option<c_long>,
 }
 
 impl From<RequestError> for RequestFailure {
-    fn from(cause: RequestError) -> Self { Self { cause, status: None, body_limit: None, curl_rc: None } }
+    fn from(cause: RequestError) -> Self { Self { cause, status: None, body_limit: None, curl_rc: None, verify: None } }
+}
+
+impl RequestFailure {
+    /// The verify result when this failure is a certificate chain the television's trust store could
+    /// not verify — see [`keypin::untrusted_chain_verify`] for the closed set — and `None` for
+    /// everything else, the clock cases (9, 10) and a name mismatch included.
+    pub fn untrusted_chain(&self) -> Option<u8> { keypin::untrusted_chain_verify(self.curl_rc?, self.verify) }
 }
 
 /// CURLINFO_RESPONSE_CODE is the last response, not the CONNECT proxy response:
@@ -623,7 +637,7 @@ fn response_status(rc: c_int, info_rc: c_int, code: c_long, follow_redirects: bo
 
 fn finish_response(
     rc: c_int, info_rc: c_int, code: c_long, follow_redirects: bool,
-    max_body: Option<usize>, sink: BodySink,
+    max_body: Option<usize>, sink: BodySink, verify: Option<c_long>,
 ) -> Result<Resp, RequestFailure> {
     let status = response_status(rc, info_rc, code, follow_redirects);
     if sink.overflowed || rc != 0 || status.is_none() {
@@ -632,6 +646,7 @@ fn finish_response(
             status,
             body_limit: if sink.overflowed { max_body } else { None },
             curl_rc: (rc != 0).then_some(rc as i32),
+            verify,
         });
     }
     Ok(Resp { status: status.unwrap(), body: sink.body, peer_pin: None })
@@ -1752,7 +1767,10 @@ fn request_tls_evidence(
             plx_base::eventlog::log(&format!("net: curl rc={rc} — {why}"));
         }
     }
-    finish_response(rc, info_rc, code, follow_redirects, max_body, sink)
+    // `done_verify` is read only for the one code that carries it, from the attempt that DECIDED
+    // the request: a roots-mode retry that failed reports its own result, a strict failure no mode
+    // answered reports the strict one.
+    finish_response(rc, info_rc, code, follow_redirects, max_body, sink, done_verify)
         .map(|resp| Resp { peer_pin, ..resp })
 }
 
@@ -2294,6 +2312,37 @@ pub mod keypin {
     fn is_untrusted_issuer(rc: c_int, verify: Option<c_long>) -> bool {
         rc == TLS_VERIFY_FAILED
             && matches!(verify, Some(X509_NO_ISSUER | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY))
+    }
+
+    /// OpenSSL `X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT` (18) and `…_SELF_SIGNED_CERT_IN_CHAIN` (19):
+    /// the chain ends at a certificate that is its own issuer and that this trust store does not
+    /// hold. Not a case [`is_untrusted_issuer`] (and so roots mode) answers — no bundle of public
+    /// roots holds a server's own root — but it is every bit as much "this device cannot vouch for
+    /// this server" as a missing issuer, which is all [`untrusted_chain_verify`] says.
+    const X509_SELF_SIGNED_LEAF: c_long = 18;
+    const X509_SELF_SIGNED_IN_CHAIN: c_long = 19;
+
+    /// **The closed answer to "did the television's trust store fail this server?"** — libcurl 60 with
+    /// an OpenSSL verify result of 2, 18, 19, 20 or 21 (a missing issuer, or a chain that ends at a
+    /// root nobody here holds), as that number, and `None` for everything else. Never 9 or 10: those
+    /// are the date, which a wrong television clock explains and which key mode, [`Blocked::NoKey`] and
+    /// `app::clock_notice` already own. Never a different `rc` (a refused connection, a timeout, a
+    /// handshake the firmware cannot speak, 51's name check), and never a `60` whose verify result
+    /// was not reported or names a signature, a name or a purpose. The set is a superset of
+    /// [`is_untrusted_issuer`]'s and disjoint from [`is_date_failure`]'s by construction.
+    ///
+    /// What the answer is evidence of is the server's certificate and this device's trust, not the
+    /// network: it is what a failed identity probe is graded by (`plex::probe::Cause`), so a failure
+    /// that is only this no longer reads as "unreachable" or, worse, "no access".
+    pub fn untrusted_chain_verify(rc: c_int, verify: Option<c_long>) -> Option<u8> {
+        if rc != TLS_VERIFY_FAILED {
+            return None;
+        }
+        match verify? {
+            v @ (X509_NO_ISSUER | X509_SELF_SIGNED_LEAF | X509_SELF_SIGNED_IN_CHAIN
+                | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY) => u8::try_from(v).ok(),
+            _ => None,
+        }
     }
 
     /// Is `host` a `*.plex.direct` name? A case-insensitive SUFFIX match on the host part with at
@@ -3074,7 +3123,7 @@ pub fn test_response_failure(rc: c_int, info_rc: c_int, code: c_long, redirects:
     -> Result<Resp, RequestFailure> {
     let mut sink = BodySink::new(None);
     sink.push(b"synthetic partial body");
-    finish_response(rc, info_rc, code, redirects, None, sink)
+    finish_response(rc, info_rc, code, redirects, None, sink, None)
 }
 
 /// The wire fixtures behind [`with_test_response`] and [`with_h2_reset_failure`]. They live outside
@@ -3272,7 +3321,7 @@ mod request_tests {
         }
         let mut sink = BodySink::new(Some(4));
         assert!(!sink.push(b"synthetic-secret"));
-        let failure = finish_response(23, 1, 401, false, Some(4), sink).err().unwrap();
+        let failure = finish_response(23, 1, 401, false, Some(4), sink, None).err().unwrap();
         assert_eq!(failure.status, None);
         assert_eq!(failure.body_limit, Some(4));
         assert!(!format!("{failure:?}").contains("synthetic-secret"));

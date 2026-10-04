@@ -391,3 +391,55 @@ DKrIb2EKk5NpOpE6/XttQYZV/3gilB9l+Cc/DOVwmyg=\n\
         }
     }
 }
+
+// ---- the trust verdict a failed request reports (`RequestFailure::untrusted_chain`) ---------------
+
+#[test]
+fn only_a_missing_issuer_or_a_self_signed_chain_under_rc_60_is_an_untrusted_chain() {
+    for verify in [2, 18, 19, 20, 21] {
+        assert_eq!(keypin::untrusted_chain_verify(60, Some(verify)), Some(verify as u8), "verify {verify}");
+    }
+    // 9 and 10 are the wrong-clock case (`keypin` key mode, `app::clock_notice`); the rest are a
+    // name mismatch, a bad signature or "not reported" — none of them says the store lacks a root.
+    for verify in [None, Some(0), Some(7), Some(9), Some(10), Some(17), Some(22), Some(62), Some(-1), Some(274)] {
+        assert_eq!(keypin::untrusted_chain_verify(60, verify), None, "verify {verify:?}");
+    }
+    for rc in [0, 6, 7, 28, 35, 51, 58, 77, 90] {
+        assert_eq!(keypin::untrusted_chain_verify(rc, Some(20)), None, "rc {rc}");
+    }
+    let failure = |curl_rc, verify| RequestFailure { cause: RequestError::Transport, status: None, body_limit: None, curl_rc, verify };
+    assert_eq!(failure(Some(60), Some(20)).untrusted_chain(), Some(20));
+    assert_eq!(failure(Some(60), Some(10)).untrusted_chain(), None);
+    assert_eq!(failure(None, Some(20)).untrusted_chain(), None);
+}
+
+/// The verify result has to survive the trip from libcurl's handle to the failure the layers above
+/// read: a store that lacks the issuer is untrusted whether or not the bundle was tried, and a date
+/// failure under a store that DOES hold the issuer is not.
+#[test]
+fn a_real_failed_handshake_reports_its_x509_verify_result_on_the_failure() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    // No bundle on disk: the strict failure is the final one, so this is what a build without
+    // `le-roots.pem` (or a host that is not a `*.plex.direct` name) reports.
+    let cert = leaf(&[PLEX_DIRECT]);
+    keypin::test_roots::set(Some("/nonexistent/le-roots.pem"));
+    let out = request_to(PLEX_DIRECT, Arc::clone(&cert), &unrelated_store(), None, "roots-verify-issuer");
+    keypin::test_roots::set(None);
+    let failure = out.result.err().expect("an unknown issuer is refused");
+    assert_eq!(failure.curl_rc, Some(60));
+    assert!(matches!(failure.verify, Some(2 | 20 | 21)), "an unknown issuer: {:?}", failure.verify);
+    assert_eq!(failure.untrusted_chain(), failure.verify.map(|v| v as u8));
+    assert!(failure.untrusted_chain().is_some());
+    // The bundle was tried and did not hold the root either: still the same verdict.
+    let other_roots = mint_cert(&["another-root.invalid"]).pem;
+    let out = request_to(PLEX_DIRECT, Arc::clone(&cert), &unrelated_store(), Some(&other_roots), "roots-verify-lacks");
+    assert!(out.result.err().expect("refused").untrusted_chain().is_some(), "a failed roots retry is still untrusted");
+    // A date failure with the issuer trusted is the clock's, never the store's.
+    let expired = expired_leaf(&[PLEX_DIRECT]);
+    let out = request_to(PLEX_DIRECT, Arc::clone(&expired), &expired.pem, None, "roots-verify-date");
+    let failure = out.result.err().expect("an expired leaf is refused");
+    assert_eq!(failure.curl_rc, Some(60));
+    assert_eq!(failure.verify, Some(10));
+    assert_eq!(failure.untrusted_chain(), None);
+}

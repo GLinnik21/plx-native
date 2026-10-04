@@ -246,6 +246,6 @@ fn a_refused_profile_resources_request_does_not_blame_the_connection() {
     assert!(!refused.contains("connection"), "a 401 is an answer: {refused}");
     assert!(refused.contains("Kid"), "the refusal names the profile: {refused}");
     let silent = run(Err(RequestFailure { cause: RequestError::TimedOut, status: None,
-        body_limit: None, curl_rc: Some(28) }));
+        body_limit: None, curl_rc: Some(28), verify: None }));
     assert!(silent.contains("check the connection"), "no answer keeps the connection copy: {silent}");
 }

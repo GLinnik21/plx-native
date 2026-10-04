@@ -142,7 +142,7 @@ impl RetryClock for RetryScript {
 #[test]
 fn account_retry_runner_uses_the_interactive_ladder_and_lets_the_last_attempt_answer() {
     let dns = Err(plx_net::net::RequestFailure { cause: plx_net::net::RequestError::Transport,
-        status: None, body_limit: None, curl_rc: Some(6) });
+        status: None, body_limit: None, curl_rc: Some(6), verify: None });
     let mut answers = vec![Err(dns), Err(dns), Ok("servers")].into_iter();
     let mut clock = RetryScript { elapsed: Duration::ZERO, waits: Vec::new(), cancel: false };
     let mut misses = Vec::new();
@@ -158,7 +158,7 @@ fn account_retry_runner_uses_the_interactive_ladder_and_lets_the_last_attempt_an
 fn account_retry_runner_cancels_and_does_not_guess_at_retry_after() {
     let mut cancelled = RetryScript { elapsed: Duration::ZERO, waits: Vec::new(), cancel: true };
     let dns = Err(plx_net::net::RequestFailure { cause: plx_net::net::RequestError::Transport,
-        status: None, body_limit: None, curl_rc: Some(6) });
+        status: None, body_limit: None, curl_rc: Some(6), verify: None });
     let run = retry_account_call::<()>(INTERACTIVE_ACCOUNT, &mut cancelled, |_, _, _| {},
         |_| Err(dns));
     assert_eq!(run.result, AccountCallEnd::Cancelled);
@@ -194,7 +194,7 @@ fn account_retry_budget_charges_time_spent_inside_requests() {
     let mut clock = SharedClock(Rc::clone(&elapsed));
     let mut remaining = Vec::new();
     let dns = Err(plx_net::net::RequestFailure { cause: plx_net::net::RequestError::Transport,
-        status: None, body_limit: None, curl_rc: Some(6) });
+        status: None, body_limit: None, curl_rc: Some(6), verify: None });
     let run = retry_account_call::<()>(BACKGROUND_ACCOUNT, &mut clock, |_, _, _| {}, |left| {
         remaining.push(left);
         elapsed.set(elapsed.get() + Duration::from_secs(25).min(left));
@@ -404,6 +404,7 @@ fn dns_miss() -> PinPoll {
         status: None,
         body_limit: None,
         curl_rc: Some(6),
+        verify: None,
     }))
 }
 

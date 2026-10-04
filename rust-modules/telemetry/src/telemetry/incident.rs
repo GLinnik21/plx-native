@@ -1034,6 +1034,7 @@ pub fn preview_event() -> Vec<u8> {
                 status: None,
                 body_limit: None,
                 curl_rc: Some(6),
+                verify: None,
             })),
         )
         .with_link_state(1, Some(std::time::Duration::from_secs(4)), 1)
@@ -1054,7 +1055,7 @@ mod tests {
     use std::time::Duration;
 
     fn failure(cause: RequestError, status: Option<u16>, curl_rc: Option<i32>) -> RequestFailure {
-        RequestFailure { cause, status, body_limit: None, curl_rc }
+        RequestFailure { cause, status, body_limit: None, curl_rc, verify: None }
     }
 
     #[test]
@@ -1364,7 +1365,7 @@ mod tests {
 
         let discovery = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent),
             Some(Err(RequestFailure { cause: RequestError::Transport, status: None,
-                body_limit: None, curl_rc: Some(6) })))
+                body_limit: None, curl_rc: Some(6), verify: None })))
             .with_discovery(DiscoveryEvidence { trigger: DiscoveryTrigger::Login,
                 target: Some(DiscoveryTarget::PlexTv) })
             .with_retry_run(3, Duration::from_secs(6));
@@ -1510,7 +1511,7 @@ mod tests {
         // The discovery evidence rides only on its own kinds, so walk it where it is carried.
         let silent = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent),
             Some(Err(RequestFailure { cause: RequestError::Transport, status: None,
-                body_limit: None, curl_rc: Some(6) })))
+                body_limit: None, curl_rc: Some(6), verify: None })))
             .with_discovery(DiscoveryEvidence { trigger: DiscoveryTrigger::Login,
                 target: Some(DiscoveryTarget::PlexTv) })
             .with_retry_run(3, Duration::from_secs(6));

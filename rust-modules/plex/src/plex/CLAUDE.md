@@ -209,10 +209,24 @@ landed, and whatever was in flight (a hub fetch, the picker's first avatar) fail
 plan was built with, and only an eligible answer can become `first`/`best`/get activated — a
 verified plaintext answer in a store build does **not** count as reached and does not hold back the
 relay leg. If nothing eligible verifies, the result is `Reach::InsecureOnly` (plan §4's precedence:
-`At` > `InsecureOnly` > `Refused` > `No`), which becomes `Outcome::InsecureOnly` /
+`At` > `InsecureOnly` > `Refused` > `TlsUntrusted` > `No`), which becomes `Outcome::InsecureOnly` /
 `Discovery::InsecureOnly` / `SourceState::InsecureOnly` ("Not secure") — a fifth sentence, told
 apart from `Unreachable`, that **outranks a 401**. Before this it counted as reached, which was
 issue #95 itself.
+
+**Why a server could not be used is `probe::Cause`, beside the `Outcome`, never more variants of
+it.** `Outcome::Unreachable` still means "no address verified" and the sources panel and registry
+read it so; underneath it the probe tells `Cause::Unreachable` (nothing answered) from
+`Cause::TlsUntrusted { verify }` (HTTPS reached something whose chain this television's trust store —
+and, for a `*.plex.direct` name, the bundled roots — could not verify: libcurl 60 with an X509 verify
+result of 2, 18, 19, 20 or 21, `RequestFailure::untrusted_chain`; **never 9 or 10, which are the wrong
+clock**) and `Cause::Unauthorized` (a 401). `Reach::TlsUntrusted` sits between `Refused` and `No`. The
+cause travels on `SettledProbe::cause()` per `machine_id` and is what the failure read-outs are worded
+by: `browse.auth.no_source_access` ("has no access to this server") is for a 401 and nothing else — a
+profile switch where no server verified says `tls_untrusted`, `no_source_access` or
+`servers_unreachable` by that order (`FailureCauses::worst`), and each failed switch or discovery
+writes one closed `auth: no server verified — unreachable=N tls_untrusted=N unauthorized=N
+verify=[…]` line (counts and verify codes only).
 
 **"May a credential go to this origin" has ONE answer: `grant::credential_allowed`** (or
 `grant::allowed_under` where a pure function receives the policy). It is the build's
