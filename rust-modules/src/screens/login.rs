@@ -399,8 +399,8 @@ fn readout_overlay<'a>(
 /// The icon a failed sign-in's mark draws as. Telemetry decides WHICH mark a cause earns
 /// (`IncidentContext::readout_glyph`, from the same evidence as the caption); this screen decides
 /// what each mark looks like. One arm per mark and no wildcard, so a new mark cannot draw nothing.
-fn incident_icon(glyph: crate::telemetry::incident::ReadoutGlyph) -> plx_ui::icons::Icon {
-    use crate::telemetry::incident::ReadoutGlyph as G;
+fn incident_icon(glyph: plx_telemetry::telemetry::incident::ReadoutGlyph) -> plx_ui::icons::Icon {
+    use plx_telemetry::telemetry::incident::ReadoutGlyph as G;
     use plx_ui::icons::Icon;
     match glyph {
         G::ClockBadgeAlert => Icon::ClockBadgeAlert,
@@ -743,22 +743,22 @@ struct Note {
 
 /// The support line a person reads out or photographs: what is running, on which firmware and
 /// set, and which failure — codes only, never an address or an account. The trailing segment is
-/// [`crate::telemetry::incident::storage_evidence_line`] — the persistence class, key-manager
+/// [`plx_telemetry::telemetry::incident::storage_evidence_line`] — the persistence class, key-manager
 /// stage and service error code, read from the offer's current read-out facts. Those facts advance
 /// on a deduplicated retry even when the report's already-resolved context and receipt stay put.
 fn support_line(offer: &auth::owner::IncidentOffer) -> String {
-    use crate::telemetry::incident::LinkClass;
+    use plx_telemetry::telemetry::incident::LinkClass;
     let set = plx_platform::tv::device::device().set_line();
     let set = if set.is_empty() { plx_platform::i18n::msg::settings_login_unknown_device().to_string() } else { set };
     let code = match offer.key.link {
         LinkClass::Unknown => offer.key.kind.code().to_string(),
         link => format!("{}.{}", offer.key.kind.code(), link.code()),
     };
-    let storage = crate::telemetry::incident::storage_evidence_line(offer.readout_context());
+    let storage = plx_telemetry::telemetry::incident::storage_evidence_line(offer.readout_context());
     let discovery = offer.readout_context().and_then(|ctx| ctx.discovery.map(|e| {
         let target = e.target.map_or("discovery", |target| match target {
-            crate::telemetry::incident::DiscoveryTarget::PlexTv => "plex.tv",
-            crate::telemetry::incident::DiscoveryTarget::Servers => plx_platform::i18n::msg::settings_login_your_servers(),
+            plx_telemetry::telemetry::incident::DiscoveryTarget::PlexTv => "plex.tv",
+            plx_telemetry::telemetry::incident::DiscoveryTarget::Servers => plx_platform::i18n::msg::settings_login_your_servers(),
         });
         let attempts = ctx.discovery_attempts
             .map_or(String::new(), |n| format!(" attempts:{n}"));
@@ -1087,7 +1087,7 @@ impl LoginScreen {
             // the decision can change while the failure is on screen (a withdrawal elsewhere),
             // and an offer made under an older decision is resolved again. A harness-driven boot
             // never stops on the question, so it never asks for one.
-            let revision = crate::telemetry::consent::revision();
+            let revision = plx_telemetry::telemetry::consent::revision();
             let stale = match o.state {
                 S::Pending => true,
                 S::Offered { revision: at } | S::OnRequest { revision: at } => at != revision,
@@ -1098,8 +1098,8 @@ impl LoginScreen {
                 && self.report.last_resolve != Some((o.id, revision))
             {
                 self.report.last_resolve = Some((o.id, revision));
-                let permission = crate::telemetry::consent::report_permission_now(
-                    crate::telemetry::consent::ONBOARDING_REPORT_SCOPE,
+                let permission = plx_telemetry::telemetry::consent::report_permission_now(
+                    plx_telemetry::telemetry::consent::ONBOARDING_REPORT_SCOPE,
                 );
                 fx.push(Fx::App(AppFx::Session(auth::SessionCmd::ResolveIncident {
                     id: o.id,
@@ -1197,12 +1197,12 @@ impl LoginScreen {
     fn details_offered(&self) -> bool {
         if let Some(warning) = self.persistence_warning {
             return warning.helper.is_some() && self.report.offer.as_ref().is_some_and(|o|
-                o.key.kind == crate::telemetry::incident::IncidentKind::SaveFailed);
+                o.key.kind == plx_telemetry::telemetry::incident::IncidentKind::SaveFailed);
         }
         match (&self.report.offer, self.phase) {
             (Some(_), Phase::Error) => true,
             (Some(o), Phase::Waiting) => {
-                o.key.kind == crate::telemetry::incident::IncidentKind::LinkStalled
+                o.key.kind == plx_telemetry::telemetry::incident::IncidentKind::LinkStalled
             }
             _ => false,
         }
@@ -2259,7 +2259,7 @@ impl<H: AuthLike> Screen<H> for LoginScreen {
 #[cfg(test)]
 mod incident_icon_tests {
     use super::incident_icon;
-    use crate::telemetry::incident::ReadoutGlyph;
+    use plx_telemetry::telemetry::incident::ReadoutGlyph;
 
     /// Telemetry's marks and the icon family share names, and the mapping between them is written
     /// out by hand: a mark that drew a neighbour's icon would put the wrong badge above a verdict
@@ -2831,7 +2831,7 @@ mod tests {
     fn the_failed_readout_stands_on_the_page_lines_and_never_grows() {
         use auth::owner::IncidentState as S;
         let m = plx_ui::fixture::FixtureMeasure;
-        let pin = crate::telemetry::incident::IncidentKind::PinCreate;
+        let pin = plx_telemetry::telemetry::incident::IncidentKind::PinCreate;
         let rows = |s: &LoginScreen| {
             let (labels, has_reason) = s.readout_labels();
             status_row_rects(&m, labels, s.readout_kind(), has_reason)
@@ -3362,7 +3362,7 @@ mod tests {
         );
     }
 
-    fn incident(state: auth::owner::IncidentState, kind: crate::telemetry::incident::IncidentKind)
+    fn incident(state: auth::owner::IncidentState, kind: plx_telemetry::telemetry::incident::IncidentKind)
         -> auth::owner::IncidentOffer {
         let mut context = crate::auth::synthetic_incident();
         context.kind = kind;
@@ -3398,7 +3398,7 @@ mod tests {
         let mut failed = snapshot(Phase::Error, 0, "");
         failed.error = Arc::from("Can’t reach Plex");
         failed.incident = Some(incident(auth::owner::IncidentState::Pending,
-            crate::telemetry::incident::IncidentKind::PinCreate));
+            plx_telemetry::telemetry::incident::IncidentKind::PinCreate));
         let mut s = LoginScreen::new(EntryId(0), failed.read());
         let m = plx_ui::fixture::FixtureMeasure;
         let (_, first) = step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
@@ -3415,8 +3415,8 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let mut failed = snapshot(Phase::Error, 0, "");
         failed.incident = Some(incident(
-            auth::owner::IncidentState::Offered { revision: crate::telemetry::consent::revision() },
-            crate::telemetry::incident::IncidentKind::PinCreate));
+            auth::owner::IncidentState::Offered { revision: plx_telemetry::telemetry::consent::revision() },
+            plx_telemetry::telemetry::incident::IncidentKind::PinCreate));
         let mut s = LoginScreen::new(EntryId(0), failed.read());
         let m = plx_ui::fixture::FixtureMeasure;
         let (_, fx) = step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
@@ -3451,7 +3451,7 @@ mod tests {
     fn failed_with(state: auth::owner::IncidentState) -> auth::owner::SessionSnapshot {
         let mut failed = snapshot(Phase::Error, 0, "");
         failed.error = Arc::from("Can’t reach Plex");
-        failed.incident = Some(incident(state, crate::telemetry::incident::IncidentKind::PinCreate));
+        failed.incident = Some(incident(state, plx_telemetry::telemetry::incident::IncidentKind::PinCreate));
         failed
     }
 
@@ -3544,7 +3544,7 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let m = plx_ui::fixture::FixtureMeasure;
         let cx = test_cx(&m);
-        let pin = crate::telemetry::incident::IncidentKind::PinCreate;
+        let pin = plx_telemetry::telemetry::incident::IncidentKind::PinCreate;
         let receipt = "41de4cd388e4041654de38f2787c3922".to_string();
         for state in [S::NotNow, S::Failed, S::OnRequest { revision: 0 }, S::Sending,
             S::Delivered { receipt: receipt.clone() }, S::Saved { receipt: receipt.clone() }]
@@ -3640,7 +3640,7 @@ mod tests {
     fn insecure_failure(eligibility: plx_plex::plex::probe::PlaintextEligibility)
         -> auth::owner::SessionSnapshot {
         let mut failed = failed_with(auth::owner::IncidentState::Offered {
-            revision: crate::telemetry::consent::revision(),
+            revision: plx_telemetry::telemetry::consent::revision(),
         });
         let verdict = plaintext_verdict(eligibility);
         failed.error = Arc::from(auth::insecure_only_copy(Some(&verdict)).as_ref());
@@ -3804,7 +3804,7 @@ mod tests {
     fn support_line_carries_the_current_readout_storage_evidence() {
         let plain = incident(
             auth::owner::IncidentState::NotNow,
-            crate::telemetry::incident::IncidentKind::PinCreate,
+            plx_telemetry::telemetry::incident::IncidentKind::PinCreate,
         );
         assert!(
             support_line(&plain).ends_with("persistence:unknown keymgr:unknown svc:unknown"),
@@ -3814,8 +3814,8 @@ mod tests {
 
         let mut with_evidence = plain.clone();
         let mut ctx = crate::auth::synthetic_incident();
-        ctx.kind = crate::telemetry::incident::IncidentKind::SaveFailed;
-        ctx.persistence = Some(crate::telemetry::incident::PersistenceFailure::WriteFailed);
+        ctx.kind = plx_telemetry::telemetry::incident::IncidentKind::SaveFailed;
+        ctx.persistence = Some(plx_telemetry::telemetry::incident::PersistenceFailure::WriteFailed);
         ctx.keymanager_stage = Some(plx_platform::storage::wire::KeymanagerStage::Begin);
         ctx.service_error_code = Some(-17);
         with_evidence.key.kind = ctx.kind;
@@ -3839,11 +3839,11 @@ mod tests {
     #[test]
     fn discovery_support_uses_exact_attempts_and_omits_an_uncollected_count() {
         let mut offer = incident(auth::owner::IncidentState::NotNow,
-            crate::telemetry::incident::IncidentKind::Discovery(
-                crate::telemetry::incident::DiscoveryClass::Silent));
-        let discovery = crate::telemetry::incident::DiscoveryEvidence {
-            trigger: crate::telemetry::incident::DiscoveryTrigger::Login,
-            target: Some(crate::telemetry::incident::DiscoveryTarget::PlexTv),
+            plx_telemetry::telemetry::incident::IncidentKind::Discovery(
+                plx_telemetry::telemetry::incident::DiscoveryClass::Silent));
+        let discovery = plx_telemetry::telemetry::incident::DiscoveryEvidence {
+            trigger: plx_telemetry::telemetry::incident::DiscoveryTrigger::Login,
+            target: Some(plx_telemetry::telemetry::incident::DiscoveryTarget::PlexTv),
         };
         offer.context = Some(crate::auth::synthetic_incident()
             .with_discovery(discovery)
@@ -3856,16 +3856,16 @@ mod tests {
             "Details must not show the deduplicated report's older run: {}", support_line(&offer));
 
         offer.context = Some(crate::auth::synthetic_incident().with_discovery(
-            crate::telemetry::incident::DiscoveryEvidence {
-                trigger: crate::telemetry::incident::DiscoveryTrigger::Rediscover,
-                target: Some(crate::telemetry::incident::DiscoveryTarget::Servers),
+            plx_telemetry::telemetry::incident::DiscoveryEvidence {
+                trigger: plx_telemetry::telemetry::incident::DiscoveryTrigger::Rediscover,
+                target: Some(plx_telemetry::telemetry::incident::DiscoveryTarget::Servers),
             }));
         offer.readout_context = offer.context;
         assert!(!support_line(&offer).contains("attempts:"), "{}", support_line(&offer));
     }
 
     fn screen_with(phase: Phase, state: auth::owner::IncidentState,
-        kind: crate::telemetry::incident::IncidentKind) -> LoginScreen {
+        kind: plx_telemetry::telemetry::incident::IncidentKind) -> LoginScreen {
         let mut s = bare_screen(phase, 0.0);
         s.error = Arc::from("Can’t reach Plex");
         s.report.offer = Some(incident(state, kind));
@@ -3883,7 +3883,7 @@ mod tests {
     #[test]
     fn a_failure_with_no_report_draws_no_status_line() {
         use auth::owner::IncidentState as S;
-        let pin = crate::telemetry::incident::IncidentKind::PinCreate;
+        let pin = plx_telemetry::telemetry::incident::IncidentKind::PinCreate;
         for state in [S::Pending, S::Offered { revision: 0 }, S::NotNow, S::Dropped, S::OnRequest { revision: 0 }] {
             let s = screen_with(Phase::Error, state.clone(), pin);
             assert_eq!(text(s.report_note()), None, "{state:?}");
@@ -3902,7 +3902,7 @@ mod tests {
         let m = plx_ui::fixture::FixtureMeasure;
         let spin_after_ticks = |state: auth::owner::IncidentState| {
             let mut failed = snapshot(Phase::Error, 0, "");
-            failed.incident = Some(incident(state, crate::telemetry::incident::IncidentKind::PinCreate));
+            failed.incident = Some(incident(state, plx_telemetry::telemetry::incident::IncidentKind::PinCreate));
             let mut s = LoginScreen::new(EntryId(0), failed.read());
             for ms in [16, 32, 48] {
                 step_ev_with(&mut s, &tick_ev(ms), &failed, InstanceId(0), &m);

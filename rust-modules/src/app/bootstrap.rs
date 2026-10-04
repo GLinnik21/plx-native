@@ -154,7 +154,7 @@ pub(crate) enum Entropy {
 pub(crate) struct Initial {
     pub version: u32,
     pub session: crate::auth::SessionInit,
-    pub consent: crate::telemetry::consent::Consent,
+    pub consent: plx_telemetry::telemetry::consent::Consent,
     pub home: crate::pms::initial::Initial,
     pub clock_start: u32,
     pub entropy: Entropy,
@@ -216,7 +216,7 @@ impl Initial {
         });
         let initial = Self { version: 1,
             session: crate::auth::SessionInit::captured_boot(saved, primary, Vec::new()),
-            consent: crate::telemetry::capture_initial(), clock_start: 0, entropy: Entropy::Captured(entropy),
+            consent: plx_telemetry::telemetry::capture_initial(), clock_start: 0, entropy: Entropy::Captured(entropy),
             primary_client: plx_plex::plex::Client::capture_generation_seed(),
             automated: crate::dev::any_trigger_present(),
             settings: crate::dev::scenarios::settings_boot_value(),

@@ -5306,8 +5306,8 @@ pub(crate) fn set_next_episode_mode(mode: NextEpisodeMode) -> bool {
     if saved {
         restore_next_episode_mode(mode);
         plx_machine::idle::invalidate();
-        crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
-            feature: crate::diag::schema::Feature::NextEpisode(mode),
+        plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
+            feature: plx_telemetry::diag::schema::Feature::NextEpisode(mode),
         });
     }
     saved
@@ -5336,8 +5336,8 @@ pub(crate) fn set_skip_interval(interval: SkipInterval) -> bool {
     if saved {
         restore_skip_interval(interval);
         plx_machine::idle::invalidate();
-        crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
-            feature: crate::diag::schema::Feature::SkipInterval(interval),
+        plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
+            feature: plx_telemetry::diag::schema::Feature::SkipInterval(interval),
         });
     }
     saved

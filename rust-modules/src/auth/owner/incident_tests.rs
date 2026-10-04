@@ -5,7 +5,7 @@
 use super::super::*;
 use super::*;
 use crate::auth::LoginProgress;
-use crate::telemetry::incident::{IncidentContext, IncidentKind, InternalClass, LinkClass};
+use plx_telemetry::telemetry::incident::{IncidentContext, IncidentKind, InternalClass, LinkClass};
 
 struct OwnerHost;
 impl plx_machine::machine::Host for OwnerHost {
@@ -141,17 +141,17 @@ fn legacy_no_servers_context_keeps_the_parent_canonical_digest() {
     const E437F264: &str = r#"{"kind":{"Discovery":"NoServers"},"link":"Unknown","http_status":null,"curl_rc":null,"unanswered":"Zero","failing_for":"None","code_generation":null,"persistence":null,"helper":null,"candidate_errnos":[null,null,null,null,null,null,null,null],"keymanager_stage":null,"service_error_code":null,"insecure":null,"plaintext_consent":null,"no_servers":{"resources":"TwoToFive","trigger":"Rediscover"},"occurred_at_ms":1}"#;
     const N79EF8433: &str = r#"{"kind":{"Discovery":"NoServers"},"link":"Unknown","http_status":null,"curl_rc":null,"unanswered":"Zero","failing_for":"None","code_generation":null,"persistence":null,"helper":null,"candidate_errnos":[null,null,null,null,null,null,null,null],"keymanager_stage":null,"service_error_code":null,"insecure":null,"plaintext_consent":null,"no_servers":{"resources":"One","trigger":"Login"},"occurred_at_ms":2}"#;
     for (fixture, resources, trigger, occurred_at_ms) in [
-        (E437F264, crate::telemetry::incident::CountBucket::TwoToFive,
-            crate::telemetry::incident::DiscoveryTrigger::Rediscover, 1),
-        (N79EF8433, crate::telemetry::incident::CountBucket::One,
-            crate::telemetry::incident::DiscoveryTrigger::Login, 2),
+        (E437F264, plx_telemetry::telemetry::incident::CountBucket::TwoToFive,
+            plx_telemetry::telemetry::incident::DiscoveryTrigger::Rediscover, 1),
+        (N79EF8433, plx_telemetry::telemetry::incident::CountBucket::One,
+            plx_telemetry::telemetry::incident::DiscoveryTrigger::Login, 2),
     ] {
         let restored: IncidentContext = serde_json::from_str(fixture).unwrap();
         let expected = IncidentContext {
             occurred_at_ms,
             ..IncidentContext::new(
-                IncidentKind::Discovery(crate::telemetry::incident::DiscoveryClass::NoServers), None)
-                .with_no_servers(crate::telemetry::incident::NoServersEvidence {
+                IncidentKind::Discovery(plx_telemetry::telemetry::incident::DiscoveryClass::NoServers), None)
+                .with_no_servers(plx_telemetry::telemetry::incident::NoServersEvidence {
                     resources, trigger,
                 })
         };
@@ -281,7 +281,7 @@ fn discovery_trouble_is_accepted_for_rediscover_and_stale_epochs_are_fenced() {
         epoch: first_epoch, token: "token".into(),
     }, false);
     fail(&mut owner, IncidentContext::new(
-        IncidentKind::Discovery(crate::telemetry::incident::DiscoveryClass::Silent), None));
+        IncidentKind::Discovery(plx_telemetry::telemetry::incident::DiscoveryClass::Silent), None));
     command(&mut owner, Command::Retry);
     let epoch = owner.state.epoch;
     assert_eq!(owner.state.phase, Phase::Discovering);
@@ -577,7 +577,7 @@ fn a_discovery_retry_that_fails_the_same_way_is_not_asked_about_again() {
     observe(&mut owner, LoginProgress::Authorized { epoch, token: "synthetic-token".into() }, false);
     let silent = IncidentContext {
         occurred_at_ms: 3,
-        ..IncidentContext::new(IncidentKind::Discovery(crate::telemetry::incident::DiscoveryClass::Silent), Some(Err(dns())))
+        ..IncidentContext::new(IncidentKind::Discovery(plx_telemetry::telemetry::incident::DiscoveryClass::Silent), Some(Err(dns())))
     };
     fail(&mut owner, silent);
     resolve(&mut owner, Permission::NotDetermined, 1);
@@ -593,9 +593,9 @@ fn a_discovery_retry_that_fails_the_same_way_is_not_asked_about_again() {
 
 #[test]
 fn a_settled_discovery_offer_keeps_one_answer_but_details_reads_the_latest_run() {
-    let evidence = crate::telemetry::incident::DiscoveryEvidence {
-        trigger: crate::telemetry::incident::DiscoveryTrigger::Login,
-        target: Some(crate::telemetry::incident::DiscoveryTarget::PlexTv),
+    let evidence = plx_telemetry::telemetry::incident::DiscoveryEvidence {
+        trigger: plx_telemetry::telemetry::incident::DiscoveryTrigger::Login,
+        target: Some(plx_telemetry::telemetry::incident::DiscoveryTarget::PlexTv),
     };
     for final_state in [
         IncidentState::NotNow,
@@ -610,7 +610,7 @@ fn a_settled_discovery_offer_keeps_one_answer_but_details_reads_the_latest_run()
         let first_context = IncidentContext {
             occurred_at_ms: 3,
             ..IncidentContext::new(IncidentKind::Discovery(
-                crate::telemetry::incident::DiscoveryClass::Silent), Some(Err(dns())))
+                plx_telemetry::telemetry::incident::DiscoveryClass::Silent), Some(Err(dns())))
                 .with_discovery(evidence)
                 .with_retry_run(2, std::time::Duration::from_secs(3))
         };
@@ -642,7 +642,7 @@ fn a_settled_discovery_offer_keeps_one_answer_but_details_reads_the_latest_run()
         let latest_context = IncidentContext {
             occurred_at_ms: 9,
             ..IncidentContext::new(IncidentKind::Discovery(
-                crate::telemetry::incident::DiscoveryClass::Silent), Some(Err(dns())))
+                plx_telemetry::telemetry::incident::DiscoveryClass::Silent), Some(Err(dns())))
                 .with_discovery(evidence)
                 .with_retry_run(3, std::time::Duration::from_secs(7))
         };
@@ -812,10 +812,10 @@ fn no_servers_incident() -> IncidentContext {
     IncidentContext {
         occurred_at_ms: 3,
         ..IncidentContext::new(
-            IncidentKind::Discovery(crate::telemetry::incident::DiscoveryClass::NoServers), None)
-            .with_no_servers(crate::telemetry::incident::NoServersEvidence {
-                resources: crate::telemetry::incident::CountBucket::One,
-                trigger: crate::telemetry::incident::DiscoveryTrigger::Login,
+            IncidentKind::Discovery(plx_telemetry::telemetry::incident::DiscoveryClass::NoServers), None)
+            .with_no_servers(plx_telemetry::telemetry::incident::NoServersEvidence {
+                resources: plx_telemetry::telemetry::incident::CountBucket::One,
+                trigger: plx_telemetry::telemetry::incident::DiscoveryTrigger::Login,
             })
     }
 }
@@ -865,9 +865,9 @@ fn the_account_name_is_absent_from_every_report_effect_and_digest() {
         serde_json::to_string(&context).unwrap(),
         format!("{context:?}"),
     ];
-    for consent in [crate::telemetry::incident::ConsentKind::Standing,
-        crate::telemetry::incident::ConsentKind::OneOff] {
-        seen.push(crate::telemetry::incident::event_body("a", "b", Some(&"e".repeat(32)), context, consent)
+    for consent in [plx_telemetry::telemetry::incident::ConsentKind::Standing,
+        plx_telemetry::telemetry::incident::ConsentKind::OneOff] {
+        seen.push(plx_telemetry::telemetry::incident::event_body("a", "b", Some(&"e".repeat(32)), context, consent)
             .to_string());
     }
     for (i, text) in seen.iter().enumerate() {

@@ -46,7 +46,7 @@
 /// distribution is segmented by the same hardware families. Unique device identifiers remain
 /// structurally absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DiagEvent {
+pub enum DiagEvent {
     /// The app reached its event loop. A marker with no fields — "how many launches" is the
     /// question, and everything that would qualify it is a session constant.
     AppLaunch,
@@ -149,7 +149,7 @@ pub(crate) enum DiagEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Feature {
+pub enum Feature {
     Pause,
     Seek,
     AudioTrack,
@@ -182,7 +182,7 @@ pub(crate) enum Feature {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SignInFailure {
+pub enum SignInFailure {
     PinCreate,
     Authorization,
     Discovery,
@@ -239,7 +239,7 @@ impl Feature {
 /// Note what `Int` did NOT bring with it. The raster and the frame rate `playback.started` reports
 /// are `Str` buckets, not numbers, for the reason that event's own comment gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Value {
+pub enum Value {
     /// From a fixed table in this crate — never a runtime-built string. The guarantee is not the
     /// `'static` lifetime, which a leaked allocation would satisfy; it is that every producer in
     /// [`serialize`] is a literal or a `match` over an enum.
@@ -256,7 +256,7 @@ pub(crate) enum Value {
 /// while a television is offline instead of letting an ingest service mistake the next boot for
 /// the moment every queued action happened.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct UsageEnvelope {
+pub struct UsageEnvelope {
     pub version: u8,
     pub occurred_at_ms: u64,
     pub session_id: String,
@@ -273,7 +273,7 @@ pub(crate) struct UsageEnvelope {
 /// correlate playback failures with a shipped webOS/API/SoC class and connection path. There is no
 /// serial, MAC-derived LGUDID, network address, account value or Plex identity.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct UsageContext {
+pub struct UsageContext {
     pub app_version: String,
     pub webos_release: String,
     pub webos_api: String,
@@ -339,7 +339,7 @@ impl UsageContext {
     /// inheriting whichever registry slot happens to be current or reporting a hardcoded
     /// `unknown` for a connection the event never had. The one server-addressed producer is
     /// [`Self::for_snapshot`], for an event that captured its own `(link, ip)` up front.
-    pub(crate) fn current() -> Self {
+    pub fn current() -> Self {
         Self::build(None)
     }
 
@@ -347,7 +347,7 @@ impl UsageContext {
     /// registry read. `server.is_some()` is what decides "this event addresses one server" (and
     /// so gets fields at all, possibly `unknown`); `server.is_none()` omits both regardless of
     /// `link`/`ip`, matching [`Self::current`]'s server-less behaviour exactly.
-    pub(crate) fn for_snapshot(
+    pub fn for_snapshot(
         server: Option<plx_plex::plex::ServerId>,
         link: Option<plx_plex::plex::probe::Location>,
         ip: Option<plx_plex::plex::IpVersion>,
@@ -373,7 +373,7 @@ impl UsageContext {
             (connection, ip)
         });
         Self {
-            app_version: dimension(env!("PLX_VERSION")),
+            app_version: dimension(crate::telemetry::app_version()),
             webos_release: dimension(&os.release),
             webos_api: dimension(&os.api),
             webos_codename: dimension(&os.codename),
@@ -388,7 +388,7 @@ impl UsageContext {
     }
 
     /// What the consent preview shows before the app has permission to capture real values.
-    pub(crate) fn preview() -> Self {
+    pub fn preview() -> Self {
         Self {
             app_version: "<app version>".into(),
             webos_release: "<webOS release>".into(),
@@ -428,15 +428,15 @@ fn dimension(value: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
-pub(crate) enum UsageValue {
+pub enum UsageValue {
     Str(String),
     Int(i64),
 }
 
 impl UsageEnvelope {
-    pub(crate) const VERSION: u8 = 1;
+    pub const VERSION: u8 = 1;
 
-    pub(crate) fn capture(event: DiagEvent, occurred_at_ms: u64, session_id: &str) -> Self {
+    pub fn capture(event: DiagEvent, occurred_at_ms: u64, session_id: &str) -> Self {
         Self::capture_with_context(event, occurred_at_ms, session_id, UsageContext::current())
     }
 
@@ -446,7 +446,7 @@ impl UsageEnvelope {
     /// event on that attempt must report THAT connection, not whatever the client reads as at
     /// send time after a mid-attempt re-point. The one server-addressed producer; a generic event
     /// with no one server goes through [`Self::capture`] instead.
-    pub(crate) fn capture_for_snapshot(
+    pub fn capture_for_snapshot(
         event: DiagEvent,
         occurred_at_ms: u64,
         session_id: &str,
@@ -462,7 +462,7 @@ impl UsageEnvelope {
         )
     }
 
-    pub(crate) fn capture_with_context(
+    pub fn capture_with_context(
         event: DiagEvent,
         occurred_at_ms: u64,
         session_id: &str,
@@ -490,11 +490,11 @@ impl UsageEnvelope {
         }
     }
 
-    pub(crate) fn encode(&self) -> Option<Vec<u8>> {
+    pub fn encode(&self) -> Option<Vec<u8>> {
         serde_json::to_vec(self).ok()
     }
 
-    pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
         let value: Self = serde_json::from_slice(bytes).ok()?;
         (value.version == Self::VERSION).then_some(value)
     }
@@ -503,8 +503,8 @@ impl UsageEnvelope {
     /// understood? Legacy PostHog bodies predate this shape and have no `version` field. Senders
     /// may pass those through, but must fail closed on a future/invalid internal envelope rather
     /// than posting its storage representation as if it were vendor wire JSON.
-    #[cfg(test)]
-    pub(crate) fn claims_neutral_format(bytes: &[u8]) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn claims_neutral_format(bytes: &[u8]) -> bool {
         serde_json::from_slice::<serde_json::Value>(bytes)
             .ok()
             .and_then(|v| v.get("version").cloned())
@@ -521,7 +521,7 @@ impl UsageEnvelope {
 /// from one description of the event. It carried an `#[allow(dead_code)]` until that caller
 /// existed; the attribute is gone rather than left behind, because a stale allowance is how a
 /// genuinely dead function later hides in plain sight.
-pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value)>) {
+pub fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value)>) {
     match e {
         DiagEvent::AppLaunch => ("app.launch", Vec::new()),
         DiagEvent::RouteEntered { screen } => {
@@ -636,15 +636,15 @@ pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value
 /// held beside the field rather than in the document because the document is the OUTPUT — written
 /// there, the two drift, and the one that goes stale is the one nobody compiles.
 ///
-/// **`#[cfg(test)]`, and that is the honest shape rather than a compromise.** This is a
+/// **`#[cfg(any(test, feature = "test-support"))]`, and that is the honest shape rather than a compromise** (the application's consent-document tests read it through `test-support`). This is a
 /// SPECIFICATION, checked against the implementation; at runtime [`serialize`] *is* the schema, and
 /// nothing needs a second copy of it in the shipped binary. The alternative was an
 /// `#[allow(dead_code)]`, and this file's own doc argues against exactly that: a standing allowance
 /// is how a genuinely dead declaration later hides in plain sight. Every comparison that gives this
 /// registry its value — against `serialize`, against `PRIVACY.md`, against the consent screen's
 /// preview — is a test, and `make check` runs them all.
-#[cfg(test)]
-pub(crate) const EVENT_SPECS: &[EventSpec] = &[
+#[cfg(any(test, feature = "test-support"))]
+pub const EVENT_SPECS: &[EventSpec] = &[
     EventSpec { name: "app.launch", fields: &[] },
     EventSpec {
         name: "route.entered",
@@ -711,8 +711,8 @@ pub(crate) const EVENT_SPECS: &[EventSpec] = &[
 
 /// Properties attached to every usage event by the durable envelope. Kept separate from
 /// [`EVENT_SPECS`] because these classify the app/device/network context, not the action itself.
-#[cfg(test)]
-pub(crate) const CONTEXT_SPECS: &[F] = &[
+#[cfg(any(test, feature = "test-support"))]
+pub const CONTEXT_SPECS: &[F] = &[
     F {
         key: "app_version",
         domain: "the PlxNative package version",
@@ -761,21 +761,21 @@ pub(crate) const CONTEXT_SPECS: &[F] = &[
     },
 ];
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 const PLAYBACK_ID: &str = "a random number minted per attempt, never stored and never reused";
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 const MODE: &str = "`direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused";
 
 /// One event's contract. See [`EVENT_SPECS`].
-#[cfg(test)]
-pub(crate) struct EventSpec {
+#[cfg(any(test, feature = "test-support"))]
+pub struct EventSpec {
     pub name: &'static str,
     pub fields: &'static [F],
 }
 
 /// One field's contract: its key, and what it may hold in the words the privacy document prints.
-#[cfg(test)]
-pub(crate) struct F {
+#[cfg(any(test, feature = "test-support"))]
+pub struct F {
     pub key: &'static str,
     pub domain: &'static str,
 }
@@ -783,8 +783,8 @@ pub(crate) struct F {
 /// The schema table exactly as `PRIVACY.md` carries it. **The document is the OUTPUT** — a test
 /// asserts the file contains this verbatim and prints the block on failure, so the fix to a stale
 /// document is a paste rather than an act of authorship.
-#[cfg(test)]
-pub(crate) fn privacy_table() -> String {
+#[cfg(any(test, feature = "test-support"))]
+pub fn privacy_table() -> String {
     let mut out = String::from("| event | fields |\n|---|---|\n");
     for spec in EVENT_SPECS {
         let fields = if spec.fields.is_empty() {
@@ -801,8 +801,8 @@ pub(crate) fn privacy_table() -> String {
     out
 }
 
-#[cfg(test)]
-pub(crate) fn privacy_context_table() -> String {
+#[cfg(any(test, feature = "test-support"))]
+pub fn privacy_context_table() -> String {
     let mut out = String::from("| property | value |\n|---|---|\n");
     for field in CONTEXT_SPECS {
         out.push_str(&format!("| `{}` | {} |\n", field.key, field.domain));
@@ -1027,10 +1027,10 @@ mod tests {
         // guard that has to be argued with is one somebody eventually deletes. Narrowing it here
         // rather than adding an exemption keeps the failure meaning one thing.
         let from = src
-            .find("pub(crate) enum DiagEvent")
+            .find("pub enum DiagEvent")
             .expect("the event type");
         let to = src
-            .find("pub(crate) struct UsageEnvelope")
+            .find("pub struct UsageEnvelope")
             .expect("the durable envelope boundary");
         let decls = &src[from..to];
         for (i, line) in decls.lines().enumerate() {
@@ -1082,7 +1082,8 @@ mod tests {
     fn the_privacy_document_carries_the_generated_table() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .expect("rust-modules has a parent")
+            .and_then(std::path::Path::parent)
+            .expect("rust-modules/telemetry has a repository root above it")
             .join("PRIVACY.md");
         let doc = std::fs::read_to_string(&root).expect("PRIVACY.md is readable");
         let want = privacy_table();

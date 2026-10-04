@@ -16,13 +16,13 @@ use serde_json::{Map, Value};
 static CLEAR_ERROR_TRACE: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
 
 /// Register the function [`clear_error_trace`] calls. The first registration wins.
-pub(crate) fn install_error_trace_clear(clear: fn()) {
+pub fn install_error_trace_clear(clear: fn()) {
     let _ = CLEAR_ERROR_TRACE.set(clear);
 }
 
 /// Forget the in-memory playback trace immediately, as error reporting is withdrawn or the account
 /// that consented ends. A no-op until the eraser is installed, which a booted app does first.
-pub(crate) fn clear_error_trace() {
+pub fn clear_error_trace() {
     if let Some(clear) = CLEAR_ERROR_TRACE.get() {
         clear();
     }
@@ -119,7 +119,7 @@ fn breadcrumb(step: TraceStep) -> Value {
 /// — which is also why [`super::sentry::attach_hardware_context`] must be called here explicitly:
 /// unlike a native crash, this event never touches the scope `sdk::start` put the `webos`/
 /// `hardware` contexts on, so without that call it would carry no compatibility context at all.
-pub(crate) fn event_body(
+pub fn event_body(
     event_id: &str,
     dist: &str,
     errors_id: Option<&str>,
@@ -133,9 +133,9 @@ pub(crate) fn event_body(
         "event_id": event_id,
         "platform": "native",
         "level": "error",
-        "release": concat!("plxnative@", env!("PLX_VERSION")),
+        "release": super::release(),
         "environment": super::sender::ENVIRONMENT,
-        "sdk": {"name": "plxnative-handled", "version": env!("PLX_VERSION")},
+        "sdk": {"name": "plxnative-handled", "version": super::app_version()},
         "logger": "playback",
         "transaction": "playback",
         "culprit": format!("playback::{code}"),
@@ -200,7 +200,7 @@ pub(crate) fn event_body(
 
 /// Queue one handled event and ask the existing background sender to flush it. No network work is
 /// performed on the render thread.
-pub(crate) fn report_error(kind: FailureClass, context: PlaybackErrorContext, trace: &[TraceStep]) {
+pub fn report_error(kind: FailureClass, context: PlaybackErrorContext, trace: &[TraceStep]) {
     if !super::consent::allows_errors() || !super::sender::has_sentry() {
         return;
     }
@@ -234,7 +234,7 @@ pub(crate) fn report_error(kind: FailureClass, context: PlaybackErrorContext, tr
 /// Representative handled-error payload built through the real serializer. Per-report random and
 /// runtime-build values are visible placeholders; the other values are representative members of
 /// the closed domains disclosed beside the preview. No consent-time identifier is minted.
-pub(crate) fn preview_event() -> Vec<u8> {
+pub fn preview_event() -> Vec<u8> {
     use crate::telemetry::classes::{
         AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DeliveryReason, HttpClass,
         OriginalProbePhase, PipelineClass, QualityClass, RasterClass, RateClass, RefusalContext,
@@ -338,7 +338,7 @@ fn codes<T: Copy>(values: &[T], code: fn(T) -> &'static str) -> String {
 /// Closed value domains for the representative handled-error payload above. Generated from the
 /// same enum `code()` methods as the serializer, so the consent screen does not imply that its one
 /// sample value is the only possible one.
-pub(crate) fn preview_domains() -> String {
+pub fn preview_domains() -> String {
     use crate::telemetry::classes::{
         BufferClass as B, DeliveryClass as D, DeliveryReason as W, HttpClass as H,
         OriginalProbePhase as P, PipelineClass as L, QualityClass as Q, RasterClass as X,
@@ -881,7 +881,7 @@ mod tests {
     fn consent_preview_and_privacy_name_every_refusal_domain_value() {
         use crate::telemetry::classes::{AudioCodecClass, DecisionCodeClass, VideoCodecClass};
         let legend = preview_domains();
-        let privacy = include_str!("../../../PRIVACY.md");
+        let privacy = include_str!("../../../../PRIVACY.md");
         let mut values: Vec<&str> = Vec::new();
         values.extend(DecisionCodeClass::ALL.iter().map(|c| c.code()));
         values.extend(VideoCodecClass::ALL.iter().map(|c| c.code()));
@@ -908,7 +908,7 @@ mod tests {
     #[test]
     fn consent_preview_and_privacy_name_the_closed_failure_domains() {
         let legend = preview_domains();
-        let privacy = include_str!("../../../PRIVACY.md");
+        let privacy = include_str!("../../../../PRIVACY.md");
         for value in [
             "playback_interrupted",
             "original_rollback",

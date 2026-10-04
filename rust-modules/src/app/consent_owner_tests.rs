@@ -1,5 +1,5 @@
 use super::*;
-use crate::telemetry::consent::{self, Consent};
+use plx_telemetry::telemetry::consent::{self, Consent};
 use plx_ui::dispatch::NoTap;
 
 struct PublishedSnapshot(Option<Consent>);
@@ -133,8 +133,8 @@ fn signing_out_through_consent_owner_leaves_nothing_for_the_next_account() {
     }
     impl Drop for Redirects {
         fn drop(&mut self) {
-            crate::telemetry::spool::set_test_path(None);
-            crate::telemetry::redirect_for_test(None);
+            plx_telemetry::telemetry::spool::set_test_path(None);
+            plx_telemetry::telemetry::redirect_for_test(None);
             if let Some(saved) = self.saved.take() {
                 consent::install(saved);
             }
@@ -154,8 +154,8 @@ fn signing_out_through_consent_owner_leaves_nothing_for_the_next_account() {
         saved: consent::current(),
     };
     let consent_file = dir.join("telemetry.json");
-    crate::telemetry::redirect_for_test(Some(consent_file.clone()));
-    crate::telemetry::spool::set_test_path(Some(dir.join("spool.jsonl")));
+    plx_telemetry::telemetry::redirect_for_test(Some(consent_file.clone()));
+    plx_telemetry::telemetry::spool::set_test_path(Some(dir.join("spool.jsonl")));
 
     let enabled = Consent {
         asked_version: consent::POLICY_VERSION,
@@ -165,9 +165,9 @@ fn signing_out_through_consent_owner_leaves_nothing_for_the_next_account() {
         errors_id: Some("b".repeat(32)),
         ..Default::default()
     };
-    crate::telemetry::record(enabled.clone());
+    plx_telemetry::telemetry::record(enabled.clone());
     assert_eq!(
-        crate::telemetry::persistence::load(std::slice::from_ref(&consent_file)),
+        plx_telemetry::telemetry::persistence::load(std::slice::from_ref(&consent_file)),
         consent::migrate_loaded(enabled.clone()),
         "the decision is durably persisted before sign-out"
     );
@@ -185,7 +185,7 @@ fn signing_out_through_consent_owner_leaves_nothing_for_the_next_account() {
     assert!(!published.answered() && !published.any());
     assert!(published.install_id.is_none() && published.errors_id.is_none());
     assert!(!consent::allows_usage() && !consent::allows_errors());
-    let reopened = crate::telemetry::persistence::load(std::slice::from_ref(&consent_file));
+    let reopened = plx_telemetry::telemetry::persistence::load(std::slice::from_ref(&consent_file));
     assert!(!reopened.answered() && !reopened.any(), "the next launch is asked afresh");
     assert!(reopened.install_id.is_none() && reopened.errors_id.is_none());
     assert!(!consent_file.exists());

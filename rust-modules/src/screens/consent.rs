@@ -16,7 +16,7 @@
 
 use std::borrow::Cow;
 
-use crate::telemetry::consent::{self, Consent};
+use plx_telemetry::telemetry::consent::{self, Consent};
 use plx_ui::decision_alert::{Choice as AlertChoice, DecisionAlert};
 use plx_ui::document_reader::DocumentReader;
 use plx_ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKeys, RowKind};
@@ -1169,13 +1169,13 @@ impl Screen<InnerHost> for PreviewPage {
 pub(crate) fn preview_crash() -> String {
     let mut out = String::from(plx_platform::i18n::msg::settings_consent_preview_crash_intro());
     out.push_str(plx_platform::i18n::msg::settings_consent_preview_native());
-    let crash = crate::telemetry::native::preview_event();
+    let crash = plx_telemetry::telemetry::native::preview_event();
     let crash_text = serde_json::from_slice::<serde_json::Value>(&crash)
         .ok()
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| String::from_utf8_lossy(&crash).into_owned());
     out.push_str(&crash_text);
-    for (label, body) in crate::telemetry::crashreport::preview_events() {
+    for (label, body) in plx_telemetry::telemetry::crashreport::preview_events() {
         out.push_str("\n\n");
         out.push_str(label);
         out.push_str(plx_platform::i18n::msg::settings_consent_preview_fallback());
@@ -1186,33 +1186,33 @@ pub(crate) fn preview_crash() -> String {
         out.push_str(&text);
     }
     out.push_str(plx_platform::i18n::msg::settings_consent_preview_handled());
-    let handled = crate::telemetry::playback::preview_event();
+    let handled = plx_telemetry::telemetry::playback::preview_event();
     let handled_text = serde_json::from_slice::<serde_json::Value>(&handled)
         .ok()
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| String::from_utf8_lossy(&handled).into_owned());
     out.push_str(&handled_text);
     out.push_str(plx_platform::i18n::msg::settings_consent_preview_incident());
-    let incident = crate::telemetry::incident::preview_event();
+    let incident = plx_telemetry::telemetry::incident::preview_event();
     let incident_text = serde_json::from_slice::<serde_json::Value>(&incident)
         .ok()
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| String::from_utf8_lossy(&incident).into_owned());
     out.push_str(&incident_text);
     out.push_str("\n\n");
-    out.push_str(&crate::telemetry::playback::preview_domains());
+    out.push_str(&plx_telemetry::telemetry::playback::preview_domains());
     out
 }
 
 /// **Item 14: the Analytics/Usage channel's own preview** — every
-/// [`DiagEvent`](crate::diag::schema::DiagEvent) the build can emit, everything PostHog (Germany)
+/// [`DiagEvent`](plx_telemetry::diag::schema::DiagEvent) the build can emit, everything PostHog (Germany)
 /// can receive when product analytics is on. Runs the real `posthog::preview` serialiser, so an
 /// event added without being declared shows up here rather than only in a dashboard.
 ///
 /// The identifier shown is always a placeholder, never the stored value. A new identifier is
 /// minted only when product analytics is enabled; error-only consent creates none.
 pub(crate) fn preview_usage() -> String {
-    use crate::diag::schema::DiagEvent;
+    use plx_telemetry::diag::schema::DiagEvent;
     let mut out = String::from(plx_platform::i18n::msg::settings_consent_preview_usage_intro());
     out.push_str(plx_platform::i18n::msg::settings_consent_preview_usage_heading());
     for e in [
@@ -1221,11 +1221,11 @@ pub(crate) fn preview_usage() -> String {
         DiagEvent::SignInCompleted,
         DiagEvent::SignInStarted,
         DiagEvent::SignInFailed {
-            kind: crate::diag::schema::SignInFailure::Authorization,
+            kind: plx_telemetry::diag::schema::SignInFailure::Authorization,
         },
         DiagEvent::SignInCancelled,
         DiagEvent::FeatureUsed {
-            feature: crate::diag::schema::Feature::Seek,
+            feature: plx_telemetry::diag::schema::Feature::Seek,
         },
         // Representative values, not placeholders: every one of these is a real bucket the app can
         // actually emit, so what the person reads here is the shape of what would be sent. The
@@ -1276,11 +1276,11 @@ pub(crate) fn preview_usage() -> String {
             // The REAL environment this build would report, not a placeholder: it is the one
             // field on the preview that differs between a developer's build and a shipped one, and
             // showing the wrong side would make the panel lie about where the data goes.
-            crate::telemetry::posthog::preview(
+            plx_telemetry::telemetry::posthog::preview(
                 "<project key>",
                 "<random id>",
                 e,
-                crate::telemetry::sender::ENVIRONMENT,
+                plx_telemetry::telemetry::sender::ENVIRONMENT,
             );
         // **Pretty-printed, and that is not cosmetic.** Compact JSON has almost no spaces, so a
         // greedy word-wrapper sees one enormous unbreakable word, fails to fit it, and ELIDES —

@@ -757,7 +757,7 @@ pub(super) fn enhancement_fallback(
 /// server" opening, so every site keeps the exact log sentence it always had.
 pub(super) fn note_enhancement_refused(context: &str, audio: plx_plex::plex::AudioEnhancements) {
     crate::player::log(&format!("enhancement: refused/ignored by server{context}"));
-    crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
+    plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::EnhancementRefused {
         boost_dialog: audio.boost_dialog,
         normalize_loudness: audio.normalize_loudness,
     });

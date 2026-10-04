@@ -23,7 +23,7 @@ use std::sync::Mutex;
 const MAX_WATCHED: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DeliveryState {
+pub enum DeliveryState {
     /// In the durable spool; no send has settled it yet.
     Queued,
     /// The one-off's direct fallback is on the network.
@@ -54,18 +54,18 @@ fn table() -> std::sync::MutexGuard<'static, Vec<(String, DeliveryState)>> {
 }
 
 /// The account tenure a caller is acting in, to be checked again with [`current`].
-pub(crate) fn tenure() -> u64 {
+pub fn tenure() -> u64 {
     TENURE.load(Ordering::Acquire)
 }
 
 /// Is `tenure` still the account's? `false` once [`forget`] has run since it was read.
-pub(crate) fn current(tenure: u64) -> bool {
+pub fn current(tenure: u64) -> bool {
     TENURE.load(Ordering::Acquire) == tenure
 }
 
 /// Start watching `event_id` in `state`, or move a watched one to it. Refused (`false`) when
 /// `tenure` has ended, or when every watched report is on the network and none can make room.
-pub(crate) fn watch(event_id: &str, state: DeliveryState, tenure: u64) -> bool {
+pub fn watch(event_id: &str, state: DeliveryState, tenure: u64) -> bool {
     let mut t = table();
     if !current(tenure) {
         return false;
@@ -89,7 +89,7 @@ pub(crate) fn watch(event_id: &str, state: DeliveryState, tenure: u64) -> bool {
 
 /// What a sender learned about `event_id`. Only a watched report is updated, and a settled one
 /// (delivered or failed) stays settled.
-pub(crate) fn settle(event_id: &str, state: DeliveryState) {
+pub fn settle(event_id: &str, state: DeliveryState) {
     let mut t = table();
     if let Some((_, existing)) = t.iter_mut().find(|(id, _)| id == event_id) {
         if !existing.settled() {
@@ -99,7 +99,7 @@ pub(crate) fn settle(event_id: &str, state: DeliveryState) {
 }
 
 /// [`settle`], from a worker that may have outlived the tenure it started in.
-pub(crate) fn settle_if_current(event_id: &str, state: DeliveryState, tenure: u64) {
+pub fn settle_if_current(event_id: &str, state: DeliveryState, tenure: u64) {
     let mut t = table();
     if !current(tenure) {
         return;
@@ -113,7 +113,7 @@ pub(crate) fn settle_if_current(event_id: &str, state: DeliveryState, tenure: u6
 
 /// A build that can send nothing (no endpoint configured): every watched report still unsettled
 /// will never be delivered.
-pub(crate) fn fail_unsettled() {
+pub fn fail_unsettled() {
     for (_, s) in table().iter_mut().filter(|(_, s)| !s.settled()) {
         *s = DeliveryState::Failed;
     }
@@ -121,14 +121,14 @@ pub(crate) fn fail_unsettled() {
 
 /// What became of the watched report with this event id, or `None` once it is forgotten or
 /// evicted.
-pub(crate) fn state(event_id: &str) -> Option<DeliveryState> {
+pub fn state(event_id: &str) -> Option<DeliveryState> {
     table().iter().find(|(id, _)| id == event_id).map(|(_, s)| *s)
 }
 
 /// End the departing account's claim on every watched report. Called by sign-out and Delete all
 /// local data (`app::adapters::consent`'s forget path) BEFORE the spool is erased, so a one-off
 /// append racing it is refused rather than surviving the erasure.
-pub(crate) fn forget() {
+pub fn forget() {
     TENURE.fetch_add(1, Ordering::AcqRel);
     table().clear();
 }

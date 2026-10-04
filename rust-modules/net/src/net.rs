@@ -10,7 +10,7 @@
 //! through here too whenever the origin is TLS. `crate::http` is the door that decides which of
 //! the two transports a request takes; this module is only ever the https half of it. Direct
 //! callers are `plex::account`, auth's public headerless QR-image fetch, and — since the telemetry
-//! work — [`crate::telemetry::sender`], which is the first traffic in this app's history to a host
+//! work — `plx_telemetry::telemetry::sender`, which is the first traffic in this app's history to a host
 //! that is neither Plex nor the user's own server. It goes through [`post_ca`]: CA-verified,
 //! unpinned, bounded sink. **This list has stood here while becoming untrue before**, which is why
 //! it is worth checking rather than trusting; that is twice.

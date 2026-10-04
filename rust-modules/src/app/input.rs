@@ -918,7 +918,7 @@ pub(crate) fn enter_profiles_from_onboard(pages: &mut plx_ui::dispatch::Dispatch
 /// itself idempotent while the surface is up (any phase), which is what lets the three per-frame
 /// routing call sites go on simply asking.
 pub(crate) fn maybe_ask_consent(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
-    let c = crate::telemetry::consent::current().unwrap_or_default();
+    let c = plx_telemetry::telemetry::consent::current().unwrap_or_default();
     // dev: /tmp/plxnative-consent[=<crash|product>] forces either first-run purpose even on an
     // automated boot. This screen is suppressed BY the presence of any trigger, so without an
     // override it cannot be reached headlessly at all. Selecting Product changes display state
@@ -1287,8 +1287,8 @@ pub(crate) unsafe fn key_ok(
             let np = !super::lifecycle::viewer_paused();
             if np {
                 if set_transport_paused(pa, true) {
-                    crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
-                        feature: crate::diag::schema::Feature::Pause,
+                    plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
+                        feature: plx_telemetry::diag::schema::Feature::Pause,
                     });
                 }
             } else {

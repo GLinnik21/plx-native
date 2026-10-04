@@ -57,8 +57,8 @@
 //! * Sign-out and *Delete all local data* erase the offer and the seen keys with everything else.
 
 use super::{Command, SessionFx, SessionMachine};
-use crate::telemetry::consent::Permission;
-use crate::telemetry::incident::{IncidentContext, IncidentKind, LinkClass};
+use plx_telemetry::telemetry::consent::Permission;
+use plx_telemetry::telemetry::incident::{IncidentContext, IncidentKind, LinkClass};
 use plx_machine::machine::Canon;
 use serde::{Deserialize, Serialize};
 
@@ -202,7 +202,7 @@ pub(super) fn write_key(w: &mut Canon, key: &IncidentKey) {
 }
 
 pub(super) fn write_context(w: &mut Canon, c: &IncidentContext) {
-    use crate::telemetry::incident::keymanager_stage_code;
+    use plx_telemetry::telemetry::incident::keymanager_stage_code;
     write_kind(w, c.kind);
     w.str(c.link.code());
     w.option(c.http_status, |w, s| {

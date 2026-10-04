@@ -34,11 +34,11 @@
 //! suspend all end an ENGINE without ending a playback, and counting those as endings would make
 //! the completion rate a measure of how often people scrub.
 
-use crate::diag::schema::DiagEvent;
+use plx_telemetry::diag::schema::DiagEvent;
 // The classification vocabulary is telemetry's wire schema (`telemetry::classes`); this module
 // classifies a live playback INTO it. Re-exported here so the player and the route layer keep
 // naming the closed domains where they report from.
-pub(crate) use crate::telemetry::classes::{
+pub(crate) use plx_telemetry::telemetry::classes::{
     AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DeliveryReason, HttpClass,
     LoadElapsedClass, OriginalProbePhase, PipelineClass, PlaybackErrorContext, QualityClass,
     RasterClass, RateClass, RefusalContext, TraceAge, TraceDirection, TraceEvent, TraceOutcome,
@@ -245,7 +245,7 @@ fn push_trace_for(generation: u32, event: TraceEvent) {
     // Check consent while holding the same trace lock used by withdrawal's clear. Either this
     // append finishes before the clear (and is erased) or it observes the new decision and does
     // nothing; no breadcrumb can appear after withdrawal and survive it.
-    if !crate::telemetry::consent::allows_errors() {
+    if !plx_telemetry::telemetry::consent::allows_errors() {
         return;
     }
     trace.push_for(generation, now_ms(), event);
@@ -256,7 +256,7 @@ fn push_trace(event: TraceEvent) {
         .playback_trace
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    if !crate::telemetry::consent::allows_errors() || trace.generation == 0 {
+    if !plx_telemetry::telemetry::consent::allows_errors() || trace.generation == 0 {
         return;
     }
     let generation = trace.generation;
@@ -271,7 +271,7 @@ fn finish_trace(event: TraceEvent) -> Vec<TraceStep> {
         .playback_trace
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    if !crate::telemetry::consent::allows_errors() {
+    if !plx_telemetry::telemetry::consent::allows_errors() {
         trace.sealed = true;
         return Vec::new();
     }
@@ -298,7 +298,7 @@ pub(crate) fn clear_error_trace() {
 /// ([`tick`] -> [`finish_trace`], whatever the generation), so an eraser installed by the first
 /// full attempt would leave that trace beyond a withdrawal's reach.
 pub(crate) fn install_trace_eraser() {
-    crate::telemetry::playback::install_error_trace_clear(clear_error_trace);
+    plx_telemetry::telemetry::playback::install_error_trace_clear(clear_error_trace);
 }
 
 pub(crate) fn note_seek_for(generation: u32) {
@@ -486,7 +486,7 @@ pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: plx_plex::pl
         .playback_trace
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    if crate::telemetry::consent::allows_errors() {
+    if plx_telemetry::telemetry::consent::allows_errors() {
         trace.reset(
             generation,
             at,
@@ -516,7 +516,7 @@ fn emit(event: DiagEvent) {
     let sid = plx_plex::plex::ServerId::from_raw(server);
     let link = decode_link(link);
     let ip = decode_ip(ip);
-    crate::diag::event_for_connection(event, sid, link, ip);
+    plx_telemetry::diag::event_for_connection(event, sid, link, ip);
 }
 
 /// Resolve an attempt before a newer Play overwrites its join key. Before first frame this is an
@@ -647,7 +647,7 @@ pub(crate) fn tick(ps: &crate::route::PlaybackSession) {
             let shape = super::error_now(ps);
             let kind = shape.kind.class();
             let trace = finish_trace(TraceEvent::Failed { kind });
-            crate::telemetry::playback::report_error(kind, error_context(ps), &trace);
+            plx_telemetry::telemetry::playback::report_error(kind, error_context(ps), &trace);
             emit(DiagEvent::PlaybackFailed {
                 playback_id: ATTEMPT.load(Relaxed),
                 mode: mode(ps),
@@ -1106,11 +1106,11 @@ mod tests {
             "x-secret-audio-tag",
         );
         let ctx = error_context(&ps);
-        let body = crate::telemetry::playback::event_body(
+        let body = plx_telemetry::telemetry::playback::event_body(
             &"a".repeat(32),
             "0123456789abcdef",
             Some(&"e".repeat(32)),
-            crate::telemetry::classes::FailureClass::DecisionRefused,
+            plx_telemetry::telemetry::classes::FailureClass::DecisionRefused,
             ctx,
             &[],
         );
@@ -1325,7 +1325,7 @@ mod tests {
         let snapshot = trace.finish(
             (ERROR_TRACE_MAX as i64 + 9) * 1_000,
             TraceEvent::Failed {
-                kind: crate::telemetry::classes::FailureClass::OriginalRollback,
+                kind: plx_telemetry::telemetry::classes::FailureClass::OriginalRollback,
             },
         );
         assert_eq!(trace.steps.len(), ERROR_TRACE_MAX);
@@ -1336,7 +1336,7 @@ mod tests {
         assert!(matches!(
             snapshot.last().map(|s| s.event),
             Some(TraceEvent::Failed {
-                kind: crate::telemetry::classes::FailureClass::OriginalRollback,
+                kind: plx_telemetry::telemetry::classes::FailureClass::OriginalRollback,
             })
         ));
         assert!(
@@ -1359,7 +1359,7 @@ mod tests {
     /// [`install_trace_eraser`] is what `app::enter_application` runs at boot.
     #[test]
     fn a_failed_preview_trace_is_erased_through_telemetrys_hook() {
-        use crate::telemetry::consent::{self, Consent};
+        use plx_telemetry::telemetry::consent::{self, Consent};
         let _g = plx_base::testlock::serial();
         let previous = consent::current();
         let mut enabled = Consent::default();
@@ -1369,10 +1369,10 @@ mod tests {
         clear_error_trace();
 
         let sealed = finish_trace(TraceEvent::Failed {
-            kind: crate::telemetry::classes::FailureClass::OriginalRollback,
+            kind: plx_telemetry::telemetry::classes::FailureClass::OriginalRollback,
         });
         install_trace_eraser();
-        crate::telemetry::playback::clear_error_trace();
+        plx_telemetry::telemetry::playback::clear_error_trace();
         let left = super::super::SHARED
             .playback_trace
             .lock()

@@ -108,7 +108,7 @@ pub(crate) fn install_panic_logger() {
 pub(crate) fn install_plex_seams() {
     plx_plex::plex::session::install_auto_quality_ready(crate::route::auto_quality_ready);
     #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
-    plx_plex::plex::session::install_account_clear_cleanup(crate::telemetry::cleanup_after_account_clear);
+    plx_plex::plex::session::install_account_clear_cleanup(plx_telemetry::telemetry::cleanup_after_account_clear);
 }
 
 #[cfg(test)]
@@ -116,8 +116,9 @@ mod seam_order_tests {
     /// `plx_plex` reports the version it is handed (`plex::identity::set_version`) and, in a
     /// shipping build, panics when asked for it earlier, so the hand-in has to be the first thing
     /// the one entry point does: nothing before it can build a header or a `User-Agent`. It also
-    /// has to hand in `PLX_VERSION` itself, the string `ci/check-package.py` grades in the binary,
-    /// and no second production site may hand in anything else. Reads the source, like the tests
+    /// has to hand in `PLX_VERSION` itself, the string `ci/check-package.py` grades in the binary
+    /// (as `plxnative@` + version, see the telemetry hand-in below), and no second production site
+    /// may hand in anything else. Reads the source, like the tests
     /// below, because no host test can run `enter_application`.
     #[test]
     fn the_plex_version_is_handed_in_first_and_only_there() {
@@ -136,6 +137,22 @@ mod seam_order_tests {
             .find(|line| !line.is_empty() && !line.starts_with("//"))
             .expect("a first statement");
         assert_eq!(first, hand_in, "set_version must be enter_application's first statement");
+        // `plx_telemetry` reports the release it is handed the same way (and also panics when asked
+        // earlier in a shipping build). It is composed here with `concat!`, not by the telemetry
+        // crate, because `ci/check-package.py` greps the packaged binary for that exact string.
+        let release = concat!("plx_telemetry::telemetry::", "set_release(concat!(\"plxnative@\", env!(\"PLX_VERSION\")));");
+        let second = body
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("//"))
+            .nth(1)
+            .expect("a second statement");
+        assert_eq!(second, release, "set_release must be enter_application's second statement");
+        assert_eq!(
+            source.matches(concat!("telemetry::", "set_release(")).count(),
+            1,
+            "one production hand-in of the release"
+        );
         assert_eq!(
             source.matches(concat!("identity::", "set_version(")).count(),
             1,
@@ -684,7 +701,7 @@ pub(crate) unsafe fn construct(
     // process that no longer exists and this is the first moment anything can send it. A record
     // queued during THIS session goes out at the next launch, or sooner if a consent change
     // flushes.
-    if !preflight.controlled() { crate::telemetry::flush_soon(); }
+    if !preflight.controlled() { plx_telemetry::telemetry::flush_soon(); }
 
     // NO token is compiled into this binary. PMS access comes from the signed-in session,
     // or — for automated runs only (the regression harness, headless captures) — from the
@@ -832,7 +849,7 @@ pub(crate) unsafe fn construct(
             initial.as_ref().expect("controlled initialization"), &mt, preflight.replay())
     } else {
         super::bridge::Bridge::new(plx_base::diag::heartbeat::now_us, session_init,
-            crate::telemetry::consent::current().unwrap_or_default(), &mt)
+            plx_telemetry::telemetry::consent::current().unwrap_or_default(), &mt)
     };
     // Construct the one dispatcher before bootstrap commands; move this same queue into App.
     let mut pages = plx_ui::dispatch::Dispatcher::with_transition(Box::new(
@@ -1530,7 +1547,7 @@ pub(crate) unsafe fn construct(
             log("bootstrap: captured session persistence applied");
         }
         if !replay {
-            app.telemetry_guard = Some(crate::telemetry::activate_initial(initial.consent.clone()));
+            app.telemetry_guard = Some(plx_telemetry::telemetry::activate_initial(initial.consent.clone()));
         }
         if !replay { super::adapters::poster::init(); }
         app.rec.tick(initial.clock_start, 0.0);

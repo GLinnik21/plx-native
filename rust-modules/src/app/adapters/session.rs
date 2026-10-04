@@ -98,10 +98,10 @@ impl IncidentWatch {
 /// delivered and failed end it; an id no longer watched (forgotten, evicted) ends it silently.
 fn settle_incident_watch(
     watch: &mut Option<IncidentWatch>,
-    state: impl Fn(&str) -> Option<crate::telemetry::delivery::DeliveryState>,
+    state: impl Fn(&str) -> Option<plx_telemetry::telemetry::delivery::DeliveryState>,
 ) -> Option<(u32, crate::auth::owner::IncidentDelivery)> {
     use crate::auth::owner::IncidentDelivery;
-    use crate::telemetry::delivery::DeliveryState;
+    use plx_telemetry::telemetry::delivery::DeliveryState;
     let w = watch.as_mut()?;
     match state(&w.receipt) {
         Some(DeliveryState::Queued | DeliveryState::Sending) => None,
@@ -859,17 +859,17 @@ impl SessionAdapter {
             resources.coordinator_events.push(action);
             return;
         }
-        use crate::diag::schema::{DiagEvent, SignInFailure};
+        use plx_telemetry::diag::schema::{DiagEvent, SignInFailure};
         match action {
             CoordinatorAction::LocalDataErased => {}
             // Bridge routes this coordinator effect through the physical Consent owner first.
             // Fixture adapters record it above; the live Session resource must not execute a
             // second telemetry owner behind that machine.
             CoordinatorAction::CloseTelemetry => {}
-            CoordinatorAction::SignInStarted => crate::diag::event(DiagEvent::SignInStarted),
-            CoordinatorAction::SignInCompleted => crate::diag::event(DiagEvent::SignInCompleted),
-            CoordinatorAction::SignInCancelled => crate::diag::event(DiagEvent::SignInCancelled),
-            CoordinatorAction::SignInFailed { phase } => crate::diag::event(DiagEvent::SignInFailed { kind: match phase {
+            CoordinatorAction::SignInStarted => plx_telemetry::diag::event(DiagEvent::SignInStarted),
+            CoordinatorAction::SignInCompleted => plx_telemetry::diag::event(DiagEvent::SignInCompleted),
+            CoordinatorAction::SignInCancelled => plx_telemetry::diag::event(DiagEvent::SignInCancelled),
+            CoordinatorAction::SignInFailed { phase } => plx_telemetry::diag::event(DiagEvent::SignInFailed { kind: match phase {
                 crate::auth::Phase::Creating => SignInFailure::PinCreate,
                 crate::auth::Phase::Waiting => SignInFailure::Authorization,
                 crate::auth::Phase::Discovering => SignInFailure::Discovery,
@@ -900,7 +900,7 @@ impl SessionAdapter {
     fn execute_incident(&mut self, lane: crate::auth::owner::IncidentLane,
         report: crate::auth::owner::IncidentReport) -> crate::auth::owner::IncidentDelivery {
         use crate::auth::owner::{IncidentDelivery, IncidentLane, IncidentReport};
-        use crate::telemetry::incident::{self, IncidentContext};
+        use plx_telemetry::telemetry::incident::{self, IncidentContext};
         #[cfg(test)]
         if let Resources::Fixture(resources) = &mut self.resources {
             resources.incident_reports.push((lane, report));
@@ -931,7 +931,7 @@ impl SessionAdapter {
     /// nothing new is known, and for good once it is delivered, dropped or forgotten (sign-out
     /// clears `telemetry::delivery`).
     pub(crate) fn take_incident_delivery(&mut self) -> Option<(u32, crate::auth::owner::IncidentDelivery)> {
-        settle_incident_watch(&mut self.incident_watch, crate::telemetry::delivery::state)
+        settle_incident_watch(&mut self.incident_watch, plx_telemetry::telemetry::delivery::state)
     }
 
     pub(crate) fn claim_root_press(&mut self) -> bool {
@@ -2353,7 +2353,7 @@ mod tests {
     #[test]
     fn a_watched_report_says_each_change_of_its_delivery_once() {
         use crate::auth::owner::IncidentDelivery;
-        use crate::telemetry::delivery::DeliveryState as D;
+        use plx_telemetry::telemetry::delivery::DeliveryState as D;
         let mut watch = Some(IncidentWatch::new(7, "receipt-1".into()));
         for quiet in [D::Queued, D::Sending] {
             assert_eq!(super::settle_incident_watch(&mut watch, |_| Some(quiet)), None);

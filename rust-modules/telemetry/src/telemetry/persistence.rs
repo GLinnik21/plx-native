@@ -6,12 +6,12 @@
 
 use super::consent::Consent;
 use plx_platform::storage::{Record, RecordKey, RecordState, RecordStore};
-#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
 use plx_platform::storage::StoreError;
 use std::path::{Path, PathBuf};
 
 #[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
     test
 ))]
 use plx_platform::storage::{
@@ -22,7 +22,7 @@ use plx_platform::storage::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // `Delegated` is produced only by the shipping webOS adapter.
-pub(crate) enum PersistResult {
+pub enum PersistResult {
     NotAttempted,
     /// Durability belongs to the immediately-following atomic Session `ClearTenure` operation.
     Delegated,
@@ -32,16 +32,16 @@ pub(crate) enum PersistResult {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CleanupResult {
+pub enum CleanupResult {
     NotAttempted,
     Complete,
     Failed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PersistOutcome {
-    pub(crate) write: PersistResult,
-    pub(crate) cleanup: CleanupResult,
+pub struct PersistOutcome {
+    pub write: PersistResult,
+    pub cleanup: CleanupResult,
 }
 
 static LAST_OUTCOME: std::sync::Mutex<PersistOutcome> = std::sync::Mutex::new(PersistOutcome {
@@ -53,29 +53,29 @@ fn publish(outcome: PersistOutcome) {
     *LAST_OUTCOME.lock().unwrap_or_else(|e| e.into_inner()) = outcome;
 }
 
-#[cfg(test)]
-pub(crate) fn last_outcome() -> PersistOutcome {
+#[cfg(any(test, feature = "test-support"))]
+pub fn last_outcome() -> PersistOutcome {
     *LAST_OUTCOME.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-#[cfg(test)]
-pub(crate) fn redirect_root_for_test(root: Option<PathBuf>) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn redirect_root_for_test(root: Option<PathBuf>) {
     plx_base::paths::redirect_persistent_state_root_for_test(root);
 }
 
 /// Which thread most recently ran the blocking disk/storage-helper work in [`record`] or
 /// [`forget`]. Exists only to let a test prove the *caller* of those functions never blocks on
 /// them directly — see `app::adapters::consent`'s `commit_live`/`forget_live` off-thread tests.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static LAST_CALL_THREAD: std::sync::Mutex<Option<std::thread::ThreadId>> =
     std::sync::Mutex::new(None);
 
-#[cfg(test)]
-pub(crate) fn last_call_thread() -> Option<std::thread::ThreadId> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn last_call_thread() -> Option<std::thread::ThreadId> {
     *LAST_CALL_THREAD.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn note_call_thread() {
     *LAST_CALL_THREAD.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::thread::current().id());
 }
@@ -92,8 +92,8 @@ fn root() -> PathBuf {
 /// This is blocking disk/storage-helper I/O — a genuine round trip on the television. Callers
 /// must run it off the frame thread (`plx_base::storage_worker`), never inline from a dispatch path;
 /// see `telemetry::transition::commit`.
-pub(crate) fn record(consent: &Consent) -> PersistOutcome {
-    #[cfg(test)]
+pub fn record(consent: &Consent) -> PersistOutcome {
+    #[cfg(any(test, feature = "test-support"))]
     note_call_thread();
     record_at(consent, &super::resource_candidates(), root())
 }
@@ -102,23 +102,23 @@ pub(crate) fn record(consent: &Consent) -> PersistOutcome {
 /// resurrect the previous decision from the canonical record or from a reappeared legacy file.
 ///
 /// Blocking, for the same reason as [`record`]; see `telemetry::transition::forget`.
-pub(crate) fn forget() -> PersistOutcome {
-    #[cfg(test)]
+pub fn forget() -> PersistOutcome {
+    #[cfg(any(test, feature = "test-support"))]
     note_call_thread();
     forget_at(&super::resource_candidates(), root())
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
 fn store() -> Result<impl RecordStore, StoreError> {
     plx_platform::storage::open(root())
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
 fn store_at(root: PathBuf) -> Result<impl RecordStore, StoreError> {
     plx_platform::storage::open(root)
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
 fn cleanup_canonical(store: &impl RecordStore) -> CleanupResult {
     if store.cleanup(RecordKey::Consent).is_ok() {
         CleanupResult::Complete
@@ -144,8 +144,8 @@ fn log_cleanup_failure(stage: &str, path: &Path, error: &std::io::Error) {
 /// here rather than doing it inline, because the immediately-following session ClearTenure is the
 /// one atomic DB8 revocation for both domains and legacy sources must survive until THAT commit is
 /// confirmed, not merely queued.
-#[cfg(any(test, all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))))]
-pub(crate) fn cleanup_after_combined_clear(legacy: &[PathBuf]) -> CleanupResult {
+#[cfg(any(test, feature = "test-support", all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))))]
+pub fn cleanup_after_combined_clear(legacy: &[PathBuf]) -> CleanupResult {
     remove_legacy_sources(legacy.iter().cloned())
 }
 
@@ -180,14 +180,14 @@ fn remove_legacy_sources(paths: impl IntoIterator<Item = PathBuf>) -> CleanupRes
 
 /// Load canonical consent, falling back to trusted legacy candidates only when canonical is
 /// absent. A malformed, inaccessible, future, or otherwise present canonical record is terminal.
-pub(crate) fn load(legacy: &[PathBuf]) -> Consent {
-    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+pub fn load(legacy: &[PathBuf]) -> Consent {
+    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
     {
         return load_helper(&mut client::NativeTransport, legacy);
     }
-    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
     {
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     if plx_base::paths::ensure_persistent_state_root().is_err() {
         publish(PersistOutcome {
             write: PersistResult::Failed,
@@ -269,7 +269,7 @@ pub(crate) fn load(legacy: &[PathBuf]) -> Consent {
 }
 
 #[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
     test
 ))]
 fn helper_expected(snapshot: &client::Snapshot) -> Option<(&str, state::Expected)> {
@@ -277,7 +277,7 @@ fn helper_expected(snapshot: &client::Snapshot) -> Option<(&str, state::Expected
 }
 
 #[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
     test
 ))]
 #[derive(Clone, Copy)]
@@ -289,7 +289,7 @@ struct HelperCommit {
 }
 
 #[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
     test
 ))]
 fn helper_commit(
@@ -360,7 +360,7 @@ fn helper_commit(
 }
 
 #[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
     test
 ))]
 fn legacy_consent(legacy: &[PathBuf]) -> Result<Option<(Consent, Vec<PathBuf>)>, ()> {
@@ -388,7 +388,7 @@ fn legacy_consent(legacy: &[PathBuf]) -> Result<Option<(Consent, Vec<PathBuf>)>,
 }
 
 #[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
     test
 ))]
 enum PreviousCanonical {
@@ -401,7 +401,7 @@ enum PreviousCanonical {
 /// Decode the complete `plxnative-record` wrapper used by the JSON canonical store that preceded
 /// DB8. A corrupt/future record is terminal and is never treated like an absent legacy source.
 #[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
     test
 ))]
 fn previous_canonical_consent() -> PreviousCanonical {
@@ -409,7 +409,7 @@ fn previous_canonical_consent() -> PreviousCanonical {
 }
 
 #[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
     test
 ))]
 fn previous_canonical_consent_at(root: PathBuf) -> PreviousCanonical {
@@ -441,7 +441,7 @@ fn previous_canonical_consent_at(root: PathBuf) -> PreviousCanonical {
 }
 
 #[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
     test
 ))]
 fn load_helper(transport: &mut dyn client::Transport, legacy: &[PathBuf]) -> Consent {
@@ -615,7 +615,7 @@ fn read_legacy(path: &Path) -> LegacyRead {
     }
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
 fn load_legacy_and_migrate(store: &impl RecordStore, legacy: &[PathBuf]) -> Consent {
     let mut found: Option<(Consent, Vec<(PathBuf, Vec<u8>)>)> = None;
     for path in legacy {
@@ -717,8 +717,8 @@ fn load_legacy_and_migrate(store: &impl RecordStore, legacy: &[PathBuf]) -> Cons
 }
 
 /// Persist a typed decision canonically and retire stale legacy copies after a durable commit.
-#[cfg(test)]
-pub(crate) fn record_with_legacy(consent: &Consent, legacy: &[PathBuf]) -> PersistResult {
+#[cfg(any(test, feature = "test-support"))]
+pub fn record_with_legacy(consent: &Consent, legacy: &[PathBuf]) -> PersistResult {
     record_at(consent, legacy, root()).write
 }
 
@@ -727,12 +727,12 @@ pub(super) fn record_at(
     legacy: &[PathBuf],
     canonical_root: PathBuf,
 ) -> PersistOutcome {
-    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
     {
         let _ = canonical_root;
         return record_helper(&mut client::NativeTransport, consent, legacy);
     }
-    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
     {
     let store = match store_at(canonical_root) {
         Ok(store) => store,
@@ -828,7 +828,7 @@ pub(super) fn record_at(
 }
 
 #[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
     test
 ))]
 fn record_helper(
@@ -906,7 +906,7 @@ fn record_helper(
 
 /// Write a canonical cleared tombstone, then remove stale legacy copies best-effort.
 pub(super) fn forget_at(legacy: &[PathBuf], canonical_root: PathBuf) -> PersistOutcome {
-    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
     {
         let _ = canonical_root;
         // Session's immediately-following ClearTenure is the one atomic DB8 revocation for both
@@ -920,7 +920,7 @@ pub(super) fn forget_at(legacy: &[PathBuf], canonical_root: PathBuf) -> PersistO
         publish(outcome);
         return outcome;
     }
-    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
     {
     let store = match store_at(canonical_root) {
         Ok(store) => store,
@@ -1253,17 +1253,17 @@ mod upgrade_tests {
     use std::os::unix::fs::PermissionsExt;
 
     const DB8_066: &str =
-        include_str!("../../../tests/fixtures/persistence/generated/v0.6.6-db8-record.json");
+        include_str!("../../../../tests/fixtures/persistence/generated/v0.6.6-db8-record.json");
     const JSON_STORE_066: &str =
-        include_str!("../../../tests/fixtures/persistence/generated/v0.6.6-json-store/consent.json");
+        include_str!("../../../../tests/fixtures/persistence/generated/v0.6.6-json-store/consent.json");
     const GENERATED_DECLINE_065: &str = include_str!(
-        "../../../tests/fixtures/persistence/generated/v0.6.5-errors-yes-declined-extension.consent.json"
+        "../../../../tests/fixtures/persistence/generated/v0.6.5-errors-yes-declined-extension.consent.json"
     );
 
     fn published() -> Vec<(&'static str, &'static str)> {
         macro_rules! fx {
             ($p:literal) => {
-                ($p, include_str!(concat!("../../../tests/fixtures/persistence/", $p)))
+                ($p, include_str!(concat!("../../../../tests/fixtures/persistence/", $p)))
             };
         }
         vec![
