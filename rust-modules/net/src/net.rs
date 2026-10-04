@@ -2193,7 +2193,9 @@ pub mod resolve {
 /// stays 2 (the certificate must still be issued for the name in the URL), the key must still match
 /// (rc 90 otherwise), and [`apply`] makes the relaxation impossible without an accepted pin. A
 /// failure whose verify result is anything else (an untrusted issuer reported first, 18-21; a name
-/// mismatch) is refused exactly as before even when a key is held.
+/// mismatch) never enters KEY mode, even when a key is held: a self-signed result (18, 19) and a
+/// name mismatch are refused exactly as before, and a missing issuer (2, 20, 21) on a
+/// `*.plex.direct` host is answered by roots mode instead (below), never by a key.
 ///
 /// **What the trigger does NOT prove, stated plainly.** The security of key mode rests on the key
 /// pin plus the name check, not on the date being the only defect. (1) Verify result 9/10 does not
