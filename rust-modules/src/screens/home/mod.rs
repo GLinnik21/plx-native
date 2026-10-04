@@ -12,6 +12,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
+use std::sync::Arc;
 
 use crate::pms::{HeroRef, HubIdentity, HubRef, HubsView, PmsMovie};
 use crate::stores::hubs::HubsCmd;
@@ -372,7 +373,9 @@ pub(crate) struct HomeScreen {
     instance: InstanceId,
 
     groups: Vec<HomeGroupKey>,
-    items: Vec<HomeItemKey>,
+    /// Shared with `memory()`: an unchanged republication leaves it shared, and only a real
+    /// write (a new key, a moved card, a prune) copies it. Mutate through `Arc::make_mut`.
+    items: Arc<Vec<HomeItemKey>>,
     next_group: u32,
     next_elem: u32,
     rows: Vec<HubProjection>,
@@ -380,8 +383,9 @@ pub(crate) struct HomeScreen {
     /// rather than a scan of every row. Derived in `sync_catalog`; not canon.
     elem_at: HashMap<u32, (u32, u32)>,
     /// `items` / `groups` looked up by identity, so keying a card is a hash probe rather than a
-    /// scan of the whole table. Positions into the two `Vec`s, which only ever grow; kept in step
-    /// by `push_item` / `push_group`, the only places either is pushed to. Derived, not canon.
+    /// scan of the whole table. Positions into the two `Vec`s; kept in step by `push_item` /
+    /// `push_group`, the only places either grows, and rebuilt whole by `rebuild_indexes` after a
+    /// prune compacts them. Derived, not canon.
     item_index: HashMap<HomeHubIdentity, HubKeys>,
     group_index: HashMap<HomeHubIdentity, usize>,
     projected_generation: Option<u32>,
@@ -436,7 +440,7 @@ impl HomeScreen {
             entry,
             instance: id,
             groups: Vec::new(),
-            items: Vec::new(),
+            items: Arc::default(),
             next_group: FIRST_HUB_GROUP,
             next_elem: FIRST_ITEM_ELEM,
             rows: Vec::new(),
@@ -478,11 +482,14 @@ impl HomeScreen {
             }
         }
         let mut taken_elems: HashSet<u32> = self.items.iter().map(|k| k.elem).collect();
-        for saved in &memory.items {
+        for saved in memory.items.iter() {
             if let Some(index) = self.find_item(&saved.identity) {
-                let existing = &mut self.items[index];
-                existing.last_row = saved.last_row;
-                existing.last_col = saved.last_col;
+                let existing = &self.items[index];
+                if (existing.last_row, existing.last_col) != (saved.last_row, saved.last_col) {
+                    let existing = &mut Arc::make_mut(&mut self.items)[index];
+                    existing.last_row = saved.last_row;
+                    existing.last_col = saved.last_col;
+                }
             } else {
                 assert!(taken_elems.insert(saved.elem), "restored Home element collision");
                 self.push_item(saved.clone());
@@ -523,9 +530,13 @@ impl HomeScreen {
     }
 
     fn push_group(&mut self, key: HomeGroupKey) {
-        // First wins, as the scan this replaced did.
-        self.group_index.entry(key.identity.clone()).or_insert(self.groups.len());
+        Self::index_group(&mut self.group_index, &key, self.groups.len());
         self.groups.push(key);
+    }
+
+    /// First wins, as the scan this replaced did.
+    fn index_group(index: &mut HashMap<HomeHubIdentity, usize>, key: &HomeGroupKey, at: usize) {
+        index.entry(key.identity.clone()).or_insert(at);
     }
 
     fn group_for(&mut self, identity: &HomeHubIdentity) -> GroupId {
@@ -563,25 +574,41 @@ impl HomeScreen {
     }
 
     fn push_item(&mut self, key: HomeItemKey) {
-        let index = self.items.len();
-        // First wins, as the scan this replaced did.
+        Self::index_item(&mut self.item_index, &key, self.items.len());
+        Arc::make_mut(&mut self.items).push(key);
+    }
+
+    /// First wins, as the scan this replaced did.
+    fn index_item(index: &mut HashMap<HomeHubIdentity, HubKeys>, key: &HomeItemKey, at: usize) {
         match &key.identity {
             HomeItemIdentity::Item { hub, sid, rk } => {
-                let sids = self.item_index.entry(hub.clone()).or_default().by_rk.entry(rk.clone()).or_default();
+                let sids = index.entry(hub.clone()).or_default().by_rk.entry(rk.clone()).or_default();
                 if !sids.iter().any(|(s, _)| s == sid) {
-                    sids.push((*sid, index));
+                    sids.push((*sid, at));
                 }
             }
             HomeItemIdentity::Slot { hub, generation, ordinal } => {
-                self.item_index.entry(hub.clone()).or_default().slots.entry((*generation, *ordinal)).or_insert(index);
+                index.entry(hub.clone()).or_default().slots.entry((*generation, *ordinal)).or_insert(at);
             }
         }
-        self.items.push(key);
     }
 
-    fn item_registration(&mut self, hub: &HomeHubIdentity, item: ItemRef<'_>) -> &mut HomeItemKey {
+    /// Both indexes from the tables, after a prune compacted them.
+    fn rebuild_indexes(&mut self) {
+        self.item_index.clear();
+        self.group_index.clear();
+        for (at, key) in self.items.iter().enumerate() {
+            Self::index_item(&mut self.item_index, key, at);
+        }
+        for (at, key) in self.groups.iter().enumerate() {
+            Self::index_group(&mut self.group_index, key, at);
+        }
+    }
+
+    /// The position of `item`'s key, minting one if the card has none.
+    fn item_registration(&mut self, hub: &HomeHubIdentity, item: ItemRef<'_>) -> usize {
         if let Some(index) = self.item_slot(hub, item) {
-            return &mut self.items[index];
+            return index;
         }
         let elem = self.next_elem.max(FIRST_ITEM_ELEM);
         self.next_elem = elem
@@ -593,7 +620,19 @@ impl HomeScreen {
             ItemRef::Slot { generation, ordinal } => HomeItemIdentity::Slot { hub: hub.clone(), generation, ordinal },
         };
         self.push_item(HomeItemKey { identity, elem, last_row: 0, last_col: 0 });
-        self.items.last_mut().unwrap()
+        self.items.len() - 1
+    }
+
+    /// Record where `index`'s card sits and return its elem. The table is written only when the
+    /// slot moved, so an unchanged republication leaves it shared with `memory()`.
+    fn place_item(&mut self, index: usize, row: u32, col: u32) -> u32 {
+        let key = &self.items[index];
+        if (key.last_row, key.last_col) != (row, col) {
+            let key = &mut Arc::make_mut(&mut self.items)[index];
+            key.last_row = row;
+            key.last_col = col;
+        }
+        self.items[index].elem
     }
 
     #[cfg(test)]
@@ -604,7 +643,8 @@ impl HomeScreen {
                 (hub, ItemRef::Slot { generation: *generation, ordinal: *ordinal })
             }
         };
-        self.item_registration(hub, item).elem
+        let index = self.item_registration(hub, item);
+        self.items[index].elem
     }
 
     fn sync_catalog<H: HomeLike>(&mut self, cx: &Cx<'_, H>) {
@@ -624,10 +664,8 @@ impl HomeScreen {
                 } else {
                     ItemRef::Item { sid: item.sid, rk: &item.rk }
                 };
-                let key = self.item_registration(&identity, item_ref);
-                key.last_row = row as u32;
-                key.last_col = col as u32;
-                elems.push(key.elem);
+                let index = self.item_registration(&identity, item_ref);
+                elems.push(self.place_item(index, row as u32, col as u32));
             }
             // The publishing section, for an identifier whose own section segment does not parse:
             // a hub lists one section's items.
@@ -655,7 +693,7 @@ impl HomeScreen {
             }
         }
         debug_assert_eq!(self.grid.shelves.len(), rows.len());
-        self.elem_at.clear();
+        let was = std::mem::take(&mut self.elem_at);
         for (row, hub) in rows.iter().enumerate() {
             for (col, &elem) in hub.elems.iter().enumerate() {
                 // First row wins, as the scan this replaces did.
@@ -668,7 +706,50 @@ impl HomeScreen {
                 && !self.rows.iter().any(|row| row.group.0 == *group)
         });
         self.projected_generation = Some(view.generation);
+        self.prune_keys(&was, view.generation, cx.focus.current.map(|key| key.elem));
         self.reconcile_carousel(view);
+    }
+
+    /// Bound the key tables. A key is only needed while its card is shown, was just shown (so a
+    /// focus on a card that rotated out can recover to its row), or is the focus. Volatile keys
+    /// (a `Slot` item, an item of an `Ephemeral` hub) carry their generation and can never match
+    /// again once their publication is gone, so those go at once; stable keys stay until the table
+    /// outgrows twice the shown cards plus 256, then the oldest go (elems are minted in order).
+    /// An `Ephemeral` group of an older generation is never projected again. A remembered cursor
+    /// older than what is retained recovers to the first row (`reconcile`). A Home whose hubs are
+    /// stable and whose cards carry rating keys, under the cap, drops nothing.
+    fn prune_keys(&mut self, was: &HashMap<u32, (u32, u32)>, generation: u32, focus: Option<u32>) {
+        let now = &self.elem_at;
+        let live = |elem: u32| now.contains_key(&elem) || was.contains_key(&elem) || Some(elem) == focus;
+        let mut drop: HashSet<u32> = self.items.iter()
+            .filter(|key| {
+                let volatile = match &key.identity {
+                    HomeItemIdentity::Slot { .. } => true,
+                    HomeItemIdentity::Item { hub, .. } => matches!(hub, HomeHubIdentity::Ephemeral { .. }),
+                };
+                volatile && !live(key.elem)
+            })
+            .map(|key| key.elem)
+            .collect();
+        let cap = 2 * now.len() + 256;
+        let kept = self.items.len() - drop.len();
+        if kept > cap {
+            let mut oldest: Vec<u32> = self.items.iter()
+                .map(|key| key.elem)
+                .filter(|&elem| !live(elem) && !drop.contains(&elem))
+                .collect();
+            oldest.sort_unstable();
+            drop.extend(oldest.into_iter().take(kept - cap));
+        }
+        let groups_before = self.groups.len();
+        self.groups.retain(|key| !matches!(key.identity, HomeHubIdentity::Ephemeral { generation: g, .. } if g != generation));
+        if drop.is_empty() && self.groups.len() == groups_before {
+            return;
+        }
+        if !drop.is_empty() {
+            Arc::make_mut(&mut self.items).retain(|key| !drop.contains(&key.elem));
+        }
+        self.rebuild_indexes();
     }
 
     fn identity_of(item: &PmsMovie) -> Option<(crate::plex::ServerId, String)> {
@@ -1797,7 +1878,7 @@ impl LogicalState for HomeScreen {
             c.u32(key.group);
         }
         c.seq(self.items.len());
-        for key in &self.items {
+        for key in self.items.iter() {
             write_item_identity(&key.identity, c);
             c.u32(key.elem).u32(key.last_row).u32(key.last_col);
         }
@@ -2416,7 +2497,7 @@ impl<H: HomeLike> Screen<H> for HomeScreen {
     fn memory(&self) -> H::Memory {
         PageMemory::Home(HomeMemory {
             groups: self.groups.clone(),
-            items: self.items.clone(),
+            items: Arc::clone(&self.items),
             next_group: self.next_group,
             next_elem: self.next_elem,
             carousel: self.carousel.clone(),
