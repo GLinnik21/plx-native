@@ -779,16 +779,7 @@ fn a_server_whose_libraries_are_unknown_is_undecided_not_unpinned() {
 /// only the card budget bounds Home.
 #[test]
 fn the_reporters_seventeen_rows_all_reach_home() {
-    let cw: Vec<(i64, String)> = (0..12).map(|i| (100 - i, format!("cw{i}"))).collect();
-    let cw: Vec<(i64, &str)> = cw.iter().map(|(t, r)| (*t, r.as_str())).collect();
-    let shelves: Vec<Shelf> = (0..16)
-        .map(|s| {
-            let keys: Vec<String> = (0..12).map(|i| format!("s{s}-{i}")).collect();
-            shelf(0, &format!("Shelf {s}"), &format!("x.{s}"),
-                &keys.iter().map(|r| r.as_str()).collect::<Vec<_>>())
-        })
-        .collect();
-    let (_, hubs, _) = merge(&[src(0, "", HubState::Ready, Some(built(0, &cw, shelves)))]);
+    let (_, hubs, _) = merge(&[src(0, "", HubState::Ready, Some(built_with_deck(12, shelves_in(0, 1, 16, 12))))]);
     assert_eq!(hubs.len(), 17, "the deck and all sixteen shelves");
     assert!(hubs.iter().all(|h| h.len == 12), "each row whole");
 }
@@ -797,17 +788,10 @@ fn the_reporters_seventeen_rows_all_reach_home() {
 /// everything after it are left off, never a truncated tail row.
 #[test]
 fn no_shelf_is_published_partially() {
-    let cw: Vec<(i64, String)> = (0..24).map(|i| (100 - i, format!("cw{i}"))).collect();
-    let cw: Vec<(i64, &str)> = cw.iter().map(|(t, r)| (*t, r.as_str())).collect();
     let whole = (HOME_CARDS_MAX - 24) / 12;
-    let shelves: Vec<Shelf> = (0..whole + 1)
-        .map(|s| {
-            let keys: Vec<String> = (0..12).map(|i| format!("s{s}-{i}")).collect();
-            shelf(0, &format!("Shelf {s}"), &format!("x.{s}"),
-                &keys.iter().map(|r| r.as_str()).collect::<Vec<_>>())
-        })
-        .collect();
-    let (items, hubs, _) = merge(&[src(0, "", HubState::Ready, Some(built(0, &cw, shelves)))]);
+    let (items, hubs, _) = merge(&[src(
+        0, "", HubState::Ready, Some(built_with_deck(24, shelves_in(0, 1, whole + 1, 12))),
+    )]);
     assert_eq!(hubs[0].len, 24);
     assert!(hubs[1..].iter().all(|h| h.len == 12), "no shelf is cut short");
     assert_eq!(hubs.len(), 1 + whole, "the deck and every shelf that fits whole; one more would not");
@@ -931,6 +915,13 @@ fn a_corrected_credit_restamps_the_shelves_home_already_built() {
     plx_plex::plex::reset_servers_for_test();
 }
 
+/// Source 0's projection with a deck of `deck` Continue Watching cards (newest first) and `shelves`.
+fn built_with_deck(deck: usize, shelves: Vec<Shelf>) -> SourceBuild {
+    let cw: Vec<(i64, String)> = (0..deck).map(|i| (100 - i as i64, format!("cw{i}"))).collect();
+    let cw: Vec<(i64, &str)> = cw.iter().map(|(t, r)| (*t, r.as_str())).collect();
+    built(0, &cw, shelves)
+}
+
 /// `n` shelves of `per` cards each, all in library `sec` of `slot`'s server.
 fn shelves_in(slot: u16, sec: i64, n: usize, per: usize) -> Vec<Shelf> {
     (0..n)
@@ -1009,9 +1000,7 @@ fn a_hundred_and_seventy_shelves_reach_home() {
     assert_eq!((hubs.len(), items.len()), (170, 2040), "all 170 shelves fit alone: 2,040 cards");
     assert_eq!(bound_overflow(&no_deck, &BrowseScope::standalone(), &(items, hubs, vec![])), (0, 0));
 
-    let cw: Vec<(i64, String)> = (0..12).map(|i| (100 - i, format!("cw{i}"))).collect();
-    let cw: Vec<(i64, &str)> = cw.iter().map(|(t, r)| (*t, r.as_str())).collect();
-    let with_deck = [src(0, "", HubState::Ready, Some(built(0, &cw, shelves_in(0, 1, 170, 12))))];
+    let with_deck = [src(0, "", HubState::Ready, Some(built_with_deck(12, shelves_in(0, 1, 170, 12))))];
     let build = merge_with_scope(&with_deck, &BrowseScope::standalone());
     assert_eq!(build.1.len(), 1 + 169, "the deck and 169 shelves");
     assert_eq!(build.0.len(), 12 + 169 * 12, "2,040 cards, 8 under the bound");
