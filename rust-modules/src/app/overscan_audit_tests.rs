@@ -67,12 +67,12 @@ fn no_required_content_enters_the_safe_area_exclusion_zone() {
     // ---- the shared chrome, and the screens composed on it ------------------------------
     probe("widgets", &plx_ui::widgets::overscan_rects);
     probe("detail", &plx_ui::detail_layout::overscan_rects);
-    probe("player_hud", &crate::appkit::player_hud::overscan_rects);
+    probe("player_hud", &plx_appkit::player_hud::overscan_rects);
 
     // ---- the panels, each at the widest/tallest state its own clamp admits ---------------
     probe("account_menu", &crate::screens::account_menu::overscan_rects);
-    probe("track_menu", &crate::appkit::track_menu::overscan_rects);
-    probe("more_menu", &crate::appkit::more_menu::overscan_rects);
+    probe("track_menu", &plx_appkit::track_menu::overscan_rects);
+    probe("more_menu", &plx_appkit::more_menu::overscan_rects);
     probe("stats", &crate::app::diagnostics::overscan_rects);
     drop(probe);
 

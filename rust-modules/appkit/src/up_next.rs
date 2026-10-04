@@ -13,7 +13,7 @@
 //! timer are one object rather than a button beside a rail.
 //!
 //! **Two buttons, and they are deliberately not equals** (the design's own note): *Next Episode*
-//! takes the [`ctrl_slot`](crate::appkit::player_hud::ctrl_slot) width — the floor that keeps the row
+//! takes the [`ctrl_slot`](crate::player_hud::ctrl_slot) width — the floor that keeps the row
 //! from visibly shrinking when it appears — while *Watch Credits* takes only its own label's, since
 //! a second full-width capsule would read as a pair of equals when one continues watching and the
 //! other does nothing at all. They are laid out in that spatial order, so LEFT reaches Watch
@@ -24,7 +24,7 @@
 //! is armed, so the timer is never running behind a hidden transport.
 //!
 //! **The row's cursor is not kept here.** It is `hud_nav.btn`, exactly as it is for the discs, so
-//! LEFT/RIGHT need no special case and [`ControlSlot::items`](crate::appkit::player_hud::ControlSlot)
+//! LEFT/RIGHT need no special case and [`ControlSlot::items`](crate::player_hud::ControlSlot)
 //! answers for the clamp. This module owns the countdown and nothing else — which is also why the
 //! cancel rule lives at `app.rs`'s one frame block rather than being spread across the key arms.
 //!
@@ -43,16 +43,16 @@ use std::os::raw::c_int;
 
 /// How long the tile holds before starting the next episode by itself. Long enough to read the
 /// title and reach for the remote, short enough that "always the next episode" stays automatic.
-pub(crate) const COUNTDOWN_MS: u32 = 10_000;
+pub const COUNTDOWN_MS: u32 = 10_000;
 
 /// The row's two items, in the order they are DRAWN — so `hud_nav.btn` and the arrow keys agree
 /// without a translation table (LEFT lands on 0 because 0 is the left one).
-pub(crate) const BTN_CREDITS: c_int = 0;
-pub(crate) const BTN_NEXT: c_int = 1;
+pub const BTN_CREDITS: c_int = 0;
+pub const BTN_NEXT: c_int = 1;
 /// Where the focus ring parks when the row appears: the PRIMARY, which here is the right-hand item
 /// rather than the usual 0. `ControlSlot::primary_btn` is what reads this, so the appear edge in
 /// `app.rs` stays one line for every occupant.
-pub(crate) const PRIMARY_BTN: c_int = BTN_NEXT;
+pub const PRIMARY_BTN: c_int = BTN_NEXT;
 
 /// **The auto-advance countdown, owned by the player's instance** (`PlayerScreen::up_next`,
 /// restructure spec §9). Two `static mut`s until phase 9, and the reason they had to move is the
@@ -60,7 +60,7 @@ pub(crate) const PRIMARY_BTN: c_int = BTN_NEXT;
 /// module global cannot be told that a playback has ended — `reset` was called by hand from four
 /// places to stand in for that.
 #[derive(Default)]
-pub(crate) struct Countdown {
+pub struct Countdown {
     /// `SDL_GetTicks` deadline at which the next episode auto-starts. 0 = not armed (the tile is
     /// not up, or the countdown was cancelled).
     ///
@@ -76,9 +76,9 @@ pub(crate) struct Countdown {
 }
 
 /// Whether this owns the control row this frame. The precedence itself lives in ONE place —
-/// [`crate::appkit::player_hud::slot_for`] — so this is just a read of the resolved slot.
-pub(crate) fn is_shown(slot: crate::appkit::player_hud::ControlSlot) -> bool {
-    matches!(slot, crate::appkit::player_hud::ControlSlot::UpNext(_))
+/// [`crate::player_hud::slot_for`] — so this is just a read of the resolved slot.
+pub fn is_shown(slot: crate::player_hud::ControlSlot) -> bool {
+    matches!(slot, crate::player_hud::ControlSlot::UpNext(_))
 }
 
 /// Per-frame tick: arm the countdown the moment the tile appears, and forget everything about it
@@ -87,7 +87,7 @@ pub(crate) fn is_shown(slot: crate::appkit::player_hud::ControlSlot) -> bool {
 /// It arms on APPEARANCE, never on focus: the tile's whole promise is that it starts the next
 /// episode on its own. Focus only ever [`cancel`]s it.
 impl Countdown {
-pub(crate) fn tick(&mut self, slot: crate::appkit::player_hud::ControlSlot, now: u32) {
+pub fn tick(&mut self, slot: crate::player_hud::ControlSlot, now: u32) {
     if !is_shown(slot) {
         // segment over (or the queue emptied): drop the deadline AND the cancel latch, so the
         // next episode's credits arm normally instead of inheriting this one's refusal
@@ -112,26 +112,26 @@ pub(crate) fn tick(&mut self, slot: crate::appkit::player_hud::ControlSlot, now:
 /// `bare_transport` is the third way and the one that reads as an omission until it bites: an
 /// OVERLAY — a track menu, the Info card, the Chapters strip — is the only way of taking hold
 /// of the transport that never moves the focus ring. Worse,
-/// [`crate::appkit::player_hud::draw_hud`] draws the control row only for the BARE transport, so with
+/// [`crate::player_hud::draw_hud`] draws the control row only for the BARE transport, so with
 /// the Info card open the tile is not on screen at all. Without this term a countdown that was
 /// already running when the card opened kept its clock behind a panel nobody could see it through
 /// and cut to the next episode out of nowhere — the same failure `HudState::raise_for_offer`
 /// exists to forbid, reached by the other door. A panel one presses OPEN is exactly as much
 /// "engaging the transport" as an arrow key.
-pub(crate) fn countdown_may_run(bare_transport: bool, row_focused: bool, btn: c_int) -> bool {
+pub fn countdown_may_run(bare_transport: bool, row_focused: bool, btn: c_int) -> bool {
     bare_transport && row_focused && btn == BTN_NEXT
 }
 
 impl Countdown {
 /// Stop the auto-advance without hiding the tile — the user took hold of the row, or is leaving.
 /// The tile stays up as a plain "OK to play" target; only the clock is off.
-pub(crate) fn cancel(&mut self) {
+pub fn cancel(&mut self) {
     self.deadline = 0;
     self.cancelled = true;
 }
 
 /// True while the countdown is running (drives holding the HUD up, so the timer is never invisible).
-pub(crate) fn armed(&self) -> bool {
+pub fn armed(&self) -> bool {
     self.deadline != 0
 }
 
@@ -162,21 +162,21 @@ fn remaining_ms(&self, now: u32) -> u32 {
 }
 
 /// True once the countdown has run out — `app.rs` polls this and starts the next episode.
-pub(crate) fn expired(&self, now: u32) -> bool {
+pub fn expired(&self, now: u32) -> bool {
     self.armed() && self.remaining_ms(now) == 0
 }
 
 /// The descriptor to start, cloned off the `&'static` store. Cloning is mandatory, not tidiness:
 /// `route::request_play_up_next` clears `UP_NEXT` as its first act, so handing it a borrow of the
 /// static would be a use-after-free the borrow checker cannot see through a `'static` lifetime.
-pub(crate) fn take(&mut self, ps: &plx_media::route::PlaybackSession) -> Option<UpNext> {
+pub fn take(&mut self, ps: &plx_media::route::PlaybackSession) -> Option<UpNext> {
     self.cancel();
     plx_media::route::up_next(ps).cloned()
 }
 
 /// Per-session reset — a new playback must not inherit the previous episode's countdown OR its
 /// cancel latch.
-pub(crate) fn reset(&mut self) {
+pub fn reset(&mut self) {
     self.deadline = 0;
     self.cancelled = false;
 }
@@ -208,18 +208,18 @@ const CAPTION_H: f32 = 30.0;
 const CAPTION_W: f32 = 460.0;
 
 /// The tile's four frames, in draw order up the column.
-pub(crate) struct Layout {
-    pub(crate) still: Rect,
-    pub(crate) caption: Rect,
-    pub(crate) credits: Rect,
-    pub(crate) next: Rect,
+pub struct Layout {
+    pub still: Rect,
+    pub caption: Rect,
+    pub credits: Rect,
+    pub next: Rect,
 }
 
 /// PURE — the whole column from the two MEASURED pill widths, so the draw and the pointer hit-test
 /// are one arrangement and the arrangement is host-testable. Measuring is the impure half and lives
 /// in [`layout`]: `text_width` is `TTF_SizeUTF8`, which the host suite cannot even link against.
-pub(crate) fn layout_of(next_w: f32, credits_w: f32) -> Layout {
-    use crate::appkit::player_hud::{CTRL_H, CTRL_RIGHT, CTRL_Y};
+pub fn layout_of(next_w: f32, credits_w: f32) -> Layout {
+    use crate::player_hud::{CTRL_H, CTRL_RIGHT, CTRL_Y};
     let next = Rect::new(CTRL_RIGHT - next_w, CTRL_Y, next_w, CTRL_H);
     let credits = Rect::new(next.x - PILL_GAP - credits_w, next.y, credits_w, next.h);
     let caption = Rect::new(
@@ -249,9 +249,9 @@ pub(crate) fn layout_of(next_w: f32, credits_w: f32) -> Layout {
 /// deliberately NOT a second `ctrl_slot`, because that floor exists to hold the row's right edge
 /// steady, which is the primary's job, and two equal capsules would say the two choices are
 /// equivalent.
-pub(crate) fn layout(row: &mut crate::appkit::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
+pub fn layout(row: &mut crate::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
     layout_of(
-        crate::appkit::player_hud::ctrl_slot(row, plx_platform::i18n::msg::widgets_next_episode(), measure).w,
+        crate::player_hud::ctrl_slot(row, plx_platform::i18n::msg::widgets_next_episode(), measure).w,
         plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
     )
 }
@@ -260,9 +260,9 @@ pub(crate) fn layout(row: &mut crate::appkit::player_hud::TransportRow, measure:
 /// buttons at. Only the two BUTTONS are pointer targets: the still and its caption are not, since
 /// with two actions in the row a click on the artwork has no single obvious meaning, and guessing
 /// one is how a stray click starts an episode the user did not ask for.
-pub(crate) fn layout_peek(row: &crate::appkit::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
+pub fn layout_peek(row: &crate::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
     layout_of(
-        crate::appkit::player_hud::ctrl_slot_w(row, plx_platform::i18n::msg::widgets_next_episode(), measure),
+        crate::player_hud::ctrl_slot_w(row, plx_platform::i18n::msg::widgets_next_episode(), measure),
         plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
     )
 }
@@ -280,9 +280,9 @@ fn caption(u: &UpNext) -> String {
     plx_platform::i18n::msg::widgets_next_caption(&episode)
 }
 
-pub(crate) fn draw(
+pub fn draw(
     ps: &plx_media::route::PlaybackSession,
-    row: &mut crate::appkit::player_hud::TransportRow,
+    row: &mut crate::player_hud::TransportRow,
     up: &Countdown,
     p: Painter,
     focused: bool,
@@ -420,7 +420,7 @@ mod tests {
         // little under it — which is the asymmetry the design is making a point of
         let l = layout_of(243.0, 226.0);
         let (n, c, t, cap) = (l.next, l.credits, l.still, l.caption);
-        let right = crate::appkit::player_hud::CTRL_RIGHT;
+        let right = crate::player_hud::CTRL_RIGHT;
         assert_eq!(n.x + n.w, right, "the primary holds the row's right edge");
         assert_eq!(t.x + t.w, right, "…and the still shares it");
         assert_eq!(

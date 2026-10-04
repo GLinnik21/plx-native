@@ -566,6 +566,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_appkit"
+version = "0.0.0"
+dependencies = [
+ "plx_appkit",
+ "plx_base",
+ "plx_data",
+ "plx_gfx",
+ "plx_machine",
+ "plx_media",
+ "plx_platform",
+ "plx_plex",
+ "plx_telemetry",
+ "plx_ui",
+]
+
+[[package]]
 name = "plx_base"
 version = "0.0.0"
 dependencies = [
@@ -714,6 +730,7 @@ version = "0.7.0"
 dependencies = [
  "image",
  "libc",
+ "plx_appkit",
  "plx_base",
  "plx_data",
  "plx_gfx",

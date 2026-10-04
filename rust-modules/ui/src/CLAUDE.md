@@ -123,7 +123,7 @@ CAPTION 24 rung is the legibility floor at TV distance, and every extra size cos
 cache. A string that does not fit is rewritten or given a short key.
 
 **Known unchecked surfaces** (no `fit_report` covers them yet): action pills, crumbs and tabs in
-`app/chrome.rs`, the player HUD, `up_next`, chapters (all now under `../appkit/`), and card-row names such as profile names.
+`app/chrome.rs`, the player HUD, `up_next`, chapters (all now in the `plx_appkit` crate, `rust-modules/appkit/src/`), and card-row names such as profile names.
 Do not read their absence from a test as a pass.
 
 ## The architecture (restructure spec v4)

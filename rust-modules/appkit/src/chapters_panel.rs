@@ -38,7 +38,7 @@ use plx_ui::widgets::CARD_FOCUS_SCALE;
 /// The strip's whole state, owned by the container that mounts this panel — the modal PHASE and
 /// the appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw`
 /// takes the appear fraction as a parameter instead of stepping its own `Popover`.
-pub(crate) struct ChaptersState {
+pub struct ChaptersState {
     sel: c_int,
     scroll: Spring, // horizontal scroll offset (px)
     scale: Spring,  // focused-card pop (springs 1.0 → FOCUS_SCALE on each move)
@@ -46,7 +46,7 @@ pub(crate) struct ChaptersState {
 
 impl ChaptersState {
     /// focus the chapter that contains the current playhead
-    pub(crate) fn new(meta: metadata::MetadataView<'_>) -> Self {
+    pub fn new(meta: metadata::MetadataView<'_>) -> Self {
         let pos_ms = plx_media::player::playpos_ns() / 1_000_000;
         let sel = chapters(meta)
             .iter()
@@ -62,7 +62,7 @@ impl ChaptersState {
     /// The highlighted chapter, for the focus probe (`crate::focusprobe`). The strip's LEFT/RIGHT
     /// arm in `app.rs` moves this and nothing else, so the fingerprint is blind to it without a
     /// reader.
-    pub(crate) fn sel(&self) -> c_int {
+    pub fn sel(&self) -> c_int {
         self.sel
     }
 
@@ -71,7 +71,7 @@ impl ChaptersState {
     /// element (§7.3 step 5) — the owner's `step` is the only place that mutates in response to a
     /// `FocusMoved`, and this is `screens::player::overlay::PlayerOverlayScreen::step`'s write.
     /// Re-pops the card exactly as the old `move_focus` did on an actual change.
-    pub(crate) fn set_sel(&mut self, i: c_int) {
+    pub fn set_sel(&mut self, i: c_int) {
         if i != self.sel {
             self.scale.jump(1.0); // re-pop the newly-focused card
         }
@@ -79,7 +79,7 @@ impl ChaptersState {
     }
 
     /// seek target (nanoseconds) for the focused chapter, or -1 if none.
-    pub(crate) fn on_ok(&self, meta: metadata::MetadataView<'_>) -> i64 {
+    pub fn on_ok(&self, meta: metadata::MetadataView<'_>) -> i64 {
         let s = self.sel;
         chapters(meta)
             .get(s.max(0) as usize)
@@ -87,7 +87,7 @@ impl ChaptersState {
             .unwrap_or(-1)
     }
 
-    pub(crate) fn update(&mut self, dt: f32, meta: metadata::MetadataView<'_>) {
+    pub fn update(&mut self, dt: f32, meta: metadata::MetadataView<'_>) {
         // The store this indexes belongs to the PLAYING item and a new play retires it, so re-clamp
         // rather than spring the scroll toward a slot that no longer exists (which culls every card
         // and leaves an empty panel). `on_ok`/`draw` are `.get()`-based, so this is about the strip
@@ -107,7 +107,7 @@ impl ChaptersState {
         );
     }
 
-    pub(crate) fn draw(
+    pub fn draw(
         &mut self,
         ps: &plx_media::route::PlaybackSession,
         appear: f32,
@@ -194,12 +194,12 @@ fn n(meta: metadata::MetadataView<'_>) -> c_int {
     chapters(meta).len() as c_int
 }
 /// whether the PLAYING item has chapters — drives showing/hiding the Chapters tab
-pub(crate) fn has_chapters(meta: metadata::MetadataView<'_>) -> bool {
+pub fn has_chapters(meta: metadata::MetadataView<'_>) -> bool {
     n(meta) > 0
 }
 /// how many chapters the PLAYING item has — what the owning screen reads from its host's metadata
 /// view and hands to [`ChaptersPart::count`], so this widget never names the host's trait
-pub(crate) fn chapter_count(meta: metadata::MetadataView<'_>) -> usize {
+pub fn chapter_count(meta: metadata::MetadataView<'_>) -> usize {
     n(meta) as usize
 }
 
@@ -256,14 +256,14 @@ fn clamp_index<K: IndexElem>(entry: EntryId, want: FocusKey<K>, n: usize) -> Foc
 /// mutates a screen"), so a mutable field would make this type unconstructable from there. The
 /// actual paint (`ChaptersState::draw`) stays a direct call on the owned `Panel` from
 /// `PlayerOverlayScreen::draw`'s `&mut self`; [`Part::draw`] below only registers stops.
-pub(crate) struct ChaptersPart<'a> {
-    pub(crate) state: &'a ChaptersState,
-    pub(crate) entry: EntryId,
-    pub(crate) group: GroupId,
+pub struct ChaptersPart<'a> {
+    pub state: &'a ChaptersState,
+    pub entry: EntryId,
+    pub group: GroupId,
     /// the playing leaf's chapter count for THIS query, read by the owner from its host's metadata
     /// view ([`chapter_count`]) — passed in so the part is generic over any [`Host`], not over the
     /// application's `MetadataLike` (which lives in `screens::registry`, a layer above this one)
-    pub(crate) count: usize,
+    pub count: usize,
 }
 
 impl<H: Host> Focusable<H> for ChaptersPart<'_>

@@ -1,11 +1,11 @@
 //! The player transport's **overflow menu** — the popover behind the third control disc (`…`), on
 //! the same animated [`TableView`] as the subtitle/audio and profile menus. It only REPORTS the
 //! chosen [`Action`]; `app.rs` performs it, exactly as the profile menu did before it became
-//! an owned surface ([`crate::screens::account_menu`], restructure phase 10).
+//! an owned surface (`crate::screens::account_menu`, restructure phase 10).
 //!
 //! # Why an overflow menu exists at all
 //!
-//! **Stats for nerds**, the diagnostics overlay ([`crate::app::diagnostics`]), needs a home a stranger can
+//! **Stats for nerds**, the diagnostics overlay (`crate::app::diagnostics`), needs a home a stranger can
 //! find, because it is how this app gets bug reports off televisions nobody here owns — every other
 //! diagnostic surface in the codebase (the `/tmp/plxnative-*` triggers, the remote FIFO, the
 //! capture stream) is compiled out of RELEASE builds by the `devtriggers` feature, which is what a
@@ -41,7 +41,7 @@
 //! `docs/parity-gaps.md`'s standing decision is that this app has **no full-screen menu sheets** —
 //! the reference clients put playback quality in one and we do not. Quality drills in INSIDE the
 //! popover instead, on the same [`plx_ui::page_stack::PageStack`] the Subtitles tab of
-//! [`crate::appkit::track_menu`] uses: BACK, LEFT and a click on the title band mean "up one page", and
+//! [`crate::track_menu`] uses: BACK, LEFT and a click on the title band mean "up one page", and
 //! only BACK on the root dismisses. Six rungs fit; when they stop fitting, the [`TableView`]
 //! scrolls, which is what it is for.
 //!
@@ -81,7 +81,7 @@ use plx_ui::{theme, Rect};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     None,
-    /// flip [`crate::app::diagnostics`]'s overlay on/off
+    /// flip `crate::app::diagnostics`'s overlay on/off
     ToggleStats,
     /// select a rung of the playback-quality ladder ([`plx_media::route::set_quality`])
     SetQuality(plx_media::route::Quality),
@@ -94,7 +94,7 @@ pub enum Action {
 /// **A drill-in page of the More menu** — the form's `Dest`. The root is the empty page stack, not
 /// a value of this type (`docs/player-submenus.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MorePage {
+pub enum MorePage {
     /// The playback-quality ladder: one checked-rung row per rung ([`MoreRow::Act`] of a
     /// [`Action::SetQuality`]).
     Quality,
@@ -119,7 +119,7 @@ impl MorePage {
 /// A row's identity on either page: the Quality drill-in on the root, or a row that commits an
 /// [`Action`] (a rung on the Quality page, an Options switch on the root).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MoreRow {
+pub enum MoreRow {
     /// The root's Quality row ([`MorePage::Quality`]): reads out the current rung.
     OpenQuality,
     Act(Action),
@@ -127,7 +127,7 @@ pub(crate) enum MoreRow {
 
 /// What OK on the highlighted row did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MoreOk {
+pub enum MoreOk {
     /// Perform this action; the container dismisses the panel (a rung pick and the Options rows
     /// close it, exactly as before the Quality page existed).
     Action(Action),
@@ -145,7 +145,7 @@ type MoreTable = FormTable<MoreRow, Action, MorePage>;
 /// row, capped at `MENU_MAX_W`, and every row must fit the cap in every language
 /// (`every_row_fits_the_panel_in_every_language`).
 
-pub(crate) struct MoreMenuState {
+pub struct MoreMenuState {
     /// The rows AND the action each one commits, declared together ([`root_form`],
     /// [`quality_form`]) — the row SET varies (the Quality ladder is built from
     /// `route::available_quality_ladder`, and Force Direct Play drops it), so a row is found by its
@@ -266,14 +266,14 @@ impl MoreMenuState {
     }
 
     /// The page showing, `None` at the root.
-    #[cfg(test)]
-    pub(crate) fn page(&self) -> Option<MorePage> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn page(&self) -> Option<MorePage> {
         self.pages.top()
     }
 
     /// The highlighted row's identity, for tests.
-    #[cfg(test)]
-    pub(crate) fn sel_id(&self) -> Option<MoreRow> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn sel_id(&self) -> Option<MoreRow> {
         self.form.selected_id().copied()
     }
 
@@ -308,7 +308,7 @@ impl MoreMenuState {
 
     /// Pop the top page: the root comes back exactly as it was left — the opener focused by id, the
     /// scroll reinstated ([`FormTable::restore`]). `false` at the root (nothing popped).
-    pub(crate) fn pop(&mut self, ps: &plx_media::route::PlaybackSession) -> bool {
+    pub fn pop(&mut self, ps: &plx_media::route::PlaybackSession) -> bool {
         let Some(saved) = self.pages.pop() else { return false };
         let leaving = page_stack::leave_page(&mut self.form);
         self.motion.begin_slide(leaving, -1.0);
@@ -320,7 +320,7 @@ impl MoreMenuState {
 
     /// **RIGHT**: on a Nav row it enters — the same as OK; anywhere else nothing happens (this
     /// popover has no tabs to switch).
-    pub(crate) fn on_right(&mut self, ps: &plx_media::route::PlaybackSession) {
+    pub fn on_right(&mut self, ps: &plx_media::route::PlaybackSession) {
         let sel = self.form.table.sel.max(0) as usize;
         if matches!(self.form.binding_at(sel).map(|b| &b.kind), Some(RowKind::Nav(_))) {
             if let Some(Activation::Push(dest)) = self.form.activate(sel) {
@@ -331,13 +331,13 @@ impl MoreMenuState {
 
     /// **The replay canon**: the page path (each pushed page and the row that opened it) and the
     /// selected row's [`RowKey`] — not its index, which two pages share.
-    pub(crate) fn canon(&self, c: &mut plx_machine::machine::Canon) {
+    pub fn canon(&self, c: &mut plx_machine::machine::Canon) {
         self.pages.canon(c, MorePage::code, |r| r.key().0);
         c.u32(self.form.key_at(self.form.table.sel.max(0) as usize).map_or(u32::MAX, |k| k.0));
     }
 
     /// What the `moreosc` trigger needs to choose its next key: how many pages are pushed.
-    pub(crate) fn osc_depth(&self) -> usize {
+    pub fn osc_depth(&self) -> usize {
         self.pages.len()
     }
 
@@ -347,7 +347,7 @@ impl MoreMenuState {
     /// Quality page it is refreshed IN PLACE (focus kept by id, the checked rung following the
     /// pick), and the page pops to the root when Quality stops being offered. The panel's height
     /// follows, and the card animates to it ([`Self::update`]). Returns whether it rebuilt.
-    pub(crate) fn refresh(&mut self, ps: &plx_media::route::PlaybackSession) -> bool {
+    pub fn refresh(&mut self, ps: &plx_media::route::PlaybackSession) -> bool {
         let forced = plx_media::route::forced_direct_play(ps);
         self.refresh_to(ps, forced, rows_for(forced), plx_media::route::quality())
     }
@@ -389,7 +389,7 @@ impl MoreMenuState {
         true
     }
 
-    pub(crate) fn new(ps: &plx_media::route::PlaybackSession) -> Self {
+    pub fn new(ps: &plx_media::route::PlaybackSession) -> Self {
         Self::open_focused(ps, None)
     }
 
@@ -402,13 +402,13 @@ impl MoreMenuState {
     ///
     /// Under Force Direct Play the menu has no Quality section (see [`rows_for`]), and this is the
     /// same menu as [`Self::new`]; `screens::player::overlay` does not route here then.
-    pub(crate) fn new_quality(ps: &plx_media::route::PlaybackSession) -> Self {
+    pub fn new_quality(ps: &plx_media::route::PlaybackSession) -> Self {
         Self::open_focused(ps, Some(plx_media::route::quality()))
     }
 
     /// Every row's focus key, in drawn order (for a test that walks the rows).
-    #[cfg(test)]
-    pub(crate) fn keys(&self) -> Vec<u32> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn keys(&self) -> Vec<u32> {
         (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.key_at(i).map(|k| k.0)).collect()
     }
 
@@ -416,7 +416,7 @@ impl MoreMenuState {
     /// key ladder moves, and the reason it exists: `app.rs`'s UP/DOWN arm for this panel changes
     /// nothing else, so without this the fingerprint records the panel opening and closing and
     /// nothing between.
-    pub(crate) fn sel(&self) -> i32 {
+    pub fn sel(&self) -> i32 {
         self.form.table.sel
     }
 
@@ -427,7 +427,7 @@ impl MoreMenuState {
     /// Both a D-pad move AND a pointer hover reach here now — hover parks focus THROUGH the engine
     /// (§7.5), replacing this menu's own `pointer_focus`.
     /// Returns whether a row with that key is on the page showing.
-    pub(crate) fn focus_key(&mut self, elem: u32) -> bool {
+    pub fn focus_key(&mut self, elem: u32) -> bool {
         let Some(i) = self.form.index_of_key(RowKey(elem)) else { return false };
         self.form.table.sel = i as i32;
         true
@@ -435,7 +435,7 @@ impl MoreMenuState {
 
     /// OK on the highlighted row: an action to perform (the container dismisses the panel
     /// afterward), or a Nav row that opened its page.
-    pub(crate) fn on_ok(&mut self, ps: &plx_media::route::PlaybackSession) -> MoreOk {
+    pub fn on_ok(&mut self, ps: &plx_media::route::PlaybackSession) -> MoreOk {
         match self.form.selected_id().and_then(|id| self.form.index_of(id)).and_then(|i| self.form.activate(i)) {
             Some(Activation::Action(act)) => MoreOk::Action(act),
             Some(Activation::Push(page)) => {
@@ -454,7 +454,7 @@ impl MoreMenuState {
     fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         self.motion.natural(self.form.table.layout_rev(), || {
             let pw = self.form.table.menu_panel_width(measure);
-            let px = crate::appkit::player_hud::CTRL_RIGHT - pw;
+            let px = crate::player_hud::CTRL_RIGHT - pw;
             let bottom = theme::layout::PLAYER_MENU_BOTTOM; // ~28px above the discs, as track_menu
             let ph = self.panel_h();
             Rect::new(px, bottom - ph, pw, ph)
@@ -486,17 +486,17 @@ impl MoreMenuState {
 
     /// Is the card still resizing? The player overlay holds the pointer while it is
     /// (`Screen::pointer_held`).
-    pub(crate) fn transitioning(&self) -> bool {
+    pub fn transitioning(&self) -> bool {
         self.motion.transitioning()
     }
 
     /// The opening page's strings (the root, or the Quality page for a quality entry), queued on
     /// the frame the panel mounts — see `TrackMenuState::warm_open`, which this mirrors.
-    pub(crate) fn warm_open(&self, measure: &dyn plx_machine::machine::Measure) {
+    pub fn warm_open(&self, measure: &dyn plx_machine::machine::Measure) {
         self.motion.warm_open(&self.form.table, || self.panel_rect(measure), measure);
     }
 
-    pub(crate) fn update(&mut self, dt: f32, measure: &dyn plx_machine::machine::Measure, ps: &plx_media::route::PlaybackSession) {
+    pub fn update(&mut self, dt: f32, measure: &dyn plx_machine::machine::Measure, ps: &plx_media::route::PlaybackSession) {
         self.refresh(ps);
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
         let natural = self.panel_rect(measure);
@@ -505,7 +505,7 @@ impl MoreMenuState {
         self.motion.prewarm_text(natural, &self.form.table, measure);
     }
 
-    pub(crate) fn draw(&mut self, appear: f32, measure: &dyn plx_machine::machine::Measure) {
+    pub fn draw(&mut self, appear: f32, measure: &dyn plx_machine::machine::Measure) {
         // rises INTO place from below, toward the disc that opened it. The dim under it is the
         // container's (`PlayerOverlayScreen::scrim`, `theme::underlay::DIM_SHEET`), painted at the
         // end of the player's page pass — not here.
@@ -532,10 +532,10 @@ impl MoreMenuState {
 /// mutates a screen"), so a mutable field would make this type unconstructable from there. The
 /// actual paint (`MoreMenuState::draw`) stays a direct call on the owned `Panel` from
 /// `PlayerOverlayScreen::draw`'s `&mut self`; [`Part::draw`] below only registers stops.
-pub(crate) struct MoreMenuPart<'a> {
-    pub(crate) state: &'a MoreMenuState,
-    pub(crate) entry: EntryId,
-    pub(crate) group: GroupId,
+pub struct MoreMenuPart<'a> {
+    pub state: &'a MoreMenuState,
+    pub entry: EntryId,
+    pub group: GroupId,
 }
 
 impl PopoverPanel for MoreMenuState {
@@ -653,7 +653,7 @@ static STATS_READER: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::ne
 
 /// Register the reader for the Stats for nerds switch. The first registration wins; the loop makes
 /// exactly one, before any screen exists.
-pub(crate) fn install_stats_reader(read: fn() -> bool) {
+pub fn install_stats_reader(read: fn() -> bool) {
     let _ = STATS_READER.set(read);
 }
 
@@ -716,13 +716,13 @@ fn row_for(ps: &plx_media::route::PlaybackSession, a: Action) -> Row {
 }
 
 /// The panel at its TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]).
-#[cfg(test)]
-pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let (pw, ph) = (plx_ui::table::MENU_MAX_W, 320.0f32);
     let bottom = theme::layout::PLAYER_MENU_BOTTOM;
     out.push((
         "… overflow menu panel",
-        Rect::new(crate::appkit::player_hud::CTRL_RIGHT - pw, bottom - ph, pw, ph),
+        Rect::new(crate::player_hud::CTRL_RIGHT - pw, bottom - ph, pw, ph),
     ));
 }
 

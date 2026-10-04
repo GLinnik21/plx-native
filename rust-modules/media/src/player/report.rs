@@ -1651,7 +1651,7 @@ mod tests {
         // layer crate split out of it. The list read `src` and `ui/src` of the application crate
         // until the media split moved this test, and the layers that had left before then were
         // not in it, so moving a directory had already moved it out of this scan.
-        let layers = ["base", "machine", "platform", "gfx", "net", "ui", "plex", "telemetry", "data", "session"];
+        let layers = ["base", "machine", "platform", "gfx", "net", "ui", "plex", "telemetry", "data", "session", "appkit"];
         let roots = [manifest.join("src"), manifest.join("../src")]
             .into_iter()
             .chain(layers.iter().map(|layer| manifest.join("..").join(layer).join("src")));

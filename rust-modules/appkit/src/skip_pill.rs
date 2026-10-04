@@ -20,7 +20,7 @@ use std::ffi::CString;
 /// the item, so "skip" means **the episode is over** — seeking to its end would race the decoder
 /// against its own last frames for no benefit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum SkipAction {
+pub enum SkipAction {
     /// jump to this position (ns) and keep playing
     Seek(i64),
     /// the item is finished — hand off to the end-of-playback path (next episode, or leave)
@@ -32,16 +32,16 @@ pub(crate) enum SkipAction {
 /// copy-edit — the sort of thing a design pass does — silently disable Up Next and auto-advance,
 /// with no compile error and nothing to fail.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Prompt {
+pub struct Prompt {
     /// the segment itself — carried so activating the button can retire it (`metadata::mark_skipped`)
-    pub(crate) marker: metadata::Marker,
-    pub(crate) kind: MarkerKind,
-    pub(crate) action: SkipAction,
+    pub marker: metadata::Marker,
+    pub kind: MarkerKind,
+    pub action: SkipAction,
 }
 
 impl Prompt {
     /// The button's copy — presentation, derived from the kind at the point of drawing.
-    pub(crate) fn label(&self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self.kind {
             MarkerKind::Intro => plx_platform::i18n::msg::widgets_skip_intro(),
             MarkerKind::Credits => plx_platform::i18n::msg::widgets_skip_credits(),
@@ -50,14 +50,14 @@ impl Prompt {
 }
 
 /// PURE: the offer a given segment makes. Takes the marker rather than reading the playhead, so
-/// the precedence it feeds ([`crate::appkit::player_hud::slot_for`]) is host-testable and the whole frame
+/// the precedence it feeds ([`crate::player_hud::slot_for`]) is host-testable and the whole frame
 /// decides from ONE playhead sample — `playpos_ns` is written by LG's media thread, and re-reading
 /// it per call site let the input path and the draw path disagree within a single frame.
 ///
 /// Markers belong to the PLAYING leaf (`metadata::playing()`), never to `metadata::current()`:
 /// during a show-page episode play `current()` is the SHOW, and offering episode 1's intro timing
 /// during episode 5 is the same identity bug the track store exists to prevent.
-pub(crate) fn prompt_for(m: metadata::Marker) -> Prompt {
+pub fn prompt_for(m: metadata::Marker) -> Prompt {
     Prompt {
         marker: m,
         kind: m.kind,
@@ -72,15 +72,15 @@ pub(crate) fn prompt_for(m: metadata::Marker) -> Prompt {
 
 /// The button's rect — the SHARED control-row slot, so it and Up Next cannot drift apart.
 ///
-/// `row` is the player instance's own [`crate::appkit::player_hud::TransportRow`] (restructure phase
+/// `row` is the player instance's own [`crate::player_hud::TransportRow`] (restructure phase
 /// 9): it carries both the label-width memo this measurement is cached in and the control row's
 /// focus springs. It was a module `static mut` on the other side of `ctrl_slot` until then.
-pub(crate) fn rect(row: &mut crate::appkit::player_hud::TransportRow, pr: Prompt, measure: &dyn plx_machine::machine::Measure) -> Rect {
-    crate::appkit::player_hud::ctrl_slot(row, pr.label(), measure)
+pub fn rect(row: &mut crate::player_hud::TransportRow, pr: Prompt, measure: &dyn plx_machine::machine::Measure) -> Rect {
+    crate::player_hud::ctrl_slot(row, pr.label(), measure)
 }
 
 /// Draw the button in the control row. Called by `player_hud` INSTEAD of the two discs.
-pub(crate) fn draw(row: &mut crate::appkit::player_hud::TransportRow, p: Painter, pr: Prompt, focused: bool, measure: &dyn plx_machine::machine::Measure) {
+pub fn draw(row: &mut crate::player_hud::TransportRow, p: Painter, pr: Prompt, focused: bool, measure: &dyn plx_machine::machine::Measure) {
     let Ok(label) = CString::new(pr.label()) else {
         return;
     };

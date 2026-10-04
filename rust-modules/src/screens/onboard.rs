@@ -24,7 +24,7 @@ use plx_ui::route_screen::RouteLayout;
 use super::family::SessionGround as RouteGround;
 use plx_ui::screen::{DrawFrame, Enter, FocusSource, FocusTarget, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
 use plx_ui::form::{FormTable, RowKey};
-use crate::appkit::source_list::{self, Level, SrcTarget, Tail};
+use plx_appkit::source_list::{self, Level, SrcTarget, Tail};
 use plx_ui::table_screen::{BandPart, Header, TableScreen};
 use plx_ui::widgets::{CtlPop, Spinner, StatusKind, StatusOverlay};
 use plx_ui::{theme, Env, Painter, View};

@@ -8,13 +8,13 @@ L14, which a split hides from them, and the gate does not check impl coherence. 
 off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
 entries are gone, and the gate fails on any reference from outside the port to a member of it. It
 is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
-up the split. **Eleven of the fourteen layers, `base`, `machine`, `platform`, `gfx`, `net`, `ui`,
-`plex`, `telemetry`, `data`, `session` and `media`, are their own crates, `plx_base`,
+up the split. **Twelve of the fourteen layers, `base`, `machine`, `platform`, `gfx`, `net`, `ui`,
+`plex`, `telemetry`, `data`, `session`, `media` and `appkit`, are their own crates, `plx_base`,
 `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`,
-`plx_data`, `plx_session` and `plx_media`** (`rust-modules/base/`, `machine/`, `platform/`, `gfx/`,
-`net/`, `ui/`, `plex/`, `telemetry/`, `data/`, `session/` and `media/`; "Split 1: base" to "Split
-11 (media)" below, and "Splits 9 and 10 together" for how those two were combined); the other three
-(`appkit`, `screens`, `app`) are still modules of `plxnative-modules`.
+`plx_data`, `plx_session`, `plx_media` and `plx_appkit`** (`rust-modules/base/`, `machine/`,
+`platform/`, `gfx/`, `net/`, `ui/`, `plex/`, `telemetry/`, `data/`, `session/`, `media/` and
+`appkit/`; "Split 1: base" to "Split 12 (appkit)" below, and "Splits 9 and 10 together" for how those
+two were combined); the other two (`screens`, `app`) are still modules of `plxnative-modules`.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
@@ -1616,6 +1616,84 @@ modules on the cycle (`app dev textinput`), 10 outside". What it taught:
 - **Tests.** The default-features suite lists 5637 tests on `main` and 5637 here, in twelve binaries
   now (`plx_media` 930 of them, taken from the application's 2841 which is 1911): 157 + 66 + 218 +
   94 + 128 + 756 + 458 + 236 + 425 + 258 + 930 + 1911.
+
+### Split 12 (appkit)
+
+`appkit` was extracted twelfth: `rust-modules/appkit/` is the workspace member `plx_appkit` (an `rlib`,
+`uses = base machine platform gfx net plex telemetry ui data session media`; the manifest names the nine
+it calls, `net` and `session` being reached only through `media`), holding the player HUD, the
+track, more, info and chapters panels, `up_next`, `timing_capsule`, `skip_pill` and the Sources row
+model: 11 files, 12,813 lines. Like `ui` it is one module, so the manifest says
+`[package.metadata.plx] mount = "appkit"` and `src/lib.rs` is what was `appkit/mod.rs`
+(`plx_appkit::player_hud::slot_for` is module `appkit::player_hud` to the analyzer, and
+`--report` lists `appkit::track_menu::overscan_rects`, not `track_menu::...`). Mechanically
+(`split-appkit-rewrite.py`): `git mv`, 18 application files from `crate::appkit` to `plx_appkit`,
+`crate::appkit::x` to `crate::x` inside the crate, `pub(crate)` to `pub` in 10 moved files, and the
+doc links that named `screens`, `app`, `lab` and `focusprobe` unbracketed. What it taught:
+
+- **One orphan-rule hit, found by the compiler.** `impl Default for SubtitleBitmaps` sat in
+  `screens/player/mod.rs`, a screen's impl of `std`'s trait for a type of the layer below; across a
+  crate boundary that is E0117. It lives beside the type in `player_hud.rs` now. The `Focusable`
+  and `Screen` impls of the application's own types are not affected (the traits are `plx_ui`'s and
+  the types the application's). `appkit` defines no `#[macro_export]` macro and the crate has no
+  `env!`, `option_env!`, `include_*!` or `CARGO_MANIFEST_DIR`.
+- **`--report` named four items; the rest of the surface was read by hand.** The four
+  (`more_menu::overscan_rects`, `player_hud::overscan_rects`, `track_menu::overscan_rects`,
+  `player_hud::SkipIntervalGuard`) and the other `cfg(test)` read-backs of the menus and the HUD
+  (`page`, `keys`, `page_path`, `selected_id`, `stub`, `force_play_at_for_test`, ...) are all
+  `any(test, feature = "test-support")` now: 22 lines in 4 files, by `split-appkit-gate.py`, none
+  flipped back (the module's blanket `allow(dead_code)` would hide a flip-back from rustc, so none
+  was attempted). Nothing in the crate switches on `cfg!(test)` or `cfg(not(test))`, and it has no
+  `devtriggers`/`hostsim`/`threadcheck` `cfg`, so the features are `devtriggers` (forwarded to the
+  nine crates below and used for the crate's own self dev-dependency, the rule of "Splits 9 and 10
+  together", so `cargo test -p plx_appkit` alone builds the layers below as the Makefile's suite
+  does) and `test-support`. The old blanket `#![allow(dead_code)]` of the module (its comment records
+  why) moved to `lib.rs` as the same inner attribute; no new `allow` was added.
+- **The crate's test binary draws, so it needs the host link.** `cargo test -p plx_appkit` failed to
+  link on the SDL, GL and nanosvg symbols until the crate got its own `build.rs` including the shared
+  `build_support/host_link.rs`, exactly like `plx_ui`'s and `plx_gfx`'s (`cargo:rustc-link-arg` reaches only the
+  package that prints it). It prints nothing on the television (`host_link::emit` returns first for
+  `target_arch = "arm"`), reads no variable but cargo's own, and is in the harness's tree-copy input list.
+- **Gates that read the old location.** `ci/check-deps.sh` has `SRC_APPKIT` in every whole-tree list
+  that ends at `$SRC_MEDIA`, and the rules that named the directory by path follow the files
+  (`wall`, `mutators`, `sessionwrite`, `ladder`). Two rules read `$SRC` alone and would have gone
+  silent without failing: the owner rules' one shared pass (`OWNER_LINES`) and `textmeasure`; both
+  scan `$SRC_APPKIT` too. `ci/check-statics.sh` gates `appkit/src` (its path check is loud).
+  `ci/check-localization.py` read `rust-modules/src/appkit` as one of the two product-string
+  directories and its missing-path test listed it; both read the crate now, and the string
+  collector reads `rust-modules/appkit/src` as a source directory and a constants source. The eventlog scrub test's
+  root list gained `../appkit/src`, and so did `player/report.rs`'s `fetch_update` walk. Two `plx_ui` tests read `src/appkit` by `CARGO_MANIFEST_DIR`
+  (`containers::tests::no_surface_states_its_own_dim_weight`, `widgets_glass_budget_tests`) and fail
+  loudly on a missing directory; both read `appkit/src` now. The `-p` lists (Makefile, workflow,
+  `tools/build-bench.py` and the tests that pin them, which skill and docs spell), `--src` for the line
+  budget, `RUST_INPUTS`, `tools/cargo-seed.py`, `ci/test_no_host_staticlib.py`, the release hook, `tests/test_harness.py`'s
+  `TREE_INPUTS` and the build-bench scenario (`appkit`, "Edit leaf (plx_appkit skip_pill.rs)"; added, not
+  run) follow. The module-cycle baseline now reads 9 modules outside the cycle (the same 3 on it).
+- **The seam was checked in the artifact, per crate.** In the `plx_appkit` rlib of a `--release`
+  build with the feature off, `strings` finds none of seven seam names (`SkipIntervalGuard`,
+  `overscan_rects`, `page_path`, `key_of`, `sel_id`, `own_burn_built`, `force_play_at_for_test`); the
+  `--features test-support` control build finds five of them (the other two are inlined). `selected_id`
+  and `offset_ms` are left out of the list: both occur as substrings of unrelated symbols in either
+  build. `cargo tree -e normal` lists no `test-support` with the default features or with
+  `--no-default-features`, and `cargo tree -e normal,build -f '{p} [{f}]'` for `plxnative-modules` differs
+  from `main`'s by one line, `plx_appkit v0.0.0 [default,devtriggers]` (`[default]` with
+  `--no-default-features`), in the default, release and `hostsim` configurations.
+- **FFI and linkage are untouched, proven in the artifact.** The crate declares no `extern "C"`,
+  `#[no_mangle]` or `dynlib!`. The ARM staticlib built the way the Makefile builds it from `main` and
+  from the branch has the same 291 defined C-ABI symbols and the same 279 undefined non-Rust symbols
+  by `llvm-nm` (and the same 580 defined global symbols of any kind).
+- **Proven by temporary violating edits, reverted byte for byte** (`split-appkit-violate.py`): an
+  `Instant::now()` in `skip_pill.rs` fails `wall`; `session::load(` in `up_next.rs` fails
+  `sessionwrite`; `fn move_focus` in `chapters_panel.rs` fails `ladder`; a raw `text_width` in
+  `timing_capsule.rs` fails `textmeasure`; `SDL_GetTicks(` fails `ticks`; `tv::sink::installed` in
+  `up_next.rs` fails `sink`; `static mut` in `skip_pill.rs` fails `ci/check-statics.sh`; a
+  `use plx_media::player::ffi::..` in `lib.rs` fails the port fence; an English `Label::new("..")` in
+  `skip_pill.rs` fails `ci/check-localization.py`; and a `log(&format!(.., d.title))` in `up_next.rs`
+  fails `no_log_call_site_interpolates_viewing_content` in `plx_base`.
+- **Tests.** The default-features suite lists 5648 tests on `main` and 5648 here, in thirteen binaries
+  now (`plx_appkit` 214 of them, taken from the application's 1919 which is 1705). `cargo test -p
+  plx_appkit` alone and the application's tests alone passed on three runs each. `--report` lists
+  `appkit` as ready and 4 `cfg(test)` items named across layers remain (`screens` only).
 
 ## What the split cost the binary, and how the release profile pays it back
 

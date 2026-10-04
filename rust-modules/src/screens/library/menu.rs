@@ -13,7 +13,7 @@ use plx_ui::screen::{
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
 };
 use plx_ui::form::{Binding, Form, FormSection, FormTable, RowKey, RowKind};
-use crate::appkit::source_list::{self, Level, SrcTarget, Tail};
+use plx_appkit::source_list::{self, Level, SrcTarget, Tail};
 use plx_ui::table::{Row, TableView};
 use std::convert::Infallible;
 #[cfg(test)]

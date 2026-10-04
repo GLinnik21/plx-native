@@ -37,12 +37,12 @@ use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, Fx, FocusKey, GroupId, Handled, InputKind, InstanceId,
     LogicalState, Machine,
 };
-use crate::appkit::player_hud::{self, ControlSlot, SubtitleBitmaps, TransportRow};
+use plx_appkit::player_hud::{self, ControlSlot, SubtitleBitmaps, TransportRow};
 use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, FocusSource, Focusable, GroupKind, GroupSpec,
     HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
 };
-use crate::appkit::up_next::Countdown;
+use plx_appkit::up_next::Countdown;
 use plx_ui::Rect;
 
 use input::{HudState, Scrub};
@@ -84,12 +84,6 @@ pub(crate) struct PlayerRender {
     /// The decoded image-subtitle display set and its cache key (`player_hud`'s `SET`/`KEY`/`SEL`).
     pub(crate) subs: SubtitleBitmaps,
     pub(crate) ass: ass_subtitles::AssSubtitles,
-}
-
-impl Default for SubtitleBitmaps {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 /// **What the surfaces over the player page do to the transport this frame** — one value
@@ -139,7 +133,7 @@ pub(crate) struct PlayerScreen {
     pub(crate) slot: ControlSlot,
     /// Who owns the "pipeline is working" signal this frame — resolved once, after `player::pump`,
     /// and handed to both the transport and the read-out so they can never both light.
-    pub(crate) busy: crate::appkit::player_hud::Busy,
+    pub(crate) busy: plx_appkit::player_hud::Busy,
     /// Is the transport's MIDDLE drawn at all this frame? False while an Info card or Chapters
     /// strip has taken it — which panel is up is the container's answer, so the loop pushes it.
     pub(crate) transport: bool,
@@ -159,7 +153,7 @@ pub(crate) struct PlayerScreen {
     /// Did a failure own the frame at the last Tick — the edge that resets `failure_sel`.
     failure_up: bool,
     /// The transport clocks' prewarm memo — a render resource, not logical state (`prepare`).
-    clock_warm: crate::appkit::player_hud::ClockWarm,
+    clock_warm: plx_appkit::player_hud::ClockWarm,
 }
 
 impl PlayerScreen {
@@ -171,7 +165,7 @@ impl PlayerScreen {
             row: TransportRow::new(),
             up_next: Countdown::default(),
             slot: ControlSlot::Discs,
-            busy: crate::appkit::player_hud::Busy::None,
+            busy: plx_appkit::player_hud::Busy::None,
             transport: true,
             hud_policy: HudPolicy::Normal,
             origin: None,
@@ -228,7 +222,7 @@ impl PlayerScreen {
 
     /// Draw the image-subtitle display set — the render half this screen owns.
     pub(crate) fn draw_subtitle_bitmap(&mut self, hud_up: bool) {
-        crate::appkit::player_hud::draw_subtitle_bitmap(&mut self.render.subs, hud_up);
+        plx_appkit::player_hud::draw_subtitle_bitmap(&mut self.render.subs, hud_up);
     }
 
     /// The transport, with this instance's own springs, memo and countdown. Paint only: what a
@@ -240,7 +234,7 @@ impl PlayerScreen {
         measure: &dyn plx_machine::machine::Measure,
         meta: plx_data::metadata::MetadataView<'_>,
     ) {
-        crate::appkit::player_hud::draw_hud(
+        plx_appkit::player_hud::draw_hud(
             ps,
             &mut self.row,
             &self.up_next,
@@ -390,18 +384,18 @@ impl PlayerScreen {
         mix(u64::from(
             self.row
                 .since_play_ms(now)
-                .is_some_and(|d| d < crate::appkit::player_hud::PLAY_MARK_MS),
+                .is_some_and(|d| d < plx_appkit::player_hud::PLAY_MARK_MS),
         ));
         mix(match self.slot {
             ControlSlot::Discs => 1,
             ControlSlot::Skip(_) => 2,
             ControlSlot::UpNext(_) => 3,
         });
-        mix(match crate::appkit::player_hud::busy(ps) {
-            crate::appkit::player_hud::Busy::None => 1,
-            crate::appkit::player_hud::Busy::Transport => 2,
+        mix(match plx_appkit::player_hud::busy(ps) {
+            plx_appkit::player_hud::Busy::None => 1,
+            plx_appkit::player_hud::Busy::Transport => 2,
             // the caption is a `&'static CStr`: its ADDRESS is a stable identity for the message
-            crate::appkit::player_hud::Busy::Readout(k, c) => {
+            plx_appkit::player_hud::Busy::Readout(k, c) => {
                 4 ^ ((k as u64) << 32) ^ (c.as_ptr() as u64)
             }
         });
@@ -674,7 +668,7 @@ impl PlayerScreen {
         fx: &mut Effects<'_, H>,
     ) -> Handled {
         use player_hud::{ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
-        let failed = crate::appkit::player_hud::transport_hidden(ps);
+        let failed = plx_appkit::player_hud::transport_hidden(ps);
         let Some(elem) = hit else {
             // **A click that lands on no control at all toggles play/pause** — the `else` arm of
             // the old pointer block, and the reason clicking the PICTURE works: over full-screen
@@ -803,7 +797,7 @@ impl PlayerScreen {
         // Info card over a read-out from a tab row nothing had painted. Port of `key_player_failed`,
         // whose loop arm this replaces; the panel-first half of its BACK is the container's now
         // (an open `…` popover is a surface and answers the key before this screen sees it).
-        if crate::appkit::player_hud::transport_hidden(ps) && !matches!(key, Key::Exit) {
+        if plx_appkit::player_hud::transport_hidden(ps) && !matches!(key, Key::Exit) {
             // …every key but EXIT, which is the remote's own and ends the PROCESS. It is not a
             // control on this frame, so "nothing that is not drawn may be driven" does not reach
             // it, and swallowing it would make a failed playback the one screen in the app an
@@ -975,7 +969,7 @@ impl PlayerScreen {
                     (self.hud.nav.btn + if fwd { 1 } else { -1 }).clamp(0, self.slot.items() - 1);
             }
             input::ScrubPress::Tabs => {
-                let max_tab = if crate::appkit::chapters_panel::has_chapters(meta) { 1 } else { 0 };
+                let max_tab = if plx_appkit::chapters_panel::has_chapters(meta) { 1 } else { 0 };
                 self.hud.nav.tab =
                     (self.hud.nav.tab + if fwd { 1 } else { -1 }).clamp(0, max_tab);
             }
@@ -1179,7 +1173,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
             len: row_len,
             elem: plx_ui::screen::ElemKind::Control,
         });
-        let has_ch = crate::appkit::chapters_panel::has_chapters(H::metadata(cx));
+        let has_ch = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
         out.push(GroupSpec {
             id: GROUP_TABS,
             kind: GroupKind::Row { wrap: false },
@@ -1192,7 +1186,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
         });
         if matches!(
             self.busy,
-            crate::appkit::player_hud::Busy::Readout(plx_ui::widgets::StatusKind::Failed, _)
+            plx_appkit::player_hud::Busy::Readout(plx_ui::widgets::StatusKind::Failed, _)
         ) {
             let frames = player_hud::FailureReadout::now(H::session(cx)).frames(cx.measure);
             let extent = frames.iter().flatten().copied().reduce(|a, b| a.union(b)).unwrap_or(Rect::FULL);
@@ -1247,7 +1241,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
             }
             e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => player_hud::tab_hit_rect(
                 (e - ELEM_TAB_BASE) as i32,
-                crate::appkit::chapters_panel::has_chapters(H::metadata(cx)),
+                plx_appkit::chapters_panel::has_chapters(H::metadata(cx)),
                 cx.measure,
             )?,
             e if (ELEM_FAILURE_BASE..ELEM_FAILURE_END).contains(&e) => {
@@ -1337,10 +1331,10 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         let subs_lift = self.subs_lift(ps, now);
         self.render.ass.draw();
         if let Some(message) = self.render.ass.error() {
-            crate::appkit::player_hud::draw_subtitle_message(message, subs_lift);
+            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift);
         }
         self.draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
-        crate::appkit::player_hud::draw_subtitles(subs_lift, plx_media::route::is_transcoding(ps));
+        plx_appkit::player_hud::draw_subtitles(subs_lift, plx_media::route::is_transcoding(ps));
         // What a pointer can hit is registered AFTER the paint, by `record_stops`, from this
         // screen's own `Focusable` — the rects D-pad focus uses, in the z-order `groups` states.
         // `Hover::Ignore` on the transport's stops: the old pointer path never followed the mouse
@@ -1362,7 +1356,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         // terminal `Error` (which is not `is_busy()`, so it does not pin the HUD) keeps its message
         // instead of vanishing with the 4.5 s linger. AFTER the transport, so it is never dimmed by
         // the scrim; BEFORE the overlay panels, which the container draws above this page.
-        crate::appkit::player_hud::draw_readout(ps, self.busy, now, self.failure_sel, f.measure);
+        plx_appkit::player_hud::draw_readout(ps, self.busy, now, self.failure_sel, f.measure);
         if self.repair_alert.visible() {
             self.repair_alert.draw_scrim();
             self.repair_alert.draw(plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::widgets_repair_action_c(), f.measure);
@@ -1518,12 +1512,12 @@ mod clock_animator_tests {
         // observer that reads the transport.
         screen.row.force_play_at_for_test(5_000);
         assert!(
-            screen.row.since_play_ms(5_100).is_some_and(|d| d < crate::appkit::player_hud::PLAY_MARK_MS),
+            screen.row.since_play_ms(5_100).is_some_and(|d| d < plx_appkit::player_hud::PLAY_MARK_MS),
             "the fixture: the Play mark is on screen",
         );
 
         settled(&mut pl, &screen, &ps, 5_100);
-        let after = 5_000 + crate::appkit::player_hud::PLAY_MARK_MS + 1;
+        let after = 5_000 + plx_appkit::player_hud::PLAY_MARK_MS + 1;
         assert!(
             reported(&mut pl, &screen, &ps, after),
             "the Play mark stopped being drawn on this frame: it must report",
@@ -1540,7 +1534,7 @@ mod clock_animator_tests {
         let ps = PlaybackSession::IDLE;
         let mut pl = Player::new();
         let mut screen = PlayerScreen::new(plx_machine::machine::EntryId(1));
-        screen.busy = crate::appkit::player_hud::Busy::None;
+        screen.busy = plx_appkit::player_hud::Busy::None;
 
         settled(&mut pl, &screen, &ps, 9_000);
         // The fingerprint reads `player_hud::busy(ps)` for itself rather than this field, so the
@@ -1565,7 +1559,7 @@ mod clock_animator_tests {
 mod render_residency_tests {
     use super::*;
     use plx_ui::frame::RenderReport;
-    use crate::appkit::player_hud::SubtitleBitmaps;
+    use plx_appkit::player_hud::SubtitleBitmaps;
 
     /// **The player's own render is its image-subtitle display set, and only that** (§8.3 rule
     /// (c)). The picture is the hardware video plane, which is not ours at all; the HUD is drawn
@@ -1699,7 +1693,7 @@ mod step_ladder_tests {
     /// the tabs remain.
     #[test]
     fn a_control_the_frame_does_not_draw_registers_no_stop() {
-        use crate::appkit::player_hud::ELEM_TAB_BASE;
+        use plx_appkit::player_hud::ELEM_TAB_BASE;
         use plx_ui::screen::DrawFrame;
         let _g = plx_base::testlock::serial();
         for (transport, hud_drawn, want) in [
@@ -1827,7 +1821,7 @@ mod step_ladder_tests {
         use crate::screens::registry::PlayerLike;
         use plx_ui::hit::{pointer_gaps, HitMap, PointerKind};
         use plx_machine::machine::FocusKey;
-        use crate::appkit::player_hud::{Busy, ControlSlot, ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        use plx_appkit::player_hud::{Busy, ControlSlot, ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
         use plx_ui::screen::{At, DrawFrame};
         let _g = plx_base::testlock::serial();
         let marker = |kind| Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg: kind == MarkerKind::Credits };
@@ -2715,7 +2709,7 @@ mod repair_confirmation_tests {
         for state in [plx_platform::tv::sandbox::State::Running, plx_platform::tv::sandbox::State::Repaired, plx_platform::tv::sandbox::State::Failed(plx_platform::tv::sandbox::Failure::Timeout)] {
             let mut ps = blocked(); ps.repair_status = state;
             plx_media::route::reset_player_control_for_test(&ps);
-            let row = crate::appkit::player_hud::FailureReadout::now(&ps).actions().to_vec();
+            let row = plx_appkit::player_hud::FailureReadout::now(&ps).actions().to_vec();
             assert!(!row.contains(&plx_media::player::FailureAction::Repair), "{state:?}: {row:?}");
             let mut page = PlayerScreen::new(EntryId(1));
             // OK performs the row's first control, which is no longer the repair question: with
