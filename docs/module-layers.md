@@ -988,6 +988,70 @@ four lower layers'. Its 458 tests run in their own binary. What it taught beyond
   `plx_plex` compiles for the ARM target (`cargo check --target arm-unknown-linux-gnueabi --lib`
   with and without default features).
 
+### Splits 6 and 7 together: what the combination needed, and the measurement
+
+The two splits were made in parallel from the same commit and landed as one change, on a `main`
+that had moved by two Home changes meanwhile. Combining them:
+
+- **The files both touched are lists again.** 42 files conflicted: the same 22 lists as in Splits 4
+  and 5 plus 20 source files in which one lane rewrote `crate::ui::` and the other `crate::plex::`
+  on the same line (and three doc comments in the moved `plex` files that named `crate::ui`). The
+  token-level three-way merge resolved all but two prose hunks; it left two list joins that were
+  not valid TOML (`"plx_ui/devtriggers",\n, "plx_plex/devtriggers"]`), so read every merged
+  manifest. Both rewrite scripts were re-run on the result: the `ui` one changed nothing, the
+  `plex` one rewrote the `crate::plex` paths `main` had added to `screens/home/mod.rs` since.
+- **The gates still fire in the combination**, proven by temporary violating edits: `plx_ui`
+  naming `plx_plex`, `plx_plex` naming `plx_ui`, and `plx_platform::webos`/`::keymanager` named
+  from `ui/src`, `plex/src` and `coldstart.rs` each fail `ci/check-module-layers.py` (the mounted
+  crate is reported as `[ui]`); `nav`, `textmeasure` (in `ui/src` and in the application), `wall`,
+  `uistorage`, `ticks`, `threads`, `tmppath` and `effect` fail `ci/check-deps.sh` from the new
+  crates; an English literal in `ui/src/dwell.rs` fails `ci/check-localization.py`; a
+  `log(&format!(.., d.title))` in `ui/src`, `plex/src` or `screens/home` fails the eventlog scrub
+  scan. A reference from `plx_ui` to the application is not the layer gate's to catch: the crate
+  has no such dependency, so it does not compile.
+- **One gate had gone quiet, and it was neither lane's own.** `ci/check-localization.py` reads a
+  fixed list of product files, and `route/decision.rs` was on it for the quality row's text. The
+  plex split moved that text (`PlaybackQuality::label`) into `plex/session.rs`, which the gate did
+  not read, and its constants table read `platform`, `gfx` and `ui` only. It reads
+  `plex/src/plex/session.rs` and every layer crate's constants now. When an inherent method moves
+  down a layer, look for the gates that listed its old file.
+- **The security-relevant seams were checked in the artifact, not in the manifest.** In a host
+  release build of the application with `--no-default-features`, and in the ARM shipping archive
+  itself (`PLX_RELEASE=1 cargo rustc --release --target arm-unknown-linux-gnueabi --lib
+  --crate-type staticlib --no-default-features`), `nm` and `strings` find none of `TempSession`,
+  `redirect_for_test`, `with_io_for_test`, `invalidate_for_test`, `reads_for_test`,
+  `store_for_test`, `loopback_pms`, `test_ca_bundle`, `is_latched` or `keypin::holds`; with default
+  features only the two keypin readers exist (they are the `tls-selftest` dev trigger's, as before
+  the split); a `--features test-support` build of `plx_plex` has all of them, which is what shows
+  the search can find them. `cargo tree -e normal -f '{p} [{f}]'` lists no `test-support` on any
+  crate for either feature set (`-e normal,dev` lists it 28 times): with `resolver = "2"` a
+  `[dev-dependencies]` feature reaches test and `--tests` builds only.
+- **An unset version is a panic, not a placeholder.** Split 7 left `identity::version()` answering
+  `0.0.0-unset` behind a `debug_assert!`, and the television's build is `--release`. Nothing can
+  reach it today (`set_version` is the first statement of `enter_application`, which has one
+  caller), and a source-order test now holds that; if it is ever reached, the process stops instead
+  of labelling itself with a version no release had.
+- **The simulator draws the same screens.** `plxnative-sim` against `tests/mock_pms.py` (the seed
+  library, the placeholder token, plex.tv replaced by the mock) settles on Home and on a library
+  page, and the captures match the same captures from `main` apart from the frame-pacing tick.
+
+Measured effect (`make build-bench`, same machine, 3 interleaved runs each, non-incremental; other
+lanes were building, both sets carry load warnings, so read the minima). Before, on `cab5834f`: an
+edit in `plx_base` 35.3 s (min 35.1), in `plx_machine` 34.6 s (min 34.6), in `plx_platform` 34.6 s
+(min 34.0), in `plx_gfx` 33.0 s (min 32.8), in `plx_net` 33.0 s (min 32.0), of the application
+crate 32.4 s (min 31.5), the hub edit (`ui/mod.rs`) 32.3 s (min 31.8), the unit suite 76.0 s (min
+75.2) with 5613 tests. After: an edit in `plx_base` 30.9 s (min 27.8), in `plx_machine` 27.9 s
+(min 27.2), in `plx_platform` 28.1 s (min 26.7), in `plx_gfx` 25.3 s (min 24.2), in `plx_net`
+26.3 s (min 24.2), in `plx_ui` 24.4 s (min 23.7), in `plx_plex` 24.7 s (min 24.1), of the
+application crate 21.8 s (min 21.6), the hub edit (`plx_ui`'s `lib.rs`) 23.8 s (min 23.6), and the
+unit suite 72.0 s (min 71.7) with 5614 tests (the one added is the hand-in order test). An
+application edit is about 10 s faster and an edit in a layer 6 to 8 s: 92k of 450k lines (`ui` 59k, `plex` 33k) no longer
+recompile behind it. The unit suite did not grow this time, with eight test binaries where there
+were six: the row is the run of a built suite, cargo runs the binaries one after another, and the
+time is the tests themselves (per binary, one run: the application 59.9 s before and 43.8 s after,
+`plx_plex` 9.3 s, `plx_gfx` 6.1 s, `plx_ui` 5.3 s, the other four under 3 s together), not linking
+or starting them.
+
 ## Limits of the analysis
 
 - `cfg` predicates other than `test` count as possibly on, so the graph is the union of every
