@@ -781,8 +781,8 @@ expression in this plan multiplies a capacity by a time.
    computed in `u64`/`i64` and narrowed with `.min(u64::from(u32::MAX)) as u32`, exactly as
    `abr.rs:284-287` already does. `C_safe · H` with `H = 10_000` overflows `u32` at any capacity
    above ~430 Mbps, which this project has measured in the field.
-2. **Host and device must not disagree silently.** `[profile.release]` sets only `opt-level = 2`
-   (`rust-modules/Cargo.toml:112-113`), so `overflow-checks` is **off** on the television and
+2. **Host and device must not disagree silently.** `[profile.release]` sets `opt-level = 2`, `lto` and
+   `codegen-units = 1` and does not touch `overflow-checks`, so those checks are **off** on the television and
    **on** under `cargo test`. The same expression panics on the host and wraps on the device. No
    new expression may rely on either behaviour: all arithmetic on the decision path is explicitly
    `checked_*`/`saturating_*`/widened, so the two configurations are indistinguishable by

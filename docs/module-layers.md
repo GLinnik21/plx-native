@@ -394,7 +394,7 @@ on. Each extraction:
   dependencies because `cargo metadata` unifies features across dependency kinds (host-lint job;
   the tool now reads `cargo tree`). Then
   `grep -rn "rust-modules/src/" tools ci tests Makefile .github` for each moved module name.
-- watches `binary_bytes` each wave. A crate boundary stops inlining and dead-code removal across it,
+- watches `binary_bytes` at every split. A crate boundary stops inlining and dead-code removal across it,
   so the shipped binary grows with every layer unless the release profile pays it back; the CI
   "Binary size budget" table of the cross-build job is where it shows ("What the split cost the
   binary" below).
@@ -1500,7 +1500,7 @@ rebuilds the application only. The no-op build is 0.1 s in both.
 
 ## What the split cost the binary, and how the release profile pays it back
 
-The split made the shipped binary bigger, wave by wave. Every layer crate is compiled on its own,
+The split made the shipped binary bigger, split by split. Every layer crate is compiled on its own,
 and with the default release profile (no LTO, 16 codegen units) a function can no longer be inlined
 into, or dropped from, the crate above it when it lives behind a crate boundary. `binary_bytes` in
 `ci/build-budgets.json` is the stripped ARM `plxnative` that the cross-build job stages (default
@@ -1517,7 +1517,7 @@ features, dev flavour), and CI's "Binary size budget" table reported:
 | data, session, no LTO | 12,553,756 |
 | data, session, `lto = "fat"` and `codegen-units = 1` | 11,098,900 |
 
-The last no-LTO figure is over the 12,426,000 limit, which is what made wave 4 red. The two
+The last no-LTO figure is over the 12,426,000 limit, which made Splits 9 and 10 (data, session) red. The two
 `[profile.release]` keys in `rust-modules/Cargo.toml` take the result below the pre-split size,
 because whole-program optimisation with a single codegen unit sees the same code the single crate
 did. They also restore the cross-crate inlining the single crate had, which the per-frame UI code
