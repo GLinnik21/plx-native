@@ -1042,19 +1042,39 @@ mod tests {
         assert_eq!(text, MARKER, "a capped snapshot contains no partial record");
     }
 
+    /// A umask is PROCESS-wide, so setting `0o777` here would turn every file any other test in
+    /// this binary creates during the window into an unreadable one (the storage fixtures'
+    /// readbacks failed with EIO in roughly one run in six under `--test-threads=16`, and a lock
+    /// only protects the fixtures that take it). The body therefore runs in a CHILD copy of the
+    /// test binary, selected by `CHILD_ENV`, whose umask is its own; the parent only checks that
+    /// the child really ran the test and passed.
     #[test]
     fn publication_is_0640_even_under_a_restrictive_umask() {
-        let _serial = plx_base::testlock::serial();
-        struct Mask(libc::mode_t);
-        impl Drop for Mask {
-            fn drop(&mut self) {
-                unsafe {
-                    libc::umask(self.0);
-                }
-            }
+        const CHILD_ENV: &str = "PLX_DIAGNOSTICS_UMASK_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // libtest names a test without its crate: `storage::diagnostics::tests::…`.
+            let name = format!(
+                "{}::publication_is_0640_even_under_a_restrictive_umask",
+                module_path!().split_once("::").unwrap().1
+            );
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--test-threads=1"])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && stdout.contains("1 passed"),
+                "the child run failed or ran nothing:\n{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
         }
         let root = Root::new();
-        let _mask = Mask(unsafe { libc::umask(0o777) });
+        // Only ever reached in the child process: this changes ITS umask, never the suite's.
+        unsafe {
+            libc::umask(0o777);
+        }
         publish(&root.0, b"schema=1\n").unwrap();
         let meta = std::fs::metadata(root.0.join(NAME)).unwrap();
         assert_eq!(meta.mode() & 0o7777, 0o640);

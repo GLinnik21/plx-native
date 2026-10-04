@@ -3,13 +3,9 @@ use super::*;
 const AVATAR: &str = "/photo/:/transcode?width=300&height=300&minSize=1&url=https%3A%2F%2Fplex.tv%2Fusers%2F0123abcd%2Favatar%3Fc%3D1700000000&X-Plex-Token=tok";
 const POSTER: &str = "/photo/:/transcode?width=250&height=375&minSize=1&url=%2Flibrary%2Fmetadata%2F42%2Fthumb%2F1&X-Plex-Token=t";
 
-// Holds the global test lock for the whole test (the first dir a test makes takes it, later ones
-// ride on it): `storage::diagnostics`'s umask test makes every file created during its window
-// unreadable, and this fixture writes (and then reads back) real files.
-struct TestDir(PathBuf, #[allow(dead_code)] Option<plx_base::testlock::Serial>);
+struct TestDir(PathBuf);
 impl TestDir {
     fn new() -> Self {
-        let serial = (!plx_base::testlock::held()).then(plx_base::testlock::serial);
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "plx-imgcache-test-{}-{}",
@@ -17,7 +13,7 @@ impl TestDir {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&path).unwrap();
-        Self(path, serial)
+        Self(path)
     }
     fn cache(&self, entries: usize, bytes: u64) -> Cache {
         Cache::new(vec![self.0.clone()], Limits { entries, bytes })
