@@ -6141,17 +6141,17 @@ class FpsMock(unittest.TestCase):
     def test_under_mock_only_scenes_with_a_mock_block_run(self):
         runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), True)
         names = {s["name"] for s in runnable}
-        self.assertEqual(names, {"home-grid", "home-grid-deep"})
+        self.assertEqual(names, {"home-grid", "home-grid-deep", "library-shelves-deep"})
         self.assertEqual(len(runnable) + len(skipped), len(self.scenes))
         for _, why in skipped:
             self.assertIn("real library content", why)
 
     def test_without_mock_a_mock_only_scene_is_skipped_and_the_rest_unchanged(self):
         runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), False)
-        self.assertEqual([n for n, _ in skipped], ["home-grid-deep"])
+        self.assertEqual([n for n, _ in skipped], ["home-grid-deep", "library-shelves-deep"])
         self.assertIn("--mock", skipped[0][1])
         self.assertIn("home-grid", {s["name"] for s in runnable})
-        self.assertEqual(len(runnable), len(self.scenes) - 1)
+        self.assertEqual(len(runnable), len(self.scenes) - 2)
 
     def test_no_scene_runnable_under_mock_names_a_library_item(self):
         # a scene that needs a ratingKey from the overlay can never run without one
@@ -6165,8 +6165,16 @@ class FpsMock(unittest.TestCase):
         self.assertEqual(self.mf.mock_server_args(self.scenes["home-grid"]), [])
         self.assertEqual(self.mf.mock_server_args(self.scenes["home-grid-deep"]),
                          ["--home-hubs", "170"])
+        self.assertEqual(self.mf.mock_server_args(self.scenes["library-shelves-deep"]),
+                         ["--section-hubs", "170", "--section-hubs-linked", "40"])
+        self.assertEqual(self.mf.mock_server_args({"mock": {"section_hubs": 9}}),
+                         ["--section-hubs", "9"])
         with self.assertRaises(ValueError):
             self.mf.mock_server_args({"name": "x", "mock": {"home_hubs": -1}})
+        with self.assertRaises(ValueError):
+            self.mf.mock_server_args({"name": "x", "mock": {"section_hubs": 3, "section_hubs_linked": 4}})
+        with self.assertRaises(ValueError):
+            self.mf.mock_server_args({"name": "x", "mock": {"section_hubs": -1}})
 
     def test_an_exact_scene_name_selects_only_that_scene(self):
         scenes = list(self.scenes.values())
@@ -6192,6 +6200,73 @@ class FpsMock(unittest.TestCase):
         for s in self.scenes.values():
             if s.get("walk"):
                 self.assertLessEqual(self.mf.walk_secs_needed(s), s["run_secs"], s["name"])
+
+    def test_walk_secs_needed_counts_the_launch_wait(self):
+        # KeyWalk sleeps `LAUNCH_WAIT_S` before it looks at the log; the sleep is part of run_secs
+        scene = {"warmup_s": 5, "walk": {"key_gap_s": 1.0, "max_rows": 10, "land_wait_s": 15,
+                                         "settle_s": 3, "rest_s": 4, "tail_s": 5}}
+        self.assertEqual(self.mf.walk_secs_needed(scene),
+                         self.mf.LAUNCH_WAIT_S + 5 + 15 + 3 + 20 + 4 + 5)
+        self.assertGreaterEqual(self.mf.LAUNCH_WAIT_S, 10)
+
+    def test_library_deep_scene_walks_the_section_shelves_and_the_grid(self):
+        deep = self.scenes["library-shelves-deep"]
+        self.assertEqual(deep["route"], "library")
+        self.assertTrue(deep["mock"]["only"])
+        self.assertEqual((deep["mock"]["section_hubs"], deep["mock"]["section_hubs_linked"]), (170, 40))
+        self.assertEqual(deep["walk"]["landed"], "library")
+        self.assertEqual(deep["walk"]["extra_rows"], 6)
+        for t in ("plxnative-library", "plxnative-framedrop", "plxnative-focus"):
+            self.assertIn(t, deep["triggers"])
+        self.assertNotIn("plxnative-libosc", deep["triggers"])  # the walk is the stimulus
+        self.assertNotIn("min_landed", deep["walk"])  # PR 8 adds it; main lands 12 by design
+        # room for every shelf at its worst: all of them, a second stop per linked one, the extras
+        self.assertGreaterEqual(deep["walk"]["max_rows"], 170 + 40 + deep["walk"]["extra_rows"])
+        self.assertEqual((deep["loop_floor"], deep["fps_floor"]), (50, 30))
+
+    # --- the expected key count --------------------------------------------------------
+    def test_walk_downs_for_home_is_one_per_landed_row(self):
+        deep = self.scenes["home-grid-deep"]
+        self.assertEqual(self.mf.walk_downs(deep, 21), 21)
+
+    def test_walk_downs_for_a_library_counts_extra_rows_and_linked_shelves_twice(self):
+        deep = self.scenes["library-shelves-deep"]
+        # main lands 12 shelves (CW + Recently Added + 10 padding hubs): 10 * 40 // 168 = 2 linked
+        self.assertEqual(self.mf.linked_landed(deep, 12), 2)
+        self.assertEqual(self.mf.walk_downs(deep, 12), 12 + 2 + 6)
+        # a fully landed 170 carries every linked shelf: 170 + 40 + 6
+        self.assertEqual(self.mf.linked_landed(deep, 170), 40)
+        self.assertEqual(self.mf.walk_downs(deep, 170), 170 + 40 + 6)
+        self.assertEqual(self.mf.linked_landed(deep, 500), 40)
+        self.assertEqual(self.mf.linked_landed(deep, 1), 0)
+        plain = {"walk": {"landed": "library", "extra_rows": 2}, "mock": {"section_hubs": 50}}
+        self.assertEqual(self.mf.walk_downs(plain, 7), 9)
+
+    GRID_FP = "focus route=library pill=-1 card=1 menu=0 region=grid row=0 col=0 viewport_x=0.000"
+
+    def _library_walk(self, tail, sent=None):
+        deep = self.scenes["library-shelves-deep"]
+        want = 2 * self.mf.walk_downs(deep, 12)
+        w = type("W", (), {"error": None, "rows": 12, "sent": want if sent is None else sent})
+        lines = [self.SYN, "libhubs: section 0 landed 12 shelves", self.KEY, self._beat()] + tail
+        return deep, want, lines, w
+
+    def test_grade_walk_prelude_expects_the_library_key_count(self):
+        deep, want, lines, w = self._library_walk([self.GRID_FP])
+        fail, _, detail = run.grade_walk_prelude(deep, lines, w)
+        self.assertIsNone(fail, fail)
+        self.assertIn("12 shelf(s) landed", detail)
+        # the Home arithmetic (2 * 12 keys) would have called this complete
+        deep, want, lines, w = self._library_walk([self.GRID_FP], sent=2 * 12)
+        fail, _, _ = run.grade_walk_prelude(deep, lines, w)
+        self.assertIn(f"sent 24 of {want}", fail)
+
+    def test_grade_walk_prelude_needs_a_grid_fingerprint_at_the_turn(self):
+        for tail in ([], ["focus route=library pill=-1 card=1 menu=0 region=shelf row=3 col=0"],
+                     ["focus route=home region=grid row=0 col=0"]):
+            deep, _, lines, w = self._library_walk(tail)
+            fail, _, _ = run.grade_walk_prelude(deep, lines, w)
+            self.assertIn("region=grid", fail)
 
     def test_walk_plan_is_down_then_up_and_only_those_keys(self):
         plan = self.mf.walk_plan(21, {"max_rows": 170})
@@ -6245,6 +6320,27 @@ class FpsMock(unittest.TestCase):
         self.assertEqual((st["beats"], st["frames"], st["gt33"], st["peak_fps"]), (2, 110, 3, 60))
         self.assertEqual(st["max_ms"], 70.0)
 
+    def test_library_landed_reads_the_section_the_scene_seats(self):
+        lines = ["libhubs: section 1 landed 3 shelves", "libhubs: section 0 landed 12 shelves",
+                 "libhubs: section 1 landed 4 shelves"]
+        movies = {"triggers": {"plxnative-library": True}, "walk": {"landed": "library"}}
+        shows = {"triggers": {"plxnative-library": "1"}, "walk": {"landed": "library"}}
+        self.assertEqual(self.mf.library_section_index(movies), 0)
+        self.assertEqual(self.mf.library_section_index(shows), 1)
+        self.assertEqual(self.mf.library_section_index({"triggers": {"plxnative-library": "0"}}), 0)
+        # not the last matching line (that is the Shows section's 4)
+        self.assertEqual(self.mf.landed_library(lines, 0), 12)
+        self.assertEqual(self.mf.landed_library(lines, 1), 4)
+        self.assertIsNone(self.mf.landed_library(["libhubs: section 0 failed (1 in a row)"], 0))
+        self.assertEqual(self.mf.landed_library(lines + ["libhubs: section 0 landed 15 shelves"], 0), 15)
+        self.assertEqual(self.mf.landed_library_count(lines, 0), 1)
+        # the scene's `walk.landed` picks the regex; Home's own line is not a library landing
+        self.assertEqual(self.mf.landed_shelves(movies, lines), 12)
+        self.assertIsNone(self.mf.landed_shelves(movies, ["hubs: landed — 9 items, 3 shelves"]))
+        self.assertEqual(self.mf.landed_shelves({"walk": {}}, ["hubs: landed — 9 items, 3 shelves"]), 3)
+        self.assertIsNone(self.mf.landed_shelves({"walk": {}}, lines))
+        self.assertEqual(self.mf.LIBHUBS_RE.pattern, r"^libhubs: section (\d+) landed (\d+) shelves")
+
     # --- the mock process and the configured address -----------------------------------
     def _config(self, host, port):
         d = tempfile.mkdtemp()
@@ -6268,11 +6364,13 @@ class FpsMock(unittest.TestCase):
 
     def test_mock_pms_serves_the_scenes_hubs_and_the_guest_resolves_against_it(self):
         port = self._free_port()
-        with self.mf.MockPms("127.0.0.1", port, ["--home-hubs", "7"]):
+        with self.mf.MockPms("127.0.0.1", port, ["--home-hubs", "7", "--section-hubs", "9"]):
             token = self.mf.resolve_mock_token(self._config("127.0.0.1", port))
             self.assertEqual(token, "plxnative-mock-guest")
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/hubs", timeout=10) as r:
                 self.assertEqual(len(json.load(r)["MediaContainer"]["Hub"]), 7)
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/hubs/sections/1", timeout=10) as r:
+                self.assertEqual(len(json.load(r)["MediaContainer"]["Hub"]), 9)
         # stopped on exit: the address is free again
         with socket.socket() as s:
             self.assertNotEqual(s.connect_ex(("127.0.0.1", port)), 0)
