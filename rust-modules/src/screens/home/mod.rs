@@ -968,6 +968,11 @@ impl HomeScreen {
                 continue;
             }
             shelf.update(count, col, &RowStyle::HOME, dt);
+            // `step` never lands a released spring exactly on rest, so a visited row would be
+            // stepped forever; snap it once every spring is inside the idle gate's settled band.
+            if col.is_none() {
+                shelf.park();
+            }
         }
         let revealed = focused.map(|(row, _)| (row, Some(row)))
             .or_else(|| self.focused_heading(cx.focus.current).map(|row| (row, None)));

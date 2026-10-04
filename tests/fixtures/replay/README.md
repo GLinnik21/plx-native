@@ -289,3 +289,12 @@ being refused (`replay: REFUSED — invalid or incompatible recording`, all thre
 all three were re-recorded with `tools/plxnative-rec rerecord` against shape
 `10119451143357529556` and replayed SAME in both modes (`tests/replay_fixtures.py`, three
 consecutive runs) with zero difference counters. None of the three drives the player.
+
+Parking settled Home rows (#395 PR 7: `CardRow::park`) changed recorded behaviour without moving the
+shape: a released row's springs now snap to exact rest once they pass `idle::settled`, so Home's
+hashed card-row motion differs from the first frame a visited row settles. `1-boot-home-chip-grid`
+diverged on 195 of 582 frames in both modes, every other counter zero; `6-settings-family` and
+`12-filmography-detail-return` stayed SAME. The divergence was attributed by replaying with only
+the `park` call removed from `update_grid` (all three SAME, every counter zero on the clean tree).
+The anchor was recorded afresh on the unchanged shape (`tools/plxnative-rec import`, `anchor: true`
+restored by hand) and replayed SAME in Targets and Resolve on three consecutive runs.

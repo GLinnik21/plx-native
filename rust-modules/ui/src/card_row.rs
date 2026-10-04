@@ -212,6 +212,32 @@ impl CardRow {
             && at(&self.lift, 0.0)
             && at(&self.band, 0.0)
     }
+    /// Snap an unfocused row whose every spring is already [`settled`](plx_machine::idle::settled)
+    /// onto its rest target, so [`at_exact_rest`](Self::at_exact_rest) holds and a caller may stop
+    /// stepping it. `step` never lands a released spring exactly: the focused cell's `scale` stalls
+    /// one ulp above 1.0 and `band` decays into denormals, so without this a row that was ever
+    /// focused is stepped every frame forever. Inert by construction: it fires only inside the
+    /// threshold the idle gate already treats as "motion finished". `scroll_x` is a retained
+    /// viewport, not a rest value, and is left alone. Returns whether the row is now at exact rest.
+    pub fn park(&mut self) -> bool {
+        if self.focus != -1 {
+            return false;
+        }
+        let rest = |sp: &Spring, to: f32| plx_machine::idle::settled(sp.pos, to, sp.vel);
+        if !(self.scale.iter().all(|sp| rest(sp, 1.0))
+            && rest(&self.overflow, 1.0)
+            && rest(&self.lift, 0.0)
+            && rest(&self.band, 0.0))
+        {
+            return false;
+        }
+        for sp in self.scale.iter_mut().chain([&mut self.overflow]) {
+            sp.jump(1.0);
+        }
+        self.lift.jump(0.0);
+        self.band.jump(0.0);
+        true
+    }
     /// Step every cell's scale spring (all `MAX_ROW_ITEMS` every call — invariant #10; Home skips the
     /// call for a row at [`at_exact_rest`](Self::at_exact_rest), a fixed point of this method) toward
     /// `focus_scale` for the focused cell else 1.0; then, ONLY when this row is focused, glide the
@@ -1508,25 +1534,78 @@ mod tests {
         assert_eq!(motion_hash(&row), before);
     }
 
-    /// FINDING: this FAILS, so a row that has held focus never parks and Home's skip only helps
-    /// rows never visited. After 30 focused frames and 1,200 released ones at dt = 1/60 (still
-    /// stuck after 20,000): the focused cell's `scale` sits at pos 1.0000001, vel -9.8e-7 (one ulp
-    /// above rest with a velocity too small to move it, a fixed point of `step` that is not rest),
-    /// and `band` sits at the denormals, pos 3e-45, vel -2e-44. `lift` and `overflow` do land
-    /// exactly. Parking a visited row needs a snap at rest; kept ignored until that lands.
+    /// A row that held focus used to stall one ulp from rest (`scale` at 1.0000001, `band` at
+    /// denormals) and never reach exact rest; `park` snaps it once every spring is settled.
     #[test]
-    #[ignore = "a released row stalls one ulp from rest (scale) and at denormals (band)"]
-    fn a_released_row_reaches_exact_rest() {
+    fn a_released_row_parks_within_120_frames() {
         let dt = 1.0 / 60.0;
         let mut row = CardRow::new();
         for _ in 0..30 {
             row.update(24, Some(3), &RowStyle::HOME, dt);
         }
         assert!(!row.at_exact_rest());
-        for _ in 0..1200 {
+        assert!(!row.park(), "a focused row never parks");
+        let mut parked_at = None;
+        for f in 0..120 {
             row.update(24, None, &RowStyle::HOME, dt);
+            if row.park() {
+                parked_at = Some(f);
+                break;
+            }
+        }
+        assert!(parked_at.is_some(), "not parked within 120 frames");
+        assert!(row.at_exact_rest());
+        let before = motion_hash(&row);
+        row.update(24, None, &RowStyle::HOME, dt);
+        assert_eq!(motion_hash(&row), before, "update of a parked row is a fixed point");
+    }
+
+    #[test]
+    fn park_leaves_a_moving_row_alone() {
+        let mut row = CardRow::new();
+        row.update(24, Some(3), &RowStyle::HOME, 1.0 / 60.0);
+        row.update(24, None, &RowStyle::HOME, 1.0 / 60.0);
+        let before = motion_hash(&row);
+        assert!(!row.park());
+        assert_eq!(motion_hash(&row), before);
+    }
+
+    /// A row focused past the spring array pops the shared `overflow` spring; it must park too.
+    #[test]
+    fn a_row_released_from_an_overflow_cell_parks() {
+        let dt = 1.0 / 60.0;
+        let mut row = CardRow::new();
+        for _ in 0..30 {
+            row.update(60, Some(MAX_ROW_ITEMS + 5), &RowStyle::HOME, dt);
+        }
+        for _ in 0..120 {
+            row.update(60, None, &RowStyle::HOME, dt);
+            if row.park() {
+                break;
+            }
         }
         assert!(row.at_exact_rest());
+    }
+
+    /// Parking must not change the row's reserved label band relative to a never-focused row.
+    #[test]
+    fn a_parked_row_reserves_exactly_the_collapsed_band() {
+        let dt = 1.0 / 60.0;
+        let mut visited = CardRow::new();
+        for _ in 0..30 {
+            visited.update(24, Some(3), &RowStyle::HOME, dt);
+        }
+        for _ in 0..120 {
+            visited.update(24, None, &RowStyle::HOME, dt);
+            if visited.park() {
+                break;
+            }
+        }
+        let fresh = CardRow::new();
+        assert_eq!(visited.band.pos, fresh.band.pos);
+        assert_eq!(visited.lift.pos, fresh.lift.pos);
+        assert_eq!(visited.under_band(), fresh.under_band());
+        assert_eq!(visited.band_reveal(), fresh.band_reveal());
     }
 
     #[test]

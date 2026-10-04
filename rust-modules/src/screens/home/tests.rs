@@ -3155,6 +3155,37 @@ fn a_stable_home_under_the_cap_prunes_nothing() {
     }
 }
 
+/// Focus walking down the page leaves every row it visited parked at exact rest once the motion
+/// settles, so `update_grid` skips them: a visited row used to stall one ulp from rest and be
+/// stepped on every frame for the rest of the session.
+#[test]
+fn walking_focus_down_leaves_every_released_row_at_exact_rest() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    let rows = 12;
+    republish(&mut s, &mut state, &adapter, rows, 4);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    let dt = 1.0 / 60.0;
+    for row in 0..rows {
+        let context = cx(snapshot.view(), Some(FocusKey { entry: EntryId(7), elem: s.rows[row].elems[0] }));
+        for _ in 0..30 {
+            s.update_grid(snapshot.view(), &context, dt);
+        }
+    }
+    let context = cx(snapshot.view(), Some(FocusKey { entry: EntryId(7), elem: s.rows[rows - 1].elems[0] }));
+    for _ in 0..120 {
+        s.update_grid(snapshot.view(), &context, dt);
+    }
+    for row in 0..rows - 1 {
+        assert!(s.grid.shelves[row].at_exact_rest(), "row {row} never parked");
+    }
+    assert!(!s.grid.shelves[rows - 1].at_exact_rest(), "the focused row is live");
+}
+
 #[test]
 fn stable_keys_are_bounded_oldest_first() {
     let _guard = plx_base::testlock::serial();
