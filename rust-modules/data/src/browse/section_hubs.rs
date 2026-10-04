@@ -18,7 +18,8 @@
 //! ## The publication machine, and why it is not just "commit when terminal"
 //!
 //! The grid and the hubs land independently, and **the shelf count sets the grid's absolute
-//! offset** — a late 12-shelf landing would move a focused grid row by 6,588px. "Commit when the
+//! offset** — a late landing of twelve shelves would move a focused grid row by 6,588px, and a
+//! section has no shelf cap to keep that small (issue #412). "Commit when the
 //! fetch is terminal" does not work, because [`crate::pms::backoff_secs`] is an INFINITE ladder
 //! (2/4/8/16/30s and then 30s forever): terminal never arrives on a dead server, and an ordinary
 //! fail-then-succeed would still shift the grid under a reader.
@@ -65,10 +66,13 @@ use std::sync::{Arc, Mutex};
 /// items-per-hub and never changes how many hubs come back.
 const HUB_FETCH_COUNT: i64 = 12;
 
-/// How many shelves a library may draw. Nine is what the dev server's owner arranged and the
-/// endpoint has no documented ceiling, so this bounds a pathological table rather than expressing
-/// a design: twelve shelves is already 6,588px of document above the grid.
-const MAX_SHELVES: usize = 12;
+/// Cards one section publishes at most, across all its shelves: a distant memory ceiling and not
+/// a design. There is no shelf count (issue #412): `/hubs/sections/{id}` has no paging, so every
+/// hub the server sends is published, each at most [`MAX_SHELF_ITEMS`] cards, and only a total
+/// past this drops anything — whole shelves from the tail, never a truncated row
+/// ([`parse_hubs_within`]). The coupling to Home's bound is intended: the same ~0.65 KB a card
+/// on the same TV, about 1.3 MB per visited section at the bound.
+const SECTION_CARDS_MAX: usize = crate::pms::HOME_CARDS_MAX;
 
 /// Frames the page waits for the FIRST answer before committing zero shelves and becoming usable
 /// — ~4 s at 60 fps. Deliberately not derived from the retry ladder (module doc), and counted in
@@ -464,12 +468,21 @@ impl super::BrowseState {
             return false;
         };
         match result.shelves {
-            Some(shelves) => {
+            Some(parsed) => {
+                let Parsed { shelves, left_off_shelves, left_off_cards } = parsed;
+                // The harness (`tests/mock_fps.py`, `LIBHUBS_RE`) reads the section and the shelf
+                // count; new fields go AFTER them.
                 plx_base::eventlog::log(&format!(
-                    "libhubs: section {} landed {} shelves",
+                    "libhubs: section {} landed {} shelves, {} items",
                     result.sec,
-                    shelves.len()
+                    shelves.len(),
+                    shelves.iter().map(|s| s.items.len()).sum::<usize>()
                 ));
+                if left_off_shelves > 0 {
+                    plx_base::eventlog::log(&format!(
+                        "libhubs: card bound {SECTION_CARDS_MAX} reached — {left_off_shelves} shelves, {left_off_cards} cards left off"
+                    ));
+                }
                 state.hubs.land_ok(shelves);
             }
             None => {
@@ -733,7 +746,7 @@ pub(super) struct HubResult {
     token_gen: u32,
     /// `None` is a FAILED fetch — kept distinguishable from a successful answer that happens to be
     /// empty, which on this endpoint is a common and legitimate reply.
-    shelves: Option<Vec<Shelf>>,
+    shelves: Option<Parsed>,
 }
 
 // ---- the pure half --------------------------------------------------------------------------
@@ -746,12 +759,40 @@ pub(super) struct HubResult {
 /// EMPTY hub is dropped entirely, which §3a measured as the common case (one movie section
 /// answered with 6 hubs of which 5 were empty), so this is required rather than tidy: a client
 /// that draws what it is given draws five headings over nothing.
-pub fn parse_hubs(mc: &plx_plex::plex::MediaContainer, sid: ServerId, section: i64) -> Vec<Shelf> {
+///
+/// There is no shelf count: every hub the server sends is published, because `/hubs/sections/{id}`
+/// has no paging and a hub dropped here is a hub the person cannot reach. The one ceiling is
+/// [`SECTION_CARDS_MAX`] on the total, applied by the whole-shelf rule — see [`parse_hubs_within`].
+pub fn parse_hubs(mc: &plx_plex::plex::MediaContainer, sid: ServerId, section: i64) -> Parsed {
+    parse_hubs_within(mc, sid, section, SECTION_CARDS_MAX)
+}
+
+/// One response's shelves, and what [`SECTION_CARDS_MAX`] left off the tail.
+pub struct Parsed {
+    pub shelves: Vec<Shelf>,
+    /// Shelves that passed the filter but did not fit under the bound, and their cards (each
+    /// shelf's item-capped count). `(0, 0)` for every section under the bound.
+    pub left_off_shelves: usize,
+    pub left_off_cards: usize,
+}
+
+/// [`parse_hubs`] against an explicit card bound, so the whole-shelf rule is testable without
+/// building thousands of cards.
+///
+/// A shelf is published only if all its (item-capped) cards fit under `bound`, and publishing
+/// stops at the first that does not: no later, smaller shelf jumps the queue and no row is cut
+/// short. The filter keeps running past that point (empty and untitled hubs are still dropped,
+/// items still capped) so the counts of what was left off are of shelves that would have drawn.
+fn parse_hubs_within(
+    mc: &plx_plex::plex::MediaContainer,
+    sid: ServerId,
+    section: i64,
+    bound: usize,
+) -> Parsed {
     let mut out = Vec::new();
+    let (mut cards, mut full) = (0usize, false);
+    let (mut left_off_shelves, mut left_off_cards) = (0usize, 0usize);
     for hub in &mc.hub {
-        if out.len() >= MAX_SHELVES {
-            break;
-        }
         let items: Vec<PmsMovie> = hub
             .metadata
             .iter()
@@ -766,6 +807,13 @@ pub fn parse_hubs(mc: &plx_plex::plex::MediaContainer, sid: ServerId, section: i
         if hub.title.is_empty() {
             continue; // a row with no heading has nothing to say about what is in it
         }
+        if full || cards + items.len() > bound {
+            full = true;
+            left_off_shelves += 1;
+            left_off_cards += items.len();
+            continue;
+        }
+        cards += items.len();
         out.push(Shelf {
             is_continue: shelf_is_continue(&hub.hub_identifier, &hub.key),
             landscape: is_episode_shelf(&items),
@@ -783,7 +831,7 @@ pub fn parse_hubs(mc: &plx_plex::plex::MediaContainer, sid: ServerId, section: i
             items,
         });
     }
-    out
+    Parsed { shelves: out, left_off_shelves, left_off_cards }
 }
 
 /// Prints the shelf's identity and how many items it holds — `PmsMovie` has no `Debug` and a
@@ -1006,7 +1054,7 @@ mod tests {
     }
 
     fn parsed() -> Vec<Shelf> {
-        parse_hubs(&container(HUBS_JSON), ServerId::from_raw(0), 1)
+        parse_hubs(&container(HUBS_JSON), ServerId::from_raw(0), 1).shelves
     }
 
     /// The shelves come back in the SERVER OWNER's order — this endpoint quotes their
@@ -1086,7 +1134,7 @@ mod tests {
            "key":"/library/collections/14/children","Metadata":[
              {"ratingKey":"3001","type":"movie","title":"Delta","thumb":"/t/3001"}]}
         ]}}"#;
-        let sh = parse_hubs(&container(json), ServerId::from_raw(0), 1);
+        let sh = parse_hubs(&container(json), ServerId::from_raw(0), 1).shelves;
         assert_eq!(sh.len(), 2);
         assert_eq!(
             sh[0].title, "Нядаўна дададзенае",
@@ -1107,7 +1155,7 @@ mod tests {
           {"hubIdentifier":"custom.collection.1.50001.50001","title":"A Collection","type":"movie",
            "key":"/library/collections/50001/children","Metadata":[
              {"ratingKey":"11","type":"movie","title":"A Film","thumb":"/m"}]}]}}"#;
-        let shelves = parse_hubs(&container(json), ServerId::from_raw(0), 1);
+        let shelves = parse_hubs(&container(json), ServerId::from_raw(0), 1).shelves;
         assert_eq!(shelves.len(), 1, "a collection row must not become a movie card");
         assert_eq!(shelves[0].id, "custom.collection.1.50001.50001");
         assert_eq!(shelves[0].key, "/library/collections/50001/children",
@@ -1127,40 +1175,100 @@ mod tests {
              {"ratingKey":"1","type":"movie","title":"No Art"},
              {"ratingKey":"2","type":"movie","title":"","thumb":"/t/2"}]}]}}"#;
         assert!(
-            parse_hubs(&container(json), ServerId::from_raw(0), 1).is_empty(),
+            parse_hubs(&container(json), ServerId::from_raw(0), 1).shelves.is_empty(),
             "one row has no art and the other no title: the hub has nothing to draw"
         );
     }
 
-    /// The two caps, and they are different questions: items per shelf is `pms::MAX_SHELF_ITEMS`
-    /// (the shelf's own row budget, shared with Home) while shelves per library bounds the
-    /// DOCUMENT — twelve is already 6,588px above the grid.
+    /// `n_hubs` hubs of `per_hub` listable movies each, as the wire carries them.
+    fn many_hubs(n_hubs: usize, per_hub: usize) -> plx_plex::plex::MediaContainer {
+        let hubs: Vec<String> = (0..n_hubs)
+            .map(|h| {
+                let items: Vec<String> = (0..per_hub)
+                    .map(|i| {
+                        format!(
+                            r#"{{"ratingKey":"{h}-{i}","type":"movie","title":"T{i}","thumb":"/t/{i}"}}"#
+                        )
+                    })
+                    .collect();
+                format!(
+                    r#"{{"hubIdentifier":"h{h}","title":"Row {h}","Metadata":[{}]}}"#,
+                    items.join(",")
+                )
+            })
+            .collect();
+        container(&format!(r#"{{"MediaContainer":{{"Hub":[{}]}}}}"#, hubs.join(",")))
+    }
+
+    /// Issue #412: the Library showed twelve shelves because this module stopped there. A server
+    /// that sends fifteen hubs gets fifteen shelves, in its own order — `/hubs/sections/{id}` has
+    /// no paging, so a hub dropped here is a hub the person can never reach.
     #[test]
-    fn both_caps_hold() {
-        let mut hubs = String::new();
-        for h in 0..(MAX_SHELVES + 3) {
-            let items: Vec<String> = (0..(MAX_SHELF_ITEMS + 5))
+    fn every_hub_the_server_sends_is_published() {
+        let sh = parse_hubs(&many_hubs(15, 3), ServerId::from_raw(0), 1).shelves;
+        assert_eq!(sh.len(), 15, "there is no shelf cap");
+        let ids: Vec<&str> = sh.iter().map(|s| s.id.as_str()).collect();
+        let want: Vec<String> = (0..15).map(|h| format!("h{h}")).collect();
+        assert_eq!(ids, want, "in the owner's order");
+    }
+
+    /// The per-shelf ceiling is the one cap that stays: it is the length of the card row's spring
+    /// array, shared with Home.
+    #[test]
+    fn a_shelf_holds_at_most_max_shelf_items() {
+        let sh = parse_hubs(&many_hubs(3, MAX_SHELF_ITEMS + 5), ServerId::from_raw(0), 1).shelves;
+        assert_eq!(sh.len(), 3);
+        assert!(sh.iter().all(|s| s.items.len() == MAX_SHELF_ITEMS), "every row is capped");
+    }
+
+    /// The card bound publishes whole shelves from the head and stops at the first that does not
+    /// fit: a later, smaller shelf must not jump the queue, and no row is cut short. The left-off
+    /// counts are of hubs that would have drawn, so an empty or untitled one is not among them.
+    #[test]
+    fn the_card_bound_drops_whole_shelves_from_the_tail() {
+        // 10, 10, 10 (30 cards), then 8 (overflows a bound of 35), then 2 (would fit, and must
+        // NOT be published), then an empty hub and an untitled one, which were never shelves
+        let hub = |h: usize, n: usize, title: &str| {
+            let items: Vec<String> = (0..n)
                 .map(|i| {
-                    format!(
-                        r#"{{"ratingKey":"{h}{i}","type":"movie","title":"T{i}","thumb":"/t/{i}"}}"#
-                    )
+                    format!(r#"{{"ratingKey":"{h}-{i}","type":"movie","title":"T","thumb":"/t"}}"#)
                 })
                 .collect();
-            hubs.push_str(&format!(
-                r#"{{"hubIdentifier":"h{h}","title":"Row {h}","Metadata":[{}]}},"#,
+            format!(
+                r#"{{"hubIdentifier":"h{h}","title":"{title}","Metadata":[{}]}}"#,
                 items.join(",")
-            ));
-        }
-        let json = format!(
-            r#"{{"MediaContainer":{{"Hub":[{}]}}}}"#,
-            hubs.trim_end_matches(',')
-        );
-        let sh = parse_hubs(&container(&json), ServerId::from_raw(0), 1);
-        assert_eq!(sh.len(), MAX_SHELVES, "the document is bounded");
-        assert!(
-            sh.iter().all(|s| s.items.len() == MAX_SHELF_ITEMS),
-            "…and so is every row"
-        );
+            )
+        };
+        let hubs = [
+            hub(0, 10, "A"), hub(1, 10, "B"), hub(2, 10, "C"), hub(3, 8, "D"), hub(4, 2, "E"),
+            hub(5, 0, "F"), hub(6, 5, ""),
+        ];
+        let mc = container(&format!(r#"{{"MediaContainer":{{"Hub":[{}]}}}}"#, hubs.join(",")));
+        let sid = ServerId::from_raw(0);
+
+        let cut = parse_hubs_within(&mc, sid, 1, 35);
+        let lens: Vec<usize> = cut.shelves.iter().map(|s| s.items.len()).collect();
+        assert_eq!(lens, vec![10, 10, 10], "neither the 8-card shelf nor the 2-card one after it");
+        assert_eq!((cut.left_off_shelves, cut.left_off_cards), (2, 10));
+
+        // exactly at the bound publishes; one card over does not
+        let at = parse_hubs_within(&mc, sid, 1, 38);
+        assert_eq!(at.shelves.len(), 4);
+        assert_eq!((at.left_off_shelves, at.left_off_cards), (1, 2));
+        let over = parse_hubs_within(&mc, sid, 1, 37);
+        assert_eq!(over.shelves.len(), 3);
+        assert_eq!((over.left_off_shelves, over.left_off_cards), (2, 10));
+
+        let all = parse_hubs_within(&mc, sid, 1, 40);
+        assert_eq!((all.shelves.len(), all.left_off_shelves, all.left_off_cards), (5, 0, 0));
+    }
+
+    /// Far under the real bound: 170 hubs of 12 (the `library-shelves-deep` mock) all publish.
+    #[test]
+    fn a_large_library_is_under_the_real_bound() {
+        let parsed = parse_hubs(&many_hubs(170, 12), ServerId::from_raw(0), 1);
+        assert_eq!(parsed.shelves.len(), 170);
+        assert_eq!((parsed.left_off_shelves, parsed.left_off_cards), (0, 0));
     }
 
     /// **A row of episodes is a LANDSCAPE row, and it is decided from the items.** The case this

@@ -6232,7 +6232,7 @@ class FpsMock(unittest.TestCase):
         for t in ("plxnative-library", "plxnative-framedrop", "plxnative-focus"):
             self.assertIn(t, deep["triggers"])
         self.assertNotIn("plxnative-libosc", deep["triggers"])  # the walk is the stimulus
-        self.assertNotIn("min_landed", deep["walk"])  # PR 8 adds it; main lands 12 by design
+        self.assertEqual(deep["walk"]["min_landed"], 150)  # the cap is gone: 12 is a failure now
         # room for every shelf at its worst: all of them, a second stop per linked one, the extras
         self.assertGreaterEqual(deep["walk"]["max_rows"], 170 + 40 + deep["walk"]["extra_rows"])
         self.assertEqual((deep["loop_floor"], deep["fps_floor"]), (50, 30))
@@ -6244,7 +6244,7 @@ class FpsMock(unittest.TestCase):
 
     def test_walk_downs_for_a_library_counts_extra_rows_and_linked_shelves_twice(self):
         deep = self.scenes["library-shelves-deep"]
-        # main lands 12 shelves (CW + Recently Added + 10 padding hubs): 10 * 40 // 168 = 2 linked
+        # a 12-shelf landing (CW + Recently Added + 10 padding hubs): 10 * 40 // 168 = 2 linked
         self.assertEqual(self.mf.linked_landed(deep, 12), 2)
         self.assertEqual(self.mf.walk_downs(deep, 12), 12 + 2 + 6)
         # a fully landed 170 carries every linked shelf: 170 + 40 + 6
@@ -6257,22 +6257,82 @@ class FpsMock(unittest.TestCase):
 
     GRID_FP = "focus route=library pill=-1 card=1 menu=0 region=grid row=0 col=0 viewport_x=0.000"
 
-    def _library_walk(self, tail, sent=None):
+    @staticmethod
+    def _shelf_fp(row):
+        return f"focus route=library pill=-1 card=1 menu=0 region=shelf row={row} col=0 viewport_x=0.000"
+
+    # a walk that reached the deepest shelf ON SCREEN (row 169 of 170), then crossed into the grid
+    DEEP_TAIL = [_shelf_fp.__func__(3), _shelf_fp.__func__(169), GRID_FP]
+
+    def _library_walk(self, tail, sent=None, landed=170):
         deep = self.scenes["library-shelves-deep"]
-        want = 2 * self.mf.walk_downs(deep, 12)
-        w = type("W", (), {"error": None, "rows": 12, "sent": want if sent is None else sent})
-        lines = [self.SYN, "libhubs: section 0 landed 12 shelves", self.KEY, self._beat()] + tail
+        want = 2 * min(self.mf.walk_downs(deep, landed), deep["walk"]["max_rows"])
+        w = type("W", (), {"error": None, "rows": landed, "sent": want if sent is None else sent})
+        lines = [self.SYN, f"libhubs: section 0 landed {landed} shelves, {landed * 12} items",
+                 self.KEY, self._beat()] + tail
         return deep, want, lines, w
 
     def test_grade_walk_prelude_expects_the_library_key_count(self):
-        deep, want, lines, w = self._library_walk([self.GRID_FP])
+        deep, want, lines, w = self._library_walk(self.DEEP_TAIL)
         fail, _, detail = run.grade_walk_prelude(deep, lines, w)
         self.assertIsNone(fail, fail)
-        self.assertIn("12 shelf(s) landed", detail)
-        # the Home arithmetic (2 * 12 keys) would have called this complete
-        deep, want, lines, w = self._library_walk([self.GRID_FP], sent=2 * 12)
+        self.assertIn("170 shelf(s) landed", detail)
+        # the Home arithmetic (2 * 170 keys) would have called this complete
+        deep, want, lines, w = self._library_walk(self.DEEP_TAIL, sent=2 * 170)
         fail, _, _ = run.grade_walk_prelude(deep, lines, w)
-        self.assertIn(f"sent 24 of {want}", fail)
+        self.assertIn(f"sent 340 of {want}", fail)
+
+    def test_grade_walk_prelude_fails_when_fewer_shelves_landed_than_min_landed(self):
+        # a complete, fast walk over 12 shelves is still a failed scene once the cap is gone
+        deep, _, lines, w = self._library_walk(self.DEEP_TAIL, landed=12)
+        self.assertEqual(deep["walk"]["min_landed"], 150)
+        fail, _, _ = run.grade_walk_prelude(deep, lines, w)
+        self.assertIn("only 12 shelf(s) landed", fail)
+        self.assertIn("min_landed 150", fail)
+        self.assertIn("short or failed fetch", fail)
+        # a scene that declares no minimum is unchanged
+        plain = dict(deep, walk={k: v for k, v in deep["walk"].items() if k != "min_landed"})
+        fail, _, _ = run.grade_walk_prelude(plain, lines, w)
+        self.assertIsNone(fail, fail)
+        # and the full landing passes it
+        deep, _, lines, w = self._library_walk(self.DEEP_TAIL)
+        fail, _, detail = run.grade_walk_prelude(deep, lines, w)
+        self.assertIsNone(fail, fail)
+        self.assertIn("170 shelf(s) landed", detail)
+
+    def test_grade_walk_prelude_needs_the_deep_shelf_on_screen(self):
+        # the store published 170 and the grid was reached, but the screen only built 12 rows
+        deep, _, lines, w = self._library_walk([self._shelf_fp(11), self.GRID_FP])
+        fail, _, _ = run.grade_walk_prelude(deep, lines, w)
+        self.assertIn("region=shelf row=11", fail)
+        self.assertIn("minimum row 149", fail)
+        self.assertIn("SCREEN", fail)
+        # no shelf fingerprint at all
+        deep, _, lines, w = self._library_walk([self.GRID_FP])
+        fail, _, _ = run.grade_walk_prelude(deep, lines, w)
+        self.assertIn("region=shelf", fail)
+        self.assertIn("SCREEN", fail)
+        # the deepest of several counts, wherever it falls in the window
+        deep, _, lines, w = self._library_walk([self._shelf_fp(169), self._shelf_fp(4), self.GRID_FP])
+        fail, _, _ = run.grade_walk_prelude(deep, lines, w)
+        self.assertIsNone(fail, fail)
+        # row min_landed - 1 is enough, one less is not
+        deep, _, lines, w = self._library_walk([self._shelf_fp(149), self.GRID_FP])
+        fail, _, _ = run.grade_walk_prelude(deep, lines, w)
+        self.assertIsNone(fail, fail)
+        deep, _, lines, w = self._library_walk([self._shelf_fp(148), self.GRID_FP])
+        fail, _, _ = run.grade_walk_prelude(deep, lines, w)
+        self.assertIn("region=shelf row=148", fail)
+        # without min_landed a library walk needs no shelf fingerprint
+        deep, _, lines, w = self._library_walk([self.GRID_FP])
+        plain = dict(deep, walk={k: v for k, v in deep["walk"].items() if k != "min_landed"})
+        fail, _, _ = run.grade_walk_prelude(plain, lines, w)
+        self.assertIsNone(fail, fail)
+
+    def test_deepest_shelf_row_reads_the_library_fingerprints(self):
+        self.assertIsNone(self.mf.deepest_shelf_row([self.GRID_FP, "focus route=home region=shelf row=9"], "library"))
+        self.assertEqual(self.mf.deepest_shelf_row(
+            [self._shelf_fp(3), self._shelf_fp(169), self._shelf_fp(40)], "library"), 169)
 
     def test_grade_walk_prelude_needs_a_grid_fingerprint_at_the_turn(self):
         for tail in ([], ["focus route=library pill=-1 card=1 menu=0 region=shelf row=3 col=0"],
