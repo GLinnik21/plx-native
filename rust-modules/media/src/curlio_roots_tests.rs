@@ -226,7 +226,8 @@ fn a_media_open_with_a_plex_direct_name_in_the_userinfo_never_uses_the_bundle() 
 /// `plex/CLAUDE.md`): `CURLOPT_CAINFO` is per handle, not per hop, and `curlio` follows redirects in
 /// libcurl (`stream_redirect` hands an https hop over without going back through `keypin`). So once a
 /// `*.plex.direct` open is in roots mode, the hop it is redirected to is verified against the
-/// BUNDLE, not the device store: verification stays fully on for that hop's chain and name, but a
+/// BUNDLE (plus any CA directory the firmware's libcurl reads by default), not the device's CA
+/// file: verification stays fully on for that hop's chain and name, but a
 /// target whose issuer only the device store holds is refused, and one whose issuer the bundle holds
 /// is accepted. The bundle is therefore consulted for a redirect target of a `*.plex.direct`
 /// request, and for no other request.

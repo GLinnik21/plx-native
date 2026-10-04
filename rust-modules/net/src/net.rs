@@ -20,8 +20,9 @@
 //! when the TV's libcurl uses OpenSSL 1.0. The option/info integer constants are curl's stable
 //! public ABI values (kept here so we do not need the header). TLS peer+host verification is ON
 //! (the lab receiver's [`Tls::Pinned`] swaps it for a key pin) with TWO bounded fallbacks on the
-//! ordinary request path, both in [`keypin`] and both tried only after the strict attempt against
-//! the television's own trust store failed. **Key mode** (issue #378): a date verify result (a
+//! ordinary request path, both in [`keypin`] and both tried only after an attempt against the
+//! television's own trust store failed (roots mode may also START a request from its latch, and
+//! key mode also follows a roots attempt that failed on the date). **Key mode** (issue #378): a date verify result (a
 //! television with no battery clock) is repeated once, recognising the server by the public key
 //! remembered for that exact host and port, with the name check still on. **Roots mode**: a
 //! missing-issuer verify result (a 2020 firmware's store lacks Let's Encrypt's 2025 roots) on a
@@ -2287,7 +2288,8 @@ pub mod resolve {
 ///
 /// **Redirects.** `CURLOPT_CAINFO` is per handle, not per hop, so on the media plane (the only one
 /// that follows redirects; the control plane never does under either mode) a hop a roots-mode open is
-/// redirected to is verified against the bundle too, not the device store.
+/// redirected to is verified against the bundle too (plus any CA directory this firmware's libcurl
+/// reads by default, as [`keypin::apply_roots`] says), not the device's own CA file.
 ///
 /// **Facts, and one toast.** Where each decision is already made this module also publishes what it
 /// means, for the app to poll by [`keypin::revision`] (`plex::grant`'s shape): [`keypin::engaged`]
@@ -2477,7 +2479,7 @@ pub mod keypin {
     /// and never decided a second time.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
     pub enum Blocked {
-        /// A strict attempt failed on the certificate's DATES (libcurl 60, verify 9 or 10 — the
+        /// A strict attempt (or a roots attempt that reached the dates) failed on the certificate's DATES (libcurl 60, verify 9 or 10 — the
         /// date check was the first failure the chain walk met, not necessarily the only defect,
         /// see the module's caveat) and the table holds no key for the host, so there was nothing
         /// to recognise it by.
@@ -2578,7 +2580,10 @@ pub mod keypin {
     /// builds for a media server, and none gets a key. The request still goes out, strictly
     /// verified, as for any host with no key.
     ///
-    /// The same reading of a URL the media plane's resolve lookup uses, so the two tables agree.
+    /// The host and port are read by the same `origin::split` the resolve lookup uses, with the
+    /// plain-authority gate applied first, for the key and roots decisions only: the resolve table is
+    /// keyed by whatever `split` reads and is not gated, so the two tables agree only on the
+    /// authorities this app builds.
     pub fn key_of_url(url: &str) -> Option<String> {
         if !url.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://")) {
             return None;

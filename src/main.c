@@ -23,8 +23,10 @@ FILE *elogf = NULL;   /* shared event/diagnostic log (extern in app.h); used by 
                        * crash handler here and by the starfish.c seam. Opened "w" each
                        * launch, so it is TRUNCATED on relaunch — do not rely on it to
                        * survive a crash+relaunch (that is what the crash log and `crash_fd` are for). */
-/* The crash log has no `FILE *` any more, only a raw descriptor handed to `plx_crash_install`: its
- * ONLY writer is the signal handler, and stdio is not usable there. See `src/crashtrace.c`. */
+/* The crash log has no `FILE *` any more, only a raw descriptor handed to `plx_crash_install`: the
+ * signal handler writes through it, and stdio is not usable there. See `src/crashtrace.c`. The
+ * boot-time image marker and the Rust panic hook (`app::boot`, through `eventlog::append_record`)
+ * also append to the same file. */
 
 extern int plex_run(const char *pms_host, int pms_port);  /* Rust app core (no creds — session or /tmp/plxnative-token) */
 extern int plx_sentry_spool_external(const char *path); /* Sentry daemon's spool-only re-entry */

@@ -196,10 +196,11 @@ mode a roots-mode answer IS strictly verified, so it may teach `peer_pin`. The l
 the fallback engages, one when it first succeeds and one when the bundle refuses too, naming only the
 verify result.
 **Redirects (media plane).** `curlio` follows redirects inside libcurl and `CURLOPT_CAINFO` is per
-handle, not per hop, so a hop a roots-mode open is redirected to is verified against the bundle too (a
-target whose issuer only the device store holds is refused); `stream_redirect` does not go back through
-`keypin` per hop, and turning redirects off in roots mode would break the PMS's own redirect to a
-presigned CDN URL. Pinned by `curlio_roots_tests::a_redirect_under_roots_mode_is_verified_against_the_bundle_not_the_device_store`.
+handle, not per hop, so a hop a roots-mode open is redirected to is verified against the bundle (plus any CA
+directory the firmware's libcurl reads by default) rather than the firmware's own CA file (a target whose
+issuer only that file holds is refused); `stream_redirect` does not go back through `keypin` per hop, and
+turning redirects off in roots mode would make every redirecting open fail there, where today a hop whose
+issuer the bundle holds succeeds. Pinned by `curlio_roots_tests::a_redirect_under_roots_mode_is_verified_against_the_bundle_not_the_device_store`.
 
 **The who's-watching pick is seated from `Session::profiles` when plex.tv does not answer.** The
 first real outage (2026-09-06, `docs/measurements/offline-picker-red-tv-2026-09-06.log`) got past

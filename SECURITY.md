@@ -54,7 +54,8 @@ looking at:
   package. Chain, dates and name are all still verified, against a different root set. It is
   offered only for a host name that is a `*.plex.direct` name (a URL whose userinfo merely names
   one does not count), never for plex.tv or telemetry; a redirect that such a request follows is
-  verified against the same bundle, because libcurl takes the CA file per request and not per hop.
+  verified against the same bundle rather than the television's CA file, because libcurl takes the CA
+  file per request and not per hop.
   When the bundle verifies the chain and only the dates fail (a wrong clock too), the remembered
   key above is still tried. Stable builds refuse
   any PMS control or media URL that would carry a Plex token over plaintext HTTP, with one

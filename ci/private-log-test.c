@@ -1,5 +1,5 @@
 /* Host regression test for the boot shim's fixed-name log sinks: the open discipline (no symlink,
- * regular file, ours) and the MODE — 0640, owner rw and the app's own group r, never anything for
+ * regular file, ours, exactly one link) and the MODE — 0640, owner rw and the app's own group r, never anything for
  * "other" — on the real three sinks `main()` opens, under a restrictive umask. */
 #define main plx_boot_main
 #include "../src/main.c"
