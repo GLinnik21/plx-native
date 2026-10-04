@@ -37,6 +37,13 @@ on:
       - '!site/**'
       # graded by tests/test_demo_library.py (make check): must stay a trigger
       - 'site/credits.html'
+      # Site-build tooling: run only by pages.yml, which exercises it on every deploy. No gate
+      # here (make check, ci/, tests/) reads or imports these. NOT .github/workflows/pages.yml:
+      # ci/test_ci_timeouts.py reads every workflow file, so that one must stay a trigger.
+      - '!tools/render-doc-page.py'
+      - '!tools/subset-site-fonts.py'
+      - '!tools/render-site-glows.py'
+      - '!tools/requirements-docs.txt'
       - '!.agents/**/*.md'
       - '!rust-modules/**/*.md'
       # GitHub's Sponsor-button metadata; no gate reads it
