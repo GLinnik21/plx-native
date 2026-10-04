@@ -10,7 +10,7 @@
     "viewstate"
   ],
   "size": 8,
-  "outside_count": 23,
+  "outside_count": 21,
   "other_cycles": [
     [
       "abr",
@@ -24,10 +24,6 @@
       "app",
       "dev",
       "textinput"
-    ],
-    [
-      "diag",
-      "telemetry"
     ]
   ]
 }

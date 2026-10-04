@@ -24,9 +24,9 @@ use std::sync::Mutex;
 /// rather than queued behind it.
 static FALLBACK: Mutex<Option<u64>> = Mutex::new(None);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type TestSend = Box<dyn Fn(&Record) -> Verdict + Send>;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static TEST_SEND: Mutex<Option<TestSend>> = Mutex::new(None);
 
 fn fallback_slot() -> std::sync::MutexGuard<'static, Option<u64>> {
@@ -34,7 +34,7 @@ fn fallback_slot() -> std::sync::MutexGuard<'static, Option<u64>> {
 }
 
 fn send_one(record: &Record) -> Verdict {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         TEST_SEND
             .lock()
@@ -42,7 +42,7 @@ fn send_one(record: &Record) -> Verdict {
             .as_ref()
             .map_or(Verdict::Hopeless, |send| send(record))
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     {
         super::sender::send_one(record).0
     }
@@ -51,7 +51,7 @@ fn send_one(record: &Record) -> Verdict {
 /// Ask the ordinary sender to drain the spool. Not from a host test: a checkout configured with a
 /// DSN would otherwise put the suite's fixture records on a real project.
 fn kick_flush() {
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     super::flush_soon();
 }
 
@@ -80,7 +80,7 @@ fn fallback(record: Record, tenure: u64) {
 
 /// Submit an explicit one-off record. `true` means the durable queue accepted it or the bounded
 /// direct fallback started; it does not mean the server has replied — `delivery::state` says that.
-pub(crate) fn submit(record: Record) -> bool {
+pub fn submit(record: Record) -> bool {
     if record.category != Category::OneOff || super::queue::encode(&record).is_none() {
         return false;
     }

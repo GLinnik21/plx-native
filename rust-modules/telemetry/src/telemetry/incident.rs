@@ -38,7 +38,7 @@ use serde_json::Value;
 
 /// Why server discovery ended with nothing to connect to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum DiscoveryClass {
+pub enum DiscoveryClass {
     /// The account has no server at all.
     NoServers,
     /// A server answered and refused the credentials.
@@ -51,7 +51,7 @@ pub(crate) enum DiscoveryClass {
 
 /// Which first content load failed during onboarding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum ContentSource {
+pub enum ContentSource {
     Home,
     Libraries,
 }
@@ -59,7 +59,7 @@ pub(crate) enum ContentSource {
 /// A sign-in that failed inside the app itself rather than on any network: its own machinery
 /// refused or lost the work. Closed, like every other class here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum InternalClass {
+pub enum InternalClass {
     /// The sign-in's work was not admitted by the adapter.
     AdmissionRefused,
     /// The sign-in worker could not be started (the thread spawn was refused).
@@ -77,7 +77,7 @@ pub(crate) enum InternalClass {
 /// Where onboarding failed. Closed, and each variant's [`Self::code`] is a stable wire value —
 /// Sentry groups on it, so renaming one splits an issue in two.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum IncidentKind {
+pub enum IncidentKind {
     /// The sign-in code could not be created.
     PinCreate,
     /// plex.tv stopped answering while the code was on screen. Offered only behind *Details* —
@@ -102,7 +102,7 @@ pub(crate) enum IncidentKind {
 }
 
 impl IncidentKind {
-    pub(crate) fn code(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         match self {
             Self::PinCreate => "pin_create",
             Self::LinkStalled => "link_stalled",
@@ -129,20 +129,20 @@ impl IncidentKind {
     /// Does a failure of this kind mean plex.tv refused the account token the sign-in holds? Such
     /// a token cannot be retried: *Try again* after one must start a new QR sign-in, not a
     /// discovery pass that presents the refused token again (`auth::retry_kind`).
-    pub(crate) fn refuses_the_account_token(self) -> bool {
+    pub fn refuses_the_account_token(self) -> bool {
         matches!(self, Self::Authorization)
     }
 
     /// May a Granted person's incident of this kind be sent WITHOUT asking? Everything except a
     /// stalled wait, which is only ever offered.
-    pub(crate) fn standing_eligible(self) -> bool {
+    pub fn standing_eligible(self) -> bool {
         !matches!(self, Self::LinkStalled)
     }
 
     /// May an incident of this kind put the report question on screen as an alert? Everything
     /// except a stalled wait: the QR code is still up during one, possibly mid-scan, so a stall
     /// is offered only behind *Details*, when the person asks for it.
-    pub(crate) fn alert_eligible(self) -> bool {
+    pub fn alert_eligible(self) -> bool {
         !matches!(self, Self::LinkStalled)
     }
 }
@@ -151,11 +151,11 @@ impl IncidentKind {
 // (`LinkClass`), and the pure `classify` that coarsens it, are defined in `plex::probe`: the probe
 // grades its own transport failures in the same vocabulary and `plex` sits beneath this layer.
 // Re-exported, so every incident producer and reader keeps naming them here.
-pub(crate) use plx_plex::plex::probe::{classify, LinkClass};
+pub use plx_plex::plex::probe::{classify, LinkClass};
 
 /// How many consecutive calls came back with no usable answer, bucketed — never the raw count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum UnansweredBucket {
+pub enum UnansweredBucket {
     Zero,
     One,
     TwoToFive,
@@ -163,7 +163,7 @@ pub(crate) enum UnansweredBucket {
 }
 
 impl UnansweredBucket {
-    pub(crate) fn from_count(n: u32) -> Self {
+    pub fn from_count(n: u32) -> Self {
         match n {
             0 => Self::Zero,
             1 => Self::One,
@@ -171,7 +171,7 @@ impl UnansweredBucket {
             _ => Self::SixPlus,
         }
     }
-    pub(crate) fn code(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         match self {
             Self::Zero => "zero",
             Self::One => "one",
@@ -183,7 +183,7 @@ impl UnansweredBucket {
 
 /// A count of things plex.tv returned, bucketed — never the raw count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum CountBucket {
+pub enum CountBucket {
     Zero,
     One,
     TwoToFive,
@@ -191,7 +191,7 @@ pub(crate) enum CountBucket {
 }
 
 impl CountBucket {
-    pub(crate) fn from_count(n: usize) -> Self {
+    pub fn from_count(n: usize) -> Self {
         match n {
             0 => Self::Zero,
             1 => Self::One,
@@ -199,7 +199,7 @@ impl CountBucket {
             _ => Self::SixPlus,
         }
     }
-    pub(crate) fn code(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         match self {
             Self::Zero => "zero",
             Self::One => "one",
@@ -212,15 +212,15 @@ impl CountBucket {
 /// Which flow ran the discovery that failed: the one right after a fresh code was authorized, or
 /// the discovery-only retry (*Try again*) that reuses that authorization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum DiscoveryTrigger {
+pub enum DiscoveryTrigger {
     Login,
     Rediscover,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum DiscoveryTarget { PlexTv, Servers }
+pub enum DiscoveryTarget { PlexTv, Servers }
 impl DiscoveryTarget {
-    pub(crate) fn code(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         match self { Self::PlexTv => "plex_tv", Self::Servers => "servers" }
     }
 }
@@ -228,13 +228,13 @@ impl DiscoveryTarget {
 /// Evidence shared by every discovery verdict. `target` is absent for NoServers so moving its
 /// trigger into this shared record leaves that established JSON byte-for-byte unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DiscoveryEvidence {
+pub struct DiscoveryEvidence {
     pub trigger: DiscoveryTrigger,
     pub target: Option<DiscoveryTarget>,
 }
 
 impl DiscoveryTrigger {
-    pub(crate) fn code(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         match self {
             Self::Login => "login",
             Self::Rediscover => "rediscover",
@@ -245,14 +245,14 @@ impl DiscoveryTrigger {
 /// Why `/resources` named no server: how much it did return, and which flow asked. Every
 /// resource counted is a non-server one by definition of the verdict, so one bucket says both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct NoServersEvidence {
+pub struct NoServersEvidence {
     pub resources: CountBucket,
     pub trigger: DiscoveryTrigger,
 }
 
 /// How long the current run of misses has lasted, bucketed — never the raw duration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum FailingForBucket {
+pub enum FailingForBucket {
     None,
     Under10s,
     Under60s,
@@ -261,7 +261,7 @@ pub(crate) enum FailingForBucket {
 }
 
 impl FailingForBucket {
-    pub(crate) fn from_duration(d: Option<std::time::Duration>) -> Self {
+    pub fn from_duration(d: Option<std::time::Duration>) -> Self {
         let Some(d) = d else { return Self::None };
         match d.as_secs() {
             0..=9 => Self::Under10s,
@@ -270,7 +270,7 @@ impl FailingForBucket {
             _ => Self::FiveMinPlus,
         }
     }
-    pub(crate) fn code(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Under10s => "under_10s",
@@ -283,7 +283,7 @@ impl FailingForBucket {
 
 /// Why saving (or re-reading) the sign-in failed, from the session persistence completion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum PersistenceFailure {
+pub enum PersistenceFailure {
     /// The storage worker refused the job.
     Admission,
     /// The write itself failed.
@@ -301,7 +301,7 @@ pub(crate) enum PersistenceFailure {
 }
 
 impl PersistenceFailure {
-    pub(crate) fn code(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         match self {
             Self::Admission => "admission",
             Self::WriteFailed => "write_failed",
@@ -314,7 +314,7 @@ impl PersistenceFailure {
     }
 }
 
-pub(crate) fn keymanager_stage_code(stage: KeymanagerStage) -> &'static str {
+pub fn keymanager_stage_code(stage: KeymanagerStage) -> &'static str {
     match stage {
         KeymanagerStage::Validate => "validate",
         KeymanagerStage::Generate => "generate",
@@ -328,7 +328,7 @@ pub(crate) fn keymanager_stage_code(stage: KeymanagerStage) -> &'static str {
 /// insecure-only report carries for an eligible server (`plaintext_consent`). Never the server,
 /// its address or its owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum PlaintextConsentOutcome {
+pub enum PlaintextConsentOutcome {
     /// Eligible, and the person had not answered — the question is on screen.
     Offered,
     /// Allowed, yet this discovery still could not connect (the grant was refused as stale, or
@@ -341,7 +341,7 @@ pub(crate) enum PlaintextConsentOutcome {
 }
 
 impl PlaintextConsentOutcome {
-    pub(crate) fn code(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         match self {
             Self::Offered => "offered",
             Self::Accepted => "accepted",
@@ -354,7 +354,7 @@ impl PlaintextConsentOutcome {
 /// Everything one incident report carries. Every field is a closed enum, a bucket, a clamped
 /// count or a bare number with no identity of its own — see the module doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct IncidentContext {
+pub struct IncidentContext {
     pub kind: IncidentKind,
     pub link: LinkClass,
     /// The exact HTTP status — only with an `Answered*` link class.
@@ -417,7 +417,7 @@ fn now_ms() -> u64 {
 /// sign-in's stored key, a profile roster, a wait's clock), a BADGE says what went wrong.
 /// `WifiSlash` stands alone — there is no server to blame when the TV itself has no link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ReadoutGlyph {
+pub enum ReadoutGlyph {
     /// A clock, alert badge — a wait that ran out.
     ClockBadgeAlert,
     /// A cloud, alert badge — plex.tv answered with an error, or the app's own machinery failed.
@@ -446,8 +446,8 @@ pub(crate) enum ReadoutGlyph {
 
 impl ReadoutGlyph {
     /// Every mark, so the screen's mapping can be held to one icon per mark.
-    #[cfg(test)]
-    pub(crate) const ALL: [Self; 12] = [
+    #[cfg(any(test, feature = "test-support"))]
+    pub const ALL: [Self; 12] = [
         Self::ClockBadgeAlert,
         Self::CloudBadgeAlert,
         Self::GlobeBadgeMinus,
@@ -489,7 +489,7 @@ impl IncidentContext {
     /// A context for `kind`, classifying the last network call and stamping the time. The link
     /// counters, code generation and persistence evidence start empty; the `with_*` builders set
     /// the ones a producer has.
-    pub(crate) fn new(kind: IncidentKind, last: Option<Result<u16, RequestFailure>>) -> Self {
+    pub fn new(kind: IncidentKind, last: Option<Result<u16, RequestFailure>>) -> Self {
         let (link, http_status, curl_rc) = classify(last);
         Self {
             kind,
@@ -514,7 +514,7 @@ impl IncidentContext {
     /// A failure inside the app ([`IncidentKind::Internal`]). Raised by the session owner, which
     /// reads no clock — it is pure and replayable — so it carries no occurrence time and the
     /// report's `timestamp` is left to Sentry's receipt time (see [`Self::occurred_at_ms`]).
-    pub(crate) fn internal(class: InternalClass) -> Self {
+    pub fn internal(class: InternalClass) -> Self {
         Self {
             kind: IncidentKind::Internal(class),
             link: LinkClass::Unknown,
@@ -537,7 +537,7 @@ impl IncidentContext {
 
     /// The sign-in wait's live counters: consecutive unanswered polls, how long they have lasted,
     /// and which code the flow is on.
-    pub(crate) fn with_link_state(
+    pub fn with_link_state(
         mut self,
         unanswered: u32,
         failing_for: Option<std::time::Duration>,
@@ -550,32 +550,32 @@ impl IncidentContext {
     }
 
     /// The evidence behind an insecure-only discovery verdict.
-    pub(crate) fn with_insecure(mut self, evidence: plx_plex::plex::probe::InsecureEvidence) -> Self {
+    pub fn with_insecure(mut self, evidence: plx_plex::plex::probe::InsecureEvidence) -> Self {
         self.insecure = Some(evidence);
         self
     }
 
     /// The consent outcome for an insecure-only verdict's eligible server (see
     /// [`Self::plaintext_consent`]); `None` leaves it off the report.
-    pub(crate) fn with_plaintext_consent(mut self, outcome: Option<PlaintextConsentOutcome>) -> Self {
+    pub fn with_plaintext_consent(mut self, outcome: Option<PlaintextConsentOutcome>) -> Self {
         self.plaintext_consent = outcome;
         self
     }
 
     /// The evidence behind a no-servers discovery verdict.
-    pub(crate) fn with_no_servers(mut self, evidence: NoServersEvidence) -> Self {
+    pub fn with_no_servers(mut self, evidence: NoServersEvidence) -> Self {
         self.no_servers = Some(evidence);
         self
     }
 
-    pub(crate) fn with_discovery(mut self, evidence: DiscoveryEvidence) -> Self {
+    pub fn with_discovery(mut self, evidence: DiscoveryEvidence) -> Self {
         self.discovery = Some(evidence);
         self
     }
 
     /// A completed bounded retry run. Reuses the established bucket fields and deliberately does
     /// not set `code_generation`, which belongs only to QR/PIN issuance.
-    pub(crate) fn with_retry_run(mut self, attempts: u32, elapsed: std::time::Duration) -> Self {
+    pub fn with_retry_run(mut self, attempts: u32, elapsed: std::time::Duration) -> Self {
         self.unanswered = UnansweredBucket::from_count(attempts);
         self.failing_for = FailingForBucket::from_duration(Some(elapsed));
         self.discovery_attempts = Some(attempts);
@@ -587,7 +587,7 @@ impl IncidentContext {
     // The save-failure producer (`IncidentKind::SaveFailed`) is the next stage's; its evidence
     // builder lands with the schema so the body and the notice describe one closed set.
     #[allow(dead_code)]
-    pub(crate) fn with_persistence(mut self, outcome: &CompletionOutcome) -> Self {
+    pub fn with_persistence(mut self, outcome: &CompletionOutcome) -> Self {
         let (class, protection) = match outcome {
             CompletionOutcome::Durable(_)
             | CompletionOutcome::Superseded
@@ -650,7 +650,7 @@ impl IncidentContext {
     ///   failed rather than any named server or link, so this takes `CloudBadgeAlert`, the same
     ///   "something didn't work" mark an answered-but-broken plex.tv call wears, as the least
     ///   specific honest choice among the twelve.
-    pub(crate) fn readout_glyph(&self) -> ReadoutGlyph {
+    pub fn readout_glyph(&self) -> ReadoutGlyph {
         use ReadoutGlyph as Glyph;
         match self.kind {
             IncidentKind::PinExpired | IncidentKind::LinkStalled => Glyph::ClockBadgeAlert,
@@ -794,7 +794,7 @@ mod readout_glyph_tests {
 /// Which of the two ways out produced a report — see the module doc. Tagged on every body so the
 /// two are separable in Sentry although they share a schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum ConsentKind {
+pub enum ConsentKind {
     Standing,
     OneOff,
 }
@@ -812,7 +812,7 @@ impl ConsentKind {
 /// the consent preview exercises this exact serialiser without reading `/proc/self/exe` or minting
 /// an id before consent. `errors_id` is attached as `user.id` through the one shared
 /// [`super::sentry::attach_user`]; a one-off report passes `None` and has no `user` key at all.
-pub(crate) fn event_body(
+pub fn event_body(
     event_id: &str,
     dist: &str,
     errors_id: Option<&str>,
@@ -881,9 +881,9 @@ pub(crate) fn event_body(
         "event_id": event_id,
         "platform": "native",
         "level": "error",
-        "release": concat!("plxnative@", env!("PLX_VERSION")),
+        "release": super::release(),
         "environment": super::sender::ENVIRONMENT,
-        "sdk": {"name": "plxnative-handled", "version": env!("PLX_VERSION")},
+        "sdk": {"name": "plxnative-handled", "version": super::app_version()},
         "logger": "onboarding",
         "transaction": "onboarding",
         "culprit": format!("onboarding::{kind}"),
@@ -925,7 +925,7 @@ pub(crate) fn event_body(
 /// input must never become able to send. `ctx: None` (no evidence was ever retained for this
 /// incident — a declined report keeps nothing, see `auth::owner::incident`) renders identically to
 /// evidence that carries none of the three: `unknown` all the way across either way.
-pub(crate) fn storage_evidence_line(ctx: Option<&IncidentContext>) -> String {
+pub fn storage_evidence_line(ctx: Option<&IncidentContext>) -> String {
     let persistence = ctx.and_then(|c| c.persistence).map_or("unknown", PersistenceFailure::code);
     let keymanager_stage =
         ctx.and_then(|c| c.keymanager_stage).map_or("unknown", keymanager_stage_code);
@@ -948,7 +948,7 @@ fn granted() -> bool {
 /// Returns the queued report's event id — the Report ID the screen shows, as a one-off's is —
 /// or `None` when nothing was queued. Queued is not delivered: `telemetry::delivery::state` says
 /// what became of it, and the session adapter watches that for both lanes.
-pub(crate) fn report_standing(ctx: IncidentContext) -> Option<String> {
+pub fn report_standing(ctx: IncidentContext) -> Option<String> {
     if !ctx.kind.standing_eligible() || !granted() || !super::sender::has_sentry() {
         return None;
     }
@@ -1003,7 +1003,7 @@ fn queue_standing(record: &super::queue::Record, allowed: impl FnOnce() -> bool)
 /// says what became of it, and the session adapter watches that so the offer moves on to
 /// delivered, saved for later, or — a report that did not get through after all — re-sendable
 /// (`auth::owner::IncidentDelivery`).
-pub(crate) fn send_one_off(ctx: IncidentContext) -> Option<String> {
+pub fn send_one_off(ctx: IncidentContext) -> Option<String> {
     if !super::sender::has_sentry() {
         return None;
     }
@@ -1024,7 +1024,7 @@ pub(crate) fn send_one_off(ctx: IncidentContext) -> Option<String> {
 /// Representative incident payload built through the real serialiser, for the consent screen's
 /// example. Shows the STANDING form — the report the crash-report question actually asks about —
 /// with a per-report placeholder for the random and runtime values. No identifier is minted.
-pub(crate) fn preview_event() -> Vec<u8> {
+pub fn preview_event() -> Vec<u8> {
     let ctx = IncidentContext {
         occurred_at_ms: 0,
         ..IncidentContext::new(
@@ -1281,7 +1281,7 @@ mod tests {
     /// added to [`event_body`] without its line in the notice fails here, not in review.
     #[test]
     fn privacy_notice_names_every_sign_in_incident_key() {
-        let notice = include_str!("../../../PRIVACY.md");
+        let notice = include_str!("../../../../PRIVACY.md");
         // A class carries the status OR the CURLcode, never both; the notice names both.
         let mut ctx = IncidentContext::new(IncidentKind::Authorization, Some(Ok(503)))
             .with_link_state(2, Some(Duration::from_secs(9)), 3);

@@ -688,7 +688,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     restore_window: impl FnOnce(*mut c_void)) {
     let et = rd_u32(&app.ev, 0);
     app.window_activity.event(et);
-    crate::telemetry::window::lifecycle(et, matches!(app.route(), AppArg::Player));
+    plx_telemetry::telemetry::window::lifecycle(et, matches!(app.route(), AppArg::Player));
     if controlled_replay(app) {
         // The tape owns logical ingress; real SDL startup notifications must not be
         // counted a second time. The real compositor still owns window safety.
@@ -2480,7 +2480,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
         // reach the wire — see `diag::schema`.
         if fr.rn != app.last_route_reported {
             app.last_route_reported = fr.rn;
-            crate::diag::event(crate::diag::schema::DiagEvent::RouteEntered { screen: fr.rn });
+            plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::RouteEntered { screen: fr.rn });
         }
         // The lab envelope's `route` field, from the SAME name the heartbeat and the focus
         // fingerprint print — a snapshot that disagreed with the log about which screen the

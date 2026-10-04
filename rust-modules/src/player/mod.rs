@@ -684,8 +684,8 @@ impl FailureKind {
     /// The telemetry wire class of this cause. The wire schema is telemetry's
     /// (`telemetry::classes::FailureClass`), so this match is the ONE place the player's own enum
     /// is turned into it, and a new variant cannot compile without choosing its class.
-    pub(crate) fn class(self) -> crate::telemetry::classes::FailureClass {
-        use crate::telemetry::classes::FailureClass as C;
+    pub(crate) fn class(self) -> plx_telemetry::telemetry::classes::FailureClass {
+        use plx_telemetry::telemetry::classes::FailureClass as C;
         match self {
             FailureKind::DecisionRefused => C::DecisionRefused,
             FailureKind::PlaybackPolicy => C::PlaybackPolicy,

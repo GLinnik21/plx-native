@@ -444,7 +444,7 @@ fn a_single_miss_reports_no_link_trouble() {
 /// and the PinExpired report used to carry neither the answer nor the run of misses.
 #[test]
 fn an_expiry_after_refused_polls_carries_what_they_answered() {
-    use crate::telemetry::incident::{LinkClass, UnansweredBucket};
+    use plx_telemetry::telemetry::incident::{LinkClass, UnansweredBucket};
     let mut answers = vec![PinPoll::Pending];
     answers.extend((0..40).map(|_| PinPoll::Unreachable(Ok(429))));
     let mut w = ScriptedPin::new(answers);
@@ -453,10 +453,10 @@ fn an_expiry_after_refused_polls_carries_what_they_answered() {
         panic!("the code must run out");
     };
     let incident = expired_incident(&tail, MAX_PIN_GENERATIONS);
-    assert_eq!(incident.kind, crate::telemetry::incident::IncidentKind::PinExpired);
+    assert_eq!(incident.kind, plx_telemetry::telemetry::incident::IncidentKind::PinExpired);
     assert_eq!((incident.link, incident.http_status), (LinkClass::Answered4xx, Some(429)));
     assert_eq!(incident.unanswered, UnansweredBucket::TwoToFive);
-    assert_ne!(incident.failing_for, crate::telemetry::incident::FailingForBucket::None);
+    assert_ne!(incident.failing_for, plx_telemetry::telemetry::incident::FailingForBucket::None);
     assert_eq!(incident.code_generation, Some(4));
 
     // A code nobody scanned, on a link that answered every time, says exactly that.

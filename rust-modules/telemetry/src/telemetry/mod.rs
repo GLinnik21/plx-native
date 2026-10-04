@@ -20,22 +20,71 @@
 //! destroys what it withdrew, that the event path fails closed, that a record queued while a flush
 //! was on the network is not erased by that flush's commit — and a test behind a feature the
 //! default gate does not build is a test that never runs.
-pub(crate) mod classes;
-pub(crate) mod consent;
-pub(crate) mod crashreport;
-pub(crate) mod delivery;
-pub(crate) mod incident;
-pub(crate) mod oneoff;
-pub(crate) mod persistence;
-pub(crate) mod native;
-pub(crate) mod window;
-pub(crate) mod playback;
-pub(crate) mod posthog;
-pub(crate) mod queue;
-pub(crate) mod sender;
-pub(crate) mod sentry;
-pub(crate) mod spool;
-pub(crate) mod transition;
+pub mod classes;
+pub mod consent;
+pub mod crashreport;
+pub mod delivery;
+pub mod incident;
+pub mod oneoff;
+pub mod persistence;
+pub mod native;
+pub mod window;
+pub mod playback;
+pub mod posthog;
+pub mod queue;
+pub mod sender;
+pub mod sentry;
+pub mod spool;
+pub mod transition;
+
+/// The prefix of the Sentry `release` string, and of the one handed to [`set_release`].
+const RELEASE_PREFIX: &str = "plxnative@";
+
+/// The release this build reports, `plxnative@<version>`, handed in by the application.
+static RELEASE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Record the release string every outbound report carries (Sentry `release`, the SDK and client
+/// version, the usage context's `app_version`).
+///
+/// **The application hands it in**: `PLX_VERSION` is published by the application's build script, a
+/// `cargo:rustc-env` reaches that one crate only, and the rule that derives it is written once
+/// (`build.rs`, `ci/version_rule.py`). The application passes `concat!("plxnative@",
+/// env!("PLX_VERSION"))`, composed at compile time in ITS crate, because `ci/check-package.py`
+/// grades the packaged binary for exactly that contiguous string; a `format!` here would leave the
+/// prefix and the number in different places. It is the second statement of `enter_application`,
+/// right behind `plex::identity::set_version`, which `app::boot::seam_order_tests` pins. Idempotent
+/// for the same string; a different one is a wiring bug and is refused in a debug build.
+pub fn set_release(release: &'static str) {
+    debug_assert!(release.starts_with(RELEASE_PREFIX), "telemetry::set_release takes `plxnative@<version>`");
+    let kept = RELEASE.get_or_init(|| release);
+    debug_assert_eq!(*kept, release, "telemetry::set_release called with two releases");
+}
+
+/// The Sentry `release` string, `plxnative@<version>`.
+///
+/// Read before [`set_release`], a shipping build PANICS rather than label a report with a version no
+/// release had (the television's build is `--release`, where a `debug_assert!` is compiled out);
+/// a `test-support` build answers `plxnative@0.0.0-test`.
+pub fn release() -> &'static str {
+    match RELEASE.get() {
+        Some(r) => r,
+        None => {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                "plxnative@0.0.0-test"
+            }
+            #[cfg(not(any(test, feature = "test-support")))]
+            {
+                panic!("telemetry::release read before set_release: no report may carry an unset release")
+            }
+        }
+    }
+}
+
+/// The app version alone: [`release`] without its prefix.
+pub fn app_version() -> &'static str {
+    release().strip_prefix(RELEASE_PREFIX).unwrap_or_else(|| release())
+}
 
 use consent::Consent;
 
@@ -44,12 +93,12 @@ use consent::Consent;
 /// Called once at boot, before anything can report. A missing or unparsable file is the DEFAULT
 /// decision — everything off, unanswered — which is the only safe reading: a file we cannot
 /// understand is not consent.
-pub(crate) fn boot() -> native::Guard {
+pub fn boot() -> native::Guard {
     activate_initial(load())
 }
 
 /// Resource activation after controlled initial capture. Same live policy/order as boot.
-pub(crate) fn activate_initial(c: Consent) -> native::Guard {
+pub fn activate_initial(c: Consent) -> native::Guard {
     // Logged because the alternative is a silent behavioural difference between two televisions.
     // No identifier in the line: it is the one field here worth not putting in a log that gets
     // pasted into issue threads, and its PRESENCE is the only fact worth stating anyway.
@@ -98,8 +147,8 @@ pub(crate) fn activate_initial(c: Consent) -> native::Guard {
 /// `plxnative-consentstate` (dev builds) replaces what is stored, for the onboarding-report
 /// captures — see `consent::state_override`. Never under test: a stray trigger in
 /// the shared runtime directory must not change what a test's redirected file says.
-pub(crate) fn capture_initial() -> Consent {
-    #[cfg(not(test))]
+pub fn capture_initial() -> Consent {
+    #[cfg(not(any(test, feature = "test-support")))]
     if let Some(c) = consent::state_override() {
         return c;
     }
@@ -112,15 +161,15 @@ fn load() -> Consent { capture_initial() }
 /// of its own. Same shape and same reason as `session::redirect_for_test`: every real candidate is
 /// either a device path that does not exist on the dev Mac or the directory the test binary runs
 /// from, so a test that writes through the real list leaves a consent file in `target/`.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn candidates() -> Vec<std::path::PathBuf> {
     plx_base::paths::telemetry_candidates()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static TEST_FILE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn candidates() -> Vec<std::path::PathBuf> {
     match TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         Some(p) => vec![p],
@@ -131,27 +180,27 @@ fn candidates() -> Vec<std::path::PathBuf> {
 /// Candidate paths used by the live consent resource adapter. Logical owners must use
 /// `app::adapters::consent::ConsentAdapter` instead of treating this path inventory as a commit
 /// seam.
-pub(crate) fn resource_candidates() -> Vec<std::path::PathBuf> {
+pub fn resource_candidates() -> Vec<std::path::PathBuf> {
     candidates()
 }
 
 /// Point this module's decision file at `p`, or back at the real search order with `None`. The
 /// caller holds `plx_base::testlock::serial()` for the whole test: this is a crate global.
-#[cfg(test)]
-pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn redirect_for_test(p: Option<std::path::PathBuf>) {
     let root = p.as_ref().and_then(|path| path.parent()).map(std::path::Path::to_path_buf);
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
     persistence::redirect_root_for_test(root);
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
     persistence::load(candidates)
 }
 
 /// The canonical record follows a test's scratch candidates, so a decision one test committed
 /// cannot become the canonical answer another test's legacy fixture is shadowed by.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
     let root = candidates
         .iter()
@@ -165,15 +214,15 @@ fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
 /// Compatibility for resource-focused telemetry and auth tests: the live side effects of a
 /// transition, exactly as `app::adapters::consent::ConsentAdapter` performs them — production
 /// code has that one explicit commit seam.
-#[cfg(test)]
-pub(crate) fn record(next: Consent) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn record(next: Consent) {
     let previous = consent::current().unwrap_or_default();
     transition::commit(&previous, &next);
 }
 
 /// Test-only twin of [`record`].
-#[cfg(test)]
-pub(crate) fn forget() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn forget() {
     let prior = consent::current().unwrap_or_default();
     transition::forget(&prior);
 }
@@ -185,8 +234,8 @@ pub(crate) fn forget() {
 /// than merely queued. Ported from `release/v0.6`'s `telemetry::cleanup_after_account_clear` /
 /// `persistence::cleanup_after_combined_clear`, which the 0.7 forward-port dropped along with
 /// their only caller (Copilot review on PR #105, finding 7).
-#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
-pub(crate) fn cleanup_after_account_clear() -> bool {
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+pub fn cleanup_after_account_clear() -> bool {
     persistence::cleanup_after_combined_clear(&candidates()) != persistence::CleanupResult::Failed
 }
 
@@ -215,7 +264,7 @@ static AGAIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new
 ///
 /// Returns immediately. A refused spawn is a return value rather than a panic — `task::spawn_small`
 /// exists because `thread::spawn` panics on EAGAIN and killed this app once.
-pub(crate) fn flush_soon() {
+pub fn flush_soon() {
     use std::sync::atomic::Ordering;
     if !sender::configured() {
         // Nothing in this build to send to — see `sender`'s module doc. A report the person was
@@ -363,7 +412,7 @@ fn process_records(
 /// this account. A read failure yields `None`, and [`consent::apply`] then records that channel as
 /// off rather than inventing a fallback — a "random" identifier built from a clock or a MAC is
 /// exactly the identifier this design refuses.
-pub(crate) fn mint_id() -> Option<String> {
+pub fn mint_id() -> Option<String> {
     let mut buf = [0u8; 16];
     use std::io::Read;
     std::fs::File::open("/dev/urandom")
@@ -378,7 +427,7 @@ pub(crate) fn mint_id() -> Option<String> {
 /// The native importer uses it to decide whether a `user.id` the crash daemon captured is OUR
 /// crash-report id or something a future SDK scope put there: anything that is not this shape is
 /// dropped with the rest of the user object.
-pub(crate) fn is_minted_id(s: &str) -> bool {
+pub fn is_minted_id(s: &str) -> bool {
     s.len() == 32
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -594,7 +643,7 @@ mod tests {
 
         std::fs::write(
             dir.join("consent.json"),
-            include_str!("../../../tests/fixtures/persistence/generated/v0.6.6-json-store/consent.json"),
+            include_str!("../../../../tests/fixtures/persistence/generated/v0.6.6-json-store/consent.json"),
         )
         .unwrap();
         let from_066 = serde_json::to_value(load_from(std::slice::from_ref(&legacy))).unwrap();
@@ -607,7 +656,7 @@ mod tests {
         std::fs::remove_file(dir.join("consent.json")).unwrap();
         std::fs::write(
             &legacy,
-            include_str!("../../../tests/fixtures/persistence/generated/v0.6.5-errors-yes-declined-extension.consent.json"),
+            include_str!("../../../../tests/fixtures/persistence/generated/v0.6.5-errors-yes-declined-extension.consent.json"),
         )
         .unwrap();
         let prev = load_from(std::slice::from_ref(&legacy));

@@ -10,7 +10,7 @@
 //! Stored Home, picker and explicit developer bootstrap use the same owner, with distinct typed
 //! authority. Network/PIN derivation remain worker operations; offline policy is retained below.
 use plx_plex::plex::account::{AccountClient, CallEvidence, HomeUser, PinPoll, Resource, SwitchOutcome};
-use crate::telemetry::incident::{
+use plx_telemetry::telemetry::incident::{
     CountBucket, DiscoveryClass, DiscoveryEvidence, DiscoveryTarget, DiscoveryTrigger,
     IncidentContext, IncidentKind, NoServersEvidence,
 };
@@ -849,14 +849,14 @@ pub(crate) enum LoginProgress {
     /// screen-only like `plaintext`, `#[serde(skip)]` so no serialized copy carries it, left out of
     /// the observation digest, and never part of `incident` or a log line. `message` is then
     /// `browse.auth.no_servers`, the caption a screen shows when it has no name to say.
-    Failed { epoch: u64, message: String, incident: crate::telemetry::incident::IncidentContext,
+    Failed { epoch: u64, message: String, incident: plx_telemetry::telemetry::incident::IncidentContext,
         plaintext: Option<PlaintextVerdict>,
         #[serde(skip)]
         account: Option<String> },
     /// plex.tv stopped answering the polls of the code on screen (`Some`, once, when the run of
     /// unanswered polls reaches [`LINK_TROUBLE_AFTER`]) or answered again (`None`). Non-terminal:
     /// the wait goes on, and the owner raises a `LinkStalled` incident from the evidence.
-    LinkTrouble { epoch: u64, trouble: Option<crate::telemetry::incident::IncidentContext> },
+    LinkTrouble { epoch: u64, trouble: Option<plx_telemetry::telemetry::incident::IncidentContext> },
     /// Discovery and the account's Home-user fetch both finished. Carries everything
     /// the owner's resource commit needs to update the session coherently: the winning
     /// server, the reachable roster, and the Home users (empty for a single-user account, in which
@@ -1011,15 +1011,15 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
                     target: Some(DiscoveryTarget::Servers) }),
         )),
         Discovery::PlexTvFailed(run) => {
-            let (link, _, _) = crate::telemetry::incident::classify(Some(run.last));
+            let (link, _, _) = plx_telemetry::telemetry::incident::classify(Some(run.last));
             let message = match link {
-                crate::telemetry::incident::LinkClass::Dns => plx_platform::i18n::msg::browse_auth_plex_dns_retry(i64::from(run.attempts)),
-                crate::telemetry::incident::LinkClass::Tls =>
+                plx_telemetry::telemetry::incident::LinkClass::Dns => plx_platform::i18n::msg::browse_auth_plex_dns_retry(i64::from(run.attempts)),
+                plx_telemetry::telemetry::incident::LinkClass::Tls =>
                     plx_platform::i18n::msg::browse_auth_plex_tls().into(),
-                crate::telemetry::incident::LinkClass::Answered2xx
-                | crate::telemetry::incident::LinkClass::Answered4xx
-                | crate::telemetry::incident::LinkClass::Answered5xx
-                | crate::telemetry::incident::LinkClass::AnsweredOther =>
+                plx_telemetry::telemetry::incident::LinkClass::Answered2xx
+                | plx_telemetry::telemetry::incident::LinkClass::Answered4xx
+                | plx_telemetry::telemetry::incident::LinkClass::Answered5xx
+                | plx_telemetry::telemetry::incident::LinkClass::AnsweredOther =>
                     plx_platform::i18n::msg::browse_auth_plex_unavailable().into(),
                 _ => plx_platform::i18n::msg::browse_auth_plex_connect_retry(i64::from(run.attempts)),
             };
@@ -1860,8 +1860,8 @@ pub(crate) fn insecure_only_copy(verdict: Option<&PlaintextVerdict>) -> std::bor
 
 /// The consent outcome a report carries for an insecure-only verdict — a closed code, never the
 /// server. `None` when the verdict was never offered (not eligible).
-pub(crate) fn plaintext_consent_code(verdict: &PlaintextVerdict) -> Option<crate::telemetry::incident::PlaintextConsentOutcome> {
-    use crate::telemetry::incident::PlaintextConsentOutcome as O;
+pub(crate) fn plaintext_consent_code(verdict: &PlaintextVerdict) -> Option<plx_telemetry::telemetry::incident::PlaintextConsentOutcome> {
+    use plx_telemetry::telemetry::incident::PlaintextConsentOutcome as O;
     verdict.offers().then_some(match verdict.choice {
         PlaintextChoice::Undecided => O::Offered,
         PlaintextChoice::Allowed => O::Accepted,

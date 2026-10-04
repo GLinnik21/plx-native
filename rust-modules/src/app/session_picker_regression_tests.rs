@@ -323,8 +323,8 @@ fn change_profile_then_back_cannot_restore_the_protected_profile_it_left() {
 fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
     use super::test_support::tick;
     let _g = plx_base::testlock::serial();
-    let saved_consent = crate::telemetry::consent::current();
-    crate::telemetry::consent::install(crate::telemetry::consent::Consent::default());
+    let saved_consent = plx_telemetry::telemetry::consent::current();
+    plx_telemetry::telemetry::consent::install(plx_telemetry::telemetry::consent::Consent::default());
     // Any `plxnative-*` file in the runtime root suppresses the question (`dev::any_trigger_present`);
     // run under `--features hostsim` with a private `PLXNATIVE_RUNTIME_DIR`, as `make check` does.
     assert!(!crate::dev::any_trigger_present(), "a stray trigger in {:?} suppresses the consent question",
@@ -379,7 +379,7 @@ fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
     }
 
     if let Some(c) = saved_consent {
-        crate::telemetry::consent::install(c);
+        plx_telemetry::telemetry::consent::install(c);
     }
     // The first-run consent surface is a Settings-family screen: its `Screen::name()` is "settings".
     let named = |w: &str| mounts.iter().filter(|(_, n)| *n == w).count();

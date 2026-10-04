@@ -1221,9 +1221,11 @@ if binary.exists():
     # MATCHED WITH THE `plxnative@` PREFIX, not as a bare number, and that is the difference
     # between grading `PLX_VERSION` and grading whatever digits happen to be in .rodata: the About
     # page and any release note text carry the version too, so a bare-number search was satisfiable
-    # by a page the version mechanism never touched. `telemetry::{crashreport,native,playback}`
-    # compose `concat!("plxnative@", env!("PLX_VERSION"))` in every configuration — telemetry is
-    # ungated on purpose — so this witnesses the emitted value itself.
+    # by a page the version mechanism never touched. `enter_application`
+    # composes `concat!("plxnative@", env!("PLX_VERSION"))` in the application crate and hands it to
+    # `plx_telemetry::telemetry::set_release`, which every report reads, in every configuration —
+    # telemetry is ungated on purpose — so this witnesses the emitted value itself. (The telemetry
+    # crate cannot compose it: a `cargo:rustc-env` reaches the application crate only.)
     #
     # NIGHTLY IS GRADED SEPARATELY. Its package version (`appinfo["version"]`, already checked
     # against Cargo.toml above) IS the next-minor-or-patch number — recomputing "next" a second

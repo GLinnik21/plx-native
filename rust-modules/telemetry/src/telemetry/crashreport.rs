@@ -42,7 +42,7 @@
 
 /// The one place a signal number becomes a name. See the module doc: this exists so the name on the
 /// wire comes from a table this crate owns rather than from bytes in a file.
-pub(crate) fn signal_name(sig: u32) -> &'static str {
+pub fn signal_name(sig: u32) -> &'static str {
     match sig {
         4 => "SIGILL",
         6 => "SIGABRT",
@@ -58,7 +58,7 @@ pub(crate) fn signal_name(sig: u32) -> &'static str {
 /// exactly 40 lowercase hex digits parsed from our own startup marker; no path or signal text can
 /// inhabit this type.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct Fault {
+pub struct Fault {
     pub signal: u32,
     /// `si_addr` — the address the fault was ABOUT (0 for a null dereference).
     pub addr: u64,
@@ -76,7 +76,7 @@ pub(crate) struct Fault {
 
 /// The three ELF facts needed to pair an address with its debug file.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ImageIdentity {
+pub struct ImageIdentity {
     pub build_id: String,
     pub image_addr: u64,
     pub image_size: u64,
@@ -84,7 +84,7 @@ pub(crate) struct ImageIdentity {
 
 /// ARM's integer register set, parsed through a fixed key allowlist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct Registers {
+pub struct Registers {
     pub r0: Option<u64>,
     pub r1: Option<u64>,
     pub r2: Option<u64>,
@@ -106,7 +106,7 @@ pub(crate) struct Registers {
 
 /// A Rust panic, reduced to what may be sent. **No message**: see the module doc.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PanicReport {
+pub struct PanicReport {
     /// `file:line`, from `std::panic::Location` by way of the crash log. Compile-time source text
     /// baked into the binary, so it is a fact about the code rather than about the person running
     /// it — but it arrives here as bytes read from a FILE, so it is validated by
@@ -125,7 +125,7 @@ pub(crate) struct PanicReport {
 /// [`parse`]'s numbers get for free: it must end in `:<digits>`, name a `.rs` file, carry no
 /// whitespace and be short. A tracer, a corrupted log or a future format change cannot then smuggle
 /// a title, a URL or a path out through the one gap in the no-text rule.
-pub(crate) fn looks_like_a_source_location(s: &str) -> bool {
+pub fn looks_like_a_source_location(s: &str) -> bool {
     const MAX: usize = 120;
     let Some((file, line)) = s.rsplit_once(':') else {
         return false;
@@ -141,7 +141,7 @@ pub(crate) fn looks_like_a_source_location(s: &str) -> bool {
 /// FNV-1a, 64-bit. Non-cryptographic on purpose and that is safe here: this is a GROUPING key, not
 /// a secret, and it is never sent alongside anything that would make reversing it useful. A real
 /// digest would mean a dependency or a hand-rolled SHA for no benefit.
-pub(crate) fn message_hash(msg: &str) -> u64 {
+pub fn message_hash(msg: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in msg.as_bytes() {
         h ^= *b as u64;
@@ -169,7 +169,7 @@ fn hex_field(line: &str, key: &str) -> Option<u64> {
 
 /// One thing worth reporting, in the order the crash log recorded it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Report {
+pub enum Report {
     Fault(Fault),
     Panic(PanicReport),
 }
@@ -209,7 +209,7 @@ const PANIC_FOLLOWUPS: &[&str] = &[
 /// In practice it is THREE records: the panic cannot leave the `extern "C"` frame, so std raises
 /// `panic in a function that cannot unwind` from `core::panicking`, and the hook logs that too.
 /// The same positional rule folds it ([`PANIC_FOLLOWUPS`]) into the panic before it.
-pub(crate) fn parse(log: &str) -> Vec<Report> {
+pub fn parse(log: &str) -> Vec<Report> {
     parse_seeded(log, None)
 }
 
@@ -383,7 +383,7 @@ fn registers_json(r: &Registers) -> serde_json::Value {
 /// left no such record — the tracer is async-signal-safe and writes numbers), attached as
 /// `user.id` through the one shared [`super::sentry::attach_user`]. Passed in rather than read
 /// here so the preview can build this exact body with a placeholder.
-pub(crate) fn sentry_body(
+pub fn sentry_body(
     f: &Fault,
     event_id: &str,
     build_id: &str,
@@ -401,10 +401,10 @@ pub(crate) fn sentry_body(
         "event_id": event_id,
         "platform": "native",
         "level": "fatal",
-        "release": concat!("plxnative@", env!("PLX_VERSION")),
+        "release": super::release(),
         "environment": super::sender::ENVIRONMENT,
         "dist": effective_build_id,
-        "sdk": {"name": "plxnative-fallback", "version": env!("PLX_VERSION")},
+        "sdk": {"name": "plxnative-fallback", "version": super::app_version()},
         // **The value is built from the NAME and the ADDRESS, both of which this crate owns.** Not
         // the record's own line, which would be one line of code and would make the no-text
         // guarantee depend on what the C tracer happens to write.
@@ -459,7 +459,7 @@ pub(crate) fn sentry_body(
 /// here is a hash and would put every distinct panic message in its own issue while telling you
 /// nothing about which. Grouping on `(location, hash)` says "this panic, at this line", which is
 /// what the message would have been used for.
-pub(crate) fn panic_sentry_body(
+pub fn panic_sentry_body(
     p: &PanicReport,
     event_id: &str,
     errors_id: Option<&str>,
@@ -468,9 +468,9 @@ pub(crate) fn panic_sentry_body(
         "event_id": event_id,
         "platform": "native",
         "level": "fatal",
-        "release": concat!("plxnative@", env!("PLX_VERSION")),
+        "release": super::release(),
         "environment": super::sender::ENVIRONMENT,
-        "sdk": {"name": "plxnative-fallback", "version": env!("PLX_VERSION")},
+        "sdk": {"name": "plxnative-fallback", "version": super::app_version()},
         "exception": {"values": [{
             "type": "panic",
             // The hash, NOT the message. See the module doc: this is the field a Rust panic would
@@ -491,7 +491,7 @@ pub(crate) fn panic_sentry_body(
 /// Representative fallback payloads built by the real serializers, with every runtime value
 /// replaced afterwards by an explicit placeholder. The consent screen can therefore show both
 /// degraded schemas without minting an id or inspecting the crash log before consent.
-pub(crate) fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
+pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
     let image = ImageIdentity {
         build_id: "0".repeat(40),
         image_addr: 0x10000,
@@ -610,7 +610,7 @@ pub(crate) fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
 /// so is the fault's own position in the log, or a television that faulted identically twice would
 /// report once. 128 bits from two FNV passes with different seeds — a GROUPING key, not a secret,
 /// and the collision that matters is between two records in one log.
-pub(crate) fn event_id_for(build_id: &str, seq: usize, r: &Report) -> String {
+pub fn event_id_for(build_id: &str, seq: usize, r: &Report) -> String {
     let key = match r {
         Report::Fault(f) => {
             format!(
@@ -672,7 +672,7 @@ fn prefix_hash_from(seed: u64, bytes: &[u8]) -> u64 {
 }
 
 fn log_path() -> std::path::PathBuf {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(root) = TEST_ROOT.lock().unwrap().as_ref() {
         return root.join("plxnative-crash.log");
     }
@@ -680,14 +680,14 @@ fn log_path() -> std::path::PathBuf {
 }
 
 fn mark_paths() -> Vec<std::path::PathBuf> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(root) = TEST_ROOT.lock().unwrap().as_ref() {
         return vec![root.join("telemetry-crashmark.json")];
     }
     plx_base::paths::telemetry_crashmark_candidates()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static TEST_ROOT: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 
 /// Read the crash log's bytes and identity from ONE non-following descriptor
@@ -877,7 +877,7 @@ fn execute(plan: &Plan, fresh: bool, fx: &mut impl Recovery) {
 /// not degrade to an unsymbolicated frame with a warning; it produces `missing_symbol` and no error
 /// at all, which is indistinguishable from never having uploaded symbols. Sending no image at least
 /// says so.
-pub(crate) fn recover_pending() {
+pub fn recover_pending() {
     recover_pending_at(&log_path());
 }
 
@@ -891,7 +891,7 @@ pub(crate) fn recover_pending() {
 ///
 /// A build with no DSN therefore touches nothing: no read, no watermark write, no envelope delete.
 /// The log and the envelopes stay exactly as the crashed process left them.
-pub(crate) fn may_read_crash_data() -> bool {
+pub fn may_read_crash_data() -> bool {
     super::consent::allows_errors() && super::sender::has_sentry()
 }
 
@@ -1013,7 +1013,7 @@ fn recover_pending_at(path: &std::path::Path) {
 /// allowing the next crash to be reported normally. The cutoff is bound to the log it measured
 /// (see [`Mark`]) and is not limited by the importer's read bound, so an oversized local log
 /// cannot make the opt-in impossible.
-pub(crate) fn discard_pending_before_opt_in() -> bool {
+pub fn discard_pending_before_opt_in() -> bool {
     match cutoff_mark(&log_path()) {
         Ok(mark) => write_mark(&mark),
         Err(e) => {
@@ -1271,7 +1271,7 @@ mod tests {
         assert_eq!(v["environment"], super::super::sender::ENVIRONMENT);
         assert_eq!(
             v["release"],
-            concat!("plxnative@", env!("PLX_VERSION"))
+            super::super::release()
         );
         assert_eq!(v["debug_meta"]["images"][0]["image_size"], 0x5f0000);
         assert_eq!(

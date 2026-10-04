@@ -62,7 +62,7 @@ use serde::{Deserialize, Serialize};
 /// category, and a record that could not say which it was would have to be purged by both or
 /// neither — the first loses reports somebody consented to, the second keeps reports they did not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Category {
+pub enum Category {
     /// crash and error reports
     Errors,
     /// which screens and features get used
@@ -82,14 +82,14 @@ pub(crate) enum Category {
 /// today's routing and not a fact about the record: an error could be worth sending to both, and a
 /// spool written by one build is read by the next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Dest {
+pub enum Dest {
     Sentry,
     PostHog,
 }
 
 /// One queued send.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Record {
+pub struct Record {
     pub category: Category,
     pub dest: Dest,
     /// Sentry's `event_id`, minted when the record was QUEUED. Carried here and not regenerated at
@@ -162,13 +162,13 @@ mod body_b64 {
 /// the failure would be an allocator abort with no log, from a module whose entire job is to
 /// preserve a report. The bound is checked against the frame header, not against a buffer already
 /// read.
-pub(crate) const MAX_RECORD: usize = 256 * 1024;
+pub const MAX_RECORD: usize = 256 * 1024;
 
 /// The whole spool's byte ceiling. See the module doc: this is the cap that means something.
-pub(crate) const MAX_BYTES: usize = 512 * 1024;
+pub const MAX_BYTES: usize = 512 * 1024;
 
 /// And the record ceiling, which is the weaker of the two and exists to bound decode time.
-pub(crate) const MAX_RECORDS: usize = 200;
+pub const MAX_RECORDS: usize = 200;
 
 const HEADER: usize = 8;
 
@@ -190,7 +190,7 @@ fn crc32(data: &[u8]) -> u32 {
 /// Frame one record. `None` if it serialises to more than [`MAX_RECORD`] — a record too big to
 /// store is dropped at the point it is created, where there is a caller to log it, rather than
 /// becoming a frame no reader will accept.
-pub(crate) fn encode(r: &Record) -> Option<Vec<u8>> {
+pub fn encode(r: &Record) -> Option<Vec<u8>> {
     let payload = serde_json::to_vec(r).ok()?;
     if payload.len() > MAX_RECORD {
         return None;
@@ -204,7 +204,7 @@ pub(crate) fn encode(r: &Record) -> Option<Vec<u8>> {
 
 /// What a decode found, including what it had to throw away.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Decoded {
+pub struct Decoded {
     pub records: Vec<Record>,
     /// Bytes at the end that could not be trusted — a torn write, or everything after a record that
     /// failed its CRC. Reported rather than logged here so the caller decides how loud it is; a
@@ -216,7 +216,7 @@ pub(crate) struct Decoded {
 ///
 /// Never panics and never allocates on an untrusted length — see [`MAX_RECORD`]. An empty input is
 /// an empty queue, not an error: that is what a first boot looks like.
-pub(crate) fn decode_all(buf: &[u8]) -> Decoded {
+pub fn decode_all(buf: &[u8]) -> Decoded {
     let mut records = Vec::new();
     let mut at = 0usize;
     while at + HEADER <= buf.len() {
@@ -260,7 +260,7 @@ pub(crate) fn decode_all(buf: &[u8]) -> Decoded {
 /// Error records have priority over usage records, so route-event volume cannot erase the crash
 /// reports this durable queue principally exists to preserve. Within each category, newest wins;
 /// the retained set is restored to its original FIFO order before being written.
-pub(crate) fn trim(mut records: Vec<Record>) -> (Vec<Record>, usize) {
+pub fn trim(mut records: Vec<Record>) -> (Vec<Record>, usize) {
     let before = records.len();
     // Usage volume must never evict a crash report. Within a category, newest still wins.
     // Select newest records up to both caps, visiting Errors before Usage, then restore FIFO order.
@@ -288,7 +288,7 @@ pub(crate) fn trim(mut records: Vec<Record>) -> (Vec<Record>, usize) {
 ///
 /// Per-category rather than wholesale, because the two switches are independent: turning off usage
 /// must not discard crash reports somebody is still consenting to send.
-pub(crate) fn purge(records: Vec<Record>, category: Category) -> Vec<Record> {
+pub fn purge(records: Vec<Record>, category: Category) -> Vec<Record> {
     records
         .into_iter()
         .filter(|r| r.category != category)
@@ -300,7 +300,7 @@ pub(crate) fn purge(records: Vec<Record>, category: Category) -> Vec<Record> {
 /// Acknowledgement is by `event_id` rather than by count, and that is the whole point: a flush that
 /// sends three and gets two accepted must not advance a cursor by three, and cannot express "the
 /// middle one failed" as a number at all.
-pub(crate) fn ack(records: Vec<Record>, accepted: &[String]) -> Vec<Record> {
+pub fn ack(records: Vec<Record>, accepted: &[String]) -> Vec<Record> {
     records
         .into_iter()
         .filter(|r| !accepted.contains(&r.event_id))

@@ -20,7 +20,6 @@ mod coldstart; // retires old last-page bookmarks; authenticated cold boots now 
 mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)
 mod dev; // the /tmp/plxnative-* trigger surface, behind one `devtriggers` feature — read it before adding a trigger
 #[macro_use]
-mod diag; // typed usage schema plus log/lab scrub, ring and zlib; native crashes have a separate allowlist
 mod ff; // THE demuxer — the FFmpeg 9.0 this app BUNDLES and pins (majors 63/63/61), dlopen'd by absolute path beside the binary, never the television's
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
 mod hls; // strict parser/auth/timeline for the measured one-variant PMS HLS shape
@@ -46,7 +45,6 @@ mod search; // Search data layer: /hubs/search fanned out across every source, m
 mod shot; // simulator screenshots: read the frame back and write a PNG (see the module doc)
 mod stores; // stores as machines (restructure phase 4): one command vocabulary + one step per data store
 mod system;
-mod telemetry; // the opt-in crash + usage channels: consent, the spool, the worker, the two wire formats
 mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
 
 mod textinput; // the TV's own on-screen keyboard, via plain SDL_StartTextInput (see the module doc)

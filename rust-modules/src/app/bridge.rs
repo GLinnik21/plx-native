@@ -245,19 +245,19 @@ impl crate::screens::registry::MetadataLike for AppHost {
 /// The consent MACHINE (§2.2): the physical owner of the two decisions. The adapter persists and
 /// publishes immutable snapshots; it never supplies the previous decision back to this owner.
 pub(crate) struct ConsentMachine {
-    current: crate::telemetry::consent::Consent,
+    current: plx_telemetry::telemetry::consent::Consent,
 }
 
 impl ConsentMachine {
     pub(crate) const SHAPE: &'static str =
         "Consent{asked_version:u32,errors:bool,usage:bool,install_id:option<string>,errors_id:option<string>}";
 
-    fn from_initial(current: crate::telemetry::consent::Consent) -> Self { Self { current } }
+    fn from_initial(current: plx_telemetry::telemetry::consent::Consent) -> Self { Self { current } }
 
     fn record(&mut self, adapter: &mut super::adapters::consent::ConsentAdapter,
         errors: bool, usage: bool) {
-        let next = crate::telemetry::consent::apply(
-            &self.current, errors, usage, crate::telemetry::mint_id);
+        let next = plx_telemetry::telemetry::consent::apply(
+            &self.current, errors, usage, plx_telemetry::telemetry::mint_id);
         for (asked, got, channel) in [
             (errors, next.errors, "crash reports"),
             (usage, next.usage, "usage analytics"),
@@ -270,7 +270,7 @@ impl ConsentMachine {
         }
         adapter.commit(&self.current, &next);
         self.current = next;
-        crate::telemetry::flush_soon();
+        plx_telemetry::telemetry::flush_soon();
     }
 
     fn forget(&mut self, adapter: &mut super::adapters::consent::ConsentAdapter) {
@@ -291,7 +291,7 @@ impl ConsentMachine {
     }
 
     #[cfg(test)]
-    fn current(&self) -> &crate::telemetry::consent::Consent { &self.current }
+    fn current(&self) -> &plx_telemetry::telemetry::consent::Consent { &self.current }
 }
 
 /// What the bridge lends the dispatcher, and what it collects for the loop.
@@ -429,7 +429,7 @@ impl Bridge {
         bridge
     }
     pub(crate) fn new(now_us: fn() -> u64, init: crate::auth::SessionInit,
-        consent: crate::telemetry::consent::Consent, mt: &plx_base::task::MainThread) -> Self {
+        consent: plx_telemetry::telemetry::consent::Consent, mt: &plx_base::task::MainThread) -> Self {
         // A `static`, not `&TtfMeasure` inline: a unit-struct literal DOES const-promote to
         // `'static` today, but that is a rule about the expression rather than a promise about
         // this field, and a `static` states the lifetime outright. Same reasoning as the one
@@ -453,7 +453,7 @@ impl Bridge {
 
     fn with_measure(measure: &'static dyn Measure, now_us: fn() -> u64,
         init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
-        consent: crate::telemetry::consent::Consent,
+        consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter) -> Self {
         let stores = crate::stores::Stores::default();
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
@@ -482,7 +482,7 @@ impl Bridge {
     }
 
     #[cfg(test)]
-    fn for_consent_test(consent: crate::telemetry::consent::Consent) -> Self {
+    fn for_consent_test(consent: plx_telemetry::telemetry::consent::Consent) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_publications(&FIXTURE, || 0,
             crate::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
@@ -496,7 +496,7 @@ impl Bridge {
     }
 
     #[cfg(test)]
-    pub(crate) fn for_consent_resource_test(consent: crate::telemetry::consent::Consent) -> Self {
+    pub(crate) fn for_consent_resource_test(consent: plx_telemetry::telemetry::consent::Consent) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_publications(&FIXTURE, || 0,
             crate::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
@@ -512,7 +512,7 @@ impl Bridge {
     #[cfg(test)]
     fn with_publications(measure: &'static dyn Measure, now_us: fn() -> u64,
         init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
-        consent: crate::telemetry::consent::Consent,
+        consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications) -> Self {
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
@@ -521,7 +521,7 @@ impl Bridge {
 
     fn with_publications_and_stores(measure: &'static dyn Measure, now_us: fn() -> u64,
         init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
-        consent: crate::telemetry::consent::Consent,
+        consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications, stores: crate::stores::Stores) -> Self {
         Self {

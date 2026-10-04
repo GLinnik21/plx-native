@@ -17,7 +17,7 @@ pub(super) fn intercept(event: DiagEvent) -> bool {
 
 /// Capture calls on this thread only. The scope bypasses the telemetry adapter entirely;
 /// these observations prove producer behavior, not consent, persistence, or transport.
-pub(crate) fn capture<T>(run: impl FnOnce() -> T) -> (T, Vec<DiagEvent>) {
+pub fn capture<T>(run: impl FnOnce() -> T) -> (T, Vec<DiagEvent>) {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) { EVENTS.with(|slot| *slot.borrow_mut() = None); }

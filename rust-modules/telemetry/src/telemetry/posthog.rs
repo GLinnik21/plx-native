@@ -48,7 +48,7 @@
 //!
 //! This header used to say no sender existed at all. It does: [`super::sender`].
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::diag::schema::{self, Value};
 use crate::diag::schema::{DiagEvent, UsageContext, UsageEnvelope, UsageValue};
 
@@ -61,7 +61,7 @@ const ANON: &str = "$process_person_profile";
 ///
 /// `distinct_id` is deliberately NOT added here — it goes in a different place per endpoint, which
 /// is the whole point of this module, so each shape adds it itself and the test can tell them apart.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn props(e: DiagEvent, environment: &str) -> serde_json::Map<String, serde_json::Value> {
     let (_, fields) = schema::serialize(e);
     let mut m = serde_json::Map::new();
@@ -133,7 +133,7 @@ fn envelope_props(
 }
 
 /// Render a durable internal event for PostHog only when it is about to leave the spool.
-pub(crate) fn captured(
+pub fn captured(
     api_key: &str,
     distinct_id: &str,
     event: &UsageEnvelope,
@@ -166,7 +166,7 @@ fn render_captured(
 }
 
 /// The consent screen's exact sender shape, with runtime-only metadata visibly labelled.
-pub(crate) fn preview(
+pub fn preview(
     api_key: &str,
     distinct_id: &str,
     event: DiagEvent,
@@ -207,8 +207,8 @@ fn rfc3339_millis(epoch_ms: u64) -> String {
 /// Legacy/test-only shape helper for **`POST <host>/i/v0/e/`**. Production durable events use
 /// [`captured`] and always carry their original occurrence time; this helper keeps the older
 /// endpoint-shape tests able to exercise an explicitly absent timestamp.
-#[cfg(test)]
-pub(crate) fn single(
+#[cfg(any(test, feature = "test-support"))]
+pub fn single(
     api_key: &str,
     distinct_id: &str,
     e: DiagEvent,
@@ -241,8 +241,8 @@ pub(crate) fn single(
 // say which half. Kept because the two endpoints put `distinct_id` in DIFFERENT places — top
 // level for `/i/v0/e/`, inside `properties` for `/batch/` — which is the trap this function
 // exists to have already solved when a batch is worth having.
-#[cfg(test)]
-pub(crate) fn batch(
+#[cfg(any(test, feature = "test-support"))]
+pub fn batch(
     api_key: &str,
     distinct_id: &str,
     environment: &str,

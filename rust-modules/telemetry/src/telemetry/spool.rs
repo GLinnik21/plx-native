@@ -57,7 +57,7 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
 /// Where the spool lives, resolved once. `None` if nowhere is writable, which is a real outcome on
 /// a jail profile we have not met yet and must degrade to "queue nothing" rather than to a panic.
 fn path() -> Option<PathBuf> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(p) = test_path() {
         return Some(p);
     }
@@ -82,7 +82,7 @@ fn resolve() -> Option<PathBuf> {
 
 /// Every record on disk, oldest first. A missing file is an empty queue — that is what a first boot
 /// looks like, not an error.
-pub(crate) fn read() -> Vec<Record> {
+pub fn read() -> Vec<Record> {
     let _g = lock();
     read_locked()
 }
@@ -122,7 +122,7 @@ const UNKNOWN: usize = usize::MAX;
 /// trade for this data. The compaction below syncs, and so does every flush.
 ///
 /// It used to be a read-modify-write of the whole spool, per event, on that same thread.
-pub(crate) fn append(r: &Record) -> bool {
+pub fn append(r: &Record) -> bool {
     let _g = lock();
     append_locked(r)
 }
@@ -131,7 +131,7 @@ pub(crate) fn append(r: &Record) -> bool {
 /// means consent refused the append; `Some(false)` is an actual spool failure. Withdrawal first
 /// publishes the new decision and then takes this same lock to purge, so every race has one of two
 /// safe orders: the record is refused, or it is appended first and the purge removes it.
-pub(crate) fn append_if(r: &Record, allowed: impl FnOnce() -> bool) -> Option<bool> {
+pub fn append_if(r: &Record, allowed: impl FnOnce() -> bool) -> Option<bool> {
     append_guarded(r, allowed, None)
 }
 
@@ -144,7 +144,7 @@ pub(crate) fn append_if(r: &Record, allowed: impl FnOnce() -> bool) -> Option<bo
 /// one-off must not fall back to the network. `Some(false)` is a write failure: the watch is
 /// failed and the caller may attempt its bounded fallback in the SAME tenure. Lock order stays
 /// spool → delivery, as in compaction and purge; no delivery lock is held during disk I/O.
-pub(crate) fn append_watched_if(
+pub fn append_watched_if(
     r: &Record,
     tenure: u64,
     allowed: impl FnOnce() -> bool,
@@ -172,12 +172,12 @@ fn append_guarded(r: &Record, allowed: impl FnOnce() -> bool, tenure: Option<u64
         }
         Some(appended)
     };
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     after_append_for_test();
     result
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     // A deterministic scheduler boundary: the spool lock is released, but its caller has not
     // resumed. A flush can already read and settle the appended record at this point.
@@ -189,7 +189,7 @@ pub(super) fn on_append_for_test(f: impl FnOnce() + 'static) {
     AFTER_APPEND.with(|slot| *slot.borrow_mut() = Some(Box::new(f)));
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn after_append_for_test() {
     let f = AFTER_APPEND.with(|slot| slot.borrow_mut().take());
     if let Some(f) = f {
@@ -282,7 +282,7 @@ fn write_locked(records: &[Record]) -> bool {
 /// record from the crash channel. Writing the snapshot back minus what was accepted erases every
 /// one of them, silently: the file is well formed, the framing intact, the caps held, the sender's
 /// accounting correct. Only the count is wrong, and only against a number nobody has.
-pub(crate) fn commit_retiring(retired: &[String]) {
+pub fn commit_retiring(retired: &[String]) {
     let _g = lock();
     let keep = queue::ack(read_locked(), retired);
     if !write_locked(&keep) {
@@ -305,7 +305,7 @@ pub(crate) fn commit_retiring(retired: &[String]) {
 /// **`Category::OneOff` is never named here, and that is deliberate.** A one-off record's consent
 /// was the single press that queued it, not either standing switch, so there is no decision here
 /// for it to be withdrawn BY. Erasure is [`purge_all_local`]'s job.
-pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
+pub fn purge_withdrawn(c: &super::consent::Consent) {
     let _g = lock();
     let mut all = read_locked();
     let before = all.len();
@@ -340,7 +340,7 @@ fn settle_discarded(before: &[Record], after: &[Record]) {
 /// [`purge_withdrawn`] spares a one-off record because a consent change does not withdraw the press
 /// that queued it. Ending the account's tenure is not a consent change: it erases this
 /// television's local data, and a report the departing account pressed Send for is part of it.
-pub(crate) fn purge_all_local() {
+pub fn purge_all_local() {
     let _g = lock();
     let n = read_locked().len();
     if n == 0 {
@@ -353,10 +353,10 @@ pub(crate) fn purge_all_local() {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static TEST_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn test_path() -> Option<PathBuf> {
     TEST_PATH.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
@@ -372,8 +372,8 @@ fn test_path() -> Option<PathBuf> {
 /// spool test ran last makes the next `append` skip compaction and try to open a file that was
 /// never created at the new path (`append_locked`'s fast path only opens, it never creates). A
 /// one-off submit then reads that as a spool failure and takes the direct fallback instead.
-#[cfg(test)]
-pub(crate) fn set_test_path(p: Option<PathBuf>) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_test_path(p: Option<PathBuf>) {
     *TEST_PATH.lock().unwrap_or_else(|e| e.into_inner()) = p;
     ON_DISK.store(UNKNOWN, std::sync::atomic::Ordering::Relaxed);
     AFTER_APPEND.with(|slot| *slot.borrow_mut() = None);

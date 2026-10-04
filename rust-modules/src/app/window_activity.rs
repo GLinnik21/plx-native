@@ -27,16 +27,16 @@ impl WindowActivity {
 
     pub(crate) fn begin_present(&self, playing: bool) {
         if self.first_frame {
-            crate::telemetry::window::record(crate::telemetry::window::Observation::step(
-                crate::telemetry::window::Stage::FirstFrame, Some(playing)));
+            plx_telemetry::telemetry::window::record(plx_telemetry::telemetry::window::Observation::step(
+                plx_telemetry::telemetry::window::Stage::FirstFrame, Some(playing)));
         }
     }
 
     pub(crate) fn presented(&mut self, playing: bool) {
         if self.first_frame {
             self.first_frame = false;
-            crate::telemetry::window::record(crate::telemetry::window::Observation::step(
-                crate::telemetry::window::Stage::FirstSwapComplete, Some(playing)));
+            plx_telemetry::telemetry::window::record(plx_telemetry::telemetry::window::Observation::step(
+                plx_telemetry::telemetry::window::Stage::FirstSwapComplete, Some(playing)));
         }
     }
 }

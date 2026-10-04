@@ -5,10 +5,10 @@
 
 use serde_json::{Map, Value};
 
-pub(crate) const LIMIT: usize = 16;
+pub const LIMIT: usize = 16;
 
 #[derive(Clone, Copy)]
-pub(crate) enum Stage {
+pub enum Stage {
     WillBackground,
     DidBackground,
     WillForeground,
@@ -37,7 +37,7 @@ impl Stage {
         Self::FirstSwapComplete,
     ];
 
-    pub(crate) fn code(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         match self {
             Self::WillBackground => "will_background",
             Self::DidBackground => "did_background",
@@ -55,7 +55,7 @@ impl Stage {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct Observation {
+pub struct Observation {
     pub stage: Stage,
     pub playing: Option<bool>,
     pub version: Option<[u8; 3]>,
@@ -64,7 +64,7 @@ pub(crate) struct Observation {
 }
 
 impl Observation {
-    pub(crate) fn step(stage: Stage, playing: Option<bool>) -> Self {
+    pub fn step(stage: Stage, playing: Option<bool>) -> Self {
         Self {
             stage,
             playing,
@@ -75,7 +75,7 @@ impl Observation {
     }
 }
 
-pub(crate) fn record(observation: Observation) {
+pub fn record(observation: Observation) {
     record_if_allowed(observation, super::native::record_window);
 }
 
@@ -85,7 +85,7 @@ fn record_if_allowed(observation: Observation, emit: impl FnOnce(Observation)) {
     }
 }
 
-pub(crate) fn lifecycle(event: u32, playing: bool) {
+pub fn lifecycle(event: u32, playing: bool) {
     let stage = match event {
         0x103 => Stage::WillBackground,
         0x104 => Stage::DidBackground,

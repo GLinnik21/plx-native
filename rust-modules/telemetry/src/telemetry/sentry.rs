@@ -47,7 +47,7 @@
 /// none of it is secret — the public key is a write-only ingest credential that any binary sending
 /// anything has to carry, which is why it is publishable by design and why this type is ordinary.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Dsn {
+pub struct Dsn {
     /// `https://o0.ingest.de.sentry.io` — scheme and host, no path
     pub origin: String,
     /// the public key, which becomes `sentry_key` in the auth header
@@ -58,17 +58,17 @@ pub(crate) struct Dsn {
 
 impl Dsn {
     /// The envelope endpoint this DSN addresses.
-    pub(crate) fn envelope_url(&self) -> String {
+    pub fn envelope_url(&self) -> String {
         format!("{}/api/{}/envelope/", self.origin, self.project_id)
     }
 
     /// The `X-Sentry-Auth` header value. `sentry_version=7` is the protocol this file implements;
     /// `sentry_client` is ours and is what a Sentry-side filter would key on if this ever needed
     /// one.
-    pub(crate) fn auth_header(&self) -> String {
+    pub fn auth_header(&self) -> String {
         format!(
             "X-Sentry-Auth: Sentry sentry_version=7, sentry_client=plxnative/{}, sentry_key={}",
-            env!("PLX_VERSION"),
+            super::app_version(),
             self.public_key
         )
     }
@@ -85,7 +85,7 @@ impl Dsn {
 /// Hand-rolled rather than a URL crate, for this crate's usual reason: the input is one shape, the
 /// parse cannot fail in an interesting way, and the alternative is a dependency in a binary that
 /// ships to televisions.
-pub(crate) fn parse_dsn(dsn: &str) -> Option<Dsn> {
+pub fn parse_dsn(dsn: &str) -> Option<Dsn> {
     let dsn = dsn.trim();
     let (scheme, rest) = dsn.split_once("://")?;
     // https only. A DSN is a credential in a query-free URL, but the payload is not: an event
@@ -126,7 +126,7 @@ pub(crate) fn parse_dsn(dsn: &str) -> Option<Dsn> {
 // EU storage and Sentry fixes an organisation's region at creation — it cannot be moved, only
 // replaced. Nothing at runtime should ask: a build either has an EU DSN or should not ship.
 #[allow(dead_code)]
-pub(crate) fn is_eu_region(d: &Dsn) -> bool {
+pub fn is_eu_region(d: &Dsn) -> bool {
     d.origin.contains(".de.sentry.io")
 }
 
@@ -160,7 +160,7 @@ pub(crate) fn is_eu_region(d: &Dsn) -> bool {
 /// This doc used to say deriving it "is not possible here — the running process cannot read its own
 /// program headers without parsing `/proc/self/exe`", which names the method and then treats it as
 /// a reason not to. `paths::app_dir` has read that link since long before this module existed.
-pub(crate) const IMAGE_ADDR: &str = "0x10000";
+pub const IMAGE_ADDR: &str = "0x10000";
 
 /// **The image base this binary actually links at**, as the `0x…` string a Sentry debug image wants.
 ///
@@ -175,7 +175,7 @@ pub(crate) const IMAGE_ADDR: &str = "0x10000";
 /// the program header is an offset from a load bias this function cannot see. A wrong non-zero
 /// base and a zero base fail identically and invisibly, so "I could not tell" must resolve to the
 /// value that was measured to work, never to a guess.
-pub(crate) fn image_addr() -> &'static str {
+pub fn image_addr() -> &'static str {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     V.get_or_init(|| {
         read_head("/proc/self/exe")
@@ -217,7 +217,7 @@ fn read_head(path: &str) -> Option<Vec<u8>> {
 /// Empty when it cannot be read, and a caller must then send NO debug image: an image carrying a
 /// wrong or absent id is what produces `missing_symbol` with no error, the failure mode
 /// [`IMAGE_ADDR`]'s doc records from the other direction.
-pub(crate) fn build_id() -> &'static str {
+pub fn build_id() -> &'static str {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     V.get_or_init(|| {
         read_head("/proc/self/exe")
@@ -232,7 +232,7 @@ pub(crate) fn build_id() -> &'static str {
 /// Sentry's debug-image schema uses a size as well as an address. Like [`image_addr`], this is a
 /// link property and is read from the binary that is actually running, not from the next build
 /// that happens to process its crash log.
-pub(crate) fn image_size() -> u64 {
+pub fn image_size() -> u64 {
     static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
         read_head("/proc/self/exe")
@@ -279,7 +279,7 @@ pub extern "C" fn plx_crash_write_image_marker(fd: std::os::raw::c_int) {
 /// symptom is a frame that comes back unsymbolicated with no error attached — see [`IMAGE_ADDR`].
 ///
 /// `None` for a build id shorter than 16 bytes, which no `sha1` id is.
-pub(crate) fn debug_id(build_id_hex: &str) -> Option<String> {
+pub fn debug_id(build_id_hex: &str) -> Option<String> {
     let b: Vec<u8> = (0..build_id_hex.len() / 2)
         .map(|i| u8::from_str_radix(&build_id_hex[i * 2..i * 2 + 2], 16).ok())
         .collect::<Option<Vec<u8>>>()?;
@@ -312,7 +312,7 @@ pub(crate) fn debug_id(build_id_hex: &str) -> Option<String> {
 /// bytes — and the PADDING is the part that is easy to drop, because `"GNU\0"` is exactly four
 /// bytes and so a parser that forgets to round up reads correctly on every ELF anyone would test
 /// with and wrongly on the one that has a different note first.
-pub(crate) fn gnu_build_id(buf: &[u8]) -> Option<String> {
+pub fn gnu_build_id(buf: &[u8]) -> Option<String> {
     const PT_NOTE: u32 = 4;
     const NT_GNU_BUILD_ID: u32 = 3;
     if buf.len() < 64 || &buf[..4] != b"\x7fELF" || buf[5] != 1 {
@@ -376,7 +376,7 @@ pub(crate) fn gnu_build_id(buf: &[u8]) -> Option<String> {
 ///
 /// `None` for anything this cannot answer honestly: not an ELF, big-endian, `ET_DYN` (see
 /// [`image_addr`]), a truncated header, or no `PT_LOAD` at all.
-pub(crate) fn lowest_load_vaddr(buf: &[u8]) -> Option<u64> {
+pub fn lowest_load_vaddr(buf: &[u8]) -> Option<u64> {
     const PT_LOAD: u32 = 1;
     const ET_EXEC: u16 = 2;
     if buf.len() < 64 || &buf[..4] != b"\x7fELF" {
@@ -499,7 +499,7 @@ fn load_span(buf: &[u8]) -> Option<u64> {
                     // before this would, and nothing gzips a Sentry item today. Kept because the number is the
                     // COMPRESSED ceiling and the 1 MiB figure everyone quotes is the decompressed one, which is the
                     // mistake this constant exists to have already made once.
-pub(crate) const MAX_COMPRESSED: usize = 200 * 1024;
+pub const MAX_COMPRESSED: usize = 200 * 1024;
 
 /// Attach the crash-report identifier to an event body as Sentry's `user.id` — **the one shape
 /// every Sentry-bound producer shares**, so the three of them (the native envelope via the SDK
@@ -512,7 +512,7 @@ pub(crate) const MAX_COMPRESSED: usize = 200 * 1024;
 /// other four fields Relay treats as identity and this channel has no business carrying.
 ///
 /// `None` attaches nothing — the body is left exactly as built, with no `user` key at all.
-pub(crate) fn attach_user(body: &mut serde_json::Value, errors_id: Option<&str>) {
+pub fn attach_user(body: &mut serde_json::Value, errors_id: Option<&str>) {
     if let Some(id) = errors_id.filter(|id| !id.is_empty()) {
         body["user"] = serde_json::json!({ "id": id });
     }
@@ -534,7 +534,7 @@ pub(crate) fn attach_user(body: &mut serde_json::Value, errors_id: Option<&str>)
 /// Sentry's Contexts UI. Merges into whatever `contexts` object the caller already built (a
 /// `playback` context sits beside these, not under them) rather than replacing it — and creates one
 /// if the body had none yet.
-pub(crate) fn attach_hardware_context(body: &mut serde_json::Value) {
+pub fn attach_hardware_context(body: &mut serde_json::Value) {
     let webos = plx_platform::tv::device::info();
     let hw = plx_platform::tv::device::device();
     let contexts = body
@@ -564,7 +564,7 @@ pub(crate) fn attach_hardware_context(body: &mut serde_json::Value) {
 /// Newline-delimited, and the item header's `length` is the payload's byte length — the field this
 /// function exists to get right, since a wrong one makes the receiver parse the next line as
 /// payload and reject the whole envelope with a message about neither.
-pub(crate) fn envelope(event_id: &str, item_type: &str, payload: &[u8]) -> Vec<u8> {
+pub fn envelope(event_id: &str, item_type: &str, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(payload.len() + 160);
     out.extend_from_slice(format!("{{\"event_id\":\"{event_id}\"}}\n").as_bytes());
     out.extend_from_slice(
@@ -751,7 +751,8 @@ mod tests {
     fn the_configured_dsn_parses_and_is_eu() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .expect("rust-modules has a parent")
+            .and_then(std::path::Path::parent)
+            .expect("rust-modules/telemetry has a repository root above it")
             .join("pkg/telemetry.local.json");
         let Ok(text) = std::fs::read_to_string(&path) else {
             return;

@@ -105,7 +105,7 @@ const _: () = {
 ///
 /// An unconfigured build reads `development`. Nothing can be sent from one, so the value is
 /// unobservable; `development` is simply the honest reading of "not the shipped configuration".
-pub(crate) const ENVIRONMENT: &str = if HAS_PROD {
+pub const ENVIRONMENT: &str = if HAS_PROD {
     "production"
 } else {
     "development"
@@ -141,7 +141,7 @@ const TIMEOUTS: plx_net::net::Timeouts = plx_net::net::Timeouts {
 
 /// Could this build send anything at all? False at compile time in any checkout without the
 /// configuration file — see the module doc.
-pub(crate) fn configured() -> bool {
+pub fn configured() -> bool {
     has_sentry() || has_posthog()
 }
 
@@ -150,7 +150,7 @@ pub(crate) fn configured() -> bool {
 /// with a Sentry key and no PostHog one. [`configured`] answers "can this build send at all", which
 /// is the wrong question for a log line: it is `true` while half the app is silently discarding
 /// every record it produces.
-pub(crate) fn has_sentry() -> bool {
+pub fn has_sentry() -> bool {
     SENTRY_DSN.is_some()
 }
 
@@ -159,17 +159,17 @@ pub(crate) fn has_sentry() -> bool {
 /// Sentry Native has no transport in this build; the value is still required in the envelope it
 /// writes for an external reporter. The ordinary sender discards that header and frames the
 /// sanitised body with this same compile-time destination later.
-pub(crate) fn sentry_dsn() -> Option<&'static str> {
+pub fn sentry_dsn() -> Option<&'static str> {
     SENTRY_DSN
 }
 
-pub(crate) fn has_posthog() -> bool {
+pub fn has_posthog() -> bool {
     POSTHOG_KEY.is_some()
 }
 
 /// What to do with a record after an attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Verdict {
+pub enum Verdict {
     /// Accepted. Drop it.
     Done,
     /// Not accepted, but might be next time — keep it and try later.
@@ -184,7 +184,7 @@ pub(crate) enum Verdict {
 /// The three-way split is the point. A two-way "did it work" collapses two opposite mistakes into
 /// one: dropping a record the server was merely too busy for, and retrying a malformed one until it
 /// crowds out every other. Both are silent.
-pub(crate) fn classify(status: u16) -> Verdict {
+pub fn classify(status: u16) -> Verdict {
     match status {
         200..=299 => Verdict::Done,
         // Rate limited or asked to back off. The record is fine; the moment is not.
@@ -219,7 +219,7 @@ pub(crate) fn classify(status: u16) -> Verdict {
 /// The practical consequence is stated plainly: this build honours **429 as a status** and holds
 /// the spool for a fixed minute; it does not yet honour an interval a server asked for.
 #[allow(dead_code)]
-pub(crate) fn retry_after_secs(headers: &str) -> Option<u64> {
+pub fn retry_after_secs(headers: &str) -> Option<u64> {
     for line in headers.lines() {
         let lower = line.to_ascii_lowercase();
         let key = if lower.starts_with("retry-after:") {
@@ -243,14 +243,14 @@ pub(crate) fn retry_after_secs(headers: &str) -> Option<u64> {
 /// The hold applied when a server said back off but named no interval. A minute: long enough that a
 /// burst does not hammer a rate-limited endpoint, short enough that an ordinary hiccup does not
 /// strand a crash report until the next launch.
-pub(crate) const DEFAULT_HOLD_S: u64 = 60;
+pub const DEFAULT_HOLD_S: u64 = 60;
 
 /// May this record be sent right now, given the consent in force?
 ///
 /// **Per record, against its own category.** A spool written before a withdrawal still holds
 /// records of a category that is now off, and the whole point of storing the category with the
 /// record is that this question has an answer.
-pub(crate) fn allowed(r: &Record, c: &consent::Consent) -> bool {
+pub fn allowed(r: &Record, c: &consent::Consent) -> bool {
     match r.category {
         // A one-off report's consent is the single press that queued it, not this snapshot — see
         // `queue::Category::OneOff`. Allowed whether or not the standing question was ever
@@ -341,7 +341,7 @@ fn route(r: &Record) -> Option<(String, Vec<String>)> {
 /// Attempt one record. Returns the verdict and, when a server asked for one, the hold in seconds.
 ///
 /// Never called from the main loop or from signal context — see [`super::flush_soon`].
-pub(crate) fn send_one(r: &Record) -> (Verdict, Option<u64>) {
+pub fn send_one(r: &Record) -> (Verdict, Option<u64>) {
     let Some((url, headers)) = route(r) else {
         // No configuration for this destination in this build. Hopeless rather than Keep: nothing
         // about a later attempt will differ, and keeping would spool forever.
