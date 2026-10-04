@@ -6007,20 +6007,32 @@ def grade_walk_prelude(scene, lines, walker):
     """
     if walker.error:
         return f"the key walk failed: {walker.error}", lines, ""
+    walk = scene["walk"]
+    library = walk.get("landed") == "library"
+    unit = "shelf" if library else "row"
     rows = walker.rows or 0
-    want = 2 * min(rows, int(scene["walk"]["max_rows"]))
+    # Home: one Down per landed row. Library: one per shelf, a second for each linked shelf, and
+    # `extra_rows` more past the shelves (`mock_fps.walk_downs`), all capped at `max_rows`.
+    want = 2 * min(mock_fps.walk_downs(scene, rows), int(walk["max_rows"])) if rows else 0
     if walker.sent < want or want == 0:
-        return (f"the key walk sent {walker.sent} of {want} key(s) ({rows} row(s) landed); it "
+        return (f"the key walk sent {walker.sent} of {want} key(s) ({rows} {unit}(s) landed); it "
                 f"never ran to completion — raise run_secs or look at the log"), lines, ""
     window = mock_fps.walk_window(lines)
     if window is None:
         return ("no `key type=0x300` line in the event log: the app received none of the "
                 f"{walker.sent} key(s) the walk sent"), lines, ""
-    final = mock_fps.landed(lines)
+    # `walk.fingerprint_region`: the focus fingerprint (`plxnative-focus`) must show the walk
+    # crossed into that region, e.g. the Library's grid at the turn-around.
+    region = walk.get("fingerprint_region")
+    if region and not mock_fps.grid_fingerprint_seen(window, scene["route"], region):
+        return (f"no `focus route={scene['route']} ... region={region}` fingerprint in the walk's "
+                f"window: the {walker.sent} key(s) never carried focus into the {region} "
+                f"(is `plxnative-focus` armed, and are `extra_rows` enough?)"), lines, ""
+    final = mock_fps.landed_shelves(scene, lines)
     stats = mock_fps.frame_stats(window, scene["route"])
     keys_seen = sum(1 for ln in window if mock_fps.KEY_RE.search(ln))
-    detail = mock_fps.describe_walk(final[1] if final else rows, keys_seen, stats,
-                                    mock_fps.landed_count(lines))
+    detail = mock_fps.describe_walk(final if final else rows, keys_seen, stats,
+                                    mock_fps.landed_lands(scene, lines), unit)
     return None, window, detail
 
 

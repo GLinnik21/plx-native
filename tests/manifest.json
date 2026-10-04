@@ -103,7 +103,7 @@
       "route": "home",
       "loop_floor": 50,
       "fps_floor": 20,
-      "run_secs": 150,
+      "run_secs": 170,
       "warmup_s": 5,
       "triggers": {
         "plxnative-grid": true,
@@ -121,7 +121,38 @@
         "rest_s": 4,
         "tail_s": 5
       },
-      "comment": "Home with a hundred and seventy rows (#395), against the SYNTHETIC mock only: `./tests/run.py --fps --mock --filter home-grid-deep` starts tests/mock_pms.py --home-hubs 170 itself and needs no Plex account. plxnative-homeosc sweeps only ~9 rows either side of the top, so this scene instead presses Down once per LANDED row (the count is read from the `hubs: landed` log line, never hard-coded: a build with a card bound lands fewer rows than one without) at ~3 keys/s, rests, and presses Up back, and grades the heartbeats of THAT window. Floors are home-grid's own (loop_floor 50, fps_floor 20 on the median; see its notes): the walk steps focus every 330 ms exactly as its oscillator does every 350 ms, so the same duty-cycle reasoning applies. plxnative-framedrop is armed (25 ms) because the heartbeat only carries its frame_n/frame_gt33/frame_max fields then; frame_gt33, the worst frame and p99 over the window are printed in the result and NOT graded. run_secs covers max_rows both ways at key_gap_s (tests hold it to that); keys are only ever down/up, never ok or back."
+      "comment": "Home with a hundred and seventy rows (#395), against the SYNTHETIC mock only: `./tests/run.py --fps --mock --filter home-grid-deep` starts tests/mock_pms.py --home-hubs 170 itself and needs no Plex account. plxnative-homeosc sweeps only ~9 rows either side of the top, so this scene instead presses Down once per LANDED row (the count is read from the `hubs: landed` log line, never hard-coded: a build with a card bound lands fewer rows than one without) at ~3 keys/s, rests, and presses Up back, and grades the heartbeats of THAT window. Floors are home-grid's own (loop_floor 50, fps_floor 20 on the median; see its notes): the walk steps focus every 330 ms exactly as its oscillator does every 350 ms, so the same duty-cycle reasoning applies. plxnative-framedrop is armed (25 ms) because the heartbeat only carries its frame_n/frame_gt33/frame_max fields then; frame_gt33, the worst frame and p99 over the window are printed in the result and NOT graded. run_secs covers max_rows both ways at key_gap_s (tests hold it to that); keys are only ever down/up, never ok or back. run_secs was 150 until #412: the corrected walk_secs_needed also counts KeyWalk's 10 s launch wait (154 s here)."
+    },
+    {
+      "name": "library-shelves-deep",
+      "tier": "ui",
+      "route": "library",
+      "loop_floor": 50,
+      "fps_floor": 30,
+      "run_secs": 200,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-library": true,
+        "plxnative-framedrop": 25,
+        "plxnative-focus": true
+      },
+      "mock": {
+        "section_hubs": 170,
+        "section_hubs_linked": 40,
+        "only": true
+      },
+      "walk": {
+        "landed": "library",
+        "key_gap_s": 0.33,
+        "max_rows": 220,
+        "extra_rows": 6,
+        "fingerprint_region": "grid",
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5
+      },
+      "comment": "The Library with a hundred and seventy recommended shelves, forty of them promoted collections (#412), against the SYNTHETIC mock only: `./tests/run.py --fps --mock --filter library-shelves-deep` starts tests/mock_pms.py --section-hubs 170 --section-hubs-linked 40 itself. This is the INSTRUMENT for #412: on a build that still caps the Library at twelve shelves per section it lands 12 and the scene passes on those 12 by design (no `walk.min_landed` yet; a later change adds it when the cap goes). The walk length derives from what LANDED, as home-grid-deep's does: the shelf count is the seated section's `libhubs: section N landed M shelves` line (`plxnative-library` with no value seats the preferred Movies library, index 0), then one Down per shelf, a second for each linked shelf (its heading is a stop of its own, then its row) and `extra_rows` more to cross the toolbar into the grid, at ~3 keys/s, a rest, and Up back; keys are only ever down/up. Graded: synthetic identity, keys sent == the expected count, a `focus route=library ... region=grid` fingerprint (`plxnative-focus`, armed here) inside the walk window, loop_floor 50 and fps_floor 30 (library-scroll's) on that window. frame_gt33, the worst frame and p99 are printed, NOT graded (plxnative-framedrop is armed so the heartbeat carries them). max_rows >= 170 + 40 + extra_rows; run_secs covers it plus the launch wait (tests hold it to that). NOT yet run on a device."
     },
     {
       "name": "home-idle",
