@@ -117,7 +117,7 @@ impl InfoPanelState {
 
     pub(crate) fn draw(
         &mut self,
-        ps: &crate::route::PlaybackSession,
+        ps: &plx_media::route::PlaybackSession,
         appear: f32,
         measure: &dyn plx_machine::machine::Measure,
         meta: metadata::MetadataView<'_>,
@@ -199,7 +199,7 @@ impl InfoPanelState {
         if !thumb_path.is_empty() {
             // the PLAYING item's server — the info panel describes what is on the video plane
             let (t, tw, th) = resolve_tex_wh_on(
-                crate::route::item_sid(crate::route::cur_sid(ps)).raw(),
+                plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw(),
                 &thumb_path,
                 480,
                 270,
@@ -263,10 +263,10 @@ impl InfoPanelState {
         // universal-transcode `start.mkv` query is several hundred bytes) purely to test emptiness.
         // The `play_pending` half is the resolve window — see the doc.
         let now_fact = playback_now(
-            crate::route::has_url(ps) && !crate::route::play_pending(),
-            crate::route::is_transcoding(ps),
-            crate::route::is_remux(ps),
-            &crate::route::stream_vcodec(ps),
+            plx_media::route::has_url(ps) && !plx_media::route::play_pending(),
+            plx_media::route::is_transcoding(ps),
+            plx_media::route::is_remux(ps),
+            &plx_media::route::stream_vcodec(ps),
         );
         // metadata line (genres · year · duration) + capability badges. Built and FIT here, before the
         // title/synopsis layout below, rather than inside its own draw block further down — see

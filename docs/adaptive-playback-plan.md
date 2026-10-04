@@ -8,7 +8,7 @@ baseline, not the current implementation, which deliberately has no probe-spacin
 **Baseline SHA: `5a8ef2ef`** (`playback: risk-aware adaptive controller, model read-out and
 shaped-link test tier`). Every "today" in this document means that commit. **Every `abr.rs:NNNN`
 citation below is a line number IN THAT COMMIT**, and `abr.rs` has since been split into
-`rust-modules/src/abr/` (Phase 1). The citations are deliberately NOT rewritten: they are evidence
+`rust-modules/media/src/abr/` (Phase 1). The citations are deliberately NOT rewritten: they are evidence
 about a baseline, and repointing them at a moving tip would make them unverifiable. To read one,
 `git show 5a8ef2ef:rust-modules/src/abr.rs`. **No change to `abr.rs`
 decision behaviour lands before step M2 of §4 has recorded that baseline's device behaviour** — see

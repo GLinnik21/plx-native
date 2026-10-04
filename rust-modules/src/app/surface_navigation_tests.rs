@@ -329,7 +329,7 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let home = d.nav.top_page().map(|e| e.id);
     assert_eq!(frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]).0, "player");
-    open_player_overlay(crate::route::idle_session_for_test(), plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Info);
+    open_player_overlay(plx_media::route::idle_session_for_test(), plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Info);
     frame(&mut d, &mut rig, AppArg::Player, tick(2), vec![]);
     assert!(player_overlay_up(&d), "the panel is on the player page's own ModalStack");
     // …`exit_player`'s own order: the panels are dismissed, then the route is the origin's.
@@ -369,7 +369,7 @@ fn player_diagnostics_hide_behind_any_open_player_overlay() {
         OverlayKind::More { quality: false },
     ] {
         open_player_overlay(
-            crate::route::idle_session_for_test(),
+            plx_media::route::idle_session_for_test(),
             plx_data::stores::metadata::MetadataStore::default().view(),
             &mut d,
             kind,
@@ -722,7 +722,7 @@ fn account_to_settings_never_unfreezes_the_host() {
 /// for (§16.9).
 #[test]
 fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_alone() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
@@ -804,7 +804,7 @@ fn same_instance_reads_the_playback_and_not_the_overlay() {
 #[test]
 fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
     use crate::screens::player::overlay::OverlayKind;
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
@@ -860,7 +860,7 @@ fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
 #[test]
 fn the_hud_state_helper_reads_every_phase_of_every_surface() {
     use crate::screens::player::overlay::OverlayKind;
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);

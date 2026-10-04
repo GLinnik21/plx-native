@@ -161,7 +161,7 @@ argument is the signature of exactly this class of bug.
   `$(WEBOS_SDK)/bin/*-objdump -d <lib> | grep -c 'vld1\|vmull'` before assuming.
 - **Existing deep-dives own their domains.** For Starfish/ACB bind order, the `uid=NULL`
   rule, the sret `std::string` convention and the 3-arg taskId ABI, read
-  `rust-modules/src/player/CLAUDE.md` — don't rediscover them here.
+  `rust-modules/media/src/player/CLAUDE.md` — don't rediscover them here.
 
 ## Troubleshooting
 

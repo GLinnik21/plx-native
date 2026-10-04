@@ -115,8 +115,8 @@ pub(crate) struct MenuPlayAwait {
 /// play-vs-open on this call at all (see [`MenuPlayAwait`]/[`menu_play_tick`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn activate_card(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     mm: &plx_data::pms::PmsMovie,
     want_play: bool,
     hud_ms: u32,
@@ -194,8 +194,8 @@ fn collection_content_arg(mm: &plx_data::pms::PmsMovie) -> crate::screens::regis
 /// different page is up by the time it settles.
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn menu_play_tick(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     menu_play_await: &mut Option<MenuPlayAwait>,
@@ -270,8 +270,8 @@ pub(crate) unsafe fn menu_play_tick(
 /// [`menu_play_tick`], never resolved on the press frame.
 ///
 /// Runs in the default feature set too: `menu_play_tick`'s landed arm reaches `start_playback` and
-/// the video sink, but `player::ffi` is not compiled in tests, so the sink a bare `cargo test
-/// --lib` meets is `tv::sink::NoSink` and answers every verb with nothing.
+/// the video sink, but `port.rs` installs `tv::sink::NoSink` under `cfg(test)`, so the sink a bare
+/// `cargo test --lib` meets answers every verb with nothing (`player::ffi` is compiled, and never reached).
 #[cfg(test)]
 mod activate_card_tests {
     use super::*;
@@ -284,9 +284,9 @@ mod activate_card_tests {
     #[test]
     fn a_show_or_season_play_no_longer_decides_on_the_press_frame() {
         let _guard = plx_base::testlock::serial();
-        let mut ps = crate::route::PlaybackSession::default();
+        let mut ps = plx_media::route::PlaybackSession::default();
         let mt = unsafe { plx_base::task::MainThread::assume() };
-        let mut pa = crate::player::adapter::PlayerAdapter::new(mt);
+        let mut pa = plx_media::player::adapter::PlayerAdapter::new(mt);
         let mut pages = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
         let mut bridge = super::bridge::Bridge::for_test(|| 0);
         let mut menu_play_await = None;
@@ -341,9 +341,9 @@ mod activate_card_tests {
     #[test]
     fn a_collection_card_opens_the_collection_page() {
         let _guard = plx_base::testlock::serial();
-        let mut ps = crate::route::PlaybackSession::default();
+        let mut ps = plx_media::route::PlaybackSession::default();
         let mt = unsafe { plx_base::task::MainThread::assume() };
-        let mut pa = crate::player::adapter::PlayerAdapter::new(mt);
+        let mut pa = plx_media::player::adapter::PlayerAdapter::new(mt);
         let mut pages = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
         let mut bridge = super::bridge::Bridge::for_test(|| 0);
         let mut menu_play_await = None;
@@ -368,8 +368,8 @@ struct LiveItemPlayback<'a, R>(&'a mut R);
 impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
     fn loaded_episode(
         &mut self,
-        ps: &mut crate::route::PlaybackSession,
-        pa: &mut crate::player::adapter::PlayerAdapter,
+        ps: &mut plx_media::route::PlaybackSession,
+        pa: &mut plx_media::player::adapter::PlayerAdapter,
         rk: &str,
         pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
         bridge: &mut super::bridge::Bridge,
@@ -382,8 +382,8 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
 
     fn captured_card(
         &mut self,
-        ps: &mut crate::route::PlaybackSession,
-        pa: &mut crate::player::adapter::PlayerAdapter,
+        ps: &mut plx_media::route::PlaybackSession,
+        pa: &mut plx_media::player::adapter::PlayerAdapter,
         item: &plx_data::pms::PmsMovie,
         pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
         bridge: &mut super::bridge::Bridge,
@@ -419,8 +419,8 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
 /// that follows in the same frame SUPERSEDES the newest request. The bit stays on the argument
 /// (and in the recorded state) as the fact it is.
 pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     req: crate::screens::registry::ItemMenuReq,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
@@ -704,7 +704,7 @@ pub(crate) fn on_auto_repeat(sym: c_uint, ok_armed: bool, press: &mut plx_ui::pr
 /// stamp is a local read only by arms that run in the same iteration, so an unbound press cannot
 /// carry it anywhere.
 pub(crate) unsafe fn begin_fresh_press(
-    ps: &crate::route::PlaybackSession,
+    ps: &plx_media::route::PlaybackSession,
     key: Key,
     sym: c_uint,
     wcode: c_uint,
@@ -739,7 +739,7 @@ pub(crate) unsafe fn begin_fresh_press(
 /// because nothing reachable from a test calls it and the linker dead-strips it). This half touches
 /// no SDL at all, so the invariant is gradeable by `make check` instead of only by a television.
 pub(crate) fn note_global_press(
-    ps: &crate::route::PlaybackSession,
+    ps: &plx_media::route::PlaybackSession,
     sym: c_uint,
     wcode: c_uint,
     now: u32,
@@ -777,7 +777,7 @@ mod unsupported_key_tests {
     /// `(a click is still armed, the HUD is still dismissed)`. `press::*`, `hud_until()` and
     /// `hud_until()` and `paused()` are crate globals, so every caller holds `testlock::serial()`;
     /// the press is the test's own `Press`.
-    fn press(ps: &crate::route::PlaybackSession, sym: c_uint, wcode: c_uint) -> (bool, bool) {
+    fn press(ps: &plx_media::route::PlaybackSession, sym: c_uint, wcode: c_uint) -> (bool, bool) {
         let mut hud = HudState::IDLE;
         let mut ok_armed = true; // a click is in flight, as if OK were still down on a card
         hud.dismissed = true; // …and the transport was hidden by hand (UP from the control row)
@@ -793,7 +793,7 @@ mod unsupported_key_tests {
     /// click it slid off. BACK is the case to use — it is not OK, so it takes the abort branch.
     #[test]
     fn a_bound_key_still_wakes_the_hud_and_aborts_the_click() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
         let (armed, dismissed) = press(&ps, SDLK_ESCAPE, 0);
         assert!(
@@ -809,7 +809,7 @@ mod unsupported_key_tests {
     /// scancode takes the same branch.
     #[test]
     fn an_unsupported_key_wakes_nothing_and_abandons_nothing() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
         for (sym, wcode, what) in [
             (0, 269, "HOME"),
@@ -827,7 +827,7 @@ mod unsupported_key_tests {
     /// Pinned so the trade-off stays a decision on record rather than something a reader finds.
     #[test]
     fn a_number_key_counts_as_bound_because_the_pin_keypad_types_from_it() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
         let (armed, dismissed) = press(&ps, b'5' as c_uint, 34);
         assert!(!armed);
@@ -1243,8 +1243,8 @@ pub(crate) fn chip_clicked(route: &AppArg, ev: &[u8]) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn key_ok(
-    ps: &crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     now: u32,
     _ptr: &mut Pointer,
     ok_armed: &mut bool,
@@ -1325,8 +1325,8 @@ pub(crate) unsafe fn key_ok(
 /// one of the two. (It matters most at Home's root, where "what BACK would otherwise do" is hand
 /// the screen back to the television — see [`back_at_root`].)
 pub(crate) fn key_back(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     refresh_hubs_at: &mut u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {

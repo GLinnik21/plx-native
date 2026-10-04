@@ -2,7 +2,7 @@
 //!
 //! # The split, and why it is exactly here
 //!
-//! [`crate::player::diag`] is main-thread by contract — the panel it was written for must not tell
+//! [`plx_media::player::diag`] is main-thread by contract — the panel it was written for must not tell
 //! a story that never happened, so the whole struct is one instant's read. Everything after that
 //! (scrub, serialise, gzip, TLS, the blocking POST) is unbounded work on a link we do not control,
 //! and none of it may touch the SDL loop: the feed pump, the ACB control calls and the render all
@@ -95,7 +95,7 @@ fn set_phase(p: u8, detail: String) {
 }
 
 /// **Main thread.** Sample everything, then hand it to a worker.
-pub(crate) fn request(reason: &str, ps: &crate::route::PlaybackSession) {
+pub(crate) fn request(reason: &str, ps: &plx_media::route::PlaybackSession) {
     let Some(cfg) = config::get() else { return };
     if INFLIGHT.swap(true, Relaxed) {
         plx_base::eventlog::log("lab: upload already in flight — press ignored");

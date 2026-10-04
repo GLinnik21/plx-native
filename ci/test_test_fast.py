@@ -128,13 +128,13 @@ class TestFastRuns(unittest.TestCase):
             self.assertEqual(call["target_dir"], TDIR)
             self.assertTrue(call["cwd"].endswith("rust-modules"), call["cwd"])
             self.assertEqual(call["runtime_dir_set"], "yes")
-            self.assertRegex(call["args"], r"^\+\S+ test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session route::$")
+            self.assertRegex(call["args"], r"^\+\S+ test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media route::$")
 
     def test_no_filter_runs_the_whole_default_feature_suite(self):
         with FakeCargoHome() as fake:
             self.assertEqual(fake.run("test-fast").returncode, 0)
             (call,) = fake.calls()
-            self.assertRegex(call["args"], r"^\+\S+ test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session$")
+            self.assertRegex(call["args"], r"^\+\S+ test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media$")
             self.assertNotIn("--features", call["args"])
 
     def test_own_dir_is_neither_of_the_dirs_other_builds_use(self):

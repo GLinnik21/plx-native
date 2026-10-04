@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Derive `rust-modules/src/abr/sim.rs`'s plant calibration from committed evidence.
+"""Derive `rust-modules/media/src/abr/sim.rs`'s plant calibration from committed evidence.
 
 **Why this is a tool and not a table somebody typed.** `sim.rs` is the closed-loop plant the ABR
 controller is graded against, and it carried three hand-transcribed operating points. Two of the

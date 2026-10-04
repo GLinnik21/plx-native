@@ -139,7 +139,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                 owner: InputOwner::Entry(key.entry),
             };
             let cx = parts.cx::<AppHost>(
-                rig.views_with(crate::route::idle_session_for_test()),
+                rig.views_with(plx_media::route::idle_session_for_test()),
                 &rig.measure,
             );
             let placed = page.place(&key.elem, &cx, At::Drawn).unwrap();

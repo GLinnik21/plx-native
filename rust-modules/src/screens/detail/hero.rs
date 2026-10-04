@@ -565,11 +565,11 @@ enum PlayNote {
 }
 
 fn play_note(
-    preview: crate::route::Preview,
+    preview: plx_media::route::Preview,
     hdr: bool,
     subscription: plx_plex::plex::serverinfo::Subscription,
 ) -> PlayNote {
-    let converts = preview == crate::route::Preview::Converts;
+    let converts = preview == plx_media::route::Preview::Converts;
     let no_pass = subscription == plx_plex::plex::serverinfo::Subscription::No;
     if converts && no_pass && hdr {
         PlayNote::Warn
@@ -601,7 +601,7 @@ const FACTS_BITS: usize = 8;
 fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
     let mut bits = [Bit::Air(0.0); FACTS_BITS];
     let mut n = 0;
-    let Some(preview) = crate::route::playback_preview(d) else {
+    let Some(preview) = plx_media::route::playback_preview(d) else {
         return (bits, 0);
     };
     let mut push = |bit: Bit| {
@@ -614,9 +614,9 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
     match play_note(preview, d.hdr, item_subscription(d)) {
         PlayNote::Quiet => push(Bit::Word(
             match preview {
-                crate::route::Preview::DirectPlay => plx_platform::i18n::msg::browse_detail_direct_play_c(),
-                crate::route::Preview::Remux => plx_platform::i18n::msg::browse_detail_direct_stream_c(),
-                crate::route::Preview::Converts => converts_on_server_c(),
+                plx_media::route::Preview::DirectPlay => plx_platform::i18n::msg::browse_detail_direct_play_c(),
+                plx_media::route::Preview::Remux => plx_platform::i18n::msg::browse_detail_direct_stream_c(),
+                plx_media::route::Preview::Converts => converts_on_server_c(),
             },
             plx_ui::detail_layout::FACTS_INK,
             0,
@@ -1087,7 +1087,7 @@ mod tests {
     #[test]
     fn how_it_plays_resolves_the_full_docs_truth_table() {
         use plx_plex::plex::serverinfo::Subscription::{No, Unknown, Yes};
-        use crate::route::Preview::{Converts, DirectPlay, Remux};
+        use plx_media::route::Preview::{Converts, DirectPlay, Remux};
         for preview in [DirectPlay, Remux, Converts] {
             for hdr in [false, true] {
                 for subscription in [Unknown, No, Yes] {

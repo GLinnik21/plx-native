@@ -606,6 +606,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_media"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "plx_base",
+ "plx_data",
+ "plx_gfx",
+ "plx_machine",
+ "plx_media",
+ "plx_net",
+ "plx_platform",
+ "plx_plex",
+ "plx_telemetry",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plx_net"
 version = "0.0.0"
 dependencies = [
@@ -700,6 +718,7 @@ dependencies = [
  "plx_data",
  "plx_gfx",
  "plx_machine",
+ "plx_media",
  "plx_net",
  "plx_platform",
  "plx_plex",

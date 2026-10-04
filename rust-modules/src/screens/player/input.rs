@@ -35,8 +35,8 @@ use std::os::raw::c_int;
 /// trap with a friendlier name on it — seven call sites, no compiler help, and "shown" is the
 /// obvious one to reach for. One predicate, no wrong choice.
 #[inline]
-pub(crate) fn hud_visible(ps: &crate::route::PlaybackSession, now: u32, until: u32, is_paused: bool, dismissed: bool) -> bool {
-    ((now < until || is_paused) && !dismissed) || crate::player::loading(ps)
+pub(crate) fn hud_visible(ps: &plx_media::route::PlaybackSession, now: u32, until: u32, is_paused: bool, dismissed: bool) -> bool {
+    ((now < until || is_paused) && !dismissed) || plx_media::player::loading(ps)
 }
 
 // (`struct HeldKey` stood here — WHICH key the remote is holding, as one value: the sym the
@@ -233,7 +233,7 @@ impl HudState {
 
     /// Is the transport on screen right now, by this HUD's own state?
     #[inline]
-    pub(crate) fn visible(&self, ps: &crate::route::PlaybackSession, now: u32, is_paused: bool) -> bool {
+    pub(crate) fn visible(&self, ps: &plx_media::route::PlaybackSession, now: u32, is_paused: bool) -> bool {
         hud_visible(ps, now, self.until, is_paused, self.dismissed)
     }
 
@@ -263,7 +263,7 @@ impl HudState {
     ///
     /// That caller is `note_global_press`, NOT `begin_fresh_press` as it once was, and the
     /// difference is the point of the split: an unsupported key never gets here at all.
-    pub(crate) fn note_fresh_press(&mut self, ps: &crate::route::PlaybackSession, now: u32, is_paused: bool) {
+    pub(crate) fn note_fresh_press(&mut self, ps: &plx_media::route::PlaybackSession, now: u32, is_paused: bool) {
         self.visible_at_press = self.visible(ps, now, is_paused);
         // Any BOUND fresh key un-dismisses the HUD (UP-hide re-sets it). "Bound" and not "any" is
         // the whole of `note_global_press`, the ONLY caller: an unsupported press never reaches
@@ -418,15 +418,15 @@ mod failed_player_input_tests {
 #[cfg(test)]
 mod hud_visibility_tests {
     use super::*;
-    use crate::player::PlaybackState;
+    use plx_media::player::PlaybackState;
 
     /// Drive the derived playback state through the field the pump owns. Crate-global, so the whole
     /// body holds `testlock::serial()` — `state()` is read by other modules' tests too.
     fn with_state<T>(s: PlaybackState, f: impl FnOnce() -> T) -> T {
         let _g = plx_base::testlock::serial();
-        let prev = crate::player::swap_state_for_test(s);
+        let prev = plx_media::player::swap_state_for_test(s);
         let out = f();
-        crate::player::restore_state_for_test(prev);
+        plx_media::player::restore_state_for_test(prev);
         out
     }
 
@@ -436,7 +436,7 @@ mod hud_visibility_tests {
     /// the `…` disc cannot be reached in the one state worth reporting.
     #[test]
     fn a_stalled_pipeline_keeps_the_transport_reachable_after_the_linger_expires() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         with_state(PlaybackState::Buffering, || {
             // the timer alone would say hidden — 9 s past the linger, nothing paused
             let (now, expired) = (10_000u32, 1_000u32);
@@ -451,7 +451,7 @@ mod hud_visibility_tests {
     /// would never auto-hide at all.
     #[test]
     fn a_healthy_playing_pipeline_still_auto_hides() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         with_state(PlaybackState::Playing, || {
             assert!(!hud_visible(&ps, 10_000, 1_000, false, false));
             assert!(hud_visible(&ps, 500, 1_000, false, false), "inside the linger");
@@ -493,7 +493,7 @@ mod hud_visibility_tests {
     /// hidden geometry while an otherwise-live linger timer is still counting down.
     #[test]
     fn a_hand_hidden_hud_still_takes_the_press_that_wakes_it() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         with_state(PlaybackState::Playing, || {
             let mut hud = HudState { until: 20_000, dismissed: true, ..HudState::IDLE };
             hud.note_fresh_press(&ps, 10_000, false);
@@ -515,7 +515,7 @@ mod hud_visibility_tests {
     /// Dismissal outranks healthy playback, but never the stalled pipeline read-out.
     #[test]
     fn dismiss_wins_while_healthy_and_loses_while_stalled() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         with_state(PlaybackState::Playing, || {
             assert!(!hud_visible(&ps, 10_000, 20_000, true, true));
         });
@@ -541,7 +541,7 @@ mod hud_visibility_tests {
     /// screen", which is the half that was missing.
     #[test]
     fn a_fresh_offer_puts_the_transport_up_and_parks_the_ring_on_the_primary() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         with_state(PlaybackState::Playing, || {
             let now = 10_000u32;
             let mut hud = HudState::IDLE;
@@ -565,7 +565,7 @@ mod hud_visibility_tests {
     /// countdown, since the cancel rule reads the ring as a steady state rather than as an edge.
     #[test]
     fn an_offer_leaves_a_user_who_walked_off_the_scrubber_where_they_are() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         with_state(PlaybackState::Playing, || {
             let now = 10_000u32;
             // parked on the Chapters tab, which is only reachable by pressing DOWN twice

@@ -74,7 +74,7 @@ impl PickerPage {
     pub(crate) fn new(entry: EntryId, field: PickerKind) -> Self {
         let mut s = Self { entry, form: FormTable::new(BAND),
             state: PickerState { field, selected: 0, io: Io { busy: false, status: String::new() },
-                quality: crate::route::quality(), direct_play: crate::route::direct_play_mode(),
+                quality: plx_media::route::quality(), direct_play: plx_media::route::direct_play_mode(),
                 checked: u32::MAX, confirming: false, affirmative: false, alert_scroll: 0 },
             copy: String::new(), txn: Txn::new(true),
             alert: DecisionPrompt::new(ALERT_GROUP, ALERT, ALERT + 1, plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::settings_playback_enable_force_c()) };
@@ -122,8 +122,8 @@ impl PickerPage {
     /// Rebuild the list. `seat_current` opens it on the checked option (construction, a snapshot
     /// landing); otherwise the cursor stays on its row by identity.
     fn rebuild(&mut self, seat_current: bool) {
-        self.state.quality = crate::route::quality();
-        self.state.direct_play = crate::route::direct_play_mode();
+        self.state.quality = plx_media::route::quality();
+        self.state.direct_play = plx_media::route::direct_play_mode();
         self.copy = copy_text(Subject::Picker(self.state.field), &self.state.io.status, self.state.direct_play).into_owned();
         self.state.confirming = self.alert.is_open(); self.state.affirmative = self.alert.choice();
         self.state.alert_scroll = self.alert.scroll_target_bits();

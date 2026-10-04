@@ -147,15 +147,15 @@ fn the_field_list_shows_the_value_a_picker_committed_after_the_pop() {
 fn the_field_list_rereads_a_local_value_a_picker_committed() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("pref-parent-local");
-    let previous = crate::route::quality();
-    crate::route::restore_quality(Quality::Original);
+    let previous = plx_media::route::quality();
+    plx_media::route::restore_quality(Quality::Original);
     let mut parent = PreferencesPage::new(EntryId(0), Kind::Playback);
     let before = parent.state.values[0].clone();
-    crate::route::restore_quality(Quality::P480);
+    plx_media::route::restore_quality(Quality::P480);
     drive(&mut parent, tick(), 0);
     assert_ne!(parent.state.values[0], before);
     assert_eq!(parent.state.values[0], Quality::P480.label());
-    crate::route::restore_quality(previous);
+    plx_media::route::restore_quality(previous);
 }
 
 /// A Size/Position pick made anywhere (the player's Style pages publish the live value before
@@ -164,21 +164,21 @@ fn the_field_list_rereads_a_local_value_a_picker_committed() {
 fn the_field_list_rereads_a_subtitle_look_picked_elsewhere() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("pref-parent-look");
-    let (size, position) = (crate::route::subtitle_size(), crate::route::subtitle_position());
-    crate::route::restore_subtitle_size(crate::route::SubtitleSize::Medium);
-    crate::route::restore_subtitle_position(crate::route::SubtitlePosition::Low);
+    let (size, position) = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
+    plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::Low);
     let mut parent = PreferencesPage::new(EntryId(0), Kind::Playback);
     let size_row = parent.form.index_of(&RowId::Field(PickerKind::SubtitleSize)).unwrap();
     let position_row = parent.form.index_of(&RowId::Field(PickerKind::SubtitlePosition)).unwrap();
     assert_eq!(parent.state.values[size_row], plx_platform::i18n::msg::settings_playback_subtitle_size_medium());
 
-    crate::route::restore_subtitle_size(crate::route::SubtitleSize::Large);
-    crate::route::restore_subtitle_position(crate::route::SubtitlePosition::High);
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Large);
+    plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::High);
     drive(&mut parent, tick(), 0);
     assert_eq!(parent.state.values[size_row], plx_platform::i18n::msg::settings_playback_subtitle_size_large());
     assert_eq!(parent.state.values[position_row], plx_platform::i18n::msg::settings_playback_subtitle_position_high());
-    crate::route::restore_subtitle_size(size);
-    crate::route::restore_subtitle_position(position);
+    plx_media::route::restore_subtitle_size(size);
+    plx_media::route::restore_subtitle_position(position);
 }
 
 /// Every field belongs to exactly the page whose list shows it: the Audio & Subtitles page lists

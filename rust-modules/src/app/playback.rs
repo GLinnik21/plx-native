@@ -35,19 +35,19 @@ pub(crate) use crate::screens::registry::RepeatGate;
 
 #[inline]
 pub(crate) fn resume_pend() -> bool {
-    crate::player::TX.resume_pend.load(Relaxed)
+    plx_media::player::TX.resume_pend.load(Relaxed)
 }
 #[inline]
 pub(crate) fn set_resume_pend(v: bool) {
-    crate::player::TX.resume_pend.store(v, Relaxed)
+    plx_media::player::TX.resume_pend.store(v, Relaxed)
 }
 #[inline]
 pub(crate) fn dur() -> i64 {
-    crate::player::duration_ns()
+    plx_media::player::duration_ns()
 }
 #[inline]
 pub(crate) fn playpos() -> i64 {
-    crate::player::playpos_ns()
+    plx_media::player::playpos_ns()
 }
 /// The playhead the user INTENDED, which is not always the one being published. While a seek is
 /// still resolving (request → reopen → prime → Play) `playpos()` keeps reporting the PRE-seek spot,
@@ -61,20 +61,20 @@ pub(crate) fn playpos() -> i64 {
 /// PUBLISHED position is the point (the re-pause gate, which is already behind `seek_pending() < 0`,
 /// and the heartbeat's `pos=`, which the harness grades real playback progress from).
 #[inline]
-pub(crate) fn intended_pos(ps: &crate::route::PlaybackSession) -> i64 {
-    crate::player::intended_pos_ns(ps)
+pub(crate) fn intended_pos(ps: &plx_media::route::PlaybackSession) -> i64 {
+    plx_media::player::intended_pos_ns(ps)
 }
 #[inline]
 pub(crate) fn frames() -> i32 {
-    crate::player::frames()
+    plx_media::player::frames()
 }
 #[inline]
 pub(crate) fn seek_pending() -> i64 {
-    crate::player::seek_pending()
+    plx_media::player::seek_pending()
 }
 #[inline]
 pub(crate) fn request_seek(x: i64) {
-    crate::player::request_seek(x)
+    plx_media::player::request_seek(x)
 }
 /// Commit a scrub to `target` and clear the preview. If we were PAUSED, STAY logically paused: a
 /// dedicated seek-preroll feed override lets the synchronized native clock decode one landed frame
@@ -88,12 +88,12 @@ pub(crate) fn commit_seek(target: i64, repause_at: &mut i64) {
     if paused() {
         *repause_at = target;
         set_resume_pend(true);
-        crate::player::TX.begin_paused_seek();
+        plx_media::player::TX.begin_paused_seek();
     }
 }
 #[inline]
 pub(crate) fn is_started() -> bool {
-    crate::player::is_started()
+    plx_media::player::is_started()
 }
 
 // ---- the route vocabulary, and the pure questions asked ABOUT a route -------------------------
@@ -106,7 +106,7 @@ pub(crate) fn is_started() -> bool {
 
 /// Perform what the `…` popover reported. Shared by the OK key and the pointer click, so
 /// the two paths can never come to disagree about what a row does.
-pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter, bridge: &mut super::bridge::Bridge, a: crate::appkit::more_menu::Action) {
+pub(crate) fn apply_more_action(ps: &mut plx_media::route::PlaybackSession, pa: &mut plx_media::player::adapter::PlayerAdapter, bridge: &mut super::bridge::Bridge, a: crate::appkit::more_menu::Action) {
     match a {
         crate::appkit::more_menu::Action::ToggleStats => crate::app::diagnostics::toggle(),
         // A rung of the playback-quality ladder — a routing POLICY, not a number handed to a
@@ -117,12 +117,12 @@ pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut
             // refusal has no Engine at all.  Persist the pick first, then make a fresh playback
             // request at the same user-visible position.  Selecting the already-active rung is
             // therefore the promised plain Retry.
-            let failed = matches!(crate::player::state(ps), crate::player::PlaybackState::Error);
+            let failed = matches!(plx_media::player::state(ps), plx_media::player::PlaybackState::Error);
             if failed {
-                crate::route::set_quality_for_retry(q);
+                plx_media::route::set_quality_for_retry(q);
                 retry_failed_playback(ps, pa, bridge.metadata_mut(), None);
             } else {
-                crate::route::set_quality(ps, q);
+                plx_media::route::set_quality(ps, q);
             }
         }
         // Lab builds only. Nothing about playback changes: the snapshot is taken and the toast
@@ -142,15 +142,15 @@ pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut
 /// `direct_play` overrides the Direct Play mode the retry resolves under; `None` keeps the failed
 /// attempt's own (a retry is the SAME request).
 pub(crate) fn retry_failed_playback(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     meta: &mut plx_data::stores::metadata::MetadataStore,
     direct_play: Option<plx_plex::plex::session::DirectPlayMode>,
 ) -> bool {
     // URL/dev-trigger playback has no Plex descriptor.  Check BEFORE teardown: extinguishing its
     // Error Engine and only then discovering it cannot be rebuilt would replace an actionable
     // read-out with an idle black frame.
-    if !crate::route::can_retry_current_play(ps) {
+    if !plx_media::route::can_retry_current_play(ps) {
         log("playback retry: current source has no reusable Plex request");
         return false;
     }
@@ -159,10 +159,10 @@ pub(crate) fn retry_failed_playback(
     // retry was refused before presenting anything, retain its target too: the stopped Engine now
     // reports zero and must not send a second quality attempt back to the beginning.
     let resume_ns = intended_pos(ps)
-        .max(crate::route::unpresented_resume_ns(ps))
+        .max(plx_media::route::unpresented_resume_ns(ps))
         .max(0);
-    crate::player::stop_bufferfeed(ps, pa);
-    if crate::route::retry_current_play(ps, meta, resume_ns, direct_play) {
+    plx_media::player::stop_bufferfeed(ps, pa);
+    if plx_media::route::retry_current_play(ps, meta, resume_ns, direct_play) {
         plx_machine::idle::invalidate();
         true
     } else {
@@ -180,14 +180,14 @@ pub(crate) fn retry_failed_playback(
 /// storage. The retry resolves under Auto explicitly rather than inheriting the failed attempt's
 /// Force, which a plain retry keeps on purpose.
 pub(crate) fn play_automatically(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     meta: &mut plx_data::stores::metadata::MetadataStore,
 ) -> bool {
     use plx_plex::plex::session::DirectPlayMode;
-    crate::route::restore_direct_play_mode(DirectPlayMode::Auto);
+    plx_media::route::restore_direct_play_mode(DirectPlayMode::Auto);
     let _ = plx_base::storage_worker::submit_retained(|| {
-        if !crate::route::set_direct_play_mode(DirectPlayMode::Auto) {
+        if !plx_media::route::set_direct_play_mode(DirectPlayMode::Auto) {
             log("play automatically: the Direct Play preference was not saved");
         }
         plx_machine::idle::invalidate();
@@ -271,8 +271,8 @@ pub(crate) fn enter_player(
 /// Stop/BACK/EOS return target, reset the HUD focus cursor, and show the HUD. A missed step
 /// here used to silently fork behavior between the interactive and headless paths.
 pub(crate) fn start_playback(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     resume_ns: i64,
     from: Origin,
     hud_ms: u32,
@@ -286,14 +286,14 @@ pub(crate) fn start_playback(
 /// Resource effects below launch policy. Implementations receive no navigation, origin, or
 /// return state: acceptance cannot invent where a session returns to.
 pub(super) trait PlaybackResources {
-    fn request_movie(&mut self, ps: &mut crate::route::PlaybackSession,
+    fn request_movie(&mut self, ps: &mut plx_media::route::PlaybackSession,
         meta: &mut plx_data::stores::metadata::MetadataStore, item: &plx_data::pms::PmsMovie) -> bool;
-    fn request_episode(&mut self, ps: &mut crate::route::PlaybackSession,
+    fn request_episode(&mut self, ps: &mut plx_media::route::PlaybackSession,
         meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool;
     fn describe_movie(&mut self, meta: &mut plx_data::stores::metadata::MetadataStore,
         sid: plx_plex::plex::ServerId, rk: &str);
-    fn prepare_start(&mut self, ps: &mut crate::route::PlaybackSession,
-        pa: &mut crate::player::adapter::PlayerAdapter, resume_ns: i64) -> bool;
+    fn prepare_start(&mut self, ps: &mut plx_media::route::PlaybackSession,
+        pa: &mut plx_media::player::adapter::PlayerAdapter, resume_ns: i64) -> bool;
 }
 
 /// The HUD's context line for a catalog movie, `"2019 · PG-13 · 2h 15m"` — what
@@ -322,11 +322,11 @@ pub(crate) fn warm_up_next_still(sid: plx_plex::plex::ServerId, thumb: &str) {
 pub(super) struct LivePlaybackResources;
 
 impl PlaybackResources for LivePlaybackResources {
-    fn request_movie(&mut self, ps: &mut crate::route::PlaybackSession,
+    fn request_movie(&mut self, ps: &mut plx_media::route::PlaybackSession,
         meta: &mut plx_data::stores::metadata::MetadataStore, item: &plx_data::pms::PmsMovie) -> bool {
-        crate::route::request_play_movie(ps, meta, item, &movie_ctx(item))
+        plx_media::route::request_play_movie(ps, meta, item, &movie_ctx(item))
     }
-    fn request_episode(&mut self, ps: &mut crate::route::PlaybackSession,
+    fn request_episode(&mut self, ps: &mut plx_media::route::PlaybackSession,
         meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool {
         request_loaded_episode(ps, meta, rk)
     }
@@ -335,8 +335,8 @@ impl PlaybackResources for LivePlaybackResources {
         meta.run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
         meta.run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
     }
-    fn prepare_start(&mut self, ps: &mut crate::route::PlaybackSession,
-        pa: &mut crate::player::adapter::PlayerAdapter, resume_ns: i64) -> bool {
+    fn prepare_start(&mut self, ps: &mut plx_media::route::PlaybackSession,
+        pa: &mut plx_media::player::adapter::PlayerAdapter, resume_ns: i64) -> bool {
         // A resolve in flight means the route statics are NOT installed yet. Applying the
         // resume now would read a stale/empty TSESSION, so `resume_at` would take its
         // DIRECT-PLAY branch and arm_seek() a transcode — and pump.rs's feed gate requires
@@ -344,26 +344,26 @@ impl PlaybackResources for LivePlaybackResources {
         // ACB bind, timeline frozen at the resume point. (Exactly what broke
         // transcode_av1_no_dp_audio. Direct-play never noticed because arm_seek is what the
         // correct branch does anyway.) Defer it to `pump_play`, after apply_plan.
-        let pending = crate::route::play_pending();
+        let pending = plx_media::route::play_pending();
         let resume_prepared = pending
             || resume_ns <= 0
             || matches!(
-                crate::player::resume_at(ps, resume_ns),
-                crate::player::ResumeOutcome::Prepared
+                plx_media::player::resume_at(ps, resume_ns),
+                plx_media::player::ResumeOutcome::Prepared
             );
         if !resume_prepared {
-            if let Some(transaction) = crate::route::pending_route_start() {
-                let _ = crate::route::reject_route_start_preparation(transaction);
+            if let Some(transaction) = plx_media::route::pending_route_start() {
+                let _ = plx_media::route::reject_route_start_preparation(transaction);
             }
         }
         // Flip to the player NOW so the HUD draws its Resolving state this frame; `pump_play`
         // below starts the engine when the plan lands. With nothing pending this is the old
         // synchronous behaviour, byte for byte.
         if pending {
-            crate::route::arm_play_resume(ps, resume_ns);
+            plx_media::route::arm_play_resume(ps, resume_ns);
             true
         } else if resume_prepared {
-            crate::player::start_bufferfeed(ps, pa)
+            plx_media::player::start_bufferfeed(ps, pa)
         } else {
             false
         }
@@ -373,8 +373,8 @@ impl PlaybackResources for LivePlaybackResources {
 /// Shared start policy after resource preparation: gate the page push, forward the caller's
 /// origin and return state, and reset/seed the HUD. Used by both ordinary and menu starts.
 pub(super) fn start_playback_with<R: PlaybackResources>(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     resume_ns: i64,
     from: Origin,
     hud_ms: u32,
@@ -419,7 +419,7 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
 }
 
 /// Legacy card launches resolve media data without creating an invisible Detail screen.
-pub(crate) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore) -> Option<i64> {
+pub(crate) fn request_loaded_hero(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore) -> Option<i64> {
     let d = meta.view().current()?.clone();
     if d.kind == "show" || !d.seasons.is_empty() {
         let started = d.on_deck.as_ref().is_some_and(|e| e.resume_ms > 0)
@@ -429,19 +429,19 @@ pub(crate) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession, meta: 
             .clone();
         request_episode(ps, meta, &d, &ep).then(|| plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
     } else {
-        crate::route::request_play(ps, meta, crate::route::item_sid(d.sid), &d.rk, &d.part,
+        plx_media::route::request_play(ps, meta, plx_media::route::item_sid(d.sid), &d.rk, &d.part,
             &d.vcodec, &d.acodec, &d.title, "")
             .then(|| plx_data::metadata::resume_ns(d.resume_ms, d.dur_ms))
     }
 }
 
-pub(crate) fn request_loaded_episode(ps: &mut crate::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool {
+pub(crate) fn request_loaded_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool {
     let Some(d) = meta.view().current().cloned() else { return false };
     let Some(ep) = d.episodes.iter().find(|e| e.rk == rk).cloned() else { return false };
     request_episode(ps, meta, &d, &ep)
 }
 
-fn request_episode(ps: &mut crate::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, d: &plx_data::metadata::Detail, ep: &plx_data::metadata::Episode) -> bool {
+fn request_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, d: &plx_data::metadata::Detail, ep: &plx_data::metadata::Episode) -> bool {
     meta.run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
         is_episode: true, is_real_episode: true, title: d.title.clone(), ep_title: ep.title.clone(),
         season: ep.season, index: ep.index, summary: ep.summary.clone(),
@@ -450,7 +450,7 @@ fn request_episode(ps: &mut crate::route::PlaybackSession, meta: &mut plx_data::
     })));
     let title = if ep.title.is_empty() { &d.title } else { &ep.title };
     let context = format!("{}  ·  {}", d.title, plx_ui::fmt::episode_ordinal(ep.season, ep.index));
-    crate::route::request_play(ps, meta, crate::route::item_sid(d.sid), &ep.rk, &ep.part,
+    plx_media::route::request_play(ps, meta, plx_media::route::item_sid(d.sid), &ep.rk, &ep.part,
         &ep.vcodec, &ep.acodec, title, &context)
 }
 
@@ -475,8 +475,8 @@ pub(crate) fn close_player_overlays(pages: &mut plx_ui::dispatch::Dispatcher<sup
 /// before the card goes away. So the surface arms `PlayerReq::ArmInfoPress`, the loop's press
 /// machine holds the frame, and this reads the decision back out of the panel that is still up.
 pub(crate) unsafe fn commit_info_press(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     refresh_hubs_at: &mut u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
@@ -502,43 +502,43 @@ pub(crate) unsafe fn commit_info_press(
 /// [`TrackCommit`](crate::appkit::track_menu::TrackCommit) and this is where it lands, from the
 /// overlay's `PlayerReq` and from the headless `plxnative-menupick` trigger alike.
 pub(crate) fn commit_track(
-    ps: &mut crate::route::PlaybackSession,
+    ps: &mut plx_media::route::PlaybackSession,
     commit: crate::appkit::track_menu::TrackCommit,
 ) {
     use crate::appkit::track_menu::TrackCommit;
     match commit {
-        TrackCommit::Audio(audio) => crate::route::commit_audio_selection(ps, audio),
-        TrackCommit::AudioEnhancement(a) => crate::player::request_audio_enhancement(ps, a),
+        TrackCommit::Audio(audio) => plx_media::route::commit_audio_selection(ps, audio),
+        TrackCommit::AudioEnhancement(a) => plx_media::player::request_audio_enhancement(ps, a),
         TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec } => {
             // What the client can draw itself — an embedded ordinal or an external sidecar — is
             // what an Original route (issue #266's candidate) can carry without a burn.
             let client_renderable = render_ordinal >= 0 || sidecar_key.is_some();
-            crate::route::commit_subtitle_selection(ps, render_ordinal, stream_id, client_renderable);
+            plx_media::route::commit_subtitle_selection(ps, render_ordinal, stream_id, client_renderable);
             // An EXTERNAL pick has no demuxer ordinal (`render_ordinal` is -1, so the embedded
             // renderer is off) — on direct play `player::sidecar` fetches and draws it instead.
             // While transcoding the commit above already asked for a burn and the sidecar draw
             // is silenced for as long as that is true, so selecting here is harmless and means
             // the line survives the playback going BACK to direct play.
             match sidecar_key {
-                Some(key) => crate::player::sidecar::select(crate::route::cur_sid(ps), stream_id, key, sidecar_codec),
-                None => crate::player::sidecar::deselect(),
+                Some(key) => plx_media::player::sidecar::select(plx_media::route::cur_sid(ps), stream_id, key, sidecar_codec),
+                None => plx_media::player::sidecar::deselect(),
             }
         }
-        TrackCommit::SubtitleTone(tone) => crate::player::set_subtitle_tone(tone),
+        TrackCommit::SubtitleTone(tone) => plx_media::player::set_subtitle_tone(tone),
         // live first, persisted after, nothing republished on completion (`route::select_subtitle_size`)
-        TrackCommit::SubtitleSize(size) => crate::route::select_subtitle_size(size, None),
-        TrackCommit::SubtitlePosition(position) => crate::route::select_subtitle_position(position, None),
+        TrackCommit::SubtitleSize(size) => plx_media::route::select_subtitle_size(size, None),
+        TrackCommit::SubtitlePosition(position) => plx_media::route::select_subtitle_position(position, None),
         TrackCommit::SubtitleOffset(offset) => {
-            crate::player::set_subtitle_offset(offset);
-            crate::route::persist_subtitle_offset(ps, offset);
+            plx_media::player::set_subtitle_offset(offset);
+            plx_media::route::persist_subtitle_offset(ps, offset);
         }
     }
 }
 
 pub(crate) fn player_requests(
-    repair: &mut crate::player::machine::RepairAttempt,
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    repair: &mut plx_media::player::machine::RepairAttempt,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     reqs: Vec<crate::screens::registry::PlayerReq>,
     now: u32,
     refresh_hubs_at: &mut u32,
@@ -674,18 +674,18 @@ pub(super) fn return_from_player(
 /// does. There is no re-derivation and no second history to reconcile: `App.play_from: Node` plus
 /// `enter_node` plus `Trail::ensure` are all deleted (D1).
 pub(crate) fn exit_player(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     refresh_hubs_at: &mut u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
-    crate::route::cancel_play(ps); // BACK during a load: supersede, drop the landing
+    plx_media::route::cancel_play(ps); // BACK during a load: supersede, drop the landing
     close_player_overlays(pages);
-    crate::player::stop_bufferfeed(ps, pa);
+    plx_media::player::stop_bufferfeed(ps, pa);
     // `stop_bufferfeed` reports/clears a real engine through `report::ended`, but a refusal or a
     // BACK during resolve has no engine for teardown to take. The exit ritual still ends that
     // attempt, so retire its in-memory trace here as the common backstop.
-    crate::player::report::clear_error_trace();
+    plx_media::player::report::clear_error_trace();
     // The jail pre-flight refusal (also no Engine to teardown) is already retired above: it
     // lives on `ps.jail_load_blocked`, and `cancel_play` at the top of this function clears it
     // via `clear_play_verdict` the same way it clears a `/decision` refusal — see that function's
@@ -712,13 +712,13 @@ pub(crate) fn exit_player(
 /// to tell a real exit from an Up Next handoff — `dev::scenarios::maybe_replay_after_eos` is the
 /// one that does — must use this return value rather than the route.
 pub(crate) fn finish_playback(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     refresh_hubs_at: &mut u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
-    if crate::route::next_episode_mode() != crate::route::NextEpisodeMode::Off
+    if plx_media::route::next_episode_mode() != plx_media::route::NextEpisodeMode::Off
         && play_up_next(ps, pa, HUD_LINGER_MS, pages, bridge)
     {
         return true;
@@ -735,8 +735,8 @@ pub(crate) fn finish_playback(
 /// the route flipped, which is the only thing the two callers still handle differently.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn activate_ctrl_row(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     slot: crate::appkit::player_hud::ControlSlot,
     refresh_hubs_at: &mut u32,
     btn: c_int,
@@ -803,8 +803,8 @@ pub(crate) fn activate_ctrl_row(
 /// must happen BEFORE `request_play_up_next`: teardown reads the outgoing item's session
 /// ids and clears the URL, both of which the new plan is about to overwrite.
 pub(crate) fn play_up_next(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     hud_ms: u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
@@ -823,9 +823,9 @@ pub(crate) fn play_up_next(
         plx_data::metadata::resume_ns(u.resume_ms, u.dur_ms),
     );
     close_player_overlays(pages);
-    crate::player::stop_bufferfeed(ps, pa);
+    plx_media::player::stop_bufferfeed(ps, pa);
     let ctx = plx_ui::fmt::episode_kicker(u.season, u.index, &u.ep_title);
-    if !crate::route::request_play_up_next(ps, bridge.metadata_mut(), u, &ctx) {
+    if !plx_media::route::request_play_up_next(ps, bridge.metadata_mut(), u, &ctx) {
         return false;
     }
     // Same ritual as `play_item_now`: retire the finished episode's descriptor so the HUD
@@ -858,8 +858,8 @@ pub(crate) fn play_up_next(
 /// as a flag (rather than a resume_ns the caller computes) keeps Plex's resume rule
 /// (`metadata::resume_ns`, which also refuses to resume the last few percent) in one place.
 pub(crate) unsafe fn play_item_now(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     mm: &plx_data::pms::PmsMovie,
     from_start: bool,
     from: Origin,
@@ -874,8 +874,8 @@ pub(crate) unsafe fn play_item_now(
 /// Shared captured-row launch, including the empty/request guards, metadata scheduling,
 /// restart-versus-resume choice, and origin forwarding to the start policy.
 pub(super) fn play_item_now_with<R: PlaybackResources>(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     mm: &plx_data::pms::PmsMovie,
     from_start: bool,
     from: Origin,
@@ -943,8 +943,8 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
 /// the player adapter, the route and the trail. The card itself decided (its own `on_ok`) and
 /// is already dismissing; this is what the loop does about it.
 fn apply_info_action(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     action: crate::appkit::info_panel::InfoAction,
     refresh_hubs_at: &mut u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
@@ -1004,8 +1004,8 @@ fn apply_info_action(
 /// mid-press has already changed what the user is looking at.
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn activate_player_row(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     ctrl: crate::appkit::player_hud::ControlSlot,
     now: u32,
     refresh_hubs_at: &mut u32,
@@ -1050,7 +1050,7 @@ pub(crate) unsafe fn activate_player_row(
 
 /// PAUSE — the dedicated transport key, which only ever pauses (PLAY is its other half).
 pub(crate) fn key_pause(
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     now: u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
@@ -1069,8 +1069,8 @@ pub(crate) fn key_pause(
 
 /// PLAY — off the player route it starts the buffer-feed and enters the player; on it, it un-pauses.
 pub(crate) unsafe fn key_play(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     now: u32,
     foreground: &mut ForegroundLifecycle,
     repause_at: &mut i64,
@@ -1096,7 +1096,7 @@ pub(crate) unsafe fn key_play(
         super::bridge::show_page(pages, AppArg::Player);
     } else if matches!(activation, ForegroundActivation::Ordinary) {
         if was_off_player {
-            if crate::player::start_bufferfeed(ps, pa) {
+            if plx_media::player::start_bufferfeed(ps, pa) {
                 // The origin is the page the PLAY key was pressed on — through the same one door
                 // `start_playback` uses, so the seed and the push cannot drift apart here.
                 enter_player(pages, bridge, Origin::Here, None);
@@ -1164,8 +1164,9 @@ mod paused_seek_tests {
     #[test]
     fn a_scrub_commit_taken_while_paused_arms_the_repause_instead_of_resuming() {
         let _g = plx_base::testlock::serial();
-        let was_paused = crate::player::TX.paused.load(Relaxed);
-        crate::player::TX.paused.store(true, Relaxed);
+        let was_paused = plx_media::player::TX.paused.load(Relaxed);
+        let (was_seek, was_resume, was_seeking) = (seek_pending(), resume_pend(), plx_media::player::SHARED.seeking.load(Relaxed));
+        plx_media::player::TX.paused.store(true, Relaxed);
         let mut repause_at = 0i64;
 
         commit_seek(42_000_000_000, &mut repause_at);
@@ -1174,13 +1175,19 @@ mod paused_seek_tests {
         assert_eq!(repause_at, 42_000_000_000, "…and the landed-frame wait target is its own");
         assert!(resume_pend(), "the per-frame loop is asked to close the bounded override");
         assert!(
-            crate::player::seek_preroll_active(),
+            plx_media::player::seek_preroll_active(),
             "…which is what lets the pipeline decode the landed frame with the transport still \
              saying Paused — the whole difference from PlayerReq::SeekTo",
         );
 
-        crate::player::TX.finish_seek_preroll();
-        crate::player::TX.paused.store(was_paused, Relaxed);
+        plx_media::player::TX.finish_seek_preroll();
+        plx_media::player::TX.paused.store(was_paused, Relaxed);
+        // Restore what the commit wrote: a seek left in flight reads as `Seeking` to every
+        // later test of this binary, which used to be cleaned up by the player's own tests that ran
+        // in the same binary before the media layer became a crate of its own.
+        plx_media::player::TX.seek_to_ns.store(was_seek, Relaxed);
+        plx_media::player::SHARED.seeking.store(was_seeking, Relaxed);
+        set_resume_pend(was_resume);
     }
 
     /// …and the complement: while PLAYING there is nothing to hold, so the commit is a bare seek
@@ -1189,8 +1196,9 @@ mod paused_seek_tests {
     #[test]
     fn a_scrub_commit_taken_while_playing_arms_no_repause() {
         let _g = plx_base::testlock::serial();
-        let was_paused = crate::player::TX.paused.load(Relaxed);
-        crate::player::TX.paused.store(false, Relaxed);
+        let was_paused = plx_media::player::TX.paused.load(Relaxed);
+        let (was_seek, was_resume, was_seeking) = (seek_pending(), resume_pend(), plx_media::player::SHARED.seeking.load(Relaxed));
+        plx_media::player::TX.paused.store(false, Relaxed);
         set_resume_pend(false);
         let mut repause_at = 7i64;
 
@@ -1199,8 +1207,11 @@ mod paused_seek_tests {
         assert_eq!(seek_pending(), 11_000_000_000);
         assert_eq!(repause_at, 7, "untouched: there is no pause to hold");
         assert!(!resume_pend());
-        assert!(!crate::player::seek_preroll_active());
-        crate::player::TX.paused.store(was_paused, Relaxed);
+        assert!(!plx_media::player::seek_preroll_active());
+        plx_media::player::TX.paused.store(was_paused, Relaxed);
+        plx_media::player::TX.seek_to_ns.store(was_seek, Relaxed);
+        plx_media::player::SHARED.seeking.store(was_seeking, Relaxed);
+        set_resume_pend(was_resume);
     }
 }
 

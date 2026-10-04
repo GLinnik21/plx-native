@@ -586,7 +586,7 @@ fn capenc() {
     let mut my_jfd: c_int = -1;
     let mut my_mfd: c_int = -1;
     let mut turbo = tj_load(); // None (logged) -> pure-Rust fallback; dropped for good on a tj error
-    let mut venc: Option<Box<crate::ff::Venc>> = None; // mpeg1/ts session, per client
+    let mut venc: Option<Box<plx_media::ff::Venc>> = None; // mpeg1/ts session, per client
     let mut last_mpeg_ticks: u32 = 0;
     let mut rgb: Vec<u8> = Vec::new();
     let mut jpg: Vec<u8> = Vec::new(); // fallback-path encode target
@@ -717,7 +717,7 @@ fn capenc() {
                         venc = None;
                     }
                     if venc.is_none() {
-                        venc = crate::ff::Venc::open(
+                        venc = plx_media::ff::Venc::open(
                             f.w,
                             f.h,
                             MPEG_RATE.load(Ordering::Relaxed) as i64,

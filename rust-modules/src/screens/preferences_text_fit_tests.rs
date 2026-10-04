@@ -9,7 +9,7 @@ use super::*;
 use plx_base::fontcov::advances::ShippedMeasure as M;
 use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
 use plx_plex::plex::account::AudioPreferences;
-use crate::route::available_quality_ladder;
+use plx_media::route::available_quality_ladder;
 use plx_ui::table::{Section, TableView};
 use plx_machine::machine::Measure;
 
@@ -68,26 +68,26 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
         for direct_play in [DirectPlayMode::Auto, DirectPlayMode::Forced, DirectPlayMode::Disabled] {
             check_field_section(&format!("{tag} direct_play={direct_play:?}"), &playback(Quality::Original, direct_play), &mut out);
         }
-        for size in crate::route::SubtitleSize::LADDER {
-            crate::route::restore_subtitle_size(size);
+        for size in plx_media::route::SubtitleSize::LADDER {
+            plx_media::route::restore_subtitle_size(size);
             check_field_section(&format!("{tag} subtitle_size={size:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
         }
-        crate::route::restore_subtitle_size(crate::route::SubtitleSize::Medium);
-        for position in crate::route::SubtitlePosition::LADDER {
-            crate::route::restore_subtitle_position(position);
+        plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
+        for position in plx_media::route::SubtitlePosition::LADDER {
+            plx_media::route::restore_subtitle_position(position);
             check_field_section(&format!("{tag} subtitle_position={position:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
         }
-        crate::route::restore_subtitle_position(crate::route::SubtitlePosition::Low);
-        for mode in crate::route::NextEpisodeMode::LADDER {
-            crate::route::restore_next_episode_mode(mode);
+        plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::Low);
+        for mode in plx_media::route::NextEpisodeMode::LADDER {
+            plx_media::route::restore_next_episode_mode(mode);
             check_field_section(&format!("{tag} next_episode={mode:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
         }
-        crate::route::restore_next_episode_mode(crate::route::NextEpisodeMode::Countdown);
-        for interval in crate::route::SkipInterval::LADDER {
-            crate::route::restore_skip_interval(interval);
+        plx_media::route::restore_next_episode_mode(plx_media::route::NextEpisodeMode::Countdown);
+        for interval in plx_media::route::SkipInterval::LADDER {
+            plx_media::route::restore_skip_interval(interval);
             check_field_section(&format!("{tag} skip_interval={interval:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
         }
-        crate::route::restore_skip_interval(crate::route::SkipInterval::Seconds10);
+        plx_media::route::restore_skip_interval(plx_media::route::SkipInterval::Seconds10);
 
         check_field_section(&format!("{tag} retry row"), &FieldListInputs { show_retry: true, ..audio(None) }, &mut out);
 

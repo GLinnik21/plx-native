@@ -47,7 +47,7 @@ pub(crate) struct ChaptersState {
 impl ChaptersState {
     /// focus the chapter that contains the current playhead
     pub(crate) fn new(meta: metadata::MetadataView<'_>) -> Self {
-        let pos_ms = crate::player::playpos_ns() / 1_000_000;
+        let pos_ms = plx_media::player::playpos_ns() / 1_000_000;
         let sel = chapters(meta)
             .iter()
             .rposition(|c| c.start_ms <= pos_ms)
@@ -109,7 +109,7 @@ impl ChaptersState {
 
     pub(crate) fn draw(
         &mut self,
-        ps: &crate::route::PlaybackSession,
+        ps: &plx_media::route::PlaybackSession,
         appear: f32,
         measure: &dyn plx_machine::machine::Measure,
         meta: metadata::MetadataView<'_>,
@@ -142,7 +142,7 @@ impl ChaptersState {
             plx_ui::widgets::draw_card(
                 p,
                 card,
-                crate::route::item_sid(crate::route::cur_sid(ps)).raw(),
+                plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw(),
                 &ch.thumb,
                 (480, 270),
                 CH_RAD,

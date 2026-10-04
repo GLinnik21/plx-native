@@ -151,6 +151,6 @@ Its contextual answer verbs share one horizontal row, separated from BODY-sized 
 | a size | `rust-modules/gfx/src/gfx/tokens.rs` (`mod size`, re-exported as `theme::size`) |
 | anything behind hero text | `rust-modules/ui/src/landing_hero.rs` and `widgets.rs`'s scrim section, then re-grade the anchor table |
 | a horizontal row | `rust-modules/ui/src/card_row.rs` |
-| playback UI | `rust-modules/src/player/CLAUDE.md` |
+| playback UI | `rust-modules/media/src/player/CLAUDE.md` |
 | Plex data feeding UI | `rust-modules/plex/src/plex/CLAUDE.md` and `docs/pms-api.md` |
 | known gaps against official clients | `docs/parity-gaps.md` |

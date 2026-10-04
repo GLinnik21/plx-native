@@ -19,8 +19,8 @@ use plx_ui::screen::{ReturnState, ScreenEvent};
 /// Drain the real bridge queue after menu activation. Resource injection is below the shared
 /// performer, so production and tests consume precisely the same emitted requests.
 pub(super) fn drain_item_menu_requests<R: super::playback::PlaybackResources>(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     resources: &mut R,
@@ -69,7 +69,7 @@ pub(super) fn preview_must_halt(active: bool, abandoning: bool, host_owns_input:
 /// An app suspend is the one exit that leaves input where it was, and the lifecycle arm halts
 /// the preview itself.
 fn halt_preview_off_its_page(app: &mut App) {
-    let active = crate::player::preview::occupies() || crate::route::is_preview(&app.player.session);
+    let active = plx_media::player::preview::occupies() || plx_media::route::is_preview(&app.player.session);
     if !active {
         PREVIEW_HOST.with(|h| h.set(None));
         return;
@@ -78,7 +78,7 @@ fn halt_preview_off_its_page(app: &mut App) {
         .with(std::cell::Cell::get)
         .and_then(|instance| app.pages.nav.entry_of_instance(instance))
         .is_some_and(|entry| app.pages.nav.input_owner() == Some(InputOwner::Entry(entry)));
-    if preview_must_halt(active, crate::player::preview::abandoning(), host_owns_input) {
+    if preview_must_halt(active, plx_media::player::preview::abandoning(), host_owns_input) {
         log("preview: its page no longer owns input — halting");
         halt_preview(app);
         PREVIEW_HOST.with(|h| h.set(None));
@@ -87,14 +87,14 @@ fn halt_preview_off_its_page(app: &mut App) {
 
 /// The `&mut App`-free half of [`halt_preview`], for call sites (the item menu's own action
 /// dispatch in `app::input`) that only have the playback session and adapter, not the whole
-/// frame. Both must start abandonment before checking [`crate::player::preview::occupies`] —
+/// frame. Both must start abandonment before checking [`plx_media::player::preview::occupies`] —
 /// see [`hold_feature`]'s doc for why a still-abandoning preview needs a hold rather than a
 /// synchronous play.
 pub(super) fn halt_preview_now(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
 ) {
-    crate::player::preview::halt(ps, pa);
+    plx_media::player::preview::halt(ps, pa);
 }
 
 /// Queue a play for [`drain_held_feature`] to perform once a still-abandoning preview's Load
@@ -135,7 +135,7 @@ fn note_extra_now_playing(meta: &mut plx_data::stores::metadata::MetadataStore, 
 }
 
 pub(super) fn request_play_intent(
-    session: &mut crate::route::PlaybackSession,
+    session: &mut plx_media::route::PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
     play: &crate::screens::registry::PlayIntent,
 ) -> bool {
@@ -143,7 +143,7 @@ pub(super) fn request_play_intent(
         crate::screens::registry::PlayIntent::Item {
             sid, rk, part, vcodec, acodec, title, context,
         } => {
-            let ok = crate::route::request_play(
+            let ok = plx_media::route::request_play(
                 session, meta, *sid, rk, part, vcodec, acodec, title, context,
             );
             if ok {
@@ -152,7 +152,7 @@ pub(super) fn request_play_intent(
             ok
         }
         crate::screens::registry::PlayIntent::Movie(m) =>
-            crate::route::request_play_movie(session, meta, m, &super::playback::movie_ctx(m)),
+            plx_media::route::request_play_movie(session, meta, m, &super::playback::movie_ctx(m)),
     }
 }
 
@@ -189,22 +189,22 @@ pub(super) fn play_clearance(occupies: bool, live: bool, preview: bool, player_m
 /// means hold the play; an orphan is stopped here, so `true` always means the slot is free.
 /// Every Play reachable from a page goes through this one door.
 pub(super) fn clear_engine_for_play(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     player_mounted: bool,
 ) -> bool {
     halt_preview_now(ps, pa);
     match play_clearance(
-        crate::player::preview::occupies(),
+        plx_media::player::preview::occupies(),
         pa.is_live(),
-        crate::route::is_preview(ps),
+        plx_media::route::is_preview(ps),
         player_mounted,
     ) {
         PlayClearance::Hold => false,
         PlayClearance::Clear => true,
         PlayClearance::RetireOrphan => {
             log("play: stopping an off-route engine nothing owns before the new Load");
-            crate::player::stop_bufferfeed(ps, pa);
+            plx_media::player::stop_bufferfeed(ps, pa);
             true
         }
     }
@@ -357,7 +357,7 @@ mod held_feature_tests {
     /// The post-accept half of [`request_play_intent`] / [`drain_held_feature`]. A full
     /// `request_play` would leave the process-wide player in Resolving and poison parallel tests.
     fn drain_held_play_now_playing() {
-        if crate::player::preview::occupies() {
+        if plx_media::player::preview::occupies() {
             return;
         }
         let Some(held) = HELD_FEATURE.with(|slot| slot.borrow_mut().take()) else { return };
@@ -553,16 +553,16 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
             }
             ContentReq::PreviewStart { sid, rk, part, vcodec, acodec, title } => {
                 if part.is_empty() {
-                    crate::player::preview::note_no_extra(sid, &rk);
+                    plx_media::player::preview::note_no_extra(sid, &rk);
                     continue;
                 }
                 if !matches!(
-                    crate::player::preview::request_start(sid, &rk, fr.now),
-                    crate::player::preview::Start::Accepted
+                    plx_media::player::preview::request_start(sid, &rk, fr.now),
+                    plx_media::player::preview::Start::Accepted
                 ) {
                     continue;
                 }
-                let ok = crate::route::request_preview(
+                let ok = plx_media::route::request_preview(
                     &mut app.player.session,
                     app.bridge.metadata_mut(),
                     sid,
@@ -575,14 +575,14 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 if ok {
                     PREVIEW_HOST.with(|h| h.set(Some(instance)));
                 } else {
-                    crate::player::preview::note_admission_refused();
+                    plx_media::player::preview::note_admission_refused();
                 }
             }
             ContentReq::PreviewStop => halt_preview(app),
             // Full-trailer mode's transport. Unlike every neighbour here it does NOT halt the
             // preview — it is the one request whose whole point is that the session survives it.
             ContentReq::PreviewTransport(play) => {
-                crate::player::preview::transport(
+                plx_media::player::preview::transport(
                     &mut app.player.session,
                     &mut app.adapters.player,
                     play,
@@ -592,7 +592,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
             // own — `player::preview::seek` decides that (a refused/failed seek's own outcome),
             // exactly as `PreviewTransport` above never halts on a bare pause.
             ContentReq::PreviewSeek(target_ns) => {
-                crate::player::preview::seek(
+                plx_media::player::preview::seek(
                     &mut app.player.session,
                     &mut app.adapters.player,
                     target_ns,
@@ -1924,7 +1924,7 @@ pub(crate) fn restore_played_entry(app: &mut App) {
     let episode = meta.playing().filter(|p| p.sid == *sid)
         .and_then(|_| meta.now_playing())
         .filter(|n| n.is_episode && n.detail_rk == *rk)
-        .map(|n| { spot.season = Some(n.season); crate::route::cur_rk(&app.player.session) });
+        .map(|n| { spot.season = Some(n.season); plx_media::route::cur_rk(&app.player.session) });
     if episode.is_some() {
         app.pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore {

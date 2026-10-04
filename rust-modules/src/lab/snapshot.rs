@@ -7,7 +7,7 @@
 //!
 //! # What may appear, and what may not
 //!
-//! The envelope is assembled from [`crate::player::Diag`], [`plx_platform::tv::device`] and
+//! The envelope is assembled from [`plx_media::player::Diag`], [`plx_platform::tv::device`] and
 //! [`plx_platform::devcaps`], whose fields are numbers, bools, enums and short platform strings.
 //! `app::diagnostics`'s module doc states the rule those types already live under and the reasoning
 //! behind each clause; it applies here unchanged and for a stronger reason, since an upload
@@ -92,7 +92,7 @@ pub(crate) struct Caps {
     pub audio: String,
 }
 
-/// The playback state, out of one consistent [`crate::player::Diag`] read.
+/// The playback state, out of one consistent [`plx_media::player::Diag`] read.
 ///
 /// Enums are sent as the STRINGS the diagnostics panel prints rather than as their raw
 /// discriminants: the receiving agent should not have to hold this crate's numbering in its head,
@@ -138,8 +138,8 @@ struct Line<'a> {
     m: &'a str,
 }
 
-impl From<&crate::player::Diag> for Player {
-    fn from(d: &crate::player::Diag) -> Self {
+impl From<&plx_media::player::Diag> for Player {
+    fn from(d: &plx_media::player::Diag) -> Self {
         Player {
             vp_mode: d.vp_mode_str(),
             window_id: d.window_id.clone(),
@@ -196,9 +196,9 @@ pub(crate) fn build(
     reason: &str,
     session: &str,
     route: &'static str,
-    ps: &crate::route::PlaybackSession,
+    ps: &plx_media::route::PlaybackSession,
 ) -> String {
-    let d = crate::player::diag(ps);
+    let d = plx_media::player::diag(ps);
     let (recs, dropped) = plx_base::eventlog::ring::take();
     body(seq, reason, session, route, &d, recs, dropped)
 }
@@ -210,7 +210,7 @@ pub(crate) fn body(
     reason: &str,
     session: &str,
     route: &'static str,
-    d: &crate::player::Diag,
+    d: &plx_media::player::Diag,
     recs: Vec<Rec>,
     dropped: u64,
 ) -> String {
@@ -328,7 +328,7 @@ mod tests {
             "key",
             "s",
             "home",
-            &crate::player::Diag::default(),
+            &plx_media::player::Diag::default(),
             recs,
             0,
         );
@@ -357,7 +357,7 @@ mod tests {
             "key",
             "a1b2c3d4",
             "player",
-            &crate::player::Diag::default(),
+            &plx_media::player::Diag::default(),
             recs,
             7,
         );
@@ -392,7 +392,7 @@ mod tests {
             "menu",
             "s",
             "home",
-            &crate::player::Diag::default(),
+            &plx_media::player::Diag::default(),
             recs,
             0,
         );

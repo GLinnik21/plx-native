@@ -286,7 +286,7 @@ fn owned_search_wheel_scrolls_without_moving_focus_and_dpad_reveals_again() {
     let field_y = |d: &Dispatcher<AppHost>, rig: &Bridge| {
         let parts = CxParts { tick: tick(0), press: Default::default(),
             focus: d.input.engine.read(InputOwner::Entry(field.entry)), owner: InputOwner::Entry(field.entry) };
-        let cx = parts.cx::<AppHost>(rig.views_with(crate::route::idle_session_for_test()), &rig.measure);
+        let cx = parts.cx::<AppHost>(rig.views_with(plx_media::route::idle_session_for_test()), &rig.measure);
         d.top_screen().unwrap().place(&field.elem, &cx, At::Drawn).unwrap().rest_rect.y
     };
     let before = field_y(&d, &rig);
@@ -681,7 +681,7 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
     let memory = match &ret.memory { PageMemory::Search(memory) => memory, _ => panic!("Search must supply entry memory") };
     let parts = CxParts { tick: tick(100), press: Default::default(), focus: d.input.engine.read(InputOwner::Entry(key.entry)), owner: InputOwner::Entry(key.entry) };
     let old_rect = {
-        let cx = parts.cx::<AppHost>(rig.views_with(crate::route::idle_session_for_test()), &rig.measure);
+        let cx = parts.cx::<AppHost>(rig.views_with(plx_media::route::idle_session_for_test()), &rig.measure);
         d.top_screen().unwrap().place(&key.elem, &cx, At::Drawn).unwrap().rest_rect
     };
     assert!(old_rect.x < 1800.0, "the last card must have scrolled into view: {old_rect:?}");
@@ -691,7 +691,7 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
             rig.stores.search.publish_shelves_for_test(catalog());
             rig.search = rig.stores.search_snapshot(rig.directory.view());
         }
-        let cx = parts.cx::<AppHost>(rig.views_with(crate::route::idle_session_for_test()), &rig.measure);
+        let cx = parts.cx::<AppHost>(rig.views_with(plx_media::route::idle_session_for_test()), &rig.measure);
         let mut restored = crate::screens::search::SearchScreen::new(key.entry, InstanceId(900));
         restored.restore(memory);
         let mut present = plx_machine::present::Present::new();

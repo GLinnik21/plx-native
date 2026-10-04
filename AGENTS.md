@@ -3,7 +3,7 @@
 ## Project
 
 PlxNative is a production-quality native Plex client for rooted LG webOS 4.5 TVs. Most of the
-application is Rust under `rust-modules/src/`; `src/main.c` is the boot/crash shim,
+application is Rust under `rust-modules/` (the application in `src/`, the layers in their own crates); `src/main.c` is the boot/crash shim,
 `src/starfish.c` is the StarfishMediaAPIs/ACB seam, and `src/svg.c` rasterizes SVGs. Keep changes
 properly factored and finished; "only a demo" is never a reason to leave a shortcut behind.
 
@@ -15,7 +15,7 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - `docs/agent-reference.md` is the detailed architecture, build, portability, and verification
   reference. Read the relevant section before changing a subsystem; do not load the whole file
   when a narrower section is enough.
-- Before playback work, read `rust-modules/src/player/CLAUDE.md`.
+- Before playback work, read `rust-modules/media/src/player/CLAUDE.md`.
 - Before Plex data-layer work, read `rust-modules/plex/src/plex/CLAUDE.md` and `docs/pms-api.md`.
 - Before UI work, read `rust-modules/ui/src/CLAUDE.md` and use the shared theme, layout, and widget
   systems instead of adding screen-local visual primitives. Before touching a screen, also read
@@ -88,7 +88,7 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   body (`docs/agent-reference.md`, build section); the tool queues on the `make check` lock.
 - `make` performs the ARM cross-build. Do not assume a host-only green result proves the target
   still builds.
-- After editing `rust-modules/src/**/*.rs`, also check the shipping feature set with
+- After editing `rust-modules/src/**/*.rs` or a layer crate's `rust-modules/*/src/**/*.rs`, also check the shipping feature set with
   `CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
   --no-default-features` when the Claude-only release hook did not run. Keep the
   `CARGO_INCREMENTAL=0` prefix on this and on every other direct `cargo` call: they bypass `make`,

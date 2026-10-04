@@ -1891,7 +1891,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                         edge: Edge::Down,
                         ..
                     }
-                ) && crate::player::preview::view().picture
+                ) && plx_media::player::preview::view().picture
                     && cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| self.locate(k.elem, meta)).is_some_and(|located| matches!(located, Located::Hero(_)))
                 {
                     // UP fades ALL of this page's chrome to zero — the action row included —
@@ -2030,7 +2030,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
         self.spot_facts = SpotFacts::of(self, meta);
         let measure = f.cx.measure;
         let _layout = self.pin_layout(meta, measure);
-        let preview = crate::player::preview::view();
+        let preview = plx_media::player::preview::view();
         if preview_punch_through(preview.picture) {
             plx_gfx::gfx::frame_clear_through();
         } else {
@@ -2181,7 +2181,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                 .or_else(|| self.selected().map(|m| m.title.as_str()))
                 .unwrap_or_default(),
             self.preview_extra(meta).map(|e| e.title.as_str()).unwrap_or_default(),
-            crate::player::preview::paused(),
+            plx_media::player::preview::paused(),
             measure,
         );
 
@@ -2283,7 +2283,7 @@ impl DetailScreen {
         p: Painter,
         d: Option<&Detail>,
         measure: &dyn plx_machine::machine::Measure,
-        preview: crate::player::preview::View,
+        preview: plx_media::player::preview::View,
         meta: plx_data::metadata::MetadataView<'_>,
     ) {
         let sf = (self.scroll.pos / (self.content_top(measure, meta) - plx_ui::detail_layout::TOP_MARGIN))
@@ -2341,7 +2341,7 @@ impl DetailScreen {
             );
         }
         if self.scroll.pos > 0.0 && preview.picture {
-            let a = (self.scroll.pos / crate::player::preview::COVER_SCROLL).clamp(0.0, 1.0);
+            let a = (self.scroll.pos / plx_media::player::preview::COVER_SCROLL).clamp(0.0, 1.0);
             let cover = theme::with_a(theme::PLANE_COVER, a);
             p.rect(Rect::FULL, 0.0, cover, cover, 0.0);
         }
@@ -2555,7 +2555,7 @@ impl DetailScreen {
             last.x + last.w - plx_ui::consts::MARGIN_X,
             hero::CD,
         ];
-        let picture = crate::player::preview::view().picture;
+        let picture = plx_media::player::preview::view().picture;
         // A text-recording pass (the transition's prewarm, or a headless sweep) drew no pixels
         // under this row, so a read-back there would sample some other page's ground.
         let may_read = !picture
@@ -3311,13 +3311,13 @@ impl DetailScreen {
         meta: plx_data::metadata::MetadataView<'_>,
     ) {
         let hero = matches!(focused, Some(Located::Hero(_)));
-        let view = crate::player::preview::view();
-        let scrolled_off = self.scroll.pos >= crate::player::preview::COVER_SCROLL;
+        let view = plx_media::player::preview::view();
+        let scrolled_off = self.scroll.pos >= plx_media::player::preview::COVER_SCROLL;
         // "Is the viewer still actively engaged with this hero" — shared by the abandon trigger,
         // `can_dwell` and the natural-completion check below, which all used to repeat this same
         // two-term condition independently (eng review, `docs/trailer-ux-plan.md` §8.2 issue 2A).
         let hero_active = hero && !scrolled_off;
-        if crate::player::preview::occupies() && !hero_active && !self.preview_promoted {
+        if plx_media::player::preview::occupies() && !hero_active && !self.preview_promoted {
             self.preview_dwell = 0.0;
             self.content(fx, ContentReq::PreviewStop);
         }
@@ -3339,19 +3339,19 @@ impl DetailScreen {
             }
         }
         self.preview_had_picture = view.picture;
-        let blocked = crate::player::preview::blocked(self.sid, &self.preview_cache_rk(meta));
+        let blocked = plx_media::player::preview::blocked(self.sid, &self.preview_cache_rk(meta));
         let already_played = preview_already_played(self.preview_played_for.as_deref(), &self.preview_cache_rk(meta));
         let can_dwell = hero_active
             && !self.preview_promoted
             && !view.playing
-            && !crate::player::preview::occupies()
+            && !plx_media::player::preview::occupies()
             && !already_played
             && !blocked;
         if can_dwell {
             plx_ui::dwell::accumulate(&mut self.preview_dwell, dt, &mut |event| {
                 fx.note(event);
             });
-            if self.preview_dwell >= crate::player::preview::DWELL_S {
+            if self.preview_dwell >= plx_media::player::preview::DWELL_S {
                 self.preview_dwell = 0.0;
                 self.request_preview(fx, meta);
             }
@@ -3377,7 +3377,7 @@ impl DetailScreen {
         // hand back a commit target on any given tick, which reaches `player::preview::seek`
         // through `ContentReq::PreviewSeek` — never `route::request_seek`'s user-intent
         // bookkeeping, per the watch-state promise `player/preview.rs`'s module doc restates.
-        if let Some(target_ns) = self.trailer_ctl.step_scrub_hold(now, crate::player::duration_ns()) {
+        if let Some(target_ns) = self.trailer_ctl.step_scrub_hold(now, plx_media::player::duration_ns()) {
             self.content(fx, ContentReq::PreviewSeek(target_ns));
         }
         if let Some(target_ns) = self.trailer_ctl.step_tap_commit(now) {
@@ -3390,7 +3390,7 @@ impl DetailScreen {
             now,
             dt,
             full_trailer,
-            crate::player::preview::paused(),
+            plx_media::player::preview::paused(),
             trailer::hint_shown(view.picture, self.preview_promoted, hero_active),
         ) {
             fx.note(PresentEvent::Motion);
@@ -3457,7 +3457,7 @@ impl DetailScreen {
                 // Normalized the same way every other play path in this file resolves the
                 // server (mod.rs's hero/related/extras presses): `item_sid` falls back to the
                 // browsed surface whenever `self.sid` is still `ServerId::UNSET`.
-                sid: crate::route::item_sid(self.sid),
+                sid: plx_media::route::item_sid(self.sid),
                 rk,
                 part,
                 vcodec,
@@ -3475,11 +3475,11 @@ impl DetailScreen {
     /// and lets the eased `preview_chrome` alpha (set from this same predicate in `preview_tick`)
     /// fade the row, so a control losing focus does not also lose its paint on the same frame.
     /// Computed fresh rather than cached: reading
-    /// `crate::player::preview::view()` live means a frame where `preview_promoted` is still true
+    /// `plx_media::player::preview::view()` live means a frame where `preview_promoted` is still true
     /// but the machine has already dropped `picture` (EOS/failure) self-corrects immediately,
     /// rather than depending on `preview_tick` having already cleared the flag this same frame.
     fn full_trailer(&self) -> bool {
-        self.preview_promoted && crate::player::preview::view().picture
+        self.preview_promoted && plx_media::player::preview::view().picture
     }
 
     /// Un-promotes full-trailer mode if it was active — shared by the BACK and DOWN key arms and
@@ -3494,7 +3494,7 @@ impl DetailScreen {
         // out: background autoplay has no control that could ever start it again, so leaving the
         // pause behind would strand a frozen picture under the restored chrome.
         self.trailer_ctl.dismiss();
-        if crate::player::preview::paused() {
+        if plx_media::player::preview::paused() {
             self.content(fx, ContentReq::PreviewTransport(Some(true)));
         }
         fx.invalidate(Provenance::Input);
@@ -3527,8 +3527,8 @@ impl DetailScreen {
                     self.trailer_ctl.scrub_fresh(
                         fwd,
                         now,
-                        crate::player::duration_ns(),
-                        crate::player::playpos_ns(),
+                        plx_media::player::duration_ns(),
+                        plx_media::player::playpos_ns(),
                     );
                     None
                 }
@@ -3573,7 +3573,7 @@ impl DetailScreen {
     /// page rather than leaving it. A second BACK press, with no preview left to collapse, falls
     /// through to the ordinary `ContentReq::Back` navigation below. Returns whether it fired.
     fn collapse_background_preview<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) -> bool {
-        if !crate::player::preview::view().picture {
+        if !plx_media::player::preview::view().picture {
             return false;
         }
         self.preview_dwell = 0.0;
@@ -3751,7 +3751,7 @@ impl DetailScreen {
                 let Some(d) = self.detail(meta) else { return };
                 let Some((extra, title)) = hero::trailer_play(d) else { return };
                 let play = PlayIntent::Item {
-                    sid: crate::route::item_sid(d.sid),
+                    sid: plx_media::route::item_sid(d.sid),
                     rk: extra.rk.clone(),
                     part: extra.part.clone(),
                     vcodec: extra.vcodec.clone(),
@@ -3828,7 +3828,7 @@ impl DetailScreen {
         } else {
             let play = self.selected().map_or_else(
                 || PlayIntent::Item {
-                    sid: crate::route::item_sid(d.sid),
+                    sid: plx_media::route::item_sid(d.sid),
                     rk: d.rk.clone(),
                     part: d.part.clone(),
                     vcodec: d.vcodec.clone(),
@@ -3904,7 +3904,7 @@ impl DetailScreen {
             StoreCmd::Metadata(MetadataCmd::SetNowPlaying(Some(now_playing))),
         )));
         let play = PlayIntent::Item {
-            sid: crate::route::item_sid(sid),
+            sid: plx_media::route::item_sid(sid),
             rk: play_rk,
             part,
             vcodec,
@@ -3946,7 +3946,7 @@ mod preview_plane_tests {
     #[test]
     fn the_players_preview_field_is_the_scrims_preview_field() {
         assert_eq!(
-            crate::player::preview::PREVIEW_FIELD.to_bits(),
+            plx_media::player::preview::PREVIEW_FIELD.to_bits(),
             plx_ui::landing_hero::PREVIEW_FIELD.to_bits(),
         );
     }

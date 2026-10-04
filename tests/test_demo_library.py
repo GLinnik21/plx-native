@@ -429,7 +429,10 @@ class SceneManifest(unittest.TestCase):
 
     def test_every_trigger_is_one_the_app_reads(self):
         read = set()
-        for path in RUST.rglob("*.rs"):
+        # The application AND every layer crate (`rust-modules/<layer>/src`): a trigger is read where
+        # its owner lives, and the media layer (`simvideo`, `playurl`, ...) is one of them.
+        roots = [RUST, *sorted((ROOT / "rust-modules").glob("*/src"))]
+        for path in (p for root in roots for p in root.rglob("*.rs")):
             read |= set(re.findall(r'dev::(?:read|flag)\("([a-z0-9_]+)"\)', path.read_text()))
             read |= set(re.findall(r'\b(?:read|flag)\("([a-z0-9_]+)"\)', path.read_text()))
         for s in self.scenes:

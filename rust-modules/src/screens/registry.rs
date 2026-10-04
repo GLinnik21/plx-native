@@ -1004,7 +1004,7 @@ pub(crate) trait HomeLike: AppLike<Memory = PageMemory> + Sized {
 /// (`AppFx::Player`, `ContentReq::Play`), because the publication is a copy and there is no `&mut`
 /// on this path by construction.
 pub(crate) trait PlayerLike: AppLike<Memory = PageMemory> + Sized {
-    fn session<'a>(cx: &Cx<'a, Self>) -> &'a crate::route::PlaybackSession;
+    fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession;
 }
 
 pub(crate) trait SearchLike: AppLike<Memory = PageMemory> + Sized {

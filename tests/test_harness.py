@@ -1660,7 +1660,7 @@ class PipelineTier(unittest.TestCase):
 
         `apply_triggers` now quotes arbitrary apostrophes too, so this is no longer the command's
         security boundary; the no-apostrophe property remains useful for copied case headers and
-        has a twin in rust-modules/src/player/playurl.rs (`the_harness_payload_carries_no_apostrophe`).
+        has a twin in rust-modules/media/src/player/playurl.rs (`the_harness_payload_carries_no_apostrophe`).
         """
         for c in self._pipeline_cases():
             files = run.triggers_for_case(c, url_base="http://192.0.2.10:8020")
@@ -3498,7 +3498,7 @@ class AbrLogLineContract(unittest.TestCase):
     fields were renamed and an old log read as "no samples".
     """
 
-    FF = os.path.join(REPO_ROOT, "rust-modules", "src", "ff.rs")
+    FF = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
 
     def _emitted_fields(self, prefix):
         """The `name=` fields of the app's format literal for `abr: <prefix>`, in order."""
@@ -3781,7 +3781,7 @@ class EverySeekGiveUpPathDisarmsTheSpinner(unittest.TestCase):
     """
 
     def _src(self, *parts):
-        with open(os.path.join(REPO_ROOT, "rust-modules", "src", *parts), encoding="utf-8") as fh:
+        with open(os.path.join(REPO_ROOT, "rust-modules", "media", "src", *parts), encoding="utf-8") as fh:
             return fh.read()
 
     def test_a_failed_transcode_seek_rebuild_abandons_the_seek(self):
@@ -4066,8 +4066,8 @@ class AbrLadderFixtures(unittest.TestCase):
 # here to catch.
 # ---------------------------------------------------------------------------------------------
 
-FF_RS = os.path.join(REPO_ROOT, "rust-modules", "src", "ff.rs")
-WINDOW_RS = os.path.join(REPO_ROOT, "rust-modules", "src", "abr", "window.rs")
+FF_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+WINDOW_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "abr", "window.rs")
 
 # `name=` in a format string or a regex pattern. Deliberately anchored on the `=`, because that is
 # what both sides actually agree on -- the surrounding placeholder/capture syntax differs.
@@ -4677,7 +4677,7 @@ class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
     append silently retired a grader (`RE_ABR_UP` parses this line too).
     """
 
-    FF_RS = os.path.join(REPO_ROOT, "rust-modules", "src", "ff.rs")
+    FF_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
 
     def commit_format(self):
         with open(self.FF_RS, encoding="utf-8") as fh:
@@ -4749,7 +4749,7 @@ class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
 class TheAbrWindowLineMatchesTheHarnessRegex(unittest.TestCase):
     """**The other half of a contract whose two sides never meet at runtime.**
 
-    The app formats `abr: window` on a television (`rust-modules/src/abr/window.rs`,
+    The app formats `abr: window` on a television (`rust-modules/media/src/abr/window.rs`,
     `AdmissionReadout::log_line`) and this harness parses it on a Mac. Nothing links them, so a
     field renamed on one side and not the other produces "no `abr: window` lines" -- which reads
     exactly like the feature never ran, i.e. like a total regression, on the one tier where the
@@ -4761,7 +4761,7 @@ class TheAbrWindowLineMatchesTheHarnessRegex(unittest.TestCase):
     the regex it is supposed to grade, and agree with it forever.
     """
 
-    WINDOW_RS = os.path.join(REPO_ROOT, "rust-modules", "src", "abr", "window.rs")
+    WINDOW_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "abr", "window.rs")
 
     @classmethod
     def wire_examples(cls):
@@ -5229,7 +5229,7 @@ class DepGates(unittest.TestCase):
         "ci",
         "rust-modules/src",
         # The layer crates split out of `src`: `ci/check-deps.sh` reads them as `SRC_BASE`,
-        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM`, `SRC_GFX`, `SRC_UI`, `SRC_PLEX`, `SRC_TELEMETRY`, `SRC_DATA` and `SRC_SESSION`, so a copy without them grades a different
+        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM`, `SRC_GFX`, `SRC_UI`, `SRC_PLEX`, `SRC_TELEMETRY`, `SRC_DATA`, `SRC_SESSION` and `SRC_MEDIA`, so a copy without them grades a different
         # tree than the checkout.
         "rust-modules/base/src",
         "rust-modules/machine/src",
@@ -5241,6 +5241,7 @@ class DepGates(unittest.TestCase):
         "rust-modules/telemetry/src",
         "rust-modules/data/src",
         "rust-modules/session/src",
+        "rust-modules/media/src",
         "rust-modules/Cargo.toml",
         "rust-modules/build.rs",
         "rust-modules/net/Cargo.toml",
@@ -5248,6 +5249,7 @@ class DepGates(unittest.TestCase):
         "rust-modules/telemetry/Cargo.toml",
         "rust-modules/data/Cargo.toml",
         "rust-modules/session/Cargo.toml",
+        "rust-modules/media/Cargo.toml",
         "rust-modules/platform/Cargo.toml",
         "rust-modules/platform/build.rs",
         "rust-modules/gfx/Cargo.toml",
@@ -5328,7 +5330,9 @@ class DepGates(unittest.TestCase):
         it is invisible to cargo (nothing declares it part of the crate) but not to `find … -name
         '*.rs'`, which is all these gates scan with — so this is the cheapest way to prove a gate
         catches a shape without touching a real, permanent source file."""
-        target = os.path.join(self.tree, "rust-modules", "src", name)
+        # `player/` and `route/` are the media layer crate's now (docs/module-layers.md, Split 11).
+        crate = "media" if name.split("/")[0] in ("player", "route") else None
+        target = os.path.join(self.tree, "rust-modules", *([crate] if crate else []), "src", name)
         self.assertFalse(os.path.exists(target), f"stale self-test artifact at {target} — remove it by hand")
         try:
             with open(target, "w", encoding="utf-8") as f:

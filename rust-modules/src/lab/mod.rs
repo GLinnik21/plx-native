@@ -8,7 +8,7 @@
 //! listener, `make -s print-eventlog`) and is therefore unreachable there.
 //!
 //! This module is the bridge: a **bounded ring of the log lines the app already writes**, plus the
-//! structured state `crate::player::Diag` already carries, uploaded over pinned TLS to a receiver
+//! structured state `plx_media::player::Diag` already carries, uploaded over pinned TLS to a receiver
 //! on the developer's Mac (`tools/plxnative-lab`), triggered by a remote button, a menu row or the
 //! optional authenticated command channel. `docs/lab-diagnostics.md` is the design note; read it
 //! before extending any of this.
@@ -114,7 +114,7 @@ pub(crate) fn command_done(_id: u32, _ok: bool) {
 /// It sits at the TOP of the chain, above every modal, on purpose — the screen a tester most
 /// wants a snapshot of is the playback failure read-out, whose own arm `continue`s on every key.
 #[inline]
-pub(crate) fn key_press(_sym: u32, _wcode: u32, _ps: &crate::route::PlaybackSession) -> bool {
+pub(crate) fn key_press(_sym: u32, _wcode: u32, _ps: &plx_media::route::PlaybackSession) -> bool {
     #[cfg(feature = "lab-diagnostics")]
     {
         if plx_platform::labcfg::is_trigger_key(_sym, _wcode) {
@@ -134,7 +134,7 @@ pub(crate) fn key_press(_sym: u32, _wcode: u32, _ps: &crate::route::PlaybackSess
 ///
 /// The session is a PARAMETER for the reason every other `player::diag` caller's is (phase 9):
 /// there is no `route::decision::SESSION` global left to read it out of, and the loop owns it.
-pub(crate) fn request_upload(_reason: &str, _ps: &crate::route::PlaybackSession) {
+pub(crate) fn request_upload(_reason: &str, _ps: &plx_media::route::PlaybackSession) {
     #[cfg(feature = "lab-diagnostics")]
     upload::request(_reason, _ps);
 }

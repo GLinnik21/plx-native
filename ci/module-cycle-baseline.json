@@ -1,19 +1,10 @@
 {
   "members": [
-    "abr",
-    "curlio",
-    "ff",
-    "hls",
-    "player",
-    "route"
+    "app",
+    "dev",
+    "textinput"
   ],
-  "size": 6,
-  "outside_count": 14,
-  "other_cycles": [
-    [
-      "app",
-      "dev",
-      "textinput"
-    ]
-  ]
+  "size": 3,
+  "outside_count": 10,
+  "other_cycles": []
 }

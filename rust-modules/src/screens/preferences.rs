@@ -19,7 +19,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver};
 use plx_plex::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
-use crate::route::{DirectPlayMode, NextEpisodeMode, Quality, SkipInterval, SubtitlePosition, SubtitleSize};
+use plx_media::route::{DirectPlayMode, NextEpisodeMode, Quality, SkipInterval, SubtitlePosition, SubtitleSize};
 use plx_ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
@@ -320,10 +320,10 @@ impl PreferencesPage {
     pub(crate) fn new(entry: EntryId, kind: Kind) -> Self {
         let mut s = Self { entry, form: FormTable::new(BAND),
             state: State { kind, selected: 0, io: Io { busy: false, status: String::new() },
-                quality: crate::route::quality(), direct_play: crate::route::direct_play_mode(), values: Vec::new() },
+                quality: plx_media::route::quality(), direct_play: plx_media::route::direct_play_mode(), values: Vec::new() },
             copy: String::new(), txn: Txn::new(false),
-            look: (crate::route::subtitle_size(), crate::route::subtitle_position()),
-            next_episode: crate::route::next_episode_mode(), skip_interval: crate::route::skip_interval() };
+            look: (plx_media::route::subtitle_size(), plx_media::route::subtitle_position()),
+            next_episode: plx_media::route::next_episode_mode(), skip_interval: plx_media::route::skip_interval() };
         s.rebuild(None);
         s
     }
@@ -345,11 +345,11 @@ impl PreferencesPage {
     }
     /// Rebuild the field list from the confirmed values, keeping the row the cursor is on by identity.
     fn rebuild(&mut self, keep: Option<RowId>) {
-        self.state.quality = crate::route::quality();
-        self.state.direct_play = crate::route::direct_play_mode();
-        self.look = (crate::route::subtitle_size(), crate::route::subtitle_position());
-        self.next_episode = crate::route::next_episode_mode();
-        self.skip_interval = crate::route::skip_interval();
+        self.state.quality = plx_media::route::quality();
+        self.state.direct_play = plx_media::route::direct_play_mode();
+        self.look = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
+        self.next_episode = plx_media::route::next_episode_mode();
+        self.skip_interval = plx_media::route::skip_interval();
         self.copy = copy_text(Subject::Page(self.state.kind), &self.state.io.status, self.state.direct_play).into_owned();
         let inputs = FieldListInputs {
             kind: self.state.kind, quality: self.state.quality, direct_play: self.state.direct_play,
@@ -393,10 +393,10 @@ fn resolve_value(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
     match field {
         PickerKind::Quality => Value::Quality(quality),
         PickerKind::DirectPlay => Value::DirectPlay(direct_play),
-        PickerKind::SubtitleSize => Value::SubtitleSize(crate::route::subtitle_size()),
-        PickerKind::SubtitlePosition => Value::SubtitlePosition(crate::route::subtitle_position()),
-        PickerKind::NextEpisode => Value::NextEpisode(crate::route::next_episode_mode()),
-        PickerKind::SkipInterval => Value::SkipInterval(crate::route::skip_interval()),
+        PickerKind::SubtitleSize => Value::SubtitleSize(plx_media::route::subtitle_size()),
+        PickerKind::SubtitlePosition => Value::SubtitlePosition(plx_media::route::subtitle_position()),
+        PickerKind::NextEpisode => Value::NextEpisode(plx_media::route::next_episode_mode()),
+        PickerKind::SkipInterval => Value::SkipInterval(plx_media::route::skip_interval()),
         // A deprecated code (`pb`) resolves to its replacement so the picker checks that entry.
         PickerKind::AudioLanguage => Value::Language(prefs.and_then(|p| p.stated_language.as_deref()).map(plx_plex::plex::languages::canonical).unwrap_or_default().to_string()),
         PickerKind::SubtitleLanguage => Value::Language(prefs.and_then(|p| p.subtitle_language.as_deref()).map(plx_plex::plex::languages::canonical).unwrap_or_default().to_string()),
@@ -407,7 +407,7 @@ fn resolve_value(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
 /// `PickerKind`'s picker options.
 fn field_options(field: PickerKind, quality: Quality, direct_play: DirectPlayMode, prefs: Option<&AudioPreferences>) -> Vec<(String, Value)> {
     match field {
-        PickerKind::Quality => crate::route::available_quality_ladder().iter()
+        PickerKind::Quality => plx_media::route::available_quality_ladder().iter()
             .map(|q| (q.label().into(), Value::Quality(*q))).collect(),
         PickerKind::DirectPlay => [DirectPlayMode::Auto, DirectPlayMode::Forced, DirectPlayMode::Disabled]
             .into_iter().map(|m| (mode_label(m).into(), Value::DirectPlay(m))).collect(),
@@ -446,8 +446,8 @@ fn field_readout(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
         // Only the foreign-audio mode has a short form (es does not fit beside the label); the
         // other two modes show the picker's own label.
         PickerKind::SubtitleMode if prefs.is_some_and(|p| p.subtitle_mode == 1) => plx_platform::i18n::msg::settings_audio_foreign_short().into(),
-        PickerKind::SubtitleSize => subtitle_size_label(crate::route::subtitle_size()).into(),
-        PickerKind::SubtitlePosition => subtitle_position_label(crate::route::subtitle_position()).into(),
+        PickerKind::SubtitleSize => subtitle_size_label(plx_media::route::subtitle_size()).into(),
+        PickerKind::SubtitlePosition => subtitle_position_label(plx_media::route::subtitle_position()).into(),
         _ => {
             let current = resolve_value(field, quality, direct_play, prefs);
             field_options(field, quality, direct_play, prefs).into_iter().find(|(_, v)| *v == current)
@@ -539,11 +539,11 @@ impl Machine<InnerHost> for PreferencesPage {
                 let adopted = self.txn.adopt_shared();
                 let had_rows = self.form.table.n_rows() > 0;
                 let landed = self.txn.poll(&mut self.state.io, fx) != Landed::Nothing;
-                if landed || stale || started || adopted || self.state.quality != crate::route::quality()
-                    || self.state.direct_play != crate::route::direct_play_mode()
-                    || self.look != (crate::route::subtitle_size(), crate::route::subtitle_position())
-                    || self.next_episode != crate::route::next_episode_mode()
-                    || self.skip_interval != crate::route::skip_interval() {
+                if landed || stale || started || adopted || self.state.quality != plx_media::route::quality()
+                    || self.state.direct_play != plx_media::route::direct_play_mode()
+                    || self.look != (plx_media::route::subtitle_size(), plx_media::route::subtitle_position())
+                    || self.next_episode != plx_media::route::next_episode_mode()
+                    || self.skip_interval != plx_media::route::skip_interval() {
                     self.rebuild_keeping();
                     // An empty loading table had no engine seat. Give its first landing (or
                     // Retry row) one so OK works immediately, without moving an existing

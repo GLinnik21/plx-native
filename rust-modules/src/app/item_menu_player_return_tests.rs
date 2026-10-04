@@ -36,7 +36,7 @@ struct Resources {
 impl playback::PlaybackResources for Resources {
     fn request_movie(
         &mut self,
-        _: &mut crate::route::PlaybackSession,
+        _: &mut plx_media::route::PlaybackSession,
         _: &mut plx_data::stores::metadata::MetadataStore,
         item: &plx_data::pms::PmsMovie,
     ) -> bool {
@@ -48,7 +48,7 @@ impl playback::PlaybackResources for Resources {
         });
         self.accept_request
     }
-    fn request_episode(&mut self, _: &mut crate::route::PlaybackSession, _: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool {
+    fn request_episode(&mut self, _: &mut plx_media::route::PlaybackSession, _: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool {
         self.calls.push(ResourceCall::Episode(rk.into()));
         self.accept_request
     }
@@ -57,8 +57,8 @@ impl playback::PlaybackResources for Resources {
     }
     fn prepare_start(
         &mut self,
-        _: &mut crate::route::PlaybackSession,
-        _: &mut crate::player::adapter::PlayerAdapter,
+        _: &mut plx_media::route::PlaybackSession,
+        _: &mut plx_media::player::adapter::PlayerAdapter,
         resume_ns: i64,
     ) -> bool {
         self.calls.push(ResourceCall::Start(resume_ns));
@@ -154,9 +154,9 @@ fn chain(host: AppArg, episode: bool, accept_request: bool, accept_start: bool) 
         plx_ui::containers::modal::Phase::Closing
     );
 
-    let mut ps = crate::route::PlaybackSession::default();
+    let mut ps = plx_media::route::PlaybackSession::default();
     let mut pa =
-        crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        plx_media::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
     let mut resources = Resources {
         calls: Vec::new(),
         accept_request,

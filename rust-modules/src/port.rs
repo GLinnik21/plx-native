@@ -7,9 +7,9 @@
 use std::os::raw::{c_char, c_int};
 
 #[cfg(all(not(feature = "hostsim"), not(test)))]
-const SINK: &dyn plx_platform::tv::sink::VideoSink = &crate::player::ffi::StarfishSink;
+const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_media::player::ffi::StarfishSink;
 #[cfg(feature = "hostsim")]
-const SINK: &dyn plx_platform::tv::sink::VideoSink = &crate::player::ffi_host::HostSink;
+const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_media::player::ffi_host::HostSink;
 #[cfg(all(not(feature = "hostsim"), test))]
 const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_platform::tv::sink::NoSink;
 

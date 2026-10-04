@@ -859,7 +859,7 @@ arithmetic: `overflow-checks` is **on** under `cargo test` and **off** in releas
 underflow panics on the Mac and wraps silently on the television. Every term above is `i64`, and
 no subtraction of unsigned quantities appears in the rule.
 
-### The shipped integer form — what `rust-modules/src/abr/window.rs` computes
+### The shipped integer form — what `rust-modules/media/src/abr/window.rs` computes
 
 Two sums over the last `n` samples, in microseconds, and no division except the transfer's own:
 
