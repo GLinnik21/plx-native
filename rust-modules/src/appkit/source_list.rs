@@ -21,9 +21,9 @@
 //! would read as a bug on whichever screen you saw second.
 //!
 //! Pure over its inputs, so it is host-testable without a live section table (which is also why
-//! `browse` hands out owned [`SrcGroup`](crate::browse::SrcGroup)/[`SrcRow`](crate::browse::SrcRow)
+//! `browse` hands out owned [`SrcGroup`](plx_data::browse::SrcGroup)/[`SrcRow`](plx_data::browse::SrcRow)
 //! projections rather than borrows of its statics).
-use crate::browse::{SourceState, SrcGroup};
+use plx_data::browse::{SourceState, SrcGroup};
 use plx_plex::plex::probe::Location;
 use plx_ui::form::{Form, FormId, FormSection, RowKey, RowKind};
 use plx_ui::table::{Row, Section};
@@ -228,8 +228,8 @@ fn header_accessory(sec: Section, g: &SrcGroup) -> Section {
 /// separator above the roster-refresh row an inert slot.
 pub(crate) fn form(
     level: Level,
-    groups: &[crate::browse::SrcGroup],
-    rows: &[crate::browse::SrcRow],
+    groups: &[plx_data::browse::SrcGroup],
+    rows: &[plx_data::browse::SrcRow],
     tail: Tail,
 ) -> SrcForm {
     let mut out: Vec<FormSection<SrcTarget, SrcTarget, Infallible>> = Vec::new();
@@ -296,7 +296,7 @@ pub(crate) fn form(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browse::{SourceState, SrcGroup};
+    use plx_data::browse::{SourceState, SrcGroup};
     use plx_ui::form::FormTable;
 
     /// The built list as a table sees it: the drawn sections, and the target of every FOCUSABLE row
@@ -304,7 +304,7 @@ mod tests {
     fn sections(
         level: Level,
         groups: &[SrcGroup],
-        rows: &[crate::browse::SrcRow],
+        rows: &[plx_data::browse::SrcRow],
         tail: Tail,
     ) -> (Vec<Section>, Vec<SrcTarget>) {
         let mut built = FormTable::<SrcTarget, SrcTarget, Infallible>::new(plx_ui::table_screen::BAND_BASE);
@@ -454,11 +454,11 @@ mod tests {
             SrcGroup { name: "friends-server".into(), handle: "friend".into(), state: SourceState::Reachable, tier: Some(Location::Relay) },
         ];
         let rows = vec![
-            crate::browse::SrcRow { src: 0, section: 0, title: "Movies".into(), count_line: "185 films".into(),
+            plx_data::browse::SrcRow { src: 0, section: 0, title: "Movies".into(), count_line: "185 films".into(),
                 pinned: false, last_pinned: false, current: false },
-            crate::browse::SrcRow { src: 1, section: 1, title: "TV Shows".into(), count_line: "40 shows".into(),
+            plx_data::browse::SrcRow { src: 1, section: 1, title: "TV Shows".into(), count_line: "40 shows".into(),
                 pinned: true, last_pinned: true, current: false },
-            crate::browse::SrcRow { src: 2, section: 2, title: "Home Videos".into(), count_line: "12 films".into(),
+            plx_data::browse::SrcRow { src: 2, section: 2, title: "Home Videos".into(), count_line: "12 films".into(),
                 pinned: true, last_pinned: false, current: true },
         ];
         let mut out = Vec::new();
@@ -479,7 +479,7 @@ mod tests {
     }
 
     fn one_group_sections(g: SrcGroup) -> Vec<Section> {
-        let rows = vec![crate::browse::SrcRow { src: 0, section: 0, title: "Movies".into(), count_line: "1 film".into(),
+        let rows = vec![plx_data::browse::SrcRow { src: 0, section: 0, title: "Movies".into(), count_line: "1 film".into(),
             pinned: true, last_pinned: false, current: false }];
         sections(Level::Browse, &[g], &rows, Tail::None).0
     }

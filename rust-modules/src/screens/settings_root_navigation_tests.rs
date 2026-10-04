@@ -20,7 +20,7 @@ fn mounting_the_surface_names_its_root_page() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
-        crate::pms::HubsSnapshot::empty_for_test().view(),
+        plx_data::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     assert_eq!(name(&s), word::SETTINGS);
@@ -37,7 +37,7 @@ fn signed_out_root_does_not_offer_automatically_sign_in() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
-        crate::pms::HubsSnapshot::empty_for_test().view(),
+        plx_data::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     // Playback / Language / Privacy / Legal / About — About is a door, not a switch.
@@ -73,7 +73,7 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
-        crate::pms::HubsSnapshot::empty_for_test().view(),
+        plx_data::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     let row = FocusKey {
@@ -116,7 +116,7 @@ fn right_on_automatically_sign_in_does_not_push() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
-        crate::pms::HubsSnapshot::empty_for_test().view(),
+        plx_data::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     let row = FocusKey {
@@ -163,7 +163,7 @@ fn back_at_the_surface_s_own_root_is_not_handled() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
-        crate::pms::HubsSnapshot::empty_for_test().view(),
+        plx_data::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     let back: ScreenEvent<InnerHost> = ScreenEvent::Input(InputEvent {
@@ -207,7 +207,7 @@ fn a_pop_from_legal_restores_focus_to_the_row_that_opened_it() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
-        crate::pms::HubsSnapshot::empty_for_test().view(),
+        plx_data::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
 
@@ -295,7 +295,7 @@ fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
-        crate::pms::HubsSnapshot::empty_for_test().view(),
+        plx_data::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     let root_row = FocusKey {
@@ -339,7 +339,7 @@ fn remembered_does_not_grow_across_repeated_visits_to_the_same_page() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
-        crate::pms::HubsSnapshot::empty_for_test().view(),
+        plx_data::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     let legal_row = FocusKey {
@@ -403,7 +403,7 @@ fn a_settled_pop_leaves_the_surface_at_rest_at_depth_two() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
-        crate::pms::HubsSnapshot::empty_for_test().view(),
+        plx_data::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     assert!(
@@ -507,7 +507,7 @@ fn the_logical_state_follows_the_inner_stack() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
-        crate::pms::HubsSnapshot::empty_for_test().view(),
+        plx_data::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     let at_root = <RouteSurface as Screen<InnerHost>>::state(&s).hash();
@@ -691,7 +691,7 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
     let connect = FocusKey { entry: EntryId(0), elem: super::super::registry::ALERT + 1 };
     root.step(&ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &cx(Some(connect)), &mut fx);
     let answers: Vec<_> = out.iter().filter_map(|st| match &st.fx {
-        Fx::App(super::super::registry::AppFx::Session(crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }))
+        Fx::App(super::super::registry::AppFx::Session(plx_session::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }))
             if machine_id == "lan-machine" => Some(*choice),
         _ => None,
     }).collect();
@@ -784,7 +784,7 @@ fn back_from_each_root_door_reseats_focus_on_the_same_root_id() {
     ] {
         let mut s = RouteSurface::new(
             EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root,
-            crate::pms::HubsSnapshot::empty_for_test().view(),
+            plx_data::pms::HubsSnapshot::empty_for_test().view(),
         );
         step(&mut s, ScreenEvent::Mount, None);
         let row = FocusKey { entry: EntryId(0), elem: root_key(id.clone()) };

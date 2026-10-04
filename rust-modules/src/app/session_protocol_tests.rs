@@ -6,8 +6,8 @@ use super::*;
 #[cfg(test)]
 mod carry_matrix {
     use super::*;
-    use crate::auth::{AuthProgress, LoginProgress, RegistryProgress, SessionCmd};
-    use crate::auth::owner::{AdmissionId, AdmissionState, CommitAdmission, CommitReply, Identity, Pending, Receipt,
+    use plx_session::auth::{AuthProgress, LoginProgress, RegistryProgress, SessionCmd};
+    use plx_session::auth::owner::{AdmissionId, AdmissionState, CommitAdmission, CommitReply, Identity, Pending, Receipt,
         RegistryPlan, SessionEnvelope, SessionEvent, SessionFx, SessionOp, SessionWorkKey, StreamPhase};
     use plx_plex::plex::session::{Session, SourceRef, UserRef, ServerRef};
     use plx_machine::machine::{RequestId, Stamped};
@@ -55,10 +55,10 @@ mod carry_matrix {
             ).collect(), ..Default::default() }
     }
     fn rig(ops: &[(u32, SessionOp)]) -> Bridge {
-        let mut init = crate::auth::SessionInit::captured(stored());
+        let mut init = plx_session::auth::SessionInit::captured(stored());
         init.epoch = EPOCH;
-        init.phase = if ops[0].1 == SessionOp::ProfileSwitch { crate::auth::Phase::Switching }
-            else { crate::auth::Phase::Discovering };
+        init.phase = if ops[0].1 == SessionOp::ProfileSwitch { plx_session::auth::Phase::Switching }
+            else { plx_session::auth::Phase::Discovering };
         init.authorized_in_flow = true;
         for &(req, op) in ops {
             init.next_req = init.next_req.max(req);
@@ -87,7 +87,7 @@ mod carry_matrix {
                     epoch: key.epoch, expected: None, sources: Vec::new(), primary: None,
                 })).unwrap();
             }
-            output.complete(LoginProgress::Failed { epoch: key.epoch, message: "old flow".into(), incident: crate::auth::synthetic_incident(), plaintext: None, account: None }.into()).unwrap();
+            output.complete(LoginProgress::Failed { epoch: key.epoch, message: "old flow".into(), incident: plx_session::auth::synthetic_incident(), plaintext: None, account: None }.into()).unwrap();
         }).unwrap();
         let records = rig.session_adapter.take_results();
         assert_eq!(records.len(), 3);
@@ -118,7 +118,7 @@ mod carry_matrix {
         assert!(records.iter().all(|r| rig.session_adapter.admitted(r)));
         let next_key = SessionWorkKey { epoch: EPOCH + 1, op: SessionOp::Login };
         rig.session_adapter.launch(RequestId(2), next_key, true, |job| { job(); true }, move |output| {
-            output.complete(LoginProgress::Failed { epoch: next_key.epoch, message: "next batch".into(), incident: crate::auth::synthetic_incident(), plaintext: None, account: None }.into()).unwrap();
+            output.complete(LoginProgress::Failed { epoch: next_key.epoch, message: "next batch".into(), incident: plx_session::auth::synthetic_incident(), plaintext: None, account: None }.into()).unwrap();
         }).unwrap();
         assert!(rig.session_adapter.take_results().is_empty());
         assert!(frame(&mut rig, &mut d, Vec::new(), &mut trace).carried > 0);
@@ -161,10 +161,10 @@ mod carry_matrix {
             if event_form {
                 // The real screen-command effect adds one normal delivery hop. Old ACK schedules
                 // Pump(App); that becomes Pump(Event) before this command cancels the old flow.
-                d.emit(MachineId::Session, Fx::App(AppFx::Session(SessionCmd::StartSwitch(crate::auth::Picker::ChangeProfile))));
+                d.emit(MachineId::Session, Fx::App(AppFx::Session(SessionCmd::StartSwitch(plx_session::auth::Picker::ChangeProfile))));
                 pad(&mut d, BUDGET - 5);
             } else {
-                execute_session_command(&mut d, SessionCmd::StartSwitch(crate::auth::Picker::ChangeProfile));
+                execute_session_command(&mut d, SessionCmd::StartSwitch(plx_session::auth::Picker::ChangeProfile));
                 pad(&mut d, BUDGET - 2);
             }
             let second = frame(&mut rig, &mut d, Vec::new(), &mut trace);
@@ -222,7 +222,7 @@ mod carry_matrix {
         seated.sources[0].origin_url = seated.server.origin_url.clone();
         seated.sources[0].token = "profile-b".into();
         let ready = serde_json::from_value(serde_json::json!({
-            "epoch":EPOCH, "expected":crate::auth::SessionIdentity::of(&old),
+            "epoch":EPOCH, "expected":plx_session::auth::SessionIdentity::of(&old),
             "outcome":{"Ready":{"delta":{"server":seated.server,"sources":seated.sources,
                 "user":seated.user,"cache":null},"probes":[]}}
         })).unwrap();
@@ -230,7 +230,7 @@ mod carry_matrix {
         late.address = "127.0.0.3".into();
         late.origin_url = "http://127.0.0.3:32400".into();
         let roster = serde_json::from_value(serde_json::json!({
-            "epoch":EPOCH, "expected":crate::auth::SessionIdentity::of(&seated),
+            "epoch":EPOCH, "expected":plx_session::auth::SessionIdentity::of(&seated),
             "resources":[{"clientIdentifier":"primary","provides":"server","owned":true,"accessToken":"profile-b"}],
             "reached":[late],"probes":[]
         })).unwrap();
@@ -246,7 +246,7 @@ mod carry_matrix {
                 output.complete(AuthProgress::ProfileRoster(roster)).unwrap();
             }).unwrap();
         entered.recv_timeout(Duration::from_secs(10)).unwrap();
-        let expected = crate::auth::SessionIdentity::of(&old);
+        let expected = plx_session::auth::SessionIdentity::of(&old);
         rig.session_adapter.launch(RequestId(2), SessionWorkKey { epoch: EPOCH, op: SessionOp::ServerRoster }, true,
             |job| { job(); true }, move |output| {
                 output.progress(AuthProgress::Registry(RegistryProgress::Install {
@@ -272,7 +272,7 @@ mod carry_matrix {
         assert_eq!(rig.session_adapter.fixture_resources().registry_writes.len(), 1);
         assert!(rig.session.snapshot_init().pending_commit.is_some());
         assert_eq!(rig.session.snapshot_init().inbox.len(), 3);
-        assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Switching);
+        assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Switching);
         execute_session_command(&mut d, SessionCmd::TakeReady);
         pad(&mut d, BUDGET - 2); // Real old ACK then TakeReady; C remains in the dispatcher.
         queue(&mut d, SessionEvent::Result(carried_obsolete.clone()));
@@ -316,8 +316,8 @@ mod carry_matrix {
 }
 
 fn home_roster_failure_history(cached: bool, failure: u8) {
-    use crate::auth::{SessionCmd, Phase};
-    use crate::auth::owner::{SessionEvent, SessionWork, SessionOp, SessionWorkKey, SESSION_TOTAL_RESERVATIONS};
+    use plx_session::auth::{SessionCmd, Phase};
+    use plx_session::auth::owner::{SessionEvent, SessionWork, SessionOp, SessionWorkKey, SESSION_TOTAL_RESERVATIONS};
     use plx_machine::machine::RequestId;
     let mut stored = plx_plex::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
@@ -328,7 +328,7 @@ fn home_roster_failure_history(cached: bool, failure: u8) {
             uuid: "cached-user".into(), title: "Cached".into(), ..Default::default()
         });
     }
-    let mut rig = Bridge::for_session_test(crate::auth::SessionInit::captured(stored));
+    let mut rig = Bridge::for_session_test(plx_session::auth::SessionInit::captured(stored));
     let mut delayed = Vec::new();
     if failure == 4 {
         for req in 100..100 + SESSION_TOTAL_RESERVATIONS {
@@ -346,11 +346,11 @@ fn home_roster_failure_history(cached: bool, failure: u8) {
             let fact = serde_json::from_value(serde_json::json!({
                 "epoch":2, "expected":expected, "users":null
             })).unwrap();
-            output.complete(crate::auth::AuthProgress::HomeRoster(fact)).unwrap();
+            output.complete(plx_session::auth::AuthProgress::HomeRoster(fact)).unwrap();
         });
     } // 0: real spawn refusal; 1: real Dropped guard; 2: rejected body; 3: accepted None.
     let mut d = Dispatcher::<AppHost>::new();
-    execute_session_command(&mut d, SessionCmd::StartSwitch(crate::auth::Picker::ChangeProfile));
+    execute_session_command(&mut d, SessionCmd::StartSwitch(plx_session::auth::Picker::ChangeProfile));
     d.frame_with(&mut rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
     if failure != 4 { assert_eq!(rig.auth_read().0.phase, Phase::Profiles); }
     let records = rig.session_adapter.take_results();
@@ -362,7 +362,7 @@ fn home_roster_failure_history(cached: bool, failure: u8) {
     assert_eq!(rig.auth_read().0.phase, Phase::Profiles,
         "failure kind {failure}, cached={cached}: completed work cannot leave an empty picker loading");
     assert_eq!(rig.auth_read().0.users.len(), usize::from(cached));
-    assert_eq!(&*rig.auth_read().0.error, if cached { "" } else { crate::auth::owner::roster_unreachable() });
+    assert_eq!(&*rig.auth_read().0.error, if cached { "" } else { plx_session::auth::owner::roster_unreachable() });
     assert!(rig.session.snapshot_init().pending.is_empty());
     assert!(rig.take_session_ready().is_none());
     rig.session_adapter.cancel_all();
@@ -385,7 +385,7 @@ fn home_roster_admission_failure_finishes_empty_picker_but_preserves_cached_tile
 #[cfg(test)]
 mod qr_exhaustion_guard {
     use super::*;
-    use crate::auth::owner::{AdmissionId, AdmissionState, Identity, Pending, SessionEvent,
+    use plx_session::auth::owner::{AdmissionId, AdmissionState, Identity, Pending, SessionEvent,
         SessionFx, SessionOp, SessionWorkKey, StreamPhase, SESSION_TOTAL_RESERVATIONS};
     use plx_machine::landing::AdmissionError;
     use plx_machine::machine::{RequestId, Stamped};
@@ -434,11 +434,11 @@ mod qr_exhaustion_guard {
     #[test]
     fn qr_allocator_exhaustion_cancel_and_retire_hold_running_producer_until_guard_ack() {
         let key = SessionWorkKey { epoch: u64::from(u32::MAX) + 181, op: SessionOp::Login };
-        let mut init = crate::auth::SessionInit::captured(plx_plex::plex::session::Session {
+        let mut init = plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session {
             client_id: "synthetic-client".into(), ..Default::default()
         });
         init.epoch = key.epoch;
-        init.phase = crate::auth::Phase::Creating;
+        init.phase = plx_session::auth::Phase::Creating;
         init.next_qr = u64::MAX;
         init.next_req = SESSION_TOTAL_RESERVATIONS;
         init.pending.insert(1, Pending { key, expected: Identity::of(&init.persisted),
@@ -453,7 +453,7 @@ mod qr_exhaustion_guard {
         jobs.rig.session_adapter.launch(RequestId(1), key, true,
             |job| { *running = Some(std::thread::spawn(job)); true }, move |output| {
                 assert_ne!(std::thread::current().id(), main_thread);
-                output.progress(crate::auth::LoginProgress::CodeReady {
+                output.progress(plx_session::auth::LoginProgress::CodeReady {
                     epoch: key.epoch, code: "ABCD".into(), qr_png: vec![1, 2, 3],
                 }.into()).unwrap();
                 entered_tx.send(()).unwrap();
@@ -473,7 +473,7 @@ mod qr_exhaustion_guard {
         d.frame_with(&mut jobs.rig, Tick::default(), Vec::new(), results, &mut tap, false);
         assert_eq!(tap.cancelled, [1]);
         assert_eq!(tap.retired, [1]);
-        assert_eq!(jobs.rig.auth_read().0.phase, crate::auth::Phase::Error);
+        assert_eq!(jobs.rig.auth_read().0.phase, plx_session::auth::Phase::Error);
         assert_eq!(jobs.rig.auth_read().0.qr_generation, 0);
         assert_eq!(jobs.rig.session.snapshot_init().next_qr, u64::MAX);
         assert!(jobs.rig.session.snapshot_init().pending.is_empty());
@@ -492,7 +492,7 @@ mod qr_exhaustion_guard {
 
 #[test]
 fn admission_refusal_correlation_survives_carried_acceptance_and_transferred_terminal() {
-    use crate::auth::owner::{AdmissionId, AdmissionReply, AdmissionState, Identity, Pending,
+    use plx_session::auth::owner::{AdmissionId, AdmissionReply, AdmissionState, Identity, Pending,
         SessionEvent, SessionOp, SessionWork, SessionWorkKey, StreamPhase, SESSION_TOTAL_RESERVATIONS};
     use plx_machine::machine::{Addr, RequestId};
     fn deliver(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, event: SessionEvent) {
@@ -501,11 +501,11 @@ fn admission_refusal_correlation_survives_carried_acceptance_and_transferred_ter
     }
     let key = SessionWorkKey { epoch: u64::from(u32::MAX) + 171, op: SessionOp::Login };
     let fixture = |req| {
-        let mut init = crate::auth::SessionInit::captured(plx_plex::plex::session::Session {
+        let mut init = plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session {
             client_id: "synthetic-client".into(), ..Default::default()
         });
         init.epoch = key.epoch;
-        init.phase = crate::auth::Phase::Creating;
+        init.phase = plx_session::auth::Phase::Creating;
         init.next_req = req;
         init.pending.insert(req, Pending { key, expected: Identity::of(&init.persisted),
             lifecycle: None, last_arrival: None, phase: StreamPhase::Running, capture: None,
@@ -524,7 +524,7 @@ fn admission_refusal_correlation_survives_carried_acceptance_and_transferred_ter
     deliver(&mut rig, &mut d, SessionEvent::Admission(negative));
     assert_eq!(rig.session_subhash(), before, "resource acceptance protects even before its first observation/reply");
     for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST {
-        execute_session_command(&mut d, crate::auth::SessionCmd::DismissPinError);
+        execute_session_command(&mut d, plx_session::auth::SessionCmd::DismissPinError);
     }
     d.emit(MachineId::Session, Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::Session(
         SessionEvent::Admission(AdmissionReply { accepted: true, ..negative })))));
@@ -581,7 +581,7 @@ fn admission_refusal_correlation_survives_carried_acceptance_and_transferred_ter
     assert_eq!(rig.session_subhash(), before, "stale rejection cannot retire never-admitted current work either");
     deliver(&mut rig, &mut d, SessionEvent::Admission(refusal));
     assert!(rig.session.snapshot_init().pending.is_empty());
-    assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Error);
+    assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Error);
     rig.session_adapter.cancel_all();
     for job in delayed { job(); }
     assert!(rig.session_adapter.take_results().is_empty());
@@ -589,7 +589,7 @@ fn admission_refusal_correlation_survives_carried_acceptance_and_transferred_ter
 
 #[test]
 fn bridge_cached_session_hash_distinguishes_logical_state_without_ui_damage() {
-    let init = crate::auth::SessionInit::captured(Default::default());
+    let init = plx_session::auth::SessionInit::captured(Default::default());
     let mut other = init.clone();
     other.next_req = 1;
     let mut a = Bridge::for_session_test(init);
@@ -601,7 +601,7 @@ fn bridge_cached_session_hash_distinguishes_logical_state_without_ui_damage() {
     let before = a.session_subhash();
     let read = a.session.publication();
     let mut d = Dispatcher::<AppHost>::new();
-    execute_session_command(&mut d, crate::auth::SessionCmd::DismissPinError);
+    execute_session_command(&mut d, plx_session::auth::SessionCmd::DismissPinError);
     d.frame_with(&mut a, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
     assert_eq!(a.session_subhash(), before);
     assert!(!a.session.take_logical_dirty());
@@ -610,14 +610,14 @@ fn bridge_cached_session_hash_distinguishes_logical_state_without_ui_damage() {
 
 #[test]
 fn dismissing_the_keypad_clears_the_pin_verdict() {
-    let mut init = crate::auth::SessionInit::captured(Default::default());
-    init.phase = crate::auth::Phase::Profiles;
+    let mut init = plx_session::auth::SessionInit::captured(Default::default());
+    init.phase = plx_session::auth::Phase::Profiles;
     init.pin_denied = true;
     init.error = "Couldn't switch profile — check the connection.".into();
     let mut rig = Bridge::for_session_test(init);
     let retained = rig.session.publication();
     let mut d = Dispatcher::<AppHost>::new();
-    execute_session_command(&mut d, crate::auth::SessionCmd::DismissPinError);
+    execute_session_command(&mut d, plx_session::auth::SessionCmd::DismissPinError);
     assert!(rig.auth_read().0.pin_denied, "emission alone cannot dismiss the verdict");
     d.frame_with(&mut rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
     assert!(!rig.auth_read().0.pin_denied, "the verdict goes with the pad");
@@ -625,15 +625,15 @@ fn dismissing_the_keypad_clears_the_pin_verdict() {
         "the non-PIN roster banner is not collateral");
     assert!(retained.pin_denied, "a retained old view remains coherent");
     let after = rig.session.subhash();
-    execute_session_command(&mut d, crate::auth::SessionCmd::DismissPinError);
+    execute_session_command(&mut d, plx_session::auth::SessionCmd::DismissPinError);
     d.frame_with(&mut rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
     assert_eq!(rig.session.subhash(), after, "repeat dismissal is a logical no-op");
 }
 
 #[test]
 fn refused_restart_preserves_the_exact_owner_state_through_dispatch() {
-    use crate::auth::{Phase, SessionCmd};
-    use crate::auth::owner::ReplyTo;
+    use plx_session::auth::{Phase, SessionCmd};
+    use plx_session::auth::owner::ReplyTo;
     // Ready, changed phase, and replacement code are the three old wait-identity refusals.
     // Checked allocator exhaustion must also refuse BEFORE cancellation of a matching wait.
     for (phase, generation, epoch, next_req) in [
@@ -643,7 +643,7 @@ fn refused_restart_preserves_the_exact_owner_state_through_dispatch() {
         (Phase::Waiting, 7, u64::MAX, 3),
         (Phase::Waiting, 7, 19, u32::MAX),
     ] {
-        let mut init = crate::auth::SessionInit::captured(Default::default());
+        let mut init = plx_session::auth::SessionInit::captured(Default::default());
         init.phase = phase;
         init.qr_gen = generation;
         init.epoch = epoch;
@@ -674,19 +674,19 @@ fn refused_restart_preserves_the_exact_owner_state_through_dispatch() {
 
 #[test]
 fn mounted_profiles_selection_crosses_owner_and_live_ack_with_constructor_and_command_carry() {
-    use crate::auth::owner::Command;
+    use plx_session::auth::owner::Command;
     use plx_machine::machine::{PressId, RequestId};
     let _guard = plx_base::testlock::serial();
     let epoch = u64::from(u32::MAX) + 31;
-    let mut init = crate::auth::SessionInit::captured(plx_plex::plex::session::Session {
+    let mut init = plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
         user: plx_plex::plex::session::UserRef { uuid: "synthetic-user".into(),
             token: "synthetic-profile-token".into(), ..Default::default() }, ..Default::default()
     });
     init.epoch = epoch;
-    init.phase = crate::auth::Phase::Profiles;
+    init.phase = plx_session::auth::Phase::Profiles;
     init.pin_denied = true;
-    init.users = vec![crate::auth::UserTile { uuid: "synthetic-user".into(),
+    init.users = vec![plx_session::auth::UserTile { uuid: "synthetic-user".into(),
         title: "Synthetic user".into(), ..Default::default() }];
     let mut rig = Bridge::for_session_test(init);
     let mut d = Dispatcher::<AppHost>::new();
@@ -735,7 +735,7 @@ fn mounted_profiles_selection_crosses_owner_and_live_ack_with_constructor_and_co
     let accepted = d.frame_with(&mut rig, Tick { ms: 48, dt_us: 16_000 }, Vec::new(), Vec::new(), &mut NoTap, false);
     assert!(accepted.dropped_deliveries > 0, "foreign-instance delivery must be rejected by the dispatcher");
     assert_eq!(rig.auth_read().0.flow_epoch, epoch + 1);
-    assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Ready);
+    assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Ready);
     assert!(probe(&d).contains("selection_accepted=true"),
         "the real live screen, not a Tap, must receive the owner's acceptance");
     d.emit(MachineId::Session, Fx::Deliver(MachineId::Instance(instance), Delivery::Screen(
@@ -766,12 +766,12 @@ fn mounted_profiles_selection_crosses_owner_and_live_ack_with_constructor_and_co
 
 #[test]
 fn erased_publication_waits_for_carried_resource_completion() {
-    use crate::auth::owner::Command;
-    let mut init = crate::auth::SessionInit::captured(plx_plex::plex::session::Session {
+    use plx_session::auth::owner::Command;
+    let mut init = plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
         ..Default::default()
     });
-    init.phase = crate::auth::Phase::Profiles;
+    init.phase = plx_session::auth::Phase::Profiles;
     init.pin_code = "old-code".into();
     init.signin_active = true;
     let mut rig = Bridge::for_session_test(init);
@@ -784,16 +784,16 @@ fn erased_publication_waits_for_carried_resource_completion() {
     let first = d.frame_with(&mut rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
     assert!(first.carried > 0);
     assert!(!rig.session_adapter.fixture_resources().disk.account_token.is_empty());
-    assert_ne!(rig.auth_read().0.phase, crate::auth::Phase::Deleted,
+    assert_ne!(rig.auth_read().0.phase, plx_session::auth::Phase::Deleted,
         "logical cancellation is not completion of the still-carried disk/resource erase");
     let erased_epoch = rig.auth_read().0.flow_epoch;
     let pending = rig.session.snapshot_init();
-    let restored = crate::auth::SessionMachine::from_init(pending);
+    let restored = plx_session::auth::SessionMachine::from_init(pending);
     assert_eq!(restored.subhash(), rig.session.subhash(), "pending erase is canonical/init state");
     execute_session_command(&mut d, Command::StartLogin);
     d.frame_with(&mut rig, Tick { ms: 16, dt_us: 16_000 }, Vec::new(), Vec::new(), &mut NoTap, false);
     assert!(rig.session_adapter.fixture_resources().disk.account_token.is_empty());
-    assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Deleted);
+    assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Deleted);
     // Preserve the former deleted_ctl constructor assertions through actual queued erasure.
     let erased = rig.session.snapshot_init();
     assert!(erased.persisted.client_id.is_empty());
@@ -805,20 +805,20 @@ fn erased_publication_waits_for_carried_resource_completion() {
     assert!(rig.session.snapshot_init().pending_erase.is_none());
     assert!(rig.take_reqs().iter().any(|req| matches!(req, LoopReq::LocalDataErased)));
     let events = &rig.session_adapter.fixture_resources().coordinator_events;
-    assert!(matches!(events.first(), Some(crate::auth::owner::CoordinatorAction::CloseTelemetry)));
-    assert!(!events.iter().any(|event| matches!(event, crate::auth::owner::CoordinatorAction::SignInStarted)),
+    assert!(matches!(events.first(), Some(plx_session::auth::owner::CoordinatorAction::CloseTelemetry)));
+    assert!(!events.iter().any(|event| matches!(event, plx_session::auth::owner::CoordinatorAction::SignInStarted)),
         "a carried start cannot launch before erase completion");
     execute_session_command(&mut d, Command::StartLogin);
     d.emit(MachineId::Session, Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::Session(
-        crate::auth::owner::SessionEvent::Erased { epoch: erased_epoch, leftovers: 99 }))));
+        plx_session::auth::owner::SessionEvent::Erased { epoch: erased_epoch, leftovers: 99 }))));
     d.frame_with(&mut rig, Tick { ms: 32, dt_us: 16_000 }, Vec::new(), Vec::new(), &mut NoTap, false);
-    assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Creating);
+    assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Creating);
     assert_eq!(rig.auth_read().0.delete_leftovers, 2, "duplicate old completion cannot overwrite a newer flow");
 }
 
 #[test]
 fn selection_acceptance_uses_exact_instance_correlation_and_full_epoch_through_carry() {
-    use crate::auth::owner::{Command, ReplyTo};
+    use plx_session::auth::owner::{Command, ReplyTo};
     use plx_ui::dispatch::Tap;
     #[derive(Default)]
     struct Replies(Vec<(u32, u32, bool, u64)>);
@@ -835,14 +835,14 @@ fn selection_acceptance_uses_exact_instance_correlation_and_full_epoch_through_c
     for case in 0..5 {
         for carry in [false, true] {
             let epoch = if case == 4 { u64::MAX } else { u64::from(u32::MAX) + 23 };
-            let mut init = crate::auth::SessionInit::captured(plx_plex::plex::session::Session {
+            let mut init = plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session {
                 client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
                 user: plx_plex::plex::session::UserRef { uuid: "synthetic-user".into(),
                     token: "synthetic-profile-token".into(), ..Default::default() }, ..Default::default()
             });
             init.epoch = epoch;
-            init.phase = crate::auth::Phase::Profiles;
-            init.users = vec![crate::auth::UserTile { uuid: "synthetic-user".into(),
+            init.phase = plx_session::auth::Phase::Profiles;
+            init.users = vec![plx_session::auth::UserTile { uuid: "synthetic-user".into(),
                 title: "Synthetic user".into(), protected: case == 1, ..Default::default() }];
             if case == 3 { init.next_req = u32::MAX; }
             let mut rig = Bridge::for_session_test(init);
@@ -872,13 +872,13 @@ fn selection_acceptance_uses_exact_instance_correlation_and_full_epoch_through_c
             assert_eq!(replies.0, [(41, 17, accepted, actual_epoch)]);
             assert_eq!(rig.auth_read().0.flow_epoch, actual_epoch, "selection executes once, not again at ACK");
             if case == 0 {
-                assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Ready);
+                assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Ready);
                 assert_eq!(rig.session.snapshot_init().next_req, 0, "fast Ready needs no worker request identity");
             } else if case == 1 {
-                assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Switching);
+                assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Switching);
                 assert_eq!(rig.session.snapshot_init().next_req, 1);
             } else {
-                assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Profiles);
+                assert_eq!(rig.auth_read().0.phase, plx_session::auth::Phase::Profiles);
                 assert_eq!(rig.session.subhash(), old_hash, "refusal does not mutate the existing flow");
                 assert!(std::sync::Arc::ptr_eq(&old, &rig.session.publication()));
             }
@@ -888,14 +888,14 @@ fn selection_acceptance_uses_exact_instance_correlation_and_full_epoch_through_c
 
 #[test]
 fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_acks() {
-    use crate::auth::owner::{AdmissionId, AdmissionState, Command, Identity, Pending, Receipt,
+    use plx_session::auth::owner::{AdmissionId, AdmissionState, Command, Identity, Pending, Receipt,
         SessionEvent, SessionFx, SessionOp, SessionWorkKey, StreamPhase,
         SESSION_DATA_RECORDS, SESSION_TOTAL_RESERVATIONS, SESSION_TRANSFER_RECORDS};
     use plx_machine::machine::RequestId;
     // frame_ingest also captures the OTHER stores. Serialize that real frame boundary;
     // Session's own resources remain private and every network operation is injected.
     let _guard = plx_base::testlock::serial();
-    let mut init = crate::auth::SessionInit::captured(plx_plex::plex::session::Session {
+    let mut init = plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
         ..Default::default()
     });
@@ -906,7 +906,7 @@ fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_ac
             lifecycle: None, last_arrival: None, phase: StreamPhase::Running, capture: None,
             admission: AdmissionState::Awaiting(AdmissionId(req)) });
     }
-    let expected = crate::auth::SessionIdentity::of(&init.persisted);
+    let expected = plx_session::auth::SessionIdentity::of(&init.persisted);
     let mut rig = Bridge::for_session_test(init);
     let fill = |rig: &mut Bridge, first: u32| {
         for offset in 0..SESSION_TOTAL_RESERVATIONS {
@@ -915,8 +915,8 @@ fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_ac
                 |job| { job(); true }, move |output| {
                     if offset == 0 {
                         for _ in 0..SESSION_DATA_RECORDS {
-                            assert!(output.progress(crate::auth::AuthProgress::Registry(
-                                crate::auth::RegistryProgress::Install { epoch: 1,
+                            assert!(output.progress(plx_session::auth::AuthProgress::Registry(
+                                plx_session::auth::RegistryProgress::Install { epoch: 1,
                                     expected: Some(expected.clone()), sources: Vec::new(), primary: None })).is_ok());
                         }
                     }
@@ -988,7 +988,7 @@ fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_ac
 
 #[test]
 fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
-    use crate::auth::owner::{RegistryPlan, SessionEvent, SessionWork};
+    use plx_session::auth::owner::{RegistryPlan, SessionEvent, SessionWork};
     let _guard = plx_base::testlock::serial();
     for replacement in 0..3 {
         plx_plex::plex::reset_servers_for_test();
@@ -1020,7 +1020,7 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
         let expected_origin = fresh.origin().unwrap();
         let expected_pin = fresh.resolve_pin().unwrap();
         assert!(expected_origin.is_tls());
-        let mut rig = Bridge::for_session_test(crate::auth::SessionInit::captured(stored));
+        let mut rig = Bridge::for_session_test(plx_session::auth::SessionInit::captured(stored));
         rig.session_adapter.fixture_resources().native_endpoints.insert(sid.raw(), client);
         rig.session_adapter.inject_fixture_work(1, move |output, input| {
             let SessionWork::Endpoint { expected, lifecycle, machine_id, .. } = input
@@ -1029,14 +1029,14 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
             assert_eq!(lifecycle.instance_gen, instance);
             assert_eq!(lifecycle.token_gen, token_gen);
             assert_eq!(expected.profile_uuid, "synthetic-profile");
-            let probe = crate::auth::settled_probe_for_test(&machine_id,
+            let probe = plx_session::auth::settled_probe_for_test(&machine_id,
                 plx_plex::plex::probe::Outcome::Reachable,
                 Some(plx_plex::plex::probe::Location::Local), Some(fresh.address.clone()));
-            assert!(output.complete(crate::auth::endpoint_work_fact(1, expected, lifecycle,
+            assert!(output.complete(plx_session::auth::endpoint_work_fact(1, expected, lifecycle,
                 machine_id, Some(fresh), Some(probe))).is_ok());
         });
         let mut d = Dispatcher::<AppHost>::new();
-        execute_session_command(&mut d, crate::auth::SessionCmd::RequestEndpoint { sid });
+        execute_session_command(&mut d, plx_session::auth::SessionCmd::RequestEndpoint { sid });
         d.frame_with(&mut rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
         let records = rig.session_adapter.take_results();
         assert_eq!(records.len(), 1);

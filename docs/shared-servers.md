@@ -604,7 +604,7 @@ item-shaped integer is server-local and dense from 1) is exactly why they cannot
 "I have watched this" is a claim about a **title**, not about a file on a host — so a Mark as
 Watched now **fans out** to every registered source that holds the same item.
 
-It lives in `rust-modules/src/viewstate.rs`, which was already the single owner of view-state
+It lives in `rust-modules/data/src/viewstate.rs`, which was already the single owner of view-state
 writes, and it reuses the resolve "Also available" was built on (`Client::find_by_guid`, one query
 per source, off the SDL thread).
 

@@ -188,9 +188,9 @@ impl Selftest {
     }
 
     fn control(&mut self, r: u32) -> Plane {
-        let reply = crate::auth::get_identity(&self.cfg.origin, self.resolve_pin.as_ref(), PLANE_BUDGET);
+        let reply = plx_session::auth::get_identity(&self.cfg.origin, self.resolve_pin.as_ref(), PLANE_BUDGET);
         match reply {
-            crate::auth::ProbeReply::Answered { status, peer_pin, .. } => {
+            plx_session::auth::ProbeReply::Answered { status, peer_pin, .. } => {
                 let mode = self.mode();
                 let ok = (200..300).contains(&status);
                 let mut line = if ok {
@@ -211,7 +211,7 @@ impl Selftest {
                 line.push_str(&format!(" pin_held={}", self.pin_held()));
                 Plane { line, ok, key: mode == "key" }
             }
-            crate::auth::ProbeReply::Failed(failure) => {
+            plx_session::auth::ProbeReply::Failed(failure) => {
                 let rc = failure.and_then(|f| f.curl_rc).map_or("none".to_owned(), |rc| rc.to_string());
                 Plane { line: format!("tls-selftest r={r} control: refused rc={rc} pin_held={}", self.pin_held()), ok: false, key: false }
             }

@@ -37,7 +37,7 @@ pub(super) fn transport_title<'a>(film_title: &'a str, extra_title: &'a str) -> 
     // own word and the server's "Trailer" count as saying nothing new.
     if trimmed.is_empty()
         || trimmed.eq_ignore_ascii_case("trailer")
-        || trimmed.to_lowercase() == crate::metadata::ExtraContext::Trailer.label().to_lowercase()
+        || trimmed.to_lowercase() == plx_data::metadata::ExtraContext::Trailer.label().to_lowercase()
     {
         film_title
     } else {

@@ -16,10 +16,10 @@
 
 use std::ffi::CString;
 
-use crate::person::{Person, NSHELF};
+use plx_data::person::{Person, NSHELF};
 use plx_plex::plex::ServerId;
-use crate::pms::PmsMovie;
-use crate::stores::person::PersonCmd;
+use plx_data::pms::PmsMovie;
+use plx_data::stores::person::PersonCmd;
 use plx_ui::card_row::{self, CardRow, RowStyle};
 use plx_ui::consts::*;
 use plx_ui::label::{Label, VAlign};
@@ -145,7 +145,7 @@ fn nshelves(p: &Person) -> usize {
 /// Is there a real, resolved Filmography entry to enter? (`p.credited` gates it — see
 /// [`entry_reachable`] for the PENDING half this alone cannot answer.) Pure over the two facts
 /// that decide it, so [`has_entry_of`] is testable with no `Person` in scope — `Person`'s own
-/// `credits`/`srcs`/`roster_gen` fields are private to `crate::person`, so a host test outside
+/// `credits`/`srcs`/`roster_gen` fields are private to `plx_data::person`, so a host test outside
 /// that module cannot build one by hand; the two existing `#[cfg(test)]` seams it exposes
 /// (`install_for_test`/`install_credits_for_test`) both force `credited = true`, so the PENDING
 /// half of this predicate can only be exercised through its pure form today.
@@ -154,7 +154,7 @@ fn has_entry_of(credited: bool, filmography_total: usize) -> bool {
 }
 
 fn has_entry(p: &Person) -> bool {
-    has_entry_of(p.credited, crate::person::filmography_total(p))
+    has_entry_of(p.credited, plx_data::person::filmography_total(p))
 }
 
 /// **Should the entry row be OFFERED at all right now** — present or merely still pending an
@@ -643,8 +643,8 @@ impl PersonScreen {
     /// Claim this Bridge's Person owner for this identity through the addressed store effect.
     fn request_store<H: ContentLike + PersonLike>(&mut self, fx: &mut Effects<'_, H>) {
         fx.push(plx_machine::machine::Fx::App(AppFx::Store(
-            crate::stores::StoreId::Person,
-            crate::stores::StoreCmd::Person(PersonCmd::Open {
+            plx_data::stores::StoreId::Person,
+            plx_data::stores::StoreCmd::Person(PersonCmd::Open {
             sid: self.sid,
             key: self.key.clone(),
             guid: self.guid.clone(),
@@ -733,7 +733,7 @@ impl PersonScreen {
         let Some(person) = self.person(cx) else {
             return;
         };
-        if self.locate(person, elem).is_some() || !crate::person::media_resolving(person, sid) {
+        if self.locate(person, elem).is_some() || !plx_data::person::media_resolving(person, sid) {
             self.return_pending = false;
         }
     }
@@ -797,7 +797,7 @@ impl PersonScreen {
                 n => CString::new(plx_platform::i18n::current().number(n as i64)).unwrap_or_default(),
             };
         }
-        self.entry_count_c = match crate::person::filmography_total(p) {
+        self.entry_count_c = match plx_data::person::filmography_total(p) {
             0 => CString::default(),
             n => CString::new(plx_platform::i18n::current().number(n as i64)).unwrap_or_default(),
         };
@@ -806,7 +806,7 @@ impl PersonScreen {
     fn remeasure_header(&mut self, p: &Person, measure: &dyn Measure) {
         self.refresh_runs(p, measure);
         self.header = header_flow(
-            crate::person::facts_pending(p),
+            plx_data::person::facts_pending(p),
             &p.bio,
             !p.roles.is_empty(),
             !self.life_parts.is_empty(),
@@ -985,7 +985,7 @@ impl PersonScreen {
 
         let settling =
             (self.scroll.scroll.pos - want).abs() > 0.25 || self.scroll.scroll.vel.abs() > 0.5;
-        if crate::person::facts_pending(p) || H::person(cx).loading() {
+        if plx_data::person::facts_pending(p) || H::person(cx).loading() {
             self.spin_ms = self.spin_phase.advance(t, &mut fx.present());
         }
         if settling {
@@ -1021,7 +1021,7 @@ impl PersonScreen {
     /// tracks_available` is the precedent and the reason.
     /// The scenario has no frame capability; it reads the header's last measured answer and
     /// waits for the next measure after a store invalidation, just as the painted header does.
-    pub(crate) fn bio_available(&self, view: crate::person::PersonView<'_>) -> bool {
+    pub(crate) fn bio_available(&self, view: plx_data::person::PersonView<'_>) -> bool {
         view.current().is_some_and(|person| plx_plex::plex::same_item(
             (person.sid, person.key.as_str()), (self.sid, self.key.as_str())))
             && self.bio_more()
@@ -1146,7 +1146,7 @@ impl PersonScreen {
         let col_x_ = col_x(d);
         let truncated = self.bio_more();
         let marked = self.bio_marked(focus_elem);
-        let pending = crate::person::facts_pending(person);
+        let pending = plx_data::person::facts_pending(person);
         // The bio block (plate, shadow and text) is drawn FIRST so its plate sits under the name,
         // roles and life lines above it, as the old fixed highlight did. A resting bio never
         // measures for a plate: the lift block is skipped until the lift has a factor.
@@ -1477,7 +1477,7 @@ impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
                 elem: want.elem,
             },
             None if returning_card
-                .is_some_and(|card| crate::person::media_resolving(p, card.sid)) =>
+                .is_some_and(|card| plx_data::person::media_resolving(p, card.sid)) =>
             {
                 want
             }
@@ -1645,7 +1645,7 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
             }) => {
                 Handled::No
             }
-            ScreenEvent::StoreChanged(ord, _) if *ord == crate::stores::StoreId::Person.ord() => {
+            ScreenEvent::StoreChanged(ord, _) if *ord == plx_data::stores::StoreId::Person.ord() => {
                 self.header_dirty = true;
                 self.refresh_store_cache(cx);
                 self.settle_return_pending(cx);
@@ -1657,8 +1657,8 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
                 if self.person(cx).is_some() && !self.teardown_closed {
                     self.teardown_closed = true;
                     fx.push(plx_machine::machine::Fx::App(AppFx::Store(
-                        crate::stores::StoreId::Person,
-                        crate::stores::StoreCmd::Person(PersonCmd::Close),
+                        plx_data::stores::StoreId::Person,
+                        plx_data::stores::StoreCmd::Person(PersonCmd::Close),
                     )));
                 }
                 Handled::Yes
@@ -1803,13 +1803,13 @@ mod tests {
         type Fx = AppFx;
         type Msg = super::super::registry::AppMsg;
         type Elem = u32;
-        type Views<'a> = crate::person::PersonView<'a>;
+        type Views<'a> = plx_data::person::PersonView<'a>;
         type Init = super::super::family::NoInit;
         type Memory = PageMemory;
     }
 
     impl PersonLike for PersonHost {
-        fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a> { cx.views }
+        fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> { cx.views }
     }
 
     fn item(rk: &str) -> PmsMovie {
@@ -1824,7 +1824,7 @@ mod tests {
         }
     }
 
-    fn cx<'a>(m: &'a dyn Measure, person: crate::person::PersonView<'a>) -> Cx<'a, PersonHost> {
+    fn cx<'a>(m: &'a dyn Measure, person: plx_data::person::PersonView<'a>) -> Cx<'a, PersonHost> {
         Cx {
             views: person,
             tick: Tick::default(),
@@ -1835,7 +1835,7 @@ mod tests {
         }
     }
 
-    fn cx_at<'a>(m: &'a FixtureMeasure, person: crate::person::PersonView<'a>, focus: plx_machine::machine::FocusKey<u32>) -> Cx<'a, PersonHost> {
+    fn cx_at<'a>(m: &'a FixtureMeasure, person: plx_data::person::PersonView<'a>, focus: plx_machine::machine::FocusKey<u32>) -> Cx<'a, PersonHost> {
         Cx {
             focus: FocusRead {
                 current: Some(focus),
@@ -1848,9 +1848,9 @@ mod tests {
     /// seeds the shelves the way a landing does — `install_for_test` ALSO settles `credited =
     /// true`, which is why every test below that wants a genuinely PENDING entry row reasons about
     /// [`entry_reachable_of`] directly instead (see that function's own doc for why no test seam
-    /// can force `credited` back to `false` on a live `Person` from outside `crate::person`).
-    fn seed(movies: usize, shows: usize) -> (crate::stores::person::PersonStore, PersonScreen) {
-        let mut store = crate::stores::person::PersonStore::default();
+    /// can force `credited` back to `false` on a live `Person` from outside `plx_data::person`).
+    fn seed(movies: usize, shows: usize) -> (plx_data::stores::person::PersonStore, PersonScreen) {
+        let mut store = plx_data::stores::person::PersonStore::default();
         store.run(PersonCmd::Open {
             sid: ServerId::UNSET,
             key: "161".into(),
@@ -1874,7 +1874,7 @@ mod tests {
         (store, s)
     }
 
-    fn focus_of(s: &PersonScreen, store: &crate::stores::person::PersonStore, kind: usize, col: usize) -> plx_machine::machine::FocusKey<u32> {
+    fn focus_of(s: &PersonScreen, store: &plx_data::stores::person::PersonStore, kind: usize, col: usize) -> plx_machine::machine::FocusKey<u32> {
         s.shelf_key(store.view().current().unwrap(), kind, col)
     }
 
@@ -1920,7 +1920,7 @@ mod tests {
     #[test]
     fn the_header_skeleton_spinner_reports_motion_while_facts_are_pending() {
         let _serial = plx_base::testlock::serial();
-        let mut store = crate::stores::person::PersonStore::default();
+        let mut store = plx_data::stores::person::PersonStore::default();
         store.run(PersonCmd::Open {
             sid: ServerId::UNSET, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
@@ -1936,7 +1936,7 @@ mod tests {
         );
         let p = store.view().current().expect("Open seeds a pending Person synchronously");
         assert!(
-            crate::person::facts_pending(p),
+            plx_data::person::facts_pending(p),
             "a fresh mount must start pending, or this test is not exercising the skeleton clock"
         );
         let m = FixtureMeasure;
@@ -1969,19 +1969,19 @@ mod tests {
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         {
-            let context = cx(&measure, crate::person::PersonView::default());
+            let context = cx(&measure, plx_data::person::PersonView::default());
             let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(
                 plx_machine::machine::InstanceId(0)), &mut present);
             Machine::<PersonHost>::step(
                 &mut screen, &ScreenEvent::Enter(Enter::Restored), &context, &mut fx);
         }
         assert!(matches!(&out[0].fx,
-            plx_machine::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
-                crate::stores::StoreCmd::Person(PersonCmd::Open { sid, key, guid, name, thumb })))
+            plx_machine::machine::Fx::App(AppFx::Store(plx_data::stores::StoreId::Person,
+                plx_data::stores::StoreCmd::Person(PersonCmd::Open { sid, key, guid, name, thumb })))
                 if *sid == ServerId::from_raw(2) && key == "161" && guid == "person-guid"
                     && name == "Person Name" && thumb == "thumb"));
 
-        let mut store = crate::stores::person::PersonStore::default();
+        let mut store = plx_data::stores::person::PersonStore::default();
         store.run(PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
             guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
         out.clear();
@@ -1993,8 +1993,8 @@ mod tests {
                 &mut screen, &ScreenEvent::WillLeave(Leave::ForGood), &context, &mut fx);
         }
         assert!(matches!(&out[0].fx,
-            plx_machine::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
-                crate::stores::StoreCmd::Person(PersonCmd::Close)))));
+            plx_machine::machine::Fx::App(AppFx::Store(plx_data::stores::StoreId::Person,
+                plx_data::stores::StoreCmd::Person(PersonCmd::Close)))));
         assert!(store.view().current().is_some(),
             "the screen emits; only the addressed Bridge is allowed to apply the command");
     }
@@ -2010,7 +2010,7 @@ mod tests {
             EntryId(0), ServerId::from_raw(2), "161".into(), "person-guid".into(),
             "Person Name".into(), "thumb".into());
         let measure = FixtureMeasure;
-        let mut store = crate::stores::person::PersonStore::default();
+        let mut store = plx_data::stores::person::PersonStore::default();
         store.run(PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
             guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
         let mut present = plx_machine::present::Present::new();
@@ -2027,8 +2027,8 @@ mod tests {
                 &mut screen, &ScreenEvent::Unmount, &context, &mut fx);
         }
         let closes = out.iter().filter(|s| matches!(&s.fx,
-            plx_machine::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
-                crate::stores::StoreCmd::Person(PersonCmd::Close))))).count();
+            plx_machine::machine::Fx::App(AppFx::Store(plx_data::stores::StoreId::Person,
+                plx_data::stores::StoreCmd::Person(PersonCmd::Close))))).count();
         assert_eq!(closes, 1,
             "WillLeave(ForGood) then Unmount must close the Person store exactly once, not twice");
     }
@@ -2041,7 +2041,7 @@ mod tests {
             EntryId(0), ServerId::from_raw(2), "161".into(), "person-guid".into(),
             "Person Name".into(), "thumb".into());
         let measure = FixtureMeasure;
-        let mut store = crate::stores::person::PersonStore::default();
+        let mut store = plx_data::stores::person::PersonStore::default();
         store.run(PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
             guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
         let mut present = plx_machine::present::Present::new();
@@ -2054,8 +2054,8 @@ mod tests {
                 &mut screen, &ScreenEvent::Unmount, &context, &mut fx);
         }
         let closes = out.iter().filter(|s| matches!(&s.fx,
-            plx_machine::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
-                crate::stores::StoreCmd::Person(PersonCmd::Close))))).count();
+            plx_machine::machine::Fx::App(AppFx::Store(plx_data::stores::StoreId::Person,
+                plx_data::stores::StoreCmd::Person(PersonCmd::Close))))).count();
         assert_eq!(closes, 1, "a bare Unmount must close the Person store exactly once");
     }
 
@@ -2622,7 +2622,7 @@ mod tests {
     fn pending_share_return(
         measure: &FixtureMeasure,
     ) -> (
-        crate::stores::person::PersonStore,
+        plx_data::stores::person::PersonStore,
         PersonScreen,
         plx_machine::machine::FocusKey<u32>,
         ServerId,
@@ -2633,7 +2633,7 @@ mod tests {
             plx_plex::plex::register_for_test("person-pending-origin", "127.0.0.1", 1, "a", "cid");
         let share =
             plx_plex::plex::register_for_test("person-pending-share", "127.0.0.1", 2, "b", "cid");
-        let mut store = crate::stores::person::PersonStore::default();
+        let mut store = plx_data::stores::person::PersonStore::default();
         store.run(PersonCmd::Open { sid: origin, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
             thumb: String::new() });
@@ -2693,7 +2693,7 @@ mod tests {
         );
         Machine::<PersonHost>::step(
             &mut returned,
-            &ScreenEvent::StoreChanged(crate::stores::StoreId::Person.ord(), 1),
+            &ScreenEvent::StoreChanged(plx_data::stores::StoreId::Person.ord(), 1),
             &cx_at(measure, store.view(), old_focus),
             &mut fx,
         );
@@ -2799,7 +2799,7 @@ mod tests {
         );
         Machine::<PersonHost>::step(
             &mut returned,
-            &ScreenEvent::StoreChanged(crate::stores::StoreId::Person.ord(), 2),
+            &ScreenEvent::StoreChanged(plx_data::stores::StoreId::Person.ord(), 2),
             &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
@@ -2828,7 +2828,7 @@ mod tests {
             plx_plex::plex::register_for_test("person-return-origin", "127.0.0.1", 1, "a", "cid");
         let share =
             plx_plex::plex::register_for_test("person-return-share", "127.0.0.1", 2, "b", "cid");
-        let mut store = crate::stores::person::PersonStore::default();
+        let mut store = plx_data::stores::person::PersonStore::default();
         store.run(PersonCmd::Open { sid: origin, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
             thumb: String::new() });
@@ -2886,7 +2886,7 @@ mod tests {
         );
         Machine::<PersonHost>::step(
             &mut first,
-            &ScreenEvent::StoreChanged(crate::stores::StoreId::Person.ord(), 1),
+            &ScreenEvent::StoreChanged(plx_data::stores::StoreId::Person.ord(), 1),
             &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
@@ -2926,7 +2926,7 @@ mod tests {
         );
         Machine::<PersonHost>::step(
             &mut first,
-            &ScreenEvent::StoreChanged(crate::stores::StoreId::Person.ord(), 2),
+            &ScreenEvent::StoreChanged(plx_data::stores::StoreId::Person.ord(), 2),
             &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
@@ -2947,7 +2947,7 @@ mod tests {
         );
         Machine::<PersonHost>::step(
             &mut first,
-            &ScreenEvent::StoreChanged(crate::stores::StoreId::Person.ord(), 3),
+            &ScreenEvent::StoreChanged(plx_data::stores::StoreId::Person.ord(), 3),
             &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
@@ -2977,7 +2977,7 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("person-cold-return", "127.0.0.1", 1, "a", "cid");
-        let mut store = crate::stores::person::PersonStore::default();
+        let mut store = plx_data::stores::person::PersonStore::default();
         store.run(PersonCmd::Open { sid, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
             thumb: String::new() });
@@ -3050,7 +3050,7 @@ mod tests {
         );
         Machine::<PersonHost>::step(
             &mut remounted,
-            &ScreenEvent::StoreChanged(crate::stores::StoreId::Person.ord(), 2),
+            &ScreenEvent::StoreChanged(plx_data::stores::StoreId::Person.ord(), 2),
             &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );

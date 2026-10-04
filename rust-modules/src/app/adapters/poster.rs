@@ -2556,7 +2556,7 @@ mod tests {
         tex::reset_for_test(16 * 1024 * 1024);
         store().slots = [Pslot::ZERO; PT_CAP];
         let rect = plx_ui::Rect::new(0.0, 0.0, 250.0, 375.0);
-        let mut item = crate::pms::PmsMovie::default();
+        let mut item = plx_data::pms::PmsMovie::default();
         item.sid = sid;
         item.thumb = "/library/metadata/42/thumb".into();
         item.still = "/library/metadata/42/still".into();

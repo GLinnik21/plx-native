@@ -73,9 +73,9 @@
 //! page commits and dismisses like a root pick. A page whose listing is gone (the language left the
 //! offered list) pops to the root ([`TrackMenuState::pages_hold`]); a language page that drops to a
 //! single track stays open, and popping it lands on that track's direct row.
-use crate::metadata;
-use crate::metadata::sub_layout::{self, LangId, OtherLang, RowBadge, RowTarget, SubHeader, SubModel, SubRow, SubTrack};
-use crate::metadata::track_label;
+use plx_data::metadata;
+use plx_data::metadata::sub_layout::{self, LangId, OtherLang, RowBadge, RowTarget, SubHeader, SubModel, SubRow, SubTrack};
+use plx_data::metadata::track_label;
 use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
 use plx_ui::frame::Budget;
 use plx_ui::geom::IndexElem;
@@ -103,7 +103,7 @@ use std::os::raw::c_int;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrackRow {
     /// An Audio-tab track row — the index into the playing item's audio list
-    /// ([`crate::metadata::PlayingItem::audio`]).
+    /// ([`plx_data::metadata::PlayingItem::audio`]).
     Audio(usize),
     /// The Boost dialog toggle row (issue #266) — present whenever [`TrackMenuState::enhance_shown`]
     /// is `Some` (offered) OR [`TrackMenuState::enhance_disabled`] is (dim, with a reason),
@@ -1324,7 +1324,7 @@ impl TrackMenuState {
             // codec + channel layout.
             let name = track_label::track_name(
                 &s.title,
-                names.audio(crate::metadata::audio_ordinal(&d.audio, i)),
+                names.audio(plx_data::metadata::audio_ordinal(&d.audio, i)),
                 lang,
             );
             let sub = if name.is_empty() {
@@ -1807,8 +1807,8 @@ fn format_offset(ms: i64) -> String {
 }
 
 // ---- section building ----
-use crate::metadata::friendly_codec; // the ONE codec→display-name map (shared with the Info card)
-use crate::metadata::track_label::Kind;
+use plx_data::metadata::friendly_codec; // the ONE codec→display-name map (shared with the Info card)
+use plx_data::metadata::track_label::Kind;
 
 /// "AC-3 5.1", "Dolby TrueHD 7.1", "DTS 5.1" — a compact codec + channel-layout descriptor.
 fn audio_descriptor(s: &metadata::Stream) -> String {
@@ -2032,9 +2032,9 @@ mod tests {
 
     /// A store with `subs` installed as the playing item's subtitle list. `pub(super)`:
     /// `enhancement_menu_tests` below reuses it for the Subtitles tab under a live Burn (M7).
-    pub(super) fn store_with(subs: Vec<metadata::Stream>) -> crate::stores::metadata::MetadataStore {
-        let mut store = crate::stores::metadata::MetadataStore::default();
-        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
+    pub(super) fn store_with(subs: Vec<metadata::Stream>) -> plx_data::stores::metadata::MetadataStore {
+        let mut store = plx_data::stores::metadata::MetadataStore::default();
+        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(
             metadata::PlayingItem::with_subs(subs)
         ))));
         store
@@ -2043,11 +2043,11 @@ mod tests {
     /// A store with `audio` installed as the playing item's audio list — the audio-tab
     /// counterpart to [`store_with`]. `pub(super)`: `enhancement_menu_tests` below builds the
     /// same fixture shape for the Audio tab's DSP toggle rows (issue #266 PR 4).
-    pub(super) fn store_with_audio(audio: Vec<metadata::Stream>) -> crate::stores::metadata::MetadataStore {
-        let mut store = crate::stores::metadata::MetadataStore::default();
+    pub(super) fn store_with_audio(audio: Vec<metadata::Stream>) -> plx_data::stores::metadata::MetadataStore {
+        let mut store = plx_data::stores::metadata::MetadataStore::default();
         let mut item = metadata::PlayingItem::with_subs(Vec::new());
         item.audio = audio;
-        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
+        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
         store
     }
 
@@ -2302,7 +2302,7 @@ mod tests {
         crate::player::sidecar::reset();
         crate::player::set_subtitle_offset(0);
         let ps = crate::route::PlaybackSession::IDLE;
-        let store = store_with(vec![crate::metadata::Stream {
+        let store = store_with(vec![plx_data::metadata::Stream {
             id: 1,
             index: 0,
             lang: "English".into(),
@@ -2325,7 +2325,7 @@ mod tests {
         crate::player::sidecar::reset();
         let ps = crate::route::PlaybackSession::IDLE;
         let store = store_with(vec![
-            crate::metadata::Stream {
+            plx_data::metadata::Stream {
                 id: 1,
                 index: 0,
                 lang: "Russian".into(),
@@ -2334,7 +2334,7 @@ mod tests {
                 title: "iTunes".into(),
                 ..Default::default()
             },
-            crate::metadata::Stream {
+            plx_data::metadata::Stream {
                 id: 2,
                 index: 1,
                 lang: "Russian".into(),
@@ -2383,7 +2383,7 @@ mod tests {
         crate::player::restore_subtitle_tone(SubtitleTone::White);
         let ps = crate::route::PlaybackSession::IDLE;
         let store = store_with(vec![
-            crate::metadata::Stream {
+            plx_data::metadata::Stream {
                 id: 41,
                 index: 0,
                 lang: "English".into(),
@@ -2391,7 +2391,7 @@ mod tests {
                 codec: "srt".into(),
                 ..Default::default()
             },
-            crate::metadata::Stream {
+            plx_data::metadata::Stream {
                 id: 42,
                 index: 1,
                 lang: "French".into(),
@@ -2459,7 +2459,7 @@ mod tests {
         crate::player::sidecar::reset();
         crate::player::set_subtitle_offset(0);
         let ps = crate::route::PlaybackSession::IDLE;
-        let store = store_with(vec![crate::metadata::Stream {
+        let store = store_with(vec![plx_data::metadata::Stream {
             id: 1,
             index: 0,
             lang: "English".into(),
@@ -2537,7 +2537,7 @@ mod tests {
     fn audio_commit_carries_carried_audio() {
         let ps = crate::route::PlaybackSession::IDLE;
         let store = store_with_audio(vec![
-            crate::metadata::Stream {
+            plx_data::metadata::Stream {
                 id: 10,
                 index: 0,
                 codec: "aac".into(),
@@ -2545,7 +2545,7 @@ mod tests {
                 default: true,
                 ..Default::default()
             },
-            crate::metadata::Stream {
+            plx_data::metadata::Stream {
                 id: 20,
                 index: 1,
                 codec: "eac3".into(),
@@ -2581,7 +2581,7 @@ mod tests {
     #[test]
     fn audio_reselecting_the_active_row_dismisses_without_a_commit() {
         let ps = crate::route::PlaybackSession::IDLE;
-        let store = store_with_audio(vec![crate::metadata::Stream {
+        let store = store_with_audio(vec![plx_data::metadata::Stream {
             id: 10,
             index: 0,
             codec: "aac".into(),
@@ -2602,7 +2602,7 @@ mod tests {
         for n in [0usize, 1, 3] {
             let ps = crate::route::PlaybackSession::IDLE;
             let audio = (0..n)
-                .map(|i| crate::metadata::Stream {
+                .map(|i| plx_data::metadata::Stream {
                     id: 10 + i as i64,
                     index: i as i64,
                     codec: "aac".into(),
@@ -2634,8 +2634,8 @@ mod enhancement_menu_tests {
     /// One playing audio track — enough for `tracks(meta)` to be `Some` so `build_audio` does not
     /// take its "no playing item" early return. The enhancement offer itself is driven entirely by
     /// the `PlaybackSession` (`EnhTestFixture`), never by this store.
-    fn one_track_store() -> crate::stores::metadata::MetadataStore {
-        store_with_audio(vec![crate::metadata::Stream {
+    fn one_track_store() -> plx_data::stores::metadata::MetadataStore {
+        store_with_audio(vec![plx_data::metadata::Stream {
             id: 501,
             index: 0,
             codec: "ac3".into(),
@@ -2933,7 +2933,7 @@ mod enhancement_menu_tests {
         let _g = plx_base::testlock::serial();
         let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
         let store = store_with_audio(vec![
-            crate::metadata::Stream {
+            plx_data::metadata::Stream {
                 id: 501,
                 index: 0,
                 codec: "ac3".into(),
@@ -2941,7 +2941,7 @@ mod enhancement_menu_tests {
                 default: true,
                 ..Default::default()
             },
-            crate::metadata::Stream { id: 502, index: 1, codec: "aac".into(), channels: 2, ..Default::default() },
+            plx_data::metadata::Stream { id: 502, index: 1, codec: "aac".into(), channels: 2, ..Default::default() },
         ]);
         let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
         assert_eq!(menu.form.table.sections[0].rows.len(), 2, "both tracks in the track section");
@@ -3133,7 +3133,7 @@ mod enhancement_menu_tests {
         menu.warm_open(&M);
         assert!(!plx_gfx::text::prewarm_pending(), "an unchanged layout was walked again by warm_open");
         let mut menu = menu;
-        menu.update(0.016, &M, &ps, crate::stores::metadata::MetadataStore::default().view());
+        menu.update(0.016, &M, &ps, plx_data::stores::metadata::MetadataStore::default().view());
         assert!(!plx_gfx::text::prewarm_pending(), "the first update walked the layout again");
         teardown(&ps);
     }
@@ -3146,7 +3146,7 @@ mod enhancement_menu_tests {
         use plx_ui::fixture::FixtureMeasure as M;
         let _g = plx_base::testlock::serial();
         let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
-        let mut store = crate::stores::metadata::MetadataStore::default();
+        let mut store = plx_data::stores::metadata::MetadataStore::default();
         let sub = |id: i64, index: i64, lang: &str, code: &str| metadata::Stream {
             id,
             index,
@@ -3160,7 +3160,7 @@ mod enhancement_menu_tests {
             sub(602, 3, "Czech", "ces"),
         ]);
         item.audio = vec![metadata::Stream { id: 501, index: 0, codec: "ac3".into(), channels: 2, default: true, ..Default::default() }];
-        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
+        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
         let mut menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
         plx_gfx::text::reset_prewarm_for_test();
         // A second of presented frames on the Audio tab: open, settle, drain. The first frame
@@ -3204,7 +3204,7 @@ mod enhancement_menu_tests {
         use plx_ui::fixture::FixtureMeasure as M;
         let _g = plx_base::testlock::serial();
         let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
-        let mut store = crate::stores::metadata::MetadataStore::default();
+        let mut store = plx_data::stores::metadata::MetadataStore::default();
         let sub = |id: i64, index: i64, lang: &str, code: &str| metadata::Stream {
             id,
             index,
@@ -3236,7 +3236,7 @@ mod enhancement_menu_tests {
                 ..Default::default()
             },
         ];
-        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
+        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
         plx_gfx::text::reset_prewarm_for_test();
         let frame = |menu: &mut TrackMenuState| {
@@ -3368,7 +3368,7 @@ mod enhancement_menu_tests {
         let _g = plx_base::testlock::serial();
         let two_tracks = || {
             store_with_audio(vec![
-                crate::metadata::Stream {
+                plx_data::metadata::Stream {
                     id: 501,
                     index: 0,
                     codec: "ac3".into(),
@@ -3376,7 +3376,7 @@ mod enhancement_menu_tests {
                     default: true,
                     ..Default::default()
                 },
-                crate::metadata::Stream { id: 502, index: 1, codec: "aac".into(), channels: 2, ..Default::default() },
+                plx_data::metadata::Stream { id: 502, index: 1, codec: "aac".into(), channels: 2, ..Default::default() },
             ])
         };
         let (ps_before, _sid_before) = enhancement_test_session(EnhTestFixture::default());
@@ -4119,7 +4119,7 @@ mod style_page_tests {
     fn open_with(
         codec: &str,
         effect: SubtitleEffect,
-    ) -> (TrackMenuState, crate::route::PlaybackSession, crate::stores::metadata::MetadataStore) {
+    ) -> (TrackMenuState, crate::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
         let (ps, _sid) = enhancement_test_session(EnhTestFixture {
             remux: None,
             subtitle_effect: effect,
@@ -4132,7 +4132,7 @@ mod style_page_tests {
         (menu, ps, store)
     }
 
-    fn open_text() -> (TrackMenuState, crate::route::PlaybackSession, crate::stores::metadata::MetadataStore) {
+    fn open_text() -> (TrackMenuState, crate::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
         open_with("srt", SubtitleEffect::Sidecar)
     }
 
@@ -4537,7 +4537,7 @@ mod language_page_tests {
         v
     }
 
-    fn open(subs: Vec<metadata::Stream>) -> (TrackMenuState, crate::route::PlaybackSession, crate::stores::metadata::MetadataStore) {
+    fn open(subs: Vec<metadata::Stream>) -> (TrackMenuState, crate::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
         let _ = crate::player::sidecar::reset();
         let ps = crate::route::PlaybackSession::IDLE;
         let store = store_with(subs);
@@ -4771,7 +4771,7 @@ mod language_page_tests {
     }
 
     /// Open the Other languages page, then `name`'s drill-in, the way a viewer's keys would.
-    fn open_language_named(menu: &mut TrackMenuState, store: &crate::stores::metadata::MetadataStore, name: &str) {
+    fn open_language_named(menu: &mut TrackMenuState, store: &plx_data::stores::metadata::MetadataStore, name: &str) {
         focus_id(menu, TrackRow::OpenOther);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
         let at = (0..menu.form.table.n_rows().max(0) as usize)
@@ -5032,7 +5032,7 @@ mod motion_tests {
         ]
     }
 
-    fn open() -> (TrackMenuState, crate::route::PlaybackSession, crate::stores::metadata::MetadataStore) {
+    fn open() -> (TrackMenuState, crate::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
         let _ = crate::player::sidecar::reset();
         let ps = crate::route::PlaybackSession::IDLE;
         let store = store_with(subs());
@@ -5045,13 +5045,13 @@ mod motion_tests {
 
     /// One loop frame, as the dispatcher runs it: forget last frame's motion, then update. Returns
     /// whether a spring moved (what keeps the present gate awake).
-    fn frame(menu: &mut TrackMenuState, ps: &crate::route::PlaybackSession, store: &crate::stores::metadata::MetadataStore) -> bool {
+    fn frame(menu: &mut TrackMenuState, ps: &crate::route::PlaybackSession, store: &plx_data::stores::metadata::MetadataStore) -> bool {
         plx_machine::idle::frame_begin(DT);
         menu.update(DT, &ShippedMeasure, ps, store.view());
         plx_machine::idle::present_moving()
     }
 
-    fn run(menu: &mut TrackMenuState, ps: &crate::route::PlaybackSession, store: &crate::stores::metadata::MetadataStore, n: usize) {
+    fn run(menu: &mut TrackMenuState, ps: &crate::route::PlaybackSession, store: &plx_data::stores::metadata::MetadataStore, n: usize) {
         for _ in 0..n {
             frame(menu, ps, store);
         }
@@ -5065,7 +5065,7 @@ mod motion_tests {
         menu.panel_rect(&ShippedMeasure)
     }
 
-    fn push_style(menu: &mut TrackMenuState, store: &crate::stores::metadata::MetadataStore) {
+    fn push_style(menu: &mut TrackMenuState, store: &plx_data::stores::metadata::MetadataStore) {
         let i = menu.form.index_of(&TrackRow::Style).expect("Style row");
         menu.focus_row(i as c_int);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);

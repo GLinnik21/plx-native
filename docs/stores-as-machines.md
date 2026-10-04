@@ -14,7 +14,7 @@ package: the temporary executor still calls the existing auth controller.
 
 The design note for spec v4 (`ui-plxnative-structured-phoenix.md`) phase 4, written from the
 code rather than from the spec's sentence, because the sentence hides four decisions the tree
-forces. Read `rust-modules/src/stores/mod.rs` for the vocabulary; this is the reasoning.
+forces. Read `rust-modules/data/src/stores/mod.rs` for the vocabulary; this is the reasoning.
 
 Browse retirement Wave 2 plus the ViewState and Person ownership stages completed their destination contracts:
 `BrowsePublications` is the retained directory/listing/section-hubs aggregate,

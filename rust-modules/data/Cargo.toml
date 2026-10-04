@@ -1,0 +1,59 @@
+[package]
+name = "plx_data"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "PlxNative data layer: the content stores and the catalog, browse, detail, person, collection, search and view-state modules they own."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+
+[lib]
+name = "plx_data"
+# An rlib the application crate links, never an archive of its own: the one staticlib is the
+# application crate's (ci/test_no_host_staticlib.py holds that line for this crate too). It owns no
+# build script, declares no `extern "C"` and links nothing.
+crate-type = ["rlib"]
+
+[features]
+default = []
+# Forwarded from the application crate, which is the only one that sets them. Each is named here
+# only because some code in this crate has a `cfg` on it (the dev-trigger stand-ins of `metadata`
+# and `person`, the simulator's detail source).
+devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_platform/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers"]
+hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_plex/hostsim", "plx_telemetry/hostsim"]
+# The `cfg(test)` seams other crates' tests use (`pms::seed_for_test`, `metadata::set_current_for_test`,
+# `browse::view::*::fixture`, the stores' `*_for_test` drivers, ...) plus the test-mode arms
+# `cfg(test)` alone cannot give a dependent. Enabled from the dependents' `[dev-dependencies]`;
+# never in a shipped build.
+test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_plex/test-support", "plx_telemetry/test-support"]
+
+[dependencies]
+plx_base = { path = "../base" }
+plx_machine = { path = "../machine" }
+plx_platform = { path = "../platform" }
+plx_plex = { path = "../plex" }
+plx_telemetry = { path = "../telemetry" }
+# `rc`: Home cards are `Arc<PmsMovie>`, which the derived (de)serializers must be able to carry.
+serde = { version = "1", default-features = false, features = ["derive", "alloc", "rc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+
+[dev-dependencies]
+plx_base = { path = "../base", features = ["test-support"] }
+plx_machine = { path = "../machine", features = ["test-support"] }
+plx_platform = { path = "../platform", features = ["test-support"] }
+plx_net = { path = "../net", features = ["test-support"] }
+# THE RULE for a layer crate whose own tests need the development feature set (the same in every
+# crate that has it): the crate dev-depends on ITSELF with `devtriggers`, so `cargo test -p plx_data`
+# alone builds the crate and every layer below it exactly as the Makefile's suite does (the
+# application's default features forward `devtriggers` to all of them). Here it is the plex
+# layer's credential policy for a plaintext origin (`CredentialPolicy::AllowPlaintext`): the browse and
+# search fixtures register an `http://10.0.0.1` server and select it, which a build without the feature
+# refuses (39 tests), and three tests of this crate exist only under its own `devtriggers`.
+# A dev-dependency feature reaches test builds only (`resolver = "2"`): `cargo tree -e normal` shows
+# no `devtriggers` under `--no-default-features`, which is the shipping set.
+plx_data = { path = ".", features = ["devtriggers"] }
+plx_plex = { path = "../plex", features = ["test-support"] }
+plx_telemetry = { path = "../telemetry", features = ["test-support"] }
+
+[lints]
+workspace = true

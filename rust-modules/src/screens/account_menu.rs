@@ -103,7 +103,7 @@ struct AccountInputs {
     name: Option<String>,
     signed_in: bool,
     /// *Change profile* is on offer: plex.tv can serve a roster and the Session has not refused this
-    /// identity one (`switch_refused`, [`crate::auth::owner::SessionSnapshot::switch_refused`]).
+    /// identity one (`switch_refused`, [`plx_session::auth::owner::SessionSnapshot::switch_refused`]).
     can_switch: bool,
     /// The lab-only *Send diagnostics* row ([`plx_platform::labcfg::menu_row_enabled`], compile-time `false`
     /// outside lab builds).
@@ -236,7 +236,7 @@ pub(crate) struct AccountMenuScreen {
     /// actions, not row positions, so a landing cannot turn an armed Settings press into Sign out.
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
     /// The Session's published switch verdict the rows were built on
-    /// ([`crate::auth::owner::SessionSnapshot::switch_refused`]) — a change rebuilds them.
+    /// ([`plx_session::auth::owner::SessionSnapshot::switch_refused`]) — a change rebuilds them.
     switch_refused: bool,
     built: bool,
 }
@@ -519,30 +519,30 @@ mod tests {
         type Fx = AppFx;
         type Msg = crate::screens::registry::AppMsg;
         type Elem = u32;
-        type Views<'a> = crate::auth::SessionRead<'a>;
+        type Views<'a> = plx_session::auth::SessionRead<'a>;
         type Init = super::super::family::NoInit;
         type Memory = ();
     }
     impl AuthLike for MenuHost {
-        fn auth<'a>(cx: &Cx<'a, Self>) -> crate::auth::SessionRead<'a> {
+        fn auth<'a>(cx: &Cx<'a, Self>) -> plx_session::auth::SessionRead<'a> {
             cx.views
         }
     }
 
-    fn published(switch_refused: bool) -> crate::auth::owner::SessionSnapshot {
-        crate::auth::owner::SessionSnapshot {
-            flow_epoch: 0, phase: crate::auth::Phase::Ready, qr_generation: 0,
+    fn published(switch_refused: bool) -> plx_session::auth::owner::SessionSnapshot {
+        plx_session::auth::owner::SessionSnapshot {
+            flow_epoch: 0, phase: plx_session::auth::Phase::Ready, qr_generation: 0,
             code: std::sync::Arc::from(""), png: std::sync::Arc::from(Vec::<u8>::new()),
             code_replaced: false, users: std::sync::Arc::from(Vec::new()),
             error: std::sync::Arc::from(""), pin_denied: false, profile: None,
-            scope: crate::auth::owner::ProfileScope(0), delete_leftovers: 0,
+            scope: plx_session::auth::owner::ProfileScope(0), delete_leftovers: 0,
             persistence_warning: None, incident: None, link_trouble: false,
             discovery_retry: None, plaintext: None, account: None,
             switch_refused, readout_back_resumes: false,
         }
     }
 
-    fn tick(menu: &mut AccountMenuScreen, read: &crate::auth::owner::SessionSnapshot) {
+    fn tick(menu: &mut AccountMenuScreen, read: &plx_session::auth::owner::SessionSnapshot) {
         use plx_machine::machine::{InputOwner, MachineId, Tick};
         let cx = Cx::<MenuHost> {
             views: read.read(),

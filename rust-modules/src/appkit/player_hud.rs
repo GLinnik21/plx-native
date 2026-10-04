@@ -655,7 +655,7 @@ pub(crate) enum ControlSlot {
     Skip(crate::appkit::skip_pill::Prompt),
     /// …and the show has another episode queued, which outranks skipping the credits. Carries the
     /// segment for the same reason `Skip` does — so the row has a stable IDENTITY.
-    UpNext(crate::metadata::Marker),
+    UpNext(plx_data::metadata::Marker),
 }
 
 impl ControlSlot {
@@ -688,7 +688,7 @@ impl ControlSlot {
     /// so a momentary drop out of Playing mid-segment reads as "no segment" and flips the slot to
     /// `Discs` and back. Keyed on the segment, that round trip is not a new offer; keyed on the
     /// slot, it was — and every flicker re-raised the HUD over an intro the user was just watching.
-    pub(crate) fn offer(self) -> Option<(crate::metadata::MarkerKind, i64)> {
+    pub(crate) fn offer(self) -> Option<(plx_data::metadata::MarkerKind, i64)> {
         match self {
             ControlSlot::Discs => None,
             ControlSlot::Skip(pr) => Some((pr.marker.kind, pr.marker.start_ms)),
@@ -731,11 +731,11 @@ impl ControlSlot {
 /// The Next episode preference only changes the offer for that final-credits-with-a-successor
 /// case: `AfterCredits` and `Off` offer nothing there (the discs stay), because the successor is
 /// not announced until the stream ends, if then. The last episode and films keep Skip Credits.
-pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool, mode: crate::route::NextEpisodeMode) -> ControlSlot {
+pub(crate) fn slot_for(marker: Option<plx_data::metadata::Marker>, has_next: bool, mode: crate::route::NextEpisodeMode) -> ControlSlot {
     match marker {
         Some(m) => {
             let pr = crate::appkit::skip_pill::prompt_for(m);
-            if has_next && m.kind == crate::metadata::MarkerKind::Credits && m.final_seg {
+            if has_next && m.kind == plx_data::metadata::MarkerKind::Credits && m.final_seg {
                 match mode {
                     crate::route::NextEpisodeMode::Countdown => ControlSlot::UpNext(m),
                     crate::route::NextEpisodeMode::AfterCredits | crate::route::NextEpisodeMode::Off => ControlSlot::Discs,
@@ -752,11 +752,11 @@ pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool, 
 /// around: `playpos_ns` is written by LG's media thread and `player::pump` runs between the input
 /// handlers and the draw, so re-deriving per call site let a keypress dispatch to a control that
 /// the same frame then declined to draw.
-pub(crate) fn slot(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> ControlSlot {
+pub(crate) fn slot(ps: &crate::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> ControlSlot {
     let has_next = crate::route::up_next(ps).is_some();
     let mode = crate::route::next_episode_mode();
     // The data layer does not read the player: the playhead is sampled here, once, and handed in.
-    let head = crate::metadata::Playhead {
+    let head = plx_data::metadata::Playhead {
         playing: crate::player::is_playing(ps),
         pos_ns: crate::player::playpos_ns(),
         dur_ns: crate::player::duration_ns(),
@@ -1777,7 +1777,7 @@ pub(crate) fn draw_hud(
     now: u32,
     transport: bool,
     measure: &dyn plx_machine::machine::Measure,
-    meta: crate::metadata::MetadataView<'_>,
+    meta: plx_data::metadata::MetadataView<'_>,
 ) {
     // A FAILURE owns the frame, and it outranks every branch below — including the Up Next card,
     // which cannot coexist with one but must not be the arm that decides so. `Player Screen.dc.html`
@@ -1972,7 +1972,7 @@ mod tests {
         plx_gfx::text::reset_prewarm_for_test();
     }
 
-    use crate::metadata::{Marker, MarkerKind};
+    use plx_data::metadata::{Marker, MarkerKind};
     use crate::route::NextEpisodeMode;
     use crate::appkit::skip_pill::SkipAction;
 

@@ -203,24 +203,24 @@ pub(crate) fn app(effect: &AppFx) -> Result<Value, &'static str> {
     })
 }
 
-fn work_value(work: &crate::stores::StoreWork) -> Result<Value, &'static str> {
+fn work_value(work: &plx_data::stores::StoreWork) -> Result<Value, &'static str> {
     Ok(match work {
-        crate::stores::StoreWork::Hubs => json!("hubs"),
-        crate::stores::StoreWork::BrowseDiscovery => json!("discovery"),
+        plx_data::stores::StoreWork::Hubs => json!("hubs"),
+        plx_data::stores::StoreWork::BrowseDiscovery => json!("discovery"),
         _ => return Err("unsupported Home store work"),
     })
 }
 
-fn store(command: &crate::stores::StoreCmd) -> Result<Value, &'static str> {
-    use crate::stores::{StoreCmd, hubs::HubsCmd, browse::BrowseCmd};
+fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
+    use plx_data::stores::{StoreCmd, hubs::HubsCmd, browse::BrowseCmd};
     Ok(match command {
         StoreCmd::Hubs(HubsCmd::Reset) => json!({"hubs":"reset"}),
         StoreCmd::Hubs(HubsCmd::RefetchHubs) => json!({"hubs":"refetch"}),
         StoreCmd::Hubs(HubsCmd::Retry) => json!({"hubs":"retry"}),
         StoreCmd::Browse(BrowseCmd::Reset) => json!({"browse":"reset"}),
-        StoreCmd::Browse(BrowseCmd::Discovery(result)) => crate::browse::record::encode(result),
+        StoreCmd::Browse(BrowseCmd::Discovery(result)) => plx_data::browse::record::encode(result),
         StoreCmd::Metadata(cmd) => {
-            use crate::stores::metadata::MetadataCmd;
+            use plx_data::stores::metadata::MetadataCmd;
             json!({"metadata":match cmd {
                 MetadataCmd::RequestDetail { sid, rk } => json!({"request_detail":[sid.raw(),rk]}),
                 MetadataCmd::Clear => json!("clear"),
@@ -228,7 +228,7 @@ fn store(command: &crate::stores::StoreCmd) -> Result<Value, &'static str> {
             }})
         }
         StoreCmd::Person(cmd) => {
-            use crate::stores::person::PersonCmd;
+            use plx_data::stores::person::PersonCmd;
             json!({"person":match cmd {
                 PersonCmd::Open { sid,key,guid,name,thumb } => json!({"open":[sid.raw(),key,guid,name,thumb]}),
                 PersonCmd::Close => json!("close"),
@@ -237,7 +237,7 @@ fn store(command: &crate::stores::StoreCmd) -> Result<Value, &'static str> {
             }})
         }
         StoreCmd::Collection(cmd) => {
-            use crate::stores::collection::CollectionCmd;
+            use plx_data::stores::collection::CollectionCmd;
             json!({"collection":match cmd {
                 CollectionCmd::Open { target } => json!({"open":[target.id.sid.raw(),target.id.rk,target.id.sec,target.id.tag,target.id.name,target.want]}),
                 CollectionCmd::Close => json!("close"),
@@ -250,7 +250,7 @@ fn store(command: &crate::stores::StoreCmd) -> Result<Value, &'static str> {
 }
 
 pub(crate) fn message(message: &AppMsg) -> Result<Value, &'static str> {
-    use crate::auth::owner::SessionEvent;
+    use plx_session::auth::owner::SessionEvent;
     Ok(match message {
         AppMsg::Session(event) => match event {
             SessionEvent::Command(command) => json!({"command":wire(command)?}),
@@ -260,7 +260,7 @@ pub(crate) fn message(message: &AppMsg) -> Result<Value, &'static str> {
         },
         AppMsg::Store(command) => store(command)?,
         AppMsg::StoreWork(work) => work_value(work)?,
-        AppMsg::HubsResult(result) => crate::pms::record::encode(result),
+        AppMsg::HubsResult(result) => plx_data::pms::record::encode(result),
         AppMsg::Home(command) => json!({"home_command":home_command(command)}),
         _ => return Err("unsupported Home message"),
     })

@@ -2,7 +2,7 @@
 
 use std::hash::{Hash, Hasher};
 
-use crate::metadata::Detail;
+use plx_data::metadata::Detail;
 use plx_machine::machine::{GroupId, Measure};
 use plx_ui::widgets::{self, SelMark, StripLay, TabGround, TabStrip};
 use plx_ui::{theme, Painter, Rect};
@@ -65,7 +65,7 @@ pub(crate) fn locate(key: u32) -> Option<usize> {
         .then(|| (key - SEASON_ELEM_RANGE_START) as usize)
 }
 
-pub(crate) fn watch_state(season: &crate::metadata::Season) -> plx_ui::widgets::PosterMark {
+pub(crate) fn watch_state(season: &plx_data::metadata::Season) -> plx_ui::widgets::PosterMark {
     if season.watched() {
         plx_ui::widgets::PosterMark::Watched
     } else if season.viewed_leaf_count > 0 {
@@ -197,14 +197,14 @@ mod tests {
     fn detail() -> Detail {
         Detail {
             seasons: vec![
-                crate::metadata::Season {
+                plx_data::metadata::Season {
                     rk: "s1".into(),
                     index: 1,
                     title: "Season 1".into(),
                     leaf_count: 1,
                     viewed_leaf_count: 0,
                 },
-                crate::metadata::Season {
+                plx_data::metadata::Season {
                     rk: "s3".into(),
                     index: 3,
                     title: "Season 3".into(),

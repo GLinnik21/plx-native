@@ -415,8 +415,8 @@ pub(crate) enum BootTo {
 /// Pure capture boundary shared by actual boot and owner bootstrap regression fixtures.
 pub(crate) fn captured_session_for_boot(saved: plx_plex::plex::session::Session,
     dev_primary: Option<plx_plex::plex::session::ServerRef>,
-    extras: Vec<plx_plex::plex::session::SourceRef>) -> crate::auth::SessionInit {
-    crate::auth::SessionInit::captured_boot(saved, dev_primary, extras)
+    extras: Vec<plx_plex::plex::session::SourceRef>) -> plx_session::auth::SessionInit {
+    plx_session::auth::SessionInit::captured_boot(saved, dev_primary, extras)
 }
 
 fn captured_dev_sources(servers: &[crate::dev::DevServer]) -> Vec<plx_plex::plex::session::SourceRef> {
@@ -436,16 +436,16 @@ fn captured_dev_sources(servers: &[crate::dev::DevServer]) -> Vec<plx_plex::plex
     // being fetched from server B: the same catalog index opening a different film.
 pub(super) fn activate_server_owned(
     bridge: &mut super::bridge::Bridge,
-) -> crate::stores::EndpointRefreshSet {
-    bridge.browse_run(crate::stores::browse::BrowseCmd::Reset);
+) -> plx_data::stores::EndpointRefreshSet {
+    bridge.browse_run(plx_data::stores::browse::BrowseCmd::Reset);
     bridge.refresh_browse_directory();
-    bridge.search_run(crate::stores::search::SearchCmd::Reset);
-    let _ = bridge.hubs_run(crate::stores::hubs::HubsCmd::Reset).changed;
-    bridge.person_run(crate::stores::person::PersonCmd::Reset);
-    bridge.collection_run(crate::stores::collection::CollectionCmd::Reset);
-    bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Reset);
-    bridge.metadata_run(crate::stores::metadata::MetadataCmd::Reset);
-    let mut endpoints = bridge.hubs_run(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints;
+    bridge.search_run(plx_data::stores::search::SearchCmd::Reset);
+    let _ = bridge.hubs_run(plx_data::stores::hubs::HubsCmd::Reset).changed;
+    bridge.person_run(plx_data::stores::person::PersonCmd::Reset);
+    bridge.collection_run(plx_data::stores::collection::CollectionCmd::Reset);
+    bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
+    bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::Reset);
+    let mut endpoints = bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints;
     endpoints.merge(bridge.browse_discover_pump().endpoints);
     log("pms: catalog activation queued");
     endpoints
@@ -465,10 +465,10 @@ pub(super) fn install_pms_owned(
     token: &str,
     tier: Option<plx_plex::plex::probe::Location>,
     pin: Option<&plx_plex::plex::ResolvePin>,
-    install: &crate::auth::owner::ReadyInstall,
-) -> crate::stores::EndpointRefreshSet {
-    if let crate::auth::owner::ReadyInstall::PrimaryAndExtras(extras) = install {
-        crate::auth::install_captured_registry(origin, address, token, tier, pin, extras, None);
+    install: &plx_session::auth::owner::ReadyInstall,
+) -> plx_data::stores::EndpointRefreshSet {
+    if let plx_session::auth::owner::ReadyInstall::PrimaryAndExtras(extras) = install {
+        plx_session::auth::install_captured_registry(origin, address, token, tier, pin, extras, None);
     }
     activate_server_owned(bridge)
 }
@@ -525,7 +525,7 @@ pub(crate) unsafe fn construct(
 ) -> Result<App, c_int> {
     let controlled = preflight.controlled();
     if let Some(initial) = &initial {
-        crate::stores::tape::init(initial.person_credits(), preflight.replay());
+        plx_data::stores::tape::init(initial.person_credits(), preflight.replay());
         initial.home.restore(&mt).map_err(|_| 1)?;
         plx_plex::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| 1)?;
     }
@@ -708,7 +708,7 @@ pub(crate) unsafe fn construct(
     // /tmp/plxnative-token dev trigger. The value is NEVER logged (only that one is in effect).
     let dev_token = match &initial {
         Some(initial) => {
-            let crate::auth::owner::BootstrapAuthority::DevPms { primary, .. } = &initial.session.authority
+            let plx_session::auth::owner::BootstrapAuthority::DevPms { primary, .. } = &initial.session.authority
                 else { unreachable!("preflight validated authority") };
             primary.token.clone()
         }
@@ -881,7 +881,7 @@ pub(crate) unsafe fn construct(
         pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
         rec: &mut super::recorder::Recplay| {
         if forced_login {
-        super::bridge::execute_session_command(pages, crate::auth::SessionCmd::StartLogin);
+        super::bridge::execute_session_command(pages, plx_session::auth::SessionCmd::StartLogin);
         pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
             rec, false);
         #[cfg(feature = "devtriggers")]
@@ -900,7 +900,7 @@ pub(crate) unsafe fn construct(
         log(&format!(
             "boot: dev token — link={tier:?} (classified from the configured address)"
         ));
-        super::bridge::execute_session_command(pages, crate::auth::SessionCmd::ActivateDevBootstrap);
+        super::bridge::execute_session_command(pages, plx_session::auth::SessionCmd::ActivateDevBootstrap);
         pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
             rec, false);
         if let Some(ready) = bridge.take_session_ready() {
@@ -909,13 +909,13 @@ pub(crate) unsafe fn construct(
                     log("bootstrap: primary resource binding refused");
                     return BootTo::Login;
                 }
-                use crate::stores::{StoreCmd, StoreWork};
+                use plx_data::stores::{StoreCmd, StoreWork};
                 use plx_machine::machine::{Fx, MachineId};
                 use crate::screens::registry::AppFx;
                 for cmd in [
-                    StoreCmd::Browse(crate::stores::browse::BrowseCmd::Reset),
-                    StoreCmd::Hubs(crate::stores::hubs::HubsCmd::Reset),
-                    StoreCmd::Hubs(crate::stores::hubs::HubsCmd::RefetchHubs),
+                    StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Reset),
+                    StoreCmd::Hubs(plx_data::stores::hubs::HubsCmd::Reset),
+                    StoreCmd::Hubs(plx_data::stores::hubs::HubsCmd::RefetchHubs),
                 ] { pages.emit(MachineId::Nav, Fx::App(AppFx::Store(cmd.store(), cmd))); }
                 pages.emit(MachineId::Nav, Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
                 pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(), rec, false);
@@ -933,7 +933,7 @@ pub(crate) unsafe fn construct(
             // Ready handoff before a viewer is selected. Boot BACK therefore retains its
             // protected/unknown-profile refusal policy rather than silently entering Home.
             super::bridge::execute_session_command(pages,
-                crate::auth::SessionCmd::StartSwitch(crate::auth::Picker::Boot));
+                plx_session::auth::SessionCmd::StartSwitch(plx_session::auth::Picker::Boot));
             pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
                 rec, false);
             log("boot: stored session — who's watching");
@@ -943,7 +943,7 @@ pub(crate) unsafe fn construct(
             // install_pms can read any per-profile stores. Stored boot does not re-save its
             // credentials. This is the normal bounded dispatcher drain over the same owner
             // and queue later moved into App, not a recursive bootstrap reducer.
-            super::bridge::execute_session_command(pages, crate::auth::SessionCmd::ResumeStored);
+            super::bridge::execute_session_command(pages, plx_session::auth::SessionCmd::ResumeStored);
             pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
                 rec, false);
             if let Some(ready) = bridge.take_session_ready() {
@@ -952,7 +952,7 @@ pub(crate) unsafe fn construct(
                 super::bridge::execute_endpoint_outcomes(pages, endpoints);
                 // Refresh only AFTER installing the captured primary, so a fast accepted
                 // endpoint observation cannot be overwritten by that older boot snapshot.
-                super::bridge::execute_session_command(pages, crate::auth::SessionCmd::RefreshRoster);
+                super::bridge::execute_session_command(pages, plx_session::auth::SessionCmd::RefreshRoster);
                 pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
                     rec, false);
                 if session.auto_sign_in()
@@ -967,13 +967,13 @@ pub(crate) unsafe fn construct(
                 }
                 BootTo::Home
             } else {
-                super::bridge::execute_session_command(pages, crate::auth::SessionCmd::StartLogin);
+                super::bridge::execute_session_command(pages, plx_session::auth::SessionCmd::StartLogin);
                 log("boot: stored session could not be activated — starting QR sign-in");
                 BootTo::Login
             }
         }
     } else {
-        super::bridge::execute_session_command(pages, crate::auth::SessionCmd::StartLogin);
+        super::bridge::execute_session_command(pages, plx_session::auth::SessionCmd::StartLogin);
         pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
             rec, false);
         log("boot: no session — starting QR sign-in");
@@ -1283,7 +1283,7 @@ pub(crate) unsafe fn construct(
     bridge.refresh_browse_directory();
     let ask_first_run = || !controlled && (crate::dev::scenarios::firstrun_armed()
         || (!automated_boot()
-            && crate::stores::browse::onboard::asks(bridge.browse_directory())));
+            && plx_data::stores::browse::onboard::asks(bridge.browse_directory())));
     // The sign-in's telemetry question is PRESENTED on the container tree, and the tree lives on
     // the `App` this function is still assembling — so this boot arm records that it owes the
     // question and `maybe_ask_consent` is called once the struct exists, a few dozen lines down.

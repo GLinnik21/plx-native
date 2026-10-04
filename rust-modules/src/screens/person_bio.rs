@@ -42,7 +42,7 @@
 //! that gate because they integrate milliseconds, and a hand-rolled scroll offset here would have
 //! been the third. The discrete transitions ([`open`]/[`close`]/[`move_focus`]) still call
 //! `idle::invalidate` because a state change is not motion.
-use crate::person::Person;
+use plx_data::person::Person;
 use plx_ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use plx_ui::label::{Label, VAlign};
 use plx_ui::text_view::TextView;
@@ -908,19 +908,19 @@ mod tests {
         type Fx = AppFx;
         type Msg = AppMsg;
         type Elem = u32;
-        type Views<'a> = crate::person::PersonView<'a>;
+        type Views<'a> = plx_data::person::PersonView<'a>;
         type Init = TestInit;
         type Memory = TestInit;
     }
     impl crate::screens::registry::PersonLike for TestHost {
-        fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a> { cx.views }
+        fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> { cx.views }
     }
 
     const ENTRY: EntryId = EntryId(7);
 
     fn cx(measure: &plx_ui::fixture::FixtureMeasure) -> Cx<'_, TestHost> {
         Cx {
-            views: crate::person::PersonView::default(),
+            views: plx_data::person::PersonView::default(),
             tick: Tick::default(),
             measure,
             press: PressRead::default(),

@@ -125,18 +125,18 @@ pub(super) fn hold_feature(
 
 /// After `request_play` accepts, extras (trailers included) install an Info-card descriptor so
 /// the card names the extra rather than the parent. Feature plays leave `now_playing` alone.
-fn note_extra_now_playing(meta: &mut crate::stores::metadata::MetadataStore, sid: plx_plex::plex::ServerId, rk: &str, context: &str) {
-    if crate::metadata::context_omits_queue_continuous(context) {
-        let now_playing = crate::metadata::trailer_now_playing(meta.state(), sid, rk);
+fn note_extra_now_playing(meta: &mut plx_data::stores::metadata::MetadataStore, sid: plx_plex::plex::ServerId, rk: &str, context: &str) {
+    if plx_data::metadata::context_omits_queue_continuous(context) {
+        let now_playing = plx_data::metadata::trailer_now_playing(meta.state(), sid, rk);
         meta.run(
-            crate::stores::metadata::MetadataCmd::SetNowPlaying(now_playing),
+            plx_data::stores::metadata::MetadataCmd::SetNowPlaying(now_playing),
         );
     }
 }
 
 pub(super) fn request_play_intent(
     session: &mut crate::route::PlaybackSession,
-    meta: &mut crate::stores::metadata::MetadataStore,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
     play: &crate::screens::registry::PlayIntent,
 ) -> bool {
     match play {
@@ -235,20 +235,20 @@ fn drain_held_feature(app: &mut App) {
     );
 }
 
-// TEST ONLY. This file's four test modules call `crate::metadata`'s free reads and
-// `crate::stores::metadata`'s command apply at hundreds of call sites, a shape written for the
+// TEST ONLY. This file's four test modules call `plx_data::metadata`'s free reads and
+// `plx_data::stores::metadata`'s command apply at hundreds of call sites, a shape written for the
 // old crate-global metadata statics and the deleted `stores::metadata::apply` shim — see
 // `screens::detail::tests`'s `TEST_METADATA` for the identical reasoning. The owner lives here,
 // confined to the thread each test body runs on, reached only through
 // `MetadataStore::run`/`state_mut`/`view` (the sole owner API), never a second mechanism.
 #[cfg(test)]
 thread_local! {
-    static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-        std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+        std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
 }
 
 #[cfg(test)]
-fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
@@ -304,13 +304,13 @@ mod held_feature_tests {
     use super::*;
     use crate::screens::registry::PlayIntent;
 
-    fn parent_with_extra() -> crate::metadata::Detail {
-        crate::metadata::Detail {
+    fn parent_with_extra() -> plx_data::metadata::Detail {
+        plx_data::metadata::Detail {
             sid: plx_plex::plex::ServerId::UNSET,
             rk: "movie".into(),
             kind: "movie".into(),
             title: "Movie".into(),
-            extras: vec![crate::metadata::Extra {
+            extras: vec![plx_data::metadata::Extra {
                 rk: "9".into(),
                 title: "Official Trailer".into(),
                 dur_ms: 120_000,
@@ -321,8 +321,8 @@ mod held_feature_tests {
         }
     }
 
-    fn leftover_episode_now_playing() -> crate::metadata::NowPlaying {
-        crate::metadata::NowPlaying {
+    fn leftover_episode_now_playing() -> plx_data::metadata::NowPlaying {
+        plx_data::metadata::NowPlaying {
             is_episode: true,
             is_real_episode: true,
             title: "Show".into(),
@@ -369,11 +369,11 @@ mod held_feature_tests {
     #[test]
     fn a_held_trailer_play_installs_now_playing_for_the_info_card() {
         let _g = plx_base::testlock::serial();
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(parent_with_extra()));
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(parent_with_extra()));
         test_store().run(
-            crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(leftover_episode_now_playing())),
+            plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(leftover_episode_now_playing())),
         );
-        install_held(trailer_play(crate::metadata::TRAILER_CONTEXT));
+        install_held(trailer_play(plx_data::metadata::TRAILER_CONTEXT));
         drain_held_play_now_playing();
         let np = test_store().view().now_playing().expect("held trailer Play must install NowPlaying");
         assert!(!np.is_episode);
@@ -381,20 +381,20 @@ mod held_feature_tests {
         assert_eq!(np.ep_title, "Official Trailer");
         assert_eq!(np.dur_ms, 120_000);
         assert_eq!(np.detail_rk, "movie");
-        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(test_store().state_mut(), None);
+        test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     #[test]
     fn a_held_show_trailer_play_labels_the_info_card_with_the_extra() {
         let _g = plx_base::testlock::serial();
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(plx_data::metadata::Detail {
             sid: plx_plex::plex::ServerId::UNSET,
             rk: "show".into(),
             kind: "show".into(),
             is_show: true,
             title: "Show".into(),
-            extras: vec![crate::metadata::Extra {
+            extras: vec![plx_data::metadata::Extra {
                 rk: "9".into(),
                 title: "Official Trailer".into(),
                 dur_ms: 90_000,
@@ -403,39 +403,39 @@ mod held_feature_tests {
             }],
             ..Default::default()
         }));
-        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        install_held(trailer_play(crate::metadata::TRAILER_CONTEXT));
+        test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        install_held(trailer_play(plx_data::metadata::TRAILER_CONTEXT));
         drain_held_play_now_playing();
         let np = test_store().view().now_playing().expect("held show trailer Play must install NowPlaying");
         assert!(np.is_episode, "a show parent labels Go to Show");
         assert_eq!(np.title, "Show");
         assert_eq!(np.ep_title, "Official Trailer");
         assert_eq!(np.dur_ms, 90_000);
-        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(test_store().state_mut(), None);
+        test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     #[test]
     fn a_held_extra_play_installs_now_playing_the_same_way() {
         let _g = plx_base::testlock::serial();
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(parent_with_extra()));
-        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        install_held(trailer_play(crate::metadata::EXTRA_CONTEXT));
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(parent_with_extra()));
+        test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        install_held(trailer_play(plx_data::metadata::EXTRA_CONTEXT));
         drain_held_play_now_playing();
         assert_eq!(
             test_store().view().now_playing().map(|n| n.ep_title.as_str()),
             Some("Official Trailer"),
         );
-        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(test_store().state_mut(), None);
+        test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     #[test]
     fn a_held_feature_play_does_not_replace_now_playing() {
         let _g = plx_base::testlock::serial();
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(parent_with_extra()));
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(parent_with_extra()));
         test_store().run(
-            crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(leftover_episode_now_playing())),
+            plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(leftover_episode_now_playing())),
         );
         install_held(trailer_play(""));
         drain_held_play_now_playing();
@@ -443,8 +443,8 @@ mod held_feature_tests {
             test_store().view().now_playing().is_some_and(|n| n.detail_rk == "show"),
             "ordinary Play must not install a trailer descriptor"
         );
-        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(test_store().state_mut(), None);
+        test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     /// [`HeldFeature::ret`] widened to `Option<ReturnState<..>>` so `app::input::apply_item_action`
@@ -456,7 +456,7 @@ mod held_feature_tests {
     #[test]
     fn a_none_ret_round_trips_through_the_held_queue_unchanged() {
         let _g = plx_base::testlock::serial();
-        hold_feature(trailer_play(crate::metadata::TRAILER_CONTEXT), 0, None);
+        hold_feature(trailer_play(plx_data::metadata::TRAILER_CONTEXT), 0, None);
         let held_ret_is_none = HELD_FEATURE.with(|slot| slot.borrow().as_ref().map(|h| h.ret.is_none()));
         assert_eq!(
             held_ret_is_none,
@@ -682,26 +682,26 @@ fn home_requests(app: &mut App, now: u32) {
     }
 }
 
-fn home_item<'a>(view: crate::pms::HubsView<'a>, sid: plx_plex::plex::ServerId, rk: &str) -> Option<&'a crate::pms::PmsMovie> {
+fn home_item<'a>(view: plx_data::pms::HubsView<'a>, sid: plx_plex::plex::ServerId, rk: &str) -> Option<&'a plx_data::pms::PmsMovie> {
     (0..view.hub_count()).find_map(|i| view.hub(i)?.items.iter()
         .find(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk)))
         .map(|item| &**item))
 }
 
 /// Resolve identity against the retained selected item, never against the current server.
-fn search_target(item: &crate::search::Item, request: &crate::screens::registry::SearchReq) -> Option<AppArg> {
+fn search_target(item: &plx_data::search::Item, request: &crate::screens::registry::SearchReq) -> Option<AppArg> {
     use crate::screens::registry::SearchReq;
     match (item, request) {
-        (crate::search::Item::Media(item), SearchReq::Detail { sid, rk })
+        (plx_data::search::Item::Media(item), SearchReq::Detail { sid, rk })
             if item.sid == *sid && item.rk == *rk && !rk.is_empty() =>
             Some(AppArg::Content(ContentArg::Detail { sid: *sid, rk: rk.clone() })),
-        (crate::search::Item::Tag(item), SearchReq::Person { sid, key, guid, .. }) => {
+        (plx_data::search::Item::Tag(item), SearchReq::Person { sid, key, guid, .. }) => {
             let current = if item.id.is_empty() || item.id == "0" { &item.tag_key } else { &item.id };
             (item.sid == *sid && current == key && !key.is_empty() && item.tag_key == *guid)
                 .then(|| AppArg::Content(ContentArg::Person { sid: *sid, key: current.clone(),
                     guid: item.tag_key.clone(), name: item.name.clone(), thumb: item.thumb.clone() }))
         }
-        (crate::search::Item::Collection(hit), SearchReq::Collection { sid, rk, tag })
+        (plx_data::search::Item::Collection(hit), SearchReq::Collection { sid, rk, tag })
             if hit.item.sid == *sid && hit.item.rk == *rk && hit.tag == *tag =>
             hit.route().map(AppArg::Content),
         _ => None,
@@ -733,7 +733,7 @@ fn search_requests(app: &mut App) {
                 bridge::nav_push_with_return(&mut app.pages, target, ret);
             }
             SearchReq::ItemMenu { sid, rk } => {
-                let Some((crate::search::Item::Media(item), opener)) = app.bridge.search_selection(&app.pages, entry, ret.focus) else { continue };
+                let Some((plx_data::search::Item::Media(item), opener)) = app.bridge.search_selection(&app.pages, entry, ret.focus) else { continue };
                 if item.sid != *sid || item.rk != *rk || !crate::screens::item_menu::has_actions(&item) { continue; }
                 let arg = bridge::card_menu_arg(&item, false, false, entry, ret.focus, opener.rect);
                 bridge::open_item_menu(&mut app.pages, arg);
@@ -748,7 +748,7 @@ fn search_requests(app: &mut App) {
 mod search_action_tests {
     use super::*;
     use crate::screens::registry::SearchReq;
-    use crate::search::{Item, TagHit};
+    use plx_data::search::{Item, TagHit};
 
     #[test]
     fn owned_search_targets_validate_retained_identity_and_use_retained_labels() {
@@ -756,7 +756,7 @@ mod search_action_tests {
         plx_plex::plex::reset_servers_for_test();
         let a = plx_plex::plex::register_for_test("action-a", "127.0.0.1", 1, "synthetic", "fixture");
         let b = plx_plex::plex::register_for_test("action-b", "127.0.0.1", 2, "synthetic", "fixture");
-        let media = Item::Media(crate::pms::PmsMovie { sid: a, rk: "same".into(), ..Default::default() });
+        let media = Item::Media(plx_data::pms::PmsMovie { sid: a, rk: "same".into(), ..Default::default() });
         assert!(matches!(search_target(&media, &SearchReq::Detail { sid: a, rk: "same".into() }),
             Some(AppArg::Content(ContentArg::Detail { sid, rk })) if sid == a && rk == "same"));
         assert!(search_target(&media, &SearchReq::Detail { sid: b, rk: "same".into() }).is_none());
@@ -788,9 +788,9 @@ mod search_action_tests {
         plx_plex::plex::reset_servers_for_test();
         let a = plx_plex::plex::register_for_test("coll-a", "127.0.0.1", 1, "synthetic", "fixture");
         let b = plx_plex::plex::register_for_test("coll-b", "127.0.0.1", 2, "synthetic", "fixture");
-        let hit = Item::Collection(crate::search::CollectionHit {
-            item: crate::pms::PmsMovie { sid: a, rk: "50007".into(), sec: 1, title: "Shorts".into(),
-                kind: crate::pms::KIND_COLLECTION, ..Default::default() },
+        let hit = Item::Collection(plx_data::search::CollectionHit {
+            item: plx_data::pms::PmsMovie { sid: a, rk: "50007".into(), sec: 1, title: "Shorts".into(),
+                kind: plx_data::pms::KIND_COLLECTION, ..Default::default() },
             tag: 7 });
         let req = |sid, rk: &str, tag| SearchReq::Collection { sid, rk: rk.into(), tag };
         assert!(search_target(&hit, &req(a, "50007", 7)) == Some(AppArg::Content(ContentArg::Collection(
@@ -800,7 +800,7 @@ mod search_action_tests {
         assert!(search_target(&hit, &SearchReq::Detail { sid: a, rk: "50007".into() }).is_none(),
             "a collection never opens as an item detail");
         // the tag-shaped fallback: no ratingKey, resolved on the page by section + tag id
-        let tag = Item::Collection(crate::search::CollectionHit::from_tag(
+        let tag = Item::Collection(plx_data::search::CollectionHit::from_tag(
             &TagHit { sid: a, id: "7".into(), sec: 1, name: "Shorts".into(), ..Default::default() }));
         assert!(search_target(&tag, &req(a, "", 7)) == Some(AppArg::Content(ContentArg::Collection(
             plx_plex::plex::collections::CollectionRef::by_tag(a, 1, 7, "Shorts")))));
@@ -860,12 +860,12 @@ fn library_requests(app: &mut App, now: u32) {
 }
 
 fn home_tab_available(
-    directory: crate::stores::browse::DirectoryView<'_>,
+    directory: plx_data::stores::browse::DirectoryView<'_>,
     tab: HomeTab,
 ) -> bool {
     let kind = match tab {
-        HomeTab::Movies => Some(crate::stores::browse::SecKind::Movie),
-        HomeTab::Shows => Some(crate::stores::browse::SecKind::Show),
+        HomeTab::Movies => Some(plx_data::stores::browse::SecKind::Movie),
+        HomeTab::Shows => Some(plx_data::stores::browse::SecKind::Show),
         _ => None,
     };
     kind.is_none_or(|kind| directory.tab_of_kind(kind).is_some())
@@ -873,12 +873,12 @@ fn home_tab_available(
 
 fn library_publication_command(
     dispatcher: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
-    target: crate::stores::browse::SectionAddress,
+    target: plx_data::stores::browse::SectionAddress,
     hidden_page: bool,
     at_head: bool,
-) -> crate::stores::browse::BrowseCmd {
-    crate::stores::browse::BrowseCmd::Addressed { target,
-        work: crate::stores::browse::LibraryWork::Hubs {
+) -> plx_data::stores::browse::BrowseCmd {
+    plx_data::stores::browse::BrowseCmd::Addressed { target,
+        work: plx_data::stores::browse::LibraryWork::Hubs {
             may_publish: hidden_page || (at_head && !dispatcher.input.press.is_live()),
         },
     }
@@ -906,8 +906,8 @@ mod library_publication_tests {
         entry: EntryId,
         sid: plx_plex::plex::ServerId,
         episode: &str,
-    ) -> (crate::metadata::Spot, plx_machine::machine::FocusKey<u32>) {
-        let spot = crate::metadata::Spot {
+    ) -> (plx_data::metadata::Spot, plx_machine::machine::FocusKey<u32>) {
+        let spot = plx_data::metadata::Spot {
             section: 2,
             col: 3,
             ep_text: true,
@@ -936,7 +936,7 @@ mod library_publication_tests {
         pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
         entry: EntryId,
     ) -> Option<(
-        crate::metadata::Spot,
+        plx_data::metadata::Spot,
         Option<String>,
         crate::screens::registry::DetailRefreshPhase,
     )> {
@@ -974,10 +974,10 @@ mod library_publication_tests {
     // file-level helpers of the same name for exactly that reason.
     fn land_detail_for_test(
         rig: &mut bridge::Bridge, sid: plx_plex::plex::ServerId, rk: &str, gen: u32,
-        detail: Option<crate::metadata::Detail>,
+        detail: Option<plx_data::metadata::Detail>,
     ) -> bool {
         let (state, adapter) = rig.metadata_mut().split_for_test();
-        crate::metadata::land_detail_for_test(state, adapter, sid, rk, gen, detail)
+        plx_data::metadata::land_detail_for_test(state, adapter, sid, rk, gen, detail)
     }
 
     /// Complete every detail fetch the rig admitted and install the landings. Deterministic: under
@@ -992,7 +992,7 @@ mod library_publication_tests {
     struct SettleDetailBeforeRestoredEnter {
         sid: plx_plex::plex::ServerId,
         generation: u32,
-        detail: Option<crate::metadata::Detail>,
+        detail: Option<plx_data::metadata::Detail>,
         expected_fresh: bool,
         landed: bool,
         // Captured from `rig.metadata_mut()` just before the `frame_with_tap` call that invokes
@@ -1000,7 +1000,7 @@ mod library_publication_tests {
         // dispatcher already holds `rig` mutably for the whole call), so this raw pointer is the
         // only way to reach the SAME store the mounted `DetailScreen` reads — the disconnected
         // `test_store()` thread-local this used to call was the original bug.
-        store: *mut crate::stores::metadata::MetadataStore,
+        store: *mut plx_data::stores::metadata::MetadataStore,
     }
 
     impl plx_ui::dispatch::Tap<bridge::AppHost> for SettleDetailBeforeRestoredEnter {
@@ -1014,7 +1014,7 @@ mod library_publication_tests {
             // touches the metadata store while the dispatcher is mid-frame delivering this effect.
             let store = unsafe { &mut *self.store };
             let (state, adapter) = store.split_for_test();
-            let fresh = crate::metadata::land_detail_for_test(
+            let fresh = plx_data::metadata::land_detail_for_test(
                 state,
                 adapter,
                 self.sid,
@@ -1032,22 +1032,22 @@ mod library_publication_tests {
         rk: &str,
         title: &str,
         watched: bool,
-    ) -> crate::metadata::Detail {
-        crate::metadata::Detail {
+    ) -> plx_data::metadata::Detail {
+        plx_data::metadata::Detail {
             sid,
             rk: rk.into(),
             title: title.into(),
             watched,
             is_show: true,
             kind: "show".into(),
-            seasons: vec![crate::metadata::Season {
+            seasons: vec![plx_data::metadata::Season {
                 rk: "season-2".into(),
                 index: 2,
                 title: "Season 2".into(),
                 leaf_count: 1,
                 viewed_leaf_count: 0,
             }],
-            episodes: vec![crate::metadata::Episode {
+            episodes: vec![plx_data::metadata::Episode {
                 rk: "episode-a".into(),
                 index: 1,
                 season: 2,
@@ -1061,12 +1061,12 @@ mod library_publication_tests {
     #[test]
     fn home_tab_validation_reads_the_supplied_directory() {
         let sid = plx_plex::plex::ServerId::from_raw(3);
-        let directory = crate::stores::browse::DirectorySnapshot::fixture(7, 0, vec![
-            crate::stores::browse::SectionView {
+        let directory = plx_data::stores::browse::DirectorySnapshot::fixture(7, 0, vec![
+            plx_data::stores::browse::SectionView {
                 sid: Some(sid),
                 key: 11,
-                kind: crate::stores::browse::SecKind::Movie,
-                row: crate::stores::browse::SrcRow {
+                kind: plx_data::stores::browse::SecKind::Movie,
+                row: plx_data::stores::browse::SrcRow {
                     section: 0,
                     title: "Movies".into(),
                     pinned: true,
@@ -1084,10 +1084,10 @@ mod library_publication_tests {
     #[test]
     fn a_fresh_arm_at_rest_scale_still_blocks_visible_shelf_publication() {
         let mut dispatcher = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let target = crate::stores::browse::SectionAddress { epoch: 1, sid: plx_plex::plex::ServerId::from_raw(0), section: 1 };
+        let target = plx_data::stores::browse::SectionAddress { epoch: 1, sid: plx_plex::plex::ServerId::from_raw(0), section: 1 };
         let allowed = |d: &plx_ui::dispatch::Dispatcher<bridge::AppHost>, hidden, head| {
             matches!(library_publication_command(d, target, hidden, head),
-                crate::stores::browse::BrowseCmd::Addressed { work: crate::stores::browse::LibraryWork::Hubs { may_publish: true }, .. })
+                plx_data::stores::browse::BrowseCmd::Addressed { work: plx_data::stores::browse::LibraryWork::Hubs { may_publish: true }, .. })
         };
         assert!(allowed(&dispatcher, false, true));
         dispatcher.input.press.begin(0);
@@ -1102,7 +1102,7 @@ mod library_publication_tests {
     #[test]
     fn deferred_viewstate_refresh_cannot_retarget_the_page_navigated_to_later() {
         let sid = plx_plex::plex::ServerId::from_raw(2);
-        let target = crate::stores::viewstate::DetailRefresh {
+        let target = plx_data::stores::viewstate::DetailRefresh {
             sid,
             rk: "origin".into(),
             keep: Some("episode".into()),
@@ -1130,10 +1130,10 @@ mod library_publication_tests {
         let mut rig = bridge::Bridge::for_test(|| 0);
         let mut frame_no = 0;
 
-        let before = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let before = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         bridge::show_page(&mut pages, a.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
-        let after = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let after = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
 
         // Each `RequestDetail` admission bumps the generation exactly once (`begin_detail_request`),
         // whether or not it is later superseded — so the generation delta is a direct count of how
@@ -1144,8 +1144,8 @@ mod library_publication_tests {
              plus one per Enter");
 
         drain_detail_workers(&mut rig);
-        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
     }
 
     /// Regression for the fix the double-fetch fix introduced: `DetailScreen`'s own teardown
@@ -1175,11 +1175,11 @@ mod library_publication_tests {
         bridge::show_page(&mut pages, AppArg::Home);
         frame(&mut pages, &mut rig, &mut frame_no);
 
-        let before_open = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let before_open = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         bridge::nav_push(&mut pages, a.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == a), "Detail A mounted");
-        let gen_a = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let gen_a = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert_eq!(gen_a - before_open, 1, "the fresh open issues exactly one fetch");
 
         // Back BEFORE A's own fetch has landed: `self.detail(meta)` sees nothing loaded yet, so
@@ -1194,7 +1194,7 @@ mod library_publication_tests {
             "nothing had loaded for A yet, so teardown had nothing to clear");
 
         // The orphaned fetch lands now, with nobody left to supersede it.
-        assert!(land_detail_for_test(&mut rig, sid, "detail-a", gen_a, Some(crate::metadata::Detail {
+        assert!(land_detail_for_test(&mut rig, sid, "detail-a", gen_a, Some(plx_data::metadata::Detail {
             sid,
             rk: "detail-a".into(),
             title: "Detail A".into(),
@@ -1204,18 +1204,18 @@ mod library_publication_tests {
         assert_eq!(rig.metadata_mut().view().current().map(|d| d.rk.as_str()), Some("detail-a"),
             "the orphaned landing repopulates current() after the page that asked for it is gone");
 
-        let before_reopen = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let before_reopen = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         bridge::nav_push(&mut pages, a.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
-        let after_reopen = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let after_reopen = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
 
         assert_eq!(after_reopen - before_reopen, 1,
             "reopening the same Detail page after Back must refetch exactly once, not reuse the \
              store's orphaned leftover for this item");
 
         drain_detail_workers(&mut rig);
-        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
     }
 
     #[test]
@@ -1239,16 +1239,16 @@ mod library_publication_tests {
         // Retire the constructors' real worker requests, then hold B in the same global metadata
         // slot the product uses while A's ViewState completion arrives.
         drain_detail_workers(&mut rig);
-        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), Some(crate::metadata::Detail {
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), Some(plx_data::metadata::Detail {
             sid,
             rk: "detail-b".into(),
             title: "Visible B".into(),
             ..Default::default()
         }));
-        let b_request = crate::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-b");
+        let b_request = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-b");
 
-        refresh_content(&mut pages, &mut rig, crate::stores::viewstate::DetailRefresh {
+        refresh_content(&mut pages, &mut rig, plx_data::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
@@ -1267,13 +1267,13 @@ mod library_publication_tests {
             "covered A retains the addressed episode and focus spot");
 
         assert!(land_detail_for_test(&mut rig, sid, "detail-b", b_request,
-            Some(crate::metadata::Detail {
+            Some(plx_data::metadata::Detail {
                 sid,
                 rk: "detail-b".into(),
                 title: "Visible B".into(),
                 ..Default::default()
             })));
-        let generation = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let generation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         let ret = pages.return_state();
         bridge::nav_pop_with_return(&mut pages, ret);
         frame(&mut pages, &mut rig, &mut frame_no);
@@ -1281,7 +1281,7 @@ mod library_publication_tests {
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
         assert!(rig.metadata_mut().view().detail_request_status(sid, "detail-a").is_some(),
             "A starts its deferred metadata refresh only after Back uncovers it");
-        assert_eq!(crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), generation + 2,
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), generation + 2,
             "B closes its request and A starts exactly one replacement request");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
@@ -1300,13 +1300,13 @@ mod library_publication_tests {
         // the key survived. See `DetailScreen::reconcile` for how it survives now.
         assert_eq!(pages.focus(), Some(focus),
             "the restored engine focus remains on the addressed episode row");
-        let generation = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let generation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         frame(&mut pages, &mut rig, &mut frame_no);
-        assert_eq!(crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), generation,
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), generation,
             "the deferred refresh is consumed once");
 
-        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
         drain_detail_workers(&mut rig);
     }
 
@@ -1335,19 +1335,19 @@ mod library_publication_tests {
         let (spot, focus) = seed_detail_return(&mut pages, a_entry, sid, "episode-a");
 
         drain_detail_workers(&mut rig);
-        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), Some(crate::metadata::Detail {
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), Some(plx_data::metadata::Detail {
             sid,
             rk: "detail-a".into(),
             title: "Covered A".into(),
             watched: true,
             ..Default::default()
         }));
-        let stale_request = crate::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
-        let generation = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let stale_request = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
+        let generation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert_eq!(generation, stale_request);
 
-        refresh_content(&mut pages, &mut rig, crate::stores::viewstate::DetailRefresh {
+        refresh_content(&mut pages, &mut rig, plx_data::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
@@ -1357,7 +1357,7 @@ mod library_publication_tests {
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == person));
         assert_eq!(rig.metadata_mut().view().current().map(|detail| detail.rk.as_str()), Some("detail-a"),
             "the covered Detail's stale-but-visible slot is not displaced under Person");
-        assert_eq!(crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), generation,
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), generation,
             "A must not refresh while Person owns the visible page");
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(true),
             "the pre-write A fetch remains in flight while its page is covered");
@@ -1370,11 +1370,11 @@ mod library_publication_tests {
         frame(&mut pages, &mut rig, &mut frame_no);
 
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
-        assert_eq!(crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), generation + 1,
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), generation + 1,
             "uncovered A supersedes the pre-write fetch with exactly one reconciliation");
-        let reconciliation = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let reconciliation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert!(!land_detail_for_test(&mut rig, sid, "detail-a", stale_request,
-            Some(crate::metadata::Detail {
+            Some(plx_data::metadata::Detail {
                 sid,
                 rk: "detail-a".into(),
                 title: "Stale pre-write A".into(),
@@ -1384,20 +1384,20 @@ mod library_publication_tests {
         assert!(rig.metadata_mut().view().current().is_some_and(|detail|
             detail.rk == "detail-a" && detail.watched),
             "the stale landing cannot undo A's optimistic watched state");
-        assert_eq!(crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
             "rejecting the stale landing cannot replace the reconciliation generation");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
                 crate::screens::registry::DetailRefreshPhase::Requested)),
             "RestoreMemory preserves the ViewState episode/focus intent");
         assert_eq!(pages.focus(), Some(focus));
-        let generation = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let generation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         frame(&mut pages, &mut rig, &mut frame_no);
-        assert_eq!(crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), generation,
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), generation,
             "the explicit pending refresh is consumed after one request");
 
-        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
         drain_detail_workers(&mut rig);
     }
 
@@ -1437,16 +1437,16 @@ mod library_publication_tests {
         let a_entry = pages.nav.top_page().expect("Detail A mounted").id;
 
         drain_detail_workers(&mut rig);
-        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
         let mut detail = detail_with_episode(sid, "detail-a", "Old A", true);
-        detail.related.push(crate::pms::PmsMovie {
+        detail.related.push(plx_data::pms::PmsMovie {
             sid, rk: "detail-b".into(), title: "Related B".into(), ..Default::default()
         });
-        detail.related.push(crate::pms::PmsMovie {
+        detail.related.push(plx_data::pms::PmsMovie {
             sid, rk: "detail-c".into(), title: "Related C".into(), ..Default::default()
         });
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), Some(detail));
-        pages.store_changed(crate::stores::StoreId::Metadata.ord(), 1);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), Some(detail));
+        pages.store_changed(plx_data::stores::StoreId::Metadata.ord(), 1);
         frame(&mut pages, &mut rig, &mut frame_no);
 
         let PageMemory::Detail(memory) = pages.return_state().memory else {
@@ -1464,13 +1464,13 @@ mod library_publication_tests {
         let spot = memory.spot;
         assert_eq!((spot.section, spot.col, spot.ep_text, spot.season), (2, 0, true, Some(2)));
 
-        let pre_refresh = crate::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
+        let pre_refresh = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
         if settled_before_refresh {
             let mut settled = detail_with_episode(sid, "detail-a", "Old A", true);
-            settled.related.push(crate::pms::PmsMovie {
+            settled.related.push(plx_data::pms::PmsMovie {
                 sid, rk: "detail-b".into(), title: "Related B".into(), ..Default::default()
             });
-            settled.related.push(crate::pms::PmsMovie {
+            settled.related.push(plx_data::pms::PmsMovie {
                 sid, rk: "detail-c".into(), title: "Related C".into(), ..Default::default()
             });
             assert!(land_detail_for_test(&mut rig, 
@@ -1478,8 +1478,8 @@ mod library_publication_tests {
             assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(false),
                 "the reviewer race begins from a normally settled page");
             let initial = crate::app::bootstrap::Initial::synthetic_home(1, 32498, None).unwrap();
-            crate::stores::tape::init(initial.person_credits(), true);
-            crate::stores::tape::begin([
+            plx_data::stores::tape::init(initial.person_credits(), true);
+            plx_data::stores::tape::begin([
                 serde_json::json!({
                     "content_resource": true,
                     "request": {
@@ -1490,7 +1490,7 @@ mod library_publication_tests {
                 }),
             ].into(), Default::default());
         }
-        refresh_content(&mut pages, &mut rig, crate::stores::viewstate::DetailRefresh {
+        refresh_content(&mut pages, &mut rig, plx_data::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
@@ -1501,7 +1501,7 @@ mod library_publication_tests {
                 saw_restore: bool,
                 checked_after_restore: bool,
                 // See `SettleDetailBeforeRestoredEnter::store` — same reason, same shape.
-                store: *mut crate::stores::metadata::MetadataStore,
+                store: *mut plx_data::stores::metadata::MetadataStore,
             }
             impl plx_ui::dispatch::Tap<bridge::AppHost> for AtomicStart {
                 fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<bridge::AppHost>) {
@@ -1525,7 +1525,7 @@ mod library_publication_tests {
                 Delivery::Screen(ScreenEvent::Tick(plx_machine::machine::Tick {
                     ms: frame_no * 16, dt_us: 16_000,
                 }))));
-            pages.store_changed(crate::stores::StoreId::Metadata.ord(), pre_refresh);
+            pages.store_changed(plx_data::stores::StoreId::Metadata.ord(), pre_refresh);
             let mut tap = AtomicStart {
                 sid, saw_restore: false, checked_after_restore: false,
                 store: rig.metadata_mut() as *mut _,
@@ -1535,15 +1535,15 @@ mod library_publication_tests {
             frame_no += 1;
             pages.prune(&report.unmounted);
             assert!(tap.saw_restore && tap.checked_after_restore);
-            let (requests, failure) = crate::stores::tape::finish();
+            let (requests, failure) = plx_data::stores::tape::finish();
             assert_eq!(failure, None);
             assert_eq!(requests.len(), 1,
                 "the synchronous start remains one recorder-visible resource admission");
-            crate::stores::tape::reset_for_test();
+            plx_data::stores::tape::reset_for_test();
         } else {
             frame(&mut pages, &mut rig, &mut frame_no);
         }
-        let stale_a = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let stale_a = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(true));
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot.clone(), Some("episode-a".into()),
@@ -1579,7 +1579,7 @@ mod library_publication_tests {
             bridge::nav_push(&mut pages, b.clone());
         }
         frame(&mut pages, &mut rig, &mut frame_no);
-        let stale_b = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let stale_b = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == b));
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), None,
             "opening B supersedes A's requested reconciliation");
@@ -1600,9 +1600,9 @@ mod library_publication_tests {
         frame(&mut pages, &mut rig, &mut frame_no);
 
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
-        assert_eq!(crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), stale_b + 1,
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), stale_b + 1,
             "Back starts one replacement for the requested reconciliation B superseded");
-        let reconciliation = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let reconciliation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(true));
         if !navigate {
             assert_eq!(detail_restore_target(&pages, a_entry),
@@ -1628,7 +1628,7 @@ mod library_publication_tests {
         }
 
         frame(&mut pages, &mut rig, &mut frame_no);
-        assert_eq!(crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
             "the outstanding requested reconciliation is not duplicated");
 
         assert!(!land_detail_for_test(&mut rig, sid, "detail-a", stale_a,
@@ -1637,7 +1637,7 @@ mod library_publication_tests {
         assert!(!land_detail_for_test(&mut rig, sid, "detail-a", pre_refresh, None),
             "the pre-refresh request was superseded before its completion");
         assert!(!land_detail_for_test(&mut rig, sid, "detail-b", stale_b,
-            Some(crate::metadata::Detail {
+            Some(plx_data::metadata::Detail {
                 sid,
                 rk: "detail-b".into(),
                 title: "Stale B".into(),
@@ -1648,7 +1648,7 @@ mod library_publication_tests {
 
         drain_detail_workers(&mut rig);
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(false));
-        pages.store_changed(crate::stores::StoreId::Metadata.ord(), reconciliation);
+        pages.store_changed(plx_data::stores::StoreId::Metadata.ord(), reconciliation);
         frame(&mut pages, &mut rig, &mut frame_no);
         frame(&mut pages, &mut rig, &mut frame_no);
         assert_eq!(pages.focus(), Some(return_focus), "completion cannot yank focus back to the episode");
@@ -1657,11 +1657,11 @@ mod library_publication_tests {
         assert_eq!(detail_refresh_phase(&pages, a_entry),
             crate::screens::registry::DetailRefreshPhase::None,
             "reconciliation terminates independently of focus restoration");
-        assert_eq!(crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
             "settling restoration cannot start a duplicate request");
 
-        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
         drain_detail_workers(&mut rig);
     }
 
@@ -1702,11 +1702,11 @@ mod library_publication_tests {
         let a_entry = pages.nav.top_page().expect("Detail A mounted").id;
 
         drain_detail_workers(&mut rig);
-        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), Some(detail_with_episode(
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), Some(detail_with_episode(
             sid, "detail-a", "Old A", true,
         )));
-        pages.store_changed(crate::stores::StoreId::Metadata.ord(), 1);
+        pages.store_changed(plx_data::stores::StoreId::Metadata.ord(), 1);
         frame(&mut pages, &mut rig, &mut frame_no);
 
         let PageMemory::Detail(memory) = pages.return_state().memory else {
@@ -1723,15 +1723,15 @@ mod library_publication_tests {
         let PageMemory::Detail(memory) = pages.return_state().memory else { unreachable!() };
         let spot = memory.spot;
 
-        let pre_refresh = crate::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
-        refresh_content(&mut pages, &mut rig, crate::stores::viewstate::DetailRefresh {
+        let pre_refresh = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
+        refresh_content(&mut pages, &mut rig, plx_data::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
         });
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(!land_detail_for_test(&mut rig, sid, "detail-a", pre_refresh, None));
-        let reconciliation = crate::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
+        let reconciliation = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
                 crate::screens::registry::DetailRefreshPhase::Requested)));
@@ -1760,7 +1760,7 @@ mod library_publication_tests {
 
         assert!(settle.landed, "the reconciliation settles at the restored Enter boundary");
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
-        assert_eq!(crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
             "Enter must not duplicate the reconciliation that already settled");
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(false));
         frame(&mut pages, &mut rig, &mut frame_no);
@@ -1770,8 +1770,8 @@ mod library_publication_tests {
         assert_eq!(detail_return_waiting(&pages, a_entry), Some(false),
             "the return cannot remain waiting after the terminal reconciliation");
 
-        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
         drain_detail_workers(&mut rig);
     }
 
@@ -1796,11 +1796,11 @@ mod library_publication_tests {
         let a_entry = pages.nav.top_page().expect("Detail A mounted").id;
 
         drain_detail_workers(&mut rig);
-        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), Some(detail_with_episode(
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), Some(detail_with_episode(
             sid, "detail-a", "Old A", true,
         )));
-        pages.store_changed(crate::stores::StoreId::Metadata.ord(), 1);
+        pages.store_changed(plx_data::stores::StoreId::Metadata.ord(), 1);
         frame(&mut pages, &mut rig, &mut frame_no);
 
         let PageMemory::Detail(memory) = pages.return_state().memory else {
@@ -1817,15 +1817,15 @@ mod library_publication_tests {
         let PageMemory::Detail(memory) = pages.return_state().memory else { unreachable!() };
         let spot = memory.spot;
 
-        let pre_refresh = crate::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
-        refresh_content(&mut pages, &mut rig, crate::stores::viewstate::DetailRefresh {
+        let pre_refresh = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
+        refresh_content(&mut pages, &mut rig, plx_data::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
         });
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(!land_detail_for_test(&mut rig, sid, "detail-a", pre_refresh, None));
-        let reconciliation = crate::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
+        let reconciliation = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
                 crate::screens::registry::DetailRefreshPhase::Requested)));
@@ -1834,7 +1834,7 @@ mod library_publication_tests {
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == person));
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(true));
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
         assert!(rig.metadata_mut().view().current().is_none(),
             "the unsuccessful reconciliation has no cached Detail to fall back to");
 
@@ -1857,7 +1857,7 @@ mod library_publication_tests {
 
         assert!(settle.landed, "the failed reconciliation settles at restored Enter");
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
-        assert_eq!(crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
             "terminal failure must not be retried through the ordinary cold-body branch");
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(false));
 
@@ -1867,11 +1867,11 @@ mod library_publication_tests {
         assert_eq!(detail_return_waiting(&pages, a_entry), Some(false),
             "failed restoration cannot remain permanently waiting");
         frame(&mut pages, &mut rig, &mut frame_no);
-        assert_eq!(crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
             "settled failure cannot start a delayed duplicate request");
 
-        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
         drain_detail_workers(&mut rig);
     }
 }
@@ -1938,7 +1938,7 @@ pub(crate) fn restore_played_entry(app: &mut App) {
 pub(crate) fn refresh_content(
     pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>,
     bridge: &mut bridge::Bridge,
-    target: crate::stores::viewstate::DetailRefresh,
+    target: plx_data::stores::viewstate::DetailRefresh,
 ) {
     // A write may finish after another Detail has covered its origin. The covered instance must
     // retain the addressed restore intent, but the ONE Metadata slot belongs to the top page: an
@@ -1965,7 +1965,7 @@ pub(crate) fn refresh_content(
     let PageMemory::Detail(spot) = memory else { return };
     let spot = spot.spot;
     if owns_metadata {
-        bridge.metadata_run(crate::stores::metadata::MetadataCmd::RequestDetail {
+        bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RequestDetail {
             sid: target.sid,
             rk: target.rk.clone(),
         });
@@ -1982,7 +1982,7 @@ pub(crate) fn refresh_content(
         }))));
 }
 
-fn detail_refresh_matches(arg: &AppArg, target: &crate::stores::viewstate::DetailRefresh) -> bool {
+fn detail_refresh_matches(arg: &AppArg, target: &plx_data::stores::viewstate::DetailRefresh) -> bool {
     matches!(arg, AppArg::Content(ContentArg::Detail { sid, rk })
         if *sid == target.sid && *rk == target.rk)
 }

@@ -6,7 +6,7 @@
 
 use std::ffi::CString;
 
-use crate::metadata::{Detail, Episode};
+use plx_data::metadata::{Detail, Episode};
 use plx_machine::machine::GroupId;
 use plx_ui::text_lift::{TextLift, TOP_CENTRE};
 use plx_ui::text_view::TextView;
@@ -207,7 +207,7 @@ pub(crate) fn draw(
     scale: impl Fn(usize) -> f32,
     lift: impl Fn(usize) -> TextLift,
     measure: &dyn plx_machine::machine::Measure,
-    meta: crate::metadata::MetadataView<'_>,
+    meta: plx_data::metadata::MetadataView<'_>,
 ) {
     let stale = if meta.season_loading() {
         STALE_ALPHA
@@ -236,7 +236,7 @@ pub(crate) fn draw_focused(
     scale: f32,
     lift: &TextLift,
     measure: &dyn plx_machine::machine::Measure,
-    meta: crate::metadata::MetadataView<'_>,
+    meta: plx_data::metadata::MetadataView<'_>,
 ) {
     let Some(episode) = d.episodes.get(index) else {
         return;

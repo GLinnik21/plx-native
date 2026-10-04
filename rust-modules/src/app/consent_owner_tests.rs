@@ -104,8 +104,8 @@ fn session_close_telemetry_is_executed_by_the_consent_owner() {
 
     drive(
         &mut rig,
-        AppFx::SessionEffect(crate::auth::owner::SessionFx::Coordinator(
-            crate::auth::owner::CoordinatorAction::CloseTelemetry,
+        AppFx::SessionEffect(plx_session::auth::owner::SessionFx::Coordinator(
+            plx_session::auth::owner::CoordinatorAction::CloseTelemetry,
         )),
     );
 
@@ -121,7 +121,7 @@ fn session_close_telemetry_is_executed_by_the_consent_owner() {
         .iter()
         .any(|action| matches!(
             action,
-            crate::auth::owner::CoordinatorAction::CloseTelemetry
+            plx_session::auth::owner::CoordinatorAction::CloseTelemetry
         )));
 }
 
@@ -175,8 +175,8 @@ fn signing_out_through_consent_owner_leaves_nothing_for_the_next_account() {
 
     drive(
         &mut rig,
-        AppFx::SessionEffect(crate::auth::owner::SessionFx::Coordinator(
-            crate::auth::owner::CoordinatorAction::CloseTelemetry,
+        AppFx::SessionEffect(plx_session::auth::owner::SessionFx::Coordinator(
+            plx_session::auth::owner::CoordinatorAction::CloseTelemetry,
         )),
     );
 

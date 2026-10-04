@@ -4,10 +4,10 @@
 
 use std::ffi::CString;
 
-use crate::collection::{Collection, CollectionOrder, CollectionStatus, CollectionTarget, PAGE_SIZE};
+use plx_data::collection::{Collection, CollectionOrder, CollectionStatus, CollectionTarget, PAGE_SIZE};
 use plx_plex::plex::collections::CollectionRef;
-use crate::pms::PmsMovie;
-use crate::stores::collection::CollectionCmd;
+use plx_data::pms::PmsMovie;
+use plx_data::stores::collection::CollectionCmd;
 use plx_ui::card_row::{self, TileLabel};
 use plx_ui::consts::*;
 use plx_ui::label::{Label, VAlign};
@@ -208,8 +208,8 @@ impl CollectionScreen {
 
     fn request_store<H: ContentLike + CollectionLike>(&mut self, want: usize, fx: &mut Effects<'_, H>) {
         fx.push(plx_machine::machine::Fx::App(AppFx::Store(
-            crate::stores::StoreId::Collection,
-            crate::stores::StoreCmd::Collection(CollectionCmd::Open { target: self.target(want) }),
+            plx_data::stores::StoreId::Collection,
+            plx_data::stores::StoreCmd::Collection(CollectionCmd::Open { target: self.target(want) }),
         )));
     }
 
@@ -694,7 +694,7 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
             ScreenEvent::Input(InputEvent { kind: InputKind::Click { .. }, .. }) => {
                 self.return_pending = false; Handled::No
             }
-            ScreenEvent::StoreChanged(ord, _) if *ord == crate::stores::StoreId::Collection.ord() => {
+            ScreenEvent::StoreChanged(ord, _) if *ord == plx_data::stores::StoreId::Collection.ord() => {
                 if let Some(collection) = self.collection(cx) { self.sync(collection, cx.measure); }
                 if self.return_pending {
                     let settled = cx.focus.current.filter(|key| key.entry == self.entry)
@@ -706,8 +706,8 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
                 if self.collection(cx).is_some() && !self.teardown_closed {
                     self.teardown_closed = true;
-                    fx.push(plx_machine::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Collection,
-                        crate::stores::StoreCmd::Collection(CollectionCmd::Close))));
+                    fx.push(plx_machine::machine::Fx::App(AppFx::Store(plx_data::stores::StoreId::Collection,
+                        plx_data::stores::StoreCmd::Collection(CollectionCmd::Close))));
                 }
                 Handled::Yes
             }
@@ -775,27 +775,27 @@ mod tests {
         type Fx = AppFx;
         type Msg = super::super::registry::AppMsg;
         type Elem = u32;
-        type Views<'a> = crate::collection::CollectionView<'a>;
+        type Views<'a> = plx_data::collection::CollectionView<'a>;
         type Init = super::super::family::NoInit;
         type Memory = PageMemory;
     }
     impl CollectionLike for CollectionHost {
-        fn collection<'a>(cx: &Cx<'a, Self>) -> crate::collection::CollectionView<'a> { cx.views }
+        fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> { cx.views }
     }
 
     fn item(rk: &str) -> PmsMovie { PmsMovie { rk: rk.into(), title: rk.into(), ..Default::default() } }
     fn set() -> CollectionRef {
         CollectionRef { sid: plx_plex::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 7, name: "Set".into() }
     }
-    fn seeded() -> (crate::stores::collection::CollectionStore, CollectionScreen) {
-        let mut store = crate::stores::collection::CollectionStore::default();
+    fn seeded() -> (plx_data::stores::collection::CollectionStore, CollectionScreen) {
+        let mut store = plx_data::stores::collection::CollectionStore::default();
         store.run(CollectionCmd::Open { target: CollectionTarget { id: set(), want: PAGE_SIZE } });
         store.install_for_test(vec![item("a"), item("b"), item("c")], CollectionStatus::Ready);
         let mut screen = CollectionScreen::new(EntryId(9), set());
         screen.sync(store.view().current().unwrap(), &FixtureMeasure);
         (store, screen)
     }
-    fn cx<'a>(view: crate::collection::CollectionView<'a>, focus: Option<plx_machine::machine::FocusKey<u32>>) -> Cx<'a, CollectionHost> {
+    fn cx<'a>(view: plx_data::collection::CollectionView<'a>, focus: Option<plx_machine::machine::FocusKey<u32>>) -> Cx<'a, CollectionHost> {
         Cx { views: view, tick: Tick::default(), measure: &FixtureMeasure,
             press: PressRead::default(), focus: FocusRead { current: focus, ..Default::default() },
             owner: InputOwner::Entry(EntryId(9)) }
@@ -852,7 +852,7 @@ mod tests {
         let out = step(&mut screen, ScreenEvent::FocusMoved { from: None, to: key, by: By::Dir },
             &cx(store.view(), Some(key)));
         let want = out.iter().find_map(|e| match &e.fx {
-            plx_machine::machine::Fx::App(AppFx::Store(_, crate::stores::StoreCmd::Collection(
+            plx_machine::machine::Fx::App(AppFx::Store(_, plx_data::stores::StoreCmd::Collection(
                 CollectionCmd::Open { target, .. }))) => Some(target.want),
             _ => None,
         });
@@ -999,7 +999,7 @@ mod tests {
         let _ = step(&mut restored, ScreenEvent::RestoreMemory(PageMemory::Collection(memory)), &cx(store.view(), None));
         let out = step(&mut restored, ScreenEvent::Enter(plx_ui::screen::Enter::Restored), &cx(store.view(), None));
         let want = out.iter().find_map(|e| match &e.fx {
-            plx_machine::machine::Fx::App(AppFx::Store(_, crate::stores::StoreCmd::Collection(
+            plx_machine::machine::Fx::App(AppFx::Store(_, plx_data::stores::StoreCmd::Collection(
                 CollectionCmd::Open { target, .. }))) => Some(target.want),
             _ => None,
         });

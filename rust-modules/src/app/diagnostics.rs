@@ -3123,12 +3123,12 @@ mod tests {
     #[test]
     fn playback_diagnostics_show_the_frozen_dv_presentation() {
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let dovi = crate::metadata::Dovi {
+        let dovi = plx_data::metadata::Dovi {
             present: true,
             profile: 8,
             bl_compat: 1,
             el_present: false,
-            ..crate::metadata::Dovi::NONE
+            ..plx_data::metadata::Dovi::NONE
         };
         assert!(crate::route::set_stream_declaration_for_test(
             &mut ps,

@@ -2,7 +2,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::auth::owner::{SessionEvent, SessionWork};
+    use plx_session::auth::owner::{SessionEvent, SessionWork};
     use plx_plex::plex::session::{self, Session, SourceRef, ServerRef, UserRef};
 
     struct Cleanup<'a>(&'a plx_base::task::MainThread);
@@ -13,7 +13,7 @@ mod tests {
         }
     }
 
-    fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<crate::auth::owner::SessionEnvelope>) {
+    fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<plx_session::auth::owner::SessionEnvelope>) {
         let results = records.into_iter().map(|r| (r.addr, AppMsg::Session(SessionEvent::Result(r)))).collect();
         d.frame_with(rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
     }
@@ -40,7 +40,7 @@ mod tests {
             let id = plx_plex::plex::register_for_test("synthetic-server", "127.0.0.1", 32400,
                 "synthetic-old-token", "synthetic-client");
             let client = plx_plex::plex::client_for(id).unwrap();
-            let mut init = crate::auth::SessionInit::captured(saved);
+            let mut init = plx_session::auth::SessionInit::captured(saved);
             init.epoch = u64::from(u32::MAX) + 81;
             let epoch = init.epoch;
             let mut rig = Bridge::for_session_test(init);
@@ -51,7 +51,7 @@ mod tests {
                         let SessionWork::Endpoint { session, expected, lifecycle, machine_id } = input
                             else { panic!("wrong worker family") };
                         let old_source = session.sources[0].clone();
-                        crate::auth::endpoint_worker_with_io(epoch, session, expected, lifecycle, machine_id, &output,
+                        plx_session::auth::endpoint_worker_with_io(epoch, session, expected, lifecycle, machine_id, &output,
                             |_, _| match scenario {
                                 1 => Err(Ok(503)),
                                 2 => Ok(Vec::new()),
@@ -63,7 +63,7 @@ mod tests {
                                 assert_eq!(scenario, 3, "early resource return must not probe");
                                 (Some(SourceRef { address: "127.0.0.9".into(),
                                     origin_url: "http://127.0.0.9:32400".into(), ..old_source }),
-                                    crate::auth::settled_probe(
+                                    plx_session::auth::settled_probe(
                                         &plx_plex::plex::probe::plan(resource, plx_plex::plex::CredentialPolicy::HttpsOnly),
                                         plx_plex::plex::probe::Outcome::Reachable, None, Some("127.0.0.9".into())))
                             });
@@ -71,15 +71,15 @@ mod tests {
                 });
             }
             let mut d = Dispatcher::<AppHost>::new();
-            execute_session_command(&mut d, crate::auth::SessionCmd::RequestEndpoint { sid: id });
+            execute_session_command(&mut d, plx_session::auth::SessionCmd::RequestEndpoint { sid: id });
             frame(&mut rig, &mut d, Vec::new());
             assert!(rig.session.snapshot_init().pending.contains_key(&1));
             let records = rig.session_adapter.take_results();
             assert_eq!(records.len(), 1);
             assert!(records[0].terminal);
-            if scenario == 0 { assert!(matches!(records[0].outcome, crate::auth::owner::SessionArrival::Refused)); }
+            if scenario == 0 { assert!(matches!(records[0].outcome, plx_session::auth::owner::SessionArrival::Refused)); }
             let before_owner = rig.session.subhash();
-            execute_session_command(&mut d, crate::auth::SessionCmd::RequestEndpoint { sid: id });
+            execute_session_command(&mut d, plx_session::auth::SessionCmd::RequestEndpoint { sid: id });
             frame(&mut rig, &mut d, Vec::new());
             assert_eq!(rig.session.subhash(), before_owner, "same SID stays occupied until main applies result");
             if scenario == 3 {
@@ -93,7 +93,7 @@ mod tests {
             assert_eq!(client.host(), "127.0.0.1");
             assert_eq!(session::peek().sources[0].address, "127.0.0.1");
             assert_eq!(std::fs::read(tmp.path()).unwrap(), before);
-            execute_session_command(&mut d, crate::auth::SessionCmd::RequestEndpoint { sid: id });
+            execute_session_command(&mut d, plx_session::auth::SessionCmd::RequestEndpoint { sid: id });
             frame(&mut rig, &mut d, Vec::new());
             assert!(rig.session.snapshot_init().pending.contains_key(&2), "matching retirement permits successor");
             let terminal = rig.session_adapter.take_results();

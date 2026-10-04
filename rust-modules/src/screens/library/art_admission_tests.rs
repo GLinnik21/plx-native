@@ -36,14 +36,14 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
     for episodes in [false, true] {
         let sid = plx_plex::plex::ServerId::from_raw(0);
         let mut fixture = Fixture::new();
-        fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
-            (0..1200).map(|i| Some(crate::pms::PmsMovie {
+        fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid,
+            (0..1200).map(|i| Some(plx_data::pms::PmsMovie {
                 sid, rk: i.to_string(), kind: if episodes { 3 } else { 0 },
                 thumb: format!("/poster/{i}"), still: format!("/still/{i}"),
                 ..Default::default()
             })).collect(), Vec::new()).with_library_type(if episodes {
-                crate::browse::LibraryType::Episodes
-            } else { crate::browse::LibraryType::Primary });
+                plx_data::browse::LibraryType::Episodes
+            } else { plx_data::browse::LibraryType::Primary });
         let mut page = fixture.screen();
         let layout = page.layout;
         let scroll = layout.row_reveal(20);

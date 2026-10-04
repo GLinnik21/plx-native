@@ -37,8 +37,8 @@ impl playback::PlaybackResources for Resources {
     fn request_movie(
         &mut self,
         _: &mut crate::route::PlaybackSession,
-        _: &mut crate::stores::metadata::MetadataStore,
-        item: &crate::pms::PmsMovie,
+        _: &mut plx_data::stores::metadata::MetadataStore,
+        item: &plx_data::pms::PmsMovie,
     ) -> bool {
         self.calls.push(ResourceCall::Movie {
             sid: item.sid,
@@ -48,11 +48,11 @@ impl playback::PlaybackResources for Resources {
         });
         self.accept_request
     }
-    fn request_episode(&mut self, _: &mut crate::route::PlaybackSession, _: &mut crate::stores::metadata::MetadataStore, rk: &str) -> bool {
+    fn request_episode(&mut self, _: &mut crate::route::PlaybackSession, _: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool {
         self.calls.push(ResourceCall::Episode(rk.into()));
         self.accept_request
     }
-    fn describe_movie(&mut self, _: &mut crate::stores::metadata::MetadataStore, sid: ServerId, rk: &str) {
+    fn describe_movie(&mut self, _: &mut plx_data::stores::metadata::MetadataStore, sid: ServerId, rk: &str) {
         self.calls.push(ResourceCall::Describe(sid, rk.into()));
     }
     fn prepare_start(
@@ -110,7 +110,7 @@ fn chain(host: AppArg, episode: bool, accept_request: bool, accept_start: bool) 
     let entry = d.nav.top_page().unwrap().id;
     let instance = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     // The played item differs from the host's identity, including Related on Detail.
-    let row = crate::pms::PmsMovie {
+    let row = plx_data::pms::PmsMovie {
         sid: SID,
         rk: "played-3".into(),
         part: "/library/parts/3/file.mkv".into(),

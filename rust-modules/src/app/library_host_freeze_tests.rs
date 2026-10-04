@@ -40,7 +40,7 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
     rig.refresh_browse_directory();
-    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     assert_eq!(users(), 0, "a bare library page freezes nothing");
@@ -55,7 +55,7 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
                 host,
                 kind: crate::screens::registry::LibraryMenuKind::Sort,
                 anchor: [0; 4],
-                target: crate::stores::browse::SectionAddress {
+                target: plx_data::stores::browse::SectionAddress {
                     epoch: listing.epoch,
                     sid: listing.sid,
                     section: listing.section,
@@ -132,7 +132,7 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
     rig.refresh_browse_directory();
-    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
@@ -150,7 +150,7 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
             host,
             kind: crate::screens::registry::LibraryMenuKind::Sort,
             anchor: [0; 4],
-            target: crate::stores::browse::SectionAddress {
+            target: plx_data::stores::browse::SectionAddress {
                 epoch: listing.epoch,
                 sid: listing.sid,
                 section: listing.section,

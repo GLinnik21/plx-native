@@ -7,11 +7,11 @@ use super::test_support::{frame, frame_with_tap};
 
 #[test]
 fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
-    use crate::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
+    use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
     let _guard = plx_base::testlock::serial();
-    let stores = crate::stores::Stores::default();
+    let stores = plx_data::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
-    let mut directory = crate::stores::browse::DirectorySnapshot::default();
+    let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
     stores.capture_browse(&mut directory);
     let section = &directory.view().sections()[0];
     let target = SectionAddress {
@@ -22,14 +22,14 @@ fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
     stores.browse_run(BrowseCmd::SetCur(0));
     let mut retained = None;
     for at in [
-        crate::stores::browse::CursorAt::SlotIndex(52),
-        crate::stores::browse::CursorAt::ItemKey {
+        plx_data::stores::browse::CursorAt::SlotIndex(52),
+        plx_data::stores::browse::CursorAt::ItemKey {
             sid: target.sid,
             rk: "synthetic-52".into(),
             slot: 52,
         },
     ] {
-        let cursor = crate::stores::browse::Cursor { at, scroll: 1200.0 };
+        let cursor = plx_data::stores::browse::Cursor { at, scroll: 1200.0 };
         let query = stores.browse.borrow_mut().listing_snapshot().view().id().unwrap().query;
         let command = BrowseCmd::Addressed {
             target,
@@ -42,7 +42,7 @@ fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
         let snapshot = stores.browse.borrow_mut().listing_snapshot();
         assert_eq!(snapshot.view().cursor(), Some(&cursor));
         if let Some((old, value)) = &retained {
-            let old: &crate::stores::browse::ListingSnapshot = old;
+            let old: &plx_data::stores::browse::ListingSnapshot = old;
             assert_eq!(
                 old.view().cursor(),
                 Some(value),
@@ -102,14 +102,14 @@ fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
 #[test]
 fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     #[derive(Default)]
-    struct Saves(Vec<(crate::stores::browse::SectionAddress, crate::stores::browse::Cursor)>);
+    struct Saves(Vec<(plx_data::stores::browse::SectionAddress, plx_data::stores::browse::Cursor)>);
     impl plx_ui::dispatch::Tap<AppHost> for Saves {
         fn effect(&mut self, _: u64, effect: &plx_machine::machine::Stamped<AppHost>) {
             if let Fx::App(AppFx::Store(
                 _,
-                crate::stores::StoreCmd::Browse(crate::stores::browse::BrowseCmd::Addressed {
+                plx_data::stores::StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Addressed {
                     target,
-                    work: crate::stores::browse::LibraryWork::SaveCursor { cursor, .. },
+                    work: plx_data::stores::browse::LibraryWork::SaveCursor { cursor, .. },
                 }),
             )) = &effect.fx
             {
@@ -137,7 +137,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
-    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
     rig.stores.browse.borrow_mut().seed_shelves_for_test(0, &[], 4);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
@@ -156,7 +156,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     let select = |d: &mut Dispatcher<AppHost>, rig: &Bridge, index: usize| {
         let view = rig.directory.view();
         let section = &view.sections()[index];
-        let target = crate::stores::browse::SectionAddress {
+        let target = plx_data::stores::browse::SectionAddress {
             epoch: view.epoch().unwrap(),
             sid: section.sid.unwrap(),
             section: section.key,
@@ -181,7 +181,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
                 host: d.nav.top_page().unwrap().inst.as_ref().unwrap().id,
                 kind: crate::screens::registry::LibraryMenuKind::Filter,
                 anchor: [0; 4],
-                target: crate::stores::browse::SectionAddress {
+                target: plx_data::stores::browse::SectionAddress {
                     epoch: listing_id.epoch,
                     sid: listing_id.sid,
                     section: listing_id.section,
@@ -207,7 +207,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
         );
     }
     assert!(saves.0.iter().any(|(target, cursor)| target.sid == item.sid
-        && matches!(&cursor.at, crate::stores::browse::CursorAt::ItemKey { sid, rk, slot: 52 } if *sid == item.sid && rk == &item.rk)),
+        && matches!(&cursor.at, plx_data::stores::browse::CursorAt::ItemKey { sid, rk, slot: 52 } if *sid == item.sid && rk == &item.rk)),
         "section switching must emit the outgoing A snapshot through the StoreCmd drain");
     assert_eq!(
         rig.directory.view().current(),
@@ -244,13 +244,13 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
         d.prune(&report.unmounted);
     }
     assert!(saves.0.iter().any(|(target, cursor)| target.sid == b_item.sid
-        && matches!(&cursor.at, crate::stores::browse::CursorAt::ItemKey { sid, rk, slot: 19 } if *sid == b_item.sid && rk == &b_item.rk)),
+        && matches!(&cursor.at, plx_data::stores::browse::CursorAt::ItemKey { sid, rk, slot: 19 } if *sid == b_item.sid && rk == &b_item.rk)),
         "outgoing WillLeave must emit B's snapshot before its engine memory is retired");
     assert!(
         d.nav.entry(old_entry).is_none(),
         "the test must retire, not merely evict, the old entry"
     );
-    rig.enter_library(crate::stores::browse::SecKind::Movie);
+    rig.enter_library(plx_data::stores::browse::SecKind::Movie);
     for i in 210..290 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }

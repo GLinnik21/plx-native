@@ -119,7 +119,7 @@ impl LogicalState for AppInit {
 #[cfg(test)]
 struct RecordedInit<'a> {
     app: &'a AppInit,
-    hubs: &'a crate::pms::initial::Initial,
+    hubs: &'a plx_data::pms::initial::Initial,
 }
 
 #[cfg(test)]
@@ -129,8 +129,8 @@ impl LogicalState for RecordedInit<'_> {
 }
 
 #[cfg(test)]
-fn initial_header(app: &AppInit, state: &crate::pms::PmsState, adapter: &crate::pms::PmsAdapter) -> Header {
-    let hubs = crate::pms::initial::Initial::capture(state, adapter);
+fn initial_header(app: &AppInit, state: &plx_data::pms::PmsState, adapter: &plx_data::pms::PmsAdapter) -> Header {
+    let hubs = plx_data::pms::initial::Initial::capture(state, adapter);
     let mut header = Header::new(state_fp(), &RecordedInit { app, hubs: &hubs });
     header.init_data = json!({"app": app, "hubs": hubs});
     header
@@ -154,8 +154,8 @@ const APP_SHAPES: &[&str] = &[
     super::bridge::ConsentMachine::SHAPE,
     plx_ui::containers::STATE_SHAPE,
     plx_ui::screen::RETURN_STATE_SHAPE,
-    crate::pms::record::SHAPE,
-    crate::pms::initial::SHAPE,
+    plx_data::pms::record::SHAPE,
+    plx_data::pms::initial::SHAPE,
     AppInit::SHAPE,
     super::bootstrap::SHAPE,
     super::bootstrap::ADMISSION_SHAPE,
@@ -404,7 +404,7 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
         || recording.header.blobs {
         return Err("unsupported controlled recording configuration");
     }
-    let mut detail = crate::metadata::record::Validator::default();
+    let mut detail = plx_data::metadata::record::Validator::default();
     for (index, frame) in recording.frames.iter().enumerate() {
         if (index == 0 || !frame.inputs.is_empty() || !frame.effects.is_empty() || !frame.results.is_empty())
             && frame.st.is_none() {
@@ -438,16 +438,16 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
             let envelope: ResultEnvelope = serde_json::from_value(value.clone()).map_err(|_| "invalid result envelope")?;
             let (store, req) = match envelope.payload["kind"].as_str() {
                 Some("content") if initial.content.is_some() => {
-                    let result = crate::stores::tape::validate_result(&envelope.payload)?;
+                    let result = plx_data::stores::tape::validate_result(&envelope.payload)?;
                     if envelope.payload["store"] == "metadata" {
                         detail.completion(&envelope.payload["data"])?;
                     }
                     result
                 }
-                Some("hubs") => (crate::stores::StoreId::Hubs,
-                    crate::pms::record::validate_binding(envelope.payload, initial.primary_client)?),
-                Some("discovery") => (crate::stores::StoreId::Browse,
-                    crate::browse::record::validate_binding(envelope.payload, initial.primary_client)?),
+                Some("hubs") => (plx_data::stores::StoreId::Hubs,
+                    plx_data::pms::record::validate_binding(envelope.payload, initial.primary_client)?),
+                Some("discovery") => (plx_data::stores::StoreId::Browse,
+                    plx_data::browse::record::validate_binding(envelope.payload, initial.primary_client)?),
                 _ => return Err("unsupported controlled result family"),
             };
             if envelope.f != frame.f || envelope.t != "async" || envelope.req != req
@@ -455,7 +455,7 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
                 return Err("mismatched controlled result address");
             }
             stores.insert(store.ord().0);
-            if store == crate::stores::StoreId::Person {
+            if store == plx_data::stores::StoreId::Person {
                 *counts.entry(store.ord().0).or_default() += 1;
             } else { counts.insert(store.ord().0, 1); }
         }
@@ -469,7 +469,7 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
                 if initial.content.is_none() || effect["from"] != "Cache" || effect["e"] != "App" {
                     return Err("invalid content resource origin");
                 }
-                crate::stores::tape::validate_admission(&effect["payload"], initial.primary_client)?;
+                plx_data::stores::tape::validate_admission(&effect["payload"], initial.primary_client)?;
             }
             if effect["e"] == "Request" {
                 if effect["from"] != "Cache" { return Err("invalid admission origin"); }
@@ -580,9 +580,9 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
     fn result(&mut self, _frame: u64, addr: &plx_machine::machine::Addr, msg: &crate::screens::registry::AppMsg) {
         if let Self::Replaying(replay) = self {
             let payload = match msg {
-                crate::screens::registry::AppMsg::HubsResult(result) => Some(crate::pms::record::encode(result)),
-                crate::screens::registry::AppMsg::Store(crate::stores::StoreCmd::Browse(
-                    crate::stores::browse::BrowseCmd::Discovery(result))) => Some(crate::browse::record::encode(result)),
+                crate::screens::registry::AppMsg::HubsResult(result) => Some(plx_data::pms::record::encode(result)),
+                crate::screens::registry::AppMsg::Store(plx_data::stores::StoreCmd::Browse(
+                    plx_data::stores::browse::BrowseCmd::Discovery(result))) => Some(plx_data::browse::record::encode(result)),
                 _ => None,
             };
             let frame = replay.rec.frames.get(replay.at);
@@ -604,9 +604,9 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
         }
         let Self::Recording(rec) = self else { return };
         let payload = match msg {
-            crate::screens::registry::AppMsg::HubsResult(result) => crate::pms::record::encode(result),
-            crate::screens::registry::AppMsg::Store(crate::stores::StoreCmd::Browse(
-                crate::stores::browse::BrowseCmd::Discovery(result))) => crate::browse::record::encode(result),
+            crate::screens::registry::AppMsg::HubsResult(result) => plx_data::pms::record::encode(result),
+            crate::screens::registry::AppMsg::Store(plx_data::stores::StoreCmd::Browse(
+                plx_data::stores::browse::BrowseCmd::Discovery(result))) => plx_data::browse::record::encode(result),
             _ => { self.refuse("unsupported adapter result"); return; },
         };
         let start = std::time::Instant::now();
@@ -691,11 +691,11 @@ impl Recplay {
                     .map(|v| v["payload"].clone()).collect(),
             )).unwrap_or_default()
         } else { Default::default() };
-        crate::stores::tape::begin(requests, results);
+        plx_data::stores::tape::begin(requests, results);
     }
     pub(crate) fn content_results(&mut self) {
-        for payload in crate::stores::tape::take_results() {
-            let (store, req) = match crate::stores::tape::validate_result(&payload) {
+        for payload in plx_data::stores::tape::take_results() {
+            let (store, req) = match plx_data::stores::tape::validate_result(&payload) {
                 Ok(v) => v, Err(e) => { self.refuse(e); return; }
             };
             let to = machine_name(plx_machine::machine::MachineId::Store(store.ord()));
@@ -713,7 +713,7 @@ impl Recplay {
         }
     }
     pub(crate) fn content_end(&mut self) {
-        let (requests, failure) = crate::stores::tape::finish();
+        let (requests, failure) = plx_data::stores::tape::finish();
         for request in requests { self.observe_effect("Cache", "App", request); }
         if let Some(reason) = failure { self.refuse(reason); }
     }
@@ -894,18 +894,18 @@ impl Recplay {
                 .map_err(|_| "invalid result envelope")?;
             if envelope.payload["kind"] == "content" { continue; }
             let discovery = envelope.payload["kind"] == "discovery";
-            let store = if discovery { crate::stores::StoreId::Browse } else { crate::stores::StoreId::Hubs };
+            let store = if discovery { plx_data::stores::StoreId::Browse } else { plx_data::stores::StoreId::Hubs };
             let to = plx_machine::machine::MachineId::Store(store.ord());
             if envelope.f != frame.f || envelope.t != "async" || envelope.to != machine_name(to) {
                 return Err("unsupported result envelope");
             }
             let msg = if discovery {
-                let result = crate::browse::record::decode(envelope.payload, &mut client)?;
+                let result = plx_data::browse::record::decode(envelope.payload, &mut client)?;
                 if result.request_id() != envelope.req { return Err("result request mismatch"); }
-                crate::screens::registry::AppMsg::Store(crate::stores::StoreCmd::Browse(
-                    crate::stores::browse::BrowseCmd::Discovery(result)))
+                crate::screens::registry::AppMsg::Store(plx_data::stores::StoreCmd::Browse(
+                    plx_data::stores::browse::BrowseCmd::Discovery(result)))
             } else {
-                let result = crate::pms::record::decode(envelope.payload, &mut client)?;
+                let result = plx_data::pms::record::decode(envelope.payload, &mut client)?;
                 if result.request_id() != envelope.req { return Err("result request mismatch"); }
                 crate::screens::registry::AppMsg::HubsResult(result)
             };
@@ -1010,7 +1010,7 @@ impl Recplay {
     ///
     /// `store_gen` is Stage B's seam: every store's generation now lives on the owning `Bridge`'s
     /// `Stores` aggregate rather than a crate-global compatibility array, so the per-frame land
-    /// scan below reaches it through the caller's closure instead of naming `crate::stores::gen`
+    /// scan below reaches it through the caller's closure instead of naming `plx_data::stores::gen`
     /// (deleted — there is no free store left for it to answer for).
     #[cfg(test)]
     pub(crate) fn end_frame(&mut self, hash: &dyn Fn() -> u64) -> bool {
@@ -1023,7 +1023,7 @@ impl Recplay {
     pub(crate) fn end_frame_with(
         &mut self,
         hash: &dyn Fn() -> u64,
-        store_gen: &dyn Fn(crate::stores::StoreId) -> u32,
+        store_gen: &dyn Fn(plx_data::stores::StoreId) -> u32,
     ) -> bool {
         self.end_frame_with_gate(hash, store_gen, plx_machine::landgate::fixture_gate())
     }
@@ -1031,7 +1031,7 @@ impl Recplay {
     pub(crate) fn end_frame_with_gate(
         &mut self,
         hash: &dyn Fn() -> u64,
-        store_gen: &dyn Fn(crate::stores::StoreId) -> u32,
+        store_gen: &dyn Fn(plx_data::stores::StoreId) -> u32,
         gate: &plx_machine::landgate::Gate,
     ) -> bool {
         match self {
@@ -1044,7 +1044,7 @@ impl Recplay {
                 // a mailbox this frame, whichever of its sites did it. Written before `st`, so a
                 // reader sees the arrival above the state it produced.
                 for (ord, n) in gate.take_frame_lands() {
-                    let gen = crate::stores::StoreId::from_ord(ord).map_or(0, store_gen);
+                    let gen = plx_data::stores::StoreId::from_ord(ord).map_or(0, store_gen);
                     r.w.land(r.f, ord.0, gen, n);
                     r.events = true;
                 }
@@ -1327,7 +1327,7 @@ mod tests {
         second.arm_landgate(second_bridge.landgate());
         first.begin_frame(first_bridge.landgate());
         second.begin_frame(second_bridge.landgate());
-        let browse = crate::stores::StoreId::Browse.ord();
+        let browse = plx_data::stores::StoreId::Browse.ord();
         first_bridge.landgate().landed(browse);
         second_bridge.landgate().landed(browse);
 
@@ -1911,7 +1911,7 @@ mod tests {
         rec.end_frame(&||0);
         rec.finish(plx_machine::landgate::fixture_gate());
         assert_eq!(*segments.borrow(), bytes, "later frames/shutdown cannot recreate recording bytes");
-        assert_eq!(bridge.auth_read().0.phase, crate::auth::Phase::Deleted);
+        assert_eq!(bridge.auth_read().0.phase, plx_session::auth::Phase::Deleted);
     }
 
     #[test]
@@ -1945,7 +1945,7 @@ mod tests {
             let mut pages = plx_ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
             assert!(super::super::run::request_local_erasure(&mut rec,&mut bridge,&mut pages));
             pages.frame_with(&mut bridge, Tick::default(), Vec::new(), Vec::new(), &mut rec, false);
-            assert_eq!(bridge.auth_read().0.phase, crate::auth::Phase::Deleted);
+            assert_eq!(bridge.auth_read().0.phase, plx_session::auth::Phase::Deleted);
             assert_eq!(bridge.auth_read().0.delete_leftovers, 1, "retirement failure joins the existing erase ACK");
         }
     }
@@ -2075,18 +2075,18 @@ mod tests {
     #[test]
     fn recording_header_contains_home_boot_contents_and_hashes_hidden_state() {
         let _guard = plx_base::testlock::serial();
-        let mut state = crate::pms::PmsState::default();
-        let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-        crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+        let mut state = plx_data::pms::PmsState::default();
+        let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+        plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
         let app = AppInit { route: "home", session: false, servers: 1, consent_asked: 0,
             consent_errors: false, consent_usage: false, seed: 0 };
         let header = initial_header(&app, &state, &adapter);
         assert_eq!(header.init_data["hubs"]["catalog"]["items"].as_array().unwrap().len(), 2);
         let mut data = header.init_data["hubs"].clone();
-        let original: crate::pms::initial::Initial = serde_json::from_value(data.clone()).unwrap();
+        let original: plx_data::pms::initial::Initial = serde_json::from_value(data.clone()).unwrap();
         assert_eq!(RecordedInit { app: &app, hubs: &original }.hash(), header.init_hash);
         data["sources"][0]["retry_n"] = json!(123);
-        let changed: crate::pms::initial::Initial = serde_json::from_value(data).unwrap();
+        let changed: plx_data::pms::initial::Initial = serde_json::from_value(data).unwrap();
         assert_ne!(RecordedInit { app: &app, hubs: &changed }.hash(), header.init_hash);
     }
 
@@ -2096,15 +2096,15 @@ mod tests {
         use plx_machine::machine::{Addr, MachineId, RequestId};
         use crate::screens::registry::AppMsg;
         let _guard = plx_base::testlock::serial();
-        let mut state = crate::pms::PmsState::default();
-        let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-        crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
-        crate::pms::queue_test_landing(&state, &adapter, Some(2));
-        crate::pms::queue_test_landing(&state, &adapter, Some(3));
-        let results = crate::pms::take_landings(&adapter);
-        let addr = Addr { to: MachineId::Store(crate::stores::StoreId::Hubs.ord()), req: RequestId(results[0].request_id()) };
+        let mut state = plx_data::pms::PmsState::default();
+        let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+        plx_data::pms::seed_for_test(&mut state, &adapter, 1, plx_data::pms::HubState::Ready);
+        plx_data::pms::queue_test_landing(&state, &adapter, Some(2));
+        plx_data::pms::queue_test_landing(&state, &adapter, Some(3));
+        let results = plx_data::pms::take_landings(&adapter);
+        let addr = Addr { to: MachineId::Store(plx_data::stores::StoreId::Hubs.ord()), req: RequestId(results[0].request_id()) };
         let expected: Vec<_> = results.iter().map(|r| json!({ "f": 0, "t": "async",
-            "to": machine_name(addr.to), "req": addr.req.0, "payload": crate::pms::record::encode(r) })).collect();
+            "to": machine_name(addr.to), "req": addr.req.0, "payload": plx_data::pms::record::encode(r) })).collect();
         let boot = |expected: Vec<Value>| {
             let init = AppInit { route: "home", session: false, servers: 1, consent_asked: 0,
                 consent_errors: false, consent_usage: false, seed: 0 };
@@ -2125,7 +2125,7 @@ mod tests {
         for ((got_addr, msg), expected) in decoded.iter().zip(&expected) {
             assert_eq!(*got_addr, addr);
             let AppMsg::HubsResult(result) = msg else { unreachable!() };
-            assert_eq!(crate::pms::record::encode(result), expected["payload"]);
+            assert_eq!(plx_data::pms::record::encode(result), expected["payload"]);
         }
         for (key, value) in [("f", json!(1)), ("t", json!("in")), ("to", json!("store:4")),
             ("req", json!(addr.req.0 + 1)), ("unknown", json!(true)), ("payload", json!({}))] {
@@ -2146,7 +2146,7 @@ mod tests {
             assert_eq!(r.same(), count == 0);
         }
         for wrong in [Addr { req: RequestId(addr.req.0 + 1), ..addr },
-            Addr { to: MachineId::Store(crate::stores::StoreId::Search.ord()), ..addr }] {
+            Addr { to: MachineId::Store(plx_data::stores::StoreId::Search.ord()), ..addr }] {
             let mut replay = boot(vec![expected[0].clone()]);
             replay.result(99, &wrong, &AppMsg::HubsResult(results[0].clone()));
             replay.end_frame(&|| 7);
@@ -2193,7 +2193,7 @@ mod tests {
         rig.seed_registered_browse_for_test([own, shared]);
         assert!(!rig.browse_directory().sections().is_empty(),
             "a Bridge Hubs landing fixture requires its retained Browse bootstrap");
-        rig.seed_hubs_for_directory_test(own, 1, crate::pms::HubState::Ready);
+        rig.seed_hubs_for_directory_test(own, 1, plx_data::pms::HubState::Ready);
         let init = AppInit { route: "home", session: false, servers: 1, consent_asked: 0,
             consent_errors: false, consent_usage: false, seed: 0 };
         let sink = plx_ui::rec::MemSink::default();
@@ -2215,7 +2215,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["req"], request);
         assert_eq!(results[0]["to"], "store:1");
-        let decoded = crate::pms::record::decode(results[0]["payload"].clone(), |_| None).unwrap();
+        let decoded = plx_data::pms::record::decode(results[0]["payload"].clone(), |_| None).unwrap();
         assert_eq!(decoded.request_id(), request);
         assert_eq!(results[0]["payload"]["build"]["shelves"][0]["items"].as_array().unwrap().len(), 3);
         for event in ["mount", "enter"] {
@@ -2380,7 +2380,7 @@ mod tests {
     fn a_hubs_landing_is_delivered_on_its_recorded_frame_during_replay() {
         let _guard = plx_base::testlock::serial();
         let mut rig = super::super::bridge::Bridge::for_test(|| 0);
-        rig.seed_hubs_for_test(1, crate::pms::HubState::Ready);
+        rig.seed_hubs_for_test(1, plx_data::pms::HubState::Ready);
         let _ = rig.take_hubs_results_for_test();
         // a recording in which Hubs landed on FRAME 2 and nowhere else
         let manifest = format!(r#"{{"schema": {}, "state_fp": {}}}"#, plx_ui::rec::SCHEMA, state_fp());
@@ -2408,7 +2408,7 @@ mod tests {
     fn a_hubs_landing_the_recording_never_saw_is_delivered_at_once_and_counted() {
         let _guard = plx_base::testlock::serial();
         let mut rig = super::super::bridge::Bridge::for_test(|| 0);
-        rig.seed_hubs_for_test(1, crate::pms::HubState::Ready);
+        rig.seed_hubs_for_test(1, plx_data::pms::HubState::Ready);
         let _ = rig.take_hubs_results_for_test();
         rig.landgate().arm_replay(vec![]);
         rig.queue_hubs_landing_for_test(Some(4));
@@ -2416,7 +2416,7 @@ mod tests {
         assert_eq!(rig.take_hubs_results_for_test().len(), 1);
         assert_eq!(
             rig.landgate().take_diffs(),
-            vec![(5, crate::stores::StoreId::Hubs.ord().0, plx_machine::landgate::Diff::Extra)]
+            vec![(5, plx_data::stores::StoreId::Hubs.ord().0, plx_machine::landgate::Diff::Extra)]
         );
     }
 
@@ -2514,7 +2514,7 @@ mod tests {
         parsed
     }
 
-    fn session_command(bridge: &mut super::super::bridge::Bridge, command: crate::auth::SessionCmd) {
+    fn session_command(bridge: &mut super::super::bridge::Bridge, command: plx_session::auth::SessionCmd) {
         let mut d = plx_ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
         super::super::bridge::execute_session_command(&mut d, command);
         d.frame_with(bridge, Tick::default(), Vec::new(), Vec::new(), &mut plx_ui::dispatch::NoTap, false);
@@ -2529,10 +2529,10 @@ mod tests {
         let hash = record_session_frame(&base).frames[0].st.unwrap();
         assert_eq!(initial, other.session_subhash());
         assert_eq!(hash, record_session_frame(&other).frames[0].st.unwrap());
-        session_command(&mut other, crate::auth::SessionCmd::DismissPinError);
+        session_command(&mut other, plx_session::auth::SessionCmd::DismissPinError);
         assert_eq!(initial, other.session_subhash(), "no-op Session command retains cached hash");
         assert_eq!(hash, record_session_frame(&other).frames[0].st.unwrap());
-        session_command(&mut other, crate::auth::SessionCmd::NoteDeleteLeftovers(1));
+        session_command(&mut other, plx_session::auth::SessionCmd::NoteDeleteLeftovers(1));
         assert_ne!(initial, other.session_subhash(), "real owner transition changes logical Session");
         assert_ne!(hash, record_session_frame(&other).frames[0].st.unwrap(),
             "same press/route/overlay/focus/tree cannot hide a changed Session");
@@ -2544,7 +2544,7 @@ mod tests {
         let base = super::super::bridge::Bridge::for_test(|| 0);
         let mut other = super::super::bridge::Bridge::for_test(|| 0);
         for changed in [false, true] {
-            if changed { session_command(&mut other, crate::auth::SessionCmd::NoteDeleteLeftovers(1)); }
+            if changed { session_command(&mut other, plx_session::auth::SessionCmd::NoteDeleteLeftovers(1)); }
             let mut replay = Recplay::Replaying(Replay {
                 resolution:Default::default(),
                 rec: record_session_frame(&base), at: 0, graded: 0, diverged: 0,
@@ -2581,11 +2581,11 @@ mod tests {
         // `child_count`; they are history, so they keep the record they were computed with.
         const PRE_CHILD_COUNT_RECORD_SHAPE: &str = "HubsResultV1{gen:u32,seq:u32,sid:u16,client:Option<u32>,token_gen:u32,build:Option<{cw:[{last_viewed_at:i64,m:PmsMovie}],shelves:[{title:str,hub_id:str,key:str,items:[PmsMovie]}]}>};PmsMovie{sid:u16,sec:i64,title:str,year:i32,rating:str,dur_ns:i64,part:str,thumb:str,still:str,art:str,summary:str,rk:str,vcodec:str,acodec:str,blur:[[f32bits;3];4],has_blur:bool,kind:i32,resume_ms:i64,show_rk:str,season_index:i32,show_title:str,ep_index:i32,unwatched:bool,watched:bool,aired:str}";
         let mut pre_settings = APP_SHAPES.to_vec();
-        let record = pre_settings.iter().position(|shape| *shape == crate::pms::record::SHAPE).unwrap();
+        let record = pre_settings.iter().position(|shape| *shape == plx_data::pms::record::SHAPE).unwrap();
         pre_settings[record] = PRE_CHILD_COUNT_RECORD_SHAPE;
         // ...and under the hubs initial state before a hub row carried its total.
         const PRE_TOTAL_INITIAL_SHAPE: &str = "HubsInitialV1{version:u32,generation:u32,next_request:u32,seen:u64,seen_facts:u32,sections_generation:u32,catalog_generation:u32,sources:[{sid:u16,client:Option<u32>,token_gen:u32,handle:str,state:u32,fetching:bool,seq:u32,retry_bits:u32,retry_n:u32,last:Option<SourceBuild>}],catalog:{items:[PmsMovie],hubs:[{title:str,hub_id:str,key:str,source:str,start:u64,len:u64}],heroes:[{idx:u64,source:str}]}}";
-        let initial = pre_settings.iter().position(|shape| *shape == crate::pms::initial::SHAPE).unwrap();
+        let initial = pre_settings.iter().position(|shape| *shape == plx_data::pms::initial::SHAPE).unwrap();
         pre_settings[initial] = PRE_TOTAL_INITIAL_SHAPE;
         pre_settings[APP_SHAPES.len() - 2] = super::super::bootstrap::PRE_SETTINGS_SHAPE;
         assert_eq!(plx_ui::rec::state_fp(&pre_settings), 0x9f03_9e4f_2ff6_4d19,

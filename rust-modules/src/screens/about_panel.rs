@@ -809,22 +809,22 @@ mod tests {
     }
 
     thread_local! {
-        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+        static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
     }
 
-    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
     }
 
     impl crate::screens::registry::CollectionLike for TestHost {
-        fn collection<'a>(_cx: &Cx<'a, Self>) -> crate::collection::CollectionView<'a> {
-            crate::collection::CollectionView::default()
+        fn collection<'a>(_cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> {
+            plx_data::collection::CollectionView::default()
         }
     }
 
     impl crate::screens::registry::MetadataLike for TestHost {
-        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
             test_store().view()
         }
     }

@@ -2,8 +2,8 @@
 //! Use the existing Bridge/owner/dispatcher and explicit resource fixtures; no global controller.
 
 use super::*;
-use crate::auth::owner::ReplyTo;
-use crate::auth::{Phase, Picker, SessionCmd, SessionInit};
+use plx_session::auth::owner::ReplyTo;
+use plx_session::auth::{Phase, Picker, SessionCmd, SessionInit};
 use plx_plex::plex::session::{self, HomeUserRef, ServerRef, Session, SourceRef, UserRef};
 
 fn stored(protected: bool) -> Session {

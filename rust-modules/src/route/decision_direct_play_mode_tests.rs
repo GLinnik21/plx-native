@@ -31,7 +31,7 @@ fn force_registers_original_despite_saved_quality_relay_and_device_raster() {
     plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Relay);
     restore_quality(Quality::P480);
     restore_direct_play_mode(DirectPlayMode::Forced);
-    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     let mut item = fourk_item(sid, vec![eac3_track()]);
     item.width = 7680;
     item.height = 4320;
@@ -62,7 +62,7 @@ fn force_server_refusal_or_missing_mde_never_attempts_conversion() {
     for body in [MDE_TRANSCODE, EMPTY_MC] {
         let (port, rx, server) = plan_pms(2, body);
         let sid = plx_plex::plex::register_for_test("forced-refusal", "127.0.0.1", port, "token", "forced-client");
-        let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
+        let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
         env.direct_play_mode = DirectPlayMode::Forced;
         env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
         let plan = build_stream("rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "eac3", &env);
@@ -84,7 +84,7 @@ fn disabling_direct_play_keeps_codec_preserving_remux() {
     assert!(plx_net::net::global_init());
     let (port, rx, server) = plan_pms(3, MDE_TRANSCODE_COPY);
     let sid = plx_plex::plex::register_for_test("disabled-original", "127.0.0.1", port, "token", "disabled-client");
-    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.direct_play_mode = DirectPlayMode::Disabled;
     env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
     let plan = build_stream("rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "eac3", &env);
@@ -107,8 +107,8 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
     assert!(audio_track_direct_plays(&ps, "dts", 8), "Force bypasses device channels");
     assert!(!audio_track_direct_plays(&ps, "truehd", 8));
     assert!(!audio_track_direct_plays(&ps, "", 0));
-    assert!(!video_feed_supported("vp9", crate::metadata::DvPresentation::NotDv));
-    let blocked_dv = crate::metadata::Dovi { present: true, profile: 5, bl_compat: 0, ..crate::metadata::Dovi::NONE }
+    assert!(!video_feed_supported("vp9", plx_data::metadata::DvPresentation::NotDv));
+    let blocked_dv = plx_data::metadata::Dovi { present: true, profile: 5, bl_compat: 0, ..plx_data::metadata::Dovi::NONE }
         .presentation(false, plx_platform::devcaps::dv::DvCapability::Unsupported, true);
     assert!(!video_feed_supported("hevc", blocked_dv));
     assert!(hls_abr_control(&ps).is_none());
@@ -126,7 +126,7 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
 fn disabled_mode_refuses_an_original_only_url_without_a_pms_item() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), unregistered_sid(), "");
+    let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), unregistered_sid(), "");
     env.direct_play_mode = DirectPlayMode::Disabled;
     let plan = build_stream("", "/movie.mkv", "h264", "aac", &env);
     assert!(plan.url.is_empty());

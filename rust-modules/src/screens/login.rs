@@ -1,5 +1,5 @@
 //! **The sign-in screen, as an owned `Screen`** (restructure spec §13, phase 6 — `ui/login.rs`
-//! moved). Plex's own server-rendered QR PNG (fetched by [`crate::auth`], decoded + tinted here)
+//! moved). Plex's own server-rendered QR PNG (fetched by [`plx_session::auth`], decoded + tinted here)
 //! plus the typed short-code fallback, driven by the flow's phase. Scanning the QR on a phone
 //! opens plex.tv pre-filled with the pin; the flow's background poll then advances us onward.
 //!
@@ -49,7 +49,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
 use std::sync::Arc;
 
-use crate::auth::{self, Phase};
+use plx_session::auth::{self, Phase};
 use plx_ui::frame::Budget;
 use plx_ui::label::HAlign;
 use plx_machine::machine::{
@@ -923,7 +923,7 @@ impl LoginScreen {
     /// to know what changed — `tick`'s own wait-restart clock — reads the exact values this method
     /// cached instead of asking for a second publication. `tick` used to do exactly that: it
     /// computed `let live: Wait = (auth::phase(), auth::qr_generation());` several lines before
-    /// calling `resync`, which then read the identical pair out of `crate::auth` again on its own.
+    /// calling `resync`, which then read the identical pair out of `plx_session::auth` again on its own.
     /// That is precisely the "read it twice" bug the module doc calls out by name — a retry (or a
     /// pin running out and being replaced) landing in the gap between the two independent reads
     /// could hand the wait-restart clock a phase that disagreed with the one this method cached,
@@ -983,7 +983,7 @@ impl LoginScreen {
         let had_control = self.has_control();
         let alert_was_open = self.report.alert.is_open();
 
-        // ONE sample of `crate::auth` feeds both the wait-restart clock below and every cached
+        // ONE sample of `plx_session::auth` feeds both the wait-restart clock below and every cached
         // field `resync` publishes — see `resync`'s own doc, and the module doc's "read it twice
         // is an observable bug" rule. This used to read `(auth::phase(), auth::qr_generation())`
         // again independently right here, a few lines before calling `resync`, which read the
@@ -2628,7 +2628,7 @@ mod tests {
             "the complete wrapped instruction must share its draw/focus/hit geometry");
     }
 
-    /// A bare screen, built with NO read of `crate::auth` at all — for testing [`ControlKind`]'s
+    /// A bare screen, built with NO read of `plx_session::auth` at all — for testing [`ControlKind`]'s
     /// decision and the `Focusable` geometry without consulting even the local test host's
     /// Session publication.
     fn bare_screen(phase: Phase, phase_ms: f32) -> LoginScreen {
@@ -3364,7 +3364,7 @@ mod tests {
 
     fn incident(state: auth::owner::IncidentState, kind: plx_telemetry::telemetry::incident::IncidentKind)
         -> auth::owner::IncidentOffer {
-        let mut context = crate::auth::synthetic_incident();
+        let mut context = plx_session::auth::synthetic_incident();
         context.kind = kind;
         auth::owner::IncidentOffer {
             id: 7,
@@ -3813,7 +3813,7 @@ mod tests {
         );
 
         let mut with_evidence = plain.clone();
-        let mut ctx = crate::auth::synthetic_incident();
+        let mut ctx = plx_session::auth::synthetic_incident();
         ctx.kind = plx_telemetry::telemetry::incident::IncidentKind::SaveFailed;
         ctx.persistence = Some(plx_telemetry::telemetry::incident::PersistenceFailure::WriteFailed);
         ctx.keymanager_stage = Some(plx_platform::storage::wire::KeymanagerStage::Begin);
@@ -3845,17 +3845,17 @@ mod tests {
             trigger: plx_telemetry::telemetry::incident::DiscoveryTrigger::Login,
             target: Some(plx_telemetry::telemetry::incident::DiscoveryTarget::PlexTv),
         };
-        offer.context = Some(crate::auth::synthetic_incident()
+        offer.context = Some(plx_session::auth::synthetic_incident()
             .with_discovery(discovery)
             .with_retry_run(2, std::time::Duration::from_secs(3)));
-        offer.readout_context = Some(crate::auth::synthetic_incident()
+        offer.readout_context = Some(plx_session::auth::synthetic_incident()
             .with_discovery(discovery)
             .with_retry_run(3, std::time::Duration::from_secs(7)));
         assert!(support_line(&offer).contains("attempts:3"), "{}", support_line(&offer));
         assert!(!support_line(&offer).contains("attempts:2"),
             "Details must not show the deduplicated report's older run: {}", support_line(&offer));
 
-        offer.context = Some(crate::auth::synthetic_incident().with_discovery(
+        offer.context = Some(plx_session::auth::synthetic_incident().with_discovery(
             plx_telemetry::telemetry::incident::DiscoveryEvidence {
                 trigger: plx_telemetry::telemetry::incident::DiscoveryTrigger::Rediscover,
                 target: Some(plx_telemetry::telemetry::incident::DiscoveryTarget::Servers),

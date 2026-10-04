@@ -97,7 +97,7 @@ pub(crate) enum Screen {
     /// with no further grammar to decode — the same one-element shortcut `Screen::Login`'s
     /// sibling used to take before phase 6 gave it several.
     Login {
-        phase: crate::auth::Phase,
+        phase: plx_session::auth::Phase,
         has_control: bool,
     },
     /// The who's-watching picker (`screens::profiles`), an OWNED screen since phase 6 — so, like
@@ -188,7 +188,7 @@ plx_base::devtrig::latched_flag!(
 ///
 /// Call once per frame, AFTER the frame's input has been handled and the screen drawn, so what is
 /// recorded is the state a key press has already moved rather than the state it is about to.
-pub(crate) fn sample(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: crate::metadata::MetadataView<'_>) {
+pub(crate) fn sample(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) {
     if !armed() {
         return;
     }
@@ -210,18 +210,18 @@ pub(crate) fn sample(ps: &crate::route::PlaybackSession, route: &str, screen: Sc
 /// one of those screens fingerprints as its route word and nothing else. `app::recorder`'s
 /// `state_hash` folds `Dispatcher::state_hash` in beside this line for exactly that reason; a
 /// replay graded on this alone would call a press that opened the wrong family page `SAME`.
-pub(crate) fn line(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: crate::metadata::MetadataView<'_>) -> String {
+pub(crate) fn line(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) -> String {
     fingerprint_content(ps, route, screen, hud, ctrl, content, meta)
 }
 
 /// Build the line. Split out from [`sample`] so its determinism and its grammar are host-testable
 /// without a log file or a change-detection state.
 #[cfg(test)]
-fn fingerprint(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, meta: crate::metadata::MetadataView<'_>) -> String {
+fn fingerprint(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, meta: plx_data::metadata::MetadataView<'_>) -> String {
     fingerprint_content(ps, route, screen, hud, ctrl, "", meta)
 }
 
-fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: crate::metadata::MetadataView<'_>) -> String {
+fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) -> String {
     let mut s = String::with_capacity(192);
     s.push_str("focus route=");
     s.push_str(route);
@@ -236,7 +236,7 @@ fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: 
 /// One screen's own fields. Split out of [`fingerprint`] so a popover ROUTE could spend it on its
 /// HOST — the popover's line is the host's state plus the panel's, and there is no other way to say
 /// that without five copies of the host arms.
-fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: crate::metadata::MetadataView<'_>) {
+fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) {
     match screen {
         Screen::Login { phase, has_control } => {
             // The phase is still most of this screen's state — it is a projection of the auth
@@ -281,7 +281,7 @@ fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Scree
 
 
 /// The player: the HUD cursor, what the control row currently holds, and each panel's own state.
-fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot, meta: crate::metadata::MetadataView<'_>) {
+fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot, meta: plx_data::metadata::MetadataView<'_>) {
     // `upnext` is the PLAYER INSTANCE's countdown since phase 9, so it arrives on `content` with
     // the panels' fields rather than being read off a module global here.
     let slot = match ctrl {
@@ -326,7 +326,7 @@ fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str
 ///
 /// A rating key is a server-local integer dense from 1, so it names an item only together with the
 /// server — and the slot number is a registry index (0, 1, …), not anything about the machine.
-pub(crate) fn push_item(s: &mut String, m: Option<&crate::pms::PmsMovie>) {
+pub(crate) fn push_item(s: &mut String, m: Option<&plx_data::pms::PmsMovie>) {
     match m {
         Some(m) => {
             s.push_str(" sid=");
@@ -387,10 +387,10 @@ mod tests {
     use super::*;
 
     thread_local! {
-        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+        static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
     }
-    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
     }
 
@@ -410,8 +410,8 @@ mod tests {
             // both "no control on screen" and "the control has focus", because the two print
             // different values through one grammar — same reason `Screen::Profiles`'s two
             // entries exist, and the exact gap `Screen::Login`'s own doc says this used to leave
-            ("login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: false }),
-            ("login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: true }),
+            ("login", Screen::Login { phase: plx_session::auth::Phase::Idle, has_control: false }),
+            ("login", Screen::Login { phase: plx_session::auth::Phase::Idle, has_control: true }),
             // both a real cursor and "nothing focused yet", because the two print different
             // values through one grammar — same reason `Screen::Onboard`'s two entries exist
             ("profiles", Screen::Profiles { elem: 2 }),
@@ -500,8 +500,8 @@ mod tests {
         };
         // the player's control row swaps occupants under the same cursor — the keys must not swap
         // with it, or every marker segment would look like a schema change
-        let credits = crate::metadata::Marker {
-            kind: crate::metadata::MarkerKind::Credits,
+        let credits = plx_data::metadata::Marker {
+            kind: plx_data::metadata::MarkerKind::Credits,
             start_ms: 1000,
             end_ms: 2000,
             final_seg: false,
@@ -603,8 +603,8 @@ mod tests {
     fn the_login_screens_stalled_control_appearing_is_observable() {
         let ps = crate::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
-        let without = fingerprint(&ps, "login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: false }, hud(), ControlSlot::Discs, test_store().view());
-        let with = fingerprint(&ps, "login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: true }, hud(), ControlSlot::Discs, test_store().view());
+        let without = fingerprint(&ps, "login", Screen::Login { phase: plx_session::auth::Phase::Idle, has_control: false }, hud(), ControlSlot::Discs, test_store().view());
+        let with = fingerprint(&ps, "login", Screen::Login { phase: plx_session::auth::Phase::Idle, has_control: true }, hud(), ControlSlot::Discs, test_store().view());
         assert_ne!(
             without, with,
             "the login screen's escape/retry/restart control appearing is not observable"

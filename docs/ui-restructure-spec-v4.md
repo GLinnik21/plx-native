@@ -432,7 +432,7 @@ rule), and `Dispatcher::state_hash` is folded into the recorder frame as the `tr
 (`app/recorder.rs`) — which is why `state_fp` was re-pinned and both anchor fixtures re-recorded
 for 5b.
 
-**Phase 4 (2026-09-07) put the STORES behind one vocabulary and one step — `rust-modules/src/stores/`,
+**Phase 4 (2026-09-07) put the STORES behind one vocabulary and one step — `rust-modules/data/src/stores/` (`rust-modules/src/stores/` until the data split),
 designed in `docs/stores-as-machines.md`.** Browse, Person and ViewState were the first physical
 owners; Search, Hubs and Metadata completed the port in later stages, so all six are now physical
 owners: each `app::bridge::Bridge` owns a `Stores` aggregate containing a `BrowseStore`,

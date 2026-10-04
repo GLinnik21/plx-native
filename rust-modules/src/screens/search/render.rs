@@ -1,7 +1,7 @@
 //! Paint from the instance and its retained frame views. No live Search/roster/focus reads.
 use super::*;
 use crate::screens::registry::tile_facts;
-use crate::search::scope::{ScopeSource, SourceScopeSnapshot};
+use plx_data::search::scope::{ScopeSource, SourceScopeSnapshot};
 use plx_ui::card_row::{self, TileLabel};
 use plx_ui::consts::{MARGIN_X, SCR_H, SCR_W};
 use plx_ui::label::{HAlign, Label, VAlign};
@@ -26,7 +26,7 @@ pub(super) struct Resources {
     head_w: f32,
     scope: Option<SourceScopeSnapshot>,
     scope_line: Option<CString>,
-    recents: Option<crate::search::recents::RecentsSnapshot>,
+    recents: Option<plx_data::search::recents::RecentsSnapshot>,
     recent_runs: Vec<CString>,
     titles: [CString; 5],
     count_keys: [Option<(Kind, usize)>; 5],
@@ -103,7 +103,7 @@ impl Resources {
             self.recents = Some(recents.clone());
         }
         let keys = count_keys(H::search(cx).shelves());
-        for (i, kind) in crate::search::KINDS.iter().enumerate() {
+        for (i, kind) in plx_data::search::KINDS.iter().enumerate() {
             if self.titles[i].is_empty() {
                 self.titles[i] = cstring(kind.title());
             }
@@ -126,7 +126,7 @@ impl Resources {
 /// `shelves()` is compact: a kind with no results has no shelf at all. Filing counts by position in
 /// that list put every count after a missing kind one slot early, so a search with no TV Shows
 /// headed its Episodes shelf with the Cast & Crew count ("Episodes 2 people").
-fn count_keys(shelves: &[crate::search::Shelf]) -> [Option<(Kind, usize)>; 5] {
+fn count_keys(shelves: &[plx_data::search::Shelf]) -> [Option<(Kind, usize)>; 5] {
     let mut keys = [None; 5];
     for shelf in shelves {
         keys[layout::ordinal(shelf.kind) as usize] = Some((shelf.kind, shelf.items.len()));
@@ -564,7 +564,7 @@ fn run_caret_w(blank: bool, head_w: f32) -> f32 {
 
 fn ghost_shown(q: &str) -> bool {
     let n = q.trim().chars().count();
-    n > 0 && n + 1 == crate::search::MIN_QUERY
+    n > 0 && n + 1 == plx_data::search::MIN_QUERY
 }
 
 fn caret_shown(editing: bool, phase_on: bool) -> bool {
@@ -590,8 +590,8 @@ enum EmptyState {
     Fault,
 }
 
-fn empty_state(state: crate::search::State, has_shelves: bool) -> Option<EmptyState> {
-    use crate::search::State;
+fn empty_state(state: plx_data::search::State, has_shelves: bool) -> Option<EmptyState> {
+    use plx_data::search::State;
     match state {
         State::Idle => Some(EmptyState::NotYet),
         State::Searching => None,
@@ -774,7 +774,7 @@ mod tests {
         assert_eq!(msg::browse_search_placeholder_c_in(&be).to_str().unwrap(), "Пошук у вашай бібліятэцы");
     }
 
-    use crate::search::{Item, Kind, State, TagHit};
+    use plx_data::search::{Item, Kind, State, TagHit};
 
     fn own(name: &str) -> ScopeSource {
         ScopeSource {
@@ -830,7 +830,7 @@ mod tests {
 
     #[test]
     fn a_count_sits_under_its_own_kind_when_an_earlier_kind_found_nothing() {
-        let shelf = |kind, n| crate::search::Shelf {
+        let shelf = |kind, n| plx_data::search::Shelf {
             kind,
             items: (0..n).map(|_| Item::Media(Default::default())).collect(),
         };
@@ -1271,14 +1271,14 @@ mod tests {
 
     #[test]
     fn a_caption_identifies_the_result_and_names_a_borrowed_source_last() {
-        let film = Item::Media(crate::pms::PmsMovie {
+        let film = Item::Media(plx_data::pms::PmsMovie {
             title: "Wallace & Gromit".into(),
             year: 2005,
             ..Default::default()
         });
         assert_eq!(subtitle(Kind::Movie, &film, ""), "2005");
         assert_eq!(subtitle(Kind::Movie, &film, "friend"), "2005 · friend");
-        let ep = Item::Media(crate::pms::PmsMovie {
+        let ep = Item::Media(plx_data::pms::PmsMovie {
             kind: 3,
             title: "A Grand Day Out".into(),
             show_title: "Wallace & Gromit".into(),
@@ -1292,7 +1292,7 @@ mod tests {
             subtitle(Kind::Episode, &ep, "friend"),
             "11/4/1989 · friend"
         );
-        let undated = Item::Media(crate::pms::PmsMovie {
+        let undated = Item::Media(plx_data::pms::PmsMovie {
             kind: 3,
             title: "A Grand Day Out".into(),
             season_index: 1,
@@ -1301,7 +1301,7 @@ mod tests {
         });
         assert_eq!(subtitle(Kind::Episode, &undated, ""), "");
         assert_eq!(subtitle(Kind::Episode, &undated, "friend"), "friend");
-        let bare = Item::Media(crate::pms::PmsMovie {
+        let bare = Item::Media(plx_data::pms::PmsMovie {
             title: "Untitled".into(),
             ..Default::default()
         });
@@ -1314,7 +1314,7 @@ mod tests {
         });
         assert_eq!(subtitle(Kind::Person, &person, ""), "");
         // a tag-shaped collection lands as a collection hit carrying the tag's count
-        let tagged = |count| Item::Collection(crate::search::CollectionHit::from_tag(&TagHit {
+        let tagged = |count| Item::Collection(plx_data::search::CollectionHit::from_tag(&TagHit {
             count,
             ..Default::default()
         }));
@@ -1322,8 +1322,8 @@ mod tests {
         assert_eq!(subtitle(Kind::Collection, &tagged(1), ""), "1 item");
         // a collection that arrived as a full row reads its childCount through the shared
         // formatter — an empty collection is "0 items", as on its own page
-        let full = |child_count| Item::Collection(crate::search::CollectionHit {
-            item: crate::pms::PmsMovie { child_count, kind: crate::pms::KIND_COLLECTION, ..Default::default() },
+        let full = |child_count| Item::Collection(plx_data::search::CollectionHit {
+            item: plx_data::pms::PmsMovie { child_count, kind: plx_data::pms::KIND_COLLECTION, ..Default::default() },
             ..Default::default()
         });
         assert_eq!(subtitle(Kind::Collection, &full(12), ""), "12 items");
@@ -1337,17 +1337,17 @@ mod tests {
     /// the time it lands (`search::CollectionHit::from_tag`).
     #[test]
     fn a_thumbless_collection_hit_reaches_the_card_as_a_neutral_collection_row() {
-        let full = Item::Collection(crate::search::CollectionHit {
-            item: crate::pms::PmsMovie { title: "Shorts".into(), kind: crate::pms::KIND_COLLECTION,
+        let full = Item::Collection(plx_data::search::CollectionHit {
+            item: plx_data::pms::PmsMovie { title: "Shorts".into(), kind: plx_data::pms::KIND_COLLECTION,
                 ..Default::default() },
             tag: 7,
         });
         assert!(matches!(tile_art(Kind::Collection, &full),
             Art::Poster(Some(m)) if m.kind == plx_ui::tile::TileKind::Collection && m.thumb.is_empty()
                 && m.title == "Shorts"));
-        let with_art = Item::Collection(crate::search::CollectionHit {
-            item: crate::pms::PmsMovie { thumb: "/library/metadata/50007/thumb/1".into(),
-                kind: crate::pms::KIND_COLLECTION, ..Default::default() },
+        let with_art = Item::Collection(plx_data::search::CollectionHit {
+            item: plx_data::pms::PmsMovie { thumb: "/library/metadata/50007/thumb/1".into(),
+                kind: plx_data::pms::KIND_COLLECTION, ..Default::default() },
             tag: 7,
         });
         assert!(matches!(tile_art(Kind::Collection, &with_art),

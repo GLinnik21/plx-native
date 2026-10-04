@@ -1,9 +1,9 @@
 //! In-player Info card (mockup "Info mode"): a horizontal card over the transport with the
 //! episode/movie still, title + synopsis, a metadata line with outlined capability badges, and a
 //! column of action buttons. Opened from the HUD's "Info" tab; app.rs routes D-pad/OK/BACK here
-//! while it's open and hides the normal transport middle behind it. Data from crate::metadata.
+//! while it's open and hides the normal transport middle behind it. Data from plx_data::metadata.
 #![allow(dead_code)]
-use crate::metadata;
+use plx_data::metadata;
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::frame::Budget;
 use plx_ui::geom::IndexElem;
@@ -1007,11 +1007,11 @@ mod focus_tests {
     // this test's `on_ok`/`is_episode` calls read from are the SAME owner, not two disconnected
     // `MetadataStore::default()`s (same pattern as `screens::detail::tests`'s `TEST_METADATA`).
     thread_local! {
-        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+        static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
     }
 
-    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
     }
 
@@ -1111,8 +1111,8 @@ mod focus_tests {
     #[test]
     fn go_to_after_a_trailer_opens_the_loaded_parent() {
         let _g = plx_base::testlock::serial();
-        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
+        test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(plx_data::metadata::Detail {
             rk: "parent-movie".into(),
             kind: "movie".into(),
             ..Default::default()
@@ -1125,7 +1125,7 @@ mod focus_tests {
         );
         assert!(!is_episode(test_store().view()), "a movie parent labels Go to Movie");
 
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(plx_data::metadata::Detail {
             rk: "parent-show".into(),
             kind: "show".into(),
             is_show: true,
@@ -1136,13 +1136,13 @@ mod focus_tests {
         assert_eq!(show.on_ok(test_store().view()), InfoAction::GoToDetail("parent-show".into()));
         assert!(is_episode(test_store().view()), "a show parent labels Go to Show");
 
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(plx_data::metadata::Detail {
             sid: plx_plex::plex::ServerId::UNSET,
             rk: "parent-show".into(),
             kind: "show".into(),
             is_show: true,
             title: "Show".into(),
-            extras: vec![crate::metadata::Extra {
+            extras: vec![plx_data::metadata::Extra {
                 rk: "9".into(),
                 title: "Official Trailer".into(),
                 dur_ms: 120_000,
@@ -1151,8 +1151,8 @@ mod focus_tests {
             }],
             ..Default::default()
         }));
-        let trailer = crate::metadata::trailer_now_playing(test_store().state(), plx_plex::plex::ServerId::UNSET, "9");
-        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(trailer));
+        let trailer = plx_data::metadata::trailer_now_playing(test_store().state(), plx_plex::plex::ServerId::UNSET, "9");
+        test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(trailer));
         let mut playing = InfoPanelState::new();
         playing.set_focus(1);
         assert_eq!(playing.on_ok(test_store().view()), InfoAction::GoToDetail("parent-show".into()));
@@ -1163,7 +1163,7 @@ mod focus_tests {
             "the extra's duration, not the show's"
         );
 
-        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(test_store().state_mut(), None);
+        test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 }

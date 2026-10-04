@@ -27,7 +27,7 @@
 use crate::screens::family::SettingsPage;
 use std::sync::Arc;
 use crate::screens::settings::{Family, RouteSurface};
-use crate::stores::{StoreCmd, StoreId, StoreWork};
+use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_machine::machine::{
     Canon, Chrome, Cx, Effects, EntryId, Host, InstanceId, LogicalState, ScreenId,
 };
@@ -39,8 +39,8 @@ pub(crate) mod tile_facts;
 
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub(crate) enum AppFx {
-    Session(crate::auth::SessionCmd),
-    SessionEffect(crate::auth::owner::SessionFx),
+    Session(plx_session::auth::SessionCmd),
+    SessionEffect(plx_session::auth::owner::SessionFx),
     /// Account and install preference IO, admitted by the application before work starts.
     Preferences(PreferenceCmd),
     /// A store command, executed as a `Deliver` to the store machine in the same drain.
@@ -123,7 +123,7 @@ pub(crate) enum PreferenceCmd {
 pub(crate) struct ItemMenuReq {
     pub(crate) act: crate::screens::item_menu::Action,
     pub(crate) sid: plx_plex::plex::ServerId,
-    pub(crate) item: Option<crate::pms::PmsMovie>,
+    pub(crate) item: Option<plx_data::pms::PmsMovie>,
     pub(crate) loaded_episode: bool,
     pub(crate) from_home: bool,
 }
@@ -254,14 +254,14 @@ pub(crate) enum HomeCmd {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LibraryReq {
     /// Evaluated after dispatch by the application, where the input owner can report a live arm.
-    PublishShelves { target: crate::stores::browse::SectionAddress, hidden_page: bool, at_head: bool },
-    Menu { kind: LibraryMenuKind, anchor: [u32; 4], target: crate::stores::browse::SectionAddress },
+    PublishShelves { target: plx_data::stores::browse::SectionAddress, hidden_page: bool, at_head: bool },
+    Menu { kind: LibraryMenuKind, anchor: [u32; 4], target: plx_data::stores::browse::SectionAddress },
     Play { sid: plx_plex::plex::ServerId, rk: String, resume_ns: i64 },
     Detail { sid: plx_plex::plex::ServerId, rk: String },
     ItemMenu { sid: plx_plex::plex::ServerId, rk: String, from_deck: bool },
     Account,
     Tab(HomeTab),
-    BackToHome { kind: crate::stores::browse::SecKind },
+    BackToHome { kind: plx_data::stores::browse::SecKind },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,7 +270,7 @@ pub(crate) enum LibraryMenuKind { Sort, Filter, Genre, Sources, Type }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LibraryMenuArg {
     pub host: plx_machine::machine::InstanceId,
-    pub target: crate::stores::browse::SectionAddress,
+    pub target: plx_data::stores::browse::SectionAddress,
     pub kind: LibraryMenuKind,
     /// Bit-preserving rest rectangle; valid in canonical arguments without float equality.
     pub anchor: [u32; 4],
@@ -333,7 +333,7 @@ pub(crate) enum ItemMenuKind {
     Card {
         /// Boxed because it is by far the largest thing an `AppArg` can carry, and every other
         /// variant of that enum would pay for it inline.
-        row: Box<crate::pms::PmsMovie>,
+        row: Box<plx_data::pms::PmsMovie>,
         from_deck: bool,
     },
     /// The detail page's episode filmstrip. `mark` is resolved by the page through the same
@@ -391,7 +391,7 @@ impl plx_machine::machine::LogicalState for ItemMenuArg {
 /// Addressed simulator/harness intentions. They are resolved by the mounted instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LibraryCmd {
-    Enter(crate::stores::browse::SecKind),
+    Enter(plx_data::stores::browse::SecKind),
     /// Seat focus on one grid card (tests, and the screenshot pipeline's `plxnative-libgrid`).
     FocusGrid { row: usize, col: usize },
     /// Seat focus on one card of a hub shelf above the grid, `shelf` counted from the top (the
@@ -402,7 +402,7 @@ pub(crate) enum LibraryCmd {
     OpenMenu(LibraryMenuKind),
     /// Choose a TYPE menu value exactly as its row does (the screenshot pipeline's and the fps
     /// suite's `plxnative-libtype`).
-    SetType(crate::browse::LibraryType),
+    SetType(plx_data::browse::LibraryType),
     Page(i32),
     Sweep,
     SwitchStep(u32),
@@ -491,9 +491,9 @@ impl plx_machine::machine::LogicalState for LibraryViewport {
 }
 
 // `ContentArg`: an item's or person's identity travels with the navigation entry, never in a
-// screen global. The type lives in `crate::stores` (the data layer's `search` hit names it as its
+// screen global. The type lives in `plx_data::stores` (the data layer's `search` hit names it as its
 // route); this is the screens' spelling of it.
-pub(crate) use crate::stores::ContentArg;
+pub(crate) use plx_data::stores::ContentArg;
 
 /// Application payload on the container's return state. Focus itself remains engine-owned.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -518,7 +518,7 @@ pub(crate) struct DetailKey {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DetailMemory {
-    pub(crate) spot: crate::metadata::Spot,
+    pub(crate) spot: plx_data::metadata::Spot,
     pub(crate) keys: Vec<DetailKey>,
     pub(crate) next_elem: u32,
 }
@@ -971,7 +971,7 @@ pub(crate) enum PlayIntent {
     /// than a `&'static` catalog borrow: it is held inside `PageAction`/`AppFx` across a frame
     /// boundary, and once Detail's `selected` becomes an owned per-page snapshot (rather than a
     /// process-wide catalog read) there is no `'static` row left to borrow.
-    Movie(crate::pms::PmsMovie),
+    Movie(plx_data::pms::PmsMovie),
 }
 
 pub(crate) trait ContentLike: AppLike<Memory = PageMemory> {}
@@ -979,24 +979,24 @@ impl<H: AppLike<Memory = PageMemory>> ContentLike for H {}
 
 /// A host publishing the Person model borrowed from its concrete store owner for this frame.
 pub(crate) trait PersonLike: AppLike + Sized {
-    fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a>;
+    fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a>;
 }
 
 pub(crate) trait CollectionLike: AppLike + Sized {
-    fn collection<'a>(cx: &Cx<'a, Self>) -> crate::collection::CollectionView<'a>;
+    fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a>;
 }
 
 /// A host publishing the Metadata layer's read surface borrowed from its concrete store owner
 /// for this frame — the same shape [`PersonLike`] gives Person, for a screen generic over `H`
-/// that needs `crate::metadata::MetadataView` rather than the app-concrete `Bridge`.
+/// that needs `plx_data::metadata::MetadataView` rather than the app-concrete `Bridge`.
 pub(crate) trait MetadataLike: AppLike + Sized {
-    fn metadata<'a>(cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a>;
+    fn metadata<'a>(cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a>;
 }
 
 /// A host that publishes Home's retained catalog view. The view is borrowed from the rig-owned
 /// snapshot and is therefore valid for the complete step/draw query without per-frame cloning.
 pub(crate) trait HomeLike: AppLike<Memory = PageMemory> + Sized {
-    fn hubs<'a>(cx: &Cx<'a, Self>) -> crate::pms::HubsView<'a>;
+    fn hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::pms::HubsView<'a>;
 }
 
 /// A host that publishes this frame's playback session (spec §2.3). The player's owned screens
@@ -1008,32 +1008,32 @@ pub(crate) trait PlayerLike: AppLike<Memory = PageMemory> + Sized {
 }
 
 pub(crate) trait SearchLike: AppLike<Memory = PageMemory> + Sized {
-    fn search<'a>(cx: &Cx<'a, Self>) -> crate::search::view::SearchView<'a>;
+    fn search<'a>(cx: &Cx<'a, Self>) -> plx_data::search::view::SearchView<'a>;
 }
 
 /// A host that publishes all three retained Library views captured at the frame split.
 pub(crate) trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
-    fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a>;
-    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a>;
-    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a>;
+    fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a>;
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a>;
 }
 
 /// A host carrying the retained Browse directory needed by Chrome and the Settings family.
 /// Full Library hosts implement this automatically; the nested Settings host carries only this
 /// one publication so its Onboard child never falls back to the compatibility selector.
 pub(crate) trait DirectoryLike: AppLike + Sized {
-    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a>;
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
 }
 
 impl<H: LibraryLike> DirectoryLike for H {
-    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> {
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
         LibraryLike::directory(cx)
     }
 }
 
 /// Session's immutable frame publication; playback retains its separate `session` view.
 pub(crate) trait AuthLike: AppLike + Sized {
-    fn auth<'a>(cx: &Cx<'a, Self>) -> crate::auth::SessionRead<'a>;
+    fn auth<'a>(cx: &Cx<'a, Self>) -> plx_session::auth::SessionRead<'a>;
 }
 
 /// An item's server reconciliation obligation. Detail owns this independently of its cancellable
@@ -1047,20 +1047,20 @@ pub(crate) enum DetailRefreshPhase {
 
 /// The application's messages (spec §3.1).
 pub(crate) enum AppMsg {
-    Session(crate::auth::owner::SessionEvent),
+    Session(plx_session::auth::owner::SessionEvent),
     Consent(ConsentCmd),
     RestartReply { correlation: u32, accepted: bool },
     SelectionReply { correlation: u32, accepted: bool, flow_epoch: u64 },
     BackReply { correlation: u32, resumed: bool },
     Store(StoreCmd),
     StoreWork(StoreWork),
-    HubsResult(crate::stores::hubs::HubsResult),
+    HubsResult(plx_data::stores::hubs::HubsResult),
     Home(HomeCmd),
     Library(LibraryCmd),
-    LibraryEdit { target: crate::stores::browse::SectionAddress, edit: crate::stores::browse::QueryEdit },
-    LibrarySelect(crate::stores::browse::SectionAddress),
+    LibraryEdit { target: plx_data::stores::browse::SectionAddress, edit: plx_data::stores::browse::QueryEdit },
+    LibrarySelect(plx_data::stores::browse::SectionAddress),
     DetailRestore {
-        spot: crate::metadata::Spot,
+        spot: plx_data::metadata::Spot,
         episode: Option<String>,
         /// Deferred retains the obligation while covered; Requested tells the visible Detail to
         /// synchronously start the request before publishing that phase as logical state.
@@ -1097,7 +1097,7 @@ pub(crate) enum LoopReq {
     OnboardBack,
     /// **Phase 10, the profile menu's five rows.** `screens::account_menu` is a surface on the
     /// shared `ModalStack` and owns its own rows, cursor and dismissal — but not one of the five
-    /// things a row DOES. Three call `crate::auth` and then flip `app.route` (a screen may not
+    /// things a row DOES. Three call `plx_session::auth` and then flip `app.route` (a screen may not
     /// name `Route` at all, §2.1); one presents another surface, whose `Style` is the
     /// application's to choose and not a screen's (`Navigation::next_style`); and one reaches
     /// `crate::lab`. Each is therefore a request the loop performs, exactly as `LibraryReq` and
@@ -1654,7 +1654,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
 pub(crate) struct DetailSeed {
     pub(crate) sid: plx_plex::plex::ServerId,
     pub(crate) rk: String,
-    pub(crate) spot: crate::metadata::Spot,
+    pub(crate) spot: plx_data::metadata::Spot,
 }
 
 #[derive(Default)]
@@ -1669,7 +1669,7 @@ pub(crate) struct AppMounter {
     /// many episodes the chain runs for. That was `Origin::Unchanged` and a `set_origin` call;
     /// it is now the absence of a write.
     pub(crate) player_origin: Option<crate::screens::player::Origin>,
-    pub(crate) library_kind: Option<crate::stores::browse::SecKind>,
+    pub(crate) library_kind: Option<plx_data::stores::browse::SecKind>,
     /// How long the NEXT player instance pins its transport for, in ms — `HUD_LINGER_MS` for an
     /// ordinary start and `HUD_HEADLESS_MS` for a capture run. It is a seed rather than a constant
     /// because `start_playback` is what knows which, and because the deadline must be stamped from
@@ -1773,7 +1773,7 @@ where
             AppArg::Profiles => {
                 let screen = crate::screens::profiles::ProfilesScreen::new(entry, H::auth(cx));
                 fx.push(plx_machine::machine::Fx::App(AppFx::Session(
-                    crate::auth::SessionCmd::DismissPinError,
+                    plx_session::auth::SessionCmd::DismissPinError,
                 )));
                 Box::new(screen)
             }
@@ -1784,7 +1784,7 @@ where
             }
             AppArg::Library => {
                 let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
-                    .unwrap_or(crate::stores::browse::SecKind::Movie);
+                    .unwrap_or(plx_data::stores::browse::SecKind::Movie);
                 let mut page = crate::screens::library::LibraryScreen::new(entry, id, kind);
                 if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
@@ -1850,7 +1850,7 @@ pub(crate) fn every_surface_arg() -> Vec<AppArg> {
     let mut args = vec![
         AppArg::LibraryMenu(LibraryMenuArg {
             host: plx_machine::machine::InstanceId(1),
-            target: crate::stores::browse::SectionAddress {
+            target: plx_data::stores::browse::SectionAddress {
                 epoch: 0, sid: plx_plex::plex::ServerId::UNSET, section: 0,
             },
             kind: LibraryMenuKind::Sort,
@@ -1860,7 +1860,7 @@ pub(crate) fn every_surface_arg() -> Vec<AppArg> {
         AppArg::ItemMenu(ItemMenuArg {
             sid: plx_plex::plex::ServerId::UNSET,
             rk: "1".into(),
-            kind: ItemMenuKind::Card { row: Box::new(crate::pms::PmsMovie::default()), from_deck: false },
+            kind: ItemMenuKind::Card { row: Box::new(plx_data::pms::PmsMovie::default()), from_deck: false },
             host: EntryId(0),
             focus: None,
             anchor: [0; 4],

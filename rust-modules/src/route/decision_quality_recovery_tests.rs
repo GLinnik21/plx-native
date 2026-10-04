@@ -16,7 +16,7 @@ use super::test_support::apply_plan;
 fn the_codec_gates_verdict_is_what_the_quality_menu_reads() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let caps = plx_platform::devcaps::Caps::assumed();
-    let dv = crate::metadata::Dovi::default().presentation_now(true);
+    let dv = plx_data::metadata::Dovi::default().presentation_now(true);
     // The two ends of the gate, at a UHD raster this device's table admits.
     assert!(
         video_direct_plays("hevc", 3840, 2160, dv, &caps),
@@ -229,15 +229,15 @@ fn dv_decision_survives_reload_recovery_and_rollback() {
     );
     assert_eq!(
         ps.stream_dovi,
-        crate::metadata::Dovi::NONE,
+        plx_data::metadata::Dovi::NONE,
         "the route must retire the source's Dolby Vision declaration, not merely hide it",
     );
     assert!(
         !ps.stream_immersive,
         "the route must retire the source E-AC3 JOC/Atmos declaration, not merely hide it",
     );
-    assert_eq!(stream_dovi(&ps), crate::metadata::Dovi::NONE);
-    assert_eq!(stream_dv_decision(&ps), crate::metadata::DvDecision::NONE);
+    assert_eq!(stream_dovi(&ps), plx_data::metadata::Dovi::NONE);
+    assert_eq!(stream_dv_decision(&ps), plx_data::metadata::DvDecision::NONE);
     assert!(!stream_immersive(&ps));
 
     assert_eq!(
@@ -248,7 +248,7 @@ fn dv_decision_survives_reload_recovery_and_rollback() {
     assert_eq!(rollback_seconds(&mut ps), Some(120));
     assert_eq!(
         stream_dv_decision(&ps),
-        crate::metadata::DvDecision::NONE,
+        plx_data::metadata::DvDecision::NONE,
         "rollback restores the frozen HLS output declaration",
     );
     assert!(set_stream_declaration_for_test(
@@ -263,14 +263,14 @@ fn dv_decision_survives_reload_recovery_and_rollback() {
     clear_output_dv(&mut ps);
     assert_eq!(
         stream_dv_decision(&ps),
-        crate::metadata::DvDecision::NONE,
+        plx_data::metadata::DvDecision::NONE,
         "the shared remux/transcode output reset clears the declaration",
     );
 
     restore_quality(Quality::Original);
     install_active_encoder("");
     reset_session(&mut ps);
-    assert_eq!(stream_dv_decision(&ps), crate::metadata::DvDecision::NONE);
+    assert_eq!(stream_dv_decision(&ps), plx_data::metadata::DvDecision::NONE);
 }
 
 /// **RE-EXPRESSED 2026-08-27**, name and message both. It read
@@ -742,8 +742,8 @@ fn failed_original_then_auto_keeps_the_live_adaptive_route() {
                 direct: true,
                 vcodec: "hevc".into(),
                 fps: 23.976,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: None,
             }),
@@ -837,8 +837,8 @@ fn hls_recovery_restores_the_exact_direct_source_and_rearms_its_watchdog() {
                 direct: true,
                 vcodec: "hevc".into(),
                 fps: 23.976,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: Some(2),
             }),
@@ -913,8 +913,8 @@ fn a_recovery_that_never_opens_can_still_go_back_to_the_encoder_it_replaced() {
                 direct: true,
                 vcodec: "hevc".into(),
                 fps: 23.976,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: Some(2),
             }),
@@ -1089,8 +1089,8 @@ fn a_remux_recovery_keeps_hls_until_frames_and_rolls_back_the_replacement() {
                 direct: false,
                 vcodec: "hevc".into(),
                 fps: 23.976,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
@@ -1195,8 +1195,8 @@ fn a_missing_whole_file_bitrate_must_not_silently_delete_original_recovery() {
                 direct: true,
                 vcodec: "hevc".into(),
                 fps: 23.976,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: None,
             }),
@@ -1250,8 +1250,8 @@ fn a_recovery_that_opens_spends_the_way_back_rather_than_leaving_it_armed() {
                 direct: true,
                 vcodec: "hevc".into(),
                 fps: 23.976,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: None,
             }),
@@ -1396,8 +1396,8 @@ fn a_quality_change_waits_for_an_original_handoff_to_commit() {
                 direct: true,
                 vcodec: "hevc".into(),
                 fps: 23.976,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: None,
             }),
@@ -1478,8 +1478,8 @@ fn a_quality_change_survives_an_original_handoff_rollback() {
                 direct: true,
                 vcodec: "hevc".into(),
                 fps: 23.976,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
@@ -1610,8 +1610,8 @@ fn audio_selected_during_original_trial_uses_the_route_that_actually_lands() {
                 direct: true,
                 vcodec: "hevc".into(),
                 fps: 23.976,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
@@ -1820,8 +1820,8 @@ fn automatic_recovery_issues_no_part_admission_before_the_trial() {
                 direct: true,
                 vcodec: "h264".into(),
                 fps: 24.0,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
@@ -1939,8 +1939,8 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
                 direct: true,
                 vcodec: "h264".into(),
                 fps: 24.0,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
@@ -2119,8 +2119,8 @@ fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
                 direct: true,
                 vcodec: "h264".into(),
                 fps: 24.0,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
@@ -2182,8 +2182,8 @@ fn direct_recovery_without_its_server_keeps_hls_instead_of_using_a_logical_alias
                 direct: true,
                 vcodec: "h264".into(),
                 fps: 24.0,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
@@ -2227,7 +2227,7 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
                 vcodec: "hevc".into(),
                 fps: 23.976,
                 dovi: p8(),
-                dv_decision: crate::metadata::DvDecision {
+                dv_decision: plx_data::metadata::DvDecision {
                     capability: plx_platform::devcaps::dv::DvCapability::Supported,
                     presentation: p8().presentation(
                         true,
@@ -2321,8 +2321,8 @@ fn local_auto_preserves_the_candidate_needed_to_leave_a_fixed_rung() {
                 direct: true,
                 vcodec: "hevc".into(),
                 fps: 25.0,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 14_778, ordinal: 0, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
@@ -2428,8 +2428,8 @@ fn manual_original_after_a_fixed_rung_returns_to_the_native_source() {
                 direct: true,
                 vcodec: "hevc".into(),
                 fps: 25.0,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 14_778, ordinal: 0, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
@@ -2535,8 +2535,8 @@ fn original_to_auto_restarts_the_worker_to_arm_the_watchdog() {
                 direct: true,
                 vcodec: "hevc".into(),
                 fps: 24.0,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 0, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: None,
             }),
@@ -2613,8 +2613,8 @@ fn auto_to_an_admitting_fixed_rung_restarts_the_worker_to_remove_the_watchdog() 
                 direct: true,
                 vcodec: "h264".into(),
                 fps: 24.0,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 0, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
@@ -2671,8 +2671,8 @@ fn manual_original_after_a_fixed_rung_with_a_subtitle_returns_to_direct_play() {
                 direct: true,
                 vcodec: "hevc".into(),
                 fps: 25.0,
-                dovi: crate::metadata::Dovi::NONE,
-                dv_decision: crate::metadata::DvDecision::NONE,
+                dovi: plx_data::metadata::Dovi::NONE,
+                dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 14_778, ordinal: 0, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: Some(3),
             }),

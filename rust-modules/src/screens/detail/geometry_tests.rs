@@ -44,16 +44,16 @@ impl Host for TestHost {
 thread_local! {
     // TEST ONLY: see `screens::detail::tests`'s `TEST_METADATA` for why this lives here rather
     // than being threaded as a parameter — same free-helper-fn shape, same reasoning.
-    static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-        std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+        std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
 }
 
-fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
 impl crate::screens::registry::MetadataLike for TestHost {
-    fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+    fn metadata<'a>(_cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
         test_store().view()
     }
 }
@@ -121,12 +121,12 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         ground: AmbientWash::flat(theme::SURFACE_APP),
         selected: {
             // No production `HubsStore`/`PmsState` is ever seeded in this file (fixtures come from
-            // `crate::metadata::set_current_for_test`, not the hub catalog), so an empty owned
+            // `plx_data::metadata::set_current_for_test`, not the hub catalog), so an empty owned
             // state stands in — `index_of_rk` finds nothing in it, exactly as the deleted
             // process-wide catalog found nothing here before Hubs ownership moved onto `PmsState`.
-            let pms_state = crate::pms::PmsState::default();
-            crate::pms::movie(&pms_state, crate::pms::index_of_rk(&pms_state, sid, rk).max(0) as usize)
-                .filter(|_| crate::pms::index_of_rk(&pms_state, sid, rk) >= 0)
+            let pms_state = plx_data::pms::PmsState::default();
+            plx_data::pms::movie(&pms_state, plx_data::pms::index_of_rk(&pms_state, sid, rk).max(0) as usize)
+                .filter(|_| plx_data::pms::index_of_rk(&pms_state, sid, rk) >= 0)
                 .cloned()
         },
         spin_ms: 0.0,
@@ -140,7 +140,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
 }
 
 fn fixture(sid: ServerId) -> Detail {
-    let episodes = (0..12).map(|i| crate::metadata::Episode {
+    let episodes = (0..12).map(|i| plx_data::metadata::Episode {
         rk: format!("e{i}"),
         index: i,
         season: 1,
@@ -148,13 +148,13 @@ fn fixture(sid: ServerId) -> Detail {
         dur_ms: 60_000,
         ..Default::default()
     }).collect();
-    let related = (0..12).map(|i| crate::pms::PmsMovie {
+    let related = (0..12).map(|i| plx_data::pms::PmsMovie {
         sid,
         rk: format!("r{i}"),
         title: format!("Related {i}"),
         ..Default::default()
     }).collect();
-    let cast = (0..12).map(|i| crate::metadata::Cast {
+    let cast = (0..12).map(|i| plx_data::metadata::Cast {
         tag: format!("Person {i}"),
         role: "Role".into(),
         thumb: String::new(),
@@ -166,7 +166,7 @@ fn fixture(sid: ServerId) -> Detail {
         rk: "show".into(),
         is_show: true,
         kind: "show".into(),
-        seasons: vec![crate::metadata::Season {
+        seasons: vec![plx_data::metadata::Season {
             rk: "season-1".into(),
             index: 1,
             title: "Season 1".into(),
@@ -182,12 +182,12 @@ fn fixture(sid: ServerId) -> Detail {
 
 fn install(d: Detail) -> plx_base::testlock::Serial {
     let guard = plx_base::testlock::serial();
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
     guard
 }
 
 fn clear() {
-    crate::metadata::set_current_for_test(test_store().state_mut(), None);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn populated_detail_geometry_uses_recorded_metrics() {
     let mut d = fixture(sid);
     d.title = "Measured show".into();
     d.part = "/synthetic-part".into();
-    d.audio = vec![crate::metadata::Stream {
+    d.audio = vec![plx_data::metadata::Stream {
         lang: "A long measured original audio language name".into(),
         codec: "aac".into(),
         ..Default::default()
@@ -454,7 +454,7 @@ fn detail_focus_places_and_hit_map_agree_for_all_three_scrolled_strips() {
 fn fixture_with_seasons(sid: ServerId, season_count: usize, cur_season: usize) -> Detail {
     let mut d = fixture(sid);
     d.seasons = (0..season_count)
-        .map(|i| crate::metadata::Season {
+        .map(|i| plx_data::metadata::Season {
             rk: format!("season-{i}"),
             index: i as i64,
             title: format!("Season {i}"),

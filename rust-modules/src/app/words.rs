@@ -338,9 +338,9 @@ mod heartbeat_word_tests {
     #[test]
     fn deriving_the_surface_alphabet_cannot_mutate_an_unrelated_browse_owner() {
         let _guard = plx_base::testlock::serial();
-        let stores = crate::stores::Stores::default();
+        let stores = plx_data::stores::Stores::default();
         stores.browse.borrow_mut().seed_two_source_table_for_test();
-        let mut directory = crate::stores::browse::DirectorySnapshot::default();
+        let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
         stores.capture_browse(&mut directory);
         assert_eq!(
             directory.view().section_count(),

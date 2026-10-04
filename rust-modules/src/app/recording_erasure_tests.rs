@@ -38,7 +38,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
             std::fs::write(root.join("plxnative-rec"), b"").unwrap();
         }
 
-        let mut bridge = Bridge::for_session_test(crate::auth::SessionInit::captured(Session {
+        let mut bridge = Bridge::for_session_test(plx_session::auth::SessionInit::captured(Session {
             client_id: "synthetic-erasure".into(),
             ..Default::default()
         }));
@@ -72,7 +72,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
             false,
         );
         bridge.settle_session_io_for_test(&mut pages);
-        assert_eq!(bridge.auth_read().0.phase, crate::auth::Phase::Deleted);
+        assert_eq!(bridge.auth_read().0.phase, plx_session::auth::Phase::Deleted);
         assert_eq!(bridge.auth_read().0.delete_leftovers, usize::from(partial));
         assert!(bridge
             .take_reqs()

@@ -28,12 +28,12 @@ pub(super) fn allowed(
 }
 
 
-pub(super) fn trk(id: i64, codec: &str, lang: &str, default: bool) -> crate::metadata::Stream {
+pub(super) fn trk(id: i64, codec: &str, lang: &str, default: bool) -> plx_data::metadata::Stream {
     // `..Default::default()` for the rest, which is what that derive is FOR (see the comment
     // above `metadata::Stream`): this ladder is about id / codec / language / default, and a
     // fixture that spells out the technical fields it does not read would have to be revisited
     // every time the Track-information panel learns another one.
-    crate::metadata::Stream {
+    plx_data::metadata::Stream {
         id,
         index: id,
         lang_code: lang.into(),
@@ -47,7 +47,7 @@ pub(super) fn trk(id: i64, codec: &str, lang: &str, default: bool) -> crate::met
 
 /// Mark a track as the server's CURRENT pick (PMS `Stream.selected`) — the flag a pick made
 /// on a phone / Plex Web / another TV arrives on.
-pub(super) fn server_selected(mut s: crate::metadata::Stream) -> crate::metadata::Stream {
+pub(super) fn server_selected(mut s: plx_data::metadata::Stream) -> plx_data::metadata::Stream {
     s.selected = true;
     s
 }
@@ -56,8 +56,8 @@ pub(super) fn server_selected(mut s: crate::metadata::Stream) -> crate::metadata
 /// A subtitle stream, spelled out because the ordinal maths depends on `index` (container
 /// order, which PMS may report out of document order) and on `external` (sidecars are not in
 /// the container at all, so the client renderer cannot count them).
-pub(super) fn sub(id: i64, index: i64, lang: &str, external: bool) -> crate::metadata::Stream {
-    crate::metadata::Stream {
+pub(super) fn sub(id: i64, index: i64, lang: &str, external: bool) -> plx_data::metadata::Stream {
+    plx_data::metadata::Stream {
         index,
         external,
         ..trk(id, "srt", lang, false)
@@ -65,7 +65,7 @@ pub(super) fn sub(id: i64, index: i64, lang: &str, external: bool) -> crate::met
 }
 
 
-pub(super) use crate::metadata::{Dovi, DvPresentation};
+pub(super) use plx_data::metadata::{Dovi, DvPresentation};
 
 
 /// The two inputs of the boot-latched `/tmp/plxnative-nodv` diagnostic, named so assertions state

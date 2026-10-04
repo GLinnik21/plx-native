@@ -752,7 +752,7 @@ mod tests {
     /// or stepping a `Machine` outside the real dispatcher.
     fn fixture_cx(m: &FixtureMeasure, focus: Option<FocusKey<u32>>) -> Cx<'_, InnerHost> {
         Cx {
-            views: crate::stores::browse::DirectoryView::empty_for_test(),
+            views: plx_data::stores::browse::DirectoryView::empty_for_test(),
             tick: Tick::default(),
             measure: m,
             press: PressRead::default(),

@@ -5229,7 +5229,7 @@ class DepGates(unittest.TestCase):
         "ci",
         "rust-modules/src",
         # The layer crates split out of `src`: `ci/check-deps.sh` reads them as `SRC_BASE`,
-        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM`, `SRC_GFX`, `SRC_UI`, `SRC_PLEX` and `SRC_TELEMETRY`, so a copy without them grades a different
+        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM`, `SRC_GFX`, `SRC_UI`, `SRC_PLEX`, `SRC_TELEMETRY`, `SRC_DATA` and `SRC_SESSION`, so a copy without them grades a different
         # tree than the checkout.
         "rust-modules/base/src",
         "rust-modules/machine/src",
@@ -5239,11 +5239,15 @@ class DepGates(unittest.TestCase):
         "rust-modules/ui/src",
         "rust-modules/plex/src",
         "rust-modules/telemetry/src",
+        "rust-modules/data/src",
+        "rust-modules/session/src",
         "rust-modules/Cargo.toml",
         "rust-modules/build.rs",
         "rust-modules/net/Cargo.toml",
         "rust-modules/plex/Cargo.toml",
         "rust-modules/telemetry/Cargo.toml",
+        "rust-modules/data/Cargo.toml",
+        "rust-modules/session/Cargo.toml",
         "rust-modules/platform/Cargo.toml",
         "rust-modules/platform/build.rs",
         "rust-modules/gfx/Cargo.toml",
@@ -5283,7 +5287,7 @@ class DepGates(unittest.TestCase):
         bumped the mtime of a file `cargo` watches, so the NEXT cargo invocation of a `make check`
         recompiled the whole crate for nothing -- and made it impossible to run two self-tests at
         once."""
-        real = os.path.join(self.ROOT, "rust-modules", "src", "browse", "mod.rs")
+        real = os.path.join(self.ROOT, "rust-modules", "data", "src", "browse", "mod.rs")
         before = os.stat(real).st_mtime_ns
         self.assertEqual(self._prepend("browse/mod.rs", "\n").returncode, 0)
         self.assertEqual(os.stat(real).st_mtime_ns, before, "a self-test wrote into the real tree")
@@ -5299,7 +5303,7 @@ class DepGates(unittest.TestCase):
         """The untouched copy above cannot see an input that was left out of `TREE_INPUTS` -- a
         gate that scans nothing is green. So plant what the `fpflags` rule looks for in each file
         it scans, inside the copy, and require the rule to go red naming it."""
-        for rel in ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/plex/Cargo.toml", "rust-modules/telemetry/Cargo.toml", "rust-modules/platform/Cargo.toml",
+        for rel in ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/plex/Cargo.toml", "rust-modules/telemetry/Cargo.toml", "rust-modules/data/Cargo.toml", "rust-modules/session/Cargo.toml", "rust-modules/platform/Cargo.toml",
                     "rust-modules/platform/build.rs", "rust-modules/gfx/Cargo.toml",
                     "rust-modules/gfx/build.rs", "rust-modules/ui/Cargo.toml", "rust-modules/ui/build.rs",
                     "rust-modules/storage/Cargo.toml",
@@ -5343,7 +5347,7 @@ class DepGates(unittest.TestCase):
         a `find … -name '*.rs'` sweep, so an orphan file elsewhere in the tree is invisible to it
         by design; a scratch mutation of the copied file's own content is what "plants a
         pub(crate) fn set_cur in a temp copy" (the D3 brief's own words) has to mean here."""
-        target = os.path.join(self.tree, "rust-modules", "src", relpath)
+        target = self._store_file(relpath)
         with open(target, encoding="utf-8") as f:
             original = f.read()
         self.assertEqual(original.count(needle), 1, f"{needle!r} not found exactly once in {relpath}")
@@ -5356,9 +5360,17 @@ class DepGates(unittest.TestCase):
             with open(target, "w", encoding="utf-8") as f:
                 f.write(original)
 
+    def _store_file(self, relpath):
+        """The private copy's path of a store module: the data layer's crate (`plx_data`, Split 9)
+        holds stores/, browse/, pms.rs, metadata.rs, search.rs, person.rs and viewstate.rs; any other
+        relative path is the application crate's. A path that exists in neither fails the caller's
+        open(), loudly."""
+        data = os.path.join(self.tree, "rust-modules", "data", "src", relpath)
+        return data if os.path.exists(data) else os.path.join(self.tree, "rust-modules", "src", relpath)
+
     def _prepend(self, relpath, content):
         """Temporarily prepend a valid module-level fixture to a scanned Rust file."""
-        target = os.path.join(self.tree, "rust-modules", "src", relpath)
+        target = self._store_file(relpath)
         with open(target, encoding="utf-8") as f:
             original = f.read()
         try:
@@ -5497,7 +5509,7 @@ impl BrowseScopeFixture {
         self.assertIn("ok — browse-owner", r.stdout)
 
     def test_browse_owner_gate_fails_closed_when_a_scanner_input_is_missing(self):
-        target = os.path.join(self.tree, "rust-modules", "src", "browse", "view.rs")
+        target = self._store_file(os.path.join("browse", "view.rs"))
         hidden = target + ".check-deps-selftest"
         self.assertTrue(os.path.exists(target), f"missing scanner fixture {target}")
         self.assertFalse(os.path.exists(hidden), f"stale self-test artifact at {hidden}")
@@ -5518,12 +5530,13 @@ impl BrowseScopeFixture {
 
     def test_browse_owner_gate_accepts_receiver_bound_owned_methods(self):
         """A BrowseState selector is safe when it requires an explicit receiver. GREEN:
-        temporarily widen the owned `cur(&self)` method to `pub`; the gate must still pass,
-        proving it rejects free/global facades rather than all methods with those names."""
+        re-declare the owned `cur(&self)` method (already `pub` since the data crate split, so the
+        mutation adds an attribute rather than widening); the gate must still pass, proving it
+        rejects free/global facades rather than all methods with those names."""
         r = self._mutate(
             os.path.join("browse", "mod.rs"),
-            "    pub(crate) fn cur(&self) -> usize {",
             "    pub fn cur(&self) -> usize {",
+            "    #[inline]\n    pub fn cur(&self) -> usize {",
         )
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok — browse-owner", r.stdout)

@@ -2,7 +2,7 @@
 //! with, parsed beside the one module that acts on it ([`super::engine`]'s `start_bufferfeed`).
 //!
 //! It is a TYPED dev trigger. Its value is a JSON object whose decision half is a
-//! [`crate::metadata::Dovi`], so it can live neither with the trigger primitives (`plx_base::devtrig`
+//! [`plx_data::metadata::Dovi`], so it can live neither with the trigger primitives (`plx_base::devtrig`
 //! is a base-layer module and names no application type) nor in `crate::dev` (the application
 //! layer, which the player may not name). It is parsed here from `plx_base::devtrig::read`, and a
 //! release build still folds it away at COMPILE time exactly as before: `read` is `None` without
@@ -100,7 +100,7 @@ pub(crate) struct PlayUrl {
     pub(crate) source_raster: Option<[u16; 2]>,
 }
 
-/// The four DV fields the Load payload actually decides on — [`crate::metadata::Dovi`]'s
+/// The four DV fields the Load payload actually decides on — [`plx_data::metadata::Dovi`]'s
 /// decision half. The three descriptive fields (level, version, bl/rpu present) are read by the
 /// tracks panel and by nothing on the playback path, so this trigger does not carry them.
 #[derive(serde::Deserialize, Clone, Copy, Default)]
@@ -121,13 +121,13 @@ impl PlayDovi {
     /// The engine-facing record. `present` is DERIVED from a non-zero profile rather than carried
     /// separately: two fields that can disagree is a way to declare "Dolby Vision, profile 0",
     /// which is not a thing, and the harness would have to keep them in step by hand in every case.
-    pub(crate) fn to_dovi(self) -> crate::metadata::Dovi {
-        crate::metadata::Dovi {
+    pub(crate) fn to_dovi(self) -> plx_data::metadata::Dovi {
+        plx_data::metadata::Dovi {
             present: self.profile > 0,
             profile: self.profile,
             bl_compat: self.bl_compat,
             el_present: self.el_present,
-            ..crate::metadata::Dovi::NONE
+            ..plx_data::metadata::Dovi::NONE
         }
     }
 }
@@ -203,7 +203,7 @@ mod tests {
         assert!(!dv.present);
         assert_eq!(
             dv,
-            crate::metadata::Dovi::NONE,
+            plx_data::metadata::Dovi::NONE,
             "an absent dovi node must be silence itself"
         );
     }

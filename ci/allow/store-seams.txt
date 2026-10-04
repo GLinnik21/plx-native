@@ -1,5 +1,5 @@
 # count: 0
-# Entries key by `<path relative to rust-modules/src>::<fn name>`, e.g. `metadata.rs::land_x` —
+# Entries key by `<path relative to rust-modules/data/src>::<fn name>`, e.g. `metadata.rs::land_x` —
 # NOT by path alone like every other ci/allow/*.txt, because a bare-path entry here would exempt
 # a whole legacy module's worth of mutators for one worker-seam function.
 #

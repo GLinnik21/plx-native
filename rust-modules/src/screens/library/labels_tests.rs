@@ -1,12 +1,12 @@
 //! Meaningful legacy caption and landscape assertions, on the owned production helpers.
-use crate::pms::PmsMovie;
+use plx_data::pms::PmsMovie;
 use plx_ui::card_row::{self, RowStyle};
 use plx_ui::consts::{self, CARD_H, CARD_W, MARGIN_X};
 use plx_ui::fixture::FixtureMeasure;
 use plx_machine::machine::{EntryId, InstanceId};
 use plx_ui::{Painter, Rect};
 use std::os::raw::c_int;
-use crate::stores::browse::SecKind;
+use plx_data::stores::browse::SecKind;
 use super::draw::shelf_label;
 use super::layout::{self, Layout, shelf_pitch, COLS, CONTENT_TOP, GRID_RIGHT, MAX_LETTERS,
     RAIL_CAP_PAD, RAIL_TRACK_W};
@@ -203,7 +203,7 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
 fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
     // Port the original Library assertion against the owned screen's production helper.
     let caption = |item: PmsMovie, is_continue| {
-        let shelf = crate::browse::section_hubs::Shelf {
+        let shelf = plx_data::browse::section_hubs::Shelf {
             id: "x".into(), key: String::new(), link: None, total: 0, title: "Recently Added".into(), is_continue,
             landscape: false, items: vec![item],
         };
@@ -245,7 +245,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
             show_title: show.into(),
             ..Default::default()
         };
-        let shelf = |items: Vec<PmsMovie>| crate::browse::section_hubs::Shelf {
+        let shelf = |items: Vec<PmsMovie>| plx_data::browse::section_hubs::Shelf {
             id: "tv.recentlyreleased".into(),
             key: String::new(),
             link: None,
@@ -417,7 +417,7 @@ fn a_parsed_episode_draws_its_own_still_with_or_without_a_show_poster() {
             grandparent_title: "The Office".into(),
             ..Default::default()
         };
-        crate::pms::parse_item(&it, plx_plex::plex::ServerId::from_raw(0))
+        plx_data::pms::parse_item(&it, plx_plex::plex::ServerId::from_raw(0))
     };
 
     // the show HAS a poster: the poster substitution stands, and the still is kept beside it

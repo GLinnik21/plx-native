@@ -3,18 +3,18 @@
 //! page teardown is as against the FADE a BACK is).
 
 use super::*;
-use crate::metadata::{alt_source_count, alt_stand_in};
-use crate::stores::metadata::MetadataCmd;
+use plx_data::metadata::{alt_source_count, alt_stand_in};
+use plx_data::stores::metadata::MetadataCmd;
 
 // TEST ONLY: see `screens::detail::tests`'s `TEST_METADATA` for why the owner lives here,
 // thread-confined, rather than being threaded through every call site in this file. Reached only
 // through `MetadataStore::run`/`state_mut`/`view` (the sole owner API).
 thread_local! {
-    static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-        std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+        std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
 }
 
-fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
@@ -408,7 +408,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
-            test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+            test_store().run(plx_data::stores::metadata::MetadataCmd::Clear);
             plx_plex::plex::reset_servers_for_test();
         }
     }
@@ -508,7 +508,7 @@ fn an_unnamed_external_share_is_drawn_like_the_household_and_that_is_the_open_bu
     struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
-            test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+            test_store().run(plx_data::stores::metadata::MetadataCmd::Clear);
             plx_plex::plex::reset_servers_for_test();
         }
     }
@@ -574,7 +574,7 @@ fn a_resolve_that_landed_after_the_correction_is_regraded_on_the_way_in() {
     struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
-            test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+            test_store().run(plx_data::stores::metadata::MetadataCmd::Clear);
             plx_plex::plex::reset_servers_for_test();
         }
     }
@@ -625,11 +625,11 @@ fn a_landing_for_another_servers_copy_with_the_same_key_is_refused() {
     struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
-            test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+            test_store().run(plx_data::stores::metadata::MetadataCmd::Clear);
         }
     }
     let _g = Fresh(plx_base::testlock::serial());
-    test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+    test_store().run(plx_data::stores::metadata::MetadataCmd::Clear);
     let available = |sid: ServerId, rk: &str| test_store().view().alt_available(sid, rk);
     let two_sources = || {
         vec![
@@ -727,7 +727,7 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
             rk: String::new(),
             anchor: [low.x, low.y, low.w, low.h].map(f32::to_bits),
         },
-        crate::stores::metadata::MetadataStore::default().view(),
+        plx_data::stores::metadata::MetadataStore::default().view(),
     );
     let measure = plx_ui::fixture::FixtureMeasure;
     let want = panel_at(low, p.form.table.measured_width(&measure), p.form.table.measured_height());
@@ -848,7 +848,7 @@ mod focus_and_hit {
         type Memory = PageMemory;
     }
     impl crate::screens::registry::MetadataLike for HostFixture {
-        fn metadata<'a>(_cx: &plx_machine::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        fn metadata<'a>(_cx: &plx_machine::machine::Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
             test_store().view()
         }
     }

@@ -7,5 +7,5 @@ rust-modules/ui/src/popover.rs	CACHE: THE single full-viewport FrameCache (8.29 
 rust-modules/ui/src/popover.rs	HELD: whether that FrameCache is held or being recaptured — the cache's own bookkeeping
 rust-modules/ui/src/popover.rs	TARGET: the FBO pass that draws the host page INTO that FrameCache this frame, opened and closed within one frame — the cache's own bookkeeping
 rust-modules/ui/src/widgets.rs	TAB_CACHE: tab-row CString/width memo keyed by the full captured (generation, labels) vocabulary; both normal chrome and its scrim lift pass the same Bridge-owned labels, and the cache is never read as state
-rust-modules/src/search/recents.rs	STORE: write-behind persistence cache for the recents queue, keyed by the global session generation and drained to disk by background workers — a per-Bridge copy would duplicate the on-disk queue and risk a double write, not a store-ownership gap
-rust-modules/src/search/recents.rs	PENDING: the write-behind queue itself, coalesced per profile and drained by the same background workers — same persistence seam as STORE, not per-owner state
+rust-modules/data/src/search/recents.rs	STORE: write-behind persistence cache for the recents queue, keyed by the global session generation and drained to disk by background workers — a per-Bridge copy would duplicate the on-disk queue and risk a double write, not a store-ownership gap
+rust-modules/data/src/search/recents.rs	PENDING: the write-behind queue itself, coalesced per profile and drained by the same background workers — same persistence seam as STORE, not per-owner state

@@ -1,6 +1,6 @@
 //! Ports of the legacy deferred-transaction assertions through the owned screen and store.
 use super::*;
-use crate::stores::browse::QueryEdit;
+use plx_data::stores::browse::QueryEdit;
 use plx_ui::fixture::{FixtureArg, FixtureMeasure};
 use plx_machine::machine::{Host, InputOwner, Stamped, Tick};
 
@@ -8,9 +8,9 @@ struct TestHost;
 
 #[derive(Clone, Copy)]
 struct Views<'a> {
-    listing: crate::stores::browse::ListingView<'a>,
-    directory: crate::stores::browse::DirectoryView<'a>,
-    hubs: crate::stores::browse::HubsView<'a>,
+    listing: plx_data::stores::browse::ListingView<'a>,
+    directory: plx_data::stores::browse::DirectoryView<'a>,
+    hubs: plx_data::stores::browse::HubsView<'a>,
 }
 impl Host for TestHost {
     type Arg = FixtureArg;
@@ -22,21 +22,21 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 impl LibraryLike for TestHost {
-    fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> {
+    fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> {
         cx.views.listing
     }
-    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> {
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
         cx.views.directory
     }
-    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> {
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> {
         cx.views.hubs
     }
 }
 struct Fixture {
-    stores: crate::stores::Stores,
-    listing: crate::stores::browse::ListingSnapshot,
-    directory: crate::stores::browse::DirectorySnapshot,
-    hubs: crate::stores::browse::HubsSnapshot,
+    stores: plx_data::stores::Stores,
+    listing: plx_data::stores::browse::ListingSnapshot,
+    directory: plx_data::stores::browse::DirectorySnapshot,
+    hubs: plx_data::stores::browse::HubsSnapshot,
     sids: [plx_plex::plex::ServerId; 2],
     _session: plx_plex::plex::session::TempSession,
 }
@@ -55,10 +55,10 @@ impl Fixture {
             "fixture",
         );
         let mut fixture = Self {
-            stores: crate::stores::Stores::default(),
-            listing: crate::stores::browse::ListingSnapshot::empty_for_test(),
+            stores: plx_data::stores::Stores::default(),
+            listing: plx_data::stores::browse::ListingSnapshot::empty_for_test(),
             directory: Default::default(),
-            hubs: crate::stores::browse::HubsSnapshot::empty_for_test(),
+            hubs: plx_data::stores::browse::HubsSnapshot::empty_for_test(),
             sids: [own, shared],
             _session: session,
         };
@@ -142,8 +142,8 @@ impl Drop for Fixture {
     }
 }
 fn apply(
-    stores: &mut crate::stores::Stores,
-    directory: crate::stores::browse::DirectoryView<'_>,
+    stores: &mut plx_data::stores::Stores,
+    directory: plx_data::stores::browse::DirectoryView<'_>,
     out: Vec<Stamped<TestHost>>,
 ) -> Vec<bool> {
     // Pump the real synchronous StoreCmd drain; no asynchronous worker is needed to grade

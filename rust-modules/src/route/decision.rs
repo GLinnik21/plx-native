@@ -9,7 +9,7 @@
 //! (`PlaybackSession::auto_last_switch`) is now a frame-tick millisecond stamp, not an `Instant`.
 
 use plx_plex::plex::ServerId;
-use crate::pms::PmsMovie;
+use plx_data::pms::PmsMovie;
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
@@ -295,10 +295,10 @@ pub(crate) struct PlaybackSession {
     ///
     /// `Dovi::NONE` on every transcode and remux: what arrives then is the server's output, and
     /// the only DV file that reaches those paths is one we refused to declare in the first place.
-    stream_dovi: crate::metadata::Dovi,
+    stream_dovi: plx_data::metadata::Dovi,
     /// Capability and presentation frozen when `stream_dovi` entered this physical route. An
     /// audio switch, reload, Original recovery and rollback all copy this beside the raw record.
-    stream_dv_decision: crate::metadata::DvDecision,
+    stream_dv_decision: plx_data::metadata::DvDecision,
     /// **Does the audio elementary stream we are feeding carry Dolby Atmos?** The Load payload's
     /// `contents.immersive` node turns on it ([`crate::player::engine`]).
     ///
@@ -420,8 +420,8 @@ impl PlaybackSession {
         stream_vcodec: String::new(),
         stream_acodec: String::new(),
         stream_fps: 0.0,
-        stream_dovi: crate::metadata::Dovi::NONE,
-        stream_dv_decision: crate::metadata::DvDecision::NONE,
+        stream_dovi: plx_data::metadata::Dovi::NONE,
+        stream_dv_decision: plx_data::metadata::DvDecision::NONE,
         stream_immersive: false,
         title: [0; 128],
         ctxline: [0; 96],
@@ -832,8 +832,8 @@ struct AppliedRouteProjection {
     stream_vcodec: String,
     stream_acodec: String,
     stream_fps: f64,
-    stream_dovi: crate::metadata::Dovi,
-    stream_dv_decision: crate::metadata::DvDecision,
+    stream_dovi: plx_data::metadata::Dovi,
+    stream_dv_decision: plx_data::metadata::DvDecision,
     stream_immersive: bool,
 }
 
@@ -3256,8 +3256,8 @@ pub(crate) fn arm_auto_fixture(
             direct: true,
             vcodec: "h264".into(),
             fps: 0.0,
-            dovi: crate::metadata::Dovi::NONE,
-            dv_decision: crate::metadata::DvDecision::NONE,
+            dovi: plx_data::metadata::Dovi::NONE,
+            dv_decision: plx_data::metadata::DvDecision::NONE,
             audio: Some(CarriedAudio {
                 codec: "aac".into(),
                 ..CarriedAudio::named(0, -1)
@@ -4457,27 +4457,27 @@ pub(crate) fn stream_fps(ps: &PlaybackSession) -> f64 {
 /// The direct-played file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo` node.
 /// `Dovi::NONE` for anything the server is transcoding or remuxing, and for a DV file we refused
 /// to declare — in every one of those cases the payload must say nothing.
-pub(crate) fn stream_dovi(ps: &PlaybackSession) -> crate::metadata::Dovi {
+pub(crate) fn stream_dovi(ps: &PlaybackSession) -> plx_data::metadata::Dovi {
     let s = &*ps;
     if s.stream_vcodec.eq_ignore_ascii_case("hevc") {
         s.stream_dovi
     } else {
         // Last-line consistency guard for dev declarations and future route mutations: the LG
         // payload cannot truthfully describe Dolby Vision on a non-HEVC elementary stream.
-        crate::metadata::Dovi::NONE
+        plx_data::metadata::Dovi::NONE
     }
 }
 /// The capability and presentation frozen into this installed route. Unlike the raw DOVI metadata,
 /// this is the value the Load payload must consume without consulting the live capability cache.
-pub(crate) fn stream_dv_presentation(ps: &PlaybackSession) -> crate::metadata::DvPresentation {
+pub(crate) fn stream_dv_presentation(ps: &PlaybackSession) -> plx_data::metadata::DvPresentation {
     if ps.stream_vcodec.eq_ignore_ascii_case("hevc") {
         ps.stream_dv_decision.presentation
     } else {
-        crate::metadata::DvPresentation::NotDv
+        plx_data::metadata::DvPresentation::NotDv
     }
 }
 
-pub(crate) fn stream_dv_decision(ps: &PlaybackSession) -> crate::metadata::DvDecision {
+pub(crate) fn stream_dv_decision(ps: &PlaybackSession) -> plx_data::metadata::DvDecision {
     ps.stream_dv_decision
 }
 
@@ -4485,8 +4485,8 @@ pub(crate) fn stream_dv_decision(ps: &PlaybackSession) -> crate::metadata::DvDec
 /// source declaration. Centralizing the paired reset prevents a future route mutation from
 /// clearing the raw metadata while leaving a stale `Declare` behind for Load.
 fn clear_output_dv(session: &mut PlaybackSession) {
-    session.stream_dovi = crate::metadata::Dovi::NONE;
-    session.stream_dv_decision = crate::metadata::DvDecision::NONE;
+    session.stream_dovi = plx_data::metadata::Dovi::NONE;
+    session.stream_dv_decision = plx_data::metadata::DvDecision::NONE;
 }
 /// Is the audio being fed a Dolby Atmos stream? — the Load payload's `contents.immersive` node.
 /// See [`PlaybackSession::stream_immersive`].
@@ -4582,7 +4582,7 @@ pub(crate) fn set_stream_declaration(
     vc: &str,
     ac: &str,
     fps: f64,
-    dovi: crate::metadata::Dovi,
+    dovi: plx_data::metadata::Dovi,
     immersive: bool,
 ) -> bool {
     set_stream_declaration_with_capability(
@@ -4601,14 +4601,14 @@ fn set_stream_declaration_with_capability(
     vc: &str,
     ac: &str,
     fps: f64,
-    dovi: crate::metadata::Dovi,
+    dovi: plx_data::metadata::Dovi,
     immersive: bool,
     capability: plx_platform::devcaps::dv::DvCapability,
 ) -> bool {
-    let decision = crate::metadata::DvDecision {
+    let decision = plx_data::metadata::DvDecision {
         capability,
         presentation: dovi.presentation(
-            !crate::metadata::dv_withheld(),
+            !plx_data::metadata::dv_withheld(),
             capability,
             vc.eq_ignore_ascii_case("hevc"),
         ),
@@ -4638,7 +4638,7 @@ pub(crate) fn set_stream_declaration_for_test(
     vc: &str,
     ac: &str,
     fps: f64,
-    dovi: crate::metadata::Dovi,
+    dovi: plx_data::metadata::Dovi,
     immersive: bool,
     capability: plx_platform::devcaps::dv::DvCapability,
 ) -> bool {
@@ -6125,7 +6125,7 @@ impl ResolveEnv {
     /// carries the server it came from (`PmsMovie`/`UpNext`/`Detail` all hold one now), so a play
     /// raised off a merged shelf resolves against the server that shelf's row belongs to rather
     /// than whichever server happens to be current when the worker gets around to asking.
-    fn snapshot(ps: &PlaybackSession, meta: crate::metadata::MetadataView<'_>, sid: ServerId, rk: &str) -> ResolveEnv {
+    fn snapshot(ps: &PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, sid: ServerId, rk: &str) -> ResolveEnv {
         let s = ps;
         ResolveEnv {
             sid,
@@ -6152,12 +6152,12 @@ impl ResolveEnv {
     }
 }
 
-pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
+pub(crate) fn playback_preview(d: &plx_data::metadata::Detail) -> Option<Preview> {
     playback_preview_with_capability(d, None)
 }
 
 fn playback_preview_with_capability(
-    d: &crate::metadata::Detail,
+    d: &plx_data::metadata::Detail,
     capability: Option<plx_platform::devcaps::dv::DvCapability>,
 ) -> Option<Preview> {
     // A SHOW's container carries no file of its own, so the page answers for the episode its Play
@@ -6169,7 +6169,7 @@ fn playback_preview_with_capability(
     };
     let presentation = match capability {
         Some(capability) => d.dovi.presentation(
-            !crate::metadata::dv_withheld(),
+            !plx_data::metadata::dv_withheld(),
             capability,
             vcodec.eq_ignore_ascii_case("hevc"),
         ),
@@ -6213,7 +6213,7 @@ fn playback_preview_with_capability(
 
 #[cfg(test)]
 pub(crate) fn playback_preview_with_capability_for_test(
-    d: &crate::metadata::Detail,
+    d: &plx_data::metadata::Detail,
     capability: plx_platform::devcaps::dv::DvCapability,
 ) -> Option<Preview> {
     playback_preview_with_capability(d, Some(capability))
@@ -6339,7 +6339,7 @@ pub(crate) fn surface_sid() -> ServerId {
 /// PlayQueue, the resume point) belongs to the former.
 pub(crate) fn request_play(
     ps: &mut PlaybackSession,
-    meta: &mut crate::stores::metadata::MetadataStore,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
     sid: ServerId,
     rk: &str,
     part: &str,
@@ -6371,7 +6371,7 @@ pub(crate) fn request_play(
 /// zero. The caller keeps the detail page mounted.
 pub(crate) fn request_preview(
     ps: &mut PlaybackSession,
-    meta: &mut crate::stores::metadata::MetadataStore,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
     sid: ServerId,
     rk: &str,
     part: &str,
@@ -6389,7 +6389,7 @@ pub(crate) fn request_preview(
             vcodec: vcodec.to_owned(),
             acodec: acodec.to_owned(),
             title: title.to_owned(),
-            ctx: crate::metadata::TRAILER_CONTEXT.to_owned(),
+            ctx: plx_data::metadata::TRAILER_CONTEXT.to_owned(),
             preview: true,
         },
         None,
@@ -6403,7 +6403,7 @@ pub(crate) fn request_preview(
 /// a replacement timeline lease still waits for any stop announced before its publication.
 fn request_play_inner(
     ps: &mut PlaybackSession,
-    meta: &mut crate::stores::metadata::MetadataStore,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
     request: PlaybackRequest,
     retry: Option<RetryContext>,
     trace_generation: Option<u32>,
@@ -6450,7 +6450,7 @@ fn request_play_inner(
         // of, taken from the arrays themselves so the two can never disagree.
         unsafe {
             set_c(s.title.as_mut_ptr(), s.title.len(), title);
-            set_c(s.ctxline.as_mut_ptr(), s.ctxline.len(), crate::metadata::context_label(ctx));
+            set_c(s.ctxline.as_mut_ptr(), s.ctxline.len(), plx_data::metadata::context_label(ctx));
         }
         s.cur_audio = None;
         s.cur_sub_sid = 0;
@@ -6475,7 +6475,7 @@ fn request_play_inner(
     // …and the outgoing item's track/marker/chapter store, for exactly the reason above: it stays
     // the PREVIOUS leaf's until this resolve lands. See `metadata::retire_playing_item`.
     if !request.preview {
-        meta.run(crate::stores::metadata::MetadataCmd::RetirePlayingItem);
+        meta.run(plx_data::stores::metadata::MetadataCmd::RetirePlayingItem);
         reset_track_selection(request.sid, &request.rk, retry);
     }
     // Capture the reducer revision BEFORE projecting the environment. Both happen on the main
@@ -6484,7 +6484,7 @@ fn request_play_inner(
     let contract_revision = desired_contract_revision();
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
     let mut env = ResolveEnv::snapshot(ps, meta.view(), sid, rk);
-    env.omit_queue_continuous = crate::metadata::context_omits_queue_continuous(ctx);
+    env.omit_queue_continuous = plx_data::metadata::context_omits_queue_continuous(ctx);
     env.set_preview(request.preview);
     if let Some(retry) = retry {
         apply_retry_enhancement(&mut env, retry);
@@ -6668,7 +6668,7 @@ fn apply_retry_enhancement(env: &mut ResolveEnv, retry: RetryContext) {
 /// read-out's *Switch to Auto and play*); `None` keeps it.
 pub(crate) fn retry_current_play(
     ps: &mut PlaybackSession,
-    meta: &mut crate::stores::metadata::MetadataStore,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
     resume_ns: i64,
     direct_play: Option<DirectPlayMode>,
 ) -> bool {
@@ -6702,7 +6702,7 @@ fn retry_context_with(ps: &PlaybackSession, resume_ns: i64, direct_play: Option<
 /// `ctx` is the HUD's context line (`year · rating · runtime`). The caller formats it
 /// (`app::playback::movie_ctx`) because the runtime string is `ui::fmt`'s and `route` sits below
 /// `ui`.
-pub(crate) fn request_play_movie(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, m: &PmsMovie, ctx: &str) -> bool {
+pub(crate) fn request_play_movie(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, m: &PmsMovie, ctx: &str) -> bool {
     if m.part.is_empty() {
         return false;
     }
@@ -6752,7 +6752,7 @@ pub(crate) fn item_sid(sid: ServerId) -> ServerId {
 /// pre-roll doesn't change shape underneath the user when it does. `ctx` is the context line, the
 /// episode kicker (`ui::fmt::episode_kicker(u.season, u.index, &u.ep_title)`): the caller formats it
 /// before handing `u` over, because `route` sits below `ui`.
-pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, u: UpNext, ctx: &str) -> bool {
+pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, u: UpNext, ctx: &str) -> bool {
     let title = if u.show_title.is_empty() {
         &u.ep_title
     } else {
@@ -6801,7 +6801,7 @@ pub(crate) fn install_up_next_still_warm(warm: fn(ServerId, &str)) {
 /// MAIN THREAD, once a frame. Returns the generation-owned resume point when a playable fresh plan
 /// was installed. `Some(0)` means start from the beginning; `None` means no playable landing. A
 /// stale landing (and its resume) is dropped.
-pub(crate) fn pump_play(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore) -> Option<i64> {
+pub(crate) fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore) -> Option<i64> {
     let taken = PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
     let Some(PlayLanding {
         gen,
@@ -6892,7 +6892,7 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession, meta: &mut crate::stores::meta
 /// to set and are carried across it explicitly — the HUD strings, the `/identity` cache when this
 /// plan learned no id, and the codec quartet when the plan resolved no video codec — and each says
 /// below why it stays.
-fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, plan: Plan, rk: &str) -> Option<RouteStartTransaction> {
+fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, plan: Plan, rk: &str) -> Option<RouteStartTransaction> {
     // ACTIVE_ENCODER is the final server-resource owner, even when there is no encoder. A raw
     // Part URL opens/adopts its Streaming Resource under the logical playback id; retaining that
     // id lets scrobble_stop exact-close it while PlaybackSession::tsession stays empty and Direct remains
@@ -6906,7 +6906,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
         String::new()
     };
     let resolve_failed = plan.url.is_empty() && plan.verdict.is_none();
-    meta.run(crate::stores::metadata::MetadataCmd::InstallPlaying(
+    meta.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(
         plan.playing,
     ));
     // main thread only — `up_next()`/`with_queue()` lend out of this (see their docs). The rows
@@ -7531,8 +7531,8 @@ fn apply_retranscode_outcome_to_projection(p: &mut AppliedRouteProjection, appli
     p.stream_vcodec = applied.vcodec.clone();
     p.stream_acodec = applied.acodec.clone();
     p.stream_fps = 0.0;
-    p.stream_dovi = crate::metadata::Dovi::NONE;
-    p.stream_dv_decision = crate::metadata::DvDecision::NONE;
+    p.stream_dovi = plx_data::metadata::Dovi::NONE;
+    p.stream_dv_decision = plx_data::metadata::DvDecision::NONE;
     p.stream_immersive = false;
 }
 
@@ -8421,7 +8421,7 @@ pub(crate) struct EnhTestFixture {
     pub(crate) base_present: bool,
     /// The base route's own Dolby Vision declaration (I7).
     pub(crate) dv_declared: bool,
-    /// The base route's own [`crate::metadata::Dovi::base_layer_unusable`] (Profile 5 / P7 with an
+    /// The base route's own [`plx_data::metadata::Dovi::base_layer_unusable`] (Profile 5 / P7 with an
     /// enhancement layer) — a source the offer must refuse regardless of `dv_declared`, since a
     /// declaration only ever accompanies a USABLE base layer.
     pub(crate) dv_base_unusable: bool,
@@ -8505,21 +8505,21 @@ pub(crate) fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSessio
     ps.auto_original = route.base_present.then(|| AutoOriginalCandidate {
         direct: route.remux.is_none(),
         dovi: if route.dv_base_unusable {
-            crate::metadata::Dovi { present: true, profile: 5, bl_compat: 0, ..crate::metadata::Dovi::NONE }
+            plx_data::metadata::Dovi { present: true, profile: 5, bl_compat: 0, ..plx_data::metadata::Dovi::NONE }
         } else {
-            crate::metadata::Dovi::NONE
+            plx_data::metadata::Dovi::NONE
         },
         dv_decision: if route.dv_declared {
-            crate::metadata::DvDecision {
+            plx_data::metadata::DvDecision {
                 capability: plx_platform::devcaps::dv::DvCapability::Supported,
-                presentation: crate::metadata::DvPresentation::Declare(crate::metadata::DolbyHdrInfo {
+                presentation: plx_data::metadata::DvPresentation::Declare(plx_data::metadata::DolbyHdrInfo {
                     profile_id: 8,
                     track_type: "single",
                     encryption_type: "clear",
                 }),
             }
         } else {
-            crate::metadata::DvDecision::NONE
+            plx_data::metadata::DvDecision::NONE
         },
         audio: ps.cur_audio.clone(),
         ..test_support::test_original_candidate(None)

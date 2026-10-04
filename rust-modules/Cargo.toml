@@ -1,5 +1,5 @@
 # A cargo workspace with this package as its ROOT; the other members are the storage helper and the
-# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/;
+# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/, data/, session/;
 # docs/module-layers.md).
 # The root keeps the literal `version` below (release tooling reads it), `make`/CI run their usual
 # commands from this directory against this package (a bare `cargo test`/`check`/`build` here still
@@ -15,6 +15,8 @@ members = [
     "ui",
     "plex",
     "telemetry",
+    "data",
+    "session",
     "storage",
 ]
 resolver = "2"
@@ -89,6 +91,8 @@ devtriggers = [
     "plx_ui/devtriggers",
     "plx_plex/devtriggers",
     "plx_telemetry/devtriggers",
+    "plx_data/devtriggers",
+    "plx_session/devtriggers",
 ]
 # The one deliberate behavioural difference of dev builds: make main-thread violations LOUDER
 # (abort/warning), never change a code path that succeeds. Dropped by --no-default-features.
@@ -145,7 +149,7 @@ lab-diagnostics = ["plx_base/lab-diagnostics", "plx_net/lab-diagnostics", "plx_p
 # (LG's SDL fork shifts SDL_KeyboardEvent; stock SDL2 does not), and the wayland/glib calls that
 # have no host equivalent. Everything else — all of `ui/`, the whole Plex data layer, the demux
 # orchestration — is compiled identically for both.
-hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_gfx/hostsim", "plx_plex/hostsim", "plx_telemetry/hostsim"]
+hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_gfx/hostsim", "plx_plex/hostsim", "plx_telemetry/hostsim", "plx_data/hostsim", "plx_session/hostsim"]
 
 # Warnings are ERRORS, for both workspace packages, in every cargo invocation — build, check, test, clippy, the
 # ARM cross-build and the simulator alike. The tree reached zero warnings in all four
@@ -218,6 +222,13 @@ plx_plex = { path = "plex" }
 # release string the application hands it (`telemetry::set_release`), and reads its credentials with `option_env!` from the build
 # environment (the Makefile's `TELEMETRY_ENV`, the release workflow), which reaches every crate.
 plx_telemetry = { path = "telemetry" }
+# The data layer (ci/module-layers.ini `[data]`): the content stores and the catalog, browse, detail,
+# person, collection, search and view-state modules they own. No screen, widget or application type.
+plx_data = { path = "data" }
+# The session layer (ci/module-layers.ini `[session]`): plex.tv sign-in, server discovery, the
+# who's-watching picker and the install of the chosen profile's credentials, and the owner machine
+# that holds them. It reads no build variable: the version it reports is `plx_plex`'s.
+plx_session = { path = "session" }
 # safe pure-Rust JPEG/PNG decoders — replaces vendored stb_image.h (~8k lines C)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # raw socket/libc FFI for the stream module (correct constants + struct layouts)
@@ -228,8 +239,22 @@ serde_json = { version = "1", default-features = false, features = ["alloc", "st
 # derive(Deserialize) for the typed plex API response models (plex/src/plex/models.rs)
 serde = { version = "1", default-features = false, features = ["derive", "alloc", "rc"] }
 
+# The release profile (the ARM staticlib, the storage helper, `make sim-linux` and `make macapp`;
+# the host dev/test profile is untouched). `lto = "fat"` and `codegen-units = 1` are here because of
+# the crate split (docs/module-layers.md): with the default 16 codegen units and no LTO, a function
+# can no longer be inlined or dropped across a layer crate boundary, so every wave of the split grew
+# the shipped binary (11,304,028 B before the split, 12,553,756 B after wave 4, over the 12,426,000 B
+# budget in ci/build-budgets.json). Fat LTO with one codegen unit restores what the single crate
+# had, and measured in CI it gives 11,098,900 B for wave 4, below the pre-split size. It also gives
+# back the cross-crate inlining that the UI's per-frame code relied on.
+#
+# What it costs is build time, paid only by release-profile builds: CI's ARM library build went from
+# 2m40 to 4m15 and a local one from 44 s to 94 s. `make check` and the host tests run the dev profile
+# and do not pay it.
 [profile.release]
 opt-level = 2
+lto = "fat"
+codegen-units = 1
 
 [dev-dependencies]
 # The `cfg(test)` fixtures of the base layer (`testlock`, `testnet`, ...): a dependency is never
@@ -250,3 +275,7 @@ plx_ui = { path = "ui", features = ["test-support"] }
 plx_plex = { path = "plex", features = ["test-support"] }
 # Likewise the telemetry layer's consent, spool and queue seams and the usage-event schema tables.
 plx_telemetry = { path = "telemetry", features = ["test-support"] }
+# Likewise the data layer's seeding and fixture seams (`pms::seed_for_test`, `metadata::set_current_for_test`, ...).
+plx_data = { path = "data", features = ["test-support"] }
+# Likewise the session layer's test fixtures (`auth::test_support`, `auth::owner::scenarios`, ...).
+plx_session = { path = "session", features = ["test-support"] }

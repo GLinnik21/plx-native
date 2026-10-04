@@ -5,8 +5,8 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::auth::{Phase, Picker, SessionCmd, SessionInit, LoginProgress};
-    use crate::auth::owner::{ReplyTo, SessionEnvelope, SessionEvent, SessionOp, SessionWork};
+    use plx_session::auth::{Phase, Picker, SessionCmd, SessionInit, LoginProgress};
+    use plx_session::auth::owner::{ReplyTo, SessionEnvelope, SessionEvent, SessionOp, SessionWork};
     use plx_plex::plex::session::{Session, ServerRef, UserRef, HomeUserRef};
 
     const INITIAL_EPOCH: u64 = u32::MAX as u64 + 40;
@@ -256,8 +256,8 @@ mod tests {
         let sid = plx_plex::plex::ServerId::from_raw(15);
         rig.session_adapter.fixture_resources().endpoints.insert(
             sid.raw(),
-            crate::auth::owner::EndpointCapture {
-                lifecycle: crate::auth::owner::ServerLifecycle {
+            plx_session::auth::owner::EndpointCapture {
+                lifecycle: plx_session::auth::owner::ServerLifecycle {
                     sid: sid.raw(), instance_gen: 17, token_gen: 23,
                 },
                 machine_id: "stored-server".into(),
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(record.key.epoch, epoch);
         assert!(record.key.op == SessionOp::Endpoint(15));
         assert!(record.terminal);
-        assert!(matches!(record.outcome, crate::auth::owner::SessionArrival::Dropped));
+        assert!(matches!(record.outcome, plx_session::auth::owner::SessionArrival::Dropped));
         assert!(rig.session_adapter.admitted(&record));
         record
     }
@@ -388,7 +388,7 @@ mod tests {
     // pending/receipt tests. No network is performed by the real host thread below.
     mod active_worker_reservation {
         use crate::app::adapters::session::SessionAdapter;
-        use crate::auth::owner::{SessionOp, SessionWorkKey, SESSION_TOTAL_RESERVATIONS};
+        use plx_session::auth::owner::{SessionOp, SessionWorkKey, SESSION_TOTAL_RESERVATIONS};
         use plx_machine::landing::AdmissionError;
         use plx_machine::machine::RequestId;
         use std::sync::mpsc::{sync_channel, SyncSender};
@@ -454,15 +454,15 @@ mod tests {
                     entered_tx.send(()).unwrap(); // actual body entered, guard is already on stack
                     observe_rx.recv_timeout(WAIT).expect("main must cancel then release observation");
                     assert!(output.cancelled());
-                    let progress = crate::auth::LoginProgress::CodeReady {
+                    let progress = plx_session::auth::LoginProgress::CodeReady {
                         epoch: EPOCH, code: "ABCD".into(), qr_png: Vec::new(),
                     }.into();
-                    assert!(!crate::auth::owner::ObservationSink::progress(&output, progress),
+                    assert!(!plx_session::auth::owner::ObservationSink::progress(&output, progress),
                         "the production worker sink must refuse late progress");
-                    let terminal = crate::auth::LoginProgress::Failed {
-                        epoch: EPOCH, message: "Synthetic late failure".into(), incident: crate::auth::synthetic_incident(), plaintext: None, account: None
+                    let terminal = plx_session::auth::LoginProgress::Failed {
+                        epoch: EPOCH, message: "Synthetic late failure".into(), incident: plx_session::auth::synthetic_incident(), plaintext: None, account: None
                     }.into();
-                    assert!(!crate::auth::owner::ObservationSink::terminal(&output, terminal),
+                    assert!(!plx_session::auth::owner::ObservationSink::terminal(&output, terminal),
                         "the production worker sink must refuse a late terminal");
                     observed_tx.send(()).unwrap();
                     finish_rx.recv_timeout(WAIT).expect("main must finish its capacity assertions");
@@ -531,7 +531,7 @@ mod tests {
                         "origin":"https://192-0-2-10.h.plex.direct:32400", "address":"192.0.2.10",
                         "location":plx_plex::plex::probe::Location::Local, "ipv6":false}
                 }})).unwrap();
-                output.progress(crate::auth::AuthProgress::Registry(activation)).unwrap();
+                output.progress(plx_session::auth::AuthProgress::Registry(activation)).unwrap();
                 // Synthetic valid activation-contract observation, then real producer Drop.
                 // No claim about a completed network discovery or successful sign-in policy.
             });
@@ -550,7 +550,7 @@ mod tests {
                 assert!(rig.session_adapter.admitted(record));
             }
             assert!(records[..3].iter().all(|record| !record.terminal) && records[3].terminal);
-            assert!(matches!(records[3].outcome, crate::auth::owner::SessionArrival::Dropped));
+            assert!(matches!(records[3].outcome, plx_session::auth::owner::SessionArrival::Dropped));
             records
         }
 
@@ -573,7 +573,7 @@ mod tests {
             step(rig, d, fresh.clone());
             assert_eq!(rig.auth_read().0.phase, Phase::Discovering, "fresh authorization precedes activation");
             let resources = rig.session_adapter.fixture_resources();
-            let [crate::auth::owner::RegistryPlan::Activate { source, .. }] = resources.registry_writes.as_slice()
+            let [plx_session::auth::owner::RegistryPlan::Activate { source, .. }] = resources.registry_writes.as_slice()
                 else { panic!("fresh activation must execute exactly one registry effect") };
             assert_eq!(source.machine_id, "generation-server");
             assert_eq!(source.origin_url, "https://192-0-2-10.h.plex.direct:32400");

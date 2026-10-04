@@ -1,7 +1,7 @@
 //! Related-shelf geometry and actions for [`super::DetailScreen`].
 
-use crate::metadata::Detail;
-use crate::pms::PmsMovie;
+use plx_data::metadata::Detail;
+use plx_data::pms::PmsMovie;
 use crate::screens::registry::tile_facts;
 use plx_ui::card_row::{self, CardRow, RowStyle};
 use plx_machine::machine::GroupId;

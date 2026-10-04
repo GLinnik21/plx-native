@@ -28,7 +28,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         let mut rig = Bridge::for_test(|| 0);
         rig.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
         rig.refresh_browse_directory();
-        rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+        rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
         {
             let mut browse = rig.stores.browse.borrow_mut();
             browse.seed_items_for_test(12);

@@ -41,7 +41,7 @@ use std::ffi::CStr;
 use crate::screens::family::SettingsPage;
 use crate::screens::player::HudPolicy;
 use crate::screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
-use crate::stores::{StoreCmd, StoreEv, StoreId};
+use plx_data::stores::{StoreCmd, StoreEv, StoreId};
 use plx_ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
 use plx_ui::dispatch::{CxParts, Dispatcher, FrameReport, Rig, Split};
 #[cfg(test)]
@@ -86,7 +86,7 @@ fn is_first_run_consent(a: &AppArg) -> bool {
 fn refresh_chrome(
     chrome: &mut super::chrome::ChromeSnapshot,
     measure: &dyn Measure,
-    directory: crate::stores::browse::DirectoryView<'_>,
+    directory: plx_data::stores::browse::DirectoryView<'_>,
     captured: Option<(&plx_plex::plex::session::CurrentProfile, &plx_plex::plex::session::Session)>,
 ) {
     match captured {
@@ -97,18 +97,18 @@ fn refresh_chrome(
 
 #[derive(Clone, Copy)]
 pub(crate) struct AppViews<'a> {
-    pub(crate) auth: crate::auth::SessionRead<'a>,
-    pub(crate) hubs: crate::pms::HubsView<'a>,
-    pub(crate) listing: crate::stores::browse::ListingView<'a>,
-    pub(crate) directory: crate::stores::browse::DirectoryView<'a>,
-    pub(crate) section_hubs: crate::stores::browse::HubsView<'a>,
-    pub(crate) search: crate::search::view::SearchView<'a>,
-    pub(crate) person: crate::person::PersonView<'a>,
-    pub(crate) collection: crate::collection::CollectionView<'a>,
+    pub(crate) auth: plx_session::auth::SessionRead<'a>,
+    pub(crate) hubs: plx_data::pms::HubsView<'a>,
+    pub(crate) listing: plx_data::stores::browse::ListingView<'a>,
+    pub(crate) directory: plx_data::stores::browse::DirectoryView<'a>,
+    pub(crate) section_hubs: plx_data::stores::browse::HubsView<'a>,
+    pub(crate) search: plx_data::search::view::SearchView<'a>,
+    pub(crate) person: plx_data::person::PersonView<'a>,
+    pub(crate) collection: plx_data::collection::CollectionView<'a>,
     /// Stage A of the store-ownership migration (`docs/stores-as-machines.md`): the owner's
-    /// borrowed read handle, shaped like [`crate::person::PersonView`]. It still reads the
-    /// process-wide `metadata` statics underneath — see `crate::metadata::MetadataView`'s doc.
-    pub(crate) metadata: crate::metadata::MetadataView<'a>,
+    /// borrowed read handle, shaped like [`plx_data::person::PersonView`]. It still reads the
+    /// process-wide `metadata` statics underneath — see `plx_data::metadata::MetadataView`'s doc.
+    pub(crate) metadata: plx_data::metadata::MetadataView<'a>,
     /// **The playback session, as this frame's publication** (spec §2.3, phase 9). The Player
     /// machine (`App.player`) owns the value; `Split` can only lend what the RIG owns, so the loop
     /// copies the decisions in once per frame ([`crate::route::PlaybackSession::publication`]) and
@@ -139,11 +139,11 @@ pub(crate) struct BridgeInit;
 
 /// Retained read inputs captured before construction. This is not a store decision owner.
 struct StorePublications {
-    hubs: crate::pms::HubsSnapshot,
-    listing: crate::stores::browse::ListingSnapshot,
-    directory: crate::stores::browse::DirectorySnapshot,
-    section_hubs: crate::stores::browse::HubsSnapshot,
-    search: crate::stores::search::SearchSnapshot,
+    hubs: plx_data::pms::HubsSnapshot,
+    listing: plx_data::stores::browse::ListingSnapshot,
+    directory: plx_data::stores::browse::DirectorySnapshot,
+    section_hubs: plx_data::stores::browse::HubsSnapshot,
+    search: plx_data::stores::search::SearchSnapshot,
 }
 
 impl LogicalState for BridgeInit {
@@ -172,47 +172,47 @@ impl Host for AppHost {
 }
 
 impl HomeLike for AppHost {
-    fn hubs<'a>(cx: &Cx<'a, Self>) -> crate::pms::HubsView<'a> { cx.views.hubs }
+    fn hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::pms::HubsView<'a> { cx.views.hubs }
 }
 
 impl crate::screens::registry::CollectionLike for AppHost {
-    fn collection<'a>(cx: &Cx<'a, Self>) -> crate::collection::CollectionView<'a> {
+    fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> {
         cx.views.collection
     }
 }
 
 impl crate::screens::registry::AuthLike for AppHost {
-    fn auth<'a>(cx: &Cx<'a, Self>) -> crate::auth::SessionRead<'a> { cx.views.auth }
+    fn auth<'a>(cx: &Cx<'a, Self>) -> plx_session::auth::SessionRead<'a> { cx.views.auth }
 }
 
-impl crate::auth::owner::SessionHost for AppHost {
-    fn session_effect(effect: crate::auth::owner::SessionFx) -> AppFx {
+impl plx_session::auth::owner::SessionHost for AppHost {
+    fn session_effect(effect: plx_session::auth::owner::SessionFx) -> AppFx {
         AppFx::SessionEffect(effect)
     }
 }
 
-impl crate::stores::StoreEffectHost for AppHost {
-    fn endpoint_refresh(request: crate::stores::EndpointRefresh) -> AppFx {
-        AppFx::Session(crate::auth::SessionCmd::RequestEndpoint { sid: request.sid })
+impl plx_data::stores::StoreEffectHost for AppHost {
+    fn endpoint_refresh(request: plx_data::stores::EndpointRefresh) -> AppFx {
+        AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid: request.sid })
     }
 }
 
 /// Queue an application command on the same drain as screen effects and worker observations.
-pub(crate) fn execute_session_command(d: &mut Dispatcher<AppHost>, command: crate::auth::SessionCmd) {
+pub(crate) fn execute_session_command(d: &mut Dispatcher<AppHost>, command: plx_session::auth::SessionCmd) {
     d.emit(MachineId::Nav, Fx::Deliver(MachineId::Session,
-        Delivery::Machine(AppMsg::Session(crate::auth::owner::SessionEvent::Command(command)))));
+        Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command)))));
 }
 
-pub(crate) fn execute_endpoint_outcomes(d: &mut Dispatcher<AppHost>, endpoints: crate::stores::EndpointRefreshSet) {
+pub(crate) fn execute_endpoint_outcomes(d: &mut Dispatcher<AppHost>, endpoints: plx_data::stores::EndpointRefreshSet) {
     execute_endpoint_outcomes_with(endpoints, |command| execute_session_command(d, command));
 }
 
 fn execute_endpoint_outcomes_with(
-    endpoints: crate::stores::EndpointRefreshSet,
-    mut execute: impl FnMut(crate::auth::SessionCmd),
+    endpoints: plx_data::stores::EndpointRefreshSet,
+    mut execute: impl FnMut(plx_session::auth::SessionCmd),
 ) {
     for request in endpoints.iter() {
-        execute(crate::auth::SessionCmd::RequestEndpoint { sid: request.sid });
+        execute(plx_session::auth::SessionCmd::RequestEndpoint { sid: request.sid });
     }
 }
 
@@ -221,21 +221,21 @@ impl crate::screens::registry::PlayerLike for AppHost {
 }
 
 impl crate::screens::registry::SearchLike for AppHost {
-    fn search<'a>(cx: &Cx<'a, Self>) -> crate::search::view::SearchView<'a> { cx.views.search }
+    fn search<'a>(cx: &Cx<'a, Self>) -> plx_data::search::view::SearchView<'a> { cx.views.search }
 }
 
 impl crate::screens::registry::LibraryLike for AppHost {
-    fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> { cx.views.listing }
-    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> { cx.views.directory }
-    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> { cx.views.section_hubs }
+    fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.section_hubs }
 }
 
 impl crate::screens::registry::PersonLike for AppHost {
-    fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a> { cx.views.person }
+    fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> { cx.views.person }
 }
 
 impl crate::screens::registry::MetadataLike for AppHost {
-    fn metadata<'a>(cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> { cx.views.metadata }
+    fn metadata<'a>(cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> { cx.views.metadata }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -300,11 +300,11 @@ pub(crate) struct Bridge {
     home_io: Option<super::bootstrap::HomeIo>,
     recorded_clients: std::collections::BTreeMap<u32, &'static plx_plex::plex::Client>,
     initial_subhash: u64,
-    session: crate::auth::SessionMachine,
+    session: plx_session::auth::SessionMachine,
     session_adapter: super::adapters::session::SessionAdapter,
-    session_ready: Option<(u64, crate::auth::owner::ProfileScope, plx_plex::plex::session::ServerRef, String, crate::auth::owner::ReadyInstall)>,
+    session_ready: Option<(u64, plx_session::auth::owner::ProfileScope, plx_plex::plex::session::ServerRef, String, plx_session::auth::owner::ReadyInstall)>,
     consent_adapter: super::adapters::consent::ConsentAdapter,
-    stores: crate::stores::Stores,
+    stores: plx_data::stores::Stores,
     mounter: AppMounter,
     /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
     /// [`Bridge::publish_playback`] from the loop, once per iteration.
@@ -325,11 +325,11 @@ pub(crate) struct Bridge {
     /// on its own assertion. `Split::measure` is `&dyn Measure` already, so erasing it here costs
     /// the app nothing and buys [`Bridge::for_test`].
     measure: plx_ui::rec::Measurements,
-    hubs: crate::pms::HubsSnapshot,
-    listing: crate::stores::browse::ListingSnapshot,
-    directory: crate::stores::browse::DirectorySnapshot,
-    section_hubs: crate::stores::browse::HubsSnapshot,
-    search: crate::stores::search::SearchSnapshot,
+    hubs: plx_data::pms::HubsSnapshot,
+    listing: plx_data::stores::browse::ListingSnapshot,
+    directory: plx_data::stores::browse::DirectorySnapshot,
+    section_hubs: plx_data::stores::browse::HubsSnapshot,
+    search: plx_data::stores::search::SearchSnapshot,
     chrome: super::chrome::ChromeSnapshot,
     chrome_selection: u32,
     /// The shared top bar's render state — the strip's scroll/capsules/chip unfurl and the tab
@@ -403,21 +403,21 @@ impl Bridge {
         static TTF: plx_gfx::text::TtfMeasure = plx_gfx::text::TtfMeasure;
         let preferences = initial.session.persisted.clone();
         let (state, adapter) = initial.home.restore(mt).expect("validated Home initial state");
-        let mut stores = crate::stores::Stores::default();
-        stores.hubs = crate::stores::hubs::HubsStore::from_parts(state, adapter);
+        let mut stores = plx_data::stores::Stores::default();
+        stores.hubs = plx_data::stores::hubs::HubsStore::from_parts(state, adapter);
         let hubs = stores.hubs.snapshot();
         // Arms controlled-content recording/replay's admission ledger over detail terminals —
         // exactly the decision the retired crate-global `record::reset(initial.content.is_some())`
         // made at `stores::tape::init` before Stage B moved the Tracker onto this per-owner
-        // adapter (`crate::metadata::record::arm`'s own doc has the history). Must run before this
+        // adapter (`plx_data::metadata::record::arm`'s own doc has the history). Must run before this
         // `Bridge` can admit any detail request.
         stores.metadata.arm_detail_tracker(initial.content.is_some());
         let mut bridge = Self::with_publications_and_stores(&TTF, now_us, initial.session.clone(),
             super::adapters::session::SessionAdapter::controlled_home(mt, replay),
             initial.consent.clone(), super::adapters::consent::ConsentAdapter::live(),
             StorePublications {
-                hubs, listing:crate::stores::browse::ListingSnapshot::empty(),
-                directory:Default::default(), section_hubs:crate::stores::browse::HubsSnapshot::empty(),
+                hubs, listing:plx_data::stores::browse::ListingSnapshot::empty(),
+                directory:Default::default(), section_hubs:plx_data::stores::browse::HubsSnapshot::empty(),
                 search:Default::default(),
             }, stores);
         bridge.initial_subhash = initial.hash();
@@ -428,7 +428,7 @@ impl Bridge {
             failure: None, profile: bridge.session_adapter.profile_resource_view().expect("controlled publisher") });
         bridge
     }
-    pub(crate) fn new(now_us: fn() -> u64, init: crate::auth::SessionInit,
+    pub(crate) fn new(now_us: fn() -> u64, init: plx_session::auth::SessionInit,
         consent: plx_telemetry::telemetry::consent::Consent, mt: &plx_base::task::MainThread) -> Self {
         // A `static`, not `&TtfMeasure` inline: a unit-struct literal DOES const-promote to
         // `'static` today, but that is a rule about the expression rather than a promise about
@@ -446,17 +446,17 @@ impl Bridge {
     pub(crate) fn for_test(now_us: fn() -> u64) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_measure(&FIXTURE, now_us,
-            crate::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
+            plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), Default::default(),
             super::adapters::consent::ConsentAdapter::fixture())
     }
 
     fn with_measure(measure: &'static dyn Measure, now_us: fn() -> u64,
-        init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+        init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter) -> Self {
-        let stores = crate::stores::Stores::default();
-        let mut directory = crate::stores::browse::DirectorySnapshot::default();
+        let stores = plx_data::stores::Stores::default();
+        let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
         let browse = stores.capture_browse(&mut directory);
         let search = stores.search_snapshot(browse.directory.view());
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
@@ -469,14 +469,14 @@ impl Bridge {
     }
 
     #[cfg(test)]
-    fn for_session_test(init: crate::auth::SessionInit) -> Self {
+    fn for_session_test(init: plx_session::auth::SessionInit) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         let adapter = super::adapters::session::SessionAdapter::fixture_with(init.persisted.clone());
         Self::with_publications(&FIXTURE, || 0, init, adapter, Default::default(),
             super::adapters::consent::ConsentAdapter::fixture(), StorePublications {
-            hubs: crate::pms::HubsSnapshot::empty_for_test(),
-            listing: crate::stores::browse::ListingSnapshot::empty_for_test(),
-            directory: Default::default(), section_hubs: crate::stores::browse::HubsSnapshot::empty_for_test(),
+            hubs: plx_data::pms::HubsSnapshot::empty_for_test(),
+            listing: plx_data::stores::browse::ListingSnapshot::empty_for_test(),
+            directory: Default::default(), section_hubs: plx_data::stores::browse::HubsSnapshot::empty_for_test(),
             search: Default::default(),
         })
     }
@@ -485,12 +485,12 @@ impl Bridge {
     fn for_consent_test(consent: plx_telemetry::telemetry::consent::Consent) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_publications(&FIXTURE, || 0,
-            crate::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
+            plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), consent,
             super::adapters::consent::ConsentAdapter::fixture(), StorePublications {
-                hubs: crate::pms::HubsSnapshot::empty_for_test(),
-                listing: crate::stores::browse::ListingSnapshot::empty(),
-                directory: Default::default(), section_hubs: crate::stores::browse::HubsSnapshot::empty(),
+                hubs: plx_data::pms::HubsSnapshot::empty_for_test(),
+                listing: plx_data::stores::browse::ListingSnapshot::empty(),
+                directory: Default::default(), section_hubs: plx_data::stores::browse::HubsSnapshot::empty(),
                 search: Default::default(),
             })
     }
@@ -499,19 +499,19 @@ impl Bridge {
     pub(crate) fn for_consent_resource_test(consent: plx_telemetry::telemetry::consent::Consent) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_publications(&FIXTURE, || 0,
-            crate::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
+            plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), consent,
             super::adapters::consent::ConsentAdapter::live(), StorePublications {
-                hubs: crate::pms::HubsSnapshot::empty_for_test(),
-                listing: crate::stores::browse::ListingSnapshot::empty(),
-                directory: Default::default(), section_hubs: crate::stores::browse::HubsSnapshot::empty(),
+                hubs: plx_data::pms::HubsSnapshot::empty_for_test(),
+                listing: plx_data::stores::browse::ListingSnapshot::empty(),
+                directory: Default::default(), section_hubs: plx_data::stores::browse::HubsSnapshot::empty(),
                 search: Default::default(),
             })
     }
 
     #[cfg(test)]
     fn with_publications(measure: &'static dyn Measure, now_us: fn() -> u64,
-        init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+        init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications) -> Self {
@@ -520,16 +520,16 @@ impl Bridge {
     }
 
     fn with_publications_and_stores(measure: &'static dyn Measure, now_us: fn() -> u64,
-        init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+        init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
-        reads: StorePublications, stores: crate::stores::Stores) -> Self {
+        reads: StorePublications, stores: plx_data::stores::Stores) -> Self {
         Self {
             session_cache_generation: plx_plex::plex::session::visible_generation(),
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
             initial_subhash: 0,
-            session: crate::auth::SessionMachine::from_init(init),
+            session: plx_session::auth::SessionMachine::from_init(init),
             session_adapter,
             session_ready: None,
             consent_adapter,
@@ -580,7 +580,7 @@ impl Bridge {
         std::mem::take(&mut self.reqs)
     }
 
-    pub(crate) fn auth_read(&self) -> crate::auth::SessionRead<'_> { self.session.read() }
+    pub(crate) fn auth_read(&self) -> plx_session::auth::SessionRead<'_> { self.session.read() }
 
     /// Cached logical Session hash, including pending work even when its UI read is unchanged.
     pub fn session_subhash(&self) -> u64 { self.session.subhash() }
@@ -591,12 +591,12 @@ impl Bridge {
     pub(crate) fn profile_resource_view(&self) -> Option<std::sync::Arc<plx_plex::plex::session::CurrentProfile>> {
         self.session_adapter.profile_resource_view()
     }
-    pub(crate) fn snapshot_session_init(&self) -> crate::auth::SessionInit { self.session.snapshot_init() }
+    pub(crate) fn snapshot_session_init(&self) -> plx_session::auth::SessionInit { self.session.snapshot_init() }
 
-    pub(crate) fn take_session_ready(&mut self) -> Option<crate::auth::ReadyCreds> {
+    pub(crate) fn take_session_ready(&mut self) -> Option<plx_session::auth::ReadyCreds> {
         let (epoch, scope, server, token, install) = self.session_ready.take()?;
         if !self.session.ready_is_current(epoch, scope) { return None; }
-        Some(crate::auth::ReadyCreds { origin: server.origin(), address: server.address.clone(),
+        Some(plx_session::auth::ReadyCreds { origin: server.origin(), address: server.address.clone(),
             token, install, tier: server.tier, pin: server.resolve_pin() })
     }
 
@@ -625,7 +625,7 @@ impl Bridge {
     }
 
     pub(crate) fn search_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
-        -> Option<(crate::search::Item, plx_ui::popover::Opener)> {
+        -> Option<(plx_data::search::Item, plx_ui::popover::Opener)> {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::search::SearchScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
@@ -637,14 +637,14 @@ impl Bridge {
 
     pub(crate) fn search_tab_available(&self, tab: HomeTab) -> bool {
         match tab {
-            HomeTab::Movies => self.directory.view().preferred(crate::browse::SecKind::Movie).is_some(),
-            HomeTab::Shows => self.directory.view().preferred(crate::browse::SecKind::Show).is_some(),
+            HomeTab::Movies => self.directory.view().preferred(plx_data::browse::SecKind::Movie).is_some(),
+            HomeTab::Shows => self.directory.view().preferred(plx_data::browse::SecKind::Show).is_some(),
             _ => true,
         }
     }
 
     pub(crate) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
-        -> Option<(crate::pms::PmsMovie, plx_ui::popover::Opener)> {
+        -> Option<(plx_data::pms::PmsMovie, plx_ui::popover::Opener)> {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::library::LibraryScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
@@ -691,7 +691,7 @@ impl Bridge {
     }
 
     /// What the Library page's committed listing lists (the TYPE menu's value), if it is on top.
-    pub(crate) fn library_listed(d: &Dispatcher<AppHost>) -> Option<crate::browse::LibraryType> {
+    pub(crate) fn library_listed(d: &Dispatcher<AppHost>) -> Option<plx_data::browse::LibraryType> {
         let entry = d.nav.top_page()?;
         let page = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
             .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>())?;
@@ -713,7 +713,7 @@ impl Bridge {
         matches!(page.probe_viewport(d.input.engine.current(InputOwner::Entry(entry.id))).0, "grid" | "shelf")
     }
 
-    pub(crate) fn enter_library(&mut self, kind: crate::browse::SecKind) {
+    pub(crate) fn enter_library(&mut self, kind: plx_data::browse::SecKind) {
         self.mounter.library_kind = Some(kind);
         self.library_commands.clear();
         self.library_commands.push_back(crate::screens::registry::LibraryCmd::Enter(kind));
@@ -739,7 +739,7 @@ impl Bridge {
 
     /// Restore a detail page that is about to mount to a `Spot` no `ReturnState` holds — see
     /// [`crate::screens::registry::DetailSeed`].
-    pub(crate) fn seed_detail(&mut self, sid: plx_plex::plex::ServerId, rk: &str, spot: crate::metadata::Spot) {
+    pub(crate) fn seed_detail(&mut self, sid: plx_plex::plex::ServerId, rk: &str, spot: plx_data::metadata::Spot) {
         self.mounter.seed = Some(crate::screens::registry::DetailSeed { sid, rk: rk.to_string(), spot });
     }
 
@@ -1047,15 +1047,15 @@ impl Drop for Bridge {
 impl Bridge {
     /// Synchronous application boundary for callers whose answer is consumed in the same turn.
     /// This borrows the one store owned by this Bridge.
-    pub(crate) fn browse_run(&mut self, cmd: crate::stores::browse::BrowseCmd) -> bool {
+    pub(crate) fn browse_run(&mut self, cmd: plx_data::stores::browse::BrowseCmd) -> bool {
         self.stores.browse_run(cmd)
     }
 
-    pub(crate) fn browse_discover_pump(&mut self) -> crate::stores::StoreOutcome {
+    pub(crate) fn browse_discover_pump(&mut self) -> plx_data::stores::StoreOutcome {
         self.stores.browse_discover_pump()
     }
 
-    pub(crate) fn person_run(&mut self, cmd: crate::stores::person::PersonCmd) -> bool {
+    pub(crate) fn person_run(&mut self, cmd: plx_data::stores::person::PersonCmd) -> bool {
         self.stores.person_run(cmd)
     }
 
@@ -1063,17 +1063,17 @@ impl Bridge {
         self.stores.person_pump()
     }
 
-    pub(crate) fn person_view(&self) -> crate::person::PersonView<'_> {
+    pub(crate) fn person_view(&self) -> plx_data::person::PersonView<'_> {
         self.stores.person_view()
     }
 
-    pub(crate) fn collection_run(&mut self, cmd: crate::stores::collection::CollectionCmd) -> bool {
+    pub(crate) fn collection_run(&mut self, cmd: plx_data::stores::collection::CollectionCmd) -> bool {
         self.stores.collection_run(cmd)
     }
 
     pub(crate) fn collection_pump(&mut self) -> bool { self.stores.collection_pump() }
 
-    pub(crate) fn metadata_mut(&mut self) -> &mut crate::stores::metadata::MetadataStore {
+    pub(crate) fn metadata_mut(&mut self) -> &mut plx_data::stores::metadata::MetadataStore {
         &mut self.stores.metadata
     }
 
@@ -1083,11 +1083,11 @@ impl Bridge {
     /// phase becomes observable the moment the command returns (trap T2). Screen-issued Metadata
     /// commands that are not same-turn boundaries still cross `AppFx::Store` like every other
     /// store's; see `app/content.rs`'s `refresh_content`.
-    pub(crate) fn metadata_run(&mut self, cmd: crate::stores::metadata::MetadataCmd) -> bool {
+    pub(crate) fn metadata_run(&mut self, cmd: plx_data::stores::metadata::MetadataCmd) -> bool {
         self.stores.metadata_run(cmd)
     }
 
-    pub(crate) fn metadata_view(&self) -> crate::metadata::MetadataView<'_> {
+    pub(crate) fn metadata_view(&self) -> plx_data::metadata::MetadataView<'_> {
         self.stores.metadata_view()
     }
 
@@ -1096,37 +1096,37 @@ impl Bridge {
         self.stores.metadata_pump()
     }
 
-    pub(crate) fn viewstate_run(&mut self, cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
+    pub(crate) fn viewstate_run(&mut self, cmd: plx_data::stores::viewstate::ViewStateCmd) -> bool {
         self.stores.viewstate_run(cmd, self.directory.view())
     }
 
-    pub(crate) fn viewstate_pump(&mut self) -> crate::stores::EndpointRefreshSet {
+    pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         self.stores.viewstate_pump(self.directory.view())
     }
 
-    pub(crate) fn take_detail_refresh(&self) -> Option<crate::stores::viewstate::DetailRefresh> {
+    pub(crate) fn take_detail_refresh(&self) -> Option<plx_data::stores::viewstate::DetailRefresh> {
         self.stores.take_detail_refresh()
     }
 
     /// Search commands snapshot their initial favourite-library ranking from the same retained
     /// directory the screen read when it emitted the command.
-    pub(crate) fn search_run(&mut self, cmd: crate::stores::search::SearchCmd) -> bool {
+    pub(crate) fn search_run(&mut self, cmd: plx_data::stores::search::SearchCmd) -> bool {
         self.stores.search_run(cmd, self.directory.view())
     }
 
-    pub(crate) fn browse_directory(&self) -> crate::stores::browse::DirectoryView<'_> {
+    pub(crate) fn browse_directory(&self) -> plx_data::stores::browse::DirectoryView<'_> {
         self.directory.view()
     }
 
     /// A fresh Hubs publication captured from this owner's store, for a caller that must not read
     /// the frame's retained `self.hubs` publication (e.g. a same-turn action after a command).
-    pub(crate) fn hubs_snapshot(&self) -> crate::pms::HubsSnapshot {
+    pub(crate) fn hubs_snapshot(&self) -> plx_data::pms::HubsSnapshot {
         self.stores.hubs.snapshot()
     }
 
     /// Synchronous addressed Hubs command against this owner's retained Browse directory. Used by
     /// callers outside the per-frame dispatch (server activation, boot).
-    pub(crate) fn hubs_run(&mut self, cmd: crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome {
+    pub(crate) fn hubs_run(&mut self, cmd: plx_data::stores::hubs::HubsCmd) -> plx_data::stores::StoreOutcome {
         let directory = self.directory.view();
         self.stores.hubs.run_with_directory(cmd, directory)
     }
@@ -1134,7 +1134,7 @@ impl Bridge {
     /// One store's generation, for the recorder's per-frame landing scan
     /// (`recorder::Recplay::end_frame_with`) — every store lives on this owner's `Stores`
     /// aggregate now, so this is the one door onto all seven.
-    pub(crate) fn store_gen(&self, id: crate::stores::StoreId) -> u32 {
+    pub(crate) fn store_gen(&self, id: plx_data::stores::StoreId) -> u32 {
         self.stores.gen(id)
     }
 
@@ -1177,7 +1177,7 @@ impl Bridge {
     /// `mod tests`) reaches its owned `(state, adapter)` pair through here rather than the deleted
     /// process-wide catalog.
     #[cfg(test)]
-    pub(crate) fn seed_hubs_for_test(&mut self, items: usize, hub_state: crate::pms::HubState) {
+    pub(crate) fn seed_hubs_for_test(&mut self, items: usize, hub_state: plx_data::pms::HubState) {
         self.stores.hubs.seed_for_test(items, hub_state);
     }
 
@@ -1186,7 +1186,7 @@ impl Bridge {
         &mut self,
         sid: plx_plex::plex::ServerId,
         items: usize,
-        hub_state: crate::pms::HubState,
+        hub_state: plx_data::pms::HubState,
     ) {
         let directory = self.directory.view();
         self.stores.hubs.seed_for_directory_test(sid, items, hub_state, directory);
@@ -1329,13 +1329,13 @@ impl Rig<AppHost> for Bridge {
             return Handled::Yes;
         }
         if let AppMsg::Session(event) = msg {
-            use crate::auth::owner::SessionEvent;
+            use plx_session::auth::owner::SessionEvent;
             if to != MachineId::Session { return Handled::No; }
             match event {
                 SessionEvent::Result(envelope) if !self.session_adapter.admitted(envelope) => return Handled::No,
                 SessionEvent::Admission(reply) if !reply.accepted
                     && self.session_adapter.resource_admitted(reply) => return Handled::No,
-                SessionEvent::Command(crate::auth::owner::Command::BackAtRoot { .. })
+                SessionEvent::Command(plx_session::auth::owner::Command::BackAtRoot { .. })
                     if !self.session_adapter.claim_root_press() => return Handled::No,
                 _ => {}
             }
@@ -1349,7 +1349,7 @@ impl Rig<AppHost> for Bridge {
             let handled = self.session.step(event, &cx, fx);
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
             // existed before it mounted — so the one step that ENTERED it is announced here.
-            if let Some(line) = crate::auth::owner::roster_readout_entered(&publication, &self.session.publication()) {
+            if let Some(line) = plx_session::auth::owner::roster_readout_entered(&publication, &self.session.publication()) {
                 plx_base::eventlog::log(&line);
             }
             return handled;
@@ -1379,8 +1379,8 @@ impl Rig<AppHost> for Bridge {
                         .endpoints.emit(fx);
                     return Handled::Yes;
                 }
-                AppMsg::Store(StoreCmd::Browse(crate::stores::browse::BrowseCmd::Discovery(result))) => {
-                    let mut endpoints = crate::stores::EndpointRefreshSet::default();
+                AppMsg::Store(StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Discovery(result))) => {
+                    let mut endpoints = plx_data::stores::EndpointRefreshSet::default();
                     let outcome = self.stores.browse.borrow_mut()
                         .apply_discovery(result, &io.preferences);
                     endpoints.merge(outcome.endpoints);
@@ -1393,13 +1393,13 @@ impl Rig<AppHost> for Bridge {
                     endpoints.emit(fx);
                     return Handled::Yes;
                 }
-                AppMsg::StoreWork(crate::stores::StoreWork::Hubs) => {
+                AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs) => {
                     let directory = self.directory.view();
                     io.hubs_with_directory(&mut self.stores.hubs, None, parts.tick.dt(), directory)
                         .endpoints.emit(fx);
                     return Handled::Yes;
                 }
-                AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery) => {
+                AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
                     io.discovery_owned(&self.stores);
                     return Handled::Yes;
                 }
@@ -1447,21 +1447,21 @@ impl Rig<AppHost> for Bridge {
                     .endpoints.emit(fx);
                 Handled::Yes
             }
-            AppMsg::StoreWork(crate::stores::StoreWork::Hubs) => {
+            AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs) => {
                 let directory = self.directory.view();
                 self.stores.hubs.tick_with_directory(parts.tick.dt(), directory)
                     .endpoints.emit(fx);
                 Handled::Yes
             }
-            AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery) => {
+            AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
                 self.stores.browse.borrow_mut().discover_pump_with_gate(&self.stores.landgate).endpoints.emit(fx);
                 Handled::Yes
             }
-            AppMsg::StoreWork(crate::stores::StoreWork::Browse) => {
+            AppMsg::StoreWork(plx_data::stores::StoreWork::Browse) => {
                 self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate).endpoints.emit(fx);
                 Handled::Yes
             }
-            AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us }) => {
+            AppMsg::StoreWork(plx_data::stores::StoreWork::Search { dt_us }) => {
                 self.stores.search_pump(*dt_us as f32 / 1_000_000.0, self.directory.view());
                 Handled::Yes
             }
@@ -1537,7 +1537,7 @@ impl Bridge {
         }
         match fx {
             AppFx::Session(command) => out.push(Fx::Deliver(MachineId::Session,
-                Delivery::Machine(AppMsg::Session(crate::auth::owner::SessionEvent::Command(command))))),
+                Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
             AppFx::Preferences(command) => super::preferences::execute(command),
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
@@ -1557,8 +1557,8 @@ impl Bridge {
 
     /// Resource execution returns typed deliveries to the existing FIFO. In particular a
     /// commit acknowledgement never recursively steps the owner outside drain/carry budgets.
-    fn session_effect(&mut self, effect: crate::auth::owner::SessionFx, out: &mut Effects<'_, AppHost>) {
-        use crate::auth::owner::{SessionEvent, SessionFx, AdmissionReply};
+    fn session_effect(&mut self, effect: plx_session::auth::owner::SessionFx, out: &mut Effects<'_, AppHost>) {
+        use plx_session::auth::owner::{SessionEvent, SessionFx, AdmissionReply};
         use plx_machine::machine::{Addr, RequestId};
         if let Some(io) = &mut self.home_io {
             if matches!(effect, SessionFx::Capture { .. } | SessionFx::Work { .. }
@@ -1633,10 +1633,10 @@ impl Bridge {
                 deliver(SessionEvent::IncidentReported { id, delivery });
             }
             SessionFx::Coordinator(action) => {
-                if matches!(action, crate::auth::owner::CoordinatorAction::LocalDataErased) {
+                if matches!(action, plx_session::auth::owner::CoordinatorAction::LocalDataErased) {
                     self.reqs.push(LoopReq::LocalDataErased);
                 }
-                if matches!(action, crate::auth::owner::CoordinatorAction::CloseTelemetry) {
+                if matches!(action, plx_session::auth::owner::CoordinatorAction::CloseTelemetry) {
                     self.consent.forget(&mut self.consent_adapter);
                 }
                 self.session_adapter.coordinator(action);
@@ -1701,7 +1701,7 @@ pub(crate) fn frame_with_tap(
 ) -> (&'static str, FrameReport) {
     let _frame_scope = plx_base::task::FrameScope::enter();
     if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) && rig.session.needs_ready_commit() {
-        execute_session_command(d, crate::auth::SessionCmd::TakeReady);
+        execute_session_command(d, plx_session::auth::SessionCmd::TakeReady);
     }
     frame_ingest(d, rig, tick, inputs, Bridge::take_live_results, tap)
 }
@@ -1744,10 +1744,10 @@ impl Bridge {
         // Landing sequence within auth is authoritative. Do not sort it by request ID:
         // profile Ready and its late roster can be separated by other requests' progress.
         let mut results: AppResults = self.session_adapter.take_results().into_iter()
-            .map(|envelope| (envelope.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope))))
+            .map(|envelope| (envelope.addr, AppMsg::Session(plx_session::auth::owner::SessionEvent::Result(envelope))))
             .collect();
         if let Some(reply) = self.session_adapter.take_capture() {
-            results.push((reply.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Read(reply))));
+            results.push((reply.addr, AppMsg::Session(plx_session::auth::owner::SessionEvent::Read(reply))));
         }
         self.session_adapter.cancel_superseded_commits(|req, epoch, arrival|
             self.session.commit_is_current(req, epoch, arrival));
@@ -1758,9 +1758,9 @@ impl Bridge {
             if let Some(permit) = self.session.commit_permit(completed.req, completed.epoch, completed.arrival) {
                 let reply = self.session_adapter.finish_commit(permit, completed);
                 let addr = plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(reply.req) };
-                results.push((addr, AppMsg::Session(crate::auth::owner::SessionEvent::Commit(reply))));
+                results.push((addr, AppMsg::Session(plx_session::auth::owner::SessionEvent::Commit(reply))));
                 if let Some(completion) = self.session_adapter.take_live_completion() {
-                    results.push((addr, AppMsg::Session(crate::auth::owner::SessionEvent::Persistence(completion))));
+                    results.push((addr, AppMsg::Session(plx_session::auth::owner::SessionEvent::Persistence(completion))));
                 }
             }
             // Losing the permit forbids registry/profile publication, not accounting for a
@@ -1775,7 +1775,7 @@ impl Bridge {
         // dropped.
         if let Some((id, delivery)) = self.session_adapter.take_incident_delivery() {
             results.push((plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(0) },
-                AppMsg::Session(crate::auth::owner::SessionEvent::IncidentReported { id, delivery })));
+                AppMsg::Session(plx_session::auth::owner::SessionEvent::IncidentReported { id, delivery })));
         }
         results.extend(self.take_hubs_results());
         if self.home_io.is_some() {
@@ -1784,7 +1784,7 @@ impl Bridge {
                 results.push((plx_machine::machine::Addr {
                     to: MachineId::Store(StoreId::Browse.ord()),
                     req: plx_machine::machine::RequestId(result.request_id()),
-                }, AppMsg::Store(StoreCmd::Browse(crate::stores::browse::BrowseCmd::Discovery(result)))));
+                }, AppMsg::Store(StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Discovery(result)))));
             }
         }
         results
@@ -1873,7 +1873,7 @@ fn frame_ingest(
     // scope each (§4.4) now; the page's tick runs in none.
     let results = take(rig);
     let session_records: Vec<_> = results.iter().filter_map(|(addr, message)| match message {
-        AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope)) => Some((*addr, envelope.clone())),
+        AppMsg::Session(plx_session::auth::owner::SessionEvent::Result(envelope)) => Some((*addr, envelope.clone())),
         _ => None,
     }).collect();
     rig.session_adapter.validate_supplied(&session_records)
@@ -2162,7 +2162,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
 /// player route). `survives_failure` is the `…` popover's alone — see `OverlayKind`.
 pub(crate) fn open_player_overlay(
     ps: &crate::route::PlaybackSession,
-    meta: crate::metadata::MetadataView<'_>,
+    meta: plx_data::metadata::MetadataView<'_>,
     d: &mut Dispatcher<AppHost>,
     kind: crate::screens::player::overlay::OverlayKind,
 ) {
@@ -2330,7 +2330,7 @@ fn anchor_bits(rect: Option<plx_ui::Rect>) -> [u32; 4] {
 /// all five are the same arm: the row rides in the argument instead of being looked up in the hub
 /// catalog, which only Home's cards are ever in.
 pub(crate) fn card_menu_arg(
-    item: &crate::pms::PmsMovie,
+    item: &plx_data::pms::PmsMovie,
     from_deck: bool,
     from_home: bool,
     host: EntryId,
@@ -2556,7 +2556,7 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         // single-user account this is the earliest authorized moment there is.
         super::input::maybe_ask_consent(pages);
         bridge.refresh_browse_directory();
-        if crate::stores::browse::onboard::asks(bridge.browse_directory()) {
+        if plx_data::stores::browse::onboard::asks(bridge.browse_directory()) {
             plx_base::eventlog::log("login: server installed — asking which sources feed Home");
             // no `enter()`: rooting the stack at the page is what mounts the owned screen
             // (`boot.rs`), and a ROOT is right because the sweep above has just emptied the tree.
@@ -2574,8 +2574,8 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         match bridge.auth_read().0.phase {
             // A Ready decision can still await its queued disk/registry ACK. Keep the current
             // flow page until the exact owner handoff is available.
-            crate::auth::Phase::Ready => {}
-            crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
+            plx_session::auth::Phase::Ready => {}
+            plx_session::auth::Phase::Profiles | plx_session::auth::Phase::Switching => {
                 // No `enter()`-on-change guard any more (phase 6): the picker is an owned screen,
                 // so a route that is ALREADY `Profiles` mints nothing (`bridge::frame`'s
                 // `Some(_) => {}` arm) and the existing instance's state — the roster cursor, an
@@ -2671,7 +2671,7 @@ pub(crate) fn nav_push_with_return(
 /// The Library's pill is its TYPE, and the argument carries none (which library the grid shows is
 /// the `browse` store's business): the answer is the section the store is pointing at, which
 /// `nav_tab`'s `LibraryCmd::Enter` has already aimed.
-fn pill_of_arg(arg: &AppArg, directory: crate::stores::browse::DirectoryView<'_>) -> Option<usize> {
+fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<'_>) -> Option<usize> {
     use crate::app::chrome::{pill_of, Pill};
     match arg {
         AppArg::Home => pill_of(directory, Pill::Home),
@@ -2711,15 +2711,15 @@ pub(crate) fn nav_tab(
                 let want = match pill {
                     Pill::Home => HomeTab::Home,
                     Pill::Search => HomeTab::Search,
-                    Pill::Section(crate::browse::SecKind::Movie) => HomeTab::Movies,
-                    Pill::Section(crate::browse::SecKind::Show) => HomeTab::Shows,
+                    Pill::Section(plx_data::browse::SecKind::Movie) => HomeTab::Movies,
+                    Pill::Section(plx_data::browse::SecKind::Show) => HomeTab::Shows,
                 };
                 rig.home_command(HomeCmd::FocusStrip(want));
             }
             AppArg::Home
         }
-        HomeTab::Movies => { rig.enter_library(crate::browse::SecKind::Movie); AppArg::Library }
-        HomeTab::Shows => { rig.enter_library(crate::browse::SecKind::Show); AppArg::Library }
+        HomeTab::Movies => { rig.enter_library(plx_data::browse::SecKind::Movie); AppArg::Library }
+        HomeTab::Shows => { rig.enter_library(plx_data::browse::SecKind::Show); AppArg::Library }
         HomeTab::Search => AppArg::Search,
     };
     nav_peer(d, arg, ret);
@@ -2755,7 +2755,7 @@ pub(crate) fn open_detail(
     if d.nav.tabs.stack.pending_dest().is_some_and(|pending| pending.same_instance(&arg)) {
         return;
     }
-    let spot = crate::metadata::Spot {
+    let spot = plx_data::metadata::Spot {
         season: season.map(|s| s as i64),
         ..Default::default()
     };

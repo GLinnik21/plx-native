@@ -41,44 +41,44 @@ impl HomeIo {
         admitted
     }
     #[cfg(test)]
-    pub fn hubs(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
-        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32) -> crate::stores::StoreOutcome {
+    pub fn hubs(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
+        cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32) -> plx_data::stores::StoreOutcome {
         let adapter = hubs.adapter();
-        self.hubs_with(hubs, cmd, dt, &mut |request| crate::pms::spawn_fetch(&adapter, request))
+        self.hubs_with(hubs, cmd, dt, &mut |request| plx_data::pms::spawn_fetch(&adapter, request))
     }
     #[cfg(test)]
-    fn hubs_with(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
-        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
-        launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> crate::stores::StoreOutcome {
+    fn hubs_with(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
+        cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
+        launch: &mut dyn FnMut(plx_data::pms::HubRequest) -> bool) -> plx_data::stores::StoreOutcome {
         hubs.controlled(cmd, dt, &mut |request| {
             let (epoch, req, sid, client, token_gen) = request.descriptor();
             self.admit(serde_json::json!({"kind":"hubs", "epoch":epoch,
                 "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
         })
     }
-    pub(crate) fn hubs_with_directory(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
-        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
-        directory: crate::stores::browse::DirectoryView<'_>) -> crate::stores::StoreOutcome {
+    pub(crate) fn hubs_with_directory(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
+        cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
+        directory: plx_data::stores::browse::DirectoryView<'_>) -> plx_data::stores::StoreOutcome {
         let adapter = hubs.adapter();
         self.hubs_with_directory_and_launch(hubs, cmd, dt, directory,
-            &mut |request| crate::pms::spawn_fetch(&adapter, request))
+            &mut |request| plx_data::pms::spawn_fetch(&adapter, request))
     }
-    fn hubs_with_directory_and_launch(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
-        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
-        directory: crate::stores::browse::DirectoryView<'_>,
-        launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> crate::stores::StoreOutcome {
+    fn hubs_with_directory_and_launch(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
+        cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
+        directory: plx_data::stores::browse::DirectoryView<'_>,
+        launch: &mut dyn FnMut(plx_data::pms::HubRequest) -> bool) -> plx_data::stores::StoreOutcome {
         hubs.controlled_with_directory(cmd, dt, directory, &mut |request| {
             let (epoch, req, sid, client, token_gen) = request.descriptor();
             self.admit(serde_json::json!({"kind":"hubs", "epoch":epoch,
                 "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
         })
     }
-    pub(crate) fn discovery_owned(&mut self, stores: &crate::stores::Stores) {
-        self.discovery_owned_with(stores, &mut crate::browse::execute_discovery);
+    pub(crate) fn discovery_owned(&mut self, stores: &plx_data::stores::Stores) {
+        self.discovery_owned_with(stores, &mut plx_data::browse::execute_discovery);
     }
 
-    pub(crate) fn discovery_owned_with(&mut self, stores: &crate::stores::Stores,
-        launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool) {
+    pub(crate) fn discovery_owned_with(&mut self, stores: &plx_data::stores::Stores,
+        launch: &mut dyn FnMut(plx_data::browse::DiscoveryRequest) -> bool) {
         stores.browse_controlled_discover(&mut |request| {
             self.admit(request.descriptor(), || launch(request))
         });
@@ -153,9 +153,9 @@ pub(crate) enum Entropy {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Initial {
     pub version: u32,
-    pub session: crate::auth::SessionInit,
+    pub session: plx_session::auth::SessionInit,
     pub consent: plx_telemetry::telemetry::consent::Consent,
-    pub home: crate::pms::initial::Initial,
+    pub home: plx_data::pms::initial::Initial,
     pub clock_start: u32,
     pub entropy: Entropy,
     pub primary_client: u32,
@@ -180,7 +180,7 @@ pub(crate) struct ContentInitial {
 
 impl Initial {
     /// The Filmography credit count the controlled content domain was booted with: what
-    /// `crate::stores::tape::init` is armed with (`None` outside the controlled content domain).
+    /// `plx_data::stores::tape::init` is armed with (`None` outside the controlled content domain).
     pub(crate) fn person_credits(&self) -> Option<u32> {
         self.content.as_ref().map(|v| v.personcredits)
     }
@@ -193,8 +193,8 @@ impl Initial {
         let primary = plx_plex::plex::session::ServerRef { address:"127.0.0.1".into(), port:i64::from(port),
             origin_url:origin.base(),token:format!("s{:08x}",seed.wrapping_add(1)),
             tier:Some(plx_plex::plex::probe::Location::Local), ..Default::default() };
-        let initial = Self { version:1, session:crate::auth::SessionInit::captured_boot(saved,Some(primary),Vec::new()),
-            consent:Default::default(),home:crate::pms::initial::Initial::fresh(),clock_start:0,
+        let initial = Self { version:1, session:plx_session::auth::SessionInit::captured_boot(saved,Some(primary),Vec::new()),
+            consent:Default::default(),home:plx_data::pms::initial::Initial::fresh(),clock_start:0,
             entropy:Entropy::Seeded(seed),primary_client:1,automated:true,settings:settings.clone(),
             content:None, triggers:vec!["plxnative-app-init".into(),"plxnative-rec".into(),
                 "plxnative-focus".into(),"plxnative-noidle".into()] };
@@ -215,20 +215,20 @@ impl Initial {
             tier: Some(plx_plex::plex::probe::configured_tier(host)), ..Default::default()
         });
         let initial = Self { version: 1,
-            session: crate::auth::SessionInit::captured_boot(saved, primary, Vec::new()),
+            session: plx_session::auth::SessionInit::captured_boot(saved, primary, Vec::new()),
             consent: plx_telemetry::telemetry::capture_initial(), clock_start: 0, entropy: Entropy::Captured(entropy),
             primary_client: plx_plex::plex::Client::capture_generation_seed(),
             automated: crate::dev::any_trigger_present(),
             settings: crate::dev::scenarios::settings_boot_value(),
             content: None,
-            home: crate::pms::initial::Initial::fresh(),
+            home: plx_data::pms::initial::Initial::fresh(),
             triggers: crate::dev::armed_triggers(),
         };
         initial.validate()?;
         Ok((initial, Some(deferred)))
     }
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
-        use crate::auth::owner::BootstrapAuthority;
+        use plx_session::auth::owner::BootstrapAuthority;
         let s = &self.session;
         if self.version != 1 { return Err("unsupported initial version"); }
         if self.primary_client == 0 { return Err("invalid primary client binding"); }
@@ -236,7 +236,7 @@ impl Initial {
             return Err("unsupported initial consent route");
         }
         if !self.home.validate_boot() { return Err("unsupported populated Home initial state"); }
-        if s.phase != crate::auth::Phase::Idle || s.epoch != 1 || s.next_req != 0
+        if s.phase != plx_session::auth::Phase::Idle || s.epoch != 1 || s.next_req != 0
             || !s.pending.is_empty() || s.pending_commit.is_some() || s.pending_erase.is_some()
             || !s.inbox.is_empty() || s.pump_pending || s.signin_active || s.apply_pending
             || s.active_profile.is_some() || s.profile_scope.0 != 0 {
@@ -245,7 +245,7 @@ impl Initial {
         let BootstrapAuthority::DevPms { primary, extras } = &s.authority else {
             return Err("unsupported replay bootstrap authority");
         };
-        let reconstructed = crate::auth::SessionInit::captured_boot(s.persisted.clone(), Some(primary.clone()), extras.clone());
+        let reconstructed = plx_session::auth::SessionInit::captured_boot(s.persisted.clone(), Some(primary.clone()), extras.clone());
         if serde_json::to_value(&reconstructed).map_err(|_| "invalid initial Session")?
             != serde_json::to_value(s).map_err(|_| "invalid initial Session")? {
             return Err("incoherent initial Session");

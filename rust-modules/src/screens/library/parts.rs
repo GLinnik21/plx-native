@@ -27,12 +27,12 @@ pub(super) const GRID_GROUP: GroupId = GroupId(0x4c49_4201);
 pub(super) const RAIL_GROUP: GroupId = GroupId(0x4c49_4202);
 const NO_HOLES: &[(usize, usize)] = &[];
 
-pub(super) fn grid_art(item: &crate::pms::PmsMovie) -> Art<'_> {
+pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
     if item.kind == 3 { Art::Still(Some(tile_facts::of(item))) } else { Art::Poster(Some(tile_facts::of(item))) }
 }
 
 /// One label construction for the normal and modal-lifted focused grid card.
-pub(super) fn grid_label(item: &crate::pms::PmsMovie) -> card_row::TileLabel {
+pub(super) fn grid_label(item: &plx_data::pms::PmsMovie) -> card_row::TileLabel {
     if item.kind == 3 {
         let name = if item.title.is_empty() || item.title == item.show_title {
             plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64)
@@ -133,7 +133,7 @@ pub(super) struct GridPart {
     /// clears once it has settled, so a settled grid pays for no shrinking tile.
     shrink: (Option<usize>, Spring),
     bands: GridBands,
-    snapshot: Option<crate::stores::browse::ListingSnapshot>,
+    snapshot: Option<plx_data::stores::browse::ListingSnapshot>,
     indexes: GridIndexes,
     #[cfg(test)]
     test_ops: PublicationOps,
@@ -307,13 +307,13 @@ impl GridPart {
         }
     }
 
-    fn publish_slot(&mut self, view: crate::stores::browse::ListingView<'_>,
+    fn publish_slot(&mut self, view: plx_data::stores::browse::ListingView<'_>,
         section: &LibrarySectionIdentity, query: u32, index: usize, keys: &mut KeyRegistry) -> u32 {
         #[cfg(test)] { self.test_ops.slot_visits += 1; }
         keys.register(item_identity(view, section, query, index), self.group, index)
     }
 
-    fn replace_range(&mut self, view: crate::stores::browse::ListingView<'_>,
+    fn replace_range(&mut self, view: plx_data::stores::browse::ListingView<'_>,
         section: &LibrarySectionIdentity, query: u32, range: Range<usize>, keys: &mut KeyRegistry) {
         // Remove the whole old page first so a reorder within it cannot temporarily make a moved
         // identity resolve to the wrong occurrence.
@@ -461,7 +461,7 @@ impl GridPart {
 }
 
 fn item_identity(
-    view: crate::stores::browse::ListingView<'_>,
+    view: plx_data::stores::browse::ListingView<'_>,
     section: &LibrarySectionIdentity,
     query: u32,
     index: usize,

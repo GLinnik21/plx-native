@@ -26,7 +26,7 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
-    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
     {
         let mut browse = rig.stores.browse.borrow_mut();
         browse.seed_items_for_test(120);
@@ -119,7 +119,7 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
             host,
             kind: LibraryMenuKind::Filter,
             anchor: [0; 4],
-            target: crate::stores::browse::SectionAddress {
+            target: plx_data::stores::browse::SectionAddress {
                 epoch: 1,
                 sid: plx_plex::plex::ServerId::from_raw(0),
                 section: 1,
@@ -202,11 +202,11 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
-    rig.browse_run(crate::stores::browse::BrowseCmd::ApplyPins(vec![
+    rig.browse_run(plx_data::stores::browse::BrowseCmd::ApplyPins(vec![
         (0, true),
         (2, true),
     ]));
-    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
     {
         let mut browse = rig.stores.browse.borrow_mut();
         browse.seed_items_for_test(120);

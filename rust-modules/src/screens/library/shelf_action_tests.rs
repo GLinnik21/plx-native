@@ -8,9 +8,9 @@ struct TestHost;
 
 #[derive(Clone, Copy)]
 struct Views<'a> {
-    listing: crate::stores::browse::ListingView<'a>,
-    directory: crate::stores::browse::DirectoryView<'a>,
-    hubs: crate::stores::browse::HubsView<'a>,
+    listing: plx_data::stores::browse::ListingView<'a>,
+    directory: plx_data::stores::browse::DirectoryView<'a>,
+    hubs: plx_data::stores::browse::HubsView<'a>,
 }
 impl Host for TestHost {
     type Arg = FixtureArg;
@@ -22,13 +22,13 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 impl LibraryLike for TestHost {
-    fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> {
+    fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> {
         cx.views.listing
     }
-    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> {
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
         cx.views.directory
     }
-    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> {
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> {
         cx.views.hubs
     }
 }
@@ -38,9 +38,9 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
     let _guard = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("library-shelf-actions");
     session.watching("u-library-shelf-actions");
-    let stores = crate::stores::Stores::default();
+    let stores = plx_data::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
-    let mut directory = crate::stores::browse::DirectorySnapshot::default();
+    let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
     stores.capture_browse(&mut directory);
     stores.browse_run(BrowseCmd::SetCur(0));
     {
@@ -150,9 +150,9 @@ fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection()
     let _guard = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("library-linked-heading");
     session.watching("u-library-linked-heading");
-    let stores = crate::stores::Stores::default();
+    let stores = plx_data::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
-    let mut directory = crate::stores::browse::DirectorySnapshot::default();
+    let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
     stores.capture_browse(&mut directory);
     stores.browse_run(BrowseCmd::SetCur(0));
     {

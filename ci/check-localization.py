@@ -324,7 +324,16 @@ LAYER_SRCS = ('rust-modules/platform/src', 'rust-modules/gfx/src', 'rust-modules
 # also took `PlaybackQuality::label`, the quality row's text, out of the listed `route/decision.rs`)
 # a boundary naming one of its constants would pass unread.
 CONST_SRCS = (*LAYER_SRCS, 'rust-modules/base/src', 'rust-modules/machine/src', 'rust-modules/net/src',
-              'rust-modules/plex/src', 'rust-modules/telemetry/src')
+              'rust-modules/plex/src', 'rust-modules/telemetry/src', 'rust-modules/data/src',
+              'rust-modules/session/src')
+
+
+def missing_roots(root: Path) -> list[str]:
+    """The directories this gate walks that are not there. A listed FILE that is missing is reported
+    by `main`; a missing DIRECTORY would make `rglob` yield nothing, which reads as "no findings".
+    Every crate split so far moved files this gate named, and it skipped them without a word."""
+    dirs = ['rust-modules/src/screens', 'rust-modules/src/appkit', 'rust-modules/src', *CONST_SRCS]
+    return [d for d in dirs if not (root / d).is_dir()]
 
 
 def source_paths(root: Path):
@@ -334,15 +343,20 @@ def source_paths(root: Path):
         for folder in folders:
             for path in sorted((base / folder).rglob('*.rs')):
                 if path.name not in FIXTURES and not any('test' in part for part in path.relative_to(base).parts): yield path
-    for rel in ('app/chrome.rs', 'app/diagnostics.rs', 'app/playback.rs', 'auth/owner.rs',
-                'metadata.rs', 'person.rs', 'player/ass.rs', 'player/mod.rs', 'player/shared.rs',
+    for rel in ('app/chrome.rs', 'app/diagnostics.rs', 'app/playback.rs',
+                'player/ass.rs', 'player/mod.rs', 'player/shared.rs',
                 'player/sidecar.rs', 'route/decision.rs', 'route/plan.rs', 'lab/toast.rs'):
         yield src / rel
     for rel in ('webos.rs', 'tv/device.rs', 'devcaps/dv.rs'):
         yield platform / rel
+    # `metadata.rs` and `person.rs` were listed under `rust-modules/src` until the data split.
+    for rel in ('metadata.rs', 'person.rs'):
+        yield root / 'rust-modules/data/src' / rel
     yield root / LAYER_SRCS[1] / 'overdraw.rs'
     # `PlaybackQuality::label` was `route/decision.rs`'s (listed above) until the plex split.
     yield root / 'rust-modules/plex/src/plex/session.rs'
+    # `auth/owner.rs` (the session owner's read-outs) moved with the session split.
+    yield root / 'rust-modules/session/src/auth/owner.rs'
 
 
 def const_table(root: Path) -> dict[str, str]:
@@ -364,9 +378,14 @@ def main() -> int:
     exceptions = json.loads(exception_path.read_text()) if exception_path.exists() else []
     used, failures = set(), []
     consts = const_table(args.root)
+    failures.extend(f'{d}: a directory this gate reads is missing (moved? fix the path in ci/check-localization.py)'
+                    for d in missing_roots(args.root))
     for path in source_paths(args.root):
-        if not path.exists(): continue
         rel = path.relative_to(args.root).as_posix()
+        if not path.is_file():
+            # Not skipped: a listed file that moved would otherwise leave the gate green and unread.
+            failures.append(f'{rel}: a listed product file is missing (moved? fix the path in ci/check-localization.py)')
+            continue
         for f in scan(path.read_text(), FILE_CALLS.get(rel), consts):
             hit = next((i for i, e in enumerate(exceptions)
                         if e.get('path') == rel and e.get('text') == f.text

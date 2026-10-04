@@ -136,7 +136,7 @@ impl RouteSurface {
         id: InstanceId,
         kind: Family,
         root: SettingsPage,
-        hubs: crate::pms::HubsView<'_>,
+        hubs: plx_data::pms::HubsView<'_>,
     ) -> Self {
         let mut s = Self {
             entry,
@@ -1201,7 +1201,7 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
 }
 
 impl RootPage {
-    fn new(entry: EntryId, directory: crate::stores::browse::DirectoryView<'_>) -> Self {
+    fn new(entry: EntryId, directory: plx_data::stores::browse::DirectoryView<'_>) -> Self {
         let mut s = Self {
             entry,
             form: FormTable::new(super::registry::BAND),
@@ -1226,7 +1226,7 @@ impl RootPage {
 
     /// Re-derive the rows from the session, keeping focus on the row it is on BY IDENTITY (a
     /// vanished row falls to its next, else previous, neighbour — `FormTable::set`).
-    fn rebuild(&mut self, directory: crate::stores::browse::DirectoryView<'_>) {
+    fn rebuild(&mut self, directory: plx_data::stores::browse::DirectoryView<'_>) {
         if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
             self.session_snapshot = snapshot;
         }
@@ -1323,7 +1323,7 @@ impl RootPage {
     }
 
     /// Activate the row whose focus key is `key` (an `Activate` element or the RIGHT rule's).
-    fn activate(&mut self, key: u32, directory: crate::stores::browse::DirectoryView<'_>,
+    fn activate(&mut self, key: u32, directory: plx_data::stores::browse::DirectoryView<'_>,
         fx: &mut Effects<'_, InnerHost>) {
         let Some(action) = form_activate(&self.form, key, fx) else {
             return;
@@ -1374,10 +1374,10 @@ impl RootPage {
 impl RootPage {
     /// The question was answered: send the one command it became (a *Connect* shows the switch
     /// on at once; Session records it and re-finds the server), and hand focus back to the table.
-    fn alert_answer(&mut self, cmd: Option<crate::auth::SessionCmd>, directory: crate::stores::browse::DirectoryView<'_>,
+    fn alert_answer(&mut self, cmd: Option<plx_session::auth::SessionCmd>, directory: plx_data::stores::browse::DirectoryView<'_>,
         fx: &mut Effects<'_, InnerHost>) {
         if let Some(cmd) = cmd {
-            if let crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. } = &cmd {
+            if let plx_session::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. } = &cmd {
                 if choice.allows() {
                     self.pending_plaintext = Some((machine_id.clone(), true));
                 }

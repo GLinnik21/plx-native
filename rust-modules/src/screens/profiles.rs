@@ -91,7 +91,7 @@ use std::borrow::Cow;
 use std::ffi::CString;
 use std::sync::Arc;
 
-use crate::auth::{self, Phase};
+use plx_session::auth::{self, Phase};
 use plx_ui::card_row;
 use plx_ui::frame::Budget;
 use plx_ui::geom;

@@ -8,13 +8,13 @@ L14, which a split hides from them, and the gate does not check impl coherence. 
 off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
 entries are gone, and the gate fails on any reference from outside the port to a member of it. It
 is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
-up the split. **The split is more than half done: eight of the fourteen layers, `base`, `machine`,
-`platform`, `gfx`, `net`, `ui`, `plex` and `telemetry`, are their own crates, `plx_base`,
-`plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex` and `plx_telemetry`**
-(`rust-modules/base/`, `machine/`, `platform/`, `gfx/`, `net/`, `ui/`, `plex/` and `telemetry/`;
-"Split 1: base" to "Split 8 (telemetry)" below, and "Splits 6 and 7 together" for how two of them
-were combined); the other six (`data`, `session`, `media`, `appkit`, `screens`, `app`) are still
-modules of `plxnative-modules`.
+up the split. **Ten of the fourteen layers, `base`, `machine`, `platform`, `gfx`, `net`, `ui`,
+`plex`, `telemetry`, `data` and `session`, are their own crates, `plx_base`, `plx_machine`,
+`plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`, `plx_data` and
+`plx_session`** (`rust-modules/base/`, `machine/`, `platform/`, `gfx/`, `net/`, `ui/`, `plex/`,
+`telemetry/`, `data/` and `session/`; "Split 1: base" to "Split 10 (session)" below, and "Splits 9
+and 10 together" for how the last two were combined); the other four (`media`, `appkit`, `screens`,
+`app`) are still modules of `plxnative-modules`.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
@@ -394,6 +394,10 @@ on. Each extraction:
   dependencies because `cargo metadata` unifies features across dependency kinds (host-lint job;
   the tool now reads `cargo tree`). Then
   `grep -rn "rust-modules/src/" tools ci tests Makefile .github` for each moved module name.
+- watches `binary_bytes` at every split. A crate boundary stops inlining and dead-code removal across it,
+  so the shipped binary grows with every layer unless the release profile pays it back; the CI
+  "Binary size budget" table of the cross-build job is where it shows ("What the split cost the
+  binary" below).
 
 ### Split 1: base
 
@@ -1197,6 +1201,330 @@ minima are the honest comparison: every edit is 2.5 to 3.5 s faster, which is wh
 application's 450k lines (`telemetry` 14.1k, `diag` 1.7k) no longer
 recompiling behind it buys, and the no-op build is 0.1 s in both. The unit suite gains one more test
 binary and is no slower.
+
+### Split 9 (data)
+
+`data` was extracted ninth, in parallel with the `session` lane: `rust-modules/data/` is the
+workspace member `plx_data` (an `rlib`, `uses = base machine platform net plex telemetry`; the
+manifest depends on `plx_base`, `plx_machine`, `plx_platform`, `plx_plex` and `plx_telemetry`, and
+on `plx_net` as a dev-dependency only, because one fixture test calls it), holding `stores` (one
+command vocabulary and one machine per data store), `pms` (the Home catalog), `browse`, `metadata`,
+`person`, `collection`, `search` and `viewstate`. The members kept their names, so a path is
+`plx_data::pms::seed_for_test` and every `crate::<member>::` *inside* the moved files stayed valid;
+only the references in 135 application files changed, by `split-data-rewrite.py` (`crate::<member>`
+to `plx_data::<member>`, `pub(crate)` to `pub`, the eight `mod` lines out of `lib.rs`). The root-level
+files the members include by `#[path]` (`pms_*_tests.rs`, `pms_test_support.rs`, `metadata_*`,
+`search_*`: 17 files) moved with their module into `data/src/`, because none of them names a higher
+layer. Features: `devtriggers` and `hostsim` are forwarded, `test-support` is new and enables the
+five lower layers'. Its 422 tests (425 with `devtriggers`) run in their own binary. It was the
+layer with the most `--report` items (26); the lane's report listed 18 across all layers after it (14 with Split 10 combined) and `data` is
+ready. What it taught beyond the recipe:
+
+- **Gate by rule, not by item.** Every `test` inside any `cfg(..)` of the layer's non-test code
+  became `any(test, feature = "test-support")` (243 lines, by `split-data-gate.py`, which skips the
+  attribute and body of `mod tests` / `mod *_tests` / `mod test_support` and the wholly-test files).
+  No `cfg(not(test))` arm hid from it except the shipping arms it switches: `metadata`'s detail
+  fetch (a test holds the fetch instead of spawning a thread), its two dev stand-ins, `person`'s two
+  plex.tv fetches (a test that reaches them fails to link) and `pms::run`'s `EditItem` arm. Then
+  the exceptions the compiler found under `--features test-support`: what only the layer's own
+  tests use stays `cfg(test)` (13 private items and two imports, because under `test-support`
+  alone they are dead code; `split-data-revert.py` flips them).
+- **A fixture inside a `cfg(test)` module cannot be named by a seam.** `seed_two_source_table_for_owner_test`
+  called `test_support::a_source`, a function of the `cfg(test)`-only fixtures module. The
+  `BrowseSource` literal moved beside the seams that seed it (`browse::a_source`, one function).
+- **A test that reads another layer's source moves up.** `stores/metadata.rs`'s
+  `pump_wiring_tests` pinned the text of the *application's* `app/run.rs`; it is now the last module
+  of `app/run.rs`. `stores/mod.rs`'s "data layers do not execute endpoint recovery" test reads
+  `pms.rs`, `browse/mod.rs` and `viewstate.rs` from `CARGO_MANIFEST_DIR/src`, which are the crate's
+  own, so it stays; its needle lost the `crate::` (the session layer is not nameable from data at
+  all, and the test now catches either spelling). `metadata/record.rs`'s replay fixture
+  `include_str!` gained a `../`.
+- **The tests need the dev-trigger credential policy, so `cargo test -p plx_data` alone has to
+  ask for it.** The browse and search fixtures register an `http://10.0.0.1` server and select it,
+  which `plex::origin` refuses unless `devtriggers` is on (39 tests failed alone, all green in the
+  unified build). The lane enabled `plx_plex/devtriggers` from `[dev-dependencies]`; the
+  combination replaced that with the workspace rule ("Splits 9 and 10 together": the crate
+  dev-depends on itself with `devtriggers`), so the crate alone runs the same 425 tests the suite
+  does. Dev-dependency features reach test builds only.
+- **Upward names were prose only.** Nothing in the layer named `ui`, `gfx`, `route`, `player`,
+  `screens`, `app`, `dev` or `auth` in code; seven intra-doc links did, and lost their brackets. No
+  orphan-rule hazard and no inherent `impl` in a higher layer appeared: `pms::initial::Sink` (the
+  trait whose `Canon` impl was moved down in Split 2) and the `Tile` impl for `PmsMovie` (the trait
+  is `plx_base`'s) are both inside the crate. `serde` needs the `rc` feature in this manifest too
+  (Home cards are `Arc<PmsMovie>`).
+- **Gates that read the old location.** `ci/check-deps.sh` reads `SRC_DATA` wherever it reads
+  `SRC_TELEMETRY`; the six `*-owner` rules scan `$SRC_DATA` for their declaration files, spell the
+  call pattern `(crate|plx_data)::` (the application now writes the second), and `OWNER_LINES` reads
+  `$SRC_DATA`; the `mutators-visibility` table reads the crate; the `wall` rule's `stores` root
+  moved. `ci/check-statics.sh` gates `data/src/{person.rs, metadata*, pms.rs, stores}` and
+  `search/` (and the two `recents.rs` entries of `ci/allow/statics.txt` follow, or the stale-entry
+  check fails). `ci/check-localization.py` listed `metadata.rs` and `person.rs` under the
+  application and skipped a missing path without a word (it fails on one now, below). `tests/test_harness.py`'s
+  planted-violation helpers resolve a store file in the private copy's `data/src` first. Also the
+  eventlog scrub test's root list (`../data/src`), `TREE_INPUTS` and the `fpflags` list,
+  `tools/cargo-seed.py`, `ci/test_no_host_staticlib.py`, the release-configuration hook, the
+  build-budget `--src` list, the `-p` lists, `RUST_INPUTS`, and `make build-bench` (scenario "Edit
+  leaf (plx_data tape.rs)"; added, not run). The module-cycle baseline had to change: the eight
+  data modules left the 8-module cycle, and the cycle of 6 (`abr curlio ff hls player route`) is the
+  remaining one.
+- **Proven by temporary violating edits, reverted byte for byte:** a `pub fn pump() {}` prepended to
+  `data/src/viewstate.rs` fails `viewstate-owner` in `ci/check-deps.sh`; an `SDL_GetTicks(` in
+  `data/src/pms.rs` fails `ticks`; an `Instant::now()` in `data/src/stores/hubs.rs` fails `wall`; a
+  `static mut` in `data/src/stores/mod.rs` fails `ci/check-statics.sh`; and a
+  `log(&format!(.., d.title))` in `data/src/pms.rs` fails
+  `no_log_call_site_interpolates_viewing_content` in `plx_base` with the new file's path in the
+  message (the scrub test's root list gained `../data/src`; these files carry titles, ratingKeys and
+  server identities). `ci/check-module-layers.py` reports the layer ready and `--report`'s count of
+  `cfg(test)` items named across layers went from 44 to 18 (14 with Split 10).
+- **The shipping build was checked for the seams, in the artifact.** `cargo tree -e normal -f '{p} [{f}]'`
+  for `plxnative-modules` lists no `test-support` on any crate, with the default features and with
+  `--no-default-features` (`-e normal,dev` listed it 41 times in the lane, 49 in the combination). In the `plx_data` rlib of a
+  `--no-default-features` release build, `strings` finds none of `begin_detail_for_test`,
+  `land_detail_for_test`, `detail_generation_for_test`, `set_current_for_test`, `seed_for_test`,
+  `seed_grid_for_test`, `seed_named_hubs_for_test`, `with_refused_fetches_for_test`,
+  `with_refused_discovery_for_test`, `fixture_with_sources`, `queue_test_landing`,
+  `reverse_test_hubs`, `remove_test_item`, `land_for_test`, `publish_shelves_for_test`,
+  `hold_inflight_for_test`, `REFUSE_FETCH_FOR_TEST`, `REFUSE_DISCOVERY_FOR_TEST`,
+  `seed_items_for_owner_test`, `held_detail` or `seed_two_source_table_for_owner_test`; the
+  `--features test-support` control build of the same crate finds every one (1 to 8 times each),
+  and `nm` matches the seam names in 4 symbols there against 0. The ARM shipping archive built the
+  way the release is (`PLX_RELEASE=1 cargo rustc --release --target arm-unknown-linux-gnueabi --lib
+  --crate-type staticlib --no-default-features`) has none of them either.
+- **FFI and the final link are untouched.** The layer has no `extern "C"`, `#[link]`, `dynlib!`,
+  build script or `#[no_mangle]`; `cargo check --target arm-unknown-linux-gnueabi --lib` passes with
+  and without default features.
+
+### Split 10 (session)
+
+`session` was extracted tenth, in parallel with `data` (Split 9, its own lane): `rust-modules/session/`
+is the workspace member `plx_session` (an `rlib`, `uses = base machine platform net plex
+telemetry`; the manifest names exactly those six, because no line of the crate names anything
+else), holding `auth` and nothing else: the sign-in controller (PIN and QR, discovery of the
+account's servers, who's-watching and the profile PIN, the install of the chosen profile's
+credentials), `auth::owner` (the owner machine that holds the whole flow and the incident hand-off
+to telemetry) and `auth::observation`. The crate keeps `auth` as its one top-level module, so
+`crate::auth::` inside the moved files stayed valid and only the 41 application files that named
+it changed, by `split-session-rewrite.py` (`crate::auth` to `plx_session::auth`, `pub(crate)` and
+`pub(super)` to `pub`). Nine paths moved: `auth.rs`, `auth/`, `auth_test_support.rs` and the six
+`auth_*_tests.rs` files that `auth.rs` mounts by `#[path]`. This is the layer that owns sign-in,
+the profile PIN and the token hand-off, so what it taught is mostly about the test arms that must
+not ship:
+
+- **Every `cfg(test)` arm of the crate was read, not only the four `--report` named.** `--report`
+  listed `SessionIdentity::of`, `synthetic_incident`, `settled_probe_for_test` and
+  `test_support`; they are `cfg(any(test, feature = "test-support"))` now. What it could not see
+  was the rest of the seam, and two of those were security-shaped:
+  `ProfileWorkIo::admit` was `cfg(not(test))` *required* and `cfg(test)` *defaulted to
+  `EndpointAdmission::Usable`* (a default that admits every endpoint), and
+  `scripted::signinfail_spec` returned `None` under `if cfg!(test)`. A dependent's tests build
+  `plx_session` without `cfg(test)`, so the first would have stopped the application's
+  `ProfileWorkIo` test impls from compiling and the second would have let a trigger file in `/tmp`
+  reach the application's tests. Both are `any(test, feature = "test-support")` now, and the
+  shipping arm is the one with no default: a shipping build must have every `ProfileWorkIo` say
+  explicitly what it admits. There is no `cfg!(test)`, `cfg(not(test))` or `cfg(all(.., not(test)))`
+  left in the crate that is not one of these two sites (the rest are private helpers that only
+  the crate's own tests call, which stay `cfg(test)`: under `test-support` alone they would be dead
+  code).
+- **Four scenario functions were exported through a `cfg(test)` module, which no report can see.**
+  `owner.rs` ended with `#[cfg(test)] pub(crate) use tests::{late_roster_of_the_seated_profile,
+  admin_boot_refresh_of_the_seated_profile, refresh_under_another_accounts_token,
+  activation_under_another_accounts_token}`, the session halves of the roster-art scenarios that
+  `app/session_roster_art_tests.rs` drives and grades against the poster. They and the helper chain
+  they build on (`OwnerHost`, `step`, `roster_refresh_fixture`, `picker_switch_seated`,
+  `late_profile_roster`, `member_account_on_admin_seat`) moved out of `mod tests` into
+  `auth/owner/scenarios.rs`, `cfg(any(test, feature = "test-support"))`, and the tests import the
+  three helpers they still use. `scenarios.rs` is a cut and paste (293 lines under a new header) with the indentation
+  removed and `pub` added, so `mod tests` reads the same helpers it always read.
+- **Private types in a public test interface.** `test_support::test_policy()` returns
+  `ProbeDeadlines`, a private struct; once `test_support` is `pub` that is E0446 under
+  `test-support`. `ProbeDeadlines` is `pub` (two `Duration`s, no behaviour) rather than the helper
+  being `cfg(test)`d, since `auth_registry_tests` and the discovery tests share it. The
+  `cfg_attr(not(test), expect(dead_code))` on `SessionMachine::take_logical_dirty` is gone for the
+  reason Split 8 gave: the method is `pub`, so it is never dead and the expectation was unfulfilled.
+- **A `cfg(not(feature = "devtriggers"))` test needs the feature forwarded.** Two cases in
+  `auth_registry_tests.rs` (`shipping_cold_boot_degrades_gracefully_with_only_a_plaintext_stored_source`
+  and `shipping_recovery_repoints_plaintext_metadata_to_https_and_refreshes_normally`) select
+  themselves with `cfg(not(feature = "devtriggers"))`. In a crate that does not receive the feature
+  the condition is always true, so the two would have run in the default build, where the
+  development credential policy is on, and failed. `plx_session/devtriggers` is forwarded from the
+  application (and forwards to the six layers below, `plx_telemetry`'s included, so its
+  production-credentials guard keeps seeing the feature); `hostsim` is forwarded the same way.
+  `cargo test -p plx_session` *alone* built the layers below with the shipping credential policy,
+  and `a_changed_refresh_republishes_reached_unauthorized_and_offline_after_registry_replacement`
+  failed (it registers plaintext test servers). That configuration did not exist before the split
+  either: the application's own tests do not compile with `--no-default-features`. The combination
+  gave the crate the workspace rule ("Splits 9 and 10 together"), so alone it builds what the suite
+  builds.
+- **No version, no build variable, no new hand-in.** The crate has no build script and no `env!`,
+  `option_env!` or `include_str!` of the repository. What it reports to plex.tv is `plx_plex`'s
+  `identity` (handed the version once, at startup), and the consent hand-off goes through
+  `plx_telemetry`'s own API. The tests that read the crate's own source
+  (`env!("CARGO_MANIFEST_DIR")` + `src/auth.rs`, and `include_str!("auth.rs")` /
+  `include_str!("owner.rs")`) found the same relative layout under `session/`, so they read what
+  they read before; they were checked by running, not by assumption.
+- **The seams were checked in the artifact.** `cargo tree -e normal -f '{p} [{f}]'` for
+  `plxnative-modules` lists no `test-support` on any crate with the default features and with
+  `--no-default-features` (`-e normal,dev` listed it 42 times in the lane). In the `plx_session` rlib of a
+  `--release --no-default-features` build, `strings` and `nm -C` find none of
+  `settled_probe_for_test`, `synthetic_incident`, `late_roster_of_the_seated_profile`,
+  `admin_boot_refresh_of_the_seated_profile`, `refresh_under_another_accounts_token`,
+  `activation_under_another_accounts_token`, `picker_switch_seated`, `roster_refresh_fixture`,
+  `member_account_on_admin_seat`, `late_profile_roster`, `OwnerHost`, `test_support`,
+  `cached_session`, `a_two_server_account`, `race_plan`, `threaded_spawn`, `extract_fn_body`,
+  `calls_a_function_prefixed` or a `SessionIdentity::of`; the `--features test-support` control
+  build finds every one (`status_dial` and `test_policy` are inlined in both and prove nothing).
+  The two behaviours that are not symbols (the defaulted `admit` and the silenced `signinfail`
+  trigger) are held by the compile: the shipping build compiles only because every `ProfileWorkIo`
+  implementation names its own `admit`.
+- **Gates that read the old location.** `ci/check-localization.py` listed `auth/owner.rs` among
+  the product files it scans, skipped a missing path without a word, and would have stopped reading
+  the session owner's read-outs; it reads `session/src/auth/owner.rs` now and follows the crate's
+  constants. `ci/check-deps.sh` has `SRC_SESSION` wherever it reads `SRC_TELEMETRY` (the whole-tree
+  rules libm, ticks, effect, legacy, dt, frame, spawn, tmppath and the wholly-test-file resolver);
+  the eventlog scrub test's root list gained `../session/src` (these files log profile switches and
+  PIN outcomes, which is what the scan is for; its `tile.title` exemption is scoped by
+  `Path::ends_with("auth.rs")`, which `session/src/auth.rs` still satisfies);
+  `tests/test_harness.py`'s `TREE_INPUTS` and `fpflags` list, `tools/cargo-seed.py`,
+  `ci/test_no_host_staticlib.py` (`LAYER_CRATES` and the copied `WORKSPACE_FILES`), the
+  release-configuration hook and the build-budget `--src` list know the crate. Proven by temporary
+  violating edits, reverted byte for byte: a `log(&format!(.., ep_title))` in `session/src/auth/observation.rs` fails
+  `no_log_call_site_interpolates_viewing_content` in `plx_base` with the new file's path in the
+  message; an `SDL_GetTicks(` there fails `ticks` and a `/tmp/plxnative-` literal in
+  `session/src/auth/scripted.rs` fails `tmppath` in `ci/check-deps.sh`; and `use plx_ui::..` in the
+  crate fails `ci/check-module-layers.py` (`[session]` may not use `[ui]`). `--report` lists the
+  layer as ready and the count of `cfg(test)` items named across layers was 40 after this lane's split
+  (44 before it, the four being this layer's; 14 with Split 9 combined).
+- **A file mounted under `any(test, feature = "test-support")` is not "wholly test" to the
+  `threads` gate.** `ci/rust_test_modules.py` reads a mount as test-only when its `cfg` is false
+  with `test` false, and `any(test, feature = "test-support")` is not. `auth_test_support.rs` was a
+  `cfg(test)` mount until it had to be `test-support`, and its one `std::thread::spawn` (the probe
+  spawner the discovery tests pass in) became a production exception of the gate (red in `make
+  check`, declared count 0). It sits in a private inline `mod spawner` under the same `cfg` and is
+  re-exported, which is the form the gate reads, as `plx_net`'s `loopback_pms` does; the tool was
+  left alone, since reading `feature = "test-support"` as false would also change what the gate
+  skips in every other crate.
+- **No orphan-rule hazard and no inherent `impl` in a higher layer.** `ProfileWorkIo` and
+  `SessionHost` are implemented in the application's tests for the application's own types, which
+  is legal; the compiler was the checker (`cargo check --lib --tests` of all ten crates, the
+  hostsim set and the lab set passed after the move).
+- **Tooling that knows the tree's shape**: the `-p` lists (`... -p plx_telemetry -p plx_data -p plx_session`)
+  in the Makefile, the workflow, `tools/build-bench.py` and the tests that pin them, and in the
+  docs that quote them; `--src rust-modules/session/src` for the line budget; `RUST_INPUTS`;
+  `ci/test_no_host_staticlib.py` holds the crate to `rlib`; and `make build-bench` has a `session`
+  scenario ("Edit leaf (plx_session scripted.rs)"; added, not run).
+
+### Splits 9 and 10 together: what the combination needed, and the measurement
+
+The two splits were made in parallel from the same commit (`11584830`, which had not moved when
+they were combined) and landed as one change. Combining them:
+
+- **The files both touched are lists again.** 30 files conflicted (the `-p` lists, `SRC_*` roots,
+  scrub roots, workspace members, feature forwards, bench scenarios, the pinned tests, the docs that
+  quote them, and seven application files in which one lane rewrote `crate::auth` and the other a
+  `crate::<data member>` on the same line). The token-level three-way merge resolved all but four
+  hunks, three of them prose ("X and data" against "X and session") and one a string needle in
+  `stores/mod.rs` that both lanes had edited (the data lane's shorter `auth::request_endpoint_refresh(`
+  matches either spelling and was kept). Every merged manifest was read and parses; both rewrite
+  scripts were re-run last and changed nothing; `Cargo.lock` was regenerated by cargo and `--locked`
+  passes. Neither crate names the other: `data` may not use `session`, and nothing in `auth` names a
+  data module.
+- **The module-cycle baseline is re-recorded once, on the combined tree.** The cycle did not grow:
+  `main` had the 8-module data cycle as its largest and the 6-module media cycle (`abr curlio ff hls
+  player route`) among the smaller ones; the eight data modules left the graph, the media cycle is
+  the same six, and 14 modules are outside it (21 on `main`, 15 in the data lane alone).
+- **One rule for a crate whose own tests need the development feature set: it dev-depends on
+  itself.** The lanes had answered the same question two ways. `plx_data` enabled
+  `plx_plex/devtriggers` from its dev-dependencies, which made `cargo test -p plx_data` green but in
+  a configuration nothing else builds (the plex layer with the dev policy, the data crate without
+  its own feature: 422 tests, three missing). `plx_session` could not do that at all: its two
+  `cfg(not(feature = "devtriggers"))` shipping-policy cases would have been built against a plex
+  layer that has the development policy, so it left `cargo test -p plx_session` failing one test.
+  Both manifests now say `plx_<layer> = { path = ".", features = ["devtriggers"] }` under
+  `[dev-dependencies]`. Alone, each crate builds itself and every layer below as the Makefile's
+  suite does and runs the same tests (425 and 258, twice each, green); `make test-fast T=…` is
+  unchanged. A dev-dependency feature reaches test builds only: `cargo tree -e
+  features,normal,build --no-default-features` for `plxnative-modules` differs from `main`'s by the
+  two new crates and nothing else, with no `devtriggers`, `test-support` or `hostsim` in it. A later
+  layer whose tests need the dev set uses the same line; the lower
+  crates did not need it, because their tests pass without the feature.
+- **The seams were checked in the combined artifact.** `cargo tree -e normal -f '{p} [{f}]'` lists
+  no `test-support` with the default features or with `--no-default-features` (`-e normal,dev`
+  lists it 49 times). In host release builds of the application (both feature sets) and in the ARM
+  shipping archive (`PLX_RELEASE=1 cargo rustc --release --target arm-unknown-linux-gnueabi --lib
+  --crate-type staticlib --no-default-features`), `strings` and `nm` find none of `plx_data`'s 22
+  seam names (the 21 of Split 9 and `a_source`) and none of `plx_session`'s 20; the
+  `--features test-support` control builds of the two crates find 22 of 22 and 19 of 20
+  (`test_policy` is inlined). A control has to be built per crate: `-p plx_data -p plx_session
+  --features plx_data/test-support,...` from the workspace root built both without the feature and
+  found nothing, which reads exactly like a clean shipping build. `browse::a_source`, which the data
+  lane moved out of a `cfg(test)`-only module, is `cfg(any(test, feature = "test-support"))` and is
+  not in a shipping build. `ProfileWorkIo::admit` and `signinfail_spec` differ from `main` only in
+  `test` becoming `any(test, feature = "test-support")`: with the feature off (every normal build)
+  the trait method has no default, exactly as on `main`, and the trigger is read under
+  `devtriggers` only.
+- **The gates still fire in the combination**, proven by temporary violating edits, reverted byte
+  for byte: `plx_data` naming `plx_session`, `plx_session` naming `appkit`, and
+  `plx_platform::webos`/`::keymanager` named from either crate fail `ci/check-module-layers.py`;
+  `plx_data::viewstate::reset(` in `coldstart.rs` fails `viewstate-owner` and
+  `plx_data::person::pump(` in a screen fails `person-owner` (the application's spelling of the
+  owner rules); `ticks` fires in both crates, `tmppath` in `session/src`, `threads` in `data/src`;
+  a `static mut` in `data/src/person.rs` and `data/src/stores`, and a `Mutex` static in
+  `data/src/search`, fail `ci/check-statics.sh`; an English literal in `session/src/auth/owner.rs`,
+  `data/src/metadata.rs` and `data/src/person.rs` fails `ci/check-localization.py`; and a
+  `log(&format!(.., d.title))` in `session/src/auth/owner.rs`, `data/src/person.rs` and
+  `data/src/stores/metadata.rs` fails the eventlog scrub scan with the new path in the message.
+- **`ci/check-localization.py` fails on a missing path now.** Splits 3, 4, 6, 7, 9 and 10 each moved a file
+  or directory it reads, and it skipped what was missing without a word, so each lane had to notice. A listed product file or a
+  scanned directory that does not exist is a failure with the path in it; the unit test runs the
+  gate on an empty tree and on the real one.
+- **The simulator draws the same screens.** `plxnative-sim` against `tests/mock_pms.py` (the seed
+  library, the placeholder token, plex.tv replaced by the mock) settles on Home, a library page and
+  a detail page; the detail capture is byte-identical to `main`'s and the other two differ in the
+  frame-pacing tick only. Sign-in goes through `plx_session` and all three read through `plx_data`.
+
+Measured effect (`make build-bench`, same machine, 3 interleaved runs each, non-incremental, no load
+warning in either set; median / minimum). Before, on `11584830`: an edit in `plx_base` 28.9 s /
+28.7 s, in `plx_machine` 28.6 / 28.1, in `plx_platform` 27.8 / 27.5, in `plx_gfx` 24.9 / 24.5, in
+`plx_net` 25.6 / 25.1, in `plx_ui` 24.2 / 23.6, in `plx_plex` 25.2 / 24.7, in `plx_telemetry` 23.1 /
+22.8, of the application crate 22.2 / 22.0, the hub edit 24.1 / 24.1, the unit suite 80.7 / 80.4
+with 5630 tests in nine binaries. After: `plx_base` 23.5 / 23.3, `plx_machine` 22.8 / 22.7,
+`plx_platform` 22.4 / 22.4, `plx_gfx` 17.0 / 17.0, `plx_net` 20.4 / 20.3, `plx_ui` 16.4 / 16.3,
+`plx_plex` 20.0 / 20.0, `plx_telemetry` 18.0 / 17.9, `plx_data` 16.9 / 16.8 and `plx_session` 16.1 /
+16.0 (new rows: each rebuilds its crate and the application behind it), the application crate 14.7 /
+14.5, the hub edit 16.5 / 16.4, and the unit suite 73.6 / 73.3 with the same 5630 tests in eleven
+binaries (157 + 66 + 218 + 94 + 128 + 756 + 458 + 236 + 425 + 258 + 2841, seven of them ignored;
+`plx_base` is 156 on CI's Linux, where `paths`' macOS bundle test does not exist). An application
+edit is 7.5 s faster and an edit in a layer 5 to 8 s: 54k lines (`data` and `session`) no
+longer recompile behind it, and an edit in `gfx` or `ui`, which neither new crate depends on,
+rebuilds the application only. The no-op build is 0.1 s in both.
+
+## What the split cost the binary, and how the release profile pays it back
+
+The split made the shipped binary bigger, split by split. Every layer crate is compiled on its own,
+and with the default release profile (no LTO, 16 codegen units) a function can no longer be inlined
+into, or dropped from, the crate above it when it lives behind a crate boundary. `binary_bytes` in
+`ci/build-budgets.json` is the stripped ARM `plxnative` that the cross-build job stages (default
+features, dev flavour), and CI's "Binary size budget" table reported:
+
+| After | binary_bytes |
+|---|---:|
+| before the split | 11,304,028 |
+| base | 11,422,940 |
+| machine | 11,398,388 |
+| gfx, net | 11,681,228 |
+| ui, plex | 12,115,476 |
+| telemetry | 12,148,252 |
+| data, session, no LTO | 12,553,756 |
+| data, session, `lto = "fat"` and `codegen-units = 1` | 11,098,900 |
+
+The last no-LTO figure is over the 12,426,000 limit, which made Splits 9 and 10 (data, session) red. The two
+`[profile.release]` keys in `rust-modules/Cargo.toml` take the result below the pre-split size,
+because whole-program optimisation with a single codegen unit sees the same code the single crate
+did. They also restore the cross-crate inlining the single crate had, which the per-frame UI code
+leans on. Only release-profile builds pay for it (the ARM staticlib and the storage helper, the
+Linux simulator of `make sim-linux` and `make macapp`); the dev profile that `make check`, the host
+tests and the macOS simulator use is untouched. The price is build time: CI's ARM library build
+went from 2m40 to 4m15, and a local one from 44 s to 94 s.
 
 ## Limits of the analysis
 

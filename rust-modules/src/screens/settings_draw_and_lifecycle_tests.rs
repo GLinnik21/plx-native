@@ -121,7 +121,7 @@ fn opening_settings_never_writes_the_session_file() {
     let file = sess.path();
     let before = std::fs::metadata(&file).expect("the scratch session exists");
     let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root,
-        crate::pms::HubsSnapshot::empty_for_test().view());
+        plx_data::pms::HubsSnapshot::empty_for_test().view());
     step(&mut s, ScreenEvent::Mount, None);
     let after = std::fs::metadata(&file).expect("the scratch session still exists");
     assert_eq!(
@@ -155,7 +155,7 @@ fn opening_settings_never_writes_the_session_file() {
 fn every_root_detail_line_fits_a_known_good_width() {
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-detail-widths");
-    let page = RootPage::new(EntryId(0), crate::stores::browse::DirectoryView::empty_for_test());
+    let page = RootPage::new(EntryId(0), plx_data::stores::browse::DirectoryView::empty_for_test());
     let sz = theme::size::CAPTION;
     let known_good = "Privacy, licences, source code, trademarks and contact.";
     let budget = MEASURE.width_str(known_good, sz, false);

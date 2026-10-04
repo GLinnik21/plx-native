@@ -26,7 +26,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
     rig.refresh_browse_directory();
-    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
     rig.stores.browse.borrow_mut().seed_items_for_test(12);
     for i in 0..80 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
@@ -192,7 +192,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
                 host: instance,
                 kind: crate::screens::registry::LibraryMenuKind::Filter,
                 anchor: [0; 4],
-                target: crate::stores::browse::SectionAddress {
+                target: plx_data::stores::browse::SectionAddress {
                     epoch: id.epoch,
                     sid: id.sid,
                     section: id.section,

@@ -22,7 +22,7 @@
 use std::cell::Cell;
 use std::ffi::{CStr, CString};
 
-use crate::auth::{self, PlaintextVerdict, ReadoutSurface, SessionCmd};
+use plx_session::auth::{self, PlaintextVerdict, ReadoutSurface, SessionCmd};
 use plx_plex::plex::session::PlaintextChoice;
 use plx_plex::plex::ServerId;
 use plx_ui::decision_alert::{Choice, DecisionAlert, Tone};

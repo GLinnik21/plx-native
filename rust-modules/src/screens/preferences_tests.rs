@@ -8,7 +8,7 @@ use plx_ui::fixture::FixtureMeasure;
 
 pub(super) fn context(focus: u32) -> Cx<'static, InnerHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;
-    Cx { views: crate::stores::browse::DirectoryView::empty_for_test(), tick: Tick::default(),
+    Cx { views: plx_data::stores::browse::DirectoryView::empty_for_test(), tick: Tick::default(),
         measure: &MEASURE, press: PressRead::default(),
         focus: FocusRead { current: Some(FocusKey { entry: EntryId(0), elem: focus }), ..Default::default() },
         owner: InputOwner::Entry(EntryId(0)) }

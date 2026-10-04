@@ -5,10 +5,11 @@
 //! (`adapters::poster::resident_art_survives_for_test`) says whether that art still answers a draw
 //! afterwards. The poster is an app adapter, so the grading lives in this layer.
 
-use crate::auth::owner::{
+use plx_session::auth::owner::scenarios::{
     activation_under_another_accounts_token, admin_boot_refresh_of_the_seated_profile,
-    late_roster_of_the_seated_profile, refresh_under_another_accounts_token, RegistryPlan, RosterCommit,
+    late_roster_of_the_seated_profile, refresh_under_another_accounts_token,
 };
+use plx_session::auth::owner::{RegistryPlan, RosterCommit};
 
 /// **Blink C** (owner trace, 2026-09-30, who's-watching picker path): a SECOND `plex: 2
 /// server(s) revoked — profile changed` 4-6 s after Home was drawn, with the picked profile
@@ -22,7 +23,7 @@ fn a_late_profile_roster_for_the_seated_profile_keeps_resident_art() {
     let (sid, plan) = late_roster_of_the_seated_profile();
     let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
         for p in &plan.registry {
-            assert!(crate::auth::execute_session_registry(p, "synthetic-client"));
+            assert!(plx_session::auth::execute_session_registry(p, "synthetic-client"));
         }
     });
     assert!(kept, "the late roster of the already-seated profile revoked its art");
@@ -50,7 +51,7 @@ fn an_admin_boot_refresh_of_the_seated_profile_keeps_resident_art() {
 
     let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
         for p in &plan.registry {
-            assert!(crate::auth::execute_session_registry(p, "synthetic-client"));
+            assert!(plx_session::auth::execute_session_registry(p, "synthetic-client"));
         }
     });
     assert!(kept, "a same-profile roster refresh revoked the stored server's art");
@@ -71,7 +72,7 @@ fn a_refresh_under_another_accounts_token_does_not_keep_the_seated_profiles_art(
     let (sid, plan) = refresh_under_another_accounts_token();
     let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
         for p in &plan.registry {
-            assert!(crate::auth::execute_session_registry(p, "synthetic-client"));
+            assert!(plx_session::auth::execute_session_registry(p, "synthetic-client"));
         }
     });
     assert!(!kept, "another account's grants were installed as a same-identity refresh");
@@ -87,7 +88,7 @@ fn an_activation_under_another_accounts_token_does_not_keep_the_seated_profiles_
     let (sid, plan) = activation_under_another_accounts_token();
     let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
         for p in &plan.registry {
-            assert!(crate::auth::execute_session_registry(p, "synthetic-client"));
+            assert!(plx_session::auth::execute_session_registry(p, "synthetic-client"));
         }
     });
     assert!(!kept, "another account's grant was activated as a same-identity retoken");

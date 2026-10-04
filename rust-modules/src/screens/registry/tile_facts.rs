@@ -21,7 +21,7 @@
 
 use std::os::raw::c_int;
 
-use crate::pms::{PmsMovie, KIND_COLLECTION};
+use plx_data::pms::{PmsMovie, KIND_COLLECTION};
 use plx_ui::tile::{Resume, TileFacts, TileKind};
 
 /// What `ui` reads of `m`. The result borrows from the row for `'a`, and carries the row's address

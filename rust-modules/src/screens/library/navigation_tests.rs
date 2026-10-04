@@ -8,9 +8,9 @@ struct TestHost;
 
 #[derive(Clone, Copy)]
 struct Views<'a> {
-    listing: crate::stores::browse::ListingView<'a>,
-    directory: crate::stores::browse::DirectoryView<'a>,
-    hubs: crate::stores::browse::HubsView<'a>,
+    listing: plx_data::stores::browse::ListingView<'a>,
+    directory: plx_data::stores::browse::DirectoryView<'a>,
+    hubs: plx_data::stores::browse::HubsView<'a>,
 }
 impl Host for TestHost {
     type Arg = FixtureArg;
@@ -22,29 +22,29 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 impl LibraryLike for TestHost {
-    fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> {
+    fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> {
         cx.views.listing
     }
-    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> {
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
         cx.views.directory
     }
-    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> {
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> {
         cx.views.hubs
     }
 }
 const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 struct Fixture {
-    _stores: crate::stores::Stores,
-    listing: crate::stores::browse::ListingSnapshot,
-    directory: crate::stores::browse::DirectorySnapshot,
-    hubs: crate::stores::browse::HubsSnapshot,
-    sections: Vec<crate::stores::browse::SectionView>,
+    _stores: plx_data::stores::Stores,
+    listing: plx_data::stores::browse::ListingSnapshot,
+    directory: plx_data::stores::browse::DirectorySnapshot,
+    hubs: plx_data::stores::browse::HubsSnapshot,
+    sections: Vec<plx_data::stores::browse::SectionView>,
     epoch: u32,
 }
 impl Fixture {
     fn new(libraries: usize, items: usize, shelves: usize) -> Self {
-        let stores = crate::stores::Stores::default();
+        let stores = plx_data::stores::Stores::default();
         stores.browse.borrow_mut().seed_two_source_table_for_test();
         stores.browse_run(BrowseCmd::SetCur(0));
         let titles: Vec<_> = (0..shelves)
@@ -57,14 +57,14 @@ impl Fixture {
         let epoch = stores.browse.borrow().table_epoch_for_test();
         let sid = plx_plex::plex::ServerId::UNSET;
         let sections = (0..libraries)
-            .map(|i| crate::stores::browse::SectionView {
+            .map(|i| plx_data::stores::browse::SectionView {
                 // `SectionView` no longer carries an ownership bit at all (issue #100/#165 — see
                 // `screens/library/tests.rs`'s `a_single_favourite_library_draws_no_selector`), so
                 // there is nothing left here to vary with the library count.
                 sid: Some(sid),
                 key: i as i64 + 1,
                 kind: SecKind::Movie,
-                row: crate::stores::browse::SrcRow {
+                row: plx_data::stores::browse::SrcRow {
                     section: i,
                     title: format!("Library {i}"),
                     pinned: true,
@@ -97,16 +97,16 @@ impl Fixture {
         } else {
             0
         };
-        self.directory = crate::stores::browse::DirectorySnapshot::fixture(
+        self.directory = plx_data::stores::browse::DirectorySnapshot::fixture(
             self.epoch,
             current,
             self.sections.clone(),
         );
-        self.listing = crate::stores::browse::ListingSnapshot::fixture(
+        self.listing = plx_data::stores::browse::ListingSnapshot::fixture(
             sid,
             (0..items)
                 .map(|i| {
-                    Some(crate::pms::PmsMovie {
+                    Some(plx_data::pms::PmsMovie {
                         sid,
                         kind,
                         rk: format!("{}", i + 1),
@@ -211,22 +211,22 @@ fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_
     }
     let sid = plx_plex::plex::ServerId::UNSET;
     fixture.sections = vec![
-        crate::stores::browse::SectionView {
+        plx_data::stores::browse::SectionView {
             sid: Some(sid),
             key: 1,
             kind: SecKind::Movie,
-            row: crate::stores::browse::SrcRow {
+            row: plx_data::stores::browse::SrcRow {
                 section: 0,
                 title: "Movies".into(),
                 pinned: true,
                 ..Default::default()
             },
         },
-        crate::stores::browse::SectionView {
+        plx_data::stores::browse::SectionView {
             sid: Some(sid),
             key: 2,
             kind: SecKind::Show,
-            row: crate::stores::browse::SrcRow {
+            row: plx_data::stores::browse::SrcRow {
                 section: 1,
                 title: "Shows".into(),
                 pinned: true,

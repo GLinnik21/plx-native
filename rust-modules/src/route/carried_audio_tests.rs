@@ -16,7 +16,7 @@ use super::test_support::apply_plan;
 /// `"dolby digital plus + dolby atmos"` for a JOC track regardless of its ordinary 5.1 layout.
 #[test]
 fn from_stream_eac3_joc_is_immersive() {
-    let s = crate::metadata::Stream {
+    let s = plx_data::metadata::Stream {
         id: 7,
         codec: "eac3".into(),
         channels: 6,
@@ -37,7 +37,7 @@ fn from_stream_eac3_joc_is_immersive() {
 /// thing, and `has_atmos` is deliberately a substring test on that field alone.
 #[test]
 fn from_stream_ac3_not_immersive() {
-    let s = crate::metadata::Stream {
+    let s = plx_data::metadata::Stream {
         id: 9,
         codec: "ac3".into(),
         channels: 6,

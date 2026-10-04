@@ -36,16 +36,16 @@ impl Host for TestHost {
 // longer compiles, and every helper below needs a real, per-owner store rather than a second
 // mechanism.
 thread_local! {
-    static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-        std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+        std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
 }
 
-fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
 impl crate::screens::registry::MetadataLike for TestHost {
-    fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+    fn metadata<'a>(_cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
         test_store().view()
     }
 }
@@ -126,12 +126,12 @@ fn item(rk: &str, reverse: bool) -> Detail {
     let mut d = Detail { sid: ServerId::UNSET, rk: rk.into(), is_show: true,
         kind: "show".into(), ..Default::default() };
     for i in 1..=2 {
-        d.seasons.push(crate::metadata::Season { rk: format!("s{i}"), index: i,
+        d.seasons.push(plx_data::metadata::Season { rk: format!("s{i}"), index: i,
             title: format!("Season {i}"), leaf_count: 2, viewed_leaf_count: 0 });
-        d.episodes.push(crate::metadata::Episode { rk: format!("e{i}"), index: i,
+        d.episodes.push(plx_data::metadata::Episode { rk: format!("e{i}"), index: i,
             season: 1, title: format!("Episode {i}"), ..Default::default() });
-        d.related.push(crate::pms::PmsMovie { sid: ServerId::UNSET, rk: format!("r{i}"), ..Default::default() });
-        d.cast.push(crate::metadata::Cast { id: i, tag: format!("Person {i}"),
+        d.related.push(plx_data::pms::PmsMovie { sid: ServerId::UNSET, rk: format!("r{i}"), ..Default::default() });
+        d.cast.push(plx_data::metadata::Cast { id: i, tag: format!("Person {i}"),
             role: "Actor".into(), tag_key: format!("plex://person/{i}"), thumb: String::new() });
     }
     if reverse {
@@ -145,7 +145,7 @@ fn boot() -> (Dispatcher<TestHost>, TestRig) {
 }
 fn boot_with(detail: Detail) -> (Dispatcher<TestHost>, TestRig) {
     test_store().run(MetadataCmd::Clear);
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(detail));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(detail));
     let mut d = Dispatcher::new();
     d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
     let mut rig = TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec::new() };
@@ -168,7 +168,7 @@ fn first(d: &Dispatcher<TestHost>, group: GroupId) -> FocusKey<u32> {
     Focusable::<TestHost>::seat(s, group, Placed { rect: r, rest_rect: r, clip: Rect::FULL, index: Some(0) }, &cx)
 }
 fn land(d: &mut Dispatcher<TestHost>, rig: &mut TestRig, data: Detail, ms: u32) {
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(data));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(data));
     d.store_changed(StoreId::Metadata.ord(), ms);
     frame(d, rig, ms);
 }
@@ -186,7 +186,7 @@ fn repeated_detail_keys_follow_items_through_all_four_group_reorders() {
         assert_eq!(screen(&d).locate(key.elem, test_store().view()).unwrap().index(), 1,
             "the same key must now project to the item's NEW slot in {group:?}");
     }
-    crate::metadata::set_current_for_test(test_store().state_mut(), None);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn a_removed_detail_item_is_not_reinterpreted_as_its_slot_replacement() {
     changed.related.remove(0);
     land(&mut d, &mut rig, changed, 32);
     assert_ne!(d.focus(), Some(key), "a removed item and its replacement cannot share a key");
-    crate::metadata::set_current_for_test(test_store().state_mut(), None);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 #[test]
@@ -210,29 +210,29 @@ fn retained_detail_back_keeps_the_engine_key_until_its_own_landing() {
     let instance = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
     d.request(MachineId::Nav, NavOp::Push(Arg("b".into())));
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(item("b", false)));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(item("b", false)));
     frame(&mut d, &mut rig, 32);
     assert_eq!(d.nav.top_page().unwrap().arg.0, "b");
-    crate::metadata::set_current_for_test(test_store().state_mut(), None);
-    let request = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+    let request = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
     d.request(MachineId::Nav, NavOp::Pop);
     frame(&mut d, &mut rig, 48);
     assert_eq!(d.nav.top_page().unwrap().inst.as_ref().unwrap().id, instance);
     assert_eq!(d.focus(), Some(key), "unresolved return must not fall back to Hero");
-    assert!(!{ let (__s, __a) = test_store().split_for_test(); crate::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "wrong", request, Some(item("wrong", false))) });
+    assert!(!{ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "wrong", request, Some(item("wrong", false))) });
     d.store_changed(StoreId::Metadata.ord(), 64);
     frame(&mut d, &mut rig, 64);
     assert_eq!(d.focus(), Some(key), "another item's notice cannot complete restoration");
     assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "a"), Some(true));
     // The wrong-key completion was discarded; retry under a fresh admitted address.
-    let request = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
-    assert!({ let (__s, __a) = test_store().split_for_test(); crate::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, Some(item("a", true))) });
+    let request = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
+    assert!({ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, Some(item("a", true))) });
     d.store_changed(StoreId::Metadata.ord(), 80);
     frame(&mut d, &mut rig, 80);
     assert_eq!(d.focus(), Some(key));
     assert_eq!(screen(&d).locate(key.elem, test_store().view()).unwrap().index(), 1);
     assert!(screen(&d).scroll_target > 0.0, "matching landing must reveal the restored row even when its key never changed");
-    crate::metadata::set_current_for_test(test_store().state_mut(), None);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 #[test]
@@ -245,21 +245,21 @@ fn an_evicted_detail_reuses_its_item_registry_after_a_reordered_landing() {
     for i in 0..=plx_ui::containers::stack::CAP {
         let rk = format!("covered-{i}");
         d.request(MachineId::Nav, NavOp::Push(Arg(rk.clone())));
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(item(&rk, false)));
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(item(&rk, false)));
         frame(&mut d, &mut rig, 32 + i as u32 * 16);
         assert_eq!(d.nav.tabs.stack.entries.len(), i + 2, "each push must actually commit");
     }
     assert!(d.nav.entry(key.entry).unwrap().inst.is_none());
     // Remount sees a reordered model before receiving Mount. Its old registry must be seeded
     // first, otherwise the same integer is minted for the replacement at slot zero.
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(item("a", true)));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(item("a", true)));
     d.request(MachineId::Nav, NavOp::PopTo(key.entry));
     frame(&mut d, &mut rig, 400);
     assert_ne!(d.nav.top_page().unwrap().inst.as_ref().unwrap().id, old_instance);
     assert_eq!(d.focus(), Some(key));
     assert_eq!(screen(&d).locate(key.elem, test_store().view()).unwrap().index(), 1);
     assert!(screen(&d).scroll_target > 0.0, "a cold body must reveal its restored row on Enter");
-    crate::metadata::set_current_for_test(test_store().state_mut(), None);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 #[test]
@@ -273,11 +273,11 @@ fn retained_detail_back_hydrates_saved_season_before_episode_focus() {
     let key = first(&d, episodes::EPISODES_GROUP);
     d.set_focus_in(Some(key), Some(episodes::EPISODES_GROUP));
     d.request(MachineId::Nav, NavOp::Push(Arg("b".into())));
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(item("b", false)));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(item("b", false)));
     frame(&mut d, &mut rig, 48);
     assert_eq!(d.nav.top_page().unwrap().arg.0, "b");
-    crate::metadata::set_current_for_test(test_store().state_mut(), None);
-    let request = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+    let request = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
     d.request(MachineId::Nav, NavOp::Pop);
     frame(&mut d, &mut rig, 64);
     assert_eq!(screen(&d).restore_intent.as_ref().map(|intent| intent.spot.season),
@@ -286,12 +286,12 @@ fn retained_detail_back_hydrates_saved_season_before_episode_focus() {
     let mut landed = item("a", true);
     landed.cur_season = 0; // reversed seasons: season 2 is now at index zero
     for ep in &mut landed.episodes { ep.season = 2; }
-    assert!({ let (__s, __a) = test_store().split_for_test(); crate::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, Some(landed)) });
+    assert!({ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, Some(landed)) });
     d.store_changed(StoreId::Metadata.ord(), 80);
     frame(&mut d, &mut rig, 80);
     assert_eq!(d.focus(), Some(key));
     assert_eq!(screen(&d).locate(key.elem, test_store().view()).unwrap().index(), 1);
-    crate::metadata::set_current_for_test(test_store().state_mut(), None);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 #[test]
@@ -323,16 +323,16 @@ fn a_failed_addressed_return_retires_the_intent_and_falls_back() {
     let key = first(&d, related::RELATED_GROUP);
     d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
     d.request(MachineId::Nav, NavOp::Push(Arg("b".into())));
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(item("b", false)));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(item("b", false)));
     frame(&mut d, &mut rig, 32);
-    crate::metadata::set_current_for_test(test_store().state_mut(), None);
-    let request = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+    let request = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
     d.request(MachineId::Nav, NavOp::Pop);
     frame(&mut d, &mut rig, 48);
     assert_eq!(d.focus(), Some(key));
     assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "a"), Some(true));
     assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "b"), None);
-    assert!(!{ let (__s, __a) = test_store().split_for_test(); crate::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, None) });
+    assert!(!{ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, None) });
     assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "a"), Some(false));
     d.store_changed(StoreId::Metadata.ord(), 64);
     frame(&mut d, &mut rig, 64);
@@ -347,7 +347,7 @@ fn a_live_return_does_not_rewind_ids_minted_after_its_request_snapshot() {
     let (mut d, mut rig) = boot();
     let saved = d.return_state().memory;
     let mut newer = item("a", false);
-    newer.related.push(crate::pms::PmsMovie { sid: ServerId::UNSET, rk: "r3".into(), ..Default::default() });
+    newer.related.push(plx_data::pms::PmsMovie { sid: ServerId::UNSET, rk: "r3".into(), ..Default::default() });
     land(&mut d, &mut rig, newer, 32);
     let third_key = screen(&d).key_of(Located::Related(2)).unwrap();
     let counter = screen(&d).next_elem;
@@ -369,7 +369,7 @@ fn cold_entry_argument_and_return_memory_both_change_the_tree_hash() {
     for i in 0..=plx_ui::containers::stack::CAP {
         let rk = format!("covered-{i}");
         d.request(MachineId::Nav, NavOp::Push(Arg(rk.clone())));
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(item(&rk, false)));
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(item(&rk, false)));
         frame(&mut d, &mut rig, 32 + i as u32 * 16);
     }
     assert!(d.nav.entry(key.entry).unwrap().inst.is_none());
@@ -436,7 +436,7 @@ fn every_app_owned_run_on_a_show_page_comes_from_the_catalog() {
 #[test]
 fn every_app_owned_run_on_a_film_page_comes_from_the_catalog() {
     let _guard = plx_base::testlock::serial();
-    let stream = |codec: &str| crate::metadata::Stream {
+    let stream = |codec: &str| plx_data::metadata::Stream {
         lang: "Deutsch".into(), lang_code: "deu".into(), codec: codec.into(), channels: 6,
         ..Default::default()
     };
@@ -444,8 +444,8 @@ fn every_app_owned_run_on_a_film_page_comes_from_the_catalog() {
         sid: ServerId::UNSET, rk: "a".into(), kind: "movie".into(), title: "Zzyzx".into(),
         year: 1999, summary: "Qwerty".into(), rating: "R".into(),
         genres: vec!["Drama".into()], directors: vec!["Person 9".into()],
-        audio: vec![crate::metadata::Stream { ad: true, ..stream("eac3") }],
-        subs: vec![crate::metadata::Stream { sdh: true, ..stream("srt") }],
+        audio: vec![plx_data::metadata::Stream { ad: true, ..stream("eac3") }],
+        subs: vec![plx_data::metadata::Stream { sdh: true, ..stream("srt") }],
         ..Default::default()
     };
     let stray = stray_runs(film, &["Zzyzx", "Qwerty", "Vlox", "Drama", "Person", "Deutsch",
@@ -456,7 +456,7 @@ fn every_app_owned_run_on_a_film_page_comes_from_the_catalog() {
 /// A show with `n` seasons and otherwise the fixture page.
 fn show(n: i64) -> Detail {
     let mut d = item("a", false);
-    d.seasons = (1..=n).map(|i| crate::metadata::Season { rk: format!("s{i}"), index: i,
+    d.seasons = (1..=n).map(|i| plx_data::metadata::Season { rk: format!("s{i}"), index: i,
         title: format!("Season {i}"), leaf_count: 2, viewed_leaf_count: 0 }).collect();
     d
 }

@@ -1,25 +1,15 @@
 {
   "members": [
-    "browse",
-    "collection",
-    "metadata",
-    "person",
-    "pms",
-    "search",
-    "stores",
-    "viewstate"
+    "abr",
+    "curlio",
+    "ff",
+    "hls",
+    "player",
+    "route"
   ],
-  "size": 8,
-  "outside_count": 21,
+  "size": 6,
+  "outside_count": 14,
   "other_cycles": [
-    [
-      "abr",
-      "curlio",
-      "ff",
-      "hls",
-      "player",
-      "route"
-    ],
     [
       "app",
       "dev",

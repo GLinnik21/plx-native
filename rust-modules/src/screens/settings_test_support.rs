@@ -32,7 +32,7 @@ pub(super) static MEASURE: FixtureMeasure = FixtureMeasure;
 
 pub(super) fn cx_with<'a>(
     focus: Option<FocusKey<u32>>,
-    directory: crate::stores::browse::DirectoryView<'a>,
+    directory: plx_data::stores::browse::DirectoryView<'a>,
 ) -> Cx<'a, InnerHost> {
     Cx {
         views: directory,
@@ -45,7 +45,7 @@ pub(super) fn cx_with<'a>(
 }
 
 pub(super) fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, InnerHost> {
-    cx_with(focus, crate::stores::browse::DirectoryView::empty_for_test())
+    cx_with(focus, plx_data::stores::browse::DirectoryView::empty_for_test())
 }
 
 /// Step the surface once and return what it emitted, the way `RouteSurface::forward` would

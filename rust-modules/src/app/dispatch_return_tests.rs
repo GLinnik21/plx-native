@@ -9,8 +9,8 @@
 
 use super::AppHost;
 use crate::screens::registry::{AppFx, LibraryReq};
-use crate::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
-use crate::stores::{StoreCmd, StoreId, StoreWork};
+use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
+use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_ui::dispatch::{CxParts, Dispatcher, FrameReport, NoTap, Rig, Split};
 use plx_ui::fixture::{FixtureArg, FixtureMeasure};
 use plx_ui::frame::Budget;

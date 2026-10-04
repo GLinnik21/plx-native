@@ -293,7 +293,7 @@ fn draw_faded_part_at<H: LibraryLike>(part: &mut impl Part<H>, f: &mut DrawFrame
     f.page_alpha = parent;
 }
 
-pub(super) fn shelf_label(shelf: &crate::browse::section_hubs::Shelf, col: usize) -> card_row::TileLabel {
+pub(super) fn shelf_label(shelf: &plx_data::browse::section_hubs::Shelf, col: usize) -> card_row::TileLabel {
     let Some(item) = shelf.items.get(col) else { return card_row::TileLabel::title("") };
     if shelf.landscape {
         let name = if item.title.is_empty() || item.title == item.show_title {

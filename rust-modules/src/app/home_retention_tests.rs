@@ -12,7 +12,7 @@ fn pending_home_grid_focus_wins_when_the_first_catalog_arrives() {
     for on_strip in [false, true] {
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
-        rig.stores.hubs.seed_for_test(0, crate::pms::HubState::Loading);
+        rig.stores.hubs.seed_for_test(0, plx_data::pms::HubState::Loading);
         frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
         let entry = d.nav.top_page().unwrap().id;
         d.set_focus_in(
@@ -21,7 +21,7 @@ fn pending_home_grid_focus_wins_when_the_first_catalog_arrives() {
         );
         assert!(rig.home_command(HomeCmd::FocusGrid { row: 0, col: 2 }));
         frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
-        assert_eq!(rig.with_home(&d, |_, cx, _| cx.views.hubs.state), Some(crate::pms::HubState::Loading));
+        assert_eq!(rig.with_home(&d, |_, cx, _| cx.views.hubs.state), Some(plx_data::pms::HubState::Loading));
         assert_eq!(rig.with_home(&d, |home, cx, _| home.hero_item::<AppHost>(cx).is_none()), Some(true));
 
         // The real bridge releases the retained command before this frame's Tick. Its nested
@@ -53,9 +53,9 @@ fn first_home_catalog_preserves_default_and_explicit_hero_seating() {
     ] {
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
-        rig.stores.hubs.seed_for_test(0, crate::pms::HubState::Loading);
+        rig.stores.hubs.seed_for_test(0, plx_data::pms::HubState::Loading);
         frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
-        assert_eq!(rig.with_home(&d, |_, cx, _| cx.views.hubs.state), Some(crate::pms::HubState::Loading));
+        assert_eq!(rig.with_home(&d, |_, cx, _| cx.views.hubs.state), Some(plx_data::pms::HubState::Loading));
         let entry = d.nav.top_page().unwrap().id;
         d.set_focus_in(None, None);
         for command in &commands { assert!(rig.home_command(*command)); }
@@ -211,7 +211,7 @@ fn hero_edge_keys_page_without_seating_a_pager_or_leaving_the_control() {
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    rig.stores.hubs.seed_for_test(3, crate::pms::HubState::Ready);
+    rig.stores.hubs.seed_for_test(3, plx_data::pms::HubState::Ready);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
     let selected = |rig: &Bridge, d: &Dispatcher<AppHost>| rig.with_home(d,
@@ -246,7 +246,7 @@ fn a_removed_home_type_tab_recovers_to_home_not_the_profile_chip() {
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    rig.stores.hubs.seed_for_test(3, crate::pms::HubState::Ready);
+    rig.stores.hubs.seed_for_test(3, plx_data::pms::HubState::Ready);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
     let entry = d.nav.top_page().unwrap().id;
@@ -340,7 +340,7 @@ fn library_detail_return_restores_engine_card_and_viewport_after_stack_eviction(
         let mut rig = Bridge::for_test(|| 0);
         rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
         rig.refresh_browse_directory();
-        rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+        rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
         rig.stores.browse.borrow_mut().seed_items_for_test(120);
         frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
         d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
@@ -411,7 +411,7 @@ fn all_splits_in_one_frame_keep_the_same_library_listing() {
         assert_eq!(split.views.section_hubs.shelves()[0].items.len(), 3);
     }
     let retained = (rig.listing.clone(), rig.directory.clone(), rig.section_hubs.clone());
-    rig.browse_run(crate::stores::browse::BrowseCmd::Reset);
+    rig.browse_run(plx_data::stores::browse::BrowseCmd::Reset);
     assert!(retained.0.view().item(2).is_some());
     assert_eq!(retained.2.view().shelves()[0].items.len(), 3);
     assert_eq!(retained.1.view().sections().len(), 4);
@@ -432,12 +432,12 @@ fn all_splits_in_one_frame_keep_the_same_home_publication() {
     let _guard = plx_base::testlock::serial();
     let mut rig = super::Bridge::for_test(|| 0);
     let mut dispatcher = Dispatcher::<AppHost>::new();
-    rig.stores.hubs.seed_for_test(3, crate::pms::HubState::Ready);
+    rig.stores.hubs.seed_for_test(3, plx_data::pms::HubState::Ready);
     rig.capture_views(&mut dispatcher);
     assert_eq!(rig.split().views.hubs.hub(0).unwrap().items.len(), 3);
     // `split()` reads `rig.hubs`, the last-captured publication — resetting the live store
     // underneath it must not retroactively change what an already-taken split saw.
-    let _ = rig.stores.hubs.run(crate::stores::hubs::HubsCmd::Reset);
+    let _ = rig.stores.hubs.run(plx_data::stores::hubs::HubsCmd::Reset);
     assert_eq!(rig.split().views.hubs.hub(0).unwrap().items.len(), 3);
     assert_eq!(rig.split().views.hubs.hub_count(), 1,
         "a post-step draw must not pair new data with the old element projection");
@@ -450,7 +450,7 @@ fn removing_the_pressed_home_item_cancels_instead_of_activating_its_replacement(
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    rig.stores.hubs.seed_for_test(3, crate::pms::HubState::Ready);
+    rig.stores.hubs.seed_for_test(3, plx_data::pms::HubState::Ready);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     frame(&mut d, &mut rig, AppArg::Home, tick(1), script_key(Key::Down, tick(1)));
     for i in 2..40 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
@@ -472,7 +472,7 @@ fn a_midframe_reorder_keeps_painted_keys_matched_and_a_click_activates_the_seen_
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    rig.stores.hubs.seed_for_test(3, crate::pms::HubState::Ready);
+    rig.stores.hubs.seed_for_test(3, plx_data::pms::HubState::Ready);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     frame(&mut d, &mut rig, AppArg::Home, tick(1), script_key(Key::Down, tick(1)));
     for i in 2..40 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
@@ -516,7 +516,7 @@ fn home_worker_results_cross_the_addressed_dispatcher_ingest_once() {
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    rig.stores.hubs.seed_for_test(2, crate::pms::HubState::Ready);
+    rig.stores.hubs.seed_for_test(2, plx_data::pms::HubState::Ready);
     let mut tap = Results::default();
     let req = rig.stores.hubs.queue_test_landing(Some(5));
     frame_with_tap(&mut d, &mut rig, AppArg::Home, tick(0), vec![], &mut tap);
@@ -563,7 +563,7 @@ fn one_home_landing_notifies_the_home_screen_once() {
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    rig.stores.hubs.seed_for_test(2, crate::pms::HubState::Ready);
+    rig.stores.hubs.seed_for_test(2, plx_data::pms::HubState::Ready);
     let mut tap = HubsNotices::default();
     frame_with_tap(&mut d, &mut rig, AppArg::Home, tick(0), vec![], &mut tap);
     let baseline = tap.0;
@@ -580,12 +580,12 @@ fn supplied_home_results_use_the_dispatcher_without_consuming_live_arrivals() {
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    rig.stores.hubs.seed_for_test(2, crate::pms::HubState::Ready);
+    rig.stores.hubs.seed_for_test(2, plx_data::pms::HubState::Ready);
     rig.stores.hubs.queue_test_landing(Some(5));
     let captured = rig.take_hubs_results().pop().unwrap();
     let AppMsg::HubsResult(result) = captured.1 else { unreachable!() };
-    let payload = crate::pms::record::encode(&result);
-    let decoded = crate::pms::record::decode(payload, |_| None).unwrap();
+    let payload = plx_data::pms::record::encode(&result);
+    let decoded = plx_data::pms::record::decode(payload, |_| None).unwrap();
     rig.stores.hubs.queue_test_landing(Some(9));
 
     frame_with_results(&mut d, &mut rig, AppArg::Home, tick(0), vec![],
@@ -600,11 +600,11 @@ fn supplied_home_results_use_the_dispatcher_without_consuming_live_arrivals() {
 
 #[test]
 fn store_work_is_addressed_and_idle_polling_does_not_invent_a_change() {
-    use crate::stores::StoreWork;
+    use plx_data::stores::StoreWork;
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    rig.stores.hubs.seed_for_test(0, crate::pms::HubState::Ready);
+    rig.stores.hubs.seed_for_test(0, plx_data::pms::HubState::Ready);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let before = rig.stores.gen(StoreId::Hubs);
     d.emit(MachineId::Nav, Fx::App(AppFx::StoreWork(StoreWork::Hubs)));
@@ -641,7 +641,7 @@ fn onboard_frame_lands_owned_discovery_before_capturing_its_directory() {
     assert_eq!(rig.browse_directory().sources().len(), 1,
         "the pre-capture owner pump publishes discovery to Onboard in the same tick");
     assert_eq!(rig.browse_directory().sources()[0].0, sid);
-    assert_eq!(rig.browse_directory().discovery(), crate::browse::SecFetch::Ready);
+    assert_eq!(rig.browse_directory().discovery(), plx_data::browse::SecFetch::Ready);
     plx_plex::plex::reset_servers_for_test();
 }
 
@@ -675,7 +675,7 @@ fn controlled_discovery_recaptures_the_directory_in_its_delivery_turn() {
         &mut effects, MachineId::Store(StoreId::Browse.ord()), &mut present);
 
     assert_eq!(rig.deliver(MachineId::Store(StoreId::Browse.ord()),
-        &AppMsg::Store(StoreCmd::Browse(crate::stores::browse::BrowseCmd::Discovery(result))),
+        &AppMsg::Store(StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Discovery(result))),
         &parts, &mut fx), Handled::Yes);
     drop(fx);
 

@@ -8,15 +8,15 @@ fn sid(n: u16) -> plx_plex::plex::ServerId {
     plx_plex::plex::ServerId::from_raw(n)
 }
 
-fn group(name: &str, handle: &str, state: crate::browse::SourceState,
-    tier: Option<plx_plex::plex::probe::Location>) -> crate::browse::SrcGroup {
-    crate::browse::SrcGroup { name: name.into(), handle: handle.into(), state, tier }
+fn group(name: &str, handle: &str, state: plx_data::browse::SourceState,
+    tier: Option<plx_plex::plex::probe::Location>) -> plx_data::browse::SrcGroup {
+    plx_data::browse::SrcGroup { name: name.into(), handle: handle.into(), state, tier }
 }
 
 fn section(source: plx_plex::plex::ServerId, key: i64, index: usize, title: &str, current: bool)
-    -> crate::browse::view::SectionView {
-    crate::browse::view::SectionView { sid: Some(source), key, kind: SecKind::Movie,
-        row: crate::browse::SrcRow { section: index, title: title.into(), pinned: true, current,
+    -> plx_data::browse::view::SectionView {
+    plx_data::browse::view::SectionView { sid: Some(source), key, kind: SecKind::Movie,
+        row: plx_data::browse::SrcRow { section: index, title: title.into(), pinned: true, current,
             ..Default::default() } }
 }
 
@@ -29,7 +29,7 @@ fn section(source: plx_plex::plex::ServerId, key: i64, index: usize, title: &str
 #[test]
 fn every_connection_tier_and_source_state_draws_the_same_selector() {
     let _guard = plx_base::testlock::serial();
-    use crate::browse::SourceState;
+    use plx_data::browse::SourceState;
     use plx_plex::plex::probe::Location;
     let tiers = [None, Some(Location::Local), Some(Location::Remote), Some(Location::Relay)];
     let states = [SourceState::NotProbed, SourceState::Reachable, SourceState::Unauthorized,
@@ -43,7 +43,7 @@ fn every_connection_tier_and_source_state_draws_the_same_selector() {
         for state in states {
             // F=1: a lone favourite must never draw a selector, whatever the tier/state.
             let mut fixture = Fixture::new();
-            fixture.directory = crate::browse::view::DirectorySnapshot::fixture_with_sources(1, 0,
+            fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture_with_sources(1, 0,
                 vec![(sid_a, group("Cinema server", "", state, tier))],
                 vec![section(sid_a, 1, 0, "Cinema", true)]);
             let page = fixture.screen();
@@ -54,7 +54,7 @@ fn every_connection_tier_and_source_state_draws_the_same_selector() {
 
             // F=2: two favourites must draw exactly 2 pills, with labels that never move.
             let mut fixture = Fixture::new();
-            fixture.directory = crate::browse::view::DirectorySnapshot::fixture_with_sources(1, 0,
+            fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture_with_sources(1, 0,
                 vec![(sid_a, group("Cinema server", "", state, tier)),
                     (sid_b, group("Home cinema", "friend", state, tier))],
                 vec![section(sid_a, 1, 0, "Movies A", true), section(sid_b, 1, 1, "Movies B", false)]);
@@ -79,7 +79,7 @@ fn every_connection_tier_and_source_state_draws_the_same_selector() {
 #[test]
 fn ownership_does_not_change_how_many_pills_are_drawn() {
     let _guard = plx_base::testlock::serial();
-    use crate::browse::SourceState;
+    use plx_data::browse::SourceState;
     let rosters: [(&str, &[(&str, &str)]); 5] = [
         ("one owned source", &[("Cinema server", "")]),
         ("one borrowed source", &[("Friend's cinema", "friend")]),
@@ -99,7 +99,7 @@ fn ownership_does_not_change_how_many_pills_are_drawn() {
 
         // F=1: exactly one favourite, on the roster's first source.
         let mut fixture = Fixture::new();
-        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_with_sources(1, 0,
+        fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture_with_sources(1, 0,
             sources.clone(), vec![section(sources[0].0, 1, 0, "Movies", true)]);
         let page = fixture.screen();
         assert!(page.libraries.is_empty(), "{label}: F=1 must clear the selector");
@@ -114,7 +114,7 @@ fn ownership_does_not_change_how_many_pills_are_drawn() {
             (0..2).map(|i| section(sources[0].0, i as i64 + 1, i, &format!("Movies {i}"), i == 0)).collect()
         };
         let mut fixture = Fixture::new();
-        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_with_sources(1, 0, sources, sections);
+        fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture_with_sources(1, 0, sources, sections);
         let page = fixture.screen();
         assert_eq!(page.libraries.len(), 2, "{label}: F=2 must draw exactly 2 pills");
     }
@@ -128,12 +128,12 @@ fn ownership_does_not_change_how_many_pills_are_drawn() {
 #[test]
 fn a_pill_carries_its_owners_handle_and_a_household_library_carries_none() {
     let _guard = plx_base::testlock::serial();
-    use crate::browse::SourceState;
+    use plx_data::browse::SourceState;
     let friend = sid(0);
     let own = sid(1);
     let household_as_managed_guest = sid(2);
     let mut fixture = Fixture::new();
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture_with_sources(1, 0,
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture_with_sources(1, 0,
         vec![
             (friend, group("Friend's cinema", "friend", SourceState::Reachable, None)),
             (own, group("Cinema server", "", SourceState::Reachable, None)),
@@ -163,11 +163,11 @@ fn a_pill_carries_its_owners_handle_and_a_household_library_carries_none() {
 #[test]
 fn two_owned_servers_with_the_same_library_title_draw_two_identical_pills() {
     let _guard = plx_base::testlock::serial();
-    use crate::browse::SourceState;
+    use plx_data::browse::SourceState;
     let a = sid(0);
     let b = sid(1);
     let mut fixture = Fixture::new();
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture_with_sources(1, 0,
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture_with_sources(1, 0,
         vec![(a, group("Cinema server", "", SourceState::Reachable, None)),
             (b, group("Home cinema", "", SourceState::Reachable, None))],
         vec![section(a, 1, 0, "Movies", true), section(b, 1, 1, "Movies", false)]);
@@ -188,11 +188,11 @@ fn two_owned_servers_with_the_same_library_title_draw_two_identical_pills() {
 #[test]
 fn an_unreachable_favourite_stays_in_the_selector() {
     let _guard = plx_base::testlock::serial();
-    use crate::browse::SourceState;
+    use plx_data::browse::SourceState;
     let live = sid(0);
     let dead = sid(1);
     let mut fixture = Fixture::new();
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture_with_sources(1, 0,
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture_with_sources(1, 0,
         vec![(live, group("Cinema server", "", SourceState::Reachable, None)),
             (dead, group("Friend's cinema", "friend", SourceState::Unreachable, None))],
         vec![section(live, 1, 0, "Movies", true), section(dead, 1, 1, "Movies", false)]);

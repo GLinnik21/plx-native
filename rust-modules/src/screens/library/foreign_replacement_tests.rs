@@ -8,9 +8,9 @@ struct TestHost;
 
 #[derive(Clone, Copy)]
 struct Views<'a> {
-    listing: crate::stores::browse::ListingView<'a>,
-    directory: crate::stores::browse::DirectoryView<'a>,
-    hubs: crate::stores::browse::HubsView<'a>,
+    listing: plx_data::stores::browse::ListingView<'a>,
+    directory: plx_data::stores::browse::DirectoryView<'a>,
+    hubs: plx_data::stores::browse::HubsView<'a>,
 }
 impl Host for TestHost {
     type Arg = FixtureArg;
@@ -22,13 +22,13 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 impl LibraryLike for TestHost {
-    fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> {
+    fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> {
         cx.views.listing
     }
-    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> {
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
         cx.views.directory
     }
-    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> {
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> {
         cx.views.hubs
     }
 }
@@ -37,18 +37,18 @@ const INSTANCE: InstanceId = InstanceId(21);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 struct Publication {
-    listing: crate::stores::browse::ListingSnapshot,
-    directory: crate::stores::browse::DirectorySnapshot,
-    hubs: crate::stores::browse::HubsSnapshot,
+    listing: plx_data::stores::browse::ListingSnapshot,
+    directory: plx_data::stores::browse::DirectorySnapshot,
+    hubs: plx_data::stores::browse::HubsSnapshot,
 }
 impl Publication {
     fn replace(
-        stores: &crate::stores::Stores,
+        stores: &plx_data::stores::Stores,
         sids: [plx_plex::plex::ServerId; 2],
         current: usize,
     ) -> Self {
         stores.browse.borrow_mut().seed_registered_table_for_test(sids);
-        let mut directory = crate::stores::browse::DirectorySnapshot::default();
+        let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
         stores.capture_browse(&mut directory); // Resolve profile pins before choosing the intended section.
         stores.browse_run(BrowseCmd::ApplyPins(vec![(0, true), (2, true)]));
         stores.browse_run(BrowseCmd::SetCur(current));
@@ -165,7 +165,7 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
     let shared =
         plx_plex::plex::register_for_test("foreign-shared", "127.0.0.1", 10, "synthetic", "fixture");
     for incoming_index in [0, 2] {
-        let stores = crate::stores::Stores::default();
+        let stores = plx_data::stores::Stores::default();
         let outgoing = Publication::replace(&stores, [own, shared], 0);
         let old_id = outgoing.listing.view().id().unwrap();
         let mut engine = FocusEngine::new();
@@ -208,7 +208,7 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
                     sid: old_id.sid,
                     section: old_id.section,
                 },
-                edit: crate::stores::browse::QueryEdit::Unwatched(true),
+                edit: plx_data::stores::browse::QueryEdit::Unwatched(true),
             }),
         );
         assert!(page.grid_fade.is_swapping());

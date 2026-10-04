@@ -7,8 +7,8 @@
 //! the dispatcher's press machine) is the Bridge tier's, in `app/search_owned_tests.rs`.
 use super::*;
 use crate::screens::registry::AppMsg;
-use crate::search::view::SearchView;
-use crate::search::{Item, Shelf};
+use plx_data::search::view::SearchView;
+use plx_data::search::{Item, Shelf};
 use plx_ui::fixture::FixtureMeasure;
 use plx_ui::focus::{FocusEngine, Outcome};
 use plx_ui::hit::{HitMap, PointerKind};
@@ -52,7 +52,7 @@ const DT_US: u32 = 16_667;
 fn tick(i: u32) -> Tick { Tick { ms: i * 16, dt_us: DT_US } }
 
 fn movie(rk: &str) -> Item {
-    Item::Media(crate::pms::PmsMovie { rk: rk.into(), title: format!("Synthetic {rk}"), ..Default::default() })
+    Item::Media(plx_data::pms::PmsMovie { rk: rk.into(), title: format!("Synthetic {rk}"), ..Default::default() })
 }
 
 /// A shelf of `n` synthetic items, addressed so two shelves never share a result identity.
@@ -61,15 +61,15 @@ fn shelf(kind: Kind, tag: &str, n: usize) -> Shelf {
 }
 
 struct Fixture {
-    store: crate::stores::search::SearchStore,
-    search: crate::stores::search::SearchSnapshot,
+    store: plx_data::stores::search::SearchStore,
+    search: plx_data::stores::search::SearchSnapshot,
     measure: FixtureMeasure,
 }
 
 impl Fixture {
     /// A store with no query, no shelves and no remembered terms — a fresh boot.
     fn new() -> Self {
-        let store = crate::stores::search::SearchStore::default();
+        let store = plx_data::stores::search::SearchStore::default();
         let search = store.snapshot();
         Self { store, search, measure: FixtureMeasure }
     }
@@ -251,7 +251,7 @@ fn a_query_below_the_stores_own_threshold_keeps_the_remembered_terms() {
     let mut fixture = Fixture::new();
     fixture.query("w");
     let screen = fixture.screen();
-    assert_eq!(fixture.store.state(), crate::search::State::Idle,
+    assert_eq!(fixture.store.state(), plx_data::search::State::Idle,
         "one character never reaches the server — `search::MIN_QUERY` is 2");
     assert_eq!(screen.recents.len(), 2, "so the remembered terms stay on screen");
     assert!(screen.rows.is_empty());
@@ -623,7 +623,7 @@ fn a_mount_seats_the_field_and_parks_every_cursor_without_replacing_the_search()
     let screen = fixture.screen();
     let mut probe = String::new();
     <SearchScreen as Screen<HostFixture>>::state(&screen).probe(&mut probe);
-    assert_eq!(fixture.store.state(), crate::search::State::Idle);
+    assert_eq!(fixture.store.state(), plx_data::search::State::Idle);
     assert!(probe.contains("editing=false") && probe.contains("caret=0") && probe.contains("rows=0"));
     assert_eq!(screen.scroll_target, 0.0);
     assert_eq!(screen.hot.pos, 1.0, "the field mounts focused and SEATED, or it reports motion on arrival");
@@ -783,7 +783,7 @@ fn shared_shelf(fixture: &mut Fixture) -> [plx_plex::plex::ServerId; 3] {
     plx_plex::plex::describe_server(own, "own-machine", "", plx_plex::plex::GrantEvidence::ours());
     plx_plex::plex::describe_server(a, "share-a", "friend", plx_plex::plex::GrantEvidence::outside());
     plx_plex::plex::describe_server(b, "share-b", "other", plx_plex::plex::GrantEvidence::outside());
-    let item = |sid| Item::Media(crate::pms::PmsMovie { sid, rk: format!("annotated-{sid:?}"),
+    let item = |sid| Item::Media(plx_data::pms::PmsMovie { sid, rk: format!("annotated-{sid:?}"),
         title: "Synthetic result".into(), ..Default::default() });
     fixture.query("annotated").shelves(vec![
         Shelf { kind: Kind::Movie, items: vec![item(own), item(a), item(b)] },
@@ -897,7 +897,7 @@ fn a_settled_annotation_goes_quiet_and_a_moving_one_does_not() {
 fn a_collection_hit_routes_by_rating_key_or_by_section_and_tag_id() {
     use plx_plex::plex::collections::CollectionRef;
     use crate::screens::registry::ContentArg;
-    use crate::search::{CollectionHit, TagHit};
+    use plx_data::search::{CollectionHit, TagHit};
     let sid = plx_plex::plex::ServerId::from_raw(3);
 
     // a full `type=collection` row (`includeCollections=1`): both ids ride along
@@ -940,7 +940,7 @@ fn a_collection_hit_routes_by_rating_key_or_by_section_and_tag_id() {
     );
     // with no section or no tag id there is nothing to resolve, so there is no route
     let no_section = CollectionHit {
-        item: crate::pms::PmsMovie { sec: 0, ..hit.item.clone() },
+        item: plx_data::pms::PmsMovie { sec: 0, ..hit.item.clone() },
         ..hit.clone()
     };
     assert!(no_section.route().is_none(), "no section");
@@ -955,7 +955,7 @@ fn a_collection_hit_routes_by_rating_key_or_by_section_and_tag_id() {
 fn a_collection_shelf_counts_results_and_its_tiles_count_items() {
     use plx_ui::fmt::item_count;
     assert_eq!(
-        (crate::search::Kind::Collection.count_label(3), item_count(12)),
+        (plx_data::search::Kind::Collection.count_label(3), item_count(12)),
         ("3 results".to_owned(), "12 items".to_owned())
     );
     assert_eq!(item_count(1), "1 item");

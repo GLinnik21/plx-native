@@ -1017,7 +1017,7 @@ mod tests {
     /// switch-diagnostic lines, which log the roster tile's name as household identity.
     #[test]
     fn the_tile_title_exception_still_applies_inside_auth_rs() {
-        let path = std::path::Path::new("rust-modules/src/auth.rs");
+        let path = std::path::Path::new("rust-modules/session/src/auth.rs");
         let call = "log(&format!(\"auth: switch '{}' -> ok\", tile.title));";
         assert!(
             banned_hits_in_call(path, 1, call).is_empty(),
@@ -1074,9 +1074,9 @@ mod tests {
         // (`rust-modules/src`, where nearly every log call lives). Resolved from the manifest dir
         // so it is independent of the working directory the test runner happens to have. A layer
         // crate split out of `rust-modules/src` later must be added here, or its log calls stop
-        // being read (`../machine/src`, `../net/src`, `../platform/src`, `../gfx/src`, `../ui/src`, `../plex/src` and `../telemetry/src` are the machine, net, platform, gfx, ui, plex and telemetry layers').
+        // being read (`../machine/src`, `../net/src`, `../platform/src`, `../gfx/src`, `../ui/src`, `../plex/src`, `../telemetry/src`, `../data/src` and `../session/src` are the machine, net, platform, gfx, ui, plex, telemetry, data and session layers').
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let roots = [manifest.join("src"), manifest.join("../src"), manifest.join("../machine/src"), manifest.join("../net/src"), manifest.join("../platform/src"), manifest.join("../gfx/src"), manifest.join("../ui/src"), manifest.join("../plex/src"), manifest.join("../telemetry/src")];
+        let roots = [manifest.join("src"), manifest.join("../src"), manifest.join("../machine/src"), manifest.join("../net/src"), manifest.join("../platform/src"), manifest.join("../gfx/src"), manifest.join("../ui/src"), manifest.join("../plex/src"), manifest.join("../telemetry/src"), manifest.join("../data/src"), manifest.join("../session/src")];
         let mut offences: Vec<String> = Vec::new();
         let mut files = 0usize;
         for src in &roots {

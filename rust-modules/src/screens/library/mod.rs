@@ -29,13 +29,13 @@ mod foreign_replacement_tests;
 mod selector_matrix_tests;
 
 use std::borrow::Cow;
-use crate::browse::{SecFetch, SecKind};
+use plx_data::browse::{SecFetch, SecKind};
 use crate::screens::registry::{
     AppFx, AppMsg, HomeTab, LibraryCmd, LibraryIdentity, LibraryLike, LibraryMemory,
     LibraryReq, LibrarySectionIdentity, LibraryViewport, PageMemory,
 };
-use crate::stores::{StoreCmd, StoreId, StoreWork};
-use crate::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
+use plx_data::stores::{StoreCmd, StoreId, StoreWork};
+use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
 use plx_ui::card_row::{CardRow, RowStyle};
 use plx_ui::consts::{MARGIN_X, SCR_W, SCR_H, K_SCROLL, CARD_DY};
 use plx_ui::frame::Budget;
@@ -136,8 +136,8 @@ fn readout(table: SecFetch, sections: usize, fetch: SecFetch, total: i64) -> Rea
 /// bounded first-paint window) and `Staged` (an answer held until the page may move — which a
 /// hidden page always may, so it commits on the next frame) both mean the grid's offset is about
 /// to change. A publication with no identity has no section behind it and nothing to wait for.
-fn shelves_settled(hubs: crate::stores::browse::HubsView<'_>) -> bool {
-    hubs.id().is_none() || hubs.publication() == crate::browse::section_hubs::Publication::Committed
+fn shelves_settled(hubs: plx_data::stores::browse::HubsView<'_>) -> bool {
+    hubs.id().is_none() || hubs.publication() == plx_data::browse::section_hubs::Publication::Committed
 }
 
 /// A retained page body, also remountable from its entry-owned LibraryMemory.
@@ -149,7 +149,7 @@ pub(crate) struct LibraryScreen {
     /// What the committed listing lists — a projection of the store's publication, refreshed by
     /// `sync` like the layout's episode geometry, so not logical state of its own. The toolbar
     /// reads it: collections take no filters, so FILTER leaves the row while they are listed.
-    listed: crate::browse::LibraryType,
+    listed: plx_data::browse::LibraryType,
     keys: KeyRegistry,
     pair: MasterDetail<RailPart, GridPart, Regions>,
     /// The heading row's group: per section and epoch, registered beside the pair's.
@@ -160,7 +160,7 @@ pub(crate) struct LibraryScreen {
     epoch: Option<u32>,
     query: Option<u32>,
     grid_reset_pending: bool,
-    shelf_publication: Option<(crate::browse::section_hubs::HubsId, u64)>,
+    shelf_publication: Option<(plx_data::browse::section_hubs::HubsId, u64)>,
     layout: Layout,
     target_layout: Layout,
     scroll: Spring,
@@ -244,7 +244,7 @@ impl LibraryScreen {
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
 
     /// What the committed listing lists — the TYPE menu's value as the page last synced it.
-    pub(crate) fn listed(&self) -> crate::browse::LibraryType { self.listed }
+    pub(crate) fn listed(&self) -> plx_data::browse::LibraryType { self.listed }
 
     /// The heading row's group for the section on the page.
     #[cfg(test)]
@@ -276,7 +276,7 @@ impl LibraryScreen {
     fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
         let listing = H::listing(cx);
         self.listed = listing.library_type();
-        self.layout = self.layout.with_episodes(self.listed == crate::browse::LibraryType::Episodes);
+        self.layout = self.layout.with_episodes(self.listed == plx_data::browse::LibraryType::Episodes);
         let directory = H::directory(cx);
         let identity = listing.id().map(|id| LibrarySectionIdentity { sid: id.sid, key: id.section });
         let epoch = listing.id().map(|id| id.epoch).or(directory.epoch());
@@ -547,7 +547,7 @@ impl LibraryScreen {
         fx.invalidate(Provenance::Input);
     }
 
-    pub(crate) fn focused_item<'a, H: LibraryLike>(&self, focus: Option<FocusKey<u32>>, cx: &Cx<'a, H>) -> Option<&'a crate::pms::PmsMovie> {
+    pub(crate) fn focused_item<'a, H: LibraryLike>(&self, focus: Option<FocusKey<u32>>, cx: &Cx<'a, H>) -> Option<&'a plx_data::pms::PmsMovie> {
         let key = focus.filter(|key| key.entry == self.entry)?;
         if let Some(index) = self.pair.detail.index_of(key.elem) { return H::listing(cx).item(index); }
         let (row, col) = self.shelves.iter().enumerate().find_map(|(row, shelf)|
@@ -654,7 +654,7 @@ impl LibraryScreen {
             let req = if held {
                 LibraryReq::ItemMenu { sid: item.sid, rk: item.rk.clone(), from_deck }
             } else if from_deck {
-                LibraryReq::Play { sid: item.sid, rk: item.rk.clone(), resume_ns: crate::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000) }
+                LibraryReq::Play { sid: item.sid, rk: item.rk.clone(), resume_ns: plx_data::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000) }
             } else { LibraryReq::Detail { sid: item.sid, rk: item.rk.clone() } };
             fx.push(Fx::App(AppFx::Library(req)));
             return Handled::Yes;
@@ -704,10 +704,10 @@ impl LibraryScreen {
         let query = grid.map(|(target, action)| (SectionAddress {
             epoch: target.epoch, sid: target.sid, section: target.section,
         }, match action {
-            GridAction::Sort { key, desc } => crate::stores::browse::QueryEdit::Sort { key, desc },
-            GridAction::Unwatched { desired } => crate::stores::browse::QueryEdit::Unwatched(desired),
-            GridAction::Genre { id } => crate::stores::browse::QueryEdit::Genre(id),
-            GridAction::LibraryType(kind) => crate::stores::browse::QueryEdit::LibraryType(kind),
+            GridAction::Sort { key, desc } => plx_data::stores::browse::QueryEdit::Sort { key, desc },
+            GridAction::Unwatched { desired } => plx_data::stores::browse::QueryEdit::Unwatched(desired),
+            GridAction::Genre { id } => plx_data::stores::browse::QueryEdit::Genre(id),
+            GridAction::LibraryType(kind) => plx_data::stores::browse::QueryEdit::LibraryType(kind),
         }));
         if let Some(target) = selected {
             let query = query.filter(|(address, _)| *address == target).map(|(_, edit)| edit);
@@ -747,7 +747,7 @@ impl LibraryScreen {
                 let Some(target) = GridTarget::from_view(H::listing(cx)) else { return Handled::No };
                 let address = SectionAddress { epoch: target.epoch, sid: target.sid, section: target.section };
                 self.step(&ScreenEvent::App(AppMsg::LibraryEdit {
-                    target: address, edit: crate::stores::browse::QueryEdit::LibraryType(kind),
+                    target: address, edit: plx_data::stores::browse::QueryEdit::LibraryType(kind),
                 }), cx, fx);
                 return Handled::Yes;
             }
@@ -798,7 +798,7 @@ impl LibraryScreen {
                             }).unwrap_or(H::listing(cx).unwatched());
                             let address = SectionAddress { epoch: target.epoch, sid: target.sid, section: target.section };
                             return self.step(&ScreenEvent::App(AppMsg::LibraryEdit {
-                                target: address, edit: crate::stores::browse::QueryEdit::Unwatched(!current),
+                                target: address, edit: plx_data::stores::browse::QueryEdit::Unwatched(!current),
                             }), cx, fx);
                         }
                     }
@@ -838,7 +838,7 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
             ScreenEvent::WillLeave(_) => { self.save_cursor(cx, fx); self.flush(fx); }
             ScreenEvent::App(AppMsg::Library(command)) => return self.command(*command, cx, fx),
             ScreenEvent::App(AppMsg::LibraryEdit { target, edit }) => {
-                use crate::stores::browse::QueryEdit;
+                use plx_data::stores::browse::QueryEdit;
                 if Some(target.epoch) != self.epoch { return Handled::No; }
                 let target = self.pending.section().map(|section| SectionAddress {
                     epoch: section.epoch, sid: section.identity.sid, section: section.identity.key,

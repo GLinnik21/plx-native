@@ -14,9 +14,9 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::sync::Arc;
 
-use crate::pms::{HeroRef, HubIdentity, HubRef, HubsView, PmsMovie};
-use crate::stores::hubs::HubsCmd;
-use crate::stores::{StoreCmd, StoreId, StoreWork};
+use plx_data::pms::{HeroRef, HubIdentity, HubRef, HubsView, PmsMovie};
+use plx_data::stores::hubs::HubsCmd;
+use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_ui::card_row::{self, CardRow, RowStyle};
 use plx_ui::consts::*;
 use plx_ui::frame::Budget;
@@ -77,7 +77,7 @@ pub(crate) const STRIP_SHOWS_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 2;
 pub(crate) const STRIP_SEARCH_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 3;
 pub(crate) const STRIP_ACCOUNT_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 4;
 
-const MAX_ITEMS: usize = crate::pms::MAX_SHELF_ITEMS;
+const MAX_ITEMS: usize = plx_data::pms::MAX_SHELF_ITEMS;
 const HERO_FLIP_CD: f32 = 0.35;
 const HERO_AUTO_S: f32 = 8.0;
 const K_SLIDE: f32 = 130.0;
@@ -702,7 +702,7 @@ impl HomeScreen {
         }
         self.rows = rows;
         self.restored_scroll.retain(|(group, _)| {
-            view.state != crate::pms::HubState::Ready
+            view.state != plx_data::pms::HubState::Ready
                 && !self.rows.iter().any(|row| row.group.0 == *group)
         });
         self.projected_generation = Some(view.generation);
@@ -1319,7 +1319,7 @@ impl HomeScreen {
                 let Some(item) = self.selected_hero(view).map(|h| h.item) else {
                     return;
                 };
-                let resume_ns = crate::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000);
+                let resume_ns = plx_data::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000);
                 (
                     item,
                     HomeReq::Play {
@@ -1362,7 +1362,7 @@ impl HomeScreen {
                     .is_some_and(|h| h.identity == HomeHubIdentity::ContinueWatching)
                 {
                     let resume_ns =
-                        crate::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000);
+                        plx_data::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000);
                     (
                         item,
                         HomeReq::Play {
@@ -1478,7 +1478,7 @@ impl HomeScreen {
         measure: &dyn Measure,
         press_scale: f32,
     ) {
-        let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
+        let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
         let label = if resumes { plx_platform::i18n::msg::browse_home_continue_c() } else { plx_platform::i18n::msg::browse_detail_play_c() };
         let pill = Rect::new(
             MARGIN_X,
@@ -2241,7 +2241,7 @@ impl HomeScreen {
             return status_overlay(view, &self.plaintext, &self.clock)?.action_frame_measured(measure);
         }
         let hero = self.selected_hero(view)?.item;
-        let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
+        let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
         let label = if resumes { plx_platform::i18n::msg::browse_home_continue_c() } else { plx_platform::i18n::msg::browse_detail_play_c() };
         let pill = Rect::new(
             MARGIN_X,
@@ -2582,15 +2582,15 @@ fn status_read(
         return None;
     }
     Some(match view.state {
-        crate::pms::HubState::Loading => {
+        plx_data::pms::HubState::Loading => {
             (plx_platform::i18n::msg::browse_home_loading_c(), StatusKind::Working, None)
         }
-        crate::pms::HubState::Failed => (
+        plx_data::pms::HubState::Failed => (
             plx_platform::i18n::msg::browse_home_failed_c(),
             StatusKind::Failed,
             Some(plx_platform::i18n::msg::browse_action_retry_c()),
         ),
-        crate::pms::HubState::Ready => (
+        plx_data::pms::HubState::Ready => (
             plx_platform::i18n::msg::browse_home_empty_c(),
             StatusKind::Empty,
             Some(plx_platform::i18n::msg::browse_home_refresh_c()),

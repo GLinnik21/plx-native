@@ -400,7 +400,7 @@ fn a_reencode_names_selected_dts_when_there_is_no_ac3_sibling() {
 fn the_audio_ladder_walks_its_rungs_in_order() {
     let cases: [(
         &str,
-        Vec<crate::metadata::Stream>,
+        Vec<plx_data::metadata::Stream>,
         &str,
         Option<(i32, String, i64)>,
     ); 7] = [
@@ -581,7 +581,7 @@ fn a_shows_subtitle_settings_choose_the_starting_subtitle() {
         subtitle: Some("hu-HU".into()),
         subtitle_mode: mode,
     };
-    let forced = |mut s: crate::metadata::Stream| {
+    let forced = |mut s: plx_data::metadata::Stream| {
         s.forced = true;
         s
     };

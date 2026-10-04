@@ -40,12 +40,12 @@ fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
     // stacks the person page over it — which is the shape the loop really produces.
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    rig.stores.metadata.run(crate::stores::metadata::MetadataCmd::AltInstall {
+    rig.stores.metadata.run(plx_data::stores::metadata::MetadataCmd::AltInstall {
         sid: here,
         rk: "m1".into(),
         copies: vec![
-            crate::metadata::AltCopy { sid: here, rk: "m1".into(), library: "Movies".into(), ..Default::default() },
-            crate::metadata::AltCopy { sid: other, rk: "copy".into(), library: "Shared".into(), ..Default::default() },
+            plx_data::metadata::AltCopy { sid: here, rk: "m1".into(), library: "Movies".into(), ..Default::default() },
+            plx_data::metadata::AltCopy { sid: other, rk: "copy".into(), library: "Shared".into(), ..Default::default() },
         ],
     });
     let mut t = 0u32;
@@ -182,12 +182,12 @@ fn an_alt_sources_anchor_travels_on_its_arg() {
     let high = AltSourcesScreen::new(
         EntryId(1),
         arg(320.0, 200.0),
-        crate::stores::metadata::MetadataStore::default().view(),
+        plx_data::stores::metadata::MetadataStore::default().view(),
     );
     let low = AltSourcesScreen::new(
         EntryId(2),
         arg(700.0, 880.0),
-        crate::stores::metadata::MetadataStore::default().view(),
+        plx_data::stores::metadata::MetadataStore::default().view(),
     );
     let (a, b) = { let m = plx_ui::fixture::FixtureMeasure; (high.frame(&m), low.frame(&m)) };
     assert_ne!(

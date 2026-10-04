@@ -75,13 +75,13 @@ pub(super) fn notices(d: &Dispatcher<AppHost>) -> String {
 pub(super) fn directory_policy_fixture(
     own: plx_plex::plex::ServerId,
     hidden: plx_plex::plex::ServerId,
-) -> crate::stores::browse::DirectorySnapshot {
+) -> plx_data::stores::browse::DirectorySnapshot {
     let section = |sid, key, section, title: &str, pinned| {
-        crate::stores::browse::SectionView {
+        plx_data::stores::browse::SectionView {
             sid: Some(sid),
             key,
-            kind: crate::stores::browse::SecKind::Movie,
-            row: crate::stores::browse::SrcRow {
+            kind: plx_data::stores::browse::SecKind::Movie,
+            row: plx_data::stores::browse::SrcRow {
                 section,
                 title: title.into(),
                 pinned,
@@ -90,7 +90,7 @@ pub(super) fn directory_policy_fixture(
             },
         }
     };
-    crate::stores::browse::DirectorySnapshot::fixture(41, 0, vec![
+    plx_data::stores::browse::DirectorySnapshot::fixture(41, 0, vec![
         section(own, 1, 0, "Retained Movies", true),
         section(hidden, 2, 1, "Hidden Movies", false),
     ])

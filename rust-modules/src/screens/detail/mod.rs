@@ -23,12 +23,12 @@ mod geometry_tests;
 #[cfg(test)]
 mod identity_tests;
 
-use crate::metadata::{Detail, Extra, Spot};
+use plx_data::metadata::{Detail, Extra, Spot};
 use crate::screens::registry::PlayIntent;
 use plx_plex::plex::ServerId;
-use crate::stores::metadata::MetadataCmd;
-use crate::stores::viewstate::ViewStateCmd;
-use crate::stores::{StoreCmd, StoreId};
+use plx_data::stores::metadata::MetadataCmd;
+use plx_data::stores::viewstate::ViewStateCmd;
+use plx_data::stores::{StoreCmd, StoreId};
 use plx_ui::card_row::{self, CardRow, RowStyle};
 use plx_ui::frame::Budget;
 use plx_ui::hero_logo::{HeroLogo, LogoRung};
@@ -220,7 +220,7 @@ pub(crate) struct DetailScreen {
     /// fallback used only before/if `metadata::current()` has a `Detail` for this item (see
     /// [`selected`](Self::selected)'s callers); it is never re-read from the catalog afterward, so
     /// a hub republish while this page is open does not change what it reports.
-    selected: Option<crate::pms::PmsMovie>,
+    selected: Option<plx_data::pms::PmsMovie>,
     /// Skeleton spinner clock, in ms — cached each tick from [`spin_phase`](Self::spin_phase)'s
     /// `advance`. Render-only, never hashed.
     spin_ms: f32,
@@ -240,7 +240,7 @@ pub(crate) struct DetailScreen {
     /// walks the page up to three times: backdrop discovery, blur sources, visible). Never hashed.
     layout_pinned: Cell<bool>,
     /// Cached answer to every metadata read `spot()` needs, refreshed only where a real
-    /// [`crate::metadata::MetadataView`] is in hand (`tick`, `draw`, end of `sync_keys`). See
+    /// [`plx_data::metadata::MetadataView`] is in hand (`tick`, `draw`, end of `sync_keys`). See
     /// Opus decision D7: `memory_at` runs with no store in reach at all, so this is the only way
     /// it can answer without constructing a throwaway empty owner. Derived, not logical state —
     /// deliberately absent from [`SHAPE`].
@@ -248,7 +248,7 @@ pub(crate) struct DetailScreen {
 }
 
 /// Snapshot of every metadata-dependent read [`DetailScreen::spot`] needs, taken while a real
-/// [`crate::metadata::MetadataView`] is in hand. See Opus decision D7.
+/// [`plx_data::metadata::MetadataView`] is in hand. See Opus decision D7.
 #[derive(Clone, Copy, Default, PartialEq)]
 pub(crate) struct SpotFacts {
     detail: bool,
@@ -258,7 +258,7 @@ pub(crate) struct SpotFacts {
 }
 
 impl SpotFacts {
-    fn of(screen: &DetailScreen, meta: crate::metadata::MetadataView<'_>) -> SpotFacts {
+    fn of(screen: &DetailScreen, meta: plx_data::metadata::MetadataView<'_>) -> SpotFacts {
         SpotFacts {
             detail: screen.detail(meta).is_some(),
             tracks: screen.tracks_available(meta),
@@ -292,7 +292,7 @@ thread_local! {
 /// Cheap identity of the values [`LayoutCache`] was measured from. `current()` (via
 /// `MetadataView`) hands out a `&'a` borrow of one field in the owner's `MetadataState`, so
 /// pointer equality on `Detail` cannot see a replacement or an in-place `episodes =` from
-/// [`crate::metadata::pump_season`].
+/// [`plx_data::metadata::pump_season`].
 ///
 /// `content_hash` carries the actual episode/summary/hero-episode TEXT rather than a summed
 /// length: two different seasons with the same episode count and the same *aggregate*
@@ -372,7 +372,7 @@ impl Drop for LayoutPin<'_> {
 }
 
 impl DetailScreen {
-    pub(crate) fn new(entry: EntryId, sid: ServerId, rk: String, hubs: crate::pms::HubsView<'_>) -> Self {
+    pub(crate) fn new(entry: EntryId, sid: ServerId, rk: String, hubs: plx_data::pms::HubsView<'_>) -> Self {
         let selected = hubs.find(sid, &rk).cloned();
         let mut ground = AmbientWash::flat(theme::SURFACE_APP);
         if let Some(m) = selected.as_ref().filter(|m| m.has_blur) {
@@ -434,7 +434,7 @@ impl DetailScreen {
         }
     }
 
-    pub(crate) fn restore_memory(&mut self, memory: &DetailMemory, meta: crate::metadata::MetadataView<'_>) {
+    pub(crate) fn restore_memory(&mut self, memory: &DetailMemory, meta: plx_data::metadata::MetadataView<'_>) {
         // A covered live body may have interned a landing after the request snapshot. Never
         // rewind its registry/counter: those integers still belong to the identities it minted.
         for saved in &memory.keys {
@@ -477,7 +477,7 @@ impl DetailScreen {
         self.engine_key(located.local_key()?)
     }
 
-    fn sync_keys(&mut self, meta: crate::metadata::MetadataView<'_>) {
+    fn sync_keys(&mut self, meta: plx_data::metadata::MetadataView<'_>) {
         self.layout.set(None);
         let pending_key = self.pending_season.and_then(season::elem).and_then(|local| self.engine_key(local));
         let mut identities = Vec::new();
@@ -542,11 +542,11 @@ impl DetailScreen {
         self.spot_facts = SpotFacts::of(self, meta);
     }
 
-    pub(crate) fn restore(&mut self, spot: &Spot, meta: crate::metadata::MetadataView<'_>) {
+    pub(crate) fn restore(&mut self, spot: &Spot, meta: plx_data::metadata::MetadataView<'_>) {
         self.restore_episode(spot, None, meta);
     }
 
-    pub(crate) fn restore_episode(&mut self, spot: &Spot, episode: Option<&str>, meta: crate::metadata::MetadataView<'_>) {
+    pub(crate) fn restore_episode(&mut self, spot: &Spot, episode: Option<&str>, meta: plx_data::metadata::MetadataView<'_>) {
         self.sync_keys(meta);
         self.return_pending = false;
         self.restore_intent = Some(RestoreIntent {
@@ -581,7 +581,7 @@ impl DetailScreen {
             ep_text,
             // Engine-owned remembered group cursors ride ReturnState separately. These fields stay
             // for legacy focusprobe/trail serialization only and are not a second authority.
-            saved_col: [0; crate::metadata::SPOT_SECTION_SLOTS],
+            saved_col: [0; plx_data::metadata::SPOT_SECTION_SLOTS],
             season: facts.season,
         }
     }
@@ -589,7 +589,7 @@ impl DetailScreen {
     pub(crate) fn focused_episode(
         &self,
         focus: Option<FocusKey<u32>>,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
     ) -> Option<(String, PosterMark)> {
         if meta.season_loading() {
             return None;
@@ -605,7 +605,7 @@ impl DetailScreen {
     pub(crate) fn focused_season(
         &self,
         focus: Option<FocusKey<u32>>,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
     ) -> Option<(String, PosterMark)> {
         if meta.season_loading() {
             return None;
@@ -620,8 +620,8 @@ impl DetailScreen {
     pub(crate) fn focused_related<'a>(
         &self,
         focus: Option<FocusKey<u32>>,
-        meta: crate::metadata::MetadataView<'a>,
-    ) -> Option<&'a crate::pms::PmsMovie> {
+        meta: plx_data::metadata::MetadataView<'a>,
+    ) -> Option<&'a plx_data::pms::PmsMovie> {
         let key = focus.filter(|k| k.entry == self.entry)?.elem;
         let d = self.detail(meta)?;
         match self.locate(key, meta)? {
@@ -704,17 +704,17 @@ impl DetailScreen {
         }
     }
 
-    fn detail<'a>(&self, meta: crate::metadata::MetadataView<'a>) -> Option<&'a Detail> {
+    fn detail<'a>(&self, meta: plx_data::metadata::MetadataView<'a>) -> Option<&'a Detail> {
         meta.current().filter(|d| {
             plx_plex::plex::same_item((d.sid, d.rk.as_str()), (self.sid, self.rk.as_str()))
         })
     }
 
-    fn selected(&self) -> Option<&crate::pms::PmsMovie> {
+    fn selected(&self) -> Option<&plx_data::pms::PmsMovie> {
         self.selected.as_ref()
     }
 
-    fn hero_chain(&self, measure: &dyn plx_machine::machine::Measure, meta: crate::metadata::MetadataView<'_>) -> plx_ui::detail_layout::HeroChain {
+    fn hero_chain(&self, measure: &dyn plx_machine::machine::Measure, meta: plx_data::metadata::MetadataView<'_>) -> plx_ui::detail_layout::HeroChain {
         if let Some(d) = self.detail(meta) {
             return self.ensure_layout(d, measure).chain;
         }
@@ -739,7 +739,7 @@ impl DetailScreen {
 
     /// Pin [`layout`](Self::layout) for one walk ([`LayoutPin`]). Validates first, so a pinned
     /// read can never serve geometry measured from an item the walk is not drawing.
-    fn pin_layout(&self, meta: crate::metadata::MetadataView<'_>, measure: &dyn plx_machine::machine::Measure) -> LayoutPin<'_> {
+    fn pin_layout(&self, meta: plx_data::metadata::MetadataView<'_>, measure: &dyn plx_machine::machine::Measure) -> LayoutPin<'_> {
         let was = self.layout_pinned.get();
         if !was {
             if let Some(d) = self.detail(meta) {
@@ -869,7 +869,7 @@ impl DetailScreen {
         }
     }
 
-    fn content_top(&self, measure: &dyn plx_machine::machine::Measure, meta: crate::metadata::MetadataView<'_>) -> f32 {
+    fn content_top(&self, measure: &dyn plx_machine::machine::Measure, meta: plx_data::metadata::MetadataView<'_>) -> f32 {
         if let Some(d) = self.detail(meta) {
             self.ensure_layout(d, measure).content_top
         } else {
@@ -960,7 +960,7 @@ impl DetailScreen {
         Self::section_block_h(section, d, measure) + self.band_open(section)
     }
 
-    fn locate(&self, elem: u32, meta: crate::metadata::MetadataView<'_>) -> Option<Located> {
+    fn locate(&self, elem: u32, meta: plx_data::metadata::MetadataView<'_>) -> Option<Located> {
         self.locate_with(elem, self.detail(meta).is_some(), self.tracks_available(meta))
     }
 
@@ -1009,7 +1009,7 @@ impl DetailScreen {
         about::locate(elem, tracks).map(Located::About)
     }
 
-    fn focused_index(&self, focus: Option<FocusKey<u32>>, group: GroupId, meta: crate::metadata::MetadataView<'_>) -> Option<usize> {
+    fn focused_index(&self, focus: Option<FocusKey<u32>>, group: GroupId, meta: plx_data::metadata::MetadataView<'_>) -> Option<usize> {
         let key = focus.filter(|k| k.entry == self.entry)?;
         let located = self.locate(key.elem, meta)?;
         (located.group() == group).then(|| located.index())
@@ -1018,7 +1018,7 @@ impl DetailScreen {
     fn focused_episode_index(
         &self,
         focus: Option<FocusKey<u32>>,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
     ) -> Option<(usize, episodes::Row)> {
         match focus
             .filter(|k| k.entry == self.entry)
@@ -1029,7 +1029,7 @@ impl DetailScreen {
         }
     }
 
-    fn restore_focus(&self, meta: crate::metadata::MetadataView<'_>) -> Option<u32> {
+    fn restore_focus(&self, meta: plx_data::metadata::MetadataView<'_>) -> Option<u32> {
         if self.return_pending { return None; }
         let intent = self.restore_intent.as_ref()?;
         let d = self.detail(meta)?;
@@ -1643,7 +1643,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
 }
 
 impl DetailScreen {
-    fn valid(&self, located: Located, meta: crate::metadata::MetadataView<'_>) -> bool {
+    fn valid(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>) -> bool {
         let d = self.detail(meta);
         match located {
             // A control other than Play is never valid while full-trailer mode has narrowed the
@@ -1986,7 +1986,7 @@ impl DetailScreen {
     fn start_reconciliation<H: crate::screens::registry::MetadataLike>(
         &mut self,
         fx: &mut Effects<'_, H>,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
     ) {
         // T2: record the generation that already exists BEFORE this request is admitted (the
         // queued `RequestDetail` below is only admitted later, when the drain reaches it). Any
@@ -2002,7 +2002,7 @@ impl DetailScreen {
         self.refresh = DetailRefreshPhase::Requested;
     }
 
-    fn restore_target_matches(&self, located: Located, meta: crate::metadata::MetadataView<'_>) -> bool {
+    fn restore_target_matches(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>) -> bool {
         self.restore_focus(meta).and_then(|elem| self.locate(elem, meta)) == Some(located)
     }
 }
@@ -2252,7 +2252,7 @@ impl DetailScreen {
 
     #[cfg(test)]
     pub(crate) fn return_waiting_for_test(&self) -> bool {
-        self.return_waiting(crate::stores::metadata::MetadataStore::default().view())
+        self.return_waiting(plx_data::stores::metadata::MetadataStore::default().view())
     }
 
     fn art_identity(&self, d: Option<&Detail>) -> (ServerId, String, String) {
@@ -2284,7 +2284,7 @@ impl DetailScreen {
         d: Option<&Detail>,
         measure: &dyn plx_machine::machine::Measure,
         preview: crate::player::preview::View,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
     ) {
         let sf = (self.scroll.pos / (self.content_top(measure, meta) - plx_ui::detail_layout::TOP_MARGIN))
             .clamp(0.0, 1.0);
@@ -2772,7 +2772,7 @@ fn play_resume_ns(from_start: bool, resume_ms: i64, duration_ms: i64) -> i64 {
     if from_start {
         0
     } else {
-        crate::metadata::resume_ns(resume_ms, duration_ms)
+        plx_data::metadata::resume_ns(resume_ms, duration_ms)
     }
 }
 
@@ -2813,7 +2813,7 @@ mod may_sample_control_ground_tests {
 
 fn hero_blurb<'a>(
     d: Option<&'a Detail>,
-    row: Option<&'a crate::pms::PmsMovie>,
+    row: Option<&'a plx_data::pms::PmsMovie>,
 ) -> (String, String) {
     if let Some(d) = d {
         if d.is_show {
@@ -2838,8 +2838,8 @@ fn hero_blurb<'a>(
 /// The units a provider quotes its score in. `ui::fmt` formats a score from its SCALE alone, so the
 /// screen, which knows the provider, says which: IMDb is out of ten, every other badge a percentage.
 /// Exhaustive on purpose — a provider added to `RatingArt` has to choose its units here.
-fn rating_scale(art: crate::metadata::RatingArt) -> plx_ui::fmt::RatingScale {
-    use crate::metadata::RatingArt as A;
+fn rating_scale(art: plx_data::metadata::RatingArt) -> plx_ui::fmt::RatingScale {
+    use plx_data::metadata::RatingArt as A;
     use plx_ui::fmt::RatingScale;
     match art {
         A::Imdb => RatingScale::OutOfTen,
@@ -2855,7 +2855,7 @@ fn rating_scale(art: crate::metadata::RatingArt) -> plx_ui::fmt::RatingScale {
 #[cfg(test)]
 mod rating_scale_tests {
     use super::rating_scale;
-    use crate::metadata::RatingArt;
+    use plx_data::metadata::RatingArt;
     use plx_ui::fmt::rating_score;
 
     /// PMS normalises every provider onto 0–10; the badge puts the number back into the units its
@@ -2871,8 +2871,8 @@ mod rating_scale_tests {
     }
 }
 
-fn rating_mark(art: crate::metadata::RatingArt) -> &'static [plx_ui::widgets::MarkLayer] {
-    use crate::metadata::RatingArt as A;
+fn rating_mark(art: plx_data::metadata::RatingArt) -> &'static [plx_ui::widgets::MarkLayer] {
+    use plx_data::metadata::RatingArt as A;
     use plx_ui::icons::Icon;
     use plx_ui::widgets::MarkLayer;
     static FRESH: &[MarkLayer] = &[
@@ -3047,7 +3047,7 @@ impl LogicalState for DetailScreen {
 }
 
 impl DetailScreen {
-    fn reveal_focus(&mut self, focus: Option<FocusKey<u32>>, measure: &dyn plx_machine::machine::Measure, meta: crate::metadata::MetadataView<'_>) {
+    fn reveal_focus(&mut self, focus: Option<FocusKey<u32>>, measure: &dyn plx_machine::machine::Measure, meta: plx_data::metadata::MetadataView<'_>) {
         if self.return_waiting(meta) { return; }
         let Some(located) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.locate(key.elem, meta)) else { return };
         let Some(detail) = self.detail(meta) else { return };
@@ -3058,7 +3058,7 @@ impl DetailScreen {
         };
     }
 
-    fn return_waiting(&self, meta: crate::metadata::MetadataView<'_>) -> bool {
+    fn return_waiting(&self, meta: plx_data::metadata::MetadataView<'_>) -> bool {
         self.return_pending && self.restore_intent.as_ref().is_some_and(|intent| {
             self.refresh != DetailRefreshPhase::None || self.detail(meta).is_none()
                 || season::restore_step(self.detail(meta), intent.spot.season,
@@ -3068,7 +3068,7 @@ impl DetailScreen {
 
     fn pump_restore<H: crate::screens::registry::MetadataLike>(
         &mut self,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
         fx: &mut Effects<'_, H>,
     ) {
         // Consume terminal reconciliation even after directional input cancelled restoration.
@@ -3308,7 +3308,7 @@ impl DetailScreen {
         dt: f32,
         focused: Option<Located>,
         fx: &mut Effects<'_, H>,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
     ) {
         let hero = matches!(focused, Some(Located::Hero(_)));
         let view = crate::player::preview::view();
@@ -3424,7 +3424,7 @@ impl DetailScreen {
     /// `request_preview` (what to actually start) and `preview_cache_rk` (what key the started
     /// session's facts get recorded under) must agree on, or the negative-fact cache writes under
     /// one rk and reads under another and never actually blocks a known-bad trailer.
-    fn preview_extra<'a>(&self, meta: crate::metadata::MetadataView<'a>) -> Option<&'a Extra> {
+    fn preview_extra<'a>(&self, meta: plx_data::metadata::MetadataView<'a>) -> Option<&'a Extra> {
         self.detail(meta).and_then(|d| d.trailer()).filter(|e| e.playable())
     }
 
@@ -3434,11 +3434,11 @@ impl DetailScreen {
     /// which fires before any extra-specific session exists). `preview_tick`'s dwell gate must
     /// check `blocked` against this, not `self.rk` unconditionally, or a refused trailer's cache
     /// entry is written under a key nothing ever looks up again.
-    fn preview_cache_rk(&self, meta: crate::metadata::MetadataView<'_>) -> String {
+    fn preview_cache_rk(&self, meta: plx_data::metadata::MetadataView<'_>) -> String {
         self.preview_extra(meta).map(|e| e.rk.clone()).unwrap_or_else(|| self.rk.clone())
     }
 
-    fn request_preview<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>, meta: crate::metadata::MetadataView<'_>) {
+    fn request_preview<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>, meta: plx_data::metadata::MetadataView<'_>) {
         self.preview_started_for = Some(self.preview_cache_rk(meta));
         let extra = self.preview_extra(meta);
         let (rk, part, vcodec, acodec, title) = match extra {
@@ -3581,7 +3581,7 @@ impl DetailScreen {
         true
     }
 
-    fn hero_set(&self, meta: crate::metadata::MetadataView<'_>) -> hero::HeroSet {
+    fn hero_set(&self, meta: plx_data::metadata::MetadataView<'_>) -> hero::HeroSet {
         let (restart, mark) = self
             .detail(meta)
             .map(|d| {
@@ -3613,14 +3613,14 @@ impl DetailScreen {
     /// thing to keep in step with the same landing, and the failure mode of that (a hero row with
     /// four controls' worth of geometry and three drawn) is exactly the class of bug this
     /// publication exists to remove.
-    pub(crate) fn alt_available(&self, meta: crate::metadata::MetadataView<'_>) -> bool {
+    pub(crate) fn alt_available(&self, meta: plx_data::metadata::MetadataView<'_>) -> bool {
         meta.alt_available(self.sid, &self.rk)
     }
 
     /// **Is there a file for the *Track information* sheet to describe?** — the Languages column's
     /// press gate, and the page's own answer about the page's own item.
     ///
-    /// The RULE is the data's ([`crate::metadata::Detail::has_own_file`], which explains why it is
+    /// The RULE is the data's ([`plx_data::metadata::Detail::has_own_file`], which explains why it is
     /// `part` and not `is_show`); what this adds is WHOSE item it is applied to. [`Self::detail`] FILTERS the
     /// store landing by this page's `(sid, rk)`, where the panel's own `is_available()` read
     /// `metadata::current()` unfiltered — so a Detail page whose fetch had not landed yet answered
@@ -3632,11 +3632,11 @@ impl DetailScreen {
     /// still false. The column does not appear or vanish with the answer — it is always the third
     /// of four — so a press that arrives early is refused rather than landing on a control that has
     /// moved.
-    pub(crate) fn tracks_available(&self, meta: crate::metadata::MetadataView<'_>) -> bool {
-        self.detail(meta).is_some_and(crate::metadata::Detail::has_own_file)
+    pub(crate) fn tracks_available(&self, meta: plx_data::metadata::MetadataView<'_>) -> bool {
+        self.detail(meta).is_some_and(plx_data::metadata::Detail::has_own_file)
     }
 
-    fn named_show(&self, meta: crate::metadata::MetadataView<'_>) -> bool {
+    fn named_show(&self, meta: plx_data::metadata::MetadataView<'_>) -> bool {
         self.detail(meta).is_some_and(hero::watch_names_show)
     }
 
@@ -3733,7 +3733,7 @@ impl DetailScreen {
         ctl: hero::HeroCtl,
         cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
     ) {
         let measure = cx.measure;
         match ctl {
@@ -3757,7 +3757,7 @@ impl DetailScreen {
                     vcodec: extra.vcodec.clone(),
                     acodec: extra.acodec.clone(),
                     title: title.to_string(),
-                    context: crate::metadata::TRAILER_CONTEXT.into(),
+                    context: plx_data::metadata::TRAILER_CONTEXT.into(),
                 };
                 self.content(fx, ContentReq::Play { play, resume_ns: 0 });
             }
@@ -3791,11 +3791,11 @@ impl DetailScreen {
                             sid: d.sid,
                             rk: d.rk.clone(),
                             write: if ctl == hero::HeroCtl::MarkWatched {
-                                crate::viewstate::Write::Watched
+                                plx_data::viewstate::Write::Watched
                             } else {
-                                crate::viewstate::Write::Unwatched
+                                plx_data::viewstate::Write::Unwatched
                             },
-                            detail: Some(crate::stores::viewstate::DetailRefresh {
+                            detail: Some(plx_data::stores::viewstate::DetailRefresh {
                                 sid: d.sid,
                                 rk: d.rk.clone(),
                                 keep: None,
@@ -3808,7 +3808,7 @@ impl DetailScreen {
         }
     }
 
-    fn play_hero<H: ContentLike>(&mut self, from_start: bool, fx: &mut Effects<'_, H>, meta: crate::metadata::MetadataView<'_>) -> bool {
+    fn play_hero<H: ContentLike>(&mut self, from_start: bool, fx: &mut Effects<'_, H>, meta: plx_data::metadata::MetadataView<'_>) -> bool {
         let Some(d) = self.detail(meta) else { return false };
         if d.is_show {
             let i = hero::hero_episode(d).and_then(|ep| {
@@ -3849,7 +3849,7 @@ impl DetailScreen {
         index: usize,
         from_start: bool,
         fx: &mut Effects<'_, H>,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
     ) -> bool {
         if meta.season_loading() {
             return false;
@@ -3860,7 +3860,7 @@ impl DetailScreen {
 
     fn play_episode_value<H: ContentLike>(
         &mut self,
-        episode: Option<&crate::metadata::Episode>,
+        episode: Option<&plx_data::metadata::Episode>,
         d: &Detail,
         from_start: bool,
         fx: &mut Effects<'_, H>,
@@ -3881,7 +3881,7 @@ impl DetailScreen {
         };
         let context = format!("{}  \u{b7}  {}", d.title, plx_ui::fmt::episode_ordinal(ep.season, ep.index));
         let resume_ns = play_resume_ns(from_start, ep.resume_ms, ep.dur_ms);
-        let now_playing = crate::metadata::NowPlaying {
+        let now_playing = plx_data::metadata::NowPlaying {
             is_episode: true,
             is_real_episode: true,
             title: d.title.clone(),
