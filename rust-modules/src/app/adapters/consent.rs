@@ -2,7 +2,7 @@
 //! this adapter only performs persistence/publication side effects (telemetry's own, in
 //! `telemetry::transition`) or records fixture effects.
 
-use crate::telemetry::consent::Consent;
+use plx_telemetry::telemetry::consent::Consent;
 
 enum Resources {
     Live,
@@ -40,7 +40,7 @@ impl ConsentAdapter {
     /// logical authority.
     pub(crate) fn commit(&mut self, previous: &Consent, next: &Consent) {
         match &mut self.resources {
-            Resources::Live => crate::telemetry::transition::commit(previous, next),
+            Resources::Live => plx_telemetry::telemetry::transition::commit(previous, next),
             #[cfg(test)]
             Resources::Fixture(resources) => {
                 resources.transitions.push((previous.clone(), next.clone()));
@@ -52,7 +52,7 @@ impl ConsentAdapter {
     /// boundary and for fixture evidence; live erasure remains prospective.
     pub(crate) fn forget(&mut self, prior: &Consent) {
         match &mut self.resources {
-            Resources::Live => crate::telemetry::transition::forget(prior),
+            Resources::Live => plx_telemetry::telemetry::transition::forget(prior),
             #[cfg(test)]
             Resources::Fixture(resources) => resources.forgotten.push(prior.clone()),
         }
@@ -70,7 +70,7 @@ impl ConsentAdapter {
 #[cfg(test)]
 mod tests {
     use super::ConsentAdapter;
-    use crate::telemetry::consent::{self, Consent};
+    use plx_telemetry::telemetry::consent::{self, Consent};
 
     fn decision(id: &str) -> Consent {
         Consent {
@@ -132,7 +132,7 @@ mod tests {
         struct Redirect(std::path::PathBuf);
         impl Drop for Redirect {
             fn drop(&mut self) {
-                crate::telemetry::redirect_for_test(None);
+                plx_telemetry::telemetry::redirect_for_test(None);
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
@@ -146,7 +146,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let _redirect = Redirect(dir.clone());
         let file = dir.join("telemetry.json");
-        crate::telemetry::redirect_for_test(Some(file.clone()));
+        plx_telemetry::telemetry::redirect_for_test(Some(file.clone()));
         let previous = decision("owned");
         let next = Consent::default();
         let mut adapter = ConsentAdapter::fixture();
@@ -169,7 +169,7 @@ mod tests {
         struct Redirect(std::path::PathBuf);
         impl Drop for Redirect {
             fn drop(&mut self) {
-                crate::telemetry::redirect_for_test(None);
+                plx_telemetry::telemetry::redirect_for_test(None);
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
@@ -183,7 +183,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let _redirect = Redirect(dir.clone());
         let file = dir.join("telemetry.json");
-        crate::telemetry::redirect_for_test(Some(file));
+        plx_telemetry::telemetry::redirect_for_test(Some(file));
 
         let caller_thread = std::thread::current().id();
         let previous = decision("owned");
@@ -193,7 +193,7 @@ mod tests {
         adapter.commit(&previous, &next);
         plx_base::storage_worker::drain_for_test();
         assert_ne!(
-            crate::telemetry::persistence::last_call_thread(),
+            plx_telemetry::telemetry::persistence::last_call_thread(),
             Some(caller_thread),
             "transition::commit must persist off the frame thread, not inline"
         );
@@ -201,7 +201,7 @@ mod tests {
         adapter.forget(&next);
         plx_base::storage_worker::drain_for_test();
         assert_ne!(
-            crate::telemetry::persistence::last_call_thread(),
+            plx_telemetry::telemetry::persistence::last_call_thread(),
             Some(caller_thread),
             "transition::forget must persist off the frame thread, not inline"
         );
@@ -211,13 +211,13 @@ mod tests {
     /// (`transition::commit` → `spool::purge_withdrawn`) deliberately keeps.
     #[test]
     fn forget_live_erases_a_queued_one_off_report_that_a_withdrawal_keeps() {
-        use crate::telemetry::queue::{Category, Dest, Record};
-        use crate::telemetry::spool;
+        use plx_telemetry::telemetry::queue::{Category, Dest, Record};
+        use plx_telemetry::telemetry::spool;
         struct Redirect(std::path::PathBuf);
         impl Drop for Redirect {
             fn drop(&mut self) {
                 spool::set_test_path(None);
-                crate::telemetry::redirect_for_test(None);
+                plx_telemetry::telemetry::redirect_for_test(None);
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
@@ -231,7 +231,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let _redirect = Redirect(dir.clone());
-        crate::telemetry::redirect_for_test(Some(dir.join("telemetry.json")));
+        plx_telemetry::telemetry::redirect_for_test(Some(dir.join("telemetry.json")));
         spool::set_test_path(Some(dir.join("spool.bin")));
         let one_off = Record {
             category: Category::OneOff,
@@ -264,11 +264,11 @@ mod tests {
     /// attempt can never reach the next account's decision.
     #[test]
     fn commit_live_replays_held_signin_events_and_forget_live_drops_them() {
-        use crate::diag::schema::DiagEvent;
+        use plx_telemetry::diag::schema::DiagEvent;
         struct Redirect(std::path::PathBuf);
         impl Drop for Redirect {
             fn drop(&mut self) {
-                crate::telemetry::redirect_for_test(None);
+                plx_telemetry::telemetry::redirect_for_test(None);
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
@@ -282,12 +282,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let _redirect = Redirect(dir.clone());
-        crate::telemetry::redirect_for_test(Some(dir.join("telemetry.json")));
+        plx_telemetry::telemetry::redirect_for_test(Some(dir.join("telemetry.json")));
 
-        crate::diag::clear_deferred();
+        plx_telemetry::diag::clear_deferred();
         consent::install(Consent::default());
-        crate::diag::event(DiagEvent::SignInStarted);
-        assert_eq!(crate::diag::deferred_len(), 1);
+        plx_telemetry::diag::event(DiagEvent::SignInStarted);
+        assert_eq!(plx_telemetry::diag::deferred_len(), 1);
 
         let mut adapter = ConsentAdapter::live();
         let yes = Consent {
@@ -297,16 +297,16 @@ mod tests {
             ..Consent::default()
         };
         adapter.commit(&Consent::default(), &yes);
-        let after_commit = crate::diag::deferred_len();
+        let after_commit = plx_telemetry::diag::deferred_len();
 
-        crate::diag::event(DiagEvent::SignInStarted); // consent is answered yes: sent, not held
+        plx_telemetry::diag::event(DiagEvent::SignInStarted); // consent is answered yes: sent, not held
         consent::install(Consent::default());
-        crate::diag::event(DiagEvent::SignInCancelled);
-        let held_before_forget = crate::diag::deferred_len();
+        plx_telemetry::diag::event(DiagEvent::SignInCancelled);
+        let held_before_forget = plx_telemetry::diag::deferred_len();
         adapter.forget(&yes);
-        let after_forget = crate::diag::deferred_len();
+        let after_forget = plx_telemetry::diag::deferred_len();
 
-        crate::diag::clear_deferred();
+        plx_telemetry::diag::clear_deferred();
         if let Some(c) = saved {
             consent::install(c);
         }

@@ -937,8 +937,8 @@ impl TrackMenuState {
                             a.normalize_loudness
                         });
                     }
-                    crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
-                        feature: crate::diag::schema::Feature::AudioEnhancement,
+                    plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
+                        feature: plx_telemetry::diag::schema::Feature::AudioEnhancement,
                     });
                     TrackOk::Commit { commit: TrackCommit::AudioEnhancement(a), keep_open: true }
                 }
@@ -954,8 +954,8 @@ impl TrackMenuState {
                             let ord = tracks(meta)
                                 .map(|t| metadata::audio_ordinal(&t.audio, i))
                                 .unwrap_or(pick);
-                            crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
-                                feature: crate::diag::schema::Feature::AudioTrack,
+                            plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
+                                feature: plx_telemetry::diag::schema::Feature::AudioTrack,
                             });
                             return TrackOk::Commit {
                                 commit: TrackCommit::Audio(crate::route::CarriedAudio::from_stream(s, ord)),
@@ -1015,8 +1015,8 @@ impl TrackMenuState {
             .map(|t| metadata::sub_render_ordinal(&t.subs, new_sub as usize))
             .unwrap_or(-1);
         if changed {
-            crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
-                feature: crate::diag::schema::Feature::SubtitleTrack,
+            plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
+                feature: plx_telemetry::diag::schema::Feature::SubtitleTrack,
             });
         }
         let sidecar = tracks(meta)

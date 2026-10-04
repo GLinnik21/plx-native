@@ -13,7 +13,7 @@
 //! (`player::report`) pin the boundaries through its re-exports of these types.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TraceAge {
+pub enum TraceAge {
     Under1s,
     S1To3,
     S3To10,
@@ -23,7 +23,7 @@ pub(crate) enum TraceAge {
 }
 
 impl TraceAge {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Under1s => "<1s",
             Self::S1To3 => "1-3s",
@@ -34,7 +34,7 @@ impl TraceAge {
         }
     }
 
-    pub(crate) fn from_ms(ms: i64) -> Self {
+    pub fn from_ms(ms: i64) -> Self {
         match ms.max(0) {
             0..=999 => Self::Under1s,
             1_000..=2_999 => Self::S1To3,
@@ -47,7 +47,7 @@ impl TraceAge {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeliveryClass {
+pub enum DeliveryClass {
     /// No route was ever installed — the plan was refused (by the server at `/decision`, or by the
     /// Direct Play setting) or never resolved — so there is no delivery to name. Honest unknown, not
     /// a guess at which route the attempt would have taken.
@@ -59,7 +59,7 @@ pub(crate) enum DeliveryClass {
 }
 
 impl DeliveryClass {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
             Self::Direct => "original_direct",
@@ -87,7 +87,7 @@ impl DeliveryClass {
 /// `other_4xxx`, which still says "a transcode-lane error" without this list guessing its meaning —
 /// and a number outside 1000-4999 is `other`. The wire code of a named member IS its number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DecisionCodeClass {
+pub enum DecisionCodeClass {
     /// The body carried no such code (never a defaulted 0).
     Absent,
     C2000,
@@ -101,7 +101,7 @@ pub(crate) enum DecisionCodeClass {
 }
 
 impl DecisionCodeClass {
-    pub(crate) const ALL: [Self; 9] = [
+    pub const ALL: [Self; 9] = [
         Self::Absent,
         Self::C2000,
         Self::C2003,
@@ -113,7 +113,7 @@ impl DecisionCodeClass {
         Self::Other,
     ];
 
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Absent => "absent",
             Self::C2000 => "2000",
@@ -127,7 +127,7 @@ impl DecisionCodeClass {
         }
     }
 
-    pub(crate) fn from_code(code: Option<i64>) -> Self {
+    pub fn from_code(code: Option<i64>) -> Self {
         match code {
             None => Self::Absent,
             Some(2000) => Self::C2000,
@@ -147,21 +147,21 @@ impl DecisionCodeClass {
 /// policy refusals (Direct Play off, Force Direct Play) carry no server codes and no attempted
 /// transcode, so they get none of it rather than a half-filled block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RefusalContext {
+pub struct RefusalContext {
     /// `generalDecisionCode` of the refusing `/decision`.
-    pub(crate) general: DecisionCodeClass,
+    pub general: DecisionCodeClass,
     /// `transcodeDecisionCode` of the same body — the lane that names the cause.
-    pub(crate) transcode: DecisionCodeClass,
+    pub transcode: DecisionCodeClass,
     /// The route the refused plan ASKED for. A separate field from `delivery`, which stays
     /// `unknown` because no route was installed: the attempt is recorded, the delivery is not.
-    pub(crate) attempted: DeliveryClass,
+    pub attempted: DeliveryClass,
     /// The SOURCE file's codecs (not the transcode's output, which a refusal never produced).
-    pub(crate) source_video: VideoCodecClass,
-    pub(crate) source_audio: AudioCodecClass,
+    pub source_video: VideoCodecClass,
+    pub source_audio: AudioCodecClass,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum QualityClass {
+pub enum QualityClass {
     Unknown,
     Auto,
     Original,
@@ -181,7 +181,7 @@ pub(crate) enum QualityClass {
 }
 
 impl QualityClass {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
             Self::Auto => "auto",
@@ -202,7 +202,7 @@ impl QualityClass {
         }
     }
 
-    pub(crate) fn from_kbps(kbps: i64) -> Self {
+    pub fn from_kbps(kbps: i64) -> Self {
         match kbps {
             320 => Self::K320,
             720 => Self::K720,
@@ -226,7 +226,7 @@ impl QualityClass {
 /// not controller rungs: keeping the type separate prevents a 5.5 Mbit/s server response from being
 /// mislabeled as the 22 Mbit/s actuator that requested it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RateClass {
+pub enum RateClass {
     Unknown,
     Under1m,
     M1To3,
@@ -237,7 +237,7 @@ pub(crate) enum RateClass {
 }
 
 impl RateClass {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
             Self::Under1m => "<1m",
@@ -249,7 +249,7 @@ impl RateClass {
         }
     }
 
-    pub(crate) fn from_kbps(kbps: i64) -> Self {
+    pub fn from_kbps(kbps: i64) -> Self {
         match kbps {
             k if k <= 0 => Self::Unknown,
             1..=999 => Self::Under1m,
@@ -263,7 +263,7 @@ impl RateClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RasterClass {
+pub enum RasterClass {
     Unknown,
     Sd,
     Hd,
@@ -272,7 +272,7 @@ pub(crate) enum RasterClass {
 }
 
 impl RasterClass {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
             Self::Sd => "sd",
@@ -282,7 +282,7 @@ impl RasterClass {
         }
     }
 
-    pub(crate) fn from_height(height: i32) -> Self {
+    pub fn from_height(height: i32) -> Self {
         match height {
             h if h <= 0 => Self::Unknown,
             h if h <= 576 => Self::Sd,
@@ -294,14 +294,14 @@ impl RasterClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TraceDirection {
+pub enum TraceDirection {
     Up,
     Down,
     Refresh,
 }
 
 impl TraceDirection {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Up => "up",
             Self::Down => "down",
@@ -311,14 +311,14 @@ impl TraceDirection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeliveryReason {
+pub enum DeliveryReason {
     LinkFallback,
     OriginalRecovery,
     OriginalOpenRollback,
 }
 
 impl DeliveryReason {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::LinkFallback => "link_fallback",
             Self::OriginalRecovery => "original_recovery",
@@ -328,7 +328,7 @@ impl DeliveryReason {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OriginalProbePhase {
+pub enum OriginalProbePhase {
     // Retained stable wire vocabulary for events produced by builds before 2026-08-31. Current
     // runtime emits SampleSource only; removing/reusing these strings would rewrite dashboards.
     RetireHls,
@@ -340,7 +340,7 @@ pub(crate) enum OriginalProbePhase {
 }
 
 impl OriginalProbePhase {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::RetireHls => "retire_hls",
             Self::SampleSource => "sample_source",
@@ -353,7 +353,7 @@ impl OriginalProbePhase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TraceOutcome {
+pub enum TraceOutcome {
     Started,
     Succeeded,
     NoBody,
@@ -367,7 +367,7 @@ pub(crate) enum TraceOutcome {
 }
 
 impl TraceOutcome {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Started => "started",
             Self::Succeeded => "succeeded",
@@ -389,7 +389,7 @@ impl TraceOutcome {
 /// device log). A duration is exactly the kind of measurement `PlaybackErrorContext`'s other
 /// fields refuse to carry verbatim — see the module's bucket rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LoadElapsedClass {
+pub enum LoadElapsedClass {
     Under1s,
     S1To5,
     S5To20,
@@ -397,7 +397,7 @@ pub(crate) enum LoadElapsedClass {
 }
 
 impl LoadElapsedClass {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Under1s => "under_1s",
             Self::S1To5 => "1_to_5s",
@@ -406,7 +406,7 @@ impl LoadElapsedClass {
         }
     }
 
-    pub(crate) fn from_ms(ms: i64) -> Self {
+    pub fn from_ms(ms: i64) -> Self {
         match ms.max(0) {
             0..=999 => Self::Under1s,
             1_000..=4_999 => Self::S1To5,
@@ -417,7 +417,7 @@ impl LoadElapsedClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TraceEvent {
+pub enum TraceEvent {
     Requested {
         selected: QualityClass,
     },
@@ -455,13 +455,13 @@ pub(crate) enum TraceEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TraceStep {
-    pub(crate) age: TraceAge,
-    pub(crate) event: TraceEvent,
+pub struct TraceStep {
+    pub age: TraceAge,
+    pub event: TraceEvent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PipelineClass {
+pub enum PipelineClass {
     Loading,
     Playing,
     Bound,
@@ -469,7 +469,7 @@ pub(crate) enum PipelineClass {
 }
 
 impl PipelineClass {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Loading => "loading",
             Self::Playing => "playing",
@@ -478,7 +478,7 @@ impl PipelineClass {
         }
     }
 
-    pub(crate) fn from_stage(stage: u8) -> Self {
+    pub fn from_stage(stage: u8) -> Self {
         match stage {
             1 => Self::Playing,
             2 => Self::Bound,
@@ -489,7 +489,7 @@ impl PipelineClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HttpClass {
+pub enum HttpClass {
     None,
     Success,
     ClientError,
@@ -498,7 +498,7 @@ pub(crate) enum HttpClass {
 }
 
 impl HttpClass {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Success => "2xx",
@@ -508,7 +508,7 @@ impl HttpClass {
         }
     }
 
-    pub(crate) fn from_status(status: i32) -> Self {
+    pub fn from_status(status: i32) -> Self {
         match status {
             0 => Self::None,
             200..=299 => Self::Success,
@@ -520,7 +520,7 @@ impl HttpClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BufferClass {
+pub enum BufferClass {
     Unknown,
     Empty,
     Under3s,
@@ -530,7 +530,7 @@ pub(crate) enum BufferClass {
 }
 
 impl BufferClass {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
             Self::Empty => "empty",
@@ -541,7 +541,7 @@ impl BufferClass {
         }
     }
 
-    pub(crate) fn from_ms(ms: i64) -> Self {
+    pub fn from_ms(ms: i64) -> Self {
         match ms {
             m if m < 0 => Self::Unknown,
             0 => Self::Empty,
@@ -554,19 +554,19 @@ impl BufferClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PlaybackErrorContext {
-    pub(crate) delivery: DeliveryClass,
-    pub(crate) selected: QualityClass,
-    pub(crate) requested: QualityClass,
-    pub(crate) declared_rate: RateClass,
-    pub(crate) media_rate: RateClass,
-    pub(crate) raster: RasterClass,
-    pub(crate) pipeline: PipelineClass,
-    pub(crate) http: HttpClass,
-    pub(crate) buffer: BufferClass,
-    pub(crate) started: bool,
+pub struct PlaybackErrorContext {
+    pub delivery: DeliveryClass,
+    pub selected: QualityClass,
+    pub requested: QualityClass,
+    pub declared_rate: RateClass,
+    pub media_rate: RateClass,
+    pub raster: RasterClass,
+    pub pipeline: PipelineClass,
+    pub http: HttpClass,
+    pub buffer: BufferClass,
+    pub started: bool,
     /// Only for a refusal the server made at `/decision` — see [`RefusalContext`].
-    pub(crate) refusal: Option<RefusalContext>,
+    pub refusal: Option<RefusalContext>,
 }
 
 /// The video codec, as a CLOSED domain.
@@ -578,7 +578,7 @@ pub(crate) struct PlaybackErrorContext {
 /// cannot become a leak. ONE table serves the usage funnel's `playback.started` and the handled
 /// error report's source codecs, so the two cannot disagree about what "hevc" is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VideoCodecClass {
+pub enum VideoCodecClass {
     Unknown,
     H264,
     Hevc,
@@ -589,7 +589,7 @@ pub(crate) enum VideoCodecClass {
 }
 
 impl VideoCodecClass {
-    pub(crate) const ALL: [Self; 7] = [
+    pub const ALL: [Self; 7] = [
         Self::Unknown,
         Self::H264,
         Self::Hevc,
@@ -599,7 +599,7 @@ impl VideoCodecClass {
         Self::Other,
     ];
 
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
             Self::H264 => "h264",
@@ -611,7 +611,7 @@ impl VideoCodecClass {
         }
     }
 
-    pub(crate) fn from_name(name: &str) -> Self {
+    pub fn from_name(name: &str) -> Self {
         match name.to_ascii_lowercase().as_str() {
             "h264" | "avc" | "avc1" => Self::H264,
             "hevc" | "h265" | "hvc1" => Self::Hevc,
@@ -626,7 +626,7 @@ impl VideoCodecClass {
 
 /// The audio codec, as a closed domain, for [`VideoCodecClass`]'s reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AudioCodecClass {
+pub enum AudioCodecClass {
     Unknown,
     Aac,
     Ac3,
@@ -640,7 +640,7 @@ pub(crate) enum AudioCodecClass {
 }
 
 impl AudioCodecClass {
-    pub(crate) const ALL: [Self; 10] = [
+    pub const ALL: [Self; 10] = [
         Self::Unknown,
         Self::Aac,
         Self::Ac3,
@@ -653,7 +653,7 @@ impl AudioCodecClass {
         Self::Other,
     ];
 
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
             Self::Aac => "aac",
@@ -668,7 +668,7 @@ impl AudioCodecClass {
         }
     }
 
-    pub(crate) fn from_name(name: &str) -> Self {
+    pub fn from_name(name: &str) -> Self {
         match name.to_ascii_lowercase().as_str() {
             "aac" => Self::Aac,
             "ac3" => Self::Ac3,
@@ -693,7 +693,7 @@ impl AudioCodecClass {
 /// fixtures and dashboards retain their meaning after the destructive probe transaction was
 /// removed; no live path emits it now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FailureClass {
+pub enum FailureClass {
     /// `/decision` refused the item outright.
     DecisionRefused,
     /// The explicit Direct Play policy cannot deliver the requested original stream.
@@ -722,8 +722,8 @@ pub(crate) enum FailureClass {
 impl FailureClass {
     /// Every class, so a test can hold the declared `playback.failed` domain to the enum it is
     /// built from.
-    #[cfg(test)]
-    pub(crate) const ALL: [Self; 11] = [
+    #[cfg(any(test, feature = "test-support"))]
+    pub const ALL: [Self; 11] = [
         Self::DecisionRefused,
         Self::PlaybackPolicy,
         Self::NoVideoTranscodeTarget,
@@ -739,7 +739,7 @@ impl FailureClass {
 
     /// The stable wire code. Written out rather than derived from the variant name, because a
     /// rename is a refactor and must not silently re-partition a year of dashboards.
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::DecisionRefused => "decision_refused",
             Self::PlaybackPolicy => "playback_policy",

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use plx_machine::machine::{Addr, Canon, LogicalState, MachineId};
 
 mod incident;
-use crate::telemetry::incident::{IncidentContext, InternalClass};
+use plx_telemetry::telemetry::incident::{IncidentContext, InternalClass};
 pub(crate) use incident::{IncidentDelivery, IncidentFlow, IncidentKey, IncidentLane, IncidentOffer,
     IncidentReport, IncidentState};
 
@@ -176,7 +176,7 @@ pub(crate) enum Command {
     AcknowledgePersistenceWarning { key: PersistenceWarningKey },
     /// The consent decision for the held incident, as the presenting screen derived it at
     /// `revision` (`telemetry::consent::revision`). Stale ids and unchanged revisions are inert.
-    ResolveIncident { id: u32, permission: crate::telemetry::consent::Permission, revision: u32 },
+    ResolveIncident { id: u32, permission: plx_telemetry::telemetry::consent::Permission, revision: u32 },
     /// Send report — from the incident alert or from Details. A person's press, and the whole of
     /// the one-off report's consent.
     ReportIncident { id: u32 },
@@ -274,7 +274,7 @@ pub(crate) struct PersistenceWarning {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PersistenceEvidence {
-    class: crate::telemetry::incident::PersistenceFailure,
+    class: plx_telemetry::telemetry::incident::PersistenceFailure,
     keymanager_stage: Option<plx_platform::storage::wire::KeymanagerStage>,
     service_error_code: Option<i32>,
 }
@@ -283,7 +283,7 @@ impl PersistenceWarning {
     pub(crate) fn from_outcome(key: PersistenceWarningKey, site: PersistenceWarningSite,
         outcome: &plx_plex::plex::session::async_persistence::CompletionOutcome) -> Self {
         let context = IncidentContext {
-            kind: crate::telemetry::incident::IncidentKind::SaveFailed,
+            kind: plx_telemetry::telemetry::incident::IncidentKind::SaveFailed,
             ..IncidentContext::internal(InternalClass::CommitRefused)
         }.with_persistence(outcome);
         Self {
@@ -298,7 +298,7 @@ impl PersistenceWarning {
     pub(super) fn incident_context(self) -> Option<IncidentContext> {
         let evidence = self.persistence?;
         Some(IncidentContext {
-            kind: crate::telemetry::incident::IncidentKind::SaveFailed,
+            kind: plx_telemetry::telemetry::incident::IncidentKind::SaveFailed,
             persistence: Some(evidence.class), helper: self.helper, candidate_errnos: self.candidate_errnos,
             keymanager_stage: evidence.keymanager_stage, service_error_code: evidence.service_error_code,
             ..IncidentContext::internal(InternalClass::CommitRefused)
@@ -840,7 +840,7 @@ impl SessionInit {
     }
 }
 
-pub(super) fn write_incident_context(w: &mut Canon, context: &crate::telemetry::incident::IncidentContext) {
+pub(super) fn write_incident_context(w: &mut Canon, context: &plx_telemetry::telemetry::incident::IncidentContext) {
     incident::write_context(w, context);
 }
 
@@ -1649,7 +1649,7 @@ impl SessionMachine {
 
     fn retire_save_incident(&mut self) {
         if self.state.incident.as_ref().is_some_and(|offer|
-            offer.key.kind == crate::telemetry::incident::IncidentKind::SaveFailed) {
+            offer.key.kind == plx_telemetry::telemetry::incident::IncidentKind::SaveFailed) {
             self.state.incident = None;
         }
     }
@@ -3215,7 +3215,7 @@ mod tests {
         use plx_platform::storage::wire::{AuthPreservation, ErrorCode, KeymanagerFailure, KeymanagerFailureCategory,
             KeymanagerOperation, KeymanagerStage};
         use plx_platform::storage::wire::failure::{HelperFailure, Stage};
-        use crate::telemetry::incident::{IncidentKind, PersistenceFailure as P};
+        use plx_telemetry::telemetry::incident::{IncidentKind, PersistenceFailure as P};
         let protection = ProtectionFailure {
             failure: KeymanagerFailure { operation: KeymanagerOperation::Seal, stage: KeymanagerStage::Finish,
                 code: ErrorCode::Unavailable, category: KeymanagerFailureCategory::ServiceRejected, service_code: Some(-3961) },
@@ -3246,7 +3246,7 @@ mod tests {
             owner.raise_incident(IncidentFlow::SignIn, expected);
             let id = owner.state.incident.as_ref().unwrap().id;
             step(&mut owner, SessionEvent::Command(Command::ResolveIncident {
-                id, permission: crate::telemetry::consent::Permission::Declined, revision: 1 }));
+                id, permission: plx_telemetry::telemetry::consent::Permission::Declined, revision: 1 }));
             assert!(owner.state.incident.as_ref().unwrap().context.is_none());
             let effects = step(&mut owner, SessionEvent::Command(Command::ReportIncident { id }));
             let rebuilt = effects.iter().find_map(|effect| match effect {
@@ -3305,17 +3305,17 @@ mod tests {
             assert_eq!(helper.helper, Some(Detail::new(Stage::Db8, Some(-3963))));
             assert_eq!(helper.line(), "storage: helper · db8 (-3963)");
             assert_eq!(owner.state.incident.as_ref().unwrap().context.as_ref().unwrap().helper, Some(helper));
-            let context = crate::telemetry::incident::IncidentContext::new(
-                crate::telemetry::incident::IncidentKind::SaveFailed, None).with_persistence(&outcome);
-            let body = crate::telemetry::incident::event_body(&"a".repeat(32), "", None, context,
-                crate::telemetry::incident::ConsentKind::OneOff);
+            let context = plx_telemetry::telemetry::incident::IncidentContext::new(
+                plx_telemetry::telemetry::incident::IncidentKind::SaveFailed, None).with_persistence(&outcome);
+            let body = plx_telemetry::telemetry::incident::event_body(&"a".repeat(32), "", None, context,
+                plx_telemetry::telemetry::incident::ConsentKind::OneOff);
             assert_eq!(body["contexts"]["incident"]["persistence"], "commit_uncertain");
             assert_eq!(body["contexts"]["incident"]["helper"]["helper"]["stage"], "db8");
             assert_eq!(body["contexts"]["incident"]["helper"]["helper"]["code"], -3963);
             let offer = owner.state.incident.clone().unwrap();
             let retained = offer.context.unwrap();
             step(&mut owner, SessionEvent::Command(Command::ResolveIncident {
-                id: offer.id, permission: crate::telemetry::consent::Permission::Declined, revision: 1 }));
+                id: offer.id, permission: plx_telemetry::telemetry::consent::Permission::Declined, revision: 1 }));
             assert!(owner.state.incident.as_ref().unwrap().context.is_none());
             let effects = step(&mut owner, SessionEvent::Command(Command::ReportIncident { id: offer.id }));
             let rebuilt = effects.iter().find_map(|effect| match effect {
@@ -3332,8 +3332,8 @@ mod tests {
     fn helper_failure_warning_and_one_off_are_bound_to_the_completion() {
         use plx_plex::plex::session::async_persistence::{CompletionOutcome, Failure, PersistenceCompletion};
         use plx_platform::storage::wire::failure::{HelperFailure, Stage};
-        for permission in [crate::telemetry::consent::Permission::NotDetermined,
-            crate::telemetry::consent::Permission::Declined] {
+        for permission in [plx_telemetry::telemetry::consent::Permission::NotDetermined,
+            plx_telemetry::telemetry::consent::Permission::Declined] {
             let mut owner = SessionMachine::from_init(discovering_after_authorization());
             let req = owner.state.next_req;
             let epoch = owner.state.epoch;

@@ -27,7 +27,7 @@ use plx_machine::machine::RequestId;
 /// before resource deletion; no network work is launched here.
 #[test]
 fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
-    use crate::telemetry::consent;
+    use plx_telemetry::telemetry::consent;
     /// Every crate-global redirect this test takes, handed back on drop — so a failed
     /// assertion cannot leave the next test writing into this one's directory.
     struct Redirects {
@@ -36,8 +36,8 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
     }
     impl Drop for Redirects {
         fn drop(&mut self) {
-            crate::telemetry::spool::set_test_path(None);
-            crate::telemetry::redirect_for_test(None);
+            plx_telemetry::telemetry::spool::set_test_path(None);
+            plx_telemetry::telemetry::redirect_for_test(None);
             plx_plex::plex::session::redirect_for_test(None);
             if let Some(c) = self.saved.take() {
                 consent::install(c);
@@ -56,11 +56,11 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
     };
     plx_plex::plex::session::redirect_for_test(Some(dir.join("auth.json")));
     let consent_file = dir.join("telemetry.json");
-    crate::telemetry::redirect_for_test(Some(consent_file.clone()));
-    crate::telemetry::spool::set_test_path(Some(dir.join("spool.jsonl")));
+    plx_telemetry::telemetry::redirect_for_test(Some(consent_file.clone()));
+    plx_telemetry::telemetry::spool::set_test_path(Some(dir.join("spool.jsonl")));
 
     // Account A answers yes to both, which mints both identifiers and persists the decision.
-    crate::telemetry::record(consent::apply(
+    plx_telemetry::telemetry::record(consent::apply(
         &consent::Consent::default(),
         true,
         true,
@@ -68,7 +68,7 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
     ));
     assert!(consent::allows_usage() && consent::errors_id().is_some());
     assert!(
-        crate::telemetry::persistence::load(std::slice::from_ref(&consent_file)).any(),
+        plx_telemetry::telemetry::persistence::load(std::slice::from_ref(&consent_file)).any(),
         "the decision was persisted for account A"
     );
 
@@ -109,7 +109,7 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
         consent::should_ask(&after, false),
         "the next authorized sign-in must put the question on screen again"
     );
-    let reopened = crate::telemetry::persistence::load(std::slice::from_ref(&consent_file));
+    let reopened = plx_telemetry::telemetry::persistence::load(std::slice::from_ref(&consent_file));
     assert!(
         !consent_file.exists() && !reopened.answered() && reopened.errors_id.is_none(),
         "the persisted decision outlived the sign-out and would resume A's at the next boot"

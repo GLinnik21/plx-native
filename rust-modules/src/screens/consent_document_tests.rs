@@ -12,7 +12,7 @@ use super::test_support::*;
 #[test]
 fn the_preview_shows_every_event_this_build_can_emit() {
     let text = preview();
-    for s in crate::diag::schema::EVENT_SPECS {
+    for s in plx_telemetry::diag::schema::EVENT_SPECS {
         assert!(text.contains(s.name), "the payload preview does not show `{}`", s.name);
         for f in s.fields {
             assert!(
@@ -23,7 +23,7 @@ fn the_preview_shows_every_event_this_build_can_emit() {
             );
         }
     }
-    for f in crate::diag::schema::CONTEXT_SPECS {
+    for f in plx_telemetry::diag::schema::CONTEXT_SPECS {
         assert!(text.contains(f.key), "the payload preview does not show context field `{}`", f.key);
     }
     for crash_field in ["stacktrace", "registers", "threads", "debug_meta", "image_size"] {
@@ -83,7 +83,7 @@ fn the_crash_preview_carries_nothing_from_the_usage_channel() {
     let text = preview_crash();
     assert!(!text.contains("distinct_id"), "no PostHog envelope field belongs in the crash-only document");
     assert!(!text.contains("<project key>"), "no PostHog project key belongs in the crash-only document");
-    for s in crate::diag::schema::EVENT_SPECS {
+    for s in plx_telemetry::diag::schema::EVENT_SPECS {
         let quoted = format!("\"event\": \"{}\"", s.name);
         assert!(!text.contains(&quoted), "usage event `{}` leaked into the crash preview", s.name);
     }
@@ -123,7 +123,7 @@ fn the_preview_cannot_contain_a_real_identifier() {
     assert!(text.contains("<random id>"), "and the field itself is a placeholder");
     assert!(text.contains("created only when crash reports are enabled"), "the crash intro explains its placeholder");
     assert!(
-        text.contains(crate::telemetry::native::PREVIEW_USER_ID),
+        text.contains(plx_telemetry::telemetry::native::PREVIEW_USER_ID),
         "and the crash-report id is shown as a placeholder"
     );
     let bytes: Vec<char> = text.chars().collect();

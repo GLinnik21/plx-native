@@ -8,12 +8,13 @@ L14, which a split hides from them, and the gate does not check impl coherence. 
 off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
 entries are gone, and the gate fails on any reference from outside the port to a member of it. It
 is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
-up the split. **The split is half done: seven of the fourteen layers, `base`, `machine`, `platform`, `gfx`, `net`,
-`ui` and `plex`, are their own crates, `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`,
-`plx_ui` and `plx_plex`** (`rust-modules/base/`, `machine/`, `platform/`, `gfx/`, `net/`, `ui/` and
-`plex/`; "Split 1: base" to "Split 7 (plex)" below, and "Splits 6 and 7 together" for how the last
-two were combined); the other seven (`telemetry`, `data`, `session`, `media`, `appkit`, `screens`,
-`app`) are still modules of `plxnative-modules`.
+up the split. **The split is more than half done: eight of the fourteen layers, `base`, `machine`,
+`platform`, `gfx`, `net`, `ui`, `plex` and `telemetry`, are their own crates, `plx_base`,
+`plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex` and `plx_telemetry`**
+(`rust-modules/base/`, `machine/`, `platform/`, `gfx/`, `net/`, `ui/`, `plex/` and `telemetry/`;
+"Split 1: base" to "Split 8 (telemetry)" below, and "Splits 6 and 7 together" for how two of them
+were combined); the other six (`data`, `session`, `media`, `appkit`, `screens`, `app`) are still
+modules of `plxnative-modules`.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
@@ -1052,6 +1053,150 @@ were six: the row is the run of a built suite, cargo runs the binaries one after
 time is the tests themselves (per binary, one run: the application 59.9 s before and 43.8 s after,
 `plx_plex` 9.3 s, `plx_gfx` 6.1 s, `plx_ui` 5.3 s, the other four under 3 s together), not linking
 or starting them.
+
+### Split 8 (telemetry)
+
+`telemetry` was extracted eighth, alone (no parallel lane): `rust-modules/telemetry/` is the
+workspace member `plx_telemetry` (an `rlib`, `uses = base machine platform net plex`; the manifest
+depends on `plx_base`, `plx_platform`, `plx_net` and `plx_plex`, because no line of the crate names
+`machine`), holding `telemetry` (consent, the Sentry and PostHog wire formats, the spool and the
+worker) and `diag` (the typed usage-event schema; `diag::{heartbeat, spans, zlib}` are not here, they
+are `plx_base::diag::*`). The members kept their names, so a path is
+`plx_telemetry::telemetry::consent::current` and `plx_telemetry::diag::schema::EVENT_SPECS`, every
+`crate::telemetry::` *inside* the moved files stayed valid, and only the references in 33
+application files changed, by `split-telemetry-rewrite.py` (`crate::telemetry` and `crate::diag` to
+`plx_telemetry::telemetry` and `plx_telemetry::diag`, `pub(crate)` to `pub`). Nothing stayed behind:
+`diag` and `telemetry` named each other and nothing above them, so the pair that was one module cycle
+is inside one crate and left the cycle baseline. Features: `devtriggers` and `hostsim` are
+forwarded, `test-support` is new and enables the four lower layers'. Its 235 tests run in their own
+binary: the suite is 5620 tests before and after the split (5630 on the tip it landed on, the ten more being `main`'s Home tests). This is the privacy-critical layer, so what it
+taught is mostly about what would have gone quiet:
+
+- **A `cargo:rustc-env` reaches one crate, and the version needed it six times; the application
+  hands it in, as it does to `plx_plex`.** Six files read `env!("PLX_VERSION")` (13 sites: the
+  Sentry `release` and SDK version of the crash, panic, incident and playback envelope builders, the
+  auth header, the consent preview, the native SDK's release, `diag::schema`'s `app_version`
+  dimension and one test assertion). They read `telemetry::release()` and `telemetry::app_version()`
+  now, which answer what `telemetry::set_release` was handed: `enter_application`'s second
+  statement, right behind `plex::identity::set_version`, passes `concat!("plxnative@",
+  env!("PLX_VERSION"))`. Unset, a shipping build panics (it never reports a placeholder), a
+  `test-support` build answers `plxnative@0.0.0-test`, and `app::boot::seam_order_tests` pins both
+  hand-ins' order. **Why a second hand-in and not `plx_plex::plex::identity::version()`, which the
+  first version of this change read: the release gate.** `ci/check-package.py` greps the packaged
+  binary for the contiguous `plxnative@<version>` that `concat!` composes at compile time, in the
+  crate that can see `PLX_VERSION`. Composed at run time in `plx_telemetry` (`format!("plxnative@{}",
+  ..)`) the prefix and the number sit in different places in `.rodata`, and the gate, which no host
+  check runs, would have failed on the first real package. Both hand-ins are the same `env!` on
+  adjacent lines, so they cannot disagree; one version source for both would need the store to move
+  into `plx_base` and the release string to be composed there, which cannot see the variable
+  either. The two entry points `src/main.c` calls before `enter_application`
+  (`plx_sentry_spool_external`, `plx_crash_write_image_marker`) read no version, which the fw-compat
+  review confirmed by reading their call graph. `env!("PLX_VERSION")` cannot come back into the
+  crate: it is a compile error where the build script does not publish it.
+- **The credentials are not a `rustc-env` and needed nothing.** `telemetry::sender` reads
+  `option_env!("PLX_SENTRY_DSN")`, `PLX_POSTHOG_KEY` and the two `_DEV` names from the PROCESS
+  environment of the compile (the Makefile's `TELEMETRY_ENV` words, the release workflow's `env:`),
+  which cargo hands to every crate it compiles, so they reach `plx_telemetry` unchanged, no build
+  script is involved and nothing secret is in a tracked file. Proven with dummy values, not the real
+  ones: a `--no-default-features` release build with a dummy DSN and key carries both in the
+  `plx_telemetry` rlib (`strings`), the same build without them carries neither.
+- **`cfg!(feature = "devtriggers")` is a compile-time guard here, and the forward is what keeps it
+  alive.** `sender` refuses to compile a build that holds the production credentials and still has
+  the dev-trigger surface (`const _: () = { if HAS_PROD && cfg!(feature = "devtriggers") { panic!(..) } }`).
+  In a crate that does not receive the feature the condition is a constant `false`, the guard would
+  stay green and a production build with dev triggers would ship. `plx_telemetry/devtriggers` is
+  forwarded from the application's `devtriggers`. Proven both ways: dummy production credentials
+  with the default features fail with E0080 from `plx_telemetry` (also with `-p plx_telemetry
+  --features devtriggers`), the same credentials with `--no-default-features` compile, and the
+  development credentials compile with either.
+- **`--report`'s 8 items were again a fraction of the seam, and the shipping arms switch too.**
+  Behaviour hangs on `cfg(not(test))` in the layer: the consent file's real candidates against the
+  redirected one (`candidates`, `load_from`), the dev `state_override` read of `capture_initial`,
+  the one-off transport's stub, `persistence`'s redirected root and thread probe, the spool's test
+  path, and the ARM arms that select the storage helper over the file store. A dependent's tests
+  build `plx_telemetry` without `cfg(test)`, so each would have run its shipping form, and the
+  nearest consequence is a test writing the real consent file. The rule applied is the one of Split
+  7, mechanical: every `test` inside any `cfg(..)` of the layer's non-test files became `any(test,
+  feature = "test-support")` (73 lines by `split-telemetry-gate.py`, which skips `mod tests` and
+  `*_tests`), two forms by hand (`cfg(any(all(.., not(test)), test))` and the same spread over
+  several lines). Then the exceptions: what only this crate's own tests use stays `cfg(test)`,
+  because under `test-support` alone it is dead code (`persistence`'s helper-store arms and their
+  `cfg(any(<ARM>, test))` gates, `spool::on_append_for_test`, `diag`'s `record_stamp_used`), and the
+  `cfg_attr(test, allow(dead_code))` on `consent::state_override` is gone, since a `pub` function
+  is never dead. `cargo check -p plx_telemetry --features test-support` is clean with no new
+  `allow`.
+- **The shipping build was checked for the seams, in the artifact.** `cargo tree -e normal -f '{p}
+  [{f}]'` for `plxnative-modules` lists no `test-support` on any crate, with the default features
+  and with `--no-default-features` (`-e normal,dev` lists it 34 times). In the `plx_telemetry` rlib
+  of a `--no-default-features` release build, `strings` finds none of `redirect_for_test`,
+  `redirect_root_for_test`, `set_test_path`, `last_call_thread`, `test_events`, `deferred_len`,
+  `claims_neutral_format`, `privacy_table`, `privacy_context_table`, `TEST_FILE`, `AFTER_APPEND`,
+  `LAST_CALL_THREAD`, `after_append_for_test`, `note_call_thread`, `record_with_legacy` or
+  `last_outcome`; the `--features test-support` control build of the same crate finds every one
+  (constants such as `EVENT_SPECS` compile away in both and prove nothing), and `nm` defines 7
+  symbols matching the seam names there against 0. The ARM shipping archive built the way the
+  release is (`PLX_RELEASE=1 cargo rustc --release --target arm-unknown-linux-gnueabi --lib
+  --crate-type staticlib --no-default-features`) has none of them either.
+- **FFI moved without a change.** `telemetry/native.rs`'s `mod sdk` (the ARM-only `extern "C"` block
+  of 17 Sentry Native declarations, no `#[link]`) and the two `#[no_mangle]` entry points that
+  `src/main.c` calls are the old text, apart from `pub(crate)` becoming `pub` and, in two of them,
+  the version read above. The new build script does not exist; the final link is the Makefile's
+  (`libsentry.a` after `$(RUST_LIB)`), and `ci/expected-dt-needed.txt` and `LIBS_REAL` are
+  untouched. A `#[no_mangle]` item of an rlib dependency reaches the application's staticlib, as
+  `plx_base`'s `plx_runtime_path` already does, and that was observed, not assumed: the ARM
+  shipping archive from this tree and the one from `main` export the same `plx_*` symbols
+  (`plx_sentry_spool_external`, `plx_crash_write_image_marker`, `plx_runtime_path`) and leave the same
+  395 non-Rust symbols undefined for the final link. The `fw-compat-reviewer` verdict is "safe on
+  source review, ELF ungraded": no DT_NEEDED input or import changed, and the firmware matrix that
+  grades the built binary is CI's. `cargo check --target arm-unknown-linux-gnueabi --lib` passes with
+  and without default features.
+- **Relative paths one directory deeper, one of them silent.** The `include_str!`s of `PRIVACY.md`
+  and `tests/fixtures/persistence/*` gained a `../`. Two tests build a path from
+  `CARGO_MANIFEST_DIR.parent()`: `diag::schema`'s "the privacy document carries the generated table"
+  would have panicked on the missing file (loud), but `sentry`'s "the configured DSN parses and is
+  EU" returns early when `pkg/telemetry.local.json` is unreadable, so it would have gone on passing
+  while reading a file that is not there. Both go two levels up now.
+- **Gates that read the old location.** `ci/check-deps.sh` has `SRC_TELEMETRY` wherever it reads
+  `SRC_PLEX` (the whole-tree rules libm, ticks, effect, legacy, dt, frame, spawn, tmppath and the
+  wholly-test-file resolver); `ci/check-localization.py` reads the crate for prose constants; the
+  eventlog scrub test's root list gained `../telemetry/src` (these files handle consent, ids and
+  report bodies, which is what the scan is for); `tests/test_harness.py`'s `TREE_INPUTS` and
+  `fpflags` list, `tools/cargo-seed.py`, `ci/test_no_host_staticlib.py` (both its `LAYER_CRATES` and
+  the copied `WORKSPACE_FILES`, which `make check` found the hard way), the release-configuration
+  hook and the build-budget `--src` list know the crate, and the module-cycle baseline lost the
+  `diag`/`telemetry` pair. Proven by temporary violating edits, reverted byte for byte: an
+  `SDL_GetTicks(` in `telemetry/src/telemetry/window.rs` fails `ticks` in `ci/check-deps.sh`, and a
+  `log(&format!(.., d.title))` there fails `no_log_call_site_interpolates_viewing_content` in
+  `plx_base` with the new file's path in the message. `ci/check-module-layers.py` reports the layer as
+  ready and the `--report` count of `cfg(test)` items named across layers went from 52 to 44.
+- **No orphan-rule hazard, no inherent `impl` in a higher layer, and no dead code from `pub`.** The
+  compiler was the checker: `cargo check --lib --tests` of all nine crates passed on the first try
+  after the move, and the `test-support` build needed only the three reverts above. Nothing named
+  `crate::telemetry` or `crate::diag` except the application's own references, which the script
+  rewrote.
+- **Tooling that knows the tree's shape**: the `-p` lists (`... -p plx_plex -p plx_telemetry`) in the
+  Makefile, the workflow, `tools/build-bench.py` and the tests that pin them, and in the docs that
+  quote them; `--src rust-modules/telemetry/src` for the line budget (450,644 lines counted, limit
+  485,000); `RUST_INPUTS`; `ci/test_no_host_staticlib.py` holds the crate to `rlib`; and `make
+  build-bench` has a `telemetry` scenario ("Edit leaf (plx_telemetry window.rs)").
+
+Measured effect (`make build-bench`, same machine, 3 interleaved runs each, non-incremental, medians
+with the minimum after the slash). The "before" set, on `a23ddee1`, ran while this lane was also
+running cargo and other lanes were building (the log warns of a load of 16 to 18 on 10 cores in
+three runs), so its medians for the first rows (`plx_base` 57.5 s, `plx_platform` 40.7 s) are
+noise and the minima are the guide; the "after" set, on the same base plus this change, ran with no
+load warning. Before: an edit in `plx_base` 57.5 s / 29.4 s, in `plx_machine` 30.9 / 29.3, in
+`plx_platform` 40.7 / 28.8, in `plx_gfx` 29.0 / 26.6, in `plx_net` 26.6 / 25.7, in `plx_ui` 25.6 /
+25.0, in `plx_plex` 26.2 / 26.1, of the application crate 23.7 / 23.0, the hub edit 25.7 / 25.6, the
+unit suite 81.0 / 80.8 with 5620 tests. After: `plx_base` 26.9 / 25.6, `plx_machine` 26.3 / 25.1,
+`plx_platform` 25.9 / 24.7, `plx_gfx` 22.9 / 22.4, `plx_net` 23.7 / 22.9, `plx_ui` 22.4 / 21.6,
+`plx_plex` 22.8 / 22.5, `plx_telemetry` 20.7 / 20.5 (new row: it rebuilds the telemetry crate and the
+application behind it), the application crate 19.8 / 19.7, the hub edit 21.6 / 21.5, the unit suite
+72.7 / 70.9 with the same 5620 tests (157 + 66 + 218 + 94 + 128 + 752 + 458 + 235 + 3512). The
+minima are the honest comparison: every edit is 2.5 to 3.5 s faster, which is what 15.8k of the
+application's 450k lines (`telemetry` 14.1k, `diag` 1.7k) no longer
+recompiling behind it buys, and the no-op build is 0.1 s in both. The unit suite gains one more test
+binary and is no slower.
 
 ## Limits of the analysis
 

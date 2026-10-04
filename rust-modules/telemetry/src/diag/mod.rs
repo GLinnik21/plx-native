@@ -17,10 +17,10 @@
 // fields stay within their allowlisted schema, and that `PRIVACY.md` lists every usage event — and
 // tests behind a feature the default gate does not build are tests that never run. `scrub`'s 31
 // assertions sat unexecuted for as long as they existed.
-pub(crate) mod schema;
+pub mod schema;
 
-#[cfg(test)]
-pub(crate) mod test_events;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_events;
 
 /// **Report one event.** The single door, so a call site carries no `#[cfg]` and cannot know
 /// whether anything is listening — which is what `lab/mod.rs` does and what keeps the feature
@@ -42,7 +42,7 @@ pub(crate) mod test_events;
 /// It was a sink in every build when it was written, deliberately — the call sites are the part
 /// that has to be right, each one being a decision about what may be observed, and a schema with
 /// no producers is an allowlist nobody has checked against reality.
-pub(crate) fn event(e: schema::DiagEvent) {
+pub fn event(e: schema::DiagEvent) {
     event_for(e, ServerContext::None);
 }
 
@@ -54,7 +54,7 @@ pub(crate) fn event(e: schema::DiagEvent) {
 /// flight for this attempt. `test_events`'s dispatch-coverage test also goes through here (with
 /// `ServerId::UNSET` and `None`/`None`), rather than through a second, live-reading producer kept
 /// only for that test.
-pub(crate) fn event_for_connection(
+pub fn event_for_connection(
     e: schema::DiagEvent,
     server: plx_plex::plex::ServerId,
     link: Option<plx_plex::plex::probe::Location>,
@@ -76,7 +76,7 @@ enum ServerContext {
 
 fn event_for(e: schema::DiagEvent, server: ServerContext) {
     // Observe producer intent in scoped tests without consenting, queuing, or sending anything.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if test_events::intercept(e) { return; }
     event_for_impl(e, server, None);
 }
@@ -264,7 +264,7 @@ fn defer(e: schema::DiagEvent) {
 /// Each event is replayed with the [`Stamp`] it was captured with at `defer` time — not a freshly
 /// computed "now" — so the funnel a person can see afterwards is dated when the sign-in actually
 /// happened, not when they finally answered the consent question.
-pub(crate) fn replay_deferred() {
+pub fn replay_deferred() {
     let events: Vec<Deferred> = {
         let mut q = DEFERRED.lock().unwrap_or_else(|e| e.into_inner());
         q.drain(..).collect()
@@ -275,15 +275,15 @@ pub(crate) fn replay_deferred() {
 }
 
 /// How many sign-in events are currently held; for the seam tests in `app::adapters::consent`.
-#[cfg(test)]
-pub(crate) fn deferred_len() -> usize {
+#[cfg(any(test, feature = "test-support"))]
+pub fn deferred_len() -> usize {
     DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).len()
 }
 
 /// Drop every deferred sign-in event with no replay. Called on sign-out/delete-local-data
 /// (`telemetry::transition::forget`) so a queued event from the departing account's attempt can never cross into
 /// the next account's consent decision.
-pub(crate) fn clear_deferred() {
+pub fn clear_deferred() {
     DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
@@ -305,7 +305,7 @@ fn random_bytes() -> Option<[u8; 16]> {
 }
 
 /// Generic durable-record identity; no analytics code depends on a crash vendor for IDs.
-pub(crate) fn random_hex_id() -> Option<String> {
+pub fn random_hex_id() -> Option<String> {
     Some(random_bytes()?.iter().map(|b| format!("{b:02x}")).collect())
 }
 

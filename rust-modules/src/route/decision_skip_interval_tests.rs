@@ -1,6 +1,6 @@
 //! The Skip interval persistence seam: durable-first, one `feature.used` per durable pick.
 use super::*;
-use crate::diag::schema::{DiagEvent, Feature};
+use plx_telemetry::diag::schema::{DiagEvent, Feature};
 use plx_plex::plex::session::SkipInterval;
 
 struct Restore(SkipInterval);
@@ -18,7 +18,7 @@ fn a_durable_pick_is_live_persisted_and_reported_once() {
     let _restore = Restore(skip_interval());
     restore_skip_interval(SkipInterval::Seconds10);
 
-    let (saved, events) = crate::diag::test_events::capture(|| set_skip_interval(SkipInterval::Seconds30));
+    let (saved, events) = plx_telemetry::diag::test_events::capture(|| set_skip_interval(SkipInterval::Seconds30));
     assert!(saved);
     assert_eq!(skip_interval(), SkipInterval::Seconds30);
     assert_eq!(plx_plex::plex::session::load().skip_interval(), SkipInterval::Seconds30);
@@ -28,7 +28,7 @@ fn a_durable_pick_is_live_persisted_and_reported_once() {
     );
 
     // choosing the default again removes the key from the file, and is still a (reported) pick
-    let (saved, events) = crate::diag::test_events::capture(|| set_skip_interval(SkipInterval::Seconds10));
+    let (saved, events) = plx_telemetry::diag::test_events::capture(|| set_skip_interval(SkipInterval::Seconds10));
     assert!(saved);
     assert_eq!(plx_plex::plex::session::load().skip_interval(), SkipInterval::Seconds10);
     assert_eq!(events.len(), 1);
@@ -48,7 +48,7 @@ fn a_failed_write_changes_and_reports_nothing() {
     std::fs::write(dir.join("blocker"), b"x").unwrap();
     plx_plex::plex::session::redirect_for_test(Some(dir.join("blocker").join("auth.json")));
 
-    let (saved, events) = crate::diag::test_events::capture(|| set_skip_interval(SkipInterval::Seconds60));
+    let (saved, events) = plx_telemetry::diag::test_events::capture(|| set_skip_interval(SkipInterval::Seconds60));
     plx_plex::plex::session::redirect_for_test(None);
     let _ = std::fs::remove_dir_all(&dir);
     assert!(!saved);

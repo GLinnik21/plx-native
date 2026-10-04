@@ -1,5 +1,5 @@
 # A cargo workspace with this package as its ROOT; the other members are the storage helper and the
-# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/, ui/, plex/;
+# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/;
 # docs/module-layers.md).
 # The root keeps the literal `version` below (release tooling reads it), `make`/CI run their usual
 # commands from this directory against this package (a bare `cargo test`/`check`/`build` here still
@@ -14,6 +14,7 @@ members = [
     "gfx",
     "ui",
     "plex",
+    "telemetry",
     "storage",
 ]
 resolver = "2"
@@ -87,6 +88,7 @@ devtriggers = [
     "plx_gfx/devtriggers",
     "plx_ui/devtriggers",
     "plx_plex/devtriggers",
+    "plx_telemetry/devtriggers",
 ]
 # The one deliberate behavioural difference of dev builds: make main-thread violations LOUDER
 # (abort/warning), never change a code path that succeeds. Dropped by --no-default-features.
@@ -107,8 +109,8 @@ lab-diagnostics = ["plx_base/lab-diagnostics", "plx_net/lab-diagnostics", "plx_p
 
 # **There is no `telemetry` cargo feature, and this comment is here so nobody adds one back.**
 #
-# There WAS one, declared here, gating nothing: `mod telemetry;` in `lib.rs` has always been
-# unconditional, no `cfg` in the crate named it, and the `make RELEASE=1 TELEMETRY=1` this comment
+# There WAS one, declared here, gating nothing: `mod telemetry;` in `lib.rs` was unconditional (it
+# is `plx_telemetry`'s `pub mod telemetry;` now, still unconditional), no `cfg` in the crate named it, and the `make RELEASE=1 TELEMETRY=1` this comment
 # prescribed set a variable the Makefile does not know — `RUST_FEATFLAGS` knows only `RELEASE` and
 # `LAB`. So it read as the safety argument for the whole subsystem while being a no-op, which is
 # worse than not having one. A doc audit found it.
@@ -143,7 +145,7 @@ lab-diagnostics = ["plx_base/lab-diagnostics", "plx_net/lab-diagnostics", "plx_p
 # (LG's SDL fork shifts SDL_KeyboardEvent; stock SDL2 does not), and the wayland/glib calls that
 # have no host equivalent. Everything else — all of `ui/`, the whole Plex data layer, the demux
 # orchestration — is compiled identically for both.
-hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_gfx/hostsim", "plx_plex/hostsim"]
+hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_gfx/hostsim", "plx_plex/hostsim", "plx_telemetry/hostsim"]
 
 # Warnings are ERRORS, for both workspace packages, in every cargo invocation — build, check, test, clippy, the
 # ARM cross-build and the simulator alike. The tree reached zero warnings in all four
@@ -211,6 +213,11 @@ plx_ui = { path = "ui" }
 # and probe logic and `http`, the one request door. It reports the app version it is handed
 # (`plex::identity::set_version`) rather than reading `PLX_VERSION`, which reaches one crate only.
 plx_plex = { path = "plex" }
+# The telemetry layer (ci/module-layers.ini `[telemetry]`): consent, the opt-in crash and usage
+# channels (Sentry, PostHog), the spool and worker, and the typed usage-event schema. It reports the
+# release string the application hands it (`telemetry::set_release`), and reads its credentials with `option_env!` from the build
+# environment (the Makefile's `TELEMETRY_ENV`, the release workflow), which reaches every crate.
+plx_telemetry = { path = "telemetry" }
 # safe pure-Rust JPEG/PNG decoders — replaces vendored stb_image.h (~8k lines C)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # raw socket/libc FFI for the stream module (correct constants + struct layouts)
@@ -241,3 +248,5 @@ plx_net = { path = "net", features = ["test-support"] }
 plx_ui = { path = "ui", features = ["test-support"] }
 # Likewise the plex layer's session fixtures and `*_for_test` seams.
 plx_plex = { path = "plex", features = ["test-support"] }
+# Likewise the telemetry layer's consent, spool and queue seams and the usage-event schema tables.
+plx_telemetry = { path = "telemetry", features = ["test-support"] }

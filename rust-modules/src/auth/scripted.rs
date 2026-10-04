@@ -21,7 +21,7 @@
 /// account touched: paired with `plxnative-login` (which already forces `BootTo::Login` with no
 /// session), `login_worker_with_output` reads this ONCE at the top of the worker thread and, for
 /// every case named here, skips straight to `auth::output_failed_naming` with a canned caption,
-/// [`crate::telemetry::incident::IncidentContext`] and (`discovery_no_servers` only) a canned account name instead of minting a PIN or discovering
+/// [`plx_telemetry::telemetry::incident::IncidentContext`] and (`discovery_no_servers` only) a canned account name instead of minting a PIN or discovering
 /// anything — the exact same terminal path a real failure reaches, so `LoginScreen`'s `Phase::
 /// Error` draw, `readout_kind` and `readout_glyph` are exercised UNMODIFIED. Every value below is
 /// the one `auth::discovery_failure`'s table would have built for the same cause; see that
@@ -79,14 +79,14 @@ impl ReadoutCase {
         Some(plx_base::devtrig::read("readout-account").unwrap_or_else(|| MOCK_ACCOUNT.to_string()))
             .filter(|name| !name.trim().is_empty())
     }
-    /// The canned caption + [`IncidentContext`](crate::telemetry::incident::IncidentContext)
+    /// The canned caption + [`IncidentContext`](plx_telemetry::telemetry::incident::IncidentContext)
     /// `login_worker_with_output` feeds `output_failed_naming` (with [`Self::canned_account`]) in place of the real network calls — see
     /// [`readout_case`]'s doc.
     pub(crate) fn canned_login_failure(
         self,
-    ) -> (std::borrow::Cow<'static, str>, crate::telemetry::incident::IncidentContext) {
+    ) -> (std::borrow::Cow<'static, str>, plx_telemetry::telemetry::incident::IncidentContext) {
         use plx_platform::i18n::msg;
-        use crate::telemetry::incident::{
+        use plx_telemetry::telemetry::incident::{
             DiscoveryClass, DiscoveryEvidence, DiscoveryTarget, DiscoveryTrigger, IncidentContext,
             IncidentKind, LinkClass,
         };

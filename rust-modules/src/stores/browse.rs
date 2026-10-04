@@ -867,10 +867,10 @@ mod contract_tests {
             })
         };
         let observe = |target, select, choice| {
-            crate::diag::test_events::capture(|| commit(target, select, choice))
+            plx_telemetry::diag::test_events::capture(|| commit(target, select, choice))
         };
-        let switched = crate::diag::schema::DiagEvent::FeatureUsed {
-            feature: crate::diag::schema::Feature::LibrarySwitch,
+        let switched = plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
+            feature: plx_telemetry::diag::schema::Feature::LibrarySwitch,
         };
 
         // Same-current includes the final A commit after a pending A→B→A was superseded.
@@ -919,7 +919,7 @@ mod contract_tests {
             (true, vec![switched]),
             "a later real switch counts once"
         );
-        let (accepted, events) = crate::diag::test_events::capture(|| {
+        let (accepted, events) = plx_telemetry::diag::test_events::capture(|| {
             stores.browse_run(BrowseCmd::Addressed {
                 target: b,
                 work: LibraryWork::Commit {

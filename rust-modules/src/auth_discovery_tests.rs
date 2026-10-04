@@ -2412,15 +2412,15 @@ fn no_servers_evidence_counts_the_players_and_names_the_trigger() {
     ))
     .unwrap();
     for (resources, trigger, bucket) in [
-        (one, DiscoveryTrigger::Rediscover, crate::telemetry::incident::CountBucket::One),
-        (seven, DiscoveryTrigger::Login, crate::telemetry::incident::CountBucket::SixPlus),
+        (one, DiscoveryTrigger::Rediscover, plx_telemetry::telemetry::incident::CountBucket::One),
+        (seven, DiscoveryTrigger::Login, plx_telemetry::telemetry::incident::CountBucket::SixPlus),
     ] {
         let resolved = resolve_roster(&resources, &[], CredentialPolicy::HttpsOnly, &|_| (0, Vec::new()));
         let d = resolved_without_roster(resolved, trigger).err().expect("no server is a failure");
         let Discovery::NoServers(evidence) = d else { panic!("expected NoServers") };
         assert_eq!(
             evidence,
-            crate::telemetry::incident::NoServersEvidence { resources: bucket, trigger }
+            plx_telemetry::telemetry::incident::NoServersEvidence { resources: bucket, trigger }
         );
         let (_, incident) = discovery_failure(&d).expect("no servers is a failure");
         assert_eq!(incident.no_servers, Some(evidence));
@@ -2487,8 +2487,8 @@ fn a_no_servers_sign_in_hands_the_screen_the_account_name() {
 #[test]
 fn the_account_name_is_fetched_only_for_a_no_servers_verdict() {
     let output = TerminalCapture(std::sync::Mutex::new(Vec::new()));
-    let evidence = crate::telemetry::incident::NoServersEvidence {
-        resources: crate::telemetry::incident::CountBucket::One, trigger: DiscoveryTrigger::Login };
+    let evidence = plx_telemetry::telemetry::incident::NoServersEvidence {
+        resources: plx_telemetry::telemetry::incident::CountBucket::One, trigger: DiscoveryTrigger::Login };
     for (verdict, asks) in [
         (Discovery::NoServers(evidence), true),
         (Discovery::Refused, false),
@@ -2736,8 +2736,8 @@ fn a_dead_sink_never_asks_for_the_account_name() {
         fn progress(&self, _: AuthProgress) -> bool { false }
         fn terminal(&self, _: AuthProgress) -> bool { false }
     }
-    let evidence = crate::telemetry::incident::NoServersEvidence {
-        resources: crate::telemetry::incident::CountBucket::One, trigger: DiscoveryTrigger::Login };
+    let evidence = plx_telemetry::telemetry::incident::NoServersEvidence {
+        resources: plx_telemetry::telemetry::incident::CountBucket::One, trigger: DiscoveryTrigger::Login };
     let mut calls = 0;
     let account = no_servers_account_with(&Discovery::NoServers(evidence), &Dead,
         || { calls += 1; Some("n".to_owned()) });

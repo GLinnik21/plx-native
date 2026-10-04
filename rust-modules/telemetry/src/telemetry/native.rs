@@ -30,12 +30,12 @@ const DATABASE_DIR: &str = "plxnative-sentry-db";
 const PENDING_DIR: &str = "plxnative-sentry-pending";
 
 /// Keep the capture backend alive until the app leaves `plex_run` cleanly (see the `Drop` impl).
-pub(crate) struct Guard;
+pub struct Guard;
 
 /// Enough identity to pair a native envelope with the crash log's record of the same death. There
 /// is no timestamp in the async-signal-safe fallback record.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CrashKey {
+pub struct CrashKey {
     pub build_id: String,
     pub signal: u32,
 }
@@ -59,7 +59,7 @@ impl Drop for Guard {
 ///
 /// Boot imports pending envelopes before calling this. A withdrawal first restores the C crash
 /// tracer that Sentry found installed ahead of it, then removes both native directories.
-pub(crate) fn sync(c: &super::consent::Consent) -> Guard {
+pub fn sync(c: &super::consent::Consent) -> Guard {
     let wanted = c.answered() && c.errors && super::sender::sentry_dsn().is_some();
     if wanted {
         start();
@@ -75,7 +75,7 @@ pub(crate) fn sync(c: &super::consent::Consent) -> Guard {
 /// A change that leaves the backend running (say, product analytics toggled while crash reports
 /// stay on) still re-applies the crash-report id to the scope: `start` returns early once active,
 /// and the id it set at init is the one the daemon would otherwise keep.
-pub(crate) fn sync_change(c: &super::consent::Consent) {
+pub fn sync_change(c: &super::consent::Consent) {
     let wanted = c.answered() && c.errors && super::sender::sentry_dsn().is_some();
     if wanted {
         import_all();
@@ -512,20 +512,20 @@ fn sanitise_user(event: &mut serde_json::Value) {
 /// The placeholder the consent preview shows where a real report carries the crash-report id.
 /// Named here so the sanitizer can let it through the shape check the preview otherwise shares
 /// with a real envelope.
-pub(crate) const PREVIEW_USER_ID: &str = "<crash report id>";
+pub const PREVIEW_USER_ID: &str = "<crash report id>";
 
 /// A representative native crash built through the same path sanitizer as a real envelope.
 ///
 /// Dynamic values are explicit placeholders: the preview is shown before consent, so it may not
 /// manufacture an event id or inspect a pending crash merely to explain the schema.
-pub(crate) fn preview_event() -> Vec<u8> {
+pub fn preview_event() -> Vec<u8> {
     let mut event = serde_json::json!({
         "event_id": "<random id for this crash>",
         "breadcrumbs": super::window::preview(),
         "timestamp": "<crash time>",
         "platform": "native",
         "level": "fatal",
-        "release": concat!("plxnative@", env!("PLX_VERSION")),
+        "release": super::release(),
         "environment": super::sender::ENVIRONMENT,
         "dist": "<ELF build id>",
         "sdk": {"name": "plxnative", "version": "0.16.5"},
@@ -647,16 +647,16 @@ fn event_from_envelope(bytes: &[u8]) -> Option<(String, Vec<u8>, Option<CrashKey
 /// that aborted leaves both a `*** RUST PANIC` record and this SIGABRT envelope, and the panic is
 /// the one worth sending — so the envelope must still be on disk, unqueued, when that is decided.
 /// `crashreport::recover_pending` owns the order of every append, delete and watermark write.
-pub(crate) struct PendingNative {
+pub struct PendingNative {
     path: PathBuf,
     event_id: String,
     body: Vec<u8>,
-    pub(crate) key: Option<CrashKey>,
+    pub key: Option<CrashKey>,
 }
 
 impl PendingNative {
     /// Append the event to the durable spool. The envelope stays on disk until [`Self::delete`].
-    pub(crate) fn append(&self) -> bool {
+    pub fn append(&self) -> bool {
         super::spool::append(&super::queue::Record {
             category: super::queue::Category::Errors,
             dest: super::queue::Dest::Sentry,
@@ -665,7 +665,7 @@ impl PendingNative {
         })
     }
 
-    pub(crate) fn delete(&self) {
+    pub fn delete(&self) {
         let _ = std::fs::remove_file(&self.path);
     }
 }
@@ -675,7 +675,7 @@ impl PendingNative {
 /// not be read this boot (see [`Loaded::Deferred`]).
 ///
 /// Reads nothing unless `crashreport::may_read_crash_data` — the same gate as the crash log.
-pub(crate) fn read_pending() -> Vec<PendingNative> {
+pub fn read_pending() -> Vec<PendingNative> {
     if !super::crashreport::may_read_crash_data() {
         return Vec::new();
     }
@@ -867,7 +867,7 @@ mod sdk {
         let Some(executable) = cstring(executable_path.as_os_str().as_encoded_bytes()) else {
             return;
         };
-        let Some(release) = cstring(format!("plxnative@{}", env!("PLX_VERSION"))) else {
+        let Some(release) = cstring(super::super::release()) else {
             return;
         };
         let Some(environment) = cstring(super::super::sender::ENVIRONMENT) else {
@@ -974,7 +974,7 @@ fn set_user(_id: Option<&str>) {}
 
 /// Sparse breadcrumbs use the already-running, consent-gated native capture backend. Its
 /// transport is disabled; these leave the device only with a later crash event.
-pub(crate) fn record_window(observation: super::window::Observation) {
+pub fn record_window(observation: super::window::Observation) {
     #[cfg(all(target_os = "linux", target_arch = "arm"))]
     sdk::record_window(observation);
     #[cfg(not(all(target_os = "linux", target_arch = "arm")))]

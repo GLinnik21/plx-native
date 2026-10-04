@@ -71,12 +71,12 @@ use std::sync::RwLock;
 // there is no version-4 answer in the world to expand — only the maintainer's own debug installs,
 // which are re-answered by hand. The first release that ships the question ships it with the
 // identifier already in it. The rule above stands for every bump after that one.
-pub(crate) const POLICY_VERSION: u32 = 4;
+pub const POLICY_VERSION: u32 = 4;
 
 /// The stored decision. Serde-serialised to the telemetry file; every field is read and written, so
 /// none of them is dead even while only one accessor has a caller.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Consent {
+pub struct Consent {
     /// The [`POLICY_VERSION`] this decision was made against. `0` means never asked — which is
     /// what a fresh install has, and is deliberately distinguishable from "asked, and said no to
     /// everything".
@@ -123,11 +123,11 @@ pub(crate) struct Consent {
     /// Fields this build does not know, kept verbatim so another writer's data survives a rewrite
     /// by this one.
     #[serde(flatten, default)]
-    pub(crate) extensions: std::collections::BTreeMap<String, serde_json::Value>,
+    pub extensions: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Category {
+pub enum Category {
     Errors,
     Usage,
 }
@@ -141,7 +141,7 @@ pub(crate) enum Category {
 /// into "unanswered" and re-ask it; a scope only decides what an existing Yes covers. A person who
 /// said Yes before this scope existed is not Granted it — [`report_permission`] answers
 /// `NotDetermined` and the incident is offered, one report at a time, instead of sent.
-pub(crate) const ONBOARDING_REPORT_SCOPE: u32 = 7;
+pub const ONBOARDING_REPORT_SCOPE: u32 = 7;
 
 /// One row per (category, scope) bump. Rows 4–6 are the scopes 0.6.6 recorded at the policy
 /// version of the same number, which is what lets [`scope_at_policy_version`] backfill a record
@@ -183,7 +183,7 @@ fn current_scope(cat: Category) -> u32 {
 /// Backfill the accepted scope of a record written before per-category scope existed. Only a
 /// category that is ON with scope still `0` changes, so it is idempotent and never lowers or
 /// overwrites a scope a person already accepted.
-pub(crate) fn migrate_loaded(mut c: Consent) -> Consent {
+pub fn migrate_loaded(mut c: Consent) -> Consent {
     if c.asked_version >= 1 {
         if c.errors && c.errors_scope == 0 {
             c.errors_scope = scope_at_policy_version(c.asked_version, Category::Errors);
@@ -195,7 +195,7 @@ pub(crate) fn migrate_loaded(mut c: Consent) -> Consent {
     c
 }
 
-#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))), test, feature = "test-support"))]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CanonicalDecision {
@@ -207,7 +207,7 @@ struct CanonicalDecision {
     extensions: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))), test, feature = "test-support"))]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CanonicalScopes {
@@ -215,7 +215,7 @@ struct CanonicalScopes {
     usage: u32,
 }
 
-#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))), test, feature = "test-support"))]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CanonicalIds {
@@ -223,9 +223,9 @@ struct CanonicalIds {
     errors: Option<String>,
 }
 
-#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))), test, feature = "test-support"))]
 /// Split consent into the three DB8-public slots the canonical state clears atomically on logout.
-pub(crate) fn split_canonical(consent: &Consent) -> Result<plx_platform::storage::state::ConsentPayload, ()> {
+pub fn split_canonical(consent: &Consent) -> Result<plx_platform::storage::state::ConsentPayload, ()> {
     Ok(plx_platform::storage::state::ConsentPayload {
         consent: serde_json::to_value(CanonicalDecision {
             asked_version: consent.asked_version,
@@ -249,8 +249,8 @@ pub(crate) fn split_canonical(consent: &Consent) -> Result<plx_platform::storage
     })
 }
 
-#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
-pub(crate) fn join_canonical(payload: &plx_platform::storage::state::ConsentPayload) -> Result<Consent, ()> {
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))), test, feature = "test-support"))]
+pub fn join_canonical(payload: &plx_platform::storage::state::ConsentPayload) -> Result<Consent, ()> {
     let decision: CanonicalDecision = serde_json::from_value(payload.consent.clone()).map_err(|_| ())?;
     let scopes: CanonicalScopes = serde_json::from_value(payload.scopes.clone()).map_err(|_| ())?;
     let ids: CanonicalIds = serde_json::from_value(payload.ids.clone()).map_err(|_| ())?;
@@ -270,11 +270,11 @@ pub(crate) fn join_canonical(payload: &plx_platform::storage::state::ConsentPayl
 
 impl Consent {
     /// Has this person been asked, against the CURRENT policy? A bump re-asks.
-    pub(crate) fn answered(&self) -> bool {
+    pub fn answered(&self) -> bool {
         self.asked_version >= POLICY_VERSION
     }
     /// Is anything switched on at all?
-    pub(crate) fn any(&self) -> bool {
+    pub fn any(&self) -> bool {
         self.errors || self.usage
     }
 }
@@ -286,7 +286,7 @@ impl Consent {
 /// heartbeat on a known route, and every `sim-shot` script drives a screen it chose. Getting this
 /// wrong would not fail loudly — it would quietly re-point every headless run at a screen nobody
 /// wrote an assertion for.
-pub(crate) fn should_ask(c: &Consent, automated: bool) -> bool {
+pub fn should_ask(c: &Consent, automated: bool) -> bool {
     !automated && !c.answered()
 }
 
@@ -312,7 +312,7 @@ pub(crate) fn should_ask(c: &Consent, automated: bool) -> bool {
 /// * a channel whose mint returns `None` is recorded as off, and the other channel still counts;
 /// * the answer is recorded against the current [`POLICY_VERSION`] either way, so a "no" is a real
 ///   answer and is not re-asked until the policy itself changes.
-pub(crate) fn apply(
+pub fn apply(
     prev: &Consent,
     errors: bool,
     usage: bool,
@@ -357,7 +357,7 @@ pub(crate) fn apply(
 /// Whether a report of a given Errors scope may be sent without asking, must be asked about, or
 /// must not be offered at all. Derived, never stored: the stored decision is [`Consent`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum Permission {
+pub enum Permission {
     /// Never answered, or a Yes given before this scope existed and never declined at it. The
     /// report is OFFERED — sent only on an explicit press, as a one-off with no identifier.
     NotDetermined,
@@ -375,7 +375,7 @@ pub(crate) enum Permission {
 /// "Never answered" is `asked_version == 0`, deliberately not `!answered()`: an answer given
 /// against an older [`POLICY_VERSION`] is still an answer, and a stored No must stay No. Among
 /// Yes answers the accepted scope decides; a decline recorded at or above `scope` is a No to it.
-pub(crate) fn report_permission(c: &Consent, scope: u32) -> Permission {
+pub fn report_permission(c: &Consent, scope: u32) -> Permission {
     if c.asked_version == 0 {
         return Permission::NotDetermined;
     }
@@ -393,7 +393,7 @@ pub(crate) fn report_permission(c: &Consent, scope: u32) -> Permission {
 
 /// [`report_permission`] over the published snapshot. Nothing published yet is `NotDetermined`:
 /// the only thing that answer can lead to is an offer, and an offer sends nothing by itself.
-pub(crate) fn report_permission_now(scope: u32) -> Permission {
+pub fn report_permission_now(scope: u32) -> Permission {
     current().map_or(Permission::NotDetermined, |c| report_permission(&c, scope))
 }
 
@@ -407,21 +407,21 @@ static CURRENT: RwLock<Option<Consent>> = RwLock::new(None);
 static REVISION: AtomicU32 = AtomicU32::new(0);
 
 /// Make `c` the decision every later [`allows_usage`] sees. Called after a load or a save.
-pub(crate) fn install(c: Consent) {
+pub fn install(c: Consent) {
     if let Ok(mut g) = CURRENT.write() {
         *g = Some(c);
         REVISION.fetch_add(1, Ordering::SeqCst);
     }
 }
 
-pub(crate) fn revision() -> u32 {
+pub fn revision() -> u32 {
     REVISION.load(Ordering::SeqCst)
 }
 
 /// The decision as last published, if one has been. `None` means nothing has been loaded yet —
 /// distinct from "a decision that allows nothing", which is what a refusal looks like, and the
 /// consent screen needs to tell those apart to seed itself honestly.
-pub(crate) fn current() -> Option<Consent> {
+pub fn current() -> Option<Consent> {
     CURRENT.read().ok().and_then(|g| g.clone())
 }
 
@@ -430,7 +430,7 @@ pub(crate) fn current() -> Option<Consent> {
 /// **Fails closed.** No snapshot installed, or a poisoned lock, both answer `false` — a build that
 /// has not loaded a decision has not been given one, and the only safe reading of "I do not know"
 /// here is no.
-pub(crate) fn allows_usage() -> bool {
+pub fn allows_usage() -> bool {
     CURRENT
         .read()
         .map(|g| g.as_ref().is_some_and(|c| c.answered() && c.usage))
@@ -441,7 +441,7 @@ pub(crate) fn allows_usage() -> bool {
 /// the same reason. It gates both `crashreport::recover_pending` (the only thing that opens the
 /// crash log at all) and the sparse in-memory playback-error trace. Consent gates collection, not
 /// just the send: a television whose owner said no is neither scanned for faults nor traced.
-pub(crate) fn allows_errors() -> bool {
+pub fn allows_errors() -> bool {
     CURRENT
         .read()
         .map(|g| g.as_ref().is_some_and(|c| c.answered() && c.errors))
@@ -453,7 +453,7 @@ pub(crate) fn allows_errors() -> bool {
 /// touches the disk for it. `None` while [`allows_errors`] is true cannot happen through [`apply`],
 /// but a producer must READ it rather than assume it: the failure would be a report carrying a
 /// fabricated or empty id, which is the one outcome this field exists to make impossible.
-pub(crate) fn errors_id() -> Option<String> {
+pub fn errors_id() -> Option<String> {
     CURRENT.read().ok().and_then(|g| {
         g.as_ref()
             .filter(|c| c.answered() && c.errors)
@@ -470,8 +470,7 @@ pub(crate) fn errors_id() -> Option<String> {
 /// It only reads a trigger file and builds this module's own [`Consent`], so it lives here beside
 /// the one consumer (`capture_initial`) rather than in `dev::scenarios`, which the telemetry layer
 /// may not name.
-#[cfg_attr(test, allow(dead_code))]
-pub(crate) fn state_override() -> Option<Consent> {
+pub fn state_override() -> Option<Consent> {
     let spec = plx_base::devtrig::read("consentstate")?;
     // An answered record as `consent::apply` would have written it: errors on at `scope` with a
     // freshly minted Crash report ID, or errors off with nothing kept.
