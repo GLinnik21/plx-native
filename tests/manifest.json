@@ -92,9 +92,36 @@
         "plxnative-grid": true,
         "plxnative-homeosc": true
       },
+      "mock": {},
       "_floor_note": "homeosc is load-bearing since ui::idle landed: a STILL grid now presents ~0 frames/s by design, so an fps floor taken on one would grade the idle gate, not the grid's fill rate. Sweeping focus keeps the shelf rendering, which is what this scene is for. The still case is gated by fps:home-idle instead.",
       "fps_floor": 20,
       "_fps_floor_note": "Measured healthy median 41 fps on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle — the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 20 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `loop_floor`, which grades loop= and falls with the render rate while presenting."
+    },
+    {
+      "name": "home-grid-deep",
+      "tier": "ui",
+      "route": "home",
+      "loop_floor": 50,
+      "fps_floor": 20,
+      "run_secs": 150,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-grid": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "home_hubs": 170,
+        "only": true
+      },
+      "walk": {
+        "key_gap_s": 0.33,
+        "max_rows": 170,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5
+      },
+      "comment": "Home with a hundred and seventy rows (#395), against the SYNTHETIC mock only: `./tests/run.py --fps --mock --filter home-grid-deep` starts tests/mock_pms.py --home-hubs 170 itself and needs no Plex account. plxnative-homeosc sweeps only ~9 rows either side of the top, so this scene instead presses Down once per LANDED row (the count is read from the `hubs: landed` log line, never hard-coded: a build with a card bound lands fewer rows than one without) at ~3 keys/s, rests, and presses Up back, and grades the heartbeats of THAT window. Floors are home-grid's own (loop_floor 50, fps_floor 20 on the median; see its notes): the walk steps focus every 330 ms exactly as its oscillator does every 350 ms, so the same duty-cycle reasoning applies. plxnative-framedrop is armed (25 ms) because the heartbeat only carries its frame_n/frame_gt33/frame_max fields then; frame_gt33, the worst frame and p99 over the window are printed in the result and NOT graded. run_secs covers max_rows both ways at key_gap_s (tests hold it to that); keys are only ever down/up, never ok or back."
     },
     {
       "name": "home-idle",

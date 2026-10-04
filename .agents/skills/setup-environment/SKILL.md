@@ -81,9 +81,13 @@ Watching (so N-1 shelves plus Continue Watching), for work on Home with many row
 Home, add `--arm framedrop=25` to `up`: the event log then gets `FRAMEDROP` detail lines for
 frames over 25 ms.
 
-Without a TV, `make check` and `make sim` need no account either. `./tests/run.py --server` and
-`--fps` call `read_token()` (a `PMS_TOKEN` in `src/config.local.h`) and read
-`tests/manifest.local.json`, so they cannot target the mock today.
+Without a TV, `make check` and `make sim` need no account either. `./tests/run.py --fps --mock`
+runs the fps scenes that declare a `mock` block (`home-grid`, `home-grid-deep`) against the mock
+with no `PMS_TOKEN`, no `tests/manifest.local.json` and no plex.tv call: it starts and stops
+`tests/mock_pms.py` itself on `PMS_HOST`/`PMS_PORT` with each scene's arguments (stop a mock you
+started by hand first), boots the same synthetic guest as `up --guest --mock`, and keeps the panel
+and sound off. `./tests/run.py --server` (and plain `--fps`) still call `read_token()` and read
+`tests/manifest.local.json`, so they cannot target the mock.
 
 That's the whole setup. The sections below explain what each piece is, how to
 verify it, and how to fix it when it goes wrong — read them when the fast path

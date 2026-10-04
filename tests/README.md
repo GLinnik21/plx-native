@@ -433,6 +433,44 @@ cast+about / info-panel regressions.
 ./tests/run.py --list          # scenes print as `fps:<name>`
 ```
 
+### Against the synthetic mock (`--fps --mock`)
+
+```bash
+# No Plex account: no PMS_TOKEN, no manifest.local.json, no plex.tv call. Needs .tv-host and
+# src/config.local.h with PMS_HOST/PMS_PORT (the address the debug binary was built against).
+tools/tv-lock.sh with --why "fps mock" -- ./tests/run.py --fps --mock --filter home-grid-deep
+./tests/run.py --fps --mock    # every scene that declares a `mock` block: home-grid, home-grid-deep
+```
+
+`--mock` starts `tests/mock_pms.py` itself for each scene, on the `PMS_HOST`/`PMS_PORT` of
+`src/config.local.h`, with the arguments in the scene's `"mock"` block (`{"home_hubs": 170}` becomes
+`--home-hubs 170`), and stops it afterwards; it refuses to start if something already answers on
+that address. It boots the synthetic guest `tools/tv-session.sh up --guest --mock` boots
+(`tools/mock-guest.py`, which refuses any server that is not the synthetic mock), and every scene
+is then checked against the app's own log: no `pms: server N version=1.41.0.0000-synthetic` line,
+or any other server version, fails the scene before it is graded. Debug flavor only; `--server`,
+`--owner`, `--shared-server`, `--suite` and `--graphics-profile` are refused with it. The panel is
+turned off (`tv-session.sh screen off`, before every scene) and the sound muted (`sound off`) —
+the run stops if either cannot be done — and neither is ever turned back on.
+
+A scene is runnable under `--mock` only if it carries a `"mock"` block (`{}` for the default
+library); everything else needs real library content and is skipped with that reason. `"only":
+true` marks a scene that runs ONLY under `--mock` (it is skipped, with a reason, on a plain
+`--fps`). An exact scene name as `--filter` selects that scene alone (`home-grid` does not pull in
+`home-grid-deep`).
+
+`home-grid-deep` is the Home-with-many-rows scene (#395): `--home-hubs 170`. `plxnative-homeosc`
+only sweeps about nine rows either side of the top, so it instead presses **Down once per landed
+row** at about three keys a second, rests, and presses **Up** back, through one ssh paced from the
+Mac (the keys go into the app's own remote FIFO; only `down` and `up` are ever sent). The row count
+is read from the `hubs: landed — N items, S shelves` log line, never hard-coded, so a build that
+bounds the cards lands fewer rows and the scene walks those. Grading is `home-grid`'s own, applied
+to the window between the first and last key (plus two heartbeats): `loop_floor` 50 on the
+2nd-lowest `loop=`, `fps_floor` 20 on the median `fps=`. `frame_gt33`, the worst frame, p99 and
+the peak `fps=` (which shows a 60 versus 50 Hz panel state) are printed in the result and **not**
+graded. `run_secs` must cover `2 * max_rows * key_gap_s` plus the waits (a harness test holds every
+`walk` scene to that).
+
 The finite `poster-scroll-settle`, `poster-eviction-reversal` and `poster-hero-grid-dive`
 scenes additionally grade `poster-gate:` telemetry. Run them with `--fps --only poster-`.
 Their moving FPS counts actual swaps between the first and last moving-card frames using the
