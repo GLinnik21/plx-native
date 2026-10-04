@@ -32,6 +32,9 @@ Scene fields (tests/manifest.json, `fps_scenes`):
                                 `libhubs: section N landed M shelves` line, a second Down per
                                 linked shelf, `extra_rows` more to reach the grid, and a
                                 `focus route=... region=grid` fingerprint required in the window
+  "walk": {"min_landed": 150, ...}
+                                the scene FAILS when fewer shelves (rows) than that landed, so a
+                                cap that shortens the surface cannot pass on the shorter walk
 
 A scene with no `mock` block is never run under --mock: it needs real library content, and guessing
 which scenes do not is how a synthetic library grades the wrong thing.
@@ -357,6 +360,15 @@ def grid_fingerprint_seen(window, route, region):
     (`focusprobe`, armed by `plxnative-focus`; logged on change, so one line is a focus MOVE)."""
     rx = re.compile(rf"\bfocus route={re.escape(route)}\b.*\bregion={re.escape(region)}\b")
     return any(rx.search(ln) for ln in window or [])
+
+
+def deepest_shelf_row(window, route):
+    """The largest `row=` among the window's `focus route=<route> ... region=shelf row=<R>`
+    fingerprints (`focusprobe`, armed by `plxnative-focus`), or None when there is none. This is
+    the SCREEN's evidence of how deep the walk got, as opposed to the data layer's landed count."""
+    rx = re.compile(rf"\bfocus route={re.escape(route)}\b.*\bregion=shelf row=(\d+)\b")
+    rows = [int(m.group(1)) for ln in window or [] if (m := rx.search(ln))]
+    return max(rows) if rows else None
 
 
 KEY_RE = re.compile(r"\bkey type=0x300\b")

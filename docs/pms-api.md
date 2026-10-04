@@ -361,6 +361,11 @@ Measured on this server, and every one of these is a thing the OpenAPI spec does
   hub is required, not a nicety.
 * **`count` defaults to 6** and is honoured up to at least 24. It is items-per-hub; it never
   changes how many hubs come back.
+* **There is no paging of hubs** (the route's parameters are `count`, `onlyTransient` and
+  `identifier`), so a server with many promoted collections answers with all of them at once. The
+  Library takes every hub the server sends, at most `MAX_SHELF_ITEMS` (24) cards each, and bounds
+  only the section's total: `section_hubs::SECTION_CARDS_MAX` = `HOME_CARDS_MAX` = 2,048 cards,
+  whole shelves dropped from the tail and logged as `libhubs: card bound 2048 reached`.
 * **`onlyTransient` is a no-op on this server** — `0`, `1` and absent all returned the same nine
   hubs. Do not send it and do not rely on it.
 * **`Accept: */*` returns XML here too**, like every other PMS route. The client's explicit

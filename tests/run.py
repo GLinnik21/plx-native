@@ -6011,6 +6011,13 @@ def grade_walk_prelude(scene, lines, walker):
     library = walk.get("landed") == "library"
     unit = "shelf" if library else "row"
     rows = walker.rows or 0
+    # `walk.min_landed`: fewer shelves than this landed means a cap or a failed fetch cut the
+    # surface short, and the (shorter) walk that followed would grade it green on those rows.
+    min_landed = int(walk.get("min_landed", 0))
+    if min_landed and rows < min_landed:
+        return (f"only {rows} {unit}(s) landed, below the scene's min_landed {min_landed}: fewer "
+                f"{unit}s landed than min_landed (a short or failed fetch, or the data layer "
+                f"dropped {unit}s)"), lines, ""
     # Home: one Down per landed row. Library: one per shelf, a second for each linked shelf, and
     # `extra_rows` more past the shelves (`mock_fps.walk_downs`), all capped at `max_rows`.
     want = 2 * min(mock_fps.walk_downs(scene, rows), int(walk["max_rows"])) if rows else 0
@@ -6028,6 +6035,15 @@ def grade_walk_prelude(scene, lines, walker):
         return (f"no `focus route={scene['route']} ... region={region}` fingerprint in the walk's "
                 f"window: the {walker.sent} key(s) never carried focus into the {region} "
                 f"(is `plxnative-focus` armed, and are `extra_rows` enough?)"), lines, ""
+    # A library walk with `min_landed` must also reach a deep shelf ON SCREEN: the landed count is
+    # the store's, and a screen that capped its rows again would still walk into the grid.
+    if library and min_landed:
+        deepest = mock_fps.deepest_shelf_row(window, scene["route"])
+        if deepest is None or deepest < min_landed - 1:
+            seen = "none" if deepest is None else str(deepest)
+            return (f"deepest shelf the walk reached on screen is `region=shelf row={seen}`, below "
+                    f"the minimum row {min_landed - 1} (min_landed {min_landed} - 1): the SCREEN is "
+                    f"not showing the shelves the store published ({rows} landed)"), lines, ""
     final = mock_fps.landed_shelves(scene, lines)
     stats = mock_fps.frame_stats(window, scene["route"])
     keys_seen = sum(1 for ln in window if mock_fps.KEY_RE.search(ln))
