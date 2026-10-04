@@ -3,8 +3,11 @@
 A fast, unofficial [Plex](https://www.plex.tv/) client for LG webOS televisions. Native, not a web
 page — the interface is drawn straight on the GPU at 60 fps, and video plays on the TV's own decoder.
 
-*In daily use on a 2019 LG set. Website: [plxnative.com](https://plxnative.com/). Get started with the
-[installation guide](docs/install-and-verify.md).*
+**Website: [plxnative.com](https://plxnative.com/)** · [Install guide](https://plxnative.com/install/) ·
+[Troubleshooting](https://plxnative.com/troubleshooting/)
+
+*In daily use on a 2019 LG set. PlxNative is an independent project and is not affiliated with Plex, Inc.
+or LG. The same install steps are in the repo: [installation guide](docs/install-and-verify.md).*
 
 ## Why this exists
 
