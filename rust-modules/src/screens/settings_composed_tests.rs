@@ -47,9 +47,9 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 use crate::screens::registry::{self, AppFx, AppMsg};
-use crate::ui::containers::modal::{Phase, Style};
-use crate::ui::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
-use crate::ui::fixture::{key, tick, FixtureMeasure};
+use plx_ui::containers::modal::{Phase, Style};
+use plx_ui::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
+use plx_ui::fixture::{key, tick, FixtureMeasure};
 use plx_machine::machine::{InputOwner, TimerId};
 use plx_machine::present::Present;
 
@@ -282,7 +282,7 @@ fn composed_owner_settings_done_survives_then_disappears_with_reverted_draft() {
 #[test]
 fn composed_owner_pointer_seats_and_validates_answer_press_identity_without_committing() {
     use plx_machine::machine::{InputEvent, InputKind, PressId, Source};
-    use crate::ui::screen::{Activate, Hover, Stop};
+    use plx_ui::screen::{Activate, Hover, Stop};
     let _g = plx_base::testlock::serial();
     for stage in [0, 1] {
         let (mut d, mut rig, id) = consent_opened(SettingsPage::ConsentStage(stage));

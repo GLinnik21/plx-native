@@ -37,7 +37,7 @@ fn concurrent_session_change_after_attachment_rolls_back_only_this_attempt() {
     let initial = initial_for(saved, entropy);
     let mut rec = Recplay::recording_with_sink(
         &initial,
-        Box::new(crate::ui::rec::DirSink::create(&latest).unwrap()),
+        Box::new(plx_ui::rec::DirSink::create(&latest).unwrap()),
     )
     .unwrap();
     assert!(latest.join("manifest.json").exists());
@@ -56,7 +56,7 @@ fn concurrent_session_change_after_attachment_rolls_back_only_this_attempt() {
         "refused attempt must not retain typed credentials or block create_new"
     );
     assert!(!latest.join("rec-0000.jsonl").exists());
-    assert!(crate::ui::rec::Recording::load(&latest, crate::app::recorder::state_fp()).is_err());
+    assert!(plx_ui::rec::Recording::load(&latest, crate::app::recorder::state_fp()).is_err());
     assert_eq!(
         std::fs::read(latest.join("preexisting-sentinel")).unwrap(),
         b"keep existing artifact"
@@ -75,7 +75,7 @@ fn concurrent_session_change_after_attachment_rolls_back_only_this_attempt() {
     let initial = initial_for(saved, entropy);
     let mut retry = Recplay::recording_with_sink(
         &initial,
-        Box::new(crate::ui::rec::DirSink::create(&latest).unwrap()),
+        Box::new(plx_ui::rec::DirSink::create(&latest).unwrap()),
     )
     .expect("immediate next attempt can open");
     boot::apply_deferred_capture(&mut retry, plx_machine::landgate::fixture_gate(), deferred).unwrap();

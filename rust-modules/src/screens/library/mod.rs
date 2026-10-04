@@ -36,24 +36,24 @@ use crate::screens::registry::{
 };
 use crate::stores::{StoreCmd, StoreId, StoreWork};
 use crate::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
-use crate::ui::card_row::{CardRow, RowStyle};
-use crate::ui::consts::{MARGIN_X, SCR_W, SCR_H, K_SCROLL, CARD_DY};
-use crate::ui::frame::Budget;
+use plx_ui::card_row::{CardRow, RowStyle};
+use plx_ui::consts::{MARGIN_X, SCR_W, SCR_H, K_SCROLL, CARD_DY};
+use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind,
     InstanceId, Key, LogicalState, Machine, MachineId,
 };
-use crate::ui::master_detail::{
+use plx_ui::master_detail::{
     Follow, MasterDetail, MasterDetailGroups, MasterDetailLayout, MasterDetailPolicy, MasterSide,
     Outcome as MasterOutcome, Region,
 };
 use plx_machine::present::Provenance;
-use crate::ui::screen::{
+use plx_ui::screen::{
     At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusTarget, Focusable,
     GroupKind, GroupSpec, Link, Part, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step,
 };
-use crate::ui::{Rect, Spring};
-use crate::ui::xfade::Xfade;
+use plx_ui::{Rect, Spring};
+use plx_ui::xfade::Xfade;
 use identity::{KeyRegistry, KeyRegion, region_of_elem};
 use layout::{Layout, Block, CONTENT_TOP, MAX_SHELVES};
 #[cfg(test)]
@@ -76,13 +76,13 @@ const PLAINTEXT_GROUP: GroupId = GroupId(0x4c49_4213);
 const PLAINTEXT_CANCEL: u32 = 5;
 const PLAINTEXT_CONNECT: u32 = 6;
 const TYPE: u32 = 7;
-const STRIP: GroupId = crate::ui::containers::tabs::STRIP;
+const STRIP: GroupId = plx_ui::containers::tabs::STRIP;
 
 pub(crate) const SHAPE: [&str; 8] = [
     "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,heading:Option<(group:u32,elem:u32)>,landscape:bool,elems:[u32],motion:CardRow}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
     transactions::SHAPE,
-    crate::ui::widgets::PageGround::SHAPE,
-    crate::ui::widgets::TabStrip::SHAPE,
+    plx_ui::widgets::PageGround::SHAPE,
+    plx_ui::widgets::TabStrip::SHAPE,
     "LibraryChrome{capsules:TabStrip,pop:CtlPop{sp:[Spring{pos:f32,vel:f32}],focused:Option<u32>},pair_groups:{master:u32,detail:u32}}",
     Layout::SHAPE,
     GridPart::SHAPE,
@@ -90,7 +90,7 @@ pub(crate) const SHAPE: [&str; 8] = [
 ];
 
 struct Regions;
-impl<H: LibraryLike> crate::ui::master_detail::KeyRegion<H> for Regions {
+impl<H: LibraryLike> plx_ui::master_detail::KeyRegion<H> for Regions {
     fn region(&self, elem: &u32, _: &Cx<'_, H>) -> Option<Region> {
         match region_of_elem(*elem) {
             Some(KeyRegion::Grid) => Some(Region::Detail),
@@ -183,9 +183,9 @@ pub(crate) struct LibraryScreen {
     placed: Vec<(GroupId, u32)>,
     sweep_down: bool,
     // Paint-only state: neither capsule travel nor ambient colours choose focus or activation.
-    library_capsules: crate::ui::widgets::TabStrip,
-    library_pop: crate::ui::widgets::CtlPop<1>,
-    ground: crate::ui::widgets::PageGround,
+    library_capsules: plx_ui::widgets::TabStrip,
+    library_pop: plx_ui::widgets::CtlPop<1>,
+    ground: plx_ui::widgets::PageGround,
     ground_seeded: bool,
     /// The failed source's server, when discovery offers the question for it
     /// (`plex::grant::offers`) — the grant table's, not logical state.
@@ -215,9 +215,9 @@ impl LibraryScreen {
             viewports: Vec::new(),
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
             readout: Readout::Loading, live: true, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
-            library_capsules: crate::ui::widgets::TabStrip::new(),
-            library_pop: crate::ui::widgets::CtlPop::new(),
-            ground: crate::ui::widgets::PageGround::new(), ground_seeded: false,
+            library_capsules: plx_ui::widgets::TabStrip::new(),
+            library_pop: plx_ui::widgets::CtlPop::new(),
+            ground: plx_ui::widgets::PageGround::new(), ground_seeded: false,
             plaintext: Default::default(),
             clock: Default::default(),
             plaintext_alert: super::plaintext_question::PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL, PLAINTEXT_CONNECT),
@@ -360,12 +360,12 @@ impl LibraryScreen {
                 self.libraries.clear();
             } else {
                 let widths: Vec<_> = self.library_lays(cx).iter().map(|lay|
-                    crate::ui::widgets::strip_pill_rect(lay, 0.0, crate::ui::widgets::StatusOverlay::CTRL_H).w).collect();
+                    plx_ui::widgets::strip_pill_rect(lay, 0.0, plx_ui::widgets::StatusOverlay::CTRL_H).w).collect();
                 let selected = self.libraries.iter().position(|(_, index)| *index == current).unwrap_or(0);
                 let more = std::ffi::CString::new(format!("+{}", widths.len().saturating_sub(1))).unwrap_or_default();
-                let more_w = cx.measure.width(&more, crate::ui::theme::size::BODY, true) + 2.0 * crate::ui::widgets::STRIP_PAD;
+                let more_w = cx.measure.width(&more, plx_ui::theme::size::BODY, true) + 2.0 * plx_ui::widgets::STRIP_PAD;
                 let (start, len) = layout::library_window(&widths, selected, layout::GRID_RIGHT - MARGIN_X,
-                    crate::ui::widgets::STRIP_GAP_WIDE, more_w, layout::MAX_LIBRARY_PILLS);
+                    plx_ui::widgets::STRIP_GAP_WIDE, more_w, layout::MAX_LIBRARY_PILLS);
                 if len < self.libraries.len() {
                     self.libraries = self.libraries[start..start + len].to_vec();
                     self.libraries.push((MORE, usize::MAX));
@@ -585,7 +585,7 @@ impl LibraryScreen {
         let region = match elem {
             Some(TYPE | SORT | FILTER) => "toolbar", Some(RETRY) => "status",
             Some(elem) if region_of_elem(elem) == Some(KeyRegion::Rail) => "rail",
-            Some(elem) if elem >= crate::ui::dispatch::STRIP_BASE => "strip",
+            Some(elem) if elem >= plx_ui::dispatch::STRIP_BASE => "strip",
             Some(_) => "library", None => "none",
         };
         (region, -1, -1, 0.0, self.scroll.pos)
@@ -659,7 +659,7 @@ impl LibraryScreen {
             fx.push(Fx::App(AppFx::Library(req)));
             return Handled::Yes;
         }
-        let strip = crate::ui::dispatch::STRIP_BASE;
+        let strip = plx_ui::dispatch::STRIP_BASE;
         let req = match elem.checked_sub(strip) {
             Some(0) => Some(LibraryReq::Tab(HomeTab::Home)),
             Some(1) => Some(LibraryReq::Tab(HomeTab::Movies)),
@@ -960,12 +960,12 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                     let spans: Vec<_> = (0..self.libraries.len()).map(|i| {
                         let rect = self.library_rect(i, cx); (rect.x, rect.w)
                     }).collect();
-                    self.library_capsules.update(selected, focused_library, |i| spans.get(i).copied(), crate::ui::widgets::SelMark::Travels, dt);
+                    self.library_capsules.update(selected, focused_library, |i| spans.get(i).copied(), plx_ui::widgets::SelMark::Travels, dt);
                     self.library_pop.step((focused_library >= 0).then_some(0), dt);
                     let colours = self.focused_item(focused, cx).filter(|item| item.has_blur).map(|item| item.blur)
                         .or_else(|| (!self.ground_seeded).then(|| H::listing(cx).item(0).filter(|item| item.has_blur).map(|item| item.blur)).flatten());
                     self.ground_seeded |= colours.is_some();
-                    self.ground.key(colours, crate::ui::widgets::PageGround::CARD_W, dt);
+                    self.ground.key(colours, plx_ui::widgets::PageGround::CARD_W, dt);
                     for row in &mut self.shelves {
                         let col = focused.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
                         row.motion.update(row.elems.len(), col, if row.landscape { &RowStyle::EPISODE } else { &RowStyle::HOME }, dt);
@@ -1055,7 +1055,7 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                     return Handled::Yes;
                 }
                 if let InputKind::Key { sym, wcode, edge: Edge::Down, .. } = input.kind {
-                    if let Some(dir) = crate::ui::consts::page_dir(sym, wcode) {
+                    if let Some(dir) = plx_ui::consts::page_dir(sym, wcode) {
                         return self.command(LibraryCmd::Page(dir), cx, fx);
                     }
                 }
@@ -1089,10 +1089,10 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
             let mut shelf = row_group(row.group, row.elems.len(), Rect::new(MARGIN_X, self.target_layout.shelf_y(index, self.scroll_target) + CARD_DY, SCR_W - 2.0 * MARGIN_X, row_style(row).h), ElemKind::Card);
             if let Some((group, elem)) = row.heading {
                 if let Some(rect) = self.heading_rect(index, cx, At::SpringTarget) {
-                    out.push(crate::ui::linked_heading::group_spec(group, rect));
+                    out.push(plx_ui::linked_heading::group_spec(group, rect));
                 }
                 // DOWN from the heading returns to the card this shelf remembered.
-                shelf.seat = crate::ui::linked_heading::shelf_seat(&cx.focus, elem, row.group, shelf.seat);
+                shelf.seat = plx_ui::linked_heading::shelf_seat(&cx.focus, elem, row.group, shelf.seat);
             }
             out.push(shelf);
         }
@@ -1147,7 +1147,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         } else if self.toolbar_elems().contains(elem) && self.layout.grid_head { self.toolbar_chip_rect(*elem, cx, at) }
         else if *elem == RETRY && self.readout == Readout::Failed { self.status_rect(cx)? }
         else { return None };
-        Some(Placed { rect, rest_rect: rest_rect.unwrap_or(rect), clip: Rect::new(0.0, crate::ui::widgets::TOP_BAR_BOTTOM, SCR_W, SCR_H - crate::ui::widgets::TOP_BAR_BOTTOM), index: None })
+        Some(Placed { rect, rest_rect: rest_rect.unwrap_or(rect), clip: Rect::new(0.0, plx_ui::widgets::TOP_BAR_BOTTOM, SCR_W, SCR_H - plx_ui::widgets::TOP_BAR_BOTTOM), index: None })
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
         if let Some(key) = self.plaintext_alert.reconcile(want) { return key; }
@@ -1163,7 +1163,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         }
         let group = self.first_group();
         self.row_elems(Some(group)).first().copied().map(|elem| self.key(elem))
-            .unwrap_or_else(|| self.key(crate::ui::dispatch::STRIP_BASE))
+            .unwrap_or_else(|| self.key(plx_ui::dispatch::STRIP_BASE))
     }
     fn seat(&self, group: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
         if let Some(key) = self.plaintext_alert.seat(group, self.entry) { return key; }
@@ -1172,7 +1172,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         let elem = elems.iter().filter_map(|elem| self.place(elem, cx, At::SpringTarget)
             .map(|placed| (*elem, (placed.rect.cx() - from.rect.cx()).abs())))
             .min_by(|a, b| a.1.total_cmp(&b.1)).map(|(elem, _)| elem)
-            .unwrap_or(crate::ui::dispatch::STRIP_BASE);
+            .unwrap_or(plx_ui::dispatch::STRIP_BASE);
         self.key(elem)
     }
 }
@@ -1193,7 +1193,7 @@ impl LibraryScreen {
     fn shelf_rect(&self, index: usize, col: usize) -> Rect {
         let row = &self.shelves[index];
         let style = row_style(row);
-        crate::ui::card_row::tile_rect(col, MARGIN_X, style.w + style.gap, row.motion.scroll_x(),
+        plx_ui::card_row::tile_rect(col, MARGIN_X, style.w + style.gap, row.motion.scroll_x(),
             self.layout.shelf_y(index, self.scroll.pos) + CARD_DY, (style.w, style.h)).scaled(row.motion.scale(col))
     }
     fn shelf_rect_at<H: LibraryLike>(&self, index: usize, col: usize, cx: &Cx<'_, H>, at: At) -> Rect {
@@ -1206,17 +1206,17 @@ impl LibraryScreen {
         let style = row_style(row);
         let focused = cx.focus.current.filter(|key| key.entry == self.entry)
             .and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
-        let x = focused.map(|col| crate::ui::card_row::scroll_into_view(row.motion.scroll_x(), col,
+        let x = focused.map(|col| plx_ui::card_row::scroll_into_view(row.motion.scroll_x(), col,
             row.elems.len(), style.w, style.gap, SCR_W - 2.0 * MARGIN_X)).unwrap_or(row.motion.scroll_x());
-        crate::ui::card_row::tile_rect(col, MARGIN_X, style.w + style.gap, x,
+        plx_ui::card_row::tile_rect(col, MARGIN_X, style.w + style.gap, x,
             self.target_layout.shelf_y(index, self.scroll_target) + CARD_DY, (style.w, style.h))
             .scaled(if focused == Some(col) { style.focus_scale } else { 1.0 })
     }
     /// The linked heading of shelf `index`, over the published hub's own title.
-    fn heading_widget<'a, H: LibraryLike>(&self, index: usize, cx: &Cx<'a, H>) -> Option<crate::ui::linked_heading::LinkedHeading<'a>> {
+    fn heading_widget<'a, H: LibraryLike>(&self, index: usize, cx: &Cx<'a, H>) -> Option<plx_ui::linked_heading::LinkedHeading<'a>> {
         self.shelves.get(index)?.heading?;
         let shelf = H::section_hubs(cx).shelves().get(index)?;
-        Some(crate::ui::linked_heading::LinkedHeading::heading(&shelf.title, "").total(shelf.total)
+        Some(plx_ui::linked_heading::LinkedHeading::heading(&shelf.title, "").total(shelf.total)
             .bounded(layout::GRID_RIGHT - MARGIN_X))
     }
     /// The linked heading's face, cap top where an unlinked heading's would be.
@@ -1225,8 +1225,8 @@ impl LibraryScreen {
         let row = &self.shelves[index];
         let focused = cx.focus.current.is_some_and(|key| key.entry == self.entry && Some(key.elem) == row.heading_elem());
         let y = match at {
-            At::Drawn => self.layout.shelf_y(index, self.scroll.pos) - crate::ui::consts::TITLE_DY - row.motion.lift(),
-            At::SpringTarget => self.target_layout.shelf_y(index, self.scroll_target) - crate::ui::consts::TITLE_DY,
+            At::Drawn => self.layout.shelf_y(index, self.scroll.pos) - plx_ui::consts::TITLE_DY - row.motion.lift(),
+            At::SpringTarget => self.target_layout.shelf_y(index, self.scroll_target) - plx_ui::consts::TITLE_DY,
         };
         Some(heading.face_rect(MARGIN_X, y, f32::from(focused), &heading.measure(cx.measure)))
     }
@@ -1235,7 +1235,7 @@ impl LibraryScreen {
         // Geometry always comes from the shared pill strip now: a singleton never reaches this
         // (`self.libraries` is empty), so there is no separate chip-width branch to keep in sync.
         self.library_lays(cx).get(index).map(|lay|
-            crate::ui::widgets::strip_pill_rect(lay, y, crate::ui::widgets::StatusOverlay::CTRL_H))
+            plx_ui::widgets::strip_pill_rect(lay, y, plx_ui::widgets::StatusOverlay::CTRL_H))
             .unwrap_or(Rect::new(MARGIN_X, y, 0.0, 0.0))
     }
 }

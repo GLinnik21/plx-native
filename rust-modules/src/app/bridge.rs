@@ -42,20 +42,20 @@ use crate::screens::family::SettingsPage;
 use crate::screens::player::HudPolicy;
 use crate::screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
 use crate::stores::{StoreCmd, StoreEv, StoreId};
-use crate::ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
-use crate::ui::dispatch::{CxParts, Dispatcher, FrameReport, Rig, Split};
+use plx_ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
+use plx_ui::dispatch::{CxParts, Dispatcher, FrameReport, Rig, Split};
 #[cfg(test)]
 use crate::screens::registry::every_surface_arg;
 #[cfg(test)]
-use crate::ui::dispatch::NoTap;
-use crate::ui::frame::Budget;
+use plx_ui::dispatch::NoTap;
+use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, Handled, Host,
     InputEvent, InputKind, InputOwner, InstanceId, Key, LogicalState, Machine, MachineId, Measure, NavOp,
     Source, Tick, TimerId,
 };
 use plx_machine::present::Present;
-use crate::ui::screen::{
+use plx_ui::screen::{
     At, DrawFrame, FocusSource, Focusable, ReturnState, Screen, ScreenEvent,
 };
 
@@ -324,7 +324,7 @@ pub(crate) struct Bridge {
     /// real frame through a real screen trips that assertion and dies inside `text.rs` rather than
     /// on its own assertion. `Split::measure` is `&dyn Measure` already, so erasing it here costs
     /// the app nothing and buys [`Bridge::for_test`].
-    measure: crate::ui::rec::Measurements,
+    measure: plx_ui::rec::Measurements,
     hubs: crate::pms::HubsSnapshot,
     listing: crate::stores::browse::ListingSnapshot,
     directory: crate::stores::browse::DirectorySnapshot,
@@ -336,7 +336,7 @@ pub(crate) struct Bridge {
     /// track's glass band (restructure phase 12, PX-WIDGETS, review finding 10). `Bridge` is this
     /// bar's one reachable owner: the only `Rig::draw_chrome` implementation, and the only place
     /// `update_home_chrome` is called from.
-    strip: crate::ui::widgets::StripRender,
+    strip: plx_ui::widgets::StripRender,
     home_commands: std::collections::VecDeque<HomeCmd>,
     library_commands: std::collections::VecDeque<crate::screens::registry::LibraryCmd>,
     consent: ConsentMachine,
@@ -364,11 +364,11 @@ pub(crate) struct Bridge {
 
 impl Bridge {
     #[cfg(test)]
-    pub(crate) fn measurement_queries(&self)->Vec<crate::ui::rec::MetricKey> { self.measure.queries() }
-    pub(crate) fn prepare_measurements(&mut self, replay: Option<&std::collections::HashMap<crate::ui::rec::MetricKey,u32>>) {
+    pub(crate) fn measurement_queries(&self)->Vec<plx_ui::rec::MetricKey> { self.measure.queries() }
+    pub(crate) fn prepare_measurements(&mut self, replay: Option<&std::collections::HashMap<plx_ui::rec::MetricKey,u32>>) {
         self.measure.prepare(replay);
     }
-    pub(crate) fn take_measurements(&self) -> Result<Vec<(crate::ui::rec::MetricKey,u32)>, &'static str> {
+    pub(crate) fn take_measurements(&self) -> Result<Vec<(plx_ui::rec::MetricKey,u32)>, &'static str> {
         self.measure.drain()
     }
     pub(crate) fn is_controlled_replay(&self) -> bool {
@@ -422,8 +422,8 @@ impl Bridge {
             }, stores);
         bridge.initial_subhash = initial.hash();
         bridge.measure = if replay {
-            crate::ui::rec::Measurements::Pending(Default::default())
-        } else { crate::ui::rec::Measurements::record(&TTF) };
+            plx_ui::rec::Measurements::Pending(Default::default())
+        } else { plx_ui::rec::Measurements::record(&TTF) };
         bridge.home_io = Some(super::bootstrap::HomeIo { replay, preferences, requests: Vec::new(), admissions: Default::default(),
             failure: None, profile: bridge.session_adapter.profile_resource_view().expect("controlled publisher") });
         bridge
@@ -444,7 +444,7 @@ impl Bridge {
     /// dies inside `text.rs` on a `debug_assert!`, several frames away from anything it asserted.
     #[cfg(test)]
     pub(crate) fn for_test(now_us: fn() -> u64) -> Self {
-        static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
+        static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_measure(&FIXTURE, now_us,
             crate::auth::SessionInit::captured(crate::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), Default::default(),
@@ -470,7 +470,7 @@ impl Bridge {
 
     #[cfg(test)]
     fn for_session_test(init: crate::auth::SessionInit) -> Self {
-        static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
+        static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         let adapter = super::adapters::session::SessionAdapter::fixture_with(init.persisted.clone());
         Self::with_publications(&FIXTURE, || 0, init, adapter, Default::default(),
             super::adapters::consent::ConsentAdapter::fixture(), StorePublications {
@@ -483,7 +483,7 @@ impl Bridge {
 
     #[cfg(test)]
     fn for_consent_test(consent: crate::telemetry::consent::Consent) -> Self {
-        static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
+        static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_publications(&FIXTURE, || 0,
             crate::auth::SessionInit::captured(crate::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), consent,
@@ -497,7 +497,7 @@ impl Bridge {
 
     #[cfg(test)]
     pub(crate) fn for_consent_resource_test(consent: crate::telemetry::consent::Consent) -> Self {
-        static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
+        static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_publications(&FIXTURE, || 0,
             crate::auth::SessionInit::captured(crate::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), consent,
@@ -538,7 +538,7 @@ impl Bridge {
             playback: crate::route::PlaybackSession::IDLE,
             playback_live: false,
             video_plane: false,
-            measure: crate::ui::rec::Measurements::Live(measure),
+            measure: plx_ui::rec::Measurements::Live(measure),
             hubs: reads.hubs,
             listing: reads.listing,
             directory: reads.directory,
@@ -546,7 +546,7 @@ impl Bridge {
             search: reads.search,
             chrome: super::chrome::ChromeSnapshot::default(),
             chrome_selection: 0,
-            strip: crate::ui::widgets::StripRender::new(),
+            strip: plx_ui::widgets::StripRender::new(),
             home_commands: std::collections::VecDeque::new(),
             library_commands: std::collections::VecDeque::new(),
             consent: ConsentMachine::from_initial(consent),
@@ -625,14 +625,14 @@ impl Bridge {
     }
 
     pub(crate) fn search_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
-        -> Option<(crate::search::Item, crate::ui::popover::Opener)> {
+        -> Option<(crate::search::Item, plx_ui::popover::Opener)> {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::search::SearchScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         let item = page.selected_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
-        Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
+        Some((item, plx_ui::popover::Opener { rect: Some(rect), ..plx_ui::popover::Opener::NONE }))
     }
 
     pub(crate) fn search_tab_available(&self, tab: HomeTab) -> bool {
@@ -644,14 +644,14 @@ impl Bridge {
     }
 
     pub(crate) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
-        -> Option<(crate::pms::PmsMovie, crate::ui::popover::Opener)> {
+        -> Option<(crate::pms::PmsMovie, plx_ui::popover::Opener)> {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::library::LibraryScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         let item = page.focused_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
-        Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
+        Some((item, plx_ui::popover::Opener { rect: Some(rect), ..plx_ui::popover::Opener::NONE }))
     }
 
     pub(crate) fn library_command(d: &mut Dispatcher<AppHost>, command: crate::screens::registry::LibraryCmd) {
@@ -725,7 +725,7 @@ impl Bridge {
     }
 
     pub(crate) fn home_opener(&self, d: &Dispatcher<AppHost>, entry: EntryId,
-        focus: Option<FocusKey<u32>>) -> crate::ui::popover::Opener {
+        focus: Option<FocusKey<u32>>) -> plx_ui::popover::Opener {
         let rect = focus.filter(|key| key.entry == entry).and_then(|key| {
             let screen = &d.nav.entry(entry)?.inst.as_ref()?.screen;
             let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
@@ -734,7 +734,7 @@ impl Bridge {
             screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?
                 .focused_rect::<AppHost>(Some(key), &cx, At::Drawn)
         });
-        crate::ui::popover::Opener { rect, ..crate::ui::popover::Opener::NONE }
+        plx_ui::popover::Opener { rect, ..plx_ui::popover::Opener::NONE }
     }
 
     /// Restore a detail page that is about to mount to a `Spot` no `ReturnState` holds — see
@@ -802,7 +802,7 @@ impl Bridge {
         let route = &route;
         let search = *route == AppArg::Search;
         if matches!(route, AppArg::Home | AppArg::Library) || search {
-            d.nav.tabs.strip_fallback = Some(if search { crate::ui::dispatch::STRIP_BASE + 3 } else { crate::screens::home::STRIP_HOME_ELEM });
+            d.nav.tabs.strip_fallback = Some(if search { plx_ui::dispatch::STRIP_BASE + 3 } else { crate::screens::home::STRIP_HOME_ELEM });
             if let Some(io) = &self.home_io {
                 refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(),
                     Some((&io.profile, &io.preferences)));
@@ -849,7 +849,7 @@ impl Bridge {
     }
 
     pub(crate) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>,
-        glass: &mut crate::ui::frame::glass::GlassPlan, dt: f32) {
+        glass: &mut plx_ui::frame::glass::GlassPlan, dt: f32) {
         let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
         let focus = Self::home_focus(d);
         let labels = self.chrome.labels();
@@ -961,7 +961,7 @@ impl Bridge {
         let Some(screen) = d.nav.entry(entry).and_then(|e| e.inst.as_ref()).map(|i| &i.screen) else { return };
         // The page pass may be submitting a cached host quad. Opener lifts are live paint
         // above that quad, like Popover::scrim_lifting's legacy callback scope.
-        let _live = crate::ui::popover::host::live();
+        let _live = plx_ui::popover::host::live();
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
             press: plx_machine::machine::PressRead { scale: 1.0, is_long: false },
             focus: plx_machine::machine::FocusRead { current: None , ..Default::default() },
@@ -969,7 +969,7 @@ impl Bridge {
         parts.owner = plx_machine::machine::InputOwner::Entry(entry);
         parts.focus.current = focus;
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
-        let mut frame = DrawFrame::with_navigation(&cx, crate::ui::Painter::root(), self.navigation_presentation());
+        let mut frame = DrawFrame::with_navigation(&cx, plx_ui::Painter::root(), self.navigation_presentation());
         screen.redraw_focused(&mut frame, focus);
     }
 
@@ -985,7 +985,7 @@ impl Bridge {
                 // DERIVED from the container's own policy table, never a second `matches!` over
                 // `Style` — see `modal::style_caches_host`, which carries what the hand-written
                 // list here cost `fps:library-switch` when `Style::Compact` was left off it.
-                let cached = crate::ui::containers::modal::style_caches_host(s.style);
+                let cached = plx_ui::containers::modal::style_caches_host(s.style);
                 (s.entry.id, cached, s.phase == Phase::Closing)
             })
             .collect();
@@ -993,10 +993,10 @@ impl Bridge {
         let mut keep = Vec::new();
         for (id, cached, closing) in self.held.drain(..) {
             match live.iter().find(|(e, _, _)| *e == id) {
-                None => crate::ui::popover::surface_released(cached, closing),
+                None => plx_ui::popover::surface_released(cached, closing),
                 Some((_, _, now_closing)) => {
                     if *now_closing && !closing {
-                        crate::ui::popover::surface_closing(cached);
+                        plx_ui::popover::surface_closing(cached);
                     }
                     keep.push((id, cached, *now_closing));
                 }
@@ -1004,9 +1004,9 @@ impl Bridge {
         }
         for (id, cached, closing) in live {
             if !keep.iter().any(|(e, _, _)| *e == id) {
-                crate::ui::popover::surface_held(cached);
+                plx_ui::popover::surface_held(cached);
                 if closing {
-                    crate::ui::popover::surface_closing(cached);
+                    plx_ui::popover::surface_closing(cached);
                 }
                 keep.push((id, cached, closing));
             }
@@ -1039,7 +1039,7 @@ impl Drop for Bridge {
     fn drop(&mut self) {
         self.session_adapter.cancel_all();
         for (_, cached, closing) in self.held.drain(..) {
-            crate::ui::popover::surface_released(cached, closing);
+            plx_ui::popover::surface_released(cached, closing);
         }
     }
 }
@@ -1242,7 +1242,7 @@ impl Bridge {
     /// itself. `route_wears_tab_bar`'s old `page_of` resolution — "which page is this popover
     /// route over" — has nothing left to resolve and went with the routes in D1.
     fn draws_chrome_for(arg: &AppArg) -> bool {
-        use crate::ui::screen::ScreenArg;
+        use plx_ui::screen::ScreenArg;
         arg.chrome() == plx_machine::machine::Chrome::TabBar
     }
 }
@@ -1274,37 +1274,37 @@ impl Bridge {
 
 impl Rig<AppHost> for Bridge {
     fn draw_chrome(&mut self, arg: &AppArg, _parts: &CxParts<u32>,
-        nav: crate::ui::screen::NavPresentation,
-        glass: Option<&mut crate::ui::frame::glass::GlassPlan>) {
+        nav: plx_ui::screen::NavPresentation,
+        glass: Option<&mut plx_ui::frame::glass::GlassPlan>) {
         if !Self::draws_chrome_for(arg) { return; }
         let Some(glass) = glass else { return };
-        let p = crate::ui::Painter::root().alpha(nav.chrome_alpha);
+        let p = plx_ui::Painter::root().alpha(nav.chrome_alpha);
         let chrome = self.chrome.read(self.strip.chip_expand_pos());
         self.strip.draw(chrome.labels, p, glass.tab_band_mut());
-        crate::ui::widgets::profile_chip_with(
+        plx_ui::widgets::profile_chip_with(
             p,
             chrome.profile,
             chrome.chip_expand,
             glass.tab_face(),
         );
     }
-    /// See [`crate::ui::dispatch::Rig::scrim_chrome_read`] — the account menu's chip lift borrows
+    /// See [`plx_ui::dispatch::Rig::scrim_chrome_read`] — the account menu's chip lift borrows
     /// the SAME captured profile, labels and unfurl [`Bridge::draw_chrome`] used. The dispatcher
     /// adds this frame's material from `GlassPlan`; neither value crosses through a static.
-    fn scrim_chrome_read(&self) -> Option<crate::ui::widgets::ChromeRead<'_>> {
+    fn scrim_chrome_read(&self) -> Option<plx_ui::widgets::ChromeRead<'_>> {
         Some(self.chrome.read(self.strip.chip_expand_pos()))
     }
-    fn page_alpha(&self) -> f32 { crate::ui::nav::page_alpha() }
-    fn navigation_presentation(&self) -> crate::ui::screen::NavPresentation {
-        crate::ui::screen::NavPresentation {
-            page_alpha: crate::ui::nav::page_alpha(),
-            chrome_alpha: crate::ui::nav::chrome_alpha(),
-            view_tab: u32::try_from(crate::ui::nav::view_tab(-1)).ok(),
-            blur_amount: crate::ui::nav::blur_amount(),
+    fn page_alpha(&self) -> f32 { plx_ui::nav::page_alpha() }
+    fn navigation_presentation(&self) -> plx_ui::screen::NavPresentation {
+        plx_ui::screen::NavPresentation {
+            page_alpha: plx_ui::nav::page_alpha(),
+            chrome_alpha: plx_ui::nav::chrome_alpha(),
+            view_tab: u32::try_from(plx_ui::nav::view_tab(-1)).ok(),
+            blur_amount: plx_ui::nav::blur_amount(),
         }
     }
-    fn surface_scope(&mut self) -> Option<crate::ui::popover::host::Live> {
-        Some(crate::ui::popover::host::live())
+    fn surface_scope(&mut self) -> Option<plx_ui::popover::host::Live> {
+        Some(plx_ui::popover::host::live())
     }
     fn split(&mut self) -> Split<'_, AppHost> {
         Split {
@@ -1677,7 +1677,7 @@ fn step_store(cmd: &StoreCmd, _cx: &Cx<'_, AppHost>, _fx: &mut Effects<'_, AppHo
 // ---------------------------------------------------------------------------------------------
 
 /// The dispatcher's frame, once per loop iteration: the pending navigation's own commit (at
-/// [`PageDip`](crate::ui::containers::transition::PageDip)'s floor), the stores' notices, then
+/// [`PageDip`](plx_ui::containers::transition::PageDip)'s floor), the stores' notices, then
 /// the ten steps WITHOUT the draw (the loop draws at its own slot, on its own gate). Returns the
 /// top page's heartbeat word.
 ///
@@ -1697,7 +1697,7 @@ pub(crate) fn frame_with_tap(
     rig: &mut Bridge,
     tick: Tick,
     inputs: Vec<InputEvent<u32>>,
-    tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
+    tap: &mut dyn plx_ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
     let _frame_scope = plx_base::task::FrameScope::enter();
     if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) && rig.session.needs_ready_commit() {
@@ -1812,7 +1812,7 @@ pub(crate) fn frame_with_results(
     tick: Tick,
     inputs: Vec<InputEvent<u32>>,
     take: impl FnOnce() -> AppResults,
-    tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
+    tap: &mut dyn plx_ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
     frame_ingest(d, rig, tick, inputs, |_| take(), tap)
 }
@@ -1823,7 +1823,7 @@ fn frame_ingest(
     tick: Tick,
     inputs: Vec<InputEvent<u32>>,
     take: impl FnOnce(&mut Bridge) -> AppResults,
-    tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
+    tap: &mut dyn plx_ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
     let _frame_scope = plx_base::task::FrameScope::enter();
     #[cfg(test)]
@@ -1900,7 +1900,7 @@ fn frame_ingest(
     // frame, from the container's own transition — see `ui::nav`'s module doc.
     let tab = d.nav.tabs.stack.pending_dest()
         .and_then(|arg| pill_of_arg(arg, rig.directory.view()));
-    crate::ui::nav::publish(d.nav.tabs.stack.page_alpha(), d.nav.tabs.stack.chrome_alpha(), tab);
+    plx_ui::nav::publish(d.nav.tabs.stack.page_alpha(), d.nav.tabs.stack.chrome_alpha(), tab);
     // **The heartbeat's `route=` word IS the top page's own name** (§15.2). It used to be
     // `route_word(app.route)` with this line asserting the two agreed every frame; there is one
     // source now, and the `debug_assert_eq!` that guarded the pair is gone with the pair.
@@ -2011,9 +2011,9 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let position = home.grid_position::<AppHost>(focus, &cx);
         let (row, col) = position.map(|(r, c)| (r as i64, c as i64)).unwrap_or((-1, -1));
         let hf = match rig.chrome.focus(focus) {
-            crate::ui::widgets::TopFocus::Chip => -1,
-            crate::ui::widgets::TopFocus::Pill(i) => -(i as i64 + 2),
-            crate::ui::widgets::TopFocus::Away => focus.filter(|key| key.elem < 2).map_or(-1, |key| key.elem as i64),
+            plx_ui::widgets::TopFocus::Chip => -1,
+            plx_ui::widgets::TopFocus::Pill(i) => -(i as i64 + 2),
+            plx_ui::widgets::TopFocus::Away => focus.filter(|key| key.elem < 2).map_or(-1, |key| key.elem as i64),
         };
         let grid = home.snap_target() >= 0.5;
         let mut out = format!(" snapt={} snapp={} hf={hf} row={row} col={col}", grid as u8,
@@ -2030,7 +2030,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
         let menu = d.top_surface_name() == Some("library_menu");
         let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
-            crate::ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
+            plx_ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
         }};
         let item = library.focused_item(focus, &cx);
         let (region, row, col, x, y) = library.probe_viewport(focus);
@@ -2050,11 +2050,11 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         // be asking it about a `FocusKey` it has no group for and getting the same default back.
         let top = rig.chrome.focus(focus);
         let (zone, row, col, recent, card) = match top {
-            crate::ui::widgets::TopFocus::Chip => ("Chip", -1i64, -1i64, -1i64, false),
-            crate::ui::widgets::TopFocus::Pill(_) => ("Strip", -1i64, -1i64, -1i64, false),
-            crate::ui::widgets::TopFocus::Away => search.probe(focus),
+            plx_ui::widgets::TopFocus::Chip => ("Chip", -1i64, -1i64, -1i64, false),
+            plx_ui::widgets::TopFocus::Pill(_) => ("Strip", -1i64, -1i64, -1i64, false),
+            plx_ui::widgets::TopFocus::Away => search.probe(focus),
         };
-        let pill = match top { crate::ui::widgets::TopFocus::Pill(i) => i as i64, _ => -1 };
+        let pill = match top { plx_ui::widgets::TopFocus::Pill(i) => i as i64, _ => -1 };
         return format!(" zone={zone} editing={} row={row} col={col} recent={recent} pill={pill} card={} below={} clear={}",
             u8::from(search.is_editing()), u8::from(card), search.probe_below(), search.recents_shown());
     }
@@ -2070,7 +2070,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     instance.screen.groups(&cx, &mut groups);
     let group = focus.and_then(|f| instance.screen.group_of(&f.elem, &cx));
     let card = group.and_then(|g| groups.iter().find(|x| x.id == g))
-        .is_some_and(|g| g.elem == crate::ui::screen::ElemKind::Card);
+        .is_some_and(|g| g.elem == plx_ui::screen::ElemKind::Card);
     let mut out = String::new();
     match &page.arg {
         AppArg::Content(ContentArg::Detail { sid, rk }) => {
@@ -2112,9 +2112,9 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             if let Some((rk, mark)) = episode {
                 crate::focusprobe::push_rk(&mut out, &rk);
                 out.push_str(match mark {
-                    crate::ui::widgets::PosterMark::None => " epwatched=no",
-                    crate::ui::widgets::PosterMark::InProgress => " epwatched=part",
-                    crate::ui::widgets::PosterMark::Watched => " epwatched=yes",
+                    plx_ui::widgets::PosterMark::None => " epwatched=no",
+                    plx_ui::widgets::PosterMark::InProgress => " epwatched=part",
+                    plx_ui::widgets::PosterMark::Watched => " epwatched=yes",
                 });
             } else { out.push_str("- epwatched=-"); }
         }
@@ -2308,8 +2308,8 @@ pub(crate) fn open_content_panel(
     // this function's is the PRESENTING: refuse a second copy of one already up, hand the
     // container the style through its one-shot handshake, and request the op.
     let Some((style, arg)) = panel.surface(host, subject) else { return };
-    let id = crate::ui::screen::ScreenArg::id(&arg);
-    if surface_up(d, move |up| crate::ui::screen::ScreenArg::id(up) == id) {
+    let id = plx_ui::screen::ScreenArg::id(&arg);
+    if surface_up(d, move |up| plx_ui::screen::ScreenArg::id(up) == id) {
         return;
     }
     d.nav.next_style = style;
@@ -2320,7 +2320,7 @@ pub(crate) fn open_content_panel(
 /// a canonical argument needs no float equality. `None` (a host with nothing focused, or the
 /// headless trigger) resolves to the panel's own centred fallback HERE, once, rather than every
 /// frame inside the screen.
-fn anchor_bits(rect: Option<crate::ui::Rect>) -> [u32; 4] {
+fn anchor_bits(rect: Option<plx_ui::Rect>) -> [u32; 4] {
     let r = rect.unwrap_or_else(crate::screens::item_menu::fallback_anchor);
     [r.x.to_bits(), r.y.to_bits(), r.w.to_bits(), r.h.to_bits()]
 }
@@ -2335,7 +2335,7 @@ pub(crate) fn card_menu_arg(
     from_home: bool,
     host: EntryId,
     focus: Option<FocusKey<u32>>,
-    rect: Option<crate::ui::Rect>,
+    rect: Option<plx_ui::Rect>,
 ) -> crate::screens::registry::ItemMenuArg {
     crate::screens::registry::ItemMenuArg {
         sid: item.sid, // the ROW's server, not the current one
@@ -2358,7 +2358,7 @@ fn strip_menu_arg(
     kind: ItemMenuKind,
     host: EntryId,
     focus: Option<FocusKey<u32>>,
-    rect: Option<crate::ui::Rect>,
+    rect: Option<plx_ui::Rect>,
 ) -> crate::screens::registry::ItemMenuArg {
     crate::screens::registry::ItemMenuArg {
         sid,
@@ -2476,7 +2476,7 @@ pub(crate) fn nav_root(d: &mut Dispatcher<AppHost>, arg: AppArg) {
 }
 
 /// **Is `arg` already the settled `Root`** — the stack exactly `[arg]`, that entry MOUNTED, and
-/// nothing pending? Exactly [`NavStack::root_settled`](crate::ui::containers::stack::NavStack::root_settled),
+/// nothing pending? Exactly [`NavStack::root_settled`](plx_ui::containers::stack::NavStack::root_settled),
 /// which is also `is_inert`'s own `Root` rule (§stack.rs) — shared rather than restated so the two
 /// answers to "has this landing settled" can never drift apart.
 ///
@@ -2637,7 +2637,7 @@ pub(crate) fn nav_select_tab(d: &mut Dispatcher<AppHost>, arg: AppArg) {
 /// landings. It is a LANDING rather than a navigation, which is why it reuses: pushing blindly
 /// would put a second copy of a page the user is already standing on over the first.
 pub(crate) fn show_page(d: &mut Dispatcher<AppHost>, want: AppArg) {
-    use crate::ui::screen::ScreenArg;
+    use plx_ui::screen::ScreenArg;
     if d.nav.top_page().map(|e| e.arg.same_instance(&want)).unwrap_or(false) { return; }
     let existing = d.nav.tabs.stack.entries.iter().rev()
         .find(|e| e.arg.same_instance(&want)).map(|e| e.id);
@@ -2727,7 +2727,7 @@ pub(crate) fn nav_tab(
 
 /// A peer of Home: select that pill unless it is already the page on top.
 fn nav_peer(d: &mut Dispatcher<AppHost>, arg: AppArg, ret: Option<ReturnState<u32, PageMemory>>) {
-    use crate::ui::screen::ScreenArg;
+    use plx_ui::screen::ScreenArg;
     if d.nav.top_page().map(|e| e.arg.same_instance(&arg)).unwrap_or(false) { return; }
     match ret {
         Some(ret) => d.request_with_return(MachineId::Nav, NavOp::SelectTab(arg), ret),
@@ -2746,7 +2746,7 @@ pub(crate) fn open_detail(
     sid: crate::plex::ServerId, rk: &str, season: Option<std::os::raw::c_int>,
     ret: Option<ReturnState<u32, PageMemory>>,
 ) {
-    use crate::ui::screen::ScreenArg;
+    use plx_ui::screen::ScreenArg;
     let arg = AppArg::Content(ContentArg::Detail { sid, rk: rk.to_string() });
     // The page is already on its way (a second press inside the push's dip-out): the pending push
     // is inert against its twin (`NavStack::is_inert`) and its prepared body has spent its seed,
@@ -2895,7 +2895,7 @@ pub(crate) fn dismiss_surfaces(d: &mut Dispatcher<AppHost>) {
 /// page is Home; the page underneath it a frame later is the freshly-mounted sign-in screen; so
 /// for every frame the spring is still running, a cached picture of a page that no longer exists
 /// draws on top of the one that replaced it. Legacy hit this exact seam and answered it with
-/// `crate::ui::settings::hide()` — direct, synchronous field mutation, not a queued request — and
+/// `plx_ui::settings::hide()` — direct, synchronous field mutation, not a queued request — and
 /// `ModalStack::hide` is that same shape ported to the container tree: it snaps `Phase::Closing`
 /// AND the motion to 0 (already settled) on THIS surface, in THIS call, rather than parking a
 /// request for later. Bypassing `d.request` here is deliberate for the same reason `hide`'s own
@@ -3149,7 +3149,7 @@ pub(crate) fn every_surface_word() -> Vec<&'static str> {
 /// A key for the dispatcher: the raw SDL fields classified once (`ui::consts::classify`), the
 /// fork's packed state read as an edge.
 pub(crate) fn key_input(sym: u32, wcode: u32, state: u32, now: Tick, source: Source) -> InputEvent<u32> {
-    use crate::ui::consts::{classify, Key as K};
+    use plx_ui::consts::{classify, Key as K};
     let key = match classify(sym, wcode) {
         K::Up => Key::Up,
         K::Down => Key::Down,

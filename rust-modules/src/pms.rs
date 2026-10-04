@@ -114,7 +114,7 @@ pub struct PmsMovie {
     /// `originallyAvailableAt`, verbatim (`YYYY-MM-DD`) or empty — the RELEASE DATE an episode
     /// shelf trails under a focused tile (`Library Screens.dc.html` E: "focus adds the episode's
     /// name and its one trailing fact — time left on Continue Watching, release date on Recently
-    /// Released"). Formatted by [`crate::ui::fmt::pretty_date`], which already takes `year` as the
+    /// Released"). Formatted by [`plx_ui::fmt::pretty_date`], which already takes `year` as the
     /// fallback for an item the server dated only to a year.
     pub(crate) aired: String,
     /// A collection's member count (`childCount`) — its tile's caption, "12 items". 0 on every

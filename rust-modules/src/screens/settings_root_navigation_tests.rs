@@ -4,10 +4,10 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
-use crate::ui::form::Activation;
+use plx_ui::form::Activation;
 use plx_machine::machine::{Edge, InputEvent, InputKind, Source};
 use plx_machine::present::Present;
-use crate::ui::screen::By;
+use plx_ui::screen::By;
 
 /// Mounting the surface at its `Root` page runs the inner stack's own lifecycle (§3.4) and
 /// names the root — the heartbeat's `overlay=` before anything has been pressed.

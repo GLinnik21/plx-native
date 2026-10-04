@@ -118,10 +118,10 @@ pub(crate) const SYNTH_WINDOW: u32 = 0x504c_584b; // "PLXK"
 pub(crate) fn host_wcode(sym: u32) -> u32 {
     // ASCII literals spelled numerically: `b'p' as u32` is an expression, not a pattern.
     match sym {
-        32 => crate::ui::consts::WCODE_PAUSE, // space
-        112 => crate::ui::consts::WCODE_PLAY, // 'p'
-        115 => crate::ui::consts::WCODE_STOP, // 's'
-        8 => crate::ui::consts::WCODE_BACK,   // backspace
+        32 => plx_ui::consts::WCODE_PAUSE, // space
+        112 => plx_ui::consts::WCODE_PLAY, // 'p'
+        115 => plx_ui::consts::WCODE_STOP, // 's'
+        8 => plx_ui::consts::WCODE_BACK,   // backspace
         _ => 0,
     }
 }
@@ -234,16 +234,16 @@ pub(crate) fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
         "stop" => (0, WCODE_STOP),
         // The transport keys settled from LG's own scancode table (`ui::consts`' WCODE_REWIND doc).
         // Here for the same reason the edit keys below are: nothing else can press them headlessly.
-        "ff" | "fastforward" => (0, crate::ui::consts::WCODE_FASTFORWARD),
-        "rew" | "rewind" => (0, crate::ui::consts::WCODE_REWIND),
-        "playpause" => (0, crate::ui::consts::WCODE_PLAYPAUSE),
-        "exit" => (0, crate::ui::consts::WCODE_EXIT),
+        "ff" | "fastforward" => (0, plx_ui::consts::WCODE_FASTFORWARD),
+        "rew" | "rewind" => (0, plx_ui::consts::WCODE_REWIND),
+        "playpause" => (0, plx_ui::consts::WCODE_PLAYPAUSE),
+        "exit" => (0, plx_ui::consts::WCODE_EXIT),
         // The system keyboard's own two edit keys (`ui::consts`' doc has the protocol). They are
         // here because they are otherwise UNREACHABLE without a human at the panel: no trigger
         // raises the keyboard and `SDL_PushEvent` cannot carry a text event on the simulator, so
         // without these the only grader for backspace and Clear all is somebody's thumb.
-        "backspace" | "del" => (crate::ui::consts::SDLK_BACKSPACE, 42),
-        "clear" => (crate::ui::consts::SDLK_CLEAR, 156),
+        "backspace" | "del" => (plx_ui::consts::SDLK_BACKSPACE, 42),
+        "clear" => (plx_ui::consts::SDLK_CLEAR, 156),
         _ => return None,
     })
 }
@@ -480,7 +480,7 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &crate::route::PlaybackSessio
     let _own_input = if tok.starts_with("pat:") {
         None
     } else {
-        crate::ui::popover::host::input_scope()
+        plx_ui::popover::host::input_scope()
     };
     plx_machine::idle::invalidate(); // injected input is input like any other
     if let Some((kind, x, y)) = remote_token_pointer(tok) {
@@ -558,7 +558,7 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &crate::route::PlaybackSessio
         }
     } else if let Some(spec) = tok.strip_prefix("pat:") {
         // `pat:flat:40` — swap the synthetic ground live for a one-session graded sweep.
-        let ok = crate::ui::testpat::set(spec);
+        let ok = plx_ui::testpat::set(spec);
         if !ok {
             plx_base::eventlog::log(&format!("remote: unrecognised pattern {spec:?}"));
         }
@@ -589,7 +589,7 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &crate::route::PlaybackSessio
 #[cfg(test)]
 mod key_layout_tests {
     use super::{decode_key, encode_key, encode_key_repeat};
-    use crate::ui::consts::{SDLK_DOWN, SDLK_RETURN, WCODE_BACK, WCODE_PAUSE};
+    use plx_ui::consts::{SDLK_DOWN, SDLK_RETURN, WCODE_BACK, WCODE_PAUSE};
 
     /// `encode_key` and `decode_key` must agree, in whichever layout this build compiled.
     ///
@@ -695,11 +695,11 @@ mod key_layout_tests {
         );
         assert_eq!(
             remote_token_key("chup"),
-            Some((0, crate::ui::consts::WCODE_CH_UP_KEY))
+            Some((0, plx_ui::consts::WCODE_CH_UP_KEY))
         );
         assert_eq!(
             remote_token_key("pageup"),
-            Some((crate::ui::consts::SDLK_PAGEUP, 0))
+            Some((plx_ui::consts::SDLK_PAGEUP, 0))
         );
     }
 }

@@ -1004,7 +1004,7 @@ mod tests {
     /// closes that: this call, attributed to an unrelated screen module, must still be caught.
     #[test]
     fn the_tile_title_exception_does_not_exempt_a_content_tile_outside_auth_rs() {
-        let path = std::path::Path::new("rust-modules/src/ui/card_row.rs");
+        let path = std::path::Path::new("rust-modules/ui/src/card_row.rs");
         let call = "log(&format!(\"card: opened {}\", tile.title()));";
         let hits = banned_hits_in_call(path, 1, call);
         assert!(
@@ -1074,9 +1074,9 @@ mod tests {
         // (`rust-modules/src`, where nearly every log call lives). Resolved from the manifest dir
         // so it is independent of the working directory the test runner happens to have. A layer
         // crate split out of `rust-modules/src` later must be added here, or its log calls stop
-        // being read (`../machine/src`, `../net/src`, `../platform/src` and `../gfx/src` are the machine, net, platform and gfx layers').
+        // being read (`../machine/src`, `../net/src`, `../platform/src`, `../gfx/src` and `../ui/src` are the machine, net, platform, gfx and ui layers').
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let roots = [manifest.join("src"), manifest.join("../src"), manifest.join("../machine/src"), manifest.join("../net/src"), manifest.join("../platform/src"), manifest.join("../gfx/src")];
+        let roots = [manifest.join("src"), manifest.join("../src"), manifest.join("../machine/src"), manifest.join("../net/src"), manifest.join("../platform/src"), manifest.join("../gfx/src"), manifest.join("../ui/src")];
         let mut offences: Vec<String> = Vec::new();
         let mut files = 0usize;
         for src in &roots {

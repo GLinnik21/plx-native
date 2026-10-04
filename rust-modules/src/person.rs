@@ -53,7 +53,7 @@
 //!   reason and then some, since a person's CAREER is not a fact any server has an opinion about.
 //!   What the servers contribute to it is the availability JOIN, and that rides on the [`K_MEDIA`]
 //!   answers this page already makes — so it adds one request per person, not one per source. The
-//!   screen is [`crate::ui::filmography`]; the display model it draws is [`filmography`].
+//!   screen is [`plx_ui::filmography`]; the display model it draws is [`filmography`].
 //!
 //! Every fetch's plumbing is indexed by ONE flat key ([`fx`]/[`un_fx`]): its mailbox and its
 //! single-flight claim as one [`Fetch`] ([`FETCH`]), its retry countdown beside them ([`RETRY_CD`],
@@ -1025,7 +1025,7 @@ impl PersonState {
 }
 
 /// `/tmp/plxnative-personcredits[=<rows>]` — **stand in for the plex.tv FILMOGRAPHY record**, so
-/// [`crate::ui::filmography`] can be reached headlessly.
+/// [`plx_ui::filmography`] can be reached headlessly.
 ///
 /// It exists for exactly [`seed_dev_profile`]'s reason and the argument is not repeated here: the
 /// credits come from `discover.provider.plex.tv`, an automated boot signs in with a *server* token,

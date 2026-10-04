@@ -3,7 +3,7 @@
 
 use super::*;
 use plx_machine::machine::Chrome;
-use crate::ui::screen::ScreenArg;
+use plx_ui::screen::ScreenArg;
 use crate::screens::player::HudPolicy;
 #[allow(unused_imports)]
 use super::test_support::*;
@@ -131,7 +131,7 @@ fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page(
 fn switching_profile_leaves_the_container_holding_nothing_of_the_previous_profile() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::with_transition(
-        Box::new(crate::ui::containers::transition::PageDip::new()));
+        Box::new(plx_ui::containers::transition::PageDip::new()));
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     for i in 1..20u32 { super::frame(&mut d, &mut rig, tick(i * 16), vec![]); }
@@ -251,7 +251,7 @@ fn route_flips_preserve_content_and_player_origin_entries() {
         frame(&mut d, &mut rig, AppArg::Player, tick(3), vec![]).0,
         "player"
     );
-    assert_eq!(d.top_screen().map(|s| s.render()), Some(crate::ui::screen::RenderStrategy::VideoPlane));
+    assert_eq!(d.top_screen().map(|s| s.render()), Some(plx_ui::screen::RenderStrategy::VideoPlane));
     assert_eq!(d.nav.tabs.stack.depth(), 3);
     frame(&mut d, &mut rig, detail_arg("1001"), tick(4), vec![]);
     assert_eq!(d.nav.top_page().map(|e| e.id), detail);
@@ -768,7 +768,7 @@ fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_a
 #[test]
 fn same_instance_reads_the_playback_and_not_the_overlay() {
     use crate::screens::player::overlay::{OverlayKind, PlayerOverlayArg};
-    use crate::ui::screen::ScreenArg;
+    use plx_ui::screen::ScreenArg;
     let player = AppArg::Player;
     assert!(player.same_instance(&AppArg::Player));
     for kind in OverlayKind::ALL {
@@ -1063,14 +1063,14 @@ fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() 
     // scroll spring far from where Search's own (short) labels want it.
     let wide: Vec<String> = (0..8).map(|i| format!("Wide Destination Label Number {i}")).collect();
     rig.strip.reveal(
-        crate::ui::widgets::TabLabels { generation: 1, labels: &wide },
+        plx_ui::widgets::TabLabels { generation: 1, labels: &wide },
         wide.len() - 1,
     );
 
     super::show_page(&mut d, AppArg::Search);
     rig.capture_chrome(&mut d);
 
-    let base = crate::ui::dispatch::STRIP_BASE;
+    let base = plx_ui::dispatch::STRIP_BASE;
     let search_member = |d: &Dispatcher<AppHost>| {
         d.nav.tabs.strip.iter().find(|m| m.elem == base + 3).copied().expect("Search pill published")
     };
@@ -1081,7 +1081,7 @@ fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() 
 
     // The fix under test: the Search arm of `run::update`'s chrome chain calls exactly this,
     // every frame, while standing on Search.
-    let mut glass = crate::ui::frame::glass::GlassPlan::new();
+    let mut glass = plx_ui::frame::glass::GlassPlan::new();
     for _ in 0..60 {
         rig.update_home_chrome(&mut d, &mut glass, 1.0 / 60.0);
     }
@@ -1103,7 +1103,7 @@ fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() 
 fn a_second_open_of_the_pending_detail_page_leaves_no_seed_behind() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::with_transition(
-        Box::new(crate::ui::containers::transition::PageDip::new()));
+        Box::new(plx_ui::containers::transition::PageDip::new()));
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     for i in 1..20u32 { super::frame(&mut d, &mut rig, tick(i * 16), vec![]); }

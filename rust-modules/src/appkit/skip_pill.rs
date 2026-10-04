@@ -10,9 +10,9 @@
 //! skips in one press instead of three.
 #![allow(dead_code)]
 use crate::metadata::{self, MarkerKind};
-use crate::ui::theme;
-use crate::ui::widgets::{Button, ControlGround};
-use crate::ui::{Env, Painter, Rect, View};
+use plx_ui::theme;
+use plx_ui::widgets::{Button, ControlGround};
+use plx_ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
 
 /// What pressing the button does. The distinction is the `final` flag on a credits marker: an

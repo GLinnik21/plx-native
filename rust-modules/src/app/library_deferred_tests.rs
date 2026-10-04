@@ -12,7 +12,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
         edits: usize,
         commits: Vec<crate::stores::browse::QueryEdit>,
     }
-    impl crate::ui::dispatch::Tap<AppHost> for Trace {
+    impl plx_ui::dispatch::Tap<AppHost> for Trace {
         fn effect(&mut self, _: u64, effect: &plx_machine::machine::Stamped<AppHost>) {
             match &effect.fx {
                 Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::LibraryEdit { .. }))) => {
@@ -57,7 +57,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
     let page = d.nav.top_page().unwrap().id;
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     let listing = rig.listing.view().id().unwrap();
-    d.nav.next_style = crate::ui::containers::modal::Style::Compact;
+    d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(

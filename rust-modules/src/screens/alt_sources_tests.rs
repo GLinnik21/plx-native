@@ -78,8 +78,8 @@ fn panel(host_sid: ServerId, rk: &str) -> AltSourcesScreen {
 }
 
 /// The one section the screen draws for `list`, built through the same [`form_for`].
-fn section_for(list: &[AltRow]) -> crate::ui::table::Section {
-    let mut t = FormTable::<AltId, Action, std::convert::Infallible>::new(crate::ui::table_screen::BAND_BASE);
+fn section_for(list: &[AltRow]) -> plx_ui::table::Section {
+    let mut t = FormTable::<AltId, Action, std::convert::Infallible>::new(plx_ui::table_screen::BAND_BASE);
     t.set(form_for(list, sid(0), "0"), None);
     t.table.sections.remove(0)
 }
@@ -222,14 +222,14 @@ fn the_sort_key_agrees_with_the_badge_it_is_drawn_beside() {
     let scope = with("1080", 1918, 802);
     assert_eq!(scan_lines(&scope), 1080);
     assert_eq!(
-        crate::ui::fmt::resolution(&scope.res, scope.width, scope.height).as_deref(),
+        plx_ui::fmt::resolution(&scope.res, scope.width, scope.height).as_deref(),
         Some("1080p")
     );
     // …and with no class at all both fall back to the frame, and still agree
     let noclass = with("", 3840, 2160);
     assert!(scan_lines(&noclass) > scan_lines(&with("", 1920, 1080)));
     assert_eq!(
-        crate::ui::fmt::resolution(&noclass.res, noclass.width, noclass.height).as_deref(),
+        plx_ui::fmt::resolution(&noclass.res, noclass.width, noclass.height).as_deref(),
         Some("4K")
     );
     // a garbage height must not overflow into a top-of-list key
@@ -667,7 +667,7 @@ fn a_landing_for_another_servers_copy_with_the_same_key_is_refused() {
 /// The panel hangs off the control that opened it, and is never over it or off the screen.
 #[test]
 fn the_panel_hangs_off_its_button_and_stays_on_screen() {
-    let btn = Rect::new(crate::ui::consts::MARGIN_X, 300.0, 300.0, 60.0);
+    let btn = Rect::new(plx_ui::consts::MARGIN_X, 300.0, 300.0, 60.0);
     let r = panel_at(btn, 500.0, 224.0);
     assert_eq!(r.w, MENU_MAX_W.min(500.0).max(MENU_MIN_W), "the panel hugs its content width");
     assert_eq!(
@@ -678,7 +678,7 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
     assert_eq!(r.x, btn.x, "and aligned to its left edge");
 
     // a button low on the page flips the panel ABOVE it rather than off the bottom
-    let low = Rect::new(crate::ui::consts::MARGIN_X, 900.0, 300.0, 60.0);
+    let low = Rect::new(plx_ui::consts::MARGIN_X, 900.0, 300.0, 60.0);
     let r = panel_at(low, 500.0, 224.0);
     assert!(
         r.y + r.h <= low.y - BTN_GAP + 0.01,
@@ -707,7 +707,7 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
         ("right-edge", panel_at(right, 500.0, 224.0)),
     ] {
         assert!(
-            crate::ui::consts::inside_safe(p),
+            plx_ui::consts::inside_safe(p),
             "the {what} panel leaves the safe area: ({}, {}) {}x{}",
             p.x,
             p.y,
@@ -729,7 +729,7 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
         },
         crate::stores::metadata::MetadataStore::default().view(),
     );
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let want = panel_at(low, p.form.table.measured_width(&measure), p.form.table.measured_height());
     let got = p.frame(&measure);
     assert_eq!((got.x, got.y, got.w, got.h), (want.x, want.y, want.w, want.h));
@@ -747,9 +747,9 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
 /// not there. This grades the pair the panel depends on, at the one place it is now decided.
 #[test]
 fn a_reset_hides_the_menu_at_once_while_back_fades_it() {
-    use crate::ui::containers::modal::{ModalStack, Phase, Style};
-    use crate::ui::containers::Minter;
-    use crate::ui::fixture::{tick, FixtureArg, FixtureHost};
+    use plx_ui::containers::modal::{ModalStack, Phase, Style};
+    use plx_ui::containers::Minter;
+    use plx_ui::fixture::{tick, FixtureArg, FixtureHost};
     use plx_machine::machine::PresentHandle;
     use plx_machine::present::Present;
 
@@ -813,7 +813,7 @@ mod focus_and_hit {
         Canon, Chrome, Edge, FocusKey, FocusRead, Handled, Host, InputEvent, InputKind,
         InputOwner, Key, LogicalState, Machine, PressRead, ScreenId, Source, Tick,
     };
-    use crate::ui::screen::{
+    use plx_ui::screen::{
         At, Dir, Focusable, FocusSource, HitSource, Screen, ScreenArg, ScreenEvent, Step,
     };
 
@@ -856,7 +856,7 @@ mod focus_and_hit {
         plx_machine::machine::Cx {
             views: (),
             tick: Tick::default(),
-            measure: &crate::ui::fixture::FixtureMeasure,
+            measure: &plx_ui::fixture::FixtureMeasure,
             focus: FocusRead { current: focus, ..Default::default() },
             press: PressRead::default(),
             owner: InputOwner::Entry(EntryId(5)),
@@ -913,9 +913,9 @@ mod focus_and_hit {
         assert_eq!(groups.len(), 1);
         let g = groups[0];
         assert_eq!(g.len, 2);
-        assert!(matches!(g.kind, crate::ui::screen::GroupKind::Column));
-        assert!(matches!(g.elem, crate::ui::screen::ElemKind::Bare));
-        assert!(g.edge.iter().all(|e| matches!(e, crate::ui::screen::EdgeRule::Stop)));
+        assert!(matches!(g.kind, plx_ui::screen::GroupKind::Column));
+        assert!(matches!(g.elem, plx_ui::screen::ElemKind::Bare));
+        assert!(g.edge.iter().all(|e| matches!(e, plx_ui::screen::EdgeRule::Stop)));
     }
 
     /// **`neighbour` walks the table's own rows, and stops at either end** — the same order
@@ -951,7 +951,7 @@ mod focus_and_hit {
     fn place_matches_the_tables_own_row_geometry() {
         let (p, ..) = two_row_panel();
         let cx = fixture_cx(None);
-        let want = p.form.table.row_frame(p.frame(&crate::ui::fixture::FixtureMeasure), 1).expect("row 1 is drawn");
+        let want = p.form.table.row_frame(p.frame(&plx_ui::fixture::FixtureMeasure), 1).expect("row 1 is drawn");
         let placed = Focusable::<HostFixture>::place(&p, &1, &cx, At::Drawn).expect("row 1 places");
         assert_eq!(
             (placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
@@ -973,7 +973,7 @@ mod focus_and_hit {
         let ev = ScreenEvent::FocusMoved {
             from: None,
             to: FocusKey { entry, elem: 1 },
-            by: crate::ui::screen::By::Dir,
+            by: plx_ui::screen::By::Dir,
         };
         assert_eq!(Machine::step(&mut p, &ev, &cx, &mut fx), Handled::Yes);
         assert_eq!(p.form.table.sel, 1);
@@ -1076,15 +1076,15 @@ fn every_app_owned_run_fits_the_panel_in_every_language() {
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
-        let mut table = crate::ui::table::TableView::new();
+        let mut table = plx_ui::table::TableView::new();
         table.compact = false;
         table.set_sections(vec![section_for(&built)], 0, false);
-        let mut capped = crate::ui::table::TableView::new();
+        let mut capped = plx_ui::table::TableView::new();
         capped.compact = false;
         capped.set_sections(vec![section_for(&short_built)], 0, false);
         out.extend(capped.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
         out.extend(table.app_fit_failures(MENU_MAX_W, language.tag()));
         out.extend(table.app_fit_failures_hugged(language.tag()));
     }
-    crate::ui::table::assert_no_fit_failures(&out);
+    plx_ui::table::assert_no_fit_failures(&out);
 }

@@ -2,7 +2,7 @@
 //! the frame thread submits its clock and uploads only a changed completed image.
 //! Authored placement is retained even while the transport HUD is visible.
 use crate::player::{ass, ass_source, sidecar};
-use crate::ui::{
+use plx_ui::{
     consts::{SCR_H, SCR_W},
     Painter, Rect,
 };
@@ -133,8 +133,8 @@ impl AssSubtitles {
         ass::clear();
     }
 
-    pub(crate) fn render_report(&self) -> crate::ui::frame::RenderReport {
-        crate::ui::frame::RenderReport {
+    pub(crate) fn render_report(&self) -> plx_ui::frame::RenderReport {
+        plx_ui::frame::RenderReport {
             textures: self.textures.iter().filter(|t| t.id != 0).count() as u32,
             bytes: self.textures.iter().map(|t| t.pixels.len()).sum(),
         }

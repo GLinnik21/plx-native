@@ -316,16 +316,18 @@ def scan(source: str, calls: dict[str, tuple[int, ...]] | None = None,
 
 # The layer crates split out of rust-modules/src whose files this gate reads (docs/module-layers.md).
 # `platform` holds three of the listed product files below (webos.rs, tv/device.rs, devcaps/dv.rs);
-# `gfx` holds `overdraw.rs`, which this gate read as `ui/overdraw.rs` before the split.
-LAYER_SRCS = ('rust-modules/platform/src', 'rust-modules/gfx/src')
+# `gfx` holds `overdraw.rs`, which this gate read as `ui/overdraw.rs` before the split, and `ui`
+# is the whole of what this gate read as `rust-modules/src/ui`.
+LAYER_SRCS = ('rust-modules/platform/src', 'rust-modules/gfx/src', 'rust-modules/ui/src')
 
 
 def source_paths(root: Path):
     src = root / 'rust-modules/src'
     platform = root / LAYER_SRCS[0]
-    for folder in ('screens', 'ui', 'appkit'):
-        for path in sorted((src / folder).rglob('*.rs')):
-            if path.name not in FIXTURES and not any('test' in part for part in path.relative_to(src).parts): yield path
+    for base, folders in ((src, ('screens', 'appkit')), (root / LAYER_SRCS[2], ('',))):
+        for folder in folders:
+            for path in sorted((base / folder).rglob('*.rs')):
+                if path.name not in FIXTURES and not any('test' in part for part in path.relative_to(base).parts): yield path
     for rel in ('app/chrome.rs', 'app/diagnostics.rs', 'app/playback.rs', 'auth/owner.rs',
                 'metadata.rs', 'person.rs', 'player/ass.rs', 'player/mod.rs', 'player/shared.rs',
                 'player/sidecar.rs', 'route/decision.rs', 'route/plan.rs', 'lab/toast.rs'):

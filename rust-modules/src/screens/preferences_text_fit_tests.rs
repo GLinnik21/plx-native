@@ -10,7 +10,7 @@ use plx_base::fontcov::advances::ShippedMeasure as M;
 use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
 use crate::plex::account::AudioPreferences;
 use crate::route::available_quality_ladder;
-use crate::ui::table::{Section, TableView};
+use plx_ui::table::{Section, TableView};
 use plx_machine::machine::Measure;
 
 fn frame_w() -> f32 {
@@ -112,7 +112,7 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
             check_field_section(&format!("{tag} subtitle_forced={forced}"), &audio(Some(&prefs)), &mut out);
         }
     }
-    crate::ui::table::assert_no_fit_failures(&out);
+    plx_ui::table::assert_no_fit_failures(&out);
 }
 
 /// Every picker level's rows, through `field_options`, including the full language
@@ -139,7 +139,7 @@ fn every_picker_level_fits_its_column_in_every_language() {
             }
         }
     }
-    crate::ui::table::assert_no_fit_failures(&out);
+    plx_ui::table::assert_no_fit_failures(&out);
 }
 
 /// The Direct Play row's trailing read-out (`direct_play_readout`, the function `field_form`
@@ -172,7 +172,7 @@ fn direct_play_readout_fits_beside_its_label_in_every_language() {
                 language.tag(), cols.label_w);
         }
     }
-    crate::ui::table::assert_no_fit_failures(&out);
+    plx_ui::table::assert_no_fit_failures(&out);
 }
 
 /// The Subtitles row's read-out for the foreign-audio mode names the SUBTITLE language (it once
@@ -200,9 +200,9 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
 }
 
 /// The copy as `RouteLayout::draw_narrative` draws it under the title.
-fn copy_view<'a>(copy: &'a str) -> crate::ui::text_view::TextView<'a> {
+fn copy_view<'a>(copy: &'a str) -> plx_ui::text_view::TextView<'a> {
     let size = theme::size::LABEL;
-    crate::ui::text_view::TextView::new(copy, size, theme::TEXT_READING)
+    plx_ui::text_view::TextView::new(copy, size, theme::TEXT_READING)
         .leading(size as f32 + theme::space::XS).max_lines(12).with_measure(&M)
 }
 

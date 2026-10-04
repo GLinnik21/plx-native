@@ -86,20 +86,20 @@ use std::convert::Infallible;
 use crate::metadata::AltCopy;
 use crate::plex::ServerId;
 use crate::screens::registry::{AppLike, AppMsg, ContentArg, PageMemory};
-use crate::ui::consts::{SCR_H, SCR_W};
-use crate::ui::frame::Budget;
+use plx_ui::consts::{SCR_H, SCR_W};
+use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind,
     InstanceId, Key, LogicalState, Machine, MachineId, NavOp,
 };
-use crate::ui::screen::{
+use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, FocusSource, Focusable, GroupKind,
     GroupSpec, Hover, HitSource, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step,
     Stop,
 };
-use crate::ui::form::{Form, FormSection, FormTable, RowKey, RowKind};
-use crate::ui::table::{Badge, Row, TableView, MENU_MAX_W, MENU_MIN_W};
-use crate::ui::{theme, Rect};
+use plx_ui::form::{Form, FormSection, FormTable, RowKey, RowKind};
+use plx_ui::table::{Badge, Row, TableView, MENU_MAX_W, MENU_MIN_W};
+use plx_ui::{theme, Rect};
 
 /// The fields [`AltSourcesScreen::write`] canonicalises, for the recorder's shape pin (§5.4). The
 /// selected ROW is in it deliberately: this panel's UP/DOWN changes nothing else in the app, so
@@ -148,12 +148,12 @@ const BTN_GAP: f32 = theme::space::MD;
 /// Per AXIS, for `item_menu::EDGE`'s reason: `space::XL` 64 clears `MARGIN_Y` vertically and misses
 /// `MARGIN_X` horizontally by 32px.
 const EDGE: f32 = theme::space::XL;
-const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
+const EDGE_X: f32 = plx_ui::consts::MARGIN_X;
 /// How far the panel rises into place, matching those same chip menus. The container's appear
 /// spring drives it now (`DrawFrame::page_alpha` IS `Surface::motion.appear`), so the translate is
 /// applied here rather than by `Popover::painter`; at rest it contributes nothing, which is what
 /// makes a settled capture of this panel byte-identical across the conversion.
-const RISE: f32 = crate::ui::popover::Popover::RISE;
+const RISE: f32 = plx_ui::popover::Popover::RISE;
 
 /// Under the button when there is room, above it when there is not — never over it, so the control
 /// that opened the panel stays readable beside its own list. Horizontally it hangs off the
@@ -273,8 +273,8 @@ pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<A
                 // a copy the server sent no duration for leaves the read-out slot EMPTY rather
                 // than claiming "0 min" — the same rule the sub-line's dangling separator followed
                 // while the runtime was part of it
-                value: (c.dur_ms > 0).then(|| crate::ui::fmt::dur_long(c.dur_ms)),
-                badge: crate::ui::fmt::resolution(&c.res, c.width, c.height),
+                value: (c.dur_ms > 0).then(|| plx_ui::fmt::dur_long(c.dur_ms)),
+                badge: plx_ui::fmt::resolution(&c.res, c.width, c.height),
                 checked: here == Some(i),
                 sid: c.sid,
                 rk: c.rk.clone(),
@@ -378,7 +378,7 @@ impl AltSourcesScreen {
             entry,
             arg,
             rows: Vec::new(),
-            form: FormTable::new(crate::ui::table_screen::BAND_BASE),
+            form: FormTable::new(plx_ui::table_screen::BAND_BASE),
         };
         screen.rebuild(Sel::OnTheCopyYouAreOn, meta);
         screen
@@ -450,7 +450,7 @@ impl AltSourcesScreen {
     /// `AccountMenuScreen::activate` draws.
     fn commit<H: AppLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
         let action = match self.form.index_of_key(RowKey(elem)).and_then(|i| self.form.activate(i)) {
-            Some(crate::ui::form::Activation::Action(action)) => action,
+            Some(plx_ui::form::Activation::Action(action)) => action,
             _ => Action::None,
         };
         self.dismiss(fx);
@@ -665,8 +665,8 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> S
         // Named for `/tmp/plxnative-cpuprof` beside the page's own phases, so a slow frame while
         // this panel is up can be read as the PANEL or as the host under it.
         let field = f.underlay;
-        crate::ui::profile::phase("dt.alt", || {
-            crate::ui::widgets::panel_ground(p, r, PANEL_RAD, field);
+        plx_ui::profile::phase("dt.alt", || {
+            plx_ui::widgets::panel_ground(p, r, PANEL_RAD, field);
             self.form.table.draw(p, r, measure);
         });
         // The hit map's stops are registered against the SETTLED geometry (`self.frame()`, what

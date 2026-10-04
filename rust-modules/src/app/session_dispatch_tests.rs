@@ -119,7 +119,7 @@ fn production_bridges_do_not_share_browse_state_or_landings() {
     assert!(second.stores.browse.borrow_mut().listing_snapshot().view().item(0).is_none());
 
     struct BrowseNotices(usize);
-    impl crate::ui::dispatch::Tap<AppHost> for BrowseNotices {
+    impl plx_ui::dispatch::Tap<AppHost> for BrowseNotices {
         fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {
             if matches!(&stamped.fx, Fx::Deliver(_, Delivery::Screen(
                 ScreenEvent::StoreChanged(ord, _))) if *ord == StoreId::Browse.ord()) {
@@ -235,7 +235,7 @@ fn session_current_negative_commit_reply_unblocks_independent_carried_work() {
     // patch. B has a separate accepted request and must not be discarded with A.
     rig.session_adapter.fixture_resources().disk.client_id = "synthetic-new-disk-identity".into();
     let mut d = Dispatcher::<AppHost>::new();
-    for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 4 {
+    for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 4 {
         execute_session_command(&mut d, Command::DismissPinError);
     }
     let first = d.frame_with(&mut rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
@@ -284,7 +284,7 @@ fn session_cancel_preserves_carried_receipts_until_unique_discard() {
     let b = records[1].clone();
     let old_ack = Receipt::of(&a);
     let mut d = Dispatcher::<AppHost>::new();
-    for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 2 {
+    for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 2 {
         execute_session_command(&mut d, Command::DismissPinError);
     }
     d.emit(MachineId::Session, Fx::Deliver(MachineId::Session,
@@ -420,7 +420,7 @@ fn session_registry_then_terminal_waits_for_queued_commit_replies() {
         if carry {
             // Consume the real pre+post budgets so A's commit effect, the terminal, and
             // B retained behind A must survive into the next frame. No test-only drain.
-            for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 2 {
+            for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 2 {
                 dispatcher.emit(MachineId::Nav, Fx::Deliver(MachineId::Session,
                     Delivery::Machine(AppMsg::Session(crate::auth::owner::SessionEvent::Command(
                         crate::auth::owner::Command::DismissPinError)))));
@@ -450,7 +450,7 @@ fn session_registry_then_terminal_waits_for_queued_commit_replies() {
 #[test]
 fn session_replies_cross_the_production_queued_drain_with_exact_correlation() {
     use crate::auth::owner::{Command, ReplyTo, SessionEvent};
-    use crate::ui::dispatch::Tap;
+    use plx_ui::dispatch::Tap;
     struct Replies(Vec<(u32, u32, bool)>);
     impl Tap<AppHost> for Replies {
         fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {

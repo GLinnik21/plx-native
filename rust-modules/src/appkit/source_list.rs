@@ -25,8 +25,8 @@
 //! projections rather than borrows of its statics).
 use crate::browse::{SourceState, SrcGroup};
 use crate::plex::probe::Location;
-use crate::ui::form::{Form, FormId, FormSection, RowKey, RowKind};
-use crate::ui::table::{Row, Section};
+use plx_ui::form::{Form, FormId, FormSection, RowKey, RowKind};
+use plx_ui::table::{Row, Section};
 use std::convert::Infallible;
 
 /// The two levels of the Sources list — **one per surface now, and not swappable from either.**
@@ -297,7 +297,7 @@ pub(crate) fn form(
 mod tests {
     use super::*;
     use crate::browse::{SourceState, SrcGroup};
-    use crate::ui::form::FormTable;
+    use plx_ui::form::FormTable;
 
     /// The built list as a table sees it: the drawn sections, and the target of every FOCUSABLE row
     /// in layout order (separators and notes have none).
@@ -307,7 +307,7 @@ mod tests {
         rows: &[crate::browse::SrcRow],
         tail: Tail,
     ) -> (Vec<Section>, Vec<SrcTarget>) {
-        let mut built = FormTable::<SrcTarget, SrcTarget, Infallible>::new(crate::ui::table_screen::BAND_BASE);
+        let mut built = FormTable::<SrcTarget, SrcTarget, Infallible>::new(plx_ui::table_screen::BAND_BASE);
         built.set(form(level, groups, rows, tail), None);
         let targets = (0..built.table.n_rows() as usize)
             .filter_map(|i| built.id_at(i).copied())
@@ -441,10 +441,10 @@ mod tests {
     #[test]
     fn every_app_owned_run_fits_its_column_in_every_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-        use crate::ui::route_screen::RouteLayout;
-        use crate::ui::table::TableView;
+        use plx_ui::route_screen::RouteLayout;
+        use plx_ui::table::TableView;
         let widths = [
-            ("library panel", crate::ui::table::MENU_MAX_W),
+            ("library panel", plx_ui::table::MENU_MAX_W),
             ("favourites editor", RouteLayout::screen().sectioned_table().w),
         ];
         let groups = vec![
@@ -475,7 +475,7 @@ mod tests {
                 }
             }
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 
     fn one_group_sections(g: SrcGroup) -> Vec<Section> {
@@ -489,7 +489,7 @@ mod tests {
     /// report still checks it.
     #[test]
     fn a_handleless_accessory_is_app_text_and_a_handle_keeps_its_app_lead_checked() {
-        use crate::ui::table::Origin;
+        use plx_ui::table::Origin;
         let bare = &one_group_sections(group(SourceState::Unreachable, None, ""))[0];
         assert_eq!(bare.accessory_origin, Origin::App);
         let owned = &one_group_sections(group(SourceState::Unreachable, None, "friend"))[0];
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn the_state_words_fit_beside_a_long_machine_name_in_every_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-        use crate::ui::table::TableView;
+        use plx_ui::table::TableView;
         let name = "a-very-long-shared-server-machine-name-that-keeps-going";
         let mut out = Vec::new();
         for language in SHIPPED {
@@ -517,11 +517,11 @@ mod tests {
                         let mut table = TableView::new();
                         table.compact = false;
                         table.set_sections(one_group_sections(g), 0, false);
-                        out.extend(table.app_fit_failures(crate::ui::table::MENU_MAX_W, &format!("{} {state:?} {handle:?}", language.tag())));
+                        out.extend(table.app_fit_failures(plx_ui::table::MENU_MAX_W, &format!("{} {state:?} {handle:?}", language.tag())));
                     }
                 }
             }
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 }

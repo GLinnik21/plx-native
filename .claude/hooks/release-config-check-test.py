@@ -60,18 +60,19 @@ def edit(path, tool="Edit", key="file_path", **extra):
 CASES = [
     # --- fires: this lane's lib sources ---------------------------------------
     (FIRE, "plain edit", edit("/repo/rust-modules/src/app.rs"), ROOT),
-    (FIRE, "nested module", edit("/repo/rust-modules/src/ui/widgets.rs"), ROOT),
+    (FIRE, "nested module", edit("/repo/rust-modules/src/screens/home/mod.rs"), ROOT),
     (FIRE, "Write", edit("/repo/rust-modules/src/dev.rs", tool="Write"), ROOT),
     (FIRE, "a layer crate's source", edit("/repo/rust-modules/base/src/paths.rs"), ROOT),
     (FIRE, "the machine layer crate's source", edit("/repo/rust-modules/machine/src/idle.rs"), ROOT),
     (FIRE, "the platform layer crate's source", edit("/repo/rust-modules/platform/src/webos.rs"), ROOT),
     (FIRE, "the gfx layer crate's source", edit("/repo/rust-modules/gfx/src/gfx.rs"), ROOT),
     (FIRE, "the net layer crate's source", edit("/repo/rust-modules/net/src/net.rs"), ROOT),
+    (FIRE, "the ui layer crate's source", edit("/repo/rust-modules/ui/src/widgets.rs"), ROOT),
     (FIRE, "MultiEdit", edit("/repo/rust-modules/src/app/run.rs", tool="MultiEdit"), ROOT),
     (FIRE, "relative to root", edit("rust-modules/src/route.rs"), ROOT),
     (FIRE, "relative to a subdir", edit("src/plex/client.rs"), "/repo/rust-modules"),
     (FIRE, "relative climbing out", edit("../rust-modules/src/net.rs"), "/repo/tools"),
-    (FIRE, "un-normalised absolute", edit("/repo/rust-modules/src/ui/../ff.rs"), ROOT),
+    (FIRE, "un-normalised absolute", edit("/repo/rust-modules/src/screens/../ff.rs"), ROOT),
     # A worktree IS its own lane: same file, but `git rev-parse` from its own cwd returns ITS root.
     (FIRE, "worktree, from inside it",
      {"tool_name": "Edit", "tool_input": {"file_path": WT + "/rust-modules/src/app.rs"},
@@ -89,7 +90,7 @@ CASES = [
      edit(WT + "/rust-modules/src/app.rs"), ROOT),
 
     # --- does not fire: not a Rust source edit --------------------------------
-    (SKIP, "the crate's CLAUDE.md", edit("/repo/rust-modules/src/ui/CLAUDE.md"), ROOT),
+    (SKIP, "the crate's CLAUDE.md", edit("/repo/rust-modules/ui/src/CLAUDE.md"), ROOT),
     # Cargo.toml is where `[features]` itself lives, so this one is a real choice, not an
     # oversight — the hook grades a Rust edit's side effect on a configuration its author was not
     # thinking about, and someone editing the feature list is thinking about exactly that. Cost is

@@ -109,7 +109,7 @@ fn typed_initial_roundtrip_and_hidden_input_hash_are_complete() {
     changed.consent.errors = true;
     changed.validate().unwrap();
     assert_ne!(changed.hash(), initial.hash(), "automation hides the prompt, not its logical initial decision");
-    let press = crate::ui::press::Press::new();
+    let press = plx_ui::press::Press::new();
     assert_ne!(super::super::recorder::state_hash(&press,"home","","",0,0,0,initial.hash()),
         super::super::recorder::state_hash(&press,"home","","",0,0,0,changed.hash()));
     assert!(Initial::decode(serde_json::to_value(&changed).unwrap(),initial.hash()).is_err());
@@ -148,9 +148,9 @@ fn screen_input_codec_retains_full_time_source_edge_and_hit_identity() {
 }
 
 fn activate(bridge: &mut super::super::bridge::Bridge) {
-    let mut dispatcher = crate::ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
+    let mut dispatcher = plx_ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
     super::super::bridge::execute_session_command(&mut dispatcher,crate::auth::SessionCmd::ActivateDevBootstrap);
-    dispatcher.frame_with(bridge,Tick::default(),Vec::new(),Vec::new(),&mut crate::ui::dispatch::NoTap,false);
+    dispatcher.frame_with(bridge,Tick::default(),Vec::new(),Vec::new(),&mut plx_ui::dispatch::NoTap,false);
     assert!(bridge.take_session_ready().is_some());
 }
 
@@ -237,11 +237,11 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
 }
 
 fn recording(initial: &Initial) -> Recording {
-    let mut header = crate::ui::rec::Header::new(super::super::recorder::state_fp(),initial);
+    let mut header = plx_ui::rec::Header::new(super::super::recorder::state_fp(),initial);
     header.init_data = serde_json::to_value(initial).unwrap();
     header.features = super::super::recorder::features();
     header.triggers = initial.triggers.clone();
-    Recording { header,frames:vec![crate::ui::rec::Frame { f:0,tick:Some(Tick::default()),st:Some(0),..Default::default() }],
+    Recording { header,frames:vec![plx_ui::rec::Frame { f:0,tick:Some(Tick::default()),st:Some(0),..Default::default() }],
         metrics:Default::default(),stopped_at:None }
 }
 
@@ -253,10 +253,10 @@ fn whole_record_preflight_rejects_bad_late_results_and_markers_without_resources
     record.frames[0].st = None;
     assert!(super::super::recorder::validate_controlled(&record,&initial).is_err(),"missing state grades cannot produce an empty SAME");
     record.frames[0].st = Some(0);
-    record.frames.push(crate::ui::rec::Frame { f:1,tick:Some(Tick {ms:16,dt_us:16000}),
+    record.frames.push(plx_ui::rec::Frame { f:1,tick:Some(Tick {ms:16,dt_us:16000}),
         results:vec![json!({"f":1,"t":"async","to":"store:1","req":1,"payload":{
             "kind":"hubs","version":1,"gen":1,"seq":1,"sid":0,"client":1,"token_gen":1,"build":null}})],
-        lands:vec![(1,1,1)],st:Some(0),present:Some(false),readiness:Some(crate::ui::rec::Readiness { snapshot: true, text: false }),..Default::default() });
+        lands:vec![(1,1,1)],st:Some(0),present:Some(false),readiness:Some(plx_ui::rec::Readiness { snapshot: true, text: false }),..Default::default() });
     super::super::recorder::validate_controlled(&record,&initial).unwrap();
     record.frames[1].present = None;
     assert!(super::super::recorder::validate_controlled(&record,&initial).is_err());
@@ -344,7 +344,7 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
     let mut transcript: Vec<Vec<serde_json::Value>> = Vec::new();
     let mut states = Vec::new();
     let mut completion = None;
-    let mut parsed: Option<crate::ui::rec::Recording> = None;
+    let mut parsed: Option<plx_ui::rec::Recording> = None;
     for replay in [false, true] {
         let (state, adapter) = initial.restore(&mt).unwrap();
         let mut hubs = crate::stores::hubs::HubsStore::from_parts(state, adapter);
@@ -352,10 +352,10 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
         let mut io = HomeIo { replay,preferences:Default::default(),requests:Vec::new(),
             admissions:Default::default(),failure:None,profile:publisher.snapshot() };
         let mut attempts = 0;
-        let sink = crate::ui::rec::MemSink::default();
+        let sink = plx_ui::rec::MemSink::default();
         let bytes = sink.segments.clone();
-        let header = crate::ui::rec::Header::new(17,&crate::ui::press::Press::new());
-        let mut writer = crate::ui::rec::Writer::open(Box::new(sink),&header,0).unwrap();
+        let header = plx_ui::rec::Header::new(17,&plx_ui::press::Press::new());
+        let mut writer = plx_ui::rec::Writer::open(Box::new(sink),&header,0).unwrap();
         for frame in 0..160 {
             if replay {
                 io.admissions = parsed.as_ref().unwrap().frames[frame].effects.iter()
@@ -400,7 +400,7 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
         writer.finish().unwrap();
         if !replay {
             let bytes = bytes.borrow();
-            parsed = Some(crate::ui::rec::Recording::parse(&header.to_json().to_string(),
+            parsed = Some(plx_ui::rec::Recording::parse(&header.to_json().to_string(),
                 &bytes.iter().map(Vec::as_slice).collect::<Vec<_>>(),17).unwrap());
         }
     }
@@ -435,7 +435,7 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
     let mut transcript: Vec<std::collections::VecDeque<serde_json::Value>> = Vec::new();
     let mut states = Vec::new();
     let mut successful_result = None;
-    let mut parsed: Option<crate::ui::rec::Recording> = None;
+    let mut parsed: Option<plx_ui::rec::Recording> = None;
     for replay in [false, true] {
         // seed_sources is a reset fixture; restore the same pre-execution epoch on each
         // independent run, never to cancel or bypass a guard during either history.
@@ -450,10 +450,10 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
             profile: publisher.snapshot(),
         };
         let mut attempts = 0;
-        let sink = crate::ui::rec::MemSink::default();
+        let sink = plx_ui::rec::MemSink::default();
         let bytes = sink.segments.clone();
-        let header = crate::ui::rec::Header::new(17, &crate::ui::press::Press::new());
-        let mut writer = crate::ui::rec::Writer::open(Box::new(sink), &header, 0).unwrap();
+        let header = plx_ui::rec::Header::new(17, &plx_ui::press::Press::new());
+        let mut writer = plx_ui::rec::Writer::open(Box::new(sink), &header, 0).unwrap();
         for frame in 0..=602 {
             if replay {
                 io.admissions = parsed.as_ref().unwrap().frames[frame]
@@ -529,7 +529,7 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
         if !replay {
             let bytes = bytes.borrow();
             parsed = Some(
-                crate::ui::rec::Recording::parse(
+                plx_ui::rec::Recording::parse(
                     &header.to_json().to_string(),
                     &bytes.iter().map(Vec::as_slice).collect::<Vec<_>>(),
                     17,

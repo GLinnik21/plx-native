@@ -32,7 +32,7 @@
 //! design-system rule from the other side: **a mark says where you are and a word says what is set,
 //! and no row says both**, which is why a rung's rate rides inside its own label rather than in a
 //! trailing value beside the mark. (The Options row drew as a PAIR OF MARKS for one day, a ring
-//! ticked when on; those assets were deleted the same evening — see [`crate::ui::icons`].)
+//! ticked when on; those assets were deleted the same evening — see [`plx_ui::icons`].)
 //!
 //! **Options** holds switches. Its row carries [`Row::toggle`], so it states itself as the WORD
 //! `On`/`Off` at the row's trailing edge. It is a STATE, not a destination: a chevron would promise
@@ -40,7 +40,7 @@
 //!
 //! `docs/parity-gaps.md`'s standing decision is that this app has **no full-screen menu sheets** —
 //! the reference clients put playback quality in one and we do not. Quality drills in INSIDE the
-//! popover instead, on the same [`crate::ui::page_stack::PageStack`] the Subtitles tab of
+//! popover instead, on the same [`plx_ui::page_stack::PageStack`] the Subtitles tab of
 //! [`crate::appkit::track_menu`] uses: BACK, LEFT and a click on the title band mean "up one page", and
 //! only BACK on the root dismisses. Six rungs fit; when they stop fitting, the [`TableView`]
 //! scrolls, which is what it is for.
@@ -64,18 +64,18 @@
 //! the picture already satisfies does nothing at all. That is a user-initiated switch and not an
 //! adaptive one — nothing measures a link or moves a rung on its own.
 #![allow(non_upper_case_globals)]
-use crate::ui::frame::Budget;
-use crate::ui::geom::IndexElem;
+use plx_ui::frame::Budget;
+use plx_ui::geom::IndexElem;
 use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure};
-use crate::ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Step};
-use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
-use crate::ui::page_stack::{
+use plx_ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Step};
+use plx_ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use plx_ui::page_stack::{
     self, popover_group_of, popover_groups, popover_neighbour, popover_place,
     popover_register_stops, popover_seat, PageStack, PopoverPanel,
 };
-use crate::ui::panel_motion::PanelMotion;
-use crate::ui::table::Row;
-use crate::ui::{theme, Rect};
+use plx_ui::panel_motion::PanelMotion;
+use plx_ui::table::Row;
+use plx_ui::{theme, Rect};
 
 /// What the highlighted row does on OK.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -162,7 +162,7 @@ pub(crate) struct MoreMenuState {
     /// The pages pushed above the root, outermost first (empty = the root): each remembers the row
     /// that opened it and the scroll it was left at ([`page_stack`]).
     pages: PageStack<MorePage, MoreRow>,
-    /// The card's resize and the page slide ([`crate::ui::panel_motion`]), the same one the track
+    /// The card's resize and the page slide ([`plx_ui::panel_motion`]), the same one the track
     /// menu uses: a row set that changes height animates the top edge, bottom and right stay on the
     /// anchor, and a push or pop slides the two pages.
     motion: PanelMotion,
@@ -250,7 +250,7 @@ impl MoreMenuState {
         let forced = crate::route::forced_direct_play(ps);
         let rows = rows_for(forced);
         let current = crate::route::quality();
-        let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
+        let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true; // a short action list — BODY labels, like the profile menu
         form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         form.set_or_open(root_form(ps, &rows, forced, current), None);
@@ -509,7 +509,7 @@ impl MoreMenuState {
         // rises INTO place from below, toward the disc that opened it. The dim under it is the
         // container's (`PlayerOverlayScreen::scrim`, `theme::underlay::DIM_SHEET`), painted at the
         // end of the player's page pass — not here.
-        let p = crate::ui::Painter::root()
+        let p = plx_ui::Painter::root()
             .alpha(appear)
             .translate(0.0, 16.0 * (1.0 - appear));
         self.motion.draw(p, self.panel_rect(measure), 24.0, &self.form.table, measure);
@@ -698,7 +698,7 @@ fn is_on(a: Action) -> bool {
 /// global state.
 fn quality_detail(q: crate::route::Quality, source_decodable: bool) -> &'static str {
     if q == crate::route::Quality::Original && !source_decodable {
-        crate::ui::fmt::converts_on_server()
+        plx_ui::fmt::converts_on_server()
     } else {
         ""
     }
@@ -715,10 +715,10 @@ fn row_for(ps: &crate::route::PlaybackSession, a: Action) -> Row {
     }
 }
 
-/// The panel at its TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]).
+/// The panel at its TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]).
 #[cfg(test)]
 pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    let (pw, ph) = (crate::ui::table::MENU_MAX_W, 320.0f32);
+    let (pw, ph) = (plx_ui::table::MENU_MAX_W, 320.0f32);
     let bottom = theme::layout::PLAYER_MENU_BOTTOM;
     out.push((
         "… overflow menu panel",
@@ -777,7 +777,7 @@ mod tests {
     fn the_conversion_notice_is_the_words_the_detail_page_already_uses() {
         assert_eq!(
             quality_detail(crate::route::Quality::Original, false),
-            crate::ui::fmt::converts_on_server(),
+            plx_ui::fmt::converts_on_server(),
         );
     }
 
@@ -811,7 +811,7 @@ mod tests {
     fn menu(forced: bool, current: crate::route::Quality) -> MoreMenuState {
         let ps = crate::route::PlaybackSession::default();
         let rows = rows_for(forced);
-        let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
+        let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true;
         form.set_or_open(root_form(&ps, &rows, forced, current), None);
         MoreMenuState { form, rows, forced, current, pages: PageStack::new(), motion: PanelMotion::new() }
@@ -940,7 +940,7 @@ mod tests {
     /// ordinary entry, the Quality page for a quality entry.
     #[test]
     fn warm_open_queues_the_opening_page_once_without_an_update() {
-        use crate::ui::fixture::FixtureMeasure as M;
+        use plx_ui::fixture::FixtureMeasure as M;
         let _serial = plx_base::testlock::serial();
         let ps = crate::route::PlaybackSession::default();
         for st in [MoreMenuState::new(&ps), MoreMenuState::new_quality(&ps)] {
@@ -978,7 +978,7 @@ mod tests {
         let ps = crate::route::PlaybackSession::default();
         let mut rows = rows_for(false);
         rows.reverse();
-        let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
+        let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.set(quality_form(&ps, &rows, Quality::Auto), None);
         let st = MoreMenuState {
             form,
@@ -1115,7 +1115,7 @@ mod tests {
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), all.len());
-        assert!(keys.iter().all(|k| *k < crate::ui::table_screen::BAND_BASE));
+        assert!(keys.iter().all(|k| *k < plx_ui::table_screen::BAND_BASE));
         assert!(page_stack::is_title_key(page_stack::TITLE_KEY));
         assert!(keys.iter().all(|k| !page_stack::is_title_key(*k)));
     }
@@ -1230,17 +1230,17 @@ mod focus_tests {
 
     struct HostFixture;
     impl Host for HostFixture {
-        type Arg = crate::ui::fixture::FixtureArg;
-        type Fx = crate::ui::fixture::FixtureFx;
-        type Msg = crate::ui::fixture::FixtureMsg;
+        type Arg = plx_ui::fixture::FixtureArg;
+        type Fx = plx_ui::fixture::FixtureFx;
+        type Msg = plx_ui::fixture::FixtureMsg;
         type Elem = u32;
         type Views<'a> = ();
-        type Init = crate::ui::fixture::FixtureInit;
+        type Init = plx_ui::fixture::FixtureInit;
         type Memory = ();
     }
 
     fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         test(&Cx {
             views: (),
             tick: Tick::default(),
@@ -1264,7 +1264,7 @@ mod focus_tests {
         ] {
             sec = sec.item(MoreRow::Act(a), RowKind::Button, a, Row::new(label));
         }
-        let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
+        let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true;
         form.set(Form::new().section(sec), None);
         MoreMenuState {
@@ -1319,7 +1319,7 @@ mod focus_tests {
     fn place_matches_the_tables_own_row_frame() {
         let e = EntryId(4);
         let st = three_row_menu();
-        let r = st.panel_rect(&crate::ui::fixture::FixtureMeasure);
+        let r = st.panel_rect(&plx_ui::fixture::FixtureMeasure);
         let want = st.form.table.row_frame(r, 1);
         let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
         with_cx(e, |cx| {
@@ -1353,7 +1353,7 @@ mod focus_tests {
 
     /// **Every row fits the panel, in every shipped language** — the root with each possible
     /// current rung read out beside its Quality row, and the Quality page (title band included).
-    /// The panel hugs its widest row up to [`MENU_MAX_W`](crate::ui::table::MENU_MAX_W), and a row
+    /// The panel hugs its widest row up to [`MENU_MAX_W`](plx_ui::table::MENU_MAX_W), and a row
     /// elides its label to what the value beside it leaves — Spanish *Estadísticas avanzadas* and
     /// Belarusian *Падрабязная статыстыка* both ended in `…` beside their *Off*, and a rung's value
     /// ("1080p · 20 Mbps", "Original", "Автаматычна") shares its row with the label *Quality*.
@@ -1366,7 +1366,7 @@ mod focus_tests {
         let rows = rows_for(false);
         let mut check = |tag: &str, form: &MoreTable| {
             out.extend(form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, tag));
-            out.extend(form.table.app_fit_failures(crate::ui::table::MENU_MAX_W, tag));
+            out.extend(form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, tag));
             out.extend(form.table.app_fit_failures_hugged(tag));
         };
         for language in SHIPPED {
@@ -1386,6 +1386,6 @@ mod focus_tests {
             let forced = MoreMenuState::new(&ps);
             check(language.tag(), &forced.form);
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 }

@@ -33,7 +33,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
     }
     let entry = d.nav.top_page().unwrap().id;
     let instance = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
-    let base = crate::ui::dispatch::STRIP_BASE;
+    let base = plx_ui::dispatch::STRIP_BASE;
     assert_eq!(
         d.nav
             .tabs
@@ -48,8 +48,8 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
             MachineId::Nav,
             Fx::Deliver(
                 MachineId::Instance(instance),
-                Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
-                    focus: crate::ui::screen::FocusTarget::Elem(FocusKey { entry, elem }),
+                Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
+                    focus: plx_ui::screen::FocusTarget::Elem(FocusKey { entry, elem }),
                 })),
             ),
         );
@@ -184,7 +184,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
     );
 
     let id = rig.listing.view().id().unwrap();
-    d.nav.next_style = crate::ui::containers::modal::Style::Compact;
+    d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(

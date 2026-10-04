@@ -16,14 +16,14 @@ use std::ffi::CString;
 use crate::pms::{HeroRef, HubIdentity, HubRef, HubsView, PmsMovie};
 use crate::stores::hubs::HubsCmd;
 use crate::stores::{StoreCmd, StoreId, StoreWork};
-use crate::ui::card_row::{self, CardRow, RowStyle};
-use crate::ui::consts::*;
-use crate::ui::frame::Budget;
-use crate::ui::hero_logo::{self, HeroLogo, LogoRung};
-use crate::ui::icons::Icon;
-use crate::ui::label::{Label, VAlign};
-use crate::ui::linked_heading::{self, LinkedHeading};
-use crate::ui::landing_hero::{
+use plx_ui::card_row::{self, CardRow, RowStyle};
+use plx_ui::consts::*;
+use plx_ui::frame::Budget;
+use plx_ui::hero_logo::{self, HeroLogo, LogoRung};
+use plx_ui::icons::Icon;
+use plx_ui::label::{Label, VAlign};
+use plx_ui::linked_heading::{self, LinkedHeading};
+use plx_ui::landing_hero::{
     base_scrim_ramp, stack_top as hero_stack_top, COL_W as HERO_COL_W,
     TEXT_BOTTOM as HERO_TEXT_BOTTOM,
 };
@@ -32,18 +32,18 @@ use plx_machine::machine::{
     InputKind, InstanceId, Key, LogicalState, Machine, MachineId, Measure, Tick,
 };
 use plx_machine::present::{PresentEvent, Provenance};
-use crate::ui::screen::{
+use plx_ui::screen::{
     Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusTarget, Focusable,
     GroupKind, GroupSpec, Hover, Link, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step,
     Stop,
 };
-use crate::ui::text_view::TextView;
-use crate::ui::theme;
-use crate::ui::widgets::{
+use plx_ui::text_view::TextView;
+use plx_ui::theme;
+use plx_ui::widgets::{
     AmbientWash, Art, Button, CircleButton, ControlPalette, CtlPop, PageDots, PageGround,
     StatusKind, StatusOverlay,
 };
-use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
+use plx_ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 
 use super::clock_readout::ClockWatch;
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
@@ -70,11 +70,11 @@ const PLAINTEXT_CANCEL_ELEM: u32 = 0x0F00;
 const PLAINTEXT_CONNECT_ELEM: u32 = 0x0F01;
 
 /// Parent/container semantic strip keys. Positions are deliberately not encoded here.
-pub(crate) const STRIP_HOME_ELEM: u32 = crate::ui::dispatch::STRIP_BASE;
-pub(crate) const STRIP_MOVIES_ELEM: u32 = crate::ui::dispatch::STRIP_BASE + 1;
-pub(crate) const STRIP_SHOWS_ELEM: u32 = crate::ui::dispatch::STRIP_BASE + 2;
-pub(crate) const STRIP_SEARCH_ELEM: u32 = crate::ui::dispatch::STRIP_BASE + 3;
-pub(crate) const STRIP_ACCOUNT_ELEM: u32 = crate::ui::dispatch::STRIP_BASE + 4;
+pub(crate) const STRIP_HOME_ELEM: u32 = plx_ui::dispatch::STRIP_BASE;
+pub(crate) const STRIP_MOVIES_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 1;
+pub(crate) const STRIP_SHOWS_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 2;
+pub(crate) const STRIP_SEARCH_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 3;
+pub(crate) const STRIP_ACCOUNT_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 4;
 
 const MAX_ITEMS: usize = crate::pms::MAX_SHELF_ITEMS;
 const HERO_FLIP_CD: f32 = 0.35;
@@ -95,10 +95,10 @@ const HERO_WASH_W: [f32; 4] = [0.55, 0.55, 0.40, 0.40];
 
 const HERO_ROW_Y: f32 = HERO_TEXT_BOTTOM + theme::space::MD;
 const HERO_CTRL_D: f32 = StatusOverlay::CTRL_H;
-const HERO_CTRL_GAP: f32 = crate::ui::widgets::CTRL_GAP;
-const HERO_PAGER_D: f32 = HERO_CTRL_D * crate::ui::widgets::DISC_ICON_RATIO;
+const HERO_CTRL_GAP: f32 = plx_ui::widgets::CTRL_GAP;
+const HERO_PAGER_D: f32 = HERO_CTRL_D * plx_ui::widgets::DISC_ICON_RATIO;
 const HERO_PAGER_BEARING: f32 =
-    HERO_PAGER_D * crate::ui::icons::ink_x(crate::ui::icons::Icon::Chevron).0;
+    HERO_PAGER_D * plx_ui::icons::ink_x(plx_ui::icons::Icon::Chevron).0;
 const HERO_PAGER_PAD: f32 = HERO_CTRL_GAP - HERO_PAGER_BEARING;
 
 const HERO_META_R: f32 = 0.60 * SCR_W;
@@ -219,7 +219,7 @@ impl Backdrop {
         snap: f32,
     ) {
         let resolve = |h: Option<HeroRef<'_>>| {
-            h.map(|h| crate::ui::widgets::resolve_tex_wh_on(h.item.sid.raw(), &h.item.art, 1280, 720, 0))
+            h.map(|h| plx_ui::widgets::resolve_tex_wh_on(h.item.sid.raw(), &h.item.art, 1280, 720, 0))
                 .unwrap_or((0, 0.0, 0.0))
         };
         if snap < HERO_ART_CULL {
@@ -304,9 +304,9 @@ impl Backdrop {
             && slide.is_none()
             && self.tex.0 != 0
             && incoming_a > 0.01
-            && crate::ui::widgets::hero_ground_armed();
+            && plx_ui::widgets::hero_ground_armed();
         if folded {
-            crate::ui::widgets::hero_ground(
+            plx_ui::widgets::hero_ground(
                 p,
                 self.tex.0,
                 art_rect(self.tex, env.sp, 0.0),
@@ -341,7 +341,7 @@ impl Backdrop {
                     0.0,
                 );
             }
-            crate::ui::widgets::hero_scrim(p, env.hero_a, false);
+            plx_ui::widgets::hero_scrim(p, env.hero_a, false);
         }
     }
 }
@@ -916,7 +916,7 @@ impl HomeScreen {
             && cx
                 .focus
                 .current
-                .is_none_or(|key| key.elem >= crate::ui::dispatch::STRIP_BASE)
+                .is_none_or(|key| key.elem >= plx_ui::dispatch::STRIP_BASE)
         {
             self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), cx, fx);
         }
@@ -940,7 +940,7 @@ impl HomeScreen {
         }
         self.plaintext_alert.update(dt);
         self.status_ms = (self.status_ms + dt * 1000.0)
-            % (crate::ui::widgets::Spinner::PERIOD_MS as f32 * 1000.0);
+            % (plx_ui::widgets::Spinner::PERIOD_MS as f32 * 1000.0);
         self.hero_flip_cd = (self.hero_flip_cd - dt).max(0.0);
         if self.outgoing.is_some() {
             self.hero_slide.step(1.0, K_SLIDE, dt);
@@ -1060,7 +1060,7 @@ impl HomeScreen {
     ///
     /// The neighbours' clearLogos stay speculative: a late logo is a small pop, not a blank panel.
     fn prefetch(&self, view: HubsView<'_>) {
-        use crate::ui::tex::Warm;
+        use plx_ui::tex::Warm;
         if !neighbours_armed(self.snap.pos) {
             return;
         }
@@ -1072,15 +1072,15 @@ impl HomeScreen {
         );
         let neighbours = || order[..count].iter().filter_map(|&i| view.hero(i as usize));
         for hero in neighbours() {
-            crate::ui::widgets::resolve_tex_wh_on(hero.item.sid.raw(), &hero.item.art, 1280, 720, 0);
+            plx_ui::widgets::resolve_tex_wh_on(hero.item.sid.raw(), &hero.item.art, 1280, 720, 0);
         }
         if !(prefetch_armed(self.snap.pos, self.outgoing.is_some())
-            && crate::ui::tex::source_idle())
+            && plx_ui::tex::source_idle())
         {
             return;
         }
         for hero in neighbours() {
-            if crate::ui::tex::logo_warm(hero.item.sid.raw(), hero_logo_rk(hero.item))
+            if plx_ui::tex::logo_warm(hero.item.sid.raw(), hero_logo_rk(hero.item))
                 == Warm::Claimed
             {
                 return;
@@ -1318,9 +1318,9 @@ impl HomeScreen {
             self.carousel.as_ref(),
             self.snap.pos,
         );
-        crate::ui::profile::phase("hm.backdrop", || self.backdrop.draw(p, &env, slide));
+        plx_ui::profile::phase("hm.backdrop", || self.backdrop.draw(p, &env, slide));
         if env.hero_a > 0.01 {
-            crate::ui::profile::phase("hm.hero", || {
+            plx_ui::profile::phase("hm.hero", || {
                 self.draw_hero(
                     view,
                     &env,
@@ -1332,13 +1332,13 @@ impl HomeScreen {
                 )
             });
         }
-        crate::ui::profile::phase("hm.grid", || {
+        plx_ui::profile::phase("hm.grid", || {
             let heading = self.focused_heading(visible_focus);
             self.draw_grid(view, &env, p, f.press.scale, grid_focus, heading, f.measure)
         });
-        crate::ui::profile::phase("hm.status", || self.draw_status(view, &env, p, focus));
-        crate::ui::testpat::underlay(p);
-        crate::ui::testpat::draw(p);
+        plx_ui::profile::phase("hm.status", || self.draw_status(view, &env, p, focus));
+        plx_ui::testpat::underlay(p);
+        plx_ui::testpat::draw(p);
         if !self.plaintext_alert.visible() {
             // the question owns the pointer while it is up; nothing under it is a target
             self.record_stops(f, view);
@@ -1442,7 +1442,7 @@ impl HomeScreen {
             .palette(palette)
             .scale(pop(1))
             .draw(env, p);
-        crate::ui::icons::draw(p, Icon::Chevron, mark, theme::TEXT_SECONDARY);
+        plx_ui::icons::draw(p, Icon::Chevron, mark, theme::TEXT_SECONDARY);
     }
 
     /// Whether shelf `row` overlaps the screen vertically. The shelf spans from its heading's
@@ -1660,7 +1660,7 @@ impl HomeScreen {
                     self.heading_widget(view, row_index),
                     self.heading_rect(view, row_index, f.measure, At::Drawn, focus),
                 ) {
-                    let visible = rect.y >= crate::ui::widgets::TOP_BAR_BOTTOM
+                    let visible = rect.y >= plx_ui::widgets::TOP_BAR_BOTTOM
                         && rect.y + rect.h <= SCR_H;
                     if visible {
                         heading.stop(f, rect, FocusKey { entry: self.entry, elem: heading_elem(row.group) });
@@ -1744,7 +1744,7 @@ impl HomeScreen {
         let view = H::hubs(f.cx);
         let env = self.env(0.0);
         let p = f.painter.alpha(f.page_alpha);
-        let cut = crate::ui::widgets::TOP_BAR_BOTTOM;
+        let cut = plx_ui::widgets::TOP_BAR_BOTTOM;
         let _clip = f.clip(p, Rect::new(0.0, cut, SCR_W, SCR_H - cut));
         self.draw_focused_cell(view, &env, p, f.press.scale, Some((row, col)), f.measure);
     }
@@ -1973,7 +1973,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     At::Drawn => self.hero_pop.scale_with(index, cx.press.scale),
                     At::SpringTarget => {
                         if self.focused_loc(cx.focus.current) == Some(Located::Hero(index)) {
-                            crate::ui::widgets::CTRL_FOCUS_SCALE
+                            plx_ui::widgets::CTRL_FOCUS_SCALE
                         } else {
                             1.0
                         }
@@ -1981,7 +1981,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                 };
                 Some(Placed {
                     rect: base.scaled(scale),
-                    rest_rect: base.scaled(crate::ui::widgets::CTRL_FOCUS_SCALE),
+                    rest_rect: base.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE),
                     clip: Rect::FULL,
                     index: Some(index as u32),
                 })
@@ -1993,9 +1993,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     rest_rect: rect,
                     clip: Rect::new(
                         0.0,
-                        crate::ui::widgets::TOP_BAR_BOTTOM,
+                        plx_ui::widgets::TOP_BAR_BOTTOM,
                         SCR_W,
-                        SCR_H - crate::ui::widgets::TOP_BAR_BOTTOM,
+                        SCR_H - plx_ui::widgets::TOP_BAR_BOTTOM,
                     ),
                     index: None,
                 })
@@ -2041,9 +2041,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     rest_rect: base.scaled(RowStyle::HOME.focus_scale),
                     clip: Rect::new(
                         0.0,
-                        crate::ui::widgets::TOP_BAR_BOTTOM,
+                        plx_ui::widgets::TOP_BAR_BOTTOM,
                         SCR_W,
-                        SCR_H - crate::ui::widgets::TOP_BAR_BOTTOM,
+                        SCR_H - plx_ui::widgets::TOP_BAR_BOTTOM,
                     ),
                     index: Some(col as u32),
                 })
@@ -2269,7 +2269,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     }
                     self.layout_grid();
                 }
-                if to.elem >= crate::ui::dispatch::STRIP_BASE && matches!(by, By::Dir | By::Pointer)
+                if to.elem >= plx_ui::dispatch::STRIP_BASE && matches!(by, By::Dir | By::Pointer)
                 {
                     self.strip_chosen = true;
                 } else if to_loc.is_some() {
@@ -2377,14 +2377,14 @@ impl<H: HomeLike> Screen<H> for HomeScreen {
     }
     fn links(&self, out: &mut Vec<Link>) {
         out.push(Link {
-            from: crate::ui::containers::tabs::STRIP,
+            from: plx_ui::containers::tabs::STRIP,
             dir: Dir::Down,
             to: HERO_GROUP,
         });
         out.push(Link {
             from: HERO_GROUP,
             dir: Dir::Up,
-            to: crate::ui::containers::tabs::STRIP,
+            to: plx_ui::containers::tabs::STRIP,
         });
         // A collection shelf's linked heading sits between the shelf above and its own cards:
         // UP from any card reaches it, DOWN returns to the remembered card, and it is the next
@@ -2525,7 +2525,7 @@ fn status_overlay<'a>(view: HubsView<'_>, plaintext: &'a OfferWatch, clock: &Clo
     // Home's hub failure carries no typed cause of its own — it is the same untyped "can't reach
     // the server" verdict as the Library's own, so the two share the glyph rather than one
     // inventing a cause the other doesn't have.
-    let mut overlay = StatusOverlay::new(Rect::FULL, caption, kind).page(crate::ui::icons::Icon::ServerBadgeMinus);
+    let mut overlay = StatusOverlay::new(Rect::FULL, caption, kind).page(plx_ui::icons::Icon::ServerBadgeMinus);
     let mut action = action;
     if kind == StatusKind::Failed {
         if let (Some(verdict), Some(reason)) = (plaintext.verdict(), plaintext.reason()) {
@@ -2555,7 +2555,7 @@ fn hero_pill_w(measure: &dyn Measure, label: &std::ffi::CStr) -> f32 {
     theme::size::BODY as f32 * HERO_ICON_RATIO
         + HERO_ICON_GAP
         + measure.width(label, theme::size::BODY, true)
-        + crate::ui::widgets::BTN_PILL_AIR
+        + plx_ui::widgets::BTN_PILL_AIR
 }
 
 fn card_x(col: usize, scroll: f32) -> f32 {
@@ -2623,17 +2623,17 @@ fn backdrop_art(p: Painter, tex: (u32, f32, f32), snap: f32, dx: f32, alpha: f32
 }
 /// The hero's atmospheric ramp as the ground carries it — the two `rect`s the layered path draws
 /// (`base_scrim_ramp`: nothing above `y0`, `mid` at the knee, `foot` at the panel's foot).
-fn hero_ramp(hero_a: f32) -> crate::ui::widgets::WashRamp {
+fn hero_ramp(hero_a: f32) -> plx_ui::widgets::WashRamp {
     let [y0, knee, mid, foot] = base_scrim_ramp(hero_a);
-    crate::ui::widgets::WashRamp {
+    plx_ui::widgets::WashRamp {
         ink: theme::scrim(1.0),
         stops: [(y0, 0.0), (knee, mid), (SCR_H, foot)],
     }
 }
 /// The un-sliding hero art as the layer [`AmbientWash::draw_ground`] carries — exactly what
 /// [`backdrop_art`] would have drawn at `dx = 0`, down to its skip (a texture of 0 draws no art).
-fn hero_art(tex: (u32, f32, f32), snap: f32, alpha: f32) -> crate::ui::widgets::WashArt {
-    crate::ui::widgets::WashArt {
+fn hero_art(tex: (u32, f32, f32), snap: f32, alpha: f32) -> plx_ui::widgets::WashArt {
+    plx_ui::widgets::WashArt {
         tex: if alpha <= 0.01 { 0 } else { tex.0 },
         rect: art_rect(tex, snap, 0.0),
         uv: plx_gfx::gfx::UV_FULL,
@@ -2682,7 +2682,7 @@ fn display_source(real: &str) -> &str {
 }
 
 fn shared_by(source: &str) -> String {
-    crate::ui::fmt::shared_by(source).unwrap_or_default()
+    plx_ui::fmt::shared_by(source).unwrap_or_default()
 }
 fn meta_source_flow(
     base_w: f32,
@@ -2754,7 +2754,7 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
     };
     let title_h = hero_logo::band_h(LogoRung::Hero);
     let meta = if episode {
-        let mut text = crate::ui::fmt::episode_address(i64::from(hero.season_index), i64::from(hero.ep_index));
+        let mut text = plx_ui::fmt::episode_address(i64::from(hero.season_index), i64::from(hero.ep_index));
         if !text.is_empty() && !hero.title.is_empty() {
             text.push_str(" \u{b7} ");
         }
@@ -2774,7 +2774,7 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
     };
     let meta_view = TextView::new(&meta, theme::size::BODY, theme::TEXT_SECONDARY).max_lines(1);
     let meta_h = meta_view.measure_h(HERO_COL_W);
-    let synopsis = (!hero.summary.is_empty()).then(|| crate::ui::hero_synopsis(&hero.summary, ""));
+    let synopsis = (!hero.summary.is_empty()).then(|| plx_ui::hero_synopsis(&hero.summary, ""));
     let synopsis_h = synopsis
         .as_ref()
         .map(|v| theme::space::SM + v.measure_h(HERO_COL_W))

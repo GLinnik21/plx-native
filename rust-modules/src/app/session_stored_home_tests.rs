@@ -263,7 +263,7 @@ fn rejected_terminal_waits_in_owner_fifo_until_preceding_commit_ack() {
         let records = rig.session_adapter.take_results();
         assert_eq!(records.len(), 2);
         let req = records[0].addr.req.0;
-        for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - remaining {
+        for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - remaining {
             execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
         frame(&mut rig, &mut d, records.clone());

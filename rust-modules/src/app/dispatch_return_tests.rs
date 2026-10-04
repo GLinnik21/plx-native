@@ -11,15 +11,15 @@ use super::AppHost;
 use crate::screens::registry::{AppFx, LibraryReq};
 use crate::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
 use crate::stores::{StoreCmd, StoreId, StoreWork};
-use crate::ui::dispatch::{CxParts, Dispatcher, FrameReport, NoTap, Rig, Split};
-use crate::ui::fixture::{FixtureArg, FixtureMeasure};
-use crate::ui::frame::Budget;
+use plx_ui::dispatch::{CxParts, Dispatcher, FrameReport, NoTap, Rig, Split};
+use plx_ui::fixture::{FixtureArg, FixtureMeasure};
+use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Effects, FocusKey, Fx, GroupId, Handled, Host, InstanceId, LogicalState, Machine,
     MachineId, NavOp, Stamped, Tick, TimerId,
 };
 use plx_machine::present::Present;
-use crate::ui::screen::{
+use plx_ui::screen::{
     At, Dir, DrawFrame, Focusable, GroupSpec, Mounter, Placed, ReturnState, Screen, ScreenEvent,
     Step,
 };
@@ -70,7 +70,7 @@ impl Screen<ProbeHost> for Probe {
     fn crumb(&self, _: &Cx<'_, ProbeHost>) -> Option<std::borrow::Cow<'_, str>> { None }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, ProbeHost>) {}
     fn draw(&mut self, _: &mut DrawFrame<'_, '_, ProbeHost>) {}
-    fn render(&self) -> crate::ui::screen::RenderStrategy { crate::ui::screen::RenderStrategy::Page }
+    fn render(&self) -> plx_ui::screen::RenderStrategy { plx_ui::screen::RenderStrategy::Page }
     fn memory_at(&self, _: Option<FocusKey<u32>>) -> Memory {
         self.captures.set(self.captures.get() + 1);
         Memory(self.value.get())

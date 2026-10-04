@@ -1,10 +1,10 @@
 //! Meaningful legacy caption and landscape assertions, on the owned production helpers.
 use crate::pms::PmsMovie;
-use crate::ui::card_row::{self, RowStyle};
-use crate::ui::consts::{self, CARD_H, CARD_W, MARGIN_X};
-use crate::ui::fixture::FixtureMeasure;
+use plx_ui::card_row::{self, RowStyle};
+use plx_ui::consts::{self, CARD_H, CARD_W, MARGIN_X};
+use plx_ui::fixture::FixtureMeasure;
 use plx_machine::machine::{EntryId, InstanceId};
-use crate::ui::{Painter, Rect};
+use plx_ui::{Painter, Rect};
 use std::os::raw::c_int;
 use crate::stores::browse::SecKind;
 use super::draw::shelf_label;
@@ -77,17 +77,17 @@ fn a_focused_grid_caption_stays_inside_the_rail_reserved_band() {
 fn episode_grid_art_and_focus_labels_use_the_landscape_card_contract() {
     let item = PmsMovie { kind: 3, still: "/episode/still".into(),
         thumb: "/show/poster".into(), ..Default::default() };
-    let crate::ui::widgets::Art::Still(Some(art)) = super::parts::grid_art(&item) else {
+    let plx_ui::widgets::Art::Still(Some(art)) = super::parts::grid_art(&item) else {
         panic!("episodes must use their own still, not the show poster");
     };
-    assert_eq!(crate::ui::widgets::still_key(&art), "/episode/still");
+    assert_eq!(plx_ui::widgets::still_key(&art), "/episode/still");
     let layout = Layout::new(false, &[], 40, true).with_episodes(true);
     let rect = Rect::new(layout.cell_x(layout.cols() - 1), layout.row_y(0, 0.0),
         layout.card_w(), layout.card_h());
     let (x, width) = card_row::label_band(Painter::root(), rect, &layout.style());
     assert!(x + width <= GRID_RIGHT + 0.01, "episode focus label must keep the rail clear");
     let season = PmsMovie { kind: 2, ..item };
-    assert!(matches!(super::parts::grid_art(&season), crate::ui::widgets::Art::Poster(Some(_))));
+    assert!(matches!(super::parts::grid_art(&season), plx_ui::widgets::Art::Poster(Some(_))));
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
         rail.2 + 2.0 * RAIL_CAP_PAD,
     );
     let bare = Layout::new(false, &[], 40, true);
-    let head = Layout::new(true, &[crate::ui::consts::ROW_PITCH], 40, true);
+    let head = Layout::new(true, &[plx_ui::consts::ROW_PITCH], 40, true);
     let screen = crate::screens::library::LibraryScreen::new(
         EntryId(1),
         InstanceId(1),
@@ -111,19 +111,19 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
     // clears `self.libraries` outright below two candidates), so there is no more solo "chip" rect
     // to probe here — the document head's real geometry, for any drawn row, is the shared pill
     // strip. Two favourites is the smallest row that ever reaches the screen.
-    let pill_lays = crate::ui::widgets::strip_layout_measured(
+    let pill_lays = plx_ui::widgets::strip_layout_measured(
         ["Cinema".to_string(), "Cinema 2".to_string()].into_iter(),
-        MARGIN_X + crate::ui::widgets::STRIP_PAD,
-        crate::ui::theme::size::BODY,
-        crate::ui::widgets::STRIP_GAP_WIDE,
+        MARGIN_X + plx_ui::widgets::STRIP_PAD,
+        plx_ui::theme::size::BODY,
+        plx_ui::widgets::STRIP_GAP_WIDE,
         &measure,
     );
-    let pill_rect = crate::ui::widgets::strip_pill_rect(
+    let pill_rect = plx_ui::widgets::strip_pill_rect(
         &pill_lays[0],
         CONTENT_TOP,
-        crate::ui::widgets::StatusOverlay::CTRL_H,
+        plx_ui::widgets::StatusOverlay::CTRL_H,
     );
-    let control_width = crate::ui::value_chip::ValueChip::width(
+    let control_width = plx_ui::value_chip::ValueChip::width(
         &measure,
         c"Sort",
         c" · Title",
@@ -150,16 +150,16 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
             "library shelf heading (first)",
             Rect::new(
                 MARGIN_X,
-                CONTENT_TOP + head.shelf_origin(0) - crate::ui::consts::TITLE_DY,
+                CONTENT_TOP + head.shelf_origin(0) - plx_ui::consts::TITLE_DY,
                 CARD_W,
-                crate::ui::consts::TITLE_DY,
+                plx_ui::consts::TITLE_DY,
             ),
         ),
         (
             "library shelf tile (first)",
             Rect::new(
                 MARGIN_X,
-                CONTENT_TOP + head.shelf_origin(0) + crate::ui::consts::CARD_DY,
+                CONTENT_TOP + head.shelf_origin(0) + plx_ui::consts::CARD_DY,
                 CARD_W,
                 CARD_H,
             ),
@@ -170,7 +170,7 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
                 MARGIN_X,
                 CONTENT_TOP + bare.grid_block_top(),
                 CARD_W,
-                crate::ui::consts::TITLE_DY,
+                plx_ui::consts::TITLE_DY,
             ),
         ),
         (
@@ -178,10 +178,10 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
             Rect::new(
                 MARGIN_X,
                 CONTENT_TOP + bare.grid_block_top()
-                    + crate::ui::consts::TITLE_DY
-                    + crate::ui::consts::CARD_DY,
+                    + plx_ui::consts::TITLE_DY
+                    + plx_ui::consts::CARD_DY,
                 control_width,
-                crate::ui::widgets::StatusOverlay::CTRL_H,
+                plx_ui::widgets::StatusOverlay::CTRL_H,
             ),
         ),
         ("library failure read-out band", screen.status_frame()),
@@ -222,7 +222,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
 
     #[test]
     fn home_and_library_leave_the_same_air_under_a_focused_label() {
-        use crate::ui::consts::{CARD_DY, ROW_PITCH, TITLE_DY, UNDER_LABEL_AIR};
+        use plx_ui::consts::{CARD_DY, ROW_PITCH, TITLE_DY, UNDER_LABEL_AIR};
         let home_air = ROW_PITCH - TITLE_DY - CARD_DY - CARD_H - card_row::UNDER_LABEL_H;
         let focused = Layout::new(false, &[], 2, true).with_grid_focus(Some(0));
         let library_air = focused.row_y(1, 0.0) - focused.row_y(0, 0.0)
@@ -328,7 +328,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
 
     #[test]
     fn an_episode_shelf_takes_a_shorter_band_than_a_poster_shelf() {
-        use crate::ui::consts::ROW_PITCH;
+        use plx_ui::consts::ROW_PITCH;
         // graded at the FOCUSED band, where the two shapes' difference is the tile height alone
         let open = 1.0; // owned layout uses the shared under-band expansion ratio
         let poster = shelf_pitch(false, open);
@@ -366,7 +366,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
 #[test]
 fn a_landscape_tile_prefers_the_episodes_own_still() {
     use crate::screens::registry::tile_facts;
-    use crate::ui::widgets::still_key;
+    use plx_ui::widgets::still_key;
     let full = PmsMovie {
         still: "/still".into(),
         art: "/art".into(),
@@ -405,7 +405,7 @@ fn a_landscape_tile_prefers_the_episodes_own_still() {
 #[test]
 fn a_parsed_episode_draws_its_own_still_with_or_without_a_show_poster() {
     use crate::screens::registry::tile_facts;
-    use crate::ui::widgets::still_key;
+    use plx_ui::widgets::still_key;
     let ep = |gp: &str| {
         let it = crate::plex::Metadata {
             kind: "episode".into(),

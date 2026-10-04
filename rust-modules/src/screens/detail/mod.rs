@@ -29,25 +29,25 @@ use crate::plex::ServerId;
 use crate::stores::metadata::MetadataCmd;
 use crate::stores::viewstate::ViewStateCmd;
 use crate::stores::{StoreCmd, StoreId};
-use crate::ui::card_row::{self, CardRow, RowStyle};
-use crate::ui::frame::Budget;
-use crate::ui::hero_logo::{HeroLogo, LogoRung};
-use crate::ui::label::HAlign;
+use plx_ui::card_row::{self, CardRow, RowStyle};
+use plx_ui::frame::Budget;
+use plx_ui::hero_logo::{HeroLogo, LogoRung};
+use plx_ui::label::HAlign;
 use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
     Leave, LogicalState, Machine, Tick,
 };
 use plx_machine::present::{PresentEvent, Provenance};
-use crate::ui::text_lift::{lifted, TextLift, TEXT_LIFT_SCALE, TOP_CENTRE};
-use crate::ui::screen::{
+use plx_ui::text_lift::{lifted, TextLift, TEXT_LIFT_SCALE, TOP_CENTRE};
+use plx_ui::screen::{
     Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, Focusable,
     GroupKind, GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat,
     Step, Stop,
 };
-use crate::ui::widgets::{
+use plx_ui::widgets::{
     AmbientWash, Button, CircleButton, ControlGround, ControlPalette, CtlPop, PosterMark, TabStrip,
 };
-use crate::ui::{hero_alpha, theme, Env, Painter, Rect, Spring, View};
+use plx_ui::{hero_alpha, theme, Env, Painter, Rect, Spring, View};
 use std::borrow::Cow;
 use std::cell::Cell;
 
@@ -66,7 +66,7 @@ const TAB_EP_GAP: f32 = theme::space::MD;
 /// draw, because the direction of this ramp is the whole rule and both wrong directions shipped to
 /// the panel once each.
 fn compact_title_alpha(scroll: f32, first_top: f32, hero_visible: f32) -> f32 {
-    let hide_at = (first_top - crate::ui::detail_layout::TOP_MARGIN).max(0.0);
+    let hide_at = (first_top - plx_ui::detail_layout::TOP_MARGIN).max(0.0);
     let travelled = ((scroll - hide_at) / COMPACT_TITLE_FADE).clamp(0.0, 1.0);
     ((1.0 - hero_visible) * (1.0 - travelled)).clamp(0.0, 1.0)
 }
@@ -77,7 +77,7 @@ const HERO_FADE: f32 = 400.0;
 /// should be gone by the time the block above it is properly on its way.
 const COMPACT_TITLE_FADE: f32 = 200.0;
 const EP_SCALE_MAX: usize = 40;
-const K_SCROLL: f32 = crate::ui::consts::K_SCROLL;
+const K_SCROLL: f32 = plx_ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
 
 pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,refresh:u32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;8],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
@@ -274,7 +274,7 @@ impl SpotFacts {
 #[derive(Clone, Copy)]
 struct LayoutCache {
     stamp: LayoutStamp,
-    chain: crate::ui::detail_layout::HeroChain,
+    chain: plx_ui::detail_layout::HeroChain,
     content_top: f32,
     top: [f32; section::SLOTS],
     block: [f32; section::SLOTS],
@@ -529,7 +529,7 @@ impl DetailScreen {
             let elem = *interned.entry(identity.clone()).or_insert_with(|| {
                 let elem = self.next_elem;
                 self.next_elem = elem.checked_add(1).expect("detail element-key space exhausted");
-                assert!(self.next_elem < crate::ui::dispatch::STRIP_BASE, "detail keys must not overlap chrome");
+                assert!(self.next_elem < plx_ui::dispatch::STRIP_BASE, "detail keys must not overlap chrome");
                 self.keys.push(DetailKey { identity, elem });
                 elem
             });
@@ -714,7 +714,7 @@ impl DetailScreen {
         self.selected.as_ref()
     }
 
-    fn hero_chain(&self, measure: &dyn plx_machine::machine::Measure, meta: crate::metadata::MetadataView<'_>) -> crate::ui::detail_layout::HeroChain {
+    fn hero_chain(&self, measure: &dyn plx_machine::machine::Measure, meta: crate::metadata::MetadataView<'_>) -> plx_ui::detail_layout::HeroChain {
         if let Some(d) = self.detail(meta) {
             return self.ensure_layout(d, measure).chain;
         }
@@ -725,12 +725,12 @@ impl DetailScreen {
         &self,
         d: Option<&Detail>,
         measure: &dyn plx_machine::machine::Measure,
-    ) -> crate::ui::detail_layout::HeroChain {
+    ) -> plx_ui::detail_layout::HeroChain {
         let (lead, synopsis) = hero_blurb(d, self.selected());
-        let synopsis_h = crate::ui::hero_synopsis(&synopsis, &lead)
+        let synopsis_h = plx_ui::hero_synopsis(&synopsis, &lead)
             .with_measure(measure)
-            .measure_h(crate::ui::detail_layout::HERO_TEXT_W);
-        crate::ui::detail_layout::hero_chain(
+            .measure_h(plx_ui::detail_layout::HERO_TEXT_W);
+        plx_ui::detail_layout::hero_chain(
             synopsis_h,
             d.is_some_and(|detail| !detail.ratings.is_empty()),
             measure,
@@ -827,7 +827,7 @@ impl DetailScreen {
     fn section_gap(section: i32, next: Option<i32>) -> f32 {
         match section {
             1 if next == Some(2) => TAB_EP_GAP,
-            3 | 4 | 6 | 7 => crate::ui::consts::UNDER_LABEL_AIR,
+            3 | 4 | 6 | 7 => plx_ui::consts::UNDER_LABEL_AIR,
             _ => SECTION_GAP,
         }
     }
@@ -1118,9 +1118,9 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                 EdgeRule::Stop,
             ],
             extent: Rect::new(
-                crate::ui::consts::MARGIN_X,
+                plx_ui::consts::MARGIN_X,
                 hero_y - self.scroll_target,
-                hero_last.x + hero_last.w - crate::ui::consts::MARGIN_X,
+                hero_last.x + hero_last.w - plx_ui::consts::MARGIN_X,
                 hero::CD,
             ),
             len: hero_n,
@@ -1139,9 +1139,9 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                     reachable: AxisMask::BOTH,
                     edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
                     extent: Rect::new(
-                        crate::ui::consts::MARGIN_X,
+                        plx_ui::consts::MARGIN_X,
                         top,
-                        crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
+                        plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         season::ROW_H,
                     ),
                     len: d.seasons.len().min(64),
@@ -1157,9 +1157,9 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                     reachable: AxisMask::BOTH,
                     edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
                     extent: Rect::new(
-                        crate::ui::consts::MARGIN_X,
+                        plx_ui::consts::MARGIN_X,
                         top,
-                        crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
+                        plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         self.block_h(2, d, measure),
                     ),
                     len: d.episodes.len().min(episodes::MAX_ITEMS) * 2,
@@ -1172,9 +1172,9 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                     reachable: AxisMask::BOTH,
                     edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
                     extent: Rect::new(
-                        crate::ui::consts::MARGIN_X,
+                        plx_ui::consts::MARGIN_X,
                         top,
-                        crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
+                        plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         self.block_h(6, d, measure),
                     ),
                     len: extras::len(d),
@@ -1187,9 +1187,9 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                     reachable: AxisMask::BOTH,
                     edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
                     extent: Rect::new(
-                        crate::ui::consts::MARGIN_X,
+                        plx_ui::consts::MARGIN_X,
                         top,
-                        crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
+                        plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         self.block_h(3, d, measure),
                     ),
                     len: d.related.len().min(512),
@@ -1198,12 +1198,12 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                 7 => {
                     if let Some(c) = d.collection.as_ref() {
                         let heading = collection::heading_rect(c, top, 0.0, false, measure);
-                        out.push(crate::ui::linked_heading::group_spec(collection::HEADING_GROUP, heading));
+                        out.push(plx_ui::linked_heading::group_spec(collection::HEADING_GROUP, heading));
                     }
                     out.push(GroupSpec {
                         id: collection::COLLECTION_GROUP,
                         kind: GroupKind::Row { wrap: false },
-                        seat: crate::ui::linked_heading::shelf_seat(
+                        seat: plx_ui::linked_heading::shelf_seat(
                             &cx.focus,
                             collection::HEADING_ELEM,
                             collection::COLLECTION_GROUP,
@@ -1212,9 +1212,9 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                         reachable: AxisMask::BOTH,
                         edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
                         extent: Rect::new(
-                            crate::ui::consts::MARGIN_X,
+                            plx_ui::consts::MARGIN_X,
                             top + related::LABEL_H,
-                            crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
+                            plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                             self.block_h(7, d, measure) - related::LABEL_H,
                         ),
                         len: collection::len(d),
@@ -1228,9 +1228,9 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                     reachable: AxisMask::BOTH,
                     edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
                     extent: Rect::new(
-                        crate::ui::consts::MARGIN_X,
+                        plx_ui::consts::MARGIN_X,
                         top,
-                        crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
+                        plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         self.block_h(4, d, measure),
                     ),
                     len: d.credits_len().min(512),
@@ -1250,10 +1250,10 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                             EdgeRule::Stop,
                         ],
                         extent: Rect::new(
-                            crate::ui::consts::MARGIN_X,
+                            plx_ui::consts::MARGIN_X,
                             top,
-                            crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
-                            crate::ui::consts::SCR_H - crate::ui::detail_layout::TOP_MARGIN,
+                            plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
+                            plx_ui::consts::SCR_H - plx_ui::detail_layout::TOP_MARGIN,
                         ),
                         len: 1 + usize::from(tracks),
                         elem: ElemKind::Control,
@@ -1361,7 +1361,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                     hero::hero_btn_rect_at(set, i, self.hero_chain(measure, meta).btn_y - vertical, widths);
                 (
                     base.scaled(self.ctl_pop.scale(i)),
-                    base.scaled(crate::ui::widgets::CTRL_FOCUS_SCALE),
+                    base.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE),
                     Some(i as u32),
                 )
             }
@@ -1373,7 +1373,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                 )?;
                 (
                     base.scaled(self.season_pop.scale(0)),
-                    base.scaled(crate::ui::widgets::CTRL_FOCUS_SCALE),
+                    base.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE),
                     Some(i as u32),
                 )
             }
@@ -1393,7 +1393,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                     lifted(base, TOP_CENTRE, self.episode_lift(i).scale())
                 };
                 let rest = if row == episodes::Row::Still {
-                    base.scaled(crate::ui::theme::EP_CARD_FOCUS_SCALE)
+                    base.scaled(plx_ui::theme::EP_CARD_FOCUS_SCALE)
                 } else {
                     // Like the still's, the rest rect is the fully-lifted size, so focus-geometry
                     // distances are measured against a stable size, not one mid-animation.
@@ -1565,7 +1565,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                 .min(episodes::MAX_ITEMS);
             let i = card_row::column_near_x(
                 from.rect.cx(),
-                crate::ui::consts::MARGIN_X,
+                plx_ui::consts::MARGIN_X,
                 episodes::W + episodes::GAP,
                 episodes::W,
                 self.episode_scroll.pos,
@@ -1584,7 +1584,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
             let n = d.map(extras::len).unwrap_or(0);
             extras::elem(card_row::column_near_x(
                 from.rect.cx(),
-                crate::ui::consts::MARGIN_X,
+                plx_ui::consts::MARGIN_X,
                 RowStyle::EPISODE.w + RowStyle::EPISODE.gap,
                 RowStyle::EPISODE.w,
                 self.extras.scroll_x(),
@@ -1596,7 +1596,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
             let n = d.map(|d| d.related.len()).unwrap_or(0).min(512);
             related::elem(card_row::column_near_x(
                 from.rect.cx(),
-                crate::ui::consts::MARGIN_X,
+                plx_ui::consts::MARGIN_X,
                 RowStyle::HOME.w + RowStyle::HOME.gap,
                 RowStyle::HOME.w,
                 self.related.scroll_x(),
@@ -1610,7 +1610,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
             let n = d.map(collection::len).unwrap_or(0);
             collection::elem(card_row::column_near_x(
                 from.rect.cx(),
-                crate::ui::consts::MARGIN_X,
+                plx_ui::consts::MARGIN_X,
                 RowStyle::HOME.w + RowStyle::HOME.gap,
                 RowStyle::HOME.w,
                 self.collection.scroll_x(),
@@ -1622,7 +1622,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
             let n = d.map(|d| d.credits_len()).unwrap_or(0).min(512);
             cast::elem(card_row::column_near_x(
                 from.rect.cx(),
-                crate::ui::consts::MARGIN_X,
+                plx_ui::consts::MARGIN_X,
                 RowStyle::CAST.w + RowStyle::CAST.gap,
                 RowStyle::CAST.w,
                 self.cast.scroll_x(),
@@ -2061,7 +2061,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
             let below_hero = p.alpha(self.preview_chrome);
             for &section in &sections[1..n] {
                 let top = self.section_top(section, d, measure) - self.scroll.pos;
-                if top > crate::ui::consts::SCR_H || top + self.block_h(section, d, measure) < 0.0 {
+                if top > plx_ui::consts::SCR_H || top + self.block_h(section, d, measure) < 0.0 {
                     continue;
                 }
                 match section {
@@ -2093,8 +2093,8 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                             meta,
                         );
                         if meta.season_loading() {
-                            crate::ui::widgets::Spinner::new(
-                                crate::ui::consts::SCR_W * 0.5,
+                            plx_ui::widgets::Spinner::new(
+                                plx_ui::consts::SCR_W * 0.5,
                                 top + episodes::H * 0.5,
                                 26.0,
                             )
@@ -2161,9 +2161,9 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                 }
             }
         } else if meta.detail_loading() {
-            crate::ui::widgets::Spinner::new(
-                crate::ui::consts::SCR_W * 0.5,
-                (self.content_top(measure, meta) + crate::ui::consts::SCR_H) * 0.5 - self.scroll.pos,
+            plx_ui::widgets::Spinner::new(
+                plx_ui::consts::SCR_W * 0.5,
+                (self.content_top(measure, meta) + plx_ui::consts::SCR_H) * 0.5 - self.scroll.pos,
                 26.0,
             )
             .phase(self.spin_ms as u32)
@@ -2206,8 +2206,8 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
     /// The collection shelf's heading door: UP from any member reaches the heading, DOWN from it
     /// returns to the member the shelf remembered. Inert while the page has no collection shelf —
     /// a link to a group that was not declared resolves nothing.
-    fn links(&self, out: &mut Vec<crate::ui::screen::Link>) {
-        out.extend(crate::ui::linked_heading::links(
+    fn links(&self, out: &mut Vec<plx_ui::screen::Link>) {
+        out.extend(plx_ui::linked_heading::links(
             collection::HEADING_GROUP,
             collection::COLLECTION_GROUP,
         ));
@@ -2286,19 +2286,19 @@ impl DetailScreen {
         preview: crate::player::preview::View,
         meta: crate::metadata::MetadataView<'_>,
     ) {
-        let sf = (self.scroll.pos / (self.content_top(measure, meta) - crate::ui::detail_layout::TOP_MARGIN))
+        let sf = (self.scroll.pos / (self.content_top(measure, meta) - plx_ui::detail_layout::TOP_MARGIN))
             .clamp(0.0, 1.0);
         let art_alpha = (1.0 - sf) * self.preview_art;
         let (sid, _, path) = self.art_identity(d);
         let (texture, width, height) = if art_alpha > 0.01 {
-            crate::ui::widgets::resolve_tex_wh_on(sid.raw(), &path, 1920, 1080, 0)
+            plx_ui::widgets::resolve_tex_wh_on(sid.raw(), &path, 1920, 1080, 0)
         } else {
             (0, 0.0, 0.0)
         };
         let ground_flat = self
             .ground
             .is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
-        let art = crate::ui::widgets::WashArt {
+        let art = plx_ui::widgets::WashArt {
             tex: texture,
             rect: Rect::FULL.cover(width, height),
             uv: plx_gfx::gfx::UV_FULL,
@@ -2307,11 +2307,11 @@ impl DetailScreen {
         let visible = hero_alpha(self.scroll.pos, HERO_FADE);
         // The atmospheric ramp: nothing above the scrim's top, one straight stop to its foot.
         let ramp = (visible > 0.01).then(|| {
-            let y0 = crate::ui::widgets::HERO_BASE_SCRIM_Y0;
-            let foot = crate::ui::detail_layout::base_scrim_a(crate::ui::consts::SCR_H, visible)
+            let y0 = plx_ui::widgets::HERO_BASE_SCRIM_Y0;
+            let foot = plx_ui::detail_layout::base_scrim_a(plx_ui::consts::SCR_H, visible)
                 * self.preview_base_scrim;
-            let h = crate::ui::consts::SCR_H;
-            crate::ui::widgets::WashRamp { ink: theme::scrim(1.0), stops: [(y0, 0.0), (h, foot), (h, foot)] }
+            let h = plx_ui::consts::SCR_H;
+            plx_ui::widgets::WashRamp { ink: theme::scrim(1.0), stops: [(y0, 0.0), (h, foot), (h, foot)] }
         });
         // The still dissolves over its ground while the page scrolls, so where the ground is drawn
         // the ground, the still and the ramp are one pass (`AmbientWash::draw_ground`).
@@ -2326,7 +2326,7 @@ impl DetailScreen {
         if let Some(ramp) = ramp.filter(|_| !ramp_in_ground) {
             let y0 = ramp.stops[0].0;
             p.rect(
-                Rect::new(0.0, y0, crate::ui::consts::SCR_W, crate::ui::consts::SCR_H - y0),
+                Rect::new(0.0, y0, plx_ui::consts::SCR_W, plx_ui::consts::SCR_H - y0),
                 0.0,
                 theme::scrim(0.0),
                 theme::scrim(ramp.stops[1].1),
@@ -2334,7 +2334,7 @@ impl DetailScreen {
             );
         }
         if visible > 0.01 {
-            crate::ui::widgets::hero_scrim(
+            plx_ui::widgets::hero_scrim(
                 p,
                 visible * self.preview_field,
                 d.is_some_and(hero::has_people),
@@ -2350,7 +2350,7 @@ impl DetailScreen {
     fn draw_hero<H: ContentLike + crate::screens::registry::MetadataLike>(&self, p: Painter, cx: &Cx<'_, H>, d: Option<&Detail>, nav_page_alpha: f32) {
         let meta = H::metadata(cx);
         let measure = cx.measure;
-        use crate::ui::detail_layout::{HERO_TEXT_W, TITLE_BOTTOM};
+        use plx_ui::detail_layout::{HERO_TEXT_W, TITLE_BOTTOM};
 
         let (_, rk, _) = self.art_identity(d);
         let title = d
@@ -2369,14 +2369,14 @@ impl DetailScreen {
         // live 0..1 progress (see `preview_tick`). `LogoRung::lerp` keeps `HeroLogo::fit`'s
         // constant-area solve continuous across the whole travel instead of snapping partway
         // through it (`ui/hero_logo.rs`'s own module doc: sizing is area-based, not a height clamp).
-        let hero_band = crate::ui::hero_logo::band_h(LogoRung::Hero);
-        let compact_band = crate::ui::hero_logo::band_h(LogoRung::Compact);
+        let hero_band = plx_ui::hero_logo::band_h(LogoRung::Hero);
+        let compact_band = plx_ui::hero_logo::band_h(LogoRung::Compact);
         let t = self.preview_logo.pos;
         let lerp = |a: f32, b: f32| a + (b - a) * t;
         let band = Rect::new(
-            lerp(crate::ui::consts::MARGIN_X, crate::ui::detail_layout::PREVIEW_LOGO_X),
-            lerp(TITLE_BOTTOM - hero_band, crate::ui::detail_layout::PREVIEW_LOGO_Y),
-            lerp(HERO_TEXT_W, crate::ui::detail_layout::PREVIEW_LOGO_MAX_W),
+            lerp(plx_ui::consts::MARGIN_X, plx_ui::detail_layout::PREVIEW_LOGO_X),
+            lerp(TITLE_BOTTOM - hero_band, plx_ui::detail_layout::PREVIEW_LOGO_Y),
+            lerp(HERO_TEXT_W, plx_ui::detail_layout::PREVIEW_LOGO_MAX_W),
             lerp(hero_band, compact_band),
         );
         // The pinned corner spot (`t` near 1) sits well inside the below-hero flow's own reach:
@@ -2387,7 +2387,7 @@ impl DetailScreen {
         // `draw_backdrop`'s `sf` already computes, so it is fully gone by the time the flow starts
         // and back once scrolled to the top — and only while shrunk (`t`), so a normal hero (no
         // preview) is untouched.
-        let hero_extent = (self.content_top(measure, meta) - crate::ui::detail_layout::TOP_MARGIN).max(1.0);
+        let hero_extent = (self.content_top(measure, meta) - plx_ui::detail_layout::TOP_MARGIN).max(1.0);
         let logo_alpha = p.alpha(
             self.preview_chrome * preview_logo_scroll_alpha(self.scroll.pos, hero_extent, t),
         );
@@ -2395,7 +2395,7 @@ impl DetailScreen {
             .draw(logo_alpha, band, cx.measure);
 
         let (lead, synopsis) = hero_blurb(d, self.selected());
-        let synopsis_view = crate::ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
+        let synopsis_view = plx_ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
         let chain = self.hero_chain(measure, meta);
         // Two gates, and the difference is the whole behaviour. `prose` recedes the moment a
         // picture is up: the identity line and the rating marks are how you decide whether to
@@ -2411,7 +2411,7 @@ impl DetailScreen {
         if !synopsis.is_empty() {
             synopsis_view.draw(
                 synopsis_alpha,
-                Rect::new(crate::ui::consts::MARGIN_X, chain.syn_y, HERO_TEXT_W, 0.0),
+                Rect::new(plx_ui::consts::MARGIN_X, chain.syn_y, HERO_TEXT_W, 0.0),
             );
         }
         if let Some(d) = d {
@@ -2433,14 +2433,14 @@ impl DetailScreen {
         // as well keeps it honest if the two ever disagree for a frame.
         self.trailer_ctl.draw_hint(
             chrome,
-            trailer::hint_cy(crate::ui::detail_layout::PREVIEW_LOGO_Y, compact_band),
+            trailer::hint_cy(plx_ui::detail_layout::PREVIEW_LOGO_Y, compact_band),
             measure,
         );
     }
 
     fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) {
         let ordinal = (d.kind == "episode" && d.season > 0 && d.index > 0)
-            .then(|| crate::ui::fmt::episode_ordinal(d.season, d.index))
+            .then(|| plx_ui::fmt::episode_ordinal(d.season, d.index))
             .unwrap_or_default();
         let mut parts: Vec<&str> = Vec::new();
         if d.kind == "episode" {
@@ -2457,29 +2457,29 @@ impl DetailScreen {
         if !d.rating.is_empty() {
             parts.push(&d.rating);
         }
-        let mut x = crate::ui::consts::MARGIN_X
-            + crate::ui::widgets::dotted_run(
+        let mut x = plx_ui::consts::MARGIN_X
+            + plx_ui::widgets::dotted_run(
                 p,
                 &parts,
-                crate::ui::consts::MARGIN_X,
+                plx_ui::consts::MARGIN_X,
                 y,
                 theme::size::BODY,
                 theme::TEXT_SECONDARY,
                 theme::space::SM,
             );
-        if x > crate::ui::consts::MARGIN_X {
+        if x > plx_ui::consts::MARGIN_X {
             x += theme::space::SM;
         }
         let (top, base) = plx_gfx::text::text_cap_band(theme::size::BODY, 0);
         let cy = y + (top + base) * 0.5;
-        if let Some(res) = crate::ui::fmt::resolution(&d.video_resolution, d.width, d.height) {
-            x += crate::ui::widgets::badge(
+        if let Some(res) = plx_ui::fmt::resolution(&d.video_resolution, d.width, d.height) {
+            x += plx_ui::widgets::badge(
                 p,
                 x,
                 cy,
                 &res,
                 None,
-                crate::ui::widgets::BadgeStyle::Filled,
+                plx_ui::widgets::BadgeStyle::Filled,
                 measure,
             ) + theme::space::XS;
         }
@@ -2489,7 +2489,7 @@ impl DetailScreen {
             (d.audio.iter().any(|s| s.ad), plx_platform::i18n::msg::widgets_badge_ad()),
         ] {
             if present {
-                x += crate::ui::widgets::keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)
+                x += plx_ui::widgets::keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)
                     + theme::space::XS;
             }
         }
@@ -2504,29 +2504,29 @@ impl DetailScreen {
     ) {
         let (top, base) = plx_gfx::text::text_cap_band(theme::size::LABEL, 1);
         let cy = y + (top + base) * 0.5;
-        let mut x = crate::ui::consts::MARGIN_X;
+        let mut x = plx_ui::consts::MARGIN_X;
         let mut i = 0;
         while i < d.ratings.len() {
             let provider = d.ratings[i].art.provider();
             let end = i + d.ratings[i..].partition_point(|r| r.art.provider() == provider);
             let scores: Vec<String> = d.ratings[i..end]
                 .iter()
-                .map(|r| crate::ui::fmt::rating_score(rating_scale(r.art), r.value))
+                .map(|r| plx_ui::fmt::rating_score(rating_scale(r.art), r.value))
                 .collect();
-            let cells: Vec<crate::ui::widgets::RatingCell<'_>> = d.ratings[i..end]
+            let cells: Vec<plx_ui::widgets::RatingCell<'_>> = d.ratings[i..end]
                 .iter()
                 .zip(scores.iter())
-                .map(|(r, score)| crate::ui::widgets::RatingCell {
+                .map(|(r, score)| plx_ui::widgets::RatingCell {
                     mark: rating_mark(r.art),
                     value: score,
-                    suffix: crate::ui::fmt::rating_suffix(rating_scale(r.art)),
+                    suffix: plx_ui::fmt::rating_suffix(rating_scale(r.art)),
                 })
                 .collect();
-            let width = crate::ui::widgets::rating_group_w(provider, &cells, measure);
-            if x + width > crate::ui::consts::SCR_W - crate::ui::consts::MARGIN_X {
+            let width = plx_ui::widgets::rating_group_w(provider, &cells, measure);
+            if x + width > plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X {
                 break;
             }
-            x += crate::ui::widgets::rating_group(p, x, cy, provider, &cells, measure) + 32.0;
+            x += plx_ui::widgets::rating_group(p, x, cy, provider, &cells, measure) + 32.0;
             i = end;
         }
     }
@@ -2550,9 +2550,9 @@ impl DetailScreen {
         let (controls, n) = hero::hero_ctls(set);
         let last = hero::hero_btn_rect_at(set, n.saturating_sub(1), y, widths);
         let row = [
-            crate::ui::consts::MARGIN_X,
+            plx_ui::consts::MARGIN_X,
             y - self.scroll.pos,
-            last.x + last.w - crate::ui::consts::MARGIN_X,
+            last.x + last.w - plx_ui::consts::MARGIN_X,
             hero::CD,
         ];
         let picture = crate::player::preview::view().picture;
@@ -2583,7 +2583,7 @@ impl DetailScreen {
                     theme::size::BODY,
                     rect,
                 )
-                .icon(crate::ui::icons::Icon::Play)
+                .icon(plx_ui::icons::Icon::Play)
                 .focused(focused)
                 .palette(palette)
                 .ground(ground)
@@ -2591,7 +2591,7 @@ impl DetailScreen {
                 .draw(&Env::inert(), p),
                 hero::HeroCtl::Alt => {
                     Button::new(hero::alt_label().as_ptr(), theme::size::BODY, rect)
-                        .trailing_icon(crate::ui::icons::Icon::ChevronDown)
+                        .trailing_icon(plx_ui::icons::Icon::ChevronDown)
                         .focused(focused)
                         .palette(palette)
                         .ground(ground)
@@ -2600,10 +2600,10 @@ impl DetailScreen {
                 }
                 ctl => {
                     let icon = match ctl {
-                        hero::HeroCtl::Restart => crate::ui::icons::Icon::Restart,
-                        hero::HeroCtl::Trailer => crate::ui::icons::Icon::Trailer,
-                        hero::HeroCtl::MarkWatched => crate::ui::icons::Icon::Check,
-                        hero::HeroCtl::MarkUnwatched => crate::ui::icons::Icon::Minus,
+                        hero::HeroCtl::Restart => plx_ui::icons::Icon::Restart,
+                        hero::HeroCtl::Trailer => plx_ui::icons::Icon::Trailer,
+                        hero::HeroCtl::MarkWatched => plx_ui::icons::Icon::Check,
+                        hero::HeroCtl::MarkUnwatched => plx_ui::icons::Icon::Minus,
                         _ => unreachable!(),
                     };
                     let mut button = CircleButton::new(c"".as_ptr())
@@ -2644,15 +2644,15 @@ impl DetailScreen {
         if alpha <= 0.01 {
             return;
         }
-        let band = crate::ui::hero_logo::band_h(LogoRung::Compact);
+        let band = plx_ui::hero_logo::band_h(LogoRung::Compact);
         HeroLogo::new(d.sid.raw(), &d.rk, &d.title, LogoRung::Compact)
             .align(HAlign::Center)
             .draw(
                 p.alpha(alpha),
                 Rect::new(
-                    crate::ui::consts::MARGIN_X,
-                    crate::ui::detail_layout::COMPACT_TITLE_BOT - band,
-                    crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
+                    plx_ui::consts::MARGIN_X,
+                    plx_ui::detail_layout::COMPACT_TITLE_BOT - band,
+                    plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                     band,
                 ),
                 measure,
@@ -2818,7 +2818,7 @@ fn hero_blurb<'a>(
     if let Some(d) = d {
         if d.is_show {
             if let Some(ep) = hero::hero_episode(d) {
-                let ordinal = crate::ui::fmt::episode_ordinal(ep.season, ep.index);
+                let ordinal = plx_ui::fmt::episode_ordinal(ep.season, ep.index);
                 let lead = if ep.title.is_empty() {
                     format!("{ordinal}: ")
                 } else {
@@ -2838,9 +2838,9 @@ fn hero_blurb<'a>(
 /// The units a provider quotes its score in. `ui::fmt` formats a score from its SCALE alone, so the
 /// screen, which knows the provider, says which: IMDb is out of ten, every other badge a percentage.
 /// Exhaustive on purpose — a provider added to `RatingArt` has to choose its units here.
-fn rating_scale(art: crate::metadata::RatingArt) -> crate::ui::fmt::RatingScale {
+fn rating_scale(art: crate::metadata::RatingArt) -> plx_ui::fmt::RatingScale {
     use crate::metadata::RatingArt as A;
-    use crate::ui::fmt::RatingScale;
+    use plx_ui::fmt::RatingScale;
     match art {
         A::Imdb => RatingScale::OutOfTen,
         A::TomatoFresh
@@ -2856,7 +2856,7 @@ fn rating_scale(art: crate::metadata::RatingArt) -> crate::ui::fmt::RatingScale 
 mod rating_scale_tests {
     use super::rating_scale;
     use crate::metadata::RatingArt;
-    use crate::ui::fmt::rating_score;
+    use plx_ui::fmt::rating_score;
 
     /// PMS normalises every provider onto 0–10; the badge puts the number back into the units its
     /// provider actually publishes, or a 9.1 tomato reads as a 9.1% score.
@@ -2871,10 +2871,10 @@ mod rating_scale_tests {
     }
 }
 
-fn rating_mark(art: crate::metadata::RatingArt) -> &'static [crate::ui::widgets::MarkLayer] {
+fn rating_mark(art: crate::metadata::RatingArt) -> &'static [plx_ui::widgets::MarkLayer] {
     use crate::metadata::RatingArt as A;
-    use crate::ui::icons::Icon;
-    use crate::ui::widgets::MarkLayer;
+    use plx_ui::icons::Icon;
+    use plx_ui::widgets::MarkLayer;
     static FRESH: &[MarkLayer] = &[
         (Icon::Tomato, theme::RATING_FRESH),
         (Icon::TomatoCalyx, theme::RATING_LEAF),
@@ -3053,7 +3053,7 @@ impl DetailScreen {
         let Some(detail) = self.detail(meta) else { return };
         self.scroll_target = if located.section() == 0 { 0.0 } else {
             (self.section_top_settled(located.section(), detail, measure)
-                - crate::ui::detail_layout::TOP_MARGIN)
+                - plx_ui::detail_layout::TOP_MARGIN)
                 .max(0.0)
         };
     }
@@ -3154,7 +3154,7 @@ impl DetailScreen {
         for (i, spring) in self.disc_unfurl.iter_mut().enumerate() {
             spring.step(
                 f32::from(disc == Some(i)),
-                crate::ui::widgets::K_DISC_UNFURL,
+                plx_ui::widgets::K_DISC_UNFURL,
                 dt,
             );
         }
@@ -3166,7 +3166,7 @@ impl DetailScreen {
         for (i, spring) in self.episode_scale.iter_mut().enumerate() {
             spring.step(
                 if episode_focus == Some(i) {
-                    crate::ui::theme::EP_CARD_FOCUS_SCALE
+                    plx_ui::theme::EP_CARD_FOCUS_SCALE
                 } else {
                     1.0
                 },
@@ -3225,7 +3225,7 @@ impl DetailScreen {
                     d.episodes.len(),
                     episodes::W,
                     episodes::GAP,
-                    crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
+                    plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                 );
                 self.episode_scroll.step(target, K_STRIP_SCROLL, dt);
             }
@@ -3264,7 +3264,7 @@ impl DetailScreen {
             // fixed by the explicit `note` below, with no change to the number itself.
             // The helper is the add plus the Motion note. It stays a raw f32 so the hashed
             // sequence does not drift. See `ui/dwell.rs`.
-            crate::ui::dwell::accumulate(&mut self.season_settle, dt, &mut |event| {
+            plx_ui::dwell::accumulate(&mut self.season_settle, dt, &mut |event| {
                 fx.note(event);
             });
             if self.season_settle >= season::SETTLE_S {
@@ -3348,7 +3348,7 @@ impl DetailScreen {
             && !already_played
             && !blocked;
         if can_dwell {
-            crate::ui::dwell::accumulate(&mut self.preview_dwell, dt, &mut |event| {
+            plx_ui::dwell::accumulate(&mut self.preview_dwell, dt, &mut |event| {
                 fx.note(event);
             });
             if self.preview_dwell >= crate::player::preview::DWELL_S {
@@ -3410,7 +3410,7 @@ impl DetailScreen {
         // while also fading). `Spring::step` reports its own motion to `plx_machine::idle` — no `fx.note`
         // needed here, unlike the linear `ease()` scalars above.
         self.preview_logo
-            .step(f32::from(view.picture), crate::ui::consts::K_SCALE, dt);
+            .step(f32::from(view.picture), plx_ui::consts::K_SCALE, dt);
         if !view.picture {
             self.preview_promoted = false;
             // A refused/failed seek (or the item swapping under a live gesture) can drop the
@@ -3879,7 +3879,7 @@ impl DetailScreen {
         } else {
             ep.title.clone()
         };
-        let context = format!("{}  \u{b7}  {}", d.title, crate::ui::fmt::episode_ordinal(ep.season, ep.index));
+        let context = format!("{}  \u{b7}  {}", d.title, plx_ui::fmt::episode_ordinal(ep.season, ep.index));
         let resume_ns = play_resume_ns(from_start, ep.resume_ms, ep.dur_ms);
         let now_playing = crate::metadata::NowPlaying {
             is_episode: true,
@@ -3947,7 +3947,7 @@ mod preview_plane_tests {
     fn the_players_preview_field_is_the_scrims_preview_field() {
         assert_eq!(
             crate::player::preview::PREVIEW_FIELD.to_bits(),
-            crate::ui::landing_hero::PREVIEW_FIELD.to_bits(),
+            plx_ui::landing_hero::PREVIEW_FIELD.to_bits(),
         );
     }
 

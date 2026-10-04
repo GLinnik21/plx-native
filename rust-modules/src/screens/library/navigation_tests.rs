@@ -1,7 +1,7 @@
 //! Owned engine ports for requested kinds, source-row seating and document navigation.
 use super::*;
-use crate::ui::fixture::{FixtureArg, FixtureMeasure};
-use crate::ui::focus::{FocusEngine, Outcome};
+use plx_ui::fixture::{FixtureArg, FixtureMeasure};
+use plx_ui::focus::{FocusEngine, Outcome};
 use plx_machine::machine::{Host, InputOwner, Tick};
 
 struct TestHost;
@@ -492,7 +492,7 @@ fn opened_before_its_shelves(kind: SecKind, opened: Opened) -> (Fixture, Library
     fixture.publish(0, 24);
     let mut page = LibraryScreen::new(ENTRY, InstanceId(19), kind);
     let mut engine = FocusEngine::new();
-    let tab = FocusKey { entry: ENTRY, elem: crate::ui::dispatch::STRIP_BASE + 1 };
+    let tab = FocusKey { entry: ENTRY, elem: plx_ui::dispatch::STRIP_BASE + 1 };
     match opened {
         Opened::Pointer => { engine.set(OWNER, tab, Some(STRIP), By::Pointer); }
         Opened::Keyboard => { engine.set(OWNER, tab, Some(STRIP), By::Dir); }

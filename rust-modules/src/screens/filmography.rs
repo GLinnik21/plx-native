@@ -13,23 +13,23 @@ use std::os::raw::c_int;
 
 use crate::person::{Credit, Department};
 use crate::plex::ServerId;
-use crate::ui::card_row;
-use crate::ui::consts::*;
-use crate::ui::frame::Budget;
+use plx_ui::card_row;
+use plx_ui::consts::*;
+use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Effects, EntryId, GroupId, Handled, InputEvent, InputKind, Key, LogicalState,
     Machine, Measure, Tick,
 };
 use plx_machine::present::{PresentEvent, Provenance};
-use crate::ui::route_screen::{RouteGround, RouteLayout};
-use crate::ui::screen::{
+use plx_ui::route_screen::{RouteGround, RouteLayout};
+use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, FocusSource, Focusable, GroupKind,
     GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
 };
-use crate::ui::table::{Row as TRow, Section, TableView};
-use crate::ui::widgets::{self, SelMark, TabGround, TabStrip};
-use crate::ui::xfade::Xfade;
-use crate::ui::{theme, Rect, Spring};
+use plx_ui::table::{Row as TRow, Section, TableView};
+use plx_ui::widgets::{self, SelMark, TabGround, TabStrip};
+use plx_ui::xfade::Xfade;
+use plx_ui::{theme, Rect, Spring};
 
 use super::registry::{
     AppFx, ContentArg, ContentLike, ContentReq, FilmographyKey, FilmographyMemory, PageMemory,
@@ -89,12 +89,12 @@ fn credit_row(c: &Credit, server_name: Option<String>) -> TRow {
 
 fn table_frame(measure: &dyn Measure) -> Rect {
     let l = route_layout(measure);
-    let top = l.sectioned_table().y + STRIP_BAND - crate::ui::table::TOP_PAD;
+    let top = l.sectioned_table().y + STRIP_BAND - plx_ui::table::TOP_PAD;
     Rect::new(
         l.content.x,
         top,
         l.content.w,
-        (l.content.y + l.content.h - top + crate::ui::table::BOT_PAD).max(0.0),
+        (l.content.y + l.content.h - top + plx_ui::table::BOT_PAD).max(0.0),
     )
 }
 
@@ -102,7 +102,7 @@ fn table_frame(measure: &dyn Measure) -> Rect {
 /// collide with a fixed poster origin; artwork may scale to fit, while the text keeps its roles.
 fn preview_frame(layout: RouteLayout, title: &str, copy: &str, measure: &dyn Measure) -> Rect {
     let text = layout.narrative_copy_frame(true, title, layout.action.y, measure);
-    let copy_h = crate::ui::text_view::TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
+    let copy_h = plx_ui::text_view::TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
         .with_measure(measure)
         .leading(theme::size::LABEL as f32 + theme::space::XS)
         .max_lines(12)
@@ -470,7 +470,7 @@ impl FilmographyScreen {
     }
 
     /// The department strip — capsules and pills — inside the caller's clip.
-    fn draw_tabs(&self, p: crate::ui::Painter, measure: &dyn Measure) {
+    fn draw_tabs(&self, p: plx_ui::Painter, measure: &dyn Measure) {
         widgets::draw_strip(
             p,
             &self.tabs,
@@ -968,7 +968,7 @@ impl<H: ContentLike + PersonLike> Machine<H> for FilmographyScreen {
                 match self.locate(to.elem) {
                     Some(Located::Tab(i)) => {
                         self.table.list_focused = false;
-                        if !matches!(by, crate::ui::screen::By::Pointer) {
+                        if !matches!(by, plx_ui::screen::By::Pointer) {
                             self.pick_tab(i, fx);
                         }
                     }
@@ -1080,7 +1080,7 @@ impl<H: ContentLike + PersonLike> Screen<H> for FilmographyScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::fixture::FixtureMeasure;
+    use plx_ui::fixture::FixtureMeasure;
     use plx_machine::machine::{
         Edge, FocusRead, Host, InputOwner, PressId, PressRead, Source, Stamped, Tick,
     };
@@ -1266,11 +1266,11 @@ mod tests {
         let layout = RouteLayout::screen_for_title(COPY_W, RouteLayout::screen().content.w, title, &measure);
         let frame = preview_frame(layout, title, copy, &measure);
         let text = layout.narrative_copy_frame(true, title, layout.action.y, &measure);
-        let copy_h = crate::ui::text_view::TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
+        let copy_h = plx_ui::text_view::TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
             .with_measure(&measure).leading(theme::size::LABEL as f32 + theme::space::XS).measure_h(text.w);
         assert!(frame.y >= text.y + copy_h + theme::space::LG);
         assert!(frame.y > PV.y, "the old fixed origin overlaps this expanded title");
-        assert!(crate::ui::consts::inside_safe(frame));
+        assert!(plx_ui::consts::inside_safe(frame));
         assert!((frame.w / frame.h - PV.w / PV.h).abs() < 0.001);
     }
 
@@ -1282,9 +1282,9 @@ mod tests {
         assert_eq!(l.content.x, 760.0);
         assert_eq!(l.content.w, 1064.0);
         let frame = table_frame(measure);
-        let h = frame.h - crate::ui::table::TOP_PAD - crate::ui::table::BOT_PAD;
+        let h = frame.h - plx_ui::table::TOP_PAD - plx_ui::table::BOT_PAD;
         assert_eq!(h, 784.0);
-        assert_eq!(h / crate::ui::table::ROW_H_ART, 8.0);
+        assert_eq!(h / plx_ui::table::ROW_H_ART, 8.0);
     }
 
     /// **Issue 14: the focus plate stays on its label while the department row scrolls.** A person
@@ -1329,8 +1329,8 @@ mod tests {
                     s.tick(c.tick, &c, &mut fx);
                 }
                 scrolled = scrolled.max(s.tab_hscroll.pos);
-                let log = crate::ui::draw_census::capture(|| {
-                    s.draw_tabs(crate::ui::Painter::recording(), &measure);
+                let log = plx_ui::draw_census::capture(|| {
+                    s.draw_tabs(plx_ui::Painter::recording(), &measure);
                 });
                 if frame < 39 {
                     continue;
@@ -1485,7 +1485,7 @@ mod tests {
 
     #[test]
     fn holding_a_joined_credit_does_not_activate_it_on_release() {
-        use crate::ui::input::{InputMachine, PressEvent};
+        use plx_ui::input::{InputMachine, PressEvent};
         use plx_machine::machine::{InstanceId, MachineId, PressArm, PressFrom};
         let _serial = plx_base::testlock::serial();
         let mut s = screen(9, &_serial);
@@ -1573,7 +1573,7 @@ mod tests {
             &ScreenEvent::FocusMoved {
                 from: Some(from),
                 to,
-                by: crate::ui::screen::By::Dir,
+                by: plx_ui::screen::By::Dir,
             },
             Some(to),
         );
@@ -1699,7 +1699,7 @@ mod tests {
         let before_scroll = remounted.table.scroll_pos();
         let (_, out, _) = step_screen(
             &mut remounted,
-            &ScreenEvent::Enter(crate::ui::screen::Enter::Restored),
+            &ScreenEvent::Enter(plx_ui::screen::Enter::Restored),
             Some(restored),
         );
         assert!(out.is_empty());
@@ -1776,6 +1776,6 @@ mod tests {
             table.set_sections(vec![section], 0, false);
             out.extend(table.app_fit_failures(w, language.tag()));
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 }

@@ -266,7 +266,7 @@ mod tests {
                 // Both valid observations are ingested in the same ordinary dispatcher batch. The
                 // second reaches the owner while the first observation's commit ACK is queued.
                 records.push(roster);
-                for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST {
+                for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST {
                     execute_session_command(&mut d, SessionCmd::NoteDeleteLeftovers(0));
                 }
                 let results = records.into_iter().map(|record|

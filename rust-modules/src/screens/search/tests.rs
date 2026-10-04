@@ -9,13 +9,13 @@ use super::*;
 use crate::screens::registry::AppMsg;
 use crate::search::view::SearchView;
 use crate::search::{Item, Shelf};
-use crate::ui::fixture::FixtureMeasure;
-use crate::ui::focus::{FocusEngine, Outcome};
-use crate::ui::hit::{HitMap, PointerKind};
-use crate::ui::screen::By;
+use plx_ui::fixture::FixtureMeasure;
+use plx_ui::focus::{FocusEngine, Outcome};
+use plx_ui::hit::{HitMap, PointerKind};
+use plx_ui::screen::By;
 use plx_machine::machine::{FocusRead, Host, InputEvent, PressRead, Source, Stamped, Tick};
 use plx_machine::present::Present;
-use crate::ui::screen::{Activate, Hover, ScreenArg, Stop};
+use plx_ui::screen::{Activate, Hover, ScreenArg, Stop};
 
 #[derive(Clone)]
 struct Arg;
@@ -441,7 +441,7 @@ fn a_tile_scrolled_under_the_chrome_is_not_a_pointer_target() {
     fixture.query("chrome").shelves(vec![shelf(Kind::Movie, "t", 4)]);
     let mut screen = fixture.screen();
     let elem = screen.rows[0].elems[0];
-    let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
+    let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
     let rest = screen.row_rect(0, 0, At::Drawn);
 
     // Fully on screen: hit anywhere inside it.
@@ -471,7 +471,7 @@ fn the_fields_hit_rect_rides_the_scroll_and_stops_at_the_track() {
     let _serial = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut screen = fixture.screen();
-    let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
+    let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
     let at_rest = stop_of(&screen, &fixture, None, FIELD).unwrap();
     assert_eq!((at_rest.rect.y, at_rest.rect.h), (layout::FIELD.y, layout::FIELD.h),
         "an unscrolled screen must cost nothing: this is FIELD itself");
@@ -508,7 +508,7 @@ fn revealing_the_second_shelf_carries_the_query_field_under_the_track() {
     step_dir(&mut screen, &fixture, &mut engine, Dir::Down);
     assert!(screen.scroll_target > 0.0, "the second shelf is below the fold and must be revealed");
     for i in 0..120 { frame(&mut screen, &fixture, &engine, i); }
-    let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
+    let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
     assert!(screen.scroll.pos > layout::FIELD.y + layout::FIELD.h - floor,
         "the field must end up wholly under the track (scroll {})", screen.scroll.pos);
     assert!(stop_of(&screen, &fixture, None, FIELD)
@@ -698,20 +698,20 @@ fn the_panels_edit_keys_move_the_caret_clear_the_field_and_type_in_the_middle() 
         StoreCmd::Search(SearchCmd::SetQueryScoped { query, .. }))) if query == "сXуббота")),
         "every accepted edit is one scoped store command");
     let (handled, _, _) = deliver(&mut screen, &fixture, field,
-        key_event(Key::Other, crate::ui::consts::SDLK_BACKSPACE));
+        key_event(Key::Other, plx_ui::consts::SDLK_BACKSPACE));
     assert_eq!(handled, Handled::Yes, "editing, the screen consumes it");
     assert_eq!(screen.draft.query(), "суббота", "a whole codepoint, not one byte of a two-byte char");
 
     // Clear all is the whole field, wherever the caret was standing.
     deliver(&mut screen, &fixture, field, key_event(Key::Right, 0));
     let (handled, _, _) = deliver(&mut screen, &fixture, field,
-        key_event(Key::Other, crate::ui::consts::SDLK_CLEAR));
+        key_event(Key::Other, plx_ui::consts::SDLK_CLEAR));
     assert_eq!(handled, Handled::Yes, "the panel's Clear all is the screen's key");
     assert_eq!((screen.draft.query(), screen.draft.caret()), ("", 0));
 
     // An empty field still consumes Backspace — it is the field's — and edits nothing.
     let (handled, out, _) = deliver(&mut screen, &fixture, field,
-        key_event(Key::Other, crate::ui::consts::SDLK_BACKSPACE));
+        key_event(Key::Other, plx_ui::consts::SDLK_BACKSPACE));
     assert_eq!(handled, Handled::Yes);
     assert!(out.iter().all(|effect| !matches!(&effect.fx,
         Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(SearchCmd::SetQueryScoped { .. }))))),
@@ -953,7 +953,7 @@ fn a_collection_hit_routes_by_rating_key_or_by_section_and_tag_id() {
 /// UI's formatter shared with every collection tile and the collection page).
 #[test]
 fn a_collection_shelf_counts_results_and_its_tiles_count_items() {
-    use crate::ui::fmt::item_count;
+    use plx_ui::fmt::item_count;
     assert_eq!(
         (crate::search::Kind::Collection.count_label(3), item_count(12)),
         ("3 results".to_owned(), "12 items".to_owned())

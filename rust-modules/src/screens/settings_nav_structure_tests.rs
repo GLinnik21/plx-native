@@ -15,11 +15,11 @@ use super::test_support::*;
 use crate::plex::account::{AudioPreferences, PreferenceRequest};
 use super::super::family::PickerKind;
 use crate::screens::registry;
-use crate::ui::dispatch::Dispatcher;
-use crate::ui::fixture::{key, tick};
-use crate::ui::form::{FormTable, RowKind};
+use plx_ui::dispatch::Dispatcher;
+use plx_ui::fixture::{key, tick};
+use plx_ui::form::{FormTable, RowKind};
 use plx_machine::machine::{Edge, InputEvent, InputKind, Source, Tick};
-use crate::ui::screen::{Activate, Hover, Stop};
+use plx_ui::screen::{Activate, Hover, Stop};
 
 #[derive(Clone, Copy, Debug)]
 enum Method { Ok, Right, Click }

@@ -1,7 +1,7 @@
 //! Shared fixtures and helpers for the `screens::profiles` test modules split out below.
 
 use super::*;
-pub(super) use crate::ui::fixture::FixtureMeasure;
+pub(super) use plx_ui::fixture::FixtureMeasure;
 pub(super) use plx_machine::machine::{
     Edge, FocusKey, FocusRead, InputEvent, InputKind, InputOwner, InstanceId, MachineId,
     PressRead, Source, Stamped, Tick,

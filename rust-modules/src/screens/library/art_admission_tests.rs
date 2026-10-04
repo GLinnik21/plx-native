@@ -1,6 +1,6 @@
 use super::*;
 use plx_machine::machine::PosterKey;
-use crate::ui::tex::{Source, Warm};
+use plx_ui::tex::{Source, Warm};
 use std::cell::RefCell;
 
 thread_local! {
@@ -31,8 +31,8 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
     let _guard = plx_base::testlock::serial();
     // Source installation and observations are thread-local to this test. A descriptive draw
     // traverses the actual Part implementation while its primitive declarations avoid GL.
-    crate::ui::tex::install(&ArtSpy);
-    let painter = crate::ui::Painter::root();
+    plx_ui::tex::install(&ArtSpy);
+    let painter = plx_ui::Painter::root();
     for episodes in [false, true] {
         let sid = crate::plex::ServerId::from_raw(0);
         let mut fixture = Fixture::new();
@@ -49,7 +49,7 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
         let scroll = layout.row_reveal(20);
         page.pair.detail.set_geometry(layout, scroll, layout, scroll);
         let (lo, hi) = page.pair.detail.visible_window();
-        let visible: Vec<_> = (lo..hi).filter(|&i| crate::ui::card_row::paint_visible(
+        let visible: Vec<_> = (lo..hi).filter(|&i| plx_ui::card_row::paint_visible(
             painter, page.pair.detail.rect_at(i, false, 1.0), 1.0, false)).collect();
         assert!(lo > 0 && !visible.is_empty() && visible.len() < hi - lo,
             "the fixture needs both actually visible cards and culled buffered cards");
@@ -60,7 +60,7 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
             ART_REQUESTS.with(|calls| *calls.borrow_mut() = Default::default());
             let cx = fixture.cx(focus);
             {
-                let _discovery = crate::ui::frame::backdrop::discover(
+                let _discovery = plx_ui::frame::backdrop::discover(
                     std::rc::Rc::new(RefCell::new(Default::default())));
                 for _ in 0..12 {
                     let mut frame = DrawFrame::new(&cx, painter);

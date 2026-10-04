@@ -35,7 +35,7 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
     rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
-    d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+    d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
     frame(&mut d, &mut rig, AppArg::Library, tick(1), vec![]);
     Bridge::library_command(
         &mut d,
@@ -99,8 +99,8 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
         MachineId::Nav,
         Fx::Deliver(
             MachineId::Instance(instance),
-            Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
-                focus: crate::ui::screen::FocusTarget::ContainerGroup(heading),
+            Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
+                focus: plx_ui::screen::FocusTarget::ContainerGroup(heading),
             })),
         ),
     );
@@ -174,8 +174,8 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         MachineId::Nav,
         Fx::Deliver(
             MachineId::Instance(instance),
-            Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
-                focus: crate::ui::screen::FocusTarget::ContainerGroup(heading),
+            Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
+                focus: plx_ui::screen::FocusTarget::ContainerGroup(heading),
             })),
         ),
     );
@@ -232,7 +232,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         })
         .unwrap_or_else(|| panic!("the real toolbar activation must request its menu: {evidence}"));
     assert_eq!(kind, crate::screens::registry::LibraryMenuKind::Filter);
-    d.nav.next_style = crate::ui::containers::modal::Style::Compact;
+    d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(

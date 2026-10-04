@@ -30,25 +30,25 @@
 
 use std::borrow::Cow;
 
-use crate::ui::containers::stack::{Instance, NavStack};
-use crate::ui::containers::transition::Immediate;
-use crate::ui::containers::{Life, Minter};
-use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
-use crate::ui::frame::Budget;
+use plx_ui::containers::stack::{Instance, NavStack};
+use plx_ui::containers::transition::Immediate;
+use plx_ui::containers::{Life, Minter};
+use plx_ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InstanceId, Key,
     LogicalState, Machine, MachineId, NavOp, PresentHandle, Stamped, Tick,
 };
 use plx_machine::present::Provenance;
-use crate::ui::route_screen::{RouteLayout, RoutePush};
+use plx_ui::route_screen::{RouteLayout, RoutePush};
 use super::family::SessionGround as RouteGround;
-use crate::ui::screen::{
+use plx_ui::screen::{
     At, Dir, DrawFrame, Enter, FocusSource, FocusTarget, Focusable, GroupSpec, HitSource, Mounter,
     Placed, RenderStrategy, ReturnState, Screen, ScreenEvent, Step,
 };
-use crate::ui::table::Row;
-use crate::ui::table_screen::{Header, TableScreen};
-use crate::ui::{theme, Painter, Rect};
+use plx_ui::table::Row;
+use plx_ui::table_screen::{Header, TableScreen};
+use plx_ui::{theme, Painter, Rect};
 
 use super::family::{form_activate, form_focus, form_right_target, inner_cx, InnerHost, SettingsPage, ALERT_GROUP};
 use super::plaintext_question::{self, AlertStep, PlaintextAlert};
@@ -834,7 +834,7 @@ impl<H: DirectoryLike> Screen<H> for RouteSurface {
                 // opaque ground at rest and what fades out over the host on dismissal
                 let dim = theme::scrim_black(settings_scrim_alpha(a, f.nav_page_alpha));
                 root.rect(Rect::FULL, 0.0, dim, dim, 0.0);
-                crate::ui::profile::phase("st.ground", || self.ground.draw_host(root.alpha(a)));
+                plx_ui::profile::phase("st.ground", || self.ground.draw_host(root.alpha(a)));
             }
             Family::FirstRunConsent => {
                 self.ground.draw_home(root);
@@ -1532,7 +1532,7 @@ impl Screen<InnerHost> for RootPage {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let mut v = self.view();
-        crate::ui::screen::Part::<InnerHost>::draw(&mut v, f, Rect::FULL);
+        plx_ui::screen::Part::<InnerHost>::draw(&mut v, f, Rect::FULL);
         self.alert.draw(f, self.entry);
     }
     fn render(&self) -> RenderStrategy {
@@ -1774,7 +1774,7 @@ impl Machine<InnerHost> for LanguagePage {
     }
 }
 
-crate::focusable_via_view!(LanguagePage, InnerHost, view);
+plx_ui::focusable_via_view!(LanguagePage, InnerHost, view);
 
 impl Screen<InnerHost> for LanguagePage {
     fn name(&self) -> &'static str { "language" }
@@ -1782,7 +1782,7 @@ impl Screen<InnerHost> for LanguagePage {
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(plx_platform::i18n::msg::settings_title())) }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
-        crate::ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
+        plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
     }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn focus_source(&self) -> FocusSource { FocusSource::Engine }

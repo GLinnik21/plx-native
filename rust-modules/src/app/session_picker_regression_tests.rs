@@ -340,7 +340,7 @@ fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
     let mut rig = rig(account);
     // Production's dispatcher (`app/boot.rs`): the PageDip route transition, not the tests' cut.
     let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
-        crate::ui::containers::transition::PageDip::new(),
+        plx_ui::containers::transition::PageDip::new(),
     ));
 
     // The QR screen was the root before the sign-in completed.
@@ -416,7 +416,7 @@ fn login_phase_follower_settles_and_does_not_recycle_the_qr_screen() {
     let mut rig = Bridge::for_session_test(init);
     // Production's dispatcher (`app/boot.rs`): the PageDip route transition, not the tests' cut.
     let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
-        crate::ui::containers::transition::PageDip::new(),
+        plx_ui::containers::transition::PageDip::new(),
     ));
 
     // `app/boot.rs`: the QR screen is minted as the root once, before the loop's first iteration.

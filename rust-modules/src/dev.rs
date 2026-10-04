@@ -72,7 +72,7 @@ const DIAG: [&str; 35] = [
     "plxnative-gputime.jsonl",
     "plxnative-hwcnt",
     "plxnative-hwcnt.jsonl",
-    // The render thread's own per-phase clock ([`crate::ui::profile`]'s CPU mode). DIAG for the
+    // The render thread's own per-phase clock ([`plx_ui::profile`]'s CPU mode). DIAG for the
     // reason the two GPU profilers are: it observes a screen, and must not move the boot away
     // from the screen it was armed to observe.
     "plxnative-cpuprof",

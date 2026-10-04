@@ -46,21 +46,21 @@ use std::os::raw::c_int;
 use crate::pms::PmsMovie;
 use crate::screens::registry::{tile_facts, RepeatGate, PANEL_REPEAT_MS};
 use crate::screens::registry::{AppFx, AppLike, ItemMenuArg, ItemMenuKind, ItemMenuReq};
-use crate::ui::consts::*;
-use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
-use crate::ui::frame::Budget;
-use crate::ui::icons::Icon;
+use plx_ui::consts::*;
+use plx_ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use plx_ui::frame::Budget;
+use plx_ui::icons::Icon;
 use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
     LogicalState, Machine, NavOp,
 };
-use crate::ui::screen::{
+use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
 };
-use crate::ui::table::{Row, MENU_MAX_W, MENU_MIN_W};
-use crate::ui::widgets::PosterMark;
-use crate::ui::{theme, Rect};
+use plx_ui::table::{Row, MENU_MAX_W, MENU_MIN_W};
+use plx_ui::widgets::PosterMark;
+use plx_ui::{theme, Rect};
 
 /// What the highlighted row does on OK. Every variant carries the identity it needs, captured when
 /// the menu opened — a hub refetch can re-order the catalog underneath an open panel, so nothing
@@ -163,7 +163,7 @@ const CARD_GAP: f32 = theme::space::MD;
 /// but the horizontal clamp is what a panel opened over the LAST column lands on, and 64 is 32px
 /// outside `MARGIN_X`.
 const EDGE: f32 = theme::space::XL;
-const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
+const EDGE_X: f32 = plx_ui::consts::MARGIN_X;
 
 pub(crate) const SHAPE: &str =
     "ItemMenu{arg:ItemMenuArg,acts:[Option<Action{tag:u32,rk:str,season:u32,part:str,vcodec:str,acodec:str,title:str}>],sel:i32,\
@@ -275,7 +275,7 @@ fn build_with(m: &PmsMovie, from_deck: bool, trailer: Option<&crate::metadata::E
     let mut sec = state_rows(
         sec,
         &m.rk,
-        crate::ui::widgets::row_watch_state(&tile_facts::of(m)),
+        plx_ui::widgets::row_watch_state(&tile_facts::of(m)),
         leaf,
         trailer.filter(|_| m.kind == 0 || m.kind == 1),
         &m.title,
@@ -337,7 +337,7 @@ fn state_rows(
         ItemRow::MarkWatched,
         RowKind::Button,
         Action::MarkWatched(rk.to_string()),
-        Row::new(crate::ui::widgets::mark_watched_verb()).licon(Icon::CheckCircleFill),
+        Row::new(plx_ui::widgets::mark_watched_verb()).licon(Icon::CheckCircleFill),
     )
     // Destructive: it throws the watch record away, so a menu never OPENS on it
     // (`TableView::opening_row`) — a watched episode opens on Play from Start instead.
@@ -346,7 +346,7 @@ fn state_rows(
         ItemRow::MarkUnwatched,
         RowKind::Button,
         Action::MarkUnwatched(rk.to_string()),
-        Row::new(crate::ui::widgets::mark_unwatched_verb())
+        Row::new(plx_ui::widgets::mark_unwatched_verb())
             .licon(Icon::MinusCircleFill)
             .destructive(true),
     )
@@ -355,7 +355,7 @@ fn state_rows(
         ItemRow::PlayFromStart,
         RowKind::Button,
         Action::PlayFromStart(rk.to_string()),
-        Row::new(crate::ui::widgets::play_from_start_verb()).licon(Icon::PlayStart),
+        Row::new(plx_ui::widgets::play_from_start_verb()).licon(Icon::PlayStart),
     )
     .item_if(
         playable.is_some(),
@@ -373,7 +373,7 @@ fn state_rows(
                 title: extra.hud_title(parent_title).to_string(),
             },
         ),
-        Row::new(crate::ui::widgets::play_trailer_verb()).licon(Icon::Trailer),
+        Row::new(plx_ui::widgets::play_trailer_verb()).licon(Icon::Trailer),
     )
 }
 
@@ -725,7 +725,7 @@ impl<H: AppLike + crate::screens::registry::MetadataLike> Screen<H> for ItemMenu
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         let r = self.frame(f.measure);
-        crate::ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay);
+        plx_ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay);
         self.form.table.draw(p, r, f.measure);
         for elem in self.focusable().collect::<Vec<_>>() {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
@@ -808,7 +808,7 @@ mod tests {
             PosterMark::InProgress => {} // a container: neither end
         }
         assert_eq!(
-            crate::ui::widgets::row_watch_state(&tile_facts::of(&m)),
+            plx_ui::widgets::row_watch_state(&tile_facts::of(&m)),
             mark,
             "the fixture must build the state it names"
         );
@@ -1407,11 +1407,11 @@ mod tests {
             for x in [MARGIN_X, (SCR_W - CARD_W) * 0.5, SCR_W - MARGIN_X - CARD_W] {
                 let anchor = Rect::new(x, SCR_H - 120.0, CARD_W, CARD_H);
                 let frame = panel_at(anchor, width, table.measured_height());
-                assert!(crate::ui::consts::inside_safe(frame));
+                assert!(plx_ui::consts::inside_safe(frame));
                 assert!(frame.x >= anchor.x + anchor.w || frame.x + frame.w <= anchor.x,
                     "the measured menu must remain beside a visible card");
                 for row in &table.sections[0].rows {
-                    let label_width = measure.width_str(&row.label, crate::ui::theme::size::BODY, false);
+                    let label_width = measure.width_str(&row.label, plx_ui::theme::size::BODY, false);
                     assert!(label_width <= table.label_width(row, frame.w, &measure),
                         "{preference:?} action was elided: {}", row.label);
                 }
@@ -1463,7 +1463,7 @@ mod tests {
         let tall = panel_at(Rect::new(MARGIN_X, 300.0, CARD_W, CARD_H), MENU_MIN_W, 4000.0);
         for (what, p) in [("flipped", r), ("low", low), ("tall", tall)] {
             assert!(
-                crate::ui::consts::inside_safe(p),
+                plx_ui::consts::inside_safe(p),
                 "the {what} panel leaves the safe area: ({}, {}) {}x{}",
                 p.x,
                 p.y,
@@ -1511,9 +1511,9 @@ mod tests {
     // ---- fixtures ---------------------------------------------------------------------------
 
     use crate::screens::registry::{AppMsg, PageMemory};
-    use crate::ui::fixture::FixtureMeasure;
+    use plx_ui::fixture::FixtureMeasure;
     use plx_machine::machine::{FocusRead, Host, InputEvent, InputOwner, PressRead, Source, Tick};
-    use crate::ui::screen::ScreenArg;
+    use plx_ui::screen::ScreenArg;
 
     #[derive(Clone)]
     struct Arg;
@@ -1831,6 +1831,6 @@ mod tests {
                 out.extend(table.app_fit_failures_hugged(&format!("{} {name}", language.tag())));
             }
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 }

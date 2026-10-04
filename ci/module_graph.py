@@ -175,6 +175,22 @@ def split_crates(root):
     return found
 
 
+def split_mounts(root):
+    """{package name: module path tuple} of the layer crates whose `lib.rs` is NOT the root of the
+    application's module tree but one module of it: a manifest with `[package.metadata.plx]` and
+    `mount = "ui"` says the crate's root is module `ui`, so `plx_ui::theme::X` and the
+    `crate::theme::X` written inside that crate both name module `ui::theme` (the member `ui` of
+    ci/module-layers.ini). A crate with no `mount` has its `lib.rs` as the root, as before."""
+    found = {}
+    for manifest in sorted(Path(root).resolve().parent.glob('*/Cargo.toml')):
+        text = manifest.read_text()
+        package = re.search(r'^name\s*=\s*"(plx_[a-z0-9_]+)"', text, re.M)
+        table = re.search(r'^\[package\.metadata\.plx\]\s*$(.*?)(?=^\[|\Z)', text, re.M | re.S)
+        mount = re.search(r'^mount\s*=\s*"([A-Za-z0-9_:]+)"', table.group(1), re.M) if table else None
+        if package and mount: found[package.group(1)] = tuple(mount.group(1).split('::'))
+    return found
+
+
 class Crate:
     """Modules, files and resolved references of one crate rooted at `root/<entry>`."""
 
@@ -187,6 +203,10 @@ class Crate:
         # one graph for the layer gate and the cycle count while the code moves out one layer at a
         # time; ci/module-layers.ini is still the only statement of who may name whom.
         self.extern_crates = split_crates(self.root) if extern_crates is None else dict(extern_crates)
+        # A mounted crate's root is a module of the tree, not the tree's root (see `split_mounts`).
+        self.mounts = {pkg: mount for pkg, mount in split_mounts(self.root).items() if pkg in self.extern_crates} \
+            if extern_crates is None else {}
+        self.roots = {()} | set(self.mounts.values())
         self.path_heads = PATH_HEADS | frozenset(self.extern_crates)
         self.modules = {(): {'files': set(), 'test': False}}
         raw = []                   # (module, segments, file, line, test, kind)
@@ -197,7 +217,8 @@ class Crate:
         self.test_items = {}       # (module, owner, name) -> TestItem
         done = set()
         queue = collections.deque([(self.root / entry, (), self.root, self.root, False)]
-                                  + [(src / 'lib.rs', (), src, src, False) for src in self.extern_crates.values()])
+                                  + [(src / 'lib.rs', self.mounts.get(pkg, ()), src, src, False)
+                                     for pkg, src in self.extern_crates.items()])
         while queue:
             item = queue.popleft()
             if item[:2] in done: continue
@@ -214,8 +235,9 @@ class Crate:
         for module, written, file, line, test, kind in raw:
             segments = self.absolute(written, module)
             if segments is None: continue
-            if kind == 'path' and len(segments) == 1 and segments[0] in self.exported_macros:
-                target = self.exported_macros[segments[0]]  # `crate::name!` names its definer
+            if kind == 'path' and segments and segments[-1] in self.exported_macros \
+                    and tuple(segments[:-1]) in self.roots:
+                target = self.exported_macros[segments[-1]]  # `crate::name!` names its definer
             else:
                 target = self.resolve(segments)
             refs.append(Ref(module, target, file, line, test, kind, '::'.join(segments)))
@@ -293,8 +315,10 @@ class Crate:
     def absolute(self, segments, module):
         """Absolute segments for a path written in `module`, or None when it leaves the crate."""
         head = segments[0]
-        if head == 'crate' or head == '$crate' or head in self.extern_crates:
-            return list(segments[1:])
+        if head == 'crate' or head == '$crate':
+            return list(self.root_of(module)) + list(segments[1:])
+        if head in self.extern_crates:
+            return list(self.mounts.get(head, ())) + list(segments[1:])
         if head == 'self':
             return list(module) + list(segments[1:])
         if head == 'super':
@@ -304,9 +328,17 @@ class Crate:
                 base.pop(); rest.pop(0)
             if rest and rest[0] == 'self': rest.pop(0)
             return base + rest
-        if module == () and (head,) in self.modules:
-            return list(segments)
+        root = self.root_of(module)
+        if module == root and root + (head,) in self.modules:
+            return list(root) + list(segments)
         return None
+
+    def root_of(self, module):
+        """The root module of the crate that holds `module`: the longest mount that prefixes it, else ()."""
+        best = ()
+        for mount in self.mounts.values():
+            if module[:len(mount)] == mount and len(mount) > len(best): best = mount
+        return best
 
     def _walk_file(self, path, module, directory, attribute_base, file_test, queue, raw, macro_calls):
         rel = self.rel(path)
@@ -478,7 +510,7 @@ class Crate:
         # Only these tokens can start anything the walk records; everything else is stepped over
         # in bulk. In the crate root ANY word may head a path (a top-level module is in scope
         # there by name); `absolute` keeps the ones that name a module once the walk is done.
-        root = module == ()
+        root = module == self.root_of(module)
         interesting = {'#', 'mod', 'include', 'macro_rules', 'use', '!', '$'} | self.path_heads
 
         # Scopes: (last token index, module, directory, attribute base, test). Items nest, so a

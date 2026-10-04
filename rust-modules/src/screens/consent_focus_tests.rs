@@ -2,7 +2,7 @@
 //! highlight spring, including the real-`FocusEngine` navigation checks in `mod composed`.
 
 use super::*;
-use crate::ui::table::Section;
+use plx_ui::table::Section;
 #[allow(unused_imports)]
 use super::test_support::*;
 
@@ -404,7 +404,7 @@ fn a_hover_over_the_answer_band_parks_without_answering_anything() {
         &ScreenEvent::FocusMoved {
             from: None,
             to: FocusKey { entry: EntryId(1), elem: BAND },
-            by: crate::ui::screen::By::Pointer,
+            by: plx_ui::screen::By::Pointer,
         },
         &c,
         &mut mk_fx(&mut out, &mut present),
@@ -510,8 +510,8 @@ fn toggling_a_value_back_never_leaves_focus_on_nothing() {
 /// harness, but the REAL mechanism rather than a restatement of it.
 mod composed {
     use super::*;
-    use crate::ui::focus::{FocusEngine, Outcome};
-    use crate::ui::screen::{By, Dir};
+    use plx_ui::focus::{FocusEngine, Outcome};
+    use plx_ui::screen::{By, Dir};
 
     /// One direction, through the real engine, against `page`'s live view — the composed
     /// twin of `page.step(...)` for the half of the focus protocol a screen's own `step`
@@ -649,7 +649,7 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
         fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
     }
     let _guard = plx_base::testlock::serial();
-    let _no_live_font = crate::ui::text_view::ForbidLive::enter();
+    let _no_live_font = plx_ui::text_view::ForbidLive::enter();
     let measure = ReadingMeasure;
     let reader = DocumentReader::new().with_size(theme::size::BODY);
     for (name, locale) in [
@@ -682,7 +682,7 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
             assert!((frame.y + frame.h + theme::space::MD - layout.action.y).abs() < 0.01);
             // `measured_width` budgets the device's headroom on top of every run; this page only
             // needs the complete rows, so grade the raw natural widths.
-            assert!(layout.content.w >= table.measured_width(&measure) * crate::ui::fit::HEADROOM,
+            assert!(layout.content.w >= table.measured_width(&measure) * plx_ui::fit::HEADROOM,
                 "{name} product={product}: content {} < measured {}", layout.content.w, table.measured_width(&measure));
             let band = BandPart { layout, labels: &labels, group: BAND_GROUP, entry: EntryId(1),
                 uncommitted: false, scales: [1.0, 1.0], palette: palette(), danger: None };
@@ -691,7 +691,7 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
             assert_eq!(rects[0].h, rects[1].h, "both answers retain equal treatment");
             assert!(rects[1].x + rects[1].w <= layout.action.x + layout.action.w);
             for (rect, label) in rects.iter().zip(labels) {
-                assert_eq!(rect.w, crate::ui::table_screen::pill_w(&measure, label, theme::size::BODY),
+                assert_eq!(rect.w, plx_ui::table_screen::pill_w(&measure, label, theme::size::BODY),
                     "{name}: no answer text may be elided or scaled down");
             }
         }
@@ -700,10 +700,10 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
 
 #[test]
 fn overflowing_disclosure_scrolls_before_draw_with_visible_choice_focus_and_replays() {
-    use crate::ui::focus::{FocusEngine, Outcome};
+    use plx_ui::focus::{FocusEngine, Outcome};
     use plx_machine::machine::Measure;
-    use crate::ui::rec::{Measurements, TableMeasure};
-    use crate::ui::screen::By;
+    use plx_ui::rec::{Measurements, TableMeasure};
+    use plx_ui::screen::By;
     // Expand only BODY text: titles and links remain normal, while a future long disclosure
     // cannot fit even after its column has used all available width.
     struct ExpandedBody;
@@ -717,7 +717,7 @@ fn overflowing_disclosure_scrolls_before_draw_with_visible_choice_focus_and_repl
     }
     static METRICS: ExpandedBody = ExpandedBody;
     let _guard = plx_base::testlock::serial();
-    let _no_live_font = crate::ui::text_view::ForbidLive::enter();
+    let _no_live_font = plx_ui::text_view::ForbidLive::enter();
     let run = |measure: &dyn Measure| {
         let fixture = FixtureMeasure;
         let mut cx = test_cx(&fixture);

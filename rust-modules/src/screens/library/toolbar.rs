@@ -1,7 +1,7 @@
 //! One value-chip model supplies both focus geometry and paint runs.
 use std::ffi::{CStr, CString};
 use super::*;
-use crate::ui::value_chip::ValueChip;
+use plx_ui::value_chip::ValueChip;
 
 pub(super) struct Chip {
     pub name: &'static CStr,
@@ -43,11 +43,11 @@ impl LibraryScreen {
         CString::new(value).unwrap_or_default()
     }
 
-    pub(super) fn library_lays<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Vec<crate::ui::widgets::StripLay> {
-        crate::ui::widgets::strip_layout_measured(
+    pub(super) fn library_lays<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Vec<plx_ui::widgets::StripLay> {
+        plx_ui::widgets::strip_layout_measured(
             self.libraries.iter().map(|(_, section)| self.library_label(*section, cx).to_string_lossy().into_owned()),
-            MARGIN_X + crate::ui::widgets::STRIP_PAD, crate::ui::theme::size::BODY,
-            crate::ui::widgets::STRIP_GAP_WIDE, cx.measure)
+            MARGIN_X + plx_ui::widgets::STRIP_PAD, plx_ui::theme::size::BODY,
+            plx_ui::widgets::STRIP_GAP_WIDE, cx.measure)
     }
 
     pub(super) fn toolbar_chip<H: LibraryLike>(&self, elem: u32, cx: &Cx<'_, H>) -> Chip {
@@ -91,7 +91,7 @@ impl LibraryScreen {
             At::Drawn => (&self.layout, self.scroll.pos),
             At::SpringTarget => (&self.target_layout, self.scroll_target),
         };
-        Rect::new(x, CONTENT_TOP + layout.grid_block_top() + crate::ui::consts::TITLE_DY + CARD_DY - scroll,
+        Rect::new(x, CONTENT_TOP + layout.grid_block_top() + plx_ui::consts::TITLE_DY + CARD_DY - scroll,
             self.toolbar_chip(elem, cx).width(cx.measure), 52.0)
     }
 }

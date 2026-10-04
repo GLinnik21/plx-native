@@ -86,7 +86,7 @@ fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
             source: Source::Script,
             kind: InputKind::Key {
                 key: Key::Down,
-                sym: crate::ui::consts::SDLK_DOWN,
+                sym: plx_ui::consts::SDLK_DOWN,
                 wcode: 0,
                 edge: Edge::Down,
                 at_edge: false,
@@ -189,7 +189,7 @@ fn an_alt_sources_anchor_travels_on_its_arg() {
         arg(700.0, 880.0),
         crate::stores::metadata::MetadataStore::default().view(),
     );
-    let (a, b) = { let m = crate::ui::fixture::FixtureMeasure; (high.frame(&m), low.frame(&m)) };
+    let (a, b) = { let m = plx_ui::fixture::FixtureMeasure; (high.frame(&m), low.frame(&m)) };
     assert_ne!(
         (a.x, a.y),
         (b.x, b.y),

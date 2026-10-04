@@ -19,7 +19,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
         std::fs::create_dir(&outside).unwrap();
         std::fs::write(outside.join("sentinel"), b"synthetic sentinel").unwrap();
         let recording = root.join("plxnative-recordings");
-        let sink = crate::ui::rec::DirSink::create(&recording.join("latest")).unwrap();
+        let sink = plx_ui::rec::DirSink::create(&recording.join("latest")).unwrap();
         let initial = bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
         let mut rec = recorder::Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
         rec.tick(0, 0.0); // deliberately still buffered when the confirmed command arrives
@@ -107,7 +107,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
             "subsequent frames and shutdown cannot recreate erased data"
         );
         assert_eq!(
-            crate::ui::rec::erase_owned_artifacts(&root, crate::app::input::remove_or_prove_absent).len(),
+            plx_ui::rec::erase_owned_artifacts(&root, crate::app::input::remove_or_prove_absent).len(),
             usize::from(partial),
             "missing files are idempotent; an unremoved control directory remains reported"
         );

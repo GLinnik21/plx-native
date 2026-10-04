@@ -6,7 +6,7 @@
 use super::*;
 use super::test_support::*;
 use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-use crate::ui::route_screen::RouteLayout;
+use plx_ui::route_screen::RouteLayout;
 
 /// Every privacy row, built by the real `ConsentPage::settings`, through `TableView::fit_report`.
 #[test]
@@ -22,5 +22,5 @@ fn every_privacy_row_fits_its_column_in_every_language() {
         let tag = language.tag();
         out.extend(page.form.table.app_fit_failures(frame_w, tag));
     }
-    crate::ui::table::assert_no_fit_failures(&out);
+    plx_ui::table::assert_no_fit_failures(&out);
 }

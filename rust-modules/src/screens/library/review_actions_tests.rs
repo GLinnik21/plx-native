@@ -1,9 +1,9 @@
 use super::super::*;
 use super::*;
-use crate::ui::fixture::FixtureMeasure;
-use crate::ui::focus::{FocusEngine, Outcome};
+use plx_ui::fixture::FixtureMeasure;
+use plx_ui::focus::{FocusEngine, Outcome};
 use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
-use crate::ui::screen::ScreenArg;
+use plx_ui::screen::ScreenArg;
 include!("query_tests.rs");
 
 #[derive(Clone)]

@@ -2,7 +2,7 @@
 
 use super::*;
 use plx_machine::machine::Chrome;
-use crate::ui::screen::ScreenArg;
+use plx_ui::screen::ScreenArg;
 #[allow(unused_imports)]
 use super::test_support::*;
 use super::test_support::frame;
@@ -25,14 +25,14 @@ impl OwnedLeaveTrace {
     }
 }
 
-impl crate::ui::dispatch::Tap<AppHost> for OwnedLeaveTrace {
+impl plx_ui::dispatch::Tap<AppHost> for OwnedLeaveTrace {
     fn effect(&mut self, _frame: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {
         let Fx::Deliver(MachineId::Instance(instance), Delivery::Screen(event)) = &stamped.fx
             else { return };
         let name = match event {
             ScreenEvent::Mount => "mount",
-            ScreenEvent::Enter(crate::ui::screen::Enter::Fresh { .. }) => "enter-fresh",
-            ScreenEvent::Enter(crate::ui::screen::Enter::Restored) => "enter-restored",
+            ScreenEvent::Enter(plx_ui::screen::Enter::Fresh { .. }) => "enter-fresh",
+            ScreenEvent::Enter(plx_ui::screen::Enter::Restored) => "enter-restored",
             ScreenEvent::RestoreMemory(_) => "restore-memory",
             ScreenEvent::Cover => "cover",
             ScreenEvent::Uncover => "uncover",
@@ -301,7 +301,7 @@ fn owned_search_wheel_scrolls_without_moving_focus_and_dpad_reveals_again() {
         let split = rig.split();
         let cx = parts.cx::<AppHost>(split.views, split.measure);
         let placed = d.top_screen().unwrap().place(&field.elem, &cx, At::Drawn).unwrap();
-        assert_eq!(placed.clip.y, crate::ui::widgets::TOP_BAR_BOTTOM,
+        assert_eq!(placed.clip.y, plx_ui::widgets::TOP_BAR_BOTTOM,
             "scrolling under the tab track must not leave an active page hit above its floor");
     }
     frame(&mut d, &mut rig, AppArg::Search, tick(80), script_key(Key::Down, tick(80)));
@@ -354,7 +354,7 @@ fn owned_search_carried_work_keeps_the_originating_tick_delta() {
     for ms in [100, 200] { frame(&mut d, &mut rig, AppArg::Search, Tick { ms, dt_us: 100_000 }, vec![]); }
     assert!((rig.stores.search.debounce_elapsed_for_test() - 0.2).abs() < 0.000001);
     let instance = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
-    for _ in 0..(crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST) {
+    for _ in 0..(plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST) {
         d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::StoreChanged(StoreId::Browse.ord(), 0))));
     }
@@ -571,7 +571,7 @@ fn owned_search_opens_system_ownership_and_empty_down_keeps_editing() {
     assert!(owned_search_probe(&d).contains("editing=false"));
     assert_eq!(d.nav.tabs.stack.depth(), 1);
     frame(&mut d, &mut rig, AppArg::Search, tick(4), script_key(Key::Up, tick(4)));
-    assert_eq!(d.focus().unwrap().elem, crate::ui::dispatch::STRIP_BASE + 3,
+    assert_eq!(d.focus().unwrap().elem, plx_ui::dispatch::STRIP_BASE + 3,
         "UP from the field chooses Search's own shared-strip pill");
 }
 
@@ -726,7 +726,7 @@ fn owned_search_walks_the_shared_strip_to_the_chip_and_back_to_the_field() {
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let field = d.focus().unwrap();
-    let base = crate::ui::dispatch::STRIP_BASE;
+    let base = plx_ui::dispatch::STRIP_BASE;
 
     frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Up, tick(1)));
     assert_eq!(d.focus().map(|key| key.elem), Some(base + 3),
@@ -876,7 +876,7 @@ fn every_route_wearing_the_shared_bar_reaches_the_chrome_paint_guard() {
 /// condition inline with a route literal. That is exactly the shape the original bug shipped in
 /// (`if !matches!(arg.route(), Some(Route::Home | Route::Library)) { return; }`), and it is the
 /// SECOND time this guard drifted from the one chrome predicate silently — with
-/// `#![allow(dead_code)]` on `ui/mod.rs` meaning a stranded `draws_chrome_for` would not even draw
+/// `#![allow(dead_code)]` on `plx_ui`'s `lib.rs` meaning a stranded `draws_chrome_for` would not even draw
 /// a compiler warning. `draw_chrome`'s body calls into real text measurement with no font loaded
 /// on a host test, so this cannot be driven end to end here; instead it reads the guard's own
 /// source text, the same idiom `eventlog::scrub`'s `no_log_call_site_interpolates_viewing_content`

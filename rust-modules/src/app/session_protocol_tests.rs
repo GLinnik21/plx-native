@@ -13,7 +13,7 @@ mod carry_matrix {
     use plx_machine::machine::{RequestId, Stamped};
 
     const EPOCH: u64 = u32::MAX as u64 + 191;
-    const BUDGET: usize = crate::ui::dispatch::MAX_STEPS_PRE as usize + crate::ui::dispatch::MAX_STEPS_POST as usize;
+    const BUDGET: usize = plx_ui::dispatch::MAX_STEPS_PRE as usize + plx_ui::dispatch::MAX_STEPS_POST as usize;
 
     #[derive(Default)]
     struct Trace {
@@ -22,7 +22,7 @@ mod carry_matrix {
         publications: usize,
         ready: usize,
     }
-    impl crate::ui::dispatch::Tap<AppHost> for Trace {
+    impl plx_ui::dispatch::Tap<AppHost> for Trace {
         fn effect(&mut self, _: u64, s: &Stamped<AppHost>) {
             match &s.fx {
                 Fx::App(AppFx::SessionEffect(SessionFx::Acknowledge(receipts))) => self.acks.extend(receipts),
@@ -75,7 +75,7 @@ mod carry_matrix {
         d.emit(MachineId::Session, Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::Session(event))));
     }
     fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<SessionEnvelope>, trace: &mut Trace)
-        -> crate::ui::dispatch::FrameReport {
+        -> plx_ui::dispatch::FrameReport {
         let results = records.into_iter().map(|r| (r.addr, AppMsg::Session(SessionEvent::Result(r)))).collect();
         d.frame_with(rig, Tick::default(), Vec::new(), results, trace, false)
     }
@@ -420,7 +420,7 @@ mod qr_exhaustion_guard {
         cancelled: Vec<u32>,
         retired: Vec<u32>,
     }
-    impl crate::ui::dispatch::Tap<AppHost> for Cancellation {
+    impl plx_ui::dispatch::Tap<AppHost> for Cancellation {
         fn effect(&mut self, _: u64, effect: &Stamped<AppHost>) {
             match &effect.fx {
                 Fx::App(AppFx::SessionEffect(SessionFx::Cancel { requests, .. })) =>
@@ -523,7 +523,7 @@ fn admission_refusal_correlation_survives_carried_acceptance_and_transferred_ter
     let mut d = Dispatcher::<AppHost>::new();
     deliver(&mut rig, &mut d, SessionEvent::Admission(negative));
     assert_eq!(rig.session_subhash(), before, "resource acceptance protects even before its first observation/reply");
-    for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST {
+    for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST {
         execute_session_command(&mut d, crate::auth::SessionCmd::DismissPinError);
     }
     d.emit(MachineId::Session, Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::Session(
@@ -695,7 +695,7 @@ fn mounted_profiles_selection_crosses_owner_and_live_ack_with_constructor_and_co
         d.top_screen().unwrap().state().probe(&mut text);
         text
     };
-    for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST {
+    for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST {
         execute_session_command(&mut d, Command::NoteDeleteLeftovers(0));
     }
     d.request(MachineId::Nav, NavOp::Root(AppArg::Profiles));
@@ -712,7 +712,7 @@ fn mounted_profiles_selection_crosses_owner_and_live_ack_with_constructor_and_co
     // A committed press reaches the actual mounted screen and its real focus-selected action.
     // Gesture recognition itself is covered by the existing press tests; no Session command
     // is manufactured here for the selection.
-    for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 1 {
+    for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 1 {
         execute_session_command(&mut d, Command::NoteDeleteLeftovers(0));
     }
     d.emit(MachineId::Input, Fx::Deliver(MachineId::Instance(instance),
@@ -777,7 +777,7 @@ fn erased_publication_waits_for_carried_resource_completion() {
     let mut rig = Bridge::for_session_test(init);
     rig.session_adapter.fixture_resources().sweep_leftovers = 2;
     let mut d = Dispatcher::<AppHost>::new();
-    for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 1 {
+    for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 1 {
         execute_session_command(&mut d, Command::DismissPinError);
     }
     execute_session_command(&mut d, Command::EraseLocal);
@@ -819,7 +819,7 @@ fn erased_publication_waits_for_carried_resource_completion() {
 #[test]
 fn selection_acceptance_uses_exact_instance_correlation_and_full_epoch_through_carry() {
     use crate::auth::owner::{Command, ReplyTo};
-    use crate::ui::dispatch::Tap;
+    use plx_ui::dispatch::Tap;
     #[derive(Default)]
     struct Replies(Vec<(u32, u32, bool, u64)>);
     impl Tap<AppHost> for Replies {
@@ -851,7 +851,7 @@ fn selection_acceptance_uses_exact_instance_correlation_and_full_epoch_through_c
             let mut d = Dispatcher::<AppHost>::new();
             let mut replies = Replies::default();
             if carry {
-                for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 1 {
+                for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 1 {
                     execute_session_command(&mut d, Command::DismissPinError);
                 }
             }

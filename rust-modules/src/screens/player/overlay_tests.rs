@@ -19,27 +19,27 @@
 
 use super::overlay::{OverlayKind, Panel, PlayerOverlayScreen};
 use crate::screens::registry::{AppFx, AppMsg, PageMemory, PlayerReq};
-use crate::ui::consts::{SDLK_DOWN, SDLK_RETURN, SDLK_UP, WCODE_BACK, WCODE_PAUSE, WCODE_PLAY,
+use plx_ui::consts::{SDLK_DOWN, SDLK_RETURN, SDLK_UP, WCODE_BACK, WCODE_PAUSE, WCODE_PLAY,
     WCODE_PLAYPAUSE, WCODE_STOP};
-use crate::ui::fixture::FixtureMeasure;
-use crate::ui::form::FormId;
+use plx_ui::fixture::FixtureMeasure;
+use plx_ui::form::FormId;
 use crate::appkit::more_menu::{Action as MoreAction, MoreRow, MorePage};
-use crate::ui::page_stack::TITLE_KEY;
+use plx_ui::page_stack::TITLE_KEY;
 use crate::appkit::track_menu::{StyleField, TrackPage, TrackRow};
 use plx_machine::machine::{
     Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host, InputEvent, InputKind,
     InputOwner, InstanceId, Machine, MachineId, NavOp, PressId, Source, Tick,
 };
-use crate::ui::screen::{At, By, Focusable, Placed, ScreenEvent};
+use plx_ui::screen::{At, By, Focusable, Placed, ScreenEvent};
 
 pub(super) struct TestHost;
 impl Host for TestHost {
-    type Arg = crate::ui::fixture::FixtureArg;
+    type Arg = plx_ui::fixture::FixtureArg;
     type Fx = AppFx;
     type Msg = AppMsg;
     type Elem = u32;
     type Views<'a> = ();
-    type Init = crate::ui::fixture::FixtureArg;
+    type Init = plx_ui::fixture::FixtureArg;
     type Memory = PageMemory;
 }
 
@@ -298,7 +298,7 @@ fn more_open(page: &mut PlayerOverlayScreen, row: MoreRow) -> (Handled, Vec<Play
 /// the ordinary `More(SetQuality)` request and dismisses exactly as the flat ladder's rung did.
 #[test]
 fn the_quality_row_pushes_and_left_back_and_the_title_pop() {
-    use crate::ui::consts::{SDLK_LEFT, SDLK_RIGHT};
+    use plx_ui::consts::{SDLK_LEFT, SDLK_RIGHT};
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
@@ -343,14 +343,14 @@ fn the_quality_row_pushes_and_left_back_and_the_title_pop() {
 /// column; the root registers none. Mid-slide a stop sits where the page is DRAWN.
 #[test]
 fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
-    use crate::ui::screen::{DrawFrame, Screen};
+    use plx_ui::screen::{DrawFrame, Screen};
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { quality: false });
     let stops_of = |page: &PlayerOverlayScreen| {
         let cx = cx();
-        let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+        let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
         page.record_stops(&mut f);
         f.into_stops()
     };
@@ -367,7 +367,7 @@ fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
     tick(&mut page, 1_016);
     let mid = stops_of(&page);
     let title = mid.iter().find(|s| s.key.elem == TITLE_KEY).expect("a pushed page registers its title stop");
-    assert_eq!(title.hover, crate::ui::screen::Hover::Ignore, "pointer-only: hovering it moves no focus");
+    assert_eq!(title.hover, plx_ui::screen::Hover::Ignore, "pointer-only: hovering it moves no focus");
     assert!(title.rect.x > title.rest_rect.x, "mid-slide the stop is where the page is DRAWN");
     let cx = cx();
     let placed = Focusable::<TestHost>::place(&page, &TITLE_KEY, &cx, At::Drawn).expect("replay can place the title key");
@@ -456,7 +456,7 @@ fn place_answers_each_rows_own_rect_not_one_full_screen_stop() {
         (second.rect.y, second.rect.h),
         "each row is its own rect, not the whole screen twice",
     );
-    let full = crate::ui::Rect::FULL;
+    let full = plx_ui::Rect::FULL;
     assert_ne!(
         (first.rect.x, first.rect.y, first.rect.w, first.rect.h),
         (full.x, full.y, full.w, full.h),
@@ -591,7 +591,7 @@ fn a_style_pick_commits_without_dismissing_the_tracks_panel() {
 /// enters it (and on anything else is the tab switch, as before).
 #[test]
 fn back_and_left_pop_a_sub_page_and_right_enters_a_nav_row() {
-    use crate::ui::consts::{SDLK_LEFT, SDLK_RIGHT};
+    use plx_ui::consts::{SDLK_LEFT, SDLK_RIGHT};
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
@@ -629,7 +629,7 @@ fn back_and_left_pop_a_sub_page_and_right_enters_a_nav_row() {
 /// registered with the hit map and placeable for replay, but it is not in the D-pad column.
 #[test]
 fn clicking_the_title_band_pops_one_page() {
-    use crate::ui::screen::DrawFrame;
+    use plx_ui::screen::DrawFrame;
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
@@ -637,7 +637,7 @@ fn clicking_the_title_band_pops_one_page() {
 
     let stops_of = |page: &PlayerOverlayScreen| {
         let cx = cx();
-        let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+        let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
         page.record_stops(&mut f);
         f.into_stops()
     };
@@ -646,7 +646,7 @@ fn clicking_the_title_band_pops_one_page() {
     open_row(&mut page, TrackRow::Style);
     let stops = stops_of(&page);
     let title = stops.iter().find(|s| s.key.elem == TITLE_KEY).expect("a pushed page registers its title stop");
-    assert_eq!(title.hover, crate::ui::screen::Hover::Ignore, "pointer-only: hovering it moves no focus");
+    assert_eq!(title.hover, plx_ui::screen::Hover::Ignore, "pointer-only: hovering it moves no focus");
     let cx = cx();
     let placed = Focusable::<TestHost>::place(&page, &TITLE_KEY, &cx, At::Drawn).expect("replay can place the title key");
     assert_eq!((placed.rect.x, placed.rect.y), (title.rect.x, title.rect.y), "place and stop agree");
@@ -666,7 +666,7 @@ fn clicking_the_title_band_pops_one_page() {
 /// layout.
 #[test]
 fn the_pointer_is_held_while_a_page_slides_and_released_at_rest() {
-    use crate::ui::screen::{DrawFrame, Screen};
+    use plx_ui::screen::{DrawFrame, Screen};
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
@@ -682,7 +682,7 @@ fn the_pointer_is_held_while_a_page_slides_and_released_at_rest() {
     assert!(Screen::<TestHost>::pointer_held(&page), "a push holds the pointer from the first frame");
     let stops_of = |page: &PlayerOverlayScreen| {
         let cx = cx();
-        let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+        let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
         page.record_stops(&mut f);
         f.into_stops()
     };
@@ -837,7 +837,7 @@ fn timing_left_and_right_commit_subtitle_offset() {
     crate::player::set_subtitle_offset(0);
     let ps = crate::route::PlaybackSession::IDLE;
     let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
-    let (handled, reqs, dismissed) = press(&mut page, crate::ui::consts::SDLK_RIGHT, 0, Edge::Down);
+    let (handled, reqs, dismissed) = press(&mut page, plx_ui::consts::SDLK_RIGHT, 0, Edge::Down);
     assert_eq!(handled, Handled::Yes, "the capsule owns every key, never falls through");
     assert!(!dismissed);
     assert_eq!(
@@ -846,7 +846,7 @@ fn timing_left_and_right_commit_subtitle_offset() {
         "RIGHT steps +100ms",
     );
 
-    let (_, reqs, _) = press(&mut page, crate::ui::consts::SDLK_LEFT, 0, Edge::Down);
+    let (_, reqs, _) = press(&mut page, plx_ui::consts::SDLK_LEFT, 0, Edge::Down);
     assert_eq!(
         reqs,
         vec![PlayerReq::CommitTrack(crate::appkit::track_menu::TrackCommit::SubtitleOffset(0))],
@@ -944,7 +944,7 @@ fn chapters_press_commit_seeks_and_dismisses() {
 /// ladder's LEFT/RIGHT arm.
 #[test]
 fn tracks_edge_key_switches_tab_instead_of_moving_within_the_group() {
-    use crate::ui::consts::SDLK_RIGHT;
+    use plx_ui::consts::SDLK_RIGHT;
     let ps = crate::route::PlaybackSession::IDLE;
     let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
     assert!(matches!(page.kind(), OverlayKind::Tracks { .. }));
@@ -958,7 +958,7 @@ fn tracks_edge_key_switches_tab_instead_of_moving_within_the_group() {
 /// invisible to both the way a `Legacy` screen is.
 #[test]
 fn the_overlay_answers_engine_for_both_focus_and_hits() {
-    use crate::ui::screen::{FocusSource, HitSource, Screen};
+    use plx_ui::screen::{FocusSource, HitSource, Screen};
     let ps = crate::route::PlaybackSession::IDLE;
     let page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     assert_eq!(Screen::<TestHost>::focus_source(&page), FocusSource::Engine);
@@ -978,9 +978,9 @@ fn the_active_groups_seat_round_trips_through_group_of() {
         &page,
         groups[0].id,
         Placed {
-            rect: crate::ui::Rect::FULL,
-            rest_rect: crate::ui::Rect::FULL,
-            clip: crate::ui::Rect::FULL,
+            rect: plx_ui::Rect::FULL,
+            rest_rect: plx_ui::Rect::FULL,
+            clip: plx_ui::Rect::FULL,
             index: None,
         },
         &cx(),
@@ -993,7 +993,7 @@ fn the_active_groups_seat_round_trips_through_group_of() {
 
 /// **The player's panels dim through the container, inheriting the PLAYING item's own light.** GL
 /// cannot read the video plane, so the track menu and the `…` menu ask for a dim over
-/// [`UnderlaySource::Corners`](crate::ui::screen::UnderlaySource::Corners) — the leaf's UltraBlur
+/// [`UnderlaySource::Corners`](plx_ui::screen::UnderlaySource::Corners) — the leaf's UltraBlur
 /// envelope — at their `theme::underlay` roles; the Info card and Chapters strip ask for none, as
 /// they drew none; and an item with no envelope falls back to the flat ink.
 ///
@@ -1001,8 +1001,8 @@ fn the_active_groups_seat_round_trips_through_group_of() {
 /// inside `TrackMenuState::draw`/`MoreMenuState::draw`), so the first assertion failed at 0.0.
 #[test]
 fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() {
-    use crate::ui::screen::{Screen, UnderlaySource};
-    use crate::ui::theme::underlay::{DIM_PLAYER, DIM_SHEET};
+    use plx_ui::screen::{Screen, UnderlaySource};
+    use plx_ui::theme::underlay::{DIM_PLAYER, DIM_SHEET};
     let ps = crate::route::PlaybackSession::IDLE;
     let corners = [[0.1, 0.5, 0.2], [0.2, 0.4, 0.1], [0.6, 0.2, 0.1], [0.1, 0.1, 0.4]];
     let mut store = crate::stores::metadata::MetadataStore::default();
@@ -1035,8 +1035,8 @@ fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() 
 /// does, then activated by the key the map returned.
 #[test]
 fn a_pointer_click_activates_the_row_it_hit_by_key() {
-    use crate::ui::hit::HitMap;
-    use crate::ui::screen::DrawFrame;
+    use plx_ui::hit::HitMap;
+    use plx_ui::screen::DrawFrame;
     let _g = plx_base::testlock::serial();
     crate::player::sidecar::reset();
     let ps = crate::route::PlaybackSession::IDLE;
@@ -1054,7 +1054,7 @@ fn a_pointer_click_activates_the_row_it_hit_by_key() {
     ))));
     let mut page = PlayerOverlayScreen::new(&ps, store.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     let cx = cx();
-    let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+    let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
     page.record_stops(&mut f);
     let stops = f.into_stops();
     let mut map = HitMap::new();
@@ -1094,8 +1094,8 @@ fn a_pointer_click_activates_the_row_it_hit_by_key() {
 /// test metadata the Tracks and Chapters panels declare no rows, so for those two it is vacuous.
 #[test]
 fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
-    use crate::ui::hit::{pointer_gaps, HitMap};
-    use crate::ui::screen::DrawFrame;
+    use plx_ui::hit::{pointer_gaps, HitMap};
+    use plx_ui::screen::DrawFrame;
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     for kind in [
@@ -1108,7 +1108,7 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
     ] {
         let page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let cx = cx();
-        let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+        let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
         page.record_stops(&mut f);
         let mut map = HitMap::new();
         map.fill(f.into_stops());

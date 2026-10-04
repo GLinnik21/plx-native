@@ -8,9 +8,9 @@
 //! [`plx_base::fontcov::advances::ShippedMeasure`], the device's own whole-pixel advances.
 
 use plx_base::fontcov::advances::ShippedMeasure;
-use crate::ui::fit::HEADROOM;
+use plx_ui::fit::HEADROOM;
 use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
-use crate::ui::widgets::StatusOverlay;
+use plx_ui::widgets::StatusOverlay;
 use std::ffi::CString;
 
 /// Every `browse.auth.*` message: each is a sign-in or profile-switch failure's reason, drawn in
@@ -110,7 +110,7 @@ fn the_signed_in_reason_names_the_account_on_one_line_for_every_name_length() {
             let (first, rest) = reason.split_once('\n').unwrap_or_else(|| panic!("{language:?} {name}: no break"));
             assert_eq!(rest, second, "{language:?} {name}: line 2 is the plain sentence");
             assert!(!rest.contains('\n') && !first.contains('\n'), "{language:?} {name}");
-            let width = ShippedMeasure.width_str(first, crate::ui::theme::size::BODY, false);
+            let width = ShippedMeasure.width_str(first, plx_ui::theme::size::BODY, false);
             assert!(width <= column, "{language:?} {name}: line 1 is {width}px of {column}px: {first:?}");
             assert!(first.ends_with('.'), "{language:?} {name}: the sentence keeps its period: {first:?}");
             if name == "alexandra" {
@@ -176,11 +176,11 @@ fn every_insecure_only_reason_fits_two_lines_and_names_its_action() {
     use crate::plex::grant::PlaintextVerdict;
     use crate::plex::probe::PlaintextEligibility;
     use crate::plex::session::PlaintextChoice;
-    use crate::ui::text_view::TextView;
+    use plx_ui::text_view::TextView;
     const READOUT_REASON_BUDGET: usize = 125;
-    let fits = |text: &str| !TextView::new(text, crate::ui::theme::size::BODY, crate::ui::theme::TEXT_SECONDARY)
+    let fits = |text: &str| !TextView::new(text, plx_ui::theme::size::BODY, plx_ui::theme::TEXT_SECONDARY)
         .max_lines(2)
-        .with_measure(&crate::ui::fixture::FixtureMeasure)
+        .with_measure(&plx_ui::fixture::FixtureMeasure)
         .truncates(StatusOverlay::REASON_W);
     assert!(fits(discovery_insecure_only_message()));
     let mut seen = 0;
@@ -224,7 +224,7 @@ fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action(
     use crate::plex::grant::PlaintextVerdict;
     use crate::plex::probe::PlaintextEligibility;
     use crate::plex::session::PlaintextChoice;
-    use crate::ui::text_view::TextView;
+    use plx_ui::text_view::TextView;
     use std::ffi::CStr;
     /// `FixtureMeasure`'s half-em advance per UNICODE SCALAR rather than per UTF-8 byte. Its byte
     /// count doubles every Cyrillic letter, so it would grade Belarusian against a font no device
@@ -263,7 +263,7 @@ fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action(
                         }
                     }
                     assert!(text.chars().count() <= 125, "reason budget: {preference:?}: {text}");
-                    assert!(!TextView::new(&text, crate::ui::theme::size::BODY, crate::ui::theme::TEXT_SECONDARY)
+                    assert!(!TextView::new(&text, plx_ui::theme::size::BODY, plx_ui::theme::TEXT_SECONDARY)
                         .max_lines(2).with_measure(&ScalarMeasure)
                         .truncates(StatusOverlay::REASON_W), "complete action must fit: {text}");
                 }

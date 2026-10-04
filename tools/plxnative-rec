@@ -14,7 +14,7 @@
                                               new recording's — i.e. the old artifact can no longer be
                                               LOADED at all. Permitted for an anchor; see below
 
-A recording is `manifest.json` + `rec-NNNN.jsonl` (ui/rec.rs). `diff` prints frame indices, event
+A recording is `manifest.json` + `rec-NNNN.jsonl` (ui/src/rec.rs). `diff` prints frame indices, event
 kinds and hashes and never a string payload unless `--unsafe` is given, because a recording taken
 against a real server is private and the printer's output lands in transcripts. `import` refuses
 anything `check` refuses; the committed fixture is what tests/test_harness.py verifies on every
@@ -42,7 +42,7 @@ from collections import Counter
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 FIXTURES = os.path.join(ROOT, "tests", "fixtures", "replay")
-MAX_METRIC_TEXT_BYTES = 16384   # ui/rec.rs: MetricKey::valid
+MAX_METRIC_TEXT_BYTES = 16384   # ui/src/rec.rs: MetricKey::valid
 U32_MAX = (1 << 32) - 1
 U64_MAX = (1 << 64) - 1
 I32_MIN = -(1 << 31)
@@ -115,7 +115,7 @@ def metric_strings(doc):
 
     MetricKey::Width deliberately stores raw bytes so private recordings remain byte-exact and
     can distinguish non-UTF-8 C strings.  A *public* synthetic fixture has a narrower contract:
-    only the canonical ui/rec.rs envelope is decoded, and its bytes must be bounded UTF-8 text
+    only the canonical ui/src/rec.rs envelope is decoded, and its bytes must be bounded UTF-8 text
     that the closed alphabet can grade.  Numeric arrays anywhere else are application data, not
     an implicit string encoding, and are not interpreted here.
     """

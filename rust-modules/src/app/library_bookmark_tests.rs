@@ -103,7 +103,7 @@ fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
 fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     #[derive(Default)]
     struct Saves(Vec<(crate::stores::browse::SectionAddress, crate::stores::browse::Cursor)>);
-    impl crate::ui::dispatch::Tap<AppHost> for Saves {
+    impl plx_ui::dispatch::Tap<AppHost> for Saves {
         fn effect(&mut self, _: u64, effect: &plx_machine::machine::Stamped<AppHost>) {
             if let Fx::App(AppFx::Store(
                 _,
@@ -141,7 +141,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
     rig.stores.browse.borrow_mut().seed_shelves_for_test(0, &[], 4);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
-    d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+    d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
     frame(&mut d, &mut rig, AppArg::Library, tick(1), vec![]);
     Bridge::library_command(
         &mut d,
@@ -173,7 +173,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     // Menu selection addresses a covered host: its Cx must read that host entry's
     // engine memory, never the menu's current row or its unrelated remembered groups.
     let listing_id = rig.listing.view().id().unwrap();
-    d.nav.next_style = crate::ui::containers::modal::Style::Compact;
+    d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(

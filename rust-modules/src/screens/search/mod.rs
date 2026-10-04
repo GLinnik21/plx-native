@@ -17,15 +17,15 @@ use crate::search::{Item, Kind};
 use crate::screens::registry::{AppFx, HomeTab, PageMemory, SearchLike, SearchReq};
 use crate::stores::{StoreCmd, StoreId};
 use crate::stores::search::SearchCmd;
-use crate::ui::card_row::CardRow;
-use crate::ui::consts::{SCR_H, SCR_W};
-use crate::ui::frame::Budget;
+use plx_ui::card_row::CardRow;
+use plx_ui::consts::{SCR_H, SCR_W};
+use plx_ui::frame::Budget;
 use plx_machine::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
     Handled, InputKind, InputOwner, InstanceId, Key, LogicalState, Machine, MachineId, TextEdit};
 use plx_machine::present::Provenance;
-use crate::ui::screen::{At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusTarget,
+use plx_ui::screen::{At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusTarget,
     Focusable, GroupKind, GroupSpec, Link, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step};
-use crate::ui::{Rect, Spring};
+use plx_ui::{Rect, Spring};
 use draft::Draft;
 
 const FIELD: u32 = 1;
@@ -33,7 +33,7 @@ const CLEAR: u32 = 2;
 const FIELD_GROUP: GroupId = GroupId(0x5345_4100);
 const RECENTS_GROUP: GroupId = GroupId(0x5345_4101);
 const CLEAR_GROUP: GroupId = GroupId(0x5345_4102);
-const STRIP: GroupId = crate::ui::containers::tabs::STRIP;
+const STRIP: GroupId = plx_ui::containers::tabs::STRIP;
 /// The alpha at or under which the owner annotation is invisible: the renderer draws no run
 /// below it, and the instance swaps the word it holds only there — so a handle never changes
 /// under the eye (legacy `the_owner_annotation_swaps_its_words_only_while_it_is_invisible`).
@@ -72,8 +72,8 @@ pub(crate) struct SearchScreen {
     recent_clear_pending: bool,
     publication: Option<crate::search::view::SearchSnapshot>,
     content_dirty: bool,
-    fade: crate::ui::xfade::Xfade,
-    ground: crate::ui::widgets::PageGround,
+    fade: plx_ui::xfade::Xfade,
+    ground: plx_ui::widgets::PageGround,
     owner_row: Option<usize>,
     owner: String,
     owner_alpha: Spring,
@@ -93,7 +93,7 @@ impl SearchScreen {
             blink_us: 0, hot: Spring::at(1.0), scroll: Spring::at(0.0), scroll_target: 0.0,
             keys: Vec::new(), next_elem: 10, rows: Vec::new(), recents: Vec::new(), query_gen: 0,
             recent_clear_pending: false, publication: None, content_dirty: true,
-            fade: crate::ui::xfade::Xfade::new(), ground: crate::ui::widgets::PageGround::new(),
+            fade: plx_ui::xfade::Xfade::new(), ground: plx_ui::widgets::PageGround::new(),
             owner_row: None, owner: String::new(), owner_alpha: Spring::at(0.0), restored: None, render: Default::default(),
             notices: 0 }
     }
@@ -233,7 +233,7 @@ impl SearchScreen {
     }
 
     fn activate<H: SearchLike>(&mut self, elem: u32, held: bool, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        if let Some(tab) = elem.checked_sub(crate::ui::dispatch::STRIP_BASE) {
+        if let Some(tab) = elem.checked_sub(plx_ui::dispatch::STRIP_BASE) {
             let request = match tab {
                 0 => SearchReq::Tab(HomeTab::Home), 1 => SearchReq::Tab(HomeTab::Movies),
                 2 => SearchReq::Tab(HomeTab::Shows), 3 => return Handled::Yes,
@@ -340,8 +340,8 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                     if !self.editing && dy.is_finite() {
                         let (kinds, n) = self.kinds();
                         let end = layout::top(&kinds[..n], n, |i| self.rows[i].motion.band_expand());
-                        let max = (end + crate::ui::consts::MARGIN_Y - SCR_H).max(0.0);
-                        self.scroll_target = (self.scroll_target - dy * crate::ui::table::ROW_H).clamp(0.0, max);
+                        let max = (end + plx_ui::consts::MARGIN_Y - SCR_H).max(0.0);
+                        self.scroll_target = (self.scroll_target - dy * plx_ui::table::ROW_H).clamp(0.0, max);
                         fx.invalidate(Provenance::Input);
                     }
                 }
@@ -349,8 +349,8 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                     if self.editing {
                         let edit = match (*key, *sym) {
                             (Key::Left, _) => Some(TextEdit::Left), (Key::Right, _) => Some(TextEdit::Right),
-                            (_, crate::ui::consts::SDLK_BACKSPACE) => Some(TextEdit::Backspace),
-                            (_, crate::ui::consts::SDLK_CLEAR) => Some(TextEdit::Clear), _ => None,
+                            (_, plx_ui::consts::SDLK_BACKSPACE) => Some(TextEdit::Backspace),
+                            (_, plx_ui::consts::SDLK_CLEAR) => Some(TextEdit::Clear), _ => None,
                         };
                         if let Some(edit) = edit { self.edit(&edit, fx); return Handled::Yes; }
                         if *key == Key::Back { self.keyboard(false, false, fx); return Handled::Yes; }
@@ -365,7 +365,7 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                     }
                     if *key == Key::Up && cx.focus.current == Some(self.key(FIELD)) {
                         self.keyboard(false, true, fx);
-                        self.reseat(FocusTarget::Elem(self.key(crate::ui::dispatch::STRIP_BASE + 3)), fx);
+                        self.reseat(FocusTarget::Elem(self.key(plx_ui::dispatch::STRIP_BASE + 3)), fx);
                         return Handled::Yes;
                     }
                     if *key == Key::Back {
@@ -411,7 +411,7 @@ impl SearchScreen {
             model.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col))) else { return };
         let painter = f.painter.alpha(f.page_alpha * self.fade.alpha());
         // The lifted opener is painted after the strip, unlike the ordinary page flow.
-        let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
+        let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
         let _clip = f.clip(painter, Rect::new(0.0, floor, SCR_W, SCR_H - floor));
         render::tile(self, row, col, true, f, painter);
     }
@@ -494,7 +494,7 @@ impl SearchScreen {
         let style = layout::style(shelf.kind);
         let scroll = if at == At::Drawn { self.scroll.pos } else { self.scroll_target };
         let origin = layout::top(&kinds[..n], row, |i| self.rows[i].motion.band_expand());
-        crate::ui::card_row::tile_rect(col, style.margin_x, style.w + style.gap, shelf.motion.scroll_x(),
+        plx_ui::card_row::tile_rect(col, style.margin_x, style.w + style.gap, shelf.motion.scroll_x(),
             origin + layout::HEAD_TO_ROW - scroll, (style.w, style.h))
     }
     fn reveal<H: SearchLike>(&mut self, key: FocusKey<u32>, _cx: &Cx<'_, H>) {
@@ -521,7 +521,7 @@ impl SearchScreen {
                     Item::Media(media) if media.has_blur => Some(media.blur),
                     Item::Collection(hit) if hit.item.has_blur => Some(hit.item.blur), _ => None,
                 })));
-        self.ground.key(colours, crate::ui::widgets::PageGround::CARD_W, tick.dt());
+        self.ground.key(colours, plx_ui::widgets::PageGround::CARD_W, tick.dt());
         let target = cx.focus.current.and_then(|key| self.rows.iter().enumerate().find_map(|(row, model)|
             model.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col))));
         let view = H::search(cx);
@@ -540,7 +540,7 @@ impl SearchScreen {
         let owner = if settled && !self.owner.is_empty() { 1.0 } else { 0.0 };
         {
             let mut present = fx.present();
-            let (k_scale, k_scroll) = (crate::ui::consts::K_SCALE, crate::ui::consts::K_SCROLL);
+            let (k_scale, k_scroll) = (plx_ui::consts::K_SCALE, plx_ui::consts::K_SCROLL);
             plx_machine::motion::spring(&mut self.hot.pos, &mut self.hot.vel, hot, k_scale, tick, &mut present);
             plx_machine::motion::spring(&mut self.scroll.pos, &mut self.scroll.vel, self.scroll_target,
                 k_scroll, tick, &mut present);
@@ -605,7 +605,7 @@ impl<H: SearchLike> Focusable<H> for SearchScreen {
             self.rows.iter().find(|row| row.group == group).map_or(rect, |row| rect.scaled(row.motion.scale(index)))
         } else { rect };
         // The page still paints beneath the glass, but the standing strip owns those hits.
-        let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
+        let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
         Some(Placed { rect: painted, rest_rect: rect,
             clip: Rect::new(0.0, floor, SCR_W, SCR_H - floor), index: Some(index as u32) })
     }
@@ -626,7 +626,7 @@ impl<H: SearchLike> Focusable<H> for SearchScreen {
         }
         if let Some(row) = self.rows.iter().find(|row| row.group == group) {
             let style = layout::style(row.kind);
-            let index = crate::ui::card_row::column_near_x(from.rect.cx(), style.margin_x, style.w + style.gap,
+            let index = plx_ui::card_row::column_near_x(from.rect.cx(), style.margin_x, style.w + style.gap,
                 style.w, row.motion.scroll_x(), row.elems.len(), from.index.unwrap_or(0) as usize);
             return self.elem_at(group, index).map_or(self.key(FIELD), |elem| self.key(elem));
         }

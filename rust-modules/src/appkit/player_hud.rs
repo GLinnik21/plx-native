@@ -5,12 +5,12 @@
 //! primitives (they composite directly over the video plane, outside the transport HUD).
 #![allow(dead_code)]
 use plx_gfx::gfx::{delete_tex, upload_rgba};
-use crate::ui::consts::{SCR_H, SCR_W};
-use crate::ui::theme;
-use crate::ui::widgets::{
+use plx_ui::consts::{SCR_H, SCR_W};
+use plx_ui::theme;
+use plx_ui::widgets::{
     ControlGround, Spinner, StatusKind, StatusOverlay, TabPill, TransportButton,
 };
-use crate::ui::{Env, Painter, Rect, View};
+use plx_ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
 use std::sync::atomic::Ordering::Relaxed;
@@ -26,9 +26,9 @@ fn hud_env() -> Env {
 // both are already well above the couch floor; they're named here rather than left as bare literals.
 const HUD_TITLE_SZ: i32 = 54;
 
-/// the shared playback clock ([`crate::ui::fmt::clock`]) with the HUD's leading '-' for remaining
+/// the shared playback clock ([`plx_ui::fmt::clock`]) with the HUD's leading '-' for remaining
 fn fmt_time(ns: i64, neg: bool) -> String {
-    let c = crate::ui::fmt::clock(ns / 1_000_000);
+    let c = plx_ui::fmt::clock(ns / 1_000_000);
     if neg {
         format!("-{c}")
     } else {
@@ -411,8 +411,8 @@ impl SubtitleBitmaps {
     }
     /// What this display set holds of the frame's render residency: one texture per rect of the
     /// set, and the pixels behind them.
-    pub(crate) fn render_report(&self) -> crate::ui::frame::RenderReport {
-        crate::ui::frame::RenderReport {
+    pub(crate) fn render_report(&self) -> plx_ui::frame::RenderReport {
+        plx_ui::frame::RenderReport {
             textures: self.set.len() as u32,
             bytes: self.bytes,
         }
@@ -448,7 +448,7 @@ impl SubtitleBitmaps {
 // ---- HUD geometry (shared by draw_hud + the pointer hit-tests in app.rs) ----
 // scrubber (and title, and the bottom tab pills) left margin — the app's own, not a second copy of
 // it: this was a literal 90 and so stayed put when `MARGIN_X` moved to the overscan-safe 96
-const SB_X: f32 = crate::ui::consts::MARGIN_X;
+const SB_X: f32 = plx_ui::consts::MARGIN_X;
 pub(crate) const fn sb_w() -> f32 {
     SCR_W - 2.0 * SB_X
 }
@@ -470,11 +470,11 @@ pub(crate) const CTRL_Y: f32 = BTN_Y;
 /// The mock's `right: 80` put the Subtitles/Audio/`…` discs 16px past the 5% overscan frame, and the
 /// track and `…` panels were aligned to the same 80 (`track_menu`/`more_menu`). All three moved onto
 /// `MARGIN_X` together on 2026-08-23 — they are one right edge by design, so they take one number.
-pub(crate) const CTRL_RIGHT: f32 = SCR_W - crate::ui::consts::MARGIN_X;
+pub(crate) const CTRL_RIGHT: f32 = SCR_W - plx_ui::consts::MARGIN_X;
 /// how many control discs the row holds: Subtitles, Audio, More
 const BTN_N: i32 = 3;
 
-/// The CONTROL ROW's focus pop — one spring per item ([`crate::ui::widgets::CtlPop`]), so the
+/// The CONTROL ROW's focus pop — one spring per item ([`plx_ui::widgets::CtlPop`]), so the
 /// control being left shrinks while the arriving one grows instead of both snapping.
 ///
 /// **One array for all three slot occupants**, not one per module. The transport discs, the Skip
@@ -487,7 +487,7 @@ const BTN_N: i32 = 3;
 /// — it is drawn entirely from the caller's arguments — so this and the resume clock beside it are
 /// the whole of the route's retained motion state, and phase 9 gave them the one owner the rest of
 /// the route already has.
-pub(crate) type RowPop = crate::ui::widgets::CtlPop<{ BTN_N as usize }>;
+pub(crate) type RowPop = plx_ui::widgets::CtlPop<{ BTN_N as usize }>;
 
 /// **Everything the transport row remembers between frames**: the control row's per-item focus pop
 /// and the paused→playing edge the state read-out's `Play` mark is timed from.
@@ -1062,13 +1062,13 @@ const PLEX_PASS: &str = "Plex Pass";
 /// bottom margin band's upper edge, clear of the row by construction, and
 /// `the_diagnostics_footer_sits_below_the_row_inside_the_safe_bottom_band` fails if a taller row or
 /// note ever meets it.
-const FOOTER_TOP: f32 = SCR_H - crate::ui::consts::MARGIN_Y - theme::space::XL;
+const FOOTER_TOP: f32 = SCR_H - plx_ui::consts::MARGIN_Y - theme::space::XL;
 
 /// Everything the failure read-out draws, resolved once from the live failure. The draw, the
 /// pointer stops and the key ladder all build it the same way, so the row a click lands on is the
 /// row that was drawn.
 pub(crate) struct FailureReadout {
-    glyph: crate::ui::icons::Icon,
+    glyph: plx_ui::icons::Icon,
     reason: CString,
     note: Option<CString>,
     actions: Vec<crate::player::FailureAction>,
@@ -1091,9 +1091,9 @@ pub(crate) fn failure_action_label(a: crate::player::FailureAction) -> &'static 
 
 /// The glyph above the verdict, by cause — read off the same `FailureKind` the words come from, so
 /// the two cannot disagree (the rule `StatusOverlay::page` states for its callers).
-fn failure_glyph(kind: crate::player::FailureKind) -> crate::ui::icons::Icon {
+fn failure_glyph(kind: crate::player::FailureKind) -> plx_ui::icons::Icon {
     use crate::player::FailureKind as K;
-    use crate::ui::icons::Icon;
+    use plx_ui::icons::Icon;
     match kind {
         K::DecisionRefused | K::NoVideoTranscodeTarget => Icon::ServerBadgeXmark,
         K::JailMissingRtkmem => Icon::LockBadgeAlert,
@@ -1195,7 +1195,7 @@ impl FailureReadout {
     }
 
     /// Each control's rect, by row index — the geometry the draw uses.
-    pub(crate) fn frames(&self, measure: &dyn plx_machine::machine::Measure) -> [Option<Rect>; crate::ui::widgets::STATUS_ROW_MAX] {
+    pub(crate) fn frames(&self, measure: &dyn plx_machine::machine::Measure) -> [Option<Rect>; plx_ui::widgets::STATUS_ROW_MAX] {
         let labels = self.labels();
         self.overlay(&labels, None).row_frames_measured(measure)
     }
@@ -1204,12 +1204,12 @@ impl FailureReadout {
         let labels = self.labels();
         self.overlay(&labels, Some(focus.min(labels.len().saturating_sub(1))))
             .draw_measured(&hud_env(), p, measure);
-        crate::ui::text_view::TextView::new(self.footer.to_str().unwrap_or(""), theme::size::CAPTION, theme::TEXT_TERTIARY)
-            .h(crate::ui::label::HAlign::Center)
+        plx_ui::text_view::TextView::new(self.footer.to_str().unwrap_or(""), theme::size::CAPTION, theme::TEXT_TERTIARY)
+            .h(plx_ui::label::HAlign::Center)
             .max_lines(1)
             // the full safe width, not the reason's: the failure code is the line's LAST field
             // and the one support needs, so it must not be the part an ellipsis eats
-            .draw(p, Rect::new(crate::ui::consts::MARGIN_X, FOOTER_TOP, SCR_W - 2.0 * crate::ui::consts::MARGIN_X, 0.0));
+            .draw(p, Rect::new(plx_ui::consts::MARGIN_X, FOOTER_TOP, SCR_W - 2.0 * plx_ui::consts::MARGIN_X, 0.0));
     }
 }
 
@@ -1235,7 +1235,7 @@ pub(crate) const ELEM_TAB_BASE: u32 = 20;
 /// FAILED playback draws.
 pub(crate) const ELEM_FAILURE_BASE: u32 = 30;
 /// One past the failure row's last possible element.
-pub(crate) const ELEM_FAILURE_END: u32 = ELEM_FAILURE_BASE + crate::ui::widgets::STATUS_ROW_MAX as u32;
+pub(crate) const ELEM_FAILURE_END: u32 = ELEM_FAILURE_BASE + plx_ui::widgets::STATUS_ROW_MAX as u32;
 
 /// The scrubber's GRAB band — deliberately much taller than the bar itself, because it is a
 /// pointer grab zone. Placed by `PlayerScreen::place` and registered from it as the LOWEST stop, so
@@ -1718,18 +1718,18 @@ pub(crate) fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::
         // here — they are the asset's, and this screen was the second place to copy them out.
         const GAP: f32 = 14.0;
         let glyph = match mark {
-            TransportMark::Pause => Some(crate::ui::icons::Icon::Pause),
-            TransportMark::Play => Some(crate::ui::icons::Icon::Play),
-            TransportMark::Rewind => Some(crate::ui::icons::Icon::Rewind),
-            TransportMark::FastForward => Some(crate::ui::icons::Icon::FastForward),
+            TransportMark::Pause => Some(plx_ui::icons::Icon::Pause),
+            TransportMark::Play => Some(plx_ui::icons::Icon::Play),
+            TransportMark::Rewind => Some(plx_ui::icons::Icon::Rewind),
+            TransportMark::FastForward => Some(plx_ui::icons::Icon::FastForward),
             TransportMark::Working | TransportMark::None => None,
         };
-        let ink = glyph.map_or((0.0, 1.0), crate::ui::icons::ink_x);
+        let ink = glyph.map_or((0.0, 1.0), plx_ui::icons::ink_x);
         let icy = ty + plx_gfx::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
                                                                                 // scaled so every member of the family lands the SAME height of ink in this one box
         let bs = glyph.map_or(isz, |g| {
-            isz * crate::ui::icons::band(crate::ui::icons::Icon::Pause)
-                / crate::ui::icons::band(g)
+            isz * plx_ui::icons::band(plx_ui::icons::Icon::Pause)
+                / plx_ui::icons::band(g)
         });
         // **Rewind sits to the LEFT of the clock; everything else to the right.** The mark points
         // the way the playhead is travelling, so `<<` after the time would point back at the number
@@ -1747,7 +1747,7 @@ pub(crate) fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::
         };
         match glyph {
             Some(id) => {
-                crate::ui::icons::draw(p, id, Rect::new(bx, icy - bs * 0.5, bs, bs), white)
+                plx_ui::icons::draw(p, id, Rect::new(bx, icy - bs * 0.5, bs, bs), white)
             }
             None => Spinner::new(bx + isz * 0.5, icy, Spinner::R_INLINE)
                 .phase(now)
@@ -1814,7 +1814,7 @@ pub(crate) fn draw_hud(
             // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
             // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
             // caption already read it, and the whole point is that all three say the same thing).
-            let kicker = CString::new(crate::ui::fmt::episode_kicker(
+            let kicker = CString::new(plx_ui::fmt::episode_kicker(
                 n.season,
                 n.index,
                 &n.ep_title,
@@ -1891,7 +1891,7 @@ pub(crate) fn draw_hud(
 }
 
 /// **The transport's outermost drawn chrome, for the overscan audit**
-/// ([`crate::ui::consts::SAFE`]). Private geometry, so the rects are built where they are drawn
+/// ([`plx_ui::consts::SAFE`]). Private geometry, so the rects are built where they are drawn
 /// rather than restated in the module that grades them.
 ///
 /// The bottom tab row is measured at its widest — `Info` + `Chapters`, the pair an item with
@@ -1948,7 +1948,7 @@ mod tests {
         assert!(!plx_gfx::text::prewarm_resident_for_test(b"1:23", sz, 1), "prepare itself uploaded");
         // Four strings against a three-string frame budget: the second presented frame finishes them.
         while plx_gfx::text::prewarm_pending() {
-            crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
+            plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
         }
         for (text, bold) in [("1:23", 1), ("-0:36", 0), ("1:24", 1), ("-0:35", 0)] {
             assert!(
@@ -1966,7 +1966,7 @@ mod tests {
         // The end of the item: nothing below zero, and no string the clock cannot show.
         plx_gfx::text::reset_prewarm_for_test();
         warm.queue(dur + 5_000_000_000, dur);
-        crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
+        plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
         assert!(plx_gfx::text::prewarm_resident_for_test(b"-0:00", sz, 0));
         assert!(plx_gfx::text::prewarm_resident_for_test(b"2:05", sz, 1));
         plx_gfx::text::reset_prewarm_for_test();
@@ -1989,7 +1989,7 @@ mod tests {
         subs.release();
         assert_eq!(
             subs.render_report(),
-            crate::ui::frame::RenderReport::NONE,
+            plx_ui::frame::RenderReport::NONE,
             "a released set holds nothing and must stop claiming bytes"
         );
     }
@@ -2546,8 +2546,8 @@ mod tests {
         assert_eq!(r.note(), None, "the verdict already names the cause");
         assert_eq!(r.actions(), &[A::PlayAutomatically, A::Back]);
         assert_eq!(r.footer(), "0.7.0 · webOS 4.5 · code");
-        let log = crate::ui::draw_census::capture(|| {
-            r.draw(crate::ui::Painter::recording(), 0, &crate::ui::fixture::FixtureMeasure);
+        let log = plx_ui::draw_census::capture(|| {
+            r.draw(plx_ui::Painter::recording(), 0, &plx_ui::fixture::FixtureMeasure);
         });
         let texts: Vec<Rect> = log.iter().filter(|(tag, _)| *tag == 100).map(|(_, r)| *r).collect();
         assert!(texts.iter().any(|t| (t.y - FOOTER_TOP).abs() < theme::size::CAPTION as f32 * 2.0),
@@ -2577,7 +2577,7 @@ mod tests {
     #[test]
     fn every_failure_row_fits_the_screen_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
-        use crate::ui::fit::HEADROOM;
+        use plx_ui::fit::HEADROOM;
         use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         use crate::player::FailureAction as A;
         let rows: [&[A]; 3] = [
@@ -2590,12 +2590,12 @@ mod tests {
             let _guard = language_on_this_thread_for_test(language);
             for row in rows {
                 let labels: Vec<&'static std::ffi::CStr> = row.iter().map(|a| failure_action_label(*a)).collect();
-                let o = StatusOverlay::new(Rect::FULL, c"", StatusKind::Failed).page(crate::ui::icons::Icon::Alert).reason(c"x").row(&labels);
+                let o = StatusOverlay::new(Rect::FULL, c"", StatusKind::Failed).page(plx_ui::icons::Icon::Alert).reason(c"x").row(&labels);
                 let frames = o.row_frames_measured(&ShippedMeasure);
                 let lo = frames.iter().flatten().map(|f| f.x).fold(f32::MAX, f32::min);
                 let hi = frames.iter().flatten().map(|f| f.x + f.w).fold(0.0, f32::max);
-                let limit = SCR_W - 2.0 * crate::ui::consts::MARGIN_X;
-                if (hi - lo) > limit * HEADROOM || lo < crate::ui::consts::MARGIN_X {
+                let limit = SCR_W - 2.0 * plx_ui::consts::MARGIN_X;
+                if (hi - lo) > limit * HEADROOM || lo < plx_ui::consts::MARGIN_X {
                     out.push(format!("{}: {row:?} spans {:.0}px of {limit:.0}", language.tag(), hi - lo));
                 }
             }
@@ -2607,7 +2607,7 @@ mod tests {
     #[test]
     fn every_forced_verdict_fits_the_reason_slot_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
-        use crate::ui::fit::HEADROOM;
+        use plx_ui::fit::HEADROOM;
         use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
         let mut out = Vec::new();
         for language in [Preference::En, Preference::Es, Preference::Be] {

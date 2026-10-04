@@ -800,8 +800,8 @@ pub(crate) unsafe fn construct(
             crate::telemetry::consent::current().unwrap_or_default(), &mt)
     };
     // Construct the one dispatcher before bootstrap commands; move this same queue into App.
-    let mut pages = crate::ui::dispatch::Dispatcher::with_transition(Box::new(
-        crate::ui::containers::transition::PageDip::new(),
+    let mut pages = plx_ui::dispatch::Dispatcher::with_transition(Box::new(
+        plx_ui::containers::transition::PageDip::new(),
     ));
     // Install-wide playback preference, restored before any route can resolve a stream.
     // A legacy file with no value resolves to Original; a new file can choose Auto only
@@ -826,7 +826,7 @@ pub(crate) unsafe fn construct(
     if !controlled { crate::dev::scenarios::arm_audio_enhancements(); }
     let primary_binding = initial.as_ref().map(|initial| initial.primary_client);
     let activate_session = |bridge: &mut super::bridge::Bridge,
-        pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+        pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
         rec: &mut super::recorder::Recplay| {
         if forced_login {
         super::bridge::execute_session_command(pages, crate::auth::SessionCmd::StartLogin);
@@ -956,7 +956,7 @@ pub(crate) unsafe fn construct(
     // The plan is built HERE rather than in the `App` literal below so the dial is armed at the
     // point in boot it always was: `configure` logs what it will run, and that line's position in
     // the event log is what a sweep is read against.
-    let mut glass = crate::ui::frame::glass::GlassPlan::new();
+    let mut glass = plx_ui::frame::glass::GlassPlan::new();
     if !controlled {
         crate::dev::scenarios::arm_glassload(&mut glass);
         crate::dev::scenarios::arm_navblur(&mut glass);
@@ -991,7 +991,7 @@ pub(crate) unsafe fn construct(
     // and so that if a frame ever looks wrong on the panel, ruling this feature out is one
     // `rm` rather than a redeploy.
     if !controlled {
-        crate::ui::testpat::boot();
+        plx_ui::testpat::boot();
         crate::player::seed_dev_track_names();
     }
     if let Some(initial) = &initial {
@@ -1371,7 +1371,7 @@ pub(crate) unsafe fn construct(
         t0,
         instr,
         measure_fault_logged: false,
-        input: crate::ui::input::Input::new(),
+        input: plx_ui::input::Input::new(),
         rec: super::recorder::Recplay::Off,
         boot_initial: initial,
         telemetry_guard: None,
@@ -1477,7 +1477,7 @@ pub(crate) unsafe fn construct(
     // optimizer does not always prove that field `false` in a release build, so the literal
     // shipped (`ci/check-package.py` failed on it). See `dev.rs`'s module doc.
     if app.scenarios.dev.nobudget {
-        app.pages.budget = crate::ui::frame::Budget::pre_phase_11();
+        app.pages.budget = plx_ui::frame::Budget::pre_phase_11();
         #[cfg(feature = "devtriggers")]
         plx_base::eventlog::log("budget: pre-phase-11 admission (quota only) by /tmp/plxnative-nobudget");
     }

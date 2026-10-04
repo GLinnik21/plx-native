@@ -632,7 +632,7 @@ pub struct Session {
     /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
     /// profile picker is the case that motivated this — can still seed its frozen ground from
     /// real light instead of falling all the way to the design system's authored atmosphere
-    /// (`theme::ROUTE_GROUND_FALLBACK`). See [`crate::ui::route_screen::RouteGround::draw_home`],
+    /// (`theme::ROUTE_GROUND_FALLBACK`). See [`plx_ui::route_screen::RouteGround::draw_home`],
     /// the only reader, and [`record_last_hero`], its one writer.
     ///
     /// Not keyed by profile: it says nothing about content history, only about what colour light

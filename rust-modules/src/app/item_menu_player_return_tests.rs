@@ -8,9 +8,9 @@ use super::super::{
 };
 use crate::plex::ServerId;
 use crate::screens::registry::{AppArg, ContentArg, ItemMenuKind};
-use crate::ui::dispatch::Dispatcher;
+use plx_ui::dispatch::Dispatcher;
 use plx_machine::machine::Key;
-use crate::ui::screen::ScreenArg;
+use plx_ui::screen::ScreenArg;
 
 const SID: ServerId = ServerId::from_raw(0);
 
@@ -68,7 +68,7 @@ impl playback::PlaybackResources for Resources {
 
 fn frame(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, now: &mut u32, key: Option<Key>) {
     *now += 16;
-    let tick = crate::ui::fixture::tick(*now);
+    let tick = plx_ui::fixture::tick(*now);
     bridge::frame(
         d,
         rig,
@@ -130,7 +130,7 @@ fn chain(host: AppArg, episode: bool, accept_request: bool, accept_start: bool) 
         // Seed the filmstrip menu's captured subject; activation and request flags come from the
         // real ItemMenuScreen. The live metadata lookup itself is the resource under substitution.
         arg.kind = ItemMenuKind::Episode {
-            mark: crate::ui::widgets::PosterMark::None,
+            mark: plx_ui::widgets::PosterMark::None,
         };
         arg.loaded_episode = true;
     }
@@ -151,7 +151,7 @@ fn chain(host: AppArg, episode: bool, accept_request: bool, accept_start: bool) 
     frame(&mut d, &mut rig, &mut now, Some(Key::Ok));
     assert_eq!(
         d.nav.modals.top().unwrap().phase,
-        crate::ui::containers::modal::Phase::Closing
+        plx_ui::containers::modal::Phase::Closing
     );
 
     let mut ps = crate::route::PlaybackSession::default();

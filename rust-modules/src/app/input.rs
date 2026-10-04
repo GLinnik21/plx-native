@@ -120,8 +120,8 @@ pub(crate) unsafe fn activate_card(
     mm: &crate::pms::PmsMovie,
     want_play: bool,
     hud_ms: u32,
-    mut ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    mut ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     menu_play_await: &mut Option<MenuPlayAwait>,
     now: u32,
@@ -196,7 +196,7 @@ fn collection_content_arg(mm: &crate::pms::PmsMovie) -> crate::screens::registry
 pub(crate) unsafe fn menu_play_tick(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     menu_play_await: &mut Option<MenuPlayAwait>,
     now: u32,
@@ -287,7 +287,7 @@ mod activate_card_tests {
         let mut ps = crate::route::PlaybackSession::default();
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut pa = crate::player::adapter::PlayerAdapter::new(mt);
-        let mut pages = crate::ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
+        let mut pages = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
         let mut bridge = super::bridge::Bridge::for_test(|| 0);
         let mut menu_play_await = None;
 
@@ -344,7 +344,7 @@ mod activate_card_tests {
         let mut ps = crate::route::PlaybackSession::default();
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut pa = crate::player::adapter::PlayerAdapter::new(mt);
-        let mut pages = crate::ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
+        let mut pages = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
         let mut bridge = super::bridge::Bridge::for_test(|| 0);
         let mut menu_play_await = None;
         let collection = crate::pms::PmsMovie { rk: "50001".into(),
@@ -371,7 +371,7 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
         ps: &mut crate::route::PlaybackSession,
         pa: &mut crate::player::adapter::PlayerAdapter,
         rk: &str,
-        pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+        pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
         bridge: &mut super::bridge::Bridge,
     ) {
         if self.0.request_episode(ps, bridge.metadata_mut(), rk) {
@@ -385,7 +385,7 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
         ps: &mut crate::route::PlaybackSession,
         pa: &mut crate::player::adapter::PlayerAdapter,
         item: &crate::pms::PmsMovie,
-        pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+        pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
         bridge: &mut super::bridge::Bridge,
     ) {
         super::playback::play_item_now_with(ps, pa, item, true, Origin::Here, HUD_LINGER_MS,
@@ -422,7 +422,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     req: crate::screens::registry::ItemMenuReq,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     resources: &mut R,
 ) {
@@ -636,7 +636,7 @@ pub(crate) fn on_key_up(
     sym: c_uint,
     ok_armed: bool,
     down_sym: &mut u32,
-    press: &mut crate::ui::press::Press,
+    press: &mut plx_ui::press::Press,
 ) {
     if sym == *down_sym {
         *down_sym = 0;
@@ -663,7 +663,7 @@ pub(crate) fn on_key_up(
 /// `Edge::Repeat`, which is the same event one layer down, and the per-frame advance is that
 /// screen's `Tick`. Nothing about the gesture is read or written from here any more, which is what
 /// makes `PlayerScreen::scrub` a field with ONE owner.
-pub(crate) fn on_auto_repeat(sym: c_uint, ok_armed: bool, press: &mut crate::ui::press::Press) {
+pub(crate) fn on_auto_repeat(sym: c_uint, ok_armed: bool, press: &mut plx_ui::press::Press) {
     if ok_armed && is_ok(sym) {
         press.note_alive(clock::now()); // OK held: keep the dropped-key-up net honest
     }
@@ -713,7 +713,7 @@ pub(crate) unsafe fn begin_fresh_press(
     hud: Option<&mut HudState>,
     ptr: &mut Pointer,
     ok_armed: &mut bool,
-    press: &mut crate::ui::press::Press,
+    press: &mut plx_ui::press::Press,
 ) {
     *down_sym = sym;
     note_global_press(ps, sym, wcode, now, hud, ok_armed, press);
@@ -745,7 +745,7 @@ pub(crate) fn note_global_press(
     now: u32,
     hud: Option<&mut HudState>,
     ok_armed: &mut bool,
-    press: &mut crate::ui::press::Press,
+    press: &mut plx_ui::press::Press,
 ) {
     if !is_bound(sym, wcode) {
         return; // an unsupported key is not input the app acted on — see `begin_fresh_press`
@@ -781,7 +781,7 @@ mod unsupported_key_tests {
         let mut hud = HudState::IDLE;
         let mut ok_armed = true; // a click is in flight, as if OK were still down on a card
         hud.dismissed = true; // …and the transport was hidden by hand (UP from the control row)
-        let mut p = crate::ui::press::Press::new();
+        let mut p = plx_ui::press::Press::new();
         p.begin(1_000);
         note_global_press(ps, sym, wcode, 1_000, Some(&mut hud), &mut ok_armed, &mut p);
         let out = (p.is_active() && ok_armed, hud.dismissed);
@@ -887,7 +887,7 @@ pub(crate) fn after_cancel(backed_out: bool) -> AfterCancel {
 /// **No `ui::profiles::enter()`** (phase 6, mirroring first-run Favourites' own removal in 5b):
 /// the picker is an OWNED screen now, and naming the route is the whole of mounting a fresh one —
 /// `AppMounter::mount` constructs a new `ProfilesScreen` the moment the tree follows this route.
-pub(crate) fn enter_profiles_from_onboard(pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
+pub(crate) fn enter_profiles_from_onboard(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     super::bridge::execute_session_command(pages,
         crate::auth::SessionCmd::StartSwitch(crate::auth::Picker::ChangeProfile));
     super::bridge::nav_root_if_unsettled(pages, AppArg::Profiles);
@@ -917,7 +917,7 @@ pub(crate) fn enter_profiles_from_onboard(pages: &mut crate::ui::dispatch::Dispa
 /// Phase 5b: the screen is the tree's, so this presents rather than opens. `bridge::open_*` is
 /// itself idempotent while the surface is up (any phase), which is what lets the three per-frame
 /// routing call sites go on simply asking.
-pub(crate) fn maybe_ask_consent(pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
+pub(crate) fn maybe_ask_consent(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     let c = crate::telemetry::consent::current().unwrap_or_default();
     // dev: /tmp/plxnative-consent[=<crash|product>] forces either first-run purpose even on an
     // automated boot. This screen is suppressed BY the presence of any trigger, so without an
@@ -953,7 +953,7 @@ pub(crate) fn maybe_ask_consent(pages: &mut crate::ui::dispatch::Dispatcher<supe
 /// Done/Cancel is one `NavOp::Pop` inside the surface and the host route never moved — so there is
 /// no parked route to restore and no second exit to tell apart from this one. The screen's two
 /// exits are therefore two different `LoopReq`s rather than one `Action` with four variants.
-pub(crate) fn enter_home_from_onboard(pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
+pub(crate) fn enter_home_from_onboard(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     // The consent pair is NOT asked here any more: it is the sign-in's decision, shared by every
     // profile on the account, and is put before the profile picker, which is upstream of this whole step. See `maybe_ask_consent`.
     // The selection just recorded is an input to Home's merge (`pms::feeds_home`), and the merge
@@ -1010,7 +1010,7 @@ fn remove_local_file(path: &std::path::Path) -> Result<(), String> {
 }
 
 /// The erase sweeps' removal rule as a plain `fn`, for the sweeps `ui/` owns
-/// ([`crate::ui::rec::erase_owned_artifacts`]), which may not name the storage layer themselves.
+/// ([`plx_ui::rec::erase_owned_artifacts`]), which may not name the storage layer themselves.
 pub(crate) fn remove_or_prove_absent(path: &std::path::Path) -> std::io::Result<()> {
     plx_platform::storage::remove_file_or_prove_absent(path).map(|_| ())
 }
@@ -1033,7 +1033,7 @@ fn erase_runtime_logs(root: &std::path::Path) -> Vec<String> {
 /// removed.
 fn sweep_local_files(persistent: impl IntoIterator<Item = std::path::PathBuf>,
     runtime_root: &std::path::Path) -> Vec<String> {
-    let mut failures = crate::ui::rec::erase_owned_artifacts(runtime_root, remove_or_prove_absent);
+    let mut failures = plx_ui::rec::erase_owned_artifacts(runtime_root, remove_or_prove_absent);
     for path in persistent {
         if let Err(e) = remove_local_file(&path) {
             failures.push(e);
@@ -1199,9 +1199,9 @@ mod delete_all_tests {
 /// and a `ModalStack` surface needs no name at all — the page it was presented over stays the top
 /// page and is never replaced. A route with no chip on it opens nothing.
 pub(crate) fn chip_activate(
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
-    use crate::ui::screen::ScreenArg;
+    use plx_ui::screen::ScreenArg;
     if pages.top_arg().map(|a| a.chrome()) != Some(plx_machine::machine::Chrome::TabBar) {
         return;
     }
@@ -1221,11 +1221,11 @@ pub(crate) fn chip_activate(
 
 /// The bar-wearing pages, i.e. the ones with a profile chip on them at all — `BarHost::of`'s
 /// successor, and the whole of what that type was still doing once the menu became a surface.
-/// DERIVED from [`crate::ui::screen::ScreenArg::chrome`] rather than listing Home/Library/Search a second time: the
+/// DERIVED from [`plx_ui::screen::ScreenArg::chrome`] rather than listing Home/Library/Search a second time: the
 /// chip is a control ON the shared bar, so "is there a chip to press" is "does this page wear the
 /// bar", and the two cannot drift.
 pub(crate) fn wears_the_chip(route: &AppArg) -> bool {
-    use crate::ui::screen::ScreenArg;
+    use plx_ui::screen::ScreenArg;
     route.chrome() == plx_machine::machine::Chrome::TabBar
 }
 
@@ -1238,7 +1238,7 @@ pub(crate) fn chip_clicked(route: &AppArg, ev: &[u8]) -> bool {
         return false;
     }
     let (mx, my) = ptr_xy(ev);
-    crate::ui::widgets::profile_chip_at(mx, my)
+    plx_ui::widgets::profile_chip_at(mx, my)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1248,8 +1248,8 @@ pub(crate) unsafe fn key_ok(
     now: u32,
     _ptr: &mut Pointer,
     ok_armed: &mut bool,
-    press: &mut crate::ui::press::Press,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    press: &mut plx_ui::press::Press,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
     // The shared top bar's PROFILE CHIP used to be answered here, ahead of the per-route ladder
@@ -1328,7 +1328,7 @@ pub(crate) fn key_back(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     refresh_hubs_at: &mut u32,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     if super::bridge::nav_cancel(pages) {
     } else if super::bridge::player(pages).is_some() {
@@ -1393,6 +1393,6 @@ pub(crate) fn back_at_root() {
 ///
 /// The SURFACE is dismissed by the caller, not here: the screen under it is going, and there is no
 /// host left for a fade to run over (what `settings::hide()` used to say).
-pub(crate) fn delete_all_local_data_and_sign_out(pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
+pub(crate) fn delete_all_local_data_and_sign_out(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     super::bridge::execute_session_command(pages, crate::auth::SessionCmd::EraseLocal);
 }

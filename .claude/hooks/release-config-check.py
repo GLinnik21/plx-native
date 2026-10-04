@@ -271,7 +271,7 @@ def rust_src_target(payload, root, cwd=None):
     src = os.path.realpath(os.path.join(root, "rust-modules", "src"))
     # The layer crates split out of `src` (docs/module-layers.md) are compiled by the same
     # `cargo check --lib` as a dependency, so an edit there is a release-configuration risk too.
-    layer_srcs = [os.path.realpath(os.path.join(root, "rust-modules", layer, "src")) for layer in ("base", "machine", "net", "platform", "gfx")]
+    layer_srcs = [os.path.realpath(os.path.join(root, "rust-modules", layer, "src")) for layer in ("base", "machine", "net", "platform", "gfx", "ui")]
     if not any(path.startswith(s + os.sep) for s in [src] + layer_srcs):
         return None
     # `--lib` compiles no bin target, and `sim.rs` needs `hostsim`, which the release set never has.

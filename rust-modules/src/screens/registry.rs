@@ -31,7 +31,7 @@ use crate::stores::{StoreCmd, StoreId, StoreWork};
 use plx_machine::machine::{
     Canon, Chrome, Cx, Effects, EntryId, Host, InstanceId, LogicalState, ScreenId,
 };
-use crate::ui::screen::{Mounter, ReturnState, Screen};
+use plx_ui::screen::{Mounter, ReturnState, Screen};
 
 /// The one conversion from a catalog row to the plain facts `ui` draws a tile from. It lives here
 /// because a screen may name `registry` but never a sibling screen, and `ui` cannot name the row.
@@ -339,9 +339,9 @@ pub(crate) enum ItemMenuKind {
     /// The detail page's episode filmstrip. `mark` is resolved by the page through the same
     /// `ep_state` that draws the still's own state line, so the tile and the menu opened on it
     /// cannot describe one episode two ways.
-    Episode { mark: crate::ui::widgets::PosterMark },
+    Episode { mark: plx_ui::widgets::PosterMark },
     /// The detail page's season tabs.
-    Season { mark: crate::ui::widgets::PosterMark },
+    Season { mark: plx_ui::widgets::PosterMark },
 }
 
 /// **Identity, not contents.** `PmsMovie` is a wire DTO with no `PartialEq` of its own, and one
@@ -921,8 +921,8 @@ impl ContentPanel {
         self,
         host: plx_machine::machine::InstanceId,
         subject: Option<(crate::plex::ServerId, &str)>,
-    ) -> Option<(crate::ui::containers::modal::Style, AppArg)> {
-        use crate::ui::containers::modal::Style;
+    ) -> Option<(plx_ui::containers::modal::Style, AppArg)> {
+        use plx_ui::containers::modal::Style;
         Some(match self {
             Self::AltSources { anchor } => {
                 let (sid, rk) = subject?;
@@ -1190,7 +1190,7 @@ pub(crate) const BAND: u32 = 0x4000_0000;
 pub(crate) const ALERT: u32 = 0x4000_0100;
 
 const _: () = assert!(
-    BAND == crate::ui::table_screen::BAND_BASE,
+    BAND == plx_ui::table_screen::BAND_BASE,
     "screens::registry::BAND and ui::table_screen::BAND_BASE are the same address in two crates \
      that cannot import from each other; keep them numerically identical"
 );
@@ -1541,7 +1541,7 @@ impl LogicalState for AppArg {
     fn probe(&self, out: &mut String) { out.push_str("app_arg"); }
 }
 
-impl crate::ui::screen::ScreenArg for AppArg {
+impl plx_ui::screen::ScreenArg for AppArg {
     /// **Which pages draw the shared top tab bar** — `route_wears_tab_bar`'s body, in the one
     /// place that ever asked it. Exhaustive on purpose: a new screen must not be able to answer
     /// this by accident, because the page each surface stands on is what answers for the chrome
@@ -1634,7 +1634,7 @@ impl crate::ui::screen::ScreenArg for AppArg {
         // …and the same reason `id` collapses the payload: `Settings(Root)` and
         // `Settings(Legal)` are the same SCREEN, so a container must never be able to think it
         // is holding two of them.
-        <Self as crate::ui::screen::ScreenArg>::id(self) == <Self as crate::ui::screen::ScreenArg>::id(other)
+        <Self as plx_ui::screen::ScreenArg>::id(self) == <Self as plx_ui::screen::ScreenArg>::id(other)
     }
 }
 
@@ -2070,14 +2070,14 @@ const SCREEN_SHAPES_PIN: u64 = 0x7063_dff7_775b_9075;
 #[cfg(test)]
 mod arg_tests {
     use super::*;
-    use crate::ui::screen::ScreenArg as _;
+    use plx_ui::screen::ScreenArg as _;
 
     /// **The screen half of the recorder's shape pin** (§5.4), asserted here rather than in
     /// `app/recorder.rs` because this is the array a new screen joins — so the bump lands in the
     /// same file, and the same commit, as the entry that caused it.
     #[test]
     fn the_screen_shape_inventory_is_pinned() {
-        assert_eq!(crate::ui::rec::state_fp(SCREEN_SHAPES), SCREEN_SHAPES_PIN);
+        assert_eq!(plx_ui::rec::state_fp(SCREEN_SHAPES), SCREEN_SHAPES_PIN);
     }
 
     /// **One `ScreenId` per surface VARIANT.** Ids are allocated forward here precisely so a
@@ -2090,7 +2090,7 @@ mod arg_tests {
     /// `mem::discriminant` rather than over equality of the arguments themselves.
     #[test]
     fn two_different_surface_variants_never_share_a_screen_id() {
-        use crate::ui::screen::ScreenArg;
+        use plx_ui::screen::ScreenArg;
         let args = every_surface_arg();
         for (i, a) in args.iter().enumerate() {
             for b in args.iter().skip(i + 1) {
@@ -2189,7 +2189,7 @@ mod arg_tests {
         let (style, arg) = ContentPanel::CollectionAbout
             .surface(plx_machine::machine::InstanceId(1), None)
             .expect("a page with no item subject can still offer its summary");
-        assert!(matches!(style, crate::ui::containers::modal::Style::Alert));
+        assert!(matches!(style, plx_ui::containers::modal::Style::Alert));
         assert!(matches!(arg, AppArg::CollectionAbout));
         assert_ne!(arg.id(), AppArg::AboutPanel.id(),
             "the Detail About sheet and the Collection summary are distinct surfaces");

@@ -76,7 +76,7 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
         consent::current().expect("account A decision is published"),
     );
     let mut dispatcher =
-        crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
+        plx_ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
     dispatcher.emit(
         plx_machine::machine::MachineId::Session,
         plx_machine::machine::Fx::App(
@@ -90,7 +90,7 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
         plx_machine::machine::Tick::default(),
         Vec::new(),
         Vec::new(),
-        &mut crate::ui::dispatch::NoTap,
+        &mut plx_ui::dispatch::NoTap,
         false,
     );
 

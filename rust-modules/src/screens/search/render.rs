@@ -2,11 +2,11 @@
 use super::*;
 use crate::screens::registry::tile_facts;
 use crate::search::scope::{ScopeSource, SourceScopeSnapshot};
-use crate::ui::card_row::{self, TileLabel};
-use crate::ui::consts::{MARGIN_X, SCR_H, SCR_W};
-use crate::ui::label::{HAlign, Label, VAlign};
-use crate::ui::widgets::{Art, Button, StatusKind, StatusOverlay};
-use crate::ui::{theme, Env, Painter, View};
+use plx_ui::card_row::{self, TileLabel};
+use plx_ui::consts::{MARGIN_X, SCR_H, SCR_W};
+use plx_ui::label::{HAlign, Label, VAlign};
+use plx_ui::widgets::{Art, Button, StatusKind, StatusOverlay};
+use plx_ui::{theme, Env, Painter, View};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
 
@@ -93,7 +93,7 @@ impl Resources {
                 .map(|term| {
                     cstring(&elide(
                         term,
-                        820.0 - 2.0 * crate::ui::table::CONTENT_X,
+                        820.0 - 2.0 * plx_ui::table::CONTENT_X,
                         theme::size::HEADLINE,
                         true,
                         cx.measure,
@@ -149,7 +149,7 @@ pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '
         let (kinds, n) = screen.kinds();
         let top = layout::top(&kinds[..n], i, |j| screen.rows[j].motion.band_expand())
             - screen.scroll.pos;
-        if !crate::ui::on_axis(
+        if !plx_ui::on_axis(
             top,
             layout::block_h(row.kind, row.motion.band_expand()),
             SCR_H,
@@ -285,10 +285,10 @@ fn recents<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p
     .draw(
         p,
         Rect::new(
-            MARGIN_X + crate::ui::table::CONTENT_X,
+            MARGIN_X + plx_ui::table::CONTENT_X,
             layout::CONTENT_TOP - screen.scroll.pos,
             0.0,
-            crate::ui::table::HDR_H,
+            plx_ui::table::HDR_H,
         ),
     );
     let shown = screen.recents.len().min(layout::RECENT_CAP);
@@ -304,13 +304,13 @@ fn recents<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p
         if focused {
             p.rrect(
                 Rect::new(
-                    rect.x + crate::ui::table::SIDE,
-                    rect.y + crate::ui::table::PILL_INSET,
-                    rect.w - 2.0 * crate::ui::table::SIDE,
-                    rect.h - 2.0 * crate::ui::table::PILL_INSET,
+                    rect.x + plx_ui::table::SIDE,
+                    rect.y + plx_ui::table::PILL_INSET,
+                    rect.w - 2.0 * plx_ui::table::SIDE,
+                    rect.h - 2.0 * plx_ui::table::PILL_INSET,
                 ),
-                crate::ui::table::PILL_RAD,
-                crate::ui::table::PILL_RAD,
+                plx_ui::table::PILL_RAD,
+                plx_ui::table::PILL_RAD,
                 theme::ACCENT,
             );
         }
@@ -329,7 +329,7 @@ fn recents<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p
         .bold()
         .draw(
             p,
-            Rect::new(rect.x + crate::ui::table::CONTENT_X, rect.y, 0.0, rect.h),
+            Rect::new(rect.x + plx_ui::table::CONTENT_X, rect.y, 0.0, rect.h),
         );
         stop(screen, *elem, ElemKind::Bare, f, p);
     }
@@ -415,7 +415,7 @@ pub(super) fn tile<H: SearchLike>(
     };
     let scale = pop * press;
     let rect = rest.scaled(scale);
-    if !crate::ui::on_axis(rect.x, rect.w, SCR_W, 32.0) {
+    if !plx_ui::on_axis(rect.x, rect.w, SCR_W, 32.0) {
         return;
     }
     let art = tile_art(model.kind, item);
@@ -452,7 +452,7 @@ pub(super) fn tile<H: SearchLike>(
         card_row::draw_tile(p, art, rect, scale, &style, resume);
     }
     if let (Kind::Episode, Item::Media(media)) = (model.kind, item) {
-        crate::ui::widgets::still_overlay(p, &tile_facts::of(media), rect, style.tile_radius(rect, scale), false, f.measure);
+        plx_ui::widgets::still_overlay(p, &tile_facts::of(media), rect, style.tile_radius(rect, scale), false, f.measure);
     }
     stop(
         screen,
@@ -501,7 +501,7 @@ fn stop<H: SearchLike>(
     if !f.records_stops() {
         return;
     }
-    use crate::ui::screen::{Activate, Hover, Stop};
+    use plx_ui::screen::{Activate, Hover, Stop};
     let Some(placed) = <SearchScreen as Focusable<H>>::place(screen, &elem, f.cx, At::Drawn) else {
         return;
     };
@@ -643,14 +643,14 @@ fn subtitle(kind: Kind, item: &Item, handle: &str) -> String {
     let mut parts = Vec::new();
     match item {
         Item::Media(media) if kind == Kind::Episode => {
-            let date = crate::ui::fmt::pretty_date(&media.aired, media.year as i64);
+            let date = plx_ui::fmt::pretty_date(&media.aired, media.year as i64);
             if !date.is_empty() {
                 parts.push(date);
             }
         }
         Item::Media(media) if media.year > 0 => parts.push(media.year.to_string()),
         // a collection is its size, in the one formatter every collection surface shares
-        Item::Collection(hit) => parts.push(crate::ui::fmt::item_count(hit.item.child_count)),
+        Item::Collection(hit) => parts.push(plx_ui::fmt::item_count(hit.item.child_count)),
         _ => {}
     }
     if !handle.is_empty() {
@@ -1343,7 +1343,7 @@ mod tests {
             tag: 7,
         });
         assert!(matches!(tile_art(Kind::Collection, &full),
-            Art::Poster(Some(m)) if m.kind == crate::ui::tile::TileKind::Collection && m.thumb.is_empty()
+            Art::Poster(Some(m)) if m.kind == plx_ui::tile::TileKind::Collection && m.thumb.is_empty()
                 && m.title == "Shorts"));
         let with_art = Item::Collection(crate::search::CollectionHit {
             item: crate::pms::PmsMovie { thumb: "/library/metadata/50007/thumb/1".into(),

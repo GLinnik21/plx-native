@@ -1,12 +1,12 @@
 //! Library paint consumes the same placement queries as keyboard and pointer navigation.
 use super::*;
 use crate::screens::registry::tile_facts;
-use crate::ui::card_row;
-use crate::ui::screen::{Activate, Hover, Stop};
-use crate::ui::theme;
-use crate::ui::widgets::Art;
-use crate::ui::value_chip::ValueChip;
-use crate::ui::{Env, View, on_axis};
+use plx_ui::card_row;
+use plx_ui::screen::{Activate, Hover, Stop};
+use plx_ui::theme;
+use plx_ui::widgets::Art;
+use plx_ui::value_chip::ValueChip;
+use plx_ui::{Env, View, on_axis};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Layer { Grid, Document, Rail }
@@ -17,13 +17,13 @@ fn layers(mut visit: impl FnMut(Layer)) {
 }
 
 fn shelf_on_screen(origin: f32, pitch: f32) -> bool {
-    on_axis(origin - crate::ui::consts::TITLE_DY, pitch, SCR_H, 0.0)
+    on_axis(origin - plx_ui::consts::TITLE_DY, pitch, SCR_H, 0.0)
 }
 
 /// Reject a whole control band before creating labels or measuring individual pills. The
 /// full-width envelope preserves travelling capsules; shared cast tokens cover their shadows.
 /// It is deliberately wider than the controls, so no text metrics are needed to reject it.
-fn document_band_visible(p: crate::ui::Painter, y: f32, height: f32, pop: f32) -> bool {
+fn document_band_visible(p: plx_ui::Painter, y: f32, height: f32, pop: f32) -> bool {
     let pad = theme::CONTROL_CAST_FOCUS.iter()
         .map(|(dy, blur, _)| dy.abs() + blur).fold(0.0f32, f32::max) + 1.0;
     let mut bounds = Rect::new(0.0, y, SCR_W, height)
@@ -32,7 +32,7 @@ fn document_band_visible(p: crate::ui::Painter, y: f32, height: f32, pop: f32) -
     bounds.y += p.dy();
     let visible = bounds.intersect(Rect::FULL);
     visible.w > 0.0 && visible.h > 0.0
-        && (crate::ui::frame::backdrop::discovering()
+        && (plx_ui::frame::backdrop::discovering()
             || !plx_gfx::gfx::culled(bounds.x, bounds.y, bounds.w, bounds.h))
 }
 
@@ -41,16 +41,16 @@ mod layer_tests {
     #[test]
     fn document_band_culling_preserves_partial_labels_focus_and_shadow_edges() {
         let _guard = plx_base::testlock::serial();
-        let p = crate::ui::Painter::root();
-        let height = crate::ui::widgets::StatusOverlay::CTRL_H;
-        let pad = crate::ui::theme::CONTROL_CAST_FOCUS.iter()
+        let p = plx_ui::Painter::root();
+        let height = plx_ui::widgets::StatusOverlay::CTRL_H;
+        let pad = plx_ui::theme::CONTROL_CAST_FOCUS.iter()
             .map(|(dy, blur, _)| dy.abs() + blur).fold(0.0f32, f32::max) + 1.0;
         assert!(super::document_band_visible(p, -height + 1.0, height, 1.0));
         assert!(super::document_band_visible(p, -height - pad + 1.0, height, 1.0),
             "a focus shadow can remain on the panel after the control itself left");
         let above = -height - pad - 1.0;
         assert!(!super::document_band_visible(p, above, height, 1.0));
-        assert!(super::document_band_visible(p, above, height, crate::ui::widgets::CTRL_FOCUS_SCALE),
+        assert!(super::document_band_visible(p, above, height, plx_ui::widgets::CTRL_FOCUS_SCALE),
             "the focused capsule's growth belongs in the paint envelope");
         assert!(super::document_band_visible(p.translate(0.0, 300.0), above, height, 1.0));
         assert!(!super::document_band_visible(p, super::SCR_H + pad + 1.0, height, 1.0));
@@ -60,18 +60,18 @@ mod layer_tests {
     #[test]
     fn document_band_culling_keeps_visible_controls_during_backdrop_discovery() {
         let _guard = plx_base::testlock::serial();
-        let _discovery = crate::ui::frame::backdrop::discover(
+        let _discovery = plx_ui::frame::backdrop::discover(
             std::rc::Rc::new(std::cell::RefCell::new(Default::default())));
         assert!(plx_gfx::gfx::culled(0.0, 0.0, 100.0, 100.0),
             "discovery suppresses GL draws without suppressing paint declarations");
-        assert!(super::document_band_visible(crate::ui::Painter::root(),
+        assert!(super::document_band_visible(plx_ui::Painter::root(),
             super::CONTENT_TOP, super::layout::GRID_HEAD_H, 1.0));
     }
 
     #[test]
     fn shelf_culling_keeps_the_visible_band_above_the_centered_tab_track() {
-        use crate::ui::consts::{CARD_H, ROW_PITCH, SCR_H, TITLE_DY};
-        let y = crate::ui::widgets::TOP_BAR_BOTTOM - CARD_H - 8.0;
+        use plx_ui::consts::{CARD_H, ROW_PITCH, SCR_H, TITLE_DY};
+        let y = plx_ui::widgets::TOP_BAR_BOTTOM - CARD_H - 8.0;
         assert!(y + CARD_H > 0.0);
         assert!(super::shelf_on_screen(y, ROW_PITCH));
         assert!(!super::shelf_on_screen(TITLE_DY - ROW_PITCH - 1.0, ROW_PITCH));
@@ -104,20 +104,20 @@ impl LibraryScreen {
         // `loop=` 43-45 → 57); `lb.document` brackets the chips, the shelf band and the status
         // read-out with `lb.shelves` inside it for the card rows alone; `lb.grid` is the poster
         // wall's windowed rows and `lb.rail` the letter rail.
-        crate::ui::profile::phase("lb.clear", || {
+        plx_ui::profile::phase("lb.clear", || {
             plx_gfx::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         });
-        crate::ui::profile::phase("lb.ground", || {
+        plx_ui::profile::phase("lb.ground", || {
             self.ground.draw(f.painter.alpha(f.page_alpha), Rect::FULL);
         });
         let layout = self.pair.layout();
         let alpha = self.page_fade.alpha() * self.grid_fade.alpha();
         layers(|layer| match layer {
-            Layer::Grid => crate::ui::profile::phase("lb.grid", || {
+            Layer::Grid => plx_ui::profile::phase("lb.grid", || {
                 draw_faded_part_at(&mut self.pair.detail, f, layout.detail, alpha)
             }),
-            Layer::Document => crate::ui::profile::phase("lb.document", || self.draw_document(f)),
-            Layer::Rail => crate::ui::profile::phase("lb.rail", || {
+            Layer::Document => plx_ui::profile::phase("lb.document", || self.draw_document(f)),
+            Layer::Rail => plx_ui::profile::phase("lb.rail", || {
                 // Decoration derives from the CURRENT engine key; no remembered cursor is copied.
                 let index = f.focus.current.filter(|key| key.entry == self.entry)
                     .and_then(|key| self.pair.detail.index_of(key.elem));
@@ -134,12 +134,12 @@ impl LibraryScreen {
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let env = Env::inert();
         self.draw_library_controls(f);
-        crate::ui::profile::phase("lb.shelves", || {
+        plx_ui::profile::phase("lb.shelves", || {
             for (index, row) in self.shelves.iter().enumerate() {
                 let Some(shelf) = H::section_hubs(f.cx).shelves().get(index) else { continue };
                 let origin = self.layout.shelf_y(index, self.scroll.pos);
                 if !shelf_on_screen(origin, self.layout.shelf_pitch(index)) { continue; }
-                let heading_y = origin - crate::ui::consts::TITLE_DY - row.motion.lift();
+                let heading_y = origin - plx_ui::consts::TITLE_DY - row.motion.lift();
                 if let Some(heading) = self.heading_widget(index, f.cx) {
                     let focused = f.focus.current.is_some_and(|key| key.entry == self.entry
                         && Some(key.elem) == row.heading_elem());
@@ -161,7 +161,7 @@ impl LibraryScreen {
         self.draw_grid_header(f);
         if self.readout == Readout::Loading {
             // Preserve the Library's standalone loading spinner, outside either content fade.
-            crate::ui::widgets::Spinner::new(SCR_W * 0.5, SCR_H * 0.52, 26.0)
+            plx_ui::widgets::Spinner::new(SCR_W * 0.5, SCR_H * 0.52, 26.0)
                 .phase(f.cx.tick.ms).draw(&env, f.painter.alpha(f.page_alpha));
         } else if self.readout != Readout::Grid {
             let (text, reason) = self.status_text(f.cx);
@@ -180,12 +180,12 @@ impl LibraryScreen {
         let pop = self.library_pop.scale_with(0, f.press.scale);
         let y = CONTENT_TOP - self.scroll.pos - self.shelves.first().map_or(0.0, |row| row.motion.lift());
         if self.libraries.is_empty()
-            || !document_band_visible(p, y, crate::ui::widgets::StatusOverlay::CTRL_H, pop) { return; }
+            || !document_band_visible(p, y, plx_ui::widgets::StatusOverlay::CTRL_H, pop) { return; }
         // Singleton selectors are hidden for every profile in `sync`; the remaining controls
         // are always the library pill strip — drawn through the one shared strip path.
-        crate::ui::widgets::draw_strip(p, &self.library_capsules, &self.library_lays(f.cx), y,
-            crate::ui::widgets::StatusOverlay::CTRL_H, 0.0,
-            crate::ui::widgets::TabGround::Plated { pop });
+        plx_ui::widgets::draw_strip(p, &self.library_capsules, &self.library_lays(f.cx), y,
+            plx_ui::widgets::StatusOverlay::CTRL_H, 0.0,
+            plx_ui::widgets::TabGround::Plated { pop });
     }
 
     fn draw_grid_header<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) {
@@ -264,7 +264,7 @@ impl LibraryScreen {
             card_row::draw_tile(p, art, rect, scale, style, resume);
         }
         if shelf.landscape {
-            crate::ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), shelf.is_continue, f.measure);
+            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), shelf.is_continue, f.measure);
         }
     }
 
@@ -297,12 +297,12 @@ pub(super) fn shelf_label(shelf: &crate::browse::section_hubs::Shelf, col: usize
     let Some(item) = shelf.items.get(col) else { return card_row::TileLabel::title("") };
     if shelf.landscape {
         let name = if item.title.is_empty() || item.title == item.show_title {
-            crate::ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64)
+            plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64)
         } else { item.title.clone() };
         let fact = if shelf.is_continue && item.resume_frac().is_some() {
-            crate::ui::fmt::time_left(item.dur_ns / 1_000_000 - item.resume_ms)
+            plx_ui::fmt::time_left(item.dur_ns / 1_000_000 - item.resume_ms)
         } else if item.aired.is_empty() && item.year <= 0 { String::new() }
-        else { crate::ui::fmt::pretty_date(&item.aired, item.year as i64) };
+        else { plx_ui::fmt::pretty_date(&item.aired, item.year as i64) };
         return if fact.is_empty() { card_row::TileLabel::title(&name) }
         else { card_row::TileLabel::titled(&name, &fact) };
     }

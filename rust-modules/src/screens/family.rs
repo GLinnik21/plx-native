@@ -9,26 +9,26 @@
 //! them, and each names the destination through this vocabulary rather than through the module
 //! that implements it.
 
-use crate::ui::form::{Activation, FormTable, RowKey};
+use plx_ui::form::{Activation, FormTable, RowKey};
 use plx_machine::machine::{
     Canon, Chrome, Cx, Effects, Fx, GroupId, Host, LogicalState, NavOp, ScreenId,
 };
-use crate::ui::screen::ScreenArg;
-use crate::ui::widgets::ControlPalette;
+use plx_ui::screen::ScreenArg;
+use plx_ui::widgets::ControlPalette;
 
 use super::registry::{AppFx, AppMsg, DirectoryLike};
 
 /// A first-run background may mount before the persisted hero seed arrives. Keep the same
 /// generation cursor as other session-derived views, while a live hub seed remains authoritative.
 pub(crate) struct SessionGround {
-    ground: crate::ui::route_screen::RouteGround,
+    ground: plx_ui::route_screen::RouteGround,
     watch: crate::plex::session::VisibleSessionWatch,
     from_session: bool,
     seed: Option<[[f32; 3]; 4]>,
 }
 impl SessionGround {
     pub(crate) fn new() -> Self {
-        Self { ground: crate::ui::route_screen::RouteGround::new(), watch: Default::default(),
+        Self { ground: plx_ui::route_screen::RouteGround::new(), watch: Default::default(),
             from_session: false, seed: None }
     }
     pub(crate) fn refresh(&mut self) -> bool {
@@ -36,12 +36,12 @@ impl SessionGround {
         let Some(session) = crate::plex::session::peek_settled() else { return false; };
         if self.seed == session.last_hero_blur { return false; }
         self.seed = session.last_hero_blur;
-        self.ground = crate::ui::route_screen::RouteGround::for_home(self.seed);
+        self.ground = plx_ui::route_screen::RouteGround::for_home(self.seed);
         true
     }
 }
 impl std::ops::Deref for SessionGround {
-    type Target = crate::ui::route_screen::RouteGround;
+    type Target = plx_ui::route_screen::RouteGround;
     fn deref(&self) -> &Self::Target { &self.ground }
 }
 impl std::ops::DerefMut for SessionGround {
@@ -55,7 +55,7 @@ pub(crate) fn pre_home_ground(hubs: crate::pms::HubsView<'_>) -> SessionGround {
         let _ = plx_base::storage_worker::submit_retained(move || crate::plex::session::record_last_hero(blur));
     }
     let seed = live.or_else(crate::plex::session::last_hero);
-    SessionGround { ground: crate::ui::route_screen::RouteGround::for_home(seed),
+    SessionGround { ground: plx_ui::route_screen::RouteGround::for_home(seed),
         watch: Default::default(), from_session: live.is_none(), seed }
 }
 
@@ -363,7 +363,7 @@ mod tests {
             SettingsPage::ConsentStage(0),
             SettingsPage::Picker(PickerKind::Quality),
         ];
-        let mut ids: Vec<u32> = pages.iter().map(|p| crate::ui::screen::ScreenArg::id(p).0).collect();
+        let mut ids: Vec<u32> = pages.iter().map(|p| plx_ui::screen::ScreenArg::id(p).0).collect();
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), pages.len(), "two SettingsPage variants must not share a ScreenId");
@@ -375,7 +375,7 @@ mod tests {
     /// compares `same_instance`, not `id()`, for identity, and `id()` alone is only ever a KIND).
     #[test]
     fn an_indexed_variant_s_id_does_not_vary_with_its_index() {
-        use crate::ui::screen::ScreenArg;
+        use plx_ui::screen::ScreenArg;
         assert_eq!(SettingsPage::Document(0).id(), SettingsPage::Document(5).id());
         assert_eq!(SettingsPage::Preview(0).id(), SettingsPage::Preview(3).id());
         assert_eq!(SettingsPage::ConsentStage(0).id(), SettingsPage::ConsentStage(1).id());

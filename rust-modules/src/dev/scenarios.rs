@@ -256,19 +256,19 @@ pub(crate) fn arm_stillclock() {
 /// `/tmp/plxnative-anim` — the animation-diagnostic overlay (off by default).
 pub(crate) fn arm_anim() {
     if plx_base::devtrig::flag("anim") {
-        crate::ui::anim::set_enabled(true);
+        plx_ui::anim::set_enabled(true);
     }
 }
 
 /// `/tmp/plxnative-glassload` — the backdrop-glass LOAD DIAL.
-pub(crate) fn arm_glassload(glass: &mut crate::ui::frame::glass::GlassPlan) {
+pub(crate) fn arm_glassload(glass: &mut plx_ui::frame::glass::GlassPlan) {
     if let Some(v) = plx_base::devtrig::read("glassload") {
         glass.configure_dial(&v);
     }
 }
 
 /// `/tmp/plxnative-navblur` — the blurred-route-transition prototype.
-pub(crate) fn arm_navblur(glass: &mut crate::ui::frame::glass::GlassPlan) {
+pub(crate) fn arm_navblur(glass: &mut plx_ui::frame::glass::GlassPlan) {
     if let Some(v) = plx_base::devtrig::read("navblur") {
         glass.configure_navblur(&v);
     }
@@ -291,7 +291,7 @@ pub(crate) fn arm_drawmask() {
 /// `/tmp/plxnative-heroground` — the one-pass hero ground A/B.
 pub(crate) fn arm_heroground() {
     if plx_base::devtrig::flag("heroground") {
-        crate::ui::widgets::set_hero_ground(true);
+        plx_ui::widgets::set_hero_ground(true);
         #[cfg(feature = "devtriggers")]
         plx_base::eventlog::log("hero: one-pass ground ENABLED by /tmp/plxnative-heroground");
     }
@@ -312,8 +312,8 @@ pub(crate) fn arm_profile_hwcnt() {
         (Some(_), Some(_)) => {
             plx_base::eventlog::log("PROFILE disabled: remove either /tmp/plxnative-profile or /tmp/plxnative-hwcnt");
         }
-        (Some(filter), None) => crate::ui::profile::set_enabled(&filter),
-        (None, Some(filter)) => crate::ui::profile::set_hwcnt_enabled(&filter),
+        (Some(filter), None) => plx_ui::profile::set_enabled(&filter),
+        (None, Some(filter)) => plx_ui::profile::set_hwcnt_enabled(&filter),
         (None, None) => {}
     }
 }
@@ -323,7 +323,7 @@ pub(crate) fn arm_profile_hwcnt() {}
 /// `/tmp/plxnative-cpuprof` — the render thread's own per-phase CPU clock.
 pub(crate) fn arm_cpuprof() {
     if plx_base::devtrig::flag("cpuprof") {
-        crate::ui::profile::set_cpu_enabled();
+        plx_ui::profile::set_cpu_enabled();
     }
 }
 
@@ -567,7 +567,7 @@ impl ContentBoot {
             waiting_person:false, ready_seen:false }
     }
     /// Is the page this boot is waiting for the one on top?
-    fn is_top(&self, d: &crate::ui::dispatch::Dispatcher<crate::app::bridge::AppHost>) -> bool {
+    fn is_top(&self, d: &plx_ui::dispatch::Dispatcher<crate::app::bridge::AppHost>) -> bool {
         matches!(d.top_arg(), Some(AppArg::Content(crate::screens::registry::ContentArg::Detail { sid, rk }))
             if *sid == self.sid && *rk == self.rk)
     }
@@ -604,7 +604,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
     use crate::app::bridge;
     use crate::screens::registry::{AppArg, ContentArg};
     use plx_machine::machine::{Delivery, Fx, MachineId, NavOp};
-    use crate::ui::screen::ScreenEvent;
+    use plx_ui::screen::ScreenEvent;
 
     let Some(mut boot) = app.scenarios.content_boot.take() else { return };
     let ready = if boot.waiting_person {
@@ -665,7 +665,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
     if boot.waiting_person {
         let person = app.pages.nav.top_page().map(|e| e.arg.clone());
         if let Some(AppArg::Content(ContentArg::Person { sid, key, .. })) = person {
-            app.pages.nav.next_style = crate::ui::containers::modal::Style::Opaque { snapshot: true };
+            app.pages.nav.next_style = plx_ui::containers::modal::Style::Opaque { snapshot: true };
             app.pages.request(MachineId::Nav, NavOp::Present(AppArg::Content(
                 ContentArg::Filmography { sid, key })));
             return;
@@ -791,7 +791,7 @@ mod content_boot_tests {
 /// not covered by a host test; a full `App`/SDL frame would be needed to reach it).
 pub(crate) fn apply_search_boot_trigger(
     q: &str,
-    d: &mut crate::ui::dispatch::Dispatcher<crate::app::bridge::AppHost>,
+    d: &mut plx_ui::dispatch::Dispatcher<crate::app::bridge::AppHost>,
     bridge: &mut crate::app::bridge::Bridge,
 ) {
     bridge.search_run(crate::stores::search::SearchCmd::SetQuery(q.trim().to_string()));
@@ -2035,9 +2035,9 @@ pub(crate) fn home_fold_osc_tick(app: &mut App, now: u32) {
 pub(crate) fn home_osc_tick(app: &mut App, now: u32) {
     if app.scenarios.dev.home_osc && now.wrapping_sub(app.scenarios.home_osc_last) > 350 {
         app.scenarios.home_osc_last = now;
-        let sym = if (now / 3000) % 2 == 0 { crate::ui::consts::SDLK_DOWN } else { crate::ui::consts::SDLK_UP };
+        let sym = if (now / 3000) % 2 == 0 { plx_ui::consts::SDLK_DOWN } else { plx_ui::consts::SDLK_UP };
         app.inputs.extend(crate::app::bridge::script_key(
-            if sym == crate::ui::consts::SDLK_DOWN { Key::Down } else { Key::Up },
+            if sym == plx_ui::consts::SDLK_DOWN { Key::Down } else { Key::Up },
             Tick { ms: now, dt_us: 0 }));
     }
 }
@@ -2063,9 +2063,9 @@ pub(crate) fn lib_switch_tick(app: &mut App, now: u32) {
 pub(crate) fn search_osc_tick(app: &mut App, now: u32) {
     if matches!(app.route(), AppArg::Search) && app.scenarios.dev.search_osc && now.wrapping_sub(app.scenarios.search_osc_last) > 350 {
         app.scenarios.search_osc_last = now;
-        let sym = if (now / 3000) % 2 == 0 { crate::ui::consts::SDLK_DOWN } else { crate::ui::consts::SDLK_UP };
+        let sym = if (now / 3000) % 2 == 0 { plx_ui::consts::SDLK_DOWN } else { plx_ui::consts::SDLK_UP };
         app.inputs.extend(crate::app::bridge::script_key(
-            if sym == crate::ui::consts::SDLK_DOWN { Key::Down } else { Key::Up },
+            if sym == plx_ui::consts::SDLK_DOWN { Key::Down } else { Key::Up },
             Tick { ms: now, dt_us: 0 }));
     }
 }
@@ -2577,7 +2577,7 @@ pub(crate) fn consent_override() -> Option<String> {
 /// names in the binary's bytes, where `ci/check-package.py` grades them.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
-    crate::ui::rec::mode_value(&plx_base::devtrig::path("rec")).map_err(|_| "invalid recorder trigger")
+    plx_ui::rec::mode_value(&plx_base::devtrig::path("rec")).map_err(|_| "invalid recorder trigger")
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
@@ -2587,7 +2587,7 @@ pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
 /// `/tmp/plxnative-recplay` — see [`rec_trigger`].
 #[cfg(feature = "devtriggers")]
 pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
-    crate::ui::rec::mode_value(&plx_base::devtrig::path("recplay")).map_err(|_| "invalid replay trigger")
+    plx_ui::rec::mode_value(&plx_base::devtrig::path("recplay")).map_err(|_| "invalid replay trigger")
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
@@ -2600,7 +2600,7 @@ pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
 #[cfg(feature = "devtriggers")]
 pub(crate) fn app_init_value() -> Option<Result<serde_json::Value, &'static str>> {
     plx_base::devtrig::flag("app-init").then(|| {
-        crate::ui::rec::initial_value(&plx_base::devtrig::path("app-init"))
+        plx_ui::rec::initial_value(&plx_base::devtrig::path("app-init"))
             .map_err(|_| "invalid explicit initial input")
     })
 }

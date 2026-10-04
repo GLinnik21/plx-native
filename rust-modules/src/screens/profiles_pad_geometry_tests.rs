@@ -63,7 +63,7 @@ fn declared_pad_holes_match_the_keys_and_edges() {
 
 #[test]
 fn down_from_the_roster_reaches_the_footer_and_holds_there() {
-    use crate::ui::focus::{FocusEngine, Outcome};
+    use plx_ui::focus::{FocusEngine, Outcome};
     let s = bare(Pad::new());
     let view = ProfilesView { screen: &s, n: 4 };
     let mut engine = FocusEngine::new();
@@ -75,7 +75,7 @@ fn down_from_the_roster_reaches_the_footer_and_holds_there() {
             elem: 2,
         },
         Some(ROSTER_GROUP),
-        crate::ui::screen::By::Restore,
+        plx_ui::screen::By::Restore,
     );
     assert!(
         matches!(engine.move_dir(owner, &view, &[], Dir::Down, &cx(None)),
@@ -95,7 +95,7 @@ fn down_from_the_roster_reaches_the_footer_and_holds_there() {
 fn the_footer_is_reachable_with_no_roster_at_all() {
     let s = bare(Pad::new());
     let view = ProfilesView { screen: &s, n: 0 };
-    let mut engine = crate::ui::focus::FocusEngine::new();
+    let mut engine = plx_ui::focus::FocusEngine::new();
     let owner = InputOwner::Entry(s.entry);
     engine.enter(
         owner,

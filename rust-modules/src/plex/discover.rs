@@ -35,7 +35,7 @@
 //! the reason it gave is still the whole design constraint rather than an objection that has been
 //! withdrawn: those `Metadata` rows are **Discover** items, so their `ratingKey` is a plex.tv guid
 //! and their `thumb` an `image.tmdb.org` URL, and nothing in them opens a local detail page by
-//! itself. What made it shippable is [`crate::ui::filmography`] — a screen that says which credits
+//! itself. What made it shippable is [`plx_ui::filmography`] — a screen that says which credits
 //! you actually hold, by joining each row's `guid` against the `/media` answers the person page
 //! already has, and presses through to a detail page on exactly those. A row with no server behind
 //! it is a provider fact and draws no chevron.

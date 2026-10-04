@@ -36,12 +36,12 @@ ROOT = Path(__file__).resolve().parent.parent
 CRATE = "plxnative_modules"
 # The layer crates split out of the app crate (docs/module-layers.md), each a dependency of it and
 # each held to the same rule: an rlib, never an archive. One archive is linked, and it is the app's.
-LAYER_CRATES = ("plx_base", "plx_machine", "plx_net", "plx_platform", "plx_gfx")
+LAYER_CRATES = ("plx_base", "plx_machine", "plx_net", "plx_platform", "plx_gfx", "plx_ui")
 NIGHTLY = os.environ.get("RUST_NIGHTLY", "nightly")
 # What the workspace needs for cargo to resolve (not compile) the app package: the manifest and
 # lockfile, the `.cargo/config.toml` that cargo finds from the working directory, and the sources
 # the manifest names. A mutated copy replaces `Cargo.toml` only.
-WORKSPACE_FILES = (".cargo", "Cargo.lock", "build.rs", "build_support", "src", "storage", "base", "machine", "net", "platform", "gfx")
+WORKSPACE_FILES = (".cargo", "Cargo.lock", "build.rs", "build_support", "src", "storage", "base", "machine", "net", "platform", "gfx", "ui")
 
 
 def offences(unit_graph=None, metadata=None):

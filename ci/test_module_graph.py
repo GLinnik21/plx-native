@@ -83,6 +83,24 @@ class Resolution(unittest.TestCase):
                                  ('leaf', 'dynlib', False)})
         self.assertEqual(sorted(crate.extern_crates), ['plx_base'])
 
+    def test_a_mounted_layer_crate_is_one_module_of_the_tree(self):
+        # `rust-modules/ui/` (package `plx_ui`, `mount = "ui"`): its `lib.rs` is module `ui`, so the
+        # `crate::theme` written inside it and the `plx_ui::theme` written in the app both name
+        # `ui::theme`, and an exported macro invoked as `plx_ui::m!` names its defining module.
+        files = {'src/lib.rs': 'mod a; fn root() { plx_ui::theme::f(); plx_ui::m!(); }',
+                 'src/a.rs': 'use plx_ui::theme::g;',
+                 'ui/Cargo.toml': '[package]\nname = "plx_ui"\n\n[package.metadata.plx]\nmount = "ui"\n\n[features]\nx = []\n',
+                 'ui/src/lib.rs': 'pub mod theme; pub mod screen; fn root() { theme::f(); crate::screen::h(); }',
+                 'ui/src/theme.rs': 'pub fn f() { crate::screen::h(); super::screen::h(); }',
+                 'ui/src/screen.rs': '#[macro_export]\nmacro_rules! m { () => { $crate::theme::f() } }'}
+        with Tree(files) as tree:
+            crate = module_graph.Crate(tree.root / 'src')
+        found = {(module_graph.name(r.source), module_graph.name(r.target)) for r in crate.refs}
+        self.assertEqual(found, {('crate', 'ui::theme'), ('crate', 'ui::screen'), ('a', 'ui::theme'),
+                                 ('ui', 'ui::theme'), ('ui', 'ui::screen'), ('ui::theme', 'ui::screen'),
+                                 ('ui::screen', 'ui::theme')})
+        self.assertEqual(crate.mounts, {'plx_ui': ('ui',)})
+
     def test_generic_arguments_start_their_own_path(self):
         found = refs({'lib.rs': LIB, 'a.rs': 'fn f() { crate::b::D::<crate::c::H>::new(); }',
                       'b.rs': '', 'c.rs': ''})

@@ -233,10 +233,10 @@ pub(crate) enum Origin {
 /// Its own function so that the page-level half of the ritual is reachable without an engine —
 /// `player_return_tests` drives exactly this, over a real container.
 pub(crate) fn enter_player(
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     from: Origin,
-    ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
 ) {
     // …or already on its way: a Play inside the push's own dip-out finds the page it pressed on
     // still the committed top, and re-seeding from it would leave a seed no mount ever spends
@@ -276,8 +276,8 @@ pub(crate) fn start_playback(
     resume_ns: i64,
     from: Origin,
     hud_ms: u32,
-    ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
     start_playback_with(ps, pa, resume_ns, from, hud_ms, ret, pages, bridge, &mut LivePlaybackResources)
@@ -305,7 +305,7 @@ pub(crate) fn movie_ctx(m: &crate::pms::PmsMovie) -> String {
         "{} \u{b7} {} \u{b7} {}",
         m.year,
         rating,
-        crate::ui::fmt::dur_short(m.dur_ns / 1_000_000)
+        plx_ui::fmt::dur_short(m.dur_ns / 1_000_000)
     )
 }
 
@@ -316,7 +316,7 @@ pub(crate) fn movie_ctx(m: &crate::pms::PmsMovie) -> String {
 /// evict-protection a draw takes (see `ui::tex::warm_on`). At the tile's OWN 480×270 —
 /// `(server, path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
 pub(crate) fn warm_up_next_still(sid: crate::plex::ServerId, thumb: &str) {
-    crate::ui::widgets::warm_tex_on(sid.raw(), thumb, 480, 270, 0);
+    plx_ui::widgets::warm_tex_on(sid.raw(), thumb, 480, 270, 0);
 }
 
 pub(super) struct LivePlaybackResources;
@@ -378,8 +378,8 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
     resume_ns: i64,
     from: Origin,
     hud_ms: u32,
-    ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     resources: &mut R,
 ) -> bool {
@@ -449,7 +449,7 @@ fn request_episode(ps: &mut crate::route::PlaybackSession, meta: &mut crate::sto
         dur_ms: ep.dur_ms, rating: ep.rating.clone(), thumb: ep.thumb.clone(), detail_rk: d.rk.clone(),
     })));
     let title = if ep.title.is_empty() { &d.title } else { &ep.title };
-    let context = format!("{}  ·  {}", d.title, crate::ui::fmt::episode_ordinal(ep.season, ep.index));
+    let context = format!("{}  ·  {}", d.title, plx_ui::fmt::episode_ordinal(ep.season, ep.index));
     crate::route::request_play(ps, meta, crate::route::item_sid(d.sid), &ep.rk, &ep.part,
         &ep.vcodec, &ep.acodec, title, &context)
 }
@@ -464,7 +464,7 @@ fn request_episode(ps: &mut crate::route::PlaybackSession, meta: &mut crate::sto
 /// left is the one panel that is NOT the player's — the diagnostics read-out (phase 10) — and the
 /// stack dismissal, which is here rather than left to the page's unmount because a FAILED playback
 /// keeps its `…` popover up over the read-out and BACK must take that panel down first.
-pub(crate) fn close_player_overlays(pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
+pub(crate) fn close_player_overlays(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     super::bridge::dismiss_player_overlays(pages);
     crate::app::diagnostics::close(); // a diagnostics panel must not survive into the next session
 }
@@ -478,7 +478,7 @@ pub(crate) unsafe fn commit_info_press(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     refresh_hubs_at: &mut u32,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
     let Some(action) = super::bridge::player_overlay_mut(pages)
@@ -542,10 +542,10 @@ pub(crate) fn player_requests(
     reqs: Vec<crate::screens::registry::PlayerReq>,
     now: u32,
     refresh_hubs_at: &mut u32,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     ok_armed: &mut bool,
-    press: &mut crate::ui::press::Press,
+    press: &mut plx_ui::press::Press,
     repause_at: &mut i64,
 ) {
     use crate::screens::registry::PlayerReq;
@@ -633,7 +633,7 @@ pub(crate) fn player_requests(
 
 /// Shared return decision after playback ends; resource teardown belongs to `exit_player`.
 pub(super) fn return_from_player(
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     let origin = super::bridge::player(pages).and_then(|p| p.origin);
     // A typed ContentArg can still be manufactured with empty strings by a malformed replay or
@@ -677,7 +677,7 @@ pub(crate) fn exit_player(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     refresh_hubs_at: &mut u32,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     crate::route::cancel_play(ps); // BACK during a load: supersede, drop the landing
     close_player_overlays(pages);
@@ -715,7 +715,7 @@ pub(crate) fn finish_playback(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     refresh_hubs_at: &mut u32,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
     if crate::route::next_episode_mode() != crate::route::NextEpisodeMode::Off
@@ -740,7 +740,7 @@ pub(crate) fn activate_ctrl_row(
     slot: crate::appkit::player_hud::ControlSlot,
     refresh_hubs_at: &mut u32,
     btn: c_int,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
     use crate::appkit::player_hud::ControlSlot;
@@ -806,7 +806,7 @@ pub(crate) fn play_up_next(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     hud_ms: u32,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
     // clone off the `&'static` store BEFORE anything can replace it (see `Countdown::take`)
@@ -824,7 +824,7 @@ pub(crate) fn play_up_next(
     );
     close_player_overlays(pages);
     crate::player::stop_bufferfeed(ps, pa);
-    let ctx = crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title);
+    let ctx = plx_ui::fmt::episode_kicker(u.season, u.index, &u.ep_title);
     if !crate::route::request_play_up_next(ps, bridge.metadata_mut(), u, &ctx) {
         return false;
     }
@@ -864,8 +864,8 @@ pub(crate) unsafe fn play_item_now(
     from_start: bool,
     from: Origin,
     hud_ms: u32,
-    ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
     play_item_now_with(ps, pa, mm, from_start, from, hud_ms, ret, pages, bridge, &mut LivePlaybackResources);
@@ -880,8 +880,8 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
     from_start: bool,
     from: Origin,
     hud_ms: u32,
-    ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     resources: &mut R,
 ) {
@@ -947,7 +947,7 @@ fn apply_info_action(
     pa: &mut crate::player::adapter::PlayerAdapter,
     action: crate::appkit::info_panel::InfoAction,
     refresh_hubs_at: &mut u32,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
     match action {
@@ -1009,7 +1009,7 @@ pub(crate) unsafe fn activate_player_row(
     ctrl: crate::appkit::player_hud::ControlSlot,
     now: u32,
     refresh_hubs_at: &mut u32,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
     // The cursor is the instance's; read the one field this dispatch turns on, so the container
@@ -1052,7 +1052,7 @@ pub(crate) unsafe fn activate_player_row(
 pub(crate) fn key_pause(
     pa: &mut crate::player::adapter::PlayerAdapter,
     now: u32,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     if super::bridge::player(pages).is_some() && !paused() {
         if set_transport_paused(pa, true) {
@@ -1075,7 +1075,7 @@ pub(crate) unsafe fn key_play(
     foreground: &mut ForegroundLifecycle,
     repause_at: &mut i64,
     ptr: &mut Pointer,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
     let was_off_player = super::bridge::player(pages).is_none();
@@ -1284,9 +1284,9 @@ mod player_return_tests {
     use super::{enter_player, return_from_player, Origin};
     use crate::plex::ServerId;
     use crate::screens::registry::{AppArg, ContentArg, PageMemory};
-    use crate::ui::dispatch::Dispatcher;
-    use crate::ui::fixture::tick;
-    use crate::ui::screen::ScreenArg;
+    use plx_ui::dispatch::Dispatcher;
+    use plx_ui::fixture::tick;
+    use plx_ui::screen::ScreenArg;
 
     const A: ServerId = ServerId::from_raw(0);
     const B: ServerId = ServerId::from_raw(1);
@@ -1356,7 +1356,7 @@ mod player_return_tests {
         fn press(&mut self, key: plx_machine::machine::Key) {
             self.t += 16;
             let at = tick(self.t);
-            bridge::frame(&mut self.d, &mut self.rig, at, vec![crate::ui::fixture::key(key, at)]);
+            bridge::frame(&mut self.d, &mut self.rig, at, vec![plx_ui::fixture::key(key, at)]);
             self.settle();
         }
 
@@ -1530,7 +1530,7 @@ mod player_return_tests {
         let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("player-return-dip");
         let mut p = Pages::new();
-        p.d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::PageDip::new());
+        p.d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::PageDip::new());
         p.stand_on(AppArg::Home);
         p.stand_on(detail(A, "7"));
         let page = p.top_entry();

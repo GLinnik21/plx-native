@@ -8,19 +8,19 @@ use crate::collection::{Collection, CollectionOrder, CollectionStatus, Collectio
 use crate::plex::collections::CollectionRef;
 use crate::pms::PmsMovie;
 use crate::stores::collection::CollectionCmd;
-use crate::ui::card_row::{self, TileLabel};
-use crate::ui::consts::*;
-use crate::ui::label::{Label, VAlign};
+use plx_ui::card_row::{self, TileLabel};
+use plx_ui::consts::*;
+use plx_ui::label::{Label, VAlign};
 use plx_machine::machine::{Canon, Cx, Edge, Effects, EntryId, GroupId, Handled, InputEvent,
     InputKind, Key, Leave, LogicalState, Machine, Tick};
 use plx_machine::present::{PresentEvent, Provenance};
-use crate::ui::screen::{Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind,
+use plx_ui::screen::{Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind,
     FocusSource, Focusable, GroupKind, GroupSpec, HitSource, Hover, Link, Placed,
     RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop};
-use crate::ui::text_view::TextView;
-use crate::ui::theme;
-use crate::ui::widgets::{self, Art, PageGround, StatusKind, StatusOverlay};
-use crate::ui::{Env, Painter, Rect, Spring};
+use plx_ui::text_view::TextView;
+use plx_ui::theme;
+use plx_ui::widgets::{self, Art, PageGround, StatusKind, StatusOverlay};
+use plx_ui::{Env, Painter, Rect, Spring};
 
 use super::registry::{tile_facts, AppFx, CardKeys, CardPageMemory, CollectionLike, ContentArg,
     ContentLike, ContentPanel, ContentReq, PageMemory};
@@ -63,7 +63,7 @@ const GRID_TOP: f32 = 520.0;
 /// C4a: the quiet read-outs' region, where the grid would be (`left:96; right:96; top:460;
 /// height:475`), its copy centred in it.
 const STATUS_FRAME: Rect = Rect { x: MARGIN_X, y: 460.0, w: SCR_W - 2.0 * MARGIN_X, h: 475.0 };
-const LOAD_AHEAD: usize = crate::ui::poster_grid::COLS * 2;
+const LOAD_AHEAD: usize = plx_ui::poster_grid::COLS * 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Located { Header, Retry, Card(usize) }
@@ -107,7 +107,7 @@ fn head_alpha(scroll: f32) -> f32 {
 fn meta_line(collection: &Collection) -> CString {
     match meta_key(collection) {
         (_, true) => plx_platform::i18n::msg::browse_collection_kind_c().to_owned(),
-        (count, false) => CString::new(plx_platform::i18n::msg::browse_collection_meta(&crate::ui::fmt::item_count(count)))
+        (count, false) => CString::new(plx_platform::i18n::msg::browse_collection_meta(&plx_ui::fmt::item_count(count)))
             .unwrap_or_default(),
     }
 }
@@ -115,14 +115,14 @@ fn meta_line(collection: &Collection) -> CString {
 pub(crate) fn member_label(item: &PmsMovie) -> String {
     match item.kind {
         2 if item.season_index > 0 => plx_platform::i18n::msg::browse_collection_season_mark(item.season_index as i64),
-        3 => crate::ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64),
+        3 => plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64),
         _ => String::new(),
     }
 }
 
 pub(crate) fn member_caption(item: &PmsMovie) -> TileLabel {
     if item.kind == 3 {
-        let address = crate::ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64);
+        let address = plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64);
         let caption = match (item.show_title.is_empty(), address.is_empty()) {
             (false, false) => format!("{} · {}", item.show_title, address),
             (false, true) => item.show_title.clone(),
@@ -164,9 +164,9 @@ pub(crate) struct CollectionScreen {
     /// The focused row's caption band and the rows still closing behind it — the Library grid's
     /// motion (`ui::poster_grid::GridBands`), so a focused member's caption opens room under its
     /// row rather than drawing over the posters below. Presentation, not logical state.
-    bands: crate::ui::poster_grid::GridBands,
+    bands: plx_ui::poster_grid::GridBands,
     /// The header summary's focus lift ([`Self::summary_marked`]). Presentation, not logical state.
-    summary_lift: crate::ui::text_lift::TextLift,
+    summary_lift: plx_ui::text_lift::TextLift,
 }
 
 impl LogicalState for CollectionScreen {
@@ -192,8 +192,8 @@ impl CollectionScreen {
             elems: Vec::new(), labels: Vec::new(), meta: ((0, true), CString::default()), return_pending: false, teardown_closed: false,
             scroll: Spring::default(), scroll_target: 0.0, ground: PageGround::new(),
             ground_seeded: false, summary_more: false, links_c: Vec::new(), synced: None,
-            bands: crate::ui::poster_grid::GridBands::new(),
-            summary_lift: crate::ui::text_lift::TextLift::new() }
+            bands: plx_ui::poster_grid::GridBands::new(),
+            summary_lift: plx_ui::text_lift::TextLift::new() }
     }
 
     /// The header summary earns its marked/lifted treatment when the header holds focus, is
@@ -290,21 +290,21 @@ impl CollectionScreen {
     }
 
     fn card_rect(&self, index: usize, focused: bool, press: f32) -> Rect {
-        let scale = if focused { crate::ui::poster_grid::STYLE.focus_scale * if press > 0.0 { press } else { 1.0 } } else { 1.0 };
+        let scale = if focused { plx_ui::poster_grid::STYLE.focus_scale * if press > 0.0 { press } else { 1.0 } } else { 1.0 };
         self.cell(index).scaled(scale)
     }
 
     /// Member `index`'s resting cell at the live scroll and live caption bands — the ONE rect
     /// draw, hit stops and focus placement all read.
     fn cell(&self, index: usize) -> Rect {
-        crate::ui::poster_grid::cell(index, GRID_TOP, self.scroll.pos, &self.bands.geometry())
+        plx_ui::poster_grid::cell(index, GRID_TOP, self.scroll.pos, &self.bands.geometry())
     }
 
     /// The row whose caption band is open: the focused member's, while focus is on a member.
     fn focused_row<H: CollectionLike>(&self, collection: &Collection, cx: &Cx<'_, H>) -> Option<usize> {
         cx.focus.current.filter(|key| key.entry == self.entry)
             .and_then(|key| self.item_index(collection, key.elem))
-            .map(|index| index / crate::ui::poster_grid::COLS)
+            .map(|index| index / plx_ui::poster_grid::COLS)
     }
 
     fn status_frame() -> Rect { STATUS_FRAME }
@@ -344,11 +344,11 @@ impl CollectionScreen {
             CollectionStatus::Loading => StatusOverlay::new(Self::status_frame(), plx_platform::i18n::msg::browse_collection_loading_c(), StatusKind::Working).phase(tick),
             CollectionStatus::Empty => StatusOverlay::new(Self::status_frame(), plx_platform::i18n::msg::browse_collection_empty_c(), StatusKind::Empty),
             CollectionStatus::Unavailable => StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::browse_collection_unavailable_c(), StatusKind::Failed)
-                .page(crate::ui::icons::Icon::PersonBadgeXmark)
+                .page(plx_ui::icons::Icon::PersonBadgeXmark)
                 .reason(plx_platform::i18n::msg::browse_collection_unavailable_reason_c()),
             CollectionStatus::Failed => {
                 let overlay = StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::browse_home_failed_c(), StatusKind::Failed)
-                    .page(crate::ui::icons::Icon::ServerBadgeMinus).action(plx_platform::i18n::msg::browse_action_retry_c());
+                    .page(plx_ui::icons::Icon::ServerBadgeMinus).action(plx_platform::i18n::msg::browse_action_retry_c());
                 match collection {
                     Some(c) => overlay.glyph_ceiling(Self::header_text_bottom(c, measure)),
                     None => overlay,
@@ -384,13 +384,13 @@ impl CollectionScreen {
         }
         if let Some(index) = cx.focus.current.filter(|key| key.entry == self.entry)
             .and_then(|key| self.item_index(collection, key.elem)) {
-            self.scroll_target = crate::ui::poster_grid::snap_row(self.scroll.pos,
-                index / crate::ui::poster_grid::COLS, collection.items.len(), GRID_TOP, CONTENT_TOP);
+            self.scroll_target = plx_ui::poster_grid::snap_row(self.scroll.pos,
+                index / plx_ui::poster_grid::COLS, collection.items.len(), GRID_TOP, CONTENT_TOP);
         } else { self.scroll_target = 0.0; }
         // A focus the reader did not move (a restore, a landing) adopts its band settled; a D-pad
         // move opens it with motion from `FocusMoved`, as the Library grid does.
         self.bands.focus(self.focused_row(collection, cx), false);
-        self.bands.tick(crate::ui::poster_grid::STYLE.k_scroll, t.dt());
+        self.bands.tick(plx_ui::poster_grid::STYLE.k_scroll, t.dt());
         self.scroll.step(self.scroll_target, K_SCROLL, t.dt());
         let header_focused = cx.focus.current
             .is_some_and(|key| key.entry == self.entry && key.elem == HEADER_ELEM);
@@ -453,7 +453,7 @@ impl CollectionScreen {
         if collection.header_ready() && collection.thumb.is_empty() {
             // No artwork of its own (an empty collection has no composite either): the neutral
             // tile the Library grid draws for the same collection — its mark and its name.
-            crate::ui::collection_tile::draw(p, art, art, theme::CARD_RING_RAD, name);
+            plx_ui::collection_tile::draw(p, art, art, theme::CARD_RING_RAD, name);
         } else {
             // The name is set over the baked fan only when the thumb IS the server's composite.
             let fan_name = tile_facts::is_composite_thumb(&collection.thumb).then_some(name.as_str());
@@ -482,8 +482,8 @@ impl CollectionScreen {
         let h = view.measure_h(TEXT_W);
         let plate = Rect::new(COL_X - theme::space::SM, summary_y - theme::space::SM,
             TEXT_W + 2.0 * theme::space::SM, h + 2.0 * theme::space::SM);
-        crate::ui::text_lift::draw_focused(p, plate, widgets::TEXT_BLOCK_HL_RAD, &self.summary_lift,
-            crate::ui::text_lift::CENTRE, |p| {
+        plx_ui::text_lift::draw_focused(p, plate, widgets::TEXT_BLOCK_HL_RAD, &self.summary_lift,
+            plx_ui::text_lift::CENTRE, |p| {
                 view.draw(p, Rect::new(COL_X, summary_y, TEXT_W, h));
                 if self.summary_more {
                     view.draw_more(p, COL_X, summary_y, TEXT_W, h, self.summary_marked(focused));
@@ -508,21 +508,21 @@ impl CollectionScreen {
         if !card_row::paint_visible(p, rect, scale, focused) { return; }
         let resume = item.resume_frac();
         if focused {
-            let row = index / crate::ui::poster_grid::COLS;
+            let row = index / plx_ui::poster_grid::COLS;
             let open = self.bands.geometry().iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
             let label = member_caption(item).revealed(card_row::band_reveal(open));
             card_row::draw_focused(p, Art::Poster(Some(tile_facts::of(item))), rect, scale,
-                &crate::ui::poster_grid::STYLE, resume, &label, measure);
+                &plx_ui::poster_grid::STYLE, resume, &label, measure);
         } else {
             card_row::draw_tile(p, Art::Poster(Some(tile_facts::of(item))), rect, scale,
-                &crate::ui::poster_grid::STYLE, resume);
+                &plx_ui::poster_grid::STYLE, resume);
         }
         if !persistent.is_empty() {
             widgets::poster_label(p, rect,
-                crate::ui::poster_grid::STYLE.tile_radius(rect, scale), persistent, measure);
+                plx_ui::poster_grid::STYLE.tile_radius(rect, scale), persistent, measure);
             if let Some(frac) = resume {
                 card_row::resume_bar(p, rect, frac,
-                    crate::ui::poster_grid::STYLE.tile_radius(rect, scale));
+                    plx_ui::poster_grid::STYLE.tile_radius(rect, scale));
             }
         }
     }
@@ -530,14 +530,14 @@ impl CollectionScreen {
     /// Whether member `index`'s row rests wholly above the content edge — the row over the one a
     /// snapped scroll put on the edge (C2), which would otherwise show its last few pixels there.
     fn above_edge(&self, index: usize) -> bool {
-        self.cell(index).y + CARD_H <= CONTENT_TOP - (crate::ui::poster_grid::ROW_PITCH - CARD_H) + 0.5
+        self.cell(index).y + CARD_H <= CONTENT_TOP - (plx_ui::poster_grid::ROW_PITCH - CARD_H) + 0.5
     }
 
     fn draw_grid<H: ContentLike + CollectionLike>(&self, f: &mut DrawFrame<'_, '_, H>, collection: &Collection) {
         let focus = f.focus.current.filter(|key| key.entry == self.entry);
         let current = focus.and_then(|key| self.item_index(collection, key.elem));
         let p = f.painter.alpha(f.page_alpha);
-        for index in crate::ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) {
+        for index in plx_ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) {
             if current == Some(index) || self.above_edge(index) { continue; }
             if let Some(item) = collection.items.get(index) {
                 self.draw_card(p, item, &self.label_at(collection, index, item), index, false, 1.0, f.measure);
@@ -548,7 +548,7 @@ impl CollectionScreen {
                 self.draw_card(p, item, &self.label_at(collection, index, item), index, true, f.press.scale, f.measure);
             }
         }
-        let visible = if f.records_stops() { crate::ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) } else { 0..0 };
+        let visible = if f.records_stops() { plx_ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) } else { 0..0 };
         for index in visible {
             let Some(elem) = self.elem_at(collection, index) else { continue };
             let focused = current == Some(index);
@@ -565,7 +565,7 @@ impl<H: ContentLike + CollectionLike> Focusable<H> for CollectionScreen {
         let Some(collection) = self.collection(cx) else { return };
         if !collection.items.is_empty() {
             out.push(GroupSpec { id: GRID_GROUP,
-                kind: GroupKind::Grid { cols: crate::ui::poster_grid::COLS, holes: &[] },
+                kind: GroupKind::Grid { cols: plx_ui::poster_grid::COLS, holes: &[] },
                 seat: Seat::Remembered, reachable: AxisMask::BOTH,
                 edge: [EdgeRule::Geometric; 4],
                 extent: Rect::new(MARGIN_X, GRID_TOP - self.scroll.pos,
@@ -594,8 +594,8 @@ impl<H: ContentLike + CollectionLike> Focusable<H> for CollectionScreen {
     fn neighbour(&self, key: plx_machine::machine::FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
         let Some(collection) = self.collection(cx) else { return Step::Edge };
         let Some(index) = self.item_index(collection, key.elem) else { return Step::Edge };
-        let next = crate::ui::poster_grid::neighbour(index, collection.items.len(),
-            crate::ui::poster_grid::COLS, dir);
+        let next = plx_ui::poster_grid::neighbour(index, collection.items.len(),
+            plx_ui::poster_grid::COLS, dir);
         next.map(|index| Step::Move(self.key_at(collection, index))).unwrap_or(Step::Edge)
     }
 
@@ -612,7 +612,7 @@ impl<H: ContentLike + CollectionLike> Focusable<H> for CollectionScreen {
             }
             Located::Card(index) => {
                 let rect = self.cell(index);
-                Some(Placed { rect: rect.scaled(crate::ui::poster_grid::STYLE.focus_scale),
+                Some(Placed { rect: rect.scaled(plx_ui::poster_grid::STYLE.focus_scale),
                     rest_rect: rect, clip: Rect::FULL, index: Some(index as u32) })
             }
         }
@@ -636,7 +636,7 @@ impl<H: ContentLike + CollectionLike> Focusable<H> for CollectionScreen {
         let Some(collection) = self.collection(cx) else { return plx_machine::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM } };
         if group == HEADER_GROUP { return plx_machine::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM }; }
         if group == STATUS_GROUP { return plx_machine::machine::FocusKey { entry: self.entry, elem: RETRY_ELEM }; }
-        let col = (0..crate::ui::poster_grid::COLS).min_by(|&a, &b| {
+        let col = (0..plx_ui::poster_grid::COLS).min_by(|&a, &b| {
             let d = |c: usize| (self.cell(c).cx() - from.rect.cx()).abs();
             d(a).total_cmp(&d(b))
         }).unwrap_or(0);
@@ -658,7 +658,7 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
             ScreenEvent::FocusMoved { to, by, .. } => {
                 if matches!(by, By::Dir | By::Pointer) { self.return_pending = false; }
                 if let Some(collection) = self.collection(cx) {
-                    let row = self.item_index(collection, to.elem).map(|index| index / crate::ui::poster_grid::COLS);
+                    let row = self.item_index(collection, to.elem).map(|index| index / plx_ui::poster_grid::COLS);
                     self.bands.focus(row, matches!(by, By::Dir | By::Pointer));
                     if let Some(index) = self.item_index(collection, to.elem) { self.maybe_page(collection, index, fx); }
                     if to.elem == HEADER_ELEM && matches!(by, By::Dir | By::Pointer) { self.header_marked = true; }
@@ -723,7 +723,7 @@ impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
     fn name(&self) -> &'static str { super::registry::word::COLLECTION }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> { None }
-    fn prepare(&mut self, _budget: &mut crate::ui::frame::Budget, _cx: &Cx<'_, H>) {}
+    fn prepare(&mut self, _budget: &mut plx_ui::frame::Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         self.ground.draw(p, Rect::FULL);
@@ -766,7 +766,7 @@ impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::fixture::FixtureMeasure;
+    use plx_ui::fixture::FixtureMeasure;
     use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead};
 
     struct CollectionHost;
@@ -884,7 +884,7 @@ mod tests {
         store.edit_for_test(|c| { c.items.clear(); c.summary.clear(); c.status = CollectionStatus::Failed; });
         let c = store.view().current().unwrap();
         let overlay = CollectionScreen::status_overlay(Some(c), 0, &FixtureMeasure);
-        assert_eq!(overlay.glyph, Some(crate::ui::icons::Icon::ServerBadgeMinus));
+        assert_eq!(overlay.glyph, Some(plx_ui::icons::Icon::ServerBadgeMinus));
         let glyph = overlay.glyph_frame().expect("a bare header leaves room for the full glyph");
         assert_eq!(glyph.h, StatusOverlay::GLYPH_SIZE);
         assert!(glyph.y >= CollectionScreen::header_text_bottom(c, &FixtureMeasure));
@@ -955,8 +955,8 @@ mod tests {
         let (mut store, mut screen) = seeded();
         store.edit_for_test(|c| c.items = (0..30).map(|i| item(&format!("m{i}"))).collect());
         screen.sync(store.view().current().unwrap(), &FixtureMeasure);
-        let cols = crate::ui::poster_grid::COLS;
-        let scroll = crate::ui::poster_grid::snap_row(0.0, 2, 30, GRID_TOP, CONTENT_TOP);
+        let cols = plx_ui::poster_grid::COLS;
+        let scroll = plx_ui::poster_grid::snap_row(0.0, 2, 30, GRID_TOP, CONTENT_TOP);
         assert!(scroll > 0.0);
         screen.scroll.pos = scroll;
         let rows: Vec<f32> = (0..30).step_by(cols).filter(|&i| !screen.above_edge(i))
@@ -997,7 +997,7 @@ mod tests {
         store.edit_for_test(|c| { c.items = many[..PAGE_SIZE].to_vec(); c.more = true; });
         let mut restored = CollectionScreen::new(EntryId(9), set());
         let _ = step(&mut restored, ScreenEvent::RestoreMemory(PageMemory::Collection(memory)), &cx(store.view(), None));
-        let out = step(&mut restored, ScreenEvent::Enter(crate::ui::screen::Enter::Restored), &cx(store.view(), None));
+        let out = step(&mut restored, ScreenEvent::Enter(plx_ui::screen::Enter::Restored), &cx(store.view(), None));
         let want = out.iter().find_map(|e| match &e.fx {
             plx_machine::machine::Fx::App(AppFx::Store(_, crate::stores::StoreCmd::Collection(
                 CollectionCmd::Open { target, .. }))) => Some(target.want),
@@ -1035,7 +1035,7 @@ mod tests {
     #[test]
     fn the_collection_pages_fixed_slots_fit_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
-        use crate::ui::fit::HEADROOM;
+        use plx_ui::fit::HEADROOM;
         use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
         use plx_machine::machine::Measure;
         let m = ShippedMeasure;
@@ -1048,7 +1048,7 @@ mod tests {
             let w = m.width_str(&mark, theme::size::LABEL, true);
             if w > mark_budget { out.push(format!("{}: {mark:?} is {w:.0}px in {mark_budget:.0}px", language.tag())); }
             for meta in [msg::browse_collection_kind().to_owned(),
-                msg::browse_collection_meta(&crate::ui::fmt::item_count(99_999))] {
+                msg::browse_collection_meta(&plx_ui::fmt::item_count(99_999))] {
                 let w = m.width_str(&meta, theme::size::LABEL, false);
                 if w > TEXT_W * HEADROOM { out.push(format!("{}: {meta:?} is {w:.0}px in {TEXT_W:.0}px", language.tag())); }
             }
@@ -1073,7 +1073,7 @@ mod tests {
     /// server values, or letter-free. Anything else is English drawn without the catalog.
     #[test]
     fn every_app_owned_run_on_the_collection_page_comes_from_the_catalog() {
-        use crate::ui::screen::DrawFrame;
+        use plx_ui::screen::DrawFrame;
         let _serial = plx_base::testlock::serial();
         let _pseudo = plx_platform::i18n::pseudo_on_this_thread_for_test();
         let server = ["Set", "Qwerty", "Zzyzx", "Vlox"];
@@ -1093,7 +1093,7 @@ mod tests {
             screen.sync(store.view().current().unwrap(), &FixtureMeasure);
             let context = cx(store.view(), None);
             let runs = plx_gfx::text::capture_text_runs_for_test(|| {
-                let mut f = DrawFrame::new(&context, crate::ui::Painter::recording());
+                let mut f = DrawFrame::new(&context, plx_ui::Painter::recording());
                 plx_gfx::gfx::without_frame_clear(|| Screen::<CollectionHost>::draw(&mut screen, &mut f));
             });
             assert!(runs.iter().any(|run| run.contains("[!!")), "{status:?} drew catalog text: {runs:?}");

@@ -157,7 +157,7 @@ pub(crate) fn update(_now: u32) {
 /// Draw the toast, over everything, on every route. `stats` is the diagnostics read-out's frame
 /// when it is on screen: the toast sits immediately below it, and neither may cover the other.
 #[inline]
-pub(crate) fn draw(_stats: Option<crate::ui::Rect>) {
+pub(crate) fn draw(_stats: Option<plx_ui::Rect>) {
     #[cfg(feature = "lab-diagnostics")]
     toast::draw(_stats);
 }

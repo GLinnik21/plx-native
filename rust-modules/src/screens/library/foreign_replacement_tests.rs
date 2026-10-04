@@ -1,7 +1,7 @@
 //! Foreign table replacement must remount incoming content, not inherit the outgoing cursor.
 use super::*;
-use crate::ui::fixture::{FixtureArg, FixtureMeasure};
-use crate::ui::focus::{FocusEngine, Outcome};
+use plx_ui::fixture::{FixtureArg, FixtureMeasure};
+use plx_ui::focus::{FocusEngine, Outcome};
 use plx_machine::machine::{Host, InputOwner, Tick};
 
 struct TestHost;

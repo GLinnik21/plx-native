@@ -16,18 +16,18 @@ use std::ffi::CStr;
 
 use crate::stores::browse::{BrowseCmd, DirectoryView, SecFetch, SrcRow};
 use crate::stores::{StoreCmd, StoreId, StoreWork};
-use crate::ui::frame::Budget;
+use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key, LogicalState, Machine, NavOp,
 };
-use crate::ui::route_screen::RouteLayout;
+use plx_ui::route_screen::RouteLayout;
 use super::family::SessionGround as RouteGround;
-use crate::ui::screen::{DrawFrame, Enter, FocusSource, FocusTarget, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
-use crate::ui::form::{FormTable, RowKey};
+use plx_ui::screen::{DrawFrame, Enter, FocusSource, FocusTarget, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
+use plx_ui::form::{FormTable, RowKey};
 use crate::appkit::source_list::{self, Level, SrcTarget, Tail};
-use crate::ui::table_screen::{BandPart, Header, TableScreen};
-use crate::ui::widgets::{CtlPop, Spinner, StatusKind, StatusOverlay};
-use crate::ui::{theme, Env, Painter, View};
+use plx_ui::table_screen::{BandPart, Header, TableScreen};
+use plx_ui::widgets::{CtlPop, Spinner, StatusKind, StatusOverlay};
+use plx_ui::{theme, Env, Painter, View};
 
 use super::family::{form_focus, palette, BAND_GROUP, TABLE_GROUP};
 use super::registry::{band_index, word, AppFx, DirectoryLike, LoopReq};
@@ -459,45 +459,45 @@ impl<'a> OnboardView<'a> {
     }
 }
 
-impl<H: DirectoryLike> crate::ui::screen::Focusable<H> for OnboardView<'_> {
-    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<crate::ui::screen::GroupSpec>) {
-        crate::ui::screen::Focusable::<H>::groups(&self.screen(), cx, out)
+impl<H: DirectoryLike> plx_ui::screen::Focusable<H> for OnboardView<'_> {
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<plx_ui::screen::GroupSpec>) {
+        plx_ui::screen::Focusable::<H>::groups(&self.screen(), cx, out)
     }
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
-        crate::ui::screen::Focusable::<H>::group_of(&self.screen(), key, cx)
+        plx_ui::screen::Focusable::<H>::group_of(&self.screen(), key, cx)
     }
-    fn neighbour(&self, key: plx_machine::machine::FocusKey<u32>, dir: crate::ui::screen::Dir, cx: &Cx<'_, H>) -> crate::ui::screen::Step<u32> {
-        crate::ui::screen::Focusable::<H>::neighbour(&self.screen(), key, dir, cx)
+    fn neighbour(&self, key: plx_machine::machine::FocusKey<u32>, dir: plx_ui::screen::Dir, cx: &Cx<'_, H>) -> plx_ui::screen::Step<u32> {
+        plx_ui::screen::Focusable::<H>::neighbour(&self.screen(), key, dir, cx)
     }
-    fn place(&self, key: &u32, cx: &Cx<'_, H>, at: crate::ui::screen::At) -> Option<crate::ui::screen::Placed> {
-        crate::ui::screen::Focusable::<H>::place(&self.screen(), key, cx, at)
+    fn place(&self, key: &u32, cx: &Cx<'_, H>, at: plx_ui::screen::At) -> Option<plx_ui::screen::Placed> {
+        plx_ui::screen::Focusable::<H>::place(&self.screen(), key, cx, at)
     }
     fn reconcile(&self, want: plx_machine::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
-        crate::ui::screen::Focusable::<H>::reconcile(&self.screen(), want, cx)
+        plx_ui::screen::Focusable::<H>::reconcile(&self.screen(), want, cx)
     }
-    fn seat(&self, g: GroupId, from: crate::ui::screen::Placed, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
-        crate::ui::screen::Focusable::<H>::seat(&self.screen(), g, from, cx)
+    fn seat(&self, g: GroupId, from: plx_ui::screen::Placed, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
+        plx_ui::screen::Focusable::<H>::seat(&self.screen(), g, from, cx)
     }
 }
 
-impl<H: DirectoryLike> crate::ui::screen::Focusable<H> for OnboardScreen {
-    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<crate::ui::screen::GroupSpec>) {
-        crate::ui::screen::Focusable::<H>::groups(&self.view(H::directory(cx)), cx, out)
+impl<H: DirectoryLike> plx_ui::screen::Focusable<H> for OnboardScreen {
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<plx_ui::screen::GroupSpec>) {
+        plx_ui::screen::Focusable::<H>::groups(&self.view(H::directory(cx)), cx, out)
     }
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
-        crate::ui::screen::Focusable::<H>::group_of(&self.view(H::directory(cx)), key, cx)
+        plx_ui::screen::Focusable::<H>::group_of(&self.view(H::directory(cx)), key, cx)
     }
-    fn neighbour(&self, key: plx_machine::machine::FocusKey<u32>, dir: crate::ui::screen::Dir, cx: &Cx<'_, H>) -> crate::ui::screen::Step<u32> {
-        crate::ui::screen::Focusable::<H>::neighbour(&self.view(H::directory(cx)), key, dir, cx)
+    fn neighbour(&self, key: plx_machine::machine::FocusKey<u32>, dir: plx_ui::screen::Dir, cx: &Cx<'_, H>) -> plx_ui::screen::Step<u32> {
+        plx_ui::screen::Focusable::<H>::neighbour(&self.view(H::directory(cx)), key, dir, cx)
     }
-    fn place(&self, key: &u32, cx: &Cx<'_, H>, at: crate::ui::screen::At) -> Option<crate::ui::screen::Placed> {
-        crate::ui::screen::Focusable::<H>::place(&self.view(H::directory(cx)), key, cx, at)
+    fn place(&self, key: &u32, cx: &Cx<'_, H>, at: plx_ui::screen::At) -> Option<plx_ui::screen::Placed> {
+        plx_ui::screen::Focusable::<H>::place(&self.view(H::directory(cx)), key, cx, at)
     }
     fn reconcile(&self, want: plx_machine::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
-        crate::ui::screen::Focusable::<H>::reconcile(&self.view(H::directory(cx)), want, cx)
+        plx_ui::screen::Focusable::<H>::reconcile(&self.view(H::directory(cx)), want, cx)
     }
-    fn seat(&self, g: GroupId, from: crate::ui::screen::Placed, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
-        crate::ui::screen::Focusable::<H>::seat(&self.view(H::directory(cx)), g, from, cx)
+    fn seat(&self, g: GroupId, from: plx_ui::screen::Placed, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
+        plx_ui::screen::Focusable::<H>::seat(&self.view(H::directory(cx)), g, from, cx)
     }
 }
 
@@ -753,7 +753,7 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
             }
             return;
         }
-        let mut table = crate::ui::table_screen::TablePart {
+        let mut table = plx_ui::table_screen::TablePart {
             table: &self.form.table,
             frame: lf,
             group: TABLE_GROUP,
@@ -784,7 +784,7 @@ mod tests {
     /// silent change that only a device run would catch, and only by measuring the wrong screen.
     #[test]
     fn the_home_sources_editor_names_one_word_in_both_mountings() {
-        use crate::ui::screen::Screen;
+        use plx_ui::screen::Screen;
         let directory = crate::stores::browse::DirectoryView::empty_for_test();
         let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
         let first = OnboardScreen::first_run(EntryId(0), directory, hubs_snap.view());
@@ -795,7 +795,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::ui::form::FormId;
+    use plx_ui::form::FormId;
     use plx_machine::machine::{FocusKey, FocusRead, InputOwner, InstanceId, MachineId, PressId, PressRead, Source, Stamped};
     use plx_machine::present::Present;
 
@@ -864,7 +864,7 @@ mod tests {
     /// both call — a screen generic over `H: AppLike` cannot be tested against a fixture that
     /// carries a different `Fx`/`Msg` pair, `FixtureHost` included.
     fn test_cx<'a>(
-        m: &'a crate::ui::fixture::FixtureMeasure,
+        m: &'a plx_ui::fixture::FixtureMeasure,
         focus: Option<u32>,
         directory: DirectoryView<'a>,
     ) -> Cx<'a, InnerHost> {
@@ -891,7 +891,7 @@ mod tests {
         focus: Option<u32>,
         directory: DirectoryView<'_>,
     ) -> (Handled, Vec<Stamped<InnerHost>>) {
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let cx = test_cx(&m, focus, directory);
         let mut present = Present::new();
         let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
@@ -1526,7 +1526,7 @@ mod tests {
         let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
         let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
         assert_eq!(s.form.table.n_rows(), 0, "a reset browse store starts with no rows");
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let cxv = test_cx(&m, None, browse.capture());
         let mut present = Present::new();
         let _ = present.take(0);
@@ -1728,15 +1728,15 @@ mod tests {
         browse.seed_pins(&[true, true]);
         let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
         let s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let cx = test_cx(&m, None, browse.capture());
-        let mut groups: Vec<crate::ui::screen::GroupSpec> = Vec::new();
-        crate::ui::screen::Focusable::<InnerHost>::groups(&s, &cx, &mut groups);
+        let mut groups: Vec<plx_ui::screen::GroupSpec> = Vec::new();
+        plx_ui::screen::Focusable::<InnerHost>::groups(&s, &cx, &mut groups);
         let table = groups.iter().find(|g| g.id == TABLE_GROUP).expect("the table has a group");
         assert_eq!(table.len, 2, "two seeded rows");
         assert_eq!(
             table.edge[1],
-            crate::ui::screen::EdgeRule::Geometric,
+            plx_ui::screen::EdgeRule::Geometric,
             "the table's DOWN edge is a geometric search, not a wall or a fixed link"
         );
 
@@ -1745,17 +1745,17 @@ mod tests {
         let last_row = FocusKey { entry: EntryId(0), elem: SrcTarget::Library(1).key().0 };
         assert!(
             matches!(
-                crate::ui::screen::Focusable::<InnerHost>::neighbour(&s, last_row, crate::ui::screen::Dir::Down, &cx),
-                crate::ui::screen::Step::Edge
+                plx_ui::screen::Focusable::<InnerHost>::neighbour(&s, last_row, plx_ui::screen::Dir::Down, &cx),
+                plx_ui::screen::Step::Edge
             ),
             "the last row has no row below it inside the table's own group"
         );
 
         // The real edge-rule resolution: the shared `geometric` search, over this screen's own
         // real `groups()`, from the last row's own real placement.
-        let from = crate::ui::screen::Focusable::<InnerHost>::place(&s, &last_row.elem, &cx, crate::ui::screen::At::SpringTarget)
+        let from = plx_ui::screen::Focusable::<InnerHost>::place(&s, &last_row.elem, &cx, plx_ui::screen::At::SpringTarget)
             .expect("the last row places");
-        let dest = crate::ui::focus::geometric(&groups, TABLE_GROUP, from.rect, crate::ui::screen::Dir::Down);
+        let dest = plx_ui::focus::geometric(&groups, TABLE_GROUP, from.rect, plx_ui::screen::Dir::Down);
         assert_eq!(
             dest.map(|g| g.id),
             Some(BAND_GROUP),
@@ -1766,9 +1766,9 @@ mod tests {
         // `ui::route_screen`'s module doc states for the whole family): from the band, Up must
         // find the table again.
         let band_key = FocusKey { entry: EntryId(0), elem: band_elem(0) };
-        let band_from = crate::ui::screen::Focusable::<InnerHost>::place(&s, &band_key.elem, &cx, crate::ui::screen::At::SpringTarget)
+        let band_from = plx_ui::screen::Focusable::<InnerHost>::place(&s, &band_key.elem, &cx, plx_ui::screen::At::SpringTarget)
             .expect("the band places");
-        let back = crate::ui::focus::geometric(&groups, BAND_GROUP, band_from.rect, crate::ui::screen::Dir::Up);
+        let back = plx_ui::focus::geometric(&groups, BAND_GROUP, band_from.rect, plx_ui::screen::Dir::Up);
         assert_eq!(back.map(|g| g.id), Some(TABLE_GROUP), "UP off the band returns to the table");
     }
 
@@ -1857,6 +1857,6 @@ mod tests {
                 out.extend(screen.form.table.app_fit_failures(frame_w, &format!("{} {mounting}", language.tag())));
             }
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 }

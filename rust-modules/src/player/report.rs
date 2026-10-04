@@ -1644,17 +1644,21 @@ mod tests {
     #[test]
     fn no_atomic_read_modify_write_uses_the_deprecated_fetch_update() {
         let needle = concat!(".", "fetch_update", "(");
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut offences: Vec<String> = Vec::new();
         let mut files = 0usize;
-        walk(&src, &mut |path: &std::path::Path, text: &str| {
-            files += 1;
-            for (n, line) in text.lines().enumerate() {
-                if line.contains(needle) {
-                    offences.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        // The application crate and the `ui` layer (`../ui/src`), which was `src/ui` before it
+        // became its own crate: moving a directory must not move it out of this scan.
+        for src in [manifest.join("src"), manifest.join("ui/src")] {
+            walk(&src, &mut |path: &std::path::Path, text: &str| {
+                files += 1;
+                for (n, line) in text.lines().enumerate() {
+                    if line.contains(needle) {
+                        offences.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                    }
                 }
-            }
-        });
+            });
+        }
         assert!(
             files > 50,
             "the walk found only {files} source files — it is not reading the tree"

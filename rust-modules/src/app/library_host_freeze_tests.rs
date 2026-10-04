@@ -33,8 +33,8 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_for_test("freeze-own", "127.0.0.1", 9, "synthetic", "fixture");
     crate::plex::set_current(sid);
-    let base = crate::ui::popover::host_users_for_test();
-    let users = || crate::ui::popover::host_users_for_test() - base;
+    let base = plx_ui::popover::host_users_for_test();
+    let users = || plx_ui::popover::host_users_for_test() - base;
 
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
@@ -47,7 +47,7 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
     let page = d.nav.top_page().unwrap().id;
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     let listing = rig.listing.view().id().unwrap();
-    d.nav.next_style = crate::ui::containers::modal::Style::Compact;
+    d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(
@@ -110,7 +110,7 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
 /// **It has to be the LIBRARY, and it has to be `idle`.** The dispatcher keeps a motion ledger of
 /// its own (`Present::page_moving`, reported as `FrameReport::underlay_moving`), but a screen only
 /// reaches it by calling `fx.note(PresentEvent::Motion)` — which `screens::library` never does. It
-/// animates through `crate::ui::Spring`, i.e. `gfx::spring`, which reports to `plx_machine::idle` and
+/// animates through `plx_ui::Spring`, i.e. `gfx::spring`, which reports to `plx_machine::idle` and
 /// nowhere else; `report.underlay_moving` is false on every frame below. `idle::page_moving()` is
 /// the only witness there is.
 #[test]
@@ -135,7 +135,7 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
     rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
-    d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+    d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
     // park the grid focus deep, and let every boot spring settle
     Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 });
     for i in 1..80 {
@@ -143,7 +143,7 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
     }
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     let listing = rig.listing.view().id().unwrap();
-    d.nav.next_style = crate::ui::containers::modal::Style::Compact;
+    d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(crate::screens::registry::LibraryMenuArg {
@@ -191,7 +191,7 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
             report.underlay_moving
         );
         assert!(
-            crate::ui::popover::host_refresh(true, false, plx_machine::idle::page_moving()),
+            plx_ui::popover::host_refresh(true, false, plx_machine::idle::page_moving()),
             "frame {i}: …so the fading panel's frozen snapshot is re-taken"
         );
     }
@@ -202,7 +202,7 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
 /// from the container's own policy table, so the two cannot state different things again.
 #[test]
 fn every_style_caches_its_host_exactly_when_the_policy_table_says_cached() {
-    use crate::ui::containers::modal::{style_caches_host, surface_policy, HostRender, Phase, Style};
+    use plx_ui::containers::modal::{style_caches_host, surface_policy, HostRender, Phase, Style};
     for style in [
         Style::Compact,
         Style::Sheet,

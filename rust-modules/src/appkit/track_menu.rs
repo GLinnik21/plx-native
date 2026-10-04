@@ -77,21 +77,21 @@ use crate::metadata;
 use crate::metadata::sub_layout::{self, LangId, OtherLang, RowBadge, RowTarget, SubHeader, SubModel, SubRow, SubTrack};
 use crate::metadata::track_label;
 use crate::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
-use crate::ui::frame::Budget;
-use crate::ui::geom::IndexElem;
+use plx_ui::frame::Budget;
+use plx_ui::geom::IndexElem;
 use plx_machine::machine::{Canon, Cx, EntryId, FocusKey, GroupId, Host, Measure};
-use crate::ui::popover::Popover;
-use crate::ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Step};
-use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
-use crate::ui::page_stack::{
+use plx_ui::popover::Popover;
+use plx_ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Step};
+use plx_ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use plx_ui::page_stack::{
     self, popover_group_of, popover_groups, popover_neighbour, popover_place,
     popover_register_stops, popover_seat, PageStack, PopoverPanel,
 };
-use crate::ui::panel_motion::PanelMotion;
-use crate::ui::table::{Badge, Row, Section, TableView};
-use crate::ui::table_screen::BAND_BASE;
-use crate::ui::theme;
-use crate::ui::{Painter, Rect};
+use plx_ui::panel_motion::PanelMotion;
+use plx_ui::table::{Badge, Row, Section, TableView};
+use plx_ui::table_screen::BAND_BASE;
+use plx_ui::theme;
+use plx_ui::{Painter, Rect};
 use std::os::raw::c_int;
 
 
@@ -430,7 +430,7 @@ pub(crate) struct TrackMenuState {
     /// [`TrackMenuPart::reconcile`]) landed on, which names an unrelated track once the enhancement
     /// rows are back. `None` once consumed, or when nothing needs remembering.
     sticky_audio_target: Option<TrackRow>,
-    /// The card's resize and the page slide ([`crate::ui::panel_motion`]): the layout target is
+    /// The card's resize and the page slide ([`plx_ui::panel_motion`]): the layout target is
     /// cached there, the top/left edges spring to it, and a push or pop slides the two pages.
     motion: PanelMotion,
     /// The owner token of the background queue this menu parked ([`plx_gfx::text::park_prewarm_as_background`]).
@@ -1618,7 +1618,7 @@ impl TrackMenuState {
         // The whole recording part is speculative to the recorder (spec §5): the form's layout
         // asks the measure about a page no frame draws, and a replay must answer 0.0 for a key
         // its recording lacks instead of refusing on it.
-        let owner = crate::ui::rec::speculative(|| {
+        let owner = plx_ui::rec::speculative(|| {
             let form = if self.tab == 0 {
                 self.sub_root_form(ps, meta).0
             } else {
@@ -1985,14 +1985,14 @@ fn table_form(model: &SubModel, active_sub: c_int, offset_ms: i64, locked: bool)
     })
 }
 
-/// The panel at its WIDEST ([`crate::ui::table::MENU_MAX_W`], the shared cap — either tab may hug
-/// up to it) and TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]) — the full
+/// The panel at its WIDEST ([`plx_ui::table::MENU_MAX_W`], the shared cap — either tab may hug
+/// up to it) and TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]) — the full
 /// `top_min`→`bottom` span, since the measured height comes from a `TableView` no host test can
 /// measure.
 #[cfg(test)]
 pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let (bottom, top_min) = (theme::layout::PLAYER_MENU_BOTTOM, 60.0);
-    let pw = crate::ui::table::MENU_MAX_W;
+    let pw = plx_ui::table::MENU_MAX_W;
     out.push((
         "track menu panel (widest)",
         Rect::new(crate::appkit::player_hud::CTRL_RIGHT - pw, top_min, pw, bottom - top_min),
@@ -2003,7 +2003,7 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 mod tests {
     use super::*;
     use crate::player::TrackNames;
-    use crate::ui::table::TableView;
+    use plx_ui::table::TableView;
 
     /// The focus element of the `i`-th Audio row — a test names a row by its identity, never by
     /// where it happens to sit.
@@ -2024,7 +2024,7 @@ mod tests {
     ) -> (Vec<Section>, Vec<Option<TrackRow>>) {
         let yours: Vec<String> = yours.iter().map(|y| y.to_string()).collect();
         let model = sub_layout::sub_sections(subs, offered, names, &yours, show_timing);
-        let mut built = FormTable::new(crate::ui::table_screen::BAND_BASE);
+        let mut built = FormTable::new(plx_ui::table_screen::BAND_BASE);
         built.set(table_form(&model, active_sub, offset_ms, false), None);
         let ids = (0..built.table.n_rows() as usize).map(|i| built.id_at(i).copied()).collect();
         (std::mem::take(&mut built.table.sections), ids)
@@ -2180,7 +2180,7 @@ mod tests {
 
     /// **Every Subtitles-panel row fits the panel in every shipped language** — the grouped
     /// layout's section words, the kind fallbacks, the "Track N" ordinal and a region name beside
-    /// each badge, against [`MENU_MAX_W`](crate::ui::table::MENU_MAX_W), measured with the device's whole-pixel advances. (A source is
+    /// each badge, against [`MENU_MAX_W`](plx_ui::table::MENU_MAX_W), measured with the device's whole-pixel advances. (A source is
     /// server text and may elide; the fixture's sources are short so only app text is judged.)
     #[test]
     fn every_subtitles_row_fits_the_panel_in_every_language() {
@@ -2207,10 +2207,10 @@ mod tests {
             let mut table = TableView::new();
             table.set_sections(sections, 0, false);
             out.extend(table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-            out.extend(table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+            out.extend(table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
             out.extend(table.app_fit_failures_hugged(language.tag()));
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 
     /// **The pseudo-locale sweep of the grouped Subtitles panel**: every header, accessory, label,
@@ -2664,7 +2664,7 @@ mod enhancement_menu_tests {
     /// 0.0 instead of refusing.
     #[test]
     fn the_background_warm_is_not_charged_against_a_strict_replay() {
-        use crate::ui::rec::{Measurements, TableMeasure};
+        use plx_ui::rec::{Measurements, TableMeasure};
         let _g = plx_base::testlock::serial();
         plx_gfx::text::reset_prewarm_for_test();
         let (mut menu, ps) = audio_tab(EnhTestFixture::default());
@@ -2682,7 +2682,7 @@ mod enhancement_menu_tests {
     /// one has parked its own warm.
     #[test]
     fn a_closing_menus_drop_keeps_the_newer_menus_background_queue() {
-        use crate::ui::fixture::FixtureMeasure as M;
+        use plx_ui::fixture::FixtureMeasure as M;
         let _g = plx_base::testlock::serial();
         plx_gfx::text::reset_prewarm_for_test();
         let (mut old, ps) = audio_tab(EnhTestFixture::default());
@@ -3029,7 +3029,7 @@ mod enhancement_menu_tests {
         // the panel triggers itself.
         let (ps_refused, _sid2) = enhancement_test_session(EnhTestFixture { refused: true, ..Default::default() });
         let store = one_track_store();
-        menu.update(0.0, &crate::ui::fixture::FixtureMeasure, &ps_refused, store.view());
+        menu.update(0.0, &plx_ui::fixture::FixtureMeasure, &ps_refused, store.view());
         assert_eq!(
             menu.enhance_shown, None,
             "a settled refusal must drop the optimistic On reading, not leave a row reading On"
@@ -3053,7 +3053,7 @@ mod enhancement_menu_tests {
     /// `update`, because a frame that does not present uploads nothing (spec §10).
     #[test]
     fn update_rasterises_the_live_pages_text_before_the_draw() {
-        use crate::ui::fixture::FixtureMeasure as M;
+        use plx_ui::fixture::FixtureMeasure as M;
         let _g = plx_base::testlock::serial();
         let (mut menu, ps) = audio_tab(EnhTestFixture::default());
         let store = one_track_store();
@@ -3073,7 +3073,7 @@ mod enhancement_menu_tests {
             );
         }
         // The presenting side's drain rasterises them, up to its time budget.
-        crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
+        plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
         let resident =
             labels.iter().filter(|l| plx_gfx::text::prewarm_resident_any_size_for_test(l.as_bytes())).count();
         assert!(resident > 0, "the drain rasterised none of the page's strings");
@@ -3101,7 +3101,7 @@ mod enhancement_menu_tests {
     /// Observed RED with `warm_open` a no-op: nothing pending, no label resident.
     #[test]
     fn warm_open_makes_the_root_strings_resident_without_an_update() {
-        use crate::ui::fixture::FixtureMeasure as M;
+        use plx_ui::fixture::FixtureMeasure as M;
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture::default());
         plx_gfx::text::reset_prewarm_for_test();
@@ -3123,7 +3123,7 @@ mod enhancement_menu_tests {
                 "{label:?} was uploaded by a walk, which may run on a frame that does not present"
             );
         }
-        crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
+        plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
         assert!(
             labels.iter().any(|l| plx_gfx::text::prewarm_resident_any_size_for_test(l.as_bytes())),
             "the presenting side's drain rasterised none of the root page"
@@ -3143,7 +3143,7 @@ mod enhancement_menu_tests {
     /// tab switch: on the TV the first switch to Audio drew `textx8:9.5` in a 24.8–29.0 ms frame.
     #[test]
     fn an_idle_menu_warms_the_other_tabs_strings_before_a_switch() {
-        use crate::ui::fixture::FixtureMeasure as M;
+        use plx_ui::fixture::FixtureMeasure as M;
         let _g = plx_base::testlock::serial();
         let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
         let mut store = crate::stores::metadata::MetadataStore::default();
@@ -3170,7 +3170,7 @@ mod enhancement_menu_tests {
         // after the open).
         for frame in 0..60 {
             menu.update(0.016, &M, &ps, store.view());
-            let drained = crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
+            let drained = plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
             // The draw drops whatever the live queue still holds (`ui::dispatch`, every frame
             // with no page warm), which on the TV left the background warm one string deep.
             plx_gfx::text::clear_prewarm();
@@ -3201,7 +3201,7 @@ mod enhancement_menu_tests {
     /// one-a-frame warm, and the first switch to Audio met `textx7:6.6` cold.
     #[test]
     fn a_live_walk_that_interrupts_the_other_tabs_warm_requeues_it() {
-        use crate::ui::fixture::FixtureMeasure as M;
+        use plx_ui::fixture::FixtureMeasure as M;
         let _g = plx_base::testlock::serial();
         let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
         let mut store = crate::stores::metadata::MetadataStore::default();
@@ -3241,7 +3241,7 @@ mod enhancement_menu_tests {
         plx_gfx::text::reset_prewarm_for_test();
         let frame = |menu: &mut TrackMenuState| {
             menu.update(0.016, &M, &ps, store.view());
-            crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
+            plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
             // What the drain left of the live queue, the draw drops (`ui::dispatch`).
             plx_gfx::text::clear_prewarm();
         };
@@ -3285,7 +3285,7 @@ mod enhancement_menu_tests {
     /// it, so a wrapped note's panel was one frame short.
     #[test]
     fn a_note_added_by_a_live_rebuild_sizes_the_panel_on_the_same_update() {
-        use crate::ui::fixture::FixtureMeasure as M;
+        use plx_ui::fixture::FixtureMeasure as M;
         let _g = plx_base::testlock::serial();
         let (mut menu, ps_ok) = audio_tab(EnhTestFixture {
             applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
@@ -3336,7 +3336,7 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         let store = one_track_store();
-        menu.update(0.0, &crate::ui::fixture::FixtureMeasure, &ps_after, store.view());
+        menu.update(0.0, &plx_ui::fixture::FixtureMeasure, &ps_after, store.view());
 
         assert_eq!(
             menu.sel(),
@@ -3397,7 +3397,7 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         let store_hidden = two_tracks();
-        menu.update(0.0, &crate::ui::fixture::FixtureMeasure, &ps_hidden, store_hidden.view());
+        menu.update(0.0, &plx_ui::fixture::FixtureMeasure, &ps_hidden, store_hidden.view());
         assert_eq!(menu.enhance_shown, None, "fixture shape: no Plex Pass withdraws the offer entirely (I1/I2)");
 
         // The ENGINE's own reconcile runs the same frame right after this poll (§7.3 step 6): its
@@ -3411,7 +3411,7 @@ mod enhancement_menu_tests {
         // triggered itself.
         let (ps_shown, _sid_shown) = enhancement_test_session(EnhTestFixture::default());
         let store_shown = two_tracks();
-        menu.update(0.0, &crate::ui::fixture::FixtureMeasure, &ps_shown, store_shown.view());
+        menu.update(0.0, &plx_ui::fixture::FixtureMeasure, &ps_shown, store_shown.view());
 
         assert!(menu.enhance_shown.is_some(), "fixture shape: the offer is back");
         assert_eq!(
@@ -3508,11 +3508,11 @@ mod enhancement_menu_tests {
                 ..Default::default()
             });
             out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-            out.extend(menu.form.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+            out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
             out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
             teardown(&ps);
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 
     // ---- M7 follow-up: the Subtitles tab under a live Burn ------------------------------------
@@ -3673,7 +3673,7 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
-        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps_after, store.view());
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps_after, store.view());
 
         assert_eq!(menu.active_sub, 0, "the embedded track must read checked once the route shows it");
         assert!(menu.own_burn_built(), "Color/Timing must lock once the live route is really a Burn");
@@ -3703,11 +3703,11 @@ mod enhancement_menu_tests {
                 ..Default::default()
             });
             out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-            out.extend(menu.form.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+            out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
             out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
             teardown(&ps);
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 
     /// **The Spanish locked-style note WRAPS instead of running off the panel**: the fit gate now
@@ -3716,7 +3716,7 @@ mod enhancement_menu_tests {
     fn spanish_locked_note_wraps_within_the_subtitles_panel() {
         use plx_machine::machine::Measure;
         use plx_base::fontcov::advances::ShippedMeasure;
-        use crate::ui::fit::HEADROOM;
+        use plx_ui::fit::HEADROOM;
         use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         let _g = plx_base::testlock::serial();
         let _guard = language_on_this_thread_for_test(Preference::Es);
@@ -3727,11 +3727,11 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         let note = plx_platform::i18n::msg::widgets_tracks_style_locked_note();
-        let line = ShippedMeasure.width_str(&note, crate::ui::theme::size::CAPTION, false);
+        let line = ShippedMeasure.width_str(&note, plx_ui::theme::size::CAPTION, false);
         let before = menu.form.table.measured_height();
         let pw = menu.form.table.menu_panel_width(&ShippedMeasure);
         let issues = menu.form.table.fit_report(pw, &ShippedMeasure, HEADROOM);
-        assert!(issues.iter().all(|i| i.origin != crate::ui::table::Origin::App), "{issues:?}");
+        assert!(issues.iter().all(|i| i.origin != plx_ui::table::Origin::App), "{issues:?}");
         assert!(line > pw, "the premise: one line of it is wider than the panel");
         assert!(menu.form.table.measured_height() > before, "the panel grows by the wrapped note's extra lines");
         teardown(&ps);
@@ -3750,17 +3750,17 @@ mod focus_tests {
 
     struct HostFixture;
     impl Host for HostFixture {
-        type Arg = crate::ui::fixture::FixtureArg;
-        type Fx = crate::ui::fixture::FixtureFx;
-        type Msg = crate::ui::fixture::FixtureMsg;
+        type Arg = plx_ui::fixture::FixtureArg;
+        type Fx = plx_ui::fixture::FixtureFx;
+        type Msg = plx_ui::fixture::FixtureMsg;
         type Elem = u32;
         type Views<'a> = ();
-        type Init = crate::ui::fixture::FixtureInit;
+        type Init = plx_ui::fixture::FixtureInit;
         type Memory = ();
     }
 
     fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         test(&Cx {
             views: (),
             tick: Tick::default(),
@@ -3778,7 +3778,7 @@ mod focus_tests {
         for (i, label) in ["English", "Русский", "Français"].into_iter().enumerate() {
             sec = sec.item(TrackRow::Audio(i), RowKind::Choice, (), Row::new(label));
         }
-        let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
+        let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.set(TrackForm::new().section(sec), None);
         TrackMenuState {
             tab: 0,
@@ -3852,8 +3852,8 @@ mod focus_tests {
             let mut groups = Vec::new();
             <TrackMenuPart as Focusable<HostFixture>>::groups(&part, cx, &mut groups);
             let g = groups.into_iter().next().expect("one group");
-            assert!(matches!(g.edge[2], crate::ui::screen::EdgeRule::Screen));
-            assert!(matches!(g.edge[3], crate::ui::screen::EdgeRule::Screen));
+            assert!(matches!(g.edge[2], plx_ui::screen::EdgeRule::Screen));
+            assert!(matches!(g.edge[3], plx_ui::screen::EdgeRule::Screen));
         });
     }
 
@@ -3863,7 +3863,7 @@ mod focus_tests {
     fn place_matches_the_tables_own_row_frame() {
         let e = EntryId(5);
         let st = three_row_menu();
-        let r = st.panel_rect(&crate::ui::fixture::FixtureMeasure);
+        let r = st.panel_rect(&plx_ui::fixture::FixtureMeasure);
         let want = st.form.table.row_frame(r, 2);
         let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
         with_cx(e, |cx| {
@@ -3968,7 +3968,7 @@ mod localized_offset_tests {
 mod keyed_form_tests {
     use super::tests::{store_with, store_with_audio, stream};
     use super::*;
-    use crate::ui::form::RowKeys;
+    use plx_ui::form::RowKeys;
     use crate::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture};
 
     fn audio(id: i64, index: i64, default: bool) -> metadata::Stream {
@@ -4010,7 +4010,7 @@ mod keyed_form_tests {
         let before = key_of(&menu, TrackRow::Audio(1));
 
         let (ps_offered, _s2) = enhancement_test_session(EnhTestFixture::default());
-        menu.update(0.0, &crate::ui::fixture::FixtureMeasure, &ps_offered, store.view());
+        menu.update(0.0, &plx_ui::fixture::FixtureMeasure, &ps_offered, store.view());
 
         assert!(menu.enhance_shown.is_some(), "premise: the pair was inserted");
         assert_eq!(menu.ids().len(), 4, "two tracks + Boost + Loudness");
@@ -4207,7 +4207,7 @@ mod style_page_tests {
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".to_string()]);
         focus_id(&mut menu, TrackRow::Style);
         for _ in 0..240 {
-            menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store.view());
+            menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store.view());
         }
         let left_at = menu.form.table.scroll_pos();
         assert!(left_at > 0.0, "the premise: 40 tracks push Style below the fold ({left_at})");
@@ -4333,14 +4333,14 @@ mod style_page_tests {
         let (mut menu, ps, store) = open_with("srt", SubtitleEffect::Sidecar);
         focus_id(&mut menu, TrackRow::Style);
         menu.on_ok(store.view());
-        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store.view());
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store.view());
         assert_eq!(menu.page_path(), [TrackPage::Style], "an unchanged signature leaves the page");
 
         // the same subtitle, now an image one: the renderer kind moved under the page
         let mut image = stream(999, 0, "English", "eng", "");
         image.codec = "pgs".into();
         let store2 = store_with(vec![image]);
-        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store2.view());
         assert!(menu.page_path().is_empty(), "popped to the root");
         assert_eq!(menu.renderer, SubRenderer::Image);
         assert_eq!(menu.selected_id(), Some(TrackRow::Style), "on the row that opened it");
@@ -4367,7 +4367,7 @@ mod style_page_tests {
 
         // a second subtitle offered mid-play: the fingerprint moves, the renderer does not
         let store2 = store_with(vec![stream(999, 0, "English", "eng", ""), stream(1000, 1, "French", "fra", "")]);
-        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store2.view());
         assert_ne!(menu.sub_sig, before, "the new fingerprint is stored");
         assert_eq!(menu.page_path(), picker, "the picker stays");
         assert_eq!(menu.selected_id(), Some(focused), "on the row the viewer was on");
@@ -4387,7 +4387,7 @@ mod style_page_tests {
             subtitle_effect: SubtitleEffect::Embedded,
             ..Default::default()
         });
-        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps2, store.view());
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps2, store.view());
         assert_ne!(menu.sub_sig, before, "the enhancement route is part of the signature");
         assert_eq!(menu.page_path(), picker, "the picker stays");
         assert_eq!(menu.selected_id(), Some(focused));
@@ -4408,7 +4408,7 @@ mod style_page_tests {
                 let (mut menu, ps, store) = open_with(codec, SubtitleEffect::Sidecar);
                 let mut judge = |menu: &TrackMenuState| {
                     out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-                    out.extend(menu.form.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+                    out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
                     out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
                 };
                 judge(&menu);
@@ -4422,7 +4422,7 @@ mod style_page_tests {
                 teardown(&ps);
             }
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 
     /// **The locked-renderer notes wrap to two lines at the player-menu floor (three in Spanish).** A Style page is a few
@@ -4736,7 +4736,7 @@ mod language_page_tests {
         menu.on_ok(store.view());
         assert_eq!(menu.ids().len(), 3);
         focus_id(&mut menu, TrackRow::Sub(2));
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         menu.update(0.016, &measure, &ps, store.view());
         assert_eq!(menu.page_path(), [TrackPage::OtherLanguages, TrackPage::Language(11)], "an unchanged signature leaves it");
 
@@ -4764,7 +4764,7 @@ mod language_page_tests {
         focus_id(&mut menu, TrackRow::OpenOther);
         menu.on_ok(store.view());
         let store2 = store_with(vec![stream(10, 0, "English", "eng", "")]);
-        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store2.view());
         assert!(menu.page_path().is_empty());
         assert!(menu.form.index_of(&TrackRow::OpenOther).is_none(), "and the root no longer offers it");
         teardown(&ps);
@@ -4847,7 +4847,7 @@ mod language_page_tests {
         focus_id(&mut menu, TrackRow::Sub(2));
         // the three languages leave, and the playing subtitle (999) is a codeless track
         let store2 = store_with(vec![stream(999, 0, "Unknown", "", "")]);
-        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store2.view());
         assert_eq!(menu.active_sub, 0);
         assert_eq!(menu.selected_id(), Some(TrackRow::OpenOther), "the viewer's row is gone: the checked row, which is Other languages");
         teardown(&ps);
@@ -4876,7 +4876,7 @@ mod language_page_tests {
             stream(14, 2, "Dutch", "nld", ""),
             stream(15, 3, "Dutch", "nld", "SDH"),
         ]);
-        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, after.view());
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, after.view());
         if !menu.page_path().is_empty() {
             assert_eq!(menu.form.table.title(), Some("French"), "a page stays its language");
             assert_eq!(menu.ids(), [TrackRow::Sub(0), TrackRow::Sub(1)], "and lists its tracks");
@@ -4896,7 +4896,7 @@ mod language_page_tests {
             pgs(stream(15, 2, "Dutch", "nld", "")),
             stream(16, 3, "Dutch", "nld", "SDH"),
         ]);
-        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, after.view());
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, after.view());
         assert!(menu.page_path().is_empty(), "French is gone: popped to the root");
         teardown(&ps);
     }
@@ -4913,7 +4913,7 @@ mod language_page_tests {
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
         open_language_named(&mut menu, &store, "French");
         let store2 = store_with(sidecar_french(["/a.srt", "", ""]));
-        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store2.view());
         assert_eq!(menu.page_path().len(), 2, "the page stays open at one track");
         assert_eq!(menu.form.table.title(), Some("French"));
         assert_eq!(menu.ids(), [TrackRow::Sub(1)]);
@@ -4936,7 +4936,7 @@ mod language_page_tests {
         menu.on_ok(store.view());
         focus_id(&mut menu, TrackRow::Sub(1));
         let store2 = store_with(sidecar_french(["/a.srt", "/b.srt", "/c.srt"]));
-        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store2.view());
         assert_eq!(menu.page_path(), [TrackPage::OtherLanguages]);
         let french = menu.ids().into_iter().find(|id| matches!(id, TrackRow::OpenLang(_)));
         assert!(french.is_some(), "French is a drill-in now");
@@ -4984,7 +4984,7 @@ mod language_page_tests {
             let (mut menu, ps, store) = open(subs_with_vobsub());
             let judge = |menu: &TrackMenuState, out: &mut Vec<_>| {
                 out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-                out.extend(menu.form.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+                out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
                 out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
             };
             judge(&menu, &mut out);
@@ -5002,7 +5002,7 @@ mod language_page_tests {
             }
             teardown(&ps);
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 }
 
@@ -5152,7 +5152,7 @@ mod motion_tests {
         let check = |menu: &TrackMenuState, what: &str| {
             let (leaving, live) = menu.motion.alphas();
             let loudest = leaving.iter().copied().fold(0.0_f32, f32::max);
-            assert!(loudest.min(live) <= crate::ui::panel_motion::GATE + 1e-4, "{what}: leaving {leaving:?} and live {live} overlap");
+            assert!(loudest.min(live) <= plx_ui::panel_motion::GATE + 1e-4, "{what}: leaving {leaving:?} and live {live} overlap");
             assert_eq!(menu.motion.leaving_pills(), 0, "{what}: a leaving page draws a focus pill");
         };
         push_style(&mut menu, &store);

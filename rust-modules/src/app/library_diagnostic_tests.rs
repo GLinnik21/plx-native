@@ -60,7 +60,7 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
     rig.take_library_reqs();
     #[derive(Default)]
     struct PressTap(usize);
-    impl crate::ui::dispatch::Tap<AppHost> for PressTap {
+    impl plx_ui::dispatch::Tap<AppHost> for PressTap {
         fn effect(&mut self, _: u64, effect: &plx_machine::machine::Stamped<AppHost>) {
             if matches!(effect.fx, Fx::Press(_)) {
                 self.0 += 1;
@@ -112,7 +112,7 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
-    d.nav.next_style = crate::ui::containers::modal::Style::Compact;
+    d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(LibraryMenuArg {
@@ -224,8 +224,8 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
         MachineId::Nav,
         Fx::Deliver(
             MachineId::Instance(instance),
-            Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
-                focus: crate::ui::screen::FocusTarget::ContainerGroup(
+            Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
+                focus: plx_ui::screen::FocusTarget::ContainerGroup(
                     crate::screens::library::LIBRARY_GROUP,
                 ),
             })),

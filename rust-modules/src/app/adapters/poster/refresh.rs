@@ -87,7 +87,7 @@ fn run() {
             loop {
                 let Some(q) = guard.as_mut() else { return; };
                 if !q.running { return; }
-                if !q.jobs.is_empty() && super::store_idle() && crate::ui::tex::pending_bytes() == 0 {
+                if !q.jobs.is_empty() && super::store_idle() && plx_ui::tex::pending_bytes() == 0 {
                     break q.jobs.pop_front().unwrap();
                 }
                 guard = READY.wait_timeout(guard, Duration::from_millis(250))

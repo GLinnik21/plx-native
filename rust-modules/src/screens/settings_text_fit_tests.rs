@@ -12,8 +12,8 @@
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-use crate::ui::route_screen::RouteLayout;
-use crate::ui::table::TableView;
+use plx_ui::route_screen::RouteLayout;
+use plx_ui::table::TableView;
 
 /// The app-owned findings for `table` at the Settings column's width.
 fn overflowing(page: &str, table: &TableView, out: &mut Vec<String>) {
@@ -90,7 +90,7 @@ fn every_settings_row_fits_its_column_in_every_language() {
             }
         }
     }
-    crate::ui::table::assert_no_fit_failures(&out);
+    plx_ui::table::assert_no_fit_failures(&out);
 }
 
 /// The measure itself: whole pixels per glyph from each shipped face's own metrics, and a longer

@@ -23,7 +23,7 @@ pub(super) fn frame(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: AppArg
 /// …and the same driver for the two frames that also want the effect tap or a supplied result
 /// set. Only the `goto` is the test's: everything after it is production's own frame.
 pub(super) fn frame_with_tap(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: AppArg, tick: Tick,
-    inputs: Vec<InputEvent<u32>>, tap: &mut dyn crate::ui::dispatch::Tap<AppHost>)
+    inputs: Vec<InputEvent<u32>>, tap: &mut dyn plx_ui::dispatch::Tap<AppHost>)
     -> (&'static str, FrameReport) {
     goto(d, route);
     presented(super::frame_with_tap(d, rig, tick, inputs, tap))
@@ -31,7 +31,7 @@ pub(super) fn frame_with_tap(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, rout
 
 pub(super) fn frame_with_results(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: AppArg, tick: Tick,
     inputs: Vec<InputEvent<u32>>, take: impl FnOnce() -> AppResults,
-    tap: &mut dyn crate::ui::dispatch::Tap<AppHost>) -> (&'static str, FrameReport) {
+    tap: &mut dyn plx_ui::dispatch::Tap<AppHost>) -> (&'static str, FrameReport) {
     goto(d, route);
     presented(super::frame_with_results(d, rig, tick, inputs, take, tap))
 }
@@ -109,6 +109,6 @@ impl Drop for DirectoryPolicyCleanup {
 /// A test frame is a presenting frame: the product drains the Tracks/More text prewarm on the
 /// presenting side of the present decision (`app::run::prepare_window`), after the frame's update.
 fn presented<R>(frame: R) -> R {
-    crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
+    plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
     frame
 }

@@ -2,7 +2,7 @@
 //! `(server, path, w, h, png)` into an opaque [`PosterKey`] (a slot index), the transcode request
 //! path and its token, the fetch + decode workers, the disk tier (`imgcache`), the prefetch gate
 //! and the slot LRU. It delivers a decoded image as `tex::PosterReady` and holds NO texture: GL
-//! residency is the library's [`crate::ui::tex::TexCache`], reached through `ui::tex`'s free
+//! residency is the library's [`plx_ui::tex::TexCache`], reached through `ui::tex`'s free
 //! functions, and the seam between the two halves is the key. The library never names this
 //! module; it sees it as the [`tex::Source`] installed at [`init`].
 //!
@@ -49,7 +49,7 @@ mod trace;
 use plx_gfx::img;
 use crate::plex::ServerId;
 use plx_machine::machine::PosterKey;
-use crate::ui::tex::{self, Decoded, PosterError, PosterReady, Tex, Uploader, Warm};
+use plx_ui::tex::{self, Decoded, PosterError, PosterReady, Tex, Uploader, Warm};
 use std::os::raw::{c_int, c_uchar, c_uint};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
@@ -630,7 +630,7 @@ static RESIDENCY_REARMED: AtomicU64 = AtomicU64::new(0);
 /// screen's diagnostic climb forever, because a refused arrival's cooldown keeps expiring and
 /// retrying even once no real eviction is happening at all. Kept on this seam — not folded into
 /// `tex.rs` — because that cache must stay ignorant of app-level metrics; the bool crossing it is
-/// the minimal signal [`card_motion_metrics`](crate::ui::card_motion_metrics) needs.
+/// the minimal signal [`card_motion_metrics`](plx_ui::card_motion_metrics) needs.
 static RESIDENCY_REFUSED: AtomicU64 = AtomicU64::new(0);
 
 /// The interval throttle's clock, and the `(lost, rearmed, refused)` triple the LAST emitted line
@@ -770,7 +770,7 @@ fn reset_residency_log_for_test() {
 
 /// The clearLogo transcode request box (was two bare literals inside the old `logo_tex`).
 /// `minSize=1` means COVER, not fit, so a 1:1 source comes back ~600×600 and a 5:1 one ~1200×240 —
-/// both comfortably above anything [`crate::ui::hero_logo`] draws (900×268 worst case), so a hero
+/// both comfortably above anything [`plx_ui::hero_logo`] draws (900×268 worst case), so a hero
 /// logo is always a downscale. Mirrored in `img.rs`'s decode-budget table; change both together.
 const LOGO_REQ_W: c_int = 600;
 const LOGO_REQ_H: c_int = 240;
@@ -797,11 +797,11 @@ fn logo_warm(srv: ServerId, rk: &str) -> Warm {
 
 /// An item's clearLogo (transparent PNG) as a cache key once its pixels are in — `None` while
 /// pending OR when the item has no logo (the store cannot tell those two apart — which is why the
-/// text→logo swap is still a cut, see [`crate::ui::hero_logo`]). `ui::tex::logo_src` adds the
+/// text→logo swap is still a cut, see [`plx_ui::hero_logo`]). `ui::tex::logo_src` adds the
 /// texture and its TRUE PIXEL SIZE.
 ///
 /// The ONE clearLogo resolve (home hero, detail hero, detail compact title all draw through it).
-/// How big it is DRAWN is a UI decision and lives in [`crate::ui::hero_logo::fit`]: this layer used
+/// How big it is DRAWN is a UI decision and lives in [`plx_ui::hero_logo::fit`]: this layer used
 /// to take a `max_w`×`max_h` box and contain-fit into it, which is how the same mark ended up three
 /// sizes in one app — the store never owned layout policy, it only looked as if it did.
 ///
@@ -854,7 +854,7 @@ type Hit = Option<PosterKey>;
 /// admitted. Three things decide, and `touch` is only the first: `touch` itself (LRU bookkeeping on
 /// every hit, and whether a P_EVICTED slot is eligible to recover at all), the speculation bound
 /// [`warm_admissible`] for a Warm, and the drawn card's placement scope
-/// ([`crate::ui::card_motion::declines_request`]) for a Draw. Unknown or moving card
+/// ([`plx_ui::card_motion::declines_request`]) for a Draw. Unknown or moving card
 /// placement declines new work; featured images outside that scope remain eligible.
 /// A refusal claims no source slot; a follow-up present samples placement again.
 fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
@@ -872,7 +872,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // would never see if it only guarded the miss. A HIT is deliberately untouched: art that is
     // already resident still draws and still takes its LRU touch, so declining never blanks a
     // tile that had its picture.
-    let decline = touch == Touch::Draw && crate::ui::card_motion::declines_request();
+    let decline = touch == Touch::Draw && plx_ui::card_motion::declines_request();
     let mut g = store();
     let cache_gen = plx_platform::imgcache::generation();
     let (token_gen, grant_epoch) = crate::plex::client_for(srv)
@@ -920,14 +920,14 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     g.slots[i].retry_wake_sent = false;
                 } else if retry_due(&g.slots[i], now) {
                     if decline {
-                        crate::ui::card_motion::deferred();
+                        plx_ui::card_motion::deferred();
                         #[cfg(feature = "devtriggers")]
-                        crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::Retry);
+                        plx_ui::card_motion_metrics::refused(plx_ui::card_motion_metrics::Refused::Retry);
                         trace::outcome("declined_retry");
                         return (None, Warm::Known);
                     }
                     #[cfg(feature = "devtriggers")]
-                    crate::ui::card_motion_metrics::request();
+                    plx_ui::card_motion_metrics::request();
                     g.slots[i].state = P_WANT;
                     g.slots[i].retry_at = None;
                     g.slots[i].retry_wake_sent = false;
@@ -970,9 +970,9 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     return (None, Warm::Known);
                 }
                 if decline {
-                    crate::ui::card_motion::deferred();
+                    plx_ui::card_motion::deferred();
                     #[cfg(feature = "devtriggers")]
-                    crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::Evicted);
+                    plx_ui::card_motion_metrics::refused(plx_ui::card_motion_metrics::Refused::Evicted);
                     // The same deferral the cooldown just made, for the same reason: the slot
                     // stays EVICTED and the first draw at a settled speed re-arms it as usual.
                     trace::outcome("declined_evicted");
@@ -980,8 +980,8 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 }
                 #[cfg(feature = "devtriggers")]
                 {
-                    crate::ui::card_motion_metrics::request();
-                    crate::ui::card_motion_metrics::rearmed();
+                    plx_ui::card_motion_metrics::request();
+                    plx_ui::card_motion_metrics::rearmed();
                 }
                 g.slots[i].state = P_WANT;
                 g.slots[i].evict_wake_sent = false;
@@ -1039,9 +1039,9 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // in `TexCache::pending` at 375 KB each. The request is the last point at which this work
     // can still be declined for free.
     if decline {
-        crate::ui::card_motion::deferred();
+        plx_ui::card_motion::deferred();
         #[cfg(feature = "devtriggers")]
-        crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::New);
+        plx_ui::card_motion_metrics::refused(plx_ui::card_motion_metrics::Refused::New);
         trace::outcome("declined_new");
         return (None, Warm::Full);
     }
@@ -1104,7 +1104,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         img::img_free(old_px as *mut c_uchar);
     }
     #[cfg(feature = "devtriggers")]
-    crate::ui::card_motion_metrics::request();
+    plx_ui::card_motion_metrics::request();
     CV.notify_one();
     (None, Warm::Claimed)
 }
@@ -1124,9 +1124,9 @@ impl tex::Source for PosterSource {
         let kid = trace::key_id(srv, key.as_bytes());
         trace::set_current(id);
         let hit = lookup(sid, key, Touch::Draw).0;
-        let gate = match crate::ui::card_motion::verdict() {
-            Some(crate::ui::card_motion::Verdict::Unknown) => trace::Gate::Unknown,
-            Some(crate::ui::card_motion::Verdict::Moving) => trace::Gate::Moving,
+        let gate = match plx_ui::card_motion::verdict() {
+            Some(plx_ui::card_motion::Verdict::Unknown) => trace::Gate::Unknown,
+            Some(plx_ui::card_motion::Verdict::Moving) => trace::Gate::Moving,
             _ => trace::Gate::Open,
         };
         trace::probe(id, kid, hit.is_some_and(tex::resident), gate);
@@ -1203,7 +1203,7 @@ impl tex::Source for PosterSource {
             } else {
                 RESIDENCY_LOST.fetch_add(1, Ordering::Relaxed);
                 #[cfg(feature = "devtriggers")]
-                crate::ui::card_motion_metrics::evicted();
+                plx_ui::card_motion_metrics::evicted();
             }
             log_residency();
         }
@@ -1338,7 +1338,7 @@ impl Uploader for GfxUploader {
         let id = img::img_upload_rgba(d.rgba.as_ptr(), d.w as c_int, d.h as c_int);
         UP_CT.fetch_add(1, Ordering::Relaxed);
         #[cfg(feature = "devtriggers")]
-        crate::ui::card_motion_metrics::upload();
+        plx_ui::card_motion_metrics::upload();
         UP_PX.fetch_add((d.w as u64) * (d.h as u64), Ordering::Relaxed);
         Tex {
             id,
@@ -1370,7 +1370,7 @@ impl Uploader for GfxUploader {
 /// about, and no spring reports it. The cache's own `Provenance::Resource` note is the same
 /// statement to the phase-2 `Present` machine.
 pub(crate) fn prepare(
-    b: &mut crate::ui::frame::Budget,
+    b: &mut plx_ui::frame::Budget,
     present: &mut plx_machine::machine::PresentHandle<'_>,
     now_us: impl Fn() -> u64,
 ) -> usize {
@@ -1624,7 +1624,7 @@ impl fan::FanIo for WorkerFanIo<'_> {
         }
         // The box and builder a portrait card asks for the same poster with, so a member already
         // on screen (or on disk) is a cache hit rather than a second transcode at another size.
-        let (w, h) = crate::ui::widgets::POSTER_RES;
+        let (w, h) = plx_ui::widgets::POSTER_RES;
         let path = transcode_request(self.client, thumb, w, h, false);
         let loaded = load_art(self.client, self.srv, &path, self.cache_gen, |b| {
             plx_gfx::img::img_decode_owned(b).map(|(w, h, px)| fan::Rgba { w, h, px })
@@ -2141,7 +2141,7 @@ mod tests {
     #[test]
     fn a_repoint_with_the_same_url_and_token_retires_the_old_request_generation() {
         let (_fresh, sid, tok) = one_server();
-        crate::ui::card_motion::begin_frame(crate::app::clock::now());
+        plx_ui::card_motion::begin_frame(crate::app::clock::now());
         let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
         let old_generation = crate::plex::client_for(sid).unwrap().token_gen();
         {
@@ -2192,7 +2192,7 @@ mod tests {
     #[test]
     fn a_retokened_retry_slot_fetches_with_the_fresh_grant_at_once() {
         let (_fresh, sid, _tok) = one_server();
-        crate::ui::card_motion::begin_frame(crate::app::clock::now());
+        plx_ui::card_motion::begin_frame(crate::app::clock::now());
         let src = "/library/metadata/42/thumb";
         let stale = key_for(sid, src, 2, 2, 0);
         {
@@ -2324,7 +2324,7 @@ mod tests {
             }),
         };
         tex::accept(decoded(PosterKey(0)));
-        let mut budget = crate::ui::frame::Budget::new();
+        let mut budget = plx_ui::frame::Budget::new();
         budget.begin_frame(0);
         let mut present = plx_machine::present::Present::new();
         let mut present_handle = plx_machine::machine::PresentHandle::of(&mut present);
@@ -2466,7 +2466,7 @@ mod tests {
             key,
             result: Ok(Decoded { w: 2, h: 2, rgba: vec![0; BYTES].into_boxed_slice() }),
         };
-        let mut budget = crate::ui::frame::Budget::new();
+        let mut budget = plx_ui::frame::Budget::new();
         let mut present = plx_machine::present::Present::new();
         let mut uploader = StubUp { next: 0 };
         let (lost0, _) = residency_counts_for_test();
@@ -2527,8 +2527,8 @@ mod tests {
         let path = key_for(sid, "/library/metadata/4242/thumb", 2, 2, 0);
         store().slots = [Pslot::ZERO; PT_CAP];
 
-        let motion = crate::ui::card_motion::Scope::moving_for_test();
-        assert!(crate::ui::card_motion::declines_request(), "the fixture is a fast scroll");
+        let motion = plx_ui::card_motion::Scope::moving_for_test();
+        assert!(plx_ui::card_motion::declines_request(), "the fixture is a fast scroll");
         let (hit, warm) = lookup(sid, &path, Touch::Draw);
         assert_eq!(hit, None, "a fast-scrolling miss resolves to no poster");
         assert_eq!(warm, Warm::Full, "and reports the attempt spent");
@@ -2537,7 +2537,7 @@ mod tests {
 
         // The settle is the whole difference — same key, same store, same call.
         drop(motion);
-        assert!(!crate::ui::card_motion::declines_request());
+        assert!(!plx_ui::card_motion::declines_request());
         let (_, warm) = lookup(sid, &path, Touch::Draw);
         assert_eq!(warm, Warm::Claimed, "a settled document claims the slot");
         assert_eq!(store().slots[0].state, P_WANT, "and queues it for a worker");
@@ -2555,24 +2555,24 @@ mod tests {
         tex::install(&SOURCE);
         tex::reset_for_test(16 * 1024 * 1024);
         store().slots = [Pslot::ZERO; PT_CAP];
-        let rect = crate::ui::Rect::new(0.0, 0.0, 250.0, 375.0);
+        let rect = plx_ui::Rect::new(0.0, 0.0, 250.0, 375.0);
         let mut item = crate::pms::PmsMovie::default();
         item.sid = sid;
         item.thumb = "/library/metadata/42/thumb".into();
         item.still = "/library/metadata/42/still".into();
-        crate::ui::widgets::resolve_card_art(crate::ui::Painter::recording(), rect,
-            &crate::ui::widgets::Art::Poster(Some(crate::screens::registry::tile_facts::of(&item))));
+        plx_ui::widgets::resolve_card_art(plx_ui::Painter::recording(), rect,
+            &plx_ui::widgets::Art::Poster(Some(crate::screens::registry::tile_facts::of(&item))));
         assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "text prewarming must not start poster work");
         for frame in 0..3 {
-            crate::ui::card_motion::begin_frame(frame * 16);
+            plx_ui::card_motion::begin_frame(frame * 16);
             plx_machine::idle::frame_begin(0.016);
             plx_machine::idle::take_local_damage();
-            let painter = crate::ui::Painter::root().translate(if frame == 0 { 0.0 } else { 80.0 }, 0.0);
+            let painter = plx_ui::Painter::root().translate(if frame == 0 { 0.0 } else { 80.0 }, 0.0);
             let facts = crate::screens::registry::tile_facts::of(&item);
-            for art in [crate::ui::widgets::Art::Poster(Some(facts)), crate::ui::widgets::Art::Still(Some(facts)),
-                crate::ui::widgets::Art::Thumb { sid: sid.raw(), key: "/test-thumb", res: (250, 375) },
-                crate::ui::widgets::Art::Person { sid: sid.raw(), key: "/test-person", res: (250, 250) }] {
-                crate::ui::widgets::resolve_card_art(painter, rect, &art);
+            for art in [plx_ui::widgets::Art::Poster(Some(facts)), plx_ui::widgets::Art::Still(Some(facts)),
+                plx_ui::widgets::Art::Thumb { sid: sid.raw(), key: "/test-thumb", res: (250, 375) },
+                plx_ui::widgets::Art::Person { sid: sid.raw(), key: "/test-person", res: (250, 250) }] {
+                plx_ui::widgets::resolve_card_art(painter, rect, &art);
             }
             if frame < 2 {
                 assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "unknown/moving cards must claim no slots");
@@ -2581,7 +2581,7 @@ mod tests {
                 assert_eq!(store().slots.iter().filter(|s| s.state == P_WANT).count(), 4, "all four settled variants must queue art");
             }
         }
-        assert!(!crate::ui::card_motion::declines_request(), "hero work after a card is outside its scope");
+        assert!(!plx_ui::card_motion::declines_request(), "hero work after a card is outside its scope");
         store().slots = [Pslot::ZERO; PT_CAP];
     }
 
@@ -2601,7 +2601,7 @@ mod tests {
             slot.state = P_RETRY;
             slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
         }
-        let motion = crate::ui::card_motion::Scope::moving_for_test();
+        let motion = plx_ui::card_motion::Scope::moving_for_test();
         plx_machine::idle::take_local_damage();
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
             "the future retry must match its existing slot, not take the fresh-miss gate");
@@ -2647,7 +2647,7 @@ mod tests {
         }
         let (_, rearmed0) = residency_counts_for_test();
 
-        let motion = crate::ui::card_motion::Scope::moving_for_test();
+        let motion = plx_ui::card_motion::Scope::moving_for_test();
         let (hit, warm) = lookup(sid, &path, Touch::Draw);
         assert_eq!(hit, None, "an evicted slot has no pixels to hand back");
         assert_eq!(warm, Warm::Known, "the slot is known, merely left dormant");
@@ -2691,7 +2691,7 @@ mod tests {
             slot.retry_at = Some(0);
         }
 
-        let motion = crate::ui::card_motion::Scope::moving_for_test();
+        let motion = plx_ui::card_motion::Scope::moving_for_test();
         let (hit, _) = lookup(sid, &path, Touch::Draw);
         assert_eq!(hit, None, "a parked retry has no pixels");
         assert_eq!(
@@ -2723,7 +2723,7 @@ mod tests {
     /// `a_ready_source_hit_recovers_after_its_texture_is_evicted`).
     #[test]
     fn residency_transitions_are_counted_exactly_once_each() {
-        use crate::ui::tex::Source as _;
+        use plx_ui::tex::Source as _;
 
         let (_fresh, sid, _) = one_server();
         let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
@@ -2772,7 +2772,7 @@ mod tests {
     /// until their cooldown clears, which real time never does inside a tight loop.
     #[test]
     fn a_key_evicted_and_reevicted_in_rapid_succession_does_not_rearm_without_bound() {
-        use crate::ui::tex::Source as _;
+        use plx_ui::tex::Source as _;
 
         let (_fresh, sid, _) = one_server();
         let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
@@ -3007,7 +3007,7 @@ mod tests {
     /// the unrelated transient-fetch schedule.
     #[test]
     fn repeated_completed_recoveries_escalate_the_cooldown_to_its_cap() {
-        use crate::ui::tex::Source as _;
+        use plx_ui::tex::Source as _;
 
         let (_fresh, sid, _) = one_server();
         let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
@@ -3079,7 +3079,7 @@ mod tests {
     /// churned it in ten whole seconds.
     #[test]
     fn an_eviction_gap_past_the_thrash_window_resets_the_escalation() {
-        use crate::ui::tex::Source as _;
+        use plx_ui::tex::Source as _;
 
         let (_fresh, sid, _) = one_server();
         let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
@@ -3224,7 +3224,7 @@ mod tests {
     /// must catch the totals up, because that path does not consult the interval at all.
     #[test]
     fn a_rearm_inside_the_throttle_window_still_reaches_the_log_once_the_store_settles() {
-        use crate::ui::tex::Source as _;
+        use plx_ui::tex::Source as _;
 
         let (_fresh, sid, _) = one_server();
         reset_residency_log_for_test();

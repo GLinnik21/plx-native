@@ -277,7 +277,7 @@ fn viewstate_optimistic_edit_mutates_only_its_bridge_person_store() {
 /// the screen must not regain a free ViewState facade that can bypass this owner.
 #[test]
 fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_frame() {
-    use crate::ui::dispatch::Tap;
+    use plx_ui::dispatch::Tap;
 
     struct ViewStateDispatch {
         sid: crate::plex::ServerId,
@@ -676,9 +676,9 @@ fn two_bridges_keep_their_own_captured_profile_and_labels_for_a_scrim_lift() {
         ..Default::default()
     }), 41);
 
-    let ar = <Bridge as crate::ui::dispatch::Rig<AppHost>>::scrim_chrome_read(&a)
+    let ar = <Bridge as plx_ui::dispatch::Rig<AppHost>>::scrim_chrome_read(&a)
         .expect("a bar-wearing bridge publishes lift chrome");
-    let br = <Bridge as crate::ui::dispatch::Rig<AppHost>>::scrim_chrome_read(&b)
+    let br = <Bridge as plx_ui::dispatch::Rig<AppHost>>::scrim_chrome_read(&b)
         .expect("the second bridge publishes its own lift chrome");
     assert_eq!(ar.profile.name.to_bytes(), b"Owner A");
     assert_eq!(ar.profile.initial.to_bytes(), b"A");

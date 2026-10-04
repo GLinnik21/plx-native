@@ -1,12 +1,12 @@
 use super::*;
 
-use crate::ui::fixture::FixtureMeasure;
-use crate::ui::focus::{FocusEngine, Outcome};
-use crate::ui::hit::{HitMap, PointerKind};
+use plx_ui::fixture::FixtureMeasure;
+use plx_ui::focus::{FocusEngine, Outcome};
+use plx_ui::hit::{HitMap, PointerKind};
 use plx_machine::machine::{
     Chrome, FocusRead, Host, InputOwner, PressRead, ScreenId, Source, Stamped, Tick,
 };
-use crate::ui::screen::{ScreenArg, ScreenEvent};
+use plx_ui::screen::{ScreenArg, ScreenEvent};
 
 /// How many rows the layout sweeps cover: past the data layer's own cap, which is not Home's.
 const SWEEP_ROWS: usize = 40;
@@ -147,7 +147,7 @@ fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
     assert_eq!(groups[0].len, 2);
     assert!(groups
         .iter()
-        .all(|g| g.id != crate::ui::containers::tabs::STRIP));
+        .all(|g| g.id != plx_ui::containers::tabs::STRIP));
 }
 
 #[test]
@@ -196,14 +196,14 @@ fn the_top_band_reports_the_chip_and_the_pills_as_one_answer() {
     let mut links = Vec::new();
     <HomeScreen as Screen<TestHost>>::links(&s, &mut links);
     assert!(links.contains(&Link {
-        from: crate::ui::containers::tabs::STRIP,
+        from: plx_ui::containers::tabs::STRIP,
         dir: Dir::Down,
         to: HERO_GROUP
     }));
     assert!(links.contains(&Link {
         from: HERO_GROUP,
         dir: Dir::Up,
-        to: crate::ui::containers::tabs::STRIP
+        to: plx_ui::containers::tabs::STRIP
     }));
 }
 
@@ -271,7 +271,7 @@ fn the_status_readout_tells_loading_empty_and_failed_apart() {
 /// built from the same overlay the draw uses.
 #[test]
 fn a_failed_home_stands_on_the_page_readout_lines() {
-    use crate::ui::widgets::StatusOverlay;
+    use plx_ui::widgets::StatusOverlay;
     let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
@@ -280,13 +280,13 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
     let (caption, kind, action) = status_read(snapshot.view()).unwrap();
     assert_eq!((caption.to_str().unwrap(), kind), ("Can\u{2019}t reach your Plex server", StatusKind::Failed));
     assert_eq!(action.unwrap().to_str().unwrap(), "Try again");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let no_offer = OfferWatch::default();
     let overlay = status_overlay(snapshot.view(), &no_offer, &ClockWatch::default()).unwrap();
     let verdict = overlay.verdict_band_measured(&measure);
     assert_eq!(verdict.y, StatusOverlay::FULL_ANCHOR_TOP);
     let drawn = overlay.action_frame_measured(&measure).unwrap();
-    assert_eq!(drawn.y, verdict.y + verdict.h + crate::ui::theme::space::LG);
+    assert_eq!(drawn.y, verdict.y + verdict.h + plx_ui::theme::space::LG);
     let hit = screen(snapshot.view()).hero_button_rect(snapshot.view(), 0, &measure).unwrap();
     assert_eq!([hit.x, hit.y, hit.w, hit.h], [drawn.x, drawn.y, drawn.w, drawn.h]);
 }
@@ -299,7 +299,7 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
 #[test]
 fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     use plx_net::net::keypin::{self, Blocked};
-    use crate::ui::icons::Icon;
+    use plx_ui::icons::Icon;
     let _guard = plx_base::testlock::serial();
     crate::plex::grant::reset_for_test();
     let key = keypin::key_of("home-clock.invalid", 32400);
@@ -399,19 +399,19 @@ fn a_failed_home_ignores_a_clock_fact_about_another_server() {
     step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
     assert_eq!(s.clock.blocked(), None);
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
-    assert_eq!((overlay.reason, overlay.glyph), (None, Some(crate::ui::icons::Icon::ServerBadgeMinus)));
+    assert_eq!((overlay.reason, overlay.glyph), (None, Some(plx_ui::icons::Icon::ServerBadgeMinus)));
 }
 
 // The observer consumes the same final geometry as widgets::card; the screen
 // supplies no independent motion signal that could omit one of these terms.
-fn observe_card(h: &mut crate::ui::card_motion::History, s: &HomeScreen, ms: u32) -> crate::ui::card_motion::Verdict {
+fn observe_card(h: &mut plx_ui::card_motion::History, s: &HomeScreen, ms: u32) -> plx_ui::card_motion::Verdict {
     h.begin();
-    h.observe(crate::ui::card_motion::Identity { owner: 1, asset: 1 }, s.drawn_card_geometry(0, 0, 1.0).0, ms)
+    h.observe(plx_ui::card_motion::Identity { owner: 1, asset: 1 }, s.drawn_card_geometry(0, 0, 1.0).0, ms)
 }
 
 #[test]
 fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
-    use crate::ui::card_motion::{History, Verdict};
+    use plx_ui::card_motion::{History, Verdict};
     let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
@@ -434,7 +434,7 @@ fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
 
 #[test]
 fn the_hero_to_grid_dive_is_observed_from_card_placement_and_then_settles() {
-    use crate::ui::card_motion::{History, Verdict};
+    use plx_ui::card_motion::{History, Verdict};
     let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
@@ -542,7 +542,7 @@ fn drawn_hero_geometry_follows_slide_and_the_captured_press_scale() {
                 let drawn = Focusable::<TestHost>::place(&s, &key.elem, &context, At::Drawn).unwrap();
                 let target = Focusable::<TestHost>::place(&s, &key.elem, &context, At::SpringTarget).unwrap();
                 assert!((drawn.rect.cx() - base.cx() - dir * (1.0 - slide) * SCR_W).abs() < 0.01);
-                assert!((drawn.rect.w - base.w * crate::ui::widgets::CTRL_FOCUS_SCALE * press).abs() < 0.01);
+                assert!((drawn.rect.w - base.w * plx_ui::widgets::CTRL_FOCUS_SCALE * press).abs() < 0.01);
                 assert!((target.rect.cx() - base.cx()).abs() < 0.01);
                 if dir == 1.0 && slide == 0.8 {
                     let mut frame = DrawFrame::new(&context, Painter::root());
@@ -904,10 +904,10 @@ fn the_ground_is_skipped_only_when_opaque_art_covers_it() {
 #[test]
 fn the_home_hero_logo_never_reaches_the_top_bar() {
     const META_H: f32 = 28.0 * 1.32;
-    let synopsis = crate::ui::hero_syn_h(crate::ui::HERO_SYN_MAXLINES);
+    let synopsis = plx_ui::hero_syn_h(plx_ui::HERO_SYN_MAXLINES);
     let band = hero_logo::band_h(LogoRung::Hero);
     let top = hero_stack_top(band, META_H, theme::space::SM + synopsis);
-    assert!(top - (theme::logo::HERO_H_MAX - band) > crate::ui::widgets::TOP_BAR_BOTTOM);
+    assert!(top - (theme::logo::HERO_H_MAX - band) > plx_ui::widgets::TOP_BAR_BOTTOM);
 }
 
 #[test]
@@ -981,8 +981,8 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
 }
 
 fn top_band_bottom() -> f32 {
-    let chip = crate::ui::widgets::CHIP_CAP_MAX;
-    assert_eq!(chip.y + chip.h, crate::ui::widgets::TOP_BAR_BOTTOM,
+    let chip = plx_ui::widgets::CHIP_CAP_MAX;
+    assert_eq!(chip.y + chip.h, plx_ui::widgets::TOP_BAR_BOTTOM,
         "the chip capsule and the tab track are one band");
     chip.y + chip.h
 }
@@ -1301,7 +1301,7 @@ fn an_over_long_handle_truncates_rather_than_wrapping() {
 
 #[test]
 fn the_meta_lines_bound_keeps_the_run_inside_the_hero_wedge() {
-    use crate::ui::widgets::hero_scrim_a;
+    use plx_ui::widgets::hero_scrim_a;
     assert!(
         hero_scrim_a(HERO_META_R, 1.0) > 0.0,
         "the line ends where the wedge has already given up"
@@ -1531,7 +1531,7 @@ fn the_home_census_covers_input_motion_and_current_projection() {
     }
     // These extents are part of SHAPE, not merely runtime sequence lengths.
     assert_eq!(HERO_NBTN, 2);
-    assert_eq!(crate::ui::card_row::MAX_ROW_ITEMS, 24);
+    assert_eq!(plx_ui::card_row::MAX_ROW_ITEMS, 24);
 }
 
 /// `person` and `search` cap their shelves at the data layer's `pms::MAX_SHELF_ITEMS`; the card row
@@ -1540,7 +1540,7 @@ fn the_home_census_covers_input_motion_and_current_projection() {
 /// place that sees both.
 #[test]
 fn the_data_shelf_cap_is_the_card_rows_capacity() {
-    assert_eq!(crate::pms::MAX_SHELF_ITEMS, crate::ui::card_row::MAX_ROW_ITEMS);
+    assert_eq!(crate::pms::MAX_SHELF_ITEMS, plx_ui::card_row::MAX_ROW_ITEMS);
 }
 
 #[test]
@@ -2579,7 +2579,7 @@ struct HeroArtState {
 
 /// A poster source that answers READY only for what the test delivered, and records the rest.
 struct HeroArtSpy;
-impl crate::ui::tex::Source for HeroArtSpy {
+impl plx_ui::tex::Source for HeroArtSpy {
     fn probe(&self, _: u16, path: &str, _: i32, _: i32, _: bool) -> Option<plx_machine::machine::PosterKey> {
         HERO_ART.with(|a| {
             let mut a = a.borrow_mut();
@@ -2590,15 +2590,15 @@ impl crate::ui::tex::Source for HeroArtSpy {
                 .map(|i| plx_machine::machine::PosterKey(i as u32))
         })
     }
-    fn warm(&self, _: u16, path: &str, _: i32, _: i32, _: bool) -> crate::ui::tex::Warm {
+    fn warm(&self, _: u16, path: &str, _: i32, _: i32, _: bool) -> plx_ui::tex::Warm {
         HERO_ART.with(|a| a.borrow_mut().warmed.push(path.into()));
-        crate::ui::tex::Warm::Claimed
+        plx_ui::tex::Warm::Claimed
     }
     fn logo(&self, _: u16, _: &str) -> Option<plx_machine::machine::PosterKey> {
         None
     }
-    fn logo_warm(&self, _: u16, _: &str) -> crate::ui::tex::Warm {
-        crate::ui::tex::Warm::Known
+    fn logo_warm(&self, _: u16, _: &str) -> plx_ui::tex::Warm {
+        plx_ui::tex::Warm::Known
     }
     fn unresident(&self, _: plx_machine::machine::PosterKey, _: bool) {}
     fn idle(&self) -> bool {
@@ -2623,13 +2623,13 @@ fn hero_edge_right() -> ScreenEvent<TestHost> {
 /// PREPARE step would: from here on a draw probe of it resolves to a resident texture.
 fn deliver_hero_art(path: &str) {
     struct StubUp(u32);
-    impl crate::ui::tex::Uploader for StubUp {
-        fn upload(&mut self, d: &crate::ui::tex::Decoded) -> crate::ui::tex::Tex {
+    impl plx_ui::tex::Uploader for StubUp {
+        fn upload(&mut self, d: &plx_ui::tex::Decoded) -> plx_ui::tex::Tex {
             self.0 += 1;
-            crate::ui::tex::Tex { id: 100 + self.0, w: d.w, h: d.h }
+            plx_ui::tex::Tex { id: 100 + self.0, w: d.w, h: d.h }
         }
-        fn warm(&mut self, _: crate::ui::tex::Tex) {}
-        fn free(&mut self, _: crate::ui::tex::Tex) {}
+        fn warm(&mut self, _: plx_ui::tex::Tex) {}
+        fn free(&mut self, _: plx_ui::tex::Tex) {}
     }
     let key = HERO_ART.with(|a| {
         let mut a = a.borrow_mut();
@@ -2639,16 +2639,16 @@ fn deliver_hero_art(path: &str) {
         a.delivered.push(path.into());
         a.delivered.len() - 1
     });
-    crate::ui::tex::accept(crate::ui::tex::PosterReady {
+    plx_ui::tex::accept(plx_ui::tex::PosterReady {
         key: plx_machine::machine::PosterKey(key as u32),
-        result: Ok(crate::ui::tex::Decoded { w: 16, h: 9, rgba: vec![0; 16 * 9 * 4].into_boxed_slice() }),
+        result: Ok(plx_ui::tex::Decoded { w: 16, h: 9, rgba: vec![0; 16 * 9 * 4].into_boxed_slice() }),
     });
-    let mut budget = crate::ui::frame::Budget::new();
+    let mut budget = plx_ui::frame::Budget::new();
     budget.begin_frame(0);
     let mut present = plx_machine::present::Present::new();
     let mut handle = plx_machine::machine::PresentHandle::of(&mut present);
     let mut up = StubUp(key as u32 * 10);
-    crate::ui::tex::prepare(&mut budget, &mut up, &mut handle, || 0);
+    plx_ui::tex::prepare(&mut budget, &mut up, &mut handle, || 0);
 }
 
 /// **Owner field report (2026-09-30): a MANUAL hero flip blinks; the 8 s auto-advance never does.**
@@ -2668,8 +2668,8 @@ fn deliver_hero_art(path: &str) {
 #[test]
 fn a_manual_hero_flip_lands_on_a_preloaded_backdrop_with_no_ground_frame() {
     let _guard = plx_base::testlock::serial();
-    crate::ui::tex::install(&HeroArtSpy);
-    crate::ui::tex::reset_for_test(64 << 20);
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
     HERO_ART.with(|a| *a.borrow_mut() = HeroArtState { busy: true, ..Default::default() });
 
     let mut state = crate::pms::PmsState::default();
@@ -2760,8 +2760,8 @@ fn a_manual_hero_flip_lands_on_a_preloaded_backdrop_with_no_ground_frame() {
 #[test]
 fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdrops() {
     let _guard = plx_base::testlock::serial();
-    crate::ui::tex::install(&HeroArtSpy);
-    crate::ui::tex::reset_for_test(64 << 20);
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
     HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
 
     let mut state = crate::pms::PmsState::default();
@@ -2777,7 +2777,7 @@ fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdro
     }
     let tex_of = |i: usize| {
         let h = hero(i);
-        crate::ui::widgets::resolve_tex_wh_on(h.item.sid.raw(), &h.item.art, 1280, 720, 0).0
+        plx_ui::widgets::resolve_tex_wh_on(h.item.sid.raw(), &h.item.art, 1280, 720, 0).0
     };
     let who = |tex: u32| (0..n).find(|&i| tex_of(i) == tex);
     let tick = hero_tick;
@@ -2786,7 +2786,7 @@ fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdro
     // What the frame puts on screen: every backdrop-sized textured quad that reaches the panel.
     let backdrops = |s: &mut HomeScreen| {
         let context = cx(view, Some(play(s)));
-        crate::ui::draw_census::capture_tex(|| {
+        plx_ui::draw_census::capture_tex(|| {
             let mut f = DrawFrame::new(&context, Painter::recording());
             plx_gfx::gfx::without_frame_clear(|| Screen::<TestHost>::draw(s, &mut f));
         })

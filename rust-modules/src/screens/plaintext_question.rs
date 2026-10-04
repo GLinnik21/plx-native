@@ -25,16 +25,16 @@ use std::ffi::{CStr, CString};
 use crate::auth::{self, PlaintextVerdict, ReadoutSurface, SessionCmd};
 use crate::plex::session::PlaintextChoice;
 use crate::plex::ServerId;
-use crate::ui::decision_alert::{Choice, DecisionAlert, Tone};
+use plx_ui::decision_alert::{Choice, DecisionAlert, Tone};
 use plx_machine::machine::{
     Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host, InputEvent,
     InputKind, Key, MachineId,
 };
-use crate::ui::screen::{
+use plx_ui::screen::{
     Activate, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusTarget, GroupKind,
     GroupSpec, Hover, Placed, ScreenEvent, Seat, Step, Stop,
 };
-use crate::ui::{Painter, Rect};
+use plx_ui::{Painter, Rect};
 
 /// The shared question and verbs, resolved from this launch's locale.
 pub(crate) use plx_platform::i18n::msg::{
@@ -460,9 +460,9 @@ pub(crate) fn settings_detail(on: bool, connected: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::PlaintextQuestion;
-    use crate::ui::decision_alert::BUTTON_W;
-    use crate::ui::theme;
-    use crate::ui::widgets::Button;
+    use plx_ui::decision_alert::BUTTON_W;
+    use plx_ui::theme;
+    use plx_ui::widgets::Button;
 
     /// **Every answer fits its pill, in every shipped language.** The pill is `BUTTON_W` wide
     /// whatever it says and `Button` centres its label without clipping, so a long translation
@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn every_answer_fits_its_pill_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
-        use crate::ui::fit::HEADROOM;
+        use plx_ui::fit::HEADROOM;
         use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
         let mut out = Vec::new();
         for language in [Preference::En, Preference::Es, Preference::Be] {

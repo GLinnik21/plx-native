@@ -50,22 +50,22 @@ use std::os::raw::c_int;
 use std::sync::Arc;
 
 use crate::auth::{self, Phase};
-use crate::ui::frame::Budget;
-use crate::ui::label::HAlign;
+use plx_ui::frame::Budget;
+use plx_ui::label::HAlign;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key,
     LogicalState, Machine, Measure, Tick,
 };
-use crate::ui::route_screen::{RouteGround, RouteLayout};
-use crate::ui::screen::{
+use plx_ui::route_screen::{RouteGround, RouteLayout};
+use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, FocusTarget,
     Focusable, GroupKind, GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent,
     Seat, Step, Stop,
 };
-use crate::ui::text_view::TextView;
-use crate::ui::decision_alert::{Choice, DecisionAlert, Tone};
-use crate::ui::widgets::{Button, CtlPop, Spinner, StatusKind, StatusOverlay};
-use crate::ui::{theme, Env, Painter, Rect, View};
+use plx_ui::text_view::TextView;
+use plx_ui::decision_alert::{Choice, DecisionAlert, Tone};
+use plx_ui::widgets::{Button, CtlPop, Spinner, StatusKind, StatusOverlay};
+use plx_ui::{theme, Env, Painter, Rect, View};
 
 use super::plaintext_question::{self, PlaintextQuestion, connect};
 use super::registry::{word, AppFx, AppLike, AppMsg, AuthLike};
@@ -286,7 +286,7 @@ fn signed_in_reason(account: &str, measure: &dyn Measure) -> Option<String> {
     let sz = theme::size::BODY;
     let message = |name: &str| plx_platform::i18n::msg::browse_auth_no_servers_signed_in_as(name);
     let first_line_w = |text: &str| measure.width_str(text.lines().next().unwrap_or(""), sz, false);
-    let column = StatusOverlay::REASON_W * crate::ui::fit::HEADROOM;
+    let column = StatusOverlay::REASON_W * plx_ui::fit::HEADROOM;
     let full = message(&account);
     if first_line_w(&full) <= column {
         return Some(full);
@@ -381,7 +381,7 @@ fn readout_overlay<'a>(
     reason: Option<&'a CStr>,
     labels: [Option<&'a CStr>; 2],
     note: Option<&'a Note>,
-    glyph: crate::ui::icons::Icon,
+    glyph: plx_ui::icons::Icon,
 ) -> StatusOverlay<'a> {
     let mut o = StatusOverlay::new(Rect::FULL, caption, kind).page(glyph);
     if let Some(r) = reason {
@@ -399,9 +399,9 @@ fn readout_overlay<'a>(
 /// The icon a failed sign-in's mark draws as. Telemetry decides WHICH mark a cause earns
 /// (`IncidentContext::readout_glyph`, from the same evidence as the caption); this screen decides
 /// what each mark looks like. One arm per mark and no wildcard, so a new mark cannot draw nothing.
-fn incident_icon(glyph: crate::telemetry::incident::ReadoutGlyph) -> crate::ui::icons::Icon {
+fn incident_icon(glyph: crate::telemetry::incident::ReadoutGlyph) -> plx_ui::icons::Icon {
     use crate::telemetry::incident::ReadoutGlyph as G;
-    use crate::ui::icons::Icon;
+    use plx_ui::icons::Icon;
     match glyph {
         G::ClockBadgeAlert => Icon::ClockBadgeAlert,
         G::CloudBadgeAlert => Icon::CloudBadgeAlert,
@@ -430,7 +430,7 @@ fn status_row_rects(
     has_reason: bool,
 ) -> [Option<Rect>; 2] {
     // Geometry only — the glyph never moves the row, so any `Icon` measures identically.
-    readout_overlay(c"", kind, has_reason.then_some(c""), labels, None, crate::ui::icons::Icon::ClockBadgeAlert)
+    readout_overlay(c"", kind, has_reason.then_some(c""), labels, None, plx_ui::icons::Icon::ClockBadgeAlert)
         .action_frames_measured(measure)
 }
 
@@ -1133,7 +1133,7 @@ impl LoginScreen {
             self.question.withdraw(&mut self.report.alert);
         }
         if self.report.alert.is_open() && self.report.sheet == Sheet::Details {
-            use crate::ui::decision_alert::Answers;
+            use plx_ui::decision_alert::Answers;
             let body = self.report.details_body();
             let answers = if self.report.sendable() { Answers::Two } else { Answers::One };
             self.report.alert.reconcile_card(plx_platform::i18n::msg::settings_login_details_c(), body, answers);
@@ -1254,7 +1254,7 @@ impl LoginScreen {
         if self.report.offer.is_none() {
             return;
         }
-        use crate::ui::decision_alert::Answers;
+        use plx_ui::decision_alert::Answers;
         let sendable = self.report.sendable();
         let body = self.report.details_body();
         self.report.sheet = Sheet::Details;
@@ -1321,16 +1321,16 @@ impl LoginScreen {
     /// Meaningless while `readout_kind()` is not `Failed` (a `Working`/`Empty` read-out draws no
     /// glyph) — callers that share this screen's builder for those kinds still pass it through,
     /// since `StatusOverlay::page` is what actually decides whether it is ever drawn.
-    fn readout_glyph(&self) -> crate::ui::icons::Icon {
+    fn readout_glyph(&self) -> plx_ui::icons::Icon {
         if self.persistence_warning.is_some() {
-            return crate::ui::icons::Icon::KeyBadgeAlert;
+            return plx_ui::icons::Icon::KeyBadgeAlert;
         }
         match self.report.offer.as_ref().and_then(|o| o.readout_context()) {
             Some(ctx) => incident_icon(ctx.readout_glyph()),
             // No incident context to read (should not happen alongside `Phase::Error`, which
             // `auth::output_failed` always pairs with one) — the wait's own clock is the closest
             // honest reading of "something about time or connectivity went wrong".
-            None => crate::ui::icons::Icon::ClockBadgeAlert,
+            None => plx_ui::icons::Icon::ClockBadgeAlert,
         }
     }
 
@@ -1886,7 +1886,7 @@ fn harness_driven() -> bool {
 /// where `ci/check-package.py` grades them.
 #[cfg(feature = "devtriggers")]
 fn recorder_armed() -> bool {
-    matches!(crate::ui::rec::mode_value(&plx_base::devtrig::path("rec")), Ok(Some(_)))
+    matches!(plx_ui::rec::mode_value(&plx_base::devtrig::path("rec")), Ok(Some(_)))
 }
 #[cfg(not(feature = "devtriggers"))]
 fn recorder_armed() -> bool {
@@ -1908,8 +1908,8 @@ impl LoginScreen {
     /// alone.
     fn alert_elems(&self) -> &'static [u32] {
         match self.report.alert.answers() {
-            crate::ui::decision_alert::Answers::Two => &[ALERT_CANCEL, ALERT_SEND],
-            crate::ui::decision_alert::Answers::One => &[ALERT_CANCEL],
+            plx_ui::decision_alert::Answers::Two => &[ALERT_CANCEL, ALERT_SEND],
+            plx_ui::decision_alert::Answers::One => &[ALERT_CANCEL],
         }
     }
 }
@@ -2086,7 +2086,7 @@ impl<H: AuthLike> Machine<H> for LoginScreen {
                     if !self.report.alert.is_open() {
                         return Handled::Yes;
                     }
-                    use crate::ui::consts;
+                    use plx_ui::consts;
                     return match input.kind {
                         InputKind::Key { key, sym, wcode, edge, .. } => match consts::classify_input(key, sym, wcode) {
                             direction @ (consts::Key::Up | consts::Key::Down) if edge != Edge::Up => {
@@ -2229,11 +2229,11 @@ impl<H: AuthLike> Screen<H> for LoginScreen {
     /// [`Self::prepare_qr_tex`], its own `delete_tex` on `Unmount`. Everything else here is drawn
     /// immediate-mode or comes from a shared cache. The size is whatever plex.tv's PNG decoded to,
     /// which is why it is recorded rather than assumed.
-    fn render_report(&self) -> crate::ui::frame::RenderReport {
+    fn render_report(&self) -> plx_ui::frame::RenderReport {
         if self.qr_tex == 0 {
-            return crate::ui::frame::RenderReport::NONE;
+            return plx_ui::frame::RenderReport::NONE;
         }
-        crate::ui::frame::RenderReport::one(self.qr_px.0, self.qr_px.1)
+        plx_ui::frame::RenderReport::one(self.qr_px.0, self.qr_px.1)
     }
     fn focus_source(&self) -> FocusSource {
         FocusSource::Engine
@@ -2241,7 +2241,7 @@ impl<H: AuthLike> Screen<H> for LoginScreen {
     // **A click only lands inside the one control's own rect, never anywhere else on the screen —
     // a deliberate departure from the pre-phase-6 behaviour, not an oversight.** The legacy loop's
     // `Route::Login` click arm (`app/run.rs`, before 957bdc4d) fired
-    // `crate::ui::login::key(SDLK_RETURN, 0)` on ANY click anywhere on this route, because that
+    // `plx_ui::login::key(SDLK_RETURN, 0)` on ANY click anywhere on this route, because that
     // screen predates real per-widget hit testing and "one actionable thing on the login screen"
     // was reason enough to skip building it; `key()` itself still gated on whether a control was
     // actually offered, so the only visible effect was that a tap on the QR image, the URL, or
@@ -2281,7 +2281,7 @@ mod tests {
     use super::*;
     use std::sync::{Arc, LazyLock};
 
-    use crate::ui::consts::inside_safe;
+    use plx_ui::consts::inside_safe;
     use plx_machine::machine::{
         FocusRead, Host, InputOwner, InstanceId, MachineId, PressRead, Source, Stamped,
     };
@@ -2431,7 +2431,7 @@ mod tests {
             misses: 1,
             elapsed_ms: 0,
         });
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let mut screen = LoginScreen::new(EntryId(0), waiting.read());
 
         step_ev_with(&mut screen, &tick_ev(100), &waiting, InstanceId(0), &m);
@@ -2556,7 +2556,7 @@ mod tests {
     #[test]
     fn qr_is_vertically_centred_and_the_whole_link_stack_stays_in_the_right_column() {
         let route = RouteLayout::screen();
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let q = qr_layout(route, waiting_status(false, false, false), &measure);
         assert_eq!(q.card.cy(), Rect::FULL.cy());
         for r in [q.url, q.card, q.code, q.status] {
@@ -2581,7 +2581,7 @@ mod tests {
             fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
         }
         let _guard = plx_base::testlock::serial();
-        let _no_live_font = crate::ui::text_view::ForbidLive::enter();
+        let _no_live_font = plx_ui::text_view::ForbidLive::enter();
         let measure = UnicodeMeasure;
         let route = RouteLayout::screen();
         let belarusian = LocaleContext::resolve(Preference::Be, None, None, None, None);
@@ -2731,7 +2731,7 @@ mod tests {
     }
 
     fn cx_with<'a>(
-        m: &'a crate::ui::fixture::FixtureMeasure,
+        m: &'a plx_ui::fixture::FixtureMeasure,
         snapshot: &'a auth::owner::SessionSnapshot,
     ) -> Cx<'a, SessionHost> {
         Cx {
@@ -2747,7 +2747,7 @@ mod tests {
         }
     }
 
-    fn test_cx<'a>(m: &'a crate::ui::fixture::FixtureMeasure) -> Cx<'a, SessionHost> {
+    fn test_cx<'a>(m: &'a plx_ui::fixture::FixtureMeasure) -> Cx<'a, SessionHost> {
         cx_with(m, &EMPTY_SNAPSHOT)
     }
 
@@ -2756,7 +2756,7 @@ mod tests {
     /// like every read-out action in this family, never a `Control`/`Card`.
     #[test]
     fn the_control_group_exists_only_while_a_control_is_offered() {
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let cx = test_cx(&m);
 
         let quiet = bare_screen(Phase::Waiting, 0.0);
@@ -2800,7 +2800,7 @@ mod tests {
     /// [`status_action_rect_matches_the_widget_it_is_reproducing`] below is that test.
     #[test]
     fn a_stalled_working_readout_sits_its_action_pill_lower_than_a_settled_one() {
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let working = status_action_rect(&m, plx_platform::i18n::msg::browse_action_retry_c(), StatusKind::Working, true);
         let settled = status_action_rect(&m, plx_platform::i18n::msg::browse_action_retry_c(), StatusKind::Empty, true);
         assert!(
@@ -2815,7 +2815,7 @@ mod tests {
     /// row always stacks under the copy.
     #[test]
     fn a_reason_line_pushes_the_action_pill_down_further() {
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         for kind in [StatusKind::Working, StatusKind::Empty, StatusKind::Failed] {
             let with_reason = status_action_rect(&m, plx_platform::i18n::msg::browse_action_retry_c(), kind, true);
             let without = status_action_rect(&m, plx_platform::i18n::msg::browse_action_retry_c(), kind, false);
@@ -2830,7 +2830,7 @@ mod tests {
     #[test]
     fn the_failed_readout_stands_on_the_page_lines_and_never_grows() {
         use auth::owner::IncidentState as S;
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let pin = crate::telemetry::incident::IncidentKind::PinCreate;
         let rows = |s: &LoginScreen| {
             let (labels, has_reason) = s.readout_labels();
@@ -2859,7 +2859,7 @@ mod tests {
     /// the exact numbers `StatusOverlay::bands`/`action_frame` themselves fall back to when nothing
     /// has called `init_text`, which is true of every host test. It exists ONLY for the test below,
     /// and neither of the two `Measure`s already in this file can stand in for it:
-    /// [`crate::ui::fixture::FixtureMeasure`]'s `line_h` is `sz * 1.2`, a deliberately rough
+    /// [`plx_ui::fixture::FixtureMeasure`]'s `line_h` is `sz * 1.2`, a deliberately rough
     /// stand-in for real font metrics (see its own doc) rather than the widget's actual fallback —
     /// `text_height`'s is `sz` exactly, factor 1.0, no font needed — so a `FixtureMeasure`-based
     /// comparison against the real widget could never agree numerically even when the two formulas
@@ -2898,7 +2898,7 @@ mod tests {
             for has_reason in [false, true] {
                 // Geometry only — the glyph never moves the action row, so any `Icon` measures identically.
                 let mut o = StatusOverlay::new(Rect::FULL, c"caption", kind)
-                    .page(crate::ui::icons::Icon::ClockBadgeAlert).action(plx_platform::i18n::msg::browse_action_retry_c());
+                    .page(plx_ui::icons::Icon::ClockBadgeAlert).action(plx_platform::i18n::msg::browse_action_retry_c());
                 if has_reason {
                     o = o.reason(plx_platform::i18n::msg::browse_login_slow_c());
                 }
@@ -2925,7 +2925,7 @@ mod tests {
     #[test]
     fn the_spinner_phase_reports_motion_on_every_tick_while_a_control_has_one() {
         let mut s = LoginScreen::new(EntryId(0), EMPTY_SNAPSHOT.read());
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let cx = test_cx(&m);
         let mut present = Present::new();
         let _ = present.take(0);
@@ -2945,7 +2945,7 @@ mod tests {
         s: &mut LoginScreen,
         ev: &ScreenEvent<SessionHost>,
     ) -> (Handled, Vec<Stamped<SessionHost>>) {
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         step_ev_with(s, ev, &EMPTY_SNAPSHOT, InstanceId(0), &m)
     }
 
@@ -2954,7 +2954,7 @@ mod tests {
         ev: &ScreenEvent<SessionHost>,
         snapshot: &auth::owner::SessionSnapshot,
         instance: InstanceId,
-        m: &crate::ui::fixture::FixtureMeasure,
+        m: &plx_ui::fixture::FixtureMeasure,
     ) -> (Handled, Vec<Stamped<SessionHost>>) {
         let _frame_scope = plx_base::task::FrameScope::enter();
         let cx = cx_with(m, snapshot);
@@ -2976,7 +2976,7 @@ mod tests {
                 // the remote's own BACK code, so the alert trap (which classifies the raw press
                 // to tell BACK from Stop and Exit) reads it too
                 sym: 0,
-                wcode: crate::ui::consts::WCODE_BACK,
+                wcode: plx_ui::consts::WCODE_BACK,
                 edge: Edge::Down,
                 at_edge: false,
             },
@@ -3006,7 +3006,7 @@ mod tests {
         );
 
         let replacement = snapshot(Phase::Waiting, 100, "CCCC");
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         step_ev_with(
             &mut second,
             &ScreenEvent::Tick(Tick {
@@ -3045,7 +3045,7 @@ mod tests {
         let mut restart = bare_screen(Phase::Waiting, QR_ESCAPE_AFTER_MS);
         restart.wait = (Phase::Waiting, 7);
         restart.qr_gen = 7;
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let published = snapshot(Phase::Waiting, 7, "AAAA");
         let (_, restart_fx) = step_ev_with(
             &mut restart,
@@ -3126,7 +3126,7 @@ mod tests {
         screen.wait = (Phase::Waiting, 7);
         screen.qr_gen = 7;
         let published = snapshot(Phase::Waiting, 7, "AAAA");
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         step_ev_with(
             &mut screen,
             &ScreenEvent::Activate(CONTROL),
@@ -3222,7 +3222,7 @@ mod tests {
     fn phase_progress_retires_a_carried_restart_reply_and_exhaustion_emits_nothing() {
         let waiting = snapshot(Phase::Waiting, 7, "AAAA");
         let progressed = snapshot(Phase::Discovering, 7, "");
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let mut screen = bare_screen(Phase::Waiting, QR_ESCAPE_AFTER_MS);
         screen.wait = (Phase::Waiting, 7);
         screen.qr_gen = 7;
@@ -3303,7 +3303,7 @@ mod tests {
     fn back_during_switching_is_still_the_owned_logins_root_press() {
         let switching = snapshot(Phase::Switching, 17, "");
         let mut s = LoginScreen::new(EntryId(9), switching.read());
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let (handled, effects) = step_ev_with(&mut s, &key_back_down(), &switching,
             InstanceId(44), &m);
         assert_eq!(handled, Handled::Yes);
@@ -3346,7 +3346,7 @@ mod tests {
     /// reason `unmount_frees_the_qr_texture` uses it: a host test uploads nothing.
     #[test]
     fn the_qr_bitmap_is_reported_as_this_screens_own_render() {
-        use crate::ui::frame::RenderReport;
+        use plx_ui::frame::RenderReport;
         let mut s = bare_screen(Phase::Waiting, 0.0);
         assert_eq!(
             Screen::<SessionHost>::render_report(&s),
@@ -3400,7 +3400,7 @@ mod tests {
         failed.incident = Some(incident(auth::owner::IncidentState::Pending,
             crate::telemetry::incident::IncidentKind::PinCreate));
         let mut s = LoginScreen::new(EntryId(0), failed.read());
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let (_, first) = step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
         let resolves = |fx: &[Stamped<SessionHost>]| fx.iter().filter(|st| matches!(st.fx,
             Fx::App(AppFx::Session(auth::SessionCmd::ResolveIncident { id: 7, .. })))).count();
@@ -3418,7 +3418,7 @@ mod tests {
             auth::owner::IncidentState::Offered { revision: crate::telemetry::consent::revision() },
             crate::telemetry::incident::IncidentKind::PinCreate));
         let mut s = LoginScreen::new(EntryId(0), failed.read());
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let (_, fx) = step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
         assert!(enters_group(&fx, GroupId(1)), "focus is sent to the alert's answers");
         let (_, again) = step_ev_with(&mut s, &tick_ev(32), &failed, InstanceId(0), &m);
@@ -3432,7 +3432,7 @@ mod tests {
         snapshot: &auth::owner::SessionSnapshot,
         elem: u32,
     ) -> Vec<Stamped<SessionHost>> {
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let mut cx = cx_with(&m, snapshot);
         cx.focus.current = Some(plx_machine::machine::FocusKey { entry: EntryId(0), elem });
         let mut present = Present::new();
@@ -3462,7 +3462,7 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let failed = failed_with(auth::owner::IncidentState::NotNow);
         let mut s = LoginScreen::new(EntryId(0), failed.read());
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let (_, fx) = step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
         assert!(!enters_group(&fx, ALERT_GROUP), "an answered offer is not asked again");
         let (_, fx) = step_ev_with(&mut s, &ScreenEvent::Activate(DETAILS), &failed, InstanceId(0), &m);
@@ -3475,11 +3475,11 @@ mod tests {
     #[test]
     fn open_details_card_reconciles_delivery_failure_without_reopening() {
         use auth::owner::IncidentState as S;
-        use crate::ui::decision_alert::Answers;
+        use plx_ui::decision_alert::Answers;
         let _serial = plx_base::testlock::serial();
         let mut failed = failed_with(S::Queued { receipt: "old-receipt".into() });
         let mut s = LoginScreen::new(EntryId(0), failed.read());
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
         step_ev_with(&mut s, &ScreenEvent::Activate(DETAILS), &failed, InstanceId(0), &m);
         assert_eq!(s.report.alert.answers(), Answers::One);
@@ -3498,7 +3498,7 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let mut failed = failed_with(S::Sending);
         let mut s = LoginScreen::new(EntryId(0), failed.read());
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
         step_ev_with(&mut s, &ScreenEvent::Activate(DETAILS), &failed, InstanceId(0), &m);
         assert!(!s.report.alert.body_for_test().iter().any(|p| p.starts_with("Report ID:")));
@@ -3521,7 +3521,7 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let mut failed = failed_with(S::NotNow);
         let mut s = LoginScreen::new(EntryId(0), failed.read());
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
         step_ev_with(&mut s, &ScreenEvent::Activate(DETAILS), &failed, InstanceId(0), &m);
         assert_eq!(s.report.alert.choice(), Choice::Destructive);
@@ -3540,9 +3540,9 @@ mod tests {
     #[test]
     fn the_details_card_offers_send_report_iff_sendable() {
         use auth::owner::IncidentState as S;
-        use crate::ui::decision_alert::Answers;
+        use plx_ui::decision_alert::Answers;
         let _serial = plx_base::testlock::serial();
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let cx = test_cx(&m);
         let pin = crate::telemetry::incident::IncidentKind::PinCreate;
         let receipt = "41de4cd388e4041654de38f2787c3922".to_string();
@@ -3583,7 +3583,7 @@ mod tests {
     fn back_or_close_returns_focus_to_details() {
         let _serial = plx_base::testlock::serial();
         let failed = failed_with(auth::owner::IncidentState::NotNow);
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         for via_back in [true, false] {
             let mut s = LoginScreen::new(EntryId(0), failed.read());
             step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
@@ -3611,7 +3611,7 @@ mod tests {
     fn send_report_on_the_card_sends_the_report() {
         let _serial = plx_base::testlock::serial();
         let failed = failed_with(auth::owner::IncidentState::NotNow);
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let mut s = LoginScreen::new(EntryId(0), failed.read());
         step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
         let (_, early) = step_ev_with(&mut s, &ScreenEvent::Activate(ALERT_SEND), &failed, InstanceId(0), &m);
@@ -3664,7 +3664,7 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let failed = insecure_failure(crate::plex::probe::PlaintextEligibility::Eligible);
         let mut s = LoginScreen::new(EntryId(0), failed.read());
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let (_, fx) = step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
         assert!(!enters_group(&fx, ALERT_GROUP), "the report question is not raised");
         assert!(!s.report.alert.is_open());
@@ -3684,7 +3684,7 @@ mod tests {
     fn the_failed_readout_draws_the_label_its_press_acts_on() {
         use crate::plex::session::PlaintextChoice;
         let _serial = plx_base::testlock::serial();
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let mut failed = insecure_failure(crate::plex::probe::PlaintextEligibility::Eligible);
         for (choice, want) in [(PlaintextChoice::Undecided, connect()), (PlaintextChoice::Declined, plx_platform::i18n::msg::browse_action_retry_c()),
             (PlaintextChoice::Revoked, plx_platform::i18n::msg::browse_action_retry_c()), (PlaintextChoice::Allowed, plx_platform::i18n::msg::browse_action_retry_c())] {
@@ -3707,7 +3707,7 @@ mod tests {
     fn connect_asks_the_question_and_only_its_answer_reaches_session() {
         let _serial = plx_base::testlock::serial();
         let failed = insecure_failure(crate::plex::probe::PlaintextEligibility::Eligible);
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         for (how, allow) in [("connect", true), ("not now", false), ("back", false)] {
             let mut s = LoginScreen::new(EntryId(0), failed.read());
             step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
@@ -3716,7 +3716,7 @@ mod tests {
             assert!(s.report.alert.is_open() && s.report.sheet == Sheet::Plaintext, "{how}");
             assert!(enters_group(&opened, ALERT_GROUP), "{how}");
             assert_eq!(s.state.plaintext, Some(true));
-            let cx_m = crate::ui::fixture::FixtureMeasure;
+            let cx_m = plx_ui::fixture::FixtureMeasure;
             let cx = cx_with(&cx_m, &failed);
             assert_eq!(Focusable::<SessionHost>::seat(&s, ALERT_GROUP, Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None }, &cx).elem,
                 ALERT_CANCEL, "{how}: seated on Not now");
@@ -3740,7 +3740,7 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let failed = insecure_failure(crate::plex::probe::PlaintextEligibility::NotLocal);
         let mut s = LoginScreen::new(EntryId(0), failed.read());
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let (_, fx) = step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
         assert_eq!(s.control_kind(), Some(ControlKind::Retry));
         assert!(enters_group(&fx, ALERT_GROUP), "the report question is asked");
@@ -3899,7 +3899,7 @@ mod tests {
     #[test]
     fn a_report_on_its_way_turns_the_spinner_on_a_failed_readout() {
         let _serial = plx_base::testlock::serial();
-        let m = crate::ui::fixture::FixtureMeasure;
+        let m = plx_ui::fixture::FixtureMeasure;
         let spin_after_ticks = |state: auth::owner::IncidentState| {
             let mut failed = snapshot(Phase::Error, 0, "");
             failed.incident = Some(incident(state, crate::telemetry::incident::IncidentKind::PinCreate));

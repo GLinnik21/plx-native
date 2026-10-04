@@ -1,10 +1,10 @@
 //! Application-owned data for the shared bar. Capture before stepping a frame; paint consumes
 //! borrowed strings and never opens the session file or polls the Browse vocabulary.
 
-use crate::ui::containers::tabs::StripMember;
-use crate::ui::dispatch::STRIP_BASE;
+use plx_ui::containers::tabs::StripMember;
+use plx_ui::dispatch::STRIP_BASE;
 use plx_machine::machine::{FocusKey, Measure};
-use crate::ui::widgets::{self, ChromeRead, ProfileChipRead, TabLabels, TopFocus};
+use plx_ui::widgets::{self, ChromeRead, ProfileChipRead, TabLabels, TopFocus};
 use crate::stores::browse::{DirectoryView, SecKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -186,7 +186,7 @@ mod tests {
         let mut snapshot = ChromeSnapshot::default();
         let directory = directory(&[]);
         crate::plex::session::install_transient_for_test(true);
-        snapshot.refresh(&crate::ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
         assert_eq!(snapshot.name.to_str().unwrap(), "Sign in");
         crate::plex::session::save(&crate::plex::session::Session {
             client_id: "synthetic-client".into(), account_token: "synthetic-token".into(),
@@ -194,7 +194,7 @@ mod tests {
                 title: "Synthetic owner".into(), admin: true, ..Default::default()
             }], ..Default::default()
         });
-        snapshot.refresh(&crate::ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
         assert_eq!(snapshot.name.to_str().unwrap(), "Synthetic owner");
     }
 
@@ -218,7 +218,7 @@ mod tests {
         let mut snapshot = ChromeSnapshot {
             profile_generation: Some(crate::plex::session::current_gen()), ..Default::default()
         };
-        snapshot.refresh(&crate::ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
         assert_eq!(snapshot.keys, vec![STRIP_BASE, STRIP_BASE + 1, STRIP_BASE + 2, STRIP_BASE + 3]);
         assert_eq!(&snapshot.labels[..3], &["Home", "Movies", "TV Shows"]);
         let mut members = Vec::new();
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn shared_widgets_read_no_live_application_vocabulary() {
         let src = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui/widgets.rs"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/src/widgets.rs"),
         ).expect("read widgets.rs");
         let live = src.lines().filter(|line| !line.trim_start().starts_with("//"))
             .collect::<Vec<_>>().join("\n");

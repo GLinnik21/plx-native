@@ -20,16 +20,16 @@ use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver};
 use crate::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
 use crate::route::{DirectPlayMode, NextEpisodeMode, Quality, SkipInterval, SubtitlePosition, SubtitleSize};
-use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
-use crate::ui::frame::Budget;
+use plx_ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use plx_ui::frame::Budget;
 use plx_machine::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
     Handled, InputEvent, InputKind, InstanceId, Key, LogicalState, Machine, MachineId};
-use crate::ui::screen::{DrawFrame, Enter, FocusSource, FocusTarget, HitSource, RenderStrategy,
+use plx_ui::screen::{DrawFrame, Enter, FocusSource, FocusTarget, HitSource, RenderStrategy,
     Screen, ScreenEvent};
-use crate::ui::table::Row;
-use crate::ui::table_screen::{Header, TableScreen};
-use crate::ui::route_screen::RouteLayout;
-use crate::ui::{theme, Rect};
+use plx_ui::table::Row;
+use plx_ui::table_screen::{Header, TableScreen};
+use plx_ui::route_screen::RouteLayout;
+use plx_ui::{theme, Rect};
 use super::family::{form_activate, form_focus, form_right_target, InnerHost, PickerKind, SettingsPage};
 use super::registry::{word, AccountPreferenceReply, AppFx, PreferenceCmd, BAND};
 
@@ -573,7 +573,7 @@ impl Machine<InnerHost> for PreferencesPage {
     }
 }
 
-crate::focusable_via_view!(PreferencesPage, InnerHost, view);
+plx_ui::focusable_via_view!(PreferencesPage, InnerHost, view);
 
 impl Screen<InnerHost> for PreferencesPage {
     fn name(&self) -> &'static str { self.state.kind.word() }
@@ -585,7 +585,7 @@ impl Screen<InnerHost> for PreferencesPage {
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
-        crate::ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
+        plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page

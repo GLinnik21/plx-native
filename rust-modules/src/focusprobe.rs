@@ -229,7 +229,7 @@ fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: 
     // The tvOS click, which is route-agnostic: an OK over a card arms a press and the activation
     // commits from the per-frame loop on the spring-back, so "a press is in flight" is a state the
     // ladder put the app into and a state the NEXT key cancels.
-    let _ = write!(s, " press={}", b(crate::ui::press::is_active()));
+    let _ = write!(s, " press={}", b(plx_ui::press::is_active()));
     s
 }
 

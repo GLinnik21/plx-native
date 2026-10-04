@@ -11,7 +11,7 @@ use super::*;
 use super::run::Frame;
 use crate::screens::registry::{AppMsg, ContentArg, ContentReq, HomeHubIdentity, HomeItemIdentity, HomeReq, HomeTab, PageMemory};
 use plx_machine::machine::{Delivery, EntryId, Fx, InputOwner, MachineId, NavOp};
-use crate::ui::screen::{ReturnState, ScreenEvent};
+use plx_ui::screen::{ReturnState, ScreenEvent};
 
 // (`node` stood here — `ContentArg` → `ui::trail::Node`, one of the two conversions the trail
 // needed. A `ContentArg` IS the page's identity; there is nothing to convert it to.)
@@ -21,7 +21,7 @@ use crate::ui::screen::{ReturnState, ScreenEvent};
 pub(super) fn drain_item_menu_requests<R: super::playback::PlaybackResources>(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     resources: &mut R,
 ) {
@@ -515,7 +515,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
             }
             ContentReq::Present(arg) => {
                 halt_preview(app);
-                app.pages.nav.next_style = crate::ui::containers::modal::Style::Opaque { snapshot: true };
+                app.pages.nav.next_style = plx_ui::containers::modal::Style::Opaque { snapshot: true };
                 app.pages.request_with_return(source, NavOp::Present(AppArg::Content(arg)), ret);
             }
             ContentReq::Back if {
@@ -642,11 +642,11 @@ fn home_requests(app: &mut App, now: u32) {
                 // control. Restore that cursor without introducing a Home-local focus copy.
                 let remembered = app.pages.input.engine.remembered_for(entry).into_iter()
                     .find(|(group, _)| *group == plx_machine::machine::GroupId(0)).map(|(_, elem)| elem);
-                let focus = remembered.map(|elem| crate::ui::screen::FocusTarget::Elem(
+                let focus = remembered.map(|elem| plx_ui::screen::FocusTarget::Elem(
                     plx_machine::machine::FocusKey { entry, elem }))
-                    .unwrap_or(crate::ui::screen::FocusTarget::ContainerGroup(plx_machine::machine::GroupId(0)));
+                    .unwrap_or(plx_ui::screen::FocusTarget::ContainerGroup(plx_machine::machine::GroupId(0)));
                 app.pages.emit(MachineId::Nav, Fx::Deliver(source,
-                    Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh { focus }))));
+                    Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh { focus }))));
             }
             HomeReq::Account => chip_activate(&mut app.pages),
             HomeReq::Tab(tab) => {
@@ -826,7 +826,7 @@ fn library_requests(app: &mut App, now: u32) {
         match request {
             LibraryReq::PublishShelves { .. } => unreachable!(),
             LibraryReq::Menu { kind, anchor, target } => {
-                app.pages.nav.next_style = crate::ui::containers::modal::Style::Compact;
+                app.pages.nav.next_style = plx_ui::containers::modal::Style::Compact;
                 app.pages.request(source, NavOp::Present(AppArg::LibraryMenu(LibraryMenuArg { host: instance, target, kind, anchor })));
             }
             LibraryReq::Account => chip_activate(&mut app.pages),
@@ -871,7 +871,7 @@ fn home_tab_available(
 }
 
 fn library_publication_command(
-    dispatcher: &crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+    dispatcher: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
     target: crate::stores::browse::SectionAddress,
     hidden_page: bool,
     at_head: bool,
@@ -888,7 +888,7 @@ mod library_publication_tests {
     use super::*;
 
     fn frame(
-        pages: &mut crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+        pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>,
         rig: &mut bridge::Bridge,
         frame_no: &mut u32,
     ) {
@@ -901,7 +901,7 @@ mod library_publication_tests {
     }
 
     fn seed_detail_return(
-        pages: &mut crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+        pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>,
         entry: EntryId,
         sid: crate::plex::ServerId,
         episode: &str,
@@ -932,7 +932,7 @@ mod library_publication_tests {
     }
 
     fn detail_restore_target(
-        pages: &crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+        pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
         entry: EntryId,
     ) -> Option<(
         crate::metadata::Spot,
@@ -947,7 +947,7 @@ mod library_publication_tests {
     }
 
     fn detail_refresh_phase(
-        pages: &crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+        pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
         entry: EntryId,
     ) -> crate::screens::registry::DetailRefreshPhase {
         pages.nav.entry(entry).and_then(|entry| entry.inst.as_ref())
@@ -957,7 +957,7 @@ mod library_publication_tests {
     }
 
     fn detail_return_waiting(
-        pages: &crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+        pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
         entry: EntryId,
     ) -> Option<bool> {
         pages.nav.entry(entry).and_then(|entry| entry.inst.as_ref())
@@ -1002,11 +1002,11 @@ mod library_publication_tests {
         store: *mut crate::stores::metadata::MetadataStore,
     }
 
-    impl crate::ui::dispatch::Tap<bridge::AppHost> for SettleDetailBeforeRestoredEnter {
+    impl plx_ui::dispatch::Tap<bridge::AppHost> for SettleDetailBeforeRestoredEnter {
         fn effect(&mut self, _frame: u64, stamped: &plx_machine::machine::Stamped<bridge::AppHost>) {
             if self.landed || !matches!(&stamped.fx,
                 Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(
-                    crate::ui::screen::Enter::Restored)))) { return; }
+                    plx_ui::screen::Enter::Restored)))) { return; }
             self.landed = true;
             // SAFETY: `store` was captured from `rig.metadata_mut()` immediately before this same
             // `frame_with_tap` call, which holds `rig` exclusively for its duration; nothing else
@@ -1082,9 +1082,9 @@ mod library_publication_tests {
 
     #[test]
     fn a_fresh_arm_at_rest_scale_still_blocks_visible_shelf_publication() {
-        let mut dispatcher = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut dispatcher = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let target = crate::stores::browse::SectionAddress { epoch: 1, sid: crate::plex::ServerId::from_raw(0), section: 1 };
-        let allowed = |d: &crate::ui::dispatch::Dispatcher<bridge::AppHost>, hidden, head| {
+        let allowed = |d: &plx_ui::dispatch::Dispatcher<bridge::AppHost>, hidden, head| {
             matches!(library_publication_command(d, target, hidden, head),
                 crate::stores::browse::BrowseCmd::Addressed { work: crate::stores::browse::LibraryWork::Hubs { may_publish: true }, .. })
         };
@@ -1125,7 +1125,7 @@ mod library_publication_tests {
         let _guard = plx_base::testlock::serial();
         let sid = crate::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
-        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let mut rig = bridge::Bridge::for_test(|| 0);
         let mut frame_no = 0;
 
@@ -1164,7 +1164,7 @@ mod library_publication_tests {
         let _guard = plx_base::testlock::serial();
         let sid = crate::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
-        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let mut rig = bridge::Bridge::for_test(|| 0);
         let mut frame_no = 0;
 
@@ -1223,7 +1223,7 @@ mod library_publication_tests {
         let sid = crate::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let b = AppArg::Content(ContentArg::Detail { sid, rk: "detail-b".into() });
-        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let mut rig = bridge::Bridge::for_test(|| 0);
         let mut frame_no = 0;
 
@@ -1321,7 +1321,7 @@ mod library_publication_tests {
             name: "Person".into(),
             thumb: String::new(),
         });
-        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let mut rig = bridge::Bridge::for_test(|| 0);
         let mut frame_no = 0;
 
@@ -1427,7 +1427,7 @@ mod library_publication_tests {
         let sid = crate::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let b = AppArg::Content(ContentArg::Detail { sid, rk: "detail-b".into() });
-        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let mut rig = bridge::Bridge::for_test(|| 0);
         let mut frame_no = 0;
 
@@ -1502,7 +1502,7 @@ mod library_publication_tests {
                 // See `SettleDetailBeforeRestoredEnter::store` — same reason, same shape.
                 store: *mut crate::stores::metadata::MetadataStore,
             }
-            impl crate::ui::dispatch::Tap<bridge::AppHost> for AtomicStart {
+            impl plx_ui::dispatch::Tap<bridge::AppHost> for AtomicStart {
                 fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<bridge::AppHost>) {
                     if self.saw_restore && !self.checked_after_restore {
                         self.checked_after_restore = true;
@@ -1665,7 +1665,7 @@ mod library_publication_tests {
     }
 
     fn detail_key(
-        pages: &mut crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+        pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>,
         rig: &mut bridge::Bridge,
         frame_no: &mut u32,
         key: plx_machine::machine::Key,
@@ -1692,7 +1692,7 @@ mod library_publication_tests {
             name: "Person".into(),
             thumb: String::new(),
         });
-        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let mut rig = bridge::Bridge::for_test(|| 0);
         let mut frame_no = 0;
 
@@ -1741,7 +1741,7 @@ mod library_publication_tests {
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(true));
 
         pages.nav.tabs.stack.transition =
-            Box::new(crate::ui::containers::transition::Immediate);
+            Box::new(plx_ui::containers::transition::Immediate);
         let mut settle = SettleDetailBeforeRestoredEnter {
             sid,
             generation: reconciliation,
@@ -1786,7 +1786,7 @@ mod library_publication_tests {
             name: "Person".into(),
             thumb: String::new(),
         });
-        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let mut rig = bridge::Bridge::for_test(|| 0);
         let mut frame_no = 0;
 
@@ -1838,7 +1838,7 @@ mod library_publication_tests {
             "the unsuccessful reconciliation has no cached Detail to fall back to");
 
         pages.nav.tabs.stack.transition =
-            Box::new(crate::ui::containers::transition::Immediate);
+            Box::new(plx_ui::containers::transition::Immediate);
         let mut settle = SettleDetailBeforeRestoredEnter {
             sid,
             generation: reconciliation,
@@ -1935,7 +1935,7 @@ pub(crate) fn restore_played_entry(app: &mut App) {
 }
 
 pub(crate) fn refresh_content(
-    pages: &mut crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+    pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>,
     bridge: &mut bridge::Bridge,
     target: crate::stores::viewstate::DetailRefresh,
 ) {

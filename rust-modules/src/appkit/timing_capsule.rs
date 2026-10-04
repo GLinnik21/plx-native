@@ -10,11 +10,11 @@
 //! `PANEL_REPEAT_MS`, the same one every other panel here paces a held direction with) and asks
 //! [`TimingCapsule::key`] only for an ADMITTED press — a `Down` or an already-gated `Repeat`, never
 //! a raw hardware repeat this module would have to re-gate itself.
-use crate::ui::consts::Key;
-use crate::ui::icons::{self, Icon};
-use crate::ui::label::{HAlign, Label};
+use plx_ui::consts::Key;
+use plx_ui::icons::{self, Icon};
+use plx_ui::label::{HAlign, Label};
 use plx_machine::machine::Edge;
-use crate::ui::{theme, Painter, Rect, Spring};
+use plx_ui::{theme, Painter, Rect, Spring};
 use std::ffi::CString;
 
 /// The capsule's step for an ordinary tap or the first few repeats of a held press
@@ -243,7 +243,7 @@ impl TimingCapsule {
         // the container's appear fraction fades the capsule in and out, as every player panel does
         let p = Painter::root().alpha(appear);
         let w = CHEVRON_SZ * 2.0 + CAPSULE_GAP * 2.0 + CAPSULE_TEXT_W + CAPSULE_PAD_X * 2.0;
-        let cx = crate::ui::consts::SCR_W * 0.5 + self.shake.pos;
+        let cx = plx_ui::consts::SCR_W * 0.5 + self.shake.pos;
         let r = Rect::new(cx - w * 0.5, bottom_y - CAPSULE_H, w, CAPSULE_H);
         p.rect(r, CAPSULE_H * 0.5, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
         let left_ink = if self.at_lo() { theme::INK_DISABLED } else { theme::TEXT_PRIMARY };
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn the_capsule_sentence_fits_its_block_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
-        use crate::ui::fit::HEADROOM;
+        use plx_ui::fit::HEADROOM;
         use plx_platform::i18n::{LocaleContext, Preference};
         use plx_machine::machine::Measure;
         let mut out = Vec::new();

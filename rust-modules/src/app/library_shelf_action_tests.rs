@@ -113,7 +113,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         assert!(d.input.press.is_live());
         let mut requests = Vec::new();
         let mut saw_scaled_press = false;
-        let rect = |r: crate::ui::Rect| [r.x, r.y, r.w, r.h];
+        let rect = |r: plx_ui::Rect| [r.x, r.y, r.w, r.h];
         for n in i + 1..i + 80 {
             frame(&mut d, &mut rig, AppArg::Library, tick(n), vec![]);
             assert_eq!(d.focus(), Some(key));

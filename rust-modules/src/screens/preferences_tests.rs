@@ -4,7 +4,7 @@ use super::*;
 use crate::plex::account::PreferenceRequest;
 use plx_machine::machine::{FocusRead, InputOwner, PressRead, Stamped, Tick};
 use plx_machine::present::Present;
-use crate::ui::fixture::FixtureMeasure;
+use plx_ui::fixture::FixtureMeasure;
 
 pub(super) fn context(focus: u32) -> Cx<'static, InnerHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;

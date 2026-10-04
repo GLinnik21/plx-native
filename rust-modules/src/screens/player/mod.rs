@@ -31,19 +31,19 @@ mod overlay_tests;
 use std::borrow::Cow;
 
 use crate::screens::registry::{AppFx, AppLike, PlayerLike, PlayerReq};
-use crate::ui::consts;
-use crate::ui::frame::Budget;
+use plx_ui::consts;
+use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, Fx, FocusKey, GroupId, Handled, InputKind, InstanceId,
     LogicalState, Machine,
 };
 use crate::appkit::player_hud::{self, ControlSlot, SubtitleBitmaps, TransportRow};
-use crate::ui::screen::{
+use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, FocusSource, Focusable, GroupKind, GroupSpec,
     HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
 };
 use crate::appkit::up_next::Countdown;
-use crate::ui::Rect;
+use plx_ui::Rect;
 
 use input::{HudState, Scrub};
 
@@ -150,7 +150,7 @@ pub(crate) struct PlayerScreen {
     pub(crate) origin: Option<Origin>,
     render: PlayerRender,
     /// The page's one decision card: the sandbox repair's confirmation.
-    repair_alert: crate::ui::decision_alert::DecisionAlert,
+    repair_alert: plx_ui::decision_alert::DecisionAlert,
     repair_scroll: u32,
     /// Which control of the failure read-out's row holds focus — an index into
     /// `player_hud::FailureReadout::actions`, reset to the primary each time a failure takes the
@@ -177,8 +177,8 @@ impl PlayerScreen {
             origin: None,
             render: PlayerRender::default(),
             repair_alert: {
-                let mut alert = crate::ui::decision_alert::DecisionAlert::new();
-                alert.set_tone(crate::ui::decision_alert::Tone::Neutral);
+                let mut alert = plx_ui::decision_alert::DecisionAlert::new();
+                alert.set_tone(plx_ui::decision_alert::Tone::Neutral);
                 alert
             },
             repair_scroll: 0,
@@ -292,7 +292,7 @@ impl PlayerScreen {
                 let elem = Self::elem_of(g.id, i);
                 let Some(p) = Focusable::<H>::place(self, &elem, f.cx, At::Drawn) else { continue };
                 f.stop(
-                    crate::ui::Painter::root(),
+                    plx_ui::Painter::root(),
                     Stop {
                         key: FocusKey { entry: self.entry, elem },
                         rect: p.rect,
@@ -502,7 +502,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Machine<H> for Play
         if self.repair_alert.visible() {
             match ev {
                 ScreenEvent::FocusMoved { to, .. } => {
-                    self.repair_alert.set_choice(if to.elem == REPAIR_CONFIRM { crate::ui::decision_alert::Choice::Destructive } else { crate::ui::decision_alert::Choice::Cancel });
+                    self.repair_alert.set_choice(if to.elem == REPAIR_CONFIRM { plx_ui::decision_alert::Choice::Destructive } else { plx_ui::decision_alert::Choice::Cancel });
                     return Handled::Yes;
                 }
                 ScreenEvent::PressCommit(_) => {
@@ -613,8 +613,8 @@ impl PlayerScreen {
     fn repair_focus<H: AppLike>(fx: &mut Effects<'_, H>, group: GroupId) {
         fx.push(Fx::Deliver(
             fx.from(),
-            plx_machine::machine::Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
-                focus: crate::ui::screen::FocusTarget::ContainerGroup(group),
+            plx_machine::machine::Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
+                focus: plx_ui::screen::FocusTarget::ContainerGroup(group),
             })),
         ));
     }
@@ -1151,9 +1151,9 @@ impl PlayerScreen {
 impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for PlayerScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         if self.repair_alert.visible() {
-            let len = match self.repair_alert.answers() { crate::ui::decision_alert::Answers::One => 1, _ => 2 };
+            let len = match self.repair_alert.answers() { plx_ui::decision_alert::Answers::One => 1, _ => 2 };
             out.push(GroupSpec { id: GROUP_REPAIR, kind: GroupKind::Row { wrap: false }, seat: Seat::First,
-                reachable: AxisMask::BOTH, edge: [EdgeRule::Stop; 4], extent: self.repair_rect(false, cx.measure).union(self.repair_rect(true, cx.measure)), len, elem: crate::ui::screen::ElemKind::Control });
+                reachable: AxisMask::BOTH, edge: [EdgeRule::Stop; 4], extent: self.repair_rect(false, cx.measure).union(self.repair_rect(true, cx.measure)), len, elem: plx_ui::screen::ElemKind::Control });
             return;
         }
         out.push(GroupSpec {
@@ -1164,7 +1164,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
             edge: [EdgeRule::Screen; 4],
             extent: player_hud::scrub_hit_rect(),
             len: 1,
-            elem: crate::ui::screen::ElemKind::Control,
+            elem: plx_ui::screen::ElemKind::Control,
         });
         // Every item of whatever occupies the row — the Up Next PAIR included, which is two
         // controls the D-pad walks and so two stops (`ControlSlot::item_rect`).
@@ -1177,7 +1177,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
             edge: [EdgeRule::Screen; 4],
             extent: player_hud::ctrl_row_hit_rect(),
             len: row_len,
-            elem: crate::ui::screen::ElemKind::Control,
+            elem: plx_ui::screen::ElemKind::Control,
         });
         let has_ch = crate::appkit::chapters_panel::has_chapters(H::metadata(cx));
         out.push(GroupSpec {
@@ -1188,11 +1188,11 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
             edge: [EdgeRule::Screen; 4],
             extent: player_hud::tab_hit_rect(0, has_ch, cx.measure).unwrap_or(Rect::FULL),
             len: if has_ch { 2 } else { 1 },
-            elem: crate::ui::screen::ElemKind::Control,
+            elem: plx_ui::screen::ElemKind::Control,
         });
         if matches!(
             self.busy,
-            crate::appkit::player_hud::Busy::Readout(crate::ui::widgets::StatusKind::Failed, _)
+            crate::appkit::player_hud::Busy::Readout(plx_ui::widgets::StatusKind::Failed, _)
         ) {
             let frames = player_hud::FailureReadout::now(H::session(cx)).frames(cx.measure);
             let extent = frames.iter().flatten().copied().reduce(|a, b| a.union(b)).unwrap_or(Rect::FULL);
@@ -1204,7 +1204,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
                 edge: [EdgeRule::Screen; 4],
                 extent,
                 len: frames.iter().flatten().count(),
-                elem: crate::ui::screen::ElemKind::Control,
+                elem: plx_ui::screen::ElemKind::Control,
             });
         }
     }
@@ -1223,7 +1223,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
         if self.repair_alert.is_open() {
-            let two = self.repair_alert.answers() == crate::ui::decision_alert::Answers::Two;
+            let two = self.repair_alert.answers() == plx_ui::decision_alert::Answers::Two;
             let elem = match (key.elem, dir) {
                 (REPAIR_CANCEL, Dir::Right) if two => REPAIR_CONFIRM,
                 (REPAIR_CONFIRM, Dir::Left) => REPAIR_CANCEL,
@@ -1294,7 +1294,7 @@ impl LogicalState for PlayerScreen {
         c.option(self.origin.as_ref(), |c, o| {
             c.u32(o.entry.0);
         });
-        c.bool(self.repair_alert.is_open()).bool(self.repair_alert.choice() == crate::ui::decision_alert::Choice::Destructive).u32(self.repair_scroll);
+        c.bool(self.repair_alert.is_open()).bool(self.repair_alert.choice() == plx_ui::decision_alert::Choice::Destructive).u32(self.repair_scroll);
     }
     fn probe(&self, out: &mut String) {
         out.push_str(WORD);
@@ -1377,10 +1377,10 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
     /// from the shared caches. `SubtitleBitmaps` uploads one texture per rect of the active cue and
     /// deletes them itself, so it is the one thing on this screen whose bytes belong to this
     /// instance rather than to a pool.
-    fn render_report(&self) -> crate::ui::frame::RenderReport {
+    fn render_report(&self) -> plx_ui::frame::RenderReport {
         let bitmap = self.render.subs.render_report();
         let ass = self.render.ass.render_report();
-        crate::ui::frame::RenderReport { textures: bitmap.textures + ass.textures, bytes: bitmap.bytes + ass.bytes }
+        plx_ui::frame::RenderReport { textures: bitmap.textures + ass.textures, bytes: bitmap.bytes + ass.bytes }
     }
     fn focus_source(&self) -> FocusSource {
         FocusSource::Engine
@@ -1564,7 +1564,7 @@ mod clock_animator_tests {
 #[cfg(test)]
 mod render_residency_tests {
     use super::*;
-    use crate::ui::frame::RenderReport;
+    use plx_ui::frame::RenderReport;
     use crate::appkit::player_hud::SubtitleBitmaps;
 
     /// **The player's own render is its image-subtitle display set, and only that** (§8.3 rule
@@ -1611,11 +1611,11 @@ mod step_ladder_tests {
     use super::*;
     use crate::screens::player::overlay_tests::TestHost;
     use crate::screens::registry::AppFx;
-    use crate::ui::consts::{
+    use plx_ui::consts::{
         SDLK_DOWN, SDLK_RETURN, SDLK_UP, WCODE_BACK, WCODE_PAUSE, WCODE_PLAY, WCODE_PLAYPAUSE,
         WCODE_STOP,
     };
-    use crate::ui::fixture::FixtureMeasure;
+    use plx_ui::fixture::FixtureMeasure;
     use plx_machine::machine::{
         Cx, Edge, Effects, EntryId, Fx, Handled, InputEvent, InputKind, InputOwner, MachineId,
         Source, Tick,
@@ -1700,7 +1700,7 @@ mod step_ladder_tests {
     #[test]
     fn a_control_the_frame_does_not_draw_registers_no_stop() {
         use crate::appkit::player_hud::ELEM_TAB_BASE;
-        use crate::ui::screen::DrawFrame;
+        use plx_ui::screen::DrawFrame;
         let _g = plx_base::testlock::serial();
         for (transport, hud_drawn, want) in [
             (true, false, vec![]),
@@ -1710,7 +1710,7 @@ mod step_ladder_tests {
             let mut page = PlayerScreen::new(ENTRY);
             page.transport = transport;
             let cx = cx();
-            let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+            let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
             page.record_stops(&mut f, hud_drawn);
             let got: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
             assert_eq!(got, want, "transport={transport} hud_drawn={hud_drawn}");
@@ -1725,7 +1725,7 @@ mod step_ladder_tests {
     /// `hud_drawn`. `Lifted`, by contrast, draws and lifts.
     #[test]
     fn the_hidden_policy_withholds_the_transport_and_the_lift() {
-        use crate::ui::screen::DrawFrame;
+        use plx_ui::screen::DrawFrame;
         let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         page.transport = true;
@@ -1736,7 +1736,7 @@ mod step_ladder_tests {
         page.set_hud_policy(HudPolicy::Hidden);
         assert!(!page.subs_lift(ps, 1_000), "captions must stay at SUB_BASE_Y under the capsule");
         assert!(!page.hud_drawn(ps, 1_000));
-        let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+        let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
         page.record_stops(&mut f, page.hud_drawn(ps, 1_000));
         let got: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
         assert_eq!(got, Vec::<u32>::new(), "no scrub/row/tab stop registers under the capsule");
@@ -1825,16 +1825,16 @@ mod step_ladder_tests {
     fn every_control_the_dpad_reaches_is_clickable_with_the_pointer_and_acts() {
         use crate::metadata::{Marker, MarkerKind};
         use crate::screens::registry::PlayerLike;
-        use crate::ui::hit::{pointer_gaps, HitMap, PointerKind};
+        use plx_ui::hit::{pointer_gaps, HitMap, PointerKind};
         use plx_machine::machine::FocusKey;
         use crate::appkit::player_hud::{Busy, ControlSlot, ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
-        use crate::ui::screen::{At, DrawFrame};
+        use plx_ui::screen::{At, DrawFrame};
         let _g = plx_base::testlock::serial();
         let marker = |kind| Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg: kind == MarkerKind::Credits };
         let skip = player_hud::slot_for(Some(marker(MarkerKind::Intro)), false, crate::route::NextEpisodeMode::Countdown);
         let up_next = player_hud::slot_for(Some(marker(MarkerKind::Credits)), true, crate::route::NextEpisodeMode::Countdown);
         assert!(matches!(skip, ControlSlot::Skip(_)) && matches!(up_next, ControlSlot::UpNext(_)));
-        let failed = Busy::Readout(crate::ui::widgets::StatusKind::Failed, c"Playback failed");
+        let failed = Busy::Readout(plx_ui::widgets::StatusKind::Failed, c"Playback failed");
         let row = |n: u32| (0..n).map(|i| ELEM_ROW_BASE + i).collect::<Vec<_>>();
         let failure_n = player_hud::FailureReadout::now(TestHost::session(&cx())).actions().len() as u32;
         assert!(failure_n >= 1, "Back is always offered");
@@ -1850,7 +1850,7 @@ mod step_ladder_tests {
             page.busy = busy;
             page.transport = true;
             let cx = cx();
-            let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+            let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
             page.record_stops(&mut f, true);
             let mut map = HitMap::new();
             map.fill(f.into_stops());
@@ -2067,8 +2067,8 @@ mod scrub_ownership_tests {
     use super::*;
     use crate::screens::player::overlay_tests::TestHost;
     use crate::screens::registry::AppFx;
-    use crate::ui::consts::{SDLK_RETURN, SDLK_RIGHT, WCODE_BACK, WCODE_EXIT};
-    use crate::ui::fixture::FixtureMeasure;
+    use plx_ui::consts::{SDLK_RETURN, SDLK_RIGHT, WCODE_BACK, WCODE_EXIT};
+    use plx_ui::fixture::FixtureMeasure;
     use plx_machine::machine::{
         Cx, Edge, Effects, EntryId, Fx, Handled, InputEvent, InputKind, InputOwner, MachineId,
         Source, Tick,
@@ -2244,7 +2244,7 @@ mod scrub_ownership_tests {
     #[test]
     fn a_press_hops_the_chosen_skip_interval_in_both_directions_and_clamps() {
         use crate::plex::session::SkipInterval;
-        use crate::ui::consts::SDLK_LEFT;
+        use plx_ui::consts::SDLK_LEFT;
         use std::sync::atomic::Ordering::Relaxed;
         let _g = plx_base::testlock::serial();
         let _f = Fixture::new(false);
@@ -2458,7 +2458,7 @@ mod scrub_ownership_tests {
     fn the_failure_table_never_outgrows_the_read_outs_row() {
         for (kind, cx, row) in crate::player::every_failure_row() {
             assert!(
-                row.len() <= crate::ui::widgets::STATUS_ROW_MAX,
+                row.len() <= plx_ui::widgets::STATUS_ROW_MAX,
                 "{kind:?} {cx:?}: {row:?}"
             );
         }
@@ -2474,8 +2474,8 @@ mod scrub_ownership_tests {
     /// all, so pointer scrubbing was gone.
     #[test]
     fn session_eight_click_coordinates_need_a_presented_hud_not_a_pointer_gate_override() {
-        use crate::ui::hit::{HitMap, PointerKind};
-        use crate::ui::screen::DrawFrame;
+        use plx_ui::hit::{HitMap, PointerKind};
+        use plx_ui::screen::DrawFrame;
         let _g = plx_base::testlock::serial();
         let _f = Fixture::new(false);
         let was = crate::player::swap_state_for_test(crate::player::PlaybackState::Playing);
@@ -2484,7 +2484,7 @@ mod scrub_ownership_tests {
             page.hud.dismissed = true;
             let mut map = HitMap::new();
             let cx = cx();
-            let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+            let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
             page.record_stops(&mut f, false);
             map.fill(f.into_stops());
             map.swap();
@@ -2503,7 +2503,7 @@ mod scrub_ownership_tests {
             // A separate pm token lets a frame present the HUD before pd/ck. Register precisely
             // the stops the production draw uses, then keep D-pad hover suppression armed at the
             // SAME point: even with zero pointer travel, a click on a drawn control must work.
-            let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+            let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
             page.record_stops(&mut f, true);
             map.fill(f.into_stops());
             map.swap();
@@ -2574,12 +2574,12 @@ mod repair_confirmation_tests {
     use plx_machine::machine::{Host, InputEvent, InputOwner, MachineId, PressId, Source, Tick};
     struct TestHost;
     impl Host for TestHost {
-        type Arg = crate::ui::fixture::FixtureArg;
+        type Arg = plx_ui::fixture::FixtureArg;
         type Fx = AppFx;
         type Msg = crate::screens::registry::AppMsg;
         type Elem = u32;
         type Views<'a> = &'a crate::route::PlaybackSession;
-        type Init = crate::ui::fixture::FixtureArg;
+        type Init = plx_ui::fixture::FixtureArg;
         type Memory = crate::screens::registry::PageMemory;
     }
     impl PlayerLike for TestHost {
@@ -2598,7 +2598,7 @@ mod repair_confirmation_tests {
         }
     }
     fn context(ps: &crate::route::PlaybackSession, elem: Option<u32>) -> Cx<'_, TestHost> {
-        let mut cx = Cx { views: ps, tick: Tick::default(), measure: &crate::ui::fixture::FixtureMeasure,
+        let mut cx = Cx { views: ps, tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure,
             focus: Default::default(), press: Default::default(), owner: InputOwner::Entry(EntryId(1)) };
         cx.focus.current = elem.map(|elem| FocusKey { entry: EntryId(1), elem });
         cx
@@ -2668,7 +2668,7 @@ mod repair_confirmation_tests {
         let mut page = PlayerScreen::new(EntryId(1));
         assert!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)).is_empty());
         assert!(page.repair_alert.is_open());
-        assert_eq!(page.repair_alert.choice(), crate::ui::decision_alert::Choice::Cancel);
+        assert_eq!(page.repair_alert.choice(), plx_ui::decision_alert::Choice::Cancel);
         let cx = context(&ps, Some(REPAIR_CANCEL));
         let from = Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None };
         assert_eq!(Focusable::<TestHost>::seat(&page, GROUP_REPAIR, from, &cx).elem, REPAIR_CANCEL);

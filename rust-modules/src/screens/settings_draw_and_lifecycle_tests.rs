@@ -39,8 +39,8 @@ fn settings_scrim_and_entrance_alpha_compose_local_and_nav_page_alpha() {
 
 #[test]
 fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
-    use crate::ui::containers::stack::Entry;
-    use crate::ui::screen::NavPresentation;
+    use plx_ui::containers::stack::Entry;
+    use plx_ui::screen::NavPresentation;
     use std::{cell::RefCell, rc::Rc};
 
     let navigation = NavPresentation {
@@ -75,7 +75,7 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
         let mut surface = RouteSurface {
             entry: EntryId(0), id: InstanceId(0), kind: Family::Settings,
             inner, ids: Minter::default(),
-            push: Push { route: crate::ui::route_screen::RoutePush::at(pos), open: target == 1.0,
+            push: Push { route: plx_ui::route_screen::RoutePush::at(pos), open: target == 1.0,
                 leaving: popping.then(|| instance(3)) },
             ground: RouteGround::new(), ground_ready: false, remembered: Vec::new(),
         };

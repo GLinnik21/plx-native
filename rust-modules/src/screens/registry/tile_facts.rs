@@ -22,7 +22,7 @@
 use std::os::raw::c_int;
 
 use crate::pms::{PmsMovie, KIND_COLLECTION};
-use crate::ui::tile::{Resume, TileFacts, TileKind};
+use plx_ui::tile::{Resume, TileFacts, TileKind};
 
 /// What `ui` reads of `m`. The result borrows from the row for `'a`, and carries the row's address
 /// as [`TileFacts::owner`], which is how a card's placement history stays keyed to the ROW and not
@@ -78,7 +78,7 @@ fn kind_of(kind: c_int) -> TileKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::widgets::{poster_mark, row_watch_state, PosterMark};
+    use plx_ui::widgets::{poster_mark, row_watch_state, PosterMark};
 
     /// A MOVIE row at a given watched state. `dur_ns` is 100 min, so `resume_ms` reads as a
     /// percentage of the way in. For a LEAF the two flags really are each other's negation.

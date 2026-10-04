@@ -175,7 +175,7 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
 
 #[test]
 fn sources_menu_left_is_an_engine_edge_not_an_editor_transition() {
-    use crate::ui::focus::{FocusEngine, Outcome};
+    use plx_ui::focus::{FocusEngine, Outcome};
 
     let _guard = plx_base::testlock::serial();
     let (groups, sections) = source_sections();
@@ -184,7 +184,7 @@ fn sources_menu_left_is_an_engine_edge_not_an_editor_transition() {
     let owner = InputOwner::Entry(EntryId(7));
     with_cx(|cx| {
         let mut engine = FocusEngine::new();
-        engine.enter(owner, &menu, crate::ui::screen::FocusTarget::ContainerGroup(GroupId(0)), None, cx);
+        engine.enter(owner, &menu, plx_ui::screen::FocusTarget::ContainerGroup(GroupId(0)), None, cx);
         let before = engine.current(owner).expect("source menu seats its first row");
         assert!(matches!(engine.move_dir(owner, &menu, &[], Dir::Left, cx), Outcome::Nothing));
         assert_eq!(engine.current(owner), Some(before));

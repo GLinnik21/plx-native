@@ -20,26 +20,26 @@ use crate::person::{Person, NSHELF};
 use crate::plex::ServerId;
 use crate::pms::PmsMovie;
 use crate::stores::person::PersonCmd;
-use crate::ui::card_row::{self, CardRow, RowStyle};
-use crate::ui::consts::*;
-use crate::ui::label::{Label, VAlign};
-use crate::ui::linked_heading::LinkedHeading;
+use plx_ui::card_row::{self, CardRow, RowStyle};
+use plx_ui::consts::*;
+use plx_ui::label::{Label, VAlign};
+use plx_ui::linked_heading::LinkedHeading;
 use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, GroupId, Handled, InputEvent, InputKind, Key, Leave,
     LogicalState, Machine, Measure, Tick,
 };
 use plx_machine::present::{PresentEvent, Provenance};
-use crate::ui::screen::{
+use plx_ui::screen::{
     Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, FocusSource, Focusable,
     GroupKind, GroupSpec, HitSource, Hover, Link, Placed, RenderStrategy, Screen, ScreenEvent,
     Seat, Step, Stop,
 };
 #[cfg(test)]
-use crate::ui::screen::Enter;
-use crate::ui::text_view::TextView;
-use crate::ui::theme;
-use crate::ui::widgets::{Art, PageGround, StatusKind, StatusOverlay};
-use crate::ui::{Column, Env, Painter, Rect, ScrollColumn, View};
+use plx_ui::screen::Enter;
+use plx_ui::text_view::TextView;
+use plx_ui::theme;
+use plx_ui::widgets::{Art, PageGround, StatusKind, StatusOverlay};
+use plx_ui::{Column, Env, Painter, Rect, ScrollColumn, View};
 
 use super::registry::{
     tile_facts, AppFx, CardIdentity, CardKeys, CardPageMemory, ContentArg, ContentLike, ContentReq, PageMemory,
@@ -83,7 +83,7 @@ const PORTRAIT_RES: (std::os::raw::c_int, std::os::raw::c_int) = (300, 300);
 // The owner's reference mock, 2026-09-19: the portrait's top sits on the page's ordinary top
 // margin, not 42px below it — the header is the top of the page's content, not a band offset
 // from it.
-const HEADER_TOP: f32 = crate::ui::consts::MARGIN_Y;
+const HEADER_TOP: f32 = plx_ui::consts::MARGIN_Y;
 const BAND_GAP: f32 = theme::space::XL;
 // The owner's reference mock, 2026-09-19: name→roles measures one rung tighter than the shipped
 // `LG` — the header reads as one tight block rather than a loose stack.
@@ -114,7 +114,7 @@ const SHELF_GAP: f32 = UNDER_LABEL_AIR;
 const SHELF_LABEL_H: f32 = TITLE_DY + CARD_DY;
 const SHELF_STYLE: RowStyle = RowStyle::HOME;
 const TOP_MARGIN: f32 = HEADER_TOP;
-const BOTTOM_PAD: f32 = crate::ui::consts::MARGIN_Y;
+const BOTTOM_PAD: f32 = plx_ui::consts::MARGIN_Y;
 
 // The owner's reference mock, 2026-09-19: the bio-to-pill gap drops two rungs from `LG` to `SM` —
 // the pill reads as the header block's own closing line, not a new section starting under it.
@@ -563,7 +563,7 @@ pub(crate) struct PersonScreen {
     links_c: Vec<Link>,
     covered_ready_c: bool,
     /// The biography's focus lift ([`Self::bio_marked`]). Presentation, not logical state.
-    bio_lift: crate::ui::text_lift::TextLift,
+    bio_lift: plx_ui::text_lift::TextLift,
 }
 
 impl LogicalState for PersonScreen {
@@ -636,7 +636,7 @@ impl PersonScreen {
             header_dirty: true,
             links_c: Vec::new(),
             covered_ready_c: false,
-            bio_lift: crate::ui::text_lift::TextLift::new(),
+            bio_lift: plx_ui::text_lift::TextLift::new(),
         }
     }
 
@@ -779,14 +779,14 @@ impl PersonScreen {
         // part now (design: "Born …" · birthplace · "Died …"), not glued onto Born with a comma —
         // it no longer depends on a birth date being known.
         self.life_parts = Vec::new();
-        let born = crate::ui::fmt::pretty_date(&p.born, 0);
+        let born = plx_ui::fmt::pretty_date(&p.born, 0);
         if !born.is_empty() {
             self.life_parts.push(plx_platform::i18n::msg::browse_person_born(&born));
         }
         if !p.birthplace.is_empty() {
             self.life_parts.push(p.birthplace.clone());
         }
-        let died = crate::ui::fmt::pretty_date(&p.died, 0);
+        let died = plx_ui::fmt::pretty_date(&p.died, 0);
         if !died.is_empty() {
             self.life_parts.push(plx_platform::i18n::msg::browse_person_died(&died));
         }
@@ -1129,7 +1129,7 @@ impl PersonScreen {
         let flow = self.header;
         let d = flow.exp_d;
         let portrait = Rect::new(MARGIN_X, flow.portrait_y, d, d);
-        crate::ui::widgets::card(
+        plx_ui::widgets::card(
             p,
             portrait,
             Art::Person {
@@ -1167,12 +1167,12 @@ impl PersonScreen {
                     BIO_W + 2.0 * HL_PAD_X,
                     ink + 2.0 * HL_PAD_Y,
                 );
-                crate::ui::text_lift::draw_focused(
+                plx_ui::text_lift::draw_focused(
                     p,
                     plate,
-                    crate::ui::widgets::TEXT_BLOCK_HL_RAD,
+                    plx_ui::widgets::TEXT_BLOCK_HL_RAD,
                     &self.bio_lift,
-                    crate::ui::text_lift::CENTRE,
+                    plx_ui::text_lift::CENTRE,
                     draw_bio,
                 );
             } else {
@@ -1189,7 +1189,7 @@ impl PersonScreen {
         .v(VAlign::CapTop)
         .draw(p, Rect::new(col_x_, flow.name_y, 0.0, 0.0));
 
-        let phase = crate::ui::widgets::skeleton_phase(self.spin_ms as u32);
+        let phase = plx_ui::widgets::skeleton_phase(self.spin_ms as u32);
         // Roles and life-facts both draw through `widgets::dotted_run` — words in
         // `TEXT_SECONDARY`, the `·` in `TEXT_SEPARATOR` — rather than one pre-joined `Label`, so
         // the dot can carry its own ink (design: "Actor · Writer · Producer",
@@ -1202,11 +1202,11 @@ impl PersonScreen {
             let Some(y) = y else { continue };
             if pending {
                 let h = measure.cap_h(sz);
-                crate::ui::widgets::skeleton_bar(p, Rect::new(col_x_, y, BIO_W * w, h), phase);
+                plx_ui::widgets::skeleton_bar(p, Rect::new(col_x_, y, BIO_W * w, h), phase);
             } else {
                 let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
                 let (cap_top, _) = plx_gfx::text::text_cap_band(sz, 0);
-                crate::ui::widgets::dotted_run(
+                plx_ui::widgets::dotted_run(
                     p,
                     &refs,
                     col_x_,
@@ -1222,7 +1222,7 @@ impl PersonScreen {
                 let h = measure.cap_h(theme::size::BODY);
                 for (i, w) in [1.0, 1.0, 0.58].into_iter().enumerate() {
                     let ly = by + i as f32 * BIO_LEAD;
-                    crate::ui::widgets::skeleton_bar(p, Rect::new(col_x_, ly, BIO_W * w, h), phase);
+                    plx_ui::widgets::skeleton_bar(p, Rect::new(col_x_, ly, BIO_W * w, h), phase);
                 }
             }
         }
@@ -1295,8 +1295,8 @@ impl PersonScreen {
         let y = self.scroll.child_top(&self.live_flow(person, None), 1) - self.scroll.scroll.pos;
         let band = Rect::new(0.0, y, SCR_W, CARD_H);
         if !person.landed {
-            let phase = crate::ui::widgets::skeleton_phase(self.spin_ms as u32);
-            crate::ui::widgets::skeleton_bar(
+            let phase = plx_ui::widgets::skeleton_phase(self.spin_ms as u32);
+            plx_ui::widgets::skeleton_bar(
                 p,
                 Rect::new(MARGIN_X, y + TITLE_DY - 32.0, 214.0, 32.0),
                 phase,
@@ -1304,7 +1304,7 @@ impl PersonScreen {
             let cy = y + TITLE_DY + CARD_DY;
             for i in 0..5 {
                 let cx_ = MARGIN_X + i as f32 * (CARD_W + GAP);
-                crate::ui::widgets::skeleton_sheet(
+                plx_ui::widgets::skeleton_sheet(
                     p,
                     Rect::new(cx_, cy, CARD_W, CARD_H),
                     theme::CARD_RING_RAD,
@@ -1683,7 +1683,7 @@ impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &Cx<'_, H>) {}
+    fn prepare(&mut self, _b: &mut plx_ui::frame::Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         let cur = f.focus.current.map(|k| k.elem);
@@ -1778,7 +1778,7 @@ impl PersonScreen {
         }
         if entry_reachable(person) {
             let r = self.entry_rect(person, f.measure);
-            if crate::ui::on_axis(r.y, r.h, SCR_H, 0.0) {
+            if plx_ui::on_axis(r.y, r.h, SCR_H, 0.0) {
                 self.entry_heading().stop(
                     f,
                     r,
@@ -1793,7 +1793,7 @@ impl PersonScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::fixture::FixtureMeasure;
+    use plx_ui::fixture::FixtureMeasure;
     use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
 
     struct PersonHost;
@@ -1889,7 +1889,7 @@ mod tests {
         store.install_credits_for_test(&[("Actor", 9)]);
         std::fs::remove_file(path).unwrap();
         assert!(!store.view().current().unwrap().bio.is_empty());
-        crate::ui::rec::assert_measured_geometry(|measure| {
+        plx_ui::rec::assert_measured_geometry(|measure| {
             s.remeasure_header(store.view().current().unwrap(), measure);
             let context = cx(measure, store.view());
             let mut groups = Vec::new();
@@ -2263,8 +2263,8 @@ mod tests {
     /// that stale rectangle: the live, scrolled entry geometry must leave the click with the tile.
     #[test]
     fn a_scrolled_filmography_stop_does_not_steal_the_first_shelf_tile() {
-        use crate::ui::hit::{HitMap, PointerKind};
-        use crate::ui::screen::DrawFrame;
+        use plx_ui::hit::{HitMap, PointerKind};
+        use plx_ui::screen::DrawFrame;
 
         let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(2, 0);
@@ -2293,7 +2293,7 @@ mod tests {
         assert!(stale_overlap.w > 0.0 && stale_overlap.h > 0.0,
             "the fixture must reproduce the stale pill/tile overlap");
         let (x, y) = (stale_overlap.cx(), stale_overlap.cy());
-        let mut frame = DrawFrame::new(&context, crate::ui::Painter::root());
+        let mut frame = DrawFrame::new(&context, plx_ui::Painter::root());
         s.record_stops(&mut frame, store.view().current().unwrap(), None);
         let mut hit = HitMap::new();
         hit.fill(frame.into_stops());
@@ -2304,7 +2304,7 @@ mod tests {
         let entry = s.entry_rect(store.view().current().unwrap(), &measure);
         s.scroll.scroll.jump(s.scroll.scroll.pos + entry.y + entry.h + 1.0);
         let context = cx(&measure, store.view());
-        let mut frame = DrawFrame::new(&context, crate::ui::Painter::root());
+        let mut frame = DrawFrame::new(&context, plx_ui::Painter::root());
         s.record_stops(&mut frame, store.view().current().unwrap(), None);
         assert!(frame.stops().iter().all(|stop| stop.key.elem != ENTRY_ELEM),
             "an entry wholly above the viewport registers no pointer stop");
@@ -3268,7 +3268,7 @@ mod tests {
     fn a_shelf_here_pitches_like_a_shelf_on_home() {
         assert_eq!(
             SHELF_GAP + shelf_block_h_at(card_row::under_band(1.0)),
-            crate::ui::consts::ROW_PITCH
+            plx_ui::consts::ROW_PITCH
         );
         assert_eq!(SHELF_LABEL_H, TITLE_DY + CARD_DY);
     }

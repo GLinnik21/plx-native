@@ -30,7 +30,7 @@ fn dev_revoke_resource_completes_before_carried_ack_and_stale_ack_after_erase_is
         let ran = Arc::new(AtomicUsize::new(0));
         let signal = Arc::clone(&ran);
         rig.session_adapter.inject_fixture_work(2, move |_, _| { signal.fetch_add(1, Ordering::AcqRel); });
-        for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - remaining {
+        for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - remaining {
             execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
         execute_session_command(&mut d, crate::auth::SessionCmd::StartLogin);
@@ -148,7 +148,7 @@ fn carried_dev_ready_is_not_handed_off_after_erase() {
     for remaining in 1..16 {
         let mut rig = dev_fixture();
         let mut d = Dispatcher::<AppHost>::new();
-        for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - remaining {
+        for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - remaining {
             execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
         execute_session_command(&mut d, crate::auth::SessionCmd::ActivateDevBootstrap);
@@ -336,7 +336,7 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
             signal.store(true, Ordering::Release);
             output.complete(crate::auth::LoginProgress::Failed { epoch, message: "synthetic stop".into(), incident: crate::auth::synthetic_incident(), plaintext: None, account: None }.into()).unwrap();
         });
-        for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 1 {
+        for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 1 {
             execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
         execute_session_command(&mut d, crate::auth::SessionCmd::StartLogin);

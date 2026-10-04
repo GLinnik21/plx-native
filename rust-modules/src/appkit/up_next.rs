@@ -34,10 +34,10 @@
 //! never hands us a different show. Sourcing it from Continue Watching is the owner's call.)*
 #![allow(dead_code)]
 use crate::route::UpNext;
-use crate::ui::label::{HAlign, Label};
-use crate::ui::theme;
-use crate::ui::widgets::{draw_card, Button, ControlGround};
-use crate::ui::{Env, Painter, Rect, View};
+use plx_ui::label::{HAlign, Label};
+use plx_ui::theme;
+use plx_ui::widgets::{draw_card, Button, ControlGround};
+use plx_ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::c_int;
 
@@ -252,7 +252,7 @@ pub(crate) fn layout_of(next_w: f32, credits_w: f32) -> Layout {
 pub(crate) fn layout(row: &mut crate::appkit::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
     layout_of(
         crate::appkit::player_hud::ctrl_slot(row, plx_platform::i18n::msg::widgets_next_episode(), measure).w,
-        crate::ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
+        plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
     )
 }
 
@@ -263,7 +263,7 @@ pub(crate) fn layout(row: &mut crate::appkit::player_hud::TransportRow, measure:
 pub(crate) fn layout_peek(row: &crate::appkit::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
     layout_of(
         crate::appkit::player_hud::ctrl_slot_w(row, plx_platform::i18n::msg::widgets_next_episode(), measure),
-        crate::ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
+        plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
     )
 }
 
@@ -273,7 +273,7 @@ pub(crate) fn layout_peek(row: &crate::appkit::player_hud::TransportRow, measure
 /// on the same band, hence the explicit "Up Next ·" kicker rather than a bare "S2, E4".
 fn caption(u: &UpNext) -> String {
     let episode = if u.season > 0 || u.index > 0 {
-        crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title)
+        plx_ui::fmt::episode_kicker(u.season, u.index, &u.ep_title)
     } else {
         u.ep_title.clone()
     };

@@ -354,7 +354,7 @@ pub fn is_household(g: Grant<'_>, household: &[i64]) -> bool {
 /// their library, and one rule that says "inside the house, nobody is a guest" is worth more than
 /// a second rule for a case nobody here can measure. Change it here, not per screen.
 ///
-/// Every "Shared by …" in the app is [`crate::ui::fmt::shared_by`] applied to
+/// Every "Shared by …" in the app is [`plx_ui::fmt::shared_by`] applied to
 /// [`ServerFacts::handle`], and this is the only function that decides what goes into that field —
 /// see `docs/shared-servers.md` §13.
 pub fn owner_credit<'a>(g: Grant<'a>, household: &[i64]) -> &'a str {

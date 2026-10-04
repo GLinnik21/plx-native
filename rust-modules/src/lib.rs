@@ -52,7 +52,6 @@ mod telemetry; // the opt-in crash + usage channels: consent, the spool, the wor
 mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
 
 mod textinput; // the TV's own on-screen keyboard, via plain SDL_StartTextInput (see the module doc)
-mod ui;
 
 /// The instance root, for the simulator binary.
 ///

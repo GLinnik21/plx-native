@@ -1,7 +1,7 @@
 //! Ports of the legacy deferred-transaction assertions through the owned screen and store.
 use super::*;
 use crate::stores::browse::QueryEdit;
-use crate::ui::fixture::{FixtureArg, FixtureMeasure};
+use plx_ui::fixture::{FixtureArg, FixtureMeasure};
 use plx_machine::machine::{Host, InputOwner, Stamped, Tick};
 
 struct TestHost;

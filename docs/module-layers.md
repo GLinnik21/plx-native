@@ -140,7 +140,7 @@ Four choices that were not obvious:
   it can become a crate on top. L15b is the open step that makes it a port another OS could fill.
 
 This agrees with the hand-written rules already gated by `ci/check-deps.sh` (the tables in
-`ui/CLAUDE.md` and `screens/CLAUDE.md`). `ui` names no application type, `screens` never names
+`rust-modules/ui/src/CLAUDE.md` and `screens/CLAUDE.md`). `ui` names no application type, `screens` never names
 `app`, and `stores` names `ui::machine`, which is now its own layer. It is stricter in two places.
 The six files of the `machine` layer, and `overdraw.rs` in `gfx` (it was `ui/overdraw.rs`), may no
 longer name the rest of `ui/`, and the machine files may also not name `gfx`, `text` or `i18n`, which the `ui/` row of
@@ -813,6 +813,103 @@ tests (the base moved: 3 new Home tests). Every edit is 1.4 to 2.4 s faster, whi
 450k lines leaving the application crate buys; the application crate is still about 27 s of every
 row. The unit suite is 5 s slower: six test binaries are linked and started where four were, and
 the two new ones link SDL/GL (`plx_gfx`) and build the TLS fixtures (`plx_net`).
+
+### Split 6 (ui)
+
+`ui` was extracted sixth: `rust-modules/ui/` is the workspace member `plx_ui` (an `rlib`,
+`uses = base machine platform gfx`; the manifest depends on all four), holding everything that was
+`rust-modules/src/ui/`: 59k lines, about sixty modules, the widgets, containers, frame, focus engine,
+recorder and the fixtures they are tested against. Nothing under `ui/` belongs to a layer above it
+(`appkit` and `screens` are top-level modules), so nothing stayed behind and the application has no
+`mod ui;` any more. `ui/mod.rs` is `rust-modules/ui/src/lib.rs`, and `crate::ui::theme` is
+`plx_ui::theme` (153 application files, by script). The crate owns the QR encoder, so
+`qrcodegen` left the application's manifest; its features are `devtriggers` and `threadcheck`
+(forwarded) and `test-support` (new, enables the four lower layers').
+What it taught beyond the recipe and Splits 1 to 5:
+
+- **A layer that is one module needs a mount, not a root.** `ci/module_graph.py` read every layer
+  crate's `lib.rs` as "the crate root again", which is right for `base` or `machine` (many
+  top-level modules) and wrong for `ui`: its `lib.rs` holds items (`Painter`, `draw_census`,
+  `Zoom`, ...) that belong to the `ui` layer, and listing 63 top-level members instead would have
+  moved those items into `crate`, the application's layer. The manifest now says
+  `[package.metadata.plx] mount = "ui"`; the analyzer resolves `crate::`/`$crate::` inside the crate
+  and `plx_ui::` outside it under module `ui`, so `[ui] members = ui` is unchanged and `--report`
+  lists `ui::table::assert_no_fit_failures`, not `table::...`. `ci/test_module_graph.py` pins it.
+  A later layer whose crate is one module (`session`'s `auth`, if it splits alone) uses the same key.
+- **`--report`'s 12 items were again a fraction of the `cfg(test)` surface.** The compiler found the
+  other named items (about forty, all `pub fn` helpers of `table`, `panel_motion`, `rec`, `widgets`,
+  ...) as soon as the application's tests built: `cargo check --lib --tests` failed with 353 errors
+  before the gating and passes after. What it cannot find is behaviour. Six places in `ui` switch on
+  `cfg(test)`/`cfg(not(test))` and a dependent's tests would have run the shipping arm: the scissor
+  call of `screen::gl_scissor`, `underlay::upload`, the text-measure closure of
+  `widgets::value_lines`, the field kick in `containers::modal`, the `FrameCache` that
+  `popover::host` is built against, and the recording hooks of `draw_census` in `lib.rs`. Each is `cfg(any(test, feature =
+  "test-support"))` now, the shipping arms `cfg(not(any(...)))`. The last one lived inside
+  `popover_host_tests.rs`, a test file; its no-GL stand-in moved to `popover_host_mock.rs` so the
+  dependents get it without the tests. `fixture.rs` and `testapp.rs` are whole-file `#![cfg(test)]`
+  and are `test-support` too (the application's screen tests are built on `FixtureHost`).
+- **A layer's test binary has to link what it reaches.** As in `gfx`, the drawing tests make GL, SDL
+  and nanosvg symbols live, and a `cargo:rustc-link-arg` reaches only the package that prints it,
+  so `plx_ui` has its own `build.rs` that includes the shared `build_support/host_link.rs`. Without
+  it `cargo test -p plx_ui` fails to link on `_svg_rasterize_rgba`. It links nothing on the television.
+- **Six tests read sources through `CARGO_MANIFEST_DIR`, and the manifest directory moved a level
+  down.** Five failed loudly on the first run (`fixture`'s video-plane and loop-source pins,
+  `press`'s ownership test, `containers::tests::no_surface_states_its_own_dim_weight`,
+  `widgets_glass_budget_tests`); each reads `../` now, because they inspect the application's
+  `appkit/` and `screens/` too. The sixth would have passed silently:
+  `player::report`'s "no `fetch_update`" walk only has to find 50 files, and the 63 files of `ui`
+  left its root without any failure. It walks `ui/src` as well now; the eventlog scrub test gained
+  `../ui/src` for the same reason. Grep for `CARGO_MANIFEST_DIR` and `read_dir` in every moved file.
+  A seventh is a string rather than a path: `press`'s "App owns Input" assertion greps
+  `app/mod.rs` for the spelling `input: crate::input::Input`, which the script rewrote in the
+  assertion (to `crate::input`, wrong) and in the application (to `plx_ui::input`, right).
+- **`$crate` and the two exported macros.** `focusable_via_composed!` and `focusable_via_view!`
+  are `#[macro_export]`, so they live at the root of `plx_ui` and the six invocations in the
+  application spell `plx_ui::focusable_via_view!`; a `crate::focusable_via_view!` left in the application is
+  "cannot find macro in the crate root" plus six unsatisfied `Focusable` bounds. Their bodies name
+  `$crate::screen::...` and `plx_machine::machine::...`: the second works because every crate that
+  invokes them depends on `plx_machine`, which `ci/module-layers.ini` guarantees for `appkit` and
+  `screens`. `include_str!("../../../assets/icons/...")` needed no change: `rust-modules/src/ui/`
+  and `rust-modules/ui/src/` are the same depth below the repository root.
+- **`pub(crate)` became `pub` across the crate, including `pub mod` for every module** (a private
+  module of a `pub` item is still dead code to rustc once the item has no outside caller), and
+  `cargo check -p plx_ui --features test-support` is clean, so no `pub` item hides dead code under
+  the feature. No `#[expect(dead_code)]` became unfulfilled and no orphan-rule hazard appeared:
+  the traits in `plx_ui` (`Focusable`, `Part`, `Screen`, `Adapters`) are implemented in the
+  application for application types, which is legal.
+- **Intra-doc links to layers above lose their brackets.** The `[`crate::appkit::...`]` and
+  `[`crate::screens::...`]` links in the moved comments name modules `plx_ui` cannot see; the script
+  strips the brackets (the gfx split did the same) so the names stay readable.
+- **Gates scoped by the path or the spelling of the moved files.** `ci/check-deps.sh` has
+  `SRC_UI`: the `wall`, `mutators`, `sessionwrite`, `uistorage`, `ladder` and `textmeasure`-seam
+  rules named `$SRC/ui`, and the whole-tree rules (`libm`, `ticks`, `effect`, `legacy`, `frame`,
+  `threads`, `tmppath`, `dt`, `sink`, `route`) scanned `$SRC` and now also `$SRC_UI`. Two of them
+  would have gone silent rather than red: `nav` grepped for `crate::ui::nav::` in `screens/` (the
+  spelling is `plx_ui::nav::` now) and `mutators` masks a screen's own `crate::ui::x::y(` call
+  before matching. Both accept either spelling. Proven by planting a violation in a copy of the
+  file and reading the gate go red, then restoring it byte for byte: `wall` (an `Instant::now()` in
+  `ui/src/dwell.rs`), `uistorage` (`plx_platform::storage::` in `fmt.rs`), `nav`
+  (`plx_ui::nav::` in `screens/about_panel.rs`), `textmeasure` (`plx_gfx::text::text_width(` in
+  `fmt.rs`), `sessionwrite` and `ticks`. `ci/check-statics.sh` named `$SRC/ui` for its gated paths
+  and fails loudly on a missing one (it did not need the fix to be noticed, which is the better way
+  to be wrong); `ci/check-localization.py` read `screens`, `ui` and `appkit` under `rust-modules/src`
+  and would have scanned 63 files fewer without a word, so it reads `rust-modules/ui/src` as a
+  layer source (and the constants table); `ci/allow/{libm,statics}.txt` name the new paths.
+- **Tooling that knows the tree's shape**: the `-p` lists (`... -p plx_gfx -p plx_net -p plx_ui`)
+  in the Makefile, the workflow, `tools/build-bench.py` and the tests that pin them;
+  `--src rust-modules/ui/src` for the line budget (and the budget's description);
+  `RUST_INPUTS`; `tools/cargo-seed.py` keys on the new manifest; `ci/test_no_host_staticlib.py` holds
+  the crate to `rlib`; `ci/test_build_not_always_dirty.py` fails on `plx_ui` as well (its build
+  script prints `rerun-if-changed` only); the release-configuration hook treats an edit in `ui/src`
+  as a shipping-feature risk; the harness's private tree copy and the `fpflags` rule include the
+  crate's `Cargo.toml` and `build.rs`; `tests/test_harness.py`'s `rec.rs` schema read follows the
+  file; `ui/src/CLAUDE.md` moved with the code and `AGENTS.md`/`docs/agent-reference.md` point at
+  it. `make build-bench` has a `ui` scenario ("Edit leaf (plx_ui dwell.rs)") and its `hub`
+  scenario, which appended a line to `ui/mod.rs`, appends to `plx_ui`'s `lib.rs` now, so it
+  measures the same dependency (everything in the application names the crate root).
+- **The module-cycle baseline did not need re-recording.** The cycle is the same 8 modules; one
+  module moved from outside it to a smaller component, so the notice reads 25 outside against a
+  baseline of 26. `ci/check-module-cycle.py --update-baseline` records it when the wave lands.
 
 ## Limits of the analysis
 

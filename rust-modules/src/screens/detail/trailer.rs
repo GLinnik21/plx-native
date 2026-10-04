@@ -14,10 +14,10 @@
 //! the screen owns — so the key policy, the auto-hide and the hint's visibility are all host-
 //! testable without driving the process-wide `player::preview` singleton or a live engine.
 
-use crate::ui::icons::Icon;
+use plx_ui::icons::Icon;
 use crate::appkit::player_hud::{Knob, Playbar, TransportMark};
-use crate::ui::widgets::KeyHint;
-use crate::ui::{consts, theme, Painter};
+use plx_ui::widgets::KeyHint;
+use plx_ui::{consts, theme, Painter};
 use std::ffi::CString;
 
 /// How long the trailer transport lingers after the key that raised it, and how long

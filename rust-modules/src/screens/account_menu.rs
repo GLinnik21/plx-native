@@ -33,18 +33,18 @@ use std::convert::Infallible;
 
 use crate::plex::session::Account;
 use crate::screens::registry::{AppFx, AppLike, AuthLike, LoopReq};
-use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
-use crate::ui::frame::Budget;
+use plx_ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
     LogicalState, Machine, NavOp,
 };
-use crate::ui::screen::{
+use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
 };
-use crate::ui::table::{Row, Section, TableView};
-use crate::ui::Rect;
+use plx_ui::table::{Row, Section, TableView};
+use plx_ui::Rect;
 
 /// What the highlighted row does on OK.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -194,7 +194,7 @@ fn account_form(inputs: &AccountInputs) -> (String, Form<Action, Action, Infalli
 
 /// One action's row. Rows that leave for another screen carry the drill-in chevron ("Sign out"
 /// acts in place); rows whose action ends something in place are destructive and so never where
-/// the menu's focus starts ([`crate::ui::table::TableView::opening_row`]): with *Change profile*
+/// the menu's focus starts ([`plx_ui::table::TableView::opening_row`]): with *Change profile*
 /// hidden *Sign out* is the FIRST row, and a stray OK on a freshly opened menu must not sign
 /// anyone out.
 fn action_row(a: Action) -> Row {
@@ -210,21 +210,21 @@ fn action_row(a: Action) -> Row {
 /// anyway. `py` clears `widgets::TOP_BAR_BOTTOM` (130) by a `space::MD`.
 fn panel_rect(table: &TableView, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let pw = table.menu_panel_width(measure);
-    let px = crate::ui::consts::MARGIN_X;
+    let px = plx_ui::consts::MARGIN_X;
     let py = 154.0f32;
     let ph = table.measured_height().clamp(120.0, 440.0);
     Rect::new(px, py, pw, ph)
 }
 
-/// The panel at its TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]) — the clamp
+/// The panel at its TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]) — the clamp
 /// ceiling rather than a measured height, since the audit grades the widest state a surface can be
 /// in and the height comes from a `TableView` no host test can measure.
 #[cfg(test)]
-pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, crate::ui::Rect)>) {
-    let r = panel_rect(&TableView::new(), &crate::ui::fixture::FixtureMeasure);
+pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, plx_ui::Rect)>) {
+    let r = panel_rect(&TableView::new(), &plx_ui::fixture::FixtureMeasure);
     out.push((
         "account menu panel",
-        crate::ui::Rect::new(r.x, r.y, crate::ui::table::MENU_MAX_W, 440.0),
+        plx_ui::Rect::new(r.x, r.y, plx_ui::table::MENU_MAX_W, 440.0),
     ));
 }
 
@@ -436,15 +436,15 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
     fn scrim(&self) -> Scrim {
         // The SHEET role: how dark the page goes behind this menu, the peak the container ramps
         // with the appear spring (`ModalStack::draw_scrims`).
-        Scrim::lifting(crate::ui::theme::underlay::DIM_SHEET, crate::ui::widgets::redraw_profile_chip)
+        Scrim::lifting(plx_ui::theme::underlay::DIM_SHEET, plx_ui::widgets::redraw_profile_chip)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         let measure = f.measure;
         let r = self.frame(measure);
-        crate::ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay);
-        crate::ui::profile::phase("glass.foreground", || {
+        plx_ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay);
+        plx_ui::profile::phase("glass.foreground", || {
             self.form.table.draw(p, r, measure);
         });
         for elem in (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.key_at(i).map(|k| k.0)) {
@@ -546,7 +546,7 @@ mod tests {
         use plx_machine::machine::{InputOwner, MachineId, Tick};
         let cx = Cx::<MenuHost> {
             views: read.read(),
-            tick: Tick::default(), measure: &crate::ui::fixture::FixtureMeasure,
+            tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure,
             press: Default::default(), focus: Default::default(),
             owner: InputOwner::Entry(EntryId(0)),
         };
@@ -946,10 +946,10 @@ mod tests {
                 if name.is_none() {
                     out.extend(table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, &what));
                 }
-                out.extend(table.app_fit_failures(crate::ui::table::MENU_MAX_W, &what));
+                out.extend(table.app_fit_failures(plx_ui::table::MENU_MAX_W, &what));
                 out.extend(table.app_fit_failures_hugged(&what));
             }
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 }

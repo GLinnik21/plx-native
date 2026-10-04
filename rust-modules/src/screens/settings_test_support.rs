@@ -16,7 +16,7 @@
 //! `FocusKey` at all.
 
 use super::*;
-use crate::ui::fixture::FixtureMeasure;
+use plx_ui::fixture::FixtureMeasure;
 // `By` is the odd one out and the split is deliberate rather than untidy: the other seven
 // names really are `plx_machine::machine`'s, but `By` — how a focus move was CAUSED (a direction key,
 // a pointer, a restore) — belongs to `ui::screen` beside `ScreenEvent::FocusMoved`, the only
@@ -69,7 +69,7 @@ pub(super) fn name(s: &RouteSurface) -> &'static str {
 
 pub(super) struct DrawProbe {
     pub(super) id: u32,
-    pub(super) seen: std::rc::Rc<std::cell::RefCell<Vec<(u32, crate::ui::screen::NavPresentation)>>>,
+    pub(super) seen: std::rc::Rc<std::cell::RefCell<Vec<(u32, plx_ui::screen::NavPresentation)>>>,
 }
 
 impl Machine<InnerHost> for DrawProbe {
@@ -96,7 +96,7 @@ impl Screen<InnerHost> for DrawProbe {
     fn crumb(&self, _: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { None }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
-        self.seen.borrow_mut().push((self.id, crate::ui::screen::NavPresentation {
+        self.seen.borrow_mut().push((self.id, plx_ui::screen::NavPresentation {
             page_alpha: f.page_alpha,
             chrome_alpha: f.chrome_alpha,
             view_tab: f.view_tab,
@@ -169,7 +169,7 @@ pub(super) fn select_root(page: &mut RootPage, id: RootId) {
     let mut present = plx_machine::present::Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
     let to = FocusKey { entry, elem: root_key(id) };
-    page.step(&ScreenEvent::FocusMoved { from: None, to, by: crate::ui::screen::By::Dir }, &cx(None), &mut fx);
+    page.step(&ScreenEvent::FocusMoved { from: None, to, by: plx_ui::screen::By::Dir }, &cx(None), &mut fx);
 }
 
 /// Run the push spring to rest on 16 ms frames — bounded, so a spring that never settles
