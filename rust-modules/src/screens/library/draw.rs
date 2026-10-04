@@ -130,15 +130,27 @@ impl LibraryScreen {
         self.plaintext_alert.draw(f, self.entry);
     }
 
+    /// The shelves whose band can meet the panel at the drawn scroll. Everything above and below
+    /// is skipped without being looked at; `shelf_on_screen` stays the exact test for the edge
+    /// shelves the window keeps. A shelf outside this window is outside that test too, so the
+    /// focused row needs no separate visit.
+    pub(super) fn shelf_window(&self) -> std::ops::Range<usize> {
+        let base = CONTENT_TOP + self.layout.shelf_origin(&self.run, 0) - self.scroll.pos
+            - plx_ui::consts::TITLE_DY;
+        self.run.window(-base, SCR_H - base)
+    }
+
     fn draw_document<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let env = Env::inert();
         self.draw_library_controls(f);
         plx_ui::profile::phase("lb.shelves", || {
-            for (index, row) in self.shelves.iter().enumerate() {
+            for index in self.shelf_window() {
+                #[cfg(test)] self.shelf_visits.set(self.shelf_visits.get() + 1);
+                let Some(row) = self.shelves.get(index) else { continue };
                 let Some(shelf) = H::section_hubs(f.cx).shelves().get(index) else { continue };
-                let origin = self.layout.shelf_y(index, self.scroll.pos);
-                if !shelf_on_screen(origin, self.layout.shelf_pitch(index)) { continue; }
+                let origin = self.layout.shelf_y(&self.run, index, self.scroll.pos);
+                if !shelf_on_screen(origin, self.layout.shelf_pitch(&self.run, index)) { continue; }
                 let heading_y = origin - plx_ui::consts::TITLE_DY - row.motion.lift();
                 if let Some(heading) = self.heading_widget(index, f.cx) {
                     let focused = f.focus.current.is_some_and(|key| key.entry == self.entry
@@ -210,9 +222,11 @@ impl LibraryScreen {
             let rect = self.library_rect(index, f.cx);
             if on_axis(rect.y, rect.h, SCR_H, 0.0) { self.stop(*elem, f); }
         }
-        for (index, row) in self.shelves.iter().enumerate() {
-            let origin = self.layout.shelf_y(index, self.scroll.pos);
-            if !shelf_on_screen(origin, self.layout.shelf_pitch(index)) { continue; }
+        for index in self.shelf_window() {
+            #[cfg(test)] self.shelf_visits.set(self.shelf_visits.get() + 1);
+            let Some(row) = self.shelves.get(index) else { continue };
+            let origin = self.layout.shelf_y(&self.run, index, self.scroll.pos);
+            if !shelf_on_screen(origin, self.layout.shelf_pitch(&self.run, index)) { continue; }
             let focused = f.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
             for &elem in row.elems.iter().filter(|elem| Some(**elem) != focused) { self.stop(elem, f); }
             if let Some(elem) = focused.filter(|elem| row.elems.contains(elem)) { self.stop(elem, f); }

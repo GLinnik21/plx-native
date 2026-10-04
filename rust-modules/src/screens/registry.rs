@@ -2066,7 +2066,9 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 // carries it; the previous pin was 0x1a5c_e155_557b_e949.
 // Player sub-menus PR 5: More owns a page stack (`MorePage`, the Quality page) and the overlay shape
 // carries it too; the previous pin was 0x97ff_59c7_9aab_e35e.
-const SCREEN_SHAPES_PIN: u64 = 0x7063_dff7_775b_9075;
+// Library shelf run (#412): the layout carries the run's height (`shelf_run:f32`) where it carried
+// twelve pitches (`pitches:[f32;12]`); the previous pin was 0x7063_dff7_775b_9075.
+const SCREEN_SHAPES_PIN: u64 = 0xac96_3316_a3a3_7bd4;
 
 #[cfg(test)]
 mod arg_tests {
