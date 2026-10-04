@@ -724,7 +724,7 @@
   },
   "browse.auth.tls_untrusted": {
     "value": "This TV doesn't trust your server's security certificate. Update PlxNative and try again.",
-    "description": "Reason line on Who's watching or the sign-in read-out when the server answered over HTTPS but its certificate chain could not be verified against this television's trusted certificate authorities (an out-of-date certificate store, X509 verify result 2, 18, 19, 20 or 21); it is NOT the wrong-clock case, which has its own line. The remedy is an app update, which bundles newer public roots. No placeholders. Sits in a two-line reason slot on the sign-in read-out and one centred line on the picker; keep the whole sentence at 125 characters or fewer."
+    "description": "Reason line on Who's watching or the sign-in read-out when the server answered over HTTPS but its certificate chain could not be verified against this television's trusted certificate authorities (X509 verify result 2, 18, 19, 20 or 21); it is NOT the wrong-clock case, which has its own line. The sentence names the remedy that exists in the app: results 2, 20 and 21 on a plex.direct name mean an out-of-date certificate store, which an update answers with newer bundled public roots; 18 and 19 mean the server presented its own root, which only the server's owner can fix. No placeholders. Sits in a two-line reason slot on the sign-in read-out and one centred line on the picker; keep the whole sentence at 125 characters or fewer."
   },
   "browse.kind.episodes": {
     "value": "Episodes",

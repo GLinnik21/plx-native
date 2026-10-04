@@ -224,9 +224,11 @@ clock**) and `Cause::Unauthorized` (a 401). `Reach::TlsUntrusted` sits between `
 cause travels on `SettledProbe::cause()` per `machine_id` and is what the failure read-outs are worded
 by: `browse.auth.no_source_access` ("has no access to this server") is for a 401 and nothing else — a
 profile switch where no server verified says `tls_untrusted`, `no_source_access` or
-`servers_unreachable` by that order (`FailureCauses::worst`), and each failed switch or discovery
-writes one closed `auth: no server verified — unreachable=N tls_untrusted=N unauthorized=N
-verify=[…]` line (counts and verify codes only).
+`servers_unreachable` by that order (`FailureCauses::worst`). A switch or discovery in which NO server
+verified at all writes one closed `auth: no server verified — unreachable=N tls_untrusted=N
+unauthorized=N verify=[…]` line (counts and verify codes only); a plaintext-only verdict, an
+admission refusal, a malformed reply, a no-servers account and a plex.tv failure keep their own
+existing lines instead.
 
 **"May a credential go to this origin" has ONE answer: `grant::credential_allowed`** (or
 `grant::allowed_under` where a pure function receives the policy). It is the build's

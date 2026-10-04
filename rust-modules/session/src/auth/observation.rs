@@ -250,8 +250,10 @@ fn write_probe(w: &mut plx_machine::machine::Canon, probe: &SettledProbe) {
     // client's IP generation from it), so it must be part of what the Canon encodes too.
     w.option(probe.address.as_deref(), |w, address| { w.str(address); });
     // The STORED cause, and only when there is one: a probe without it (every recording made before
-    // the field existed, and every verdict the outcome already says all of) hashes exactly as it
-    // did, so no pinned replay moves. The cause is what the failure read-out was worded by.
+    // the field existed, and a cached-origin re-probe that did not fail on a certificate) hashes exactly as it did, so
+    // no pinned replay moves — a replay plays RECORDED observations, which carry no cause. A fresh
+    // race verdict that failed (`Unauthorized`, `Unreachable`, `TlsUntrusted`) stamps one, and it
+    // is what the failure read-out was worded by.
     if let Some(cause) = probe.cause {
         match cause {
             plx_plex::plex::probe::Cause::Unreachable => { w.u8(1); }

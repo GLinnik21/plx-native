@@ -43,7 +43,9 @@ pub enum DiscoveryClass {
     NoServers,
     /// A server answered and refused the credentials.
     Refused,
-    /// No server answered.
+    /// No server verified as itself: none answered, or one answered over HTTPS with a certificate
+    /// chain this television could not verify (`auth::Discovery::TlsUntrusted` reports as this
+    /// class so the schema stays closed; its X509 verify code stays on the device).
     Silent,
     /// Only insecure connections were offered, and none was allowed.
     InsecureOnly,
@@ -634,7 +636,8 @@ impl IncidentContext {
     /// * `Discovery(NoServers)` — the account has no server — `ServerBadgePlus`.
     /// * `Discovery(Refused)` — a server answered and refused — `ServerBadgeXmark`.
     /// * `Discovery(Silent)` targeting [`DiscoveryTarget::Servers`] — plex.tv named servers that
-    ///   never answered — `ServerBadgeMinus`; targeting [`DiscoveryTarget::PlexTv`] (or absent) —
+    ///   never verified (silent, or an HTTPS certificate this television could not verify, which
+    ///   the caption tells apart and this glyph does not) — `ServerBadgeMinus`; targeting [`DiscoveryTarget::PlexTv`] (or absent) —
     ///   plex.tv itself did not answer, so the badge follows `plextv_link_glyph`, falling back to
     ///   `GlobeBadgeMinus` (not `PinCreate`'s `WifiSlash`: discovery already ran, so SOME network
     ///   reached somewhere, unlike `PinCreate`'s failure to even start).
