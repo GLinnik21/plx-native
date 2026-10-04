@@ -697,7 +697,8 @@ pub fn draw_tile(
 pub struct TileLabel {
     pub title: Option<std::ffi::CString>,
     pub caption: Option<std::ffi::CString>,
-    /// lead the title with the amber play triangle (Continue Watching's tile has no play disc)
+    /// lead the title with the amber play triangle (Continue Watching's tile has no play disc);
+    /// set only while a press on the tile plays — see `widgets::still_line`'s `press_plays`
     pub glyph: bool,
     /// **How much of this block is on screen, 0..1** — [`band_reveal`] of the row's label band.
     /// 1 for every caller whose band does not animate (the Library grid, the profile picker, the
@@ -755,7 +756,8 @@ impl TileLabel {
             ..Self::title(t)
         }
     }
-    /// Title led by the amber play triangle — Continue Watching's focused primary line.
+    /// Title led by the amber play triangle — Continue Watching's focused primary line while a press there plays
+    /// (`DeckPress::Play`).
     pub fn played(t: &str) -> Self {
         TileLabel {
             glyph: true,

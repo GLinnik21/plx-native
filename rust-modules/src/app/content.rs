@@ -24,9 +24,11 @@ pub(super) fn drain_item_menu_requests<R: super::playback::PlaybackResources>(
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     resources: &mut R,
+    menu_play_await: &mut Option<super::input::MenuPlayAwait>,
+    now: u32,
 ) {
     for req in bridge.take_item_menu_reqs() {
-        unsafe { super::input::apply_item_action(ps, pa, req, pages, bridge, resources); }
+        unsafe { super::input::apply_item_action(ps, pa, req, pages, bridge, resources, menu_play_await, now); }
     }
 }
 
@@ -499,7 +501,8 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
     // dispatch asks the container for a navigation and takes the playback session's `&mut`,
     // neither of which a screen may name (§2.1).
     drain_item_menu_requests(&mut app.player.session, &mut app.adapters.player,
-        &mut app.pages, &mut app.bridge, &mut super::playback::LivePlaybackResources);
+        &mut app.pages, &mut app.bridge, &mut super::playback::LivePlaybackResources,
+        &mut app.menu_play_await, fr.now);
     for (source, request, ret) in app.bridge.take_content_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };

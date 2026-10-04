@@ -663,7 +663,7 @@ impl LibraryScreen {
             let from_deck = self.from_deck(elem, cx);
             let req = if held {
                 LibraryReq::ItemMenu { sid: item.sid, rk: item.rk.clone(), from_deck }
-            } else if from_deck {
+            } else if from_deck && plx_media::route::deck_press().press_plays() {
                 LibraryReq::Play { sid: item.sid, rk: item.rk.clone(), resume_ns: plx_data::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000) }
             } else { LibraryReq::Detail { sid: item.sid, rk: item.rk.clone() } };
             fx.push(Fx::App(AppFx::Library(req)));

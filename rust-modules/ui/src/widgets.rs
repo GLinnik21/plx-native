@@ -363,8 +363,10 @@ pub fn still_key<'a>(m: &TileFacts<'a>) -> &'a str {
 ///
 /// **`press_plays` is the whole of the app's play-indicator rule, at this one draw**, and
 /// [`still_glyph`] is the rule itself: the amber ▶ is a PROMISE — this press starts the video — so
-/// it is drawn on a surface whose press does that and on no other. A Continue Watching deck and the
-/// detail page's episode filmstrip play; a discovery shelf ("Recently Released Episodes", "Recently
+/// it is drawn on a surface whose press does that and on no other. The detail page's episode
+/// filmstrip always plays, and a Continue Watching deck plays only while the Playback setting says
+/// OK plays it (`DeckPress::Play`; by default OK opens the page and the deck draws no triangle,
+/// so its caller passes `press_plays = false`); a discovery shelf ("Recently Released Episodes", "Recently
 /// Added…") and a Search result NAVIGATE to the episode, so they draw no triangle and the line is
 /// the show's name alone.
 ///

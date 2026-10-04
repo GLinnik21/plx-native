@@ -191,18 +191,22 @@ DOWN from the hero enters the shelves; DOWN again steps between them; LEFT/RIGHT
 The focused card grows, and its title and a status line appear beneath it — here *"8 min
 left"*, which is the resume state. A watched item carries a check mark in its corner.
 
-**OK on a card in *Continue Watching* plays it directly**, and the amber ▶ on the card is what
-announces that. **Every other card opens a page, an episode included**: an episode tile on a
+**OK on a card in *Continue Watching* opens its page by default** (Settings → Playback →
+Continue Watching: *Open details*); set to *Play*, OK plays it directly and the amber ▶ on the card is
+what announces that — the ▶ is drawn only in that mode, and in the default the card's menu leads
+with Play instead. **Every other card opens a page, an episode included**: an episode tile on a
 discovery shelf ("Recently Released Episodes", "Recently Added…") opens that EPISODE's own page and
-carries no ▶, precisely so nothing on it promises playback. The difference is intentional: the deck
-is a list of things already in progress, and one press is the whole point of it — everywhere else,
-a press is a question rather than a commitment. A card's resume bar is a fact about how far in you
+carries no ▶, precisely so nothing on it promises playback. The one-press resume is *Play* mode: there the deck is a list of things already in progress and one
+press is the whole point of it. In the default the deck behaves like every other shelf — a press is
+a question rather than a commitment — and the resume is the first row of the card's hold menu (§5.6),
+which opens on it. A card's resume bar is a fact about how far in you
 are and appears on both kinds, so it is never the thing that says a press will play; that is the
 triangle's job alone. (Until 2026-09-05 an episode played from wherever it sat, which put the
 triangle on cards that navigated.)
 
-One refinement inside the deck rule: a **show** or **season** card there has no single stream to
-start, so it opens its page, waits for the load to land on the expected item, and fires that page's
+One refinement inside the deck rule: a **show** or **season** card has no single stream to
+start, so where the deck plays it (OK in *Play* mode, or the menu's Play row in the default) it
+opens its page, waits for the load to land on the expected item, and fires that page's
 Play only then — never blindly, because a failed fetch would otherwise play whatever page was open
 before. On any other shelf, a show or season card simply opens its page.
 
@@ -327,9 +331,14 @@ results are deliberately out of scope, by decision rather than by omission.
 
 Opened by **pressing and holding OK on a focused card** for ≥500 ms — a popover anchored to the
 card, over the live page. UP/DOWN moves, OK activates, BACK closes. The actions are the ones that
-apply to that item; for an in-progress movie on the deck:
+apply to that item; for an in-progress movie on the deck, by default (Continue Watching: *Open
+details*), the menu opens on its first row:
 
-*Go to Movie* · *Mark as Watched* · *Mark as Unwatched* · *Play from Start* · *Remove from Deck*.
+*Continue* · *Mark as Watched* · *Mark as Unwatched* · *Play from Start* · *Remove from Deck*.
+
+With Continue Watching set to *Play*, OK already resumes, so the menu leads with *Go to Movie*
+instead of *Continue*. A show or season card on the deck gets the same *Play* row first in the
+default (it opens the page and plays, as above), with its own "go to" row dropped.
 
 ### 5.7 Account menu
 

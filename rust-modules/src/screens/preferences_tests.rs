@@ -107,7 +107,7 @@ fn every_field_row_pushes_its_picker_and_nothing_else() {
     let mut playback = PreferencesPage::new(EntryId(0), Kind::Playback);
     let mut audio = loaded_audio_page(&account);
     for (page, fields) in [
-        (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::SkipInterval]),
+        (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval]),
         (&mut audio, vec![PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles]),
     ] {
         for field in fields {
@@ -198,4 +198,34 @@ fn every_field_reports_the_page_whose_list_shows_it() {
     let audio = FieldListInputs { kind: Kind::AudioSubtitles, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
         prefs: Some(&prefs), busy: false, show_retry: false };
     assert_eq!(fields_of(&audio), &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles]);
+}
+
+/// The Continue Watching row: shipped default is Open details, the picker lists the two options
+/// with the live one checked, and choosing Play asks the app to save exactly that.
+#[test]
+fn the_continue_watching_row_defaults_to_open_details_and_its_picker_saves_the_pick() {
+    use plx_media::route::DeckPress;
+    let _serial = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("pref-deck-press");
+    let prior = plx_media::route::deck_press();
+    plx_media::route::restore_deck_press(DeckPress::Details);
+    assert_eq!(plx_media::route::deck_press(), DeckPress::Details);
+
+    let prefs = AudioPreferences::default();
+    let readout = field_readout(PickerKind::DeckPress, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
+    let options = field_options(PickerKind::DeckPress, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
+    let current = resolve_value(PickerKind::DeckPress, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
+    assert_eq!(readout, "Open details");
+    assert_eq!(current, Value::DeckPress(DeckPress::Details));
+    assert_eq!(options, [("Open details".to_string(), Value::DeckPress(DeckPress::Details)),
+        ("Play".to_string(), Value::DeckPress(DeckPress::Play))]);
+
+    let mut picker = PickerPage::new(EntryId(0), PickerKind::DeckPress);
+    let emitted = drive(&mut picker, ScreenEvent::Activate(1), 1);
+    plx_media::route::restore_deck_press(prior);
+    let saved = emitted.into_iter().find_map(|e| match e.fx {
+        Fx::App(AppFx::Preferences(PreferenceCmd::DeckPress { mode, .. })) => Some(mode),
+        _ => None,
+    });
+    assert_eq!(saved, Some(DeckPress::Play));
 }

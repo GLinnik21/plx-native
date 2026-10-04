@@ -5343,6 +5343,34 @@ pub fn set_skip_interval(interval: SkipInterval) -> bool {
     saved
 }
 
+/// What OK does on a Continue Watching card — install-wide, like [`NEXT_EPISODE_MODE`]. Read by
+/// every deck's press and draw (Home's and the Library's) and by the item menu when it builds its
+/// rows; `DeckPress::press_plays` is the one question they all ask of it.
+static DECK_PRESS: AtomicU8 = AtomicU8::new(0); // DeckPress::Details's index
+
+pub fn deck_press() -> DeckPress {
+    DeckPress::from_index(DECK_PRESS.load(Ordering::Relaxed))
+}
+
+pub fn restore_deck_press(mode: DeckPress) {
+    #[cfg(any(test, feature = "test-support"))]
+    plx_base::testlock::assert_held("deck press preference");
+    DECK_PRESS.store(mode.index(), Ordering::Relaxed);
+}
+
+/// Blocking persistence seam; Settings dispatches it on the storage worker. The live value changes
+/// only once the write is durable, so a failed save claims nothing.
+pub fn set_deck_press(mode: DeckPress) -> bool {
+    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_deck_press(mode)))
+        .is_some_and(|write| matches!(write.classify(),
+            plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
+    if saved {
+        restore_deck_press(mode);
+        plx_machine::idle::invalidate();
+    }
+    saved
+}
+
 pub fn set_default_quality(q: Quality) -> bool {
     let q = supported_quality(q);
     let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_playback_quality(q)))
@@ -8863,6 +8891,10 @@ mod next_episode_tests;
 #[cfg(test)]
 #[path = "decision_skip_interval_tests.rs"]
 mod skip_interval_tests;
+
+#[cfg(test)]
+#[path = "decision_deck_press_tests.rs"]
+mod deck_press_tests;
 
 #[cfg(test)]
 #[path = "decision_resolve_route_tests.rs"]

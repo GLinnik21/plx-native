@@ -1,5 +1,6 @@
 //! Meaningful legacy caption and landscape assertions, on the owned production helpers.
 use plx_data::pms::PmsMovie;
+use plx_media::route::DeckPress;
 use plx_ui::card_row::{self, RowStyle};
 use plx_ui::consts::{self, CARD_H, CARD_W, MARGIN_X};
 use plx_ui::fixture::FixtureMeasure;
@@ -198,6 +199,27 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
             rect.h,
         );
     }
+}
+
+/// The deck's focused title carries the amber ▶ only while OK on the deck plays.
+#[test]
+fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
+    let _guard = plx_base::testlock::serial();
+    let prior = plx_media::route::deck_press();
+    let glyph = |mode, is_continue| {
+        plx_media::route::restore_deck_press(mode);
+        let shelf = plx_data::browse::section_hubs::Shelf {
+            id: "x".into(), key: String::new(), link: None, total: 0, title: "On Deck".into(), is_continue,
+            landscape: false, items: vec![PmsMovie { kind: 0, title: "Stardust".into(), ..Default::default() }],
+        };
+        shelf_label(&shelf, 0).glyph
+    };
+    let seen = (
+        glyph(DeckPress::Play, true), glyph(DeckPress::Details, true),
+        glyph(DeckPress::Play, false), glyph(DeckPress::Details, false),
+    );
+    plx_media::route::restore_deck_press(prior);
+    assert_eq!(seen, (true, false, false, false));
 }
 
 #[test]

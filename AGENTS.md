@@ -126,9 +126,12 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - **Never write to a real person's Plex account.** Boot with `--guest` and verify the identity
   line in the log before sending any key; never press `ok` on a card whose `ratingKey` you have not
   read from the log; reopen a screen by relaunching with `--screen` rather than walking Home. A
-  Continue Watching tile RESUMES PLAYBACK on OK, which is how two separate sessions started real
-  playback on the owner's account. Seeding, scrobbling, unscrobbling, marking watched and "Remove
-  from Deck" are all writes to a household's actual viewing record — the managed and Guest profiles
+  Continue Watching tile resumes playback on OK whenever Settings > Playback > Continue Watching
+  is "Play" (the default, "Open details", opens the page) — and the setting is saved on the set,
+  so never assume which one a given install has. In the default the card's hold menu opens ON a
+  Play/Continue row, so hold-then-OK plays too. That press is how two separate sessions started
+  real playback on the owner's account. Seeding, scrobbling, unscrobbling, marking watched and
+  "Remove from Deck" are all writes to a household's actual viewing record — the managed and Guest profiles
   are real users too. When screenshot or demo work needs particular content, mock the server.
 - Hold the TV lock around the device commands themselves and release as soon as the device work
   pauses. Do not hold a lease while building, reading screenshots or writing Markdown; other lanes

@@ -90,8 +90,8 @@ pub(crate) enum SettingsPage {
     Picker(PickerKind),
 }
 
-/// Which preference a [`SettingsPage::Picker`] edits. The parent page (`Playback` for the six local ones,
-/// `AudioSubtitles` for the four account ones) and the page's own title/options live in `screens::preferences`;
+/// Which preference a [`SettingsPage::Picker`] edits. The parent page (`Playback` for the local ones,
+/// `AudioSubtitles` for the account ones) and the page's own title/options live in `screens::preferences`;
 /// the NAME of the field lives here because the parent pushes it through this vocabulary rather
 /// than through the module that implements it (the module doc's rule).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -102,6 +102,7 @@ pub(crate) enum PickerKind {
     SubtitlePosition,
     NextEpisode,
     SkipInterval,
+    DeckPress,
     AudioLanguage,
     SubtitleMode,
     SubtitleLanguage,
@@ -124,7 +125,7 @@ impl PickerKind {
     /// The page that lists this field (its picker is pushed from there and returns there).
     pub(crate) fn parent(self) -> SettingsPage {
         match self {
-            PickerKind::Quality | PickerKind::DirectPlay | PickerKind::SubtitleSize | PickerKind::SubtitlePosition | PickerKind::NextEpisode | PickerKind::SkipInterval => SettingsPage::Playback,
+            PickerKind::Quality | PickerKind::DirectPlay | PickerKind::SubtitleSize | PickerKind::SubtitlePosition | PickerKind::NextEpisode | PickerKind::DeckPress | PickerKind::SkipInterval => SettingsPage::Playback,
             PickerKind::AudioLanguage | PickerKind::SubtitleMode | PickerKind::SubtitleLanguage | PickerKind::ForcedSubtitles => SettingsPage::AudioSubtitles,
         }
     }
