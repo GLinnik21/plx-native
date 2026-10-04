@@ -15,7 +15,7 @@ pub(super) struct SectionTarget {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct GridTarget {
     pub epoch: u32,
-    pub sid: crate::plex::ServerId,
+    pub sid: plx_plex::plex::ServerId,
     pub section: i64,
     pub query: u32,
 }
@@ -112,7 +112,7 @@ mod tests {
             epoch: 7,
             index,
             identity: LibrarySectionIdentity {
-                sid: crate::plex::ServerId::from_raw(2),
+                sid: plx_plex::plex::ServerId::from_raw(2),
                 key: 40 + index as i64,
             },
             kind: SecKind::Movie,
@@ -122,7 +122,7 @@ mod tests {
     fn grid(query: u32) -> GridTarget {
         GridTarget {
             epoch: 7,
-            sid: crate::plex::ServerId::from_raw(2),
+            sid: plx_plex::plex::ServerId::from_raw(2),
             section: 42,
             query,
         }

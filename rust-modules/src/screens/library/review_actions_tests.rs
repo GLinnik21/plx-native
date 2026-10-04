@@ -64,7 +64,7 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let sid = crate::plex::ServerId::from_raw(0);
+        let sid = plx_plex::plex::ServerId::from_raw(0);
         let listing = crate::stores::browse::ListingSnapshot::fixture(
             sid,
             (0..36)
@@ -155,13 +155,13 @@ fn fresh_bookmarks_follow_stable_items_then_slots_and_keep_the_returned_card_vis
             }
         };
         fixture.listing = crate::stores::browse::ListingSnapshot::fixture(
-            crate::plex::ServerId::from_raw(0),
+            plx_plex::plex::ServerId::from_raw(0),
             items,
             vec![("A".into(), 18), ("Z".into(), 18)],
         )
         .with_cursor(crate::stores::browse::Cursor {
             at: crate::stores::browse::CursorAt::ItemKey {
-                sid: crate::plex::ServerId::from_raw(if scenario == 3 { 1 } else { 0 }),
+                sid: plx_plex::plex::ServerId::from_raw(if scenario == 3 { 1 } else { 0 }),
                 rk: if scenario == 2 { "36" } else { "18" }.into(),
                 slot,
             },
@@ -237,7 +237,7 @@ fn leaving_with_a_foreign_frame_snapshot_cannot_bookmark_that_section() {
             original.clone().with_section(epoch, section)
         } else {
             crate::stores::browse::ListingSnapshot::fixture(
-                crate::plex::ServerId::from_raw(sid),
+                plx_plex::plex::ServerId::from_raw(sid),
                 vec![None; 36],
                 Vec::new(),
             )
@@ -320,7 +320,7 @@ fn a_late_listing_keeps_its_bookmark_seed_pending_until_the_card_is_placeable() 
         let mut fixture = Fixture::new();
         let saved = crate::stores::browse::Cursor {
             at: crate::stores::browse::CursorAt::ItemKey {
-                sid: crate::plex::ServerId::from_raw(0),
+                sid: plx_plex::plex::ServerId::from_raw(0),
                 rk: "18".into(),
                 slot: 17,
             },
@@ -328,7 +328,7 @@ fn a_late_listing_keeps_its_bookmark_seed_pending_until_the_card_is_placeable() 
         };
         let loaded = fixture.listing.clone().with_cursor(saved.clone());
         fixture.listing = crate::stores::browse::ListingSnapshot::fixture(
-            crate::plex::ServerId::from_raw(0),
+            plx_plex::plex::ServerId::from_raw(0),
             Vec::new(),
             Vec::new(),
         )
@@ -337,7 +337,7 @@ fn a_late_listing_keeps_its_bookmark_seed_pending_until_the_card_is_placeable() 
         // Two favorite rows make the document's first block available before its grid arrives.
         let mut sections = fixture.directory.view().sections().to_vec();
         sections.push(crate::stores::browse::SectionView {
-            sid: Some(crate::plex::ServerId::from_raw(1)),
+            sid: Some(plx_plex::plex::ServerId::from_raw(1)),
             key: 2,
             kind: SecKind::Movie,
             row: crate::stores::browse::SrcRow {
@@ -386,7 +386,7 @@ fn switch_diagnostic_requests_type_sort_filter_and_rail_actions() {
     let mut fixture = Fixture::new();
     let mut sections = fixture.directory.view().sections().to_vec();
     sections.push(crate::stores::browse::SectionView {
-        sid: Some(crate::plex::ServerId::from_raw(0)),
+        sid: Some(plx_plex::plex::ServerId::from_raw(0)),
         key: 2,
         kind: SecKind::Show,
         row: crate::stores::browse::SrcRow {
@@ -532,7 +532,7 @@ fn rapid_filter_activations_invert_the_pending_desired_value() {
             kind: LibraryMenuKind::Filter,
             target: SectionAddress {
                 epoch: 1,
-                sid: crate::plex::ServerId::from_raw(0),
+                sid: plx_plex::plex::ServerId::from_raw(0),
                 section: 1,
             },
             anchor: [0; 4],

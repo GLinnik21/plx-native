@@ -553,7 +553,7 @@ fn tracks_selected(page: &PlayerOverlayScreen) -> Option<TrackRow> {
 #[test]
 fn a_style_pick_commits_without_dismissing_the_tracks_panel() {
     let _g = plx_base::testlock::serial(); // the panel seeds its tone from the player's global
-    crate::player::restore_subtitle_tone(crate::plex::session::SubtitleTone::White);
+    crate::player::restore_subtitle_tone(plx_plex::plex::session::SubtitleTone::White);
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
@@ -572,7 +572,7 @@ fn a_style_pick_commits_without_dismissing_the_tracks_panel() {
     assert!(reqs.iter().any(|r| matches!(
         r,
         PlayerReq::CommitTrack(crate::appkit::track_menu::TrackCommit::SubtitleTone(
-            crate::plex::session::SubtitleTone::Silver
+            plx_plex::plex::session::SubtitleTone::Silver
         ))
     )));
     assert!(reqs.iter().any(|r| matches!(r, PlayerReq::ExtendHud(_))));
@@ -1007,7 +1007,7 @@ fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() 
     let corners = [[0.1, 0.5, 0.2], [0.2, 0.4, 0.1], [0.6, 0.2, 0.1], [0.1, 0.1, 0.4]];
     let mut store = crate::stores::metadata::MetadataStore::default();
     assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(crate::metadata::PlayingItem {
-        sid: crate::plex::ServerId::from_raw(0), rk: "rk".into(), show_rk: String::new(), audio: Vec::new(), subs: Vec::new(),
+        sid: plx_plex::plex::ServerId::from_raw(0), rk: "rk".into(), show_rk: String::new(), audio: Vec::new(), subs: Vec::new(),
         video_fps: 0.0, width: 0, height: 0, bitrate: 0, dovi: Default::default(),
         markers: Vec::new(), chapters: Vec::new(), blur: Some(corners),
     }))));

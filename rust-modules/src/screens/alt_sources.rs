@@ -84,7 +84,7 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 
 use crate::metadata::AltCopy;
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use crate::screens::registry::{AppLike, AppMsg, ContentArg, PageMemory};
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::frame::Budget;
@@ -244,7 +244,7 @@ pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<A
     // not — and they are the ones that decide which row wears the tick and which press does nothing.
     let here = list
         .iter()
-        .position(|c| crate::plex::same_item((c.sid, &c.rk), (here_sid, here_rk)));
+        .position(|c| plx_plex::plex::same_item((c.sid, &c.rk), (here_sid, here_rk)));
     let mut idx: Vec<usize> = (0..list.len()).collect();
     idx.sort_by(|&a, &b| {
         let (ca, cb) = (&list[a], &list[b]);
@@ -311,7 +311,7 @@ pub(crate) enum Action {
 /// What one row's OK means, decided once when the row is declared, so the "the row you are on is
 /// not a destination" rule is host-testable and no press ever indexes a list.
 pub(crate) fn action_for(row: &AltRow, here_sid: ServerId, here_rk: &str) -> Action {
-    if crate::plex::same_item((row.sid, &row.rk), (here_sid, here_rk)) || row.rk.is_empty() {
+    if plx_plex::plex::same_item((row.sid, &row.rk), (here_sid, here_rk)) || row.rk.is_empty() {
         return Action::None;
     }
     Action::Open {

@@ -16,7 +16,7 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   reference. Read the relevant section before changing a subsystem; do not load the whole file
   when a narrower section is enough.
 - Before playback work, read `rust-modules/src/player/CLAUDE.md`.
-- Before Plex data-layer work, read `rust-modules/src/plex/CLAUDE.md` and `docs/pms-api.md`.
+- Before Plex data-layer work, read `rust-modules/plex/src/plex/CLAUDE.md` and `docs/pms-api.md`.
 - Before UI work, read `rust-modules/ui/src/CLAUDE.md` and use the shared theme, layout, and widget
   systems instead of adding screen-local visual primitives. Before touching a screen, also read
   `rust-modules/src/screens/CLAUDE.md`; the restructure's design record is

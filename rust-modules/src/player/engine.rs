@@ -1258,7 +1258,7 @@ fn start_bufferfeed_inner(
     let source;
 
     if stream {
-        let su = crate::plex::StreamUrl::parse(&url); // the typed layer's URL splitter
+        let su = plx_plex::plex::StreamUrl::parse(&url); // the typed layer's URL splitter
                                                       // **The whole ORIGIN goes down, not a `(host, port)` pair, because the SCHEME chooses the
                                                       // transport**: `ff::demux` reads http through `plx_net::stream`'s cleartext socket and https
                                                       // through `crate::curlio`. This used to REFUSE an https origin outright — cleartext to a
@@ -1267,7 +1267,7 @@ fn start_bufferfeed_inner(
                                                       // Rebuilding the origin from an address would put the refusal back in a subtler form: the
                                                       // certificate is issued for the `plex.direct` NAME, so a TLS connection to the dotted quad
                                                       // behind it fails validation however well the packets flow (`net/origin.rs`).
-        if !crate::http::credential_transport_allowed(&su.origin, &su.path, &[]) {
+        if !plx_plex::http::credential_transport_allowed(&su.origin, &su.path, &[]) {
             plx_base::eventlog::log("stream: refused insecure credential transport");
             return Err(crate::route::RouteStartResult::StartFailed);
         }

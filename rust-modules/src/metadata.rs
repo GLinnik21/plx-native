@@ -50,14 +50,14 @@ impl<'a> MetadataView<'a> {
     pub(crate) fn season_loading(&self) -> bool {
         season_loading(self.adapter)
     }
-    pub(crate) fn detail_request_status(&self, sid: crate::plex::ServerId, rk: &str) -> Option<bool> {
+    pub(crate) fn detail_request_status(&self, sid: plx_plex::plex::ServerId, rk: &str) -> Option<bool> {
         detail_request_status(self.adapter, sid, rk)
     }
     /// See [`detail_generation`] (free fn) for why a bare terminal `bool` is not enough identity.
     pub(crate) fn detail_generation(&self) -> u32 {
         detail_generation(self.adapter)
     }
-    pub(crate) fn cached_playing(&self, sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
+    pub(crate) fn cached_playing(&self, sid: plx_plex::plex::ServerId, rk: &str) -> Option<PlayingItem> {
         cached_playing(self.state, sid, rk)
     }
     pub(crate) fn active_marker(&self, head: Playhead) -> Option<Marker> {
@@ -78,10 +78,10 @@ impl<'a> MetadataView<'a> {
         let pos_ms = head.pos_ns / 1_000_000;
         tail_marker(pos_ms, dur_ms)
     }
-    pub(crate) fn alt_copies(&self, sid: crate::plex::ServerId, rk: &str) -> &'a [AltCopy] {
+    pub(crate) fn alt_copies(&self, sid: plx_plex::plex::ServerId, rk: &str) -> &'a [AltCopy] {
         alt_copies(self.state, sid, rk)
     }
-    pub(crate) fn alt_available(&self, sid: crate::plex::ServerId, rk: &str) -> bool {
+    pub(crate) fn alt_available(&self, sid: plx_plex::plex::ServerId, rk: &str) -> bool {
         alt_available(self.state, sid, rk)
     }
 }
@@ -135,7 +135,7 @@ pub(crate) struct MetadataAdapter {
     /// TEST ONLY: the detail fetches [`request_detail`] admitted, parked here instead of on a
     /// worker thread — see [`MetadataAdapter::run_held_detail_fetches_for_test`].
     #[cfg(test)]
-    held_detail: std::sync::Mutex<Vec<(crate::plex::ServerId, String, u32)>>,
+    held_detail: std::sync::Mutex<Vec<(plx_plex::plex::ServerId, String, u32)>>,
 }
 
 impl Default for MetadataAdapter {
@@ -453,7 +453,7 @@ impl Dovi {
     /// - the server's permission to **COPY** the video — a remux or a `directStream` transcode
     ///   hands us the identical elementary stream one container down, and the Load payload built
     ///   for that path declares nothing. `route::build_stream` reads it for both
-    ///   ([`crate::plex::TranscodeSpec::no_video_copy`] and the `remux` gate) and that is why a
+    ///   ([`plx_plex::plex::TranscodeSpec::no_video_copy`] and the `remux` gate) and that is why a
     ///   declared Profile 5 still refuses a copy: the declaration rides the DIRECT PLAY, not the
     ///   file, so the same pixels arriving by another route are as wrong as they ever were.
     ///
@@ -473,7 +473,7 @@ impl Dovi {
     /// unchanged. That direction is deliberate, and the price of getting it wrong is higher than
     /// it first looks: a true answer here does not merely reroute an item, it also withdraws the
     /// server's permission to COPY the video
-    /// ([`crate::plex::TranscodeSpec::no_video_copy`] — without which the refusal accomplishes
+    /// ([`plx_plex::plex::TranscodeSpec::no_video_copy`] — without which the refusal accomplishes
     /// nothing at all), and a server that cannot encode the result then refuses the playback
     /// outright. So a false positive costs the film, not just its 4K and its HDR10. The same
     /// misread-degrades-to-assumed rule [`crate::route::video_direct_plays`] applies to an unknown
@@ -1081,8 +1081,8 @@ pub(crate) struct CollectionShelf {
 impl CollectionShelf {
     /// Where the shelf's linked heading leads: the collection by section and tag, for the
     /// collection store to resolve.
-    pub(crate) fn link(&self, sid: crate::plex::ServerId) -> crate::plex::collections::CollectionRef {
-        crate::plex::collections::CollectionRef::by_tag(sid, self.section, self.tag, &self.title)
+    pub(crate) fn link(&self, sid: plx_plex::plex::ServerId) -> plx_plex::plex::collections::CollectionRef {
+        plx_plex::plex::collections::CollectionRef::by_tag(sid, self.section, self.tag, &self.title)
     }
 }
 
@@ -1108,7 +1108,7 @@ pub(crate) struct Chapter {
 /// Parse an item's `Chapter[]` into the app's model — the ONE `plex::Chapter` → [`Chapter`] mapping,
 /// shared by the detail parse and the playing-item store (which must agree: the Chapters strip seeks
 /// with these offsets, so two mappings is two chances to disagree about which item they describe).
-fn convert_chapters(chapters: &[crate::plex::Chapter]) -> Vec<Chapter> {
+fn convert_chapters(chapters: &[plx_plex::plex::Chapter]) -> Vec<Chapter> {
     chapters
         .iter()
         .map(|c| Chapter {
@@ -1153,7 +1153,7 @@ const FINAL_SLACK_MS: i64 = 2_000;
 /// and any segment whose offsets are not a forward range (a zero-length or inverted marker would
 /// otherwise produce a prompt that can never be satisfied by seeking to its end). `duration_ms` is
 /// the item's, for [`FINAL_SLACK_MS`] (`0` when unknown: only the explicit flag counts).
-fn convert_markers(markers: &[crate::plex::Marker], duration_ms: i64) -> Vec<Marker> {
+fn convert_markers(markers: &[plx_plex::plex::Marker], duration_ms: i64) -> Vec<Marker> {
     markers
         .iter()
         .filter_map(|m| {
@@ -1365,7 +1365,7 @@ pub(crate) struct Rating {
 ///
 /// Rows whose artwork cannot be attributed are dropped, as are non-positive scores: PMS omits a
 /// score it does not have, and `de_f64` defaults that to 0.0, so "0.0" means absent, not zero.
-fn convert_ratings(it: &crate::plex::Metadata) -> Vec<Rating> {
+fn convert_ratings(it: &plx_plex::plex::Metadata) -> Vec<Rating> {
     let mut out: Vec<Rating> = if !it.ratings.is_empty() {
         it.ratings
             .iter()
@@ -1412,10 +1412,10 @@ pub(crate) struct Detail {
     /// WHICH SERVER this item was fetched from — the other half of its identity. `rk` on its own
     /// names an item on no machine in particular the moment a shared server is registered (both
     /// number from 1; docs/shared-servers.md §2), and every equality test that reads this struct
-    /// therefore compares the pair through [`crate::plex::same_item`]: `cached_playing`'s cache
+    /// therefore compares the pair through [`plx_plex::plex::same_item`]: `cached_playing`'s cache
     /// hit, `pump_season`'s ownership test, `detail::reselect`, and the BACK trail's node.
     #[serde(with = "record::server_id")]
-    pub(crate) sid: crate::plex::ServerId,
+    pub(crate) sid: plx_plex::plex::ServerId,
     pub(crate) rk: String,
     /// Which SERVER this item was fetched from, as the OWNER'S HANDLE ("friend") — empty whenever
     /// it came from the signed-in user's own server, which is every item today.
@@ -1507,7 +1507,7 @@ pub(crate) struct Detail {
     pub(crate) art: String,
     pub(crate) thumb: String,
     /// The item's own `UltraBlurColors` corners (tl, tr, br, bl — the ring order
-    /// [`plex::UltraBlurColors::corners`](crate::plex::UltraBlurColors::corners) owns) and whether
+    /// [`plex::UltraBlurColors::corners`](plx_plex::plex::UltraBlurColors::corners) owns) and whether
     /// the server sent a usable envelope — what keys the detail page's ambient GROUND. It lives on
     /// the LOADED item and not only on the catalog row because a page opened from the Library grid,
     /// a Related tile or the person page is never in the home catalog (`pms::index_of_rk` searches
@@ -1620,7 +1620,7 @@ impl Detail {
     /// [`dev_source`]) — the trigger surface is boot state, and this is reached from a draw.
     pub(crate) fn source(&self) -> String {
         dev_source().map(str::to_owned).unwrap_or_else(|| {
-            crate::plex::server_facts(self.sid)
+            plx_plex::plex::server_facts(self.sid)
                 .map(|f| f.handle.clone())
                 .unwrap_or_default()
         })
@@ -1696,7 +1696,7 @@ pub(crate) fn install_for_test(state: &mut MetadataState, d: Option<Detail>) {
 /// episode keeping its old `viewOffset` would still draw its resume bar and no check.
 ///
 /// The landed refresh is the truth and silently corrects any of this; see [`crate::viewstate`].
-fn set_watched_local(state: &mut MetadataState, sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
+fn set_watched_local(state: &mut MetadataState, sid: plx_plex::plex::ServerId, rk: &str, on: bool) -> bool {
     {
         let Some(d) = state.current.as_mut() else {
             return false;
@@ -1716,14 +1716,14 @@ fn set_watched_local(state: &mut MetadataState, sid: crate::plex::ServerId, rk: 
         // among them), so they move with the same pass.
         let members = d.collection.iter_mut().flat_map(|c| c.members.iter_mut());
         for m in d.related.iter_mut().chain(members) {
-            if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
+            if plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)) {
                 // the shared three-field flip (`watched`/`unwatched`/`resume_ms` move together, or
                 // the tile wears the progress bar it had before and shows no tick at all)
                 crate::pms::set_watched(m, on);
                 hit = true;
             }
         }
-        if crate::plex::same_item((d.sid, &d.rk), (sid, rk)) {
+        if plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk)) {
             d.watched = on;
             d.resume_ms = 0;
             return true;
@@ -1888,14 +1888,14 @@ fn sync_now_playing(state: &mut MetadataState) {
 /// episode descriptor.
 pub(crate) fn trailer_now_playing(
     state: &MetadataState,
-    sid: crate::plex::ServerId,
+    sid: plx_plex::plex::ServerId,
     extra_rk: &str,
 ) -> Option<NowPlaying> {
     let d = current(state)?;
     let extra = d
         .extras
         .iter()
-        .find(|e| crate::plex::same_item((d.sid, e.rk.as_str()), (sid, extra_rk)))?;
+        .find(|e| plx_plex::plex::same_item((d.sid, e.rk.as_str()), (sid, extra_rk)))?;
     Some(NowPlaying {
         is_episode: d.is_show,
         // An extra is never a real episode leaf, whatever kind its parent is — `season`/`index`
@@ -1918,7 +1918,7 @@ pub(crate) fn trailer_now_playing(
     })
 }
 
-// ---- fetches (all via the typed crate::plex client; serde DTOs, no Value scraping) ----
+// ---- fetches (all via the typed plx_plex::plex client; serde DTOs, no Value scraping) ----
 //
 // Every one of them takes the `ServerId` rather than reaching for `plex::client()`: they run on the
 // detail/season workers, and the house rule is that a worker reads no statics (`pms::parse_item`
@@ -1946,8 +1946,8 @@ fn dev_source() -> Option<&'static str> {
     None
 }
 
-fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<(Detail, String)> {
-    let it = crate::plex::client_for(sid)?.metadata(rk)?;
+fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, String)> {
+    let it = plx_plex::plex::client_for(sid)?.metadata(rk)?;
     let media0 = it.primary_media();
     // one read, both fields (see `Detail::blur`)
     let blur = it.ultra_blur_colors.and_then(|u| u.corners());
@@ -2046,7 +2046,7 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<(Detail, String)
 const CREW_JOBS: [CrewRole; 2] = [CrewRole::Director, CrewRole::Writer];
 
 /// The named tags of one crew array, in server order, without the blanks or the repeats.
-fn dedup_tags(tags: &[crate::plex::Tag]) -> Vec<String> {
+fn dedup_tags(tags: &[plx_plex::plex::Tag]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for t in tags.iter().filter(|t| !t.tag.is_empty()) {
         if !out.iter().any(|s| s == &t.tag) {
@@ -2064,7 +2064,7 @@ fn dedup_tags(tags: &[crate::plex::Tag]) -> Vec<String> {
 /// merge) the job is already there and is not repeated — "Director, Director" is nobody's credit.
 /// Nameless rows are dropped: a tile with no name and (often) no headshot is a blank circle the
 /// focus can still land on.
-fn crew_credits(it: &crate::plex::Metadata) -> Vec<Cast> {
+fn crew_credits(it: &plx_plex::plex::Metadata) -> Vec<Cast> {
     let mut out: Vec<Cast> = Vec::new();
     for (role, list) in CREW_JOBS.iter().zip([&it.director, &it.writer]) {
         let job = role.key();
@@ -2114,7 +2114,7 @@ pub(crate) struct Streams {
     pub(crate) dovi: Dovi,
 }
 
-fn convert_streams(streams: &[crate::plex::Stream]) -> Streams {
+fn convert_streams(streams: &[plx_plex::plex::Stream]) -> Streams {
     let (mut audio, mut subs, mut fps) = (Vec::new(), Vec::new(), 0.0);
     let mut hdr = false;
     let mut dovi = Dovi::default();
@@ -2214,17 +2214,17 @@ mod convert_streams_tests {
     #[test]
     fn convert_streams_carries_loudness_capability() {
         let wire = [
-            crate::plex::Stream {
+            plx_plex::plex::Stream {
                 stream_type: 2,
                 can_normalize_loudness: true,
                 ..Default::default()
             },
-            crate::plex::Stream {
+            plx_plex::plex::Stream {
                 stream_type: 2,
                 can_normalize_loudness: false,
                 ..Default::default()
             },
-            crate::plex::Stream {
+            plx_plex::plex::Stream {
                 stream_type: 1,
                 can_normalize_loudness: false,
                 ..Default::default()
@@ -2242,7 +2242,7 @@ mod convert_streams_tests {
 /// same version's technical fields (resolution/size/bitrate — the hero's media badge). Both ride
 /// the ONE version (see `plex::Metadata::primary_media`), and both are borrowed from a show's
 /// first episode by the same call in `fetch_item_streams`, so they can't describe different files.
-fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
+fn parse_streams(it: &plx_plex::plex::Metadata, d: &mut Detail) {
     if let Some(m) = it.primary_media() {
         d.video_resolution = m.video_resolution.clone();
         d.width = m.width;
@@ -2290,7 +2290,7 @@ pub(crate) struct PlayingItem {
     /// esInfo fps, the chapters and the markers — so a bare-rk cache hit against a colliding item on
     /// the other machine is the silent failure this field exists to stop: every one of those values
     /// would be the wrong file's, with nothing on screen to say so.
-    pub(crate) sid: crate::plex::ServerId,
+    pub(crate) sid: plx_plex::plex::ServerId,
     pub(crate) rk: String,
     /// The show's ratingKey when this is an episode (`grandparentRatingKey`), else empty — what
     /// the resolve asks the show's own language settings of (`route::plan::build_stream`).
@@ -2329,7 +2329,7 @@ impl PlayingItem {
     /// overlay tests install, where nothing but the subtitle list is read.
     pub(crate) fn with_subs(subs: Vec<Stream>) -> Self {
         PlayingItem {
-            sid: crate::plex::ServerId::from_raw(0),
+            sid: plx_plex::plex::ServerId::from_raw(0),
             rk: "rk".into(),
             show_rk: String::new(),
             audio: Vec::new(),
@@ -2367,9 +2367,9 @@ impl PlayingItem {
 /// This closed a TODO that stood here through the foundation commits: `Detail` had no server, so
 /// the filter was the rk alone and the parameter was deliberately unused. `Detail.sid` is what
 /// made the pair test possible.
-fn cached_playing(state: &MetadataState, sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
+fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str) -> Option<PlayingItem> {
     current(state)
-        .filter(|d| crate::plex::same_item((d.sid, &d.rk), (sid, rk)) && !d.audio.is_empty())
+        .filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk)) && !d.audio.is_empty())
         .map(|d| PlayingItem {
             sid,
             rk: rk.to_string(),
@@ -2390,11 +2390,11 @@ fn cached_playing(state: &MetadataState, sid: crate::plex::ServerId, rk: &str) -
 /// `sid` names the server `rk` is a key on. It runs on the resolve worker, so the server must
 /// arrive by value: `client_opt()` here would fetch whichever server is CURRENT, and a ratingKey
 /// that also exists there would come back with a different film's stream list.
-pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
+pub(crate) fn fetch_playing_item(sid: plx_plex::plex::ServerId, rk: &str) -> Option<PlayingItem> {
     if rk.is_empty() {
         return None;
     }
-    let it = crate::plex::client_for(sid).and_then(|c| c.metadata(rk));
+    let it = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(rk));
     // Markers and chapters hang off the ITEM, streams off its first Part — so a part-less response
     // still yields both of those instead of discarding all three. `Client::metadata` already sends
     // `includeChapters=1` (plex/library.rs), so the Chapter[] is on the wire either way: taking it
@@ -2802,14 +2802,14 @@ mod lang_matches_tests {
 
 /// fetch one item's full metadata and parse its streams into `d` — used to borrow a
 /// show's first-episode audio/subtitle tracks (the show container carries none).
-fn fetch_item_streams(sid: crate::plex::ServerId, rk: &str, d: &mut Detail) {
-    if let Some(it) = crate::plex::client_for(sid).and_then(|c| c.metadata(rk)) {
+fn fetch_item_streams(sid: plx_plex::plex::ServerId, rk: &str, d: &mut Detail) {
+    if let Some(it) = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(rk)) {
         parse_streams(&it, d);
     }
 }
 
-fn fetch_seasons(sid: crate::plex::ServerId, rk: &str) -> Vec<Season> {
-    let mc = match crate::plex::client_for(sid).and_then(|c| c.children(rk)) {
+fn fetch_seasons(sid: plx_plex::plex::ServerId, rk: &str) -> Vec<Season> {
+    let mc = match plx_plex::plex::client_for(sid).and_then(|c| c.children(rk)) {
         Some(m) => m,
         None => {
             // The empty Vec is the deliberate degrade (see `fetch_episodes`'s note), but by the
@@ -2842,8 +2842,8 @@ fn fetch_seasons(sid: crate::plex::ServerId, rk: &str) -> Vec<Season> {
 /// NB its siblings `fetch_seasons`/`fetch_related` deliberately KEEP the degrade-to-empty: both are
 /// only ever called from `fetch_full`, which builds a Detail from nothing — there is no previous
 /// list there to protect, and neither is worth failing the whole page over.
-fn fetch_episodes(sid: crate::plex::ServerId, season_rk: &str) -> Option<Vec<Episode>> {
-    let mc = crate::plex::client_for(sid)?.children(season_rk)?;
+fn fetch_episodes(sid: plx_plex::plex::ServerId, season_rk: &str) -> Option<Vec<Episode>> {
+    let mc = plx_plex::plex::client_for(sid)?.children(season_rk)?;
     Some(mc.metadata.iter().map(convert_episode).collect())
 }
 
@@ -2851,7 +2851,7 @@ fn fetch_episodes(sid: crate::plex::ServerId, season_rk: &str) -> Option<Vec<Epi
 /// mapping is host-testable without a PMS — the watched flag in particular is DERIVED, and a
 /// derivation nothing can exercise is how `viewCount` came to be parsed at
 /// `plex/models.rs` and then dropped on the floor here for the whole life of the episode row.
-fn convert_episode(x: &crate::plex::Metadata) -> Episode {
+fn convert_episode(x: &plx_plex::plex::Metadata) -> Episode {
     let media0 = x.media.first();
     Episode {
         rk: x.rating_key.clone(),
@@ -2874,7 +2874,7 @@ fn convert_episode(x: &crate::plex::Metadata) -> Episode {
     }
 }
 
-fn convert_extra(x: &crate::plex::Metadata) -> Extra {
+fn convert_extra(x: &plx_plex::plex::Metadata) -> Extra {
     Extra {
         rk: x.rating_key.clone(),
         title: x.title.clone(),
@@ -2894,23 +2894,23 @@ fn extra_key_tail(primary: &str) -> &str {
     primary.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(primary)
 }
 
-fn extra_matches_primary(x: &crate::plex::Metadata, primary: &str) -> bool {
+fn extra_matches_primary(x: &plx_plex::plex::Metadata, primary: &str) -> bool {
     !primary.is_empty()
         && (x.rating_key == extra_key_tail(primary) || (!x.key.is_empty() && x.key == primary))
 }
 
-fn is_trailer_meta(x: &crate::plex::Metadata) -> bool {
+fn is_trailer_meta(x: &plx_plex::plex::Metadata) -> bool {
     x.subtype == "trailer" || x.extra_type == 1
 }
 
-fn playable_trailer_meta(x: &crate::plex::Metadata) -> bool {
+fn playable_trailer_meta(x: &plx_plex::plex::Metadata) -> bool {
     is_trailer_meta(x) && x.first_part().is_some_and(|p| !p.key.is_empty())
 }
 
 /// Picker winner: a playable trailer, preferring `primaryExtraKey`, else first in server order.
 /// A primary that names a non-trailer (or a trailer with no Part) is ignored.
-fn pick_trailer(rows: &[crate::plex::Metadata], primary: &str) -> Option<Extra> {
-    let playable: Vec<&crate::plex::Metadata> =
+fn pick_trailer(rows: &[plx_plex::plex::Metadata], primary: &str) -> Option<Extra> {
+    let playable: Vec<&plx_plex::plex::Metadata> =
         rows.iter().filter(|x| playable_trailer_meta(x)).collect();
     playable
         .iter()
@@ -2923,10 +2923,10 @@ fn pick_trailer(rows: &[crate::plex::Metadata], primary: &str) -> Option<Extra> 
 /// First trailer row (playable or not) under the same primary preference — used only when the
 /// picker found none, so we can pay **one** follow-up metadata GET for a missing Part.
 fn trailer_fill_candidate<'a>(
-    rows: &'a [crate::plex::Metadata],
+    rows: &'a [plx_plex::plex::Metadata],
     primary: &str,
-) -> Option<&'a crate::plex::Metadata> {
-    let trailers: Vec<&crate::plex::Metadata> = rows
+) -> Option<&'a plx_plex::plex::Metadata> {
+    let trailers: Vec<&plx_plex::plex::Metadata> = rows
         .iter()
         .filter(|x| is_trailer_meta(x) && !x.rating_key.is_empty())
         .collect();
@@ -2937,21 +2937,21 @@ fn trailer_fill_candidate<'a>(
         .or_else(|| trailers.first().copied())
 }
 
-fn trailer_from_item(it: &crate::plex::Metadata) -> Option<Extra> {
+fn trailer_from_item(it: &plx_plex::plex::Metadata) -> Option<Extra> {
     playable_trailer_meta(it).then(|| convert_extra(it))
 }
 
-fn fetch_primary_trailer(sid: crate::plex::ServerId, primary: &str) -> Option<Extra> {
+fn fetch_primary_trailer(sid: plx_plex::plex::ServerId, primary: &str) -> Option<Extra> {
     let rk = extra_key_tail(primary);
     if rk.is_empty() {
         return None;
     }
-    let it = crate::plex::client_for(sid).and_then(|c| c.metadata(rk))?;
+    let it = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(rk))?;
     trailer_from_item(&it)
 }
 
-fn fetch_extras_rows(sid: crate::plex::ServerId, rk: &str) -> Option<Vec<crate::plex::Metadata>> {
-    match crate::plex::client_for(sid).and_then(|c| c.extras(rk)) {
+fn fetch_extras_rows(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Vec<plx_plex::plex::Metadata>> {
+    match plx_plex::plex::client_for(sid).and_then(|c| c.extras(rk)) {
         Some(mc) => Some(mc.metadata),
         None => {
             plx_base::eventlog::log(&format!(
@@ -2965,15 +2965,15 @@ fn fetch_extras_rows(sid: crate::plex::ServerId, rk: &str) -> Option<Vec<crate::
 /// Resolve the Trailer control's extra. At most one follow-up `metadata()` when every trailer
 /// row arrived without a Part; never N+1 over the rest of the list.
 fn resolve_trailer(
-    sid: crate::plex::ServerId,
-    rows: &[crate::plex::Metadata],
+    sid: plx_plex::plex::ServerId,
+    rows: &[plx_plex::plex::Metadata],
     primary: &str,
 ) -> Option<Extra> {
     if let Some(e) = pick_trailer(rows, primary) {
         return Some(e);
     }
     let candidate = trailer_fill_candidate(rows, primary)?;
-    let it = crate::plex::client_for(sid).and_then(|c| c.metadata(&candidate.rating_key))?;
+    let it = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(&candidate.rating_key))?;
     let e = convert_extra(&it);
     e.playable().then_some(e)
 }
@@ -2982,7 +2982,7 @@ fn resolve_trailer(
 /// the page promised and then could not focus.
 const EXTRAS_MAX: usize = 32;
 
-fn extras_from_rows(rows: &[crate::plex::Metadata]) -> Vec<Extra> {
+fn extras_from_rows(rows: &[plx_plex::plex::Metadata]) -> Vec<Extra> {
     rows.iter()
         .filter(|x| !x.rating_key.is_empty())
         .take(EXTRAS_MAX)
@@ -2994,8 +2994,8 @@ fn extras_from_rows(rows: &[crate::plex::Metadata]) -> Vec<Extra> {
 /// fills a missing Part replaces that row so the shelf tile and the Trailer disc agree.
 fn project_extras(
     d: &mut Detail,
-    sid: crate::plex::ServerId,
-    rows: &[crate::plex::Metadata],
+    sid: plx_plex::plex::ServerId,
+    rows: &[plx_plex::plex::Metadata],
     primary: &str,
 ) {
     d.extras = extras_from_rows(rows);
@@ -3022,8 +3022,8 @@ fn project_extras(
     d.trailer_rk = winner.rk;
 }
 
-fn fetch_related(sid: crate::plex::ServerId, rk: &str) -> RelatedRows {
-    let mc = match crate::plex::client_for(sid).and_then(|c| c.related(rk)) {
+fn fetch_related(sid: plx_plex::plex::ServerId, rk: &str) -> RelatedRows {
+    let mc = match plx_plex::plex::client_for(sid).and_then(|c| c.related(rk)) {
         Some(m) => m,
         None => {
             // Same shape as `fetch_seasons` above: the degrade is deliberate, the silence is not —
@@ -3054,9 +3054,9 @@ const RELATED_MAX: usize = 20;
 /// De-duplication is across the WHOLE response and not per hub, which is the point of it: PMS's
 /// related hubs overlap heavily ("Similar Movies" and "More with <actor>" routinely name the same
 /// film), and a flattened strip that listed it twice would put two tiles of one title side by side.
-fn related_rows(mc: &crate::plex::MediaContainer, sid: crate::plex::ServerId, rk: &str) -> RelatedRows {
+fn related_rows(mc: &plx_plex::plex::MediaContainer, sid: plx_plex::plex::ServerId, rk: &str) -> RelatedRows {
     let own = mc.hub.iter().position(|h| {
-        crate::plex::collections::related_collection_hub(&h.hub_identifier, &h.key).is_some()
+        plx_plex::plex::collections::related_collection_hub(&h.hub_identifier, &h.key).is_some()
     });
     let mut seen = std::collections::HashSet::new();
     seen.insert(rk.to_string());
@@ -3092,13 +3092,13 @@ fn related_rows(mc: &crate::plex::MediaContainer, sid: crate::plex::ServerId, rk
 /// collection's only listed member: a shelf of the page's own poster is no way to a collection.
 /// Members keep server order, the item's own tile included, capped at [`COLLECTION_MAX`].
 fn collection_shelf(
-    h: &crate::plex::Hub,
-    sid: crate::plex::ServerId,
+    h: &plx_plex::plex::Hub,
+    sid: plx_plex::plex::ServerId,
     rk: &str,
 ) -> Option<CollectionShelf> {
-    let (section, tag) = crate::plex::collections::related_collection_hub(&h.hub_identifier, &h.key)?;
+    let (section, tag) = plx_plex::plex::collections::related_collection_hub(&h.hub_identifier, &h.key)?;
     let mut seen = std::collections::HashSet::new();
-    let listed: Vec<&crate::plex::Metadata> = h
+    let listed: Vec<&plx_plex::plex::Metadata> = h
         .metadata
         .iter()
         .filter(|x| {
@@ -3130,7 +3130,7 @@ fn collection_shelf(
 /// (phase 12/D7 deleted the last one, `load_detail_now`; see that deletion's note below). Keep it
 /// that way: installing the result is the caller's job, and on the async path that must happen on
 /// the main thread (see the `DETAIL_LANDING`/`land_detail` note).
-fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
+fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Detail> {
     // `ms=` is the whole chain's wall clock. It is the exact cost `request_detail` moves off the
     // SDL loop, so it is the number to read when judging whether a call site can afford to block
     // — note the framedrop breakdown CANNOT show it (fd_pc0 starts after event handling).
@@ -3266,11 +3266,11 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
 // drop the old `Detail` under a live reference — a use-after-free, not a lint. Keeping the main
 // thread the sole writer is precisely what makes that borrow sound, so the worker's only output
 // is the mailbox.
-type DetailKey = (crate::plex::ServerId, String);
+type DetailKey = (plx_plex::plex::ServerId, String);
 
 /// The addressed request's status: None means another item (or no request), true means
 /// in flight, false means the matching request settled, including failure/refusal.
-fn detail_request_status(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str) -> Option<bool> {
+fn detail_request_status(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str) -> Option<bool> {
     let want = adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner());
     want.as_ref().filter(|(wanted_sid, wanted_rk)| *wanted_sid == sid && wanted_rk == rk)
         .map(|_| detail_loading(adapter))
@@ -3286,7 +3286,7 @@ fn detail_generation(adapter: &MetadataAdapter) -> u32 {
 }
 
 #[cfg(test)]
-pub(crate) fn begin_detail_for_test(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str) -> u32 {
+pub(crate) fn begin_detail_for_test(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str) -> u32 {
     plx_base::testlock::assert_held("the detail store (begin_detail_for_test)");
     let (gen, _, admission) = begin_detail_request(adapter, sid, rk);
     admission.expect("synthetic detail request must have a reserved completion");
@@ -3299,7 +3299,7 @@ pub(crate) fn detail_generation_for_test(adapter: &MetadataAdapter) -> u32 {
 }
 
 #[cfg(test)]
-pub(crate) fn land_detail_for_test(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: crate::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
+pub(crate) fn land_detail_for_test(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
     plx_base::testlock::assert_held("the detail store (land_detail_for_test)");
     land_detail(adapter, sid, rk, gen, detail);
     pump_detail(state, adapter)
@@ -3328,7 +3328,7 @@ fn supersede_detail(adapter: &MetadataAdapter) -> u32 {
 /// keyed by the item it fetched. An older fetch landing late is refused by [`pump_detail`]'s
 /// generation check, so ordering in the queue is never what protects a newer result. Called from
 /// the worker (and from the tests, which is the point of it being a named function).
-fn land_detail(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str, gen: u32, d: Option<Detail>) {
+fn land_detail(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str, gen: u32, d: Option<Detail>) {
     let addr = detail_addr(gen);
     // Full has already queued one Dropped terminal. Unknown/duplicate results queue nothing;
     // cancelled worker completions acknowledge only their own retained reservation.
@@ -3337,7 +3337,7 @@ fn land_detail(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str, 
 
 /// Mint the request: supersede the season, bump the generation, record what the page awaits
 /// and admit the request. The spawn is the caller's; a refused one is `refused` back.
-fn begin_detail_request(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str) -> (
+fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str) -> (
     u32, plx_machine::machine::Addr, Result<(), plx_machine::landing::AdmissionError>,
 ) {
     use std::sync::atomic::Ordering;
@@ -3367,13 +3367,13 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: crate::plex::ServerId, r
 /// `sid` names the server to ask and is captured by the CALLER, on the main thread — the worker
 /// must not read the current server (see the fetch block's note), and the page being opened may
 /// belong to a machine that is not the current one at all.
-fn request_detail(adapter: &std::sync::Arc<MetadataAdapter>, sid: crate::plex::ServerId, rk: &str) {
+fn request_detail(adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str) {
     request_detail_with_spawn(adapter, sid, rk, |gen| {
         let rk = rk.to_string();
         let adapter = std::sync::Arc::clone(adapter);
         crate::stores::tape::admit(serde_json::json!({"store":"metadata",
             "sid":sid.raw(),"rk":rk,"gen":gen,
-            "client":crate::plex::client_for(sid).map(|c| c.instance_gen())}), || {
+            "client":plx_plex::plex::client_for(sid).map(|c| c.instance_gen())}), || {
             // See `MetadataAdapter::run_held_detail_fetches_for_test`: a test runs the fetch
             // when it chooses, never on a thread racing its assertions.
             #[cfg(test)]
@@ -3390,7 +3390,7 @@ fn request_detail(adapter: &std::sync::Arc<MetadataAdapter>, sid: crate::plex::S
 }
 
 /// Shared admission/spawn path; tests inject a spawn outcome without starting network workers.
-fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str, spawn: impl FnOnce(u32) -> bool) {
+fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str, spawn: impl FnOnce(u32) -> bool) {
     let (gen, addr, admission) = begin_detail_request(adapter, sid, rk);
     if admission.is_err() { return; }
     if !spawn(gen) {
@@ -3401,7 +3401,7 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: crate::plex::Server
 }
 
 fn finish_detail_fetch(
-    adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str, gen: u32,
+    adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str, gen: u32,
     fetch: impl FnOnce() -> Option<Detail> + std::panic::UnwindSafe,
 ) {
     // Publish outside the catch so fetch failure/unwind still acknowledges this reservation.
@@ -3562,7 +3562,7 @@ struct AltResult {
     /// resolve is out passes an rk-only test — and the generation guard cannot see that hop either,
     /// since it only moves when a DETAIL lands and the new page's is still in flight. The panel
     /// would then list the other machine's copies, and OK on one would open a different film.
-    sid: crate::plex::ServerId,
+    sid: plx_plex::plex::ServerId,
     /// The rk the resolve was asked FOR, carried so the landing can be matched against the page
     /// that is mounted now — the ADDRESSED store files it under that pair and a reader on another page
     /// sees nothing.
@@ -3577,11 +3577,11 @@ struct AltResult {
 /// `screens::alt_sources` only orders, marks and draws them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct AltCopy {
-    /// The registry slot the copy lives on ([`crate::plex::servers`]). It is the row's IDENTITY —
+    /// The registry slot the copy lives on ([`plx_plex::plex::servers`]). It is the row's IDENTITY —
     /// the gate counts distinct values of it, and OK resolves the destination client through it —
-    /// so a copy whose source is not registered carries [`crate::plex::ServerId::UNSET`] and can be
+    /// so a copy whose source is not registered carries [`plx_plex::plex::ServerId::UNSET`] and can be
     /// listed but never navigated to.
-    pub(crate) sid: crate::plex::ServerId,
+    pub(crate) sid: plx_plex::plex::ServerId,
     /// The LIBRARY this copy is in, on that server ("Movies", "Film Club") — the row's label.
     /// Libraries are what a person browses; the machine name (`nas-home`) belongs to the Sources
     /// list and to a failure read-out, and appears nowhere else in the product.
@@ -3636,7 +3636,7 @@ pub(crate) struct AltCopy {
 /// (`docs/shared-servers.md` §1) — is enforced by the READER, which always knows which page it is.
 #[derive(Default)]
 struct AltStore {
-    sid: crate::plex::ServerId,
+    sid: plx_plex::plex::ServerId,
     rk: String,
     copies: Vec<AltCopy>,
     /// Does the headless stand-in own `copies`? Set where [`alt_dev_stand_in`] writes them, cleared
@@ -3649,9 +3649,9 @@ struct AltStore {
 
 /// The copies held for `(sid, rk)` — EMPTY for any other item, and for an item nothing has landed
 /// for yet.
-fn alt_copies<'a>(state: &'a MetadataState, sid: crate::plex::ServerId, rk: &str) -> &'a [AltCopy] {
+fn alt_copies<'a>(state: &'a MetadataState, sid: plx_plex::plex::ServerId, rk: &str) -> &'a [AltCopy] {
     let held = &state.alt;
-    if crate::plex::same_item((held.sid, held.rk.as_str()), (sid, rk)) {
+    if plx_plex::plex::same_item((held.sid, held.rk.as_str()), (sid, rk)) {
         &held.copies
     } else {
         &[]
@@ -3675,7 +3675,7 @@ pub(crate) fn alt_source_count(list: &[AltCopy]) -> usize {
 /// **The gate**: is a second pinned source holding `(sid, rk)`? The Detail page's actions row asks
 /// before it draws the control, so with one source there is no button, no layout for it and no
 /// draw call.
-fn alt_available(state: &MetadataState, sid: crate::plex::ServerId, rk: &str) -> bool {
+fn alt_available(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str) -> bool {
     alt_source_count(alt_copies(state, sid, rk)) >= 2
 }
 
@@ -3683,7 +3683,7 @@ fn alt_available(state: &MetadataState, sid: crate::plex::ServerId, rk: &str) ->
 /// see changed, which is what raises the Metadata store's notice.
 fn alt_install(
     state: &mut MetadataState,
-    item_sid: crate::plex::ServerId,
+    item_sid: plx_plex::plex::ServerId,
     item_rk: &str,
     list: Vec<AltCopy>,
 ) -> bool {
@@ -3694,7 +3694,7 @@ fn alt_install(
     // the only point that sees both the list and the current answer.
     alt_regrade(&mut list, false);
     let held = &mut state.alt;
-    let same = crate::plex::same_item((held.sid, held.rk.as_str()), (item_sid, item_rk))
+    let same = plx_plex::plex::same_item((held.sid, held.rk.as_str()), (item_sid, item_rk))
         && held.copies == list
         && !held.stand_in;
     held.sid = item_sid;
@@ -3749,7 +3749,7 @@ fn alt_regrade(list: &mut [AltCopy], stand_in_owns: bool) -> bool {
     }
     let mut moved = false;
     for c in list.iter_mut() {
-        let credit = crate::plex::server_facts(c.sid)
+        let credit = plx_plex::plex::server_facts(c.sid)
             .map(|f| f.handle.clone())
             .unwrap_or_default();
         // `None` is the absence of an owner and must not become `Some("")` — the same guard
@@ -3769,14 +3769,14 @@ fn alt_prune_inactive(state: &mut MetadataState) -> bool {
     let held = &mut state.alt;
     let before = held.copies.len();
     held.copies
-        .retain(|c| crate::plex::client_for(c.sid).is_some());
+        .retain(|c| plx_plex::plex::client_for(c.sid).is_some());
     held.copies.len() != before
 }
 
 /// Forget the whole store — paired with [`clear`], whose caller is a page being torn down.
 fn alt_clear(state: &mut MetadataState) {
     let held = &mut state.alt;
-    held.sid = crate::plex::ServerId::UNSET;
+    held.sid = plx_plex::plex::ServerId::UNSET;
     held.rk = String::new();
     held.copies = Vec::new();
     held.stand_in = false;
@@ -3805,19 +3805,19 @@ fn alt_clear(state: &mut MetadataState) {
 fn request_alt_sources(
     _state: &mut MetadataState,
     adapter: &std::sync::Arc<MetadataAdapter>,
-    sid: crate::plex::ServerId,
+    sid: plx_plex::plex::ServerId,
     rk: &str,
     guid: &str,
 ) {
     use std::sync::atomic::Ordering;
     let gen = adapter.alt_gen.fetch_add(1, Ordering::SeqCst) + 1;
-    let roster_gen = crate::plex::server_roster_gen();
+    let roster_gen = plx_plex::plex::server_roster_gen();
     adapter.alt_roster_gen.store(roster_gen, Ordering::SeqCst);
     *adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if guid.is_empty() {
         return; // nothing portable to match on; the panel stays absent
     }
-    let others: Vec<crate::plex::ServerId> = crate::plex::server_ids().collect();
+    let others: Vec<plx_plex::plex::ServerId> = plx_plex::plex::server_ids().collect();
     if others.len() < 2 {
         return; // a one-server install pays nothing: no worker, no query, no control
     }
@@ -3850,12 +3850,12 @@ fn request_alt_sources(
 /// WORKER. One `find_by_guid` per source, projected into rows. Pure of app state apart from the
 /// registry (an atomic read whose clients are never freed), so it is gradeable against a fixture.
 fn resolve_alt_sources(
-    others: &[crate::plex::ServerId],
+    others: &[plx_plex::plex::ServerId],
     guid: &str,
 ) -> Vec<AltCopy> {
     let mut out = Vec::new();
     for &id in others {
-        let Some(c) = crate::plex::client_for(id) else {
+        let Some(c) = plx_plex::plex::client_for(id) else {
             continue;
         };
         // `None` here is "did not answer" and `Some(empty)` is "does not have it" — both contribute
@@ -3864,7 +3864,7 @@ fn resolve_alt_sources(
         let Some(mc) = c.find_by_guid(guid) else {
             continue;
         };
-        let handle = crate::plex::server_facts(id)
+        let handle = plx_plex::plex::server_facts(id)
             .map(|f| f.handle.clone())
             .unwrap_or_default();
         for m in mc.metadata.iter() {
@@ -3928,7 +3928,7 @@ fn pump_alt_sources_with_library(
 ) -> bool {
     use std::sync::atomic::Ordering;
     let mut changed = false;
-    let roster_gen = crate::plex::server_roster_gen();
+    let roster_gen = plx_plex::plex::server_roster_gen();
     if adapter.alt_roster_gen.swap(roster_gen, Ordering::SeqCst) != roster_gen {
         adapter.alt_gen.fetch_add(1, Ordering::SeqCst);
         *adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -3939,7 +3939,7 @@ fn pump_alt_sources_with_library(
     // says nothing about which servers hold the item), and invalidating a resolve in flight would
     // leave the control absent until the page was remounted, since nothing here re-asks. So the
     // two epochs are read separately and this one only re-stamps what the rows SAY.
-    let facts_gen = crate::plex::server_facts_gen();
+    let facts_gen = plx_plex::plex::server_facts_gen();
     if adapter.alt_facts_gen.swap(facts_gen, Ordering::SeqCst) != facts_gen {
         changed |= alt_restamp_owners(state);
     }
@@ -4030,7 +4030,7 @@ fn alt_dev_stand_in(d: &Detail, library: Option<&str>) -> Option<Vec<AltCopy>> {
     // compatibility caller with no directory cannot honestly name the library, so it cannot arm
     // this visual stand-in.
     let library = library?;
-    let here = crate::plex::current_server();
+    let here = plx_plex::plex::current_server();
     let theirs = alt_stand_in_slot()?;
     let v = alt_stand_in(
         &handle,
@@ -4066,20 +4066,20 @@ fn alt_dev_stand_in(_d: &Detail, _library: Option<&str>) -> Option<Vec<AltCopy>>
 /// token is available to a dev path; with no token there is nothing to build a working client from,
 /// so there is no stand-in at all rather than one that 401s.
 #[cfg(not(test))]
-fn alt_stand_in_slot() -> Option<crate::plex::ServerId> {
-    let here = crate::plex::current_server();
+fn alt_stand_in_slot() -> Option<plx_plex::plex::ServerId> {
+    let here = plx_plex::plex::current_server();
     // `server_ids`, never `0..server_count()`: slot numbers are permanent and a sign-out retires
     // the ones below the registry's floor, so the live roster is a window and not a prefix.
     let other =
-        crate::plex::server_ids().find(|&id| id != here && crate::plex::client_for(id).is_some());
+        plx_plex::plex::server_ids().find(|&id| id != here && plx_plex::plex::client_for(id).is_some());
     if let Some(id) = other {
         return Some(id); // a real second server is already registered — use it
     }
-    let c = crate::plex::client_opt()?;
+    let c = plx_plex::plex::client_opt()?;
     let token = plx_base::devtrig::read("token").filter(|t| !t.is_empty())?;
     // …and a registry with no room left answers `UNSET`, which is no stand-in at all rather than
     // one that resolves to whatever happens to be current.
-    Some(crate::plex::register(
+    Some(plx_plex::plex::register(
         &format!("standin-{}", c.machine_id()),
         c.host(),
         c.port(),
@@ -4102,8 +4102,8 @@ pub(crate) fn alt_stand_in(
     rk: &str,
     res: &str,
     dur_ms: i64,
-    here: crate::plex::ServerId,
-    theirs: crate::plex::ServerId,
+    here: plx_plex::plex::ServerId,
+    theirs: plx_plex::plex::ServerId,
 ) -> Vec<AltCopy> {
     let mine = AltCopy {
         sid: here,
@@ -4155,7 +4155,7 @@ struct SeasonResult {
     /// page to server B's page with the same rk while a `/children` fetch is in flight installs A's
     /// episode list onto B's page: the generation guard cannot see it (the hop bumped nothing that
     /// distinguishes them) and the rk test passes.
-    sid: crate::plex::ServerId,
+    sid: plx_plex::plex::ServerId,
     rk: String,                // the show the fetch was for
     idx: usize,                // the season it was for
     prev: usize, // the season `cur_season` held before the optimistic flip — restored on failure
@@ -4170,7 +4170,7 @@ struct SeasonResult {
 fn land_season(
     adapter: &MetadataAdapter,
     gen: u32,
-    sid: crate::plex::ServerId,
+    sid: plx_plex::plex::ServerId,
     rk: String,
     idx: usize,
     prev: usize,
@@ -4309,7 +4309,7 @@ pub(crate) fn pump_season_with_gate(state: &mut MetadataState, adapter: &Metadat
     // reachable; with a share registered, hopping from A's show to B's show with the same rk
     // while a `/children` is in flight passes an rk-only test and installs A's episodes onto
     // B's page.
-    if !crate::plex::same_item((d.sid, &d.rk), (r.sid, &r.rk)) {
+    if !plx_plex::plex::same_item((d.sid, &d.rk), (r.sid, &r.rk)) {
         return false; // the page moved to another item — not ours to patch
     }
     match r.eps {
@@ -4342,8 +4342,8 @@ pub(crate) fn pump_season(state: &mut MetadataState, adapter: &MetadataAdapter) 
 mod marker_tests {
     use super::*;
 
-    fn wire(kind: &str, start: i64, end: i64, is_final: bool) -> crate::plex::Marker {
-        crate::plex::Marker {
+    fn wire(kind: &str, start: i64, end: i64, is_final: bool) -> plx_plex::plex::Marker {
+        plx_plex::plex::Marker {
             kind: kind.to_string(),
             start_time_offset: start,
             end_time_offset: end,
@@ -4482,7 +4482,7 @@ mod episode_tests {
     /// through serde on purpose rather than hand-building a `Metadata`: the DTO field and the
     /// mapping are the two halves of this gap, and a hand-built struct would only ever exercise
     /// the half that was already right.
-    fn row(extra: &str) -> crate::plex::Metadata {
+    fn row(extra: &str) -> plx_plex::plex::Metadata {
         let json = format!(
             r#"{{"type":"episode","ratingKey":"1804","index":"3","parentIndex":"2",
                  "title":"Ep","duration":"3000000"{extra}}}"#
@@ -4541,8 +4541,8 @@ mod rating_tests {
     use super::*;
 
     /// one `Rating[]` row on the wire
-    fn wire(image: &str, value: f64, kind: &str) -> crate::plex::Rating {
-        crate::plex::Rating {
+    fn wire(image: &str, value: f64, kind: &str) -> plx_plex::plex::Rating {
+        plx_plex::plex::Rating {
             image: image.to_string(),
             value,
             kind: kind.to_string(),
@@ -4606,7 +4606,7 @@ mod rating_tests {
             RatingArt::TomatoFresh.rank()
         );
         // …so an item that somehow carried both critic tomatoes still badges exactly one
-        let it = crate::plex::Metadata {
+        let it = plx_plex::plex::Metadata {
             ratings: vec![
                 wire("rottentomatoes://image.rating.certified", 9.4, "critic"),
                 wire("rottentomatoes://image.rating.ripe", 9.4, "critic"),
@@ -4661,7 +4661,7 @@ mod rating_tests {
     #[test]
     fn the_array_wins_over_the_flat_pair_and_orders_the_row() {
         // Luca, verbatim off the live server 2026-07-29
-        let it = crate::plex::Metadata {
+        let it = plx_plex::plex::Metadata {
             ratings: vec![
                 wire("imdb://image.rating", 7.4, "audience"),
                 wire("rottentomatoes://image.rating.ripe", 9.1, "critic"),
@@ -4693,7 +4693,7 @@ mod rating_tests {
     /// cannot rot before the first grid-side caller arrives.
     #[test]
     fn the_flat_pair_is_used_when_the_array_is_absent() {
-        let it = crate::plex::Metadata {
+        let it = plx_plex::plex::Metadata {
             rating: 4.0,
             rating_image: "rottentomatoes://image.rating.rotten".to_string(),
             audience_rating: 8.3,
@@ -4710,7 +4710,7 @@ mod rating_tests {
     /// invent a review. An unattributable row must also not take its neighbours down with it.
     #[test]
     fn absent_scores_and_unknown_providers_drop_out() {
-        let it = crate::plex::Metadata {
+        let it = plx_plex::plex::Metadata {
             ratings: vec![
                 wire("rottentomatoes://image.rating.ripe", 0.0, "critic"), // absent
                 wire("metacritic://image.rating", 8.8, "critic"),          // unknown provider
@@ -4721,7 +4721,7 @@ mod rating_tests {
         assert_eq!(arts(&convert_ratings(&it)), [RatingArt::Imdb]);
 
         // nothing usable at all → an empty row, and the hero simply draws no badges
-        let empty = crate::plex::Metadata {
+        let empty = plx_plex::plex::Metadata {
             rating: 9.1,
             ..Default::default()
         }; // score, no image
@@ -4733,7 +4733,7 @@ mod rating_tests {
     /// critic-first sort has decided which one that is.
     #[test]
     fn a_slot_is_only_badged_once() {
-        let it = crate::plex::Metadata {
+        let it = plx_plex::plex::Metadata {
             ratings: vec![
                 wire("rottentomatoes://image.rating.upright", 8.5, "audience"),
                 // a contradictory second critic row: ripe AND rotten for the same item
@@ -4758,11 +4758,11 @@ mod rating_tests {
 mod trailer_tests {
     use super::*;
 
-    fn extra(json: &str) -> crate::plex::Metadata {
+    fn extra(json: &str) -> plx_plex::plex::Metadata {
         serde_json::from_str(json).expect("an extras row parses")
     }
 
-    fn trailer(rk: &str, part: &str) -> crate::plex::Metadata {
+    fn trailer(rk: &str, part: &str) -> plx_plex::plex::Metadata {
         extra(&format!(
             r#"{{"type":"clip","ratingKey":"{rk}","key":"/library/metadata/{rk}",
                  "subtype":"trailer","extraType":"1","title":"Trailer {rk}",
@@ -4771,14 +4771,14 @@ mod trailer_tests {
         ))
     }
 
-    fn trailer_no_part(rk: &str) -> crate::plex::Metadata {
+    fn trailer_no_part(rk: &str) -> plx_plex::plex::Metadata {
         extra(&format!(
             r#"{{"type":"clip","ratingKey":"{rk}","key":"/library/metadata/{rk}",
                  "subtype":"trailer","extraType":"1","title":"Trailer {rk}"}}"#
         ))
     }
 
-    fn bts(rk: &str) -> crate::plex::Metadata {
+    fn bts(rk: &str) -> plx_plex::plex::Metadata {
         extra(&format!(
             r#"{{"type":"clip","ratingKey":"{rk}","key":"/library/metadata/{rk}",
                  "subtype":"behindTheScenes","extraType":"5","title":"BTS {rk}",
@@ -4902,11 +4902,11 @@ mod trailer_tests {
         assert!(d.trailer().is_none());
         assert_eq!(d.rk, "movie");
         assert!(
-            resolve_trailer(crate::plex::ServerId::UNSET, &[], "").is_none(),
+            resolve_trailer(plx_plex::plex::ServerId::UNSET, &[], "").is_none(),
             "empty extras never fails the page"
         );
         assert!(
-            fetch_primary_trailer(crate::plex::ServerId::UNSET, "").is_none(),
+            fetch_primary_trailer(plx_plex::plex::ServerId::UNSET, "").is_none(),
             "no primaryExtraKey → no follow-up GET"
         );
     }
@@ -4929,7 +4929,7 @@ mod trailer_tests {
         assert_eq!(shelf[0].thumb, "/t");
         assert_eq!(shelf[0].caption(), "Behind the Scenes");
         let mut d = Detail::default();
-        project_extras(&mut d, crate::plex::ServerId::UNSET, &rows, "");
+        project_extras(&mut d, plx_plex::plex::ServerId::UNSET, &rows, "");
         assert_eq!(d.trailer().unwrap().rk, "9");
         assert_eq!(d.extras.len(), 2, "the shelf keeps the featurette");
         let bare = Extra {
@@ -4980,7 +4980,7 @@ mod trailer_tests {
         let _g = plx_base::testlock::serial();
         let mut state = MetadataState::default();
         set_current_for_test(&mut state, Some(Detail {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "movie".into(),
             kind: "movie".into(),
             title: "Movie".into(),
@@ -4997,7 +4997,7 @@ mod trailer_tests {
             }],
             ..Default::default()
         }));
-        let np = trailer_now_playing(&state, crate::plex::ServerId::UNSET, "9").unwrap();
+        let np = trailer_now_playing(&state, plx_plex::plex::ServerId::UNSET, "9").unwrap();
         assert!(!np.is_episode);
         assert!(!np.is_real_episode, "an extra is never a real episode leaf");
         assert_eq!(np.title, "Movie");
@@ -5005,9 +5005,9 @@ mod trailer_tests {
         assert_eq!(np.dur_ms, 120_000);
         assert_eq!(np.detail_rk, "movie");
         assert_eq!(np.thumb, "/art");
-        assert!(trailer_now_playing(&state, crate::plex::ServerId::UNSET, "other").is_none());
+        assert!(trailer_now_playing(&state, plx_plex::plex::ServerId::UNSET, "other").is_none());
         set_current_for_test(&mut state, Some(Detail {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "show".into(),
             kind: "show".into(),
             is_show: true,
@@ -5021,7 +5021,7 @@ mod trailer_tests {
             }],
             ..Default::default()
         }));
-        let show = trailer_now_playing(&state, crate::plex::ServerId::UNSET, "9").unwrap();
+        let show = trailer_now_playing(&state, plx_plex::plex::ServerId::UNSET, "9").unwrap();
         assert!(show.is_episode, "a show parent labels Go to Show");
         assert!(
             !show.is_real_episode,

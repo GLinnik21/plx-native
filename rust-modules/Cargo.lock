@@ -620,6 +620,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_plex"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "plx_base",
+ "plx_machine",
+ "plx_net",
+ "plx_platform",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plx_ui"
 version = "0.0.0"
 dependencies = [
@@ -644,6 +657,7 @@ dependencies = [
  "plx_machine",
  "plx_net",
  "plx_platform",
+ "plx_plex",
  "plx_ui",
  "serde",
  "serde_json",

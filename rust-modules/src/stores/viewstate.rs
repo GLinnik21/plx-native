@@ -1,7 +1,7 @@
 //! The physically owned view-state write queue (`docs/stores-as-machines.md`). Each production
 //! `Bridge` owns one [`ViewStateStore`]: main-thread state, an `Arc` worker adapter, and notice.
 
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 

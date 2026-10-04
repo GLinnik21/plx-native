@@ -12,7 +12,7 @@ use std::ffi::CString;
 use std::os::raw::c_int;
 
 use crate::person::{Credit, Department};
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use plx_ui::card_row;
 use plx_ui::consts::*;
 use plx_ui::frame::Budget;
@@ -227,7 +227,7 @@ impl FilmographyScreen {
         person: crate::person::PersonView<'_>,
     ) -> Self {
         let person = person.current().filter(|person| {
-            crate::plex::same_item((person.sid, person.key.as_str()), (sid, key.as_str()))
+            plx_plex::plex::same_item((person.sid, person.key.as_str()), (sid, key.as_str()))
         });
         let mut screen = Self {
             entry,
@@ -261,7 +261,7 @@ impl FilmographyScreen {
 
     fn person<'a, H: PersonLike>(&self, cx: &Cx<'a, H>) -> Option<&'a crate::person::Person> {
         H::person(cx).current().filter(|p| {
-            crate::plex::same_item((p.sid, p.key.as_str()), (self.sid, self.key.as_str()))
+            plx_plex::plex::same_item((p.sid, p.key.as_str()), (self.sid, self.key.as_str()))
         })
     }
 
@@ -542,7 +542,7 @@ impl FilmographyScreen {
                 let server_name = c
                     .local
                     .as_ref()
-                    .and_then(|(sid, _)| crate::plex::server_facts(*sid).map(|f| f.name.clone()));
+                    .and_then(|(sid, _)| plx_plex::plex::server_facts(*sid).map(|f| f.name.clone()));
                 credit_row(c, server_name)
             })
             .collect();

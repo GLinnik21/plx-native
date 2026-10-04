@@ -26,7 +26,7 @@ fn query_reset_intent_and_observed_query_are_canonical_in_return_memory() {
 #[test]
 fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading() {
     let _guard = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("library-query-reset");
+    let session = plx_plex::plex::session::TempSession::new("library-query-reset");
     session.watching("u-library-query-reset");
     for edit in [
         QueryEdit::Sort {

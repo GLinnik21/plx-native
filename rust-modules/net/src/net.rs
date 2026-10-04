@@ -2715,14 +2715,14 @@ pub mod keypin {
     }
 
     /// Also read by the `tls-selftest` dev trigger, which reports which mode answered.
-    #[cfg(any(test, feature = "devtriggers"))]
+    #[cfg(any(test, feature = "devtriggers", feature = "test-support"))]
     pub fn is_latched(key: &str) -> bool {
         state().latched.contains_key(key)
     }
 
     /// Does the table hold a pin for `key` (`host:port`) right now? Read by the `tls-selftest` dev
     /// trigger, whose log lines report the table itself and not what the trigger last asked of it.
-    #[cfg(any(test, feature = "devtriggers"))]
+    #[cfg(any(test, feature = "devtriggers", feature = "test-support"))]
     pub fn holds(key: &str) -> bool {
         state().table.contains_key(key)
     }

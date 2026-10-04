@@ -322,13 +322,13 @@ fn composed_owner_favourites_footer_survives_left_down_and_idle_frames() {
     struct ResetSources;
     impl Drop for ResetSources {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _reset = ResetSources;
-    crate::plex::reset_servers_for_test();
-    let a = crate::plex::register_for_test("focus-a", "127.0.0.1", 9, "synthetic", "focus-test");
-    let b = crate::plex::register_for_test("focus-b", "127.0.0.1", 9, "synthetic", "focus-test");
+    plx_plex::plex::reset_servers_for_test();
+    let a = plx_plex::plex::register_for_test("focus-a", "127.0.0.1", 9, "synthetic", "focus-test");
+    let b = plx_plex::plex::register_for_test("focus-b", "127.0.0.1", 9, "synthetic", "focus-test");
     // The existing fixture pins client identities and marks sections/counts complete:
     // the real Onboard Tick can poll discovery without spawning network work.
     let mut rig = SurfaceRig::new();
@@ -552,21 +552,21 @@ fn playback_picker_seats_the_saved_option_and_restores_its_parent_row() {
 /// success (or a failed load's Retry row) must work without a direction key seating the engine.
 #[test]
 fn account_preference_landing_seats_the_first_rows_and_retry_landing() {
-    use crate::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest};
+    use plx_plex::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest};
     use registry::{AccountPreferenceReply, PreferenceCmd};
     let _g = plx_base::testlock::serial();
     let _sess = scratch_session("composed-preference-load-seat");
-    let previous = crate::plex::session::current_snapshot();
-    struct RestoreProfile(std::sync::Arc<crate::plex::session::CurrentProfile>);
+    let previous = plx_plex::plex::session::current_snapshot();
+    struct RestoreProfile(std::sync::Arc<plx_plex::plex::session::CurrentProfile>);
     impl Drop for RestoreProfile {
         fn drop(&mut self) {
-            crate::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation);
+            plx_plex::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation);
         }
     }
     let _restore = RestoreProfile(previous);
-    let user = crate::plex::session::UserRef { id: 7, uuid: "preference-seat-fixture".into(),
+    let user = plx_plex::plex::session::UserRef { id: 7, uuid: "preference-seat-fixture".into(),
         ..Default::default() };
-    crate::plex::session::publish_profile_for_test(Some(user.clone()), 71);
+    plx_plex::plex::session::publish_profile_for_test(Some(user.clone()), 71);
     let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 71, AudioPreferences::default());
     for fail_first in [false, true] {
         let (mut d, mut rig, id) = consent_opened(SettingsPage::AudioSubtitles);
@@ -675,21 +675,21 @@ fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
 /// the new table's last row. Drive the real push from the real root row.
 #[test]
 fn audio_subtitles_pushed_from_the_root_seats_its_first_row_when_rows_land() {
-    use crate::plex::account::{AudioPreferences, PreferenceRequest};
+    use plx_plex::plex::account::{AudioPreferences, PreferenceRequest};
     use registry::{AccountPreferenceReply, PreferenceCmd};
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("composed-audio-push-first-row");
-    let previous = crate::plex::session::current_snapshot();
-    struct RestoreProfile(std::sync::Arc<crate::plex::session::CurrentProfile>);
+    let previous = plx_plex::plex::session::current_snapshot();
+    struct RestoreProfile(std::sync::Arc<plx_plex::plex::session::CurrentProfile>);
     impl Drop for RestoreProfile {
         fn drop(&mut self) {
-            crate::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation);
+            plx_plex::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation);
         }
     }
     let _restore = RestoreProfile(previous);
-    let user = crate::plex::session::UserRef { id: 7, uuid: "audio-push-fixture".into(),
+    let user = plx_plex::plex::session::UserRef { id: 7, uuid: "audio-push-fixture".into(),
         ..Default::default() };
-    crate::plex::session::publish_profile_for_test(Some(user.clone()), 72);
+    plx_plex::plex::session::publish_profile_for_test(Some(user.clone()), 72);
     let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 72, AudioPreferences::default());
     let (mut d, mut rig, id) = opened();
     // Audio & Subtitles is the signed-in root's third row (Favorite libraries, Video & playback,
@@ -749,7 +749,7 @@ fn sel_of(d: &Dispatcher<InnerHost>, id: EntryId) -> u32 {
 }
 
 fn sign_out() {
-    crate::plex::session::save(&crate::plex::session::Session::default());
+    plx_plex::plex::session::save(&plx_plex::plex::session::Session::default());
 }
 
 #[test]
@@ -769,17 +769,17 @@ fn a_sign_out_that_drops_the_focused_row_lands_the_engine_on_the_next_survivor()
 
 #[test]
 fn a_dropped_plaintext_row_never_leaves_the_engine_on_a_neighbour_that_took_its_key() {
-    use crate::plex::session::PlaintextChoice;
+    use plx_plex::plex::session::PlaintextChoice;
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("composed-reseat-plaintext");
-    crate::plex::reset_servers_for_test();
-    crate::plex::grant::reset_for_test();
-    let account = crate::plex::grant::account_key(&crate::plex::session::peek().account_token);
-    let mut saved: crate::plex::session::Session = (*crate::plex::session::peek()).clone();
+    plx_plex::plex::reset_servers_for_test();
+    plx_plex::plex::grant::reset_for_test();
+    let account = plx_plex::plex::grant::account_key(&plx_plex::plex::session::peek().account_token);
+    let mut saved: plx_plex::plex::session::Session = (*plx_plex::plex::session::peek()).clone();
     for m in ["m-a", "m-b", "m-c"] {
         saved = saved.with_plaintext_choice(&account, m, PlaintextChoice::Allowed);
     }
-    crate::plex::session::save(&saved);
+    plx_plex::plex::session::save(&saved);
     let (mut d, mut rig, id) = opened();
     let mut ms = settle_frames(&mut d, &mut rig, 16);
     let (a, b, c) = (PLAINTEXT_KEY_BASE, PLAINTEXT_KEY_BASE + 1, PLAINTEXT_KEY_BASE + 2);
@@ -787,18 +787,18 @@ fn a_dropped_plaintext_row_never_leaves_the_engine_on_a_neighbour_that_took_its_
     assert_eq!(d.focus().map(|k| k.elem), Some(b), "premise: focus on the second server");
     let _ = (a, c);
     // the first server's answer is withdrawn: B is now the FIRST switch, key 1000
-    crate::plex::session::save(&crate::plex::session::peek().with_plaintext_choice(&account, "m-a", PlaintextChoice::Undecided));
+    plx_plex::plex::session::save(&plx_plex::plex::session::peek().with_plaintext_choice(&account, "m-a", PlaintextChoice::Undecided));
     ms = settle_frames(&mut d, &mut rig, ms);
     assert_eq!(d.focus().map(|k| k.elem), Some(PLAINTEXT_KEY_BASE),
         "focus stays on m-b, which moved to the first switch; the stale key 1001 now names m-c");
     assert_eq!(sel_of(&d, id), PLAINTEXT_KEY_BASE);
     frame(&mut d, &mut rig, ms + 16, vec![key(Key::Ok, tick(ms + 16))]);
     plx_base::storage_worker::drain_for_test();
-    let after = crate::plex::session::peek();
+    let after = plx_plex::plex::session::peek();
     assert_eq!(after.plaintext_choice(&account, "m-b"), PlaintextChoice::Revoked, "OK toggled the focused server");
     assert_eq!(after.plaintext_choice(&account, "m-c"), PlaintextChoice::Allowed, "and not the one that took its key");
-    crate::plex::grant::reset_for_test();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::grant::reset_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]

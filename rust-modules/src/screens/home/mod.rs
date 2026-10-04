@@ -120,7 +120,7 @@ struct HubProjection {
     /// Where the row's linked heading leads: the collection a promoted `custom.collection.*` hub
     /// lists, classified once per publication. Every other row is unlinked and keeps its plain
     /// heading.
-    link: Option<crate::plex::collections::CollectionRef>,
+    link: Option<plx_plex::plex::collections::CollectionRef>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -181,7 +181,7 @@ struct Backdrop {
     outgoing_art: Spring,
     tex: (u32, f32, f32),
     outgoing_tex: (u32, f32, f32),
-    keyed: Option<(crate::plex::ServerId, String)>,
+    keyed: Option<(plx_plex::plex::ServerId, String)>,
 }
 
 impl Backdrop {
@@ -215,7 +215,7 @@ impl Backdrop {
         &mut self,
         hero: Option<HeroRef<'_>>,
         outgoing: Option<HeroRef<'_>>,
-        selected: Option<&(crate::plex::ServerId, String)>,
+        selected: Option<&(plx_plex::plex::ServerId, String)>,
         snap: f32,
     ) {
         let resolve = |h: Option<HeroRef<'_>>| {
@@ -252,7 +252,7 @@ impl Backdrop {
         hero: Option<HeroRef<'_>>,
         outgoing: Option<HeroRef<'_>>,
         grid_item: Option<&PmsMovie>,
-        selected: Option<&(crate::plex::ServerId, String)>,
+        selected: Option<&(plx_plex::plex::ServerId, String)>,
         snap: f32,
         dt: f32,
     ) {
@@ -349,14 +349,14 @@ impl Backdrop {
 /// A card named by borrowed parts, so a lookup in the key table clones nothing.
 #[derive(Clone, Copy)]
 enum ItemRef<'a> {
-    Item { sid: crate::plex::ServerId, rk: &'a str },
+    Item { sid: plx_plex::plex::ServerId, rk: &'a str },
     Slot { generation: u32, ordinal: u32 },
 }
 
 /// One hub's entries in the key table: positions in `HomeScreen::items`.
 #[derive(Default)]
 struct HubKeys {
-    by_rk: HashMap<String, Vec<(crate::plex::ServerId, usize)>>,
+    by_rk: HashMap<String, Vec<(plx_plex::plex::ServerId, usize)>>,
     slots: HashMap<(u32, u32), usize>,
 }
 
@@ -389,8 +389,8 @@ pub(crate) struct HomeScreen {
     restore_reveal: bool,
 
     /// Selected hero ITEM identity. It is data, not focus.
-    carousel: Option<(crate::plex::ServerId, String)>,
-    outgoing: Option<(crate::plex::ServerId, String)>,
+    carousel: Option<(plx_plex::plex::ServerId, String)>,
+    outgoing: Option<(plx_plex::plex::ServerId, String)>,
     hero_flip_cd: f32,
     hero_slide: Spring,
     hero_dir: f32,
@@ -633,7 +633,7 @@ impl HomeScreen {
             // a hub lists one section's items.
             let link = match hub.identity {
                 Some(HubIdentity::Identifier { sid, id, key }) =>
-                    crate::plex::collections::promoted_collection_link(
+                    plx_plex::plex::collections::promoted_collection_link(
                         sid, id, key, hub.title, hub.items.first().map_or(0, |item| item.sec)),
                 _ => None,
             };
@@ -671,17 +671,17 @@ impl HomeScreen {
         self.reconcile_carousel(view);
     }
 
-    fn identity_of(item: &PmsMovie) -> Option<(crate::plex::ServerId, String)> {
+    fn identity_of(item: &PmsMovie) -> Option<(plx_plex::plex::ServerId, String)> {
         (!item.rk.is_empty()).then(|| (item.sid, item.rk.clone()))
     }
 
-    fn same_item(item: &PmsMovie, identity: &(crate::plex::ServerId, String)) -> bool {
+    fn same_item(item: &PmsMovie, identity: &(plx_plex::plex::ServerId, String)) -> bool {
         item.sid == identity.0 && item.rk == identity.1
     }
 
     fn hero_by_identity<'a>(
         view: HubsView<'a>,
-        identity: &(crate::plex::ServerId, String),
+        identity: &(plx_plex::plex::ServerId, String),
     ) -> Option<HeroRef<'a>> {
         (0..view.hero_count())
             .filter_map(|i| view.hero(i))
@@ -813,7 +813,7 @@ impl HomeScreen {
     }
 
     /// Where a row's linked heading leads, if it has one.
-    fn linked(&self, row: usize) -> Option<&crate::plex::collections::CollectionRef> {
+    fn linked(&self, row: usize) -> Option<&plx_plex::plex::collections::CollectionRef> {
         self.rows.get(row)?.link.as_ref()
     }
 
@@ -925,7 +925,7 @@ impl HomeScreen {
             self.snap_target = 0.0;
             self.snap.jump(0.0);
         }
-        let current = crate::plex::client_for(crate::plex::current_server()).map(|c| c.machine_id());
+        let current = plx_plex::plex::client_for(plx_plex::plex::current_server()).map(|c| c.machine_id());
         // `|` not `||`: both watches must re-read.
         if self.plaintext.refresh(current, Near::First) | self.clock.refresh(current) {
             fx.invalidate(Provenance::Landing(fx.from()));
@@ -1211,7 +1211,7 @@ impl HomeScreen {
             // asks the shared question rather than retrying what cannot succeed.
             if let Some(v) = self.plaintext.verdict() {
                 let machine = v.machine_id.clone();
-                let sid = crate::plex::id_of_machine(&machine);
+                let sid = plx_plex::plex::id_of_machine(&machine);
                 self.plaintext_alert.open(&machine, sid, MachineId::Instance(self.instance), fx);
                 fx.invalidate(Provenance::Input);
             }

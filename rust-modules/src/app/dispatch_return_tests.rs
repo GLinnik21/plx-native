@@ -114,7 +114,7 @@ fn booted() -> (Dispatcher<ProbeHost>, ProbeRig) {
     (d, rig)
 }
 fn housekeeping() -> Vec<AppFx> {
-    let target = SectionAddress { epoch: 0, sid: crate::plex::ServerId::from_raw(0), section: 1 };
+    let target = SectionAddress { epoch: 0, sid: plx_plex::plex::ServerId::from_raw(0), section: 1 };
     vec![
         AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed {
             target, work: LibraryWork::Want { lo: 0, hi: 24 },

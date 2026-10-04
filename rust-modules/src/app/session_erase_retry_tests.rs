@@ -3,7 +3,7 @@
 //! `plex::session`'s; the adapter that drives the erase sits above that layer, so the grading lives
 //! here (it was one of `plex::session`'s persistence tests).
 
-use crate::plex::session::{cache_revoked, redirect_for_test, save, Session};
+use plx_plex::plex::session::{cache_revoked, redirect_for_test, save, Session};
 
 /// The session file redirected into a directory of this test's own, handed back on drop. The same
 /// scratch `plex::session`'s persistence tests use; theirs is private to that module.

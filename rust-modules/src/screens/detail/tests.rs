@@ -192,7 +192,7 @@ fn clear() {
     // empty one — the addressed store cannot MIS-answer, but it can answer for an item a later
     // test happens to reuse the pair of.
     test_store().run(crate::stores::metadata::MetadataCmd::AltInstall {
-        sid: crate::plex::ServerId::UNSET,
+        sid: plx_plex::plex::ServerId::UNSET,
         rk: String::new(),
         copies: Vec::new(),
     });
@@ -1081,9 +1081,9 @@ fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
 fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
     let _guard = plx_base::testlock::serial();
     use plx_ui::hit::{HitMap, PointerKind};
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_for_test("hero-hit-own", "127.0.0.1", 1, "t", "c1");
-    let other = crate::plex::register_for_test("hero-hit-other", "127.0.0.1", 2, "t", "c2");
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("hero-hit-own", "127.0.0.1", 1, "t", "c1");
+    let other = plx_plex::plex::register_for_test("hero-hit-other", "127.0.0.1", 2, "t", "c2");
     let measure = plx_ui::fixture::FixtureMeasure;
     let context = cx(&measure, None);
     let mut sizes = std::collections::BTreeSet::new();
@@ -1187,7 +1187,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
     assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
     assert_eq!(cases, 192);
     clear();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// **A pointer click must not be able to reach the hero row — Play included — while full-trailer
@@ -1365,8 +1365,8 @@ fn preview_tick_does_not_read_the_session_file_every_frame() {
 
     // A readable session, so `preview::enabled()`'s `peek()` call has real Ready bytes behind it,
     // rather than the trivially-cheap Missing/default path.
-    let _session = crate::plex::session::TempSession::new("detail-preview-fps");
-    crate::plex::session::save(&crate::plex::session::Session {
+    let _session = plx_plex::plex::session::TempSession::new("detail-preview-fps");
+    plx_plex::plex::session::save(&plx_plex::plex::session::Session {
         client_id: "cid-detail-preview-fps".into(),
         trailer_autoplay: true,
         ..Default::default()
@@ -1381,13 +1381,13 @@ fn preview_tick_does_not_read_the_session_file_every_frame() {
     );
     let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
 
-    crate::plex::session::reset_reads_for_test();
+    plx_plex::plex::session::reset_reads_for_test();
     let mut now = 0u32;
     for _ in 0..30 {
         now += 16;
         screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
     }
-    let reads = crate::plex::session::reads_for_test();
+    let reads = plx_plex::plex::session::reads_for_test();
     assert_eq!(
         reads, 0,
         "preview_tick must not re-read the session file every frame -- {reads} session reads over \
@@ -2015,8 +2015,8 @@ fn leaving_the_page_resets_play_once_state_alongside_the_existing_preview_fields
 #[test]
 fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply() {
     let _guard = plx_base::testlock::serial();
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_for_test("detail-watch", "127.0.0.1", 1, "t", "c");
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("detail-watch", "127.0.0.1", 1, "t", "c");
     crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
         sid,
         rk: "movie".into(),
@@ -2045,7 +2045,7 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
     assert!(!test_store().view().current().unwrap().watched,
         "the screen must not call the process-global compatibility facade itself");
     clear();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]

@@ -331,7 +331,7 @@ pub(crate) struct PushBench {
     /// The Person target's data, opportunistically refreshed from whichever Detail item is
     /// current (`dev::scenarios::push_bench_refresh_person`) — Person has no ratingKey-shaped
     /// trigger of its own, so this is the only door onto it.
-    pub(crate) person: Option<(crate::plex::ServerId, String, String, String, String)>,
+    pub(crate) person: Option<(plx_plex::plex::ServerId, String, String, String, String)>,
     /// Which target the MOST RECENT `Start` actually opened — may differ from the rotation's
     /// nominal pick at that cycle when `Person` was chosen but no cast data has landed yet (falls
     /// back to `Library` for that one cycle). `Settle` reads this rather than recomputing the
@@ -481,7 +481,7 @@ pub(crate) struct DeepBench {
     /// 1 every cycle regardless of which leg ran; a bench whose whole point is NOT popping in
     /// between cannot.
     pub(crate) targets: Vec<PushTarget>,
-    pub(crate) person: Option<(crate::plex::ServerId, String, String, String, String)>,
+    pub(crate) person: Option<(plx_plex::plex::ServerId, String, String, String, String)>,
     /// Logged once, the first time a `Person` step falls back to re-pushing `Detail` for want of
     /// cast data (mirrors `PushBench::person_fallback_logged`; the fallback target differs because
     /// `Library` is not a safe fallback here — see `targets`' doc).

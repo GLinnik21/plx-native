@@ -112,24 +112,24 @@ impl TestBrowse {
     }
 
     pub(super) fn first_run_asks(&self) -> bool {
-        let session = crate::plex::session::peek();
-        crate::plex::pins::asks(
+        let session = plx_plex::plex::session::peek();
+        plx_plex::plex::pins::asks(
             self.state.sources.len(),
-            session.pins_for(&crate::plex::session::current_profile_key()),
+            session.pins_for(&plx_plex::plex::session::current_profile_key()),
         )
     }
 }
 pub(super) struct RegisteredCleanup;
 impl Drop for RegisteredCleanup {
     fn drop(&mut self) {
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 }
 pub(super) fn registered_source(
-) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client) {
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "old", "cid");
-    assert!(crate::plex::set_current(sid));
+) -> (RegisteredCleanup, TestBrowse, ServerId, &'static plx_plex::plex::Client) {
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("browse-life", "10.0.0.1", 32400, "old", "cid");
+    assert!(plx_plex::plex::set_current(sid));
     let mut source = a_source("original", "", true);
     source.sid = sid;
     source.sections_done = false;
@@ -139,18 +139,18 @@ pub(super) fn registered_source(
         RegisteredCleanup,
         browse,
         sid,
-        crate::plex::client_for(sid).unwrap(),
+        plx_plex::plex::client_for(sid).unwrap(),
     )
 }
 pub(super) fn registered_page_source(
-) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client) {
+) -> (RegisteredCleanup, TestBrowse, ServerId, &'static plx_plex::plex::Client) {
     registered_page_source_of_kind(SecKind::Movie)
 }
 /// Same as [`registered_page_source`], but for a chosen section kind — used to prove the
 /// "Plays" sort gate (issue #146) behaves the same for `Show` as it does for `Movie`.
 pub(super) fn registered_page_source_of_kind(
     kind: SecKind,
-) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client) {
+) -> (RegisteredCleanup, TestBrowse, ServerId, &'static plx_plex::plex::Client) {
     let (cleanup, mut browse, sid, client) = registered_source();
     if let Some(source) = browse.state.source_mut(0) {
         source.sections_done = true;
@@ -164,7 +164,7 @@ pub(super) fn registered_page_source_of_kind(
     (cleanup, browse, sid, client)
 }
 pub(super) fn registered_resident_page_source(
-) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client) {
+) -> (RegisteredCleanup, TestBrowse, ServerId, &'static plx_plex::plex::Client) {
     let (cleanup, mut browse, sid, client) = registered_page_source();
     let state = browse.state.state_mut(0).unwrap();
     state.fetch = SecFetch::Ready;
@@ -173,7 +173,7 @@ pub(super) fn registered_resident_page_source(
     (cleanup, browse, sid, client)
 }
 pub(super) fn registered_directory_source(
-) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client)
+) -> (RegisteredCleanup, TestBrowse, ServerId, &'static plx_plex::plex::Client)
 {
     let (cleanup, mut browse, sid, client) = registered_page_source();
     let state = browse.state.state_mut(0).unwrap();
@@ -188,7 +188,7 @@ pub(super) fn registered_directory_source(
 }
 pub(super) fn queue_success_from(
     browse: &mut TestBrowse,
-    client: &'static crate::plex::Client,
+    client: &'static plx_plex::plex::Client,
     token_gen: u32,
 ) {
     let landing = SrcLanding {
@@ -203,7 +203,7 @@ pub(super) fn queue_success_from(
 }
 pub(super) fn queue_page_from(
     browse: &mut TestBrowse,
-    client: &'static crate::plex::Client,
+    client: &'static plx_plex::plex::Client,
     token_gen: u32,
 ) {
     *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
@@ -221,7 +221,7 @@ pub(super) fn queue_page_from(
 }
 pub(super) fn queue_directories_from(
     browse: &mut TestBrowse,
-    client: &'static crate::plex::Client,
+    client: &'static plx_plex::plex::Client,
     token_gen: u32,
 ) {
     let epoch = browse.state.table_epoch();
@@ -282,7 +282,7 @@ pub(super) fn seed_one_section(browse: &mut TestBrowse) {
 }
 /// Land what a worker would post for the CURRENT query: `total < 0` is the failure sentinel.
 pub(super) fn land_page(browse: &mut TestBrowse, total: i64, items: usize) {
-    let client = crate::plex::client();
+    let client = plx_plex::plex::client();
     let r = PageResult {
         client,
         token_gen: client.token_gen(),
@@ -300,7 +300,7 @@ pub(super) fn land_page(browse: &mut TestBrowse, total: i64, items: usize) {
 /// for the CURRENT section — used to exercise the client-side "Plays" sort augmentation
 /// (issue #146) that runs where this landing is applied.
 pub(super) fn land_page_with_sorts(browse: &mut TestBrowse, sorts: Vec<SortEntry>) {
-    let client = crate::plex::client();
+    let client = plx_plex::plex::client();
     let r = PageResult {
         client,
         token_gen: client.token_gen(),
@@ -335,7 +335,7 @@ pub(super) fn seed_one_source(
     // The CURRENT server's id, registered or not — see `seed_sources_for_test` for why nothing
     // is registered here. It makes `cur_source_idx`'s empty-table fallback resolve to this row.
     browse.seed_sources(vec![BrowseSource {
-        sid: crate::plex::current_server(),
+        sid: plx_plex::plex::current_server(),
         client_addr: 0,
         token_gen: 0,
         machine_id: "mach-0".into(),
@@ -402,7 +402,7 @@ pub(super) fn a_source(name: &str, handle: &str, reachable: bool) -> BrowseSourc
 /// It is `plex::session::TempSession` now — one guard rather than the three near-identical
 /// copies that had grown here, in `ui::onboard` and in `auth`; the local alias is kept only so
 /// the dozens of call sites below still read as pinning THIS module's per-profile answer.
-pub(super) use crate::plex::session::TempSession as TempPins;
+pub(super) use plx_plex::plex::session::TempSession as TempPins;
 /// The Plex Home ADMIN's plex.tv account id, as `/api/v2/resources` reports it in `ownerId` on
 /// the family server. Synthetic: a real account id never belongs in a public repository.
 pub(super) const ADMIN_ID: i64 = 4_242;

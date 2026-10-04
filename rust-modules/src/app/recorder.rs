@@ -884,7 +884,7 @@ impl Recplay {
     /// lookup or best-effort rebinding here. Controlled boot installs the mapping explicitly.
     pub(crate) fn replay_results(
         &self,
-        mut client: impl FnMut(u32) -> Option<&'static crate::plex::Client>,
+        mut client: impl FnMut(u32) -> Option<&'static plx_plex::plex::Client>,
     ) -> Result<Option<super::bridge::AppResults>, &'static str> {
         let Self::Replaying(replay) = self else { return Ok(None) };
         let Some(frame) = replay.rec.frames.get(replay.at) else { return Ok(Some(Vec::new())) };
@@ -2179,15 +2179,15 @@ mod tests {
         struct Cleanup;
         impl Drop for Cleanup {
             fn drop(&mut self) {
-                crate::plex::reset_servers_for_test();
+                plx_plex::plex::reset_servers_for_test();
             }
         }
-        crate::plex::reset_servers_for_test();
-        let own = crate::plex::register_for_test(
+        plx_plex::plex::reset_servers_for_test();
+        let own = plx_plex::plex::register_for_test(
             "recorder-owned", "127.0.0.1", 9, "synthetic", "fixture");
-        let shared = crate::plex::register_for_test(
+        let shared = plx_plex::plex::register_for_test(
             "recorder-shared", "127.0.0.1", 10, "synthetic", "fixture");
-        crate::plex::set_current(own);
+        plx_plex::plex::set_current(own);
         let _cleanup = Cleanup;
         let mut rig = super::super::bridge::Bridge::for_test(|| 0);
         rig.seed_registered_browse_for_test([own, shared]);

@@ -34,7 +34,7 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
     plx_ui::tex::install(&ArtSpy);
     let painter = plx_ui::Painter::root();
     for episodes in [false, true] {
-        let sid = crate::plex::ServerId::from_raw(0);
+        let sid = plx_plex::plex::ServerId::from_raw(0);
         let mut fixture = Fixture::new();
         fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
             (0..1200).map(|i| Some(crate::pms::PmsMovie {

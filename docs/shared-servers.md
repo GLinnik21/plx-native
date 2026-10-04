@@ -96,7 +96,7 @@ fit. Last resort. The preference order in every client that has one is **local �
 only portable identity is the `guid` (`plex://movie/…`). Plex makes the scoping explicit in its own
 grammar: a PlayQueue is created with
 `uri=server://{machineIdentifier}/com.plexapp.plugins.library/library/metadata/{ratingKey}` —
-which this repo already builds, at `rust-modules/src/plex/timeline.rs:56`.
+which this repo already builds, at `rust-modules/plex/src/plex/timeline.rs:56`.
 
 **Consequences, all client-side:**
 
@@ -230,7 +230,7 @@ build (a consented plaintext grant needs a fresh plex.tv resource list, which an
 not have), so the household's own server used to be unreachable exactly when it was the only thing
 left. `rust-modules/net/src/net/origin.rs`'s `ResolvePin` (re-exported as `plex::ResolvePin`) keeps the https origin and hands libcurl the
 `address` plex.tv advertised beside it through `CURLOPT_RESOLVE`, on both the control and the media
-plane; the certificate is still validated against the name. `rust-modules/src/plex/CLAUDE.md` has
+plane; the certificate is still validated against the name. `rust-modules/plex/src/plex/CLAUDE.md` has
 the rules, and `/tmp/plxnative-nowan` is the reproduction.
 
 **Offline, the who's-watching pick (2026-09-06).** A profile pick is a plex.tv call, so the pinned
@@ -240,7 +240,7 @@ PIN-protected one with a local verifier of the PIN, never the PIN), and a pick t
 not answer is seated from the cache — an unprotected profile on the pick, a protected one on its
 PIN. A profile that has never been seated online on this television has nothing cached, and the
 picker says so: "No internet connection. Pick this profile once while online, and it will work
-offline." One online sign-in and one online pick per profile are the whole precondition. `rust-modules/src/plex/CLAUDE.md` has the mechanism.
+offline." One online sign-in and one online pick per profile are the whole precondition. `rust-modules/plex/src/plex/CLAUDE.md` has the mechanism.
 
 **Offline artwork.** Every reusable image transcode—posters, backdrops, logos, episode stills,
 profile avatars and cast headshots—uses the shared disk tier in `rust-modules/platform/src/imgcache.rs`.
@@ -289,7 +289,7 @@ asked for is how to read what shipped.
 | 3 | **Move the ~30 call sites onto `client_for(sid)`.** `posters.rs:452` becomes `client_for(slot.sid)?.fetch_built(&key)` — **token-free**, because the poster key already ends in `with_token(…)` and `get_bytes` would append a second one. Ship gate: byte-identical event log across `tests/run.py`. | 1 d | Correctness |
 | 4 **LANDED** | **Probe + race.** `plex/probe.rs` retains the advertised HTTPS URI but suppresses plaintext for unmatched non-owned LAN connections (§2a), drops HTTP when `httpsRequired`, and ranks local→remote→relay. `auth.rs` races candidates within one server, verifies `machineIdentifier`, and activates the first VERIFIED answer this build can put a credential on (`Candidate::credential_eligible`, stamped once at synthesis from `CredentialPolicy` — issue #95: a verified plaintext answer no longer counts as reached in a store build), may re-point once to the best such answer, and persists only that winner. Servers remain serial with a 4 s gap; relay is a second phase whenever nothing eligible verified directly; a verified plaintext-only answer ends as `Reach::InsecureOnly` ("Not secure"), which outranks a `401`. | 1–1½ d | **The share becomes reachable** |
 | 5 | **Persist the registry; boot from the hint.** `session.rs` gains `servers: Vec<ServerRec>` + `current_machine_id`, every field `#[serde(default)]`, legacy `ServerRef` still written for one release. A corrupt `servers` array must not fail the whole `Session` parse — that is a silent sign-out at every boot. No timestamps: this TV's wall clock is ~3 h skewed. | 1 d | Fast boot |
-| 6 **LANDED** | **TLS control plane.** Shipped as `rust-modules/src/http.rs`: `Scheme::Http` keeps the raw `stream.rs` arm, while `Scheme::Https` uses `net.rs`/libcurl. The curl request surface now carries per-call deadlines, a bounded response sink, body-less `CUSTOMREQUEST` PUT, HTTP(S)-only redirect policy for the public QR fetch, and one fresh easy handle per call so no request state can survive into the next. Probe ranking is TLS-first, status remains distinct from reachability, and every PMS/account request conditionally carries the validated inherited locale as `X-Plex-Language`. | 1–1½ d | Any https-only share browses |
+| 6 **LANDED** | **TLS control plane.** Shipped as `rust-modules/plex/src/http.rs`: `Scheme::Http` keeps the raw `stream.rs` arm, while `Scheme::Https` uses `net.rs`/libcurl. The curl request surface now carries per-call deadlines, a bounded response sink, body-less `CUSTOMREQUEST` PUT, HTTP(S)-only redirect policy for the public QR fetch, and one fresh easy handle per call so no request state can survive into the next. Probe ranking is TLS-first, status remains distinct from reachability, and every PMS/account request conditionally carries the validated inherited locale as `X-Plex-Language`. | 1–1½ d | Any https-only share browses |
 | 7 **LANDED** | **TLS media plane.** Shipped as `rust-modules/src/curlio.rs`: the second `dynlib!` table (seven `curl_multi_*`, device-probed PRESENT and inventory-confirmed on all 14 releases; `curl_multi_poll`/`curl_multi_wakeup` probed ABSENT and therefore banned — they first appear at 7.4.0, so binding them would have emptied the table on four of the nine gated releases), `AvioState`'s source enum, the `read_cb`/`seek_cb` dispatch, the preserved seek abort guard and the two extended abort-guard tests, all as this row asked. **One deviation, deliberate:** teardown is a **wake pipe** handed to `curl_multi_wait` as an application-owned extra fd, NOT `curl_multi` pumped from inside `read_cb`. The row's outcome — teardown collapses to "set the flag, join" — is preserved, and that is the reason: self-polling puts a 10–100 ms floor on every teardown, while a byte on a pipe wakes a blocked wait at once. The one gap the pipe cannot close is a thread already inside `curl_multi_perform` doing SYNCHRONOUS name resolution; the dev set reports `AsynchDNS`, and the designed fallback (our own `getaddrinfo` + `CURLOPT_RESOLVE`, hostname untouched so SNI and certificate identity survive) is written into `curlio`'s module doc and deliberately not built. With step 6 present, ordinary HTTPS browse/play now reaches this source; `plxnative-servers` and `plxnative-playurl` remain the isolation routes for device diagnosis. | 2–4 d | Any share plays |
 | 8 **LANDED** | **N servers live** — the Sources list is a chip at the head of the Library's document with a one-level picker panel (§6; it was a toolbar chip with a two-level panel until 2026-09-05), `sourceTitle` is the row subtitle, and attribution stays in **text not artwork**. Profile activation only installs prepared identity and queues catalog work; hubs and sections use per-source workers/mailboxes, lifecycle generations reject stale landings after a repoint, and a dead share no longer blocks the SDL loop or blanks another source. A failed catalog request also queues a single-flight `/resources` re-probe for that exact granted machine, so a Wi-Fi/LAN transition can publish a newly reachable origin without copying the account owner's token into a managed profile or changing its grants. Continue Watching is merged by `lastViewedAt`. | 2–4 d | The product |
 | 9 **LANDED, UNVERIFIABLE** | **Relay policy.** The relay clamps no bitrate: `maxVideoBitrate` is a literal on the re-encode branch only. (`TranscodeSpec` gained a `ceiling` field on 2026-08-23 for the USER's ladder — same mechanism, different input; the relay still names no rate.) Respecting relay's 2 Mbps means **forcing a transcode decision** in `build_stream` — a policy change, not a parameter. | ½–1 d | Correctness on relay |
@@ -474,7 +474,7 @@ publish old credentials. Historical test totals below are snapshots; re-derive t
   token generations come from a **process-global sequence** are all consequences of one fact —
   `client()` is a hot path (`posters::poster_key` calls it three times per key, per visible tile,
   per frame) — and the full account now lives where implementers will meet it, in
-  **`rust-modules/src/plex/CLAUDE.md`**.
+  **`rust-modules/plex/src/plex/CLAUDE.md`**.
 - **`plex/probe.rs` — the connection policy, pure.** No socket, no thread, no clock, so all of it is
   host-testable on Darwin. Builds and ranks candidate origins: for a non-owned unmatched local
   connection it retains only the advertised HTTPS URI and suppresses both advertised and synthesized

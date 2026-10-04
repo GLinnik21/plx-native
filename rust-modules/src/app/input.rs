@@ -80,7 +80,7 @@ impl Pointer {
 /// itself.
 #[derive(Clone)]
 pub(crate) struct MenuPlayAwait {
-    sid: crate::plex::ServerId,
+    sid: plx_plex::plex::ServerId,
     /// The rk the press is actually waiting for: the SHOW's, for both the show and season arms
     /// (a season's own `rk` names no page of its own — see `activate_card`'s original comment,
     /// preserved on [`menu_play_tick`]).
@@ -183,7 +183,7 @@ pub(crate) unsafe fn activate_card(
 }
 
 fn collection_content_arg(mm: &crate::pms::PmsMovie) -> crate::screens::registry::ContentArg {
-    crate::screens::registry::ContentArg::Collection(crate::plex::collections::CollectionRef::by_rk(
+    crate::screens::registry::ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_rk(
         mm.sid, &mm.rk, mm.sec, &mm.title))
 }
 
@@ -211,7 +211,7 @@ pub(crate) unsafe fn menu_play_tick(
         return;
     }
     let landed = bridge.metadata_view().current()
-        .map(|d| crate::plex::same_item((d.sid, &d.rk), (sid, &expect)))
+        .map(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, &expect)))
         .unwrap_or(false);
     if !landed {
         // Give up once the addressed request has SETTLED without landing this item (a failed or
@@ -297,12 +297,12 @@ mod activate_card_tests {
                 // SAFETY: captured from `bridge` just above, which outlives this guard for the
                 // whole test body.
                 unsafe { &mut *self.0 }.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
-                crate::plex::reset_servers_for_test();
+                plx_plex::plex::reset_servers_for_test();
             }
         }
         let _cleanup = Cleanup(&mut bridge as *mut _);
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test("press-frame", "127.0.0.1", 1, "t", "c-press-frame");
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("press-frame", "127.0.0.1", 1, "t", "c-press-frame");
         let mm = crate::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
 
         unsafe {

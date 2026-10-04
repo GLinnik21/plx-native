@@ -45,39 +45,39 @@ fn a_settled_query_change_with_unknown_total_is_still_page_work() {
 #[test]
 fn an_equal_size_profile_roster_replaces_the_inactive_source_instead_of_appending() {
     let _g = plx_base::testlock::serial();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let mut browse = TestBrowse::default();
-    let a = crate::plex::register_for_test("browse-a", "127.0.0.1", 1, "a", "cid");
-    let b = crate::plex::register_for_test("browse-b", "127.0.0.1", 2, "b", "cid");
+    let a = plx_plex::plex::register_for_test("browse-a", "127.0.0.1", 1, "a", "cid");
+    let b = plx_plex::plex::register_for_test("browse-b", "127.0.0.1", 2, "b", "cid");
     browse.sync_roster();
     assert_eq!(browse.state.sources().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, b]);
 
-    crate::plex::revoke_for_profile_switch();
-    let c = crate::plex::register_for_test("browse-c", "127.0.0.1", 3, "c", "cid");
+    plx_plex::plex::revoke_for_profile_switch();
+    let c = plx_plex::plex::register_for_test("browse-c", "127.0.0.1", 3, "c", "cid");
     assert_eq!(
-        crate::plex::server_count(),
+        plx_plex::plex::server_count(),
         2,
         "the replacement deliberately preserves count"
     );
     browse.sync_roster();
     assert_eq!(browse.state.sources().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, c]);
 
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 #[test]
 fn filling_a_source_name_refreshes_the_retained_directory() {
     let _g = plx_base::testlock::serial();
     let _cleanup = RegisteredCleanup;
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let mut browse = TestBrowse::default();
-    let sid = crate::plex::register_for_test("browse-name-fill", "127.0.0.1", 1, "t", "cid");
-    crate::plex::describe_server(sid, "", "", crate::plex::GrantEvidence::ours());
+    let sid = plx_plex::plex::register_for_test("browse-name-fill", "127.0.0.1", 1, "t", "cid");
+    plx_plex::plex::describe_server(sid, "", "", plx_plex::plex::GrantEvidence::ours());
     browse.sync_roster();
     let mut directory = view::DirectorySnapshot::default();
     directory.capture_from(&mut browse.state);
     let old = directory.clone();
     let generation = browse.state.source_list_gen();
-    crate::plex::describe_server_name(sid, "Learned");
+    plx_plex::plex::describe_server_name(sid, "Learned");
     browse.sync_roster();
     assert_ne!(browse.state.source_list_gen(), generation);
     directory.capture_from(&mut browse.state);
@@ -106,12 +106,12 @@ fn filling_a_source_name_refreshes_the_retained_directory() {
 #[test]
 fn a_source_follows_a_corrected_credit_but_not_a_renamed_machine() {
     let _g = plx_base::testlock::serial();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let mut browse = TestBrowse::default();
-    let sid = crate::plex::register_for_test("browse-credit", "127.0.0.1", 1, "t", "cid");
+    let sid = plx_plex::plex::register_for_test("browse-credit", "127.0.0.1", 1, "t", "cid");
 
     // what a build without the rule left in the registry at boot
-    crate::plex::describe_server(sid, "Mac mini", "admin", crate::plex::GrantEvidence::outside());
+    plx_plex::plex::describe_server(sid, "Mac mini", "admin", plx_plex::plex::GrantEvidence::outside());
     browse.sync_roster();
     assert_eq!(
         browse.state.sources().first().map(|s| (s.handle.as_str(), s.owned)),
@@ -119,7 +119,7 @@ fn a_source_follows_a_corrected_credit_but_not_a_renamed_machine() {
     );
 
     // the roster refresh lands, re-graded: nobody is credited for the household's own server
-    crate::plex::describe_server(sid, "Mac mini", "", crate::plex::GrantEvidence::outside());
+    plx_plex::plex::describe_server(sid, "Mac mini", "", plx_plex::plex::GrantEvidence::outside());
     browse.sync_roster();
     assert_eq!(
         browse.state.sources().first().map(|s| s.handle.as_str()),
@@ -128,11 +128,11 @@ fn a_source_follows_a_corrected_credit_but_not_a_renamed_machine() {
     );
 
     // …and a rename still does not travel
-    crate::plex::describe_server(sid, "nas-loft", "", crate::plex::GrantEvidence::outside());
+    plx_plex::plex::describe_server(sid, "nas-loft", "", plx_plex::plex::GrantEvidence::outside());
     browse.sync_roster();
     assert_eq!(browse.state.sources().first().map(|s| s.name.as_str()), Some("Mac mini"));
 
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 #[test]
 fn a_discovery_landing_from_before_a_same_slot_repoint_is_inert() {
@@ -140,15 +140,15 @@ fn a_discovery_landing_from_before_a_same_slot_repoint_is_inert() {
     let (_cleanup, mut browse, sid, old) = registered_source();
     let old_gen = old.token_gen();
     assert_eq!(
-        crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
+        plx_plex::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
         sid
     );
-    crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+    plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Unauthorized);
 
     queue_success_from(&mut browse, old, old_gen);
     assert_eq!(
-        crate::plex::server_probe_result(sid),
-        Some(crate::plex::probe::Outcome::Unauthorized)
+        plx_plex::plex::server_probe_result(sid),
+        Some(plx_plex::plex::probe::Outcome::Unauthorized)
     );
     assert_eq!(browse.state.sources()[0].name, "original");
     assert!(
@@ -166,7 +166,7 @@ fn endpoint_outcomes_follow_only_current_failed_discovery_through_both_pumps() {
         let requests = browse.discover_pump();
         assert_eq!(requests.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
         assert!(
-            !crate::plex::write_held_for_test(),
+            !plx_plex::plex::write_held_for_test(),
             "intent returned after lifecycle lock release"
         );
         queue_discovery_for_owner_test(
@@ -189,7 +189,7 @@ fn a_same_slot_repoint_rearms_section_discovery_without_erasing_known_rows() {
     assert!(browse.state.sources()[0].sections_done);
     assert_eq!(browse.section_count(), 1);
     assert_eq!(
-        crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
+        plx_plex::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
         sid
     );
 
@@ -211,19 +211,19 @@ fn a_discovery_landing_from_before_an_in_place_retoken_is_inert() {
     let (_cleanup, mut browse, sid, old) = registered_source();
     let old_gen = old.token_gen();
     assert_eq!(
-        crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
+        plx_plex::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
         sid
     );
     assert!(
-        std::ptr::eq(old, crate::plex::client_for(sid).unwrap()),
+        std::ptr::eq(old, plx_plex::plex::client_for(sid).unwrap()),
         "retoken stays in place"
     );
-    crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+    plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Unauthorized);
 
     queue_success_from(&mut browse, old, old_gen);
     assert_eq!(
-        crate::plex::server_probe_result(sid),
-        Some(crate::plex::probe::Outcome::Unauthorized)
+        plx_plex::plex::server_probe_result(sid),
+        Some(plx_plex::plex::probe::Outcome::Unauthorized)
     );
     assert_eq!(browse.state.sources()[0].name, "original");
     assert!(browse.state.sections().is_empty());
@@ -233,18 +233,18 @@ fn a_discovery_landing_from_before_a_profile_reset_is_inert() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_source();
     let old_gen = old.token_gen();
-    crate::plex::revoke_for_profile_switch();
+    plx_plex::plex::revoke_for_profile_switch();
     assert_eq!(
-        crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"),
+        plx_plex::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"),
         sid
     );
-    crate::plex::finish_profile_switch(&[sid]);
-    crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
+    plx_plex::plex::finish_profile_switch(&[sid]);
+    plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Unreachable);
 
     queue_success_from(&mut browse, old, old_gen);
     assert_eq!(
-        crate::plex::server_probe_result(sid),
-        Some(crate::plex::probe::Outcome::Unreachable)
+        plx_plex::plex::server_probe_result(sid),
+        Some(plx_plex::plex::probe::Outcome::Unreachable)
     );
     assert_eq!(browse.state.sources()[0].name, "original");
     assert!(browse.state.sections().is_empty());
@@ -253,7 +253,7 @@ fn a_discovery_landing_from_before_a_profile_reset_is_inert() {
 fn page_failure_and_recovery_republish_directory_reachability() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, client) = registered_resident_page_source();
-    crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Reachable);
+    plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Reachable);
     // A fully discovered, current lifecycle: neither directory discovery nor the next-page
     // scheduler has work. Only the injected page results below can change the source.
     browse.sync_roster();
@@ -311,15 +311,15 @@ fn a_page_landing_from_before_a_same_slot_repoint_is_inert() {
     let (_cleanup, mut browse, sid, old) = registered_resident_page_source();
     let old_gen = old.token_gen();
     assert_eq!(
-        crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
+        plx_plex::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
         sid
     );
-    crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+    plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Unauthorized);
 
     queue_page_from(&mut browse, old, old_gen);
     assert_eq!(
-        crate::plex::server_probe_result(sid),
-        Some(crate::plex::probe::Outcome::Unauthorized)
+        plx_plex::plex::server_probe_result(sid),
+        Some(plx_plex::plex::probe::Outcome::Unauthorized)
     );
     assert_eq!(browse.state.sources()[0].state, SourceState::Unauthorized);
     assert_eq!(
@@ -335,16 +335,16 @@ fn a_page_landing_from_before_an_in_place_retoken_is_inert() {
     let (_cleanup, mut browse, sid, old) = registered_resident_page_source();
     let old_gen = old.token_gen();
     assert_eq!(
-        crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
+        plx_plex::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
         sid
     );
-    assert!(std::ptr::eq(old, crate::plex::client_for(sid).unwrap()));
-    crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+    assert!(std::ptr::eq(old, plx_plex::plex::client_for(sid).unwrap()));
+    plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Unauthorized);
 
     queue_page_from(&mut browse, old, old_gen);
     assert_eq!(
-        crate::plex::server_probe_result(sid),
-        Some(crate::plex::probe::Outcome::Unauthorized)
+        plx_plex::plex::server_probe_result(sid),
+        Some(plx_plex::plex::probe::Outcome::Unauthorized)
     );
     assert_eq!(browse.state.sources()[0].state, SourceState::Unauthorized);
     assert_eq!(browse.state.states()[0].total, 1);
@@ -355,18 +355,18 @@ fn a_page_landing_from_before_a_profile_reset_is_inert() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_resident_page_source();
     let old_gen = old.token_gen();
-    crate::plex::revoke_for_profile_switch();
+    plx_plex::plex::revoke_for_profile_switch();
     assert_eq!(
-        crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"),
+        plx_plex::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"),
         sid
     );
-    crate::plex::finish_profile_switch(&[sid]);
-    crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
+    plx_plex::plex::finish_profile_switch(&[sid]);
+    plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Unreachable);
 
     queue_page_from(&mut browse, old, old_gen);
     assert_eq!(
-        crate::plex::server_probe_result(sid),
-        Some(crate::plex::probe::Outcome::Unreachable)
+        plx_plex::plex::server_probe_result(sid),
+        Some(plx_plex::plex::probe::Outcome::Unreachable)
     );
     assert_eq!(browse.state.sources()[0].state, SourceState::Unreachable);
     assert_eq!(browse.state.states()[0].total, 1);
@@ -392,7 +392,7 @@ fn a_repoint_requested_after_validation_waits_for_the_local_page_commit() {
         start_rx.recv().unwrap();
         attempt_tx.send(()).unwrap();
         assert_eq!(
-            crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
+            plx_plex::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
             sid
         );
         assert!(
@@ -401,7 +401,7 @@ fn a_repoint_requested_after_validation_waits_for_the_local_page_commit() {
         );
     });
 
-    let applied = crate::plex::commit_reachability_if_current(
+    let applied = plx_plex::plex::commit_reachability_if_current(
         sid,
         client,
         token_gen,
@@ -409,7 +409,7 @@ fn a_repoint_requested_after_validation_waits_for_the_local_page_commit() {
         None,
         |outcome| {
             assert!(
-                crate::plex::write_held_for_test(),
+                plx_plex::plex::write_held_for_test(),
                 "local page mutation must execute under WRITE"
             );
             start_tx.send(()).unwrap();
@@ -423,7 +423,7 @@ fn a_repoint_requested_after_validation_waits_for_the_local_page_commit() {
     assert_eq!(applied, Some(true));
     repoint.join().unwrap();
     assert_eq!(browse.state.states()[0].total, 2);
-    assert!(!std::ptr::eq(client, crate::plex::client_for(sid).unwrap()));
+    assert!(!std::ptr::eq(client, plx_plex::plex::client_for(sid).unwrap()));
 }
 #[test]
 fn directory_landings_from_before_a_same_slot_repoint_are_inert() {
@@ -431,7 +431,7 @@ fn directory_landings_from_before_a_same_slot_repoint_are_inert() {
     let (_cleanup, mut browse, sid, old) = registered_directory_source();
     let old_gen = old.token_gen();
     assert_eq!(
-        crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
+        plx_plex::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
         sid
     );
     queue_directories_from(&mut browse, old, old_gen);
@@ -443,7 +443,7 @@ fn directory_landings_from_before_an_in_place_retoken_are_inert() {
     let (_cleanup, mut browse, sid, old) = registered_directory_source();
     let old_gen = old.token_gen();
     assert_eq!(
-        crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
+        plx_plex::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
         sid
     );
     queue_directories_from(&mut browse, old, old_gen);
@@ -454,12 +454,12 @@ fn directory_landings_from_before_a_profile_reset_are_inert() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_directory_source();
     let old_gen = old.token_gen();
-    crate::plex::revoke_for_profile_switch();
+    plx_plex::plex::revoke_for_profile_switch();
     assert_eq!(
-        crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"),
+        plx_plex::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"),
         sid
     );
-    crate::plex::finish_profile_switch(&[sid]);
+    plx_plex::plex::finish_profile_switch(&[sid]);
     queue_directories_from(&mut browse, old, old_gen);
     assert_new_directories_survive(&browse);
 }
@@ -481,7 +481,7 @@ fn blocking_section_discovery_discards_a_same_slot_repoint_during_the_request() 
     let count = ensure_sections_with(&mut browse.state, |client| {
         assert!(std::ptr::eq(client, old));
         assert_eq!(
-            crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
+            plx_plex::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
             sid
         );
         Some(vec![(1, "Stale Movies".into(), SecKind::Movie)])
@@ -493,7 +493,7 @@ fn blocking_section_discovery_discards_a_same_slot_repoint_during_the_request() 
         "the old origin's section table must not land"
     );
     assert_eq!(
-        crate::plex::server_probe_result(sid),
+        plx_plex::plex::server_probe_result(sid),
         None,
         "the replacement lifecycle stays unprobed"
     );
@@ -502,12 +502,12 @@ fn blocking_section_discovery_discards_a_same_slot_repoint_during_the_request() 
 fn blocking_section_discovery_discards_an_in_place_retoken_during_the_request() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_source();
-    crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+    plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Unauthorized);
     let old_gen = old.token_gen();
     let count = ensure_sections_with(&mut browse.state, |client| {
         assert!(std::ptr::eq(client, old));
         assert_eq!(
-            crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
+            plx_plex::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
             sid
         );
         Some(vec![(1, "Stale Movies".into(), SecKind::Movie)])
@@ -517,8 +517,8 @@ fn blocking_section_discovery_discards_an_in_place_retoken_during_the_request() 
     assert_eq!(count, 0);
     assert!(browse.state.sections().is_empty());
     assert_eq!(
-        crate::plex::server_probe_result(sid),
-        Some(crate::plex::probe::Outcome::Unauthorized)
+        plx_plex::plex::server_probe_result(sid),
+        Some(plx_plex::plex::probe::Outcome::Unauthorized)
     );
 }
 #[test]
@@ -526,14 +526,14 @@ fn blocking_section_failure_preserves_an_auth_401_published_during_the_request()
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, _) = registered_source();
     let count = ensure_sections_with(&mut browse.state, |_| {
-        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+        plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Unauthorized);
         None
     });
 
     assert_eq!(count, 0);
     assert_eq!(
-        crate::plex::server_probe_result(sid),
-        Some(crate::plex::probe::Outcome::Unauthorized)
+        plx_plex::plex::server_probe_result(sid),
+        Some(plx_plex::plex::probe::Outcome::Unauthorized)
     );
     assert_eq!(
         browse.state.sources()[0].state,
@@ -602,9 +602,9 @@ fn the_source_table_tells_a_household_server_from_a_share_though_both_read_unown
     let _g = plx_base::testlock::serial();
     let _cleanup = RegisteredCleanup;
     let _session = TempPins::new("browse-household");
-    crate::plex::session::save(&crate::plex::session::Session {
+    plx_plex::plex::session::save(&plx_plex::plex::session::Session {
         client_id: "cid-test".into(),
-        home_users: vec![crate::plex::session::HomeUserRef {
+        home_users: vec![plx_plex::plex::session::HomeUserRef {
             id: ADMIN_ID,
             uuid: "u-admin".into(),
             admin: true,
@@ -612,15 +612,15 @@ fn the_source_table_tells_a_household_server_from_a_share_though_both_read_unown
         }],
         ..Default::default()
     });
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let mut browse = TestBrowse::default();
-    let house = crate::plex::register_for_test("browse-house", "127.0.0.1", 1, "t", "cid");
-    let share = crate::plex::register_for_test("browse-share", "127.0.0.1", 2, "t", "cid");
+    let house = plx_plex::plex::register_for_test("browse-house", "127.0.0.1", 1, "t", "cid");
+    let share = plx_plex::plex::register_for_test("browse-share", "127.0.0.1", 2, "t", "cid");
     // what a managed profile's own `/api/v2/resources` says about each
-    crate::plex::describe_server(house, "Mac mini", "", crate::plex::GrantEvidence {
+    plx_plex::plex::describe_server(house, "Mac mini", "", plx_plex::plex::GrantEvidence {
         owned: false, home: true, owner_id: ADMIN_ID,
     });
-    crate::plex::describe_server(share, "nas-home", "friend", crate::plex::GrantEvidence {
+    plx_plex::plex::describe_server(share, "nas-home", "friend", plx_plex::plex::GrantEvidence {
         owned: false, home: false, owner_id: FRIEND_ID,
     });
 

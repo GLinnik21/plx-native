@@ -34,14 +34,14 @@ static STORE: Mutex<Option<Store>> = Mutex::new(None);
 
 fn with_store<R>(f: impl FnOnce(&mut Store) -> R) -> R {
     let mut guard = STORE.lock().unwrap_or_else(|e| e.into_inner());
-    let generation = crate::plex::session::current_gen();
-    let session_generation = crate::plex::session::visible_generation();
-    let settled = crate::plex::session::peek_settled();
+    let generation = plx_plex::plex::session::current_gen();
+    let session_generation = plx_plex::plex::session::visible_generation();
+    let settled = plx_plex::plex::session::peek_settled();
     if settled.is_none() && guard.as_ref().is_some_and(|s| s.generation == generation) {
         return f(guard.as_mut().unwrap());
     }
     if guard.as_ref().map(|s| (s.generation, s.session_generation)) != Some((generation, session_generation)) {
-        let who = crate::plex::session::current_profile_key();
+        let who = plx_plex::plex::session::current_profile_key();
         // Copy before taking the session snapshot: a worker may drain this entry concurrently.
         // Keep the pending-store lock separate from the session snapshot lock.
         let pending = PENDING.lock().unwrap_or_else(|e| e.into_inner())
@@ -177,7 +177,7 @@ static PENDING: Mutex<Vec<Pending>> = Mutex::new(Vec::new());
 #[derive(Clone, PartialEq, Eq)]
 struct Account { client_id: String, token: String }
 impl Account {
-    fn of(s: &crate::plex::session::Session) -> Self {
+    fn of(s: &plx_plex::plex::session::Session) -> Self {
         Self { client_id: s.client_id.clone(), token: s.account_token.clone() }
     }
 }
@@ -200,10 +200,10 @@ struct Pending { account: Account, who: String, terms: Vec<String> }
 /// the test stays here because this is where it is *graded*, and because a rule worth having in
 /// two places is one whose cost is a string comparison.
 fn merged(
-    s: &crate::plex::session::Session,
+    s: &plx_plex::plex::session::Session,
     who: &str,
     terms: &[String],
-) -> Option<crate::plex::session::Session> {
+) -> Option<plx_plex::plex::session::Session> {
     if s.client_id.is_empty() || s.recents_for(who) == terms {
         return None;
     }
@@ -217,7 +217,7 @@ fn merged(
 
 
 fn flush() {
-    crate::plex::session::update(|s| {
+    plx_plex::plex::session::update(|s| {
         let pending = std::mem::take(&mut *PENDING.lock().unwrap_or_else(|e| e.into_inner()));
         let account = Account::of(s);
         let mut next = None;
@@ -245,25 +245,25 @@ mod tests {
     #[test]
     fn session_refresh_recovers_history_without_a_profile_switch() {
         let _guard = plx_base::testlock::serial();
-        let session = crate::plex::session::TempSession::new("recents-session-refresh");
+        let session = plx_plex::plex::session::TempSession::new("recents-session-refresh");
         let _caches = ClearCaches;
         session.watching("test-user");
-        let mut saved = (*crate::plex::session::peek()).clone();
+        let mut saved = (*plx_plex::plex::session::peek()).clone();
         saved.set_recents_for("test-user", vec!["Synthetic title".into()]);
-        crate::plex::session::install_transient_for_test(true);
+        plx_plex::plex::session::install_transient_for_test(true);
         assert!(snapshot().terms().is_empty());
-        crate::plex::session::save(&saved);
+        plx_plex::plex::session::save(&saved);
         assert_eq!(snapshot().terms(), &["Synthetic title"]);
     }
 
     #[test]
     fn queue_capacity_refuses_new_profiles_without_evicting_accepted_edits() {
         let _guard = plx_base::testlock::serial();
-        let session = crate::plex::session::TempSession::new("recents-pending-cap");
+        let session = plx_plex::plex::session::TempSession::new("recents-pending-cap");
         let _caches = ClearCaches;
         session.watching("overflow");
         let before = snapshot();
-        let account = Account::of(&crate::plex::session::peek());
+        let account = Account::of(&plx_plex::plex::session::peek());
         *PENDING.lock().unwrap() = (0..PENDING_CAP).map(|i| Pending {
             account: account.clone(), who: format!("queued-{i}"), terms: vec!["accepted".into()],
         }).collect();
@@ -277,7 +277,7 @@ mod tests {
         assert!(remember_with(snapshot().generation(), "newest", || {}));
         assert_eq!(PENDING.lock().unwrap().len(), PENDING_CAP);
         flush();
-        let saved = crate::plex::session::peek();
+        let saved = plx_plex::plex::session::peek();
         assert_eq!(saved.recents_for("queued-0"), &["newest", "accepted"]);
         for i in 1..PENDING_CAP {
             assert_eq!(saved.recents_for(&format!("queued-{i}")), &["accepted"]);
@@ -286,13 +286,13 @@ mod tests {
         session.watching("overflow");
         assert!(remember_with(snapshot().generation(), "now admitted", || {}));
         flush();
-        assert_eq!(crate::plex::session::peek().recents_for("overflow"), &["now admitted"]);
+        assert_eq!(plx_plex::plex::session::peek().recents_for("overflow"), &["now admitted"]);
     }
 
     #[test]
     fn pending_writes_preserve_each_profiles_latest_committed_history() {
         let _guard = plx_base::testlock::serial();
-        let session = crate::plex::session::TempSession::new("recents-pending-profiles");
+        let session = plx_plex::plex::session::TempSession::new("recents-pending-profiles");
         let _caches = ClearCaches;
         session.watching("pending-a");
         assert!(remember_with(snapshot().generation(), "alpha", || {}));
@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(snapshot().terms(), &["alpha"], "return before the worker drains preserves history");
         assert!(remember_with(snapshot().generation(), "alpha latest", || {}));
         flush();
-        let saved = crate::plex::session::peek();
+        let saved = plx_plex::plex::session::peek();
         assert_eq!(saved.recents_for("pending-a"), &["alpha latest", "alpha"], "B cannot replace A's queued write");
         assert_eq!(saved.recents_for("pending-b"), &["beta"]);
     }
@@ -310,17 +310,17 @@ mod tests {
     #[test]
     fn pending_writes_cannot_cross_an_account_replacement() {
         let _guard = plx_base::testlock::serial();
-        let session = crate::plex::session::TempSession::new("recents-pending-account");
+        let session = plx_plex::plex::session::TempSession::new("recents-pending-account");
         let _caches = ClearCaches;
-        crate::plex::session::update(|s| {
+        plx_plex::plex::session::update(|s| {
             let mut next = s.clone();
             next.account_token = "synthetic-old-account".into();
             Some(next)
         });
         session.watching("old-profile");
         assert!(remember_with(snapshot().generation(), "old history", || {}));
-        let old = crate::plex::session::peek();
-        crate::plex::session::save(&crate::plex::session::Session {
+        let old = plx_plex::plex::session::peek();
+        plx_plex::plex::session::save(&plx_plex::plex::session::Session {
             client_id: old.client_id.clone(),
             account_token: "synthetic-new-account".into(),
             ..Default::default()
@@ -329,17 +329,17 @@ mod tests {
         session.watching("old-profile");
         assert!(snapshot().terms().is_empty(), "pending old-account terms must not reappear in a view");
         flush();
-        assert!(crate::plex::session::peek().recents_for("old-profile").is_empty(),
+        assert!(plx_plex::plex::session::peek().recents_for("old-profile").is_empty(),
             "a valid replacement session is not authority to persist the departing account's terms");
         assert!(remember_with(snapshot().generation(), "new account history", || {}));
         flush();
-        assert_eq!(crate::plex::session::peek().recents_for("old-profile"), &["new account history"]);
+        assert_eq!(plx_plex::plex::session::peek().recents_for("old-profile"), &["new account history"]);
     }
 
     #[test]
     fn retained_terms_survive_edits_and_noops_do_not_republish_or_submit() {
         let _guard = plx_base::testlock::serial();
-        let session = crate::plex::session::TempSession::new("recents-publication");
+        let session = plx_plex::plex::session::TempSession::new("recents-publication");
         let _caches = ClearCaches;
         session.watching("recent-a");
         let empty = snapshot();
@@ -370,15 +370,15 @@ mod tests {
         assert!(cleared.same_publication(&snapshot()));
         assert_eq!(submissions, 3);
         flush();
-        assert!(crate::plex::session::peek().recents_for("recent-a").is_empty());
+        assert!(plx_plex::plex::session::peek().recents_for("recent-a").is_empty());
     }
 
     #[test]
     fn profile_snapshots_and_persisted_lists_stay_separate_across_switches() {
         let _guard = plx_base::testlock::serial();
-        let session = crate::plex::session::TempSession::new("recents-profiles");
+        let session = plx_plex::plex::session::TempSession::new("recents-profiles");
         let _caches = ClearCaches;
-        crate::plex::session::update(|s| {
+        plx_plex::plex::session::update(|s| {
             let mut next = s.clone();
             next.set_recents_for("recent-a", vec!["alpha".into()]);
             next.set_recents_for("recent-b", vec!["beta".into()]);
@@ -400,7 +400,7 @@ mod tests {
         assert!(b.same_publication(&snapshot()), "stale commands leave the new profile untouched");
         assert!(clear_with(b.generation(), || {}));
         flush();
-        let saved = crate::plex::session::peek();
+        let saved = plx_plex::plex::session::peek();
         assert_eq!(saved.recents_for("recent-a"), &["new-a", "alpha"]);
         assert!(saved.recents_for("recent-b").is_empty());
         assert_eq!(b.terms(), &["beta"]);
@@ -463,7 +463,7 @@ mod tests {
     /// tests still pass.
     #[test]
     fn a_session_that_could_not_be_read_is_never_written_back() {
-        use crate::plex::session::Session;
+        use plx_plex::plex::session::Session;
         let terms = list(&["wallace"]);
 
         // `peek` hands back a DEFAULT session both for "no file yet" and for "the file did not
@@ -498,7 +498,7 @@ mod tests {
     /// person's key, and cannot touch the list already stored for anybody else.
     #[test]
     fn terms_are_written_under_the_profile_that_searched_them() {
-        use crate::plex::session::Session;
+        use plx_plex::plex::session::Session;
         let live = Session {
             client_id: "cid-1".into(),
             ..Default::default()

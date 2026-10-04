@@ -23,8 +23,8 @@ use std::cell::Cell;
 use std::ffi::{CStr, CString};
 
 use crate::auth::{self, PlaintextVerdict, ReadoutSurface, SessionCmd};
-use crate::plex::session::PlaintextChoice;
-use crate::plex::ServerId;
+use plx_plex::plex::session::PlaintextChoice;
+use plx_plex::plex::ServerId;
 use plx_ui::decision_alert::{Choice, DecisionAlert, Tone};
 use plx_machine::machine::{
     Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host, InputEvent,
@@ -418,12 +418,12 @@ impl OfferWatch {
     /// Re-read the offer for `machine` (`near` says whether another will do); `true` when what
     /// the read-out shows changed.
     pub(crate) fn refresh(&mut self, machine: Option<&str>, near: Near) -> bool {
-        let key = (crate::plex::grant::revision(), machine.map(str::to_owned));
+        let key = (plx_plex::plex::grant::revision(), machine.map(str::to_owned));
         if self.seen.as_ref() == Some(&key) {
             return false;
         }
         self.seen = Some(key);
-        let offers = crate::plex::grant::offers();
+        let offers = plx_plex::plex::grant::offers();
         let at = offers.iter().position(|v| Some(v.machine_id.as_str()) == machine)
             .or_else(|| (near == Near::First && !offers.is_empty()).then_some(0));
         let next = at.and_then(|i| offers.into_iter().nth(i)).map(|v| {

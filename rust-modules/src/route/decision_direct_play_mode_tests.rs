@@ -27,8 +27,8 @@ fn force_registers_original_despite_saved_quality_relay_and_device_raster() {
     let _g = fresh_registry(&mut ps);
     assert!(plx_net::net::global_init());
     let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
-    let sid = crate::plex::register_for_test("forced-original", "127.0.0.1", port, "token", "forced-client");
-    crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Relay);
+    let sid = plx_plex::plex::register_for_test("forced-original", "127.0.0.1", port, "token", "forced-client");
+    plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Relay);
     restore_quality(Quality::P480);
     restore_direct_play_mode(DirectPlayMode::Forced);
     let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
@@ -50,7 +50,7 @@ fn force_registers_original_despite_saved_quality_relay_and_device_raster() {
     assert_eq!(quality(), Quality::P480, "Force must retain the saved ceiling");
     restore_quality(Quality::Original);
     restore_direct_play_mode(DirectPlayMode::Auto);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn force_server_refusal_or_missing_mde_never_attempts_conversion() {
     assert!(plx_net::net::global_init());
     for body in [MDE_TRANSCODE, EMPTY_MC] {
         let (port, rx, server) = plan_pms(2, body);
-        let sid = crate::plex::register_for_test("forced-refusal", "127.0.0.1", port, "token", "forced-client");
+        let sid = plx_plex::plex::register_for_test("forced-refusal", "127.0.0.1", port, "token", "forced-client");
         let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
         env.direct_play_mode = DirectPlayMode::Forced;
         env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
@@ -72,7 +72,7 @@ fn force_server_refusal_or_missing_mde_never_attempts_conversion() {
         assert!(plan.verdict.as_ref().unwrap().text().contains("Force Direct Play is on"));
         assert_eq!(requests.iter().filter(|r| r.contains("/decision?")).count(), 1);
         assert!(!requests.iter().any(|r| r.starts_with("PUT ") || r.contains("start.")));
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 }
 
@@ -83,7 +83,7 @@ fn disabling_direct_play_keeps_codec_preserving_remux() {
     let _g = fresh_registry(&mut ps);
     assert!(plx_net::net::global_init());
     let (port, rx, server) = plan_pms(3, MDE_TRANSCODE_COPY);
-    let sid = crate::plex::register_for_test("disabled-original", "127.0.0.1", port, "token", "disabled-client");
+    let sid = plx_plex::plex::register_for_test("disabled-original", "127.0.0.1", port, "token", "disabled-client");
     let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.direct_play_mode = DirectPlayMode::Disabled;
     env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
@@ -92,7 +92,7 @@ fn disabling_direct_play_keeps_codec_preserving_remux() {
     server.join().unwrap();
     assert!(plan.contract.remux && plan.url.contains("start.mkv") && !plan.tsession.is_empty());
     assert!(!requests.iter().any(|r| query_param(r, "directPlay") == Some("1")));
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]

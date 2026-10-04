@@ -47,7 +47,7 @@ mod refresh;
 mod trace;
 
 use plx_gfx::img;
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use plx_machine::machine::PosterKey;
 use plx_ui::tex::{self, Decoded, PosterError, PosterReady, Tex, Uploader, Warm};
 use std::os::raw::{c_int, c_uchar, c_uint};
@@ -177,7 +177,7 @@ struct Pslot {
     gen: c_uint,   // bumped on eviction; stale-decode guard
     cache_gen: u64, // account epoch captured when queued, before any worker can race sign-out
     token_gen: u32, // the grant that built this request (profile switches need not erase disk)
-    /// The IDENTITY the art was claimed under ([`crate::plex::Client::grant_epoch`]). What a hit
+    /// The IDENTITY the art was claimed under ([`plx_plex::plex::Client::grant_epoch`]). What a hit
     /// must match: a same-user retoken keeps it (and the slot is re-keyed to the fresh request),
     /// a revocation — profile switch, sign-out — does not.
     grant_epoch: u32,
@@ -381,11 +381,11 @@ fn park_retry(s: &mut Pslot) {
 /// transient. Other completed HTTP answers are final: retrying a redirect we deliberately do not
 /// follow, an unsupported method/media type, or a missing item can never change this request.
 /// Bytes that arrived but did not decode are the decoder's verdict and final too.
-fn is_transient(outcome: &crate::plex::ArtFetch) -> bool {
+fn is_transient(outcome: &plx_plex::plex::ArtFetch) -> bool {
     match outcome {
-        crate::plex::ArtFetch::Bytes(_) => false,
-        crate::plex::ArtFetch::Status(s) => matches!(s, 401 | 403 | 408 | 429 | 500..=599),
-        crate::plex::ArtFetch::NoResponse => true,
+        plx_plex::plex::ArtFetch::Bytes(_) => false,
+        plx_plex::plex::ArtFetch::Status(s) => matches!(s, 401 | 403 | 408 | 429 | 500..=599),
+        plx_plex::plex::ArtFetch::NoResponse => true,
     }
 }
 
@@ -409,7 +409,7 @@ fn same_art(s: &Pslot, srv: ServerId, key: &[u8]) -> bool {
     held == key || sans_token(held) == sans_token(key)
 }
 
-/// `key` without its trailing credential. [`crate::plex::Client::with_token`] appends
+/// `key` without its trailing credential. [`plx_plex::plex::Client::with_token`] appends
 /// `X-Plex-Token=` as the LAST parameter of every built request (the test pinning the token to the
 /// end of the key holds that); a percent-encoded `url=` value cannot contain a literal `=`, so the
 /// last occurrence is the parameter. A key with no token (a baked fan key) is returned whole.
@@ -534,7 +534,7 @@ pub(crate) fn resident_art_survives_for_test(sid: ServerId, change: impl FnOnce(
     reset_key_memo();
     let before = built_key(sid, SRC, 2, 2, false).expect("a registered server builds a key").to_owned();
     {
-        let c = crate::plex::client_for(sid).expect("a registered server");
+        let c = plx_plex::plex::client_for(sid).expect("a registered server");
         let mut g = store();
         g.slots = [Pslot::ZERO; PT_CAP];
         let slot = &mut g.slots[0];
@@ -567,7 +567,7 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
     if path.is_empty() {
         return None;
     }
-    let c = crate::plex::client_for(srv)?;
+    let c = plx_plex::plex::client_for(srv)?;
     // SAFETY: main-thread only (every caller is a draw path), and the borrow is consumed by the
     // caller before the memo can be touched again; the `'static` is that discipline, not a fact.
     let memo = unsafe {
@@ -594,7 +594,7 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
 /// every store key and the fan baker's member fetches, so both name the same bytes on disk.
 /// Supersampled simulator renders (`surface::render_scale`, 1 on a television) ask the server
 /// for the pixels they will draw; the logical box stays the caller's.
-fn transcode_request(c: &crate::plex::Client, path: &str, w: c_int, h: c_int, png: bool) -> String {
+fn transcode_request(c: &plx_plex::plex::Client, path: &str, w: c_int, h: c_int, png: bool) -> String {
     let n = plx_base::surface::render_scale() as i64;
     c.image_transcode_path(path, w as i64 * n, h as i64 * n, png)
 }
@@ -875,7 +875,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     let decline = touch == Touch::Draw && plx_ui::card_motion::declines_request();
     let mut g = store();
     let cache_gen = plx_platform::imgcache::generation();
-    let (token_gen, grant_epoch) = crate::plex::client_for(srv)
+    let (token_gen, grant_epoch) = plx_plex::plex::client_for(srv)
         .map_or((0, 0), |c| (c.token_gen(), c.grant_epoch()));
     // hit? Matched on the picture and the identity, not the token string: discovery re-registering
     // a stored server under plex.tv's current grant for the same user moves `token_gen` (and the
@@ -1441,7 +1441,7 @@ impl ArtFail {
 /// **Why the SERVER is half the key.** With a friend's share registered beside our own, the
 /// interesting failure is the asymmetric one — ours answers and the share does not, because it is
 /// asleep or its token was revoked — and a cause-only latch would spend its single line on
-/// whichever failed first and hide the other for the rest of the process. [`crate::plex::MAX_SERVERS`]
+/// whichever failed first and hide the other for the rest of the process. [`plx_plex::plex::MAX_SERVERS`]
 /// is 16, so the extra dimension is one `u32` of bits per slot.
 ///
 /// **What is deliberately NOT in the line: the key.** It is a `/photo/:/transcode?…` path ending in
@@ -1457,10 +1457,10 @@ fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
     // `u16::MAX`, and the three store entry points take a raw key from any caller, so a slot's id
     // is not guaranteed to name a registry entry. Everything that does not name one shares the
     // last word.
-    const NWORD: usize = crate::plex::MAX_SERVERS + 1;
+    const NWORD: usize = plx_plex::plex::MAX_SERVERS + 1;
     static LOGGED: [AtomicU32; NWORD] = [const { AtomicU32::new(0) }; NWORD];
     let bit = 1u32 << cause as u32;
-    let word = &LOGGED[(srv.raw() as usize).min(crate::plex::MAX_SERVERS)];
+    let word = &LOGGED[(srv.raw() as usize).min(plx_plex::plex::MAX_SERVERS)];
     // fetch_or, not load-then-store: this loop runs on more than one thread (`posters_init` spawns
     // two), so two workers can reach the same cause for the same server at once and only
     // the one that flipped the bit may write the line.
@@ -1476,14 +1476,14 @@ fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
 /// Cumulative network attempts, including stale refreshes. No URL or credential is logged.
 static FETCHES: AtomicU64 = AtomicU64::new(0);
 
-fn fetch_image(client: &crate::plex::Client, path: &str) -> Option<Vec<u8>> {
+fn fetch_image(client: &plx_plex::plex::Client, path: &str) -> Option<Vec<u8>> {
     FETCHES.fetch_add(1, Ordering::Relaxed);
     client.fetch_built(path)
 }
 
 /// Use the persistent PMS identity, never its registration-order slot. An origin is the
 /// conservative fallback for injected/older sessions that have not learned a machine id yet.
-fn disk_namespace(client: &crate::plex::Client) -> String {
+fn disk_namespace(client: &plx_plex::plex::Client) -> String {
     if client.machine_id().is_empty() {
         format!("origin:{}", client.origin().base())
     } else {
@@ -1517,7 +1517,7 @@ struct Loaded<T> {
 /// removed and falls through to the network; only a fetched response that DECODES is written to
 /// disk, so a bad answer never replaces a good image.
 fn load_art<T>(
-    client: &crate::plex::Client,
+    client: &plx_plex::plex::Client,
     srv: ServerId,
     key_s: &str,
     cache_gen: u64,
@@ -1549,7 +1549,7 @@ fn load_art<T>(
     }
     FETCHES.fetch_add(1, Ordering::Relaxed);
     match client.fetch_built_outcome(key_s) {
-        crate::plex::ArtFetch::Bytes(b) if !b.is_empty() => {
+        plx_plex::plex::ArtFetch::Bytes(b) if !b.is_empty() => {
             out.art = decode(&b);
             if out.art.is_some() {
                 if let Some(k) = &disk {
@@ -1557,7 +1557,7 @@ fn load_art<T>(
                 }
             }
         }
-        crate::plex::ArtFetch::Bytes(_) => {
+        plx_plex::plex::ArtFetch::Bytes(_) => {
             out.transient = true;
             warn_fetch_failed(srv, ArtFail::Empty);
         }
@@ -1572,7 +1572,7 @@ fn load_art<T>(
 /// The worker's real [`fan::FanIo`]: the baked PNG under its own disk key, the collection's
 /// first members from the server that owns it, and each member poster through [`load_art`].
 struct WorkerFanIo<'a> {
-    client: &'a crate::plex::Client,
+    client: &'a plx_plex::plex::Client,
     srv: ServerId,
     rk: &'a str,
     cache_gen: u64,
@@ -1591,7 +1591,7 @@ impl WorkerFanIo<'_> {
     fn still_current(&self) -> bool {
         self.cache_gen == plx_platform::imgcache::generation()
             && self.client.token_gen() == self.token_gen
-            && crate::plex::session::current_profile_key() == self.profile
+            && plx_plex::plex::session::current_profile_key() == self.profile
     }
 }
 
@@ -1606,7 +1606,7 @@ impl fan::FanIo for WorkerFanIo<'_> {
         }
     }
     fn members(&mut self) -> fan::Got<fan::Members> {
-        use crate::plex::collections::CollectionOutcome as O;
+        use plx_plex::plex::collections::CollectionOutcome as O;
         match self.client.collection_children(self.rk, 0, fan::FAN_MEMBERS as i64) {
             O::Ok(page) => fan::Got::Ok(
                 page.metadata
@@ -1648,14 +1648,14 @@ impl fan::FanIo for WorkerFanIo<'_> {
 /// Bake (or reload) one collection's fan. The disk namespace adds the active profile to the
 /// server identity because the members a server lists depend on whose restrictions apply.
 fn bake_fan(
-    client: &crate::plex::Client,
+    client: &plx_plex::plex::Client,
     srv: ServerId,
     rk: &str,
     stamp: &str,
     cache_gen: u64,
     token_gen: u32,
 ) -> fan::Got<fan::Rgba> {
-    let profile = crate::plex::session::current_profile_key();
+    let profile = plx_plex::plex::session::current_profile_key();
     let disk = if crate::dev::scenarios::imagecache_bypass_armed() {
         None
     } else {
@@ -1691,7 +1691,7 @@ fn poster_worker() {
         let mut transient = false;
         // Revoked servers cannot use disk as a route around sign-out. Keep this client snapshot
         // for both identity and transport; a later registry repoint must not mix the two.
-        if let Some(client) = crate::plex::client_for(srv)
+        if let Some(client) = plx_plex::plex::client_for(srv)
             .filter(|c| cache_gen == plx_platform::imgcache::generation() && c.token_gen() == token_gen)
         {
             if let Some((rk, stamp)) = fan::parse_fan_key(&key_s) {
@@ -1754,7 +1754,7 @@ fn poster_worker() {
 
 /// Spawn the poster workers. No config is threaded in: each request carries its own server
 /// (the slot's [`Pslot::srv`]), and the address behind it comes from the registry
-/// (`crate::plex::install` or a `register` must have run before a fetch can resolve).
+/// (`plx_plex::plex::install` or a `register` must have run before a fetch can resolve).
 pub(crate) fn init() {
     tex::install(&SOURCE);
     {
@@ -1851,7 +1851,7 @@ mod tests {
     struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
             reset_key_memo();
         }
     }
@@ -1859,10 +1859,10 @@ mod tests {
     /// `session::load`, which mints and PERSISTS a uuid on a host that has no session file.
     fn one_server() -> (Fresh, ServerId, &'static str) {
         let g = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         reset_key_memo();
         let tok = "tok-poster-test";
-        let sid = crate::plex::register_for_test(
+        let sid = plx_plex::plex::register_for_test(
             "poster-test",
             "127.0.0.1",
             32400,
@@ -2027,17 +2027,17 @@ mod tests {
     /// belong to different people (a managed profile shown the owner's restricted posters).
     #[test]
     fn a_fan_bake_is_not_persisted_across_a_retoken_or_a_profile_switch() {
-        struct Restore(std::sync::Arc<crate::plex::session::CurrentProfile>);
+        struct Restore(std::sync::Arc<plx_plex::plex::session::CurrentProfile>);
         impl Drop for Restore {
             fn drop(&mut self) {
-                crate::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation);
+                plx_plex::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation);
             }
         }
         let (_g, sid, _) = one_server();
-        let _restore = Restore(crate::plex::session::current_snapshot());
-        let profile = |uuid: &str| crate::plex::session::UserRef { uuid: uuid.into(), ..Default::default() };
-        crate::plex::session::publish_profile_for_test(Some(profile("profile-a")), 7);
-        let client = crate::plex::client_for(sid).unwrap();
+        let _restore = Restore(plx_plex::plex::session::current_snapshot());
+        let profile = |uuid: &str| plx_plex::plex::session::UserRef { uuid: uuid.into(), ..Default::default() };
+        plx_plex::plex::session::publish_profile_for_test(Some(profile("profile-a")), 7);
+        let client = plx_plex::plex::client_for(sid).unwrap();
         let io = |c| WorkerFanIo {
             client: c,
             srv: sid,
@@ -2045,12 +2045,12 @@ mod tests {
             cache_gen: plx_platform::imgcache::generation(),
             disk: None,
             token_gen: c.token_gen(),
-            profile: crate::plex::session::current_profile_key(),
+            profile: plx_plex::plex::session::current_profile_key(),
         };
 
         let started = io(client);
         assert!(started.still_current(), "an undisturbed bake may persist");
-        crate::plex::session::publish_profile_for_test(Some(profile("profile-b")), 8);
+        plx_plex::plex::session::publish_profile_for_test(Some(profile("profile-b")), 8);
         assert!(!started.still_current(), "the profile moved under the bake");
 
         let started = io(client);
@@ -2143,7 +2143,7 @@ mod tests {
         let (_fresh, sid, tok) = one_server();
         plx_ui::card_motion::begin_frame(crate::app::clock::now());
         let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
-        let old_generation = crate::plex::client_for(sid).unwrap().token_gen();
+        let old_generation = plx_plex::plex::client_for(sid).unwrap().token_gen();
         {
             let mut g = store();
             g.slots = [Pslot::ZERO; PT_CAP];
@@ -2155,9 +2155,9 @@ mod tests {
             set_key(slot, &path);
             slot.state = P_EVICTED;
         }
-        let repointed = crate::plex::register_for_test("poster-test", "127.0.0.2", 32400, tok, "cid-poster-test");
+        let repointed = plx_plex::plex::register_for_test("poster-test", "127.0.0.2", 32400, tok, "cid-poster-test");
         assert_eq!(repointed, sid);
-        let current_generation = crate::plex::client_for(sid).unwrap().token_gen();
+        let current_generation = plx_plex::plex::client_for(sid).unwrap().token_gen();
         assert_ne!(current_generation, old_generation);
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Claimed);
         assert!(store().slots.iter().any(|s| s.state == P_WANT
@@ -2177,7 +2177,7 @@ mod tests {
         // same identity, and neither may cost a tile its texture.
         for grant in ["tok-plex-tv-grant-for-the-same-user", tok] {
             let kept = resident_art_survives_for_test(sid, || {
-                let again = crate::plex::register_for_test(
+                let again = plx_plex::plex::register_for_test(
                     "poster-test", "127.0.0.1", 32400, grant, "cid-poster-test");
                 assert_eq!(again, sid, "discovery must reuse the stored server's slot");
             });
@@ -2196,7 +2196,7 @@ mod tests {
         let src = "/library/metadata/42/thumb";
         let stale = key_for(sid, src, 2, 2, 0);
         {
-            let c = crate::plex::client_for(sid).unwrap();
+            let c = plx_plex::plex::client_for(sid).unwrap();
             let mut g = store();
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
@@ -2209,7 +2209,7 @@ mod tests {
             slot.attempts = 5;
             slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
         }
-        let again = crate::plex::register_for_test(
+        let again = plx_plex::plex::register_for_test(
             "poster-test", "127.0.0.1", 32400, "tok-plex-tv-grant-for-the-same-user", "cid-poster-test");
         assert_eq!(again, sid);
         let fresh = key_for(sid, src, 2, 2, 0);
@@ -2232,8 +2232,8 @@ mod tests {
     fn a_revocation_still_retires_resident_art() {
         let (_fresh, sid, tok) = one_server();
         let kept = resident_art_survives_for_test(sid, || {
-            crate::plex::revoke_for_profile_switch();
-            let again = crate::plex::register_for_test(
+            plx_plex::plex::revoke_for_profile_switch();
+            let again = plx_plex::plex::register_for_test(
                 "poster-test", "127.0.0.1", 32400, tok, "cid-poster-test");
             assert_eq!(again, sid);
         });
@@ -2254,8 +2254,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_DECODED;
             slot.px = 0;
@@ -2310,8 +2310,8 @@ mod tests {
             slot.state = P_READY;
             slot.srv = srv;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(srv).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(srv).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(srv).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(srv).unwrap().grant_epoch();
             set_key(slot, &path);
         }
 
@@ -2448,8 +2448,8 @@ mod tests {
             let mut g = store();
             g.slots = [Pslot::ZERO; PT_CAP];
             g.quit = false;
-            let gen = crate::plex::client_for(srv).unwrap().token_gen();
-            let epoch = crate::plex::client_for(srv).unwrap().grant_epoch();
+            let gen = plx_plex::plex::client_for(srv).unwrap().token_gen();
+            let epoch = plx_plex::plex::client_for(srv).unwrap().grant_epoch();
             let cache_gen = plx_platform::imgcache::generation();
             for (i, path) in [&path0, &path1].into_iter().enumerate() {
                 let slot = &mut g.slots[i];
@@ -2595,8 +2595,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_RETRY;
             slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
@@ -2637,8 +2637,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_EVICTED;
             // No eviction history, so the cooldown gate would admit this re-arm. That isolates
@@ -2682,8 +2682,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_RETRY;
             slot.attempts = 1;
@@ -2733,8 +2733,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -2782,8 +2782,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -2873,8 +2873,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_EVICTED;
         }
@@ -2925,8 +2925,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_EVICTED;
             slot.evict_attempts = 1;
@@ -2968,8 +2968,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_EVICTED;
             slot.evict_attempts = 1;
@@ -3019,8 +3019,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -3090,8 +3090,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
             slot.evicted_at = Some(0);
@@ -3235,8 +3235,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -3345,7 +3345,7 @@ mod tests {
     /// status that will not change is final.
     #[test]
     fn only_a_final_status_is_final() {
-        use crate::plex::ArtFetch;
+        use plx_plex::plex::ArtFetch;
         for s in [301, 400, 404, 405, 410, 414, 415, 422] {
             assert!(!is_transient(&ArtFetch::Status(s)), "{s} will not change");
         }

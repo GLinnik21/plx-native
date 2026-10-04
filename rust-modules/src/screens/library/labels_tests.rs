@@ -407,7 +407,7 @@ fn a_parsed_episode_draws_its_own_still_with_or_without_a_show_poster() {
     use crate::screens::registry::tile_facts;
     use plx_ui::widgets::still_key;
     let ep = |gp: &str| {
-        let it = crate::plex::Metadata {
+        let it = plx_plex::plex::Metadata {
             kind: "episode".into(),
             rating_key: "9".into(),
             title: "The Meeting".into(),
@@ -417,7 +417,7 @@ fn a_parsed_episode_draws_its_own_still_with_or_without_a_show_poster() {
             grandparent_title: "The Office".into(),
             ..Default::default()
         };
-        crate::pms::parse_item(&it, crate::plex::ServerId::from_raw(0))
+        crate::pms::parse_item(&it, plx_plex::plex::ServerId::from_raw(0))
     };
 
     // the show HAS a poster: the poster substitution stands, and the still is kept beside it

@@ -1,6 +1,6 @@
 //! Plex library fetch/parse into the private catalog (was src/pms.c), read by the UI
 //! via the retained publication (`hubs_snapshot()` → `HubsView`) and movie()/hub_item().
-//! The fetch + JSON parse go through the typed `crate::plex` client (serde DTOs) — no
+//! The fetch + JSON parse go through the typed `plx_plex::plex` client (serde DTOs) — no
 //! hand-built paths or `Value` scraping here.
 //!
 //! **This is the data module `stores::hubs` (`docs/stores-as-machines.md`) is a machine over** —
@@ -22,7 +22,7 @@
 //! modules. `ci/allow/mutators.txt`'s `# count: 0` already
 //! proves no PRODUCTION line outside `pms`/`stores::hubs` spells the old direct-call form; this
 //! is the part that keyword-level `pub(super)` genuinely cannot add on top of that count.
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -63,7 +63,7 @@ pub struct PmsMovie {
     /// WHICH SERVER this row came from. Every other identity on it — `rk`, `show_rk`, `part` — is a
     /// server-local key that a second server reuses from 1 (docs/shared-servers.md §2 measured the
     /// collision), so the row is only addressable as the PAIR `(sid, rk)`; see
-    /// [`crate::plex::same_item`]. Stamped by [`parse_item`] from a value the SPAWNING thread
+    /// [`plx_plex::plex::same_item`]. Stamped by [`parse_item`] from a value the SPAWNING thread
     /// captured, never from `plex::current_server()` inside the worker — `parse_item` runs on the
     /// hub, page and person workers, and by the time one of them parses, "the current server" may
     /// already be a different machine than the one whose bytes it is holding.
@@ -239,7 +239,7 @@ pub(crate) fn movie(state: &PmsState, i: usize) -> Option<&PmsMovie> {
 pub(crate) fn index_of_rk(state: &PmsState, sid: ServerId, rk: &str) -> c_int {
     catalog(state)
         .iter()
-        .position(|m| crate::plex::same_item((m.sid, &m.rk), (sid, rk)))
+        .position(|m| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)))
         .map(|i| i as c_int)
         .unwrap_or(-1)
 }
@@ -261,7 +261,7 @@ fn clean(s: &str) -> String {
 /// outright) is that a worker reads no statics. It is also the only correct answer — the current
 /// server can change while a page fetch is in flight, and the rows in hand belong to the machine
 /// that was asked, not to whichever one is current when they finish parsing.
-pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie {
+pub(crate) fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
     let mut m = PmsMovie {
         sid,
         sec: it.library_section_id,
@@ -519,7 +519,7 @@ impl<'a> HubsView<'a> {
     /// Server-scoped catalog lookup by `(sid, rk)`, over the retained publication rather than a
     /// global — see [`index_of_rk`]'s doc for why the scan must not compare `rk` alone.
     pub(crate) fn find(self, sid: ServerId, rk: &str) -> Option<&'a PmsMovie> {
-        self.data.items.iter().find(|m| crate::plex::same_item((m.sid, &m.rk), (sid, rk)))
+        self.data.items.iter().find(|m| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)))
     }
 }
 
@@ -656,7 +656,7 @@ fn edit_item_with_scope(
 /// [`edit_item_with_scope`] on ONE source's projection. Pure — no statics, no I/O — so the rule is
 /// graded on the host rather than inferred from a screenshot.
 fn apply_edit(b: &mut SourceBuild, sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
-    let mine = |m: &PmsMovie| crate::plex::same_item((m.sid, &m.rk), (sid, rk));
+    let mine = |m: &PmsMovie| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk));
     match edit {
         LocalEdit::Watched(on) => {
             let mut hit = false;
@@ -751,7 +751,7 @@ struct SourceBuild {
 /// otherwise stamp these rows with the other machine's id — the one thing every `(sid, rk)`
 /// comparison downstream then trusts). A `&'static Client` also pins the exact address this fetch
 /// was aimed at even if the registry re-points that slot mid-request.
-fn fetch_source(c: &crate::plex::Client, sid: ServerId) -> Option<SourceBuild> {
+fn fetch_source(c: &plx_plex::plex::Client, sid: ServerId) -> Option<SourceBuild> {
     let mc = c.home_hubs(HUB_FETCH_COUNT)?;
     // The Continue Watching shelf comes from the DEDICATED hub (see `project`). Its failure fails
     // THIS SOURCE (`?`) — nothing of it commits and it retries on its own backoff. Losing the most
@@ -764,12 +764,12 @@ fn fetch_source(c: &crate::plex::Client, sid: ServerId) -> Option<SourceBuild> {
 /// Pure — no statics, no I/O, no knowledge of any other source; `sid` is the server the two
 /// containers came from, stamped onto every row it builds.
 fn project(
-    mc: &crate::plex::MediaContainer,
-    cw: &crate::plex::MediaContainer,
+    mc: &plx_plex::plex::MediaContainer,
+    cw: &plx_plex::plex::MediaContainer,
     sid: ServerId,
 ) -> SourceBuild {
     // need a poster to show it in a shelf
-    let keep = |it: &crate::plex::Metadata| {
+    let keep = |it: &plx_plex::plex::Metadata| {
         if !listable(&it.kind) { return None; }
         let m = parse_item(it, sid);
         (!m.title.is_empty() && !m.thumb.is_empty()).then_some(m)
@@ -835,8 +835,8 @@ fn project(
         let identifier_is_unique =
             hub_identifier_counts.get(hub.hub_identifier.as_str()).copied().unwrap_or(0) <= 1;
         out.shelves.push(Shelf {
-            title: crate::plex::hub_title::localized_hub_title(
-                crate::plex::hub_title::Scope::Home { library, identifier_is_unique },
+            title: plx_plex::plex::hub_title::localized_hub_title(
+                plx_plex::plex::hub_title::Scope::Home { library, identifier_is_unique },
                 &hub.hub_identifier,
                 &hub.title,
             ),
@@ -1034,7 +1034,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
             // NB the pool holds `HeroSlot`s, so the index is `s.idx` — unit 12's hero-ordering work
             // and unit 3's identity work landed in this same expression from opposite directions.
             if new_pool.iter().any(|s| {
-                crate::plex::same_item((new_cat[s.idx].sid, &new_cat[s.idx].rk), (m.sid, &m.rk))
+                plx_plex::plex::same_item((new_cat[s.idx].sid, &new_cat[s.idx].rk), (m.sid, &m.rk))
             }) {
                 continue;
             }
@@ -1086,7 +1086,7 @@ struct Src {
     sid: ServerId,
     /// Registry lifecycle currently represented by this slot. A slot id survives repoint, so the
     /// pointer and credential generation are part of the source identity too.
-    client: Option<&'static crate::plex::Client>,
+    client: Option<&'static plx_plex::plex::Client>,
     token_gen: u32,
     /// **The CREDIT** for this source — `plex::servers::owner_credit`'s answer, stamped onto every
     /// shelf and hero row this source contributes. `"friend"` for a borrowed server; **empty when
@@ -1121,7 +1121,7 @@ impl Src {
     /// after admission to this source's single flight; the adapter receives the captured value.
     fn begin_request(
         &mut self,
-        client: &'static crate::plex::Client,
+        client: &'static plx_plex::plex::Client,
         generation: u32,
         mint: impl FnOnce() -> u32,
     ) -> Option<HubRequest> {
@@ -1140,7 +1140,7 @@ impl Src {
     }
 
     fn new(sid: ServerId, handle: String) -> Src {
-        let client = crate::plex::client_for(sid);
+        let client = plx_plex::plex::client_for(sid);
         Src {
             sid,
             client,
@@ -1157,7 +1157,7 @@ impl Src {
 }
 
 fn refresh_src_lifecycle(s: &mut Src) -> bool {
-    let client = crate::plex::client_for(s.sid);
+    let client = plx_plex::plex::client_for(s.sid);
     let token_gen = client.map_or(0, |c| c.token_gen());
     let same = match (s.client, client) {
         (Some(a), Some(b)) => std::ptr::eq(a, b) && s.token_gen == token_gen,
@@ -1186,11 +1186,11 @@ fn refresh_src_lifecycle(s: &mut Src) -> bool {
 struct LandingClient {
     /// Logical identity in the recording's process, preserved when replay binds another resource.
     instance: u32,
-    resource: &'static crate::plex::Client,
+    resource: &'static plx_plex::plex::Client,
 }
 
 impl LandingClient {
-    fn live(resource: &'static crate::plex::Client) -> Self {
+    fn live(resource: &'static plx_plex::plex::Client) -> Self {
         Self { instance: resource.instance_gen(), resource }
     }
 }
@@ -1237,9 +1237,9 @@ impl Landing {
 // The backoff ladder (`backoff_secs`: 2s, 4s, 8s, 16s, then 30s forever) and its ends live in
 // `plex::retry` — the plaintext grant's upgrade retry steps the same ladder, and `plex` cannot name
 // this module. Home's fetch and Browse's section hubs keep reading it through here.
-pub(crate) use crate::plex::retry::backoff_secs;
+pub(crate) use plx_plex::plex::retry::backoff_secs;
 #[cfg(test)]
-use crate::plex::retry::RETRY_MIN_S;
+use plx_plex::plex::retry::RETRY_MIN_S;
 
 /// Home's fetch state, folded from every source — what the loading / empty / error read-out reads.
 ///
@@ -1392,11 +1392,11 @@ fn roster_with_scope(scope: &BrowseScope) -> Vec<(ServerId, String)> {
     let (pinned, known) = home_server_sets(&scope.pins);
     let mut own: Vec<(ServerId, String)> = Vec::new();
     let mut shared: Vec<(ServerId, String)> = Vec::new();
-    for sid in crate::plex::server_ids() {
-        if crate::plex::client_for(sid).is_none() || !feeds_home(sid, &pinned, &known) {
+    for sid in plx_plex::plex::server_ids() {
+        if plx_plex::plex::client_for(sid).is_none() || !feeds_home(sid, &pinned, &known) {
             continue;
         }
-        let handle = crate::plex::server_facts(sid)
+        let handle = plx_plex::plex::server_facts(sid)
             .map(|f| f.handle.clone())
             .unwrap_or_default();
         if handle.is_empty() {
@@ -1424,7 +1424,7 @@ fn roster_key() -> u64 {
 }
 
 fn roster_key_with_scope(scope: &BrowseScope) -> u64 {
-    ((crate::plex::server_roster_gen() as u64) << 32) | u64::from(scope.cache_key())
+    ((plx_plex::plex::server_roster_gen() as u64) << 32) | u64::from(scope.cache_key())
 }
 
 #[cfg(test)]
@@ -1457,7 +1457,7 @@ fn adopt_browse_scope(state: &mut PmsState, scope: &BrowseScope) {
 /// copy onto every shelf and hero row, so a credit re-graded by a roster refresh is exactly a
 /// change this table must rebuild for — and the roster epoch alone cannot see one.
 fn facts_key() -> u32 {
-    crate::plex::server_facts_gen()
+    plx_plex::plex::server_facts_gen()
 }
 
 /// Bring the source table in line with the roster: a surviving source keeps everything it has
@@ -1611,7 +1611,7 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, launch: impl FnOnce(Hu
     // slot id; it never asks which server is current, and a slot re-pointed mid-request cannot
     // redirect a fetch that is already out (`plex::servers` leaks each client precisely so that
     // reference stays live).
-    let Some(c) = crate::plex::client_for(s.sid) else {
+    let Some(c) = plx_plex::plex::client_for(s.sid) else {
         return Some(landed_fail(s));
     };
     let Some(request) = s.begin_request(c, gen,
@@ -1890,7 +1890,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
             continue; // its source left the roster while it was out
         };
         let lifecycle_matches = l.client.is_none_or(|client| {
-            crate::plex::client_for(l.sid)
+            plx_plex::plex::client_for(l.sid)
                 .is_some_and(|now| std::ptr::eq(now, client.resource) && now.token_gen() == l.token_gen)
         });
         if l.gen != cur || l.seq != s.seq || !lifecycle_matches {
@@ -2057,7 +2057,7 @@ pub(crate) fn seed_two_library_home_for_test(
 #[cfg(test)]
 fn seed_with_scope_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, sid: ServerId, items: usize, hub_state: HubState, scope: &BrowseScope) {
     reset_with_scope(state, adapter, scope);
-    let handle = crate::plex::server_facts(sid)
+    let handle = plx_plex::plex::server_facts(sid)
         .map(|facts| facts.handle.clone())
         .unwrap_or_default();
     let mut s = Src::new(sid, handle);

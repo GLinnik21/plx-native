@@ -1017,7 +1017,7 @@ def pms_reset_streams(host, port, rk, token, parts=None):
     """Restore an item's PART-level audio/subtitle selection to its declared default -- subtitles
     OFF (`subtitleStreamID=0`) and audio on its server-selected/default/first track -- via the
     same `PUT /library/parts/<id>?...&allParts=1` shape the app itself sends from a live pick
-    (`Client::select_streams`, rust-modules/src/plex/library.rs; docs/pms-api.md "track
+    (`Client::select_streams`, rust-modules/plex/src/plex/library.rs; docs/pms-api.md "track
     switching"). Selection is server state that PMS keeps until something else changes it: a
     crashed run's live subtitle pick (or a case that deliberately switches one) otherwise
     persists past that run and becomes the NEXT run's silent starting state, for the TEST

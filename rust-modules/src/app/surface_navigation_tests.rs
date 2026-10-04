@@ -11,8 +11,8 @@ use super::test_support::{frame, every_route};
 
 #[test]
 fn content_instances_compare_item_identity_and_keep_distinct_entries() {
-    let a = AppArg::Content(ContentArg::Detail { sid: crate::plex::ServerId::UNSET, rk: "1001".into() });
-    let b = AppArg::Content(ContentArg::Detail { sid: crate::plex::ServerId::UNSET, rk: "1002".into() });
+    let a = AppArg::Content(ContentArg::Detail { sid: plx_plex::plex::ServerId::UNSET, rk: "1001".into() });
+    let b = AppArg::Content(ContentArg::Detail { sid: plx_plex::plex::ServerId::UNSET, rk: "1002".into() });
     assert_eq!(a.id(), b.id());
     assert!(!a.same_instance(&b));
     assert!(a.same_instance(&a.clone()));
@@ -1107,7 +1107,7 @@ fn a_second_open_of_the_pending_detail_page_leaves_no_seed_behind() {
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     for i in 1..20u32 { super::frame(&mut d, &mut rig, tick(i * 16), vec![]); }
-    let sid = crate::plex::ServerId::UNSET;
+    let sid = plx_plex::plex::ServerId::UNSET;
     open_detail(&mut d, &mut rig, sid, "1001", Some(1), None);
     super::frame(&mut d, &mut rig, tick(400), vec![]);
     assert!(

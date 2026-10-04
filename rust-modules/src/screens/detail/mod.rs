@@ -25,7 +25,7 @@ mod identity_tests;
 
 use crate::metadata::{Detail, Extra, Spot};
 use crate::screens::registry::PlayIntent;
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use crate::stores::metadata::MetadataCmd;
 use crate::stores::viewstate::ViewStateCmd;
 use crate::stores::{StoreCmd, StoreId};
@@ -706,7 +706,7 @@ impl DetailScreen {
 
     fn detail<'a>(&self, meta: crate::metadata::MetadataView<'a>) -> Option<&'a Detail> {
         meta.current().filter(|d| {
-            crate::plex::same_item((d.sid, d.rk.as_str()), (self.sid, self.rk.as_str()))
+            plx_plex::plex::same_item((d.sid, d.rk.as_str()), (self.sid, self.rk.as_str()))
         })
     }
 

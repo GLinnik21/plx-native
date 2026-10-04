@@ -61,7 +61,7 @@ fn signed_out_root_does_not_offer_automatically_sign_in() {
         "signed out, About is a document push"
     );
     assert_eq!(name(&s), word::LEGAL);
-    assert!(!crate::plex::session::peek().auto_sign_in());
+    assert!(!plx_plex::plex::session::peek().auto_sign_in());
 }
 
 #[test]
@@ -98,12 +98,12 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
     );
     assert_eq!(s.inner.depth(), 1);
     assert!(
-        crate::plex::session::peek().auto_sign_in(),
+        plx_plex::plex::session::peek().auto_sign_in(),
         "the queued switch is durable after the worker completes"
     );
     step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
     plx_base::storage_worker::drain_for_test();
-    assert!(!crate::plex::session::peek().auto_sign_in());
+    assert!(!plx_plex::plex::session::peek().auto_sign_in());
     assert_eq!(s.inner.depth(), 1);
 }
 
@@ -145,7 +145,7 @@ fn right_on_automatically_sign_in_does_not_push() {
     });
     let _ = step(&mut s, right, Some(row));
     assert_eq!(s.inner.depth(), 1, "RIGHT on a switch is not rule 8");
-    assert!(!crate::plex::session::peek().auto_sign_in());
+    assert!(!plx_plex::plex::session::peek().auto_sign_in());
     assert_eq!(name(&s), word::SETTINGS);
 }
 
@@ -549,11 +549,11 @@ fn the_logical_state_follows_the_inner_stack() {
 fn session_refresh_rebuilds_root_without_navigation() {
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-session-refresh");
-    let saved = crate::plex::session::peek();
-    crate::plex::session::install_transient_for_test(true);
+    let saved = plx_plex::plex::session::peek();
+    plx_plex::plex::session::install_transient_for_test(true);
     let mut root = RootPage::new(EntryId(0), cx(None).views);
     assert!(!root.form.index_of(&RootId::AutoSignIn).is_some());
-    crate::plex::session::save(&saved.with_auto_sign_in(true));
+    plx_plex::plex::session::save(&saved.with_auto_sign_in(true));
     let mut out = Vec::new();
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
@@ -567,13 +567,13 @@ fn session_refresh_rebuilds_root_without_navigation() {
 fn session_refresh_keeps_optimistic_setting_through_transient_completion() {
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-pending-refresh");
-    let saved = crate::plex::session::peek();
+    let saved = plx_plex::plex::session::peek();
     let mut root = RootPage::new(EntryId(0), cx(None).views);
     let ticket = plx_base::storage_worker::submit_retained(|| false);
     plx_base::storage_worker::drain_for_test();
     root.pending_auto = Some((true, ticket));
     root.rebuild(cx(None).views);
-    crate::plex::session::install_transient_for_test(false);
+    plx_plex::plex::session::install_transient_for_test(false);
     let mut out = Vec::new();
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
@@ -581,7 +581,7 @@ fn session_refresh_keeps_optimistic_setting_through_transient_completion() {
     assert!(root.state.auto_sign_in, "transient completion must not erase the optimistic value");
     assert!(root.form.index_of(&RootId::AutoSignIn).is_some(),
         "transient storage must not remove the pending toggle");
-    crate::plex::session::save(&saved);
+    plx_plex::plex::session::save(&saved);
     root.step(&ScreenEvent::Tick(Tick::default()), &cx(None), &mut fx);
     assert!(!root.state.auto_sign_in, "settled authority resolves the refused write");
     assert!(root.pending_auto.is_none());
@@ -593,23 +593,23 @@ fn session_refresh_keeps_optimistic_setting_through_transient_completion() {
 /// revocation, so the next discovery keeps the server tokenless.
 #[test]
 fn the_unencrypted_connection_switch_shows_the_grant_and_revokes_it_at_once() {
-    use crate::plex::session::PlaintextChoice;
+    use plx_plex::plex::session::PlaintextChoice;
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-plaintext-switch");
-    crate::plex::reset_servers_for_test();
-    crate::plex::grant::reset_for_test();
-    let account = crate::plex::grant::account_key(&crate::plex::session::peek().account_token);
+    plx_plex::plex::reset_servers_for_test();
+    plx_plex::plex::grant::reset_for_test();
+    let account = plx_plex::plex::grant::account_key(&plx_plex::plex::session::peek().account_token);
     assert!(!account.is_empty(), "the fixture session is signed in");
-    let mut saved = crate::plex::session::peek().with_plaintext_choice(&account, "lan-machine", PlaintextChoice::Allowed);
-    saved.sources.push(crate::plex::session::SourceRef {
+    let mut saved = plx_plex::plex::session::peek().with_plaintext_choice(&account, "lan-machine", PlaintextChoice::Allowed);
+    saved.sources.push(plx_plex::plex::session::SourceRef {
         machine_id: "lan-machine".into(),
         name: "Basement".into(),
         ..Default::default()
     });
-    crate::plex::session::save(&saved);
-    let lan = crate::plex::Origin::http("192.168.0.10", 32400);
-    crate::plex::grant::mint(crate::plex::grant::scope(), "lan-machine", &lan,
-        &crate::plex::grant::eligible_evidence_for_test()).unwrap();
+    plx_plex::plex::session::save(&saved);
+    let lan = plx_plex::plex::Origin::http("192.168.0.10", 32400);
+    plx_plex::plex::grant::mint(plx_plex::plex::grant::scope(), "lan-machine", &lan,
+        &plx_plex::plex::grant::eligible_evidence_for_test()).unwrap();
 
     let mut root = RootPage::new(EntryId(0), cx(None).views);
     let row = root.form.index_of(&RootId::Plaintext(ServerMachineId("lan-machine".into())))
@@ -624,16 +624,16 @@ fn the_unencrypted_connection_switch_shows_the_grant_and_revokes_it_at_once() {
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
     root.activate(root.form.key_at(row).unwrap().0, cx(None).views, &mut fx);
-    assert_eq!(crate::plex::grant::granted_origin("lan-machine"), None, "revoked before the write lands");
-    assert!(!crate::plex::grant::allowed_under(crate::plex::CredentialPolicy::HttpsOnly, &lan));
+    assert_eq!(plx_plex::plex::grant::granted_origin("lan-machine"), None, "revoked before the write lands");
+    assert!(!plx_plex::plex::grant::allowed_under(plx_plex::plex::CredentialPolicy::HttpsOnly, &lan));
     assert_eq!(root.state.plaintext, vec![false], "the switch shows the answer optimistically");
     let drawn = root.form.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
     assert_eq!(drawn.toggle, Some(false));
     assert_eq!(drawn.detail, "Not allowed. Only encrypted connections.");
     plx_base::storage_worker::drain_for_test();
-    assert_eq!(crate::plex::session::peek().plaintext_choice(&account, "lan-machine"), PlaintextChoice::Revoked);
-    crate::plex::grant::reset_for_test();
-    crate::plex::reset_servers_for_test();
+    assert_eq!(plx_plex::plex::session::peek().plaintext_choice(&account, "lan-machine"), PlaintextChoice::Revoked);
+    plx_plex::plex::grant::reset_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// Nobody was ever asked, so there is nothing to turn off: no section at all.
@@ -653,14 +653,14 @@ fn no_unencrypted_connection_section_without_an_answer() {
 /// its *Connect* sends the answer (Allowed, re-finding the server), shown on at once.
 #[test]
 fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
-    use crate::plex::session::PlaintextChoice;
+    use plx_plex::plex::session::PlaintextChoice;
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-plaintext-ask");
-    crate::plex::reset_servers_for_test();
-    crate::plex::grant::reset_for_test();
-    crate::plex::grant::offered(crate::plex::grant::scope(), crate::plex::grant::PlaintextVerdict {
+    plx_plex::plex::reset_servers_for_test();
+    plx_plex::plex::grant::reset_for_test();
+    plx_plex::plex::grant::offered(plx_plex::plex::grant::scope(), plx_plex::plex::grant::PlaintextVerdict {
         machine_id: "lan-machine".into(), name: "Basement".into(), shared_by: String::new(),
-        eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided,
+        eligibility: plx_plex::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided,
     });
     let mut root = RootPage::new(EntryId(0), cx(None).views);
     let row = root.form.index_of(&RootId::Plaintext(ServerMachineId("lan-machine".into())))
@@ -676,7 +676,7 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
     root.activate(root.form.key_at(row).unwrap().0, cx(None).views, &mut fx);
     assert!(root.alert.is_open(), "ON asks before anything is recorded");
     assert_eq!(root.state.plaintext, vec![false]);
-    assert!(crate::plex::grant::choices(&[], &crate::plex::session::peek().account_token).is_empty(),
+    assert!(plx_plex::plex::grant::choices(&[], &plx_plex::plex::session::peek().account_token).is_empty(),
         "nothing is recorded yet");
     let mut groups = Vec::new();
     Focusable::<InnerHost>::groups(&root, &cx(None), &mut groups);
@@ -698,8 +698,8 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
     assert_eq!(answers, [PlaintextChoice::Allowed]);
     assert!(!root.alert.is_open());
     assert_eq!(root.state.plaintext, vec![true], "the switch shows the answer optimistically");
-    crate::plex::grant::reset_for_test();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::grant::reset_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 fn inputs_for(signed_in: bool) -> RootInputs {

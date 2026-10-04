@@ -601,8 +601,8 @@ fn support_line_of(i: &plx_platform::tv::device::Info, hw: &plx_platform::tv::de
     let set: &str = if set.is_empty() { plx_platform::i18n::msg::settings_login_unknown_device() } else { &set };
     format!(
         "{} {} · {} · {} · {}",
-        crate::plex::identity::PRODUCT,
-        crate::plex::identity::VERSION,
+        plx_plex::plex::identity::PRODUCT,
+        plx_plex::plex::identity::version(),
         plx_platform::i18n::webos_release_line(i),
         set,
         kind.code()
@@ -909,11 +909,11 @@ fn jail_error_shape() -> ErrorShape {
 fn error_shape(
     no_video: bool,
     transcoding: bool,
-    sub: crate::plex::serverinfo::Subscription,
+    sub: plx_plex::plex::serverinfo::Subscription,
     verdict: Option<&str>,
     runtime: RuntimeFailure,
 ) -> ErrorShape {
-    let no_pass = sub == crate::plex::serverinfo::Subscription::No;
+    let no_pass = sub == plx_plex::plex::serverinfo::Subscription::No;
     // FIRST, because it is the earliest thing that can fail and the most certain thing we can say:
     // the server adjudicated the request at `/decision` and refused BOTH lanes before any of the
     // signals below could exist (no engine ran, so `no_video` is simply false here). The two lines
@@ -1026,8 +1026,8 @@ fn error_shape(
 /// `Error` (the plan's own refusal and the engine it would otherwise have started).
 ///
 /// MAIN THREAD, like every other reader of `route`'s playback state.
-fn playing_subscription(ps: &crate::route::PlaybackSession) -> crate::plex::serverinfo::Subscription {
-    crate::plex::serverinfo::subscription_of(crate::route::cur_sid(ps))
+fn playing_subscription(ps: &crate::route::PlaybackSession) -> plx_plex::plex::serverinfo::Subscription {
+    plx_plex::plex::serverinfo::subscription_of(crate::route::cur_sid(ps))
 }
 
 /// Keep the runtime diagnosis while making the active override and its recovery path visible.
@@ -1592,8 +1592,8 @@ static SUBTITLE_TONE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8:
 
 /// The selected tone. Read once a frame by the two subtitle draws (`appkit::player_hud`) and by the
 /// track menu for its checkmark.
-pub(crate) fn subtitle_tone() -> crate::plex::session::SubtitleTone {
-    crate::plex::session::SubtitleTone::from_index(SUBTITLE_TONE.load(Relaxed))
+pub(crate) fn subtitle_tone() -> plx_plex::plex::session::SubtitleTone {
+    plx_plex::plex::session::SubtitleTone::from_index(SUBTITLE_TONE.load(Relaxed))
 }
 
 /// The viewer's subtitle timing offset in MILLISECONDS — positive draws every client-rendered cue
@@ -1706,9 +1706,9 @@ const ENH_BOOST_DIALOG: u8 = 1;
 const ENH_NORMALIZE_LOUDNESS: u8 = 2;
 
 /// The current preference (see [`AUDIO_ENHANCEMENTS`]).
-pub(crate) fn audio_enhancements() -> crate::plex::AudioEnhancements {
+pub(crate) fn audio_enhancements() -> plx_plex::plex::AudioEnhancements {
     let bits = AUDIO_ENHANCEMENTS.load(Relaxed);
-    crate::plex::AudioEnhancements {
+    plx_plex::plex::AudioEnhancements {
         boost_dialog: bits & ENH_BOOST_DIALOG != 0,
         normalize_loudness: bits & ENH_NORMALIZE_LOUDNESS != 0,
     }
@@ -1716,7 +1716,7 @@ pub(crate) fn audio_enhancements() -> crate::plex::AudioEnhancements {
 
 /// Restore the persisted preference without writing it back — boot and the credentials handoff,
 /// the same two places [`restore_subtitle_tone`] is called from.
-pub(crate) fn restore_audio_enhancements(a: crate::plex::AudioEnhancements) {
+pub(crate) fn restore_audio_enhancements(a: plx_plex::plex::AudioEnhancements) {
     let bits = if a.boost_dialog { ENH_BOOST_DIALOG } else { 0 }
         | if a.normalize_loudness { ENH_NORMALIZE_LOUDNESS } else { 0 };
     AUDIO_ENHANCEMENTS.store(bits, Relaxed);
@@ -1724,7 +1724,7 @@ pub(crate) fn restore_audio_enhancements(a: crate::plex::AudioEnhancements) {
 
 /// Select a preference on the main thread and retain its persistence for the shared storage
 /// worker, exactly as [`set_subtitle_tone`] does.
-pub(crate) fn set_audio_enhancements(a: crate::plex::AudioEnhancements) {
+pub(crate) fn set_audio_enhancements(a: plx_plex::plex::AudioEnhancements) {
     restore_audio_enhancements(a);
     persist_audio_enhancements(a);
 }
@@ -1732,29 +1732,29 @@ pub(crate) fn set_audio_enhancements(a: crate::plex::AudioEnhancements) {
 /// **The Audio tab's toggle rows land here** (issue #266): persist the preference, then bring the
 /// playing route in line with it. The reconcile itself defers behind a pending Original trial, so
 /// a toggle during one applies to whichever route that trial settles on.
-pub(crate) fn request_audio_enhancement(ps: &mut crate::route::PlaybackSession, a: crate::plex::AudioEnhancements) {
+pub(crate) fn request_audio_enhancement(ps: &mut crate::route::PlaybackSession, a: plx_plex::plex::AudioEnhancements) {
     set_audio_enhancements(a);
     crate::route::reconcile_enhancement(ps, false);
     // the rows' checkmarks move on this — see `route::persist_quality_choice`
     plx_machine::idle::invalidate();
 }
 
-fn persist_audio_enhancements(a: crate::plex::AudioEnhancements) {
-    let _ = plx_base::storage_worker::submit_retained(move || crate::plex::session::set_audio_enhancements(a));
+fn persist_audio_enhancements(a: plx_plex::plex::AudioEnhancements) {
+    let _ = plx_base::storage_worker::submit_retained(move || plx_plex::plex::session::set_audio_enhancements(a));
 }
 
 /// Restore the persisted preference without writing it back (boot, and the credentials handoff
 /// after a fresh sign-in — the two places `route::restore_quality` is called from).
-pub(crate) fn restore_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
+pub(crate) fn restore_subtitle_tone(tone: plx_plex::plex::session::SubtitleTone) {
     SUBTITLE_TONE.store(tone.index(), Relaxed);
 }
 
 /// Select a tone on the main thread and retain its persistence work for the shared worker.
 /// Takes effect on the next drawn frame —
 /// the draws read the atomic — so there is nothing to reload and no cue store to touch.
-pub(crate) fn set_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
+pub(crate) fn set_subtitle_tone(tone: plx_plex::plex::session::SubtitleTone) {
     SUBTITLE_TONE.store(tone.index(), Relaxed);
-    let _ = plx_base::storage_worker::submit_retained(move || crate::plex::session::set_subtitle_tone(tone));
+    let _ = plx_base::storage_worker::submit_retained(move || plx_plex::plex::session::set_subtitle_tone(tone));
     // the picker's checkmark moves on this — see `route::persist_quality_choice`
     plx_machine::idle::invalidate();
 }
@@ -2330,7 +2330,7 @@ pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
 #[cfg(test)]
 pub(crate) fn failtest_policy_shape_for_test(verdict: &str) -> ErrorShape {
     with_forced_playback_context(
-        error_shape(false, false, crate::plex::serverinfo::Subscription::Yes, Some(verdict), RuntimeFailure::Unknown),
+        error_shape(false, false, plx_plex::plex::serverinfo::Subscription::Yes, Some(verdict), RuntimeFailure::Unknown),
         true,
     )
 }
@@ -2369,7 +2369,7 @@ mod tests {
 
     #[test]
     fn forced_runtime_failures_keep_the_cause_and_explain_how_to_leave_force() {
-        use crate::plex::serverinfo::Subscription as Sub;
+        use plx_plex::plex::serverinfo::Subscription as Sub;
         for runtime in [RuntimeFailure::Unknown, RuntimeFailure::MediaSource,
             RuntimeFailure::PlaybackInterrupted, RuntimeFailure::TvPipeline, RuntimeFailure::LoadTimeout] {
             let normal = error_shape(false, false, Sub::No, None, runtime);
@@ -2388,7 +2388,7 @@ mod tests {
 
     #[test]
     fn forced_policy_refusal_does_not_claim_the_server_cannot_convert() {
-        use crate::plex::serverinfo::Subscription as Sub;
+        use plx_plex::plex::serverinfo::Subscription as Sub;
         let reason = "Force Direct Play is on, and this audio format can’t play without conversion.";
         let forced = with_forced_playback_context(
             error_shape(false, false, Sub::No, Some(reason), RuntimeFailure::Unknown), true);
@@ -2625,7 +2625,7 @@ mod tests {
             line,
             format!(
                 "PlxNative {} · webOS 4.10.2 · 43LM6300PVB · m3r · tv_pipeline",
-                crate::plex::identity::VERSION
+                plx_plex::plex::identity::version()
             )
         );
         let bare = support_line_of(
@@ -2929,7 +2929,7 @@ mod tests {
     /// (default-false) flags.
     #[test]
     fn an_audio_only_stream_is_blamed_on_whoever_sent_it() {
-        use crate::plex::serverinfo::Subscription as Sub;
+        use plx_plex::plex::serverinfo::Subscription as Sub;
         // transcode on a known-free server: the Pass appears as a parenthetical fact on the
         // panel, as the capsule flag for the read-out…
         let e = error_shape(true, true, Sub::No, None, RuntimeFailure::Unknown);
@@ -3022,7 +3022,7 @@ mod tests {
     /// back into the unhelpful bare "Playback failed" screen.
     #[test]
     fn runtime_failures_fill_the_existing_readout_reason_slot() {
-        use crate::plex::serverinfo::Subscription as Sub;
+        use plx_plex::plex::serverinfo::Subscription as Sub;
         let cases = [
             (
                 (true, false, false, false),
@@ -3108,7 +3108,7 @@ mod tests {
     /// answered), not the refusal's "rejected".
     #[test]
     fn load_timeout_has_its_own_wording_distinct_from_an_ordinary_tv_refusal() {
-        use crate::plex::serverinfo::Subscription as Sub;
+        use plx_plex::plex::serverinfo::Subscription as Sub;
         let refused = error_shape(false, false, Sub::Unknown, None, RuntimeFailure::TvPipeline);
         let timed_out = error_shape(false, false, Sub::Unknown, None, RuntimeFailure::LoadTimeout);
         assert_ne!(
@@ -3145,7 +3145,7 @@ mod tests {
     /// `no_video` from a previous session must not re-word a refusal.
     #[test]
     fn a_refused_decision_quotes_the_server_and_never_names_a_subscription() {
-        use crate::plex::serverinfo::Subscription as Sub;
+        use plx_plex::plex::serverinfo::Subscription as Sub;
         const VP9: &str =
             "Cannot convert this item. Implementation for video encoder 'vp9' not found.";
         for sub in [Sub::Unknown, Sub::No, Sub::Yes] {
@@ -3224,22 +3224,22 @@ mod tests {
     #[test]
     fn the_failure_read_out_states_the_playing_items_server_not_the_current_one() {
         let mut ps = crate::route::PlaybackSession::IDLE;
-        use crate::plex::serverinfo::{store_for_test, Subscription as Sub};
+        use plx_plex::plex::serverinfo::{store_for_test, Subscription as Sub};
         struct Fresh {
             _g: plx_base::testlock::Serial,
         }
         impl Drop for Fresh {
             fn drop(&mut self) {
-                crate::plex::reset_servers_for_test();
+                plx_plex::plex::reset_servers_for_test();
             }
         }
         let g = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         let _fresh = Fresh { _g: g };
-        crate::route::swap_cur_sid_for_test(&mut ps, crate::plex::ServerId::UNSET);
+        crate::route::swap_cur_sid_for_test(&mut ps, plx_plex::plex::ServerId::UNSET);
 
         let reg =
-            |m: &str, host: &str| crate::plex::register_for_test(m, host, 32400, "tok", "cid");
+            |m: &str, host: &str| plx_plex::plex::register_for_test(m, host, 32400, "tok", "cid");
         let (ours, theirs) = (reg("mach-A", "10.0.0.1"), reg("mach-B", "10.0.0.2"));
         // the slot arrays outlive `reset_servers_for_test` — start from the boot state explicitly
         store_for_test(ours, Sub::Unknown, "");
@@ -3248,7 +3248,7 @@ mod tests {
         store_for_test(ours, Sub::Yes, "1.43.3.10861-cd85035e7");
         store_for_test(theirs, Sub::No, "1.32.0.6918-free");
         // …and browsing a share does NOT re-point `current`, which is the whole trap
-        assert!(crate::plex::set_current(ours));
+        assert!(plx_plex::plex::set_current(ours));
 
         crate::route::swap_cur_sid_for_test(&mut ps, theirs);
         assert_eq!(
@@ -3271,7 +3271,7 @@ mod tests {
         );
 
         // the inverse polarity: playing from OUR Pass'd server while `current` sits on the share
-        assert!(crate::plex::set_current(theirs));
+        assert!(plx_plex::plex::set_current(theirs));
         crate::route::swap_cur_sid_for_test(&mut ps, ours);
         assert_eq!(
             playing_subscription(&ps),
@@ -3292,7 +3292,7 @@ mod tests {
 
         // before the first play there is no playing server, and "we have not heard" is the honest
         // answer — never slot 0's, and never a blamed subscription
-        crate::route::swap_cur_sid_for_test(&mut ps, crate::plex::ServerId::UNSET);
+        crate::route::swap_cur_sid_for_test(&mut ps, plx_plex::plex::ServerId::UNSET);
         assert_eq!(playing_subscription(&ps), Sub::Unknown);
         assert!(
             !error_shape(

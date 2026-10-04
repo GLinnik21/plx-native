@@ -69,25 +69,25 @@ pub(crate) enum AppFx {
 /// A private live receipt. Requests contain account credentials and are intentionally unsupported
 /// by the controlled recorder/replay codec; the bridge must reject them before execution.
 pub(crate) struct AccountPreferenceReply {
-    pub request: Option<crate::plex::account::PreferenceRequest>,
-    pub outcome: Result<crate::plex::account::PreferenceSnapshot, crate::plex::account::PreferenceError>,
+    pub request: Option<plx_plex::plex::account::PreferenceRequest>,
+    pub outcome: Result<plx_plex::plex::account::PreferenceSnapshot, plx_plex::plex::account::PreferenceError>,
 }
 
 pub(crate) enum PreferenceCmd {
     /// Capture the live profile only after admission: even session::peek can schedule storage IO.
     Load { reply: std::sync::mpsc::Sender<AccountPreferenceReply> },
     Save {
-        request: crate::plex::account::PreferenceRequest,
-        base: crate::plex::account::PreferenceSnapshot,
-        update: crate::plex::account::PreferenceUpdate,
+        request: plx_plex::plex::account::PreferenceRequest,
+        base: plx_plex::plex::account::PreferenceSnapshot,
+        update: plx_plex::plex::account::PreferenceUpdate,
         reply: std::sync::mpsc::Sender<AccountPreferenceReply>,
     },
-    Quality { quality: crate::plex::session::PlaybackQuality, reply: std::sync::mpsc::Sender<bool> },
-    DirectPlay { mode: crate::plex::session::DirectPlayMode, reply: std::sync::mpsc::Sender<bool> },
-    NextEpisode { mode: crate::plex::session::NextEpisodeMode, reply: std::sync::mpsc::Sender<bool> },
-    SkipInterval { interval: crate::plex::session::SkipInterval, reply: std::sync::mpsc::Sender<bool> },
-    SubtitleSize { size: crate::plex::session::SubtitleSize, reply: std::sync::mpsc::Sender<bool> },
-    SubtitlePosition { position: crate::plex::session::SubtitlePosition, reply: std::sync::mpsc::Sender<bool> },
+    Quality { quality: plx_plex::plex::session::PlaybackQuality, reply: std::sync::mpsc::Sender<bool> },
+    DirectPlay { mode: plx_plex::plex::session::DirectPlayMode, reply: std::sync::mpsc::Sender<bool> },
+    NextEpisode { mode: plx_plex::plex::session::NextEpisodeMode, reply: std::sync::mpsc::Sender<bool> },
+    SkipInterval { interval: plx_plex::plex::session::SkipInterval, reply: std::sync::mpsc::Sender<bool> },
+    SubtitleSize { size: plx_plex::plex::session::SubtitleSize, reply: std::sync::mpsc::Sender<bool> },
+    SubtitlePosition { position: plx_plex::plex::session::SubtitlePosition, reply: std::sync::mpsc::Sender<bool> },
     Language { language: plx_platform::i18n::Preference, reply: std::sync::mpsc::Sender<bool> },
 }
 
@@ -122,7 +122,7 @@ pub(crate) enum PreferenceCmd {
 ///   the page being left is not one BACK can return to.
 pub(crate) struct ItemMenuReq {
     pub(crate) act: crate::screens::item_menu::Action,
-    pub(crate) sid: crate::plex::ServerId,
+    pub(crate) sid: plx_plex::plex::ServerId,
     pub(crate) item: Option<crate::pms::PmsMovie>,
     pub(crate) loaded_episode: bool,
     pub(crate) from_home: bool,
@@ -202,13 +202,13 @@ pub(crate) enum PlayerReq {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SearchReq {
     Back,
-    Detail { sid: crate::plex::ServerId, rk: String },
-    Person { sid: crate::plex::ServerId, key: String, guid: String, name: String, thumb: String },
-    ItemMenu { sid: crate::plex::ServerId, rk: String },
+    Detail { sid: plx_plex::plex::ServerId, rk: String },
+    Person { sid: plx_plex::plex::ServerId, key: String, guid: String, name: String, thumb: String },
+    ItemMenu { sid: plx_plex::plex::ServerId, rk: String },
     /// OK on a Collections-shelf hit. `rk` is the collection's ratingKey (empty for a tag-shaped
     /// hit from a server that ignored `includeCollections`), `tag` its tag id; both are checked
     /// against the retained selection before the route is built from it.
-    Collection { sid: crate::plex::ServerId, rk: String, tag: i64 },
+    Collection { sid: plx_plex::plex::ServerId, rk: String, tag: i64 },
     Tab(HomeTab),
     Account,
 }
@@ -216,9 +216,9 @@ pub(crate) enum SearchReq {
 /// Bounded actions emitted by the owned Home page. Item identity is always server-scoped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HomeReq {
-    Play { sid: crate::plex::ServerId, rk: String, resume_ns: i64 },
-    Detail { sid: crate::plex::ServerId, rk: String },
-    ItemMenu { sid: crate::plex::ServerId, rk: String },
+    Play { sid: plx_plex::plex::ServerId, rk: String, resume_ns: i64 },
+    Detail { sid: plx_plex::plex::ServerId, rk: String },
+    ItemMenu { sid: plx_plex::plex::ServerId, rk: String },
     /// BACK from the shelves: fold to the hero and seat the engine in its remembered hero group.
     FoldToHero,
     Account,
@@ -256,9 +256,9 @@ pub(crate) enum LibraryReq {
     /// Evaluated after dispatch by the application, where the input owner can report a live arm.
     PublishShelves { target: crate::stores::browse::SectionAddress, hidden_page: bool, at_head: bool },
     Menu { kind: LibraryMenuKind, anchor: [u32; 4], target: crate::stores::browse::SectionAddress },
-    Play { sid: crate::plex::ServerId, rk: String, resume_ns: i64 },
-    Detail { sid: crate::plex::ServerId, rk: String },
-    ItemMenu { sid: crate::plex::ServerId, rk: String, from_deck: bool },
+    Play { sid: plx_plex::plex::ServerId, rk: String, resume_ns: i64 },
+    Detail { sid: plx_plex::plex::ServerId, rk: String },
+    ItemMenu { sid: plx_plex::plex::ServerId, rk: String, from_deck: bool },
     Account,
     Tab(HomeTab),
     BackToHome { kind: crate::stores::browse::SecKind },
@@ -300,7 +300,7 @@ impl plx_machine::machine::LogicalState for LibraryMenuArg {
 #[derive(Clone)]
 pub(crate) struct ItemMenuArg {
     /// The server every action's ratingKey names — see [`ItemMenuReq`].
-    pub(crate) sid: crate::plex::ServerId,
+    pub(crate) sid: plx_plex::plex::ServerId,
     /// The item the menu is about. For a card it is the row's own key, repeated here so the
     /// identity questions (`same_instance`, the canonical hash) need not look inside the row.
     pub(crate) rk: String,
@@ -412,7 +412,7 @@ pub(crate) enum LibraryCmd {
 /// Stable section identity. PMS section keys are server-local, never globally unique.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct LibrarySectionIdentity {
-    pub(crate) sid: crate::plex::ServerId,
+    pub(crate) sid: plx_plex::plex::ServerId,
     pub(crate) key: i64,
 }
 
@@ -424,7 +424,7 @@ pub(crate) enum LibraryIdentity {
     Shelf {
         section: LibrarySectionIdentity,
         hub: String,
-        sid: crate::plex::ServerId,
+        sid: plx_plex::plex::ServerId,
         rk: String,
     },
     ShelfSlot {
@@ -435,7 +435,7 @@ pub(crate) enum LibraryIdentity {
     },
     Grid {
         section: LibrarySectionIdentity,
-        sid: crate::plex::ServerId,
+        sid: plx_plex::plex::ServerId,
         rk: String,
     },
     GridSlot {
@@ -500,14 +500,14 @@ pub(crate) use crate::stores::ContentArg;
 pub(crate) enum DetailIdentity {
     /// A published placeholder with no server-side identity yet; never equal to a landed item.
     Slot(u32),
-    Season { sid: crate::plex::ServerId, show: String, rk: String },
-    Episode { sid: crate::plex::ServerId, rk: String, text: bool },
-    Related { sid: crate::plex::ServerId, rk: String },
-    Cast { sid: crate::plex::ServerId, key: String, guid: String, name: String, role: String },
-    Extra { sid: crate::plex::ServerId, rk: String },
+    Season { sid: plx_plex::plex::ServerId, show: String, rk: String },
+    Episode { sid: plx_plex::plex::ServerId, rk: String, text: bool },
+    Related { sid: plx_plex::plex::ServerId, rk: String },
+    Cast { sid: plx_plex::plex::ServerId, key: String, guid: String, name: String, role: String },
+    Extra { sid: plx_plex::plex::ServerId, rk: String },
     /// A card of the collection shelf. Its own variant rather than `Related`: the two shelves are
     /// different rows, and a movie that moves between them across a refetch is a different card.
-    CollectionMember { sid: crate::plex::ServerId, rk: String },
+    CollectionMember { sid: plx_plex::plex::ServerId, rk: String },
 }
 
 #[derive(Clone, Debug)]
@@ -525,7 +525,7 @@ pub(crate) struct DetailMemory {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CardIdentity {
-    pub(crate) sid: crate::plex::ServerId,
+    pub(crate) sid: plx_plex::plex::ServerId,
     pub(crate) rk: String,
     pub(crate) elem: u32,
 }
@@ -546,7 +546,7 @@ impl CardKeys {
 
     /// The element `(sid, rk)` owns, interning a fresh one on first sight. `page` names the page
     /// in the exhaustion panic.
-    pub(crate) fn intern(&mut self, sid: crate::plex::ServerId, rk: &str, page: &str) -> u32 {
+    pub(crate) fn intern(&mut self, sid: plx_plex::plex::ServerId, rk: &str, page: &str) -> u32 {
         if let Some(elem) = self.elem_for(sid, rk) { return elem; }
         let elem = self.next;
         self.next = elem.checked_add(1).unwrap_or_else(|| panic!("{page} element-key space exhausted"));
@@ -558,8 +558,8 @@ impl CardKeys {
     /// found through one index built for the pass, so a page landing costs O(cards + keys)
     /// rather than a scan of every key per card.
     pub(crate) fn intern_all<'a>(&mut self,
-        cards: impl Iterator<Item = (crate::plex::ServerId, &'a str)>, page: &str) -> Vec<u32> {
-        let mut known: std::collections::HashMap<(crate::plex::ServerId, String), u32> =
+        cards: impl Iterator<Item = (plx_plex::plex::ServerId, &'a str)>, page: &str) -> Vec<u32> {
+        let mut known: std::collections::HashMap<(plx_plex::plex::ServerId, String), u32> =
             self.keys.iter().map(|k| ((k.sid, k.rk.clone()), k.elem)).collect();
         cards.map(|(sid, rk)| {
             if let Some(&elem) = known.get(&(sid, rk.to_string())) { return elem; }
@@ -583,8 +583,8 @@ impl CardKeys {
         self.next = self.next.max(saved.next).max(after).max(first);
     }
 
-    pub(crate) fn elem_for(&self, sid: crate::plex::ServerId, rk: &str) -> Option<u32> {
-        self.keys.iter().find(|k| crate::plex::same_item((k.sid, k.rk.as_str()), (sid, rk))).map(|k| k.elem)
+    pub(crate) fn elem_for(&self, sid: plx_plex::plex::ServerId, rk: &str) -> Option<u32> {
+        self.keys.iter().find(|k| plx_plex::plex::same_item((k.sid, k.rk.as_str()), (sid, rk))).map(|k| k.elem)
     }
 
     /// The identity that owns `elem`.
@@ -647,8 +647,8 @@ pub(crate) struct FilmographyMemory {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HomeHubIdentity {
     ContinueWatching,
-    Identifier { sid: crate::plex::ServerId, id: String, key: String },
-    Key { sid: crate::plex::ServerId, key: String },
+    Identifier { sid: plx_plex::plex::ServerId, id: String, key: String },
+    Key { sid: plx_plex::plex::ServerId, key: String },
     Ephemeral { generation: u32, ordinal: u32 },
 }
 
@@ -660,7 +660,7 @@ pub(crate) struct HomeGroupKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HomeItemIdentity {
-    Item { hub: HomeHubIdentity, sid: crate::plex::ServerId, rk: String },
+    Item { hub: HomeHubIdentity, sid: plx_plex::plex::ServerId, rk: String },
     Slot { hub: HomeHubIdentity, generation: u32, ordinal: u32 },
 }
 
@@ -680,7 +680,7 @@ pub(crate) struct HomeMemory {
     pub(crate) items: Vec<HomeItemKey>,
     pub(crate) next_group: u32,
     pub(crate) next_elem: u32,
-    pub(crate) carousel: Option<(crate::plex::ServerId, String)>,
+    pub(crate) carousel: Option<(plx_plex::plex::ServerId, String)>,
     pub(crate) strip_chosen: bool,
     pub(crate) scroll_y: f32,
     /// Stable group keys, not row ordinals: provider reorder must not transfer a viewport.
@@ -836,7 +836,7 @@ pub(crate) enum ContentReq {
     Play { play: PlayIntent, resume_ns: i64 },
     /// Start a hero preview. Does not push the player route.
     PreviewStart {
-        sid: crate::plex::ServerId,
+        sid: plx_plex::plex::ServerId,
         rk: String,
         part: String,
         vcodec: String,
@@ -920,7 +920,7 @@ impl ContentPanel {
     pub(crate) fn surface(
         self,
         host: plx_machine::machine::InstanceId,
-        subject: Option<(crate::plex::ServerId, &str)>,
+        subject: Option<(plx_plex::plex::ServerId, &str)>,
     ) -> Option<(plx_ui::containers::modal::Style, AppArg)> {
         use plx_ui::containers::modal::Style;
         Some(match self {
@@ -958,7 +958,7 @@ impl ContentPanel {
 pub(crate) enum PlayIntent {
     /// An item off this page's own metadata.
     Item {
-        sid: crate::plex::ServerId,
+        sid: plx_plex::plex::ServerId,
         rk: String,
         part: String,
         vcodec: String,
@@ -1651,7 +1651,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
 /// `ui::trail::Node` until phase 12, i.e. a whole history entry used as a carrier for its `Spot`.
 #[derive(Clone)]
 pub(crate) struct DetailSeed {
-    pub(crate) sid: crate::plex::ServerId,
+    pub(crate) sid: plx_plex::plex::ServerId,
     pub(crate) rk: String,
     pub(crate) spot: crate::metadata::Spot,
 }
@@ -1850,14 +1850,14 @@ pub(crate) fn every_surface_arg() -> Vec<AppArg> {
         AppArg::LibraryMenu(LibraryMenuArg {
             host: plx_machine::machine::InstanceId(1),
             target: crate::stores::browse::SectionAddress {
-                epoch: 0, sid: crate::plex::ServerId::UNSET, section: 0,
+                epoch: 0, sid: plx_plex::plex::ServerId::UNSET, section: 0,
             },
             kind: LibraryMenuKind::Sort,
             anchor: [0; 4],
         }),
         AppArg::AccountMenu,
         AppArg::ItemMenu(ItemMenuArg {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "1".into(),
             kind: ItemMenuKind::Card { row: Box::new(crate::pms::PmsMovie::default()), from_deck: false },
             host: EntryId(0),
@@ -1873,7 +1873,7 @@ pub(crate) fn every_surface_arg() -> Vec<AppArg> {
         // metadata store landing.
         AppArg::AltSources(crate::screens::alt_sources::AltSourcesArg {
             host: plx_machine::machine::InstanceId(1),
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "1".into(),
             anchor: [0; 4],
         }),
@@ -2137,14 +2137,14 @@ mod arg_tests {
         }
         for r in [
             AppArg::Content(crate::screens::registry::ContentArg::Detail {
-                sid: crate::plex::ServerId::UNSET, rk: String::new(),
+                sid: plx_plex::plex::ServerId::UNSET, rk: String::new(),
             }),
             AppArg::Content(crate::screens::registry::ContentArg::Person {
-                sid: crate::plex::ServerId::UNSET, key: String::new(), guid: String::new(),
+                sid: plx_plex::plex::ServerId::UNSET, key: String::new(), guid: String::new(),
                 name: String::new(), thumb: String::new(),
             }),
             AppArg::Content(crate::screens::registry::ContentArg::Collection(
-                crate::plex::collections::CollectionRef::by_tag(crate::plex::ServerId::UNSET, 0, 1, ""),
+                plx_plex::plex::collections::CollectionRef::by_tag(plx_plex::plex::ServerId::UNSET, 0, 1, ""),
             )),
             AppArg::Login,
             AppArg::Profiles,
@@ -2160,8 +2160,8 @@ mod arg_tests {
 
     #[test]
     fn collection_content_arg_has_the_pinned_canonical_field_order() {
-        let sid = crate::plex::ServerId::from_raw(7);
-        let arg = ContentArg::Collection(crate::plex::collections::CollectionRef {
+        let sid = plx_plex::plex::ServerId::from_raw(7);
+        let arg = ContentArg::Collection(plx_plex::plex::collections::CollectionRef {
             sid, rk: "50077".into(), sec: 8, tag: 77, name: "Fixture".into(),
         });
         let mut expected = Canon::new();
@@ -2171,8 +2171,8 @@ mod arg_tests {
 
     #[test]
     fn collection_identity_never_compares_a_tag_with_a_rating_key() {
-        let sid = crate::plex::ServerId::from_raw(2);
-        let by_rk = |rk: &str, tag| ContentArg::Collection(crate::plex::collections::CollectionRef {
+        let sid = plx_plex::plex::ServerId::from_raw(2);
+        let by_rk = |rk: &str, tag| ContentArg::Collection(plx_plex::plex::collections::CollectionRef {
             sid, rk: rk.into(), sec: 4, tag, name: "A".into(),
         });
         // The rule itself is `CollectionRef::same_collection`'s (graded in `plex::collections`);
@@ -2198,16 +2198,16 @@ mod arg_tests {
 
     #[test]
     fn collection_is_its_own_page_identity() {
-        let a = AppArg::Content(ContentArg::Collection(crate::plex::collections::CollectionRef {
-            sid: crate::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 1, name: "A".into(),
+        let a = AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef {
+            sid: plx_plex::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 1, name: "A".into(),
         }));
-        let b = AppArg::Content(ContentArg::Collection(crate::plex::collections::CollectionRef {
-            sid: crate::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 9, name: "Renamed".into(),
+        let b = AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef {
+            sid: plx_plex::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 9, name: "Renamed".into(),
         }));
         assert_eq!(a.id(), ScreenId(23));
         assert!(a.same_instance(&b));
         assert!(!a.same_instance(&AppArg::Content(ContentArg::Detail {
-            sid: crate::plex::ServerId::UNSET, rk: "50001".into(),
+            sid: plx_plex::plex::ServerId::UNSET, rk: "50001".into(),
         })));
     }
 }

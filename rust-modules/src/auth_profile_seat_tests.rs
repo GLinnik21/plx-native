@@ -9,12 +9,12 @@ use super::test_support::*;
 /// differing response uuid must not produce an entry the next pick cannot find.
 #[test]
 fn a_seated_profile_is_recorded_under_the_roster_uuid() {
-    let u = crate::plex::account::SwitchedUser {
+    let u = plx_plex::plex::account::SwitchedUser {
         uuid: String::new(),
         ..Default::default()
     };
     assert_eq!(seated_uuid(&u, &tile("u-kid", false)), "u-kid");
-    let u = crate::plex::account::SwitchedUser {
+    let u = plx_plex::plex::account::SwitchedUser {
         uuid: "u-other".into(),
         ..Default::default()
     };
@@ -221,19 +221,19 @@ fn a_rejected_pin_leaves_no_error_on_the_who_s_watching_roster() {
 /// reports that server reachable, winning it a [`SourceRef`] built the same way the fixtures
 /// build one.
 struct OnlineSwitchIo {
-    seated: crate::plex::account::SwitchedUser,
+    seated: plx_plex::plex::account::SwitchedUser,
     resource_token: String,
 }
 impl ProfileWorkIo for OnlineSwitchIo {
     fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
-        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+        SwitchOutcome::Switched(plx_plex::plex::account::SwitchedUser {
             id: self.seated.id,
             uuid: self.seated.uuid.clone(),
             title: self.seated.title.clone(),
             auth_token: self.seated.auth_token.clone(),
         })
     }
-    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> {
         Ok(vec![Resource {
             name: "ours".into(),
             client_identifier: "ours".into(),
@@ -249,8 +249,8 @@ impl ProfileWorkIo for OnlineSwitchIo {
         let address = Some(winner.address.clone());
         (Some(winner), settled_probe(&plan, Outcome::Reachable, None, address))
     }
-    fn admit(&mut self, _: &SourceRef, _: &str) -> crate::plex::EndpointAdmission {
-        crate::plex::EndpointAdmission::Usable
+    fn admit(&mut self, _: &SourceRef, _: &str) -> plx_plex::plex::EndpointAdmission {
+        plx_plex::plex::EndpointAdmission::Usable
     }
     fn gap(&mut self) {}
 }
@@ -274,12 +274,12 @@ impl owner::ObservationSink for CapturingSink {
 struct FailedFreshProbeIo;
 impl ProfileWorkIo for FailedFreshProbeIo {
     fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
-        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+        SwitchOutcome::Switched(plx_plex::plex::account::SwitchedUser {
             uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-account-token".into(),
             ..Default::default()
         })
     }
-    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> {
         Ok(vec![Resource { name: "ours".into(), client_identifier: "ours".into(),
             provides: "server".into(), owned: true, access_token: "fresh-kid-token".into(),
             ..Default::default() }])
@@ -288,7 +288,7 @@ impl ProfileWorkIo for FailedFreshProbeIo {
         let plan = probe::plan(resource, CredentialPolicy::build());
         (None, settled_probe(&plan, Outcome::Unreachable, None, None))
     }
-    fn admit(&mut self, _: &SourceRef, _: &str) -> crate::plex::EndpointAdmission {
+    fn admit(&mut self, _: &SourceRef, _: &str) -> plx_plex::plex::EndpointAdmission {
         panic!("a failed identity probe has no endpoint to authenticate")
     }
     fn gap(&mut self) {}
@@ -313,17 +313,17 @@ fn cached_dialable_address_with_a_failed_fresh_probe_never_reports_ready() {
 
 struct ScriptedAdmissionIo {
     servers: Vec<(&'static str, &'static str)>,
-    admissions: std::collections::VecDeque<crate::plex::EndpointAdmission>,
+    admissions: std::collections::VecDeque<plx_plex::plex::EndpointAdmission>,
     checked: Vec<(String, String)>,
 }
 impl ProfileWorkIo for ScriptedAdmissionIo {
     fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
-        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+        SwitchOutcome::Switched(plx_plex::plex::account::SwitchedUser {
             uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-account-token".into(),
             ..Default::default()
         })
     }
-    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> {
         Ok(self.servers.iter().enumerate().map(|(index, (machine_id, token))| Resource {
             name: format!("Server {}", index + 1), client_identifier: (*machine_id).into(),
             provides: "server".into(), owned: index == 0, access_token: (*token).into(),
@@ -341,7 +341,7 @@ impl ProfileWorkIo for ScriptedAdmissionIo {
         (Some(winner), settled_probe(&plan, Outcome::Reachable,
             Some(probe::Location::Local), address))
     }
-    fn admit(&mut self, source: &SourceRef, _: &str) -> crate::plex::EndpointAdmission {
+    fn admit(&mut self, source: &SourceRef, _: &str) -> plx_plex::plex::EndpointAdmission {
         self.checked.push((source.machine_id.clone(), source.token.clone()));
         self.admissions.pop_front().expect("one admission result per reached source")
     }
@@ -376,7 +376,7 @@ fn ready_primary(events: &[AuthProgress]) -> Option<&ServerRef> {
 #[test]
 fn identity_ok_but_authenticated_401_fails_with_server_refusal_wording_and_profile_token() {
     let mut io = ScriptedAdmissionIo { servers: vec![("ours", "fresh-kid-token")],
-        admissions: [crate::plex::EndpointAdmission::Refused(401)].into(), checked: Vec::new() };
+        admissions: [plx_plex::plex::EndpointAdmission::Refused(401)].into(), checked: Vec::new() };
     let events = run_scripted_admission(&mut io);
     let error = switch_failure_event(&events).expect("a refused profile token fails the switch");
     assert!(error.contains("refused Kid"));
@@ -386,7 +386,7 @@ fn identity_ok_but_authenticated_401_fails_with_server_refusal_wording_and_profi
 #[test]
 fn authenticated_sections_timeout_fails_instead_of_reporting_ready() {
     let mut io = ScriptedAdmissionIo { servers: vec![("ours", "fresh-kid-token")],
-        admissions: [crate::plex::EndpointAdmission::Timeout].into(), checked: Vec::new() };
+        admissions: [plx_plex::plex::EndpointAdmission::Timeout].into(), checked: Vec::new() };
     let events = run_scripted_admission(&mut io);
     assert_eq!(switch_failure_event(&events), Some("Couldn't switch profile — check the connection."));
     assert!(ready_primary(&events).is_none());
@@ -396,10 +396,10 @@ fn authenticated_sections_timeout_fails_instead_of_reporting_ready() {
 fn malformed_authenticated_sections_body_fails_instead_of_reporting_ready() {
     for body in [b"not json".as_slice(), b"{}".as_slice(), b"{\"MediaContainer\":null}".as_slice(),
         br#"{"error":"unauthorized"}"#.as_slice()] {
-        assert_eq!(crate::plex::endpoint_admission_from_reply(200, body),
-            crate::plex::EndpointAdmission::Malformed, "body={}", String::from_utf8_lossy(body));
+        assert_eq!(plx_plex::plex::endpoint_admission_from_reply(200, body),
+            plx_plex::plex::EndpointAdmission::Malformed, "body={}", String::from_utf8_lossy(body));
     }
-    let malformed = crate::plex::EndpointAdmission::Malformed;
+    let malformed = plx_plex::plex::EndpointAdmission::Malformed;
     let mut io = ScriptedAdmissionIo { servers: vec![("ours", "fresh-kid-token")],
         admissions: [malformed].into(), checked: Vec::new() };
     let events = run_scripted_admission(&mut io);
@@ -410,9 +410,9 @@ fn malformed_authenticated_sections_body_fails_instead_of_reporting_ready() {
 
 #[test]
 fn empty_valid_authenticated_sections_body_reports_ready() {
-    let empty = crate::plex::endpoint_admission_from_reply(200,
+    let empty = plx_plex::plex::endpoint_admission_from_reply(200,
         br#"{"MediaContainer":{"size":0,"Directory":[]}}"#);
-    assert_eq!(empty, crate::plex::EndpointAdmission::Usable);
+    assert_eq!(empty, plx_plex::plex::EndpointAdmission::Usable);
     let mut io = ScriptedAdmissionIo { servers: vec![("ours", "fresh-kid-token")],
         admissions: [empty].into(), checked: Vec::new() };
     let events = run_scripted_admission(&mut io);
@@ -421,17 +421,17 @@ fn empty_valid_authenticated_sections_body_reports_ready() {
 }
 
 struct MultiEndpointAdmissionIo {
-    admissions: std::collections::VecDeque<crate::plex::EndpointAdmission>,
+    admissions: std::collections::VecDeque<plx_plex::plex::EndpointAdmission>,
     checked: Vec<(String, String)>,
 }
 impl ProfileWorkIo for MultiEndpointAdmissionIo {
     fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
-        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+        SwitchOutcome::Switched(plx_plex::plex::account::SwitchedUser {
             uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-account-token".into(),
             ..Default::default()
         })
     }
-    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> {
         Ok(vec![Resource { name: "Server".into(), client_identifier: "ours".into(),
             provides: "server".into(), owned: true, access_token: "fresh-kid-token".into(),
             ..Default::default() }])
@@ -450,7 +450,7 @@ impl ProfileWorkIo for MultiEndpointAdmissionIo {
         (Some(winner), settled_probe(&plan, Outcome::Reachable,
             Some(probe::Location::Local), address))
     }
-    fn admit(&mut self, source: &SourceRef, _: &str) -> crate::plex::EndpointAdmission {
+    fn admit(&mut self, source: &SourceRef, _: &str) -> plx_plex::plex::EndpointAdmission {
         self.checked.push((source.origin_url.clone(), source.token.clone()));
         self.admissions.pop_front().unwrap()
     }
@@ -460,7 +460,7 @@ impl ProfileWorkIo for MultiEndpointAdmissionIo {
 #[test]
 fn refused_first_endpoint_then_authenticated_second_reports_ready_on_second() {
     let mut io = MultiEndpointAdmissionIo { admissions: [
-        crate::plex::EndpointAdmission::Refused(403), crate::plex::EndpointAdmission::Usable,
+        plx_plex::plex::EndpointAdmission::Refused(403), plx_plex::plex::EndpointAdmission::Usable,
     ].into(), checked: Vec::new() };
     let stored = cached_session(None);
     let expected = SessionIdentity::of(&stored);
@@ -479,12 +479,12 @@ fn refused_first_endpoint_then_authenticated_second_reports_ready_on_second() {
 struct ExpiredBudgetIo { probes: usize, admissions: usize }
 impl ProfileWorkIo for ExpiredBudgetIo {
     fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
-        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+        SwitchOutcome::Switched(plx_plex::plex::account::SwitchedUser {
             uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-account-token".into(),
             ..Default::default()
         })
     }
-    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> {
         Ok(vec![Resource { name: "Server".into(), client_identifier: "ours".into(),
             provides: "server".into(), owned: true, access_token: "fresh-kid-token".into(),
             ..Default::default() }])
@@ -497,9 +497,9 @@ impl ProfileWorkIo for ExpiredBudgetIo {
             Some(probe::Location::Local), Some(winner.address)))
     }
     fn admit_until(&mut self, _: &SourceRef, _: &str, _: Instant)
-        -> crate::plex::EndpointAdmission {
+        -> plx_plex::plex::EndpointAdmission {
         self.admissions += 1;
-        crate::plex::EndpointAdmission::Usable
+        plx_plex::plex::EndpointAdmission::Usable
     }
     fn admission_budget(&self) -> Duration { Duration::ZERO }
     fn gap(&mut self) {}
@@ -526,12 +526,12 @@ struct StalledLosingProbeIo {
 }
 impl ProfileWorkIo for StalledLosingProbeIo {
     fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
-        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+        SwitchOutcome::Switched(plx_plex::plex::account::SwitchedUser {
             uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-account-token".into(),
             ..Default::default()
         })
     }
-    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> {
         Ok(vec![Resource { name: "A".into(), client_identifier: "ours".into(),
             provides: "server".into(), owned: true, access_token: "fresh-kid-token".into(),
             ..Default::default() }])
@@ -550,12 +550,12 @@ impl ProfileWorkIo for StalledLosingProbeIo {
             Some(probe::Location::Local), Some(winner.address)))
     }
     fn admit_until(&mut self, _: &SourceRef, _: &str, deadline: Instant)
-        -> crate::plex::EndpointAdmission {
+        -> plx_plex::plex::EndpointAdmission {
         self.admission_deadline = Some(deadline);
         if self.probe_started.is_some_and(|started| deadline > started + Duration::from_millis(95)) {
-            crate::plex::EndpointAdmission::Usable
+            plx_plex::plex::EndpointAdmission::Usable
         } else {
-            crate::plex::EndpointAdmission::Timeout
+            plx_plex::plex::EndpointAdmission::Timeout
         }
     }
     fn admission_budget(&self) -> Duration { Duration::from_millis(100) }
@@ -582,12 +582,12 @@ struct LaterProbeBudgetIo {
 }
 impl ProfileWorkIo for LaterProbeBudgetIo {
     fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
-        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+        SwitchOutcome::Switched(plx_plex::plex::account::SwitchedUser {
             uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-account-token".into(),
             ..Default::default()
         })
     }
-    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> {
         Ok(vec![
             Resource { name: "A".into(), client_identifier: "a".into(), provides: "server".into(),
                 owned: true, access_token: "a-token".into(), ..Default::default() },
@@ -620,13 +620,13 @@ impl ProfileWorkIo for LaterProbeBudgetIo {
             Some(probe::Location::Relay), Some(winner.address))))
     }
     fn admit_until(&mut self, source: &SourceRef, _: &str, _: Instant)
-        -> crate::plex::EndpointAdmission {
+        -> plx_plex::plex::EndpointAdmission {
         self.admissions.push(source.machine_id.clone());
         if source.machine_id == "a" {
             std::thread::sleep(Duration::from_millis(45));
-            crate::plex::EndpointAdmission::Timeout
+            plx_plex::plex::EndpointAdmission::Timeout
         } else {
-            crate::plex::EndpointAdmission::Usable
+            plx_plex::plex::EndpointAdmission::Usable
         }
     }
     fn admission_budget(&self) -> Duration { Duration::from_millis(100) }
@@ -654,12 +654,12 @@ struct DiesDuringSecondaryIo {
 }
 impl ProfileWorkIo for DiesDuringSecondaryIo {
     fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
-        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+        SwitchOutcome::Switched(plx_plex::plex::account::SwitchedUser {
             uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-account-token".into(),
             ..Default::default()
         })
     }
-    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> {
         Ok(vec![
             Resource { name: "A".into(), client_identifier: "a".into(), provides: "server".into(),
                 owned: true, access_token: "a-token".into(), ..Default::default() },
@@ -677,9 +677,9 @@ impl ProfileWorkIo for DiesDuringSecondaryIo {
         (Some(winner.clone()), settled_probe(&plan, Outcome::Reachable, None,
             Some(winner.address)))
     }
-    fn admit(&mut self, source: &SourceRef, _: &str) -> crate::plex::EndpointAdmission {
+    fn admit(&mut self, source: &SourceRef, _: &str) -> plx_plex::plex::EndpointAdmission {
         assert_eq!(source.machine_id, "a", "secondary servers are not authenticated for liveness");
-        crate::plex::EndpointAdmission::Usable
+        plx_plex::plex::EndpointAdmission::Usable
     }
     fn gap(&mut self) {}
 }
@@ -718,12 +718,12 @@ fn dead_output_stops_after_the_post_ready_secondary_identity_probe() {
 struct UnavailableSecondaryIo;
 impl ProfileWorkIo for UnavailableSecondaryIo {
     fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
-        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+        SwitchOutcome::Switched(plx_plex::plex::account::SwitchedUser {
             uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-account-token".into(),
             ..Default::default()
         })
     }
-    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> {
         Ok(vec![
             Resource { name: "A".into(), client_identifier: "ours".into(), provides: "server".into(),
                 owned: true, access_token: "fresh-a-token".into(), ..Default::default() },
@@ -790,7 +790,7 @@ fn online_profile_switch_preserves_the_uuids_existing_cached_extensions() {
     let expected = SessionIdentity::of(&stored);
     let tile = UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() };
     let mut io = OnlineSwitchIo {
-        seated: crate::plex::account::SwitchedUser {
+        seated: plx_plex::plex::account::SwitchedUser {
             id: 0,
             uuid: "u-kid".into(),
             title: "Kid".into(),
@@ -828,7 +828,7 @@ fn online_profile_switch_keeps_managed_plex_tv_and_pms_tokens_separate() {
     let expected = SessionIdentity::of(&stored);
     let tile = UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() };
     let mut io = OnlineSwitchIo {
-        seated: crate::plex::account::SwitchedUser {
+        seated: plx_plex::plex::account::SwitchedUser {
             id: 27, uuid: "u-kid".into(), title: "Kid".into(),
             auth_token: "managed-plex-tv-token".into(),
         },

@@ -357,7 +357,7 @@ mod tests {
     fn controlled_content_records_preview_and_panel_payloads() {
         use crate::screens::registry::{AppFx, ContentPanel, ContentReq};
         use serde_json::json;
-        let sid = crate::plex::ServerId::from_raw(7);
+        let sid = plx_plex::plex::ServerId::from_raw(7);
         let cases = [
             (ContentReq::PreviewStart { sid, rk: "1001".into(), part: "/part".into(),
                 vcodec: "h264".into(), acodec: "aac".into(), title: "s12345678".into() },

@@ -12,7 +12,7 @@
 use super::composed_tests::{consent_opened, frame, opened, path, settle_frames, walk_to, SurfaceRig};
 use super::*;
 use super::test_support::*;
-use crate::plex::account::{AudioPreferences, PreferenceRequest};
+use plx_plex::plex::account::{AudioPreferences, PreferenceRequest};
 use super::super::family::PickerKind;
 use crate::screens::registry;
 use plx_ui::dispatch::Dispatcher;
@@ -131,14 +131,14 @@ fn every_playback_field_pushes_its_picker() {
 fn every_audio_and_subtitles_field_pushes_its_picker() {
     let _g = plx_base::testlock::serial();
     let _sess = scratch_session("nav-structure-audio");
-    let previous = crate::plex::session::current_snapshot();
-    struct Restore(std::sync::Arc<crate::plex::session::CurrentProfile>);
+    let previous = plx_plex::plex::session::current_snapshot();
+    struct Restore(std::sync::Arc<plx_plex::plex::session::CurrentProfile>);
     impl Drop for Restore {
-        fn drop(&mut self) { crate::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation); }
+        fn drop(&mut self) { plx_plex::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation); }
     }
     let _restore = Restore(previous);
-    let user = crate::plex::session::UserRef { id: 7, uuid: "nav-structure-audio".into(), ..Default::default() };
-    crate::plex::session::publish_profile_for_test(Some(user.clone()), 81);
+    let user = plx_plex::plex::session::UserRef { id: 7, uuid: "nav-structure-audio".into(), ..Default::default() };
+    plx_plex::plex::session::publish_profile_for_test(Some(user.clone()), 81);
     let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 81, AudioPreferences::default());
     let items = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::AudioSubtitles, Some(&AudioPreferences::default()));
     assert_eq!(items.len(), 4, "{items:?}");

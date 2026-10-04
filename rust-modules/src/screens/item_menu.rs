@@ -457,7 +457,7 @@ pub(crate) struct ItemMenuScreen {
 /// Play Trailer only when the already-loaded Detail is this movie/show and already has a trailer.
 /// The menu never talks to PMS.
 fn cached_trailer(
-    sid: crate::plex::ServerId,
+    sid: plx_plex::plex::ServerId,
     m: &PmsMovie,
     meta: crate::metadata::MetadataView<'_>,
 ) -> Option<crate::metadata::Extra> {
@@ -465,7 +465,7 @@ fn cached_trailer(
         return None;
     }
     let d = meta.current()?;
-    if !crate::plex::same_item((d.sid, d.rk.as_str()), (sid, m.rk.as_str())) {
+    if !plx_plex::plex::same_item((d.sid, d.rk.as_str()), (sid, m.rk.as_str())) {
         return None;
     }
     d.trailer().cloned().filter(|e| e.playable())
@@ -565,7 +565,7 @@ impl ItemMenuScreen {
     /// Watching shelf merged across servers, resolving a bare rk against the CURRENT server is the
     /// reported bug itself (hold a friend's episode → Play from Start → our film with the same key
     /// plays, under the friend's title).
-    pub(crate) fn sid(&self) -> crate::plex::ServerId {
+    pub(crate) fn sid(&self) -> plx_plex::plex::ServerId {
         self.arg.sid
     }
 
@@ -1139,10 +1139,10 @@ mod tests {
     fn a_related_tile_off_the_wire_gets_the_row_set_its_state_earns() {
         let row = |json: &str| {
             let body = format!(r#"{{"MediaContainer":{{"Hub":[{{"Metadata":[{json}]}}]}}}}"#);
-            let mc = serde_json::from_str::<crate::plex::Envelope>(&body)
+            let mc = serde_json::from_str::<plx_plex::plex::Envelope>(&body)
                 .expect("parses")
                 .media_container;
-            crate::pms::parse_item(&mc.hub[0].metadata[0], crate::plex::ServerId::UNSET)
+            crate::pms::parse_item(&mc.hub[0].metadata[0], plx_plex::plex::ServerId::UNSET)
         };
         let set = |json: &str| labels(&build(&row(json), false));
 
@@ -1323,7 +1323,7 @@ mod tests {
     #[test]
     fn the_menu_carries_the_row_it_was_opened_on_and_the_episode_menu_carries_none() {
         let mut m = item(0, PosterMark::None);
-        m.sid = crate::plex::ServerId::from_raw(3);
+        m.sid = plx_plex::plex::ServerId::from_raw(3);
         m.part = "/library/parts/42/file.mkv".to_string();
 
         let mut screen = ItemMenuScreen::new(EntryId(7), card_arg(&m, false));
@@ -1332,7 +1332,7 @@ mod tests {
         let req = commit(&mut screen, elem);
         assert_eq!(
             req.sid,
-            crate::plex::ServerId::from_raw(3),
+            plx_plex::plex::ServerId::from_raw(3),
             "the ROW's server, not the current one"
         );
         let carried = req.item.expect("the row the panel is about");
@@ -1349,7 +1349,7 @@ mod tests {
         let mut strip = ItemMenuScreen::new(
             EntryId(8),
             ItemMenuArg {
-                sid: crate::plex::ServerId::from_raw(3),
+                sid: plx_plex::plex::ServerId::from_raw(3),
                 rk: "77".into(),
                 kind: ItemMenuKind::Episode {
                     mark: PosterMark::None,
@@ -1724,24 +1724,24 @@ mod tests {
         let _g = plx_base::testlock::serial();
         crate::metadata::set_current_for_test(test_store().state_mut(), None);
         assert!(
-            cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), test_store().view()).is_none(),
+            cached_trailer(plx_plex::plex::ServerId::UNSET, &item(0, PosterMark::None), test_store().view()).is_none(),
             "no loaded Detail → no row"
         );
 
         crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "42".into(),
             kind: "movie".into(),
             extras: vec![extra()],
             ..Default::default()
         }));
-        let hit = cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), test_store().view()).unwrap();
+        let hit = cached_trailer(plx_plex::plex::ServerId::UNSET, &item(0, PosterMark::None), test_store().view()).unwrap();
         assert_eq!(hit.rk, "99");
 
         let mut other = item(0, PosterMark::None);
         other.rk = "other".into();
         assert!(
-            cached_trailer(crate::plex::ServerId::UNSET, &other, test_store().view()).is_none(),
+            cached_trailer(plx_plex::plex::ServerId::UNSET, &other, test_store().view()).is_none(),
             "a related tile of a different item must not steal the loaded trailer"
         );
         crate::metadata::set_current_for_test(test_store().state_mut(), None);

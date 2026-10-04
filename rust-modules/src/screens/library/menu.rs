@@ -115,12 +115,12 @@ fn stamp_state(stamp: &mut Stamp, state: crate::browse::SourceState) {
     });
 }
 
-fn stamp_tier(stamp: &mut Stamp, tier: Option<crate::plex::probe::Location>) {
+fn stamp_tier(stamp: &mut Stamp, tier: Option<plx_plex::plex::probe::Location>) {
     stamp.tag(match tier {
         None => 0,
-        Some(crate::plex::probe::Location::Local) => 1,
-        Some(crate::plex::probe::Location::Remote) => 2,
-        Some(crate::plex::probe::Location::Relay) => 3,
+        Some(plx_plex::plex::probe::Location::Local) => 1,
+        Some(plx_plex::plex::probe::Location::Remote) => 2,
+        Some(plx_plex::plex::probe::Location::Relay) => 3,
     });
 }
 
@@ -760,7 +760,7 @@ mod review_actions_tests;
 mod tests {
     use super::*;
     use crate::browse::{SecKind, SourceState};
-    use crate::plex::ServerId;
+    use plx_plex::plex::ServerId;
     use plx_ui::fixture::FixtureMeasure;
     use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
     use plx_ui::screen::ScreenArg;

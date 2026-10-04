@@ -15,11 +15,11 @@
 //! and never become GL textures. A warm disk hit decodes the baked PNG and fetches nothing.
 //!
 //! A custom poster (`/library/metadata/{rk}/thumb/…`) is untouched: only a path that
-//! [`crate::plex::collections::composite_parts`] reads as a composite is rerouted, at key
+//! [`plx_plex::plex::collections::composite_parts`] reads as a composite is rerouted, at key
 //! build time, to the synthetic `/plx/fan/{rk}/{stamp}` key this module parses back. The server's
 //! composite is never a fallback: no usable member art is [`Got::Final`].
 
-use crate::plex::collections::composite_parts;
+use plx_plex::plex::collections::composite_parts;
 
 /// The store key prefix of a baked fan. Not a server path: the worker recognises it before any
 /// request is built, and it carries no token by construction.
@@ -103,7 +103,7 @@ impl Rgba {
 }
 
 /// One fanned member: its decoded poster and, when the server sent a non-black one, its
-/// `UltraBlurColors` in [`crate::plex::models::UltraBlurColors::corners`]' ring order (0–1).
+/// `UltraBlurColors` in [`plx_plex::plex::models::UltraBlurColors::corners`]' ring order (0–1).
 pub(super) struct Member {
     pub poster: Rgba,
     pub blur: Option<[[f32; 3]; 4]>,

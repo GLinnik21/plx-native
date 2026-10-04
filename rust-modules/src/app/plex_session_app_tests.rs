@@ -9,7 +9,7 @@
 //! application's.
 
 use crate::app::bridge::Bridge;
-use crate::plex::session::{self, Session};
+use plx_plex::plex::session::{self, Session};
 
 fn signed_in() -> Session {
     Session {
@@ -83,18 +83,18 @@ fn audio_enhancements_persist_and_restore() {
     let _serial = plx_base::testlock::serial();
     let _session = session::TempSession::new("audio-enhancements");
     session::save(&signed_in());
-    assert_eq!(session::load().audio_enhancements(), crate::plex::AudioEnhancements::NONE, "absent field = NONE");
+    assert_eq!(session::load().audio_enhancements(), plx_plex::plex::AudioEnhancements::NONE, "absent field = NONE");
 
-    let enh = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
+    let enh = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
     crate::player::set_audio_enhancements(enh);
     plx_base::storage_worker::drain_for_test();
     let saved = session::load();
     assert_eq!(saved.audio_enhancements(), enh);
     assert_eq!(saved.client_id, signed_in().client_id, "merged, not replaced");
 
-    crate::player::restore_audio_enhancements(crate::plex::AudioEnhancements::NONE);
+    crate::player::restore_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
     crate::player::restore_audio_enhancements(saved.audio_enhancements());
     assert_eq!(crate::player::audio_enhancements(), enh, "boot restores what was saved");
     assert!(!session::set_audio_enhancements(enh), "an unchanged preference is not rewritten");
-    crate::player::restore_audio_enhancements(crate::plex::AudioEnhancements::NONE);
+    crate::player::restore_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
 }

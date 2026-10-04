@@ -1,7 +1,7 @@
 //! Shared fixtures and helpers for the `auth` test modules split out below.
 
 use super::*;
-pub(super) use crate::plex::probe::Scheme;
+pub(super) use plx_plex::plex::probe::Scheme;
 pub(super) use std::cell::RefCell;
 pub(super) use std::sync::Mutex;
 
@@ -118,7 +118,7 @@ pub(super) fn race_plan() -> ProbePlan {
 /// answered", with no transport evidence (`ProbeReply::from`). For the racing fixtures that are
 /// about completion order and acceptance, not about how a failure is named.
 pub(super) fn status_dial(
-    f: impl Fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> (i32, Vec<u8>) + Send + Sync + 'static,
+    f: impl Fn(&Origin, Option<&plx_plex::plex::ResolvePin>, Duration) -> (i32, Vec<u8>) + Send + Sync + 'static,
 ) -> ProbeDial {
     Arc::new(move |origin, pin, budget| ProbeReply::from(f(origin, pin, budget)))
 }

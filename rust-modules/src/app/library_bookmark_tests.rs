@@ -121,18 +121,18 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
-    let session = crate::plex::session::TempSession::new("library-bookmark-return");
+    let session = plx_plex::plex::session::TempSession::new("library-bookmark-return");
     session.watching("u-library-bookmark-return");
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let sid =
-        crate::plex::register_for_test("bookmark-own", "127.0.0.1", 9, "synthetic", "fixture");
+        plx_plex::plex::register_for_test("bookmark-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared =
-        crate::plex::register_for_test("bookmark-shared", "127.0.0.1", 10, "synthetic", "fixture");
-    crate::plex::set_current(sid);
+        plx_plex::plex::register_for_test("bookmark-shared", "127.0.0.1", 10, "synthetic", "fixture");
+    plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);

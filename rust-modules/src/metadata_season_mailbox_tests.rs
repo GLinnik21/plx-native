@@ -251,9 +251,9 @@ fn menu_play_season_load_inside_a_frame_still_installs_the_episode_list() {
             body.len(),
         );
     });
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_for_test("season-live", "127.0.0.1", port, "token", "season-client");
-    crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Local);
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("season-live", "127.0.0.1", port, "token", "season-client");
+    plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
     install_show_on(sid, "show-1", 1, &["stale"]);
 
     let frame = plx_base::task::FrameScope::enter();
@@ -261,7 +261,7 @@ fn menu_play_season_load_inside_a_frame_still_installs_the_episode_list() {
     drop(frame);
 
     server.join().unwrap();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     assert_eq!(listed_eps(), ["ep-menu"], "the blocking season fetch must run under its allow_blocking exception");
     assert_eq!(selected_tab(), 0);
 }

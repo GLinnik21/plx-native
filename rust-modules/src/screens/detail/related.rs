@@ -30,7 +30,7 @@ pub(crate) fn locate(key: u32) -> Option<usize> {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Action {
     None,
-    OpenDetail(crate::plex::ServerId, String),
+    OpenDetail(plx_plex::plex::ServerId, String),
 }
 
 pub(crate) fn action(d: &Detail, key: u32) -> Action {

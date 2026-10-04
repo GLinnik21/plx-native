@@ -301,7 +301,7 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     use plx_net::net::keypin::{self, Blocked};
     use plx_ui::icons::Icon;
     let _guard = plx_base::testlock::serial();
-    crate::plex::grant::reset_for_test();
+    plx_plex::plex::grant::reset_for_test();
     let key = keypin::key_of("home-clock.invalid", 32400);
     let _scoped = keypin::Scoped::watch_machine("home-clock-machine", &key);
     let _current = current_server_for_test("home-clock-machine");
@@ -347,18 +347,18 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     }
 
     // The plaintext offer's reason (and its glyph) win: its own cause is the one the person can act on.
-    let verdict = crate::plex::grant::PlaintextVerdict {
+    let verdict = plx_plex::plex::grant::PlaintextVerdict {
         machine_id: "lan-machine".into(), name: "Home".into(), shared_by: String::new(),
-        eligibility: crate::plex::probe::PlaintextEligibility::Eligible,
-        choice: crate::plex::session::PlaintextChoice::Undecided,
+        eligibility: plx_plex::plex::probe::PlaintextEligibility::Eligible,
+        choice: plx_plex::plex::session::PlaintextChoice::Undecided,
     };
-    crate::plex::grant::offered(crate::plex::grant::scope(), verdict.clone());
+    plx_plex::plex::grant::offered(plx_plex::plex::grant::scope(), verdict.clone());
     step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     let offer = crate::auth::plaintext_copy(Some(&verdict), crate::auth::ReadoutSurface::SignedIn);
     assert_eq!(overlay.reason.and_then(|r| r.to_str().ok()), Some(offer.as_ref()));
     assert_eq!((overlay.glyph, overlay.action), (Some(Icon::ServerBadgeMinus), Some(plaintext_question::connect())));
-    crate::plex::grant::reset_for_test();
+    plx_plex::plex::grant::reset_for_test();
 }
 
 /// Make `machine` the current server (the one a failed Home speaks about) for a test, and put the
@@ -367,13 +367,13 @@ fn current_server_for_test(machine: &str) -> impl Drop {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_pinned_with_client_id(machine, &crate::plex::Origin::http("192.168.1.53", 32400),
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_pinned_with_client_id(machine, &plx_plex::plex::Origin::http("192.168.1.53", 32400),
         "", None, "client", Default::default());
-    assert!(crate::plex::set_current(sid) || crate::plex::current_server() == sid, "the test server is current");
+    assert!(plx_plex::plex::set_current(sid) || plx_plex::plex::current_server() == sid, "the test server is current");
     Reset
 }
 
@@ -383,7 +383,7 @@ fn current_server_for_test(machine: &str) -> impl Drop {
 fn a_failed_home_ignores_a_clock_fact_about_another_server() {
     use plx_net::net::keypin;
     let _guard = plx_base::testlock::serial();
-    crate::plex::grant::reset_for_test();
+    plx_plex::plex::grant::reset_for_test();
     let elsewhere = keypin::key_of("home-elsewhere.invalid", 32400);
     let _scoped = keypin::Scoped::watch_machine("home-elsewhere-machine", &elsewhere);
     let _current = current_server_for_test("home-here-machine");
@@ -569,7 +569,7 @@ fn status_action_geometry_does_not_inherit_the_previous_hero_pop_or_slide() {
     let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     for _ in 0..80 { s.hero_pop.step(Some(0), 0.016); }
-    s.outgoing = Some((crate::plex::ServerId::UNSET, "old".into()));
+    s.outgoing = Some((plx_plex::plex::ServerId::UNSET, "old".into()));
     s.hero_slide.jump(0.5);
     let key = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
     let mut context = cx(snapshot.view(), Some(key));
@@ -1356,15 +1356,15 @@ fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
     let mut s = screen(snapshot.view());
     let second_elem = s.elem_for(HomeItemIdentity::Item {
         hub: HomeHubIdentity::Key {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             key: "/hubs/second".into(),
         },
-        sid: crate::plex::ServerId::UNSET,
+        sid: plx_plex::plex::ServerId::UNSET,
         rk: "second".into(),
     });
     s.rows.push(HubProjection {
         identity: HomeHubIdentity::Key {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             key: "/hubs/second".into(),
         },
         group: GroupId(FIRST_HUB_GROUP + 1),
@@ -1421,15 +1421,15 @@ fn repeated_item_keys_are_scoped_by_hub_identity() {
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
     let a = HomeItemIdentity::Item {
         hub: HomeHubIdentity::ContinueWatching,
-        sid: crate::plex::ServerId::UNSET,
+        sid: plx_plex::plex::ServerId::UNSET,
         rk: "7".into(),
     };
     let b = HomeItemIdentity::Item {
         hub: HomeHubIdentity::Key {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             key: "/hubs/new".into(),
         },
-        sid: crate::plex::ServerId::UNSET,
+        sid: plx_plex::plex::ServerId::UNSET,
         rk: "7".into(),
     };
     let ka = s.elem_for(a.clone());
@@ -1458,10 +1458,10 @@ fn memory_round_trip_preserves_registries_and_carousel_identity() {
     a.group_for(&hub);
     a.elem_for(HomeItemIdentity::Item {
         hub,
-        sid: crate::plex::ServerId::UNSET,
+        sid: plx_plex::plex::ServerId::UNSET,
         rk: "42".into(),
     });
-    a.carousel = Some((crate::plex::ServerId::UNSET, "42".into()));
+    a.carousel = Some((plx_plex::plex::ServerId::UNSET, "42".into()));
     a.strip_chosen = true;
     let memory = match <HomeScreen as Screen<TestHost>>::memory(&a) {
         PageMemory::Home(m) => m,
@@ -1485,7 +1485,7 @@ fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
     let mut hero_picture = screen(snapshot.view());
     let mut grid_picture = screen(snapshot.view());
     for s in [&mut hero_picture, &mut grid_picture] {
-        s.carousel = Some((crate::plex::ServerId::UNSET, "2".into()));
+        s.carousel = Some((plx_plex::plex::ServerId::UNSET, "2".into()));
         s.snap_target = 1.0;
         s.visible_activation = Some(HERO_PLAY_ELEM);
     }
@@ -1514,7 +1514,7 @@ fn the_home_census_covers_input_motion_and_current_projection() {
         |s| s.hero_slide.pos = 0.4,
         |s| s.hero_slide.vel = 1.0,
         |s| s.hero_dir = -1.0,
-        |s| s.outgoing = Some((crate::plex::ServerId::UNSET, "old".into())),
+        |s| s.outgoing = Some((plx_plex::plex::ServerId::UNSET, "old".into())),
         |s| s.grid.scroll_y.vel = 1.0,
         |s| s.grid.scroll_target = 100.0,
         |s| s.rows[0].elems.swap(0, 1),
@@ -1550,7 +1550,7 @@ fn paint_only_backdrop_and_spinner_state_do_not_change_the_canonical_hash() {
     b.status_ms = 900.0;
     b.backdrop.art.pos = 0.5;
     assert_eq!(a.hash(), b.hash());
-    a.carousel = Some((crate::plex::ServerId::UNSET, "a".into()));
+    a.carousel = Some((plx_plex::plex::ServerId::UNSET, "a".into()));
     assert_ne!(a.hash(), b.hash());
 }
 
@@ -1696,7 +1696,7 @@ fn continue_watching_commit_plays_while_an_ordinary_shelf_opens_detail() {
         |r| matches!(r, HomeReq::Play { rk, .. } if rk == "1")
     ));
     s.rows[0].identity = HomeHubIdentity::Key {
-        sid: crate::plex::ServerId::UNSET,
+        sid: plx_plex::plex::ServerId::UNSET,
         key: "/hubs/recent".into(),
     };
     let (_, detail, _) = step(
@@ -1800,7 +1800,7 @@ fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint(
     crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
     let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
-    s.carousel = Some((crate::plex::ServerId::UNSET, "2".into()));
+    s.carousel = Some((plx_plex::plex::ServerId::UNSET, "2".into()));
     let hero = FocusKey {
         entry: s.entry,
         elem: HERO_PLAY_ELEM,
@@ -2242,9 +2242,9 @@ fn a_pinned_hero_never_auto_advances() {
 /// points at Settings.
 #[test]
 fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
-    use crate::plex::session::PlaintextChoice;
+    use plx_plex::plex::session::PlaintextChoice;
     let _guard = plx_base::testlock::serial();
-    crate::plex::grant::reset_for_test();
+    plx_plex::plex::grant::reset_for_test();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
@@ -2252,11 +2252,11 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     let view = snapshot.view();
     let mut s = screen(view);
     let entry = s.entry;
-    let verdict = crate::plex::grant::PlaintextVerdict {
+    let verdict = plx_plex::plex::grant::PlaintextVerdict {
         machine_id: "lan-machine".into(), name: "Home".into(), shared_by: String::new(),
-        eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided,
+        eligibility: plx_plex::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided,
     };
-    crate::plex::grant::offered(crate::plex::grant::scope(), verdict.clone());
+    plx_plex::plex::grant::offered(plx_plex::plex::grant::scope(), verdict.clone());
     step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
     let measure = FixtureMeasure;
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
@@ -2293,7 +2293,7 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     assert_eq!(answers, [PlaintextChoice::Allowed]);
     assert!(!s.plaintext_alert.is_open());
 
-    crate::plex::grant::answer("account", "lan-machine", PlaintextChoice::Declined);
+    plx_plex::plex::grant::answer("account", "lan-machine", PlaintextChoice::Declined);
     step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!(overlay.action, Some(plaintext_question::try_again()));
@@ -2302,7 +2302,7 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     let (_, retried, _) = step(&mut s, view, hero, &ScreenEvent::Activate(HERO_PLAY_ELEM));
     assert!(retries(&retried), "an answered question is not put again from a failure");
     assert!(!s.plaintext_alert.is_open());
-    crate::plex::grant::reset_for_test();
+    plx_plex::plex::grant::reset_for_test();
 }
 
 // ---- linked collection shelves (#205) -------------------------------------------------------

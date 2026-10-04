@@ -125,7 +125,7 @@ pub(super) fn hold_feature(
 
 /// After `request_play` accepts, extras (trailers included) install an Info-card descriptor so
 /// the card names the extra rather than the parent. Feature plays leave `now_playing` alone.
-fn note_extra_now_playing(meta: &mut crate::stores::metadata::MetadataStore, sid: crate::plex::ServerId, rk: &str, context: &str) {
+fn note_extra_now_playing(meta: &mut crate::stores::metadata::MetadataStore, sid: plx_plex::plex::ServerId, rk: &str, context: &str) {
     if crate::metadata::context_omits_queue_continuous(context) {
         let now_playing = crate::metadata::trailer_now_playing(meta.state(), sid, rk);
         meta.run(
@@ -306,7 +306,7 @@ mod held_feature_tests {
 
     fn parent_with_extra() -> crate::metadata::Detail {
         crate::metadata::Detail {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "movie".into(),
             kind: "movie".into(),
             title: "Movie".into(),
@@ -340,7 +340,7 @@ mod held_feature_tests {
 
     fn trailer_play(context: &str) -> PlayIntent {
         PlayIntent::Item {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "9".into(),
             part: "/p".into(),
             vcodec: String::new(),
@@ -389,7 +389,7 @@ mod held_feature_tests {
     fn a_held_show_trailer_play_labels_the_info_card_with_the_extra() {
         let _g = plx_base::testlock::serial();
         crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "show".into(),
             kind: "show".into(),
             is_show: true,
@@ -682,9 +682,9 @@ fn home_requests(app: &mut App, now: u32) {
     }
 }
 
-fn home_item<'a>(view: crate::pms::HubsView<'a>, sid: crate::plex::ServerId, rk: &str) -> Option<&'a crate::pms::PmsMovie> {
+fn home_item<'a>(view: crate::pms::HubsView<'a>, sid: plx_plex::plex::ServerId, rk: &str) -> Option<&'a crate::pms::PmsMovie> {
     (0..view.hub_count()).find_map(|i| view.hub(i)?.items.iter()
-        .find(|item| crate::plex::same_item((item.sid, &item.rk), (sid, rk))))
+        .find(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk))))
 }
 
 /// Resolve identity against the retained selected item, never against the current server.
@@ -752,9 +752,9 @@ mod search_action_tests {
     #[test]
     fn owned_search_targets_validate_retained_identity_and_use_retained_labels() {
         let _serial = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let a = crate::plex::register_for_test("action-a", "127.0.0.1", 1, "synthetic", "fixture");
-        let b = crate::plex::register_for_test("action-b", "127.0.0.1", 2, "synthetic", "fixture");
+        plx_plex::plex::reset_servers_for_test();
+        let a = plx_plex::plex::register_for_test("action-a", "127.0.0.1", 1, "synthetic", "fixture");
+        let b = plx_plex::plex::register_for_test("action-b", "127.0.0.1", 2, "synthetic", "fixture");
         let media = Item::Media(crate::pms::PmsMovie { sid: a, rk: "same".into(), ..Default::default() });
         assert!(matches!(search_target(&media, &SearchReq::Detail { sid: a, rk: "same".into() }),
             Some(AppArg::Content(ContentArg::Detail { sid, rk })) if sid == a && rk == "same"));
@@ -776,7 +776,7 @@ mod search_action_tests {
             assert!(search_target(&tag, &SearchReq::Detail { sid: a, rk: key.into() }).is_none());
         }
         assert!(search_target(&Item::Tag(TagHit::default()), &person(Default::default(), "", "")).is_none());
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     /// OK on a collection hit opens the COLLECTION page — never the item detail its ratingKey would
@@ -784,16 +784,16 @@ mod search_action_tests {
     #[test]
     fn a_collection_hit_opens_the_collection_page_with_its_retained_identity() {
         let _serial = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let a = crate::plex::register_for_test("coll-a", "127.0.0.1", 1, "synthetic", "fixture");
-        let b = crate::plex::register_for_test("coll-b", "127.0.0.1", 2, "synthetic", "fixture");
+        plx_plex::plex::reset_servers_for_test();
+        let a = plx_plex::plex::register_for_test("coll-a", "127.0.0.1", 1, "synthetic", "fixture");
+        let b = plx_plex::plex::register_for_test("coll-b", "127.0.0.1", 2, "synthetic", "fixture");
         let hit = Item::Collection(crate::search::CollectionHit {
             item: crate::pms::PmsMovie { sid: a, rk: "50007".into(), sec: 1, title: "Shorts".into(),
                 kind: crate::pms::KIND_COLLECTION, ..Default::default() },
             tag: 7 });
         let req = |sid, rk: &str, tag| SearchReq::Collection { sid, rk: rk.into(), tag };
         assert!(search_target(&hit, &req(a, "50007", 7)) == Some(AppArg::Content(ContentArg::Collection(
-            crate::plex::collections::CollectionRef { sid: a, rk: "50007".into(), sec: 1, tag: 7, name: "Shorts".into() }))));
+            plx_plex::plex::collections::CollectionRef { sid: a, rk: "50007".into(), sec: 1, tag: 7, name: "Shorts".into() }))));
         assert!(search_target(&hit, &req(b, "50007", 7)).is_none(), "another server's key");
         assert!(search_target(&hit, &req(a, "50008", 7)).is_none(), "a stale selection");
         assert!(search_target(&hit, &SearchReq::Detail { sid: a, rk: "50007".into() }).is_none(),
@@ -802,9 +802,9 @@ mod search_action_tests {
         let tag = Item::Collection(crate::search::CollectionHit::from_tag(
             &TagHit { sid: a, id: "7".into(), sec: 1, name: "Shorts".into(), ..Default::default() }));
         assert!(search_target(&tag, &req(a, "", 7)) == Some(AppArg::Content(ContentArg::Collection(
-            crate::plex::collections::CollectionRef::by_tag(a, 1, 7, "Shorts")))));
+            plx_plex::plex::collections::CollectionRef::by_tag(a, 1, 7, "Shorts")))));
         assert!(search_target(&tag, &req(a, "", 8)).is_none());
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 }
 
@@ -903,7 +903,7 @@ mod library_publication_tests {
     fn seed_detail_return(
         pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>,
         entry: EntryId,
-        sid: crate::plex::ServerId,
+        sid: plx_plex::plex::ServerId,
         episode: &str,
     ) -> (crate::metadata::Spot, plx_machine::machine::FocusKey<u32>) {
         let spot = crate::metadata::Spot {
@@ -972,7 +972,7 @@ mod library_publication_tests {
     // Bridge-less screen fixtures. `land_detail_for_test`/`drain_detail_workers` below shadow the
     // file-level helpers of the same name for exactly that reason.
     fn land_detail_for_test(
-        rig: &mut bridge::Bridge, sid: crate::plex::ServerId, rk: &str, gen: u32,
+        rig: &mut bridge::Bridge, sid: plx_plex::plex::ServerId, rk: &str, gen: u32,
         detail: Option<crate::metadata::Detail>,
     ) -> bool {
         let (state, adapter) = rig.metadata_mut().split_for_test();
@@ -989,7 +989,7 @@ mod library_publication_tests {
     }
 
     struct SettleDetailBeforeRestoredEnter {
-        sid: crate::plex::ServerId,
+        sid: plx_plex::plex::ServerId,
         generation: u32,
         detail: Option<crate::metadata::Detail>,
         expected_fresh: bool,
@@ -1027,7 +1027,7 @@ mod library_publication_tests {
     }
 
     fn detail_with_episode(
-        sid: crate::plex::ServerId,
+        sid: plx_plex::plex::ServerId,
         rk: &str,
         title: &str,
         watched: bool,
@@ -1059,7 +1059,7 @@ mod library_publication_tests {
 
     #[test]
     fn home_tab_validation_reads_the_supplied_directory() {
-        let sid = crate::plex::ServerId::from_raw(3);
+        let sid = plx_plex::plex::ServerId::from_raw(3);
         let directory = crate::stores::browse::DirectorySnapshot::fixture(7, 0, vec![
             crate::stores::browse::SectionView {
                 sid: Some(sid),
@@ -1083,7 +1083,7 @@ mod library_publication_tests {
     #[test]
     fn a_fresh_arm_at_rest_scale_still_blocks_visible_shelf_publication() {
         let mut dispatcher = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let target = crate::stores::browse::SectionAddress { epoch: 1, sid: crate::plex::ServerId::from_raw(0), section: 1 };
+        let target = crate::stores::browse::SectionAddress { epoch: 1, sid: plx_plex::plex::ServerId::from_raw(0), section: 1 };
         let allowed = |d: &plx_ui::dispatch::Dispatcher<bridge::AppHost>, hidden, head| {
             matches!(library_publication_command(d, target, hidden, head),
                 crate::stores::browse::BrowseCmd::Addressed { work: crate::stores::browse::LibraryWork::Hubs { may_publish: true }, .. })
@@ -1100,7 +1100,7 @@ mod library_publication_tests {
 
     #[test]
     fn deferred_viewstate_refresh_cannot_retarget_the_page_navigated_to_later() {
-        let sid = crate::plex::ServerId::from_raw(2);
+        let sid = plx_plex::plex::ServerId::from_raw(2);
         let target = crate::stores::viewstate::DetailRefresh {
             sid,
             rk: "origin".into(),
@@ -1123,7 +1123,7 @@ mod library_publication_tests {
     #[test]
     fn opening_a_detail_page_issues_exactly_one_detail_fetch() {
         let _guard = plx_base::testlock::serial();
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let mut rig = bridge::Bridge::for_test(|| 0);
@@ -1162,7 +1162,7 @@ mod library_publication_tests {
     #[test]
     fn reopening_the_same_detail_after_back_refetches_once() {
         let _guard = plx_base::testlock::serial();
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let mut rig = bridge::Bridge::for_test(|| 0);
@@ -1220,7 +1220,7 @@ mod library_publication_tests {
     #[test]
     fn a_covered_detail_refresh_waits_until_its_page_owns_metadata_again() {
         let _guard = plx_base::testlock::serial();
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let b = AppArg::Content(ContentArg::Detail { sid, rk: "detail-b".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
@@ -1312,7 +1312,7 @@ mod library_publication_tests {
     #[test]
     fn a_detail_covered_by_person_refreshes_even_when_its_metadata_is_still_loaded() {
         let _guard = plx_base::testlock::serial();
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let person = AppArg::Content(ContentArg::Person {
             sid,
@@ -1424,7 +1424,7 @@ mod library_publication_tests {
 
     fn requested_refresh_after_child(navigate: bool, settled_before_refresh: bool) {
         let _guard = plx_base::testlock::serial();
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let b = AppArg::Content(ContentArg::Detail { sid, rk: "detail-b".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
@@ -1496,7 +1496,7 @@ mod library_publication_tests {
         });
         if settled_before_refresh {
             struct AtomicStart {
-                sid: crate::plex::ServerId,
+                sid: plx_plex::plex::ServerId,
                 saw_restore: bool,
                 checked_after_restore: bool,
                 // See `SettleDetailBeforeRestoredEnter::store` — same reason, same shape.
@@ -1683,7 +1683,7 @@ mod library_publication_tests {
     #[test]
     fn a_requested_detail_refresh_that_settled_while_covered_is_not_retried() {
         let _guard = plx_base::testlock::serial();
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let person = AppArg::Content(ContentArg::Person {
             sid,
@@ -1777,7 +1777,7 @@ mod library_publication_tests {
     #[test]
     fn a_failed_requested_refresh_with_no_cached_detail_is_not_retried_on_restore() {
         let _guard = plx_base::testlock::serial();
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let person = AppArg::Content(ContentArg::Person {
             sid,
@@ -1883,7 +1883,7 @@ fn home_menu_from_deck(ret: &ReturnState<u32, PageMemory>) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 fn activate_home_item(app: &mut App, source: MachineId, entry: EntryId,
-    sid: crate::plex::ServerId, rk: &str, resume_ns: Option<i64>, ret: ReturnState<u32, PageMemory>, now: u32) {
+    sid: plx_plex::plex::ServerId, rk: &str, resume_ns: Option<i64>, ret: ReturnState<u32, PageMemory>, now: u32) {
     let snapshot = app.bridge.hubs_snapshot();
     let Some(mut item) = home_item(snapshot.view(), sid, rk).cloned() else { return };
     if let Some(resume_ns) = resume_ns { item.resume_ms = resume_ns.max(0) / 1_000_000; }

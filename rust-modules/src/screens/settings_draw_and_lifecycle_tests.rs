@@ -99,7 +99,7 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
 ///
 /// [`RootPage::rebuild`] asks [`signed_in`] whether this television has an account, once at
 /// construction and again on `Enter`, so TWICE per open. That question used to go through
-/// [`crate::plex::session::load`] — the read-modify-WRITE door, whose own doc says a read that
+/// [`plx_plex::plex::session::load`] — the read-modify-WRITE door, whose own doc says a read that
 /// can turn into a save "is not [an acceptable trade] on a path a keypress can reach", and
 /// "do not add a per-frame reader of this file". On this television the key manager is
 /// unusable ("session protection: no usable key manager; using the 0600 file fallback"), so

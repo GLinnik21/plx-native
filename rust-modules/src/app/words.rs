@@ -69,7 +69,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
 #[cfg(test)]
 pub(crate) fn every_route() -> [AppArg; 10] {
     use crate::screens::registry::ContentArg;
-    let sid = crate::plex::ServerId::UNSET;
+    let sid = plx_plex::plex::ServerId::UNSET;
     [
         AppArg::Login,
         AppArg::Profiles,
@@ -80,7 +80,7 @@ pub(crate) fn every_route() -> [AppArg; 10] {
         AppArg::Content(ContentArg::Person {
             sid, key: String::new(), guid: String::new(), name: String::new(), thumb: String::new(),
         }),
-        AppArg::Content(ContentArg::Collection(crate::plex::collections::CollectionRef::by_tag(sid, 0, 1, ""))),
+        AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_tag(sid, 0, 1, ""))),
         AppArg::Search,
         AppArg::Player,
     ]

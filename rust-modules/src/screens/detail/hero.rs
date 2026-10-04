@@ -567,10 +567,10 @@ enum PlayNote {
 fn play_note(
     preview: crate::route::Preview,
     hdr: bool,
-    subscription: crate::plex::serverinfo::Subscription,
+    subscription: plx_plex::plex::serverinfo::Subscription,
 ) -> PlayNote {
     let converts = preview == crate::route::Preview::Converts;
-    let no_pass = subscription == crate::plex::serverinfo::Subscription::No;
+    let no_pass = subscription == plx_plex::plex::serverinfo::Subscription::No;
     if converts && no_pass && hdr {
         PlayNote::Warn
     } else if converts && no_pass {
@@ -580,8 +580,8 @@ fn play_note(
     }
 }
 
-fn item_subscription(d: &Detail) -> crate::plex::serverinfo::Subscription {
-    crate::plex::serverinfo::subscription_of(d.sid)
+fn item_subscription(d: &Detail) -> plx_plex::plex::serverinfo::Subscription {
+    plx_plex::plex::serverinfo::subscription_of(d.sid)
 }
 
 const FACTS_GLYPH_D: f32 = theme::size::CAPTION as f32;
@@ -1086,7 +1086,7 @@ mod tests {
 
     #[test]
     fn how_it_plays_resolves_the_full_docs_truth_table() {
-        use crate::plex::serverinfo::Subscription::{No, Unknown, Yes};
+        use plx_plex::plex::serverinfo::Subscription::{No, Unknown, Yes};
         use crate::route::Preview::{Converts, DirectPlay, Remux};
         for preview in [DirectPlay, Remux, Converts] {
             for hdr in [false, true] {
@@ -1105,17 +1105,17 @@ mod tests {
     #[test]
     fn the_pass_note_judges_the_items_own_server_not_the_browsed_one() {
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let own = crate::plex::register_for_test("own", "127.0.0.1", 1, "t", "c1");
-        let shared = crate::plex::register_for_test("shared", "127.0.0.2", 2, "t", "c2");
-        crate::plex::serverinfo::store_for_test(
+        plx_plex::plex::reset_servers_for_test();
+        let own = plx_plex::plex::register_for_test("own", "127.0.0.1", 1, "t", "c1");
+        let shared = plx_plex::plex::register_for_test("shared", "127.0.0.2", 2, "t", "c2");
+        plx_plex::plex::serverinfo::store_for_test(
             own,
-            crate::plex::serverinfo::Subscription::Yes,
+            plx_plex::plex::serverinfo::Subscription::Yes,
             "1",
         );
-        crate::plex::serverinfo::store_for_test(
+        plx_plex::plex::serverinfo::store_for_test(
             shared,
-            crate::plex::serverinfo::Subscription::No,
+            plx_plex::plex::serverinfo::Subscription::No,
             "1",
         );
         let borrowed = Detail {
@@ -1128,13 +1128,13 @@ mod tests {
         };
         assert_eq!(
             item_subscription(&borrowed),
-            crate::plex::serverinfo::Subscription::No
+            plx_plex::plex::serverinfo::Subscription::No
         );
         assert_eq!(
             item_subscription(&ours),
-            crate::plex::serverinfo::Subscription::Yes
+            plx_plex::plex::serverinfo::Subscription::Yes
         );
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
@@ -1345,7 +1345,7 @@ mod tests {
     #[test]
     fn the_optimistic_flip_settles_a_leaf_at_once_and_a_container_a_round_trip_late() {
         let _guard = plx_base::testlock::serial();
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
             sid,
             rk: "movie".into(),

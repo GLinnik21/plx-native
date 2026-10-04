@@ -3,8 +3,8 @@
 //! separate jobs so a tag-only route can publish its resolved ratingKey before later requests
 //! finish. All network work runs off the frame thread; landings are applied by [`CollectionState::pump_with_gate`].
 
-use crate::plex::collections::{resolve_tag, CollectionOutcome, CollectionRef};
-use crate::plex::ServerId;
+use plx_plex::plex::collections::{resolve_tag, CollectionOutcome, CollectionRef};
+use plx_plex::plex::ServerId;
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
 use std::sync::Arc;
@@ -127,7 +127,7 @@ impl CollectionState {
                     return current.want != old || retry;
                 }
                 self.supersede(adapter);
-                let client_key = crate::plex::client_for(target.id.sid).map(|c| (c.instance_gen(), c.token_gen()));
+                let client_key = plx_plex::plex::client_for(target.id.sid).map(|c| (c.instance_gen(), c.token_gen()));
                 self.current = Some(Collection::loading(target.id, target.want.max(PAGE_SIZE), client_key));
                 true
             }
@@ -142,7 +142,7 @@ impl CollectionState {
                 let Some(c) = self.current.as_mut() else { return false };
                 let mut hit = false;
                 for item in c.items.iter_mut()
-                    .filter(|item| crate::plex::same_item((item.sid, &item.rk), (sid, &rk))) {
+                    .filter(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, &rk))) {
                     crate::pms::set_watched(item, on);
                     hit = true;
                 }
@@ -153,7 +153,7 @@ impl CollectionState {
 
     fn refresh_if_client_changed(&mut self, adapter: &CollectionAdapter) -> bool {
         let Some(c) = self.current.as_ref() else { return false };
-        let now = crate::plex::client_for(c.id.sid).map(|x| (x.instance_gen(), x.token_gen()));
+        let now = plx_plex::plex::client_for(c.id.sid).map(|x| (x.instance_gen(), x.token_gen()));
         if now == c.client_key { return false; }
         let (id, want) = (c.id.clone(), c.want);
         self.supersede(adapter);
@@ -193,7 +193,7 @@ impl CollectionState {
         if adapter.fetch.busy() || self.retry_cd > 0 { return; }
         let Some(job) = self.job() else { return };
         let Some(c) = self.current.as_ref() else { return };
-        let Some(client) = crate::plex::client_for(c.id.sid) else {
+        let Some(client) = plx_plex::plex::client_for(c.id.sid) else {
             self.retry_cd = RETRY_FRAMES;
             if c.items.is_empty() { self.current.as_mut().unwrap().status = CollectionStatus::Failed; }
             return;
@@ -301,7 +301,7 @@ struct Header {
 }
 
 impl Header {
-    fn of(row: &crate::plex::Metadata) -> Self {
+    fn of(row: &plx_plex::plex::Metadata) -> Self {
         Self { title: row.title.clone(), thumb: row.thumb.clone(), summary: row.summary.clone(),
             child_count: row.child_count.max(0) as usize, order: CollectionOrder::of(row.collection_sort) }
     }
@@ -323,7 +323,7 @@ enum Landing {
 /// episode takes `parentThumb` first and falls back to the show's. Its own 16:9 still is never
 /// the portrait art — with both posters absent the cell draws the neutral placeholder rather
 /// than a cropped landscape frame.
-pub(crate) fn member(row: &crate::plex::Metadata, sid: ServerId) -> PmsMovie {
+pub(crate) fn member(row: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
     let mut item = parse_item(row, sid);
     if item.kind == 3 {
         item.thumb = if !row.parent_thumb.is_empty() { row.parent_thumb.clone() }
@@ -333,7 +333,7 @@ pub(crate) fn member(row: &crate::plex::Metadata, sid: ServerId) -> PmsMovie {
 }
 
 /// A read's page, or the landing its failure is: the one mapping of the server's non-page answers.
-fn answered(outcome: CollectionOutcome) -> Result<crate::plex::MediaContainer, Landing> {
+fn answered(outcome: CollectionOutcome) -> Result<plx_plex::plex::MediaContainer, Landing> {
     match outcome {
         CollectionOutcome::Ok(page) => Ok(page),
         CollectionOutcome::Denied => Err(Landing::Denied),
@@ -342,7 +342,7 @@ fn answered(outcome: CollectionOutcome) -> Result<crate::plex::MediaContainer, L
     }
 }
 
-fn run_job(client: &'static crate::plex::Client, sid: ServerId, job: Job) -> Landing {
+fn run_job(client: &'static plx_plex::plex::Client, sid: ServerId, job: Job) -> Landing {
     let run = || -> Result<Landing, Landing> {
         Ok(match job {
             Job::Resolve { sec, tag, name } => {
@@ -431,8 +431,8 @@ mod tests {
             name: name.into() }, want: PAGE_SIZE }
     }
 
-    fn row(kind: &str, thumb: &str, parent: &str, grandparent: &str) -> crate::plex::Metadata {
-        crate::plex::Metadata { rating_key: "9".into(), kind: kind.into(), title: "Pilot".into(),
+    fn row(kind: &str, thumb: &str, parent: &str, grandparent: &str) -> plx_plex::plex::Metadata {
+        plx_plex::plex::Metadata { rating_key: "9".into(), kind: kind.into(), title: "Pilot".into(),
             thumb: thumb.into(), parent_thumb: parent.into(), grandparent_thumb: grandparent.into(),
             parent_index: 3, index: 4, grandparent_title: "Show".into(), ..Default::default() }
     }
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn the_header_reads_the_collections_member_order() {
         let head = |body: &str| {
-            let row: crate::plex::Metadata = serde_json::from_str(body).expect("parses");
+            let row: plx_plex::plex::Metadata = serde_json::from_str(body).expect("parses");
             Header::of(&row).order
         };
         assert_eq!(head(r#"{"title":"Saga","collectionSort":"0"}"#), Some(CollectionOrder::Release));

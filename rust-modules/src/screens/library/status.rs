@@ -50,7 +50,7 @@ impl LibraryScreen {
     pub(super) fn watch_readout<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) -> bool {
         use super::super::plaintext_question::{asks, Near};
         let machine = (self.readout == Readout::Failed)
-            .then(|| H::directory(cx).source().and_then(|(sid, _)| crate::plex::client_for(*sid)))
+            .then(|| H::directory(cx).source().and_then(|(sid, _)| plx_plex::plex::client_for(*sid)))
             .flatten()
             .map(|client| client.machine_id());
         let offer_moved = self.plaintext.refresh(machine, Near::Only);

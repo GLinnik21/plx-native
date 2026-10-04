@@ -76,7 +76,7 @@
 use crate::metadata;
 use crate::metadata::sub_layout::{self, LangId, OtherLang, RowBadge, RowTarget, SubHeader, SubModel, SubRow, SubTrack};
 use crate::metadata::track_label;
-use crate::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
+use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
 use plx_ui::frame::Budget;
 use plx_ui::geom::IndexElem;
 use plx_machine::machine::{Canon, Cx, EntryId, FocusKey, GroupId, Host, Measure};
@@ -263,7 +263,7 @@ type TrackTable = FormTable<TrackRow, (), TrackPage>;
 /// [`TrackMenuState::enh_state`]'s answer: the Audio tab's Boost/Loudness offer as displayed, the
 /// route it rides, the reason it is disabled, and the live subtitle effect its note names.
 type EnhState = (
-    Option<crate::plex::AudioEnhancements>,
+    Option<plx_plex::plex::AudioEnhancements>,
     Option<crate::route::EnhancementRoute>,
     Option<crate::route::DisabledReason>,
     crate::route::SubtitleEffect,
@@ -404,7 +404,7 @@ pub(crate) struct TrackMenuState {
     /// [`Self::offset_ms`]/[`Self::tone`] — a run of toggle presses inside one open counts from
     /// what THIS panel last drew, and [`Self::rebuild`] is the only writer, on every (re)build of
     /// the Audio tab (`new`/`focus_tab`).
-    enhance_shown: Option<crate::plex::AudioEnhancements>,
+    enhance_shown: Option<plx_plex::plex::AudioEnhancements>,
     /// The route [`Self::enhance_shown`] would take, kept alongside it (`Some` iff `enhance_shown`
     /// is `Some`) — the Audio tab's consequence note (M7: a burned subtitle, a dropped Dolby Vision
     /// declaration) reads the flavour, not just whether the toggle is on.
@@ -457,7 +457,7 @@ pub(crate) enum TrackCommit {
     /// bits regardless of which row was pressed. Built from [`TrackMenuState::enhance_shown`],
     /// never re-derived from `ps` here — the panel owns its own rows, not the playback (see this
     /// enum's own doc).
-    AudioEnhancement(crate::plex::AudioEnhancements),
+    AudioEnhancement(plx_plex::plex::AudioEnhancements),
     /// `sidecar_key` is `Some` when the pick is an EXTERNAL text subtitle the client can draw
     /// on direct play (`metadata::Stream::sidecar_renderable`): it has no demuxer ordinal
     /// (`render_ordinal` is -1), so the loop hands it to `player::sidecar` beside the unchanged
@@ -923,7 +923,7 @@ impl TrackMenuState {
                     TrackOk::Inert
                 }
                 target @ (Some(TrackRow::Boost) | Some(TrackRow::Loudness)) => {
-                    let mut a = self.enhance_shown.unwrap_or(crate::plex::AudioEnhancements::NONE);
+                    let mut a = self.enhance_shown.unwrap_or(plx_plex::plex::AudioEnhancements::NONE);
                     if target == Some(TrackRow::Boost) {
                         a.boost_dialog = !a.boost_dialog;
                     } else {
@@ -1489,7 +1489,7 @@ impl TrackMenuState {
     /// below — landing on the checked track — is exactly the existing open/switch behaviour.
     fn rebuild_audio(
         &mut self,
-        enhance_shown: Option<crate::plex::AudioEnhancements>,
+        enhance_shown: Option<plx_plex::plex::AudioEnhancements>,
         enhance_route: Option<crate::route::EnhancementRoute>,
         enhance_disabled: Option<crate::route::DisabledReason>,
         enhance_subtitle_effect: crate::route::SubtitleEffect,
@@ -2656,7 +2656,7 @@ mod enhancement_menu_tests {
 
     fn teardown(ps: &crate::route::PlaybackSession) {
         reset_player_control_for_test(ps);
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     /// **The other tab's warm is speculative to the recorder** (spec §5): its form build and
@@ -2705,7 +2705,7 @@ mod enhancement_menu_tests {
     fn enh_rows_absent_no_pass() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) =
-            audio_tab(EnhTestFixture { pass: crate::plex::serverinfo::Subscription::No, ..Default::default() });
+            audio_tab(EnhTestFixture { pass: plx_plex::plex::serverinfo::Subscription::No, ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
         assert_eq!(menu.form.table.sections.len(), 1, "track list only — no second section at all");
         teardown(&ps);
@@ -2715,7 +2715,7 @@ mod enhancement_menu_tests {
     fn enh_rows_absent_unknown_subscription() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture {
-            pass: crate::plex::serverinfo::Subscription::Unknown,
+            pass: plx_plex::plex::serverinfo::Subscription::Unknown,
             ..Default::default()
         });
         assert_eq!(menu.enhance_shown, None);
@@ -2905,7 +2905,7 @@ mod enhancement_menu_tests {
     fn row_for_audio_target_none_without_enhancement_rows() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) =
-            audio_tab(EnhTestFixture { pass: crate::plex::serverinfo::Subscription::No, ..Default::default() });
+            audio_tab(EnhTestFixture { pass: plx_plex::plex::serverinfo::Subscription::No, ..Default::default() });
         assert_eq!(menu.row_for_audio_target("boost"), None);
         assert_eq!(menu.row_for_audio_target("loudness"), None);
         teardown(&ps);
@@ -2916,7 +2916,7 @@ mod enhancement_menu_tests {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture {
             remux: Some(true),
-            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
             ..Default::default()
         });
         assert!(menu.enhance_shown.is_some());
@@ -2965,7 +2965,7 @@ mod enhancement_menu_tests {
         assert_eq!(
             outcome,
             TrackOk::Commit {
-                commit: TrackCommit::AudioEnhancement(crate::plex::AudioEnhancements {
+                commit: TrackCommit::AudioEnhancement(plx_plex::plex::AudioEnhancements {
                     boost_dialog: true,
                     normalize_loudness: false,
                 }),
@@ -2979,7 +2979,7 @@ mod enhancement_menu_tests {
         assert_eq!(
             outcome,
             TrackOk::Commit {
-                commit: TrackCommit::AudioEnhancement(crate::plex::AudioEnhancements::NONE),
+                commit: TrackCommit::AudioEnhancement(plx_plex::plex::AudioEnhancements::NONE),
                 keep_open: true,
             }
         );
@@ -2991,23 +2991,23 @@ mod enhancement_menu_tests {
         let _g = plx_base::testlock::serial();
         // Settled (no user edit queued): the row reads what the contract actually APPLIED.
         let (menu, ps) = audio_tab(EnhTestFixture {
-            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
             ..Default::default()
         });
         assert_eq!(
             menu.enhance_shown,
-            Some(crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true }),
+            Some(plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true }),
         );
         teardown(&ps);
         drop(_g);
 
         // In flight (a user edit queued, not yet settled): the row reads the DESIRED preference.
         let _g = plx_base::testlock::serial();
-        let desired = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
+        let desired = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
         crate::player::set_audio_enhancements(desired);
         let (menu, ps) = audio_tab(EnhTestFixture { in_flight: true, ..Default::default() });
         assert_eq!(menu.enhance_shown, Some(desired));
-        crate::player::set_audio_enhancements(crate::plex::AudioEnhancements::NONE);
+        crate::player::set_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
         teardown(&ps);
     }
 
@@ -3018,7 +3018,7 @@ mod enhancement_menu_tests {
         // `self.enhance_shown = Some(a)` leaves a freshly-picked row in, before the server has
         // answered.
         let (mut menu, ps_ok) = audio_tab(EnhTestFixture {
-            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
             ..Default::default()
         });
         assert_eq!(menu.form.table.sections[1].rows[1].toggle, Some(true));
@@ -3288,7 +3288,7 @@ mod enhancement_menu_tests {
         use plx_ui::fixture::FixtureMeasure as M;
         let _g = plx_base::testlock::serial();
         let (mut menu, ps_ok) = audio_tab(EnhTestFixture {
-            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
             ..Default::default()
         });
         assert!(!menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).any(|r| r.is_note()), "premise: no note yet");
@@ -3320,7 +3320,7 @@ mod enhancement_menu_tests {
     fn live_update_preserves_focus_on_the_toggled_row_not_the_checked_track() {
         let _g = plx_base::testlock::serial();
         let (mut menu, ps_before) = audio_tab(EnhTestFixture {
-            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: false },
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: false },
             ..Default::default()
         });
         // Row 0 is the one audio track (checked/active); row 1 is Boost dialog. Move the ENGINE's
@@ -3332,7 +3332,7 @@ mod enhancement_menu_tests {
         // request (mirrors the server's async `EnhancementOutcome` landing), delivered the way
         // `update` is fed every frame: a fresh `&PlaybackSession`, not a rebuild the panel triggers.
         let (ps_after, _sid2) = enhancement_test_session(EnhTestFixture {
-            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
             ..Default::default()
         });
         let store = one_track_store();
@@ -3393,7 +3393,7 @@ mod enhancement_menu_tests {
         // The offer vanishes for a frame — under M7 only a Plex Pass flip does that (I1/I2); every
         // other gate that used to hide the rows is now a visible `Disabled` reason instead.
         let (ps_hidden, _sid_hidden) = enhancement_test_session(EnhTestFixture {
-            pass: crate::plex::serverinfo::Subscription::No,
+            pass: plx_plex::plex::serverinfo::Subscription::No,
             ..Default::default()
         });
         let store_hidden = two_tracks();
@@ -3504,7 +3504,7 @@ mod enhancement_menu_tests {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             let (menu, ps) = audio_tab(EnhTestFixture {
-                applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true },
+                applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true },
                 ..Default::default()
             });
             out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
@@ -3541,7 +3541,7 @@ mod enhancement_menu_tests {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = subtitles_tab(EnhTestFixture {
             subtitle_effect: crate::route::SubtitleEffect::Embedded,
-            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
             applied_burn: true,
             ..Default::default()
         });
@@ -3595,7 +3595,7 @@ mod enhancement_menu_tests {
         let _g = plx_base::testlock::serial();
         let (mut menu, ps) = subtitles_tab(EnhTestFixture {
             subtitle_effect: crate::route::SubtitleEffect::Embedded,
-            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
             applied_burn: true,
             ..Default::default()
         });
@@ -3620,7 +3620,7 @@ mod enhancement_menu_tests {
         let _g = plx_base::testlock::serial();
         let (mut menu, ps) = subtitles_tab(EnhTestFixture {
             subtitle_effect: crate::route::SubtitleEffect::Embedded,
-            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
             applied_burn: true,
             ..Default::default()
         });
@@ -3656,7 +3656,7 @@ mod enhancement_menu_tests {
         // enhancement_tests.rs) drives before its own live pick.
         let (mut menu, _ps_before) = subtitles_tab(EnhTestFixture {
             subtitle_effect: crate::route::SubtitleEffect::None,
-            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
             applied_burn: false,
             ..Default::default()
         });
@@ -3668,7 +3668,7 @@ mod enhancement_menu_tests {
         // sat untouched — `ps` is process-external state the menu never owns a copy of).
         let (ps_after, _sid) = enhancement_test_session(EnhTestFixture {
             subtitle_effect: crate::route::SubtitleEffect::Embedded,
-            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
             applied_burn: true,
             ..Default::default()
         });
@@ -3698,7 +3698,7 @@ mod enhancement_menu_tests {
             let _guard = language_on_this_thread_for_test(language);
             let (menu, ps) = subtitles_tab(EnhTestFixture {
                 subtitle_effect: crate::route::SubtitleEffect::Embedded,
-                applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+                applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
                 applied_burn: true,
                 ..Default::default()
             });
@@ -3722,7 +3722,7 @@ mod enhancement_menu_tests {
         let _guard = language_on_this_thread_for_test(Preference::Es);
         let (menu, ps) = subtitles_tab(EnhTestFixture {
             subtitle_effect: crate::route::SubtitleEffect::Embedded,
-            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
             applied_burn: true,
             ..Default::default()
         });
@@ -4001,7 +4001,7 @@ mod keyed_form_tests {
         let _g = plx_base::testlock::serial();
         let store = store_with_audio(vec![audio(501, 0, true), audio(502, 1, false)]);
         let (ps_hidden, _s1) = enhancement_test_session(EnhTestFixture {
-            pass: crate::plex::serverinfo::Subscription::No,
+            pass: plx_plex::plex::serverinfo::Subscription::No,
             ..Default::default()
         });
         let mut menu = TrackMenuState::new(&ps_hidden, store.view(), 0, Vec::new());
@@ -4018,7 +4018,7 @@ mod keyed_form_tests {
         assert_eq!(key_of(&menu, TrackRow::Audio(1)), before, "the track's key did not move");
         assert_eq!(RowKeys::reseat(&menu.form), None, "the engine's key still names the landed row");
         reset_player_control_for_test(&ps_hidden);
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     /// **Adding a subtitle track to the offered list moves no other row's key**, even though the
@@ -4112,7 +4112,7 @@ mod style_page_tests {
 
     fn teardown(ps: &crate::route::PlaybackSession) {
         reset_player_control_for_test(ps);
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     /// A direct-play route with the subtitle `codec` active (or none when `effect` is `None`).
@@ -4504,7 +4504,7 @@ mod language_page_tests {
 
     fn teardown(ps: &crate::route::PlaybackSession) {
         reset_player_control_for_test(ps);
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     fn pgs(mut s: metadata::Stream) -> metadata::Stream {
@@ -5020,7 +5020,7 @@ mod motion_tests {
 
     fn teardown(ps: &crate::route::PlaybackSession) {
         reset_player_control_for_test(ps);
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     fn subs() -> Vec<metadata::Stream> {

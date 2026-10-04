@@ -623,7 +623,7 @@ mod tests {
     /// **The trailer shares the Skip interval**: a fresh press hops the chosen length, both ways.
     #[test]
     fn a_fresh_press_hops_the_chosen_skip_interval() {
-        use crate::plex::session::SkipInterval;
+        use plx_plex::plex::session::SkipInterval;
         let _g = plx_base::testlock::serial();
         const S: i64 = 1_000_000_000;
         let (dur, live) = (200 * S, 100 * S);

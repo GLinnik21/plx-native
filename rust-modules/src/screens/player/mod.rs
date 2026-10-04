@@ -2243,7 +2243,7 @@ mod scrub_ownership_tests {
     /// From 50 s of a 100 s film: a 60 s hop forward lands on the 3 s tail cap and one back on 0.
     #[test]
     fn a_press_hops_the_chosen_skip_interval_in_both_directions_and_clamps() {
-        use crate::plex::session::SkipInterval;
+        use plx_plex::plex::session::SkipInterval;
         use plx_ui::consts::SDLK_LEFT;
         use std::sync::atomic::Ordering::Relaxed;
         let _g = plx_base::testlock::serial();

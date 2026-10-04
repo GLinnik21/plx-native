@@ -39,7 +39,7 @@ fn source_cx<'a>(
 #[test]
 fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     let _guard = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("menu-anchor-contract");
+    let session = plx_plex::plex::session::TempSession::new("menu-anchor-contract");
     session.watching("u-menu-anchor-contract");
     let stores = crate::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
@@ -217,7 +217,7 @@ fn sources_menu_left_is_an_engine_edge_not_an_editor_transition() {
 #[test]
 fn open_sources_refreshes_metadata_once_then_settles() {
     let _guard = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("menu-refresh-contract");
+    let session = plx_plex::plex::session::TempSession::new("menu-refresh-contract");
     session.watching("u-menu-refresh-contract");
     let stores = crate::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();

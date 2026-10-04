@@ -6,7 +6,7 @@ use super::super::{
     bridge::{self, AppHost, Bridge},
     content, playback,
 };
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use crate::screens::registry::{AppArg, ContentArg, ItemMenuKind};
 use plx_ui::dispatch::Dispatcher;
 use plx_machine::machine::Key;
@@ -212,8 +212,8 @@ fn chain(host: AppArg, episode: bool, accept_request: bool, accept_start: bool) 
 #[test]
 fn card_menu_activation_returns_to_all_hosts_through_production_launch() {
     let _serial = plx_base::testlock::serial();
-    let _session = crate::plex::session::TempSession::new("menu-card-return");
-    crate::plex::reset_servers_for_test();
+    let _session = plx_plex::plex::session::TempSession::new("menu-card-return");
+    plx_plex::plex::reset_servers_for_test();
     // Non-Home first: Home alone can hide a missing origin.
     for host in [
         AppArg::Library,
@@ -229,16 +229,16 @@ fn card_menu_activation_returns_to_all_hosts_through_production_launch() {
 #[test]
 fn filmstrip_menu_activation_returns_to_detail_through_production_launch() {
     let _serial = plx_base::testlock::serial();
-    let _session = crate::plex::session::TempSession::new("menu-filmstrip-return");
-    crate::plex::reset_servers_for_test();
+    let _session = plx_plex::plex::session::TempSession::new("menu-filmstrip-return");
+    plx_plex::plex::reset_servers_for_test();
     chain(detail(), true, true, true);
 }
 
 #[test]
 fn refused_menu_resources_leave_the_retained_host_and_do_not_repeat_work() {
     let _serial = plx_base::testlock::serial();
-    let _session = crate::plex::session::TempSession::new("menu-refused-return");
-    crate::plex::reset_servers_for_test();
+    let _session = plx_plex::plex::session::TempSession::new("menu-refused-return");
+    plx_plex::plex::reset_servers_for_test();
     for episode in [false, true] {
         chain(detail(), episode, false, true);
         chain(detail(), episode, true, false);

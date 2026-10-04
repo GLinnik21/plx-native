@@ -576,7 +576,7 @@ fn preferred_language_tags_match_both_three_letter_spellings() {
 /// **A show's subtitle settings turn a subtitle on at the start of a direct play.**
 #[test]
 fn a_shows_subtitle_settings_choose_the_starting_subtitle() {
-    let prefs = |mode: i32| crate::plex::ShowLangPrefs {
+    let prefs = |mode: i32| plx_plex::plex::ShowLangPrefs {
         audio: None,
         subtitle: Some("hu-HU".into()),
         subtitle_mode: mode,
@@ -604,7 +604,7 @@ fn a_shows_subtitle_settings_choose_the_starting_subtitle() {
 
 #[test]
 fn show_settings_are_read_out_of_a_setting_list() {
-    use crate::plex::{Setting, ShowLangPrefs};
+    use plx_plex::plex::{Setting, ShowLangPrefs};
     let s = |id: &str, v: &str| Setting { id: id.into(), value: v.into() };
     assert_eq!(ShowLangPrefs::from_settings(&[s("episodeSort", "-1")]), None);
     assert_eq!(
@@ -692,7 +692,7 @@ fn a_picks_sibling_matches_across_iso_639_spellings() {
 /// `""` and `"-1"` are Plex's "Account default": unset, so the file's default wins.
 #[test]
 fn an_account_default_show_setting_is_no_preference() {
-    use crate::plex::{Setting, ShowLangPrefs};
+    use plx_plex::plex::{Setting, ShowLangPrefs};
     let s = |id: &str, v: &str| Setting { id: id.into(), value: v.into() };
     assert_eq!(
         ShowLangPrefs::from_settings(&[s("audioLanguage", "-1")]).and_then(|p| p.audio),
@@ -710,7 +710,7 @@ fn an_account_default_show_setting_is_no_preference() {
 fn inherited_subtitles_use_account_language_and_mode() {
     let tracks = [sub(1, 0, "eng", false), sub(2, 1, "fra", false)];
     let account = SubtitleLangPrefs { language: Some("fr"), mode: 2, forced: 0 };
-    assert_eq!(pick_dp_subtitle_account(&tracks, &crate::plex::ShowLangPrefs::default(), account, "eng"), Some((2, 1)));
+    assert_eq!(pick_dp_subtitle_account(&tracks, &plx_plex::plex::ShowLangPrefs::default(), account, "eng"), Some((2, 1)));
 }
 
 #[test]
@@ -718,7 +718,7 @@ fn account_subtitle_precedence_foreign_audio_and_forced_modes() {
     let mut tracks = [sub(1, 0, "eng", false), sub(2, 1, "fra", false), sub(3, 2, "fra", false)];
     tracks[2].forced = true;
     let account = SubtitleLangPrefs { language: Some("fr"), mode: 2, forced: 0 };
-    let mut show = crate::plex::ShowLangPrefs::default();
+    let mut show = plx_plex::plex::ShowLangPrefs::default();
     for (forced, want) in [(0, 2), (1, 3), (2, 3), (3, 2)] {
         assert_eq!(pick_dp_subtitle_account(&tracks, &show, SubtitleLangPrefs { forced, ..account }, "eng").map(|p| p.0), Some(want));
     }
@@ -741,7 +741,7 @@ fn account_subtitles_skip_unrenderable_tracks_without_enabling_a_burn() {
     let mut tracks = [sub(1, 0, "fra", false), sub(2, 1, "fra", true), sub(3, 2, "fra", false)];
     tracks[0].codec = "unsupported".into();
     let account = SubtitleLangPrefs { language: Some("fr"), mode: 2, forced: 0 };
-    let show = crate::plex::ShowLangPrefs::default();
+    let show = plx_plex::plex::ShowLangPrefs::default();
     assert_eq!(pick_dp_subtitle_account(&tracks, &show, account, "eng"), Some((3, 1)));
     assert_eq!(pick_dp_subtitle_account(&tracks[..2], &show, account, "eng"), None);
     tracks[1].selected = true;

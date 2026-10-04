@@ -11,17 +11,17 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
-    let session = crate::plex::session::TempSession::new("library-strip-navigation");
+    let session = plx_plex::plex::session::TempSession::new("library-strip-navigation");
     session.watching("u-library-strip-navigation");
-    crate::plex::reset_servers_for_test();
-    let own = crate::plex::register_for_test("strip-own", "127.0.0.1", 9, "synthetic", "fixture");
+    plx_plex::plex::reset_servers_for_test();
+    let own = plx_plex::plex::register_for_test("strip-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared =
-        crate::plex::register_for_test("strip-shared", "127.0.0.1", 10, "synthetic", "fixture");
-    crate::plex::set_current(own);
+        plx_plex::plex::register_for_test("strip-shared", "127.0.0.1", 10, "synthetic", "fixture");
+    plx_plex::plex::set_current(own);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);

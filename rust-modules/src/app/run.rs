@@ -859,7 +859,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // unencrypted connections on: every plaintext grant ends here, and each server that
             // lost one is queued for a fresh discovery (requested by the upgrade retry's frame
             // step) that re-proves eligibility before minting again (`plex::grant`).
-            crate::plex::grant::network_changed();
+            plx_plex::plex::grant::network_changed();
             // Reacquire only on DID foreground, before playback restoration and rendering.
             restore_window(app.win);
             plx_machine::idle::invalidate();
@@ -3199,7 +3199,7 @@ mod lifecycle_regression_tests {
 
             app.pages.suspend();
             app.window_activity.event(0x104);
-            let revision = crate::plex::grant::revision();
+            let revision = plx_plex::plex::grant::revision();
             let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
             for value in app.rec.replay_inputs() {
                 unsafe { replay_inject(&mut app, &mut fr, &value); }
@@ -3207,7 +3207,7 @@ mod lifecycle_regression_tests {
             assert!(!app.pages.nav.suspended, "recorded foreground reaches the navigation owner");
             assert!(!app.window_activity.allow_present(true),
                 "a recording cannot authorize EGL presentation while the real window is backgrounded");
-            assert_eq!(crate::plex::grant::revision(), revision,
+            assert_eq!(plx_plex::plex::grant::revision(), revision,
                 "recorded foreground has no network-grant authority");
 
             // The actual compositor's startup pair may arrive at another frame. It
@@ -3220,7 +3220,7 @@ mod lifecycle_regression_tests {
             assert_eq!(restored_windows, 1, "only the real DID foreground restores native handles");
             assert!(app.window_activity.allow_present(true));
             assert!(app.inputs.is_empty(), "ambient keys cannot enter the recorded scenario");
-            assert_eq!(crate::plex::grant::revision(), revision);
+            assert_eq!(plx_plex::plex::grant::revision(), revision);
             app.rec.present(true);
             Tap::focus(&mut app.rec, 1, None);
             assert!(app.rec.end_frame(&|| 7));
@@ -3456,7 +3456,7 @@ mod lifecycle_regression_tests {
 
     struct Rig {
         app: App,
-        sid: crate::plex::ServerId,
+        sid: plx_plex::plex::ServerId,
         release: mpsc::Sender<()>,
         entered: mpsc::Receiver<()>,
         requests: Arc<Mutex<Vec<String>>>,
@@ -3492,7 +3492,7 @@ mod lifecycle_regression_tests {
         /// `successor: false` serves a one-row queue — a film, with no Up Next to hand off to — so
         /// an end of stream leaves the player instead of starting the next item.
         fn serving(successor: bool) -> Option<Rig> {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -3574,11 +3574,11 @@ mod lifecycle_regression_tests {
                 None => {
                     // See the doc comment above: nothing past this point has run yet, so undoing
                     // the initial reset is the whole cleanup owed.
-                    crate::plex::reset_servers_for_test();
+                    plx_plex::plex::reset_servers_for_test();
                     return None;
                 }
             };
-            let sid = crate::plex::register_for_test(
+            let sid = plx_plex::plex::register_for_test(
                 "lifecycle-fixture",
                 "127.0.0.1",
                 port as i32,
@@ -3686,7 +3686,7 @@ mod lifecycle_regression_tests {
             }
             crate::player::SHARED.reset_session();
             crate::route::reset_player_control_for_test(&self.app.player.session);
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
 
@@ -4045,7 +4045,7 @@ mod lifecycle_regression_tests {
         event
     }
 
-    fn detail_arg(sid: crate::plex::ServerId) -> AppArg {
+    fn detail_arg(sid: plx_plex::plex::ServerId) -> AppArg {
         AppArg::Content(crate::screens::registry::ContentArg::Detail { sid, rk: "1".into() })
     }
 

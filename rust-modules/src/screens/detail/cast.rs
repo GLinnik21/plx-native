@@ -3,7 +3,7 @@
 use std::ffi::CString;
 
 use crate::metadata::Detail;
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use plx_ui::card_row::{self, CardRow, RowStyle};
 use plx_ui::label::{HAlign, Label, VAlign};
 use plx_machine::machine::{GroupId, Measure};

@@ -1137,7 +1137,7 @@ mod focus_tests {
         assert!(is_episode(test_store().view()), "a show parent labels Go to Show");
 
         crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "parent-show".into(),
             kind: "show".into(),
             is_show: true,
@@ -1151,7 +1151,7 @@ mod focus_tests {
             }],
             ..Default::default()
         }));
-        let trailer = crate::metadata::trailer_now_playing(test_store().state(), crate::plex::ServerId::UNSET, "9");
+        let trailer = crate::metadata::trailer_now_playing(test_store().state(), plx_plex::plex::ServerId::UNSET, "9");
         test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(trailer));
         let mut playing = InfoPanelState::new();
         playing.set_focus(1);

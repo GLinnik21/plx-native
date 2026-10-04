@@ -58,7 +58,7 @@ struct Fixture {
 
 impl Fixture {
     fn normal() -> Self {
-        let sid = crate::plex::ServerId::from_raw(0);
+        let sid = plx_plex::plex::ServerId::from_raw(0);
         let listing = crate::stores::browse::ListingSnapshot::fixture(
             sid,
             (0..36).map(|i| Some(crate::pms::PmsMovie {
@@ -78,7 +78,7 @@ impl Fixture {
 
     fn section(section: usize, key: i64, title: &str, current: bool) -> crate::stores::browse::SectionView {
         crate::stores::browse::SectionView {
-            sid: Some(crate::plex::ServerId::from_raw(0)),
+            sid: Some(plx_plex::plex::ServerId::from_raw(0)),
             key,
             kind: SecKind::Movie,
             row: SrcRow { section, title: title.into(), pinned: true, current, ..Default::default() },
@@ -86,7 +86,7 @@ impl Fixture {
     }
 
     fn listing(fetch: SecFetch, total: i64) -> crate::stores::browse::ListingSnapshot {
-        let sid = crate::plex::ServerId::from_raw(0);
+        let sid = plx_plex::plex::ServerId::from_raw(0);
         crate::stores::browse::ListingSnapshot::fixture(
             sid,
             (0..total.max(0) as usize).map(|i| Some(crate::pms::PmsMovie {
@@ -172,7 +172,7 @@ fn failed_status_occupies_content_and_keeps_only_navigation_and_retry() {
 #[test]
 fn empty_loading_and_failed_discovery_publish_no_false_grid_controls() {
     let _guard = plx_base::testlock::serial();
-    let sid = crate::plex::ServerId::from_raw(7);
+    let sid = plx_plex::plex::ServerId::from_raw(7);
     let scenarios = [
         ("reachable empty table", crate::stores::browse::DirectorySnapshot::fixture_source(
             1, sid, SrcGroup { name: "Cinema server".into(), handle: String::new(), state: SourceState::Reachable, tier: None }, SecFetch::Ready),

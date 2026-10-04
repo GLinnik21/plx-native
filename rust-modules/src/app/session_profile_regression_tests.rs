@@ -5,7 +5,7 @@
 mod tests {
     use super::super::*;
     use crate::auth::owner::{SessionEvent, SessionWork};
-    use crate::plex::account::{AccountClient, Resource, SwitchOutcome};
+    use plx_plex::plex::account::{AccountClient, Resource, SwitchOutcome};
     use crate::auth::{Phase, SessionCmd, ProfileWorkIo};
     use crate::auth::owner::{RegistryPlan, SessionEnvelope};
 
@@ -30,7 +30,7 @@ mod tests {
     fn profile_rig(protected: bool) -> Bridge {
         let mut stored = cached_fixture();
         if protected {
-            stored.profiles[0].pin = Some(crate::plex::session::PinVerifier::new("4821"));
+            stored.profiles[0].pin = Some(plx_plex::plex::session::PinVerifier::new("4821"));
         }
         let mut init = crate::auth::SessionInit::captured(stored);
         init.epoch = u64::from(u32::MAX) + 20;
@@ -61,8 +61,8 @@ mod tests {
         fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
             SwitchOutcome::Refused(403)
         }
-        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> { panic!("refusal cannot discover") }
-        fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<crate::plex::session::SourceRef>, crate::auth::SettledProbe) { panic!("refusal cannot probe") }
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> { panic!("refusal cannot discover") }
+        fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<plx_plex::plex::session::SourceRef>, crate::auth::SettledProbe) { panic!("refusal cannot probe") }
         fn gap(&mut self) { panic!("refusal cannot wait") }
     }
 
@@ -72,20 +72,20 @@ mod tests {
     #[test]
     fn a_refused_profile_switch_leaves_the_live_plaintext_grant_alone() {
         let _g = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        crate::plex::grant::reset_for_test();
-        let origin = crate::plex::Origin::http("192.168.0.10", 32400);
-        crate::plex::grant::mint(crate::plex::grant::scope(), "lan-http", &origin,
-            &crate::plex::grant::eligible_evidence_for_test()).unwrap();
+        plx_plex::plex::reset_servers_for_test();
+        plx_plex::plex::grant::reset_for_test();
+        let origin = plx_plex::plex::Origin::http("192.168.0.10", 32400);
+        plx_plex::plex::grant::mint(plx_plex::plex::grant::scope(), "lan-http", &origin,
+            &plx_plex::plex::grant::eligible_evidence_for_test()).unwrap();
         let mut rig = profile_rig(false);
         let mut d = Dispatcher::<AppHost>::new();
         inject(&mut rig, RefusedIo);
         command(&mut rig, &mut d, SessionCmd::SelectProfile { index: 0, pin: None });
         let records = rig.session_adapter.take_results();
         frame(&mut rig, &mut d, records);
-        assert_eq!(crate::plex::grant::granted_origin("lan-http"), Some(origin));
-        crate::plex::grant::reset_for_test();
-        crate::plex::reset_servers_for_test();
+        assert_eq!(plx_plex::plex::grant::granted_origin("lan-http"), Some(origin));
+        plx_plex::plex::grant::reset_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
@@ -200,32 +200,32 @@ mod tests {
     impl ProfileWorkIo for OnlineIo {
         fn switch(&mut self, _: &AccountClient, uuid: &str, _: Option<&str>) -> SwitchOutcome {
             assert_eq!(uuid, "synthetic-kid");
-            SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+            SwitchOutcome::Switched(plx_plex::plex::account::SwitchedUser {
                 uuid: uuid.into(), title: "Kid".into(), auth_token: "synthetic-switched-account".into(),
                 ..Default::default()
             })
         }
-        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> {
             Ok(vec![
                 serde_json::from_str(r#"{"clientIdentifier":"synthetic-server","name":"Synthetic server","provides":"server","owned":true,"accessToken":"synthetic-kid-token"}"#).unwrap(),
                 serde_json::from_str(r#"{"clientIdentifier":"synthetic-share","name":"Synthetic share","provides":"server","owned":false,"accessToken":"synthetic-share-token"}"#).unwrap(),
             ])
         }
-        fn probe(&mut self, resource: &Resource, _: &[i64]) -> (Option<crate::plex::session::SourceRef>, crate::auth::SettledProbe) {
+        fn probe(&mut self, resource: &Resource, _: &[i64]) -> (Option<plx_plex::plex::session::SourceRef>, crate::auth::SettledProbe) {
             let expected = if self.probes == 0 { "synthetic-server" } else { "synthetic-share" };
             assert_eq!(resource.client_identifier, expected);
             assert!(self.probes < 2);
             self.probes += 1;
             let address = if resource.owned { "127.0.0.2" } else { "127.0.0.3" };
-            let source = crate::plex::session::SourceRef {
+            let source = plx_plex::plex::session::SourceRef {
                 machine_id: resource.client_identifier.clone(), name: resource.name.clone(),
                 owned: resource.owned, token: resource.access_token.clone(), address: address.into(),
                 port: 32400, origin_url: format!("http://{address}:32400"),
                 ..Default::default()
             };
             (Some(source), crate::auth::settled_probe(
-                &crate::plex::probe::plan(resource, crate::plex::CredentialPolicy::HttpsOnly),
-                crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local),
+                &plx_plex::plex::probe::plan(resource, plx_plex::plex::CredentialPolicy::HttpsOnly),
+                plx_plex::plex::probe::Outcome::Reachable, Some(plx_plex::plex::probe::Location::Local),
                 Some(address.into())))
         }
         fn gap(&mut self) {
@@ -286,17 +286,17 @@ mod tests {
                 command(&mut rig, &mut d, SessionCmd::TakeReady);
                 let disk = &mut rig.session_adapter.fixture_resources().disk;
                 assert_eq!(disk.user.uuid, "synthetic-kid");
-                disk.recent_searches.push(crate::plex::session::RecentSearches {
+                disk.recent_searches.push(plx_plex::plex::session::RecentSearches {
                     user: "synthetic-kid".into(), terms: vec!["newer preference".into()],
                     extensions: Default::default(),
                 });
-                disk.playback_quality = Some(crate::plex::session::PlaybackQuality::Original);
+                disk.playback_quality = Some(plx_plex::plex::session::PlaybackQuality::Original);
                 assert!(!disk.sources.iter().any(|source| source.machine_id == "synthetic-share" && source.dialable()));
                 frame(&mut rig, &mut d, vec![roster]);
                 drain_carried(&mut rig, &mut d);
                 let disk = &rig.session_adapter.fixture_resources().disk;
                 assert_eq!(disk.recent_searches[0].terms, ["newer preference"]);
-                assert_eq!(disk.playback_quality, Some(crate::plex::session::PlaybackQuality::Original));
+                assert_eq!(disk.playback_quality, Some(plx_plex::plex::session::PlaybackQuality::Original));
             }
             assert!(rig.take_session_ready().is_some());
             assert!(rig.take_session_ready().is_none());
@@ -341,17 +341,17 @@ mod tests {
         fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
             SwitchOutcome::Unreachable
         }
-        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> {
             panic!("offline seating must not fetch resources")
         }
-        fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<crate::plex::session::SourceRef>, crate::auth::SettledProbe) {
+        fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<plx_plex::plex::session::SourceRef>, crate::auth::SettledProbe) {
             panic!("offline seating must not probe")
         }
         fn gap(&mut self) { panic!("offline seating has no probe gap") }
     }
 
-    fn cached_fixture() -> crate::plex::session::Session {
-        use crate::plex::session::{ProfileCreds, ServerRef, Session, SourceRef, UserRef};
+    fn cached_fixture() -> plx_plex::plex::session::Session {
+        use plx_plex::plex::session::{ProfileCreds, ServerRef, Session, SourceRef, UserRef};
         let source = SourceRef { machine_id: "synthetic-server".into(), name: "Synthetic server".into(),
             address: "127.0.0.1".into(), port: 32400, origin_url: "http://127.0.0.1:32400".into(),
             token: "synthetic-kid-token".into(), owned: true, ..Default::default() };

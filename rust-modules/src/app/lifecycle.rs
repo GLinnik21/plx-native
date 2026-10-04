@@ -244,7 +244,7 @@ mod root_back_tests {
         crate::app::bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick::default(), vec![]);
         crate::app::bridge::nav_push(&mut d, crate::screens::registry::AppArg::Content(
             crate::screens::registry::ContentArg::Detail {
-                sid: crate::plex::ServerId::UNSET, rk: "nonroot-back".into(),
+                sid: plx_plex::plex::ServerId::UNSET, rk: "nonroot-back".into(),
             }));
         crate::app::bridge::frame(&mut d, &mut rig,
             plx_machine::machine::Tick { ms: 16, dt_us: 16_000 }, vec![]);

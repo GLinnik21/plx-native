@@ -106,9 +106,9 @@ pub(crate) fn install_panic_logger() {
 ///   telemetry/consent legacy-file sweep a durable sign-out runs. It exists only where the sweep does
 ///   (ARM, not the simulator, not a test build); unset, `plex` reads it as already retired.
 pub(crate) fn install_plex_seams() {
-    crate::plex::session::install_auto_quality_ready(crate::route::auto_quality_ready);
+    plx_plex::plex::session::install_auto_quality_ready(crate::route::auto_quality_ready);
     #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
-    crate::plex::session::install_account_clear_cleanup(crate::telemetry::cleanup_after_account_clear);
+    plx_plex::plex::session::install_account_clear_cleanup(crate::telemetry::cleanup_after_account_clear);
 }
 
 #[cfg(test)]
@@ -300,14 +300,14 @@ mod replay_budget_tests {
 /// to one PMS, so falling back could open a different item on another server.
 pub(crate) fn resolve_direct_server(
     requested: Option<Result<u16, String>>,
-    current: crate::plex::ServerId,
-    registered: impl Fn(crate::plex::ServerId) -> bool,
-) -> Result<crate::plex::ServerId, String> {
+    current: plx_plex::plex::ServerId,
+    registered: impl Fn(plx_plex::plex::ServerId) -> bool,
+) -> Result<plx_plex::plex::ServerId, String> {
     let Some(slot) = requested else {
         return Ok(current);
     };
     let raw = slot?;
-    let sid = crate::plex::ServerId::from_raw(raw);
+    let sid = plx_plex::plex::ServerId::from_raw(raw);
     registered(sid)
         .then_some(sid)
         .ok_or_else(|| format!("server slot {raw} is not registered"))
@@ -322,8 +322,8 @@ mod direct_server_tests {
 
     #[test]
     fn an_explicit_direct_screen_server_never_falls_back_to_current() {
-        let current = crate::plex::ServerId::from_raw(0);
-        let secondary = crate::plex::ServerId::from_raw(1);
+        let current = plx_plex::plex::ServerId::from_raw(0);
+        let secondary = plx_plex::plex::ServerId::from_raw(1);
         assert_eq!(
             resolve_direct_server(None, current, |_| false),
             Ok(current),
@@ -343,11 +343,11 @@ mod direct_server_tests {
     }
 }
 
-pub(crate) fn direct_trigger_server() -> Result<crate::plex::ServerId, String> {
+pub(crate) fn direct_trigger_server() -> Result<plx_plex::plex::ServerId, String> {
     resolve_direct_server(
         crate::dev::server_slot(),
-        crate::plex::current_server(),
-        |sid| crate::plex::client_for(sid).is_some(),
+        plx_plex::plex::current_server(),
+        |sid| plx_plex::plex::client_for(sid).is_some(),
     )
 }
 
@@ -361,16 +361,16 @@ pub(crate) enum BootTo {
 }
 
 /// Pure capture boundary shared by actual boot and owner bootstrap regression fixtures.
-pub(crate) fn captured_session_for_boot(saved: crate::plex::session::Session,
-    dev_primary: Option<crate::plex::session::ServerRef>,
-    extras: Vec<crate::plex::session::SourceRef>) -> crate::auth::SessionInit {
+pub(crate) fn captured_session_for_boot(saved: plx_plex::plex::session::Session,
+    dev_primary: Option<plx_plex::plex::session::ServerRef>,
+    extras: Vec<plx_plex::plex::session::SourceRef>) -> crate::auth::SessionInit {
     crate::auth::SessionInit::captured_boot(saved, dev_primary, extras)
 }
 
-fn captured_dev_sources(servers: &[crate::dev::DevServer]) -> Vec<crate::plex::session::SourceRef> {
+fn captured_dev_sources(servers: &[crate::dev::DevServer]) -> Vec<plx_plex::plex::session::SourceRef> {
     servers.iter().filter(|s| s.usable()).filter_map(|s| {
         let origin = s.origin()?;
-        Some(crate::plex::session::SourceRef { machine_id: s.machine_id.clone(), name: s.name.clone(),
+        Some(plx_plex::plex::session::SourceRef { machine_id: s.machine_id.clone(), name: s.name.clone(),
             address: s.resolve_pin().map_or_else(|| s.host.clone(), |pin| pin.addr().to_string()),
             port: s.port, origin_url: origin.base(), token: s.token.clone(),
             shared_by: s.handle.clone(), owned: s.handle.is_empty(), tier: s.tier, ..Default::default() })
@@ -408,11 +408,11 @@ pub(super) fn activate_server_owned(
     // routes control and media requests through the matching transport.
 pub(super) fn install_pms_owned(
     bridge: &mut super::bridge::Bridge,
-    origin: &crate::plex::Origin,
+    origin: &plx_plex::plex::Origin,
     address: &str,
     token: &str,
-    tier: Option<crate::plex::probe::Location>,
-    pin: Option<&crate::plex::ResolvePin>,
+    tier: Option<plx_plex::plex::probe::Location>,
+    pin: Option<&plx_plex::plex::ResolvePin>,
     install: &crate::auth::owner::ReadyInstall,
 ) -> crate::stores::EndpointRefreshSet {
     if let crate::auth::owner::ReadyInstall::PrimaryAndExtras(extras) = install {
@@ -458,7 +458,7 @@ pub(crate) unsafe fn boot(
 
 pub(super) fn apply_deferred_capture(rec: &mut super::recorder::Recplay,
     gate: &plx_machine::landgate::Gate,
-    deferred: crate::plex::session::DeferredLoad) -> Result<(), &'static str> {
+    deferred: plx_plex::plex::session::DeferredLoad) -> Result<(), &'static str> {
     if let Err(reason) = deferred.apply() {
         rec.abort_startup(gate)?;
         return Err(reason);
@@ -469,13 +469,13 @@ pub(super) fn apply_deferred_capture(rec: &mut super::recorder::Recplay,
 pub(crate) unsafe fn construct(
     pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
     preflight: super::bootstrap::Preflight, initial: Option<super::bootstrap::Initial>,
-    deferred: Option<crate::plex::session::DeferredLoad>,
+    deferred: Option<plx_plex::plex::session::DeferredLoad>,
 ) -> Result<App, c_int> {
     let controlled = preflight.controlled();
     if let Some(initial) = &initial {
         crate::stores::tape::init(initial.person_credits(), preflight.replay());
         initial.home.restore(&mt).map_err(|_| 1)?;
-        crate::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| 1)?;
+        plx_plex::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| 1)?;
     }
     SDL_SetMainReady();
     // DEAD END, measured 2026-07-31 — do not re-try this. The obvious answer to "a parked TV
@@ -629,7 +629,7 @@ pub(crate) unsafe fn construct(
     plx_gfx::gfx::init_blur();
     // The transport takes the client's `User-Agent` as a value (it names no Plex layer): hand it
     // over before any request can be made, so the first one already carries it.
-    plx_net::net::set_user_agent(crate::plex::identity::user_agent());
+    plx_net::net::set_user_agent(plx_plex::plex::identity::user_agent());
     // One-time libcurl bind + init (main thread) before any threaded HTTPS call. A false here
     // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
     // still runs, and `net::global_init` has already said so in the event log.
@@ -754,11 +754,11 @@ pub(crate) unsafe fn construct(
     let pick_user: Option<usize> = if controlled { None } else { crate::dev::scenarios::pickuser_index() };
     let session = match &initial {
         Some(initial) => initial.session.persisted.clone(),
-        None => crate::plex::session::load(),
+        None => plx_plex::plex::session::load(),
     };
     // The remembered server keys of the session this boot runs on, handed over before any request
     // can leave: a captured session was never READ through the cache that projects them.
-    crate::plex::session::project_server_keys(&session, false);
+    plx_plex::plex::session::project_server_keys(&session, false);
     // dev: /tmp/plxnative-tls-selftest — exercises the wrong-clock TLS fallback on both planes with
     // no account (a no-op without the trigger; absent in shipping builds). Armed HERE, after the
     // projection above, and not beside `global_init`: the projection replaces the key table
@@ -780,11 +780,11 @@ pub(crate) unsafe fn construct(
     let forced_login = !controlled && crate::dev::scenarios::login_forced();
     let dev_primary = (!forced_login && !dev_token.is_empty()).then(|| {
         let origin = crate::dev::scenarios::pms_origin()
-            .unwrap_or_else(|| crate::plex::Origin::http(&host_s, pms_port));
-        crate::plex::session::ServerRef {
+            .unwrap_or_else(|| plx_plex::plex::Origin::http(&host_s, pms_port));
+        plx_plex::plex::session::ServerRef {
             address: origin.host().to_owned(), port: i64::from(origin.port()),
             origin_url: origin.base(), token: dev_token.clone(),
-            tier: Some(crate::plex::probe::configured_tier(origin.host())), ..Default::default()
+            tier: Some(plx_plex::plex::probe::configured_tier(origin.host())), ..Default::default()
         }
     });
     let session_init = match &initial {
@@ -844,7 +844,7 @@ pub(crate) unsafe fn construct(
         // "nothing has said" — which left every automated run unable to reach Auto's Original
         // bootstrap, since `abr::bootstrap` is only consulted once a tier exists. See
         // `probe::configured_tier` for why address shape is honest enough here.
-        let tier = crate::plex::probe::configured_tier(&host_s);
+        let tier = plx_plex::plex::probe::configured_tier(&host_s);
         log(&format!(
             "boot: dev token — link={tier:?} (classified from the configured address)"
         ));
@@ -1306,7 +1306,7 @@ pub(crate) unsafe fn construct(
     // /tmp/plxnative-qualityswitch: the rungs still to switch to, the tick of the last one
     // fired, and the gap between them. Same shape as the seek script above, for the same
     // reason — a person changing quality mid-playback does it more than once.
-    let quality_script: Vec<crate::plex::session::PlaybackQuality> = Vec::new();
+    let quality_script: Vec<plx_plex::plex::session::PlaybackQuality> = Vec::new();
     let quality_script_at = 0u32;
     let quality_gap_ms = 0u32;
     let quality_tried = false;

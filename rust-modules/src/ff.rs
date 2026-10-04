@@ -2089,7 +2089,7 @@ struct BlockingDeadline {
 }
 
 impl TransportWatchdog {
-    fn for_origin(origin: &crate::plex::Origin) -> Self {
+    fn for_origin(origin: &plx_plex::plex::Origin) -> Self {
         let inactivity = if origin.is_tls() {
             crate::curlio::media_stall_budget()
         } else {
@@ -2752,7 +2752,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                 path,
             } => {
                 plx_net::stream::http_close(*hs);
-                let origin = crate::plex::Origin::http(&host.to_string_lossy(), *port);
+                let origin = plx_plex::plex::Origin::http(&host.to_string_lossy(), *port);
                 let from = path.to_string_lossy().into_owned();
                 let req = plx_net::stream::redirect::Request {
                     origin: &origin,
@@ -2761,7 +2761,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                     range_from: Some(target),
                     deadline: None,
                     same_origin_only: false,
-                    credential_gate: crate::http::credential_transport_allowed,
+                    credential_gate: plx_plex::http::credential_transport_allowed,
                 };
                 match plx_net::stream::redirect::open_following(
                     *hs,
@@ -3544,7 +3544,7 @@ fn hls_open_curl(
 /// stay on the PMS origin. Also returns the resource the open landed on: a playlist's children
 /// resolve against it, not against the path that was requested.
 fn hls_open_plain(
-    origin: &crate::plex::Origin,
+    origin: &plx_plex::plex::Origin,
     request_path: &str,
     aq: *mut AuQueue,
     net: &mut HlsNet,
@@ -3565,7 +3565,7 @@ fn hls_open_plain(
         deadline,
         // The HLS contract (`crate::hls`): every request stays on the PMS origin.
         same_origin_only: true,
-        credential_gate: crate::http::credential_transport_allowed,
+        credential_gate: plx_plex::http::credential_transport_allowed,
     };
     let opened = plx_net::stream::redirect::open_following(hs, &req, &mut *checkpoint);
     if unsafe { crate::aq::aq_is_aborted(aq) } {
@@ -3638,7 +3638,7 @@ fn open_curl_hop(
 /// on the curl source. Publishes the same two diagnostics the TLS arm of `demux` does.
 fn open_plain_progressive(
     hs_p: *mut HttpStream,
-    origin: &crate::plex::Origin,
+    origin: &plx_plex::plex::Origin,
     path: &str,
     aq_p: *mut AuQueue,
 ) -> Result<(Src, i64), MediaOpenFail> {
@@ -3651,7 +3651,7 @@ fn open_plain_progressive(
         range_from: None,
         deadline: None,
         same_origin_only: false,
-        credential_gate: crate::http::credential_transport_allowed,
+        credential_gate: plx_plex::http::credential_transport_allowed,
     };
     match plx_net::stream::redirect::open_following(hs_p, &req, &mut plx_base::checkpoint::NoCheckpoint)
     {
@@ -4644,7 +4644,7 @@ struct HlsCursor {
 }
 
 fn hls_cursor_open(
-    origin: &crate::plex::Origin,
+    origin: &plx_plex::plex::Origin,
     path: &str,
     aq: *mut AuQueue,
     net: &mut HlsNet,
@@ -6053,7 +6053,7 @@ unsafe fn hls_prefetch_same_encoder(
 }
 
 fn hls_demux(
-    origin: &crate::plex::Origin,
+    origin: &plx_plex::plex::Origin,
     path: &str,
     acodec: &str,
     abr: Option<(crate::route::HlsAbrControl, crate::route::WorkerTicket)>,
@@ -6976,7 +6976,7 @@ fn hls_demux(
             crate::player::log("abr: candidate spent its exploration reserve in the control plane");
             continue;
         }
-        let candidate_url = crate::plex::StreamUrl::parse(&primed.url);
+        let candidate_url = plx_plex::plex::StreamUrl::parse(&primed.url);
         if candidate_url.origin != *origin {
             control.abandon(&primed.encoder_session);
             reject_hls_abr_after_transaction(
@@ -7674,14 +7674,14 @@ fn open_input_failure_note(r: c_int, lane_aborted: bool) -> String {
 
 /// The demux thread body (spawned by `engine::start_bufferfeed`).
 ///
-/// Takes an [`Origin`](crate::plex::Origin) rather than a `(host, port)` pair because **the scheme
+/// Takes an [`Origin`](plx_plex::plex::Origin) rather than a `(host, port)` pair because **the scheme
 /// decides the transport**: `http` reads through the Engine's `stream.rs` socket, `https` through
 /// [`crate::curlio`]. An origin is parsed from a URL and never rebuilt from an address, which is
 /// what keeps the `plex.direct` hostname TLS validates against intact all the way down here
 /// (`net/origin.rs`). `hs` is still passed on both paths — it is the Engine's, and it stays
 /// unused (fd = -1, published as `SHARED.hs_ptr`) when the origin turns out to be https.
 pub(crate) fn demux(
-    origin: crate::plex::Origin,
+    origin: plx_plex::plex::Origin,
     path: String,
     acodec: String,
     abr: Option<(crate::route::HlsAbrControl, crate::route::WorkerTicket)>,

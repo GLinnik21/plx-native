@@ -1327,7 +1327,7 @@ check(re.fullmatch(r"\d+\.\d+\.\d+", appinfo["version"]) is not None,
 check(appinfo["type"] == "native", 'appinfo type == "native"')
 check(not appinfo["id"].startswith(("com.palm", "com.webos", "com.lge", "com.palmdts")),
       "app id avoids LG's reserved prefixes")
-# The crate version is a THIRD copy of the same number: plex/identity.rs sends it to both Plex
+# The crate version is a THIRD copy of the same number: plex/identity.rs reports it (handed in by the app) to both Plex
 # services as X-Plex-Version (through `PLX_VERSION`, which `build.rs` derives from it), so a build
 # whose Cargo.toml disagreed with appinfo.json would report a version no release ever had.
 # Nightly again the exception, and graded the same way as the first Cargo.toml witness above.

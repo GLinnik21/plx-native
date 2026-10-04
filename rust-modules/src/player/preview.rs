@@ -45,7 +45,7 @@
 //! the plan is about 958 KiB (`ui/frame/render_set.rs`). 958 / 64 is 14.96, so the ceiling is 14
 //! admitted Loads, under the ratio rather than on it. Do not quote 14 as a television result.
 
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 
 /// Admitted Loads per process, from the source arithmetic above. Not a device measurement.
 pub(crate) const CYCLE_BUDGET: u32 = 14;
@@ -454,7 +454,7 @@ pub(crate) fn enabled() -> bool {
     // never takes `session::IO`, which on the television guards a `recv(2)` round trip to the
     // storage helper, measured at ~27 ms/frame here before the cache existed (2026-09-18, the
     // detail-page 60->26 fps regression). See the doc on `session::IO`/`session::CACHE`.
-    !nopreview_armed() && crate::plex::session::peek().trailer_autoplay()
+    !nopreview_armed() && plx_plex::plex::session::peek().trailer_autoplay()
 }
 
 fn slot() -> &'static std::sync::Mutex<Machine> {
@@ -1126,7 +1126,7 @@ mod tests {
 
     #[test]
     fn a_relay_link_is_not_a_direct_play() {
-        let policy = crate::plex::link_policy(Some(crate::plex::probe::Location::Relay));
+        let policy = plx_plex::plex::link_policy(Some(plx_plex::plex::probe::Location::Relay));
         assert!(!accepts_direct_play(policy.direct_play, true, false));
         assert!(accepts_direct_play(true, true, false));
         assert!(!accepts_direct_play(true, true, true));

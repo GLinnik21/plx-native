@@ -86,7 +86,7 @@ sign-in against this mock (it authorizes the code by itself, on the 2nd poll):
 
     1. python3 tests/mock_pms.py --host 0.0.0.0 --plaintext-only-lan --advertise-ip <HOST-LAN-IP>
        (the LAN plaintext leg the app connects to directly).
-    2. `plex_tv()` in rust-modules/src/plex/account.rs accepts only a `127.0.0.1`/`localhost`
+    2. `plex_tv()` in rust-modules/plex/src/plex/account.rs accepts only a `127.0.0.1`/`localhost`
        trigger — the trigger carries the account token, and that restriction is deliberate and
        must stay. So make plex.tv loopback ON THE DEVICE with a reverse tunnel from the host
        (hold the TV lock first):
@@ -1400,7 +1400,7 @@ def plaintext_only_lan_resources(lib, ip, http_port, fail_port, access_token):
     """The exact `/api/v2/resources` PLX-NATIVE-10 needs: ONE owned server, no relay connection at
     all, and two connections — the failing `https://…plex.direct` one and the plaintext LAN one,
     which is this same mock (`ip`:`http_port`). Field names match what
-    `rust-modules/src/plex/account.rs`'s `Resource`/`Connection` deserialize (`clientIdentifier`,
+    `rust-modules/plex/src/plex/account.rs`'s `Resource`/`Connection` deserialize (`clientIdentifier`,
     `provides`, `owned`, `accessToken`, `httpsRequired`, `publicAddressMatches`,
     `connections[{protocol,address,port,uri,local,relay,IPv6}]`); the top-level shape is a bare
     JSON array, not a `MediaContainer` — plex.tv's envelope, not a PMS one."""

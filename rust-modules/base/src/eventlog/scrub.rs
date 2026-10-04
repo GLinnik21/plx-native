@@ -1074,9 +1074,9 @@ mod tests {
         // (`rust-modules/src`, where nearly every log call lives). Resolved from the manifest dir
         // so it is independent of the working directory the test runner happens to have. A layer
         // crate split out of `rust-modules/src` later must be added here, or its log calls stop
-        // being read (`../machine/src`, `../net/src`, `../platform/src`, `../gfx/src` and `../ui/src` are the machine, net, platform, gfx and ui layers').
+        // being read (`../machine/src`, `../net/src`, `../platform/src`, `../gfx/src`, `../ui/src` and `../plex/src` are the machine, net, platform, gfx, ui and plex layers').
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let roots = [manifest.join("src"), manifest.join("../src"), manifest.join("../machine/src"), manifest.join("../net/src"), manifest.join("../platform/src"), manifest.join("../gfx/src"), manifest.join("../ui/src")];
+        let roots = [manifest.join("src"), manifest.join("../src"), manifest.join("../machine/src"), manifest.join("../net/src"), manifest.join("../platform/src"), manifest.join("../gfx/src"), manifest.join("../ui/src"), manifest.join("../plex/src")];
         let mut offences: Vec<String> = Vec::new();
         let mut files = 0usize;
         for src in &roots {

@@ -1,7 +1,7 @@
 //! Real Session/Bridge erasure ACK and private files; unrelated host sweeps are substituted.
 use super::*;
 use crate::app::{bootstrap, recorder, run};
-use crate::plex::session::{self, Session};
+use plx_plex::plex::session::{self, Session};
 
 #[test]
 fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
@@ -112,7 +112,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
             "missing files are idempotent; an unremoved control directory remains reported"
         );
         session::ProfilePublisher::new(&mt).publish(None, 0);
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 }
 

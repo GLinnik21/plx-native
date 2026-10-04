@@ -153,7 +153,7 @@ mod tests {
         use std::io::{BufRead, BufReader, Write};
 
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         let _cleanup = test_support::RegisteredCleanup;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port() as i32;
@@ -173,8 +173,8 @@ mod tests {
                 write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
         });
-        let sid = crate::plex::register_for_test("library-type-fixture", "127.0.0.1", port, "", "fixture");
-        let client = crate::plex::client_for(sid).unwrap();
+        let sid = plx_plex::plex::register_for_test("library-type-fixture", "127.0.0.1", port, "", "fixture");
+        let client = plx_plex::plex::client_for(sid).unwrap();
         let state = SecState { library_type: LibraryType::Episodes, unwatched: true, ..Default::default() };
         let filters = state.query_filters(SecKind::Show);
         let first = SectionQuery { section_key: 2, sort: "", filters: &filters, start: 0, size: 60, include_meta: true };

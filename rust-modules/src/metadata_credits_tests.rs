@@ -28,7 +28,7 @@ fn crew_credits_fold_both_job_arrays_into_one_deduplicated_shelf_list() {
             { "id": 164, "filter": "writer=164", "tag": "Sam Scribe" }
         ]
     }"#;
-    let it: crate::plex::Metadata =
+    let it: plx_plex::plex::Metadata =
         serde_json::from_slice(body).expect("the live crew shape parses");
     assert_eq!(it.director.len(), 2, "Director[] is on the DTO");
     assert_eq!(it.writer.len(), 2, "and so is Writer[]");

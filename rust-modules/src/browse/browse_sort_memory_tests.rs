@@ -46,19 +46,19 @@ fn loopback_pms(machine: &str, bodies: Vec<&'static str>) -> Pms {
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
         }
     });
-    let sid = crate::plex::register_for_test(machine, "127.0.0.1", port, "", "fixture");
+    let sid = plx_plex::plex::register_for_test(machine, "127.0.0.1", port, "", "fixture");
     Pms { requests, sid }
 }
 
 /// A browse store holding one movie library on `pms`, as discovery would leave it.
 #[cfg(feature = "devtriggers")]
 fn movies_on(pms: &Pms, machine: &str) -> TestBrowse {
-    assert!(crate::plex::set_current(pms.sid));
+    assert!(plx_plex::plex::set_current(pms.sid));
     let mut source = a_source(machine, "", true);
     source.sid = pms.sid;
     // As a finished discovery leaves it: the roster sync must see this client as the one the
     // table was built against, or it re-runs discovery and that request eats a scripted answer.
-    let client = crate::plex::client_for(pms.sid).unwrap();
+    let client = plx_plex::plex::client_for(pms.sid).unwrap();
     source.client_addr = client as *const _ as usize;
     source.token_gen = client.token_gen();
     let mut browse = TestBrowse::default();
@@ -93,7 +93,7 @@ fn a_chosen_sort_survives_a_restart() {
     let _g = plx_base::testlock::serial();
     let session = TempPins::new("sort-memory");
     session.watching("u-sorter");
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let _cleanup = RegisteredCleanup;
 
     // ---- the first run: the viewer sorts Movies by Plays, most-played first -----------------
@@ -116,9 +116,9 @@ fn a_chosen_sort_survives_a_restart() {
     drop(browse);
 
     // ---- the restart: a cold session cache read from disk, and a brand-new store -------------
-    crate::plex::reset_servers_for_test();
-    crate::plex::session::redirect_for_test(Some(session.path()));
-    let _ = crate::plex::session::peek();
+    plx_plex::plex::reset_servers_for_test();
+    plx_plex::plex::session::redirect_for_test(Some(session.path()));
+    let _ = plx_plex::plex::session::peek();
     plx_base::storage_worker::drain_for_test();
     session.watching("u-sorter");
     let pms = loopback_pms("sort-machine", vec![MENU_PAGE, PLAYS_PAGE]);
@@ -146,9 +146,9 @@ fn a_remembered_sort_the_menu_no_longer_offers_falls_back_to_the_default() {
     let _g = plx_base::testlock::serial();
     let session = TempPins::new("sort-memory-gone");
     session.watching("u-sorter");
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let _cleanup = RegisteredCleanup;
-    crate::plex::session::update(|current| {
+    plx_plex::plex::session::update(|current| {
         let mut next = current.clone();
         next.set_sort_for("u-sorter", "sort-machine", 1, Some(("lastViewedAt", true)));
         Some(next)
@@ -174,7 +174,7 @@ fn a_remembered_sort_belongs_to_the_profile_that_chose_it() {
     let _g = plx_base::testlock::serial();
     let session = TempPins::new("sort-memory-profile");
     session.watching("u-sorter");
-    crate::plex::session::update(|current| {
+    plx_plex::plex::session::update(|current| {
         let mut next = current.clone();
         next.set_sort_for("u-sorter", "mac-mini", 1, Some(("viewCount", true)));
         Some(next)
@@ -217,7 +217,7 @@ fn choosing_the_default_order_forgets_the_entry() {
     };
     let held = |browse: &TestBrowse| {
         let machine = browse.state.sources()[0].machine_id.clone();
-        crate::plex::session::peek().sorts_for("u-sorter")
+        plx_plex::plex::session::peek().sorts_for("u-sorter")
             .and_then(|sorts| sorts.get(&machine, 1).map(|(sort, desc)| (sort.to_string(), desc)))
     };
     commit(&mut browse, "viewCount", true);
@@ -226,7 +226,7 @@ fn choosing_the_default_order_forgets_the_entry() {
     land_page_with_sorts(&mut browse, vec![]);
     commit(&mut browse, "titleSort", false);
     assert_eq!(held(&browse), None, "the default order needs no record");
-    assert!(crate::plex::session::peek().library_sorts.is_empty(),
+    assert!(plx_plex::plex::session::peek().library_sorts.is_empty(),
         "and a profile with nothing remembered leaves no empty record behind");
     // A Collections view's sort is that view's menu, not the library's: never remembered.
     assert!(browse.state.set_library_type(LibraryType::Collections));
@@ -240,7 +240,7 @@ fn choosing_the_default_order_forgets_the_entry() {
 /// The per-profile list is bounded: the most recently sorted libraries are kept.
 #[test]
 fn the_remembered_sorts_are_capped_most_recent_first() {
-    use crate::plex::session::LibrarySorts;
+    use plx_plex::plex::session::LibrarySorts;
     let mut sorts = LibrarySorts::default();
     for key in 0..(LibrarySorts::CAP as i64 + 5) {
         sorts.set("m", key, Some(("addedAt", true)));

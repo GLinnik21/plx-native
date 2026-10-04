@@ -173,9 +173,9 @@ fn the_signed_in_reason_is_none_when_the_sentence_leaves_the_name_no_room() {
 #[test]
 fn every_insecure_only_reason_fits_two_lines_and_names_its_action() {
     use crate::auth::{discovery_insecure_only_message, plaintext_copy, ReadoutSurface};
-    use crate::plex::grant::PlaintextVerdict;
-    use crate::plex::probe::PlaintextEligibility;
-    use crate::plex::session::PlaintextChoice;
+    use plx_plex::plex::grant::PlaintextVerdict;
+    use plx_plex::plex::probe::PlaintextEligibility;
+    use plx_plex::plex::session::PlaintextChoice;
     use plx_ui::text_view::TextView;
     const READOUT_REASON_BUDGET: usize = 125;
     let fits = |text: &str| !TextView::new(text, plx_ui::theme::size::BODY, plx_ui::theme::TEXT_SECONDARY)
@@ -221,9 +221,9 @@ fn every_insecure_only_reason_fits_two_lines_and_names_its_action() {
 fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action() {
     use crate::auth::{plaintext_copy_in, ReadoutSurface};
     use plx_platform::i18n::LocaleContext;
-    use crate::plex::grant::PlaintextVerdict;
-    use crate::plex::probe::PlaintextEligibility;
-    use crate::plex::session::PlaintextChoice;
+    use plx_plex::plex::grant::PlaintextVerdict;
+    use plx_plex::plex::probe::PlaintextEligibility;
+    use plx_plex::plex::session::PlaintextChoice;
     use plx_ui::text_view::TextView;
     use std::ffi::CStr;
     /// `FixtureMeasure`'s half-em advance per UNICODE SCALAR rather than per UTF-8 byte. Its byte

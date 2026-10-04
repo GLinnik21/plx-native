@@ -19,11 +19,11 @@ pub(super) mod blur_bits {
 }
 pub(super) mod server_id {
     use serde::{Deserialize, Serializer, Deserializer};
-    pub fn serialize<S: Serializer>(sid: &crate::plex::ServerId, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(sid: &plx_plex::plex::ServerId, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_u16(sid.raw())
     }
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<crate::plex::ServerId, D::Error> {
-        Ok(crate::plex::ServerId::from_raw(u16::deserialize(d)?))
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<plx_plex::plex::ServerId, D::Error> {
+        Ok(plx_plex::plex::ServerId::from_raw(u16::deserialize(d)?))
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -270,7 +270,7 @@ fn publish_replies(adapter: &super::MetadataAdapter, tracker: &mut Tracker, repl
             ReplyLane::Data((sid, rk), data) => {
                 let data = serde_json::to_value(data).ok().and_then(|value| serde_json::from_value(value).ok())
                     .ok_or("invalid detail result encoding")?;
-                adapter.detail_landing_ref().put(addr, (crate::plex::ServerId::from_raw(*sid), rk.clone()), data)
+                adapter.detail_landing_ref().put(addr, (plx_plex::plex::ServerId::from_raw(*sid), rk.clone()), data)
             }
             ReplyLane::Dropped(_) => adapter.detail_landing_ref().dropped(addr),
             ReplyLane::Refused(_) => adapter.detail_landing_ref().refused(addr),
@@ -379,7 +379,7 @@ mod tests {
 
     fn request(rk: &str, launched: bool, replay: bool) -> u32 {
         let mut req = 0;
-        request_detail_with_spawn(test_adapter(), crate::plex::ServerId::from_raw(0), rk, |gen| {
+        request_detail_with_spawn(test_adapter(), plx_plex::plex::ServerId::from_raw(0), rk, |gen| {
             req = gen;
             crate::stores::tape::admit(serde_json::json!({"store":"metadata",
                 "sid":0,"rk":rk,"gen":gen,"client":1}), || {
@@ -451,7 +451,7 @@ mod tests {
             let old = request("old", true, false);
             let refused = request("refused", false, false);
             // The old worker finishes after the synchronous refusal but before the observation.
-            land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "old", old, None);
+            land_detail(test_adapter(), plx_plex::plex::ServerId::from_raw(0), "old", old, None);
             if cancelled { super::super::clear(test_state(), test_adapter()); }
             pump_detail(test_state(), test_adapter());
             let results = tape::take_results();
@@ -482,10 +482,10 @@ mod tests {
         use crate::stores::tape;
         controlled(false);
         let first = request("first", true, false);
-        land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "first", first, None);
+        land_detail(test_adapter(), plx_plex::plex::ServerId::from_raw(0), "first", first, None);
         pump_detail(test_state(), test_adapter());
         let second = request("second", true, false);
-        land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "second", second, None);
+        land_detail(test_adapter(), plx_plex::plex::ServerId::from_raw(0), "second", second, None);
         super::super::clear(test_state(), test_adapter());
         let (admissions, failure) = tape::finish();
         let results = tape::take_results();
@@ -506,7 +506,7 @@ mod tests {
         let mut workers = Vec::new();
         for n in 0..4 { workers.push(request(&format!("item-{n}"), true, false)); }
         // Exactly three cancelled workers still running; the fourth has completed before clear.
-        land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "item-3", workers[3], None);
+        land_detail(test_adapter(), plx_plex::plex::ServerId::from_raw(0), "item-3", workers[3], None);
         let fifth = request("fifth", true, false);
         assert_ne!(fifth, 0, "recording admits the fifth without a pump");
         let (admissions, failure) = tape::finish();
@@ -514,7 +514,7 @@ mod tests {
         let recording_drops = test_adapter().detail_landing.dropped_count();
         // Finish all actual reservations before resetting the test environment.
         for &req in workers.iter().take(3).chain(std::iter::once(&fifth)) {
-            land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "unused", req, None);
+            land_detail(test_adapter(), plx_plex::plex::ServerId::from_raw(0), "unused", req, None);
         }
         pump_detail(test_state(), test_adapter());
         controlled(true);
@@ -576,7 +576,7 @@ mod tests {
         cancel_all(test_adapter());
         let data = Reply { seq:2, req:8, terminal:true,
             lane:ReplyLane::Data((0,"8".into()), Some(Detail {
-                sid:crate::plex::ServerId::from_raw(0), rk:"8".into(), ..Default::default()
+                sid:plx_plex::plex::ServerId::from_raw(0), rk:"8".into(), ..Default::default()
             })) };
         assert_eq!(supply(test_adapter(), vec![data], &None).err(), Some("mismatched cancelled detail terminal"));
         supply(test_adapter(), vec![dropped(2, 8)], &None).unwrap();
@@ -610,7 +610,7 @@ mod tests {
     fn detail_terminal_roundtrip_preserves_float_bits_and_reservations() {
         let _guard = plx_base::testlock::serial();
         reset(true);
-        let sid = crate::plex::ServerId::from_raw(0);
+        let sid = plx_plex::plex::ServerId::from_raw(0);
         for seq in 1..=8 {
             let gen = crate::metadata::begin_detail_for_test(test_adapter(), sid, "1001");
             let detail = Detail { sid, rk:"1001".into(), video_fps:-0.0,

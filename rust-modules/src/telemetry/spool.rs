@@ -77,7 +77,7 @@ fn resolve() -> Option<PathBuf> {
     // is the only honest test — `/media/internal` exists on a set where it is not writable by us.
     cands
         .into_iter()
-        .find(|p| crate::plex::session::write_atomic(p, b"").is_ok())
+        .find(|p| plx_plex::plex::session::write_atomic(p, b"").is_ok())
 }
 
 /// Every record on disk, oldest first. A missing file is an empty queue — that is what a first boot
@@ -89,7 +89,7 @@ pub(crate) fn read() -> Vec<Record> {
 
 fn read_locked() -> Vec<Record> {
     let Some(p) = path() else { return Vec::new() };
-    let Some(bytes) = crate::plex::session::read_owned_regular(&p) else {
+    let Some(bytes) = plx_plex::plex::session::read_owned_regular(&p) else {
         return Vec::new();
     };
     let d = queue::decode_all(&bytes);
@@ -265,7 +265,7 @@ fn write_locked(records: &[Record]) -> bool {
         settle_discarded(records, &kept);
     }
     let bytes: Vec<u8> = kept.iter().filter_map(queue::encode).flatten().collect();
-    let ok = crate::plex::session::write_atomic(&p, &bytes).is_ok();
+    let ok = plx_plex::plex::session::write_atomic(&p, &bytes).is_ok();
     if ok {
         ON_DISK.store(kept.len(), std::sync::atomic::Ordering::Relaxed);
     }

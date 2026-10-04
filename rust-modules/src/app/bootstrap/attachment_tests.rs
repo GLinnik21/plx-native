@@ -1,6 +1,6 @@
 use super::*;
 use crate::app::{boot, recorder::Recplay};
-use crate::plex::session::{self, Session};
+use plx_plex::plex::session::{self, Session};
 
 fn initial_for(saved: Session, entropy: Option<[u8; 16]>) -> Initial {
     let mut initial = Initial::synthetic_home(17, 32517, None).unwrap();

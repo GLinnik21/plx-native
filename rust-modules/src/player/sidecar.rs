@@ -67,7 +67,7 @@ impl Failure {
 /// Keep all of that identity beside the cache so identical ids on two servers cannot alias.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Selection {
-    server: crate::plex::ServerId,
+    server: plx_plex::plex::ServerId,
     stream_id: i64,
     key: String,
     codec: String,
@@ -108,15 +108,15 @@ fn state() -> std::sync::MutexGuard<'static, State> {
 
 /// Select the sidecar `stream_id`, fetching `key` from `server` unless that file is already
 /// loaded. MAIN THREAD.
-pub(crate) fn select(server: crate::plex::ServerId, stream_id: i64, key: String, codec: String) {
+pub(crate) fn select(server: plx_plex::plex::ServerId, stream_id: i64, key: String, codec: String) {
     select_with_fetch(server, stream_id, key, codec, |server, key, codec| {
-        crate::plex::client_for(server).and_then(|c| c.sidecar_subtitle(key, codec))
+        plx_plex::plex::client_for(server).and_then(|c| c.sidecar_subtitle(key, codec))
     });
 }
 
 fn select_with_fetch(
-    server: crate::plex::ServerId, stream_id: i64, key: String, codec: String,
-    fetch: impl Fn(crate::plex::ServerId, &str, &str) -> Option<Vec<u8>> + Send + 'static,
+    server: plx_plex::plex::ServerId, stream_id: i64, key: String, codec: String,
+    fetch: impl Fn(plx_plex::plex::ServerId, &str, &str) -> Option<Vec<u8>> + Send + 'static,
 ) {
     if stream_id <= 0 || key.is_empty() {
         deselect();
@@ -205,7 +205,7 @@ pub(crate) fn select_without_fetch_for_test(stream_id: i64) {
     st.generation = st.generation.wrapping_add(1);
     st.pending = None;
     st.want = Some(Selection {
-        server: crate::plex::ServerId::UNSET, stream_id, key: String::new(), codec: String::new(),
+        server: plx_plex::plex::ServerId::UNSET, stream_id, key: String::new(), codec: String::new(),
     });
     st.failed = None;
 }
@@ -224,7 +224,7 @@ pub(crate) fn reset() {
 /// session, or on another Plex client. The embedded twin is `route::pick_dp_subtitle`, which
 /// leaves an external selection off because nothing could render it; now something can.
 /// Direct play only (the caller's gate): a transcode start keeps subtitles off, as before.
-pub(crate) fn restore_server_selection(server: crate::plex::ServerId, meta: crate::metadata::MetadataView<'_>) -> Option<i64> {
+pub(crate) fn restore_server_selection(server: plx_plex::plex::ServerId, meta: crate::metadata::MetadataView<'_>) -> Option<i64> {
     let item = meta.playing()?;
     if let Some(s) = crate::metadata::server_selected_sidecar(item) {
         super::log(&format!("server-selected sidecar subtitle: sid={}", s.id));
@@ -287,7 +287,7 @@ fn is_ass_script(text: &str) -> bool {
 }
 
 fn decode(bytes: Vec<u8>, codec: &str) -> Result<Content, Failure> {
-    if bytes.len() > crate::plex::SIDECAR_MAX_BYTES { return Err(Failure::Empty); }
+    if bytes.len() > plx_plex::plex::SIDECAR_MAX_BYTES { return Err(Failure::Empty); }
     let text = String::from_utf8_lossy(&bytes);
     if is_ass_script(&text) {
         // Validate only the presence of events. libass owns the script grammar, including
@@ -325,7 +325,7 @@ fn cue_at(cues: &[Cue], now_ns: i64) -> Option<&Cue> {
 /// line containing `-->`, text until the next blank line; `,` or `.` before the milliseconds,
 /// hours optional). ASS/SSA belongs to the native renderer and is never flattened here.
 pub(crate) fn parse(bytes: &[u8]) -> Vec<Cue> {
-    if bytes.len() > crate::plex::SIDECAR_MAX_BYTES { return Vec::new(); }
+    if bytes.len() > plx_plex::plex::SIDECAR_MAX_BYTES { return Vec::new(); }
     let text = String::from_utf8_lossy(bytes);
     let text = text.trim_start_matches('\u{feff}');
     if is_ass_script(text) { return Vec::new(); }
@@ -426,7 +426,7 @@ mod tests {
         let _guard = plx_base::testlock::serial();
         reset();
         finish_download();
-        let server = crate::plex::ServerId::from_raw(0);
+        let server = plx_plex::plex::ServerId::from_raw(0);
         select_with_fetch(server, 42, "/library/streams/42".into(), "ass".into(),
             |_, _, _| Some(STYLED_SCRIPT.to_vec()));
         finish_download();
@@ -452,7 +452,7 @@ mod tests {
         reset();
         finish_download();
         super::super::ass_source::reset();
-        select_with_fetch(crate::plex::ServerId::from_raw(0), 42,
+        select_with_fetch(plx_plex::plex::ServerId::from_raw(0), 42,
             "/library/streams/42".into(), "ass".into(), |_, _, _| Some(STYLED_SCRIPT.to_vec()));
         finish_download();
         let before = ass_source(false).unwrap();
@@ -481,7 +481,7 @@ mod tests {
         finish_download();
         let key = "/library/streams/42";
         for server in [0, 1] {
-            select_with_fetch(crate::plex::ServerId::from_raw(server), 42, key.into(), "srt".into(),
+            select_with_fetch(plx_plex::plex::ServerId::from_raw(server), 42, key.into(), "srt".into(),
                 move |_, _, _| Some(format!("00:00:01 --> 00:00:03\nserver {server}\n").into_bytes()));
             finish_download();
             assert_eq!(active(2_000_000_000, false), Some(format!("server {server}")));
@@ -500,7 +500,7 @@ mod tests {
         assert!(!state().running);
         let script = b"[Script Info]\nScriptType: v4.00+\n[Events]\n\
             Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\pos(300,100)\\c&H0000FF&}SIGN\n";
-        select_with_fetch(crate::plex::ServerId::from_raw(0), 42,
+        select_with_fetch(plx_plex::plex::ServerId::from_raw(0), 42,
             "/library/streams/42.ass".into(), "ass".into(), move |_, _, _| Some(script.to_vec()));
         let until = Instant::now() + Duration::from_secs(2);
         while state().running && Instant::now() < until {
@@ -528,14 +528,14 @@ mod tests {
         let release_rx = std::sync::Arc::new(Mutex::new(release_rx));
         let fetch = {
             let calls = calls.clone();
-            move |_: crate::plex::ServerId, key: &str, _: &str| {
+            move |_: plx_plex::plex::ServerId, key: &str, _: &str| {
                 let n = calls.fetch_add(1, Relaxed);
                 started_tx.send(()).unwrap();
                 if n == 0 { release_rx.lock().unwrap().recv().unwrap(); }
                 Some(format!("00:00:01 --> 00:00:03\n{key}\n").into_bytes())
             }
         };
-        let sid = crate::plex::ServerId::from_raw(0);
+        let sid = plx_plex::plex::ServerId::from_raw(0);
         select_with_fetch(sid, 1, "old".into(), "srt".into(), fetch.clone());
         started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         reset();
@@ -702,7 +702,7 @@ mod tests {
             assert_eq!(crate::metadata::server_selected_sidecar(&item).map(|s| s.id), want, "{ids:?}");
             let mut store = crate::stores::metadata::MetadataStore::default();
             assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
-            assert_eq!(restore_server_selection(crate::plex::ServerId::UNSET, store.view()), want, "{ids:?}");
+            assert_eq!(restore_server_selection(plx_plex::plex::ServerId::UNSET, store.view()), want, "{ids:?}");
             finish_download();
             deselect();
         }

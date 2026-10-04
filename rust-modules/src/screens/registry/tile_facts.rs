@@ -12,7 +12,7 @@
 //!   [`TileFacts::resume`], so the bar, the watched mark and the Continue Watching caption cannot
 //!   read it differently;
 //! - **whether a thumb is the server's generated collection composite** is
-//!   [`crate::plex::collections::composite_parts`], answered here as `composite_thumb`;
+//!   [`plx_plex::plex::collections::composite_parts`], answered here as `composite_thumb`;
 //! - **what kind a row is** is the row's numeric `kind`, named here.
 //!
 //! Cheap by construction: every text field is a borrow of the row, so building one per tile per
@@ -58,7 +58,7 @@ pub(crate) fn of(m: &PmsMovie) -> TileFacts<'_> {
 /// (`/library/collections/{rk}/composite/{stamp}`), the thumb the poster store bakes into our fan
 /// and whose collection name the card then sets live. A custom poster, or no art at all, is not.
 pub(crate) fn is_composite_thumb(thumb: &str) -> bool {
-    crate::plex::collections::composite_parts(thumb).is_some()
+    plx_plex::plex::collections::composite_parts(thumb).is_some()
 }
 
 /// The row's numeric kind (`0` movie, `1` show, `2` season, `3` episode, `4` collection), named.

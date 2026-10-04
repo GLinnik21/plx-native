@@ -46,8 +46,8 @@ pub(crate) const SHAPE: &str = "SearchScreen{entry:u32,instance:u32,draft:{text:
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Identity {
     Recent(String),
-    Media(Kind, crate::plex::ServerId, String),
-    Tag(Kind, crate::plex::ServerId, String),
+    Media(Kind, plx_plex::plex::ServerId, String),
+    Tag(Kind, plx_plex::plex::ServerId, String),
     Slot(Kind, u32, usize),
 }
 #[derive(Clone, Debug)]

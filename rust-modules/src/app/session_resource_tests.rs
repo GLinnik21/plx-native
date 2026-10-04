@@ -5,12 +5,12 @@ mod tests {
     use super::super::*;
     use crate::auth::owner::{SessionEnvelope, SessionEvent, SessionWork};
     use crate::auth::{Phase, SessionCmd};
-    use crate::plex::session::{self, ProfileCreds, ServerRef, Session, SourceRef, UserRef};
+    use plx_plex::plex::session::{self, ProfileCreds, ServerRef, Session, SourceRef, UserRef};
 
     struct ResourceCleanup<'a>(&'a plx_base::task::MainThread);
     impl Drop for ResourceCleanup<'_> {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
             // Publish the neutral test resource value, without allocating another profile scope.
             session::ProfilePublisher::new(self.0).publish(None, 0);
         }
@@ -24,12 +24,12 @@ mod tests {
     impl crate::auth::ProfileWorkIo for Online {
         fn switch(
             &mut self,
-            _: &crate::plex::account::AccountClient,
+            _: &plx_plex::plex::account::AccountClient,
             uuid: &str,
             _: Option<&str>,
-        ) -> crate::plex::account::SwitchOutcome {
+        ) -> plx_plex::plex::account::SwitchOutcome {
             assert_eq!(uuid, "kid");
-            crate::plex::account::SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+            plx_plex::plex::account::SwitchOutcome::Switched(plx_plex::plex::account::SwitchedUser {
                 uuid: uuid.into(),
                 title: "Kid".into(),
                 auth_token: "synthetic-switched-account".into(),
@@ -38,8 +38,8 @@ mod tests {
         }
         fn resources(
             &mut self,
-            _: &crate::plex::account::AccountClient,
-        ) -> Result<Vec<crate::plex::account::Resource>, crate::plex::account::CallEvidence> {
+            _: &plx_plex::plex::account::AccountClient,
+        ) -> Result<Vec<plx_plex::plex::account::Resource>, plx_plex::plex::account::CallEvidence> {
             Ok(vec![
                 serde_json::from_value(serde_json::json!({"clientIdentifier":"resource-server",
                     "name":"Synthetic", "provides":"server", "owned":true,
@@ -53,7 +53,7 @@ mod tests {
         }
         fn probe(
             &mut self,
-            resource: &crate::plex::account::Resource,
+            resource: &plx_plex::plex::account::Resource,
             _: &[i64],
         ) -> (Option<SourceRef>, crate::auth::SettledProbe) {
             assert_eq!(
@@ -83,9 +83,9 @@ mod tests {
                     ..Default::default()
                 }),
                 crate::auth::settled_probe(
-                    &crate::plex::probe::plan(resource, crate::plex::CredentialPolicy::HttpsOnly),
-                    crate::plex::probe::Outcome::Reachable,
-                    Some(crate::plex::probe::Location::Local),
+                    &plx_plex::plex::probe::plan(resource, plx_plex::plex::CredentialPolicy::HttpsOnly),
+                    plx_plex::plex::probe::Outcome::Reachable,
+                    Some(plx_plex::plex::probe::Location::Local),
                     Some(address.into()),
                 ),
             )
@@ -103,11 +103,11 @@ mod tests {
             let tmp = session::TempSession::new("owner-native-held-roster");
             let _cleanup = ResourceCleanup(&mt);
             tmp.assert_only_target();
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
             let saved = stored().with_auto_sign_in(true);
             session::save(&saved);
             let before = std::fs::read(tmp.path()).unwrap();
-            crate::plex::register_for_test(
+            plx_plex::plex::register_for_test(
                 "resource-server",
                 "127.0.0.1",
                 32400,
@@ -191,7 +191,7 @@ mod tests {
                 tmp.assert_only_target();
                 command(&mut rig, &mut d, SessionCmd::EraseLocal);
                 assert!(!tmp.path().exists());
-                assert_eq!(crate::plex::server_ids().count(), 0);
+                assert_eq!(plx_plex::plex::server_ids().count(), 0);
             } else {
                 session::update(|disk| {
                     let mut next = disk.clone();
@@ -211,7 +211,7 @@ mod tests {
                     !tmp.path().exists(),
                     "late roster cannot recreate the real session file"
                 );
-                assert_eq!(crate::plex::server_ids().count(), 0);
+                assert_eq!(plx_plex::plex::server_ids().count(), 0);
                 assert!(session::peek().account_token.is_empty());
             } else {
                 let disk = session::peek();
@@ -225,7 +225,7 @@ mod tests {
                     .iter()
                     .any(|s| s.machine_id == "resource-share" && s.address == "127.0.0.3"));
                 assert!(
-                    crate::plex::server_ids().any(|id| crate::plex::client_for(id)
+                    plx_plex::plex::server_ids().any(|id| plx_plex::plex::client_for(id)
                         .is_some_and(|client| client.machine_id() == "resource-share"))
                 );
             }
@@ -239,21 +239,21 @@ mod tests {
     impl crate::auth::ProfileWorkIo for Offline {
         fn switch(
             &mut self,
-            _: &crate::plex::account::AccountClient,
+            _: &plx_plex::plex::account::AccountClient,
             _: &str,
             _: Option<&str>,
-        ) -> crate::plex::account::SwitchOutcome {
-            crate::plex::account::SwitchOutcome::Unreachable
+        ) -> plx_plex::plex::account::SwitchOutcome {
+            plx_plex::plex::account::SwitchOutcome::Unreachable
         }
         fn resources(
             &mut self,
-            _: &crate::plex::account::AccountClient,
-        ) -> Result<Vec<crate::plex::account::Resource>, crate::plex::account::CallEvidence> {
+            _: &plx_plex::plex::account::AccountClient,
+        ) -> Result<Vec<plx_plex::plex::account::Resource>, plx_plex::plex::account::CallEvidence> {
             panic!("offline worker fetched resources")
         }
         fn probe(
             &mut self,
-            _: &crate::plex::account::Resource,
+            _: &plx_plex::plex::account::Resource,
             _: &[i64],
         ) -> (Option<SourceRef>, crate::auth::SettledProbe) {
             panic!("offline worker probed")
@@ -396,18 +396,18 @@ mod tests {
             let tmp = session::TempSession::new("owner-native-profile");
             let _cleanup = ResourceCleanup(&mt);
             tmp.assert_only_target();
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
             let saved = stored();
             session::save(&saved);
             let before = std::fs::read(tmp.path()).unwrap();
-            let id = crate::plex::register_for_test(
+            let id = plx_plex::plex::register_for_test(
                 "resource-server",
                 "127.0.0.1",
                 32400,
                 "synthetic-admin-token",
                 "synthetic-resource-client",
             );
-            let client = crate::plex::client_for(id).unwrap();
+            let client = plx_plex::plex::client_for(id).unwrap();
             let generation = client.token_gen();
             let mut init = crate::auth::SessionInit::captured(saved);
             init.phase = Phase::Profiles;
@@ -465,17 +465,17 @@ mod tests {
             assert_eq!(rig.auth_read().0.phase, Phase::Switching);
             assert_eq!(rig.session.snapshot_init().persisted.user.uuid, "admin");
             assert_eq!(client.token_gen(), generation);
-            assert!(std::ptr::eq(client, crate::plex::client_for(id).unwrap()));
+            assert!(std::ptr::eq(client, plx_plex::plex::client_for(id).unwrap()));
             assert_eq!(std::fs::read(tmp.path()).unwrap(), before);
             if erase_before_apply {
                 tmp.assert_only_target();
                 command(&mut rig, &mut d, SessionCmd::EraseLocal);
                 assert!(!tmp.path().exists());
-                assert_eq!(crate::plex::server_ids().count(), 0);
+                assert_eq!(plx_plex::plex::server_ids().count(), 0);
                 frame(&mut rig, &mut d, records); // A transferred, never-applied worker completion.
                 assert_eq!(rig.auth_read().0.phase, Phase::Deleted);
                 assert!(!tmp.path().exists());
-                assert_eq!(crate::plex::server_ids().count(), 0);
+                assert_eq!(plx_plex::plex::server_ids().count(), 0);
                 assert!(rig.take_session_ready().is_none());
                 continue;
             }
@@ -484,7 +484,7 @@ mod tests {
             frame(&mut rig, &mut d, records);
             assert_eq!(rig.auth_read().0.phase, Phase::Ready);
             assert_eq!(rig.session.snapshot_init().persisted.user.uuid, "kid");
-            assert!(std::ptr::eq(client, crate::plex::client_for(id).unwrap()));
+            assert!(std::ptr::eq(client, plx_plex::plex::client_for(id).unwrap()));
             assert_ne!(client.token_gen(), generation);
             assert_eq!(
                 std::fs::read(tmp.path()).unwrap(),
@@ -518,12 +518,12 @@ mod tests {
                         let fresh = SourceRef {
                             address: address.into(),
                             origin_url: format!("http://{address}:32400"),
-                            tier: Some(crate::plex::probe::Location::Local),
+                            tier: Some(plx_plex::plex::probe::Location::Local),
                             ..session.sources[0].clone()
                         };
                         let probe = crate::auth::settled_probe_for_test(&machine_id,
-                            crate::plex::probe::Outcome::Reachable,
-                            Some(crate::plex::probe::Location::Local), Some(address.into()));
+                            plx_plex::plex::probe::Outcome::Reachable,
+                            Some(plx_plex::plex::probe::Location::Local), Some(address.into()));
                         assert!(output
                             .complete(crate::auth::endpoint_work_fact(
                                 flow_epoch,
@@ -569,10 +569,10 @@ mod tests {
             command(&mut rig, &mut d, SessionCmd::EraseLocal);
             assert_eq!(rig.auth_read().0.phase, Phase::Deleted);
             assert!(!tmp.path().exists());
-            assert_eq!(crate::plex::server_ids().count(), 0);
+            assert_eq!(plx_plex::plex::server_ids().count(), 0);
             frame(&mut rig, &mut d, stale);
             assert!(!tmp.path().exists());
-            assert_eq!(crate::plex::server_ids().count(), 0);
+            assert_eq!(plx_plex::plex::server_ids().count(), 0);
             assert!(rig.take_session_ready().is_none());
         }
     }
@@ -605,11 +605,11 @@ mod tests {
             let tmp = session::TempSession::new("native-owner-activation");
             let _cleanup = ResourceCleanup(&mt);
             tmp.assert_only_target();
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
             session::save(&stored_admin());
             let before = std::fs::read(tmp.path()).unwrap();
-            let origin = crate::plex::Origin::parse("https://192-0-2-10.h.plex.direct:32400").unwrap();
-            let pin = crate::plex::ResolvePin::for_origin(&origin, "192.0.2.10").unwrap();
+            let origin = plx_plex::plex::Origin::parse("https://192-0-2-10.h.plex.direct:32400").unwrap();
+            let pin = plx_plex::plex::ResolvePin::for_origin(&origin, "192.0.2.10").unwrap();
             let mut rig = live(stored_admin(), &mt);
             let candidate_origin = origin.base();
             rig.session_adapter.inject_fixture_work(1, move |output, input| {
@@ -621,7 +621,7 @@ mod tests {
                     "epoch": EPOCH, "expected": expected,
                     "candidate": {"machine_id":"tls-test", "token":"synthetic", "name":"Synthetic",
                         "credit":"", "owned":true, "origin":candidate_origin, "address":"192.0.2.10",
-                        "location":crate::plex::probe::Location::Local, "ipv6":false}
+                        "location":plx_plex::plex::probe::Location::Local, "ipv6":false}
                 }})).unwrap();
                 output.progress(crate::auth::AuthProgress::Registry(activation)).unwrap();
                 // Synthetic activation-contract proof, not a successful network-roster policy.
@@ -634,14 +634,14 @@ mod tests {
             for record in &records { assert_receipt(&rig, record, 1); }
             assert!(!records[0].terminal && records[1].terminal);
             assert!(matches!(records[1].outcome, crate::auth::owner::SessionArrival::Dropped));
-            assert_eq!(crate::plex::server_ids().count(), 0, "worker has no registry write authority");
+            assert_eq!(plx_plex::plex::server_ids().count(), 0, "worker has no registry write authority");
             assert_eq!(std::fs::read(tmp.path()).unwrap(), before);
             let terminal = records.pop().unwrap();
             let activation = records.pop().unwrap();
             frame(&mut rig, &mut d, vec![activation.clone()]);
-            let ids: Vec<_> = crate::plex::server_ids().collect();
+            let ids: Vec<_> = plx_plex::plex::server_ids().collect();
             assert_eq!(ids.len(), 1);
-            let client = crate::plex::client_for(ids[0]).unwrap();
+            let client = plx_plex::plex::client_for(ids[0]).unwrap();
             assert_eq!(client.machine_id(), "tls-test");
             assert_eq!(client.origin(), &origin);
             assert_eq!(client.resolve_pin(), Some(&pin));
@@ -661,7 +661,7 @@ mod tests {
             let _lock = plx_base::testlock::serial();
             let mt = unsafe { plx_base::task::MainThread::assume() };
             let _cleanup = ResourceCleanup(&mt);
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
             let mut rig = live(stored(), &mt);
             rig.session_adapter.inject_fixture_work(1, |output, input| {
                 let SessionWork::ServerRoster { session, .. } = input else {
@@ -672,7 +672,7 @@ mod tests {
                     "candidate": {"machine_id":"account-server", "token":"account-grant",
                         "name":"Account server", "credit":"", "owned":true,
                         "origin":"https://192-0-2-10.h.plex.direct:32400",
-                        "address":"192.0.2.10", "location":crate::plex::probe::Location::Local,
+                        "address":"192.0.2.10", "location":plx_plex::plex::probe::Location::Local,
                         "ipv6":false}
                 }})).unwrap();
                 output.progress(crate::auth::AuthProgress::Registry(activation)).unwrap();
@@ -681,7 +681,7 @@ mod tests {
             command(&mut rig, &mut d, SessionCmd::RefreshRoster);
             let records = rig.session_adapter.take_results();
             frame(&mut rig, &mut d, records);
-            assert_eq!(crate::plex::server_ids().count(), 0);
+            assert_eq!(plx_plex::plex::server_ids().count(), 0);
         }
 
         #[test]
@@ -691,13 +691,13 @@ mod tests {
             let tmp = session::TempSession::new("native-owner-endpoint-incarnation");
             let _cleanup = ResourceCleanup(&mt);
             tmp.assert_only_target();
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
             let saved = stored();
             session::save(&saved);
             let original_disk = std::fs::read(tmp.path()).unwrap();
-            let id = crate::plex::register_for_test("resource-server", "127.0.0.1", 32400,
+            let id = plx_plex::plex::register_for_test("resource-server", "127.0.0.1", 32400,
                 "synthetic-admin-token", "synthetic-resource-client");
-            let old_client = crate::plex::client_for(id).unwrap();
+            let old_client = plx_plex::plex::client_for(id).unwrap();
             let old_instance = old_client.instance_gen();
             let old_token = old_client.token_gen();
             let mut rig = live(saved.clone(), &mt);
@@ -711,8 +711,8 @@ mod tests {
                     origin_url: "http://127.0.0.9:32400".into(),
                     token: "account-token-not-authoritative".into(), ..session.sources[0].clone() };
                 let probe = crate::auth::settled_probe_for_test(&machine_id,
-                    crate::plex::probe::Outcome::Reachable,
-                    Some(crate::plex::probe::Location::Local), Some("127.0.0.9".into()));
+                    plx_plex::plex::probe::Outcome::Reachable,
+                    Some(plx_plex::plex::probe::Location::Local), Some("127.0.0.9".into()));
                 output.complete(crate::auth::endpoint_work_fact(EPOCH, expected, lifecycle,
                     machine_id, Some(stale), Some(probe))).unwrap();
             });
@@ -722,7 +722,7 @@ mod tests {
             assert_eq!(records.len(), 1);
             assert_receipt(&rig, &records[0], 1);
             assert!(records[0].terminal);
-            assert!(std::ptr::eq(old_client, crate::plex::client_for(id).unwrap()));
+            assert!(std::ptr::eq(old_client, plx_plex::plex::client_for(id).unwrap()));
             assert_eq!(std::fs::read(tmp.path()).unwrap(), original_disk);
             let mut newer = saved;
             newer.server.address = "127.0.0.2".into();
@@ -736,10 +736,10 @@ mod tests {
                 "identity still matches: this test must exercise native incarnation rejection");
             session::save(&newer);
             let disk = std::fs::read(tmp.path()).unwrap();
-            let replacement = crate::plex::register_for_test("resource-server", "127.0.0.2", 32400,
+            let replacement = plx_plex::plex::register_for_test("resource-server", "127.0.0.2", 32400,
                 "synthetic-new-tok", "synthetic-resource-client");
             assert_eq!(replacement, id);
-            let new_client = crate::plex::client_for(id).unwrap();
+            let new_client = plx_plex::plex::client_for(id).unwrap();
             assert!(!std::ptr::eq(old_client, new_client));
             assert_ne!(new_client.instance_gen(), old_instance);
             assert_ne!(new_client.token_gen(), old_token);
@@ -749,7 +749,7 @@ mod tests {
             assert!(replacement_url.contains("X-Plex-Token=synthetic-new-tok"));
             let terminal = records[0].clone();
             frame(&mut rig, &mut d, records);
-            assert!(std::ptr::eq(new_client, crate::plex::client_for(id).unwrap()));
+            assert!(std::ptr::eq(new_client, plx_plex::plex::client_for(id).unwrap()));
             assert_eq!(new_client.host(), "127.0.0.2");
             assert_eq!(new_client.token_gen(), replacement_generation);
             assert_eq!(new_client.direct_play_url("/synthetic", "test").to_url(), replacement_url);

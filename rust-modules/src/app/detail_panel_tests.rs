@@ -27,13 +27,13 @@ fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
-    crate::plex::reset_servers_for_test();
-    let here = crate::plex::register_for_test("park-here", "127.0.0.1", 1, "t", "c1");
-    let other = crate::plex::register_for_test("park-other", "127.0.0.2", 2, "t", "c2");
+    plx_plex::plex::reset_servers_for_test();
+    let here = plx_plex::plex::register_for_test("park-here", "127.0.0.1", 1, "t", "c1");
+    let other = plx_plex::plex::register_for_test("park-other", "127.0.0.2", 2, "t", "c2");
 
     // Naming the page IS naming the item since the fold: the argument carries the identity, so
     // a frame on `detail_arg("m1")` mounts that detail page and a frame on `person_arg("p1")`
@@ -175,7 +175,7 @@ fn an_alt_sources_anchor_travels_on_its_arg() {
     let _guard = plx_base::testlock::serial();
     let arg = |x: f32, y: f32| AltSourcesArg {
         host: InstanceId(1),
-        sid: crate::plex::ServerId::UNSET,
+        sid: plx_plex::plex::ServerId::UNSET,
         rk: "m1".into(),
         anchor: [x, y, 300.0, 60.0].map(f32::to_bits),
     };

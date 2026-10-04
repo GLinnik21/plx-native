@@ -10,7 +10,7 @@
     "viewstate"
   ],
   "size": 8,
-  "outside_count": 26,
+  "outside_count": 23,
   "other_cycles": [
     [
       "abr",
@@ -28,10 +28,6 @@
     [
       "diag",
       "telemetry"
-    ],
-    [
-      "http",
-      "plex"
     ]
   ]
 }

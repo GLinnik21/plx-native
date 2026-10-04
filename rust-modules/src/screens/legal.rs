@@ -642,11 +642,12 @@ mod tests {
     /// The About page names the binary the user is RUNNING.
     ///
     /// It was a hand-typed `PlxNative 0.5.0` that no bump script touched, so it could only ever
-    /// have been right by accident. Written against `identity::VERSION` rather than against
+    /// have been right by accident. Written against `identity::version()` rather than against
     /// `env!` again so that re-typing a literal here fails: on any developer build the two differ.
     #[test]
     fn about_names_the_running_version() {
-        let v = crate::plex::identity::VERSION;
+        plx_plex::plex::identity::set_version(env!("PLX_VERSION"));
+        let v = plx_plex::plex::identity::version();
         assert!(
             ABOUT.contains(&format!("Version {v}")),
             "About should name {v}, says: {ABOUT:?}"

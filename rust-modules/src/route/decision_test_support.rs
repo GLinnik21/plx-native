@@ -109,9 +109,9 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> plx_base::testlock::Se
     restore_direct_play_mode(DirectPlayMode::Auto);
     // Issue #266: `ResolveEnv::snapshot` reads the enhancement preference from a global, so a
     // test that set it must not leak an enhanced resolve into the next one.
-    crate::player::restore_audio_enhancements(crate::plex::AudioEnhancements::NONE);
+    crate::player::restore_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
     crate::player::reset_route_requests_for_test(ps);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     crate::player::clear_original_failure();
     g
 }
@@ -119,9 +119,9 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> plx_base::testlock::Se
 /// A `ServerId` naming a slot nothing is registered in — so `client_for` answers `None` and
 /// `build_stream` takes its no-client exit without opening a socket.
 pub(super) fn unregistered_sid() -> ServerId {
-    let id = ServerId::from_raw((crate::plex::MAX_SERVERS - 1) as u16);
+    let id = ServerId::from_raw((plx_plex::plex::MAX_SERVERS - 1) as u16);
     assert!(
-        crate::plex::client_for(id).is_none(),
+        plx_plex::plex::client_for(id).is_none(),
         "the test needs an EMPTY slot"
     );
     id

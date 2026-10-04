@@ -89,8 +89,8 @@ impl PickerPage {
     /// write the checked row is live but not on disk, and OK on it must retry rather than pop.
     fn durable(&self, value: &Value) -> bool {
         match value {
-            Value::SubtitleSize(v) => crate::plex::session::peek().subtitle_size() == *v,
-            Value::SubtitlePosition(v) => crate::plex::session::peek().subtitle_position() == *v,
+            Value::SubtitleSize(v) => plx_plex::plex::session::peek().subtitle_size() == *v,
+            Value::SubtitlePosition(v) => plx_plex::plex::session::peek().subtitle_position() == *v,
             _ => true,
         }
     }

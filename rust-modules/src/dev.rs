@@ -240,10 +240,10 @@ fn parse_server_slot(s: &str) -> Result<u16, String> {
         .trim()
         .parse::<u16>()
         .map_err(|_| format!("{s:?} is not a server slot"))?;
-    if (slot as usize) >= crate::plex::MAX_SERVERS {
+    if (slot as usize) >= plx_plex::plex::MAX_SERVERS {
         return Err(format!(
             "server slot {slot} is outside 0..{}",
-            crate::plex::MAX_SERVERS
+            plx_plex::plex::MAX_SERVERS
         ));
     }
     Ok(slot)
@@ -382,7 +382,7 @@ pub(crate) fn softfloat_probe() {}
 /// an earlier run. This is deliberately an in-memory boot override: writing the session would
 /// make a test change the owner's real preference. Unknown and empty values fail closed by
 /// producing no override.
-pub(crate) fn playback_quality_override() -> Option<crate::plex::session::PlaybackQuality> {
+pub(crate) fn playback_quality_override() -> Option<plx_plex::plex::session::PlaybackQuality> {
     let value = plx_base::devtrig::read("quality")?;
     parse_playback_quality(&value)
 }
@@ -392,8 +392,8 @@ pub(crate) fn playback_quality_override() -> Option<crate::plex::session::Playba
 /// The log line a test greps must carry the SAME string the trigger accepts. `Quality::label()`
 /// is display text ("1080p \u{b7} 8 Mbps") and would make a case state its rung twice, in two
 /// spellings, with nothing keeping them in step — which is the shape that rots.
-pub(crate) fn quality_wire_name(q: crate::plex::session::PlaybackQuality) -> &'static str {
-    use crate::plex::session::PlaybackQuality as Q;
+pub(crate) fn quality_wire_name(q: plx_plex::plex::session::PlaybackQuality) -> &'static str {
+    use plx_plex::plex::session::PlaybackQuality as Q;
     match q {
         Q::Auto => "auto",
         Q::Original => "original",
@@ -405,8 +405,8 @@ pub(crate) fn quality_wire_name(q: crate::plex::session::PlaybackQuality) -> &'s
     }
 }
 
-fn parse_playback_quality(value: &str) -> Option<crate::plex::session::PlaybackQuality> {
-    use crate::plex::session::PlaybackQuality;
+fn parse_playback_quality(value: &str) -> Option<plx_plex::plex::session::PlaybackQuality> {
+    use plx_plex::plex::session::PlaybackQuality;
     match value {
         "auto" => Some(PlaybackQuality::Auto),
         "original" => Some(PlaybackQuality::Original),
@@ -442,7 +442,7 @@ fn parse_playback_quality(value: &str) -> Option<crate::plex::session::PlaybackQ
 /// overrides whatever this left. Both halves are load-bearing; neither alone would make it safe.
 fn parse_quality_switch_script(
     raw: &str,
-) -> Option<(u32, Vec<crate::plex::session::PlaybackQuality>)> {
+) -> Option<(u32, Vec<plx_plex::plex::session::PlaybackQuality>)> {
     let mut steps: Vec<&str> = raw
         .split(',')
         .map(str::trim)
@@ -472,7 +472,7 @@ fn parse_quality_switch_script(
     }
 }
 
-pub(crate) fn quality_switch_script() -> Option<(u32, Vec<crate::plex::session::PlaybackQuality>)> {
+pub(crate) fn quality_switch_script() -> Option<(u32, Vec<plx_plex::plex::session::PlaybackQuality>)> {
     parse_quality_switch_script(&plx_base::devtrig::read("qualityswitch")?)
 }
 
@@ -578,7 +578,7 @@ pub(crate) struct DevServer {
     /// deliberately: a typo'd scheme that quietly meant `http` would be a run grading the thing it
     /// was armed to test as working.
     #[serde(default)]
-    pub(crate) scheme: crate::plex::Scheme,
+    pub(crate) scheme: plx_plex::plex::Scheme,
     /// Proven connection class for a conditioned test origin.
     ///
     /// A LAN proxy can stand in front of a remote PMS so the harness can shape the whole media
@@ -586,7 +586,7 @@ pub(crate) struct DevServer {
     /// original `remote` classification disables the cold source probe the experiment exists to
     /// exercise.  Omitted stays `None`: naming an address is never enough to invent a tier.
     #[serde(default)]
-    pub(crate) tier: Option<crate::plex::probe::Location>,
+    pub(crate) tier: Option<plx_plex::plex::probe::Location>,
     /// This identity's per-(user,server) access token **for this server**. A shared server is a
     /// separate authority: the account token gets a 401 from it, which is the whole reason one
     /// `plxnative-token` cannot express two servers. A SECRET — never logged.
@@ -602,7 +602,7 @@ pub(crate) struct DevServer {
     /// advertises beside a `plex.direct` `uri`, which is what a stored session persists. This is
     /// how a headless run puts a pinned TLS origin through the registry (`/tmp/plxnative-nowan`
     /// beside it is the offline reproduction). It is validated exactly as a session's address is
-    /// ([`crate::plex::ResolvePin::for_origin`]): a value the `host` label does not encode pins
+    /// ([`plx_plex::plex::ResolvePin::for_origin`]): a value the `host` label does not encode pins
     /// nothing. Omitted: no pin, unchanged behaviour for every overlay written before it existed.
     #[serde(default, alias = "address_pin", alias = "resolve")]
     pub(crate) pin: String,
@@ -667,32 +667,32 @@ impl DevServer {
     }
     /// Are these credentials complete enough to reach the server at all?
     ///
-    /// The port is judged by [`crate::plex::probe::dial_port`], not by `> 0`: `app.rs` registers
+    /// The port is judged by [`plx_plex::plex::probe::dial_port`], not by `> 0`: `app.rs` registers
     /// every server that passes this with `s.port as c_int`, and this file is a hand-written JSON
     /// blob under `/tmp` — an out-of-range `i64` wraps in that cast into a port nobody wrote down.
     pub(crate) fn usable(&self) -> bool {
         !self.token.is_empty() && self.origin().is_some()
     }
 
-    /// **Where this server is** — the [`crate::plex::Origin`] to register it at, `None` when the
+    /// **Where this server is** — the [`plx_plex::plex::Origin`] to register it at, `None` when the
     /// trigger did not write enough to dial.
     ///
     /// The port goes through `probe::dial_port` for the reason [`DevServer::usable`] gives: this
     /// is a hand-written JSON blob under `/tmp`, and `port as i32` wraps an out-of-range `i64`
     /// into a plausible-looking one.
-    pub(crate) fn origin(&self) -> Option<crate::plex::Origin> {
+    pub(crate) fn origin(&self) -> Option<plx_plex::plex::Origin> {
         if self.host.is_empty() {
             return None;
         }
-        crate::plex::probe::dial_port(self.port)
-            .map(|p| crate::plex::Origin::new(self.scheme, &self.host, p))
+        plx_plex::plex::probe::dial_port(self.port)
+            .map(|p| plx_plex::plex::Origin::new(self.scheme, &self.host, p))
     }
 
     /// The resolve pin for [`DevServer::origin`], from the `pin` field — `None` when absent or
     /// when the label does not encode it.
-    pub(crate) fn resolve_pin(&self) -> Option<crate::plex::ResolvePin> {
+    pub(crate) fn resolve_pin(&self) -> Option<plx_plex::plex::ResolvePin> {
         let origin = self.origin()?;
-        crate::plex::ResolvePin::for_origin(&origin, &self.pin)
+        plx_plex::plex::ResolvePin::for_origin(&origin, &self.pin)
     }
 }
 
@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn quality_trigger_accepts_only_persisted_policy_spellings() {
-        use crate::plex::session::PlaybackQuality;
+        use plx_plex::plex::session::PlaybackQuality;
 
         assert_eq!(
             super::parse_playback_quality("auto"),
@@ -964,7 +964,7 @@ mod tests {
         let plain = one(r#"{"machine_id":"m","host":"10.0.0.2","port":32400,"token":"t"}"#);
         assert_eq!(
             plain.scheme,
-            crate::plex::Scheme::Http,
+            plx_plex::plex::Scheme::Http,
             "an overlay that says nothing means http"
         );
         assert_eq!(
@@ -1009,7 +1009,7 @@ mod tests {
         assert_eq!(one(r#"{"host":"10.0.0.2","token":"t"}"#).tier, None);
         assert_eq!(
             one(r#"{"host":"10.0.0.2","token":"t","tier":"remote"}"#).tier,
-            Some(crate::plex::probe::Location::Remote)
+            Some(plx_plex::plex::probe::Location::Remote)
         );
         assert!(
             super::parse_servers(r#"{"host":"10.0.0.2","token":"t","tier":"wan"}"#).is_err(),
@@ -1239,7 +1239,7 @@ mod tests {
     /// correctly and then matches nothing — indistinguishable from the feature not working.
     #[test]
     fn every_quality_wire_name_parses_back_to_itself() {
-        use crate::plex::session::PlaybackQuality as Q;
+        use plx_plex::plex::session::PlaybackQuality as Q;
         for q in [
             Q::Auto,
             Q::Original,
@@ -1263,7 +1263,7 @@ mod tests {
     /// `plxnative-abrpin` documents for its own value.
     #[test]
     fn a_quality_script_fails_closed_and_never_substitutes() {
-        use crate::plex::session::PlaybackQuality as Q;
+        use plx_plex::plex::session::PlaybackQuality as Q;
         let parse = super::parse_quality_switch_script;
         assert_eq!(
             parse("720p_4_mbps"),

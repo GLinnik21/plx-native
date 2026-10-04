@@ -39,10 +39,10 @@ fn home_keeps_recently_added_rows_for_two_same_type_libraries() {
          "Metadata":[{"ratingKey":"202","librarySectionID":"2","librarySectionTitle":"TV HDR",
                       "type":"show","title":"HDR Show","thumb":"/hdr.jpg","art":"/hdr-art.jpg"}]}
     ]}}"#;
-    let mc = serde_json::from_str::<crate::plex::Envelope>(body)
+    let mc = serde_json::from_str::<plx_plex::plex::Envelope>(body)
         .expect("the two-library PMS response parses")
         .media_container;
-    let build = project(&mc, &crate::plex::MediaContainer::default(), sid(0));
+    let build = project(&mc, &plx_plex::plex::MediaContainer::default(), sid(0));
     let (items, hubs, _) = merge(&[src(0, "", HubState::Ready, Some(build))]);
 
     assert_eq!(hubs.len(), 2, "both same-type library shelves reach Home");
@@ -81,10 +81,10 @@ fn one_movie_and_one_tv_library_get_the_natural_per_type_recently_added_titles()
          "Metadata":[{"ratingKey":"101","librarySectionID":"2","librarySectionTitle":"TV",
                       "type":"show","title":"TV Show","thumb":"/tv.jpg","art":"/tv-art.jpg"}]}
     ]}}"#;
-    let mc = serde_json::from_str::<crate::plex::Envelope>(body)
+    let mc = serde_json::from_str::<plx_plex::plex::Envelope>(body)
         .expect("the one-movie-one-tv PMS response parses")
         .media_container;
-    let build = project(&mc, &crate::plex::MediaContainer::default(), sid(0));
+    let build = project(&mc, &plx_plex::plex::MediaContainer::default(), sid(0));
 
     assert_eq!(build.shelves.len(), 2);
     assert_eq!(
@@ -109,10 +109,10 @@ fn a_recently_added_library_hub_renders_the_be_catalog_string_under_a_be_ui() {
          "Metadata":[{"ratingKey":"1","librarySectionID":"1","librarySectionTitle":"Movies",
                       "type":"movie","title":"A Film","thumb":"/t.jpg","art":"/a.jpg"}]}
     ]}}"#;
-    let mc = serde_json::from_str::<crate::plex::Envelope>(body)
+    let mc = serde_json::from_str::<plx_plex::plex::Envelope>(body)
         .expect("a PMS body with a per-library Recently Added hub parses")
         .media_container;
-    let build = project(&mc, &crate::plex::MediaContainer::default(), sid(0));
+    let build = project(&mc, &plx_plex::plex::MediaContainer::default(), sid(0));
 
     assert_eq!(build.shelves.len(), 1);
     assert_eq!(
@@ -134,10 +134,10 @@ fn a_lone_movie_library_renders_the_be_per_type_catalog_string_under_a_be_ui() {
          "Metadata":[{"ratingKey":"1","librarySectionID":"1","librarySectionTitle":"Movies",
                       "type":"movie","title":"A Film","thumb":"/m.jpg","art":"/m-art.jpg"}]}
     ]}}"#;
-    let mc = serde_json::from_str::<crate::plex::Envelope>(body)
+    let mc = serde_json::from_str::<plx_plex::plex::Envelope>(body)
         .expect("a PMS body with a lone whole-server Recently Added hub parses")
         .media_container;
-    let build = project(&mc, &crate::plex::MediaContainer::default(), sid(0));
+    let build = project(&mc, &plx_plex::plex::MediaContainer::default(), sid(0));
 
     assert_eq!(build.shelves.len(), 1);
     assert_eq!(
@@ -158,10 +158,10 @@ fn an_unrecognized_hub_identifier_keeps_the_pms_title_verbatim() {
          "Metadata":[{"ratingKey":"5","librarySectionID":"1","librarySectionTitle":"Movies",
                       "type":"movie","title":"A Film","thumb":"/t.jpg","art":"/a.jpg"}]}
     ]}}"#;
-    let mc = serde_json::from_str::<crate::plex::Envelope>(body)
+    let mc = serde_json::from_str::<plx_plex::plex::Envelope>(body)
         .expect("a PMS body with an unrecognized (custom-collection-shaped) hub parses")
         .media_container;
-    let build = project(&mc, &crate::plex::MediaContainer::default(), sid(0));
+    let build = project(&mc, &plx_plex::plex::MediaContainer::default(), sid(0));
 
     assert_eq!(build.shelves.len(), 1);
     assert_eq!(
@@ -185,10 +185,10 @@ fn a_mixed_section_hub_keeps_its_identity_when_the_leading_library_changes() {
         }}]}}}}"#)
     };
     let projection = |wire: String| {
-        let mc = serde_json::from_str::<crate::plex::Envelope>(&wire)
+        let mc = serde_json::from_str::<plx_plex::plex::Envelope>(&wire)
             .expect("the mixed-library PMS response parses")
             .media_container;
-        let build = project(&mc, &crate::plex::MediaContainer::default(), sid(0));
+        let build = project(&mc, &plx_plex::plex::MediaContainer::default(), sid(0));
         let (items, hubs, _) = merge(&[src(0, "", HubState::Ready, Some(build))]);
         let identity = match stable_hub_identity(&hubs[0], &items) {
             Some(HubIdentity::Identifier { sid, id, key }) => {
@@ -233,11 +233,11 @@ fn every_row_a_source_projects_is_stamped_with_the_server_it_was_asked_of() {
         )
     };
     let parse = |s: String| {
-        serde_json::from_str::<crate::plex::Envelope>(&s)
+        serde_json::from_str::<plx_plex::plex::Envelope>(&s)
             .expect("a PMS body parses")
             .media_container
     };
-    let empty = crate::plex::MediaContainer::default();
+    let empty = plx_plex::plex::MediaContainer::default();
     let ours = sid(3);
 
     let b = project(&parse(body("1", "Ours")), &empty, ours);
@@ -260,7 +260,7 @@ fn every_row_a_source_projects_is_stamped_with_the_server_it_was_asked_of() {
     let b2 = project(&parse(body("1", "Theirs")), &empty, theirs);
     let (m1, m2) = (&b.shelves[0].items[0], &b2.shelves[0].items[0]);
     assert!(
-        !crate::plex::same_item((m1.sid, &m1.rk), (m2.sid, &m2.rk)),
+        !plx_plex::plex::same_item((m1.sid, &m1.rk), (m2.sid, &m2.rk)),
         "one ratingKey from two servers must never alias"
     );
 
@@ -638,10 +638,10 @@ fn a_source_that_leaves_the_roster_stops_contributing() {
 fn an_equal_size_roster_replacement_has_a_different_cache_key_and_source_table() {
     let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     reset(&mut o.state, &o.adapter);
-    let a = crate::plex::register_for_test("pms-a", "127.0.0.1", 1, "a", "cid");
-    let b = crate::plex::register_for_test("pms-b", "127.0.0.1", 2, "b", "cid");
+    let a = plx_plex::plex::register_for_test("pms-a", "127.0.0.1", 1, "a", "cid");
+    let b = plx_plex::plex::register_for_test("pms-b", "127.0.0.1", 2, "b", "cid");
     sync_roster(&mut o.state);
     let before = roster_key();
     assert_eq!(
@@ -649,10 +649,10 @@ fn an_equal_size_roster_replacement_has_a_different_cache_key_and_source_table()
         [a, b]
     );
 
-    crate::plex::revoke_for_profile_switch();
-    let c = crate::plex::register_for_test("pms-c", "127.0.0.1", 3, "c", "cid");
+    plx_plex::plex::revoke_for_profile_switch();
+    let c = plx_plex::plex::register_for_test("pms-c", "127.0.0.1", 3, "c", "cid");
     assert_eq!(
-        crate::plex::server_count(),
+        plx_plex::plex::server_count(),
         2,
         "the replacement deliberately preserves count"
     );
@@ -668,7 +668,7 @@ fn an_equal_size_roster_replacement_has_a_different_cache_key_and_source_table()
     );
 
     reset(&mut o.state, &o.adapter);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// **The pin's grain is a LIBRARY, and `/hubs` is a whole-SERVER request.** So the server-level
@@ -724,9 +724,9 @@ fn an_unpinned_library_keeps_its_items_off_home_even_when_its_server_feeds_it() 
 fn equal_generation_browse_owners_rebuild_the_pms_home_projection() {
     let _guard = plx_base::testlock::serial();
     let mut o = Owner::default();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     reset(&mut o.state, &o.adapter);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "equal-generation-home", "127.0.0.1", 9, "synthetic", "fixture");
     let alpha = two_library_directory(sid, true);
     let beta = two_library_directory(sid, false);
@@ -742,7 +742,7 @@ fn equal_generation_browse_owners_rebuild_the_pms_home_projection() {
     assert_eq!(rks(&o.state, 0), ["beta"],
         "the PMS cache must not alias an independent equal-generation owner");
     reset(&mut o.state, &o.adapter);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// **The pin store is the seam, and "no pinned library" only means something for a server whose
@@ -893,14 +893,14 @@ fn the_budget_is_shared_so_neither_source_starves_the_other() {
 fn a_corrected_credit_restamps_the_shelves_home_already_built() {
     let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     reset(&mut o.state, &o.adapter);
-    let s = crate::plex::register_for_test("pms-credit", "127.0.0.1", 1, "t", "cid");
+    let s = plx_plex::plex::register_for_test("pms-credit", "127.0.0.1", 1, "t", "cid");
     assert_eq!(s, sid(0), "a fresh registry hands out slot 0");
 
     // what a build without the rule published: the household's own server, wearing the account
     // holder's handle, with shelves already merged from it
-    crate::plex::describe_server(s, "Mac mini", "admin", crate::plex::GrantEvidence::outside());
+    plx_plex::plex::describe_server(s, "Mac mini", "admin", plx_plex::plex::GrantEvidence::outside());
     seed(&mut o.state, vec![src(
         0,
         "admin",
@@ -910,7 +910,7 @@ fn a_corrected_credit_restamps_the_shelves_home_already_built() {
     assert_eq!(hub_source(&o.state, 0), "admin");
 
     // the roster refresh re-grades it — and there is deliberately NO landing after this
-    crate::plex::describe_server(s, "Mac mini", "", crate::plex::GrantEvidence::outside());
+    plx_plex::plex::describe_server(s, "Mac mini", "", plx_plex::plex::GrantEvidence::outside());
     sync_roster(&mut o.state);
 
     assert_eq!(
@@ -926,7 +926,7 @@ fn a_corrected_credit_restamps_the_shelves_home_already_built() {
     );
 
     reset(&mut o.state, &o.adapter);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// `n` shelves of `per` cards each, all in library `sec` of `slot`'s server.

@@ -11,13 +11,13 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 use super::test_support::apply_plan;
-use crate::plex::serverinfo::Subscription;
+use plx_plex::plex::serverinfo::Subscription;
 
-const PREF: crate::plex::AudioEnhancements = crate::plex::AudioEnhancements {
+const PREF: plx_plex::plex::AudioEnhancements = plx_plex::plex::AudioEnhancements {
     boost_dialog: false,
     normalize_loudness: true,
 };
-const NONE: crate::plex::AudioEnhancements = crate::plex::AudioEnhancements::NONE;
+const NONE: plx_plex::plex::AudioEnhancements = plx_plex::plex::AudioEnhancements::NONE;
 
 fn track(sid: i64, ordinal: i32, codec: &str, channels: i64, capable: bool, immersive: bool) -> CarriedAudio {
     CarriedAudio {
@@ -60,9 +60,9 @@ impl Live {
     fn start_with_parts(mode: EnhMode, media_bytes: usize, parts: PartAnswer) -> Self {
         assert!(plx_net::net::global_init() && crate::curlio::available());
         let (port, done, server) = enhancement_pms_parts(MDE_DIRECTPLAY, mode, media_bytes, parts);
-        let sid = crate::plex::register_for_test("enh-live", "127.0.0.1", port, "token", "enh-client");
-        crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Local);
-        crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
+        let sid = plx_plex::plex::register_for_test("enh-live", "127.0.0.1", port, "token", "enh-client");
+        plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+        plx_plex::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
         Live { sid, port, done, server }
     }
 
@@ -70,7 +70,7 @@ impl Live {
     fn finish(self) -> Vec<String> {
         self.done.send(()).unwrap();
         let requests = self.server.join().unwrap();
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         requests
     }
 }
@@ -78,10 +78,10 @@ impl Live {
 #[derive(Clone, Copy)]
 enum Delivery {
     Direct,
-    Remux(crate::plex::AudioEnhancements),
+    Remux(plx_plex::plex::AudioEnhancements),
     /// M7 follow-up: an ALREADY-APPLIED Burn (`remux: false`, forced re-encode) — for tests that
     /// need to start mid-play already burning a subtitle, rather than transitioning into one.
-    Burn(crate::plex::AudioEnhancements),
+    Burn(plx_plex::plex::AudioEnhancements),
     Hls,
 }
 
@@ -99,7 +99,7 @@ fn install(
         Delivery::Direct => (
             format!("http://127.0.0.1:{port}/library/parts/960001/1/file.mkv"),
             String::new(),
-            crate::plex::EncodeContract::default(),
+            plx_plex::plex::EncodeContract::default(),
             EnhancementOutcome::Off,
         ),
         Delivery::Remux(a) => (
@@ -117,8 +117,8 @@ fn install(
         Delivery::Hls => (
             format!("http://127.0.0.1:{port}/video/:/transcode/universal/start.m3u8"),
             "enh-hls-1".to_owned(),
-            crate::plex::EncodeContract {
-                delivery: crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+            plx_plex::plex::EncodeContract {
+                delivery: plx_plex::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
                 ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
                 ..Default::default()
             },
@@ -151,7 +151,7 @@ fn install(
 
 /// The toggle row minus persistence (`request_audio_enhancement` also retains a session write,
 /// which a host test must not aim at the developer's real session file).
-fn toggle(ps: &mut PlaybackSession, a: crate::plex::AudioEnhancements) -> bool {
+fn toggle(ps: &mut PlaybackSession, a: plx_plex::plex::AudioEnhancements) -> bool {
     crate::player::restore_audio_enhancements(a);
     reconcile_enhancement(ps, false)
 }
@@ -253,9 +253,9 @@ fn slow_live_logged(delay: std::time::Duration) -> (Live, RequestLog) {
         }
         shared.lock().unwrap_or_else(|e| e.into_inner()).clone()
     });
-    let sid = crate::plex::register_for_test("enh-live-slow", "127.0.0.1", port, "token", "enh-client");
-    crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Local);
-    crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
+    let sid = plx_plex::plex::register_for_test("enh-live-slow", "127.0.0.1", port, "token", "enh-client");
+    plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+    plx_plex::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
     (Live { sid, port, done, server }, log)
 }
 
@@ -335,9 +335,9 @@ fn always_refusing_live() -> Live {
         }
         requests
     });
-    let sid = crate::plex::register_for_test("enh-live-refuse", "127.0.0.1", port, "token", "enh-client");
-    crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Local);
-    crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
+    let sid = plx_plex::plex::register_for_test("enh-live-refuse", "127.0.0.1", port, "token", "enh-client");
+    plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+    plx_plex::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
     Live { sid, port, done, server }
 }
 
@@ -491,7 +491,7 @@ fn recovery_flavour_uses_candidate_family_not_live_hls() {
     crate::player::restore_audio_enhancements(PREF);
     let cand = candidate(true, a1(), None);
     install(&mut ps, &live, Delivery::Hls, a1(), Some(cand.clone()), 0);
-    assert!(matches!(ps.cur_contract.delivery, crate::plex::TranscodeDelivery::FixedHls { .. }));
+    assert!(matches!(ps.cur_contract.delivery, plx_plex::plex::TranscodeDelivery::FixedHls { .. }));
     assert_eq!(recovery_flavour(&cand, recovery_want(&ps, &cand)), RecoveryFlavour::Remux(PREF));
     crate::player::restore_audio_enhancements(NONE);
     assert_eq!(recovery_flavour(&cand, recovery_want(&ps, &cand)), RecoveryFlavour::Direct);
@@ -1669,10 +1669,10 @@ fn subtitle_repick_while_cold_start_burn_keeps_the_burn() {
     crate::player::restore_audio_enhancements(PREF);
 
     let (port, done, server) = enhancement_pms(MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0);
-    let sid = crate::plex::register_for_test("enh-repick", "127.0.0.1", port, "token", "enh-client");
-    let client = crate::plex::client_for(sid).unwrap();
-    client.set_link(crate::plex::probe::Location::Local);
-    crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
+    let sid = plx_plex::plex::register_for_test("enh-repick", "127.0.0.1", port, "token", "enh-client");
+    let client = plx_plex::plex::client_for(sid).unwrap();
+    client.set_link(plx_plex::plex::probe::Location::Local);
+    plx_plex::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
 
     let audio = crate::metadata::Stream {
         id: 10976,
@@ -1719,7 +1719,7 @@ fn subtitle_repick_while_cold_start_burn_keeps_the_burn() {
     assert_eq!(query_param(d[1], "subtitles"), Some("burn"), "the re-pick must still burn: {}", d[1]);
 
     cleanup(&mut ps);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// The FIRST device run's actual entry state (`/tmp/enh-burn-tv/logs/...log`, before its own PUT
@@ -1737,10 +1737,10 @@ fn subtitle_first_pick_while_plain_enhanced_remux_burns_it() {
     crate::player::restore_audio_enhancements(PREF);
 
     let (port, done, server) = enhancement_pms(MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0);
-    let sid = crate::plex::register_for_test("enh-firstpick", "127.0.0.1", port, "token", "enh-client");
-    let client = crate::plex::client_for(sid).unwrap();
-    client.set_link(crate::plex::probe::Location::Local);
-    crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
+    let sid = plx_plex::plex::register_for_test("enh-firstpick", "127.0.0.1", port, "token", "enh-client");
+    let client = plx_plex::plex::client_for(sid).unwrap();
+    client.set_link(plx_plex::plex::probe::Location::Local);
+    plx_plex::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
 
     let audio = crate::metadata::Stream {
         id: 10976,
@@ -1801,7 +1801,7 @@ fn subtitle_first_pick_while_plain_enhanced_remux_burns_it() {
     assert_eq!(query_param(d[1], "subtitles"), Some("burn"), "the pick must burn: {}", d[1]);
 
     cleanup(&mut ps);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 // ---- PR review follow-up: off-main-thread claim PMS I/O, mailbox lifetime, snapshot isolation --
@@ -2191,7 +2191,7 @@ fn the_stale_arms_of_the_drain_stop_their_encoder_off_the_frame_thread() {
             url: String::new(),
             vcodec: "hevc".into(),
             acodec: "ac3".into(),
-            contract: crate::plex::EncodeContract::default(),
+            contract: plx_plex::plex::EncodeContract::default(),
             enhancement: EnhancementOutcome::Off,
             ticket,
             client,
@@ -2314,7 +2314,7 @@ fn a_stale_landing_at_drain_time_stops_the_leaked_encoder_instead_of_installing_
             ),
             vcodec: "hevc".into(),
             acodec: "ac3".into(),
-            contract: crate::plex::EncodeContract::default(),
+            contract: plx_plex::plex::EncodeContract::default(),
             enhancement: EnhancementOutcome::Off,
             ticket: leaked_ticket,
             client: cur_client(&ps).expect("install() registered this session's server"),

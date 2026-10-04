@@ -1000,8 +1000,8 @@ pub(crate) struct RootPage {
     entry: EntryId,
     form: FormTable<RootId, Action, SettingsPage>,
     state: RootState,
-    session_watch: crate::plex::session::VisibleSessionWatch,
-    session_snapshot: std::sync::Arc<crate::plex::session::Session>,
+    session_watch: plx_plex::plex::session::VisibleSessionWatch,
+    session_snapshot: std::sync::Arc<plx_plex::plex::session::Session>,
     pending_auto: Option<(bool, plx_base::storage_worker::TypedTicket<bool>)>,
     pending_trailer: Option<(bool, plx_base::storage_worker::TypedTicket<bool>)>,
     /// The servers the signed-in account answered plx_platform::i18n::msg::settings_plaintext_question() for, then the
@@ -1064,7 +1064,7 @@ struct PlaintextRowInput {
 }
 
 /// Every argument [`root_form`] builds the Settings root's rows from — what [`RootPage::
-/// rebuild`] gathers (mostly from `crate::plex::session::peek_settled()` and its own pending-write
+/// rebuild`] gathers (mostly from `plx_plex::plex::session::peek_settled()` and its own pending-write
 /// state) before calling the pure builder, so the builder itself never reads a global and a test
 /// can drive it directly with a synthesized combination no real session may currently be in.
 struct RootInputs {
@@ -1211,7 +1211,7 @@ impl RootPage {
             plaintext_rows: Vec::new(),
             pending_plaintext: None,
             alert: PlaintextAlert::new(ALERT_GROUP, super::registry::ALERT, super::registry::ALERT + 1),
-            grant_seen: crate::plex::grant::revision(),
+            grant_seen: plx_plex::plex::grant::revision(),
             state: RootState {
                 sel: RowKey(0),
                 auto_sign_in: false,
@@ -1227,11 +1227,11 @@ impl RootPage {
     /// Re-derive the rows from the session, keeping focus on the row it is on BY IDENTITY (a
     /// vanished row falls to its next, else previous, neighbour — `FormTable::set`).
     fn rebuild(&mut self, directory: crate::stores::browse::DirectoryView<'_>) {
-        if let Some(snapshot) = crate::plex::session::peek_settled() {
+        if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
             self.session_snapshot = snapshot;
         }
         let sess = &self.session_snapshot;
-        let signed_in = sess.account(crate::plex::session::current().as_ref()).signed_in;
+        let signed_in = sess.account(plx_plex::plex::session::current().as_ref()).signed_in;
         let auto_sign_in = self.pending_auto.as_ref().map_or_else(|| sess.auto_sign_in(), |(value, _)| *value);
         let trailer_autoplay = self.pending_trailer.as_ref().map_or_else(|| sess.trailer_autoplay(), |(value, _)| *value);
         let multi_user = sess.home_users.len() > 1;
@@ -1264,15 +1264,15 @@ impl RootPage {
     /// what it returns is the plain [`PlaintextRowInput`]s [`root_form`] (a pure builder) turns
     /// into rows and [`Action::Plaintext`] entries.
     fn plaintext_inputs(&mut self) -> Vec<PlaintextRowInput> {
-        use crate::plex::session::PlaintextChoice;
+        use plx_plex::plex::session::PlaintextChoice;
         let sess = &self.session_snapshot;
-        let answered = crate::plex::grant::choices(&sess.plaintext_consent, &sess.account_token);
+        let answered = plx_plex::plex::grant::choices(&sess.plaintext_consent, &sess.account_token);
         let mut rows: Vec<(String, bool)> = answered
             .iter()
             .filter(|(_, choice)| *choice != PlaintextChoice::Undecided)
             .map(|(machine, choice)| (machine.clone(), choice.allows()))
             .collect();
-        for offer in crate::plex::grant::offers() {
+        for offer in plx_plex::plex::grant::offers() {
             if plaintext_question::asks(Some(&offer)) && !rows.iter().any(|(m, _)| *m == offer.machine_id) {
                 rows.push((offer.machine_id, false));
             }
@@ -1287,7 +1287,7 @@ impl RootPage {
         }
         self.plaintext_rows = rows.clone();
         self.state.plaintext = rows.iter().map(|(_, on)| *on).collect();
-        let offers = crate::plex::grant::offers();
+        let offers = plx_plex::plex::grant::offers();
         rows.into_iter()
             .map(|(machine, on)| {
                 // An offered server was never reached, so the session file does not know it yet:
@@ -1301,7 +1301,7 @@ impl RootPage {
                         .map(|s| s.name.clone()));
                 let named = real_name.is_some();
                 let name = real_name.unwrap_or_else(|| plx_platform::i18n::msg::settings_plaintext_server().to_string());
-                let connected = on && crate::plex::grant::granted_origin(&machine).is_some();
+                let connected = on && plx_plex::plex::grant::granted_origin(&machine).is_some();
                 PlaintextRowInput { machine: ServerMachineId(machine), name, named, on, connected }
             })
             .collect()
@@ -1332,7 +1332,7 @@ impl RootPage {
             Action::Door => {}
             Action::AutoSignIn => {
                 let on = !self.state.auto_sign_in;
-                if let Ok(ticket) = crate::plex::session::queue_update_ticket(move |current|
+                if let Ok(ticket) = plx_plex::plex::session::queue_update_ticket(move |current|
                     (current.auto_sign_in() != on).then(|| current.with_auto_sign_in(on))) {
                     self.pending_auto = Some((on, ticket));
                 }
@@ -1340,29 +1340,29 @@ impl RootPage {
             }
             Action::TrailerAutoplay => {
                 let on = !self.state.trailer_autoplay;
-                if let Ok(ticket) = crate::plex::session::queue_update_ticket(move |current|
+                if let Ok(ticket) = plx_plex::plex::session::queue_update_ticket(move |current|
                     (current.trailer_autoplay() != on).then(|| current.with_trailer_autoplay(on))) {
                     self.pending_trailer = Some((on, ticket));
                 }
                 self.rebuild(directory);
             }
             Action::Plaintext(ServerMachineId(machine)) => {
-                use crate::plex::session::PlaintextChoice;
+                use plx_plex::plex::session::PlaintextChoice;
                 let Some(on) = self.plaintext_rows.iter().find(|(m, _)| *m == machine).map(|(_, on)| *on) else {
                     return;
                 };
                 if !on {
                     // ON asks first — the same question the sign-in and the failure read-outs
                     // put, seated on *Not now*; only its *Connect* allows (`alert_answer`).
-                    let sid = crate::plex::id_of_machine(&machine);
+                    let sid = plx_plex::plex::id_of_machine(&machine);
                     self.alert.open(&machine, sid, MachineId::Instance(InstanceId(0)), fx);
                     return;
                 }
                 // OFF is immediate: `grant::record` withdraws the grant NOW, before the
                 // preferences write lands, and records the revocation for this account.
                 plx_base::eventlog::log("settings: unencrypted connections turned off for one server");
-                let account = crate::plex::grant::account_key(&self.session_snapshot.account_token);
-                if crate::plex::grant::record(&account, &machine, PlaintextChoice::Revoked).is_ok() {
+                let account = plx_plex::plex::grant::account_key(&self.session_snapshot.account_token);
+                if plx_plex::plex::grant::record(&account, &machine, PlaintextChoice::Revoked).is_ok() {
                     self.pending_plaintext = Some((machine, false));
                 }
                 self.rebuild(directory);
@@ -1420,7 +1420,7 @@ impl Machine<InnerHost> for RootPage {
                         // Read AFTER the receipt: the worker may have installed Locked/Blocked
                         // while this Tick was polling. Retain a consumed receipt's local value
                         // until authority settles; subsequent polls see Disconnected.
-                        if let Some(snapshot) = crate::plex::session::peek_settled() {
+                        if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
                             self.session_snapshot = snapshot;
                             *pending = None;
                             landed = true;
@@ -1428,7 +1428,7 @@ impl Machine<InnerHost> for RootPage {
                     }
                 }
                 // An offer or an answer landed (`grant::revision`): the switches re-read.
-                let revision = crate::plex::grant::revision();
+                let revision = plx_plex::plex::grant::revision();
                 if revision != self.grant_seen {
                     self.grant_seen = revision;
                     landed = true;

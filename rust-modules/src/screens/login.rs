@@ -767,8 +767,8 @@ fn support_line(offer: &auth::owner::IncidentOffer) -> String {
     let discovery = discovery.map_or(String::new(), |line| format!(" \u{b7} {line}"));
     format!(
         "{} {} \u{b7} {} \u{b7} {} \u{b7} {}{} \u{b7} {}",
-        crate::plex::identity::PRODUCT,
-        crate::plex::identity::VERSION,
+        plx_plex::plex::identity::PRODUCT,
+        plx_plex::plex::identity::version(),
         plx_platform::i18n::webos_release_line(plx_platform::tv::device::info()),
         set,
         code,
@@ -2341,7 +2341,7 @@ mod tests {
     #[test]
     fn uncertain_db8_reply_appears_on_the_login_warning_stage_line() {
         for reconcile in [false, true] {
-            let outcome = crate::plex::session::persistence::uncertain_helper_reply_for_test(reconcile);
+            let outcome = plx_plex::plex::session::persistence::uncertain_helper_reply_for_test(reconcile);
             let mut screen = bare_screen(Phase::Ready, 0.0);
             screen.persistence_warning = Some(auth::owner::PersistenceWarning::from_outcome(
                 auth::owner::PersistenceWarningKey { epoch: 1, req: 1 },
@@ -3625,19 +3625,19 @@ mod tests {
 
     // ---- PLX-NATIVE-10: the consent question ----
 
-    fn plaintext_verdict(eligibility: crate::plex::probe::PlaintextEligibility)
+    fn plaintext_verdict(eligibility: plx_plex::plex::probe::PlaintextEligibility)
         -> auth::PlaintextVerdict {
         auth::PlaintextVerdict {
             machine_id: "lan-machine".into(),
             name: "Home".into(),
             shared_by: String::new(),
             eligibility,
-            choice: crate::plex::session::PlaintextChoice::Undecided,
+            choice: plx_plex::plex::session::PlaintextChoice::Undecided,
         }
     }
 
     /// An offered report on an insecure-only failure, with `eligibility`'s verdict.
-    fn insecure_failure(eligibility: crate::plex::probe::PlaintextEligibility)
+    fn insecure_failure(eligibility: plx_plex::plex::probe::PlaintextEligibility)
         -> auth::owner::SessionSnapshot {
         let mut failed = failed_with(auth::owner::IncidentState::Offered {
             revision: crate::telemetry::consent::revision(),
@@ -3651,7 +3651,7 @@ mod tests {
     fn answers(effects: &[Stamped<SessionHost>]) -> Vec<bool> {
         effects.iter().filter_map(|st| match &st.fx {
             Fx::App(AppFx::Session(auth::SessionCmd::AnswerPlaintext { machine_id, choice, sid: None }))
-                if machine_id == "lan-machine" => Some(*choice == crate::plex::session::PlaintextChoice::Allowed),
+                if machine_id == "lan-machine" => Some(*choice == plx_plex::plex::session::PlaintextChoice::Allowed),
             _ => None,
         }).collect()
     }
@@ -3662,7 +3662,7 @@ mod tests {
     #[test]
     fn an_eligible_plaintext_failure_offers_connect_and_does_not_raise_the_report_question() {
         let _serial = plx_base::testlock::serial();
-        let failed = insecure_failure(crate::plex::probe::PlaintextEligibility::Eligible);
+        let failed = insecure_failure(plx_plex::plex::probe::PlaintextEligibility::Eligible);
         let mut s = LoginScreen::new(EntryId(0), failed.read());
         let m = plx_ui::fixture::FixtureMeasure;
         let (_, fx) = step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
@@ -3682,10 +3682,10 @@ mod tests {
     /// draws *Connect*; once answered (*Not now*) it draws *Try again*, which is what it does.
     #[test]
     fn the_failed_readout_draws_the_label_its_press_acts_on() {
-        use crate::plex::session::PlaintextChoice;
+        use plx_plex::plex::session::PlaintextChoice;
         let _serial = plx_base::testlock::serial();
         let m = plx_ui::fixture::FixtureMeasure;
-        let mut failed = insecure_failure(crate::plex::probe::PlaintextEligibility::Eligible);
+        let mut failed = insecure_failure(plx_plex::plex::probe::PlaintextEligibility::Eligible);
         for (choice, want) in [(PlaintextChoice::Undecided, connect()), (PlaintextChoice::Declined, plx_platform::i18n::msg::browse_action_retry_c()),
             (PlaintextChoice::Revoked, plx_platform::i18n::msg::browse_action_retry_c()), (PlaintextChoice::Allowed, plx_platform::i18n::msg::browse_action_retry_c())] {
             if let Some(v) = failed.plaintext.as_mut() {
@@ -3706,7 +3706,7 @@ mod tests {
     #[test]
     fn connect_asks_the_question_and_only_its_answer_reaches_session() {
         let _serial = plx_base::testlock::serial();
-        let failed = insecure_failure(crate::plex::probe::PlaintextEligibility::Eligible);
+        let failed = insecure_failure(plx_plex::plex::probe::PlaintextEligibility::Eligible);
         let m = plx_ui::fixture::FixtureMeasure;
         for (how, allow) in [("connect", true), ("not now", false), ("back", false)] {
             let mut s = LoginScreen::new(EntryId(0), failed.read());
@@ -3738,7 +3738,7 @@ mod tests {
     #[test]
     fn an_ineligible_plaintext_failure_keeps_try_again_and_the_report_question() {
         let _serial = plx_base::testlock::serial();
-        let failed = insecure_failure(crate::plex::probe::PlaintextEligibility::NotLocal);
+        let failed = insecure_failure(plx_plex::plex::probe::PlaintextEligibility::NotLocal);
         let mut s = LoginScreen::new(EntryId(0), failed.read());
         let m = plx_ui::fixture::FixtureMeasure;
         let (_, fx) = step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);

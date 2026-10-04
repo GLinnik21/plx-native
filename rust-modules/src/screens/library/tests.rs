@@ -46,7 +46,7 @@ const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 #[test]
 fn page_memory_shares_1200_keys_and_preserves_older_snapshots() {
     let _guard = plx_base::testlock::serial();
-    let sid = crate::plex::ServerId::from_raw(1);
+    let sid = plx_plex::plex::ServerId::from_raw(1);
     let section = LibrarySectionIdentity { sid, key: 7 };
     let mut page = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
     for index in 0..1200 {
@@ -202,7 +202,7 @@ fn grid_paint_window_keeps_cards_above_the_centered_tab_track() {
 fn duplicate_across_pages_keeps_full_projection_recovery_metadata() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
-    let sid = crate::plex::ServerId::from_raw(0);
+    let sid = plx_plex::plex::ServerId::from_raw(0);
     let movie = |i| crate::pms::PmsMovie { sid, rk: format!("duplicate-test-{i}"), ..Default::default() };
     let mut items = (0..120).map(movie).collect::<Vec<_>>();
     items[85] = items[5].clone();
@@ -273,7 +273,7 @@ fn large_listing_publication_work_is_bounded_by_initial_slots_then_changed_page(
     const TOTAL: usize = 10_000;
     const PAGE: usize = 60;
     let mut fixture = Fixture::new();
-    let sid = crate::plex::ServerId::from_raw(0);
+    let sid = plx_plex::plex::ServerId::from_raw(0);
     let movies = |start: usize| (start..start + PAGE).map(|i| crate::pms::PmsMovie {
         sid, rk: format!("large-{i}"), title: format!("Large {i}"), ..Default::default()
     }).collect::<Vec<_>>();
@@ -341,7 +341,7 @@ fn derived_grid_indexes_survive_reorder_truncation_clear_and_restore() {
 fn down_from_a_missing_final_row_column_clamps_to_the_last_item() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
-    let sid = crate::plex::ServerId::from_raw(0);
+    let sid = plx_plex::plex::ServerId::from_raw(0);
     fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
         (0..8).map(|i| Some(crate::pms::PmsMovie { sid, rk: format!("{i}"), ..Default::default() })).collect(),
         Vec::new());
@@ -358,7 +358,7 @@ fn down_from_a_missing_final_row_column_clamps_to_the_last_item() {
 #[test]
 fn rail_eligibility_and_last_producer_hold_over_a_long_shelf() {
     let _guard = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("library-rail-layer");
+    let session = plx_plex::plex::session::TempSession::new("library-rail-layer");
     session.watching("u-library-rail-layer");
     let mut fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 12);
     let view = fixture.listing.view();
@@ -400,7 +400,7 @@ fn owned_rail_keeps_the_fixed_legacy_origin_and_short_window() {
     let _guard = plx_base::testlock::serial();
     for n in [9, 30] {
         let mut fixture = Fixture::new();
-        let sid = crate::plex::ServerId::from_raw(0);
+        let sid = plx_plex::plex::ServerId::from_raw(0);
         fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
             (0..36).map(|i| Some(crate::pms::PmsMovie { sid, rk: format!("{i}"), ..Default::default() })).collect(),
             (0..n).map(|i| (format!("{i}"), 1)).collect());
@@ -420,7 +420,7 @@ fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason(
     for owner in ["", "friend"] {
         let mut fixture = Fixture::new();
         fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
-        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, crate::plex::ServerId::from_raw(7),
+        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, plx_plex::plex::ServerId::from_raw(7),
             crate::browse::SrcGroup { name: "Cinema server".into(), handle: owner.into(),
                 state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
         let page = fixture.screen();
@@ -449,12 +449,12 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
     use plx_ui::icons::Icon;
     use plx_ui::widgets::StatusOverlay;
     let _guard = plx_base::testlock::serial();
-    crate::plex::grant::reset_for_test();
+    plx_plex::plex::grant::reset_for_test();
     let key = keypin::key_of("library-clock.invalid", 32400);
     let _scoped = keypin::Scoped::watch_machine("library-clock-machine", &key);
-    crate::plex::reset_servers_for_test();
-    let failed_sid = crate::plex::register_pinned_with_client_id("library-clock-machine",
-        &crate::plex::Origin::http("192.168.1.51", 32400), "", None, "client", Default::default());
+    plx_plex::plex::reset_servers_for_test();
+    let failed_sid = plx_plex::plex::register_pinned_with_client_id("library-clock-machine",
+        &plx_plex::plex::Origin::http("192.168.1.51", 32400), "", None, "client", Default::default());
     // `tick_damaged`: a fact appearing or clearing under a static Failed read-out moves the
     // action row, so the tick must damage the frame.
     let tick = tick_damaged;
@@ -507,23 +507,23 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
     }
 
     // An offered plaintext server's reason outranks the clock's, glyph included.
-    use crate::plex::session::PlaintextChoice;
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_pinned_with_client_id("lan-machine", &crate::plex::Origin::http("192.168.1.50", 32400), "", None, "client", Default::default());
+    use plx_plex::plex::session::PlaintextChoice;
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_pinned_with_client_id("lan-machine", &plx_plex::plex::Origin::http("192.168.1.50", 32400), "", None, "client", Default::default());
     let fixture = Fixture::failed_source(sid, "friend");
     let mut page = fixture.screen();
     let lan_key = keypin::key_of("192.168.1.50", 32400);
     let _lan = keypin::Scoped::watch_machine("lan-machine", &lan_key);
     keypin::strict_failure(&lan_key, 60, Some(10));
-    crate::plex::grant::offered(crate::plex::grant::scope(),
-        crate::plex::grant::PlaintextVerdict { machine_id: "lan-machine".into(), name: "nas".into(), shared_by: String::new(),
-            eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided });
+    plx_plex::plex::grant::offered(plx_plex::plex::grant::scope(),
+        plx_plex::plex::grant::PlaintextVerdict { machine_id: "lan-machine".into(), name: "nas".into(), shared_by: String::new(),
+            eligibility: plx_plex::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided });
     tick(&mut page, &fixture);
     assert!(page.clock.blocked().is_some(), "the clock fact stands");
     let (shown, glyph, ..) = read(&page, &fixture);
     assert!(shown.as_ref().and_then(|r| r.to_str().ok()).is_some_and(|r| r.contains("Select Connect")), "{shown:?}");
     assert_eq!(glyph, Some(Icon::ServerBadgeMinus));
-    crate::plex::grant::reset_for_test();
+    plx_plex::plex::grant::reset_for_test();
 }
 
 /// **A fact about ANOTHER server does not colour this source's read-out** (scenario B): the
@@ -534,14 +534,14 @@ fn a_failed_source_ignores_a_clock_fact_about_another_server() {
     use plx_net::net::keypin;
     use plx_ui::icons::Icon;
     let _guard = plx_base::testlock::serial();
-    crate::plex::grant::reset_for_test();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::grant::reset_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let here = keypin::key_of("library-here.invalid", 32400);
     let elsewhere = keypin::key_of("library-elsewhere.invalid", 32400);
     let _here = keypin::Scoped::watch_machine("library-here-machine", &here);
     let _elsewhere = keypin::Scoped::watch_machine("library-elsewhere-machine", &elsewhere);
-    let sid = crate::plex::register_pinned_with_client_id("library-here-machine",
-        &crate::plex::Origin::http("192.168.1.52", 32400), "", None, "client", Default::default());
+    let sid = plx_plex::plex::register_pinned_with_client_id("library-here-machine",
+        &plx_plex::plex::Origin::http("192.168.1.52", 32400), "", None, "client", Default::default());
     let fixture = Fixture::failed_source(sid, "");
     let mut page = fixture.screen();
     let tick = |page: &mut LibraryScreen| tick_damaged(page, &fixture);
@@ -579,7 +579,7 @@ fn a_failed_library_section_and_a_failed_home_share_the_verdict_and_the_row() {
     for owner in ["", "friend"] {
         let mut fixture = Fixture::new();
         fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
-        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, crate::plex::ServerId::from_raw(7),
+        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, plx_plex::plex::ServerId::from_raw(7),
             crate::browse::SrcGroup { name: "Cinema server".into(), handle: owner.into(),
                 state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
         let page = fixture.screen();
@@ -608,7 +608,7 @@ fn a_fully_discovered_missing_kind_finishes_its_fade_and_has_no_foreign_grid() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
-        crate::browse::view::SectionView { sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
+        crate::browse::view::SectionView { sid: Some(plx_plex::plex::ServerId::from_raw(0)), key: 1,
             kind: SecKind::Movie, row: crate::browse::SrcRow { section: 0, title: "Cinema".into(),
                 pinned: true, current: true, ..Default::default() } }]);
     let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Show);
@@ -673,7 +673,7 @@ fn owned_card_stops_clip_pointer_hits_and_hold_the_engine_item() {
         &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
     assert!(out.iter().any(|effect| matches!(&effect.fx,
         Fx::App(AppFx::Library(LibraryReq::ItemMenu { sid, rk, from_deck: false }))
-            if *sid == crate::plex::ServerId::from_raw(0) && rk == "2")));
+            if *sid == plx_plex::plex::ServerId::from_raw(0) && rk == "2")));
     assert!(input.hit.resolve(Some(EntryId(99)), PointerKind::Click, stop.rect.cx(), y, Some(chosen)).miss,
         "a menu owner cannot click through to a retained Library stop");
 }
@@ -772,16 +772,16 @@ fn pending_semantic_commits_change_the_library_state_hash() {
     let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
     let empty = hash(&page);
     let section = SectionTarget { epoch: 1, index: 0,
-        identity: LibrarySectionIdentity { sid: crate::plex::ServerId::from_raw(0), key: 1 }, kind: SecKind::Movie };
+        identity: LibrarySectionIdentity { sid: plx_plex::plex::ServerId::from_raw(0), key: 1 }, kind: SecKind::Movie };
     page.pending.request_section(section.clone());
     let with_section = hash(&page);
     assert_ne!(empty, with_section, "a next-frame section commit must enter canonical state");
     page.pending.request_section(SectionTarget { epoch: 2, ..section.clone() });
     assert_ne!(with_section, hash(&page), "epoch refusal changes the next commit");
     page.pending.request_section(SectionTarget { identity: LibrarySectionIdentity {
-        sid: crate::plex::ServerId::from_raw(1), key: 1 }, ..section });
+        sid: plx_plex::plex::ServerId::from_raw(1), key: 1 }, ..section });
     assert_ne!(with_section, hash(&page), "same section key on another server is a different commit");
-    let target = GridTarget { epoch: 1, sid: crate::plex::ServerId::from_raw(0), section: 1, query: 1 };
+    let target = GridTarget { epoch: 1, sid: plx_plex::plex::ServerId::from_raw(0), section: 1, query: 1 };
     let actions = [GridAction::Unwatched { desired: true }, GridAction::Unwatched { desired: false },
         GridAction::Sort { key: "titleSort".into(), desc: false }, GridAction::Sort { key: "titleSort".into(), desc: true },
         GridAction::Sort { key: "addedAt".into(), desc: true }, GridAction::Genre { id: None },
@@ -809,7 +809,7 @@ pub(super) struct Fixture {
 fn discovery_failure_retry_targets_the_source_without_a_section() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
-    let sid = crate::plex::ServerId::from_raw(7);
+    let sid = plx_plex::plex::ServerId::from_raw(7);
     fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
         crate::browse::SrcGroup { name: "Cinema server".into(), handle: "friend".into(),
@@ -834,21 +834,21 @@ fn discovery_failure_retry_targets_the_source_without_a_section() {
 /// slot. Another server's offer does not change this source's read-out.
 #[test]
 fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
-    use crate::plex::session::PlaintextChoice;
+    use plx_plex::plex::session::PlaintextChoice;
     use super::super::plaintext_question::connect;
     let _guard = plx_base::testlock::serial();
-    crate::plex::reset_servers_for_test();
-    crate::plex::grant::reset_for_test();
-    let sid = crate::plex::register_pinned_with_client_id("lan-machine", &crate::plex::Origin::http("192.168.1.50", 32400), "", None, "client", Default::default());
+    plx_plex::plex::reset_servers_for_test();
+    plx_plex::plex::grant::reset_for_test();
+    let sid = plx_plex::plex::register_pinned_with_client_id("lan-machine", &plx_plex::plex::Origin::http("192.168.1.50", 32400), "", None, "client", Default::default());
     let mut fixture = Fixture::new();
     fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
         crate::browse::SrcGroup { name: "Cinema server".into(), handle: String::new(),
             state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
     let mut page = fixture.screen();
-    let offer = |machine: &str| crate::plex::grant::offered(crate::plex::grant::scope(),
-        crate::plex::grant::PlaintextVerdict { machine_id: machine.into(), name: "nas".into(), shared_by: String::new(),
-            eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided });
+    let offer = |machine: &str| plx_plex::plex::grant::offered(plx_plex::plex::grant::scope(),
+        plx_plex::plex::grant::PlaintextVerdict { machine_id: machine.into(), name: "nas".into(), shared_by: String::new(),
+            eligibility: plx_plex::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided });
     let tick = |page: &mut LibraryScreen| {
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
@@ -882,8 +882,8 @@ fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
         _ => None,
     }).collect();
     assert_eq!(answers, [(PlaintextChoice::Allowed, Some(sid))]);
-    crate::plex::grant::reset_for_test();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::grant::reset_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -1027,7 +1027,7 @@ impl Fixture {
     }
 
     pub(super) fn new() -> Self {
-        let sid = crate::plex::ServerId::from_raw(0);
+        let sid = plx_plex::plex::ServerId::from_raw(0);
         let listing = crate::browse::view::ListingSnapshot::fixture(sid, (0..36).map(|i|
             Some(crate::pms::PmsMovie { sid, rk: format!("{}", i + 1), title: format!("s{i:04x}"), ..Default::default() })).collect(),
             vec![("A".into(), 18), ("Z".into(), 18)]);
@@ -1054,7 +1054,7 @@ impl Fixture {
     }
     /// A source whose discovery failed, with no section address: the Failed read-out. `handle` is
     /// the sharing owner's ("" for the viewer's own server).
-    fn failed_source(sid: crate::plex::ServerId, handle: &str) -> Self {
+    fn failed_source(sid: plx_plex::plex::ServerId, handle: &str) -> Self {
         let mut fixture = Self::new();
         fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
         fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
@@ -1098,7 +1098,7 @@ fn direction(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: &
 #[test]
 fn shelf_horizontal_viewport_and_engine_item_survive_body_eviction() {
     let _guard = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("library-shelf-return");
+    let session = plx_plex::plex::session::TempSession::new("library-shelf-return");
     session.watching("u-library-shelf-return");
     let fixture = Fixture::shelves(&["movie.inprogress.1"], 12);
     let mut page = fixture.screen();
@@ -1122,7 +1122,7 @@ fn shelf_horizontal_viewport_and_engine_item_survive_body_eviction() {
 #[test]
 fn shelf_return_follows_the_film_then_its_last_published_slot() {
     let _guard = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("library-shelf-removal");
+    let session = plx_plex::plex::session::TempSession::new("library-shelf-removal");
     session.watching("u-library-shelf-removal");
     for evict in [false, true] {
         for remove_focused in [false, true] {
@@ -1194,7 +1194,7 @@ fn removed_grid_key_keeps_its_typed_master_detail_reconciliation_path() {
     let mut fixture = Fixture::new();
     let mut page = fixture.screen();
     let original = page.key(page.pair.detail.elem_at(17).unwrap());
-    let sid = crate::plex::ServerId::from_raw(0);
+    let sid = plx_plex::plex::ServerId::from_raw(0);
     fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
         (0..35).map(|i| Some(crate::pms::PmsMovie { sid, rk: format!("{}", i + 100), ..Default::default() })).collect(),
         vec![("A".into(), 18), ("Z".into(), 17)]);
@@ -1223,7 +1223,7 @@ fn direct_rail_activation_jumps_even_when_the_letter_was_already_selected() {
 fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
-    let sid = crate::plex::ServerId::from_raw(0);
+    let sid = plx_plex::plex::ServerId::from_raw(0);
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, (0..2).map(|i|
         crate::browse::view::SectionView { sid: Some(sid), key: i as i64 + 1, kind: SecKind::Movie,
             row: crate::browse::SrcRow { section: i, title: format!("s{i:04x}"), pinned: true, current: i == 0, ..Default::default() } }).collect());
@@ -1271,7 +1271,7 @@ fn a_single_favourite_library_draws_no_selector() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
-        crate::browse::view::SectionView { sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
+        crate::browse::view::SectionView { sid: Some(plx_plex::plex::ServerId::from_raw(0)), key: 1,
             kind: SecKind::Movie, row: crate::browse::SrcRow { section: 0, title: "Cinema".into(),
                 pinned: true, current: true, ..Default::default() } }]);
     let page = fixture.screen();
@@ -1293,7 +1293,7 @@ fn a_single_favourite_library_draws_no_selector() {
 fn favorite_library_row_uses_shared_strip_geometry_and_incoming_type() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
-    let sid = crate::plex::ServerId::from_raw(0);
+    let sid = plx_plex::plex::ServerId::from_raw(0);
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, (0..4).map(|i|
         crate::browse::view::SectionView { sid: Some(sid), key: i as i64 + 1,
             kind: if i < 2 { SecKind::Movie } else { SecKind::Show },
@@ -1319,7 +1319,7 @@ fn favorite_library_row_uses_shared_strip_geometry_and_incoming_type() {
 #[test]
 fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
     let _guard = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("library-shelf-geometry");
+    let session = plx_plex::plex::session::TempSession::new("library-shelf-geometry");
     session.watching("u-library-shelf-geometry");
     let fixture = Fixture::shelves(&["s0", "s1", "s2"], 12);
     let listing_id = fixture.listing.view().id().unwrap();
@@ -1396,7 +1396,7 @@ fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
     // populates `self.libraries` for 2+ candidates (see
     // `favorite_library_row_uses_shared_strip_geometry_and_incoming_type` above; a single
     // favourite clears it), so this is the minimal fixture that actually turns the strip on.
-    let sid = crate::plex::ServerId::from_raw(0);
+    let sid = plx_plex::plex::ServerId::from_raw(0);
     let sections = vec![
         crate::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Movie,
             row: crate::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } },

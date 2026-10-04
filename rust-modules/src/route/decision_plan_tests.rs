@@ -94,14 +94,14 @@ fn apply_plan_installs_contract_outcome_audio() {
         can_normalize_loudness: true,
         immersive: false,
     };
-    let audio = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
+    let audio = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
     apply_plan(
         &mut ps,
         Plan {
             url: "https://example.invalid/start.mkv".into(),
             acodec: "ac3".into(),
             src_acodec: "truehd".into(),
-            contract: crate::plex::EncodeContract { audio, ..Default::default() },
+            contract: plx_plex::plex::EncodeContract { audio, ..Default::default() },
             enhancement: EnhancementOutcome::Applied,
             audio: Some(carried.clone()),
             ..Default::default()
@@ -123,7 +123,7 @@ fn apply_plan_installs_contract_outcome_audio() {
         },
         "rk-plain",
     );
-    assert_eq!(ps.cur_contract.audio, crate::plex::AudioEnhancements::NONE);
+    assert_eq!(ps.cur_contract.audio, plx_plex::plex::AudioEnhancements::NONE);
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Off);
     assert_eq!(ps.cur_audio, None, "no fabricated track from the flat codec fields");
 }
@@ -138,8 +138,8 @@ fn remux_review_probe_installs_effective_selection_before_decision_and_start() {
     // Cold client-rendered subtitles stay off server-side; an explicit burn remains a burn.
     for burn in [0, 9] {
         let (port, done, server) = selection_probe_pms(false, burn);
-        let sid = crate::plex::register_for_test("selection-probe", "127.0.0.1", port, "token", "selection-probe-client");
-        crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Remote);
+        let sid = plx_plex::plex::register_for_test("selection-probe", "127.0.0.1", port, "token", "selection-probe-client");
+        plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Remote);
         let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
         env.audio_sid = 1;
         env.sub_sid = burn;
@@ -168,7 +168,7 @@ fn remux_review_probe_installs_effective_selection_before_decision_and_start() {
         assert!(plan.contract.remux && plan.url.contains("start.mkv"), "state-dependent sample must admit remux: {}", plan.url);
     }
     restore_quality(Quality::Original);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -178,15 +178,15 @@ fn remux_review_http_200_refusal_never_gets_media() {
     let _g = fresh_registry(&mut ps);
     assert!(plx_net::net::global_init() && crate::curlio::available());
     let (port, done, server) = selection_probe_pms(true, 0);
-    let sid = crate::plex::register_for_test("refused-probe", "127.0.0.1", port, "token", "refused-probe-client");
-    let sample = measure_remote_remux(crate::plex::client_for(sid).unwrap(), "rk", "refused-session", 2, 0, 320, crate::plex::AudioEnhancements::NONE).sample;
+    let sid = plx_plex::plex::register_for_test("refused-probe", "127.0.0.1", port, "token", "refused-probe-client");
+    let sample = measure_remote_remux(plx_plex::plex::client_for(sid).unwrap(), "rk", "refused-session", 2, 0, 320, plx_plex::plex::AudioEnhancements::NONE).sample;
     done.send(()).unwrap();
     let requests = server.join().unwrap();
     assert!(sample.is_none());
     assert!(requests.iter().any(|(r, _)| r.contains("/decision?")));
     assert!(!requests.iter().any(|(r, _)| r.contains("start.mkv")), "refusal must prevent media GET: {requests:?}");
     assert!(!requests.iter().any(|(r, _)| r.contains("closeResourceSession=1")));
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// PMS 1.43 503s a Part GET whose session has no MDE decision. A 4K HEVC+EAC3 title used
@@ -199,7 +199,7 @@ fn original_hevc_eac3_registers_mde_before_returning_the_part() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-dp-test",
         "127.0.0.1",
         port,
@@ -247,7 +247,7 @@ fn original_hevc_eac3_registers_mde_before_returning_the_part() {
         "MDE said directplay, so this is not a transcode: {}",
         plan.url
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// Smart-DP used to skip MDE so a TrueHD default would not veto the AC3 sibling. The
@@ -260,7 +260,7 @@ fn smart_dp_names_the_ac3_sibling_on_mde() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-smart-dp",
         "127.0.0.1",
         port,
@@ -317,7 +317,7 @@ fn smart_dp_names_the_ac3_sibling_on_mde() {
         "{decision}"
     );
     assert!(plan.url.contains("/library/parts/36013/"), "{}", plan.url);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// OpenAPI: a Part GET whose decision is a transcode is HTTP 503. Honour MDE rather than
@@ -330,7 +330,7 @@ fn mde_transcode_does_not_return_the_part_url() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, rx, server) = plan_pms(4, MDE_TRANSCODE);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-tc-test",
         "127.0.0.1",
         port,
@@ -372,7 +372,7 @@ fn mde_transcode_does_not_return_the_part_url() {
         "Part.decision=transcode with no Stream[] cannot claim a video re-encode: {}",
         plan.url
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// HEVC+TrueHD with no AAC/AC3/EAC3 sibling: MDE transcodes the part (TrueHD is not in the
@@ -385,7 +385,7 @@ fn mde_transcode_for_truehd_only_still_remuxes() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, rx, server) = plan_pms(4, MDE_TRANSCODE_COPY);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-truehd",
         "127.0.0.1",
         port,
@@ -434,7 +434,7 @@ fn mde_transcode_for_truehd_only_still_remuxes() {
         "TrueHD-only must codec-copy remux, not re-encode 4K: {}",
         plan.url
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// A video-stream `transcode` (bit depth past the profile, …) is the copy veto. Remux here
@@ -446,7 +446,7 @@ fn mde_video_stream_transcode_forbids_remux() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, rx, server) = plan_pms(4, MDE_TRANSCODE_VIDEO);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-vid-tc",
         "127.0.0.1",
         port,
@@ -482,7 +482,7 @@ fn mde_video_stream_transcode_forbids_remux() {
         !plan.contract.remux,
         "video-stream transcode forbids a codec-copy remux"
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// A declared Profile 5 can direct-play, but a remux copy carries no `DolbyHdrInfo`. MDE's
@@ -494,7 +494,7 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, rx, server) = plan_pms(4, MDE_TRANSCODE_COPY);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-p5-copy",
         "127.0.0.1",
         port,
@@ -533,7 +533,7 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
         plan.contract.no_video_copy,
         "the copy permission has to be withdrawn or PMS copies anyway"
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -548,7 +548,7 @@ fn unconfirmed_profile_5_forbids_copy_before_mde() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _g = fresh_registry(&mut ps);
         let (port, rx, server) = plan_pms(4, MDE_TRANSCODE_COPY);
-        let sid = crate::plex::register_for_test(
+        let sid = plx_plex::plex::register_for_test(
             "mde-p5-no-copy",
             "127.0.0.1",
             port,
@@ -589,7 +589,7 @@ fn unconfirmed_profile_5_forbids_copy_before_mde() {
             crate::metadata::DvPresentation::NotDv,
         );
         assert!(plan.dv_decision.presentation.declared().is_none());
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 }
 
@@ -610,16 +610,16 @@ fn remote_auto_truehd_remux_probes_start_mkv_not_the_part() {
         .expect("tiny source still has a probe object")
         .target_bytes;
     let (port, rx, server) = plan_pms_with_start_mkv(6, MDE_TRANSCODE_COPY, probe_bytes);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-remote-truehd",
         "127.0.0.1",
         port,
         "token",
         "mde-remote-truehd-client",
     );
-    crate::plex::client_for(sid)
+    plx_plex::plex::client_for(sid)
         .expect("registered")
-        .set_link(crate::plex::probe::Location::Remote);
+        .set_link(plx_plex::plex::probe::Location::Remote);
     let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     let mut item = fourk_item(
         sid,
@@ -679,7 +679,7 @@ fn remote_auto_truehd_remux_probes_start_mkv_not_the_part() {
         "a successful remux Original leaves the session for the play-path decision: {requests:?}"
     );
     restore_quality(Quality::Original);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// TrueHD default `id=1` is what `env.audio_sid` still carries at resolve start.
@@ -699,16 +699,16 @@ fn remote_auto_truehd_remux_probe_names_the_ac3_sibling_not_env_audio_sid() {
         .expect("tiny source still has a probe object")
         .target_bytes;
     let (port, rx, server) = plan_pms_with_start_mkv(6, MDE_TRANSCODE_COPY, probe_bytes);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-remote-truehd-ids",
         "127.0.0.1",
         port,
         "token",
         "mde-remote-truehd-ids-client",
     );
-    crate::plex::client_for(sid)
+    plx_plex::plex::client_for(sid)
         .expect("registered")
-        .set_link(crate::plex::probe::Location::Remote);
+        .set_link(plx_plex::plex::probe::Location::Remote);
     let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.audio_sid = 1;
     let mut item = fourk_item(
@@ -792,7 +792,7 @@ fn remote_auto_truehd_remux_probe_names_the_ac3_sibling_not_env_audio_sid() {
         plan.url
     );
     restore_quality(Quality::Original);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// 720p denies remux, so the encoder can transcode the selected DTS. Putting the smart-DP
@@ -805,7 +805,7 @@ fn a_720p_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::P720);
     let (port, rx, server) = plan_pms(3, EMPTY_MC);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "reencode-selected-dts",
         "127.0.0.1",
         port,
@@ -878,7 +878,7 @@ fn a_720p_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
     );
     assert_eq!(plan.audio.as_ref().map_or(0, |a| a.sid), 2669);
     restore_quality(Quality::Original);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// #202 end to end on the re-encode path: a French file whose default (echoed back as
@@ -892,7 +892,7 @@ fn a_720p_reencode_keeps_the_files_default_language_over_english() {
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::P720);
     let (port, rx, server) = plan_pms(3, EMPTY_MC);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "reencode-default-echo",
         "127.0.0.1",
         port,
@@ -965,7 +965,7 @@ fn a_720p_reencode_keeps_the_files_default_language_over_english() {
     );
     assert_eq!(plan.audio.as_ref().map_or(0, |a| a.sid), 10975);
     restore_quality(Quality::Original);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// 720p with no language preference keeps the file's direct-playable default (Russian AC3)
@@ -979,7 +979,7 @@ fn a_720p_reencode_keeps_the_default_ac3_over_an_unselected_english_dts() {
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::P720);
     let (port, rx, server) = plan_pms(3, EMPTY_MC);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "reencode-pref-lang-dts",
         "127.0.0.1",
         port,
@@ -1052,7 +1052,7 @@ fn a_720p_reencode_keeps_the_default_ac3_over_an_unselected_english_dts() {
     );
     assert_eq!(plan.audio.as_ref().map_or(0, |a| a.sid), 2663);
     restore_quality(Quality::Original);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// Relay Auto cannot Original, so bootstrap installs HLS. The play-path PUT and start.m3u8
@@ -1065,16 +1065,16 @@ fn a_auto_hls_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::Auto);
     let (port, rx, server) = plan_pms(3, EMPTY_MC);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "reencode-auto-hls-dts",
         "127.0.0.1",
         port,
         "token",
         "reencode-auto-hls-dts-client",
     );
-    crate::plex::client_for(sid)
+    plx_plex::plex::client_for(sid)
         .expect("registered")
-        .set_link(crate::plex::probe::Location::Relay);
+        .set_link(plx_plex::plex::probe::Location::Relay);
     let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.quality = Quality::Auto;
     env.src_kbps = 48_000;
@@ -1141,7 +1141,7 @@ fn a_auto_hls_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
     );
     assert_eq!(plan.audio.as_ref().map_or(0, |a| a.sid), 2669);
     restore_quality(Quality::Original);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// A remux probe that registers `/decision` and then gets no `start.mkv` body must
@@ -1158,16 +1158,16 @@ fn remote_auto_failed_remux_sample_physical_stops_before_hls() {
     }
     restore_quality(Quality::Auto);
     let (port, rx, server) = plan_pms_with_start_mkv(8, MDE_TRANSCODE_COPY, 0);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-remote-truehd-stop",
         "127.0.0.1",
         port,
         "token",
         "mde-remote-truehd-stop-client",
     );
-    crate::plex::client_for(sid)
+    plx_plex::plex::client_for(sid)
         .expect("registered")
-        .set_link(crate::plex::probe::Location::Remote);
+        .set_link(plx_plex::plex::probe::Location::Remote);
     let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     let mut item = fourk_item(
         sid,
@@ -1222,7 +1222,7 @@ fn remote_auto_failed_remux_sample_physical_stops_before_hls() {
         plan.url
     );
     restore_quality(Quality::Original);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// An empty / unusable MDE body must not fall back to Original — that Part GET 503s on 1.43.
@@ -1234,7 +1234,7 @@ fn unreachable_mde_does_not_return_the_part_url() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, rx, server) = plan_pms(4, EMPTY_MC);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-empty",
         "127.0.0.1",
         port,
@@ -1276,7 +1276,7 @@ fn unreachable_mde_does_not_return_the_part_url() {
         "HEVC+EAC3 with unreachable MDE still codec-copy remuxes: {}",
         plan.url
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// Selected embedded SRT is client-rendered on Original. MDE must name that stream id
@@ -1290,7 +1290,7 @@ fn selected_embedded_srt_names_id_and_client_rendered_mode_on_mde() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-srt",
         "127.0.0.1",
         port,
@@ -1334,7 +1334,7 @@ fn selected_embedded_srt_names_id_and_client_rendered_mode_on_mde() {
         "selected SRT must stay Original, not remux: {}",
         plan.url
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// Selected PGS is client-rendered on Original; MDE must see that stream id (and the profile
@@ -1347,7 +1347,7 @@ fn selected_pgs_names_subtitle_stream_id_on_mde() {
     let _g = fresh_registry(&mut ps);
     let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
     let sid =
-        crate::plex::register_for_test("mde-pgs", "127.0.0.1", port, "token", "mde-pgs-client");
+        plx_plex::plex::register_for_test("mde-pgs", "127.0.0.1", port, "token", "mde-pgs-client");
     let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item_with_subs(
         sid,
@@ -1385,7 +1385,7 @@ fn selected_pgs_names_subtitle_stream_id_on_mde() {
         "PGS + EAC3 stays Original when MDE allows: {}",
         plan.url
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// A selected external sidecar is not in the container. MDE must see subtitleStreamID=0
@@ -1397,7 +1397,7 @@ fn external_selected_sub_sends_subtitle_stream_id_zero_on_mde() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-ext-sub",
         "127.0.0.1",
         port,
@@ -1445,7 +1445,7 @@ fn external_selected_sub_sends_subtitle_stream_id_zero_on_mde() {
         "MDE with subs off stays Original: {}",
         plan.url
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// Selected embedded `mov_text` (iTunes MP4) is client-rendered; the profile lists it so
@@ -1457,7 +1457,7 @@ fn selected_mov_text_names_subtitle_stream_id_on_mde() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-mov-text",
         "127.0.0.1",
         port,
@@ -1496,7 +1496,7 @@ fn selected_mov_text_names_subtitle_stream_id_on_mde() {
         "mov_text + EAC3 stays Original when MDE allows: {}",
         plan.url
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// PMS reports DVD bitmaps as `dvd_subtitle`; listing only `dvd` would MDE-transcode and
@@ -1508,7 +1508,7 @@ fn selected_dvd_subtitle_names_subtitle_stream_id_on_mde() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "mde-dvd-sub",
         "127.0.0.1",
         port,
@@ -1547,5 +1547,5 @@ fn selected_dvd_subtitle_names_subtitle_stream_id_on_mde() {
         "dvd_subtitle + EAC3 stays Original when MDE allows: {}",
         plan.url
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }

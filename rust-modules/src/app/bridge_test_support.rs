@@ -40,13 +40,13 @@ pub(super) fn frame_with_results(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, 
 /// supply the identity. The fold puts the identity ON the argument, which is what makes the
 /// trail seeding this helper used to do unnecessary.
 pub(super) fn detail_arg(rk: &str) -> AppArg {
-    AppArg::Content(ContentArg::Detail { sid: crate::plex::ServerId::UNSET, rk: rk.into() })
+    AppArg::Content(ContentArg::Detail { sid: plx_plex::plex::ServerId::UNSET, rk: rk.into() })
 }
 
 /// …and a person page's.
 pub(super) fn person_arg(key: &str) -> AppArg {
     AppArg::Content(ContentArg::Person {
-        sid: crate::plex::ServerId::UNSET,
+        sid: plx_plex::plex::ServerId::UNSET,
         key: key.into(),
         guid: format!("tag://{key}"),
         name: String::new(),
@@ -73,8 +73,8 @@ pub(super) fn notices(d: &Dispatcher<AppHost>) -> String {
 }
 
 pub(super) fn directory_policy_fixture(
-    own: crate::plex::ServerId,
-    hidden: crate::plex::ServerId,
+    own: plx_plex::plex::ServerId,
+    hidden: plx_plex::plex::ServerId,
 ) -> crate::stores::browse::DirectorySnapshot {
     let section = |sid, key, section, title: &str, pinned| {
         crate::stores::browse::SectionView {
@@ -102,7 +102,7 @@ impl Drop for DirectoryPolicyCleanup {
     fn drop(&mut self) {
         // Search and Hubs are now owned per-Bridge (`rig`, dropped with the test's own stack
         // frame), so there is no process-wide store state left for this cleanup to reset.
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 }
 

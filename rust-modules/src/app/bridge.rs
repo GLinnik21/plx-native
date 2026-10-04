@@ -87,7 +87,7 @@ fn refresh_chrome(
     chrome: &mut super::chrome::ChromeSnapshot,
     measure: &dyn Measure,
     directory: crate::stores::browse::DirectoryView<'_>,
-    captured: Option<(&crate::plex::session::CurrentProfile, &crate::plex::session::Session)>,
+    captured: Option<(&plx_plex::plex::session::CurrentProfile, &plx_plex::plex::session::Session)>,
 ) {
     match captured {
         Some(captured) => chrome.refresh_with_profile(measure, directory, Some(captured)),
@@ -298,11 +298,11 @@ impl ConsentMachine {
 pub(crate) struct Bridge {
     session_cache_generation: u64,
     home_io: Option<super::bootstrap::HomeIo>,
-    recorded_clients: std::collections::BTreeMap<u32, &'static crate::plex::Client>,
+    recorded_clients: std::collections::BTreeMap<u32, &'static plx_plex::plex::Client>,
     initial_subhash: u64,
     session: crate::auth::SessionMachine,
     session_adapter: super::adapters::session::SessionAdapter,
-    session_ready: Option<(u64, crate::auth::owner::ProfileScope, crate::plex::session::ServerRef, String, crate::auth::owner::ReadyInstall)>,
+    session_ready: Option<(u64, crate::auth::owner::ProfileScope, plx_plex::plex::session::ServerRef, String, crate::auth::owner::ReadyInstall)>,
     consent_adapter: super::adapters::consent::ConsentAdapter,
     stores: crate::stores::Stores,
     mounter: AppMounter,
@@ -446,7 +446,7 @@ impl Bridge {
     pub(crate) fn for_test(now_us: fn() -> u64) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_measure(&FIXTURE, now_us,
-            crate::auth::SessionInit::captured(crate::plex::session::Session::default()),
+            crate::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), Default::default(),
             super::adapters::consent::ConsentAdapter::fixture())
     }
@@ -485,7 +485,7 @@ impl Bridge {
     fn for_consent_test(consent: crate::telemetry::consent::Consent) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_publications(&FIXTURE, || 0,
-            crate::auth::SessionInit::captured(crate::plex::session::Session::default()),
+            crate::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), consent,
             super::adapters::consent::ConsentAdapter::fixture(), StorePublications {
                 hubs: crate::pms::HubsSnapshot::empty_for_test(),
@@ -499,7 +499,7 @@ impl Bridge {
     pub(crate) fn for_consent_resource_test(consent: crate::telemetry::consent::Consent) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
         Self::with_publications(&FIXTURE, || 0,
-            crate::auth::SessionInit::captured(crate::plex::session::Session::default()),
+            crate::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), consent,
             super::adapters::consent::ConsentAdapter::live(), StorePublications {
                 hubs: crate::pms::HubsSnapshot::empty_for_test(),
@@ -525,7 +525,7 @@ impl Bridge {
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications, stores: crate::stores::Stores) -> Self {
         Self {
-            session_cache_generation: crate::plex::session::visible_generation(),
+            session_cache_generation: plx_plex::plex::session::visible_generation(),
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
             initial_subhash: 0,
@@ -569,7 +569,7 @@ impl Bridge {
 
     /// Observe storage landings on the frame thread, alongside store/adapter publications.
     pub(crate) fn land_session_cache(&mut self) {
-        let generation = crate::plex::session::visible_generation();
+        let generation = plx_plex::plex::session::visible_generation();
         if self.session_cache_generation != generation {
             self.session_cache_generation = generation;
             plx_machine::idle::invalidate();
@@ -588,7 +588,7 @@ impl Bridge {
     pub fn consent_subhash(&self) -> u64 { self.consent.subhash() }
     pub(crate) fn initial_subhash(&self) -> u64 { self.initial_subhash }
     #[cfg(test)]
-    pub(crate) fn profile_resource_view(&self) -> Option<std::sync::Arc<crate::plex::session::CurrentProfile>> {
+    pub(crate) fn profile_resource_view(&self) -> Option<std::sync::Arc<plx_plex::plex::session::CurrentProfile>> {
         self.session_adapter.profile_resource_view()
     }
     pub(crate) fn snapshot_session_init(&self) -> crate::auth::SessionInit { self.session.snapshot_init() }
@@ -739,7 +739,7 @@ impl Bridge {
 
     /// Restore a detail page that is about to mount to a `Spot` no `ReturnState` holds — see
     /// [`crate::screens::registry::DetailSeed`].
-    pub(crate) fn seed_detail(&mut self, sid: crate::plex::ServerId, rk: &str, spot: crate::metadata::Spot) {
+    pub(crate) fn seed_detail(&mut self, sid: plx_plex::plex::ServerId, rk: &str, spot: crate::metadata::Spot) {
         self.mounter.seed = Some(crate::screens::registry::DetailSeed { sid, rk: rk.to_string(), spot });
     }
 
@@ -1166,7 +1166,7 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn seed_registered_browse_for_test(
         &mut self,
-        sids: [crate::plex::ServerId; 2],
+        sids: [plx_plex::plex::ServerId; 2],
     ) {
         self.stores.browse.borrow_mut().seed_registered_table_for_test(sids);
         self.refresh_browse_directory();
@@ -1184,7 +1184,7 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn seed_hubs_for_directory_test(
         &mut self,
-        sid: crate::plex::ServerId,
+        sid: plx_plex::plex::ServerId,
         items: usize,
         hub_state: crate::pms::HubState,
     ) {
@@ -1213,7 +1213,7 @@ impl Bridge {
     }
 
     pub(crate) fn bind_primary(&mut self, recorded: u32) -> Result<(), &'static str> {
-        let resource = crate::plex::client_opt().ok_or("missing controlled primary")?;
+        let resource = plx_plex::plex::client_opt().ok_or("missing controlled primary")?;
         if resource.instance_gen() != recorded || resource.id().raw() != 0 {
             return Err("initial primary binding mismatch");
         }
@@ -1222,7 +1222,7 @@ impl Bridge {
         }
         Ok(())
     }
-    pub(crate) fn recorded_client(&self, id: u32) -> Option<&'static crate::plex::Client> {
+    pub(crate) fn recorded_client(&self, id: u32) -> Option<&'static plx_plex::plex::Client> {
         self.recorded_clients.get(&id).copied()
     }
     /// Does [`Rig::draw_chrome`] paint the shared top bar for this argument? Pulled out of that
@@ -2130,7 +2130,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
                 crate::focusprobe::push_rk(&mut out, &item.rk);
             } else { out.push_str(" sid=- rk=-"); }
         }
-        AppArg::Content(ContentArg::Collection(crate::plex::collections::CollectionRef { rk, sec, tag, .. })) => {
+        AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef { rk, sec, tag, .. })) => {
             let item = instance.screen.as_any()
                 .and_then(|screen| screen.downcast_ref::<crate::screens::collection::CollectionScreen>())
                 .and_then(|screen| screen.focused_item(focus, &cx));
@@ -2300,7 +2300,7 @@ pub(crate) fn player_overlay_mut(
 pub(crate) fn open_content_panel(
     d: &mut Dispatcher<AppHost>,
     host: InstanceId,
-    subject: Option<(crate::plex::ServerId, &str)>,
+    subject: Option<(plx_plex::plex::ServerId, &str)>,
     panel: crate::screens::registry::ContentPanel,
 ) {
     // WHICH surface a panel is — its style and its argument — is the registry's
@@ -2353,7 +2353,7 @@ pub(crate) fn card_menu_arg(
 /// rather than a catalog row: no row to carry, and `loaded_episode` set for the filmstrip so the
 /// dispatch routes Play from Start and the scrobble through that page's own episode path.
 fn strip_menu_arg(
-    sid: crate::plex::ServerId,
+    sid: plx_plex::plex::ServerId,
     rk: &str,
     kind: ItemMenuKind,
     host: EntryId,
@@ -2528,7 +2528,7 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         // A sign-out followed by a fresh sign-in can replace the session without restarting the
         // process. Re-read only at this one credentials handoff so the old account's in-memory
         // preference cannot leak into the new session.
-        let saved = crate::plex::session::peek();
+        let saved = plx_plex::plex::session::peek();
         crate::route::restore_quality(
             crate::dev::playback_quality_override().unwrap_or_else(|| saved.playback_quality()),
         );
@@ -2743,7 +2743,7 @@ fn nav_peer(d: &mut Dispatcher<AppHost>, arg: AppArg, ret: Option<ReturnState<u3
 /// SEED (`DetailSeed`) exactly as it rode on the trail node's `Spot` before.
 pub(crate) fn open_detail(
     d: &mut Dispatcher<AppHost>, rig: &mut Bridge,
-    sid: crate::plex::ServerId, rk: &str, season: Option<std::os::raw::c_int>,
+    sid: plx_plex::plex::ServerId, rk: &str, season: Option<std::os::raw::c_int>,
     ret: Option<ReturnState<u32, PageMemory>>,
 ) {
     use plx_ui::screen::ScreenArg;
@@ -3408,7 +3408,7 @@ mod preference_effect_tests {
     fn controlled_preferences_are_rejected_before_capture_or_persistence() {
         let _serial = plx_base::testlock::serial();
         let mt = unsafe { plx_base::task::MainThread::assume() };
-        let temp = crate::plex::session::TempSession::new("controlled-preference-effects");
+        let temp = plx_plex::plex::session::TempSession::new("controlled-preference-effects");
         let before = std::fs::read(temp.path()).unwrap();
         let quality = crate::route::quality();
         let mode = crate::route::direct_play_mode();

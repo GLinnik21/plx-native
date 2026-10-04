@@ -479,8 +479,8 @@ fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32)
             plx_platform::devcaps::dv::capability().compact_display(),
             &vh.to_string(),
             &os,
-            crate::plex::identity::PRODUCT,
-            crate::plex::identity::VERSION,
+            plx_plex::plex::identity::PRODUCT,
+            plx_plex::plex::identity::version(),
             &vw.to_string(),
         ),
         playback_line(ps, d, now),
@@ -623,8 +623,8 @@ fn device_rows() -> Vec<Field> {
     v.push(Field::new(
         plx_platform::i18n::msg::browse_diagnostics_field_server(),
         server_line(
-            &crate::plex::serverinfo::version(),
-            crate::plex::serverinfo::subscription(),
+            &plx_plex::plex::serverinfo::version(),
+            plx_plex::plex::serverinfo::subscription(),
         ),
     ));
     v
@@ -826,20 +826,20 @@ fn fps_milli_str(fps_milli: i64) -> String {
 
 fn connection_line(ps: &crate::route::PlaybackSession) -> String {
     let sid = crate::route::cur_sid(ps);
-    let Some(client) = crate::plex::client_for(sid) else {
+    let Some(client) = plx_plex::plex::client_for(sid) else {
         return plx_platform::i18n::msg::browse_diagnostics_standalone().to_string();
     };
     let tier = match client.link() {
-        Some(crate::plex::probe::Location::Local) => "LAN",
-        Some(crate::plex::probe::Location::Remote) => plx_platform::i18n::msg::browse_diagnostics_remote(),
-        Some(crate::plex::probe::Location::Relay) => plx_platform::i18n::msg::browse_diagnostics_relay(),
+        Some(plx_plex::plex::probe::Location::Local) => "LAN",
+        Some(plx_plex::plex::probe::Location::Remote) => plx_platform::i18n::msg::browse_diagnostics_remote(),
+        Some(plx_plex::plex::probe::Location::Relay) => plx_platform::i18n::msg::browse_diagnostics_relay(),
         None => plx_platform::i18n::msg::browse_diagnostics_unknown_link(),
     };
     format!(
         "{tier} · PMS {}",
         server_line(
-            &crate::plex::serverinfo::version_of(sid),
-            crate::plex::serverinfo::subscription_of(sid),
+            &plx_plex::plex::serverinfo::version_of(sid),
+            plx_plex::plex::serverinfo::subscription_of(sid),
         )
     )
 }
@@ -1502,8 +1502,8 @@ fn chain(src: String, sent: String, payload: &str) -> String {
 /// A server that answered but never named its subscription (a PMS predating the field) shows its
 /// release alone: the row must not claim a Pass state the server did not state. Pure so every arm
 /// is host-testable without touching the process-global store.
-fn server_line(version: &str, sub: crate::plex::serverinfo::Subscription) -> String {
-    use crate::plex::serverinfo::Subscription as S;
+fn server_line(version: &str, sub: plx_plex::plex::serverinfo::Subscription) -> String {
+    use plx_plex::plex::serverinfo::Subscription as S;
     if version.is_empty() {
         return plx_platform::i18n::msg::browse_diagnostics_not_queried().to_string();
     }
@@ -1902,7 +1902,7 @@ mod tests {
     impl Drop for EnhTestSession {
         fn drop(&mut self) {
             reset_player_control_for_test(&self.ps);
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
 
@@ -1913,10 +1913,10 @@ mod tests {
     #[test]
     fn audio_row_suffix_only_when_applied() {
         let _g = plx_base::testlock::serial();
-        let both = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
+        let both = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
         for (applied, refused, expect_suffix) in [
             (both, false, true),   // Applied: cur_enhancement derives Applied from `applied.any()`
-            (crate::plex::AudioEnhancements::NONE, false, false), // Off: nothing asked
+            (plx_plex::plex::AudioEnhancements::NONE, false, false), // Off: nothing asked
             (both, true, false),   // Refused: asked, but the server did not honour it
         ] {
             let ps = EnhTestSession::new(EnhTestFixture { applied, refused, ..Default::default() });
@@ -1940,7 +1940,7 @@ mod tests {
     #[test]
     fn route_line_shows_refused_and_unverified() {
         let _g = plx_base::testlock::serial();
-        let asked = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
+        let asked = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
         let d = crate::player::Diag::default();
 
         {
@@ -3079,7 +3079,7 @@ mod tests {
     /// and a server that never named its subscription must not be assigned one either way.
     #[test]
     fn the_server_row_states_the_pass_tristate_without_guessing() {
-        use crate::plex::serverinfo::Subscription as S;
+        use plx_plex::plex::serverinfo::Subscription as S;
         assert_eq!(
             server_line("1.43.3.10861-cd85035e7", S::Yes),
             "1.43.3 · Plex Pass"

@@ -296,7 +296,7 @@ pub(crate) struct App {
     pub(crate) refresh_hubs_at: u32,
     /// The HTTPS retry for servers on a plaintext grant (`plex::grant::UpgradeRetry`), stepped
     /// every frame beside the view-state pump (`app/run.rs`).
-    pub(crate) plaintext_upgrade: crate::plex::grant::UpgradeRetry,
+    pub(crate) plaintext_upgrade: plx_plex::plex::grant::UpgradeRetry,
     ev: [u8; 128],
     remote: Option<crate::remote::Remote>,
     /// The SDL window (`SDL_CreateWindow`), for the swap.
@@ -372,7 +372,7 @@ impl App {
     /// Controlled construction receives decoded/captured inputs before bootstrap effects.
     pub(crate) unsafe fn from_init(initial: bootstrap::Initial, mode: bootstrap::Preflight,
         pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
-        deferred: Option<crate::plex::session::DeferredLoad>) -> Result<Self, c_int> {
+        deferred: Option<plx_plex::plex::session::DeferredLoad>) -> Result<Self, c_int> {
         boot::construct(pms_host, pms_port, mt, mode, Some(initial), deferred)
     }
     /// **Which page is on top** (spec §15.2) — the container's answer, and since D1 the ONLY one.
@@ -527,6 +527,9 @@ pub fn synthetic_home_initial(seed: u32, port: u16, settings: Option<String>)
 }
 
 fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_int> {
+    // What `plx_plex` reports as `X-Plex-Version` is this build's `PLX_VERSION`, which a
+    // `cargo:rustc-env` makes visible to this crate only; before anything can build a header.
+    plx_plex::plex::identity::set_version(env!("PLX_VERSION"));
     // The hooks `plex` is handed for what it cannot name; first, so no session load precedes them.
     install_plex_seams();
     // Telemetry erases the player's in-memory error trace (withdrawal, sign-out, its own boot load

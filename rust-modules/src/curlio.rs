@@ -711,7 +711,7 @@ impl CurlSource {
         }
         // The resolve pin, by this URL's host and port — see `net::resolve` for why the media
         // plane consults a table rather than carrying the pin. Looked up ONCE here; a seek reuses it.
-        let (origin, _) = crate::plex::origin::split(url);
+        let (origin, _) = plx_plex::plex::origin::split(url);
         let resolve_entry = plx_net::net::resolve::entry_for(origin.host(), origin.port());
         // The offline reproduction (`/tmp/plxnative-nowan`): a name opens only with a pin.
         if resolve_entry.is_none()
@@ -724,7 +724,7 @@ impl CurlSource {
             .transpose()
             .map_err(|_| OpenErr::Local)?;
         let url_c = CString::new(url).map_err(|_| OpenErr::Local)?;
-        let ua = CString::new(crate::plex::identity::user_agent()).map_err(|_| OpenErr::Local)?;
+        let ua = CString::new(plx_plex::plex::identity::user_agent()).map_err(|_| OpenErr::Local)?;
         let multi = unsafe { curl_multi_init() };
         if multi.is_null() {
             return Err(OpenErr::Local);
@@ -769,7 +769,7 @@ impl CurlSource {
         if !media_url_allowed(url) {
             return Err(OpenErr::Local);
         }
-        let (origin, _) = crate::plex::origin::split(url);
+        let (origin, _) = plx_plex::plex::origin::split(url);
         let resolve_entry = plx_net::net::resolve::entry_for(origin.host(), origin.port());
         if resolve_entry.is_none()
             && plx_net::net::refuse_name(origin.host(), plx_net::net::API.connect_s)
@@ -1679,14 +1679,14 @@ fn sample_throughput_with_reservation(
 }
 
 fn media_url_allowed(url: &str) -> bool {
-    let (origin, path) = crate::plex::origin::split(url);
-    crate::http::credential_transport_allowed(&origin, path, &[])
+    let (origin, path) = plx_plex::plex::origin::split(url);
+    plx_plex::http::credential_transport_allowed(&origin, path, &[])
 }
 
 #[cfg(test)]
-fn media_url_allowed_by_policy(url: &str, policy: crate::plex::CredentialPolicy) -> bool {
-    let (origin, path) = crate::plex::origin::split(url);
-    crate::http::credential_transport_allowed_by_policy(&origin, path, &[], policy)
+fn media_url_allowed_by_policy(url: &str, policy: plx_plex::plex::CredentialPolicy) -> bool {
+    let (origin, path) = plx_plex::plex::origin::split(url);
+    plx_plex::http::credential_transport_allowed_by_policy(&origin, path, &[], policy)
 }
 
 impl Drop for CurlSource {
@@ -1945,15 +1945,15 @@ mod tests {
     fn lower_media_layer_refuses_plaintext_credentials_in_store_policy() {
         assert!(!media_url_allowed_by_policy(
             "http://192.0.2.1:32400/video.mkv?X-Plex-Token=secret",
-            crate::plex::CredentialPolicy::HttpsOnly,
+            plx_plex::plex::CredentialPolicy::HttpsOnly,
         ));
         assert!(media_url_allowed_by_policy(
             "https://example.invalid/video.mkv?X-Plex-Token=secret",
-            crate::plex::CredentialPolicy::HttpsOnly,
+            plx_plex::plex::CredentialPolicy::HttpsOnly,
         ));
         assert!(media_url_allowed_by_policy(
             "http://192.0.2.1:32400/video.mkv?X-Plex-Token=secret",
-            crate::plex::CredentialPolicy::AllowPlaintext,
+            plx_plex::plex::CredentialPolicy::AllowPlaintext,
         ));
     }
 
@@ -2035,7 +2035,7 @@ mod tests {
                 "unpinned, the name resolves to nothing"
             );
             assert_eq!(accepts.load(Ordering::Acquire), 0);
-            let pin = crate::plex::ResolvePin::for_test(
+            let pin = plx_plex::plex::ResolvePin::for_test(
                 "no-such-host.invalid",
                 port as i32,
                 "127.0.0.1".parse().unwrap(),

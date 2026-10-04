@@ -24,7 +24,7 @@
 //! `browse` hands out owned [`SrcGroup`](crate::browse::SrcGroup)/[`SrcRow`](crate::browse::SrcRow)
 //! projections rather than borrows of its statics).
 use crate::browse::{SourceState, SrcGroup};
-use crate::plex::probe::Location;
+use plx_plex::plex::probe::Location;
 use plx_ui::form::{Form, FormId, FormSection, RowKey, RowKind};
 use plx_ui::table::{Row, Section};
 use std::convert::Infallible;

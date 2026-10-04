@@ -30,12 +30,12 @@ pub(super) fn test_adapter() -> &'static std::sync::Arc<MetadataAdapter> {
 
 // ---- convert_streams: the Dolby Vision record's survival ------------------------------
 
-pub(super) fn video_stream(dovi: Option<(i64, i64, i64)>) -> crate::plex::Stream {
+pub(super) fn video_stream(dovi: Option<(i64, i64, i64)>) -> plx_plex::plex::Stream {
     let (present, profile, compat, el) = match dovi {
         Some((profile, compat, el)) => (1, profile, compat, el),
         None => (0, 0, 0, 0),
     };
-    crate::plex::Stream {
+    plx_plex::plex::Stream {
         stream_type: 1,
         codec: "hevc".into(),
         dovi_present: present,
@@ -51,7 +51,7 @@ pub(super) fn video_stream(dovi: Option<(i64, i64, i64)>) -> crate::plex::Stream
 pub(super) fn landing(gen: u32, rk: &str) {
     land_detail(
         test_adapter(),
-        crate::plex::ServerId::UNSET,
+        plx_plex::plex::ServerId::UNSET,
         rk,
         gen,
         Some(Detail {
@@ -72,15 +72,15 @@ pub(super) fn cur_rk() -> Option<String> {
 /// subject, and routing through it would couple the two.
 /// Two registry slots — plain values, so the identity rules are gradeable without a registry.
 /// `SRV_A` stands in for the signed-in user's own server, `SRV_B` for a share.
-pub(super) const SRV_A: crate::plex::ServerId = crate::plex::ServerId::from_raw(0);
+pub(super) const SRV_A: plx_plex::plex::ServerId = plx_plex::plex::ServerId::from_raw(0);
 
-pub(super) const SRV_B: crate::plex::ServerId = crate::plex::ServerId::from_raw(1);
+pub(super) const SRV_B: plx_plex::plex::ServerId = plx_plex::plex::ServerId::from_raw(1);
 
 pub(super) fn install_show(rk: &str, cur: usize, eps: &[&str]) {
     install_show_on(SRV_A, rk, cur, eps);
 }
 
-pub(super) fn install_show_on(sid: crate::plex::ServerId, rk: &str, cur: usize, eps: &[&str]) {
+pub(super) fn install_show_on(sid: plx_plex::plex::ServerId, rk: &str, cur: usize, eps: &[&str]) {
     test_state().current = Some(Detail {
         sid,
         rk: rk.to_string(),

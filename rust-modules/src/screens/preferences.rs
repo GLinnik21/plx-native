@@ -18,7 +18,7 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver};
-use crate::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
+use plx_plex::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
 use crate::route::{DirectPlayMode, NextEpisodeMode, Quality, SkipInterval, SubtitlePosition, SubtitleSize};
 use plx_ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use plx_ui::frame::Budget;
@@ -398,8 +398,8 @@ fn resolve_value(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
         PickerKind::NextEpisode => Value::NextEpisode(crate::route::next_episode_mode()),
         PickerKind::SkipInterval => Value::SkipInterval(crate::route::skip_interval()),
         // A deprecated code (`pb`) resolves to its replacement so the picker checks that entry.
-        PickerKind::AudioLanguage => Value::Language(prefs.and_then(|p| p.stated_language.as_deref()).map(crate::plex::languages::canonical).unwrap_or_default().to_string()),
-        PickerKind::SubtitleLanguage => Value::Language(prefs.and_then(|p| p.subtitle_language.as_deref()).map(crate::plex::languages::canonical).unwrap_or_default().to_string()),
+        PickerKind::AudioLanguage => Value::Language(prefs.and_then(|p| p.stated_language.as_deref()).map(plx_plex::plex::languages::canonical).unwrap_or_default().to_string()),
+        PickerKind::SubtitleLanguage => Value::Language(prefs.and_then(|p| p.subtitle_language.as_deref()).map(plx_plex::plex::languages::canonical).unwrap_or_default().to_string()),
         PickerKind::SubtitleMode => Value::Mode(prefs.map_or(0, |p| p.subtitle_mode)),
         PickerKind::ForcedSubtitles => Value::Forced(prefs.map_or(0, |p| p.subtitle_forced)),
     }
@@ -425,7 +425,7 @@ fn field_options(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
             .into_iter().enumerate().map(|(i, s)| (s.into(), Value::Forced(i as i64))).collect(),
         PickerKind::AudioLanguage | PickerKind::SubtitleLanguage => {
             let mut result = vec![(if field == PickerKind::AudioLanguage { plx_platform::i18n::msg::settings_audio_original() } else { plx_platform::i18n::msg::settings_audio_no_preference() }.into(), Value::Language(String::new()))];
-            result.extend(crate::plex::languages::picker()
+            result.extend(plx_plex::plex::languages::picker()
                 .map(|l| (l.name.to_string(), Value::Language(l.code.to_string()))));
             let current = resolve_value(field, quality, direct_play, prefs);
             if !result.iter().any(|(_, v)| *v == current) {

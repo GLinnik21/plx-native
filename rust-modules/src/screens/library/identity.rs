@@ -201,13 +201,13 @@ mod tests {
     use super::*;
 
     fn section(sid: u16) -> LibrarySectionIdentity {
-        LibrarySectionIdentity { sid: crate::plex::ServerId::from_raw(sid), key: 1 }
+        LibrarySectionIdentity { sid: plx_plex::plex::ServerId::from_raw(sid), key: 1 }
     }
 
     fn grid(sid: u16, rk: &str) -> LibraryIdentity {
         LibraryIdentity::Grid {
             section: section(sid),
-            sid: crate::plex::ServerId::from_raw(sid),
+            sid: plx_plex::plex::ServerId::from_raw(sid),
             rk: rk.into(),
         }
     }

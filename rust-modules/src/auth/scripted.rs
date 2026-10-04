@@ -172,7 +172,7 @@ fn signinfail_spec() -> Option<String> {
 /// plex.tv would. Re-read at each attempt, so *Try again* fails the same way until it is removed.
 /// `None` means "make the real request".
 pub(crate) fn signin_trouble_create()
-    -> Option<Result<crate::plex::account::Pin, crate::plex::account::CallEvidence>> {
+    -> Option<Result<plx_plex::plex::account::Pin, plx_plex::plex::account::CallEvidence>> {
     match signinfail_spec()?.as_str() {
         "" | "error" => {
             plx_base::eventlog::log("dev: signinfail — the sign-in code request fails (synthetic DNS failure)");
@@ -184,16 +184,16 @@ pub(crate) fn signin_trouble_create()
 
 /// `/tmp/plxnative-signinfail=stall` — the code is real, but every poll of it goes unanswered, so
 /// the wait reaches the stalled rule (`auth::LINK_TROUBLE_AFTER`) exactly as a dropped link would.
-pub(crate) fn signin_trouble_poll() -> Option<crate::plex::account::PinPoll> {
+pub(crate) fn signin_trouble_poll() -> Option<plx_plex::plex::account::PinPoll> {
     (signinfail_spec()?.as_str() == "stall")
-        .then(|| crate::plex::account::PinPoll::Unreachable(Err(synthetic_dns_failure())))
+        .then(|| plx_plex::plex::account::PinPoll::Unreachable(Err(synthetic_dns_failure())))
 }
 
 /// `/tmp/plxnative-signinfail=resources|resources-blip` — fail the plex.tv resource listing on
 /// every attempt, or on its first attempt only. The latter exercises the in-place retry while the
 /// sign-in screen remains in Discovering.
 pub(crate) fn signin_trouble_resources()
-    -> Option<Result<Vec<crate::plex::account::Resource>, crate::plex::account::CallEvidence>> {
+    -> Option<Result<Vec<plx_plex::plex::account::Resource>, plx_plex::plex::account::CallEvidence>> {
     static BLIPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     match signinfail_spec()?.as_str() {
         "resources" => Some(Err(Err(synthetic_dns_failure()))),

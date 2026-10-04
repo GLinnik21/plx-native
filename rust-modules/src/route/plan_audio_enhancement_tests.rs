@@ -11,9 +11,9 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 use super::test_support::apply_plan;
-use crate::plex::serverinfo::Subscription;
+use plx_plex::plex::serverinfo::Subscription;
 
-const PREF: crate::plex::AudioEnhancements = crate::plex::AudioEnhancements {
+const PREF: plx_plex::plex::AudioEnhancements = plx_plex::plex::AudioEnhancements {
     boost_dialog: false,
     normalize_loudness: true,
 };
@@ -48,13 +48,13 @@ fn resolve(
     part: &str,
     acodec: &str,
     item: impl FnOnce(ServerId) -> crate::metadata::PlayingItem,
-    setup: impl FnOnce(&mut ResolveEnv, &crate::plex::Client),
+    setup: impl FnOnce(&mut ResolveEnv, &plx_plex::plex::Client),
 ) -> Resolve {
     assert!(plx_net::net::global_init() && crate::curlio::available());
     let (port, done, server) = enhancement_pms(mde, mode, media_bytes);
-    let sid = crate::plex::register_for_test("enh-pms", "127.0.0.1", port, "token", "enh-client");
-    let client = crate::plex::client_for(sid).unwrap();
-    client.set_link(crate::plex::probe::Location::Local);
+    let sid = plx_plex::plex::register_for_test("enh-pms", "127.0.0.1", port, "token", "enh-client");
+    let client = plx_plex::plex::client_for(sid).unwrap();
+    client.set_link(plx_plex::plex::probe::Location::Local);
     let mut env = ResolveEnv::snapshot(ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-enh");
     env.quality = Quality::Original;
     env.pass = Subscription::Yes;
@@ -92,7 +92,7 @@ fn assert_direct_no_params(r: &Resolve) {
     assert!(!r.plan.url.contains("start.mkv"), "{}", r.plan.url);
     assert!(r.plan.tsession.is_empty());
     assert!(!any_param(&r.requests), "no request may carry a param: {:?}", r.requests);
-    assert_eq!(r.plan.contract.audio, crate::plex::AudioEnhancements::NONE);
+    assert_eq!(r.plan.contract.audio, plx_plex::plex::AudioEnhancements::NONE);
     assert_eq!(r.plan.enhancement, EnhancementOutcome::Off);
 }
 
@@ -116,7 +116,7 @@ fn pass_capable_ac3_local_original_is_enhanced_remux() {
     let _g = fresh_registry(&mut ps);
     let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3", ac3_item, |env, _| {
         // Production's capture, not the test default: the snapshot reads serverinfo for `sid`.
-        crate::plex::serverinfo::store_for_test(env.sid, Subscription::Yes, "1.43.4");
+        plx_plex::plex::serverinfo::store_for_test(env.sid, Subscription::Yes, "1.43.4");
         env.pass = Subscription::Unknown;
         env.pass = ResolveEnv::snapshot(&PlaybackSession::IDLE, crate::stores::metadata::MetadataStore::default().view(), env.sid, "rk-enh").pass;
     });
@@ -135,7 +135,7 @@ fn pass_capable_ac3_local_original_is_enhanced_remux() {
     apply_plan(&mut ps, r.plan, "rk-enh");
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
     assert_eq!(ps.cur_contract.audio, PREF);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -147,7 +147,7 @@ fn no_pass_is_direct_no_params() {
         env.pass = Subscription::No;
     });
     assert_direct_no_params(&r);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn unknown_subscription_is_direct_no_params() {
         env.pass = Subscription::Unknown;
     });
     assert_direct_no_params(&r);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn incapable_track_is_direct_no_params() {
     let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
         |sid| fourk_item(sid, vec![track(1, "ac3", 2, false)]), |_, _| {});
     assert_direct_no_params(&r);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// No fetched track list: the plan names the server default (no id), whose facts are unknown —
@@ -185,7 +185,7 @@ fn server_default_audio_none_is_direct_no_params() {
     assert_direct_no_params(&r);
     assert_eq!(r.plan.audio, None);
     assert!(r.plan.auto_original.as_ref().is_some_and(|c| c.audio.is_none()));
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// No fetched track list, but a transcode still NAMES an id (a retry's / the session's earlier
@@ -206,7 +206,7 @@ fn named_unfetched_audio_keeps_its_id_and_fails_closed() {
     assert!(audio.codec.is_empty() && !audio.can_normalize_loudness && !audio.immersive);
     apply_plan(&mut ps, r.plan, "rk-enh");
     assert_eq!(cur_audio_sid(&ps), 42);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// Owner decision: a declared Dolby Vision source whose base layer IS self-displayable (P7/P8)
@@ -234,7 +234,7 @@ fn dv_declared_p8_usable_base_is_enhanced_remux_without_dv() {
         r.plan.dv_decision.presentation.declared().is_none(),
         "the remux never carries DolbyHdrInfo — Dolby Vision turns off while the enhancement is on",
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// I7's other half, at the predicate: a base whose DV base layer is not self-displayable is a
@@ -256,7 +256,7 @@ fn dv_unusable_base_is_disabled_not_offered() {
         enhancement_availability(&facts(&unusable), RouteFamily::Direct),
         EnhancementAvailability::Disabled(DisabledReason::DolbyVisionUnusable),
     );
-    assert_eq!(desired_audio(PREF, enhancements_offered(&facts(&unusable), RouteFamily::Direct)), crate::plex::AudioEnhancements::NONE);
+    assert_eq!(desired_audio(PREF, enhancements_offered(&facts(&unusable), RouteFamily::Direct)), plx_plex::plex::AudioEnhancements::NONE);
 }
 
 /// M7 / owner decision: an embedded subtitle keeps playing by BURNING it in — the audio
@@ -278,7 +278,7 @@ fn embedded_default_subtitle_with_enhancement_is_burned() {
     assert_eq!(query_param(&r.plan.url, "subtitleStreamID"), Some("9"), "{}", r.plan.url);
     assert_eq!(query_param(&r.plan.url, "subtitles"), Some("burn"), "{}", r.plan.url);
     assert_eq!(r.plan.enhancement, EnhancementOutcome::Applied);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// The cold-start twin of item 3's fix: `retranscode_as` (the LIVE reconcile path) has always
@@ -305,7 +305,7 @@ fn embedded_default_subtitle_with_enhancement_logs_applied_on_cold_start() {
         appended.contains("enhancement: applied boost=0 loudness=1"),
         "no `enhancement: applied` line from the cold-start branch :: {appended:?}"
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// A subtitle the client renders itself (an external sidecar) is UNAFFECTED by the enhancement:
@@ -332,7 +332,7 @@ fn server_selected_external_srt_is_enhanced_remux_sidecar_unaffected() {
         !r.requests.iter().any(|l| l.starts_with("PUT ") && query_param(l, "subtitleStreamID").is_some_and(|v| v != "0")),
         "no burn PUT for a sidecar: {:?}", r.requests,
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -345,8 +345,8 @@ fn fixed_720p_rung_no_params() {
     });
     assert!(r.plan.auto_original.is_none(), "a fixed rung captures no Original candidate");
     assert!(!any_param(&r.requests), "{:?}", r.requests);
-    assert_eq!(r.plan.contract.audio, crate::plex::AudioEnhancements::NONE);
-    crate::plex::reset_servers_for_test();
+    assert_eq!(r.plan.contract.audio, plx_plex::plex::AudioEnhancements::NONE);
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -356,13 +356,13 @@ fn remote_auto_hls_no_params() {
     let _g = fresh_registry(&mut ps);
     // No media bytes: the Remote probe of the Part fails, so Auto starts on HLS.
     let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3", ac3_item, |env, client| {
-        client.set_link(crate::plex::probe::Location::Remote);
+        client.set_link(plx_plex::plex::probe::Location::Remote);
         env.quality = Quality::Auto;
     });
-    assert!(matches!(r.plan.contract.delivery, crate::plex::TranscodeDelivery::FixedHls { .. }), "precondition: HLS");
+    assert!(matches!(r.plan.contract.delivery, plx_plex::plex::TranscodeDelivery::FixedHls { .. }), "precondition: HLS");
     assert!(!any_param(&r.requests), "{:?}", r.requests);
-    assert_eq!(r.plan.contract.audio, crate::plex::AudioEnhancements::NONE);
-    crate::plex::reset_servers_for_test();
+    assert_eq!(r.plan.contract.audio, plx_plex::plex::AudioEnhancements::NONE);
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -371,11 +371,11 @@ fn relay_no_params() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3", ac3_item, |_, client| {
-        client.set_link(crate::plex::probe::Location::Relay);
+        client.set_link(plx_plex::plex::probe::Location::Relay);
     });
     assert!(!any_param(&r.requests), "{:?}", r.requests);
-    assert_eq!(r.plan.contract.audio, crate::plex::AudioEnhancements::NONE);
-    crate::plex::reset_servers_for_test();
+    assert_eq!(r.plan.contract.audio, plx_plex::plex::AudioEnhancements::NONE);
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -387,7 +387,7 @@ fn forced_direct_play_no_params() {
         env.direct_play_mode = DirectPlayMode::Forced;
     });
     assert_direct_no_params(&r);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// A hero preview is direct play or nothing, so marking the env as a preview must drop the
@@ -401,7 +401,7 @@ fn preview_never_carries_params() {
         env.set_preview(true);
     });
     assert_direct_no_params(&r);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// The carried track is the one the route NAMES on the wire (the direct-play pick), not the
@@ -418,7 +418,7 @@ fn carried_track_is_encode_audio_not_audio_sel() {
             |env, _| env.audio_sid = 1);
         assert_eq!(r.plan.auto_original.as_ref().and_then(|c| c.audio.as_ref()).map(|a| a.sid), Some(2));
         assert_eq!(any_param(&r.requests), want_params, "truehd={truehd_capable} ac3={ac3_capable}: {:?}", r.requests);
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 }
 
@@ -434,7 +434,7 @@ fn payload_codec_from_decision_else_ac3() {
         assert!(r.plan.contract.audio.any(), "{mode:?}");
         assert_eq!(r.plan.acodec, want, "{mode:?}");
         assert_ne!(r.plan.acodec, "eac3", "the source codec is silent audio");
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 }
 
@@ -443,7 +443,7 @@ fn assert_fell_back_to_direct(r: &Resolve) {
     assert!(r.plan.url.contains("/library/parts/") && !r.plan.url.contains("start.mkv"), "{}", r.plan.url);
     assert!(r.plan.tsession.is_empty());
     assert!(!r.plan.contract.remux);
-    assert_eq!(r.plan.contract.audio, crate::plex::AudioEnhancements::NONE);
+    assert_eq!(r.plan.contract.audio, plx_plex::plex::AudioEnhancements::NONE);
     assert_eq!(r.plan.enhancement, EnhancementOutcome::Refused);
     assert_eq!(r.plan.acodec, "ac3", "the direct play's own source codec again");
     assert_eq!(mde_lines(&r.requests).len(), 2, "MDE re-issued before the Part: {:?}", r.requests);
@@ -459,7 +459,7 @@ fn refusal_falls_back_to_direct_refused() {
     assert_fell_back_to_direct(&r);
     apply_plan(&mut ps, r.plan, "rk-enh");
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Refused);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -469,7 +469,7 @@ fn ignored_params_audio_copy_falls_back_refused() {
     let _g = fresh_registry(&mut ps);
     let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Ignore, 0, MKV, "ac3", ac3_item, |_, _| {});
     assert_fell_back_to_direct(&r);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// A remux-family Original (an `.avi`, so no MDE) on a Remote link: the probe samples the remux
@@ -488,7 +488,7 @@ fn remote_probe_and_play_decision_carry_same_params() {
             item
         },
         |env, client| {
-            client.set_link(crate::plex::probe::Location::Remote);
+            client.set_link(plx_plex::plex::probe::Location::Remote);
             env.quality = Quality::Auto;
         });
     let decisions = transcode_decisions(&r.requests);
@@ -501,7 +501,7 @@ fn remote_probe_and_play_decision_carry_same_params() {
         query_param(decisions[1], "X-Plex-Session-Identifier"),
     );
     assert_enhanced(&r);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// The remote remux probe is the FIRST decision the enhanced ask reaches, so a server that refuses
@@ -521,14 +521,14 @@ fn remote_probe_fallback(mode: EnhMode) {
             item
         },
         |env, client| {
-            client.set_link(crate::plex::probe::Location::Remote);
+            client.set_link(plx_plex::plex::probe::Location::Remote);
             env.quality = Quality::Auto;
         });
     assert!(r.plan.url.contains("start.mkv"), "the Original remux, not HLS: {} {:?}", r.plan.url, r.requests);
     assert!(!r.plan.url.contains(".m3u8"), "{}", r.plan.url);
     assert!(r.plan.contract.remux, "an Original remux");
-    assert_eq!(r.plan.contract.delivery, crate::plex::TranscodeDelivery::ProgressiveMkv);
-    assert_eq!(r.plan.contract.audio, crate::plex::AudioEnhancements::NONE);
+    assert_eq!(r.plan.contract.delivery, plx_plex::plex::TranscodeDelivery::ProgressiveMkv);
+    assert_eq!(r.plan.contract.audio, plx_plex::plex::AudioEnhancements::NONE);
     assert_eq!(query_param(&r.plan.url, "normalizeLoudness"), None, "{}", r.plan.url);
     assert_eq!(query_param(&r.plan.url, "boostDialog"), None, "{}", r.plan.url);
     assert_eq!(r.plan.enhancement, EnhancementOutcome::Refused);
@@ -543,7 +543,7 @@ fn remote_probe_fallback(mode: EnhMode) {
     assert!(r.plan.verdict.is_none(), "a refused ENHANCEMENT is not a refused playback");
     apply_plan(&mut ps, r.plan, "rk-enh");
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Refused);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -564,7 +564,7 @@ fn remote_probe_ignored_falls_back_to_remux() {
 /// but a device whose caps bound AAC to 2 channels does.
 #[test]
 fn aac51_source_outcome_unverified() {
-    let mc: crate::plex::MediaContainer = serde_json::from_str(
+    let mc: plx_plex::plex::MediaContainer = serde_json::from_str(
         r#"{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"copy"},{"streamType":2,"codec":"ac3","decision":"transcode"}]}]}]}]}"#,
     ).unwrap();
     let copyable = CarriedAudio::from_stream(&track(1, "ac3", 2, true), 0);
@@ -572,5 +572,5 @@ fn aac51_source_outcome_unverified() {
     assert_eq!(classify_outcome(Some(&mc), Some(&copyable), PREF), EnhancementOutcome::Applied);
     assert_eq!(classify_outcome(Some(&mc), Some(&not_copyable), PREF), EnhancementOutcome::Unverified);
     assert_eq!(classify_outcome(None, Some(&copyable), PREF), EnhancementOutcome::Unverified);
-    assert_eq!(classify_outcome(Some(&mc), Some(&copyable), crate::plex::AudioEnhancements::NONE), EnhancementOutcome::Off);
+    assert_eq!(classify_outcome(Some(&mc), Some(&copyable), plx_plex::plex::AudioEnhancements::NONE), EnhancementOutcome::Off);
 }

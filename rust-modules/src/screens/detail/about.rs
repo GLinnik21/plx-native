@@ -73,7 +73,7 @@ pub(crate) fn locate(key: u32, tracks_available: bool) -> Option<usize> {
 
 pub(crate) struct Rows {
     dirty: bool,
-    identity: Option<(crate::plex::ServerId, String)>,
+    identity: Option<(plx_plex::plex::ServerId, String)>,
     info: Vec<(&'static str, String)>,
     orig_audio: Option<String>,
     audio_list: String,
@@ -499,7 +499,7 @@ mod tests {
     fn a_same_identity_metadata_landing_invalidates_cached_about_rows() {
         let mut rows = Rows::new();
         let first = Detail {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "movie".into(),
             rating: "PG".into(),
             dur_ms: 60_000,
@@ -537,7 +537,7 @@ mod tests {
 
     fn movie_with_audio() -> Detail {
         Detail {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "movie".into(),
             rating: "PG".into(),
             summary: "word ".repeat(40),

@@ -178,10 +178,10 @@ fn hit(screen: &SearchScreen, fixture: &Fixture, elems: &[u32], x: f32, y: f32) 
 /// A profile that has remembered `terms`. The write comes BEFORE the switch deliberately: the
 /// recents store caches per profile GENERATION, so a file write behind an already-seated profile
 /// is not read until something moves that generation.
-fn watching(session: &crate::plex::session::TempSession, who: &str, terms: &[&str]) {
+fn watching(session: &plx_plex::plex::session::TempSession, who: &str, terms: &[&str]) {
     let terms: Vec<String> = terms.iter().map(|t| (*t).to_owned()).collect();
     let who_owned = who.to_owned();
-    crate::plex::session::update(|s| {
+    plx_plex::plex::session::update(|s| {
         let mut next = s.clone();
         next.set_recents_for(&who_owned, terms.clone());
         Some(next)
@@ -189,8 +189,8 @@ fn watching(session: &crate::plex::session::TempSession, who: &str, terms: &[&st
     session.watching(who);
 }
 
-fn remembering(tag: &str, terms: &[&str]) -> crate::plex::session::TempSession {
-    let session = crate::plex::session::TempSession::new(tag);
+fn remembering(tag: &str, terms: &[&str]) -> plx_plex::plex::session::TempSession {
+    let session = plx_plex::plex::session::TempSession::new(tag);
     watching(&session, tag, terms);
     session
 }
@@ -204,7 +204,7 @@ fn remembering(tag: &str, terms: &[&str]) -> crate::plex::session::TempSession {
 #[test]
 fn down_from_the_field_reaches_only_a_region_that_is_drawn() {
     let _serial = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("owned-search-handoff");
+    let session = plx_plex::plex::session::TempSession::new("owned-search-handoff");
 
     // (1) no query, no terms: nothing is under the field at all.
     watching(&session, "owned-search-handoff-fresh", &[]);
@@ -775,14 +775,14 @@ fn the_shelf_flow_is_frozen_unless_the_shelves_hold_focus_with_the_keyboard_down
 // ---- the borrowed-source annotation -----------------------------------------------------------
 
 /// Three sources on one shelf: the household's own, and two shares with different handles.
-fn shared_shelf(fixture: &mut Fixture) -> [crate::plex::ServerId; 3] {
-    crate::plex::reset_servers_for_test();
-    let own = crate::plex::register_for_test("own-machine", "127.0.0.1", 1, "own", "annotation");
-    let a = crate::plex::register_for_test("share-a", "127.0.0.1", 2, "a", "annotation");
-    let b = crate::plex::register_for_test("share-b", "127.0.0.1", 3, "b", "annotation");
-    crate::plex::describe_server(own, "own-machine", "", crate::plex::GrantEvidence::ours());
-    crate::plex::describe_server(a, "share-a", "friend", crate::plex::GrantEvidence::outside());
-    crate::plex::describe_server(b, "share-b", "other", crate::plex::GrantEvidence::outside());
+fn shared_shelf(fixture: &mut Fixture) -> [plx_plex::plex::ServerId; 3] {
+    plx_plex::plex::reset_servers_for_test();
+    let own = plx_plex::plex::register_for_test("own-machine", "127.0.0.1", 1, "own", "annotation");
+    let a = plx_plex::plex::register_for_test("share-a", "127.0.0.1", 2, "a", "annotation");
+    let b = plx_plex::plex::register_for_test("share-b", "127.0.0.1", 3, "b", "annotation");
+    plx_plex::plex::describe_server(own, "own-machine", "", plx_plex::plex::GrantEvidence::ours());
+    plx_plex::plex::describe_server(a, "share-a", "friend", plx_plex::plex::GrantEvidence::outside());
+    plx_plex::plex::describe_server(b, "share-b", "other", plx_plex::plex::GrantEvidence::outside());
     let item = |sid| Item::Media(crate::pms::PmsMovie { sid, rk: format!("annotated-{sid:?}"),
         title: "Synthetic result".into(), ..Default::default() });
     fixture.query("annotated").shelves(vec![
@@ -853,7 +853,7 @@ fn the_owner_annotation_swaps_its_words_only_while_it_is_invisible() {
     for i in 480..560 { frame(&mut screen, &fixture, &engine, i); }
     assert_eq!(screen.owner_row, Some(1), "the annotation belongs to the row the cursor is in");
     assert_eq!(screen.owner, "", "…and that row's item is the household's own");
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// Legacy `results.rs`'s `a_settled_annotation_goes_quiet_and_a_moving_one_does_not` — the other
@@ -885,7 +885,7 @@ fn a_settled_annotation_goes_quiet_and_a_moving_one_does_not() {
         assert!(!frame(&mut screen, &fixture, &engine, 600 + i),
             "frame {i}: a settled annotation asked for a repaint");
     }
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// **A collection hit routes to the collection page, by ratingKey first and by section + tag id
@@ -895,13 +895,13 @@ fn a_settled_annotation_goes_quiet_and_a_moving_one_does_not() {
 /// wire row.
 #[test]
 fn a_collection_hit_routes_by_rating_key_or_by_section_and_tag_id() {
-    use crate::plex::collections::CollectionRef;
+    use plx_plex::plex::collections::CollectionRef;
     use crate::screens::registry::ContentArg;
     use crate::search::{CollectionHit, TagHit};
-    let sid = crate::plex::ServerId::from_raw(3);
+    let sid = plx_plex::plex::ServerId::from_raw(3);
 
     // a full `type=collection` row (`includeCollections=1`): both ids ride along
-    let row = crate::plex::Metadata {
+    let row = plx_plex::plex::Metadata {
         kind: "collection".into(),
         rating_key: "50007".into(),
         title: "Aardman Shorts".into(),

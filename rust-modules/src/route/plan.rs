@@ -9,7 +9,7 @@
 //! belongs in `decision.rs`.
 
 use crate::metadata::lang_matches;
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use std::sync::atomic::Ordering;
 
 use super::decision::{
@@ -323,19 +323,19 @@ pub(crate) enum PrimeRefusal {
 
 pub(super) fn classify_prime_decision(
     session_active: bool,
-    outcome: crate::plex::JsonDeadlineOutcome,
-) -> Result<crate::plex::MediaContainer, PrimeRefusal> {
+    outcome: plx_plex::plex::JsonDeadlineOutcome,
+) -> Result<plx_plex::plex::MediaContainer, PrimeRefusal> {
     if !session_active {
         return Err(PrimeRefusal::Session);
     }
     match outcome {
-        crate::plex::JsonDeadlineOutcome::Response {
+        plx_plex::plex::JsonDeadlineOutcome::Response {
             parsed: Some(decision),
             ..
         } => Ok(decision),
-        crate::plex::JsonDeadlineOutcome::Response { parsed: None, .. }
-        | crate::plex::JsonDeadlineOutcome::Transport => Err(PrimeRefusal::Control),
-        crate::plex::JsonDeadlineOutcome::Deadline => Err(PrimeRefusal::Deadline),
+        plx_plex::plex::JsonDeadlineOutcome::Response { parsed: None, .. }
+        | plx_plex::plex::JsonDeadlineOutcome::Transport => Err(PrimeRefusal::Control),
+        plx_plex::plex::JsonDeadlineOutcome::Deadline => Err(PrimeRefusal::Deadline),
     }
 }
 
@@ -349,19 +349,19 @@ pub(super) fn classify_prime_decision(
 /// [`build_stream`] runs on the resolve worker and must take it from [`ResolveEnv`], while
 /// [`retranscode`] runs on the main thread and reads the live selection. A read inside here would
 /// be a `static` touched from a worker. Folding the four (now five, with issue #266's
-/// [`AudioEnhancements`](crate::plex::AudioEnhancements)) into one [`EncodeContract`] argument is
+/// [`AudioEnhancements`](plx_plex::plex::AudioEnhancements)) into one [`EncodeContract`] argument is
 /// what keeps every caller stating the whole shape at once rather than four/five positional bools
 /// and options a reader has to keep straight by position.
 pub(super) fn transcode_spec<'a>(
     rk: &'a str,
     session: &'a str,
     encoder_session: &'a str,
-    offset: crate::plex::TranscodeOffset,
+    offset: plx_plex::plex::TranscodeOffset,
     aud: i64,
     sub: i64,
-    contract: crate::plex::EncodeContract,
-) -> crate::plex::TranscodeSpec<'a> {
-    crate::plex::TranscodeSpec {
+    contract: plx_plex::plex::EncodeContract,
+) -> plx_plex::plex::TranscodeSpec<'a> {
+    plx_plex::plex::TranscodeSpec {
         rating_key: rk,
         session,
         encoder_session,
@@ -373,7 +373,7 @@ pub(super) fn transcode_spec<'a>(
 }
 
 
-pub(crate) use crate::plex::session::{PlaybackQuality as Quality, DirectPlayMode, NextEpisodeMode, SkipInterval, SubtitleSize, SubtitlePosition};
+pub(crate) use plx_plex::plex::session::{PlaybackQuality as Quality, DirectPlayMode, NextEpisodeMode, SkipInterval, SubtitleSize, SubtitlePosition};
 
 
 /// The ladder IN ORDER, best first. The ONE place row order lives, so the picker's index mapping
@@ -417,7 +417,7 @@ pub(super) fn supported_quality(q: Quality) -> Quality {
 
 
 /// **What the user's chosen ceiling allows a plan to ask for** — the same two flags
-/// [`crate::plex::link_policy`] returns, deliberately, so [`build_stream`] can compose the two by
+/// [`plx_plex::plex::link_policy`] returns, deliberately, so [`build_stream`] can compose the two by
 /// AND and the stricter always wins. A relay link cannot be loosened by picking a high rung, and a
 /// low rung is not rescued by a fast link.
 ///
@@ -434,7 +434,7 @@ pub(super) fn supported_quality(q: Quality) -> Quality {
 ///   neither carries a cap the server could come in under. What survives is the re-encode, which
 ///   is the only flavor that can honour the ask at all.
 ///
-/// **Unmeasured fails CLOSED** ([`crate::plex::Ceiling::admits`] holds the full argument): `0` is
+/// **Unmeasured fails CLOSED** ([`plx_plex::plex::Ceiling::admits`] holds the full argument): `0` is
 /// "the server did not say", and the only way to honour an explicit ask about a file you have not
 /// measured is to route it where the server applies the bound for you. That is the opposite of
 /// [`video_direct_plays`]'s unknown-passes rule, and deliberately so: a device bound is a
@@ -445,21 +445,21 @@ pub(super) fn quality_policy(
     src_kbps: i64,
     src_w: i64,
     src_h: i64,
-) -> crate::plex::LinkPolicy {
+) -> plx_plex::plex::LinkPolicy {
     if q == Quality::Auto {
         return if auto_uses_hls(q, auto_original) {
-            crate::plex::LinkPolicy {
+            plx_plex::plex::LinkPolicy {
                 direct_play: false,
                 remux: false,
             }
         } else {
-            crate::plex::LinkPolicy::UNRESTRICTED
+            plx_plex::plex::LinkPolicy::UNRESTRICTED
         };
     }
     match q.ceiling() {
-        None => crate::plex::LinkPolicy::UNRESTRICTED,
-        Some(c) if c.admits(src_kbps, src_w, src_h) => crate::plex::LinkPolicy::UNRESTRICTED,
-        Some(_) => crate::plex::LinkPolicy {
+        None => plx_plex::plex::LinkPolicy::UNRESTRICTED,
+        Some(c) if c.admits(src_kbps, src_w, src_h) => plx_plex::plex::LinkPolicy::UNRESTRICTED,
+        Some(_) => plx_plex::plex::LinkPolicy {
             direct_play: false,
             remux: false,
         },
@@ -495,10 +495,10 @@ pub(super) fn remote_probe_target_bytes(source_kbps: i64) -> Option<usize> {
 /// tests grade is literally the composition [`build_stream`] runs — a re-implementation in a test
 /// would agree with itself forever while the shipped path drifted.
 pub(super) fn flavors_allowed(
-    link: crate::plex::LinkPolicy,
-    quality: crate::plex::LinkPolicy,
-) -> crate::plex::LinkPolicy {
-    crate::plex::LinkPolicy {
+    link: plx_plex::plex::LinkPolicy,
+    quality: plx_plex::plex::LinkPolicy,
+) -> plx_plex::plex::LinkPolicy {
+    plx_plex::plex::LinkPolicy {
         direct_play: link.direct_play && quality.direct_play,
         remux: link.remux && quality.remux,
     }
@@ -539,7 +539,7 @@ pub(crate) enum SubtitleEffect {
 #[derive(Clone, Copy)]
 pub(super) struct EnhancementFacts<'a> {
     /// The server's Plex Pass state (`serverinfo::subscription_of`), captured at the request.
-    pub(super) pass: crate::plex::serverinfo::Subscription,
+    pub(super) pass: plx_plex::plex::serverinfo::Subscription,
     /// The frozen non-enhanced Original route. `None` = Original was never feasible here (forced
     /// direct play, a fixed rung, relay, a non-Original MDE…), which is I5's whole exclusion list.
     pub(super) base: Option<&'a AutoOriginalCandidate>,
@@ -600,7 +600,7 @@ pub(crate) enum DisabledReason {
 ///
 /// [`Hidden`]: EnhancementAvailability::Hidden
 pub(super) fn enhancement_availability(f: &EnhancementFacts, target: RouteFamily) -> EnhancementAvailability {
-    use crate::plex::serverinfo::Subscription;
+    use plx_plex::plex::serverinfo::Subscription;
     use EnhancementAvailability::{Disabled, Hidden, Offered};
     // I1/I2: `Unknown` fails closed exactly like `No` — an unknown server is not assumed to hold a
     // subscription it may not have, and with it hidden the app's URLs are byte-identical to a
@@ -678,13 +678,13 @@ pub(super) fn enhancement_route(f: &EnhancementFacts, target: RouteFamily) -> Op
 /// offered, `NONE` everywhere else. Every contract that reaches the wire passes through here, so
 /// a preference can never leak onto a route the predicate refused.
 pub(super) fn desired_audio(
-    pref: crate::plex::AudioEnhancements,
+    pref: plx_plex::plex::AudioEnhancements,
     offered: bool,
-) -> crate::plex::AudioEnhancements {
+) -> plx_plex::plex::AudioEnhancements {
     if offered {
         pref
     } else {
-        crate::plex::AudioEnhancements::NONE
+        plx_plex::plex::AudioEnhancements::NONE
     }
 }
 
@@ -714,8 +714,8 @@ pub(super) fn subtitle_effect_of(
 /// video copy, audio re-encoded with the DSP), so asking for one denies direct play and nothing
 /// else. `force_burn` (M7's [`EnhancementRoute::Burn`]) denies the remux flavour too: a burned
 /// subtitle needs the video actually re-encoded, which a codec-preserving copy can never do.
-pub(super) fn enhancement_policy(audio: crate::plex::AudioEnhancements, force_burn: bool) -> crate::plex::LinkPolicy {
-    crate::plex::LinkPolicy {
+pub(super) fn enhancement_policy(audio: plx_plex::plex::AudioEnhancements, force_burn: bool) -> plx_plex::plex::LinkPolicy {
+    plx_plex::plex::LinkPolicy {
         direct_play: !audio.any(),
         remux: !force_burn,
     }
@@ -736,8 +736,8 @@ pub(super) enum Fallback {
 /// `Keep`: the same "no answer is not a refusal" rule every other transcode start follows, and
 /// the outcome is then graded `Unverified` by [`classify_outcome`].
 pub(super) fn enhancement_fallback(
-    mc: Option<&crate::plex::MediaContainer>,
-    audio: crate::plex::AudioEnhancements,
+    mc: Option<&plx_plex::plex::MediaContainer>,
+    audio: plx_plex::plex::AudioEnhancements,
 ) -> Fallback {
     if audio.is_none() {
         return Fallback::Keep;
@@ -755,7 +755,7 @@ pub(super) fn enhancement_fallback(
 /// Log + diag the server's refusal of an enhanced ask, from whichever call site first learns of
 /// it. `context` is the site-specific tail after the shared "enhancement: refused/ignored by
 /// server" opening, so every site keeps the exact log sentence it always had.
-pub(super) fn note_enhancement_refused(context: &str, audio: crate::plex::AudioEnhancements) {
+pub(super) fn note_enhancement_refused(context: &str, audio: plx_plex::plex::AudioEnhancements) {
     crate::player::log(&format!("enhancement: refused/ignored by server{context}"));
     crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
         boost_dialog: audio.boost_dialog,
@@ -764,7 +764,7 @@ pub(super) fn note_enhancement_refused(context: &str, audio: crate::plex::AudioE
 }
 
 /// The audio lane's own stream decision off a `/decision` body (`copy`/`transcode`), if it says.
-fn decision_audio(mc: &crate::plex::MediaContainer) -> Option<&str> {
+fn decision_audio(mc: &plx_plex::plex::MediaContainer) -> Option<&str> {
     mc.metadata
         .first()
         .and_then(|m| m.first_part())
@@ -780,15 +780,15 @@ fn decision_audio(mc: &crate::plex::MediaContainer) -> Option<&str> {
 /// from what would have happened anyway: `Unverified` (M2's AAC 5.1 under the measured profile).
 /// No answer at all is `Unverified` for the same reason.
 pub(super) fn classify_outcome(
-    mc: Option<&crate::plex::MediaContainer>,
+    mc: Option<&plx_plex::plex::MediaContainer>,
     carried: Option<&CarriedAudio>,
-    audio: crate::plex::AudioEnhancements,
+    audio: plx_plex::plex::AudioEnhancements,
 ) -> super::decision::EnhancementOutcome {
     use super::decision::EnhancementOutcome;
     if audio.is_none() {
         return EnhancementOutcome::Off;
     }
-    let copyable = carried.is_some_and(|a| crate::plex::is_dp_audio_track(&a.codec, a.channels));
+    let copyable = carried.is_some_and(|a| plx_plex::plex::is_dp_audio_track(&a.codec, a.channels));
     match mc.and_then(decision_audio) {
         Some("transcode") if copyable => EnhancementOutcome::Applied,
         _ => EnhancementOutcome::Unverified,
@@ -805,7 +805,7 @@ pub(super) fn classify_outcome(
 /// PURE: the codec pair the server's /decision OUTPUT actually declares, or None if it names
 /// neither. The Load payload must match this, not the source file — a transcode changes the
 /// codec and rate, and describing the source to the decoder gives silent audio.
-pub(super) fn decision_codecs(mc: &crate::plex::MediaContainer) -> Option<(String, String)> {
+pub(super) fn decision_codecs(mc: &plx_plex::plex::MediaContainer) -> Option<(String, String)> {
     let streams = mc
         .metadata
         .first()
@@ -849,7 +849,7 @@ pub(crate) struct DecisionCodes {
 }
 
 impl DecisionCodes {
-    pub(crate) fn of(mc: &crate::plex::MediaContainer) -> Self {
+    pub(crate) fn of(mc: &plx_plex::plex::MediaContainer) -> Self {
         Self {
             general: mc.general_decision_code,
             transcode: mc.transcode_decision_code,
@@ -927,7 +927,7 @@ impl PlayVerdict {
 /// restates the code ("Neither direct play nor conversion is available") while
 /// `transcodeDecisionText` names the actual cause. The general one is the fallback for a server
 /// that sends only it.
-pub(super) fn refusal(mc: &crate::plex::MediaContainer) -> Option<String> {
+pub(super) fn refusal(mc: &plx_plex::plex::MediaContainer) -> Option<String> {
     if mc.general_decision_code != Some(DECISION_UNPLAYABLE) {
         return None;
     }
@@ -959,7 +959,7 @@ pub(super) fn new_sess(rk: &str) -> String {
 /// everything [`request_play`] needs to start it, so playing it costs no PMS round trip either.
 ///
 /// It comes free with the `continuous=1` PlayQueue every playback already creates (see
-/// [`crate::plex::Client::create_play_queue`]); nothing here asks the server "what's next".
+/// [`plx_plex::plex::Client::create_play_queue`]); nothing here asks the server "what's next".
 #[derive(Clone, Default)]
 pub(crate) struct UpNext {
     pub(crate) rk: String,
@@ -980,7 +980,7 @@ pub(crate) struct UpNext {
 /// returns just the movie itself (verified live — total count 1), and "up next" is a show idea.
 /// The gate belongs HERE, on the one-item control — the retained row list is deliberately not
 /// episode-gated, because a queue list has to be able to show whatever the queue holds.
-pub(super) fn up_next_of(r: &crate::plex::QueueRow) -> Option<UpNext> {
+pub(super) fn up_next_of(r: &plx_plex::plex::QueueRow) -> Option<UpNext> {
     if r.kind != "episode" || r.rk.is_empty() {
         return None;
     }
@@ -1041,7 +1041,7 @@ pub(crate) struct ResolveEnv {
     /// It comes off the LOADED DETAIL (`metadata::current().bitrate`, `Media[0]`) when that detail
     /// is this item, which is the ordinary path: a card's OK opens the detail page and Play is
     /// pressed there. **Playing straight from a shelf leaves it `0`**, and `0` fails closed (see
-    /// [`crate::plex::Ceiling::admits`]) — so with a rung selected, such a play routes to the
+    /// [`plx_plex::plex::Ceiling::admits`]) — so with a rung selected, such a play routes to the
     /// re-encode rather than guessing the file is small enough. Carrying the bitrate on
     /// `PlayingItem` instead would measure every path, and is named as the follow-up in this
     /// unit's PR: that store is `metadata.rs`'s, not this lane's.
@@ -1054,10 +1054,10 @@ pub(crate) struct ResolveEnv {
     /// request like the quality: the worker must not read the atomic the main thread moves. Only
     /// ever reaches the wire through [`desired_audio`]. A preview and a start-failure retry
     /// capture `NONE` (`request_play_inner`).
-    pub audio_enhancements: crate::plex::AudioEnhancements,
+    pub audio_enhancements: plx_plex::plex::AudioEnhancements,
     /// `serverinfo::subscription_of(sid)` at the request — for the OFFERING of the enhancement only
     /// (I1/I8), never a flavour or profile input.
-    pub pass: crate::plex::serverinfo::Subscription,
+    pub pass: plx_plex::plex::serverinfo::Subscription,
     /// Test-only replacement for the process cache. Capability is an explicit policy input in
     /// regressions; no test mutates the production `OnceLock` or makes the whole host a DV set.
     #[cfg(test)]
@@ -1085,10 +1085,10 @@ pub(crate) struct ResolveEnv {
 /// one server, so a bare-rk match against a colliding item on the other machine would hand the
 /// ceiling the wrong file's bitrate.
 pub(super) fn detail_describes(d: &crate::metadata::Detail, sid: ServerId, rk: &str) -> bool {
-    crate::plex::same_item((d.sid, &d.rk), (sid, rk))
+    plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk))
         || d.on_deck
             .as_ref()
-            .is_some_and(|ep| crate::plex::same_item((d.sid, &ep.rk), (sid, rk)))
+            .is_some_and(|ep| plx_plex::plex::same_item((d.sid, &ep.rk), (sid, rk)))
 }
 
 
@@ -1105,7 +1105,7 @@ pub(super) fn detail_describes(d: &crate::metadata::Detail, sid: ServerId, rk: &
 /// `Detail::video` is the stream's own record and carries its own bitrate; it is `None` for a show
 /// that never got an episode backfill and for an audio-only part, and PMS omits the field often
 /// enough that the whole-file fallback has to stay. Falling back is the conservative direction,
-/// which is the right one here — see [`crate::plex::Ceiling::admits`].
+/// which is the right one here — see [`plx_plex::plex::Ceiling::admits`].
 pub(super) fn source_kbps(d: &crate::metadata::Detail) -> i64 {
     match d.video.as_ref().map(|v| v.bitrate) {
         Some(b) if b > 0 => b,
@@ -1114,7 +1114,7 @@ pub(super) fn source_kbps(d: &crate::metadata::Detail) -> i64 {
 }
 
 /// Rate the quality ceiling judges for this play. A trailer extra is a different file from the
-/// loaded parent: using the movie's 4K figure (or 0, which [`crate::plex::Ceiling::admits`]
+/// loaded parent: using the movie's 4K figure (or 0, which [`plx_plex::plex::Ceiling::admits`]
 /// fails closed on) would force every non-Auto rung through the encoder.
 pub(super) fn resolve_src_kbps(
     d: Option<&crate::metadata::Detail>,
@@ -1127,7 +1127,7 @@ pub(super) fn resolve_src_kbps(
     if let Some(extra) = d
         .extras
         .iter()
-        .find(|e| crate::plex::same_item((d.sid, e.rk.as_str()), (sid, rk)))
+        .find(|e| plx_plex::plex::same_item((d.sid, e.rk.as_str()), (sid, rk)))
     {
         return extra.bitrate;
     }
@@ -1177,14 +1177,14 @@ pub(crate) struct Plan {
     /// `contents.immersive` node. Set on the DIRECT-PLAY branch only, for the same reason `dovi`
     /// is: it describes the FILE's own elementary stream.
     pub immersive: bool,
-    /// The encode's flavor/delivery/ceiling/audio-DSP shape — see [`crate::plex::EncodeContract`].
+    /// The encode's flavor/delivery/ceiling/audio-DSP shape — see [`plx_plex::plex::EncodeContract`].
     /// Was four independent fields (`remux`, `delivery`, `no_video_copy`, `ceiling`) until issue
     /// #266 needed a fifth that only ever means anything alongside `remux == true`; one value
     /// installed as [`Session::cur_contract`] is what lets a seek or a track switch rebuild the
     /// exact same query instead of four/five fields that could drift out of the coupling that
     /// matters (`no_video_copy` only under re-encode, `ceiling` only under re-encode, `audio` only
     /// under remux — see the field docs on `EncodeContract` itself).
-    pub contract: crate::plex::EncodeContract,
+    pub contract: plx_plex::plex::EncodeContract,
     /// The audio track this plan carries, installed as `Session::cur_audio` (the one source of the
     /// timeline's `audioStreamID`). `CarriedAudio::from_stream` of the fetched stream the route
     /// names; [`CarriedAudio::named`] (id only, every fact unknown) when the route names an id
@@ -1242,7 +1242,7 @@ pub(crate) struct Plan {
     /// the episode queued after this one, straight off the `continuous=1` PlayQueue
     pub up_next: Option<UpNext>,
     /// that same PlayQueue's whole returned window, projected on the worker (see `queue`)
-    pub queue: Vec<crate::plex::QueueRow>,
+    pub queue: Vec<plx_plex::plex::QueueRow>,
 }
 
 
@@ -1291,7 +1291,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     }
     let forced = env.direct_play_mode == DirectPlayMode::Forced;
     let playback_quality = if forced { Quality::Original } else { env.quality };
-    let client = match crate::plex::client_for(env.sid) {
+    let client = match plx_plex::plex::client_for(env.sid) {
         Some(c) => c,
         None => return plan,
     };
@@ -1457,19 +1457,19 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // Capture identity and generation as ONE publication. The credential helper keeps plex.tv
     // and PMS authority separate and permits the owner account-token fallback only for a proven
     // legacy owner session.
-    let active_profile = crate::plex::session::current_snapshot();
+    let active_profile = plx_plex::plex::session::current_snapshot();
     let mut account_subtitles = None;
     let account_audio = match active_profile.user.as_ref() {
-        Some(user) => match crate::plex::session::plex_tv_credential(user) {
+        Some(user) => match plx_plex::plex::session::plex_tv_credential(user) {
             Some(credential) => {
-                let stored_session = crate::plex::session::peek();
+                let stored_session = plx_plex::plex::session::peek();
                 if stored_session.client_id.is_empty() {
                     AccountAudioLanguage::NoCredential
                 } else {
-                    match crate::plex::account::AccountClient::audio_preferences(
+                    match plx_plex::plex::account::AccountClient::audio_preferences(
                         &stored_session.client_id, &credential, user, active_profile.generation,
                     ) {
-                        crate::plex::account::AudioPreferencesOutcome::Available(prefs) => {
+                        plx_plex::plex::account::AudioPreferencesOutcome::Available(prefs) => {
                             account_subtitles = Some((prefs.subtitle_language.clone(), prefs.subtitle_mode, prefs.subtitle_forced));
                             match prefs.language {
                             Some(language) => AccountAudioLanguage::Set(language),
@@ -1478,9 +1478,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                                 stated_language: prefs.stated_language,
                             },
                         } },
-                        crate::plex::account::AudioPreferencesOutcome::TimedOut =>
+                        plx_plex::plex::account::AudioPreferencesOutcome::TimedOut =>
                             AccountAudioLanguage::TimedOut,
-                        crate::plex::account::AudioPreferencesOutcome::Failed =>
+                        plx_plex::plex::account::AudioPreferencesOutcome::Failed =>
                             AccountAudioLanguage::Unavailable,
                     }
                 }
@@ -1576,7 +1576,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // every other tier and on a server whose link nobody has recorded, which is all of them today.
     // The reasoning, and what is measured versus documented, is at `plex::link_policy`.
     let location = client.link();
-    let link = crate::plex::link_policy(location);
+    let link = plx_plex::plex::link_policy(location);
     // …and what the USER has asked for, on top of what the link allows. Same two flags, composed
     // by AND, so the STRICTER of the two always wins: a relay link cannot be loosened by picking a
     // high rung, and a low rung is not rescued by a fast link. The reasoning — and why a ceiling
@@ -1648,7 +1648,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     if !forced && matches!(playback_quality, Quality::Auto | Quality::Original)
         && matches!(
             location,
-            Some(crate::plex::probe::Location::Local) | Some(crate::plex::probe::Location::Remote)
+            Some(plx_plex::plex::probe::Location::Local) | Some(plx_plex::plex::probe::Location::Remote)
         )
         && (directplay || remux_candidate)
         && !part.is_empty()
@@ -1727,7 +1727,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     };
     // What the remote remux probe must sample: "the remux we would actually play" includes its
     // audio DSP, and the play path reuses the probe's session.
-    let pre_audio = plan.auto_original.as_ref().map_or(crate::plex::AudioEnhancements::NONE, |c| {
+    let pre_audio = plan.auto_original.as_ref().map_or(plx_plex::plex::AudioEnhancements::NONE, |c| {
         enhancement_for(Some(c), if c.direct { RouteFamily::Direct } else { RouteFamily::Remux })
     });
     // **Cold start, decided in one place.** Feasibility first (is Original even possible for this
@@ -1746,9 +1746,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     let policy = crate::abr::AbrPolicy::measured();
     let original_feasible = (directplay || remux_candidate) && plan.auto_original.is_some();
     let link_kind = match location {
-        Some(crate::plex::probe::Location::Local) => Some(crate::abr::LinkKind::Local),
-        Some(crate::plex::probe::Location::Remote) => Some(crate::abr::LinkKind::Remote),
-        Some(crate::plex::probe::Location::Relay) => Some(crate::abr::LinkKind::Relay),
+        Some(plx_plex::plex::probe::Location::Local) => Some(crate::abr::LinkKind::Local),
+        Some(plx_plex::plex::probe::Location::Remote) => Some(crate::abr::LinkKind::Remote),
+        Some(plx_plex::plex::probe::Location::Relay) => Some(crate::abr::LinkKind::Relay),
         None => None,
     };
     // Captured before Auto overwrites `directplay` for HLS: a remux probe registered start.mkv
@@ -1824,7 +1824,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             quality_policy(playback_quality, false, env.src_kbps, src_w, src_h),
         );
         directplay = false;
-        plan.contract.delivery = crate::plex::TranscodeDelivery::FixedHls {
+        plan.contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
             seconds_per_segment: 2,
         };
         let rung = decision
@@ -1960,7 +1960,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         plan.acodec = achosen;
     } else if matches!(
         plan.contract.delivery,
-        crate::plex::TranscodeDelivery::FixedHls { .. }
+        plx_plex::plex::TranscodeDelivery::FixedHls { .. }
     ) {
         plan.vcodec = "h264".into();
         plan.acodec = "aac".into();
@@ -2006,7 +2006,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         rk,
         &session,
         &session,
-        crate::plex::TranscodeOffset::Fresh,
+        plx_plex::plex::TranscodeOffset::Fresh,
         encode_audio,
         burn_sub_sid,
         plan.contract,
@@ -2021,7 +2021,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // Refused outright, or ignored (audio `copy` despite the params): rebuild once without
         // the enhancement, on the same session, and remember that this server said no.
         note_enhancement_refused("; fell back", audio);
-        plan.contract.audio = crate::plex::AudioEnhancements::NONE;
+        plan.contract.audio = plx_plex::plex::AudioEnhancements::NONE;
         plan.enhancement = super::decision::EnhancementOutcome::Refused;
         if enhanced_from_direct {
             // Back to the direct play the enhancement decorated. The MDE is re-asked first so the
@@ -2042,7 +2042,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             rk,
             &session,
             &session,
-            crate::plex::TranscodeOffset::Fresh,
+            plx_plex::plex::TranscodeOffset::Fresh,
             encode_audio,
             env.sub_sid,
             plan.contract,
@@ -2103,7 +2103,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
 #[allow(clippy::too_many_arguments)]
 fn fill_direct_plan(
     plan: &mut Plan,
-    client: &crate::plex::Client,
+    client: &plx_plex::plex::Client,
     part: &str,
     session: &str,
     vcodec: &str,
@@ -2254,7 +2254,7 @@ fn account_audio_language_log(
                 lang_matches(lang, &track.lang_code)
             };
             let direct_playable_match = tracks.iter().any(|track| {
-                matching_track(track) && crate::plex::is_dp_audio_track(&track.codec, track.channels)
+                matching_track(track) && plx_plex::plex::is_dp_audio_track(&track.codec, track.channels)
             });
             let outcome = if picked_language {
                 "playing that track"
@@ -2372,9 +2372,9 @@ pub(super) fn pick_dp_audio_pref(
 
 pub(super) fn audio_direct_plays(mode: DirectPlayMode, codec: &str, channels: i64) -> bool {
     if mode == DirectPlayMode::Forced {
-        crate::plex::DP_AUDIO_CODECS.split(',').any(|c| c.eq_ignore_ascii_case(codec))
+        plx_plex::plex::DP_AUDIO_CODECS.split(',').any(|c| c.eq_ignore_ascii_case(codec))
     } else {
-        crate::plex::is_dp_audio_track(codec, channels)
+        plx_plex::plex::is_dp_audio_track(codec, channels)
     }
 }
 
@@ -2475,7 +2475,7 @@ fn encode_audio_id(
 /// Whether the client can render this embedded subtitle codec.
 fn embedded_subtitle_renderable(codec: &str) -> bool {
     // Advertised bitmap/ASS/text codecs plus ff::sub_kind's raw UTF-8 packet formats.
-    crate::plex::is_dp_subtitle(codec) || matches!(codec,
+    plx_plex::plex::is_dp_subtitle(codec) || matches!(codec,
         "vplayer" | "pjs" | "jacosub" | "microdvd" | "sami" | "realtext" |
         "subviewer" | "subviewer1" | "stl" | "mpl2")
 }
@@ -2529,7 +2529,7 @@ pub(super) fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64,
 /// Stream id named on the MDE `/decision` handshake, or `0`.
 ///
 /// [`pick_dp_subtitle`] is what Original will client-render. MDE only sees that id when the
-/// codec is in [`crate::plex::DP_SUBTITLE_CODECS`]: a sidecar, or a selected embedded track
+/// codec is in [`plx_plex::plex::DP_SUBTITLE_CODECS`]: a sidecar, or a selected embedded track
 /// we render but do not advertise (`vplayer`, …), is sent as `0` so MDE evaluates subs off
 /// instead of answering transcode (which then forbids a codec-copy remux).
 #[cfg(test)]
@@ -2544,7 +2544,7 @@ fn mde_subtitle_id_of(subs: &[crate::metadata::Stream], pick: Option<(i64, i32)>
         .and_then(|(id, _)| {
             subs.iter()
                 .find(|s| s.id == id)
-                .filter(|s| crate::plex::is_dp_subtitle(&s.codec))
+                .filter(|s| plx_plex::plex::is_dp_subtitle(&s.codec))
                 .map(|_| id)
         })
         .unwrap_or(0)
@@ -2563,13 +2563,13 @@ pub(super) struct SubtitleLangPrefs<'a> {
 
 #[cfg(test)]
 pub(super) fn pick_dp_subtitle_pref(
-    subs: &[crate::metadata::Stream], prefs: &crate::plex::ShowLangPrefs, audio_lang: &str,
+    subs: &[crate::metadata::Stream], prefs: &plx_plex::plex::ShowLangPrefs, audio_lang: &str,
 ) -> Option<(i64, i32)> {
     pick_dp_subtitle_account(subs, prefs, SubtitleLangPrefs::default(), audio_lang)
 }
 
 fn pick_dp_subtitle_account(
-    subs: &[crate::metadata::Stream], prefs: &crate::plex::ShowLangPrefs,
+    subs: &[crate::metadata::Stream], prefs: &plx_plex::plex::ShowLangPrefs,
     account: SubtitleLangPrefs<'_>, audio_lang: &str,
 ) -> Option<(i64, i32)> {
     if let Some(pick) = pick_dp_subtitle(subs) {
@@ -2614,11 +2614,11 @@ pub(super) fn video_feed_supported(vcodec: &str, dv: crate::metadata::DvPresenta
     matches!(vcodec, "h264" | "hevc") && dv.refusal().is_none()
 }
 
-pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: crate::plex::LinkPolicy) -> crate::plex::LinkPolicy {
+pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: plx_plex::plex::LinkPolicy) -> plx_plex::plex::LinkPolicy {
     match mode {
         DirectPlayMode::Auto => policy,
-        DirectPlayMode::Forced => crate::plex::LinkPolicy { direct_play: true, remux: false },
-        DirectPlayMode::Disabled => crate::plex::LinkPolicy { direct_play: false, remux: policy.remux },
+        DirectPlayMode::Forced => plx_plex::plex::LinkPolicy { direct_play: true, remux: false },
+        DirectPlayMode::Disabled => plx_plex::plex::LinkPolicy { direct_play: false, remux: policy.remux },
     }
 }
 
@@ -2657,7 +2657,7 @@ pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: crate::plex::Link
 /// fits the caps: resolution, bitrate, and the profile's own limitation axes. None of those can say
 /// "Dolby Vision", so a refused Profile 5 came back `Part.decision=transcode` with the video's own
 /// decision `copy` — the same bitstream, the same wrong colours, one container down. `build_stream`
-/// therefore also sets [`crate::plex::TranscodeSpec::no_video_copy`], off `base_layer_unusable` and
+/// therefore also sets [`plx_plex::plex::TranscodeSpec::no_video_copy`], off `base_layer_unusable` and
 /// never off this gate: a COPY carries no declaration, so it stays wrong even for a profile we are
 /// happy to direct-play. The measurement is in `docs/pms-api.md` §"What the server actually does
 /// with a Dolby Vision source". A server that cannot encode the result is then allowed to say so —
@@ -2728,7 +2728,7 @@ pub(crate) fn playback_preview_of(
     let video = video_direct_plays(vcodec, width, height, dv, plx_platform::devcaps::caps());
     let audio = audio_streams
         .iter()
-        .any(|a| crate::plex::is_dp_audio_track(&a.codec, a.channels));
+        .any(|a| plx_plex::plex::is_dp_audio_track(&a.codec, a.channels));
     // Mirrors `build_stream`'s own ladder: the video gate decides whether an ENCODER runs at all,
     // and only once it has passed do the container and the audio decide between pulling the file
     // ourselves and asking the server to repackage it.

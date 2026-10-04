@@ -4,16 +4,16 @@ use super::*;
 use std::ffi::CString;
 use super::tests::Fixture;
 
-fn sid(n: u16) -> crate::plex::ServerId {
-    crate::plex::ServerId::from_raw(n)
+fn sid(n: u16) -> plx_plex::plex::ServerId {
+    plx_plex::plex::ServerId::from_raw(n)
 }
 
 fn group(name: &str, handle: &str, state: crate::browse::SourceState,
-    tier: Option<crate::plex::probe::Location>) -> crate::browse::SrcGroup {
+    tier: Option<plx_plex::plex::probe::Location>) -> crate::browse::SrcGroup {
     crate::browse::SrcGroup { name: name.into(), handle: handle.into(), state, tier }
 }
 
-fn section(source: crate::plex::ServerId, key: i64, index: usize, title: &str, current: bool)
+fn section(source: plx_plex::plex::ServerId, key: i64, index: usize, title: &str, current: bool)
     -> crate::browse::view::SectionView {
     crate::browse::view::SectionView { sid: Some(source), key, kind: SecKind::Movie,
         row: crate::browse::SrcRow { section: index, title: title.into(), pinned: true, current,
@@ -30,7 +30,7 @@ fn section(source: crate::plex::ServerId, key: i64, index: usize, title: &str, c
 fn every_connection_tier_and_source_state_draws_the_same_selector() {
     let _guard = plx_base::testlock::serial();
     use crate::browse::SourceState;
-    use crate::plex::probe::Location;
+    use plx_plex::plex::probe::Location;
     let tiers = [None, Some(Location::Local), Some(Location::Remote), Some(Location::Relay)];
     let states = [SourceState::NotProbed, SourceState::Reachable, SourceState::Unauthorized,
         SourceState::Unreachable, SourceState::InsecureOnly];

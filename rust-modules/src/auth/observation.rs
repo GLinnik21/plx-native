@@ -277,8 +277,8 @@ pub(super) mod resources {
     use serde::ser::{SerializeSeq, SerializeStruct};
 
     struct ResourceRead<'a>(&'a Resource);
-    struct ConnectionRead<'a>(&'a crate::plex::account::Connection);
-    struct ConnectionsRead<'a>(&'a [crate::plex::account::Connection]);
+    struct ConnectionRead<'a>(&'a plx_plex::plex::account::Connection);
+    struct ConnectionsRead<'a>(&'a [plx_plex::plex::account::Connection]);
 
     impl Serialize for ConnectionRead<'_> {
         fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -482,7 +482,7 @@ mod insecure_only_outcome_tests {
         use plx_machine::machine::Canon;
         let probe = |address: Option<&str>| SettledProbe {
             machine_id: "m".into(), outcome: Outcome::InsecureOnly,
-            tier: Some(crate::plex::probe::Location::Local), address: address.map(str::to_owned),
+            tier: Some(plx_plex::plex::probe::Location::Local), address: address.map(str::to_owned),
         };
         let bytes = |address: Option<&str>| {
             let mut w = Canon::new();

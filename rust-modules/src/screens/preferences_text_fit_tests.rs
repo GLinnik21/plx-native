@@ -8,7 +8,7 @@
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure as M;
 use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-use crate::plex::account::AudioPreferences;
+use plx_plex::plex::account::AudioPreferences;
 use crate::route::available_quality_ladder;
 use plx_ui::table::{Section, TableView};
 use plx_machine::machine::Measure;
@@ -93,7 +93,7 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
 
         // Every catalog language as the Audio/Subtitle Language read-out (app data, so judged).
         let mut prefs = AudioPreferences::default();
-        for l in crate::plex::languages::LANGUAGES {
+        for l in plx_plex::plex::languages::LANGUAGES {
             prefs.stated_language = Some(l.code.to_string());
             prefs.subtitle_language = Some(l.code.to_string());
             check_field_section(&format!("{tag} language={}", l.code), &audio(Some(&prefs)), &mut out);

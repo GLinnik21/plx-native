@@ -206,7 +206,7 @@ pub(crate) fn subtitle_ink() -> [f32; 4] {
     subtitle_ink_for(crate::player::subtitle_tone())
 }
 
-fn subtitle_ink_for(tone: crate::plex::session::SubtitleTone) -> [f32; 4] {
+fn subtitle_ink_for(tone: plx_plex::plex::session::SubtitleTone) -> [f32; 4] {
     theme::SUBTITLE_INKS
         .get(tone.index() as usize)
         .copied()
@@ -216,8 +216,8 @@ fn subtitle_ink_for(tone: crate::plex::session::SubtitleTone) -> [f32; 4] {
 /// The face-size multiplier for the viewer's Settings > Playback pick, applied to the plain-text
 /// caption's 36 px base face ([`draw_subtitle_message`]) and its line pitch/wrap width together,
 /// so a larger caption still wraps before it runs off either edge.
-fn subtitle_size_scale(size: crate::plex::session::SubtitleSize) -> f32 {
-    use crate::plex::session::SubtitleSize;
+fn subtitle_size_scale(size: plx_plex::plex::session::SubtitleSize) -> f32 {
+    use plx_plex::plex::session::SubtitleSize;
     match size {
         SubtitleSize::Small => 0.78,
         SubtitleSize::Medium => 1.0,
@@ -229,8 +229,8 @@ fn subtitle_size_scale(size: crate::plex::session::SubtitleSize) -> f32 {
 /// How far ABOVE [`SUB_BASE_Y`]/[`SUB_CEIL_Y`] the viewer's Position pick lifts the plain-text
 /// caption ([`draw_subtitle_message`]) — Low is the baseline every build before this preference
 /// drew, so it lifts nothing.
-fn subtitle_position_lift(position: crate::plex::session::SubtitlePosition) -> f32 {
-    use crate::plex::session::SubtitlePosition;
+fn subtitle_position_lift(position: plx_plex::plex::session::SubtitlePosition) -> f32 {
+    use plx_plex::plex::session::SubtitlePosition;
     match position {
         SubtitlePosition::Low => 0.0,
         SubtitlePosition::Middle => 160.0,
@@ -2268,7 +2268,7 @@ mod tests {
     /// never coverage (the outline depends on it) and never hue (it tints image subtitles).
     #[test]
     fn the_subtitle_tones_are_a_strictly_darkening_opaque_grey_ladder_from_white() {
-        use crate::plex::session::SubtitleTone;
+        use plx_plex::plex::session::SubtitleTone;
         assert_eq!(theme::SUBTITLE_INKS.len(), SubtitleTone::LADDER.len());
         assert_eq!(subtitle_ink_for(SubtitleTone::White), [1.0, 1.0, 1.0, 1.0]);
         let mut prev = f32::MAX;

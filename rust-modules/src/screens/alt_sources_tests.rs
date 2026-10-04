@@ -41,9 +41,9 @@ const ADMIN_ID: i64 = 4_242;
 /// because `false` only meant "not owned", which is true of a household server as well. `outside`
 /// makes a claim, and the claim was wrong: the assertion below wanted the credit to go away
 /// BECAUSE this machine is the house's, and stating the opposite meant it passed for the right
-/// value and the wrong reason. See [`crate::plex::GrantEvidence::household`].
-fn house_evidence() -> crate::plex::GrantEvidence {
-    crate::plex::GrantEvidence::household(ADMIN_ID)
+/// value and the wrong reason. See [`plx_plex::plex::GrantEvidence::household`].
+fn house_evidence() -> plx_plex::plex::GrantEvidence {
+    plx_plex::plex::GrantEvidence::household(ADMIN_ID)
 }
 /// A copy on server `s`, in `library`, owned by `owner` (`""` = this account), at class `res`.
 fn copy(s: u16, library: &str, owner: &str, rk: &str, res: &str) -> AltCopy {
@@ -409,19 +409,19 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     impl Drop for Fresh {
         fn drop(&mut self) {
             test_store().run(crate::stores::metadata::MetadataCmd::Clear);
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _g = Fresh(plx_base::testlock::serial());
-    crate::plex::reset_servers_for_test();
-    let house = crate::plex::register_for_test("alt-house", "127.0.0.1", 1, "t", "cid");
-    let friend = crate::plex::register_for_test("alt-friend", "127.0.0.1", 2, "t", "cid");
+    plx_plex::plex::reset_servers_for_test();
+    let house = plx_plex::plex::register_for_test("alt-house", "127.0.0.1", 1, "t", "cid");
+    let friend = plx_plex::plex::register_for_test("alt-friend", "127.0.0.1", 2, "t", "cid");
     assert_eq!((house, friend), (sid(0), sid(1)), "slots 0 and 1");
 
     // what a build without the rule published: the household's own server wearing the account
     // holder's handle, and the panel's rows stamped from it
-    crate::plex::describe_server(house, "Mac mini", "admin", house_evidence());
-    crate::plex::describe_server(friend, "nas-home", "friend", crate::plex::GrantEvidence::outside());
+    plx_plex::plex::describe_server(house, "Mac mini", "admin", house_evidence());
+    plx_plex::plex::describe_server(friend, "nas-home", "friend", plx_plex::plex::GrantEvidence::outside());
     alt_install(
         house,
         "4",
@@ -440,7 +440,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     );
 
     // the roster refresh re-grades the household's own server, with NO new resolve
-    crate::plex::describe_server(house, "Mac mini", "", house_evidence());
+    plx_plex::plex::describe_server(house, "Mac mini", "", house_evidence());
     assert!(alt_restamp_owners(), "the credit moved");
 
     let after = rows(copies(), house, "4");
@@ -461,13 +461,13 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     // **An OPEN panel is a materialised table, not a view of the store.** Without the rebuild it
     // keeps both its old text and its old ORDER — and the order is not cosmetic, `owner` is the
     // own-before-a-friend's tiebreak — until the user closes and reopens it.
-    crate::plex::describe_server(house, "Mac mini", "admin", house_evidence());
+    plx_plex::plex::describe_server(house, "Mac mini", "admin", house_evidence());
     alt_restamp_owners();
     let mut p = panel(house, "4");
     // the page's own copy is `(house, "4")`, so its row wears the tick and leads
     assert_eq!(drawn(&p), ["admin", "friend"]);
 
-    crate::plex::describe_server(house, "Mac mini", "", house_evidence());
+    plx_plex::plex::describe_server(house, "Mac mini", "", house_evidence());
     alt_restamp_owners();
     assert!(p.refresh(test_store().view()), "the correction reached the drawn table");
     assert_eq!(
@@ -509,35 +509,35 @@ fn an_unnamed_external_share_is_drawn_like_the_household_and_that_is_the_open_bu
     impl Drop for Fresh {
         fn drop(&mut self) {
             test_store().run(crate::stores::metadata::MetadataCmd::Clear);
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _g = Fresh(plx_base::testlock::serial());
-    crate::plex::reset_servers_for_test();
-    let house = crate::plex::register_for_test("alt-house", "127.0.0.1", 1, "t", "cid");
-    let named = crate::plex::register_for_test("alt-friend", "127.0.0.1", 2, "t", "cid");
-    let unnamed = crate::plex::register_for_test("alt-stranger", "127.0.0.1", 3, "t", "cid");
+    plx_plex::plex::reset_servers_for_test();
+    let house = plx_plex::plex::register_for_test("alt-house", "127.0.0.1", 1, "t", "cid");
+    let named = plx_plex::plex::register_for_test("alt-friend", "127.0.0.1", 2, "t", "cid");
+    let unnamed = plx_plex::plex::register_for_test("alt-stranger", "127.0.0.1", 3, "t", "cid");
 
-    crate::plex::describe_server(house, "Mac mini", "", house_evidence());
-    crate::plex::describe_server(named, "nas-home", "friend", crate::plex::GrantEvidence::outside());
+    plx_plex::plex::describe_server(house, "Mac mini", "", house_evidence());
+    plx_plex::plex::describe_server(named, "nas-home", "friend", plx_plex::plex::GrantEvidence::outside());
     // plex.tv granted this account the server and sent no `sourceTitle` with it. Nothing about
     // that says the machine is the household's — the credit is absent, not empty-because-ours.
-    crate::plex::describe_server(unnamed, "box", "", crate::plex::GrantEvidence::outside());
+    plx_plex::plex::describe_server(unnamed, "box", "", plx_plex::plex::GrantEvidence::outside());
 
     // the registry CAN tell them apart: same empty credit, different grant evidence
     let evidence = |id| {
-        crate::plex::server_facts(id)
+        plx_plex::plex::server_facts(id)
             .map(|f| (f.handle.clone(), f.owned, f.home, f.owner_id))
             .expect("a described slot")
     };
     assert_eq!(evidence(house), (String::new(), false, true, ADMIN_ID));
     assert_eq!(evidence(unnamed), (String::new(), false, false, 0));
     assert!(
-        crate::plex::is_household(house_evidence().grant(), &[]),
+        plx_plex::plex::is_household(house_evidence().grant(), &[]),
         "the house is the household's, on the evidence"
     );
     assert!(
-        !crate::plex::is_household(crate::plex::GrantEvidence::outside().grant(), &[]),
+        !plx_plex::plex::is_household(plx_plex::plex::GrantEvidence::outside().grant(), &[]),
         "…and the unnamed share is not, on the same evidence"
     );
 
@@ -575,15 +575,15 @@ fn a_resolve_that_landed_after_the_correction_is_regraded_on_the_way_in() {
     impl Drop for Fresh {
         fn drop(&mut self) {
             test_store().run(crate::stores::metadata::MetadataCmd::Clear);
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _g = Fresh(plx_base::testlock::serial());
-    crate::plex::reset_servers_for_test();
-    let house = crate::plex::register_for_test("alt-late-house", "127.0.0.1", 1, "t", "cid");
-    let friend = crate::plex::register_for_test("alt-late-friend", "127.0.0.1", 2, "t", "cid");
-    crate::plex::describe_server(house, "Mac mini", "admin", house_evidence());
-    crate::plex::describe_server(friend, "nas-home", "friend", crate::plex::GrantEvidence::outside());
+    plx_plex::plex::reset_servers_for_test();
+    let house = plx_plex::plex::register_for_test("alt-late-house", "127.0.0.1", 1, "t", "cid");
+    let friend = plx_plex::plex::register_for_test("alt-late-friend", "127.0.0.1", 2, "t", "cid");
+    plx_plex::plex::describe_server(house, "Mac mini", "admin", house_evidence());
+    plx_plex::plex::describe_server(friend, "nas-home", "friend", plx_plex::plex::GrantEvidence::outside());
 
     // the worker's list, stamped while the old credit was still published
     let in_flight = vec![
@@ -592,7 +592,7 @@ fn a_resolve_that_landed_after_the_correction_is_regraded_on_the_way_in() {
     ];
 
     // …then the correction lands, and the epoch that saw it is already spent
-    crate::plex::describe_server(house, "Mac mini", "", house_evidence());
+    plx_plex::plex::describe_server(house, "Mac mini", "", house_evidence());
     alt_restamp_owners();
 
     // …and only now does the resolve arrive

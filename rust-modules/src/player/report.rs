@@ -66,7 +66,7 @@ static ATTEMPT: AtomicI64 = AtomicI64::new(0);
 /// (a fresh `Client` published over the same slot) relabel `started`/`ended` events that reported
 /// `local` a moment ago as `unknown`, or worse, as whatever the NEW server's connection happens to
 /// be — neither is the connection THIS attempt actually used.
-static ATTEMPT_CONNECTION: AtomicU32 = AtomicU32::new(pack_connection(crate::plex::ServerId::UNSET.raw(), 0, 0));
+static ATTEMPT_CONNECTION: AtomicU32 = AtomicU32::new(pack_connection(plx_plex::plex::ServerId::UNSET.raw(), 0, 0));
 
 const fn pack_connection(server: u16, link: u8, ip: u8) -> u32 {
     (server as u32) | ((link as u32) << 16) | ((ip as u32) << 24)
@@ -76,10 +76,10 @@ fn unpack_connection(word: u32) -> (u16, u8, u8) {
     (word as u16, (word >> 16) as u8, (word >> 24) as u8)
 }
 
-// Link/IP encode-decode is the one pair `crate::plex::client` owns (`encode_link`/`decode_link`,
+// Link/IP encode-decode is the one pair `plx_plex::plex::client` owns (`encode_link`/`decode_link`,
 // `encode_ip`/`decode_ip`) — this module used to keep a second private copy of both tables, which
 // is exactly the drift the shared pair exists to rule out.
-use crate::plex::{decode_ip, decode_link, encode_ip, encode_link};
+use plx_plex::plex::{decode_ip, decode_link, encode_ip, encode_link};
 /// Process-local trace generation. Unlike `ATTEMPT`, this is never sent; it only prevents an
 /// outgoing demux worker from writing its late transitions into the next Play's reset trace.
 static NEXT_TRACE_GENERATION: AtomicU32 = AtomicU32::new(0);
@@ -441,7 +441,7 @@ fn presented_event(ps: &crate::route::PlaybackSession) -> TraceEvent {
 ///
 /// Mints the id and clears every latch, so a second Play on the same item is a second attempt with
 /// its own funnel rather than a silent no-op against the first one's latches.
-pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: crate::plex::ServerId) -> u32 {
+pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: plx_plex::plex::ServerId) -> u32 {
     resolve_replaced_attempt(ps);
     let id = new_attempt_id();
     let at = now_ms();
@@ -469,7 +469,7 @@ pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: crate::plex:
     // Snapshot the server slot AND the connection together, in one store — see
     // `ATTEMPT_CONNECTION`'s doc for why `emit` must never re-read the live client, and why this
     // must not be three separate stores.
-    let (link, ip) = crate::plex::client_for(server)
+    let (link, ip) = plx_plex::plex::client_for(server)
         .map(|c| (c.link(), c.ip_version()))
         .unwrap_or((None, None));
     ATTEMPT_CONNECTION.store(pack_connection(server.raw(), encode_link(link), encode_ip(ip)), Relaxed);
@@ -504,7 +504,7 @@ pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: crate::plex:
 /// mid-attempt re-point without driving the whole consent/spool pipeline `emit` feeds.
 #[cfg(test)]
 pub(crate) fn attempt_connection_snapshot_for_test(
-) -> (Option<crate::plex::probe::Location>, Option<crate::plex::IpVersion>) {
+) -> (Option<plx_plex::plex::probe::Location>, Option<plx_plex::plex::IpVersion>) {
     let (_, link, ip) = unpack_connection(ATTEMPT_CONNECTION.load(Relaxed));
     (decode_link(link), decode_ip(ip))
 }
@@ -513,7 +513,7 @@ fn emit(event: DiagEvent) {
     // One load, not three — see `ATTEMPT_CONNECTION`'s doc for why a concurrent `requested` must
     // never be observable as a torn mix of the old server slot and the new connection or back.
     let (server, link, ip) = unpack_connection(ATTEMPT_CONNECTION.load(Relaxed));
-    let sid = crate::plex::ServerId::from_raw(server);
+    let sid = plx_plex::plex::ServerId::from_raw(server);
     let link = decode_link(link);
     let ip = decode_ip(ip);
     crate::diag::event_for_connection(event, sid, link, ip);
@@ -913,44 +913,44 @@ mod tests {
     #[test]
     fn requested_snapshots_the_connection_and_a_mid_attempt_repoint_does_not_change_it() {
         let _g = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let o = crate::plex::Origin::http("10.0.0.9", 32400);
-        let connection = crate::plex::ConnectionFacts::new(
-            Some(crate::plex::probe::Location::Local),
-            Some(crate::plex::IpVersion::V4),
+        plx_plex::plex::reset_servers_for_test();
+        let o = plx_plex::plex::Origin::http("10.0.0.9", 32400);
+        let connection = plx_plex::plex::ConnectionFacts::new(
+            Some(plx_plex::plex::probe::Location::Local),
+            Some(plx_plex::plex::IpVersion::V4),
         );
-        let sid = crate::plex::register_pinned_with_client_id(
+        let sid = plx_plex::plex::register_pinned_with_client_id(
             "m1", &o, "tok", None, "cid", connection,
         );
         let ps = crate::route::PlaybackSession::default();
         requested(&ps, sid);
         assert_eq!(
             attempt_connection_snapshot_for_test(),
-            (Some(crate::plex::probe::Location::Local), Some(crate::plex::IpVersion::V4)),
+            (Some(plx_plex::plex::probe::Location::Local), Some(plx_plex::plex::IpVersion::V4)),
             "snapshotted at requested time"
         );
         // Mid-attempt re-point: a DIFFERENT origin for the same machine id, e.g. a roster refresh
         // finally reaching the LAN candidate — publishes a fresh `Client` with its own tier/ip.
-        let o2 = crate::plex::Origin::http("10.0.0.20", 32400);
-        let repoint = crate::plex::ConnectionFacts::new(
-            Some(crate::plex::probe::Location::Relay),
-            Some(crate::plex::IpVersion::V6),
+        let o2 = plx_plex::plex::Origin::http("10.0.0.20", 32400);
+        let repoint = plx_plex::plex::ConnectionFacts::new(
+            Some(plx_plex::plex::probe::Location::Relay),
+            Some(plx_plex::plex::IpVersion::V6),
         );
-        let repointed = crate::plex::register_pinned_with_client_id(
+        let repointed = plx_plex::plex::register_pinned_with_client_id(
             "m1", &o2, "tok", None, "cid", repoint,
         );
         assert_eq!(repointed, sid, "re-pointed in place — same slot id");
         assert_eq!(
-            crate::plex::client_for(sid).unwrap().link(),
-            Some(crate::plex::probe::Location::Relay),
+            plx_plex::plex::client_for(sid).unwrap().link(),
+            Some(plx_plex::plex::probe::Location::Relay),
             "the live client really did change"
         );
         assert_eq!(
             attempt_connection_snapshot_for_test(),
-            (Some(crate::plex::probe::Location::Local), Some(crate::plex::IpVersion::V4)),
+            (Some(plx_plex::plex::probe::Location::Local), Some(plx_plex::plex::IpVersion::V4)),
             "the attempt's snapshot is untouched by the re-point"
         );
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]

@@ -64,7 +64,7 @@ pub(crate) fn encode(result: &Result) -> serde_json::Value {
 }
 
 pub(crate) fn decode(value: serde_json::Value,
-    mut bind: impl FnMut(u32) -> Option<&'static crate::plex::Client>) -> std::result::Result<Result, &'static str> {
+    mut bind: impl FnMut(u32) -> Option<&'static plx_plex::plex::Client>) -> std::result::Result<Result, &'static str> {
     let wire: Wire = serde_json::from_value(value).map_err(|_| "invalid discovery result")?;
     if wire.kind != "discovery" || wire.version != 1 { return Err("unsupported discovery result"); }
     let client = bind(wire.client).ok_or("unbound discovery client")?;
@@ -97,7 +97,7 @@ pub(crate) fn validate_binding(value: serde_json::Value, instance: u32) -> std::
 }
 
 pub(crate) fn apply_to(state: &mut BrowseState, adapter: &Arc<BrowseAdapter>, result: &Result,
-    preferences: Option<&crate::plex::session::Session>)
+    preferences: Option<&plx_plex::plex::session::Session>)
     -> crate::stores::StoreOutcome {
     if result.adapter.as_ref().is_some_and(|origin| !Arc::ptr_eq(origin, adapter)) {
         return Default::default();

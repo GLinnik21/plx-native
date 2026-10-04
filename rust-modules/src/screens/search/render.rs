@@ -778,7 +778,7 @@ mod tests {
 
     fn own(name: &str) -> ScopeSource {
         ScopeSource {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             name: name.into(),
             libraries: Vec::new(),
             handle: String::new(),
@@ -791,7 +791,7 @@ mod tests {
     }
     fn share(lib: &str, handle: &str) -> ScopeSource {
         ScopeSource {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             name: "a-hostname".into(),
             libraries: vec![lib.into()],
             handle: handle.into(),
@@ -809,7 +809,7 @@ mod tests {
     /// does: named when it has a name, "your server" when it does not.
     fn household(name: &str) -> ScopeSource {
         ScopeSource {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             name: name.into(),
             libraries: Vec::new(),
             handle: String::new(),

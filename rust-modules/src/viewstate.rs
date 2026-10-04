@@ -55,7 +55,7 @@
 //!   (`docs/shared-servers.md` §1) — a fan-out matched on the key would confidently mark a
 //!   DIFFERENT film watched on the other machine, which is a bug this repo has already had once
 //!   (`ui::detail`'s note on posting a borrowed item's key to our own server).
-//!   [`crate::plex::Client::find_by_guid`] is the lookup, the same one "Also available" resolves
+//!   [`plx_plex::plex::Client::find_by_guid`] is the lookup, the same one "Also available" resolves
 //!   its rows with.
 //! * **No resume position is ever COPIED from one server to another — only the watched flag
 //!   travels.** This is the subtle half. A resume offset is about a file you are streaming from one
@@ -101,7 +101,7 @@
 //! worker, and its notice. Reset rotates the adapter, and request IDs fence malformed or stale
 //! completions even within one adapter. There is no process-global ViewState transport or state.
 
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use std::panic::catch_unwind;
 use std::sync::{Arc, Mutex};
 
@@ -137,7 +137,7 @@ impl Write {
     }
 
     /// Perform it. WORKER THREAD — `c` was resolved on the main thread at the spawn site.
-    fn perform(self, c: &crate::plex::Client, rk: &str) -> bool {
+    fn perform(self, c: &plx_plex::plex::Client, rk: &str) -> bool {
         match self {
             Write::Watched => c.scrobble(rk),
             Write::Unwatched => c.unscrobble(rk),
@@ -278,7 +278,7 @@ impl ViewStateState {
     // machine marks a DIFFERENT film watched there (both servers number their items from 1). None is
     // a slot that is not registered, where `client()` panics — a view-state write is exactly the
     // operation to skip and log rather than take to the wrong machine.
-    if crate::plex::client_for(sid).is_none() {
+    if plx_plex::plex::client_for(sid).is_none() {
         plx_base::eventlog::log(&format!(
             "viewstate: rk={rk} {} DROPPED — server {} is not registered",
             w.name(),
@@ -403,7 +403,7 @@ fn edit_local_with_owners(
 impl ViewStateState {
     fn coalesce(&mut self, sid: ServerId, rk: &str, w: Write) {
     let fam = w.family();
-    self.queue.retain(|r| !(crate::plex::same_item((r.sid, &r.rk), (sid, rk)) && r.w.family() == fam));
+    self.queue.retain(|r| !(plx_plex::plex::same_item((r.sid, &r.rk), (sid, rk)) && r.w.family() == fam));
     }
 
 /// Spend one frame of the refused-spawn ladder; true when the next attempt is due. Split out so the
@@ -427,7 +427,7 @@ impl ViewStateState {
         // stopped holding a client is a write with nowhere to go: dropping it silently would be the
         // one PMS write with no line at all, which is what the request-time check above exists to
         // prevent, so it says so here too.
-        let Some(c) = crate::plex::client_for(req.sid) else {
+        let Some(c) = plx_plex::plex::client_for(req.sid) else {
             plx_base::eventlog::log(&format!(
                 "viewstate: rk={} {} DROPPED — server {} left the registry while queued",
                 req.rk,
@@ -670,7 +670,7 @@ impl ViewStateState {
 /// One source's answer to *"do you hold this guid, and under which key?"*. `None` is **did not
 /// answer**, `Some(keys)` is what it holds — `Some(empty)` included, which is the source saying it
 /// does not have the title. The two are deliberately not collapsed, for the same reason
-/// [`crate::plex::Client::find_by_guid`] refuses to collapse them: a share that is merely asleep is
+/// [`plx_plex::plex::Client::find_by_guid`] refuses to collapse them: a share that is merely asleep is
 /// not a share that lacks the film, and only one of those is a fact about a library.
 type Answer = (ServerId, Option<Vec<String>>);
 
@@ -684,13 +684,13 @@ type Answer = (ServerId, Option<Vec<String>>);
 /// and it also keeps [`resolved_guid`]'s failure honest: a slot re-pointed or revoked mid-write
 /// cannot turn into a log line claiming the item has no portable id.
 fn fan_out(
-    c: &crate::plex::Client,
+    c: &plx_plex::plex::Client,
     sid: ServerId,
     rk: &str,
     guid: &str,
     w: Write,
 ) -> Vec<(ServerId, String)> {
-    let sources: Vec<ServerId> = crate::plex::server_ids().collect();
+    let sources: Vec<ServerId> = plx_plex::plex::server_ids().collect();
     if sources.len() < 2 {
         // A one-server install pays NOTHING for this feature: no guid lookup, no query, no line in
         // the log. Checked before the lookup below for exactly that reason.
@@ -712,7 +712,7 @@ fn fan_out(
         // `dst`, not a second `c`: shadowing the item's own client inside the one loop that writes
         // to OTHER machines is how a key ends up posted to the wrong server, which is the exact
         // failure this whole function is arranged around.
-        let Some(dst) = crate::plex::client_for(id) else {
+        let Some(dst) = plx_plex::plex::client_for(id) else {
             continue;
         };
         let ok = w.perform(dst, &key);
@@ -738,7 +738,7 @@ fn fan_out(
 /// costs one extra GET, on this worker, and only where a second source is registered. `None` is a
 /// server that did not answer or an item it has no portable id for — both leave the caller with a
 /// log line rather than a quiet nothing.
-fn resolved_guid(c: &crate::plex::Client, rk: &str, given: &str) -> Option<String> {
+fn resolved_guid(c: &plx_plex::plex::Client, rk: &str, given: &str) -> Option<String> {
     if !given.is_empty() {
         return Some(given.to_string()); // the press knew it; no round trip at all
     }
@@ -755,7 +755,7 @@ fn ask_sources(sources: &[ServerId], guid: &str) -> Vec<Answer> {
     sources
         .iter()
         .map(|&id| {
-            let keys = crate::plex::client_for(id)
+            let keys = plx_plex::plex::client_for(id)
                 .and_then(|c| c.find_by_guid(guid))
                 .map(|mc| {
                     mc.metadata
@@ -792,8 +792,8 @@ fn fanout_targets(origin: (ServerId, &str), answers: &[Answer]) -> Vec<(ServerId
             let pair = (*id, k.as_str());
             let listed = out
                 .iter()
-                .any(|(s, e)| crate::plex::same_item((*s, e), pair));
-            if listed || crate::plex::same_item(pair, origin) {
+                .any(|(s, e)| plx_plex::plex::same_item((*s, e), pair));
+            if listed || plx_plex::plex::same_item(pair, origin) {
                 continue;
             }
             out.push((*id, k.clone()));
@@ -844,8 +844,8 @@ mod tests {
     #[test]
     fn owner_callback_receives_the_optimistic_browse_edit_before_run_returns() {
         let _g = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test(
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test(
             "viewstate-owner", "127.0.0.1", 9, "synthetic", "fixture");
         let mut store = crate::stores::viewstate::ViewStateStore::default();
         store.hold_inflight_for_test(sid, "held");
@@ -893,14 +893,14 @@ mod tests {
         assert!(metadata_store.take_notice().is_some(),
             "the optimistic edit reaches {} before run returns", crate::stores::StoreId::Metadata.name());
         assert!(store.take_notice().is_some(), "the owning ViewState store notices its command");
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
     fn stores_route_the_optimistic_edit_to_the_addressed_browse_owner() {
         let _g = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test(
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test(
             "viewstate-stores-owner", "127.0.0.1", 9, "synthetic", "fixture");
         let mut selected = crate::stores::Stores::default();
         selected.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
@@ -922,7 +922,7 @@ mod tests {
         assert!(decoy.browse.borrow_mut().listing_snapshot().view().item(0).is_none(),
             "the unaddressed decoy is not used by the owner-aware callback");
         drop((selected, decoy));
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
@@ -970,9 +970,9 @@ mod tests {
     #[test]
     fn endpoint_outcomes_survive_the_viewstate_refetch_pump() {
         let _g = plx_base::testlock::serial();
-        let _session = crate::plex::session::TempSession::new("endpoint-viewstate");
-        crate::plex::reset_servers_for_test();
-                let sid = crate::plex::register_for_test("endpoint-viewstate", "127.0.0.1", 9, "synthetic", "cid");
+        let _session = plx_plex::plex::session::TempSession::new("endpoint-viewstate");
+        plx_plex::plex::reset_servers_for_test();
+                let sid = plx_plex::plex::register_for_test("endpoint-viewstate", "127.0.0.1", 9, "synthetic", "cid");
         let mut stores = crate::stores::Stores::default();
         stores.viewstate.borrow_mut().owe_hubs_refresh_for_test();
         let directory = crate::stores::browse::DirectorySnapshot::default();
@@ -981,7 +981,7 @@ mod tests {
         assert_eq!(endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
         assert_eq!(stores.viewstate_pump(directory.view()).iter().count(), 0,
             "refetch is consumed once");
-                crate::plex::reset_servers_for_test();
+                plx_plex::plex::reset_servers_for_test();
     }
     use super::*;
 

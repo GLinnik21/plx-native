@@ -805,11 +805,11 @@ mod tests {
     /// This screen's session guard. Browse state belongs to each test's [`BrowseFixture`] and
     /// therefore needs no process-global teardown.
     struct TempSession {
-        _inner: crate::plex::session::TempSession,
+        _inner: plx_plex::plex::session::TempSession,
     }
     impl TempSession {
         fn new(tag: &str) -> TempSession {
-            let inner = crate::plex::session::TempSession::new(tag);
+            let inner = plx_plex::plex::session::TempSession::new(tag);
             inner.watching("u-test");
             TempSession { _inner: inner }
         }
@@ -906,10 +906,10 @@ mod tests {
     fn endpoint_outcomes_leave_onboard_in_the_same_tick_as_discovery() {
         let _g = plx_base::testlock::serial();
         let _t = TempSession::new("endpoint-onboard");
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         let mut browse = BrowseFixture::new();
-        let sid = crate::plex::register_for_test("endpoint-onboard", "127.0.0.1", 9, "synthetic", "cid");
-        let client = crate::plex::client_for(sid).unwrap();
+        let sid = plx_plex::plex::register_for_test("endpoint-onboard", "127.0.0.1", 9, "synthetic", "cid");
+        let client = plx_plex::plex::client_for(sid).unwrap();
         let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
         let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
         browse.stores.browse.borrow_mut().queue_discovery_for_test(
@@ -927,7 +927,7 @@ mod tests {
         assert!(effects.iter().any(|effect| matches!(effect.fx,
             Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)))));
         assert_eq!(s.table_gen, source_list_gen, "rebuild was not deferred");
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     fn key_ok_down() -> ScreenEvent<InnerHost> {
@@ -1055,8 +1055,8 @@ mod tests {
             "…but the LIVE pin has not moved: nothing is written until commit"
         );
         assert!(
-            crate::plex::session::peek()
-                .pins_for(&crate::plex::session::current_profile_key())
+            plx_plex::plex::session::peek()
+                .pins_for(&plx_plex::plex::session::current_profile_key())
                 .is_none(),
             "…and nothing has been recorded either — BACK has nothing to undo"
         );
@@ -1088,8 +1088,8 @@ mod tests {
              once the queued command is actually drained, not this screen's"
         );
         assert!(
-            crate::plex::session::peek()
-                .pins_for(&crate::plex::session::current_profile_key())
+            plx_plex::plex::session::peek()
+                .pins_for(&plx_plex::plex::session::current_profile_key())
                 .is_none(),
             "…nor has anything been recorded — recording is also a consequence of the command \
              actually running"
@@ -1326,8 +1326,8 @@ mod tests {
             .any(|st| matches!(st.fx, Fx::App(AppFx::Loop(LoopReq::OnboardBack)))));
         assert!(browse.pinned(0), "first-run BACK left the live pin exactly as it was");
         assert!(
-            crate::plex::session::peek()
-                .pins_for(&crate::plex::session::current_profile_key())
+            plx_plex::plex::session::peek()
+                .pins_for(&plx_plex::plex::session::current_profile_key())
                 .is_none(),
             "…and recorded nothing"
         );
@@ -1340,8 +1340,8 @@ mod tests {
         assert!(effs.is_empty(), "…and this screen asks for nothing on the way out");
         assert!(browse.pinned(0), "Settings-mode BACK left the live pin exactly as it was");
         assert!(
-            crate::plex::session::peek()
-                .pins_for(&crate::plex::session::current_profile_key())
+            plx_plex::plex::session::peek()
+                .pins_for(&plx_plex::plex::session::current_profile_key())
                 .is_none(),
             "…and recorded nothing — there was nothing to restore"
         );
@@ -1393,8 +1393,8 @@ mod tests {
             "the deferred commit must refuse rather than answer the first-run question"
         );
         assert!(
-            crate::plex::session::peek()
-                .pins_for(&crate::plex::session::current_profile_key())
+            plx_plex::plex::session::peek()
+                .pins_for(&plx_plex::plex::session::current_profile_key())
                 .is_none(),
             "…and must record nothing — nothing here is an answer the user gave"
         );
@@ -1573,8 +1573,8 @@ mod tests {
             "BACK navigates without recording an empty answer"
         );
         assert!(
-            crate::plex::session::peek()
-                .pins_for(&crate::plex::session::current_profile_key())
+            plx_plex::plex::session::peek()
+                .pins_for(&plx_plex::plex::session::current_profile_key())
                 .is_none(),
             "…and BACK recorded nothing"
         );
@@ -1645,8 +1645,8 @@ mod tests {
              restore the pre-toggle baseline (true)"
         );
         assert!(
-            crate::plex::session::peek()
-                .pins_for(&crate::plex::session::current_profile_key())
+            plx_plex::plex::session::peek()
+                .pins_for(&plx_plex::plex::session::current_profile_key())
                 .is_none(),
             "…and must record nothing — nothing here is an answer the user gave"
         );
@@ -1709,9 +1709,9 @@ mod tests {
     /// is worth recording exactly why that road was abandoned rather than silently dropped: a real
     /// dispatcher delivers a real `ScreenEvent::Tick` every frame, and `OnboardScreen`'s own Tick
     /// arm schedules the owned discovery pass, whose `sync_roster` half retires any
-    /// source not present in `crate::plex::server_ids()`'s LIVE roster (`browse::mod.rs`'s own
+    /// source not present in `plx_plex::plex::server_ids()`'s LIVE roster (`browse::mod.rs`'s own
     /// words: "Roster removal is an identity boundary, not a failed fetch"). `seed_pins_for_test`
-    /// stamps its fabricated source with `crate::plex::current_server()` — a real-looking id
+    /// stamps its fabricated source with `plx_plex::plex::current_server()` — a real-looking id
     /// nothing has actually registered — so the very first real Tick wiped the seeded roster back
     /// to zero rows, which read as "there is nowhere left to focus" and not as a focus-engine
     /// question at all. Registering a fake-but-live server to satisfy `sync_roster` shifted the

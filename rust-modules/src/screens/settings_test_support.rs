@@ -116,35 +116,35 @@ impl Screen<InnerHost> for DrawProbe {
 /// and no dialable server, i.e. deterministically SIGNED OUT, which is the state the row
 /// comments here already assume. The caller must hold `testlock::serial()` for its whole body
 /// (the redirected path is a crate global); every test below takes it first.
-pub(super) fn scratch_session(tag: &str) -> crate::plex::session::TempSession {
-    crate::plex::session::TempSession::new(tag)
+pub(super) fn scratch_session(tag: &str) -> plx_plex::plex::session::TempSession {
+    plx_plex::plex::session::TempSession::new(tag)
 }
 
-pub(super) fn multi_user_session(tag: &str) -> crate::plex::session::TempSession {
-    let t = crate::plex::session::TempSession::new(tag);
-    crate::plex::session::save(&crate::plex::session::Session {
+pub(super) fn multi_user_session(tag: &str) -> plx_plex::plex::session::TempSession {
+    let t = plx_plex::plex::session::TempSession::new(tag);
+    plx_plex::plex::session::save(&plx_plex::plex::session::Session {
         client_id: "cid-test".into(),
         account_token: "acct".into(),
-        server: crate::plex::session::ServerRef {
+        server: plx_plex::plex::session::ServerRef {
             address: "192.168.0.10".into(),
             port: 32400,
             token: "t".into(),
             ..Default::default()
         },
-        user: crate::plex::session::UserRef {
+        user: plx_plex::plex::session::UserRef {
             uuid: "u-0".into(),
             token: "ut".into(),
             title: "Admin".into(),
             ..Default::default()
         },
         home_users: vec![
-            crate::plex::session::HomeUserRef {
+            plx_plex::plex::session::HomeUserRef {
                 uuid: "u-0".into(),
                 title: "Admin".into(),
                 admin: true,
                 ..Default::default()
             },
-            crate::plex::session::HomeUserRef {
+            plx_plex::plex::session::HomeUserRef {
                 uuid: "u-1".into(),
                 title: "Kid".into(),
                 ..Default::default()

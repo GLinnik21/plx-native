@@ -13,9 +13,9 @@ use super::test_support::apply_plan;
 fn the_machine_id_cache_is_scoped_to_the_server_that_taught_it() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let a = ServerId::from_raw((crate::plex::MAX_SERVERS - 2) as u16);
-    let b = ServerId::from_raw((crate::plex::MAX_SERVERS - 1) as u16);
-    assert!(crate::plex::client_for(a).is_none() && crate::plex::client_for(b).is_none());
+    let a = ServerId::from_raw((plx_plex::plex::MAX_SERVERS - 2) as u16);
+    let b = ServerId::from_raw((plx_plex::plex::MAX_SERVERS - 1) as u16);
+    assert!(plx_plex::plex::client_for(a).is_none() && plx_plex::plex::client_for(b).is_none());
 
     apply_plan(&mut ps, 
         Plan {
@@ -67,14 +67,14 @@ fn the_timeline_reaches_the_server_the_item_came_from_not_the_current_one() {
     let (pb, rx_b, hb) = stub_pms();
     // `register_for_test`, not the public `register`: the latter resolves the device id through
     // `session::load`, which mints and PERSISTS a uuid on a host that has no session file.
-    let a = crate::plex::register_for_test(
+    let a = plx_plex::plex::register_for_test(
         "route-test-A",
         "127.0.0.1",
         pa,
         "tok-a",
         "cid-route-test",
     );
-    let b = crate::plex::register_for_test(
+    let b = plx_plex::plex::register_for_test(
         "route-test-B",
         "127.0.0.1",
         pb,
@@ -93,7 +93,7 @@ fn the_timeline_reaches_the_server_the_item_came_from_not_the_current_one() {
         },
         "rk-b",
     );
-    assert!(crate::plex::set_current(a));
+    assert!(plx_plex::plex::set_current(a));
     assert_eq!(
         cur_sid(&ps),
         b,
@@ -103,7 +103,7 @@ fn the_timeline_reaches_the_server_the_item_came_from_not_the_current_one() {
     let lease_b = begin_timeline_reporting(&ps).expect("B timeline lease");
     assert!(report_timeline(
         &lease_b,
-        crate::plex::TimelineState::Playing,
+        plx_plex::plex::TimelineState::Playing,
         1_000,
         2_000,
     ));
@@ -132,7 +132,7 @@ fn the_timeline_reaches_the_server_the_item_came_from_not_the_current_one() {
     let lease_a = begin_timeline_reporting(&ps).expect("A timeline lease");
     assert!(report_timeline(
         &lease_a,
-        crate::plex::TimelineState::Stopped,
+        plx_plex::plex::TimelineState::Stopped,
         0,
         2_000,
     ));
@@ -150,7 +150,7 @@ fn the_timeline_reaches_the_server_the_item_came_from_not_the_current_one() {
     // registered is a client that answers nothing — and `CURRENT` still points at one of them.
     // The session is idled with it for the same reason, one level up: it is still holding `b`
     // as the playing server, i.e. a `ServerId` into the table being emptied.
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     reset_session(&mut ps);
 }
 
@@ -167,14 +167,14 @@ fn replacement_timeline_waits_for_the_announced_old_stop_boundary() {
     let (order_tx, order_rx) = std::sync::mpsc::channel();
     let (old_port, old_server) = ordered_stub_pms("old", order_tx.clone());
     let (new_port, new_server) = ordered_stub_pms("new", order_tx);
-    let old_sid = crate::plex::register_for_test(
+    let old_sid = plx_plex::plex::register_for_test(
         "timeline-stop-old",
         "127.0.0.1",
         old_port,
         "old-token",
         "timeline-client",
     );
-    let new_sid = crate::plex::register_for_test(
+    let new_sid = plx_plex::plex::register_for_test(
         "timeline-stop-new",
         "127.0.0.1",
         new_port,
@@ -223,7 +223,7 @@ fn replacement_timeline_waits_for_the_announced_old_stop_boundary() {
     let lease = begin_timeline_reporting(&ps).expect("replacement reporter lease");
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let replacement = std::thread::spawn(move || {
-        let sent = report_timeline(&lease, crate::plex::TimelineState::Playing, 1_000, 20_000);
+        let sent = report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 1_000, 20_000);
         let _ = done_tx.send(sent);
     });
 
@@ -265,7 +265,7 @@ fn replacement_timeline_waits_for_the_announced_old_stop_boundary() {
     drain_scrobble();
     old_server.join().unwrap();
     new_server.join().unwrap();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     reset_session(&mut ps);
     install_active_encoder("");
     reset_player_control_for_test(&ps);
@@ -332,7 +332,7 @@ fn timeline_lease_cannot_cross_engine_teardown() {
     );
     install_active_encoder("wire-old");
     let old = begin_timeline_reporting(&ps).expect("old reporter");
-    let before = timeline_snapshot(&old, crate::plex::TimelineState::Playing, 1_000, 2_000)
+    let before = timeline_snapshot(&old, plx_plex::plex::TimelineState::Playing, 1_000, 2_000)
         .expect("old projection");
     assert_eq!(before.rating_key, "rk-old");
     assert_eq!(before.session, "wire-old");
@@ -340,7 +340,7 @@ fn timeline_lease_cannot_cross_engine_teardown() {
 
     begin_engine_teardown(true);
     assert!(
-        timeline_snapshot(&old, crate::plex::TimelineState::Playing, 1_500, 2_000).is_none(),
+        timeline_snapshot(&old, plx_plex::plex::TimelineState::Playing, 1_500, 2_000).is_none(),
         "an old reporter must not sample any field after its Engine is retired"
     );
     reset_player_control_for_test(&ps);

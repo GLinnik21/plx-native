@@ -31,7 +31,7 @@ use std::borrow::Cow;
 
 use std::convert::Infallible;
 
-use crate::plex::session::Account;
+use plx_plex::plex::session::Account;
 use crate::screens::registry::{AppFx, AppLike, AuthLike, LoopReq};
 use plx_ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use plx_ui::frame::Budget;
@@ -234,7 +234,7 @@ pub(crate) struct AccountMenuScreen {
     form: FormTable<Action, Action, Infallible>,
     /// Rebuild on visible session landings as well as the initial mount. Focus keys name
     /// actions, not row positions, so a landing cannot turn an armed Settings press into Sign out.
-    session_watch: crate::plex::session::VisibleSessionWatch,
+    session_watch: plx_plex::plex::session::VisibleSessionWatch,
     /// The Session's published switch verdict the rows were built on
     /// ([`crate::auth::owner::SessionSnapshot::switch_refused`]) — a change rebuilds them.
     switch_refused: bool,
@@ -258,10 +258,10 @@ impl AccountMenuScreen {
         if self.built {
             return;
         }
-        let Some(sess) = crate::plex::session::peek_settled() else { return };
+        let Some(sess) = plx_plex::plex::session::peek_settled() else { return };
         self.built = true;
         let keep = self.form.selected_id().copied();
-        let cur = crate::plex::session::current();
+        let cur = plx_plex::plex::session::current();
         let acc = sess.account(cur.as_ref());
         self.switch_refused = switch_refused;
         let (header, form) = account_form(&AccountInputs::of(&acc, switch_refused));
@@ -497,7 +497,7 @@ impl LogicalState for AccountMenuScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plex::session::{HomeUserRef, ServerRef, Session, UserRef};
+    use plx_plex::plex::session::{HomeUserRef, ServerRef, Session, UserRef};
 
     /// The action of every row, in order — read back off the built form, the one place row order lives.
     fn ids(form: Form<Action, Action, Infallible>) -> Vec<Action> {
@@ -570,8 +570,8 @@ mod tests {
         assert_eq!(rows_of(&acc, false)[0], Action::ChangeProfile);
 
         let _serial = plx_base::testlock::serial();
-        let _session = crate::plex::session::TempSession::new("account-menu-verdict");
-        crate::plex::session::save(&s);
+        let _session = plx_plex::plex::session::TempSession::new("account-menu-verdict");
+        plx_plex::plex::session::save(&s);
         let mut menu = AccountMenuScreen::new(EntryId(0));
         tick(&mut menu, &published(false));
         assert!(menu_rows(&menu).contains(&Action::ChangeProfile), "rig: switching is offered");
@@ -589,8 +589,8 @@ mod tests {
     #[test]
     fn a_refused_roster_never_opens_the_menu_on_sign_out() {
         let _serial = plx_base::testlock::serial();
-        let _session = crate::plex::session::TempSession::new("account-menu-safe-open");
-        crate::plex::session::save(&local(Session { account_token: "acct".into(),
+        let _session = plx_plex::plex::session::TempSession::new("account-menu-safe-open");
+        plx_plex::plex::session::save(&local(Session { account_token: "acct".into(),
             ..Default::default() }));
 
         let mut menu = AccountMenuScreen::new(EntryId(0));
@@ -628,16 +628,16 @@ mod tests {
     #[test]
     fn session_refresh_rebuilds_an_open_account_menu() {
         let _serial = plx_base::testlock::serial();
-        let _session = crate::plex::session::TempSession::new("account-menu-refresh");
+        let _session = plx_plex::plex::session::TempSession::new("account-menu-refresh");
         let mut saved = local(Session { client_id: "synthetic-client".into(),
             account_token: "synthetic-token".into(), ..Default::default() });
         saved.home_users = vec![HomeUserRef { title: "Synthetic owner".into(), admin: true,
             ..Default::default() }];
-        crate::plex::session::install_transient_for_test(true);
+        plx_plex::plex::session::install_transient_for_test(true);
         let mut menu = AccountMenuScreen::new(EntryId(0));
         menu.build(false);
         assert!(!menu_rows(&menu).contains(&Action::SignOut));
-        crate::plex::session::save(&saved);
+        plx_plex::plex::session::save(&saved);
         tick(&mut menu, &published(false));
         assert!(menu_rows(&menu).contains(&Action::SignOut));
         assert!(!menu_rows(&menu).contains(&Action::SignIn));
@@ -647,12 +647,12 @@ mod tests {
     #[test]
     fn session_refresh_preserves_action_identity_when_rows_move() {
         let _serial = plx_base::testlock::serial();
-        let _session = crate::plex::session::TempSession::new("account-action-identity");
+        let _session = plx_plex::plex::session::TempSession::new("account-action-identity");
         let mut menu = AccountMenuScreen::new(EntryId(0));
         menu.build(false);
         let settings_key = Action::Settings.focus_key();
         assert_eq!(menu.form.index_of_key(RowKey(settings_key)), Some(1));
-        crate::plex::session::save(&local(Session { client_id: "synthetic-client".into(),
+        plx_plex::plex::session::save(&local(Session { client_id: "synthetic-client".into(),
             account_token: "synthetic-token".into(), ..Default::default() }));
         menu.built = false;
         menu.build(false);
@@ -771,20 +771,20 @@ mod tests {
     #[test]
     fn the_live_profile_global_feeds_the_header() {
         let _serial = plx_base::testlock::serial();
-        let restore = crate::plex::session::current_snapshot();
+        let restore = plx_plex::plex::session::current_snapshot();
         let s = local(Session {
             account_token: "acct".into(),
             home_users: vec![owner("Gleb"), managed("Kid")],
             ..Default::default()
         });
-        crate::plex::session::publish_profile_for_test(Some(UserRef {
+        plx_plex::plex::session::publish_profile_for_test(Some(UserRef {
             title: "Kid".into(),
             ..Default::default()
         }), 41);
-        let picked = menu(&s, crate::plex::session::current().as_ref()).0;
-        crate::plex::session::publish_profile_for_test(None, 42);
-        let cleared = menu(&s, crate::plex::session::current().as_ref()).0;
-        crate::plex::session::publish_profile_for_test(restore.user.clone(), restore.generation);
+        let picked = menu(&s, plx_plex::plex::session::current().as_ref()).0;
+        plx_plex::plex::session::publish_profile_for_test(None, 42);
+        let cleared = menu(&s, plx_plex::plex::session::current().as_ref()).0;
+        plx_plex::plex::session::publish_profile_for_test(restore.user.clone(), restore.generation);
         assert_eq!(picked, "Kid");
         assert_eq!(cleared, "Gleb");
     }

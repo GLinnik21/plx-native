@@ -338,12 +338,12 @@ pub(crate) fn push_item(s: &mut String, m: Option<&crate::pms::PmsMovie>) {
     }
 }
 
-/// A registry slot number, or `-` for [`crate::plex::ServerId::UNSET`].
+/// A registry slot number, or `-` for [`plx_plex::plex::ServerId::UNSET`].
 ///
 /// Spelled as the absence it is rather than as `65535`: `UNSET` is the reserved value a page
 /// carries before anything mounted on it, and printing the raw `u16` reads as slot 65535 — a
 /// server — on a line whose other slot numbers are 0 and 1.
-fn push_sid(s: &mut String, sid: crate::plex::ServerId) {
+fn push_sid(s: &mut String, sid: plx_plex::plex::ServerId) {
     if sid.is_set() {
         let _ = write!(s, "{}", sid.raw());
     } else {

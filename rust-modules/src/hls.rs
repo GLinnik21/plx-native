@@ -6,7 +6,7 @@
 //! discontinuities). URI resolution is also part of the parser: every child stays on the source
 //! PMS origin, so a playlist cannot turn the media worker into an arbitrary URL fetcher.
 use crate::abr::MediaTimeMs;
-use crate::plex::{origin, Origin};
+use plx_plex::plex::{origin, Origin};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;

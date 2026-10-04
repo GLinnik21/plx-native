@@ -8,11 +8,11 @@ L14, which a split hides from them, and the gate does not check impl coherence. 
 off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
 entries are gone, and the gate fails on any reference from outside the port to a member of it. It
 is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
-up the split. **The split has started: `base`, `machine`, `platform`, `gfx` and `net` are their own
-crates, `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx` and `plx_net`** (`rust-modules/base/`,
-`machine/`, `platform/`, `gfx/` and `net/`; "Split 1: base", "Split 2: machine", "Split 3:
-platform", "Split 4 (gfx)" and "Split 5 (net)" below); the other nine layers are still modules of
-`plxnative-modules`.
+up the split. **The split has started: `base`, `machine`, `platform`, `gfx`, `net` and `plex` are
+their own crates, `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net` and `plx_plex`**
+(`rust-modules/base/`, `machine/`, `platform/`, `gfx/`, `net/` and `plex/`; "Split 1: base", "Split
+2: machine", "Split 3: platform", "Split 4 (gfx)", "Split 5 (net)" and "Split 7 (plex)" below); the
+other eight layers are still modules of `plxnative-modules`.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
@@ -910,6 +910,82 @@ What it taught beyond the recipe and Splits 1 to 5:
 - **The module-cycle baseline did not need re-recording.** The cycle is the same 8 modules; one
   module moved from outside it to a smaller component, so the notice reads 25 outside against a
   baseline of 26. `ci/check-module-cycle.py --update-baseline` records it when the wave lands.
+
+### Split 7 (plex)
+
+`plex` was extracted seventh (Split 6 is `ui`, in a parallel lane): `rust-modules/plex/` is the
+workspace member `plx_plex` (an `rlib`, `uses = base machine platform net`), holding `plex` (the
+typed Plex API, the session store, `grant`, `probe`, `identity`, with its `CLAUDE.md`) and `http`
+(the one request door). The members kept their names, so a path is `plx_plex::plex::session::load`
+and `plx_plex::http::...`, and every `crate::plex::` *inside* the moved files stayed valid; only the
+3 897 references in 213 application files changed, by `split-plex-rewrite.py` (`crate::plex` and
+`crate::http` to `plx_plex::plex` and `plx_plex::http`, `pub(crate)` to `pub`). The crate
+depends on `plx_base`, `plx_machine`, `plx_platform` and `plx_net`, owns no build script and links
+nothing. Features: `devtriggers` and `hostsim` are forwarded, `test-support` is new and enables the
+four lower layers'. Its 458 tests run in their own binary. What it taught beyond the recipe:
+
+- **`--report`'s 21 items were the smaller half of the test seam.** Most of `plex::session`'s
+  behaviour hangs on `cfg(test)`: the redirected store file (`TEST_FILE`, `auth_paths`,
+  `fallback_file`), the per-thread cache read and clock hooks, the `cfg(not(test))` shipping arms
+  beside them (`read_live_locked`, `Instant::now`, the migration candidates) and the test-mode
+  `testlock` assertions in `grant` and `servers`. A dependent's tests build `plx_plex` without
+  `cfg(test)`, so every one of them would have run in its shipping form: a test through
+  `TempSession` would have written the real credential store. The rule applied is mechanical, not
+  per item: **every `test` inside any `cfg(..)` or `cfg!(..)` of the layer's non-test files became
+  `any(test, feature = "test-support")`** (94 lines by `split-plex-gate.py`, which skips only
+  `mod tests` / `mod *_tests` / `mod test_support` and the wholly-test files), so a dependent's tests
+  get exactly the behaviour the layer had under `cfg(test)`. Two forms hid from the first pass:
+  `cfg!(all(.., not(test)))` (a *macro*, in `session.rs` and `install_preferences.rs`) and seven
+  `#[cfg(all(` attributes in `session/persistence.rs` whose `not(test)` sits alone on its own line,
+  which a per-line rewrite cannot see. After any such rewrite, grep for a bare `not(test)`.
+- **This is the security-relevant seam, so the shipping build was checked for it.** With the
+  feature off, `cargo check -p plx_plex --lib` and the application's `--lib` (default features and
+  `--no-default-features`, host and `arm-unknown-linux-gnueabi`) compile and the `*_for_test` seams
+  do not exist: the symbols are absent from the rlib (`TempSession`, `redirect_for_test`,
+  `CACHE_READ_FOR_TEST` found by `strings` only in the `test-support` build). The feature is enabled
+  from `[dev-dependencies]` only, which cargo does not apply to a normal build.
+- **An orphan-rule hazard did appear: an inherent `impl` in a higher layer.** `route/decision.rs`
+  had `impl Quality { ceiling, label, from_index, index }` where `Quality` is `plex`'s
+  `PlaybackQuality`, legal in one crate and E0116 in two. `ceiling` and `label` (which build a
+  `plex::Ceiling` and a localized row) moved onto `PlaybackQuality` in `plex::session`, beside its
+  other methods; `from_index` and `index` read the route-owned `QUALITY_LADDER`, so they became
+  private free functions of `decision.rs` (`quality_from_index`, `quality_index`). Look for `impl X`
+  without a trait in the layers above, not only for trait impls.
+- **A `cargo:rustc-env` reaches one crate, and the version is the thing that needed it.**
+  `identity.rs` reported `env!("PLX_VERSION")` as `X-Plex-Version` and in the `User-Agent`.
+  Re-deriving the rule in a second build script would be a third copy of it (`build.rs`,
+  `ci/version_rule.py`). The application hands it in as Split 3 did for `storage::diagnostics`:
+  `plx_plex::plex::identity::set_version(env!("PLX_VERSION"))`, the first line of
+  `enter_application`, and `identity::VERSION` is `identity::version()`. Unset, a `test-support`
+  build answers `0.0.0-test` and a shipping build asserts in debug and answers an obviously wrong
+  string, so a missed wiring cannot look plausible. `ci/check-package.py` still reads the three
+  copies of the number (it never read the Rust constant); its comment now says the crate reports
+  the number it is handed. The one test that graded the derivation
+  (`version_is_the_package_or_the_next_minor_dev`, with its `RELEASE_LINE` reader) moved to
+  `release_line::tests`, because `CARGO_PKG_VERSION` and `PLX_RELEASE` are the application crate's.
+- **A hidden dependency on a dependency's default features.** `plex::session`'s key-mode tests call
+  `plx_net::net::keypin::is_latched`, which `plx_net` gates `any(test, feature = "devtriggers")`.
+  The application's tests always had `devtriggers` (a default feature); `plx_plex` has none, so
+  its own tests did not compile. The two keypin readers are `test-support` too now. Expect this
+  whenever a layer's tests reach a lower layer's dev-trigger readers.
+- **Fixtures by relative path.** `session/migration_tests.rs` `include_str!`s
+  `tests/fixtures/persistence/*` four directories up; the crate is one directory deeper (five).
+  `replay_manifest_session_is_byte_stable` reads `tests/fixtures/replay` through
+  `CARGO_MANIFEST_DIR/..`, now `../..`.
+- **Gates.** `ci/check-deps.sh` reads `SRC_PLEX` wherever it reads `SRC_NET` (the whole-tree rules:
+  libm, ticks, effect, legacy, dt, frame, spawn, tmppath) and `wholly_test_files` classifies the
+  crate's test files. Proven by temporary violating edits rather than by reading: an
+  `SDL_GetTicks(` in `plex/src/http.rs` fails `ticks`, and a `log(&format!(.., d.title))` in
+  `plex/src/plex/retry.rs` fails the eventlog scrub scan (its root list gained `../plex/src`; these
+  are the files that handle tokens and URLs). The `-p` lists gained `-p plx_plex` (Makefile,
+  workflow, `tools/build-bench.py` and the tests that pin them, the docs that quote them);
+  the budget step gained `--src rust-modules/plex/src`; `RUST_INPUTS`, the harness's `TREE_INPUTS`
+  and the `fpflags` file list, `tools/cargo-seed.py`, `ci/test_no_host_staticlib.py`, the
+  release-configuration hook and `make build-bench` (scenario "Edit leaf (plx_plex retry.rs)")
+  know the crate. `module-cycle` is unchanged (the 8-module cycle, 24 modules outside it).
+- **FFI and the final link are untouched.** The layer has no `extern "C"`, `#[link]` or `dynlib!`;
+  `plx_plex` compiles for the ARM target (`cargo check --target arm-unknown-linux-gnueabi --lib`
+  with and without default features).
 
 ## Limits of the analysis
 

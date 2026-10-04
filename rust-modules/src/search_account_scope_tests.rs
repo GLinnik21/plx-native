@@ -16,7 +16,7 @@ fn signing_into_a_second_account_searches_its_slots_and_not_the_retired_ones() {
     register(&mut owner, 2);
     assert_eq!(slots(), vec![0, 1]);
 
-    crate::plex::revoke_all();
+    plx_plex::plex::revoke_all();
     assert!(
         slots().is_empty(),
         "there is nothing to ask while signed out"
@@ -27,7 +27,7 @@ fn signing_into_a_second_account_searches_its_slots_and_not_the_retired_ones() {
         "and the retired records reach neither the merge nor the verdict"
     );
 
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "search-test-next",
         "127.0.0.1",
         1,
@@ -62,8 +62,8 @@ fn a_profile_hole_searches_exact_live_ids_and_supersedes_the_previous_profiles_a
     }]));
     owner.state.state = State::Ready;
 
-    crate::plex::revoke_for_profile_switch();
-    let restored = crate::plex::register_for_test(
+    plx_plex::plex::revoke_for_profile_switch();
+    let restored = plx_plex::plex::register_for_test(
         "search-test-2",
         "127.0.0.1",
         1,
@@ -107,7 +107,7 @@ fn a_profile_hole_searches_exact_live_ids_and_supersedes_the_previous_profiles_a
 fn a_favourite_edit_supersedes_a_resident_query_and_re_arms_it() {
     let _g = fresh();
     let mut owner = Owner::default();
-    let _t = crate::plex::session::TempSession::new("search-favgen");
+    let _t = plx_plex::plex::session::TempSession::new("search-favgen");
     _t.watching("u-search-favgen");
     register(&mut owner, 1);
     let stores = crate::stores::Stores::default();
@@ -155,7 +155,7 @@ fn a_favourite_edit_supersedes_a_resident_query_and_re_arms_it() {
 fn a_favourite_edit_with_no_query_resident_only_refreshes_the_snapshot() {
     let _g = fresh();
     let mut owner = Owner::default();
-    let _t = crate::plex::session::TempSession::new("search-favgen-idle");
+    let _t = plx_plex::plex::session::TempSession::new("search-favgen-idle");
     _t.watching("u-search-favgen-idle");
     register(&mut owner, 1);
     let stores = crate::stores::Stores::default();

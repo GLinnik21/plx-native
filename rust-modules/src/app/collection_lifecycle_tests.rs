@@ -3,11 +3,11 @@
 //! Bridge exposes, matching the Person lifecycle coverage beside this file.
 
 use crate::collection::{CollectionStatus, CollectionTarget};
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use crate::stores::collection::CollectionCmd;
 
 fn open(store: &mut crate::stores::collection::CollectionStore, rk: &str, tag: i64) {
-    store.run(CollectionCmd::Open { target: CollectionTarget { id: crate::plex::collections::CollectionRef {
+    store.run(CollectionCmd::Open { target: CollectionTarget { id: plx_plex::plex::collections::CollectionRef {
         sid: ServerId::UNSET, rk: rk.into(), sec: 8, tag, name: "Fixture Collection".into() },
         want: crate::collection::PAGE_SIZE } });
 }
