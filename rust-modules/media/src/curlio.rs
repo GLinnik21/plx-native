@@ -97,8 +97,12 @@
 //! repeated once on a fresh easy handle, recognising the server by the key `net::keypin` remembers
 //! for that exact host and port, name check still on. One that failed with a missing-issuer verify
 //! result, for a `*.plex.direct` host, is repeated once against the bundled public roots
-//! (`net::keypin::Mode::Roots`), verification fully on. Same decision and option code as the
-//! control plane; see `start_range_until`.
+//! (`net::keypin::Mode::Roots`), verification fully on; and a roots attempt that then fails on the
+//! DATE (an old trust store behind a wrong clock) goes on to the remembered key, while a latched
+//! roots start the bundle now refuses goes strict once. Same decision (`keypin::after_failure`) and
+//! option code as the control plane; see `start_range_until`. **Redirects:** libcurl follows them
+//! (`CURLOPT_FOLLOWLOCATION`) and the CA file is per handle, not per hop, so a hop a roots-mode open
+//! is redirected to is verified against the bundle too.
 //!
 //! # Why the abort handle lives in a module-global REGISTRY
 //!
@@ -819,7 +823,10 @@ impl CurlSource {
     /// live here.**
     /// An attempt is one fresh easy handle ([`start_attempt`](Self::start_attempt)); a strict
     /// attempt that failed with a date verify result, for a host `net::keypin` holds a key
-    /// for, is followed by one more attempt recognising the server by that key. A failed handshake
+    /// for, is followed by one more attempt recognising the server by that key; a roots-mode attempt
+    /// that failed on the date is too, and a latched roots start that the bundle refuses is followed
+    /// by one strict attempt (`net::keypin::after_failure` decides every rung, at most three
+    /// attempts). A failed handshake
     /// delivered nothing, and the next attempt begins by detaching the first's handle and
     /// resetting the transfer state, so nothing carries over. The shared decision and the option
     /// setting are `net::keypin`'s, the same ones the control plane uses.

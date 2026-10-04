@@ -1303,7 +1303,8 @@ pub enum Tls<'a> {
     /// CA-verified against **the television's own trust store**. The default, and what every
     /// plex.tv and PMS call has always used — `request` is exactly this. A `*.plex.direct` request
     /// that this store fails for a missing issuer is repeated once against the shipped public
-    /// roots ([`keypin::Mode::Roots`]); the first attempt is always this one.
+    /// roots ([`keypin::Mode::Roots`]); the first attempt is this one, unless the host is latched
+    /// in roots mode (a recent success through the bundle), which starts there instead.
     Ca,
     /// CA-verified against **a PEM bundle we ship**, by absolute path. Same verification, different
     /// roots: it exists so a third-party endpoint's CA rotation is not at the mercy of a store
@@ -2227,9 +2228,10 @@ pub mod resolve {
 /// key is used.
 ///
 /// **What is relaxed, when, and what still holds.** A request retries in key mode only when ALL of
-/// these hold ([`after_strict_failure`]): it ran in strict mode (a CA store, never [`Tls::Pinned`],
-/// never plaintext); libcurl said 60; the verify result was 9 or 10; and the table below holds a
-/// key for that `host:port`. Key mode sets `CURLOPT_PINNEDPUBLICKEY` to the remembered key and
+/// these hold ([`after_failure`]): the attempt that failed ran in strict mode (a CA store, never
+/// [`Tls::Pinned`], never plaintext) or in roots mode (below), where the bundle verified the chain
+/// and only the dates failed; libcurl said 60; the verify result was 9 or 10; and the table below
+/// holds a key for that `host:port`. Key mode sets `CURLOPT_PINNEDPUBLICKEY` to the remembered key and
 /// turns `CURLOPT_SSL_VERIFYPEER` off — which drops the chain and date check: `CURLOPT_SSL_VERIFYHOST`
 /// stays 2 (the certificate must still be issued for the name in the URL), the key must still match
 /// (rc 90 otherwise), and [`apply`] makes the relaxation impossible without an accepted pin. A
@@ -2261,18 +2263,31 @@ pub mod resolve {
 /// way a household server's `*.plex.direct` handshake fails on an old television is the ISSUER:
 /// Let's Encrypt's 2025 roots (ISRG Root YR, YE) are not in a 2020 firmware's store, and libcurl
 /// says 60 with verify result 2, 20 or 21 ([`after_strict_failure`]). When the host is a
-/// `*.plex.direct` NAME ([`is_plex_direct`]) and `le-roots.pem` is in the app directory, the request
-/// is repeated once with `CURLOPT_CAINFO` set to it ([`apply_roots`]). **Nothing is relaxed**:
+/// `*.plex.direct` NAME ([`is_plex_direct`], read from a URL by [`key_of_url`], which gives an
+/// authority that is not a plain `host[:port]` no key at all) and `le-roots.pem` is in the app
+/// directory (a non-empty file this process can read), the request is repeated once with
+/// `CURLOPT_CAINFO` set to it ([`apply_roots`]). **Nothing is relaxed**:
 /// `VERIFYPEER` 1 and `VERIFYHOST` 2 are restated, so chain, dates and name are checked against four
 /// public roots instead of the firmware's. A libcurl that refuses `CURLOPT_CAINFO` sends nothing
-/// and the request reports the strict failure; a missing bundle means the fallback never engages.
-/// **Precedence with key mode: none needed.** The triggers are disjoint by verify result (9/10
-/// against 2/20/21), so a failure is answered by at most one of them; if both latches somehow
-/// stood, [`begin_at`] takes key mode first. A strict success clears both. A roots-mode handshake
-/// WAS strictly verified, so unlike key mode it may teach [`Resp::peer_pin`]. The latch is the same
-/// [`LATCH`], kept in `State::roots_latched` under the same lock: a success latches the host so
-/// later requests skip the doomed strict handshake, a refusal by the bundle ([`roots_failed`])
-/// ends it, and a latched start that the bundle refuses costs that request only.
+/// and the request reports the strict failure; a missing, empty or unreadable bundle means the
+/// fallback never engages.
+/// **How the two modes meet: [`after_failure`] is the one ladder.** The triggers are disjoint by
+/// verify result (9/10 against 2/20/21), so a STRICT failure is answered by at most one of them;
+/// but a wrong clock behind an old trust store fails strict on the issuer, and the bundle then
+/// verifies the chain and refuses the dates, so a roots attempt that fails on the date is answered
+/// by key mode too (with no key held it publishes [`Blocked::NoKey`], [`roots_unanswered`]). A
+/// roots attempt that STARTED the request from the latch and is refused (60/51) goes strict once,
+/// since the certificate may have moved to an issuer the device store now trusts but the bundle
+/// lacks. The bundle is never offered twice in one request and a date failure never goes back to
+/// strict, so a request is at most three attempts. If both latches somehow stood, [`begin_at`] takes
+/// key mode first. A strict success clears both. A roots-mode handshake WAS strictly verified, so
+/// unlike key mode it may teach [`Resp::peer_pin`]. The latch is the same [`LATCH`], kept in
+/// `State::roots_latched` under the same lock: a success latches the host so later requests skip the
+/// doomed strict handshake, and a refusal by the bundle ([`roots_failed`]) ends it.
+///
+/// **Redirects.** `CURLOPT_CAINFO` is per handle, not per hop, so on the media plane (the only one
+/// that follows redirects; the control plane never does under either mode) a hop a roots-mode open is
+/// redirected to is verified against the bundle too, not the device store.
 ///
 /// **Facts, and one toast.** Where each decision is already made this module also publishes what it
 /// means, for the app to poll by [`keypin::revision`] (`plex::grant`'s shape): [`keypin::engaged`]
@@ -2885,12 +2900,12 @@ pub mod keypin {
         matches!(rc, TLS_VERIFY_FAILED | 51)
     }
 
-    /// A strict attempt failed and [`after_strict_failure`] found no key mode to retry in: record
+    /// A strict attempt failed and [`after_failure`] found no mode to retry in: record
     /// what that says about `key`. **The fact is the host's LATEST strict outcome**, so this either
     /// publishes or ends [`Blocked::NoKey`]:
     ///
     /// * the failure was about the DATE (libcurl 60, verify 9 or 10), `key` is a bound media server
-    ///   and the table holds no key for it — exactly [`after_strict_failure`]'s trigger minus the
+    ///   and the table holds no key for it — exactly [`after_failure`]'s date trigger minus the
     ///   key — publishes it. A failure it would have answered with a key, a host that is no media
     ///   server (plex.tv) and a host that already has a fact publish nothing new;
     /// * any other failure (a refused connection, a timeout, an untrusted issuer, a name mismatch)

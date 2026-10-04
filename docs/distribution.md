@@ -634,7 +634,15 @@ world-readable `/tmp` on the TV across many runs.
   stderr).** `src/main.c`'s `open_fd_log` and `eventlog::open_log_append` create them owner
   read/write, the app's own group (gid 5000 on the television) read, and nothing for "other";
   the `fchmod` makes that independent of the umask and corrects a 0600 file left by an older
-  release. `plxnative-diag.log` has always shipped the same 0640.
+  release. `plxnative-diag.log` has always shipped the same 0640. **Both openers refuse a sink
+  whose `fstat` shows more than one link** (and anything that is a symlink, not a regular file or
+  not ours), on the OPENED descriptor, and only create a missing name, with `O_EXCL`: a co-resident
+  app in gid 5000 that can link names in the sticky `/tmp` could otherwise `link(2)` one of our 0600
+  files (the `auth.json` session fallback shares the directory) onto a sink name when
+  `fs.protected_hardlinks` is off, and the next open would pass every other check and widen it. The
+  panic hook's crash-log write goes through the same open (`eventlog::append_record`), and
+  `paths::ensure_runtime_dir` `fchmod`s a `/tmp/<app id>` root it has opened `O_NOFOLLOW` and
+  confirmed is a directory it owns, never by path.
 
   *Why.* A Developer Mode television that is not rooted gives its owner one tool, webOS Dev
   Manager, and it reads files as an unprivileged user that shares the app's group but is not the
@@ -656,7 +664,8 @@ world-readable `/tmp` on the TV across many runs.
   pointers, library paths, Starfish pipeline ids and Starfish JSON replies, no credential); the
   crash log is a signal, a faulting PC, one `/proc/self/maps` line, the build id and panic text; the
   stderr log is whatever aborts, panics, GL info logs and the television's own libraries print,
-  and **neither it nor the panic text in the crash log goes through `scrub_local`**.
+  and **the stderr log does not go through `scrub_local`, nor do the C tracer's records in the
+  crash log** (the panic text the Rust hook appends to it does, since the follow-up of the same day).
 
   *Audit of what can reach stderr and the crash log (2026-10-04, by reading the producers; no
   television run).* No credential-bearing path found: the only production `eprintln!`s are
@@ -667,9 +676,9 @@ world-readable `/tmp` on the TV across many runs.
   compiled out of a release); Sentry's debug logger is off; and the production panic sites that
   were read are static invariant messages, mutex/`Option` unwraps and `serde_json::to_*`
   serialisations, none of which formats a credential. This is an audit of the code that exists,
-  **not a mechanism**: the panic hook (`app/boot.rs`) writes the panic line to the
-  crash log and the default hook prints it to stderr unscrubbed, so a future `unwrap()` on an `Err`
-  that embeds a URL or token would land in both. Two things could not be settled without the
+  **not a mechanism**: the panic hook (`app/boot.rs`) scrubs the panic line it writes to the
+  crash log, but the default hook prints the raw message to stderr, so a future `unwrap()` on an
+  `Err` that embeds a URL or token would still land there verbatim. Two things could not be settled without the
   television: whether LG's SDL logs committed keyboard text at `SDL_LOG_CATEGORY_INPUT` /
   `SDL_LOG_PRIORITY_DEBUG`, which `textinput::trace_driver` enables in every build (the five
   message formats the driver is documented to print carry a state number, never text), and what

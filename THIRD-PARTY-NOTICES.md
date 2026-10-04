@@ -397,8 +397,11 @@ header comments.
 a television whose trust store predates the 2025 roots cannot verify a chain that ends in
 ISRG Root YR or YE. For a `*.plex.direct` host whose verification against the television's own
 store failed for that reason, the application retries once against this file, with the
-certificate chain, its dates and the host name all still checked. It is consulted for no other
-host, and only after the television's own store has said no.
+certificate chain, its dates and the host name all still checked. It is offered for no other host
+name, and only after the television's own store has said no (for ten minutes after it has verified a
+host, a request to that host starts there instead of repeating the handshake the store failed). A
+redirect that such a request is sent on to is verified against this file too, because libcurl takes
+the CA file per request and not per hop.
 
 ---
 

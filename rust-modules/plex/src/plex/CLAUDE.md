@@ -123,8 +123,9 @@ local data", which runs it first — leaves the stored record with no learned ke
 has no battery clock, so a valid `*.plex.direct` certificate can read as expired (or not yet valid)
 before NTP has run, and the strict handshake then fails with rc 60 and `CURLINFO_SSL_VERIFYRESULT`
 10 (expired) or 9 (not yet valid). When that is the failure libcurl reported, and `net::keypin` holds
-a remembered key for that exact `host:port`, the request is repeated once with
-`CURLOPT_PINNEDPUBLICKEY` set to it, `CURLOPT_SSL_VERIFYPEER` 0 and `CURLOPT_SSL_VERIFYHOST` still 2.
+a remembered key for that exact `host:port` — after a strict attempt, or after a roots-mode attempt
+(below) that verified the chain and then failed on the date, the shape of an old trust store behind a
+wrong clock — the request is repeated once with `CURLOPT_PINNEDPUBLICKEY` set to it, `CURLOPT_SSL_VERIFYPEER` 0 and `CURLOPT_SSL_VERIFYHOST` still 2.
 What is relaxed is the chain-and-date check; what still holds is that the leaf's name matches the
 host dialled and that its public key hashes to the remembered one (a different key is rc 90, never
 served). **The security of key mode rests on the key pin plus the name check, and on nothing the date
@@ -167,21 +168,38 @@ Encrypt moved to new roots in 2025 (ISRG Root YR, YE) and a 2020 firmware's stor
 the strict handshake fails with rc 60 and verify result 20 (or 2, 21) at depth 1. When that is the
 failure, and the request's host is a `*.plex.direct` NAME (`keypin::is_plex_direct`: a suffix match
 on the URL's host with only DNS-name characters, so `plex.direct.evil.example`, `notplex.direct` and
-a `@`-smuggled authority do not count) and the shipped bundle `le-roots.pem` is in the app directory
-(`paths::in_app_dir`; root-owned and read-only on the set), the request is repeated once on a
+a `@`-smuggled authority do not count, and `keypin::key_of_url`, the one reading of a URL both planes
+use for this, gives an authority that is not a plain `host[:port]` no key at all) and the shipped bundle
+`le-roots.pem` is in the app directory
+(`paths::in_app_dir`; root-owned and read-only on the set; a non-empty readable file), the request is repeated once on a
 fresh handle with `CURLOPT_CAINFO` set to it. **Nothing is relaxed**: `VERIFYPEER` 1 and `VERIFYHOST`
 2 are stated again by `keypin::apply_roots`, so the chain, the dates and the name are all still checked,
 against four public roots (X1, X2, YR, YE) and nothing else beyond what the firmware's libcurl reads
 by default from a CA directory. A libcurl that refuses `CURLOPT_CAINFO` sends nothing and the
-request reports the strict failure. A missing bundle means the fallback never engages (one log line).
-**Disjoint from key mode by verify result**: key mode answers 9/10, roots mode 2/20/21, and a name
-mismatch, a self-signed leaf (18/19), plex.tv or any other host gets neither. After a success the
-host is latched in the same `keypin` state for 10 minutes on the monotonic clock (later requests
-skip the doomed strict handshake, the timer does not slide, a strict success or a refusal by the
-bundle clears it); both stacks share the decision, the control plane in `net::request_tls_evidence`
-and the media plane in `curlio::CurlSource::start_range_until`. Unlike key mode a roots-mode answer
-IS strictly verified, so it may teach `peer_pin`. The log carries one line when the fallback engages,
-one when it first succeeds and one when the bundle refuses too, naming only the verify result.
+request reports the strict failure. A missing, empty or unreadable bundle means the fallback never engages (one log line).
+**One decision, `keypin::after_failure`, both planes call it and nothing else decides a rung.** After a
+strict failure: a date result (9/10) goes to key mode when a key is held; a missing issuer (2/20/21) on a
+`*.plex.direct` name goes to roots mode, once. After a roots-mode failure: a DATE result goes to key mode
+when a key is held (strict failed on the issuer, the bundle then verified the chain and refused the
+dates, and the key learned on an earlier good boot is all that is left; with no key held the attempt
+publishes `Blocked::NoKey` exactly as a strict date failure does, `keypin::roots_unanswered`); and a
+roots attempt that STARTED the request from the latch, refused for its verification (60/51), goes
+strict once, because the certificate may have moved to an issuer the device store now trusts but the
+bundle lacks. A roots attempt a strict failure led to has nowhere else to go, the bundle is never
+offered twice in one request, and a date failure never goes back to strict, so a request is at most
+three attempts. A name mismatch, a self-signed leaf (18/19), plex.tv or any other host gets neither
+mode. After a success the host is latched in the same `keypin` state for 10 minutes on the monotonic
+clock (later requests skip the doomed strict handshake, the timer does not slide, a strict success or
+a refusal by the bundle clears it); both stacks share the decision, the control plane in
+`net::request_tls_evidence` and the media plane in `curlio::CurlSource::start_range_until`. Unlike key
+mode a roots-mode answer IS strictly verified, so it may teach `peer_pin`. The log carries one line when
+the fallback engages, one when it first succeeds and one when the bundle refuses too, naming only the
+verify result.
+**Redirects (media plane).** `curlio` follows redirects inside libcurl and `CURLOPT_CAINFO` is per
+handle, not per hop, so a hop a roots-mode open is redirected to is verified against the bundle too (a
+target whose issuer only the device store holds is refused); `stream_redirect` does not go back through
+`keypin` per hop, and turning redirects off in roots mode would break the PMS's own redirect to a
+presigned CDN URL. Pinned by `curlio_roots_tests::a_redirect_under_roots_mode_is_verified_against_the_bundle_not_the_device_store`.
 
 **The who's-watching pick is seated from `Session::profiles` when plex.tv does not answer.** The
 first real outage (2026-09-06, `docs/measurements/offline-picker-red-tv-2026-09-06.log`) got past

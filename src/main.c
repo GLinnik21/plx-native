@@ -103,14 +103,16 @@ static FILE *open_event_log(void) {
  * What is NOT closed, stated plainly. Another native app on the same television that runs in
  * gid 5000 can read these three files. The crash log is a faulting PC, a signal, one
  * /proc/self/maps line (where THIS binary is mapped) and the Rust panic text. stderr is whatever
- * aborts, panics, GL info logs and the TV's own libraries print. Neither the panic text nor stderr
- * passes through `scrub_local`, and the C-side event-log lines in `src/starfish.c` do not either
- * (pointers, library paths, pipeline ids, Starfish replies). Reading the producers (2026-10-04,
+ * aborts, panics, GL info logs and the TV's own libraries print. The Rust panic hook scrubs the
+ * panic text it appends to the crash log (`app::boot`), but stderr does not pass through
+ * `scrub_local`, and neither do the tracer's records or the C-side event-log lines in
+ * `src/starfish.c` (pointers, library paths, pipeline ids, Starfish replies). Reading the producers (2026-10-04,
  * docs/distribution.md section 4) found no credential-bearing path into any of them: libcurl is
  * never put in verbose mode, every libavformat open uses a custom AVIO with no URL, and the
  * production panic sites that were read format fixed text. But that is an audit of the code that
- * exists, not a mechanism; a future `unwrap()` on a value that embeds a URL would reach the crash
- * log and stderr verbatim. Keep credentials out of anything that can be printed to stderr.
+ * exists, not a mechanism; a future `unwrap()` on a value that embeds a URL would reach stderr
+ * verbatim, and the crash log unless the scrubber happens to recognise it. Keep credentials out of
+ * anything that can be printed to stderr.
  *
  * The fixed path lives in shared `/tmp`, so opening is also a security boundary: `O_NOFOLLOW`
  * rejects symlinks; `fstat` on the OPENED descriptor requires a regular file owned by this app uid
