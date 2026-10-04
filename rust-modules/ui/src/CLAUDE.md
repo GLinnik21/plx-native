@@ -340,8 +340,8 @@ date, and duplicated the `//!` docs verbatim down to their typos; `docs/ui-frame
 states the rule — *"do not fix this file into a second map of the directory; one map is the
 point."* If you add a module, write its `//!` doc and its `lib.rs` line. That is the documentation.
 
-**Adding a SCREEN is a different question**: screens live in `rust-modules/src/screens/` — see
-[`../screens/CLAUDE.md`](../screens/CLAUDE.md).
+**Adding a SCREEN is a different question**: screens live in `rust-modules/screens/src/` (workspace crate `plx_screens`) — see
+[`../../screens/src/CLAUDE.md`](../../screens/src/CLAUDE.md).
 
 ## Glass, dim and dither — rendering policy you must not re-derive
 

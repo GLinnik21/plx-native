@@ -16,7 +16,7 @@ fn pending_home_grid_focus_wins_when_the_first_catalog_arrives() {
         frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
         let entry = d.nav.top_page().unwrap().id;
         d.set_focus_in(
-            on_strip.then_some(FocusKey { entry, elem: crate::screens::home::STRIP_HOME_ELEM }),
+            on_strip.then_some(FocusKey { entry, elem: plx_screens::home::STRIP_HOME_ELEM }),
             on_strip.then_some(plx_ui::containers::tabs::STRIP),
         );
         assert!(rig.home_command(HomeCmd::FocusGrid { row: 0, col: 2 }));
@@ -68,7 +68,7 @@ fn first_home_catalog_preserves_default_and_explicit_hero_seating() {
 
 #[test]
 fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
-    use crate::screens::registry::{HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeMemory, HomeTab};
+    use plx_screens::registry::{HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeMemory, HomeTab};
     let _guard = plx_base::testlock::serial();
     let mut rig = Bridge::for_test(|| 0);
     let sid = plx_plex::plex::ServerId::UNSET;
@@ -106,7 +106,7 @@ fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
     let split = rig.split();
     let cx = parts.cx::<AppHost>(split.views, split.measure);
     assert_eq!(<AppHost as HomeLike>::hubs(&cx).generation, split.views.hubs.generation);
-    assert_eq!(crate::screens::registry::word::HOME, "home");
+    assert_eq!(plx_screens::registry::word::HOME, "home");
 }
 
 #[test]
@@ -250,14 +250,14 @@ fn a_removed_home_type_tab_recovers_to_home_not_the_profile_chip() {
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
     let entry = d.nav.top_page().unwrap().id;
-    let movies = crate::screens::home::STRIP_MOVIES_ELEM;
+    let movies = plx_screens::home::STRIP_MOVIES_ELEM;
     d.nav.tabs.strip.push(plx_ui::containers::tabs::StripMember::new(movies,
         plx_ui::Rect::new(800.0, 50.0, 160.0, 60.0)));
     d.set_focus_in(Some(FocusKey { entry, elem: movies }), Some(plx_ui::containers::tabs::STRIP));
     // Republish the current empty-library strip: the previous Movies destination is gone.
     frame(&mut d, &mut rig, AppArg::Home, tick(2), vec![]);
     assert!(!d.nav.tabs.strip.iter().any(|member| member.elem == movies));
-    assert_eq!(d.focus(), Some(FocusKey { entry, elem: crate::screens::home::STRIP_HOME_ELEM }));
+    assert_eq!(d.focus(), Some(FocusKey { entry, elem: plx_screens::home::STRIP_HOME_ELEM }));
 }
 
 #[test]
@@ -344,7 +344,7 @@ fn library_detail_return_restores_engine_card_and_viewport_after_stack_eviction(
         rig.stores.browse.borrow_mut().seed_items_for_test(120);
         frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
         d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
-        Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 });
+        Bridge::library_command(&mut d, plx_screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 });
         for i in 1..80 { frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]); }
         let entry = d.nav.top_page().unwrap().id;
         let focus = d.focus().unwrap();

@@ -1,7 +1,7 @@
 # count: 0
 # The `sibling` gate's MIGRATION list (spec §2.1, §0 criterion 2): one entry per FILE that still
-# names a sibling under `crate::screens::`, matched by path alone, shrinking with each phase and
-# EMPTY when the criterion is met. `crate::screens::registry` is the shared vocabulary and is
+# names a sibling screen (`crate::<b>` in the `plx_screens` crate, `crate::screens::<b>` before Split 13), matched by path alone, shrinking with each phase and
+# EMPTY when the criterion is met. `crate::registry` is the shared vocabulary and is
 # allowed by the gate itself, so it never appears here.
 #
 # Phase 12 (P4-STAT) closed the four `screens::family` entries this list used to carry

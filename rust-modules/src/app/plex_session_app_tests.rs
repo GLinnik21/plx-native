@@ -63,12 +63,12 @@ fn login_frames_never_wait_for_the_session_io_lock() {
         let _frame = plx_base::task::FrameScope::enter();
         let mut bridge = Bridge::for_test(|| 0);
         let mut pages = plx_ui::dispatch::Dispatcher::new();
-        crate::app::bridge::nav_root(&mut pages, crate::screens::registry::AppArg::Login);
+        crate::app::bridge::nav_root(&mut pages, plx_screens::registry::AppArg::Login);
         for ms in 0..30 {
             crate::app::bridge::frame(&mut pages, &mut bridge,
                 plx_machine::machine::Tick { ms: ms * 16, dt_us: 16_000 }, Vec::new());
         }
-        assert!(matches!(pages.top_arg(), Some(crate::screens::registry::AppArg::Login)));
+        assert!(matches!(pages.top_arg(), Some(plx_screens::registry::AppArg::Login)));
         assert_eq!(session::reads_for_test(), 0, "login's Browse/Search captures may only peek");
     });
     session::drain_refresh_for_test();

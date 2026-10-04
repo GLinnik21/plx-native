@@ -2561,14 +2561,14 @@ mod tests {
         item.thumb = "/library/metadata/42/thumb".into();
         item.still = "/library/metadata/42/still".into();
         plx_ui::widgets::resolve_card_art(plx_ui::Painter::recording(), rect,
-            &plx_ui::widgets::Art::Poster(Some(crate::screens::registry::tile_facts::of(&item))));
+            &plx_ui::widgets::Art::Poster(Some(plx_screens::registry::tile_facts::of(&item))));
         assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "text prewarming must not start poster work");
         for frame in 0..3 {
             plx_ui::card_motion::begin_frame(frame * 16);
             plx_machine::idle::frame_begin(0.016);
             plx_machine::idle::take_local_damage();
             let painter = plx_ui::Painter::root().translate(if frame == 0 { 0.0 } else { 80.0 }, 0.0);
-            let facts = crate::screens::registry::tile_facts::of(&item);
+            let facts = plx_screens::registry::tile_facts::of(&item);
             for art in [plx_ui::widgets::Art::Poster(Some(facts)), plx_ui::widgets::Art::Still(Some(facts)),
                 plx_ui::widgets::Art::Thumb { sid: sid.raw(), key: "/test-thumb", res: (250, 375) },
                 plx_ui::widgets::Art::Person { sid: sid.raw(), key: "/test-person", res: (250, 250) }] {

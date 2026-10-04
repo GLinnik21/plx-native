@@ -1,5 +1,5 @@
 # count: 0
-# `crate::ui::nav::` (any function) is spelled nowhere under rust-modules/src/screens (spec §14
+# `crate::ui::nav::` (any function) is spelled nowhere under rust-modules/screens/src (spec §14
 # phase 8): a screen reads the route-level nav dip from its own DrawFrame
 # (page_alpha/chrome_alpha/view_tab/blur_amount/nav_page_alpha), never the `ui::nav` statics
 # directly. `ui/`'s CONTAINERS (popover.rs, glassload.rs, widgets.rs, app/nav.rs, app/run.rs) are

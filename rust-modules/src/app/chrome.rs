@@ -100,7 +100,7 @@ impl ChromeSnapshot {
             let account = if let Some((_, saved)) = captured { saved.account(current.as_ref()) }
                 else { plx_plex::plex::session::peek().account(current.as_ref()) };
             self.thumb = current.map(|user| user.thumb).unwrap_or_default();
-            let label = crate::screens::account_menu::chip_label(&account);
+            let label = plx_screens::account_menu::chip_label(&account);
             let initial = account.name.as_deref().and_then(|name| name.chars().next())
                 .map(|c| c.to_uppercase().to_string()).unwrap_or_default();
             (self.initial, self.name, self.name_w) =
@@ -263,7 +263,7 @@ mod tests {
         ).expect("read widgets.rs");
         let live = src.lines().filter(|line| !line.trim_start().starts_with("//"))
             .collect::<Vec<_>>().join("\n");
-        for forbidden in ["plx_data::browse::", "plx_plex::plex::session::", "crate::screens::"] {
+        for forbidden in ["plx_data::browse::", "plx_plex::plex::session::", "plx_screens::"] {
             assert!(!live.contains(forbidden),
                 "shared widgets must consume captured app projections, found {forbidden}");
         }

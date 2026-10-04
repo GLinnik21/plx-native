@@ -80,7 +80,7 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
     dispatcher.emit(
         plx_machine::machine::MachineId::Session,
         plx_machine::machine::Fx::App(
-            crate::screens::registry::AppFx::SessionEffect(
+            plx_screens::registry::AppFx::SessionEffect(
                 owner::SessionFx::Coordinator(owner::CoordinatorAction::CloseTelemetry),
             ),
         ),

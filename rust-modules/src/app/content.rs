@@ -9,7 +9,7 @@
 
 use super::*;
 use super::run::Frame;
-use crate::screens::registry::{AppMsg, ContentArg, ContentReq, HomeHubIdentity, HomeItemIdentity, HomeReq, HomeTab, PageMemory};
+use plx_screens::registry::{AppMsg, ContentArg, ContentReq, HomeHubIdentity, HomeItemIdentity, HomeReq, HomeTab, PageMemory};
 use plx_machine::machine::{Delivery, EntryId, Fx, InputOwner, MachineId, NavOp};
 use plx_ui::screen::{ReturnState, ScreenEvent};
 
@@ -33,7 +33,7 @@ pub(super) fn drain_item_menu_requests<R: super::playback::PlaybackResources>(
 }
 
 struct HeldFeature {
-    play: crate::screens::registry::PlayIntent,
+    play: plx_screens::registry::PlayIntent,
     resume_ns: i64,
     /// `Some` for a page navigation's own captured spot (BACK returns there); `None` for an
     /// item-menu-initiated play, which never carried one — see [`hold_feature`].
@@ -107,7 +107,7 @@ pub(super) fn halt_preview_now(
 /// (an ordinary page Play, and the item menu's Play Trailer) must hold through here rather
 /// than call `request_play`/`start_playback` directly.
 pub(super) fn hold_feature(
-    play: crate::screens::registry::PlayIntent,
+    play: plx_screens::registry::PlayIntent,
     resume_ns: i64,
     ret: Option<ReturnState<u32, PageMemory>>,
 ) {
@@ -139,10 +139,10 @@ fn note_extra_now_playing(meta: &mut plx_data::stores::metadata::MetadataStore, 
 pub(super) fn request_play_intent(
     session: &mut plx_media::route::PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
-    play: &crate::screens::registry::PlayIntent,
+    play: &plx_screens::registry::PlayIntent,
 ) -> bool {
     match play {
-        crate::screens::registry::PlayIntent::Item {
+        plx_screens::registry::PlayIntent::Item {
             sid, rk, part, vcodec, acodec, title, context,
         } => {
             let ok = plx_media::route::request_play(
@@ -153,7 +153,7 @@ pub(super) fn request_play_intent(
             }
             ok
         }
-        crate::screens::registry::PlayIntent::Movie(m) =>
+        plx_screens::registry::PlayIntent::Movie(m) =>
             plx_media::route::request_play_movie(session, meta, m, &super::playback::movie_ctx(m)),
     }
 }
@@ -304,7 +304,7 @@ mod play_clearance_tests {
 #[cfg(test)]
 mod held_feature_tests {
     use super::*;
-    use crate::screens::registry::PlayIntent;
+    use plx_screens::registry::PlayIntent;
 
     fn parent_with_extra() -> plx_data::metadata::Detail {
         plx_data::metadata::Detail {
@@ -670,7 +670,7 @@ fn home_requests(app: &mut App, now: u32) {
             HomeReq::ItemMenu { sid, rk } => {
                 let snapshot = app.bridge.hubs_snapshot();
                 let Some(item) = home_item(snapshot.view(), sid, &rk)
-                    .filter(|item| crate::screens::item_menu::has_actions(item)) else { continue };
+                    .filter(|item| plx_screens::item_menu::has_actions(item)) else { continue };
                 let from_deck = home_menu_from_deck(&ret);
                 let opener = app.bridge.home_opener(&app.pages, entry, ret.focus);
                 // `from_home: true` is the ONE thing `MenuHost::Home` still decided by phase 10;
@@ -692,8 +692,8 @@ fn home_item<'a>(view: plx_data::pms::HubsView<'a>, sid: plx_plex::plex::ServerI
 }
 
 /// Resolve identity against the retained selected item, never against the current server.
-fn search_target(item: &plx_data::search::Item, request: &crate::screens::registry::SearchReq) -> Option<AppArg> {
-    use crate::screens::registry::SearchReq;
+fn search_target(item: &plx_data::search::Item, request: &plx_screens::registry::SearchReq) -> Option<AppArg> {
+    use plx_screens::registry::SearchReq;
     match (item, request) {
         (plx_data::search::Item::Media(item), SearchReq::Detail { sid, rk })
             if item.sid == *sid && item.rk == *rk && !rk.is_empty() =>
@@ -712,7 +712,7 @@ fn search_target(item: &plx_data::search::Item, request: &crate::screens::regist
 }
 
 fn search_requests(app: &mut App) {
-    use crate::screens::registry::SearchReq;
+    use plx_screens::registry::SearchReq;
     for (source, request, ret) in app.bridge.take_search_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
@@ -737,7 +737,7 @@ fn search_requests(app: &mut App) {
             }
             SearchReq::ItemMenu { sid, rk } => {
                 let Some((plx_data::search::Item::Media(item), opener)) = app.bridge.search_selection(&app.pages, entry, ret.focus) else { continue };
-                if item.sid != *sid || item.rk != *rk || !crate::screens::item_menu::has_actions(&item) { continue; }
+                if item.sid != *sid || item.rk != *rk || !plx_screens::item_menu::has_actions(&item) { continue; }
                 let arg = bridge::card_menu_arg(&item, false, false, entry, ret.focus, opener.rect);
                 bridge::open_item_menu(&mut app.pages, arg);
                 app.input.press.cancel();
@@ -750,7 +750,7 @@ fn search_requests(app: &mut App) {
 #[cfg(test)]
 mod search_action_tests {
     use super::*;
-    use crate::screens::registry::SearchReq;
+    use plx_screens::registry::SearchReq;
     use plx_data::search::{Item, TagHit};
 
     #[test]
@@ -813,7 +813,7 @@ mod search_action_tests {
 }
 
 fn library_requests(app: &mut App, now: u32) {
-    use crate::screens::registry::{LibraryReq, LibraryMenuArg};
+    use plx_screens::registry::{LibraryReq, LibraryMenuArg};
     for (source, request, ret) in app.bridge.take_library_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
@@ -844,7 +844,7 @@ fn library_requests(app: &mut App, now: u32) {
             }
             LibraryReq::ItemMenu { sid, rk, from_deck } => {
                 let Some((item, opener)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
-                if item.sid != sid || item.rk != rk || !crate::screens::item_menu::has_actions(&item) { continue; }
+                if item.sid != sid || item.rk != rk || !plx_screens::item_menu::has_actions(&item) { continue; }
                 let arg = bridge::card_menu_arg(&item, from_deck, false, entry, ret.focus, opener.rect);
                 bridge::open_item_menu(&mut app.pages, arg);
                 app.input.press.cancel();
@@ -920,10 +920,10 @@ mod library_publication_tests {
         let focus = plx_machine::machine::FocusKey { entry, elem: 3003 };
         let retained = pages.nav.entry_mut(entry).expect("Detail A remains on the stack");
         retained.ret.focus = Some(focus);
-        retained.ret.memory = PageMemory::Detail(crate::screens::registry::DetailMemory {
+        retained.ret.memory = PageMemory::Detail(plx_screens::registry::DetailMemory {
             spot: spot.clone(),
-            keys: vec![crate::screens::registry::DetailKey {
-                identity: crate::screens::registry::DetailIdentity::Episode {
+            keys: vec![plx_screens::registry::DetailKey {
+                identity: plx_screens::registry::DetailIdentity::Episode {
                     sid,
                     rk: episode.into(),
                     text: true,
@@ -941,11 +941,11 @@ mod library_publication_tests {
     ) -> Option<(
         plx_data::metadata::Spot,
         Option<String>,
-        crate::screens::registry::DetailRefreshPhase,
+        plx_screens::registry::DetailRefreshPhase,
     )> {
         pages.nav.entry(entry).and_then(|entry| entry.inst.as_ref())
             .and_then(|instance| instance.screen.as_any())
-            .and_then(|screen| screen.downcast_ref::<crate::screens::detail::DetailScreen>())
+            .and_then(|screen| screen.downcast_ref::<plx_screens::detail::DetailScreen>())
             .and_then(|screen| screen.restore_target_for_test()
                 .map(|(spot, episode)| (spot, episode, screen.refresh_for_test())))
     }
@@ -953,10 +953,10 @@ mod library_publication_tests {
     fn detail_refresh_phase(
         pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
         entry: EntryId,
-    ) -> crate::screens::registry::DetailRefreshPhase {
+    ) -> plx_screens::registry::DetailRefreshPhase {
         pages.nav.entry(entry).and_then(|entry| entry.inst.as_ref())
             .and_then(|instance| instance.screen.as_any())
-            .and_then(|screen| screen.downcast_ref::<crate::screens::detail::DetailScreen>())
+            .and_then(|screen| screen.downcast_ref::<plx_screens::detail::DetailScreen>())
             .expect("retained Detail instance").refresh_for_test()
     }
 
@@ -966,8 +966,8 @@ mod library_publication_tests {
     ) -> Option<bool> {
         pages.nav.entry(entry).and_then(|entry| entry.inst.as_ref())
             .and_then(|instance| instance.screen.as_any())
-            .and_then(|screen| screen.downcast_ref::<crate::screens::detail::DetailScreen>())
-            .map(crate::screens::detail::DetailScreen::return_waiting_for_test)
+            .and_then(|screen| screen.downcast_ref::<plx_screens::detail::DetailScreen>())
+            .map(plx_screens::detail::DetailScreen::return_waiting_for_test)
     }
 
     // This module drives a REAL `bridge::Bridge` (`rig`) through the production frame driver, so
@@ -1266,7 +1266,7 @@ mod library_publication_tests {
             "A's fetch stays deferred while B owns the shared slot");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot.clone(), Some("episode-a".into()),
-                crate::screens::registry::DetailRefreshPhase::Deferred)),
+                plx_screens::registry::DetailRefreshPhase::Deferred)),
             "covered A retains the addressed episode and focus spot");
 
         assert!(land_detail_for_test(&mut rig, sid, "detail-b", b_request,
@@ -1288,7 +1288,7 @@ mod library_publication_tests {
             "B closes its request and A starts exactly one replacement request");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
-                crate::screens::registry::DetailRefreshPhase::Requested)),
+                plx_screens::registry::DetailRefreshPhase::Requested)),
             "RestoreMemory must not overwrite the addressed episode/focus intent");
         // EVIDENCE, so nobody re-derives it: this assertion is NOT stale. It fails on unmodified
         // Stage C1 too — it was simply never reached there, because the `detail_generation_for_test`
@@ -1366,7 +1366,7 @@ mod library_publication_tests {
             "the pre-write A fetch remains in flight while its page is covered");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot.clone(), Some("episode-a".into()),
-                crate::screens::registry::DetailRefreshPhase::Deferred)));
+                plx_screens::registry::DetailRefreshPhase::Deferred)));
 
         let ret = pages.return_state();
         bridge::nav_pop_with_return(&mut pages, ret);
@@ -1391,7 +1391,7 @@ mod library_publication_tests {
             "rejecting the stale landing cannot replace the reconciliation generation");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
-                crate::screens::registry::DetailRefreshPhase::Requested)),
+                plx_screens::registry::DetailRefreshPhase::Requested)),
             "RestoreMemory preserves the ViewState episode/focus intent");
         assert_eq!(pages.focus(), Some(focus));
         let generation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
@@ -1458,7 +1458,7 @@ mod library_publication_tests {
         let focus = plx_machine::machine::FocusKey {
             entry: a_entry,
             elem: memory.keys.iter().find_map(|key| matches!(&key.identity,
-                crate::screens::registry::DetailIdentity::Episode { rk, text: true, .. }
+                plx_screens::registry::DetailIdentity::Episode { rk, text: true, .. }
                 if rk == "episode-a").then_some(key.elem))
                 .expect("the loaded episode text row has a stable key"),
         };
@@ -1516,7 +1516,7 @@ mod library_publication_tests {
                             "Requested must not be visible before its reconciliation request exists");
                     }
                     if matches!(&stamped.fx, Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(
-                        AppMsg::DetailRestore { refresh: crate::screens::registry::DetailRefreshPhase::Requested, .. })))) {
+                        AppMsg::DetailRestore { refresh: plx_screens::registry::DetailRefreshPhase::Requested, .. })))) {
                         self.saw_restore = true;
                     }
                 }
@@ -1550,7 +1550,7 @@ mod library_publication_tests {
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(true));
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot.clone(), Some("episode-a".into()),
-                crate::screens::registry::DetailRefreshPhase::Requested)));
+                plx_screens::registry::DetailRefreshPhase::Requested)));
 
         let mut return_focus = focus;
         if navigate {
@@ -1558,14 +1558,14 @@ mod library_publication_tests {
                 plx_machine::machine::Edge::Down);
             let PageMemory::Detail(memory) = pages.return_state().memory else { unreachable!() };
             let related = memory.keys.iter().find(|key| matches!(&key.identity,
-                crate::screens::registry::DetailIdentity::Related { rk, .. } if rk == "detail-b"))
+                plx_screens::registry::DetailIdentity::Related { rk, .. } if rk == "detail-b"))
                 .expect("Related B is a real focus stop");
             return_focus.elem = related.elem;
             assert_eq!(pages.focus(), Some(return_focus), "DOWN walks from episode text to Related B");
             assert_eq!(detail_restore_target(&pages, a_entry), None,
                 "directional input cancels the episode/focus restore intent");
             assert_eq!(detail_refresh_phase(&pages, a_entry),
-                crate::screens::registry::DetailRefreshPhase::Requested,
+                plx_screens::registry::DetailRefreshPhase::Requested,
                 "directional input leaves the server obligation outstanding");
             detail_key(&mut pages, &mut rig, &mut frame_no, plx_machine::machine::Key::Ok,
                 plx_machine::machine::Edge::Down);
@@ -1610,12 +1610,12 @@ mod library_publication_tests {
         if !navigate {
             assert_eq!(detail_restore_target(&pages, a_entry),
                 Some((spot.clone(), Some("episode-a".into()),
-                    crate::screens::registry::DetailRefreshPhase::Requested)),
+                    plx_screens::registry::DetailRefreshPhase::Requested)),
                 "the retry preserves the episode and focus intent");
         }
         assert_eq!(pages.focus(), Some(return_focus));
         assert_eq!(detail_refresh_phase(&pages, a_entry),
-            crate::screens::registry::DetailRefreshPhase::Requested);
+            plx_screens::registry::DetailRefreshPhase::Requested);
 
         if navigate {
             // BACK may restore its own navigation snapshot. Cancel that too, while the retry
@@ -1624,7 +1624,7 @@ mod library_publication_tests {
                 plx_machine::machine::Edge::Down);
             let PageMemory::Detail(memory) = pages.return_state().memory else { unreachable!() };
             return_focus.elem = memory.keys.iter().find_map(|key| matches!(&key.identity,
-                crate::screens::registry::DetailIdentity::Related { rk, .. } if rk == "detail-c")
+                plx_screens::registry::DetailIdentity::Related { rk, .. } if rk == "detail-c")
                 .then_some(key.elem)).expect("Related C exists");
             assert_eq!(pages.focus(), Some(return_focus));
             assert_eq!(detail_restore_target(&pages, a_entry), None);
@@ -1658,7 +1658,7 @@ mod library_publication_tests {
         assert_eq!(detail_restore_target(&pages, a_entry), None,
             "the settled reconciliation releases restoration");
         assert_eq!(detail_refresh_phase(&pages, a_entry),
-            crate::screens::registry::DetailRefreshPhase::None,
+            plx_screens::registry::DetailRefreshPhase::None,
             "reconciliation terminates independently of focus restoration");
         assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
             "settling restoration cannot start a duplicate request");
@@ -1718,7 +1718,7 @@ mod library_publication_tests {
         let focus = plx_machine::machine::FocusKey {
             entry: a_entry,
             elem: memory.keys.iter().find_map(|key| matches!(&key.identity,
-                crate::screens::registry::DetailIdentity::Episode { rk, text: true, .. }
+                plx_screens::registry::DetailIdentity::Episode { rk, text: true, .. }
                 if rk == "episode-a").then_some(key.elem))
                 .expect("the loaded episode text row has a stable key"),
         };
@@ -1737,7 +1737,7 @@ mod library_publication_tests {
         let reconciliation = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
-                crate::screens::registry::DetailRefreshPhase::Requested)));
+                plx_screens::registry::DetailRefreshPhase::Requested)));
 
         bridge::nav_push(&mut pages, person.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
@@ -1812,7 +1812,7 @@ mod library_publication_tests {
         let focus = plx_machine::machine::FocusKey {
             entry: a_entry,
             elem: memory.keys.iter().find_map(|key| matches!(&key.identity,
-                crate::screens::registry::DetailIdentity::Episode { rk, text: true, .. }
+                plx_screens::registry::DetailIdentity::Episode { rk, text: true, .. }
                 if rk == "episode-a").then_some(key.elem))
                 .expect("the loaded episode text row has a stable key"),
         };
@@ -1831,7 +1831,7 @@ mod library_publication_tests {
         let reconciliation = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
-                crate::screens::registry::DetailRefreshPhase::Requested)));
+                plx_screens::registry::DetailRefreshPhase::Requested)));
 
         bridge::nav_push(&mut pages, person.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
@@ -1933,7 +1933,7 @@ pub(crate) fn restore_played_entry(app: &mut App) {
             Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore {
                 spot,
                 episode,
-                refresh: crate::screens::registry::DetailRefreshPhase::None,
+                refresh: plx_screens::registry::DetailRefreshPhase::None,
             }))));
     }
 }
@@ -1978,9 +1978,9 @@ pub(crate) fn refresh_content(
             spot,
             episode: target.keep,
             refresh: if owns_metadata {
-                crate::screens::registry::DetailRefreshPhase::Requested
+                plx_screens::registry::DetailRefreshPhase::Requested
             } else {
-                crate::screens::registry::DetailRefreshPhase::Deferred
+                plx_screens::registry::DetailRefreshPhase::Deferred
             },
         }))));
 }
@@ -1991,17 +1991,17 @@ fn detail_refresh_matches(arg: &AppArg, target: &plx_data::stores::viewstate::De
 }
 
 /// Refuse privileged replay before any request reaches the live PlayerAdapter.
-fn remove_replayed_repairs(reqs: &mut Vec<crate::screens::registry::PlayerReq>, legacy: bool, controlled: bool) -> bool {
+fn remove_replayed_repairs(reqs: &mut Vec<plx_screens::registry::PlayerReq>, legacy: bool, controlled: bool) -> bool {
     if !legacy && !controlled { return false; }
     let before = reqs.len();
-    reqs.retain(|req| !matches!(req, crate::screens::registry::PlayerReq::RepairSandbox));
+    reqs.retain(|req| !matches!(req, plx_screens::registry::PlayerReq::RepairSandbox));
     before != reqs.len()
 }
 
 #[cfg(test)]
 mod repair_replay_tests {
     use super::*;
-    use crate::screens::registry::PlayerReq;
+    use plx_screens::registry::PlayerReq;
     #[test]
     fn both_replay_modes_remove_repair_before_resource_dispatch_but_keep_exit() {
         for (legacy, controlled) in [(true, false), (false, true), (true, true)] {

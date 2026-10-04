@@ -51,9 +51,9 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(
-            crate::screens::registry::LibraryMenuArg {
+            plx_screens::registry::LibraryMenuArg {
                 host,
-                kind: crate::screens::registry::LibraryMenuKind::Sort,
+                kind: plx_screens::registry::LibraryMenuKind::Sort,
                 anchor: [0; 4],
                 target: plx_data::stores::browse::SectionAddress {
                     epoch: listing.epoch,
@@ -137,7 +137,7 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
     // park the grid focus deep, and let every boot spring settle
-    Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 });
+    Bridge::library_command(&mut d, plx_screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 });
     for i in 1..80 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
@@ -146,9 +146,9 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
     d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
-        NavOp::Present(AppArg::LibraryMenu(crate::screens::registry::LibraryMenuArg {
+        NavOp::Present(AppArg::LibraryMenu(plx_screens::registry::LibraryMenuArg {
             host,
-            kind: crate::screens::registry::LibraryMenuKind::Sort,
+            kind: plx_screens::registry::LibraryMenuKind::Sort,
             anchor: [0; 4],
             target: plx_data::stores::browse::SectionAddress {
                 epoch: listing.epoch,
@@ -171,7 +171,7 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
     // dismiss: input returns to the page while the panel is still visible, and the page is driven
     d.request(MachineId::Nav, NavOp::Dismiss(menu));
     frame(&mut d, &mut rig, AppArg::Library, tick(121), vec![]);
-    Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::FocusGrid { row: 0, col: 0 });
+    Bridge::library_command(&mut d, plx_screens::registry::LibraryCmd::FocusGrid { row: 0, col: 0 });
     let mut moved = 0;
     for i in 122..136u32 {
         plx_machine::idle::frame_begin(1.0 / 60.0);

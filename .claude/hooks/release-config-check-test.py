@@ -60,7 +60,7 @@ def edit(path, tool="Edit", key="file_path", **extra):
 CASES = [
     # --- fires: this lane's lib sources ---------------------------------------
     (FIRE, "plain edit", edit("/repo/rust-modules/src/app.rs"), ROOT),
-    (FIRE, "nested module", edit("/repo/rust-modules/src/screens/home/mod.rs"), ROOT),
+    (FIRE, "nested module", edit("/repo/rust-modules/src/app/bootstrap/effects.rs"), ROOT),
     (FIRE, "Write", edit("/repo/rust-modules/src/dev.rs", tool="Write"), ROOT),
     (FIRE, "a layer crate's source", edit("/repo/rust-modules/base/src/paths.rs"), ROOT),
     (FIRE, "the machine layer crate's source", edit("/repo/rust-modules/machine/src/idle.rs"), ROOT),
@@ -74,11 +74,12 @@ CASES = [
     (FIRE, "the session layer crate\'s source", edit("/repo/rust-modules/session/src/auth.rs"), ROOT),
     (FIRE, "the media layer crate\\'s source", edit("/repo/rust-modules/media/src/player/mod.rs"), ROOT),
     (FIRE, "the appkit layer crate\\'s source", edit("/repo/rust-modules/appkit/src/player_hud.rs"), ROOT),
+    (FIRE, "the screens layer crate\\'s source", edit("/repo/rust-modules/screens/src/home/mod.rs"), ROOT),
     (FIRE, "MultiEdit", edit("/repo/rust-modules/src/app/run.rs", tool="MultiEdit"), ROOT),
     (FIRE, "relative to root", edit("rust-modules/src/route.rs"), ROOT),
     (FIRE, "relative to a subdir", edit("src/plex/client.rs"), "/repo/rust-modules"),
     (FIRE, "relative climbing out", edit("../rust-modules/src/net.rs"), "/repo/tools"),
-    (FIRE, "un-normalised absolute", edit("/repo/rust-modules/src/screens/../ff.rs"), ROOT),
+    (FIRE, "un-normalised absolute", edit("/repo/rust-modules/src/app/../ff.rs"), ROOT),
     # A worktree IS its own lane: same file, but `git rev-parse` from its own cwd returns ITS root.
     (FIRE, "worktree, from inside it",
      {"tool_name": "Edit", "tool_input": {"file_path": WT + "/rust-modules/src/app.rs"},

@@ -2,7 +2,7 @@
 //! the effect before this entrypoint: profile capture, thread admission and persistence all live
 //! here, never in a screen constructor or step.
 use plx_plex::plex::account::{PreferenceError, PreferenceRequest};
-use crate::screens::registry::{AccountPreferenceReply, PreferenceCmd};
+use plx_screens::registry::{AccountPreferenceReply, PreferenceCmd};
 
 pub(super) fn execute(command: PreferenceCmd) {
     match command {

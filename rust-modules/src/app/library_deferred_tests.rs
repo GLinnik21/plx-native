@@ -61,9 +61,9 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(
-            crate::screens::registry::LibraryMenuArg {
+            plx_screens::registry::LibraryMenuArg {
                 host,
-                kind: crate::screens::registry::LibraryMenuKind::Filter,
+                kind: plx_screens::registry::LibraryMenuKind::Filter,
                 anchor: [0; 4],
                 target: plx_data::stores::browse::SectionAddress {
                     epoch: listing.epoch,

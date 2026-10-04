@@ -15,7 +15,7 @@ see §6.
 ### It is a peer, not a page
 
 `AppArg::Search` sits beside `Home` and `Library`, not on top of them
-(`rust-modules/src/screens/registry.rs`, the variant and its doc comment). It is reached from the
+(`rust-modules/screens/src/registry.rs`, the variant and its doc comment). It is reached from the
 strip's last pill and BACK from it returns to Home — all three navigate with `NavOp::SelectTab`, so
 arriving at one unwinds whatever was above the root and **what Search opens stacks; Search itself
 does not.** It wears the shared top tab bar (`ScreenArg::chrome() == Chrome::TabBar`), which is what

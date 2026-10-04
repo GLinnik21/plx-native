@@ -5,8 +5,8 @@
 //!
 //! **The HUD's timer, its cursor, the scrub gesture and the repeat gates are no longer here.**
 //! Restructure phase 9 moved them into the player's own `Screen` instance
-//! (`crate::screens::player`), with the types and the pure predicates in
-//! `crate::screens::player::input`; this module re-exports the few names the loop still spells
+//! (`plx_screens::player`), with the types and the pure predicates in
+//! `plx_screens::player::input`; this module re-exports the few names the loop still spells
 //! unqualified. What that changed for a reader of the code below: `hud_until()`/`set_hud`/
 //! `extend_hud`/`scrub()`/`set_scrub` are gone as free functions, because the values they read and
 //! wrote are fields of a screen now (§2.3), and every arm that touches them takes that screen.
@@ -24,13 +24,13 @@ use super::*;
 // gesture's constants and its two pure policies (`scrub_press`, `failed_key_action`) are read by
 // `screens::player` alone now, so re-exporting them here would be this module claiming a
 // vocabulary it no longer uses.
-pub(crate) use crate::screens::player::input::{
+pub(crate) use plx_screens::player::input::{
     HudNav, HudState, Scrub, HUD_HEADLESS_MS, HUD_LINGER_MS,
 };
 // The modal repeat cadence is `screens::registry`'s (phase 10 merge): the item context menu is a
 // surface of its own family and needs the same gate, so it is shared vocabulary rather than the
 // player's. `App::modal_repeat` still reaches it through this re-export.
-pub(crate) use crate::screens::registry::RepeatGate;
+pub(crate) use plx_screens::registry::RepeatGate;
 
 
 #[inline]
@@ -236,7 +236,7 @@ pub(crate) fn enter_player(
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     from: Origin,
-    ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    ret: Option<plx_ui::screen::ReturnState<u32, plx_screens::registry::PageMemory>>,
 ) {
     // …or already on its way: a Play inside the push's own dip-out finds the page it pressed on
     // still the committed top, and re-seeding from it would leave a seed no mount ever spends
@@ -253,7 +253,7 @@ pub(crate) fn enter_player(
     }
     if matches!(from, Origin::Here) {
         if let Some(entry) = pages.nav.top_page() {
-            bridge.seed_player_origin(crate::screens::player::Origin {
+            bridge.seed_player_origin(plx_screens::player::Origin {
                 entry: entry.id,
                 instance: entry.inst.as_ref().map(|i| i.id),
             });
@@ -276,7 +276,7 @@ pub(crate) fn start_playback(
     resume_ns: i64,
     from: Origin,
     hud_ms: u32,
-    ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    ret: Option<plx_ui::screen::ReturnState<u32, plx_screens::registry::PageMemory>>,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
@@ -378,7 +378,7 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
     resume_ns: i64,
     from: Origin,
     hud_ms: u32,
-    ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    ret: Option<plx_ui::screen::ReturnState<u32, plx_screens::registry::PageMemory>>,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     resources: &mut R,
@@ -539,7 +539,7 @@ pub(crate) fn player_requests(
     repair: &mut plx_media::player::machine::RepairAttempt,
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
-    reqs: Vec<crate::screens::registry::PlayerReq>,
+    reqs: Vec<plx_screens::registry::PlayerReq>,
     now: u32,
     refresh_hubs_at: &mut u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
@@ -548,7 +548,7 @@ pub(crate) fn player_requests(
     press: &mut plx_ui::press::Press,
     repause_at: &mut i64,
 ) {
-    use crate::screens::registry::PlayerReq;
+    use plx_screens::registry::PlayerReq;
     for req in reqs {
         match req {
             PlayerReq::RetryPlayback => {
@@ -641,12 +641,12 @@ pub(super) fn return_from_player(
     // EntryId floor, and returning to it would recreate the old empty-content strand.
     let identityless = origin.and_then(|o| pages.nav.entry(o.entry)).is_some_and(|entry| {
         match &entry.arg {
-            AppArg::Content(crate::screens::registry::ContentArg::Detail { rk, .. }) => rk.is_empty(),
-            AppArg::Content(crate::screens::registry::ContentArg::Person { key, guid, .. }) =>
+            AppArg::Content(plx_screens::registry::ContentArg::Detail { rk, .. }) => rk.is_empty(),
+            AppArg::Content(plx_screens::registry::ContentArg::Person { key, guid, .. }) =>
                 key.is_empty() && guid.is_empty(),
-            AppArg::Content(crate::screens::registry::ContentArg::Filmography { key, .. }) =>
+            AppArg::Content(plx_screens::registry::ContentArg::Filmography { key, .. }) =>
                 key.is_empty(),
-            AppArg::Content(crate::screens::registry::ContentArg::Collection(id)) => id.is_identityless(),
+            AppArg::Content(plx_screens::registry::ContentArg::Collection(id)) => id.is_identityless(),
             _ => false,
         }
     });
@@ -667,7 +667,7 @@ pub(super) fn return_from_player(
 /// hub refresh so Continue Watching reflects the session that just ended. A new exit path
 /// that skips this quietly re-introduces the stale-CW bug.
 ///
-/// The return target is [`crate::screens::player::Origin`]'s `entry` — the container entry that was on top when Play was
+/// The return target is [`plx_screens::player::Origin`]'s `entry` — the container entry that was on top when Play was
 /// pressed, seeded at the player's own mount by [`enter_player`] and read back off the mounted
 /// screen here. Re-entry is `NavOp::PopTo(entry)` (`bridge::nav_pop_to`), the same container op a
 /// BACK off a stacking page performs, so a player exit cannot reach a page in a way nothing else
@@ -864,7 +864,7 @@ pub(crate) unsafe fn play_item_now(
     from_start: bool,
     from: Origin,
     hud_ms: u32,
-    ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    ret: Option<plx_ui::screen::ReturnState<u32, plx_screens::registry::PageMemory>>,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
@@ -880,7 +880,7 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
     from_start: bool,
     from: Origin,
     hud_ms: u32,
-    ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    ret: Option<plx_ui::screen::ReturnState<u32, plx_screens::registry::PageMemory>>,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     resources: &mut R,
@@ -979,7 +979,7 @@ fn apply_info_action(
                 // the flag it replaces — a Library -> detail -> play -> "Go to Show" returns to
                 // the Library instead of to Home.
                 super::bridge::show_page(pages, AppArg::Content(
-                    crate::screens::registry::ContentArg::Detail { sid, rk: rk.clone() },
+                    plx_screens::registry::ContentArg::Detail { sid, rk: rk.clone() },
                 ));
             }
         }
@@ -1033,13 +1033,13 @@ pub(crate) unsafe fn activate_player_row(
     } else if btn == plx_appkit::player_hud::BTN_MORE {
         // …so the discs are what row 1 holds — the complement of the arm above, and the row's only
         // other occupant. OK on a control disc PRESENTS its panel on this page's own stack.
-        super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::More { quality: false });
+        super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, plx_screens::player::overlay::OverlayKind::More { quality: false });
     } else {
         super::bridge::open_player_overlay(
             ps,
             bridge.metadata_view(),
             pages,
-            crate::screens::player::overlay::OverlayKind::Tracks { tab: if btn == 0 { 1 } else { 0 } },
+            plx_screens::player::overlay::OverlayKind::Tracks { tab: if btn == 0 { 1 } else { 0 } },
         );
     }
     if let Some(player) = super::bridge::player_mut(pages) {
@@ -1294,7 +1294,7 @@ mod player_return_tests {
     use super::super::bridge::{self, AppHost, Bridge};
     use super::{enter_player, return_from_player, Origin};
     use plx_plex::plex::ServerId;
-    use crate::screens::registry::{AppArg, ContentArg, PageMemory};
+    use plx_screens::registry::{AppArg, ContentArg, PageMemory};
     use plx_ui::dispatch::Dispatcher;
     use plx_ui::fixture::tick;
     use plx_ui::screen::ScreenArg;

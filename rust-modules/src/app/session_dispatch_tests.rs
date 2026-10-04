@@ -493,7 +493,7 @@ fn session_replies_cross_the_production_queued_drain_with_exact_correlation() {
 
 #[test]
 fn session_frame_read_borrows_the_bridge_publication() {
-    use crate::screens::registry::AuthLike;
+    use plx_screens::registry::AuthLike;
     let _guard = plx_base::testlock::serial();
     let mut rig = Bridge::for_test(|| 0);
     let retained = rig.session.publication();

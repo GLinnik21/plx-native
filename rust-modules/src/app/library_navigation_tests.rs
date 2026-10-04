@@ -179,7 +179,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
         .collect();
     assert_eq!(
         tabs,
-        vec![(crate::screens::registry::HomeTab::Search, Some(search))],
+        vec![(plx_screens::registry::HomeTab::Search, Some(search))],
         "the emitted route and captured return focus name the armed pill, not display slot 4"
     );
 
@@ -188,9 +188,9 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(
-            crate::screens::registry::LibraryMenuArg {
+            plx_screens::registry::LibraryMenuArg {
                 host: instance,
-                kind: crate::screens::registry::LibraryMenuKind::Filter,
+                kind: plx_screens::registry::LibraryMenuKind::Filter,
                 anchor: [0; 4],
                 target: plx_data::stores::browse::SectionAddress {
                     epoch: id.epoch,

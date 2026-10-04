@@ -148,6 +148,21 @@ mod seam_order_tests {
             .nth(1)
             .expect("a second statement");
         assert_eq!(second, release, "set_release must be enter_application's second statement");
+        // The screens crate cannot see `PLX_BUILD_SHA` either (About and Source print it), and in a
+        // shipping build panics when asked before it is handed in: third, one site.
+        let sha = concat!("plx_screens::legal::", "set_build_sha(env!(\"PLX_BUILD_SHA\"));");
+        let third = body
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("//"))
+            .nth(2)
+            .expect("a third statement");
+        assert_eq!(third, sha, "set_build_sha must be enter_application's third statement");
+        assert_eq!(
+            source.matches(concat!("legal::", "set_build_sha(")).count(),
+            1,
+            "one production hand-in of the build's commit"
+        );
         assert_eq!(
             source.matches(concat!("telemetry::", "set_release(")).count(),
             1,
@@ -912,7 +927,7 @@ pub(crate) unsafe fn construct(
                 }
                 use plx_data::stores::{StoreCmd, StoreWork};
                 use plx_machine::machine::{Fx, MachineId};
-                use crate::screens::registry::AppFx;
+                use plx_screens::registry::AppFx;
                 for cmd in [
                     StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Reset),
                     StoreCmd::Hubs(plx_data::stores::hubs::HubsCmd::Reset),
@@ -1592,7 +1607,7 @@ pub(crate) unsafe fn construct(
             // The same policy, evaluated over captured consent and automation inputs. A
             // recplay trigger alone intentionally does not grant live automation authority.
             // Preflight refuses the still-unsupported first-run surface before resource boot.
-            if crate::screens::consent::should_show(&initial.consent, initial.automated) {
+            if plx_screens::consent::should_show(&initial.consent, initial.automated) {
                 log("bootstrap: REFUSED — unsupported initial consent route");
                 return Err(1);
             }

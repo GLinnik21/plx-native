@@ -2,7 +2,7 @@
 //! Focus is seeded, then ordinary navigation keys drive measured motion. No media
 //! activation or Plex viewing-history write is performed.
 use crate::app::{bridge::Bridge, App};
-use crate::screens::registry::{AppArg, HomeCmd, LibraryCmd};
+use plx_screens::registry::{AppArg, HomeCmd, LibraryCmd};
 use plx_ui::card_motion_metrics::{self as metrics, Stats};
 
 // The mock warm window demanded more than 8 MiB (persistent 44/50 ready probes).

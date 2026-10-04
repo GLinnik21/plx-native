@@ -14,7 +14,7 @@
 //! the single failure every rule in here exists to prevent.
 
 use super::bridge;
-use crate::screens::registry::AppArg;
+use plx_screens::registry::AppArg;
 
 /// The heartbeat's `route=` WORD for a route — the string `tests/run.py` selects samples by
 /// (`LOOP_RE`/`FPS_RE`) against `manifest.json`'s `route` field, and the one the focus
@@ -23,7 +23,7 @@ use crate::screens::registry::AppArg;
 /// a route renamed here without its scenes following would otherwise fail on the device as
 /// "never entered this screen", which reads exactly like a total regression.
 pub(crate) fn route_word(route: &AppArg) -> &'static str {
-    use crate::screens::registry::ContentArg;
+    use plx_screens::registry::ContentArg;
     match route {
         AppArg::Login => "login",
         AppArg::Profiles => "profiles",
@@ -68,7 +68,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
 /// `app::bridge`'s argument tests, which used to keep a second copy of the same list.
 #[cfg(test)]
 pub(crate) fn every_route() -> [AppArg; 10] {
-    use crate::screens::registry::ContentArg;
+    use plx_screens::registry::ContentArg;
     let sid = plx_plex::plex::ServerId::UNSET;
     [
         AppArg::Login,
@@ -174,12 +174,12 @@ mod heartbeat_word_tests {
     /// nothing", so a trigger that silently failed to reach Favourites still produced a scene that
     /// passed, measuring the wrong screen.
     const FAMILY_INNER: [&str; 6] = [
-        crate::screens::registry::word::PRIVACY,
-        crate::screens::registry::word::LEGAL,
-        crate::screens::registry::word::ONBOARD,
-        crate::screens::registry::word::PLAYBACK,
-        crate::screens::registry::word::AUDIO,
-        crate::screens::registry::word::PICKER,
+        plx_screens::registry::word::PRIVACY,
+        plx_screens::registry::word::LEGAL,
+        plx_screens::registry::word::ONBOARD,
+        plx_screens::registry::word::PLAYBACK,
+        plx_screens::registry::word::AUDIO,
+        plx_screens::registry::word::PICKER,
     ];
 
     /// **Every caller holds `plx_base::testlock::serial()` for its whole body**, because deriving
@@ -254,15 +254,15 @@ mod heartbeat_word_tests {
         // ONE word is in both alphabets, and it names one screen mounted on two stacks. Any other
         // overlap is a route and a surface that would be indistinguishable in a `route=` field.
         let both: Vec<&str> = overlays.iter().copied().filter(|w| routes.contains(w)).collect();
-        assert_eq!(both, [crate::screens::registry::word::ONBOARD]);
+        assert_eq!(both, [plx_screens::registry::word::ONBOARD]);
         // …and the two menus that became surfaces in phase 10 are on the overlay side ONLY. Both
         // MOVED between the tables in the commits that deleted their routes, and each moved with
         // its `manifest.json` scene's re-key (`home-acct-glass`, `item-menu`); a word left behind
         // in the route alphabet would have let a scene keep selecting on a `route=` the app can no
         // longer print, which fails on the television as "never entered this screen".
         for w in [
-            crate::screens::registry::word::ACCOUNT,
-            crate::screens::registry::word::ITEM_MENU,
+            plx_screens::registry::word::ACCOUNT,
+            plx_screens::registry::word::ITEM_MENU,
         ] {
             assert!(overlays.contains(&w), "{w:?} is a surface's own name");
             assert!(!routes.contains(&w), "{w:?} has no `route_word` arm any more");
@@ -283,7 +283,7 @@ mod heartbeat_word_tests {
         // The player's panels are `OverlayKind::word` through `Screen::name`, so they arrive
         // in the derived alphabet with everything else — asserted here because it is the one place
         // a reader can see that the panel words and the family words come from ONE source now.
-        use crate::screens::player::overlay::OverlayKind;
+        use plx_screens::player::overlay::OverlayKind;
         for kind in OverlayKind::ALL {
             assert!(
                 overlays.contains(&kind.word()),

@@ -1,5 +1,5 @@
 # A cargo workspace with this package as its ROOT; the other members are the storage helper and the
-# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/, data/, session/, media/, appkit/;
+# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/, data/, session/, media/, appkit/, screens/;
 # docs/module-layers.md).
 # The root keeps the literal `version` below (release tooling reads it), `make`/CI run their usual
 # commands from this directory against this package (a bare `cargo test`/`check`/`build` here still
@@ -19,6 +19,7 @@ members = [
     "session",
     "media",
     "appkit",
+    "screens",
     "storage",
 ]
 resolver = "2"
@@ -97,6 +98,7 @@ devtriggers = [
     "plx_session/devtriggers",
     "plx_media/devtriggers",
     "plx_appkit/devtriggers",
+    "plx_screens/devtriggers",
 ]
 # The one deliberate behavioural difference of dev builds: make main-thread violations LOUDER
 # (abort/warning), never change a code path that succeeds. Dropped by --no-default-features.
@@ -241,6 +243,11 @@ plx_media = { path = "media" }
 # the ui library over application types (the player HUD, the track menus, the info panel, the Sources row
 # model). It links nothing on the television; its build script is for the host test binary.
 plx_appkit = { path = "appkit" }
+# The screens layer (ci/module-layers.ini `[screens]`): every screen the dispatcher mounts (Home, the
+# library, detail, search, the player screen, Settings and its family, the account and item menus) and
+# the registry that names them. It links nothing on the television; its build script is for the host
+# test binary.
+plx_screens = { path = "screens" }
 # safe pure-Rust JPEG/PNG decoders — replaces vendored stb_image.h (~8k lines C)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # raw socket/libc FFI for the stream module (correct constants + struct layouts)
@@ -295,3 +302,5 @@ plx_session = { path = "session", features = ["test-support"] }
 plx_media = { path = "media", features = ["test-support"] }
 # Likewise the appkit layer's seams (`player_hud::SkipIntervalGuard`, the `overscan_rects` audits, ...).
 plx_appkit = { path = "appkit", features = ["test-support"] }
+# Likewise the screens layer's seams (`account_menu::overscan_rects`, `registry::every_surface_arg`, ...).
+plx_screens = { path = "screens", features = ["test-support"] }

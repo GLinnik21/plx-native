@@ -35,7 +35,7 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     Bridge::library_command(
         &mut d,
-        crate::screens::registry::LibraryCmd::FocusGrid { row: 2, col: 5 },
+        plx_screens::registry::LibraryCmd::FocusGrid { row: 2, col: 5 },
     );
     for i in 1..80 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
@@ -54,7 +54,7 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
         .unwrap()
         .as_any()
         .unwrap()
-        .downcast_ref::<crate::screens::library::LibraryScreen>()
+        .downcast_ref::<plx_screens::library::LibraryScreen>()
         .unwrap();
     assert_eq!(page.probe_viewport(d.focus()).0, "rail");
     rig.take_library_reqs();
@@ -106,7 +106,7 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
 
 #[test]
 fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
-    use crate::screens::registry::{LibraryCmd, LibraryMenuArg, LibraryMenuKind};
+    use plx_screens::registry::{LibraryCmd, LibraryMenuArg, LibraryMenuKind};
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
@@ -226,7 +226,7 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
             MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
                 focus: plx_ui::screen::FocusTarget::ContainerGroup(
-                    crate::screens::library::LIBRARY_GROUP,
+                    plx_screens::library::LIBRARY_GROUP,
                 ),
             })),
         ),
@@ -243,7 +243,7 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
             .unwrap()
             .as_any()
             .unwrap()
-            .downcast_ref::<crate::screens::library::LibraryScreen>()
+            .downcast_ref::<plx_screens::library::LibraryScreen>()
             .unwrap();
         let (region, row, _, _, _) = page.probe_viewport(d.focus());
         path.push((region, row));
@@ -258,7 +258,7 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
             returned = true;
             break;
         }
-        Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::Sweep);
+        Bridge::library_command(&mut d, plx_screens::registry::LibraryCmd::Sweep);
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     assert_eq!(

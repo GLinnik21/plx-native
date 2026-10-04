@@ -4,7 +4,7 @@
 use super::*;
 use plx_machine::machine::Chrome;
 use plx_ui::screen::ScreenArg;
-use crate::screens::player::HudPolicy;
+use plx_screens::player::HudPolicy;
 #[allow(unused_imports)]
 use super::test_support::*;
 use super::test_support::{frame, every_route};
@@ -322,7 +322,7 @@ fn player_exit_with_a_gone_origin_returns_to_the_existing_home_entry() {
 /// right: "home"` at `frame_with_results`'s `debug_assert_eq!`.
 #[test]
 fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame() {
-    use crate::screens::player::overlay::OverlayKind;
+    use plx_screens::player::overlay::OverlayKind;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
@@ -348,7 +348,7 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
 /// `Chapters` too, since each is anchored well inside the panel's near-full-width rect.
 #[test]
 fn player_diagnostics_hide_behind_any_open_player_overlay() {
-    use crate::screens::player::overlay::OverlayKind;
+    use plx_screens::player::overlay::OverlayKind;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
@@ -604,16 +604,16 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
     press(&mut d, &mut rig, Key::Down);
     assert_eq!(
         d.focus().map(|k| (k.entry, k.elem)),
-        Some((menu, crate::screens::item_menu::ItemRow::MarkWatched.focus_key())),
+        Some((menu, plx_screens::item_menu::ItemRow::MarkWatched.focus_key())),
         "the engine steps OVER the separator, which carries no action"
     );
     press(&mut d, &mut rig, Key::Down);
-    assert_eq!(d.focus().map(|k| (k.entry, k.elem)), Some((menu, crate::screens::item_menu::ItemRow::PlayFromStart.focus_key())));
+    assert_eq!(d.focus().map(|k| (k.entry, k.elem)), Some((menu, plx_screens::item_menu::ItemRow::PlayFromStart.focus_key())));
     press(&mut d, &mut rig, Key::Ok);
 
     let reqs = rig.take_item_menu_reqs();
     assert_eq!(reqs.len(), 1, "one commit, one request");
-    assert!(matches!(&reqs[0].act, crate::screens::item_menu::Action::PlayFromStart(rk) if rk == "42"));
+    assert!(matches!(&reqs[0].act, plx_screens::item_menu::Action::PlayFromStart(rk) if rk == "42"));
     assert!(reqs[0].from_home, "…and the trail reset the HOME root earns (`menu_leave`)");
     assert!(!reqs[0].loaded_episode);
     assert_eq!(
@@ -677,7 +677,7 @@ fn account_to_settings_never_unfreezes_the_host() {
     press(&mut d, &mut rig, Key::Down);
     assert_eq!(
         d.focus().map(|k| (k.entry, k.elem)),
-        Some((menu_entry, crate::screens::account_menu::Action::Settings.focus_key())),
+        Some((menu_entry, plx_screens::account_menu::Action::Settings.focus_key())),
         "the engine walked the menu's own rows"
     );
     press(&mut d, &mut rig, Key::Ok);
@@ -731,7 +731,7 @@ fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_a
     let instance = d.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id);
     assert!(instance.is_some(), "…with a live instance");
     let depth = d.nav.tabs.stack.depth();
-    for kind in crate::screens::player::overlay::OverlayKind::ALL {
+    for kind in plx_screens::player::overlay::OverlayKind::ALL {
         open_player_overlay(&ps, plx_data::stores::metadata::MetadataStore::default().view(), &mut d, kind);
         frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]);
         assert_eq!(player_overlay_kind(&d), Some(kind), "{kind:?} is up");
@@ -767,7 +767,7 @@ fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_a
 /// a menu is open, and what stops the track menu being reused as the Info card.
 #[test]
 fn same_instance_reads_the_playback_and_not_the_overlay() {
-    use crate::screens::player::overlay::{OverlayKind, PlayerOverlayArg};
+    use plx_screens::player::overlay::{OverlayKind, PlayerOverlayArg};
     use plx_ui::screen::ScreenArg;
     let player = AppArg::Player;
     assert!(player.same_instance(&AppArg::Player));
@@ -803,7 +803,7 @@ fn same_instance_reads_the_playback_and_not_the_overlay() {
 /// still count as "up" for `player_overlay_kind`'s purposes.
 #[test]
 fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
-    use crate::screens::player::overlay::OverlayKind;
+    use plx_screens::player::overlay::OverlayKind;
     let ps = plx_media::route::PlaybackSession::IDLE;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
@@ -859,7 +859,7 @@ fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
 /// (Settings over the player) lifts the captions as `Dispatcher::surface_up` always did.
 #[test]
 fn the_hud_state_helper_reads_every_phase_of_every_surface() {
-    use crate::screens::player::overlay::OverlayKind;
+    use plx_screens::player::overlay::OverlayKind;
     let ps = plx_media::route::PlaybackSession::IDLE;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
