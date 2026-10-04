@@ -99,6 +99,7 @@ pub(super) mod blur_bits {
 mod tests {
     use super::*;
     use crate::pms::{CwItem, PmsMovie, Shelf};
+    use std::sync::Arc;
 
     fn landing() -> Landing {
         // Exhaustive on purpose: adding a row field owes a codec/shape review, not an implicit
@@ -115,9 +116,9 @@ mod tests {
         };
         Landing { gen: 7, seq: 19, sid: m.sid, client: None, token_gen: 5,
             build: Some(SourceBuild {
-                cw: vec![CwItem { last_viewed_at: i64::MAX, m: m.clone() }],
+                cw: vec![CwItem { last_viewed_at: i64::MAX, m: Arc::new(m.clone()) }],
                 shelves: vec![Shelf { title: "Shelf".into(), hub_id: "provider.hub".into(),
-                    key: "/hub/key".into(), items: vec![m], total: 0 }],
+                    key: "/hub/key".into(), items: vec![Arc::new(m)], total: 0 }],
             }) }
     }
 

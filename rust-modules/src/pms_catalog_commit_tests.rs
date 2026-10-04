@@ -84,7 +84,7 @@ fn retained_home_publication_survives_commit_and_reset_without_copying_items() {
     assert_eq!(view.hub_count(), 1);
     assert_eq!(view.hero_count(), 3);
     assert_eq!(view.state, HubState::Ready);
-    assert!(std::ptr::eq(view.hub(0).unwrap().items.first().unwrap(), item));
+    assert!(std::ptr::eq(&**view.hub(0).unwrap().items.first().unwrap(), item));
     assert_eq!(view.hub(0).unwrap().identity, Some(HubIdentity::ContinueWatching));
     assert_eq!(view.hub(0).unwrap().source, "");
     assert_eq!(view.hero(0).unwrap().source, "");
@@ -196,12 +196,12 @@ fn a_catalog_row_is_found_by_its_server_and_key_never_by_the_key_alone() {
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let (a, b) = (sid(0), sid(1));
-    let mk = |s: ServerId, rk: &str, title: &str| PmsMovie {
+    let mk = |s: ServerId, rk: &str, title: &str| Arc::new(PmsMovie {
         sid: s,
         rk: rk.to_string(),
         title: title.to_string(),
         ..Default::default()
-    };
+    });
     // ours first, so a bare-key scan would always answer with it
     let cat = vec![
         mk(a, "1", "ours"),

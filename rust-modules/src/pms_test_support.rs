@@ -119,7 +119,11 @@ pub(super) fn land(state: &PmsState, adapter: &PmsAdapter, slot: u16, build: Opt
 
 /// A drawable catalog row of one server. `thumb` is what `project` requires of a row, `art`
 /// what the hero pool requires of one.
-pub(super) fn row(slot: u16, rk: &str) -> PmsMovie {
+pub(super) fn row(slot: u16, rk: &str) -> Arc<PmsMovie> {
+    Arc::new(plain_row(slot, rk))
+}
+
+fn plain_row(slot: u16, rk: &str) -> PmsMovie {
     PmsMovie {
         sid: sid(slot),
         rk: rk.into(),
@@ -145,7 +149,7 @@ pub(super) fn shelf(slot: u16, title: &str, hub_id: &str, rks: &[&str]) -> Shelf
 pub(super) fn shelf_in(slot: u16, sec: i64, title: &str, hub_id: &str, rks: &[&str]) -> Shelf {
     let mut sh = shelf(slot, title, hub_id, rks);
     for m in &mut sh.items {
-        m.sec = sec;
+        Arc::make_mut(m).sec = sec;
     }
     sh
 }
@@ -173,13 +177,13 @@ pub(super) fn rks(state: &PmsState, h: usize) -> Vec<String> {
 }
 
 /// A row that is part-way through, i.e. the shape a Continue Watching card really has.
-pub(super) fn started(slot: u16, rk: &str) -> PmsMovie {
-    PmsMovie {
+pub(super) fn started(slot: u16, rk: &str) -> Arc<PmsMovie> {
+    Arc::new(PmsMovie {
         dur_ns: 90 * 60 * 1_000_000_000,
         resume_ms: 30 * 60_000,
         unwatched: false,
-        ..row(slot, rk)
-    }
+        ..plain_row(slot, rk)
+    })
 }
 
 pub(super) fn pool_of(sources: &[&str]) -> Vec<HeroSlot> {

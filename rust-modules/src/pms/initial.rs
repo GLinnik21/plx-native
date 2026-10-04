@@ -172,7 +172,7 @@ fn source_build(b: &SourceBuild, w: &mut impl Sink) {
     }
 }
 
-fn movies(items: &[PmsMovie], w: &mut impl Sink) {
+fn movies(items: &[Arc<PmsMovie>], w: &mut impl Sink) {
     w.u64(items.len() as u64);
     for m in items { movie(m, w); }
 }
