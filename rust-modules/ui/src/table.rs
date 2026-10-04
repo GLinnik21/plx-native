@@ -13,6 +13,13 @@ use crate::theme;
 use crate::{Painter, Rect, Spring};
 use std::ffi::CString;
 
+thread_local! {
+    /// The focused menu row's marquee clock ([`crate::marquee`]). One list holds focus at a time;
+    /// a shelf's focused tile title keeps its own clock (`card_row`), so a popover over a shelf
+    /// never restarts either.
+    static ROW_MARQUEE: crate::marquee::Clock = const { crate::marquee::Clock::new() };
+}
+
 /// small trailing chip on a row (audio-description, forced, SDH, …)
 pub enum Badge {
     Ad,
@@ -1648,18 +1655,49 @@ impl TableView {
                 (theme::size::HEADLINE, 1)
             };
             let text_w = self.label_width(row, frame.w, measure);
-            let lbl = plx_gfx::text::elide_by(&row.label, text_w, false, |t| {
-                measure.width_str(t, lsz, lbold != 0)
-            });
-            if let Ok(cs) = CString::new(lbl) {
-                if two_line {
-                    p.text(cs.as_ptr(), label_x, title_y, tsz, base, 0, tbold);
+            // The FOCUSED row's label never elides: one that overflows its column scrolls through
+            // it instead ([`crate::marquee::ROW`] — a rest, a glide, a loop), so a long server name
+            // such as a subtitle release can be read in full. Every other row elides as before.
+            let (msz, mbold) = if two_line { (tsz, tbold) } else { (lsz, lbold) };
+            let full_w = if focused { measure.width_str(&row.label, msz, mbold != 0) } else { 0.0 };
+            if focused && full_w > text_w {
+                let m = crate::marquee::ROW;
+                let t_ms = m.phase(ROW_MARQUEE.with(|c| c.read(&row.label)), full_w, text_w);
+                m.report(t_ms, full_w, text_w);
+                let off = m.x(t_ms, full_w, text_w);
+                let y = if two_line {
+                    title_y
                 } else {
-                    let mut lab = Label::new(cs.as_ptr(), lsz, base);
-                    if lbold == 1 {
-                        lab = lab.bold();
+                    let (cap_top, baseline) = plx_gfx::text::text_cap_band(msz, mbold);
+                    cyc - (cap_top + baseline) * 0.5 // `Label`'s own Middle placement
+                };
+                if let Ok(cs) = CString::new(row.label.as_str()) {
+                    // scissored to the label's column on the row's band; nests inside the table's
+                    // own frame clip and restores it on drop
+                    let _clip = crate::screen::ClipScope::open_in(p, Rect::new(label_x, sy, text_w, h));
+                    p.text(cs.as_ptr(), label_x - off, y, msz, base, 0, mbold);
+                    let follower = label_x - off + full_w + crate::marquee::GAP;
+                    p.text(cs.as_ptr(), follower, y, msz, base, 0, mbold);
+                }
+            } else {
+                if focused {
+                    // a fitting focused label releases the clock: the next overflowing one starts
+                    // from its rest beat rather than mid-glide
+                    ROW_MARQUEE.with(|c| c.release());
+                }
+                let lbl = plx_gfx::text::elide_by(&row.label, text_w, false, |t| {
+                    measure.width_str(t, lsz, lbold != 0)
+                });
+                if let Ok(cs) = CString::new(lbl) {
+                    if two_line {
+                        p.text(cs.as_ptr(), label_x, title_y, tsz, base, 0, tbold);
+                    } else {
+                        let mut lab = Label::new(cs.as_ptr(), lsz, base);
+                        if lbold == 1 {
+                            lab = lab.bold();
+                        }
+                        lab.draw(p, Rect::new(label_x, sy, 0.0, h));
                     }
-                    lab.draw(p, Rect::new(label_x, sy, 0.0, h));
                 }
             }
             // detail sub-line, elided (long Cyrillic descriptors would run off the edge) — to the
@@ -2332,5 +2370,67 @@ mod tests {
         assert!(narrow.iter().any(|i| i.role == FitRole::Title), "a long title must be reported: {narrow:?}");
         let wide = t.fit_report(t.menu_panel_width(&M).max(t.measured_width(&M)), &M, HEADROOM);
         assert!(wide.iter().all(|i| i.role != FitRole::Title), "a panel sized from measured_width fits its title: {wide:?}");
+    }
+
+    // ---- the focused row's marquee -----------------------------------------------------------
+
+    /// The x of every text run the recording painter is handed inside `row`'s band.
+    fn row_text_xs(t: &TableView, frame: Rect, row: i32) -> Vec<f32> {
+        let band = t.row_frame(frame, row).expect("row on screen");
+        let log = crate::draw_census::capture(|| {
+            t.draw(crate::Painter::recording(), frame, &crate::fixture::FixtureMeasure)
+        });
+        log.into_iter()
+            .filter(|(tag, r)| *tag == 100 && r.y >= band.y - 1.0 && r.y < band.y + band.h)
+            .map(|(_, r)| r.x)
+            .collect()
+    }
+
+    fn marquee_table(sel: i32) -> TableView {
+        let mut t = TableView::new();
+        let long = "A.Very.Long.Subtitle.Release.Name.2026.1080p.WEB-DL.DDP5.1.H.264-GROUP";
+        let sec = Section::new("S").row(Row::new(long).server_label()).row(Row::new("Off"));
+        t.set_sections(vec![sec], sel, false);
+        t
+    }
+
+    /// **A focused label that overflows scrolls, after a rest** — a downloaded subtitle's release
+    /// name is several times the track menu's width, and eliding it hid the part that tells two
+    /// releases apart. It rests (left edge in place, a frame bought but no damage claimed), then
+    /// glides (damage reported every frame it moves), drawn as a run and its follower.
+    #[test]
+    fn a_focused_overflowing_label_rests_then_scrolls_and_reports_while_it_moves() {
+        let _serial = plx_base::testlock::serial();
+        let frame = Rect::new(0.0, 0.0, 500.0, 400.0);
+        let t = marquee_table(0);
+        ROW_MARQUEE.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let _ = plx_machine::idle::take_local_damage();
+        let rest = row_text_xs(&t, frame, 0);
+        assert_eq!(rest.len(), 2, "a run and its follower: {rest:?}");
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "resting is not damage");
+        let x0 = rest.iter().copied().fold(f32::MAX, f32::min);
+
+        plx_machine::idle::frame_begin((crate::marquee::ROW.hold_ms + 500.0) / 1000.0);
+        let gliding = row_text_xs(&t, frame, 0);
+        let x1 = gliding.iter().copied().fold(f32::MAX, f32::min);
+        assert!(x1 < x0, "the run has moved left: {x0} -> {x1}");
+        assert!(plx_machine::idle::take_local_damage() > 0, "a gliding frame reports");
+    }
+
+    /// **And nothing else moves**: a focused label that fits, and an overflowing label on a row
+    /// that is NOT focused, draw one still run and report nothing — a settled menu stays quiet.
+    #[test]
+    fn a_fitting_or_unfocused_label_draws_one_still_run_and_reports_nothing() {
+        let _serial = plx_base::testlock::serial();
+        let frame = Rect::new(0.0, 0.0, 500.0, 400.0);
+        let t = marquee_table(1); // focus on "Off"; the long row is unfocused
+        for _ in 0..3 {
+            plx_machine::idle::frame_begin(1.5);
+            let _ = plx_machine::idle::take_local_damage();
+            assert_eq!(row_text_xs(&t, frame, 1).len(), 1, "a fitting focused label: one run");
+            assert_eq!(row_text_xs(&t, frame, 0).len(), 1, "an unfocused overflowing label: one elided run");
+            assert_eq!(plx_machine::idle::take_local_damage(), 0, "nothing animates, nothing reports");
+        }
     }
 }
