@@ -5,8 +5,8 @@
 //!
 //! It owns no UI and no table: the popover keeps its own [`FormTable`] and calls
 //! [`PageStack::push`] / [`PageStack::pop`] around the form operations (`FormTable::open` on a push,
-//! `FormTable::restore` on a pop). `crate::appkit::track_menu::TrackMenuState` (Subtitles' Style and
-//! language pages) and `crate::appkit::more_menu::MoreMenuState` (Quality) both stand on it, so the
+//! `FormTable::restore` on a pop). `plx_appkit::track_menu::TrackMenuState` (Subtitles' Style and
+//! language pages) and `plx_appkit::more_menu::MoreMenuState` (Quality) both stand on it, so the
 //! two cannot drift on what a push saves or what the replay canon says about it.
 //!
 //! The root is the EMPTY stack, not a value of `P`.
@@ -113,8 +113,8 @@ where
 
 /// **What a popover must expose for its focus stops to be shared**: the form it shows, its
 /// [`PanelMotion`], and the two rects the card is laid out and drawn at. The
-/// `Focusable`/`Part` impls of `crate::appkit::track_menu::TrackMenuPart` and
-/// `crate::appkit::more_menu::MoreMenuPart` differ only in `reconcile`; everything else is the
+/// `Focusable`/`Part` impls of `plx_appkit::track_menu::TrackMenuPart` and
+/// `plx_appkit::more_menu::MoreMenuPart` differ only in `reconcile`; everything else is the
 /// `popover_*` functions below, so the two cannot drift on where a stop is, what it clips to, or
 /// which way a key steps.
 pub trait PopoverPanel {

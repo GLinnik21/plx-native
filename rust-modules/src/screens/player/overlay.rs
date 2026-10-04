@@ -41,21 +41,21 @@ use std::borrow::Cow;
 use std::os::raw::c_int;
 
 use crate::screens::registry::{AppFx, AppLike, PlayerReq};
-use crate::appkit::chapters_panel::{chapter_count, ChaptersPart};
+use plx_appkit::chapters_panel::{chapter_count, ChaptersPart};
 use plx_ui::consts;
 use plx_ui::frame::Budget;
-use crate::appkit::info_panel::InfoPanelPart;
+use plx_appkit::info_panel::InfoPanelPart;
 use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, LogicalState,
     Machine, NavOp,
 };
-use crate::appkit::more_menu::{MoreMenuPart, MoreOk};
+use plx_appkit::more_menu::{MoreMenuPart, MoreOk};
 use plx_ui::screen::{
     At, Dir, DrawFrame, FocusSource, Focusable, GroupSpec, HitSource, Part, Placed, RenderStrategy,
     Screen, ScreenEvent, Step,
 };
-use crate::appkit::timing_capsule::{CapsuleOut, TimingCapsule};
-use crate::appkit::track_menu::{TrackMenuPart, TrackOk};
+use plx_appkit::timing_capsule::{CapsuleOut, TimingCapsule};
+use plx_appkit::track_menu::{TrackMenuPart, TrackOk};
 
 use super::HudPolicy;
 use plx_ui::Rect;
@@ -68,7 +68,7 @@ use crate::screens::registry::{RepeatGate, PANEL_REPEAT_MS};
 /// so without it a replay grades a panel opening and closing and nothing between.
 ///
 /// `sel` is the highlighted row's index for every panel but the track menu and More, whose own
-/// canons ([`crate::appkit::track_menu::TrackMenuState::canon`], [`crate::appkit::more_menu::MoreMenuState::canon`])
+/// canons ([`plx_appkit::track_menu::TrackMenuState::canon`], [`plx_appkit::more_menu::MoreMenuState::canon`])
 /// replace it: the track menu's `tab`, then for both the page-path depth, each pushed page's
 /// `{page,return_key}` and the selected row's KEY.
 pub(crate) const SHAPE: &str =
@@ -218,10 +218,10 @@ impl LogicalState for PlayerOverlayArg {
 
 /// The panel itself — the state four modules kept in `static mut`s until phase 9.
 pub(crate) enum Panel {
-    Tracks(crate::appkit::track_menu::TrackMenuState),
-    Info(crate::appkit::info_panel::InfoPanelState),
-    Chapters(crate::appkit::chapters_panel::ChaptersState),
-    More(crate::appkit::more_menu::MoreMenuState),
+    Tracks(plx_appkit::track_menu::TrackMenuState),
+    Info(plx_appkit::info_panel::InfoPanelState),
+    Chapters(plx_appkit::chapters_panel::ChaptersState),
+    More(plx_appkit::more_menu::MoreMenuState),
     Timing(TimingCapsule),
 }
 
@@ -282,22 +282,22 @@ impl PlayerOverlayScreen {
     pub(crate) fn new(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
         let panel = match kind {
             OverlayKind::Tracks { tab } => Panel::Tracks(plx_base::diag::spans::span("tmnew", || {
-                crate::appkit::track_menu::TrackMenuState::new(ps, meta, tab, subtitle_yours_langs(ps, meta))
+                plx_appkit::track_menu::TrackMenuState::new(ps, meta, tab, subtitle_yours_langs(ps, meta))
             })),
-            OverlayKind::Info => Panel::Info(crate::appkit::info_panel::InfoPanelState::new()),
+            OverlayKind::Info => Panel::Info(plx_appkit::info_panel::InfoPanelState::new()),
             OverlayKind::Chapters => {
-                Panel::Chapters(crate::appkit::chapters_panel::ChaptersState::new(meta))
+                Panel::Chapters(plx_appkit::chapters_panel::ChaptersState::new(meta))
             }
             OverlayKind::More { quality: false } => {
-                Panel::More(crate::appkit::more_menu::MoreMenuState::new(ps))
+                Panel::More(plx_appkit::more_menu::MoreMenuState::new(ps))
             }
             // Force Direct Play offers no Quality section, so there is no rung to land on: a
             // quality entry is the ordinary menu then (`more_menu::rows_for`).
             OverlayKind::More { quality: true } if plx_media::route::forced_direct_play(ps) => {
-                Panel::More(crate::appkit::more_menu::MoreMenuState::new(ps))
+                Panel::More(plx_appkit::more_menu::MoreMenuState::new(ps))
             }
             OverlayKind::More { quality: true } => {
-                Panel::More(crate::appkit::more_menu::MoreMenuState::new_quality(ps))
+                Panel::More(plx_appkit::more_menu::MoreMenuState::new_quality(ps))
             }
             OverlayKind::Timing => {
                 let (lo, hi) = plx_media::player::subtitle_offset_range_ms();
@@ -354,7 +354,7 @@ impl PlayerOverlayScreen {
 
     /// Resolve `/tmp/plxnative-menupick`'s second field to an absolute row: a plain row number
     /// parses as itself (the original contract); the Audio tab's `"boost"`/`"loudness"` are tried
-    /// as NAMED targets through [`crate::appkit::track_menu::TrackMenuState::row_for_audio_target`].
+    /// as NAMED targets through [`plx_appkit::track_menu::TrackMenuState::row_for_audio_target`].
     /// `None` when neither applies — an unparseable number, a name on the wrong tab, or an
     /// unrecognized name. The Subtitles tab's `"track:N"` is not a row at all (the track may sit
     /// on a page that is not showing): see [`Self::resolve_menupick_track`].
@@ -369,7 +369,7 @@ impl PlayerOverlayScreen {
     }
 
     /// Resolve a `"track:N"` target of `/tmp/plxnative-menupick` to the subtitle's index in the
-    /// item's list ([`crate::appkit::track_menu::TrackMenuState::sub_track_for_target`]) — root tracks
+    /// item's list ([`plx_appkit::track_menu::TrackMenuState::sub_track_for_target`]) — root tracks
     /// first, then the ones behind Other languages. `None` for any other target.
     pub(crate) fn resolve_menupick_track(&self, target: &str) -> Option<usize> {
         match &self.panel {
@@ -401,14 +401,14 @@ impl PlayerOverlayScreen {
     /// `false` when the panel is not More or its root offers no Quality row (Force Direct Play).
     pub(crate) fn seat_more_quality(&mut self) -> bool {
         match &mut self.panel {
-            Panel::More(p) => p.focus_key(plx_ui::form::FormId::key(&crate::appkit::more_menu::MoreRow::OpenQuality).0),
+            Panel::More(p) => p.focus_key(plx_ui::form::FormId::key(&plx_appkit::more_menu::MoreRow::OpenQuality).0),
             _ => false,
         }
     }
 
     /// `submenuosc`'s cursor seat: put the Tracks cursor on `row` so the next real RIGHT key
     /// enters it. `false` when this page has no such row.
-    pub(crate) fn seat_track_row(&mut self, row: crate::appkit::track_menu::TrackRow) -> bool {
+    pub(crate) fn seat_track_row(&mut self, row: plx_appkit::track_menu::TrackRow) -> bool {
         match &mut self.panel {
             Panel::Tracks(p) => p.focus_id(row),
             _ => false,
@@ -416,13 +416,13 @@ impl PlayerOverlayScreen {
     }
 
     /// **The headless pick of a named subtitle track**: commit the track at `i` by its own index
-    /// ([`crate::appkit::track_menu::TrackMenuState::commit_sub_track`]), whatever page its row is on.
+    /// ([`plx_appkit::track_menu::TrackMenuState::commit_sub_track`]), whatever page its row is on.
     /// Like [`Self::pick_track_row`] it leaves the panel on screen.
     pub(crate) fn pick_sub_track(
         &mut self,
         meta: plx_data::metadata::MetadataView<'_>,
         i: usize,
-    ) -> Option<crate::appkit::track_menu::TrackCommit> {
+    ) -> Option<plx_appkit::track_menu::TrackCommit> {
         match &mut self.panel {
             Panel::Tracks(p) => match p.commit_sub_track(i, meta) {
                 TrackOk::Commit { commit, .. } => Some(commit),
@@ -444,7 +444,7 @@ impl PlayerOverlayScreen {
         &mut self,
         meta: plx_data::metadata::MetadataView<'_>,
         row: c_int,
-    ) -> Option<crate::appkit::track_menu::TrackCommit> {
+    ) -> Option<plx_appkit::track_menu::TrackCommit> {
         if let Panel::Tracks(p) = &mut self.panel {
             p.focus_row(row);
             return match p.on_ok(meta) {
@@ -464,7 +464,7 @@ impl PlayerOverlayScreen {
     pub(crate) fn info_press_action(
         &mut self,
         meta: plx_data::metadata::MetadataView<'_>,
-    ) -> Option<crate::appkit::info_panel::InfoAction> {
+    ) -> Option<plx_appkit::info_panel::InfoAction> {
         match &mut self.panel {
             Panel::Info(p) => Some(p.on_ok(meta)),
             _ => None,
@@ -670,7 +670,7 @@ impl PlayerOverlayScreen {
                 Some(CapsuleOut::Step(v)) => {
                     Self::ask(
                         fx,
-                        PlayerReq::CommitTrack(crate::appkit::track_menu::TrackCommit::SubtitleOffset(v)),
+                        PlayerReq::CommitTrack(plx_appkit::track_menu::TrackCommit::SubtitleOffset(v)),
                     );
                 }
                 // The transport stays down after the capsule leaves — not asked for here, since a
@@ -970,7 +970,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         None
     }
     fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, H>) {
-        self.suppressed = crate::appkit::player_hud::transport_hidden(H::session(cx))
+        self.suppressed = plx_appkit::player_hud::transport_hidden(H::session(cx))
             && !self.kind.survives_failure();
         // The first `update` is a frame behind the mount, so the root page's strings are queued
         // here for the open frame's drain instead (`TrackMenuState::warm_open`).
@@ -1005,7 +1005,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         // Stale content panels are gone with the transport when a playback has FAILED; the `…`
         // popover is the deliberate exception, because the read-out opened it as its own recovery
         // path (`OverlayKind::survives_failure`).
-        if crate::appkit::player_hud::transport_hidden(ps) && !self.kind.survives_failure() {
+        if plx_appkit::player_hud::transport_hidden(ps) && !self.kind.survives_failure() {
             return;
         }
         // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`
@@ -1018,7 +1018,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             Panel::Chapters(p) => p.draw(ps, appear, measure, H::metadata(f.cx)),
             Panel::More(p) => p.draw(appear, measure),
             // Fixed y, never the live caption's own baseline — see `player_hud::CAPSULE_BOTTOM_Y`.
-            Panel::Timing(p) => p.draw(crate::appkit::player_hud::CAPSULE_BOTTOM_Y, appear),
+            Panel::Timing(p) => p.draw(plx_appkit::player_hud::CAPSULE_BOTTOM_Y, appear),
         }
         self.record_stops(f);
     }

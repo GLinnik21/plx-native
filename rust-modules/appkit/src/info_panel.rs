@@ -36,7 +36,7 @@ pub enum InfoAction {
 /// The card's whole state, owned by the container that mounts this panel — the modal PHASE and the
 /// appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw`
 /// takes the appear fraction as a parameter instead of stepping its own `Popover`.
-pub(crate) struct InfoPanelState {
+pub struct InfoPanelState {
     focus: c_int, // index into the action-button column
     /// The action column's FOCUS POP — one spring per button ([`plx_ui::widgets::CtlPop`]). Two,
     /// the whole of [`actions`].
@@ -44,7 +44,7 @@ pub(crate) struct InfoPanelState {
 }
 
 impl InfoPanelState {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         InfoPanelState {
             focus: 0,
             ctl_pop: plx_ui::widgets::CtlPop::new(),
@@ -54,13 +54,13 @@ impl InfoPanelState {
     /// The focused action button, for the focus probe (`crate::focusprobe`). Same reason as the
     /// other panels: the card's UP/DOWN arm moves this alone, so nothing else in the log would show
     /// it.
-    pub(crate) fn sel(&self) -> c_int {
+    pub fn sel(&self) -> c_int {
         self.focus
     }
 
     /// true when focus is on the last action button — a further DOWN should leave the card (back to
     /// the tabs) rather than staying pinned to the bottom row
-    pub(crate) fn at_last(&self) -> bool {
+    pub fn at_last(&self) -> bool {
         self.focus >= N_ACTIONS as c_int - 1
     }
 
@@ -68,13 +68,13 @@ impl InfoPanelState {
     /// [`InfoPanelPart`] answers is the source of geometry, but the ENGINE owns the current
     /// element (§7.3 step 5) — the owner's `step` is the only place that mutates in response to a
     /// `FocusMoved`, and this is `screens::player::overlay::PlayerOverlayScreen::step`'s write.
-    pub(crate) fn set_focus(&mut self, i: c_int) {
+    pub fn set_focus(&mut self, i: c_int) {
         self.focus = i;
     }
 
     /// activate the focused action — dismissing the card afterward is the container's job now, not
     /// this method's.
-    pub(crate) fn on_ok(&self, meta: metadata::MetadataView<'_>) -> InfoAction {
+    pub fn on_ok(&self, meta: metadata::MetadataView<'_>) -> InfoAction {
         let f = self.focus;
         if f <= 0 {
             return InfoAction::FromBeginning;
@@ -108,14 +108,14 @@ impl InfoPanelState {
             .filter(|&i| i < N_ACTIONS)
     }
 
-    pub(crate) fn update(&mut self, dt: f32) {
+    pub fn update(&mut self, dt: f32) {
         // The card's focus walks the tabs above these buttons too, and `focus` is the button index
         // only while it is inside the column — outside it, every pop closes.
         let idx = self.ctl_index();
         self.ctl_pop.step(idx, dt);
     }
 
-    pub(crate) fn draw(
+    pub fn draw(
         &mut self,
         ps: &plx_media::route::PlaybackSession,
         appear: f32,
@@ -495,10 +495,10 @@ impl InfoPanelState {
 /// mutates a screen"), so a mutable field would make this type unconstructable from there. The
 /// actual paint (`InfoPanelState::draw`) stays a direct call on the owned `Panel` from
 /// `PlayerOverlayScreen::draw`'s `&mut self`; [`Part::draw`] below only registers stops.
-pub(crate) struct InfoPanelPart<'a> {
-    pub(crate) state: &'a InfoPanelState,
-    pub(crate) entry: EntryId,
-    pub(crate) group: GroupId,
+pub struct InfoPanelPart<'a> {
+    pub state: &'a InfoPanelState,
+    pub entry: EntryId,
+    pub group: GroupId,
 }
 
 impl<H: Host> Focusable<H> for InfoPanelPart<'_>
@@ -682,7 +682,7 @@ fn meta_badge(
 /// player uses for the video lane, and this is the only place the app names a video codec to a
 /// user. An unknown codec is upper-cased rather than dropped: "Converting · AV1" is still the
 /// truth, and inventing a friendly name for a codec we have never seen would not be.
-pub(crate) fn video_codec_name(codec: &str) -> String {
+pub fn video_codec_name(codec: &str) -> String {
     match codec.to_ascii_lowercase().as_str() {
         "h264" | "avc" | "avc1" => "H.264".to_string(),
         "hevc" | "h265" | "hvc1" | "hev1" => "HEVC".to_string(),
@@ -725,7 +725,7 @@ pub(crate) fn video_codec_name(codec: &str) -> String {
 /// switch — Up Next, or Play from a detail page while a session is live — every one of those three
 /// still describes the PREVIOUS item for the whole resolve. Without the pending test this line
 /// would state the last session's fact as this one's.
-pub(crate) fn playback_now(
+pub fn playback_now(
     streaming: bool,
     transcoding: bool,
     remux: bool,

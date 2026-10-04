@@ -1,5 +1,5 @@
 //! **Stats for nerds** — the on-screen diagnostics read-out, toggled from the player's `…` overflow
-//! popover ([`crate::appkit::more_menu`]) and, since 2026-08-29, from the account menu
+//! popover ([`plx_appkit::more_menu`]) and, since 2026-08-29, from the account menu
 //! ([`crate::screens::account_menu`]) on every other route.
 //!
 //! # Where this lives, and why it is not a screen (restructure phase 10)
@@ -2012,7 +2012,7 @@ mod tests {
                     + panel.head_lines[1].len().max(1) as f32 * HEAD_LINE_H);
                 assert!(layout.fields_y >= layout.sections_y + HEAD_LINE_H);
                 assert!(plx_ui::consts::inside_safe(frame));
-                assert!(frame.y + frame.h < crate::appkit::player_hud::CTRL_Y);
+                assert!(frame.y + frame.h < plx_appkit::player_hud::CTRL_Y);
             }
         }
     }
@@ -2030,7 +2030,7 @@ mod tests {
         for panel in [&short, &long] {
             let chart_top = panel.header_layout().fields_y + FieldList::height(RIGHT_ROWS);
             assert_eq!(panel.panel_rect().h - PAD - chart_top, FieldList::height(CHART_ROWS));
-            assert!(panel.panel_rect().y + panel.panel_rect().h < crate::appkit::player_hud::CTRL_Y);
+            assert!(panel.panel_rect().y + panel.panel_rect().h < plx_appkit::player_hud::CTRL_Y);
         }
         assert_eq!(long.head_lines[0].concat(), long.head[0], "opaque build IDs must never lose a suffix");
     }
@@ -2492,9 +2492,9 @@ mod tests {
     fn the_panel_clears_the_transport() {
         let bottom = MARGIN + HEAD_H + FieldList::height(LEFT_ROWS) + PAD;
         assert!(
-            bottom < crate::appkit::player_hud::CTRL_Y,
+            bottom < plx_appkit::player_hud::CTRL_Y,
             "panel bottom {bottom} overlaps the control row at {}",
-            crate::appkit::player_hud::CTRL_Y
+            plx_appkit::player_hud::CTRL_Y
         );
         // through `panel_rect` itself, not a restatement of its arithmetic: its x is `MARGIN_X`
         // (the overscan side margin) while its y is `MARGIN`, and a copy here would have kept

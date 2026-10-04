@@ -105,7 +105,7 @@ impl AssSubtitles {
             self.textures = next.into_iter().flatten().collect();
             self.uploaded = frame.serial;
         }
-        let ink = crate::appkit::player_hud::subtitle_ink();
+        let ink = plx_appkit::player_hud::subtitle_ink();
         for (texture, rect) in self.textures.iter().zip(&frame.rects) {
             Painter::root().tex(
                 texture.id,

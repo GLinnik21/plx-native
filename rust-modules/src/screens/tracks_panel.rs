@@ -221,7 +221,7 @@ pub(crate) fn fmt_bitrate(kbps: i64) -> Option<String> {
 /// profile Title-Cased in brackets. A codec with no profile is the bare name; no codec at all is
 /// no row.
 pub(crate) fn fmt_codec_profile(codec: &str, profile: &str) -> Option<String> {
-    let name = crate::appkit::info_panel::video_codec_name(codec);
+    let name = plx_appkit::info_panel::video_codec_name(codec);
     if name.is_empty() {
         return None;
     }

@@ -44,7 +44,7 @@ use std::convert::Infallible;
 /// have been on, and it is the one surface that lists every granted library so a non-favourite has
 /// a way back.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Level {
+pub enum Level {
     /// a picker: one tick, on the library you are looking at; OK closes the panel
     Browse,
     /// toggles: `On`/`Off` at the trailing edge; OK flips and the panel stays open
@@ -56,7 +56,7 @@ pub(crate) enum Level {
 /// slot ([`FormSection::separator`]): it takes a layout index and has no identity, so it can never
 /// be focused or pressed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum SrcTarget {
+pub enum SrcTarget {
     /// browse (Browse level) or favourite (OnHome level) this section
     Library(usize),
     Recheck,
@@ -75,7 +75,7 @@ impl FormId for SrcTarget {
 }
 
 /// The Sources list as a form: an item's action IS its identity.
-pub(crate) type SrcForm = Form<SrcTarget, SrcTarget, Infallible>;
+pub type SrcForm = Form<SrcTarget, SrcTarget, Infallible>;
 
 /// Does the list end with the roster-refresh row?
 ///
@@ -84,7 +84,7 @@ pub(crate) type SrcForm = Form<SrcTarget, SrcTarget, Infallible>;
 /// for a refresh to be FOR there — it appears unpinned in the Library chip's list, "which is where
 /// 'Check for shared libraries' already lives" (`Shared Sources.dc.html` §F).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Tail {
+pub enum Tail {
     Recheck,
     None,
 }
@@ -226,7 +226,7 @@ fn header_accessory(sec: Section, g: &SrcGroup) -> Section {
 ///
 /// Returns the list as a [`SrcForm`]: every library row declared with its [`SrcTarget`], and the
 /// separator above the roster-refresh row an inert slot.
-pub(crate) fn form(
+pub fn form(
     level: Level,
     groups: &[plx_data::browse::SrcGroup],
     rows: &[plx_data::browse::SrcRow],

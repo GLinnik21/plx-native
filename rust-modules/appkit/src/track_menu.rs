@@ -101,7 +101,7 @@ use std::os::raw::c_int;
 /// so one [`FormTable`] serves every page. The non-selectable footnotes under the DSP pair and under
 /// Style are inert slots ([`FormSection::note`]) and have no identity at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TrackRow {
+pub enum TrackRow {
     /// An Audio-tab track row — the index into the playing item's audio list
     /// ([`plx_data::metadata::PlayingItem::audio`]).
     Audio(usize),
@@ -148,14 +148,14 @@ impl From<RowTarget> for TrackRow {
 /// One caption style field: the Style page lists one drill-in per field, and each opens a picker
 /// page of that field's ladder with the current rung checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StyleField {
+pub enum StyleField {
     Size,
     Position,
     Color,
 }
 
 impl StyleField {
-    pub(crate) const ALL: [StyleField; 3] = [StyleField::Size, StyleField::Position, StyleField::Color];
+    pub const ALL: [StyleField; 3] = [StyleField::Size, StyleField::Position, StyleField::Color];
 
     fn ordinal(self) -> u32 {
         self as u32
@@ -192,7 +192,7 @@ impl StyleField {
 /// **A drill-in page of the Subtitles tab** — the form's `Dest`. The Subtitles root is the empty
 /// page stack, not a value of this type (`docs/player-submenus.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TrackPage {
+pub enum TrackPage {
     /// Size, Position and Color, each a drill-in showing its current value.
     Style,
     /// One field's picker: a checked [`TrackRow::Choice`] per rung.
@@ -275,7 +275,7 @@ type EnhState = (
 fn table_natural(table: &TableView, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let pw = table.menu_panel_width(measure);
     // the transport control row's own right edge — one number for the discs and both panels
-    let px = crate::appkit::player_hud::CTRL_RIGHT - pw;
+    let px = crate::player_hud::CTRL_RIGHT - pw;
     // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
     // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
     // crosses `top_min` — so a long list (an item with many audio dubs) SCROLLS inside the panel
@@ -297,7 +297,7 @@ fn table_natural(table: &TableView, measure: &dyn plx_machine::machine::Measure)
 /// (`appkit::player_hud::draw_subtitle_message`); an image subtitle keeps its own bitmap geometry and
 /// native ASS/SSA its authored layout. The subtitle INK tints all three, so Color is always live.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SubRenderer {
+pub enum SubRenderer {
     Text,
     Image,
     Styled,
@@ -353,7 +353,7 @@ impl SubSig {
 /// The menu's whole state, owned by the container that mounts this panel — the modal PHASE and the
 /// appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw` takes
 /// the appear fraction as a parameter instead of stepping its own [`Popover`].
-pub(crate) struct TrackMenuState {
+pub struct TrackMenuState {
     tab: c_int, // 0=Audio, 1=Subtitles
     active_audio: c_int, // index into the playing item's audio list
     active_sub: c_int, // -1 = Off, else index into the playing item's subs list
@@ -448,7 +448,7 @@ pub(crate) struct TrackMenuState {
 /// nothing (audio only: a subtitle OK always republishes, because "Off" is a real choice that the
 /// panel cannot distinguish from "unchanged" without knowing what the renderer currently has).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum TrackCommit {
+pub enum TrackCommit {
     /// The frozen `CarriedAudio` snapshot for the picked row (issue #266), built via
     /// `CarriedAudio::from_stream` from the exact `metadata::Stream` the row was drawn from.
     Audio(plx_media::route::CarriedAudio),
@@ -486,7 +486,7 @@ pub(crate) enum TrackCommit {
 /// different overlay (`screens::player::overlay`'s Tracks→Timing transition, plan §4) — a
 /// decision this panel can state but not perform, since it does not own the overlay stack.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum TrackOk {
+pub enum TrackOk {
     /// Perform `commit`. `keep_open` is true for a Style pick (the viewer is watching the caption
     /// change, so a run of picks needs no reopen-and-rewalk between them) and for the Audio
     /// toggles; every track pick closes the panel.
@@ -518,7 +518,7 @@ impl TrackMenuState {
     /// Build the menu focused on `tab` (0=Audio, 1=Subtitles) — the on-screen audio/subs icons
     /// pick a specific tab this way; the plain open path passes 0. `yours` is "your languages" in
     /// preference order (pref, playing audio, current subtitle) — see [`Self::yours`].
-    pub(crate) fn new(
+    pub fn new(
         ps: &plx_media::route::PlaybackSession,
         meta: metadata::MetadataView<'_>,
         tab: c_int,
@@ -557,7 +557,7 @@ impl TrackMenuState {
     /// key ladder moves, and the reason it exists: `app.rs`'s UP/DOWN arm for this panel changes
     /// nothing else, so without this the fingerprint records the panel opening and closing and
     /// nothing between.
-    pub(crate) fn sel(&self) -> i32 {
+    pub fn sel(&self) -> i32 {
         self.form.table.sel
     }
 
@@ -566,7 +566,7 @@ impl TrackMenuState {
     /// is added above it. `screens::player::overlay` writes this in place of the bare row index, so
     /// a replay tells Subtitles from Audio, the root from a Style page, and two return stacks
     /// apart.
-    pub(crate) fn canon(&self, c: &mut Canon) {
+    pub fn canon(&self, c: &mut Canon) {
         c.u32(self.tab as u32);
         self.pages.canon(c, TrackPage::code, |r| r.key().0);
         c.u32(self.form.key_at(self.form.table.sel.max(0) as usize).map_or(u32::MAX, |k| k.0));
@@ -574,51 +574,51 @@ impl TrackMenuState {
 
     /// What the `submenuosc` trigger needs to choose its next key: the tab (0 Audio, 1 Subtitles),
     /// how many pages are pushed above the root, and whether the root offers Other languages.
-    pub(crate) fn osc_probe(&self) -> (c_int, usize, bool) {
+    pub fn osc_probe(&self) -> (c_int, usize, bool) {
         (self.tab, self.pages.len(), self.form.index_of(&TrackRow::OpenOther).is_some())
     }
 
     /// The pages pushed above the Subtitles root, outermost first, for tests and probes.
-    #[cfg(test)]
-    pub(crate) fn page_path(&self) -> Vec<TrackPage> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn page_path(&self) -> Vec<TrackPage> {
         self.pages.iter().map(|s| s.page).collect()
     }
 
     /// Was the Subtitles root last built under the app's own live burn (what locks Timing and Style)?
-    #[cfg(test)]
-    pub(crate) fn own_burn_built(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn own_burn_built(&self) -> bool {
         self.sub_sig.as_ref().is_some_and(|sig| sig.own_burn)
     }
 
     /// The highlighted row's id (`None` on a note or an empty list).
-    #[cfg(test)]
-    pub(crate) fn selected_id(&self) -> Option<TrackRow> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn selected_id(&self) -> Option<TrackRow> {
         self.form.selected_id().copied()
     }
 
     /// The focusable rows at the current tab, in drawn order, by identity — for a test that needs
     /// to name a row without duplicating this layout by hand (`screens::player::overlay_tests`'s
     /// Timing hand-off test).
-    #[cfg(test)]
-    pub(crate) fn ids(&self) -> Vec<TrackRow> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ids(&self) -> Vec<TrackRow> {
         (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.id_at(i).copied()).collect()
     }
 
     /// Every focusable row's focus element, in drawn order.
-    #[cfg(test)]
-    pub(crate) fn keys(&self) -> Vec<u32> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn keys(&self) -> Vec<u32> {
         self.ids().iter().map(|id| id.key().0).collect()
     }
 
     /// The focus element (a row's [`RowKey`] number) of the row `id` names, if this tab has it.
-    #[cfg(test)]
-    pub(crate) fn key_of(&self, id: TrackRow) -> Option<u32> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn key_of(&self, id: TrackRow) -> Option<u32> {
         self.form.index_of(&id).map(|_| id.key().0)
     }
 
     /// Move focus onto the row `id` names (a test's, or the `submenuosc` trigger's, way of
     /// pressing DOWN to it); `false` when this tab has no such row.
-    pub(crate) fn focus_id(&mut self, id: TrackRow) -> bool {
+    pub fn focus_id(&mut self, id: TrackRow) -> bool {
         self.focus_key(id.key().0);
         self.form.selected_id() == Some(&id)
     }
@@ -628,22 +628,22 @@ impl TrackMenuState {
     /// element (§7.3 step 5) — the owner's `step` is the only place that mutates in response to a
     /// `FocusMoved`, and this is `screens::player::overlay::PlayerOverlayScreen::step`'s write.
     /// The element is a row's [`RowKey`] number; a key this tab does not know moves nothing.
-    pub(crate) fn focus_key(&mut self, elem: u32) {
+    pub fn focus_key(&mut self, elem: u32) {
         if let Some(i) = self.form.index_of_key(RowKey(elem)) {
             self.form.table.sel = i as i32;
         }
     }
 
     /// index into the playing item's audio list of the chosen audio track
-    pub(crate) fn active_audio(&self) -> c_int {
+    pub fn active_audio(&self) -> c_int {
         self.active_audio
     }
     /// -1 = subtitles off, else index into the playing item's subs list
-    pub(crate) fn active_sub(&self) -> c_int {
+    pub fn active_sub(&self) -> c_int {
         self.active_sub
     }
     /// Plex stream id of the chosen audio track (for &audioStreamID), or 0
-    pub(crate) fn audio_stream_id(&self, meta: metadata::MetadataView<'_>) -> i64 {
+    pub fn audio_stream_id(&self, meta: metadata::MetadataView<'_>) -> i64 {
         let i = self.active_audio();
         tracks(meta)
             .and_then(|t| t.audio.get(i.max(0) as usize))
@@ -651,7 +651,7 @@ impl TrackMenuState {
             .unwrap_or(0)
     }
     /// Plex stream id of the chosen subtitle track (for &subtitleStreamID), or 0 if Off
-    pub(crate) fn sub_stream_id(&self, meta: metadata::MetadataView<'_>) -> i64 {
+    pub fn sub_stream_id(&self, meta: metadata::MetadataView<'_>) -> i64 {
         let i = self.active_sub();
         if i < 0 {
             return 0;
@@ -849,7 +849,7 @@ impl TrackMenuState {
     /// one dev-only entry that speaks positions (the named targets below do not). The interactive
     /// path always moves relatively; this exists because the initial focus is the ACTIVE row
     /// (derived from playback state), so a relative walk from it would land elsewhere.
-    pub(crate) fn focus_row(&mut self, row: c_int) {
+    pub fn focus_row(&mut self, row: c_int) {
         for _ in 0..64 {
             if self.form.table.sel == row {
                 break;
@@ -869,7 +869,7 @@ impl TrackMenuState {
     /// through the form, the same identities [`Self::on_ok`] dispatches on, means the name
     /// is correct however many tracks the item actually has. `None` when `name` is unrecognized,
     /// or recognized but not currently built (the DSP toggle rows are not offered right now).
-    pub(crate) fn row_for_audio_target(&self, name: &str) -> Option<c_int> {
+    pub fn row_for_audio_target(&self, name: &str) -> Option<c_int> {
         let target = match name {
             "boost" => TrackRow::Boost,
             "loudness" => TrackRow::Loudness,
@@ -887,7 +887,7 @@ impl TrackMenuState {
     /// time the panel gains or loses a row (the `subtitle_text_srt` case picked row 3, which became
     /// the Style row); a position in this order cannot. `None` for an unrecognized name or an N past
     /// the last track.
-    pub(crate) fn sub_track_for_target(&self, name: &str) -> Option<usize> {
+    pub fn sub_track_for_target(&self, name: &str) -> Option<usize> {
         let n: usize = name.strip_prefix("track:")?.trim().parse().ok()?;
         self.root_tracks.iter().copied().chain(self.other.iter().flat_map(|o| o.tracks.iter().map(|t| t.i))).nth(n)
     }
@@ -895,7 +895,7 @@ impl TrackMenuState {
     /// Show `tab` (0=Audio, 1=Subtitles) on a menu that is ALREADY open — the second disc pressed
     /// while the first one's tab is showing. Same body as the LEFT/RIGHT arm below, which is why
     /// that arm calls this rather than repeating it.
-    pub(crate) fn focus_tab(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) {
+    pub fn focus_tab(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) {
         if tab != self.tab {
             self.tab = tab;
             self.rebuild(ps, meta, tab, false); // swap the whole list → snap the pill, no long glide
@@ -907,7 +907,7 @@ impl TrackMenuState {
     /// read back by its [`TrackRow`] (never by position), and a row the form declared DISABLED (the
     /// dim Timing/Style under a live burn, a Size/Position row the renderer cannot reach) is inert
     /// at the form layer.
-    pub(crate) fn on_ok(&mut self, meta: metadata::MetadataView<'_>) -> TrackOk {
+    pub fn on_ok(&mut self, meta: metadata::MetadataView<'_>) -> TrackOk {
         let tab = self.tab;
         let sel = self.form.table.sel;
         let focused = self.form.selected_id().copied();
@@ -998,7 +998,7 @@ impl TrackMenuState {
     /// row does ([`Self::on_ok`]): by the track's own index, wherever its row sits (the root, the
     /// Other languages page or a language page), so a caller that names a track never needs the row
     /// to be on the current page.
-    pub(crate) fn commit_sub_track(&mut self, i: usize, meta: metadata::MetadataView<'_>) -> TrackOk {
+    pub fn commit_sub_track(&mut self, i: usize, meta: metadata::MetadataView<'_>) -> TrackOk {
         self.commit_sub(i as c_int, meta)
     }
 
@@ -1207,7 +1207,7 @@ impl TrackMenuState {
 
     /// Pop the top page: the page beneath comes back exactly as it was left — the opener focused
     /// by id, the scroll reinstated ([`FormTable::restore`]). `false` at the root (nothing popped).
-    pub(crate) fn pop(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> bool {
+    pub fn pop(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> bool {
         let Some(saved) = self.pages.pop() else { return false };
         let leaving = page_stack::leave_page(&mut self.form);
         self.motion.begin_slide(leaving, -1.0);
@@ -1231,7 +1231,7 @@ impl TrackMenuState {
     }
 
     /// **LEFT**: pop a sub-page, else (on a root) the tab switch as before.
-    pub(crate) fn on_left(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+    pub fn on_left(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
         if !self.pop(ps, meta) {
             self.focus_tab(ps, meta, 0);
         }
@@ -1239,7 +1239,7 @@ impl TrackMenuState {
 
     /// **RIGHT**: on a Nav row it enters — the same as OK, and inert on a disabled one at the form
     /// layer — else the tab switch as before.
-    pub(crate) fn on_right(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+    pub fn on_right(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
         let sel = self.form.table.sel.max(0) as usize;
         if matches!(self.form.binding_at(sel).map(|b| &b.kind), Some(RowKind::Nav(_))) {
             if let Some(Activation::Push(dest)) = self.form.activate(sel) {
@@ -1541,7 +1541,7 @@ impl TrackMenuState {
     /// **Is the panel mid-transition** — resizing to a new layout or sliding a page? The player
     /// overlay holds the pointer while this is true (`Screen::pointer_held`): hover and clicks are
     /// swallowed rather than resolved against pages in motion.
-    pub(crate) fn transitioning(&self) -> bool {
+    pub fn transitioning(&self) -> bool {
         self.motion.transitioning()
     }
 
@@ -1553,7 +1553,7 @@ impl TrackMenuState {
     /// on. `rebuild`'s own recomputation of `enhance_shown` is the single source of truth here
     /// too, so this only ever asks "did that answer change since last frame", never rebuilds it a
     /// second, divergent way.
-    pub(crate) fn update(
+    pub fn update(
         &mut self,
         dt: f32,
         measure: &dyn plx_machine::machine::Measure,
@@ -1587,7 +1587,7 @@ impl TrackMenuState {
     /// `prepare` runs after the mount on the same frame and before the presenting side's drain
     /// (`app::run::prepare_window`), so the strings are resident before the draw. Idempotent per
     /// table layout, like `update`'s own walk; queues only, uploads nothing.
-    pub(crate) fn warm_open(&self, measure: &dyn plx_machine::machine::Measure) {
+    pub fn warm_open(&self, measure: &dyn plx_machine::machine::Measure) {
         self.motion.warm_open(&self.form.table, || self.panel_rect(measure), measure);
     }
 
@@ -1633,7 +1633,7 @@ impl TrackMenuState {
         self.background_owner = Some(owner);
     }
 
-    pub(crate) fn draw(&mut self, appear: f32, measure: &dyn plx_machine::machine::Measure) {
+    pub fn draw(&mut self, appear: f32, measure: &dyn plx_machine::machine::Measure) {
         // The appear fade/rise — the container drives the phase and the appear spring. The dim
         // over the video plane is the container's too (`PlayerOverlayScreen::scrim`,
         // `theme::underlay::DIM_PLAYER`), painted at the end of the player's page pass.
@@ -1665,10 +1665,10 @@ impl TrackMenuState {
 /// which needs `&mut` for its own lazy layout work) stays a direct call on the owned `Panel` from
 /// `PlayerOverlayScreen::draw`'s `&mut self`; [`Part::draw`] below only registers stops, which is
 /// read-only geometry like everything else in this impl.
-pub(crate) struct TrackMenuPart<'a> {
-    pub(crate) state: &'a TrackMenuState,
-    pub(crate) entry: EntryId,
-    pub(crate) group: GroupId,
+pub struct TrackMenuPart<'a> {
+    pub state: &'a TrackMenuState,
+    pub entry: EntryId,
+    pub group: GroupId,
 }
 
 impl PopoverPanel for TrackMenuState {
@@ -1780,7 +1780,7 @@ fn tone_label(tone: SubtitleTone) -> &'static str {
 
 /// The localized name of a caption size rung — the one place both the player's Style pages and
 /// Settings' Playback read it.
-pub(crate) fn subtitle_size_label(size: SubtitleSize) -> &'static str {
+pub fn subtitle_size_label(size: SubtitleSize) -> &'static str {
     use plx_platform::i18n::msg;
     match size {
         SubtitleSize::Small => msg::settings_playback_subtitle_size_small(),
@@ -1791,7 +1791,7 @@ pub(crate) fn subtitle_size_label(size: SubtitleSize) -> &'static str {
 }
 
 /// The localized name of a caption position rung, shared like [`subtitle_size_label`].
-pub(crate) fn subtitle_position_label(position: SubtitlePosition) -> &'static str {
+pub fn subtitle_position_label(position: SubtitlePosition) -> &'static str {
     use plx_platform::i18n::msg;
     match position {
         SubtitlePosition::Low => msg::settings_playback_subtitle_position_low(),
@@ -1803,7 +1803,7 @@ pub(crate) fn subtitle_position_label(position: SubtitlePosition) -> &'static st
 /// An offset as localized signed seconds to the tenth (`appkit::timing_capsule::offset_seconds_in`,
 /// the one offset formatter).
 fn format_offset(ms: i64) -> String {
-    crate::appkit::timing_capsule::offset_seconds_in(ms, true, plx_platform::i18n::current())
+    crate::timing_capsule::offset_seconds_in(ms, true, plx_platform::i18n::current())
 }
 
 // ---- section building ----
@@ -1989,13 +1989,13 @@ fn table_form(model: &SubModel, active_sub: c_int, offset_ms: i64, locked: bool)
 /// up to it) and TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]) — the full
 /// `top_min`→`bottom` span, since the measured height comes from a `TableView` no host test can
 /// measure.
-#[cfg(test)]
-pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let (bottom, top_min) = (theme::layout::PLAYER_MENU_BOTTOM, 60.0);
     let pw = plx_ui::table::MENU_MAX_W;
     out.push((
         "track menu panel (widest)",
-        Rect::new(crate::appkit::player_hud::CTRL_RIGHT - pw, top_min, pw, bottom - top_min),
+        Rect::new(crate::player_hud::CTRL_RIGHT - pw, top_min, pw, bottom - top_min),
     ));
 }
 
@@ -3958,8 +3958,8 @@ mod localized_offset_tests {
             (Preference::Be, "be-BY", "-0,1 с", "+1,3 с"),
         ] {
             let locale = LocaleContext::resolve(preference, None, Some(region), None, None);
-            assert_eq!(crate::appkit::timing_capsule::offset_seconds_in(-100, true, &locale), negative);
-            assert_eq!(crate::appkit::timing_capsule::offset_seconds_in(1300, true, &locale), positive);
+            assert_eq!(crate::timing_capsule::offset_seconds_in(-100, true, &locale), negative);
+            assert_eq!(crate::timing_capsule::offset_seconds_in(1300, true, &locale), positive);
         }
     }
 }

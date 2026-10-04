@@ -1076,7 +1076,7 @@ mod tests {
         // crate split out of `rust-modules/src` later must be added here, or its log calls stop
         // being read (`../machine/src`, `../net/src`, `../platform/src`, `../gfx/src`, `../ui/src`, `../plex/src`, `../telemetry/src`, `../data/src` and `../session/src` are the machine, net, platform, gfx, ui, plex, telemetry, data and session layers').
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let roots = [manifest.join("src"), manifest.join("../src"), manifest.join("../machine/src"), manifest.join("../net/src"), manifest.join("../platform/src"), manifest.join("../gfx/src"), manifest.join("../ui/src"), manifest.join("../plex/src"), manifest.join("../telemetry/src"), manifest.join("../data/src"), manifest.join("../session/src"), manifest.join("../media/src")];
+        let roots = [manifest.join("src"), manifest.join("../src"), manifest.join("../machine/src"), manifest.join("../net/src"), manifest.join("../platform/src"), manifest.join("../gfx/src"), manifest.join("../ui/src"), manifest.join("../plex/src"), manifest.join("../telemetry/src"), manifest.join("../data/src"), manifest.join("../session/src"), manifest.join("../media/src"), manifest.join("../appkit/src")];
         let mut offences: Vec<String> = Vec::new();
         let mut files = 0usize;
         for src in &roots {

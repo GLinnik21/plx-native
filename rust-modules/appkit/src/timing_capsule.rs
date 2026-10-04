@@ -29,7 +29,7 @@ const FAST_AFTER_REPEATS: u32 = 8;
 /// How long a value that lands on (or is swept across) zero rests there before a further HELD step
 /// is allowed to move it again — "the file's own timing is findable blind" (mock's `stepTiming`).
 /// A fresh, non-repeat press always passes regardless.
-pub(crate) const DETENT_MS: u32 = 600;
+pub const DETENT_MS: u32 = 600;
 
 /// The underdamped spring's stiffness and damping for the limit shake — tuned to land close to the
 /// mock's four beats (`1, -0.7, 0.35, 0` over ~70 ms steps) without reproducing its discrete
@@ -44,15 +44,15 @@ const SHAKE_KICK: f32 = 900.0;
 
 /// The capsule's own height (mock: `height:84px`) — also the diameter of its `rrect`'s corner
 /// radius (`CAPSULE_H / 2`, a full pill).
-pub(crate) const CAPSULE_H: f32 = 84.0;
+pub const CAPSULE_H: f32 = 84.0;
 /// The fixed width of the centred text block the capsule's sentence is laid out in (mock:
 /// `width` is unset and the English copy never wraps in its 520). 580 because the longest shipped
 /// sentence is Spanish, "Subtítulos 30,0 s más tarde" at 532 px in the bold TITLE face;
 /// `the_capsule_sentence_fits_its_block_in_every_language` measures every language with the TV's
 /// own advances, so a longer translation fails there rather than clipping on the set.
-pub(crate) const CAPSULE_TEXT_W: f32 = 580.0;
+pub const CAPSULE_TEXT_W: f32 = 580.0;
 /// The gap between each chevron and the text block (mock: `gap:22px`).
-pub(crate) const CAPSULE_GAP: f32 = 22.0;
+pub const CAPSULE_GAP: f32 = 22.0;
 /// Horizontal padding inside the pill, chevron to edge (mock: `padding:0 26px`).
 const CAPSULE_PAD_X: f32 = 26.0;
 /// The chevron glyph's own box (mock's `<svg width="18" height="30">`).
@@ -62,7 +62,7 @@ const CHEVRON_SZ: f32 = 30.0;
 /// seconds unit (`core.seconds`). `signed` prefixes `+`/`-` (the Subtitles panel's Timing
 /// read-out); unsigned is the bare magnitude this capsule's sentence says "later"/"earlier" about.
 /// ASCII hyphen-minus rather than U+2212, which the UI font is not guaranteed to carry.
-pub(crate) fn offset_seconds_in(ms: i64, signed: bool, locale: &plx_platform::i18n::LocaleContext) -> String {
+pub fn offset_seconds_in(ms: i64, signed: bool, locale: &plx_platform::i18n::LocaleContext) -> String {
     let sign = match ms.signum() {
         1 if signed => "+",
         -1 if signed => "-",
@@ -92,7 +92,7 @@ fn text_in(offset_ms: i64, locale: &plx_platform::i18n::LocaleContext) -> String
 /// asks the overlay to dismiss, and [`Bump`](CapsuleOut::Bump) is a pure animation cue: the value
 /// did not move, only the shake did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CapsuleOut {
+pub enum CapsuleOut {
     Step(i64),
     Close,
     Bump,
@@ -103,7 +103,7 @@ pub(crate) enum CapsuleOut {
 /// [`plx_media::player::subtitle_offset_range_ms`] — the ONE range rule the player's own clamp
 /// (`player::set_subtitle_offset`) also obeys, so this control can never offer a step the player
 /// refuses.
-pub(crate) struct TimingCapsule {
+pub struct TimingCapsule {
     offset_ms: i64,
     lo: i64,
     hi: i64,
@@ -120,7 +120,7 @@ pub(crate) struct TimingCapsule {
 }
 
 impl TimingCapsule {
-    pub(crate) fn new(offset_ms: i64, lo: i64, hi: i64) -> Self {
+    pub fn new(offset_ms: i64, lo: i64, hi: i64) -> Self {
         let mut c = Self {
             offset_ms: 0,
             lo,
@@ -141,15 +141,15 @@ impl TimingCapsule {
         self.caption = CString::new(text_in(ms, plx_platform::i18n::current())).unwrap_or_default();
     }
 
-    #[cfg(test)]
-    pub(crate) fn offset_ms(&self) -> i64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn offset_ms(&self) -> i64 {
         self.offset_ms
     }
 
     /// One admitted key. `edge` is `Down` for a fresh press or an already-gated `Repeat` — the
     /// caller's own `RepeatGate` has already thinned the hardware's raw repeats to
     /// `PANEL_REPEAT_MS`, so every `Repeat` this sees counts toward [`FAST_AFTER_REPEATS`].
-    pub(crate) fn key(&mut self, k: Key, edge: Edge, now: u32) -> Option<CapsuleOut> {
+    pub fn key(&mut self, k: Key, edge: Edge, now: u32) -> Option<CapsuleOut> {
         match k {
             Key::Left { .. } | Key::Right { .. } if edge != Edge::Up => {
                 let dir: i64 = if matches!(k, Key::Left { .. }) { -1 } else { 1 };
@@ -211,13 +211,13 @@ impl TimingCapsule {
 
     /// Advance the limit shake one frame — called from the overlay's `Tick`, every frame the
     /// capsule is up, whether or not a key landed this frame.
-    pub(crate) fn update(&mut self, dt: f32) {
+    pub fn update(&mut self, dt: f32) {
         self.shake.step_zeta(0.0, SHAKE_K, SHAKE_ZETA, dt);
     }
 
     /// The capsule's sentence: what HAPPENS to the subtitles, never a signed number
     /// (`player.ref.html`'s `capsuleText`, adapted to this app's own leading word).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn text(&self) -> &str {
         self.caption.to_str().unwrap_or_default()
     }
@@ -236,7 +236,7 @@ impl TimingCapsule {
     /// never the live caption's own baseline, which would make the capsule jump as a cue's line
     /// count changes. `appear` is the container's own appear fraction (`DrawFrame::page_alpha`),
     /// the same value every other player panel fades on.
-    pub(crate) fn draw(&self, bottom_y: f32, appear: f32) {
+    pub fn draw(&self, bottom_y: f32, appear: f32) {
         if appear <= 0.0 {
             return;
         }
