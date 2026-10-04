@@ -396,7 +396,9 @@ viewports agree. Episode rows use landscape stills. `Art::Still` supplies the la
 its ground participate in backdrop discovery, including texture changes and UV cropping.
 
 - An **amber ▶** means **this press starts the video**. It is drawn where that is true and nowhere
-  else: a Continue Watching deck, and the detail page's episode filmstrip. Watch state does not
+  else: the detail page's episode filmstrip always, and a Continue Watching deck only while
+  Settings > Playback > Continue Watching is "Play" (`DeckPress::Play`; the default opens the page
+  and draws none). Watch state does not
   withdraw it — `widgets::still_glyph` is the whole rule, graded by an exhaustive table, because
   the clause that failed first was the absent one: the glyph used to be decided by `PosterMark`
   FIRST, so an in-progress tile drew nothing and a Continue Watching deck — almost entirely
@@ -410,8 +412,9 @@ its ground participate in backdrop discovery, including texture changes and UV c
 **A card with no play indicator NAVIGATES**, and an episode navigates to its own detail page.
 Until 2026-09-05 `want_play` was `from_deck || kind == 3` on both Home and the Library, so an
 episode played immediately from ANY shelf and every landscape tile drew the triangle whatever its
-press did. Behaviour and mark now read the same flag (`Shelf::is_continue` /
-`pms::hub_is_continue`), so they cannot disagree. A poster wears nothing at all when it has never
+press did. Behaviour and mark both read `is_continue && route::deck_press().press_plays()`
+(`Shelf::is_continue` / `pms::hub_is_continue` alone is no longer the answer to either), so they
+cannot disagree. A poster wears nothing at all when it has never
 been started — most of a server is unstarted, so a clean shelf is the common case and a mark is
 information.
 

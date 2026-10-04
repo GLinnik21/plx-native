@@ -108,8 +108,9 @@ pub(crate) struct MenuPlayAwait {
 /// detail in place, so do not blindly fire on_ok" rule correct in.
 ///
 /// `want_play` is the caller's, because only the screen knows: on Home it is the hero's Play
-/// button, a deck row, or an episode tile; on the Library it is a tile on that library's own
-/// `*.inprogress.*` shelf.
+/// button, or a deck row while `DeckPress::Play`; on the Library a tile on that library's own
+/// `*.inprogress.*` shelf under the same setting. The deck menu's Play row on a show or season
+/// card (`apply_item_action`) arrives here with it set too.
 ///
 /// `menu_play_await`/`now` are D7's continuation seam: the show/season arm no longer decides
 /// play-vs-open on this call at all (see [`MenuPlayAwait`]/[`menu_play_tick`]).
@@ -338,6 +339,56 @@ mod activate_card_tests {
             "…and land on the page rather than leaving the press with no effect at all");
     }
 
+    /// The deck menu's Play row on a SHOW or SEASON card (`DeckPress::Details`) takes the very
+    /// `want_play` path OK takes in Play mode: it arms [`MenuPlayAwait`] on the CAPTURED row's
+    /// server and expected key (a season waits for its show) and starts no playback on the
+    /// press frame. A row that is not the captured one does nothing.
+    #[test]
+    fn the_menu_play_row_on_a_show_or_season_card_takes_the_want_play_path() {
+        use crate::screens::item_menu::Action;
+        let _guard = plx_base::testlock::serial();
+        let mut ps = crate::route::PlaybackSession::default();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut pa = crate::player::adapter::PlayerAdapter::new(mt);
+        let mut pages = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
+        let mut bridge = super::bridge::Bridge::for_test(|| 0);
+
+        struct Cleanup(*mut super::bridge::Bridge);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                // SAFETY: captured from `bridge` just below, which outlives this guard.
+                unsafe { &mut *self.0 }.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
+                plx_plex::plex::reset_servers_for_test();
+            }
+        }
+        let _cleanup = Cleanup(&mut bridge as *mut _);
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("menu-play", "127.0.0.1", 1, "t", "c-menu-play");
+
+        let show = crate::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
+        let season = crate::pms::PmsMovie { sid, rk: "season-9".into(), kind: 2,
+            show_rk: "show-1".into(), season_index: 4, ..Default::default() };
+        for (card, expect, season_index) in [(&show, "show-1", None), (&season, "show-1", Some(4))] {
+            let mut menu_play_await = None;
+            let req = |act, item| crate::screens::registry::ItemMenuReq {
+                act, sid, item, loaded_episode: false, from_home: false };
+            // a key that is not the captured row's: nothing happens
+            unsafe { apply_item_action(&mut ps, &mut pa, req(Action::Play("other".into()), Some(card.clone())),
+                &mut pages, &mut bridge, &mut crate::app::playback::LivePlaybackResources,
+                &mut menu_play_await, 0); }
+            assert!(menu_play_await.is_none(), "{}", card.rk);
+            unsafe { apply_item_action(&mut ps, &mut pa, req(Action::Play(card.rk.clone()), Some(card.clone())),
+                &mut pages, &mut bridge, &mut crate::app::playback::LivePlaybackResources,
+                &mut menu_play_await, 7); }
+            let armed = menu_play_await.as_ref().unwrap_or_else(|| panic!("{} must arm the wait", card.rk));
+            assert_eq!((armed.sid, armed.expect.as_str(), armed.season_index, armed.deadline),
+                (sid, expect, season_index, 7u32.wrapping_add(12_000)));
+            assert!(crate::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
+                "the page's detail is requested, the play decision waits for the landing");
+            assert!(!pages.has_pending_navigation(), "no premature navigation or playback");
+        }
+    }
+
     #[test]
     fn a_collection_card_opens_the_collection_page() {
         let _guard = plx_base::testlock::serial();
@@ -426,6 +477,8 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     resources: &mut R,
+    menu_play_await: &mut Option<MenuPlayAwait>,
+    now: u32,
 ) {
     let mut playback = LiveItemPlayback(resources);
     use crate::screens::item_menu::Action;
@@ -518,10 +571,17 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
         }
         // The deck card's Play row (OK opens the page): the same captured-row launch as Play from
         // Start, resuming instead of restarting. The row only exists on a Card menu, never on the
-        // filmstrip, so there is no loaded-episode path.
+        // filmstrip, so there is no loaded-episode path. A show or season has no stream of its
+        // own: it takes `activate_card`'s want_play arm — the very path OK takes in Play mode —
+        // on the captured row (same server, same key), never a re-resolve.
         Action::Play(rk) => {
             if let Some(mm) = item.as_ref().filter(|m| m.rk == rk) {
-                playback.captured_card(ps, pa, mm, false, pages, bridge);
+                if matches!(mm.kind, 0 | 3) {
+                    playback.captured_card(ps, pa, mm, false, pages, bridge);
+                } else {
+                    activate_card(ps, pa, mm, true, HUD_LINGER_MS, None, pages, bridge,
+                        menu_play_await, now);
+                }
             }
         }
         Action::PlayFromStart(rk) => {

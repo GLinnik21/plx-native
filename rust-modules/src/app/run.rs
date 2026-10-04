@@ -1678,9 +1678,10 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
             // and nothing ever read (`LONG_MS`, `is_long`). It fires while the key is still DOWN,
             // which is what makes the menu feel like a hold rather than a delayed tap; the press
             // is cancelled so the card springs back, and `ok_armed` is dropped so the eventual
-            // key-up commits nothing. A SHORT press is untouched on BOTH screens — a Continue
-            // Watching tile still resumes on OK, and OK on an episode still still plays it, by
-            // design; this is the other half of those interactions. Ordered ahead of the commit
+            // key-up commits nothing. A SHORT press is untouched on BOTH screens — what it does
+            // on a Continue Watching tile is `route::deck_press()`'s answer (resume, or open the
+            // page), and OK on an episode still still plays it, by design; the hold is the other
+            // half of those interactions either way. Ordered ahead of the commit
             // arm (and exclusive with it) so the two can never both run.
             //
             // `is_long` leads and short-circuits, deliberately: everything after it OPENS a
@@ -4102,8 +4103,9 @@ mod lifecycle_regression_tests {
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
     }
 
-    /// A Continue Watching tile plays straight from Home with no detail page in between, so the
-    /// page the session returns to is Home itself — the same entry, with its memory.
+    /// A session started straight from Home (the hero's Play, or a deck tile in Play mode) has no
+    /// detail page in between, so the page the session returns to is Home itself — the same entry,
+    /// with its memory.
     #[test]
     fn back_from_a_session_started_on_home_returns_to_home() {
         let _serial = plx_base::testlock::serial();

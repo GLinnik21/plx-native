@@ -81,8 +81,10 @@ pub(crate) enum Action {
     MarkWatched(String),
     /// `/:/unscrobble` — the − row. Twin of [`Action::MarkWatched`].
     MarkUnwatched(String),
-    /// play this leaf, resuming where it left off when it has a resume point — the Continue
-    /// Watching card's first row while OK on that card opens the page ([`DeckPress::Details`])
+    /// play this item — a leaf resumes where it left off when it has a resume point; a show or
+    /// season takes `activate_card`'s Play path (open its page, fire that page's Play) — the
+    /// Continue Watching card's first row while OK on that card opens the page
+    /// ([`DeckPress::Details`])
     Play(String),
     /// play this leaf ignoring its resume point
     PlayFromStart(String),
@@ -240,8 +242,9 @@ fn build(m: &PmsMovie, from_deck: bool) -> ItemForm {
 
 /// `deck_press` is the Continue Watching setting. It changes this menu for a card FROM the deck
 /// only, and only while OK there opens the page ([`DeckPress::Details`]): the menu then leads with
-/// Play (the opening row — the press that used to play now lives here) and drops Go to
-/// Movie / Go to Episode, which is what OK on the card already does. Any other card, and a deck
+/// Play (the opening row — the press that used to play now lives here) and drops the row that
+/// navigates to the card's own page (Go to Movie / Episode, and for a show or season its Go to
+/// Show / Season), which is what OK on the card already does. Any other card, and a deck
 /// card while OK plays, gets the menu it always had.
 fn build_with(
     m: &PmsMovie,
@@ -256,9 +259,10 @@ fn build_with(
     // ---- the deck card's own press, when OK no longer plays ----
     // First, so it is where the menu opens. It resumes when there is a resume point and the label
     // says which, in the words the hero's pill uses.
-    let resumes = crate::metadata::resume_ns(m.resume_ms, m.dur_ns / 1_000_000) > 0;
+    // A show or season has no resume point of its own, so it says "Play".
+    let resumes = leaf && crate::metadata::resume_ns(m.resume_ms, m.dur_ns / 1_000_000) > 0;
     sec = sec.item_if(
-        opens_details && leaf,
+        opens_details && (leaf || m.kind == 1 || m.kind == 2),
         ItemRow::Play,
         RowKind::Button,
         Action::Play(m.rk.clone()),
@@ -291,6 +295,9 @@ fn build_with(
                 nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_show(), &m.show_rk, m.season_index));
             }
         }
+        // a show or season deck card whose OK opens the page: that page IS the "go to" row's
+        // target, so the row would only repeat the press (Play leads instead)
+        1 | 2 if opens_details => {}
         // a season has no page of its own — it IS the show page with that season selected, so one
         // row covers it; a show's own page is likewise the only navigation it has
         2 if has_show => nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_season(), &m.show_rk, m.season_index)),
@@ -961,6 +968,37 @@ mod tests {
         // an item with a resume point says so, in the hero pill's word
         let resuming = build_deck(&item(0, PosterMark::InProgress), true, DeckPress::Details);
         assert_eq!(labels(&resuming)[0], "Continue");
+    }
+
+    /// A show or season card on the deck (the Library's `*.inprogress.*` shelf can hold one) in
+    /// Open-details mode: Play leads and opens the menu, and the self-navigation row OK already
+    /// does is dropped — exactly as for a leaf. Play mode keeps today's rows.
+    #[test]
+    fn a_show_or_season_deck_card_leads_with_play_when_ok_opens_the_page() {
+        for (kind, nav) in [(1, "Go to Show"), (2, "Go to Season")] {
+            let m = item(kind, PosterMark::InProgress);
+            let on = build_deck(&m, true, DeckPress::Details);
+            let l = labels(&on);
+            assert_eq!(l[0], "Play", "{kind}: {l:?}");
+            assert!(!l.iter().any(|x| x == nav), "{kind}: {l:?}");
+            assert!(!on.offers(ItemRow::GoToItem) && !on.offers(ItemRow::GoToShow), "{kind}");
+            assert_eq!(on.action(ItemRow::Play), Action::Play("42".into()));
+            assert_eq!(on.0.opening_key(), Some(ItemRow::Play.key()), "{kind}: opens on Play");
+            assert_ne!(l[1], "—", "{kind}: no separator under Play: {l:?}");
+            assert_ne!(l.last().unwrap(), "—", "{kind}: {l:?}");
+            assert!(!l.windows(2).any(|w| w[0] == "—" && w[1] == "—"), "{kind}: {l:?}");
+            // the remaining rows are the Play-mode menu's, minus its navigation group
+            let play = labels(&build_deck(&m, true, DeckPress::Play));
+            assert_eq!(play[0], nav, "{kind}: {play:?}");
+            assert_eq!(l[1..], play[2..], "{kind}: {l:?} vs {play:?}");
+            assert!(!play.iter().any(|x| x == "Play" || x == "Continue"), "{play:?}");
+            // off the deck the setting is not consulted
+            assert_eq!(
+                labels(&build_deck(&m, false, DeckPress::Details)),
+                labels(&build_deck(&m, false, DeckPress::Play)),
+                "{kind}"
+            );
+        }
     }
 
     #[test]

@@ -756,7 +756,8 @@ impl TileLabel {
             ..Self::title(t)
         }
     }
-    /// Title led by the amber play triangle — Continue Watching's focused primary line.
+    /// Title led by the amber play triangle — Continue Watching's focused primary line while a press there plays
+    /// (`DeckPress::Play`).
     pub fn played(t: &str) -> Self {
         TileLabel {
             glyph: true,

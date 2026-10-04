@@ -1,4 +1,4 @@
-//! Activation ports: a deck promises playback; discovery, even an episode, does not.
+//! Activation ports: a deck promises playback only under `DeckPress::Play`; discovery, even an episode, never does.
 use super::*;
 use crate::route::DeckPress;
 use plx_ui::fixture::{FixtureArg, FixtureMeasure};

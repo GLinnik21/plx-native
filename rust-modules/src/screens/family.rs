@@ -90,8 +90,8 @@ pub(crate) enum SettingsPage {
     Picker(PickerKind),
 }
 
-/// Which preference a [`SettingsPage::Picker`] edits. The parent page (`Playback` for the six local ones,
-/// `AudioSubtitles` for the four account ones) and the page's own title/options live in `screens::preferences`;
+/// Which preference a [`SettingsPage::Picker`] edits. The parent page (`Playback` for the local ones,
+/// `AudioSubtitles` for the account ones) and the page's own title/options live in `screens::preferences`;
 /// the NAME of the field lives here because the parent pushes it through this vocabulary rather
 /// than through the module that implements it (the module doc's rule).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
