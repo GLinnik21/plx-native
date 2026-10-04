@@ -41,7 +41,7 @@ minutes of television for a pipeline the change cannot reach.)
 Mac through `/tmp/plxnative-playurl`, **no Plex anywhere**. Ask `./tests/run.py --list` for the
 count — a number written down here has now rotted twice, the second time inside the branch that
 was correcting the first. The 21 library-backed cases are
-`./tests/run.py --server`; `--fps` and `--fps-player` imply `--server` (their scenes navigate a
+`./tests/run.py --server`; `--fps` and `--fps-player` imply `--server` (except with `--mock`, which refuses it; see tests/README.md) (their scenes navigate a
 real signed-in Home and would otherwise grade a QR screen). `--pipeline` still parses — it names
 the default — and pairing it with `--server`/`--fps` is refused rather than silently resolved.
 

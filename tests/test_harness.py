@@ -6216,6 +6216,8 @@ class FpsMock(unittest.TestCase):
         lines = ["hubs: landed — 216 items, 18 shelves", "x", "hubs: landed — 300 items, 21 shelves"]
         self.assertEqual(self.mf.landed(lines), (300, 21))
         self.assertEqual(self.mf.landed_count(lines), 2)
+        # the fields the app appends after the shelf count (merge time, catalog size) must not break it
+        self.assertEqual(self.mf.landed(["hubs: landed — 2040 items, 170 shelves (merge 900 us, catalog ~800 KB)"]), (2040, 170))
         self.assertIsNone(self.mf.landed(["nothing"]))
 
     @staticmethod

@@ -151,7 +151,7 @@ token, which the harness reads on the host and injects. The token is never compi
 A media shape your library lacks is skipped, not failed, so read the skip count beside the pass
 count.
 
-**`./tests/run.py --fps`** — the frame-rate regression scenes, which imply `--server`. Per-screen
+**`./tests/run.py --fps`** — the frame-rate regression scenes, which imply `--server` (with `--mock`, the scenes that declare a `mock` block run against `tests/mock_pms.py` with no token, and `--server` is refused). Per-screen
 floors live in `tests/manifest.json`. This tier is opt-in and runs on a real television; CI cannot
 grade frame rate, so a green CI run says nothing about pacing.
 

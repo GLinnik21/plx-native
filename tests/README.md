@@ -30,7 +30,8 @@ how a green run means nothing.
 credentials, touches nobody's watch history, and answers *"is the player broken"* — which is asked
 far more often than *"is my library's metadata right"*. Charging a PMS, a token and a filled-in
 overlay for the obvious command meant most people could not type it at all. `--server` is the
-explicit opt-in; `--fps` / `--fps-player` imply it, because those scenes navigate a real signed-in
+explicit opt-in; `--fps` / `--fps-player` imply it (unless `--mock`, which runs the scenes against the
+synthetic mock instead and refuses `--server`), because those scenes navigate a real signed-in
 Home and would otherwise grade a QR screen. `--pipeline` still parses — it names the default — but
 combining it with `--server`/`--fps` is refused rather than silently resolved.
 
@@ -419,7 +420,7 @@ cast+about / info-panel regressions.
 > instead of grading a loop rate as a frame rate.
 
 ```bash
-# UI tier only — every scene whose `tier` is "ui". No video; it implies --server and (since
+# UI tier only — every scene whose `tier` is "ui". No video; it implies --server (unless --mock) and (since
 # 2026-09-02) resolves the test identity first, so it needs src/config.local.h and the overlay —
 # without a token every route scene but the login spinner (which WANTS the sign-in screen) boots
 # to QR sign-in and grades a screen it never reached.
@@ -448,7 +449,7 @@ tools/tv-lock.sh with --why "fps mock" -- ./tests/run.py --fps --mock --filter h
 that address. It boots the synthetic guest `tools/tv-session.sh up --guest --mock` boots
 (`tools/mock-guest.py`, which refuses any server that is not the synthetic mock), and every scene
 is then checked against the app's own log: no `pms: server N version=1.41.0.0000-synthetic` line,
-or any other server version, fails the scene before it is graded. Debug flavor only; `--server`,
+or any other server version, fails the scene before it is graded. Debug flavor only; `tests/run.py` does not deploy the binary, so deploy the build you mean to measure first (`make deploy` under the TV lock, or `tools/tv-session.sh up`, which deploys when stale) — a stress run once measured an older binary this way. `--server`,
 `--owner`, `--shared-server`, `--suite` and `--graphics-profile` are refused with it. The panel is
 turned off (`tv-session.sh screen off`, before every scene) and the sound muted (`sound off`) —
 the run stops if either cannot be done — and neither is ever turned back on.

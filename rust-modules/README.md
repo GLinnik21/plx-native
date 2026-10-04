@@ -16,7 +16,7 @@ side. Its Rust entry points are `plex_run`, `plx_crash_write_image_marker`,
 | `stream` | HTTP/1.1 client | `repr(C)` `http_stream`; bounds-checked parsing |
 | `aq` | access-unit FIFO | `repr(C)` + libc pthread; flexible-array node |
 | `mkv` | Matroska/EBML demuxer | ~450 lines; `catch_unwind` entry points |
-| `pms` | Plex catalog fetch/parse | `serde_json` replaces the hand-scrape; shared `pms_movies[]` |
+| `pms` | Plex catalog fetch/parse | `serde_json` replaces the hand-scrape; builds Home's merged catalog of shared `Arc<PmsMovie>` cards, bounded by `HOME_CARDS_MAX` and `MAX_SHELF_ITEMS` |
 | `posters` | async artwork store | idiomatic rewrite on `std::sync` Mutex/Condvar + threads |
 | `text` | SDL2_ttf rendering | font + glyph-texture caches |
 | `gfx` | GLES2 draw primitives | 3 shader programs, SDF cards, FPS digits |
