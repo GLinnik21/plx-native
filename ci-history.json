@@ -1,4 +1,4 @@
-{"updated":"2026-10-04T12:19:20Z",
+{"updated":"2026-10-04T12:36:02Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -293,7 +293,8 @@
 {"id":37195093428,"at":"2026-10-04T10:21:18Z","sha":"7efa65ddc","title":"Library: the shelf run is sized to the published shelves; resting rows are not stepped","pr":429,"jobs":{"cross-build (armv7) + artifact assertions":316,"host unit tests (default features)":283,"host lint + type-checks":175,"host python/shell/C gates":377,"host unit tests (hostsim)":256,"host checks (NOT a device gate)":3}},
 {"id":37196864625,"at":"2026-10-04T10:53:51Z","sha":"239c8a6f0","title":"Library: no shelf cap; a shelf is published whole or not at all","pr":428,"jobs":{"host unit tests (hostsim)":239,"cross-build (armv7) + artifact assertions":329,"host python/shell/C gates":379,"host unit tests (default features)":270,"host lint + type-checks":184,"host checks (NOT a device gate)":3}},
 {"id":37198194608,"at":"2026-10-04T11:16:54Z","sha":"8137b1f6a","title":"Split: the media layer is its own crate (plx_media)","pr":432,"jobs":{"host unit tests (default features)":238,"host python/shell/C gates":383,"cross-build (armv7) + artifact assertions":298,"host unit tests (hostsim)":255,"host lint + type-checks":134,"host checks (NOT a device gate)":4}},
-{"id":37200932007,"at":"2026-10-04T12:05:42Z","sha":"5a2950915","title":"Split: the appkit layer is its own crate (plx_appkit)","pr":433,"jobs":{"host lint + type-checks":168,"host unit tests (default features)":249,"host unit tests (hostsim)":264,"host python/shell/C gates":374,"cross-build (armv7) + artifact assertions":309,"host checks (NOT a device gate)":4}}
+{"id":37200932007,"at":"2026-10-04T12:05:42Z","sha":"5a2950915","title":"Split: the appkit layer is its own crate (plx_appkit)","pr":433,"jobs":{"host lint + type-checks":168,"host unit tests (default features)":249,"host unit tests (hostsim)":264,"host python/shell/C gates":374,"cross-build (armv7) + artifact assertions":309,"host checks (NOT a device gate)":4}},
+{"id":37202260087,"at":"2026-10-04T12:29:09Z","sha":"3d108cbb5","title":"CI: don't run the app gates for site-build tooling edits","pr":435,"jobs":{"cross-build (armv7) + artifact assertions":294,"host unit tests (hostsim)":262,"host python/shell/C gates":378,"host lint + type-checks":160,"host unit tests (default features)":321,"host checks (NOT a device gate)":3}}
 ],
 "sim":[
 {"id":34841379409,"at":"2026-09-14T12:03:51Z","sha":"6073ae00c","title":"Add Windows WSLg and Linux simulator support","jobs":{"Linux simulator build + launch":126,"macOS simulator build + launch":161,"Windows launcher syntax":19},"pr":94},
