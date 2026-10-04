@@ -1,4 +1,4 @@
-{"updated":"2026-10-04T03:37:32Z",
+{"updated":"2026-10-04T03:43:16Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -447,5 +447,6 @@
 {"id":37162301155,"at":"2026-10-03T23:36:09Z","sha":"8667c0688","title":"Home: the grid is sized to the published rows, not a fixed 16-slot array","pr":408,"jobs":{"Linux simulator build + launch":239,"macOS simulator build + launch":1078,"Windows launcher syntax":14}},
 {"id":37164708314,"at":"2026-10-04T00:21:40Z","sha":"b099d8b1f","title":"Split: the gfx and net layers are their own crates (plx_gfx, plx_net)","pr":407,"jobs":{"Windows launcher syntax":15,"Linux simulator build + launch":221,"macOS simulator build + launch":637}},
 {"id":37165583077,"at":"2026-10-04T00:38:53Z","sha":"a3034d2d5","title":"Home: key cards through a hash index, not a scan of the key table","pr":410,"jobs":{"Linux simulator build + launch":194,"Windows launcher syntax":20,"macOS simulator build + launch":898}},
-{"id":37171785186,"at":"2026-10-04T02:40:40Z","sha":"56e06c992","title":"Home: bound the key table and share it with memory() (#395)","pr":413,"jobs":{"macOS simulator build + launch":757,"Linux simulator build + launch":225,"Windows launcher syntax":16}}
+{"id":37171785186,"at":"2026-10-04T02:40:40Z","sha":"56e06c992","title":"Home: bound the key table and share it with memory() (#395)","pr":413,"jobs":{"macOS simulator build + launch":757,"Linux simulator build + launch":225,"Windows launcher syntax":16}},
+{"id":37174277616,"at":"2026-10-04T03:30:38Z","sha":"a23ddee17","title":"Split: the ui and plex layers are their own crates (plx_ui, plx_plex)","pr":415,"jobs":{"macOS simulator build + launch":743,"Linux simulator build + launch":211,"Windows launcher syntax":21}}
 ]}
