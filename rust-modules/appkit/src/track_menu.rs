@@ -473,9 +473,12 @@ pub struct TrackMenuState {
     /// Search row. The panel never performs the search: it reads this and answers
     /// [`TrackOk::Search`] for the screen to send.
     search: Option<plx_data::subsearch::SubSearchSnapshot>,
-    /// The installed stream already handed to the screen ([`Self::take_search_commit`]), so a
-    /// landing republished every frame commits once.
-    search_committed: Option<i64>,
+    /// THIS panel watched a download in flight (Sending/Waiting), so an Installed landing is its
+    /// own to auto-select. Cleared when handed over ([`Self::take_search_commit`]), so a landing
+    /// republished every frame commits once. The store keeps Installed after the panel closes;
+    /// a panel opened onto it never saw the flight and must not commit it again — doing so
+    /// dismissed every later Subtitles/Audio menu on its first tick (device, 2026-10-04).
+    search_watching: bool,
 }
 
 /// **What the track menu DECIDED**, for the loop to perform (spec §2.2).
@@ -602,7 +605,7 @@ impl TrackMenuState {
             motion: PanelMotion::new(),
             background_owner: None,
             search: offer_search.then(|| plx_data::subsearch::SubSearchSnapshot::idle(0)),
-            search_committed: None,
+            search_watching: false,
         };
         s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         s.sync_item(ps, meta);
@@ -1332,6 +1335,9 @@ impl TrackMenuState {
         if self.search.is_none() || self.search.as_ref() == Some(&search) {
             return;
         }
+        if search.download.busy() {
+            self.search_watching = true;
+        }
         self.search = Some(search);
         if let Some(page @ (TrackPage::Search | TrackPage::SearchLanguage)) = self.pages.top() {
             let form = self.page_form(page);
@@ -1346,7 +1352,7 @@ impl TrackMenuState {
         self.pages.iter().any(|saved| matches!(saved.page, TrackPage::Search | TrackPage::SearchLanguage))
     }
 
-    /// **The auto-select**, once per installed stream: the subtitle as the playing item should list
+    /// **The auto-select**, once, by the panel that watched the download in flight: the subtitle as the playing item should list
     /// it, and the commit that makes it the active one — the SAME `TrackCommit::Subtitle` a pick on
     /// its row would produce, so it runs the existing chain (client-drawn sidecar on direct play, a
     /// server burn while transcoding) rather than a parallel one. The server has already selected
@@ -1354,10 +1360,9 @@ impl TrackMenuState {
     pub fn take_search_commit(&mut self) -> Option<(metadata::Stream, TrackCommit)> {
         let s = self.search.as_ref()?;
         let plx_data::subsearch::DownloadPhase::Installed { hit, stream } = &s.download else { return None };
-        if self.search_committed == Some(stream.id) {
+        if !std::mem::take(&mut self.search_watching) {
             return None;
         }
-        self.search_committed = Some(stream.id);
         let picked = s.hits.get(*hit);
         let sub = metadata::Stream {
             id: stream.id,
@@ -4093,7 +4098,7 @@ mod focus_tests {
             motion: PanelMotion::new(),
             background_owner: None,
             search: None,
-            search_committed: None,
+            search_watching: false,
         }
     }
 
@@ -5719,13 +5724,35 @@ mod motion_tests {
         let _g = plx_base::testlock::serial();
         let installed = DownloadPhase::Installed { hit: 0, stream: plx_data::subsearch::InstalledStream {
             id: 1929519, key: "/library/streams/1929519".into(), codec: "srt".into(), language_code: "nld".into() } };
-        let (mut menu, _store) = on_search_page(snap(SearchStatus::Ready, None, vec![hit("rel")], installed));
+        let waiting = DownloadPhase::Waiting { hit: 0, before: vec![1], attempts: 0 };
+        let (mut menu, _store) = on_search_page(snap(SearchStatus::Ready, None, vec![hit("rel")], waiting));
+        assert!(menu.take_search_commit().is_none(), "nothing installed yet");
+        menu.set_search(snap(SearchStatus::Ready, None, vec![hit("rel")], installed));
         let (stream, commit) = menu.take_search_commit().expect("the install is handed over");
         assert_eq!(commit, TrackCommit::Subtitle { render_ordinal: -1, stream_id: 1929519,
             sidecar_key: Some("/library/streams/1929519".into()), sidecar_codec: "srt".into() });
         assert!(stream.external && stream.sidecar_renderable(), "listed as a drawable sidecar");
         assert_eq!((stream.lang.as_str(), stream.title.as_str()), ("Nederlands", "rel"));
         assert!(menu.take_search_commit().is_none(), "never twice for one stream");
+    }
+
+    /// **Regression (device, 2026-10-04):** after a download, the Subtitles and Audio menus could
+    /// no longer be opened. The store keeps its Installed state for the playing item, and every
+    /// NEW panel saw it, re-committed and dismissed itself on its first tick. Only a panel that
+    /// watched the download in flight may auto-select it.
+    #[test]
+    fn a_panel_opened_after_the_install_never_auto_selects_it_again() {
+        let _g = plx_base::testlock::serial();
+        let installed = DownloadPhase::Installed { hit: 0, stream: plx_data::subsearch::InstalledStream {
+            id: 1929519, key: "/library/streams/1929519".into(), codec: "srt".into(), language_code: "nld".into() } };
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = store_with(vec![metadata::Stream { id: 1, index: 0, lang: "English".into(),
+            lang_code: "eng".into(), codec: "srt".into(), ..Default::default() }]);
+        for tab in [0, 1] {
+            let mut menu = TrackMenuState::new_with(&ps, store.view(), tab, vec!["eng".into()], true);
+            menu.set_search(snap(SearchStatus::Ready, None, vec![hit("rel")], installed.clone()));
+            assert!(menu.take_search_commit().is_none(), "tab {tab}: reopening must not re-commit");
+        }
     }
 
     /// The installed subtitle joins the PLAYING item's list, once, and only that item's.
