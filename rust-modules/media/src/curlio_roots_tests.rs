@@ -203,3 +203,21 @@ fn a_media_open_on_a_latched_host_both_stores_refuse_fails_after_one_strict_retr
     assert!(!keypin::is_roots_latched(&key));
     assert_eq!(accepted.load(std::sync::atomic::Ordering::Acquire), 2, "bundle then strict, and the bundle is not offered again");
 }
+
+/// `https://<plex.direct>:443@127.0.0.1:<port>/` dials the loopback server, not the `*.plex.direct`
+/// name in the userinfo; the bundle must not be offered for it (`net::keypin::key_of_url`).
+#[test]
+fn a_media_open_with_a_plex_direct_name_in_the_userinfo_never_uses_the_bundle() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    let (ca, port, _accepted) = serve("127.0.0.1");
+    let _device = TestCaGuard::install(&mint_cert(&["unrelated.invalid"]).pem, "roots-media-userinfo");
+    let _roots = keypin::test_roots::Guard::install(&ca, "roots-media-userinfo");
+    let key = keypin::key_of(PLEX_DIRECT, 443);
+    let _watch = keypin::Scoped::watch(&key);
+    let err = crate::curlio::CurlSource::open(&format!("https://{PLEX_DIRECT}:443@127.0.0.1:{port}/video.mkv"), 0)
+        .err()
+        .expect("the bundle is for *.plex.direct hosts, and the host dialled is 127.0.0.1");
+    assert_eq!(err, crate::curlio::OpenErr::Transport(60));
+    assert!(!keypin::is_roots_latched(&key));
+}

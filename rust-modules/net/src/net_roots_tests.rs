@@ -259,6 +259,70 @@ fn the_ladder_after_each_failed_attempt_is_bounded_and_never_repeats_the_bundle(
     assert_eq!(kind(keypin::after_failure(&held, &key_mode, 90, None, false)), "none");
 }
 
+/// **Userinfo cannot smuggle a `*.plex.direct` host past the name rule.** In
+/// `https://x.plex.direct:443@evil.example/` libcurl dials `evil.example` (everything before the `@`
+/// is a user name and a password), but a reading that splits the authority at the first `:` sees the
+/// host `x.plex.direct`, which would have offered the bundled roots (and the key table) to a host
+/// that is not a household's own server. `key_of_url` is the one reading of a URL both planes use for
+/// that decision, so it refuses any authority that is not a plain `host[:port]`.
+#[test]
+fn an_authority_that_is_not_a_plain_host_and_port_has_no_key() {
+    for url in [
+        "https://x.plex.direct:443@evil.example/",
+        "https://x.plex.direct@evil.example/",
+        "https://user:pw@x.plex.direct/",
+        "https://x.plex.direct:443@evil.example",
+        "https://x.plex.direct?@evil.example/",
+        "https://x.plex.direct#@evil.example/",
+        "https://x.plex.direct\\@evil.example/",
+        "https://x.plex.direct%2e@evil.example/",
+        "https://x.plex.direct /",
+        "https://x.plex.direct:443 @evil.example/",
+        "https:///x",
+    ] {
+        assert_eq!(keypin::key_of_url(url), None, "{url}");
+    }
+    // The plain shapes keep their key (lowercased), including a bracketed literal.
+    for (url, want) in [
+        ("https://127.0.0.1:32400/identity", "127.0.0.1:32400"),
+        ("HTTPS://A.B.Plex.Direct:8443/x?y=z@w", "a.b.plex.direct:8443"),
+        ("https://[::1]:32400/", "::1:32400"),
+    ] {
+        assert_eq!(keypin::key_of_url(url).as_deref(), Some(want), "{url}");
+    }
+    assert_eq!(keypin::key_of_url("http://x.plex.direct/"), None, "plaintext has no key");
+}
+
+/// The same input through a real request: libcurl dials the loopback server whose certificate the
+/// bundle (and only the bundle) would verify, and the request must fail strict, exactly as it does
+/// for any other host that is not a `*.plex.direct` name.
+#[test]
+fn a_plex_direct_name_in_the_userinfo_never_uses_the_bundle() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = leaf(&["127.0.0.1"]);
+    let _device = TestCaGuard::install(&unrelated_store(), "roots-userinfo");
+    let _roots = keypin::test_roots::Guard::install(&cert.pem, "roots-userinfo");
+    let served = spawn_observed(Arc::clone(&cert), b"{}".to_vec());
+    let port = served.port;
+    let key = keypin::key_of(PLEX_DIRECT, 443);
+    let _scoped = keypin::Scoped::watch(&key);
+    let result = request_result_evidence(
+        &format!("https://{PLEX_DIRECT}:443@127.0.0.1:{port}/identity"),
+        &[],
+        "GET",
+        None,
+        API,
+        false,
+        None,
+        None,
+        false,
+    );
+    let failure = result.err().expect("the device store does not hold the issuer and the bundle is not offered");
+    assert_eq!(failure.curl_rc, Some(60));
+    assert!(!keypin::is_roots_latched(&key), "nothing was served against the bundle");
+}
+
 #[test]
 fn is_plex_direct_is_a_suffix_rule_on_a_clean_host_name() {
     for host in [PLEX_DIRECT, "A.B.PLEX.DIRECT", "a.plex.direct.", "192-168-0-10.abc.plex.direct"] {

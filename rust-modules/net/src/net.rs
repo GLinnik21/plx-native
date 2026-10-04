@@ -2527,10 +2527,35 @@ pub mod keypin {
         format!("{}:{port}", host.to_ascii_lowercase())
     }
 
-    /// [`key_of`] a URL's origin, or `None` for anything but `https` (key mode is a TLS fallback).
+    /// [`key_of`] a URL's origin, or `None` for anything but `https` (key mode is a TLS fallback)
+    /// **and for any authority that is not a plain `host[:port]`**: the authority (everything
+    /// between `https://` and the first `/`) must be made only of letters, digits, `.`, `-`, `:`
+    /// and the brackets of an IPv6 literal.
+    ///
+    /// **The second half is a security rule, not tidiness.** This is the one reading of a URL that
+    /// both planes use to decide whether a request may be offered a remembered key or the bundled
+    /// roots (`is_plex_direct` on the key's host), and [`crate::net::origin`]'s `split` is a
+    /// tolerant reading for a file that can be corrupt: it splits the authority at the first `:`.
+    /// libcurl's reading is the standard one, where everything before an `@` is a user name and a
+    /// password. So in `https://x.plex.direct:443@evil.example/` the two disagree about the host
+    /// (`x.plex.direct` here, `evil.example` on the wire), and the name rule would have been
+    /// satisfied by a string that never reaches the network. Userinfo (`@`), a query or fragment
+    /// before the first `/`, a backslash, a percent-escape, a space: none of them is a URL this app
+    /// builds for a media server, and none gets a key. The request still goes out, strictly
+    /// verified, as for any host with no key.
+    ///
     /// The same reading of a URL the media plane's resolve lookup uses, so the two tables agree.
     pub fn key_of_url(url: &str) -> Option<String> {
-        url.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://")).then(|| {
+        if !url.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://")) {
+            return None;
+        }
+        let rest = &url[8..];
+        let authority = &rest[..rest.find('/').unwrap_or(rest.len())];
+        let plain = !authority.is_empty()
+            && authority
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'));
+        plain.then(|| {
             let (origin, _) = crate::net::origin::split(url);
             key_of(origin.host(), origin.port())
         })
