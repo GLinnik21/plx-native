@@ -5229,15 +5229,20 @@ class DepGates(unittest.TestCase):
         "ci",
         "rust-modules/src",
         # The layer crates split out of `src`: `ci/check-deps.sh` reads them as `SRC_BASE`,
-        # `SRC_MACHINE` and `SRC_PLATFORM`, so a copy without them grades a different tree than the
-        # checkout.
+        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM` and `SRC_GFX`, so a copy without them grades a different
+        # tree than the checkout.
         "rust-modules/base/src",
         "rust-modules/machine/src",
+        "rust-modules/net/src",
         "rust-modules/platform/src",
+        "rust-modules/gfx/src",
         "rust-modules/Cargo.toml",
         "rust-modules/build.rs",
+        "rust-modules/net/Cargo.toml",
         "rust-modules/platform/Cargo.toml",
         "rust-modules/platform/build.rs",
+        "rust-modules/gfx/Cargo.toml",
+        "rust-modules/gfx/build.rs",
         "rust-modules/storage/Cargo.toml",
         "rust-modules/storage/build.rs",
         "rust-modules/.cargo",
@@ -5287,8 +5292,9 @@ class DepGates(unittest.TestCase):
         """The untouched copy above cannot see an input that was left out of `TREE_INPUTS` -- a
         gate that scans nothing is green. So plant what the `fpflags` rule looks for in each file
         it scans, inside the copy, and require the rule to go red naming it."""
-        for rel in ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/platform/Cargo.toml",
-                    "rust-modules/platform/build.rs", "rust-modules/storage/Cargo.toml",
+        for rel in ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/platform/Cargo.toml",
+                    "rust-modules/platform/build.rs", "rust-modules/gfx/Cargo.toml",
+                    "rust-modules/gfx/build.rs", "rust-modules/storage/Cargo.toml",
                     "rust-modules/storage/build.rs", "rust-modules/.cargo/config.toml", "Makefile"):
             with self.subTest(input=rel):
                 target = os.path.join(self.tree, rel)

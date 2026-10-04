@@ -46,7 +46,7 @@ mod fan;
 mod refresh;
 mod trace;
 
-use crate::img;
+use plx_gfx::img;
 use crate::plex::ServerId;
 use plx_machine::machine::PosterKey;
 use crate::ui::tex::{self, Decoded, PosterError, PosterReady, Tex, Uploader, Warm};
@@ -1348,12 +1348,12 @@ impl Uploader for GfxUploader {
     }
     fn warm(&mut self, t: Tex) {
         if t.id != 0 {
-            crate::gfx::warm_tex(t.id);
+            plx_gfx::gfx::warm_tex(t.id);
         }
     }
     fn free(&mut self, t: Tex) {
         if t.id != 0 {
-            crate::gfx::delete_tex(t.id);
+            plx_gfx::gfx::delete_tex(t.id);
         }
     }
 }
@@ -1627,7 +1627,7 @@ impl fan::FanIo for WorkerFanIo<'_> {
         let (w, h) = crate::ui::widgets::POSTER_RES;
         let path = transcode_request(self.client, thumb, w, h, false);
         let loaded = load_art(self.client, self.srv, &path, self.cache_gen, |b| {
-            crate::img::img_decode_owned(b).map(|(w, h, px)| fan::Rgba { w, h, px })
+            plx_gfx::img::img_decode_owned(b).map(|(w, h, px)| fan::Rgba { w, h, px })
         });
         match loaded.art {
             Some(poster) => fan::Got::Ok(poster),

@@ -119,8 +119,8 @@ impl QrCode {
                 }
             }
         }
-        crate::gfx::delete_tex(self.texture);
-        self.texture = crate::img::img_upload_rgba(rgba.as_ptr(), side, side);
+        plx_gfx::gfx::delete_tex(self.texture);
+        self.texture = plx_gfx::img::img_upload_rgba(rgba.as_ptr(), side, side);
         self.pixels = side;
     }
 
@@ -133,7 +133,7 @@ impl QrCode {
 }
 
 impl Drop for QrCode {
-    fn drop(&mut self) { crate::gfx::delete_tex(self.texture); }
+    fn drop(&mut self) { plx_gfx::gfx::delete_tex(self.texture); }
 }
 
 #[cfg(test)]

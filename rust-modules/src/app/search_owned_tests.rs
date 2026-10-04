@@ -841,7 +841,7 @@ fn leaving_owned_search_through_a_real_route_change_releases_its_keyboard() {
 ///
 /// **This drives `Bridge::draws_chrome_for` directly** — the exact predicate `draw_chrome` calls
 /// as its guard — rather than re-deriving the same condition inline: `draw_chrome`'s own body
-/// calls into real text measurement (`crate::text::text_width`, off `self.chrome.labels()`'s real
+/// calls into real text measurement (`plx_gfx::text::text_width`, off `self.chrome.labels()`'s real
 /// strings) with no font loaded on a host test, so a test cannot drive the paint itself end to end
 /// and must instead pin the exact decision the guard makes. The fix derives that guard FROM the
 /// one chrome predicate instead of listing pages a second time (the drift this bug was), so a

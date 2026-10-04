@@ -184,7 +184,7 @@ fn all_auth_worker_bodies_are_observation_only() {
 /// as a connection problem. Before this, all of these were one `None`.
 #[test]
 fn roster_grading_tells_a_refused_identity_from_no_answer() {
-    use crate::net::{RequestError, RequestFailure};
+    use plx_net::net::{RequestError, RequestFailure};
     let user = HomeUser { uuid: "synthetic-user".into(), title: "Synthetic".into(), ..Default::default() };
     assert_eq!(grade_roster(Ok(vec![user])).map(|users| users.len()), Some(1));
     assert_eq!(grade_roster(Ok(Vec::new())).map(|users| users.len()), Some(0));

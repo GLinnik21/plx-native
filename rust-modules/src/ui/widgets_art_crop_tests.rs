@@ -59,12 +59,12 @@ fn every_person_photo_takes_the_headshot_crop_and_other_art_is_even() {
 #[test]
 fn art_at_its_tiles_aspect_is_untouched_and_a_poster_in_a_landscape_tile_is_cropped() {
     let poster = Rect::new(0.0, 0.0, 250.0, 375.0);
-    assert_eq!(art_uv(&Art::Poster(None), 250.0, 375.0, poster), crate::gfx::UV_FULL);
+    assert_eq!(art_uv(&Art::Poster(None), 250.0, 375.0, poster), plx_gfx::gfx::UV_FULL);
     let still = Rect::new(0.0, 0.0, RowStyle::EPISODE.w, RowStyle::EPISODE.h);
     let uv = art_uv(&Art::Still(None), 250.0, 375.0, still);
     let (sx, sy) = texel_scale(uv, 250.0, 375.0, still);
     assert!((sx - sy).abs() < 1e-4, "poster fallback drawn with uneven scale {sx} x {sy}");
     assert!(uv[3] < 1.0 && uv[2] == 1.0, "a tall poster in a wide tile loses top and bottom: {uv:?}");
     // an undecoded texture answers the whole window, never a NaN
-    assert_eq!(art_uv(&headshot("k"), 0.0, 0.0, cast_circle(1.0)), crate::gfx::UV_FULL);
+    assert_eq!(art_uv(&headshot("k"), 0.0, 0.0, cast_circle(1.0)), plx_gfx::gfx::UV_FULL);
 }

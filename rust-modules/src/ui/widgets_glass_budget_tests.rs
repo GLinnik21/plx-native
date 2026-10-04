@@ -7,8 +7,8 @@ use super::test_support::*;
 /// **[`GLASS_TRACK_MAX`] is the budget, solved for width** — asserted rather than asserted-in-a-
 /// comment, because the two numbers live in different files and the one that moves is the
 /// budget. A glass surface is charged for the blurred RECTANGLE: itself grown
-/// [`crate::gfx::BLUR_MARGIN`] on every side. At the limit width that must still fit
-/// [`crate::gfx::GLASS_REGION_BUDGET`], which is what a MOVING host carries at 60 fps — and this
+/// [`plx_gfx::gfx::BLUR_MARGIN`] on every side. At the limit width that must still fit
+/// [`plx_gfx::gfx::GLASS_REGION_BUDGET`], which is what a MOVING host carries at 60 fps — and this
 /// bar's host is always moving, since the page under it is what the user is scrolling.
 ///
 /// **It is priced as the PAIR now**, and that is the change worth reading twice. This asserted
@@ -26,22 +26,22 @@ use super::test_support::*;
 /// `BLUR_MARGIN`.
 #[test]
 fn the_band_budget_restated_here_is_the_measured_one() {
-    assert_eq!(BAND_REGION_BUDGET, crate::gfx::GLASS_REGION_BUDGET);
+    assert_eq!(BAND_REGION_BUDGET, plx_gfx::gfx::GLASS_REGION_BUDGET);
     let (h, y) = (TAB_PILL_H + 2.0 * TAB_TRACK_PAD, TOP_BAR_Y - TAB_TRACK_PAD);
-    let reg = crate::gfx::blur_region(0.0, y, crate::ui::consts::SCR_W, h);
+    let reg = plx_gfx::gfx::blur_region(0.0, y, crate::ui::consts::SCR_W, h);
     assert_eq!(reg[3], BAND_REGION_H, "the band's real region height");
 }
 
 #[test]
 fn the_whole_bands_glass_fits_one_region_budget() {
     assert!(
-        band_region(GLASS_TRACK_MAX) <= crate::gfx::GLASS_REGION_BUDGET,
+        band_region(GLASS_TRACK_MAX) <= plx_gfx::gfx::GLASS_REGION_BUDGET,
         "the band at the limit costs {:.0} px^2, past the {:.0} a moving host carries",
         band_region(GLASS_TRACK_MAX),
-        crate::gfx::GLASS_REGION_BUDGET,
+        plx_gfx::gfx::GLASS_REGION_BUDGET,
     );
     assert!(
-        band_region(940.0) > crate::gfx::GLASS_REGION_BUDGET,
+        band_region(940.0) > plx_gfx::gfx::GLASS_REGION_BUDGET,
         "940 was the TRACK's own limit and must be outside the BAND's: {:.0} px^2",
         band_region(940.0),
     );
@@ -106,7 +106,7 @@ fn the_unfurled_chip_never_reaches_the_glass_track() {
         let (mut lo, mut hi) = (0.0f32, crate::ui::consts::SCR_W);
         for _ in 0..40 {
             let mid = 0.5 * (lo + hi);
-            if band_region(mid) <= crate::gfx::GLASS_REGION_BUDGET {
+            if band_region(mid) <= plx_gfx::gfx::GLASS_REGION_BUDGET {
                 lo = mid;
             } else {
                 hi = mid;
@@ -148,7 +148,7 @@ fn the_unfurled_chip_never_reaches_the_glass_track() {
 /// rests on: one solve, one material, two surfaces.
 #[test]
 fn the_chips_capsule_fades_its_rim_with_its_scrim_and_rests_on_the_tracks_own_face() {
-    let face = crate::gfx::GlassFace {
+    let face = plx_gfx::gfx::GlassFace {
         scrim_top: [0.0, 0.0, 0.0, 0.40],
         scrim_bot: [0.0, 0.0, 0.0, 0.52],
         rim: [1.0, 1.0, 1.0, 0.14],

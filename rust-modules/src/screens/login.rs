@@ -299,7 +299,7 @@ fn signed_in_reason(account: &str, measure: &dyn Measure) -> Option<String> {
         if room <= 0.0 {
             return None;
         }
-        let name = crate::text::elide_middle_by(&account, room, |t| measure.width_str(t, sz, false));
+        let name = plx_gfx::text::elide_middle_by(&account, room, |t| measure.width_str(t, sz, false));
         let out = message(&name);
         if first_line_w(&out) <= column {
             return Some(out);
@@ -1838,16 +1838,16 @@ impl LoginScreen {
             return;
         }
         let (mut w, mut h): (c_int, c_int) = (0, 0);
-        let px = crate::img::img_decode_rgba(png.as_ptr(), png.len() as c_int, &mut w, &mut h);
+        let px = plx_gfx::img::img_decode_rgba(png.as_ptr(), png.len() as c_int, &mut w, &mut h);
         if !px.is_null() {
-            self.qr_tex = crate::img::img_upload_rgba(px, w, h);
+            self.qr_tex = plx_gfx::img::img_upload_rgba(px, w, h);
             self.qr_px = if self.qr_tex != 0 {
                 (w.max(0) as u32, h.max(0) as u32)
             } else {
                 (0, 0)
             };
             self.qr_tex_gen = gen;
-            crate::img::img_free(px);
+            plx_gfx::img::img_free(px);
         }
     }
 
@@ -1855,7 +1855,7 @@ impl LoginScreen {
         if !qr_cache_stale(self.qr_tex_gen, live, self.phase) {
             return;
         }
-        crate::gfx::delete_tex(self.qr_tex);
+        plx_gfx::gfx::delete_tex(self.qr_tex);
         self.qr_tex = 0;
         self.qr_px = (0, 0);
         self.qr_tex_gen = live;
@@ -2170,7 +2170,7 @@ impl<H: AuthLike> Machine<H> for LoginScreen {
             // on 0, so a screen that never uploaded a texture (never reached `Phase::Waiting`, or
             // reached it with no QR PNG yet) frees nothing.
             ScreenEvent::Unmount => {
-                crate::gfx::delete_tex(self.qr_tex);
+                plx_gfx::gfx::delete_tex(self.qr_tex);
                 self.qr_tex = 0;
                 self.qr_px = (0, 0);
                 Handled::Yes
@@ -2855,7 +2855,7 @@ mod tests {
         }
     }
 
-    /// A [`Measure`] that forwards straight to `crate::text`'s own raw, no-font-loaded fallbacks —
+    /// A [`Measure`] that forwards straight to `plx_gfx::text`'s own raw, no-font-loaded fallbacks —
     /// the exact numbers `StatusOverlay::bands`/`action_frame` themselves fall back to when nothing
     /// has called `init_text`, which is true of every host test. It exists ONLY for the test below,
     /// and neither of the two `Measure`s already in this file can stand in for it:
@@ -2872,13 +2872,13 @@ mod tests {
     struct RawTextMeasure;
     impl Measure for RawTextMeasure {
         fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
-            crate::text::text_width(s.as_ptr(), sz, bold as c_int)
+            plx_gfx::text::text_width(s.as_ptr(), sz, bold as c_int)
         }
         fn cap_h(&self, sz: i32) -> f32 {
-            crate::text::cap_h(sz, 0)
+            plx_gfx::text::cap_h(sz, 0)
         }
         fn line_h(&self, sz: i32) -> f32 {
-            crate::text::text_height(sz, 0)
+            plx_gfx::text::text_height(sz, 0)
         }
     }
 

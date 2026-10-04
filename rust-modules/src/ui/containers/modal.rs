@@ -149,8 +149,8 @@ impl PopoverMotion {
         !self.holding && (self.appear - self.target).abs() < 0.002 && self.vel.abs() < 0.02
     }
     pub fn tick(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
-        let text_pending = crate::text::surface_text_pending() && self.held_ms < SURFACE_TEXT_HOLD_MAX_MS;
-        self.tick_gated(t, present, crate::gfx::snapshot_pending() || text_pending);
+        let text_pending = plx_gfx::text::surface_text_pending() && self.held_ms < SURFACE_TEXT_HOLD_MAX_MS;
+        self.tick_gated(t, present, plx_gfx::gfx::snapshot_pending() || text_pending);
     }
     /// [`tick`](Self::tick) with the host snapshot's GPU state passed in: a HELD surface stays
     /// held while the snapshot its hold frame rendered is still in flight, because those frames
@@ -335,9 +335,9 @@ pub(crate) trait DimSink {
     fn captured(&self) -> bool;
     /// `gfx::field_kick`: queue the reduction of the page as it stands NOW — before any dim is on
     /// it — or `None` when it has no honest answer this frame.
-    fn kick(&mut self) -> Option<crate::gfx::FieldTicket>;
+    fn kick(&mut self) -> Option<plx_gfx::gfx::FieldTicket>;
     /// `gfx::field_collect`: the reduction `kick` queued, once the GPU has had a frame for it.
-    fn collect(&mut self, t: crate::gfx::FieldTicket) -> crate::gfx::FieldRead;
+    fn collect(&mut self, t: plx_gfx::gfx::FieldTicket) -> plx_gfx::gfx::FieldRead;
     /// A read is (or is no longer) in flight: keep the loop turning for it, and keep the host's
     /// ground stage — whose quad bakes the dim in — from being taken before it lands.
     fn in_flight(&mut self, pending: bool);
@@ -350,32 +350,32 @@ pub(crate) struct GlDims;
 
 impl DimSink for GlDims {
     fn video_plane(&self) -> bool {
-        crate::gfx::video_plane_frame()
+        plx_gfx::gfx::video_plane_frame()
     }
     fn page_epoch(&self) -> u32 {
         crate::ui::popover::host::page_epoch()
     }
     fn captured(&self) -> bool {
-        crate::gfx::snapshot_captured_this_frame()
+        plx_gfx::gfx::snapshot_captured_this_frame()
     }
-    fn kick(&mut self) -> Option<crate::gfx::FieldTicket> {
+    fn kick(&mut self) -> Option<plx_gfx::gfx::FieldTicket> {
         // A host test links GL but never creates a context — `underlay::upload`'s reason. A test
         // that wants a sample drives the seam with its own `DimSink`.
         #[cfg(not(test))]
         {
             // Reduce the host snapshot itself when it is the undimmed page — it was taken at this
             // same instant, so the chain's own full-screen copy would duplicate it.
-            crate::gfx::field_kick(crate::ui::popover::host::page_tex())
+            plx_gfx::gfx::field_kick(crate::ui::popover::host::page_tex())
         }
         #[cfg(test)]
         {
             None
         }
     }
-    fn collect(&mut self, t: crate::gfx::FieldTicket) -> crate::gfx::FieldRead {
+    fn collect(&mut self, t: plx_gfx::gfx::FieldTicket) -> plx_gfx::gfx::FieldRead {
         // No context-free guard needed: with no chain built (a host test never builds one) this
         // answers `Lost` before touching GL.
-        crate::gfx::field_collect(t)
+        plx_gfx::gfx::field_collect(t)
     }
     fn in_flight(&mut self, pending: bool) {
         crate::ui::popover::host::defer_ground(pending);
@@ -425,7 +425,7 @@ pub struct ModalUnderlay {
     field: crate::ui::underlay::UnderlayField,
     held: Latched,
     /// A page read queued and not yet landed: the epoch it reads, and its ticket.
-    pending: Option<(u32, crate::gfx::FieldTicket)>,
+    pending: Option<(u32, plx_gfx::gfx::FieldTicket)>,
     /// The stack is empty but the field still holds a corner envelope — see
     /// [`retire`](Self::retire). It is a CACHE until something asks for it: the next sync, dim or
     /// presented surface either adopts it (the same envelope) or drops it first.
@@ -607,15 +607,15 @@ impl ModalUnderlay {
         self.wake(source);
         if let Some((epoch, ticket)) = self.pending {
             match sink.collect(ticket) {
-                crate::gfx::FieldRead::Ready(raw) => {
+                plx_gfx::gfx::FieldRead::Ready(raw) => {
                     self.field
                         .latch_sampled(&raw, crate::ui::underlay::Grade::Dim);
                     self.held = Latched::Page(epoch);
                     self.pending = None;
                 }
-                crate::gfx::FieldRead::Pending => {}
+                plx_gfx::gfx::FieldRead::Pending => {}
                 // The targets were reused (another reader ran the chain): ask again below.
-                crate::gfx::FieldRead::Lost => self.pending = None,
+                plx_gfx::gfx::FieldRead::Lost => self.pending = None,
             }
         }
         let epoch = sink.page_epoch();
@@ -922,7 +922,7 @@ impl<H: Host> ModalStack<H> {
         if self.surfaces.is_empty() {
             return;
         }
-        if crate::gfx::blur_source_pass() {
+        if plx_gfx::gfx::blur_source_pass() {
             let source = self.underlay_source();
             self.underlay.wake(source);
             // Declaration/source traversals consume the published field. Only the visible
@@ -1140,7 +1140,7 @@ mod hide_tests {
     fn a_held_surface_waits_for_its_text_but_not_forever() {
         let _g = plx_base::testlock::serial();
         let held_for = |pending_frames: u32| {
-            crate::text::reset_prewarm_for_test();
+            plx_gfx::text::reset_prewarm_for_test();
             let mut m = PopoverMotion::at(0.0);
             m.to(1.0);
             m.hold_one_frame();
@@ -1148,15 +1148,15 @@ mod hide_tests {
             let mut frames = 0u32;
             while m.appear == 0.0 && frames < 100 {
                 if frames < pending_frames {
-                    crate::text::queue_prewarm(c"surface text".as_ptr(), 24, 0);
+                    plx_gfx::text::queue_prewarm(c"surface text".as_ptr(), 24, 0);
                 } else {
-                    crate::text::reset_prewarm_for_test();
+                    plx_gfx::text::reset_prewarm_for_test();
                 }
                 let mut ph = PresentHandle::of(&mut present);
                 m.tick(tick(16 * (frames + 1)), &mut ph);
                 frames += 1;
             }
-            crate::text::reset_prewarm_for_test();
+            plx_gfx::text::reset_prewarm_for_test();
             frames
         };
         assert_eq!(held_for(0), 2, "a warm open: the one held frame, then the ramp");
@@ -1174,7 +1174,7 @@ mod hide_tests {
     fn a_held_surface_waits_on_the_latched_text_readiness() {
         let _g = plx_base::testlock::serial();
         let held_for = |latched: &dyn Fn(u32) -> bool, queued: bool| {
-            crate::text::reset_prewarm_for_test();
+            plx_gfx::text::reset_prewarm_for_test();
             let mut m = PopoverMotion::at(0.0);
             m.to(1.0);
             m.hold_one_frame();
@@ -1182,14 +1182,14 @@ mod hide_tests {
             let mut frames = 0u32;
             while m.appear == 0.0 && frames < 100 {
                 if queued {
-                    crate::text::queue_prewarm(c"surface text".as_ptr(), 24, 0);
+                    plx_gfx::text::queue_prewarm(c"surface text".as_ptr(), 24, 0);
                 }
-                crate::text::latch_surface_text_pending(latched(frames));
+                plx_gfx::text::latch_surface_text_pending(latched(frames));
                 let mut ph = PresentHandle::of(&mut present);
                 m.tick(tick(16 * (frames + 1)), &mut ph);
                 frames += 1;
             }
-            crate::text::reset_prewarm_for_test();
+            plx_gfx::text::reset_prewarm_for_test();
             frames
         };
         assert_eq!(held_for(&|_| false, true), 2, "a live queue the latch calls ready does not hold");

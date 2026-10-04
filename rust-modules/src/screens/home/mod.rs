@@ -236,7 +236,7 @@ impl Backdrop {
             _ => true,
         };
         if changed {
-            crate::gfx::control_ground_invalidate();
+            plx_gfx::gfx::control_ground_invalidate();
             self.outgoing_art.jump(self.art.pos);
             self.art.jump(f32::from(self.tex.0 != 0));
             if self.keyed.is_none() {
@@ -1230,7 +1230,7 @@ impl HomeScreen {
     }
 
     fn draw_page<H: HomeLike>(&mut self, f: &mut DrawFrame<'_, '_, H>) {
-        crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
+        plx_gfx::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let view = H::hubs(f.cx);
         let visible_focus = self.visible_focus(f.focus.current);
         let env = self.env(0.0);
@@ -1350,7 +1350,7 @@ impl HomeScreen {
             return;
         }
         let may_read = live && dx.abs() < 0.5 && page_alpha >= 0.999;
-        let palette = crate::gfx::sample_control_ground(
+        let palette = plx_gfx::gfx::sample_control_ground(
             [pill.x + dx, pill.y, info.x + info.w - pill.x, pill.h],
             may_read,
         )
@@ -2563,7 +2563,7 @@ fn hero_art(tex: (u32, f32, f32), snap: f32, alpha: f32) -> crate::ui::widgets::
     crate::ui::widgets::WashArt {
         tex: if alpha <= 0.01 { 0 } else { tex.0 },
         rect: art_rect(tex, snap, 0.0),
-        uv: crate::gfx::UV_FULL,
+        uv: plx_gfx::gfx::UV_FULL,
         tint: theme::with_a(theme::TINT_WHITE, alpha * (1.0 - snap)),
     }
 }
@@ -2641,7 +2641,7 @@ fn meta_source_flow(
 }
 fn draw_meta_source(p: Painter, source: &str, x: f32, y: f32, base_w: f32, measure: &dyn Measure) {
     meta_source_flow(base_w, source, |text, dx, budget, size, bold, ink| {
-        let elided = crate::text::elide_by(text, budget, false, |t| {
+        let elided = plx_gfx::text::elide_by(text, budget, false, |t| {
             measure.width_str(t, size, bold != 0)
         });
         let Ok(text) = CString::new(elided) else {

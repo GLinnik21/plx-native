@@ -3127,7 +3127,7 @@ pub(crate) fn project_server_keys(session: &Session, signed_out: bool) {
     for source in &session.sources {
         add(&source.machine_id, source.resolve_pin());
     }
-    crate::net::keypin::project(pins, &stored, signed_out);
+    plx_net::net::keypin::project(pins, &stored, signed_out);
 }
 
 /// The session a cache value tells us about, for [`project_server_keys`], and whether it is the end
@@ -5685,7 +5685,7 @@ mod server_key_pin_tests {
     /// cleared record and a local revocation end it.
     #[test]
     fn only_a_sign_out_ends_what_keypin_published_not_a_live_session_with_no_key() {
-        use crate::net::keypin;
+        use plx_net::net::keypin;
         let _serial = plx_base::testlock::serial();
         let key = keypin::key_of("session-signed-in.invalid", 32400);
         let _scoped = keypin::Scoped::watch_machine("m-session-live", &key);
@@ -5813,7 +5813,7 @@ mod server_key_pin_tests {
     }
 
     fn table_key(port: i32) -> String {
-        crate::net::keypin::key_of(&format!("127-0-0-1.{HASH}.plex.direct"), port)
+        plx_net::net::keypin::key_of(&format!("127-0-0-1.{HASH}.plex.direct"), port)
     }
 
     /// A signed-in session whose primary server is the `plex.direct` origin of `machine` and which
@@ -5839,19 +5839,19 @@ mod server_key_pin_tests {
         let _session = test_support::TempSession::new("keys-restore");
         let (machine, port) = ("m-keys-restore", 41_001);
         let key = table_key(port);
-        let _scoped = crate::net::keypin::Scoped::new(key.clone(), &pin(9));
-        crate::net::keypin::forget_for_test(&key);
+        let _scoped = plx_net::net::keypin::Scoped::new(key.clone(), &pin(9));
+        plx_net::net::keypin::forget_for_test(&key);
         save(&remembering(machine, port, &pin(1)));
         let _ = load();
         plx_base::storage_worker::drain_for_test();
         let _ = peek();
-        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(1)), "stored server + stored key");
+        assert_eq!(plx_net::net::keypin::pin_for_test(&key), Some(pin(1)), "stored server + stored key");
 
-        crate::net::keypin::key_established(&key, &pin(1), Some(10));
-        assert!(crate::net::keypin::is_latched(&key));
+        plx_net::net::keypin::key_established(&key, &pin(1), Some(10));
+        assert!(plx_net::net::keypin::is_latched(&key));
         revoke_cached_session();
-        assert_eq!(crate::net::keypin::pin_for_test(&key), None, "sign-out empties the table");
-        assert!(!crate::net::keypin::is_latched(&key), "…and ends key mode");
+        assert_eq!(plx_net::net::keypin::pin_for_test(&key), None, "sign-out empties the table");
+        assert!(!plx_net::net::keypin::is_latched(&key), "…and ends key mode");
     }
 
     /// A new or changed key reaches the table when the write `learn_server_key` queued is applied
@@ -5863,22 +5863,22 @@ mod server_key_pin_tests {
         let _session = test_support::TempSession::new("keys-learn");
         let (machine, port) = ("m-keys-learn", 41_002);
         let key = table_key(port);
-        let _scoped = crate::net::keypin::Scoped::new(key.clone(), &pin(9));
-        crate::net::keypin::forget_for_test(&key);
+        let _scoped = plx_net::net::keypin::Scoped::new(key.clone(), &pin(9));
+        plx_net::net::keypin::forget_for_test(&key);
         let mut stored = remembering(machine, port, &pin(1));
         stored.account_token = "acct".into();
         save(&stored);
         let _ = load();
         plx_base::storage_worker::drain_for_test();
         let _ = peek();
-        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(1)));
+        assert_eq!(plx_net::net::keypin::pin_for_test(&key), Some(pin(1)));
 
-        crate::net::keypin::key_established(&key, &pin(1), Some(10));
+        plx_net::net::keypin::key_established(&key, &pin(1), Some(10));
         assert!(learn_server_key(machine, &pin(2)), "a different key is queued");
         plx_base::storage_worker::drain_for_test();
         let _ = peek();
-        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(2)), "the applied write projects it");
-        assert!(!crate::net::keypin::is_latched(&key), "a pin change ends key mode for the host");
+        assert_eq!(plx_net::net::keypin::pin_for_test(&key), Some(pin(2)), "the applied write projects it");
+        assert!(!plx_net::net::keypin::is_latched(&key), "a pin change ends key mode for the host");
     }
 
     /// A probe that finishes after sign-out must not put its key back into the table sign-out just
@@ -5890,21 +5890,21 @@ mod server_key_pin_tests {
         let _session = test_support::TempSession::new("keys-learn-signout");
         let (machine, port) = ("m-keys-learn-out", 41_003);
         let key = table_key(port);
-        let _scoped = crate::net::keypin::Scoped::new(key.clone(), &pin(9));
-        crate::net::keypin::forget_for_test(&key);
+        let _scoped = plx_net::net::keypin::Scoped::new(key.clone(), &pin(9));
+        plx_net::net::keypin::forget_for_test(&key);
         let mut stored = remembering(machine, port, &pin(1));
         stored.account_token = "acct".into();
         save(&stored);
         let _ = load();
         plx_base::storage_worker::drain_for_test();
         let _ = peek();
-        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(1)));
+        assert_eq!(plx_net::net::keypin::pin_for_test(&key), Some(pin(1)));
 
         revoke_cached_session();
-        assert_eq!(crate::net::keypin::pin_for_test(&key), None, "sign-out empties the table");
+        assert_eq!(plx_net::net::keypin::pin_for_test(&key), None, "sign-out empties the table");
         let _ = learn_server_key(machine, &pin(2));
         plx_base::storage_worker::drain_for_test();
         let _ = peek();
-        assert_eq!(crate::net::keypin::pin_for_test(&key), None, "the late probe did not repopulate it");
+        assert_eq!(plx_net::net::keypin::pin_for_test(&key), None, "the late probe did not repopulate it");
     }
 }

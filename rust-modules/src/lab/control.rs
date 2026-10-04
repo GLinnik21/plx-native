@@ -7,7 +7,7 @@
 //! as the development FIFO and the next poll acknowledges it.
 //!
 //! No WebSocket dependency is hidden here. The oldest supported television has libcurl 7.53.1,
-//! before libcurl's WebSocket API, while [`crate::net::post_pinned`] already supplies TLS, the
+//! before libcurl's WebSocket API, while [`plx_net::net::post_pinned`] already supplies TLS, the
 //! per-session SPKI pin, deadlines and a bounded response body. A held HTTP request also crosses
 //! Cloud Test Lab's outbound-only NAT without opening a second public port.
 //!
@@ -103,7 +103,7 @@ pub(crate) fn start() {
     // On an old OpenSSL whose lock callbacks could not be installed, net.rs serialises every
     // HTTPS request behind one mutex. A 15-second long poll would then starve sign-in and uploads;
     // keep diagnostics working and name why control is unavailable instead.
-    if !crate::net::threaded_tls_ready() {
+    if !plx_net::net::threaded_tls_ready() {
         plx_base::eventlog::log("lab-control: disabled — this firmware cannot run concurrent TLS safely");
         return;
     }
@@ -128,7 +128,7 @@ fn run(url: String, secret: String, session: String, pin: String) {
         "Content-Type: application/json".to_string(),
         "Expect:".to_string(),
     ];
-    let timeouts = crate::net::Timeouts {
+    let timeouts = plx_net::net::Timeouts {
         connect_s: 8,
         // The receiver holds an idle poll for 15 seconds. Leave handshake and response headroom.
         total_s: 25,
@@ -147,7 +147,7 @@ fn run(url: String, secret: String, session: String, pin: String) {
             Ok(body) => body,
             Err(_) => return, // Ack contains only primitives; serialization cannot realistically fail.
         };
-        match crate::net::post_pinned(&url, &headers, &body, &pin, timeouts) {
+        match plx_net::net::post_pinned(&url, &headers, &body, &pin, timeouts) {
             Some(r) if r.status == 200 => {
                 // Receiving the response proves the receiver consumed the acknowledgement in this
                 // request. Clear it before considering the next command carried by that response.

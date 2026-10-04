@@ -13,7 +13,8 @@ objects with a `reason` are looked at; `cargo test` also prints harness text on 
 
 * `SecondBuildIsFreshTests` builds the real crate twice from `rust-modules/` and demands that the
   second run recompiled nothing of the crate: every `plxnative_modules` (and `plx_platform`, the
-  layer crate whose own build script generates the catalog) compiler-artifact is `fresh`, and the
+  layer crate whose own build script generates the catalog, and `plx_gfx`, whose build script
+  compiles the nanosvg object for its own test binary) compiler-artifact is `fresh`, and the
   crate's build script did not write its output again (cargo replays a
   `build-script-executed` record even for a fresh script, so the mtime of the script's output file
   is read, wherever this cargo keeps it).
@@ -61,12 +62,13 @@ PACKAGE = "plxnative-modules"  # the package's name, as it appears in a package_
 # The layer crate that owns a build script of its own (catalog + install identities): it must not be
 # always-dirty either, or every crate above it would rebuild with it.
 PLATFORM_CRATE = "plx_platform"
+GFX_CRATE = "plx_gfx"
 NIGHTLY = os.environ.get("RUST_NIGHTLY", "nightly")
 
 
-# The invocation `make check`'s lab line runs (Makefile, "cargo check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform --features
+# The invocation `make check`'s lab line runs (Makefile, "cargo check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net --features
 # lab-diagnostics"); identical arguments and CARGO_INCREMENTAL make the first run here a reuse.
-LIB_ARGS = ["check", "--lib", "--tests", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform", "--features", "lab-diagnostics"]
+LIB_ARGS = ["check", "--lib", "--tests", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform", "-p", "plx_gfx", "-p", "plx_net", "--features", "lab-diagnostics"]
 
 
 def cargo_env():
@@ -111,7 +113,7 @@ def rebuilt(records):
     return [f"{(rec.get('target') or {}).get('name')} ({'/'.join((rec.get('target') or {}).get('kind') or [])}) was recompiled"
             for rec in records
             if rec.get("reason") == "compiler-artifact"
-            and (rec.get("target") or {}).get("name") in (CRATE, PLATFORM_CRATE) and not rec.get("fresh")]
+            and (rec.get("target") or {}).get("name") in (CRATE, PLATFORM_CRATE, GFX_CRATE) and not rec.get("fresh")]
 
 
 def freeze_stamps(records):
@@ -290,6 +292,9 @@ class MarkerStillTriggersTests(unittest.TestCase):
         # The REAL script and the sources it includes, byte for byte.
         shutil.copy(RUST / "build.rs", crate / "build.rs")
         shutil.copy(RUST / "src/release_line.rs", crate / "src/release_line.rs")
+        # `build.rs` includes the shared host link configuration by `#[path]`.
+        (crate / "build_support").mkdir()
+        shutil.copy(RUST / "build_support/host_link.rs", crate / "build_support/host_link.rs")
         (crate / "src/lib.rs").write_text("// stub library for the build-script freshness test\n")
         (crate / "Cargo.toml").write_text(STUB_MANIFEST)
         shutil.copy(RUST / "Cargo.lock", crate / "Cargo.lock")

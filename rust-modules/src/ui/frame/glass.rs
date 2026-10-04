@@ -44,7 +44,7 @@ impl GlassPlan {
         &mut self.tab
     }
 
-    pub(crate) fn tab_face(&self) -> Option<crate::gfx::GlassFace> {
+    pub(crate) fn tab_face(&self) -> Option<plx_gfx::gfx::GlassFace> {
         self.tab.face()
     }
 
@@ -59,7 +59,7 @@ impl GlassPlan {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_tab_face_for_test(&mut self, face: crate::gfx::GlassFace) {
+    pub(crate) fn set_tab_face_for_test(&mut self, face: plx_gfx::gfx::GlassFace) {
         self.tab.set_face(face);
     }
 
@@ -156,7 +156,7 @@ mod tests {
         let mut a = GlassPlan::new();
         let b = GlassPlan::new();
         a.seed_tab_density_for_test(0.73);
-        a.set_tab_face_for_test(crate::gfx::GlassFace {
+        a.set_tab_face_for_test(plx_gfx::gfx::GlassFace {
             scrim_top: [0.1, 0.2, 0.3, 0.4],
             scrim_bot: [0.5, 0.6, 0.7, 0.8],
             rim: [0.0; 4], rim_lit: [0.0; 4], rim_w: 1.0,

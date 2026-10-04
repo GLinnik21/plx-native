@@ -210,7 +210,7 @@ fn cstr(p: *const c_char) -> String {
 /// Takes no arguments on purpose: `eglGetCurrentDisplay`/`eglGetCurrentSurface` return the handles
 /// of whatever context is current **on the calling thread**, and SDL made ours current on this one.
 /// Asking EGL is what makes this a probe of the real surface rather than of a display we created.
-pub(crate) fn probe() {
+pub fn probe() {
     let mut lib: Option<Handle> = None;
     let Some(Current { dpy, ctx }) = current_with(&mut |name| resolve(name, &mut lib)) else {
         // Not a fault on a desktop simulator (no EGL at all on macOS; GLX on Linux/X11) and a
@@ -538,7 +538,7 @@ fn damage_init(dpy: *mut c_void, surface: *mut c_void, lib: &mut Option<Handle>)
 /// same reason: the spec makes a sub-buffer damage region an error without it.
 ///
 /// One `static` read and a return when the trigger is absent.
-pub(crate) fn frame_damage() {
+pub fn frame_damage() {
     unsafe {
         let (Some(query), Some(set)) = (DMG_QUERY, DMG_SET) else {
             return;
@@ -570,7 +570,7 @@ static mut LATE_FRAMES: u32 = 0;
 /// damage region could ever be legal here: `EGL_KHR_partial_update` makes it an error to set one
 /// smaller than the whole buffer without a queried age. Costs one increment per presented frame
 /// and then nothing at all.
-pub(crate) fn late_probe() {
+pub fn late_probe() {
     unsafe {
         if LATE_FRAMES > 120 || LATE_DPY.is_null() {
             return;
@@ -626,7 +626,7 @@ fn log_gl_extensions() {
 /// Polled with `flags = 0`, never `EGL_SYNC_FLUSH_COMMANDS_BIT_KHR`: a flush in the middle of a frame
 /// makes a tiler submit the half-drawn render pass and reload it afterwards, which is the very cost
 /// being avoided. The swap flushes the fence along with the rest of the frame.
-pub(crate) mod fence {
+pub mod fence {
     use super::{resolve, Handle};
     use std::os::raw::{c_int, c_uint, c_void};
     use std::sync::OnceLock;
@@ -683,13 +683,13 @@ pub(crate) mod fence {
     }
 
     /// A fence in the GL command stream, destroyed on drop.
-    pub(crate) struct Fence {
+    pub struct Fence {
         sync: usize,
     }
 
     impl Fence {
         /// Insert a fence after everything submitted so far, or `None` where there are no fences.
-        pub(crate) fn insert() -> Option<Self> {
+        pub fn insert() -> Option<Self> {
             let a = api()?;
             let create: FnCreate = unsafe { std::mem::transmute(a.create) };
             let attribs = [EGL_NONE];
@@ -703,7 +703,7 @@ pub(crate) mod fence {
         /// Has the GPU passed it? A zero-timeout poll: never waits, never flushes. An error reads
         /// as "yes", so a broken driver degrades to the frame-count rule rather than to a read
         /// that never happens.
-        pub(crate) fn signaled(&self) -> bool {
+        pub fn signaled(&self) -> bool {
             let Some(a) = api() else { return true };
             let wait: FnClientWait = unsafe { std::mem::transmute(a.wait) };
             let r = unsafe { wait(a.dpy as *mut c_void, self.sync as *mut c_void, 0, 0) };

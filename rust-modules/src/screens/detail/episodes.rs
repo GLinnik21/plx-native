@@ -195,7 +195,7 @@ pub(crate) fn watch_state(ep: &Episode) -> PosterMark {
 /// The kicker's cap-top offset from its texture origin — fixed by the font, so callers compute it
 /// once per draw rather than once per cell.
 fn kicker_cap_top() -> f32 {
-    crate::text::text_cap_band(theme::size::CAPTION, 0).0
+    plx_gfx::text::text_cap_band(theme::size::CAPTION, 0).0
 }
 
 pub(crate) fn draw(
@@ -360,7 +360,7 @@ fn draw_cell(
                 0,
             );
             if !ep.rating.is_empty() {
-                let (top, baseline) = crate::text::text_cap_band(theme::size::MICRO, 0);
+                let (top, baseline) = plx_gfx::text::text_cap_band(theme::size::MICRO, 0);
                 crate::ui::widgets::keyline_chip(
                     p,
                     text_x + width + theme::space::SM,

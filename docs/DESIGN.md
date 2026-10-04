@@ -148,7 +148,7 @@ Its contextual answer verbs share one horizontal row, separated from BODY-sized 
 | any screen | `rust-modules/src/ui/CLAUDE.md`, then `docs/ui-system-migration.md` |
 | adding a screen | `docs/ui-system-migration.md` section (E) |
 | a colour | `rust-modules/src/ui/theme.rs` |
-| a size | `rust-modules/src/gfx/tokens.rs` (`mod size`, re-exported as `theme::size`) |
+| a size | `rust-modules/gfx/src/gfx/tokens.rs` (`mod size`, re-exported as `theme::size`) |
 | anything behind hero text | `rust-modules/src/ui/landing_hero.rs` and `widgets.rs`'s scrim section, then re-grade the anchor table |
 | a horizontal row | `rust-modules/src/ui/card_row.rs` |
 | playback UI | `rust-modules/src/player/CLAUDE.md` |

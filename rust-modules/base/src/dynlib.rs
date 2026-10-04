@@ -271,7 +271,46 @@ macro_rules! dynlib_sym {
 /// precisely why no amount of device testing could have found it.
 #[macro_export]
 macro_rules! dynlib {
+    // Crate-private, the form every table uses unless it must be named from another crate.
     (
+        $(#[$meta:meta])*
+        $modname:ident : [ $($cand:literal),+ $(,)? ] {
+            $(
+                $(#[$fmeta:meta])*
+                fn $fname:ident $(= $sym:literal)? ( $($params:tt)* ) $(-> $ret:ty)? ;
+            )*
+        }
+    ) => {
+        $crate::dynlib! {
+            @emit [pub(crate)]
+            $(#[$meta])*
+            $modname : [ $($cand),+ ] {
+                $( $(#[$fmeta])* fn $fname $(= $sym)? ( $($params)* ) $(-> $ret)? ; )*
+            }
+        }
+    };
+    // `dynlib! { pub curl: [...] { ... } }`: the table's module, its cells and its wrappers are
+    // `pub`, for a layer crate whose callers in another crate bind the same library (`plx_net`'s
+    // `net::curl_easy_*`, which `curlio` calls). Nothing else about the expansion differs.
+    (
+        $(#[$meta:meta])*
+        pub $modname:ident : [ $($cand:literal),+ $(,)? ] {
+            $(
+                $(#[$fmeta:meta])*
+                fn $fname:ident $(= $sym:literal)? ( $($params:tt)* ) $(-> $ret:ty)? ;
+            )*
+        }
+    ) => {
+        $crate::dynlib! {
+            @emit [pub]
+            $(#[$meta])*
+            $modname : [ $($cand),+ ] {
+                $( $(#[$fmeta])* fn $fname $(= $sym)? ( $($params)* ) $(-> $ret)? ; )*
+            }
+        }
+    };
+    (
+        @emit [$vis:vis]
         $(#[$meta:meta])*
         $modname:ident : [ $($cand:literal),+ $(,)? ] {
             $(
@@ -286,16 +325,16 @@ macro_rules! dynlib {
     ) => {
         $(#[$meta])*
         #[allow(non_upper_case_globals)]
-        pub(crate) mod $modname {
+        $vis mod $modname {
             use std::os::raw::c_void;
             use std::sync::atomic::AtomicPtr;
 
-            pub(crate) const CANDIDATES: &[&str] = &[$($cand),+];
-            $( pub(crate) static $fname: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut()); )*
+            $vis const CANDIDATES: &[&str] = &[$($cand),+];
+            $( $vis static $fname: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut()); )*
 
             /// Open the first candidate SONAME that exists and resolve every required symbol.
             /// `dir` scopes the search to one directory — see `Handle::open_in`.
-            pub(crate) fn load(dir: Option<&std::path::Path>) -> $crate::dynlib::Loaded {
+            $vis fn load(dir: Option<&std::path::Path>) -> $crate::dynlib::Loaded {
                 $crate::dynlib::load_into(
                     dir,
                     CANDIDATES,
@@ -307,7 +346,7 @@ macro_rules! dynlib {
         $(
             $crate::dynlib_wrapper! {
                 $(#[$fmeta])*
-                [$modname, $fname, $crate::dynlib_sym!($fname $(, $sym)?)]
+                [$vis, $modname, $fname, $crate::dynlib_sym!($fname $(, $sym)?)]
                 ( $($params)* ) $(-> $ret)?
             }
         )*
@@ -327,13 +366,13 @@ macro_rules! dynlib_wrapper {
     // through the variadic part of the call. See `dynlib!`'s doc for why this is not cosmetic.
     (
         $(#[$fmeta:meta])*
-        [$modname:ident, $fname:ident, $sym:expr]
+        [$vis:vis, $modname:ident, $fname:ident, $sym:expr]
         ( $($arg:ident : $argty:ty),* , ... , $($varg:ident : $vargty:ty),+ $(,)? ) $(-> $ret:ty)?
     ) => {
         $(#[$fmeta])*
         #[inline]
         #[allow(non_snake_case)]
-        pub(crate) unsafe fn $fname ( $($arg : $argty,)* $($varg : $vargty),+ ) $(-> $ret)? {
+        $vis unsafe fn $fname ( $($arg : $argty,)* $($varg : $vargty),+ ) $(-> $ret)? {
             let p = $modname::$fname.load(std::sync::atomic::Ordering::Relaxed);
             if p.is_null() {
                 $crate::dynlib::missing_symbol($modname::CANDIDATES[0], $sym);
@@ -345,7 +384,7 @@ macro_rules! dynlib_wrapper {
     // The ordinary shape.
     (
         $(#[$fmeta:meta])*
-        [$modname:ident, $fname:ident, $sym:expr]
+        [$vis:vis, $modname:ident, $fname:ident, $sym:expr]
         ( $($arg:ident : $argty:ty),* $(,)? ) $(-> $ret:ty)?
     ) => {
         $(#[$fmeta])*
@@ -354,7 +393,7 @@ macro_rules! dynlib_wrapper {
         // As an `extern` block these were exempt from the style lint; as generated Rust functions
         // they are not.
         #[allow(non_snake_case)]
-        pub(crate) unsafe fn $fname ( $($arg : $argty),* ) $(-> $ret)? {
+        $vis unsafe fn $fname ( $($arg : $argty),* ) $(-> $ret)? {
             // Relaxed, not Acquire: an Acquire load emits a full `dmb ish` on this ARM core, on
             // EVERY FFmpeg call. It buys nothing here — the table is published by `ff::boot()` on
             // the main thread before any pipeline thread exists, and `thread::spawn` is itself the

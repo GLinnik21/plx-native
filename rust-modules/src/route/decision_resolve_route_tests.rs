@@ -1611,7 +1611,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
     use std::io::{BufRead, BufReader};
 
     let _g = fresh_registry(&mut ps);
-    if !crate::net::global_init() || !crate::curlio::available() {
+    if !plx_net::net::global_init() || !crate::curlio::available() {
         return;
     }
     const SOURCE_KBPS: u32 = 25_264;
@@ -1718,7 +1718,7 @@ fn a_rejected_original_probe_keeps_hls_and_produces_no_capacity_observation() {
     use std::io::{BufRead, BufReader, Write};
 
     let _g = fresh_registry(&mut ps);
-    if !crate::net::global_init() || !crate::curlio::available() {
+    if !plx_net::net::global_init() || !crate::curlio::available() {
         return;
     }
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -1807,7 +1807,7 @@ fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
     use std::io::{BufRead, BufReader};
 
     let _g = fresh_registry(&mut ps);
-    if !crate::net::global_init() || !crate::curlio::available() {
+    if !plx_net::net::global_init() || !crate::curlio::available() {
         return;
     }
     let plan = crate::abr::source_probe_plan(320, crate::abr::PROBE_BUDGET_MS).unwrap();
@@ -1891,7 +1891,7 @@ fn cold_source_preflight_uses_the_playback_identity_and_does_not_close_it() {
     use std::io::{BufRead, BufReader};
 
     let _g = fresh_registry(&mut ps);
-    if !crate::net::global_init() || !crate::curlio::available() {
+    if !plx_net::net::global_init() || !crate::curlio::available() {
         return;
     }
     let plan = crate::abr::source_probe_plan(320, crate::abr::PROBE_BUDGET_MS).unwrap();

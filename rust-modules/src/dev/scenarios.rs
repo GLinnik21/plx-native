@@ -277,14 +277,14 @@ pub(crate) fn arm_navblur(glass: &mut crate::ui::frame::glass::GlassPlan) {
 /// `/tmp/plxnative-overdraw` — the CPU-side per-draw-class overdraw ledger.
 pub(crate) fn arm_overdraw() {
     if plx_base::devtrig::flag("overdraw") {
-        crate::ui::overdraw::set_ledger(true);
+        plx_gfx::overdraw::set_ledger(true);
     }
 }
 
 /// `/tmp/plxnative-drawmask=<classes>` — refuse every draw of the named classes.
 pub(crate) fn arm_drawmask() {
     if let Some(spec) = plx_base::devtrig::read("drawmask") {
-        crate::ui::overdraw::set_mask(&spec);
+        plx_gfx::overdraw::set_mask(&spec);
     }
 }
 
@@ -2132,7 +2132,7 @@ fn read_rss_kb() -> u64 {
 /// harness's `BENCH_RE` anchors on the fields before it), so a cycle line that shows RSS growing
 /// also says whether GL textures are what grew.
 fn tex_field() -> String {
-    let (n, bytes) = crate::gfx::tex_ledger::totals();
+    let (n, bytes) = plx_gfx::gfx::tex_ledger::totals();
     format!("tex={n}/{}", bytes / 1024)
 }
 

@@ -6,7 +6,7 @@
 //! retirement drains an event already inside that epoch and rejects every later event, so stable
 //! storage is not mistaken for permission to mutate the next playback.
 use crate::metadata::track_names::TrackNames;
-use crate::stream::HttpStream;
+use plx_net::stream::HttpStream;
 use std::ffi::CString;
 use std::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering,

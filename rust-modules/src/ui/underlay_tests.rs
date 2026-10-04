@@ -47,7 +47,7 @@ fn latched(cells: [[f32; 3]; N]) -> UnderlayField {
 #[test]
 fn the_ground_grade_is_the_washs_own_grade_cell_for_cell() {
     for c in hostile() {
-        let mine = graded(c.map(crate::gfx::lin), Grade::Ground).map(crate::gfx::enc);
+        let mine = graded(c.map(plx_gfx::gfx::lin), Grade::Ground).map(plx_gfx::gfx::enc);
         let wash = AmbientWash::keyed([c; 4], [AmbientWash::GROUND_W; 4])[0];
         assert!(
             close(mine, [wash[0], wash[1], wash[2]], 1e-5),
@@ -61,7 +61,7 @@ fn the_ground_grade_is_the_washs_own_grade_cell_for_cell() {
 #[test]
 fn the_dim_grade_leaves_the_sampled_light_alone() {
     for c in hostile() {
-        let lin = c.map(crate::gfx::lin);
+        let lin = c.map(plx_gfx::gfx::lin);
         assert_eq!(graded(lin, Grade::Dim), lin, "Dim must not touch {c:?}");
     }
 }
@@ -197,7 +197,7 @@ fn a_ramp_reconstructs_without_a_step() {
     let row: Vec<f32> = (0..TEX_W)
         .map(|i| {
             let u = (i as f32 + 0.5) / TEX_W as f32;
-            crate::gfx::enc(reconstruct(&cells, u, 0.5)[0])
+            plx_gfx::gfx::enc(reconstruct(&cells, u, 0.5)[0])
         })
         .collect();
     let ideal = (row[TEX_W - 1] - row[0]) / (TEX_W - 1) as f32;
@@ -487,7 +487,7 @@ fn the_panel_tint_is_capped_by_the_brightest_texel_under_the_panel() {
 
 /// WCAG relative luminance over display codes — `gfx::lin` is the same IEC transfer.
 fn rel(c: [f32; 3]) -> f32 {
-    0.2126 * crate::gfx::lin(c[0]) + 0.7152 * crate::gfx::lin(c[1]) + 0.0722 * crate::gfx::lin(c[2])
+    0.2126 * plx_gfx::gfx::lin(c[0]) + 0.7152 * plx_gfx::gfx::lin(c[1]) + 0.0722 * plx_gfx::gfx::lin(c[2])
 }
 fn ratio(a: [f32; 3], b: [f32; 3]) -> f32 {
     let (x, y) = (rel(a), rel(b));

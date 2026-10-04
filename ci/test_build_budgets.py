@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """ci/check-build-budgets.py against canned inputs: pass, fail, warn, and the json schema.
 
-Hermetic: no cargo, no ARM toolchain. The `cargo metadata` documents are hand-built (a root, a
-workspace member, registry crates, a duplicated crate, a dev-only crate and a build-only crate),
-the "binary" is a few bytes behind an ELF magic, and the source tree is a temp directory.
+The verdict tests are hermetic: no cargo, no ARM toolchain. The `cargo tree` listings are
+hand-built (a root, a workspace member, registry crates, a duplicated crate and a build-only crate),
+the "binary" is a few bytes behind an ELF magic, and the source tree is a temp directory. The
+feature-resolution tests at the end run the real `cargo tree` over a throwaway path-only workspace
+(no network, no registry) and are skipped where cargo is absent.
 """
 from __future__ import annotations
 
@@ -12,6 +14,8 @@ import copy
 import importlib.util
 import io
 import json
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,37 +25,33 @@ spec = importlib.util.spec_from_file_location("budgets", ROOT / "ci" / "check-bu
 b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
 
-REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
+WORKSPACE = ROOT / "rust-modules"  # what the tool treats as "ours": path packages under it
 
 
-def metadata(extra_normal=(), dup=True):
-    """root -> {member (workspace), serde, syn 1 + syn 2 (via two proc-macros), cc (build)}; dev -> rcgen."""
-    pkgs = {
-        "root": None, "member": None,
-        "serde": REGISTRY, "syn1": REGISTRY, "syn2": REGISTRY, "macro-a": REGISTRY, "macro-b": REGISTRY,
-        "cc": REGISTRY, "rcgen": REGISTRY,
-    }
-    for name in extra_normal:
-        pkgs[name] = REGISTRY
+def tree_line(name, version="1.0.0", *marks):
+    return " ".join([f"{name} v{version}", *(f"({m})" for m in marks)])
 
-    def pkg(i):
-        return {"id": i, "name": "syn" if i.startswith("syn") else i, "version": "2.0.0" if i == "syn2" else "1.0.0",
-                "source": pkgs[i]}
 
-    def dep(i, kind=None):
-        return {"pkg": i, "dep_kinds": [{"kind": kind, "target": None}]}
+def listings(extra_normal=(), dup=True):
+    """The two `cargo tree --prefix none` listings of one canned graph.
 
-    deps = {
-        "root": [dep("member"), dep("serde"), dep("macro-a"), dep("cc", "build"), dep("rcgen", "dev")]
-                + [dep(n) for n in extra_normal],
-        "macro-a": [dep("syn1")],
-        "serde": [dep("macro-b")],
-        "macro-b": [dep("syn2")] if dup else [dep("syn1")],
-    }
-    return {
-        "packages": [pkg(i) for i in pkgs],
-        "resolve": {"root": "root", "nodes": [{"id": i, "deps": deps.get(i, [])} for i in pkgs]},
-    }
+    root -> {member (a path package under the workspace), serde, syn 1 + syn 2 (via two
+    proc-macros), cc (build only)}. rcgen is a dev-dependency, so `cargo tree -e normal,build` does
+    not print it and neither does this listing.
+    """
+    ws = str(WORKSPACE)
+    common = [
+        tree_line("root", "0.1.0", ws),
+        tree_line("member", "0.0.0", f"{ws}/member"),
+        tree_line("serde"),
+        tree_line("macro-a", "1.0.0", "proc-macro"),
+        tree_line("macro-b", "1.0.0", "proc-macro"),
+        tree_line("syn", "1.0.0"),
+        tree_line("syn", "2.0.0" if dup else "1.0.0"),
+        tree_line("serde", "1.0.0", "*"),
+        *(tree_line(n) for n in extra_normal),
+    ]
+    return {"all": "\n".join(common + [tree_line("cc")]) + "\n", "normal": "\n".join(common) + "\n"}
 
 
 def budgets_doc():
@@ -74,14 +74,14 @@ def budgets_doc():
 
 
 class Fixture:
-    def __init__(self, test, doc=None, meta=None, binary_size=900, lines=3):
+    def __init__(self, test, doc=None, trees=None, binary_size=900, lines=3):
         self.dir = tempfile.TemporaryDirectory()
         test.addCleanup(self.dir.cleanup)
         d = Path(self.dir.name)
         self.budgets = d / "budgets.json"
         self.budgets.write_text(json.dumps(doc or budgets_doc()))
-        self.meta = d / "meta.json"
-        self.meta.write_text(json.dumps(meta or metadata()))
+        self.trees = d / "trees.json"
+        self.trees.write_text(json.dumps(trees or listings()))
         self.binary = d / "plxnative"
         self.binary.write_bytes(b"\x7fELF" + b"\0" * (binary_size - 4))
         self.src = d / "src"
@@ -93,7 +93,7 @@ class Fixture:
     def run(self, *extra):
         out, err = io.StringIO(), io.StringIO()
         argv = ["--budgets", str(self.budgets), "--binary", str(self.binary),
-                "--metadata-default", str(self.meta), "--metadata-no-default", str(self.meta),
+                "--tree-default", str(self.trees), "--tree-no-default", str(self.trees),
                 "--src", str(self.src), *extra]
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = b.main(argv)
@@ -101,21 +101,67 @@ class Fixture:
 
 
 class GraphMetrics(unittest.TestCase):
-    def test_counts_third_party_normal_and_build_but_not_dev_or_workspace(self):
-        m = b.graph_metrics(metadata())
-        # serde, macro-a, macro-b, syn1, syn2, cc(build) -- not rcgen (dev) and not member/root
+    def test_counts_third_party_normal_and_build_but_not_workspace(self):
+        m = b.graph_metrics(listings(), WORKSPACE)
+        # serde, macro-a, macro-b, syn 1, syn 2, cc(build) -- not member/root (paths in the workspace)
         self.assertEqual(m["packages"], 6)
 
     def test_duplicates_are_crate_names_with_two_versions(self):
-        self.assertEqual(b.graph_metrics(metadata(dup=True))["duplicates"], 1)
-        self.assertEqual(b.graph_metrics(metadata(dup=False))["duplicates"], 0)
+        self.assertEqual(b.graph_metrics(listings(dup=True), WORKSPACE)["duplicates"], 1)
+        self.assertEqual(b.graph_metrics(listings(dup=False), WORKSPACE)["duplicates"], 0)
 
     def test_a_dependency_changes_the_count(self):
-        self.assertEqual(b.graph_metrics(metadata(extra_normal=("extra",)))["packages"], 7)
+        self.assertEqual(b.graph_metrics(listings(extra_normal=("extra",)), WORKSPACE)["packages"], 7)
 
-    def test_unresolved_metadata_is_rejected(self):
+    def test_an_empty_listing_is_rejected(self):
         with self.assertRaises(b.BudgetError):
-            b.graph_metrics({"packages": [], "resolve": None})
+            b.graph_metrics({"all": "", "normal": ""}, WORKSPACE)
+
+
+@unittest.skipUnless(shutil.which("cargo"), "needs cargo")
+class FeatureResolution(unittest.TestCase):
+    """The tool measures what a build compiles, not what `cargo metadata` unifies.
+
+    The layer crates carry a `test-support` feature with optional dependencies (plx_net: rcgen,
+    rustls, serde_json) that the app crate enables from its `[dev-dependencies]` only. Metadata
+    resolves features across dependency kinds, so it counted those crates as shipped (108 packages
+    against a limit of 72) although no build of the app compiles them.
+    """
+
+    def workspace(self, normal_features, dev_features=()):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = Path(tmp.name)
+        for name in ("lib", "opt"):
+            (d / name / "src").mkdir(parents=True)
+            (d / name / "src" / "lib.rs").write_text("")
+        (d / "lib" / "Cargo.toml").write_text(
+            '[package]\nname = "lib"\nversion = "0.0.0"\nedition = "2021"\n'
+            '[features]\ntest-support = ["dep:opt"]\n'
+            '[dependencies]\nopt = { path = "../opt", optional = true }\n')
+        (d / "opt" / "Cargo.toml").write_text('[package]\nname = "opt"\nversion = "0.0.0"\nedition = "2021"\n')
+        (d / "root" / "src").mkdir(parents=True)
+        (d / "root" / "src" / "lib.rs").write_text("")
+
+        def feats(fs):
+            return ", ".join(f'"{f}"' for f in fs)
+
+        (d / "root" / "Cargo.toml").write_text(
+            '[package]\nname = "root"\nversion = "0.0.0"\nedition = "2021"\n'
+            f'[dependencies]\nlib = {{ path = "../lib", features = [{feats(normal_features)}] }}\n'
+            f'[dev-dependencies]\nlib = {{ path = "../lib", features = [{feats(dev_features)}] }}\n')
+        return d / "root"
+
+    def packages(self, root):
+        # Path packages outside the manifest directory are third-party to it: `lib` and `opt` count.
+        trees = b.cargo_trees(root, os.environ.get("RUST_NIGHTLY", "nightly"), False)
+        return {n for n, _ in b.tree_packages(trees["all"], root)}
+
+    def test_optional_dependency_behind_a_feature_only_a_dev_dependency_enables_is_not_counted(self):
+        self.assertEqual(self.packages(self.workspace((), ("test-support",))), {"lib"})
+
+    def test_optional_dependency_behind_a_feature_the_build_enables_is_counted(self):
+        self.assertEqual(self.packages(self.workspace(("test-support",))), {"lib", "opt"})
 
 
 class Verdicts(unittest.TestCase):

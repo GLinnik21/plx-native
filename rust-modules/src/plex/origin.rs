@@ -1,7 +1,7 @@
 //! **The Plex layer's door onto the origin types, and the credential policy that is about them.**
 //!
 //! [`Origin`] (scheme + host + port), [`Scheme`], [`ResolvePin`], [`split`], [`url_host`] and
-//! [`plex_direct_literal`] are defined in [`crate::net::origin`] and re-exported here, so every
+//! [`plex_direct_literal`] are defined in [`plx_net::net::origin`] and re-exported here, so every
 //! Plex caller keeps naming `plex::Origin` and `plex::origin::split`. They moved down because the
 //! transport — `net`'s request funnel and `stream`'s redirect follower — has to read them, and a
 //! transport must not name the layer above it (`docs/module-layers.md`, step L6). Their own
@@ -10,7 +10,7 @@
 //! What stays is [`CredentialPolicy`]: whether a credential may ride an origin is a Plex decision
 //! (`super::grant` holds the live half), and it only READS an [`Origin`].
 
-pub use crate::net::origin::{plex_direct_literal, split, url_host, Origin, ResolvePin, Scheme};
+pub use plx_net::net::origin::{plex_direct_literal, split, url_host, Origin, ResolvePin, Scheme};
 
 /// **The build's half of "may a credential ride this origin".** The question itself has ONE
 /// answer, `super::grant::credential_allowed` (or `grant::allowed_under` in a pure function that

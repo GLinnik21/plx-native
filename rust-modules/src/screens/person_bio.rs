@@ -138,13 +138,13 @@ impl PersonBioScreen {
     /// [`Self::tick`] already re-clamps every frame — it has to, since the store can land a longer
     /// (or empty) biography while the panel is open — so a second clamp here would be a duplicate.
     /// It would also be an expensive one: knowing `pages` means measuring the wrapped prose, which
-    /// reaches `TextView` → `crate::text` → `TTF_SizeUTF8`.
+    /// reaches `TextView` → `plx_gfx::text` → `TTF_SizeUTF8`.
     ///
     /// **Doing that from a key handler does not fail as a skipped test. It fails as a LINK ERROR.**
     /// This screen's `step` is called by the host suite, `cargo test --lib` builds without
     /// `--features hostsim`, and nothing then supplies SDL_ttf or GL — so one `.min(pages)` on this
     /// line once stopped the whole suite from BUILDING, with an undefined `_TTF_SizeUTF8` naming
-    /// `crate::text` and nothing about this panel. It cost a bisect to find. Anything reachable
+    /// `plx_gfx::text` and nothing about this panel. It cost a bisect to find. Anything reachable
     /// from a key handler here has to stay clear of text measurement.
     ///
     /// So the index may run one past the end for a single frame and is pulled back before anything
@@ -341,7 +341,7 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike
         // **A surface is never part of a blur source.** The direct blur-source path (the chrome's
         // glass — the only glass there is) re-renders the host page into a small target; a
         // panel drawn into it would be blurred into the bar under its own frost.
-        if crate::gfx::blur_source_pass() {
+        if plx_gfx::gfx::blur_source_pass() {
             return;
         }
         let Some(person) = H::person(f.cx).current() else { return };
@@ -458,7 +458,7 @@ fn head_h() -> f32 {
         + theme::alert::GAP_EYEBROW_TITLE
         + theme::alert::TITLE_LEAD
         + theme::alert::GAP_TITLE_SUB
-        + crate::text::TtfMeasure.cap_h(theme::size::CAPTION)
+        + plx_gfx::text::TtfMeasure.cap_h(theme::size::CAPTION)
 }
 
 /// The footer band's height — the keycap is the tallest thing in it, so the band is the cap.
@@ -574,7 +574,7 @@ fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::ma
     // The name is ELIDED to the content box, not wrapped: this is an identity, and a two-line name
     // would push the reading window down by a whole rung of the flow. `person::refresh_runs` budgets
     // the same name to the header's own column for the same reason.
-    if let Ok(cs) = CString::new(crate::text::elide_by(&person.name, c.w, false, |t| {
+    if let Ok(cs) = CString::new(plx_gfx::text::elide_by(&person.name, c.w, false, |t| {
         measure.width_str(t, theme::size::TITLE, true)
     })) {
         Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
@@ -593,7 +593,7 @@ fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::ma
     );
     if !runs.is_empty() {
         let parts: Vec<&str> = runs.iter().map(|s| s.as_str()).collect();
-        let (cap_top, _) = crate::text::text_cap_band(theme::size::CAPTION, 0);
+        let (cap_top, _) = plx_gfx::text::text_cap_band(theme::size::CAPTION, 0);
         widgets::dotted_run(
             p,
             &parts,
@@ -650,13 +650,13 @@ fn draw_foot(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::ma
     let cy = c.y + c.h - foot_h() * 0.5;
     let sz = theme::size::CAPTION;
     if let Some(line) = library_line(person.total(0), person.total(1)) {
-        if let Ok(cs) = CString::new(crate::text::elide_by(&line, c.w * 0.5, false, |t| {
+        if let Ok(cs) = CString::new(plx_gfx::text::elide_by(&line, c.w * 0.5, false, |t| {
             measure.width_str(t, sz, false)
         })) {
             p.text(
                 cs.as_ptr(),
                 c.x,
-                crate::text::text_vcenter_y(sz, 0, cy),
+                plx_gfx::text::text_vcenter_y(sz, 0, cy),
                 sz,
                 theme::TEXT_TERTIARY,
                 0,

@@ -107,7 +107,7 @@ pub(crate) enum Kind {
     /// has and the one the hero photograph takes. The control the other two are priced against.
     Image,
     /// Not a synthetic surface at all: the REAL Account popover, on the real route, with cached
-    /// panel glass and its one-copy host [`crate::gfx::FrameCache`]. Its geometry and lifecycle are
+    /// panel glass and its one-copy host [`plx_gfx::gfx::FrameCache`]. Its geometry and lifecycle are
     /// the shipped ones; this module only asks for the route. Size fields are ignored.
     Account,
 }
@@ -327,7 +327,7 @@ impl Dial {
     /// the publication — constructing a plan therefore publishes too, which is what keeps a host
     /// test that arms one from leaving the instruments armed for every test after it.
     pub(crate) fn publish(&self) {
-        crate::gfx::profile::publish_dial(self.step, self.armed());
+        plx_gfx::gfx::profile::publish_dial(self.step, self.armed());
     }
 
     /// Arm the dial from `/tmp/plxnative-glassload`'s content. Logs what it will actually run, because
@@ -453,13 +453,13 @@ impl Dial {
 /// published snapshot, since neither caller holds the plan.
 #[inline]
 pub(crate) fn step_index() -> i32 {
-    crate::gfx::profile::dial_step()
+    plx_gfx::gfx::profile::dial_step()
 }
 
 /// Is anything in this module armed? The published half of [`Dial::armed`], for the same readers.
 #[inline]
 pub(crate) fn armed() -> bool {
-    crate::gfx::profile::dial_armed()
+    plx_gfx::gfx::profile::dial_armed()
 }
 
 /// Advance the dial one presented frame, BEFORE the page draws.
@@ -511,7 +511,7 @@ impl Dial {
         // A surface met while the page is being drawn as a blur SOURCE must not draw, record a need
         // or take a capture — `gfx::draw_blur_backdrop` refuses anyway, but the frost quad would
         // still land in the source target. See `widgets::tab_glass_on`.
-        if crate::gfx::blur_source_pass() {
+        if plx_gfx::gfx::blur_source_pass() {
             return;
         }
         let idx = self.step;
@@ -536,8 +536,8 @@ impl Dial {
                         0.0,
                         PANEL_RADIUS,
                         [1.0, 1.0, 1.0, 1.0],
-                        crate::gfx::GlassRim::Bevelled,
-                        crate::gfx::GlassFace::NONE,
+                        plx_gfx::gfx::GlassRim::Bevelled,
+                        plx_gfx::gfx::GlassFace::NONE,
                         theme::Material::Regular.deep(),
                     ) {
                         crate::ui::profile::phase("glass.frost", || {
@@ -558,7 +558,7 @@ impl Dial {
                     // synthetic noise: no subject and no aspect to keep, so the whole texture
                     p.tex_carded(
                         self.card_tex(i),
-                        crate::gfx::UV_FULL,
+                        plx_gfx::gfx::UV_FULL,
                         r,
                         theme::CARD_RING_RAD,
                         [1.0, 1.0, 1.0, 1.0],
@@ -600,7 +600,7 @@ impl Dial {
             state ^= state << 5;
             *byte = state as u8;
         }
-        let id = crate::gfx::upload_rgba(0, W as i32, H as i32, px.as_ptr());
+        let id = plx_gfx::gfx::upload_rgba(0, W as i32, H as i32, px.as_ptr());
         self.card_tex[slot] = id;
         id
     }
@@ -634,7 +634,7 @@ fn nav_capsule() -> Rect {
 impl Dial {
     /// Draw the blurred route transition, if one is in flight. Returns whether it drew.
     pub(crate) fn draw_nav_blur(&mut self) -> bool {
-        if !self.navblur_on() || crate::gfx::blur_source_pass() {
+        if !self.navblur_on() || plx_gfx::gfx::blur_source_pass() {
             return false;
         }
         let amount = if self.navblur_pin {
@@ -664,8 +664,8 @@ impl Dial {
             0.0,
             0.0,
             [1.0, 1.0, 1.0, amount],
-            crate::gfx::GlassRim::Bevelled,
-            crate::gfx::GlassFace::NONE,
+            plx_gfx::gfx::GlassRim::Bevelled,
+            plx_gfx::gfx::GlassFace::NONE,
             theme::Material::Regular.deep(),
         );
         // Mode 2: a PRIVATE cache for the surface above. There is one snapshot chain in this renderer,
@@ -680,8 +680,8 @@ impl Dial {
             0.0,
             cap.h * 0.5,
             [1.0, 1.0, 1.0, amount],
-            crate::gfx::GlassRim::Standing,
-            crate::gfx::GlassFace::NONE,
+            plx_gfx::gfx::GlassRim::Standing,
+            plx_gfx::gfx::GlassFace::NONE,
             theme::Material::Regular.deep(),
         ) {
             p.alpha(amount).rect_sheened(

@@ -47,7 +47,7 @@ In scope if the diff touches any of:
 |---|---|
 | `rust-modules/base/src/dynlib.rs` | the one door for runtime-bound libraries; the macro's shape *is* the calling convention |
 | `rust-modules/src/ff.rs` | the four bundled-FFmpeg `dynlib!` blocks + the pinned-major gate |
-| `rust-modules/src/net.rs` | the libcurl `dynlib!` block — variadic wrappers over two C symbols, plus the candidate list |
+| `rust-modules/net/src/net.rs` | the libcurl `dynlib!` block — variadic wrappers over two C symbols, plus the candidate list |
 | `src/starfish.c` | 15 mangled C++ externs against real libraries, plus its own `dlopen` of ACB |
 | any new `extern "C"` block, `#[link]`, or `__asm__("<mangled>")` declaration | each one adds an undefined symbol, or a whole `DT_NEEDED` entry |
 | `Makefile`'s `LIBS_REAL` / the link line (currently line 256 / 444) | a new `-l` is a new hard `DT_NEEDED` |
@@ -147,8 +147,8 @@ grade an ELF at all.
 ```sh
 git -C <repo> diff --stat HEAD          # or the range under review
 git -C <repo> diff HEAD -- rust-modules/base/src/dynlib.rs rust-modules/src/ff.rs \
-    rust-modules/src/net.rs src/starfish.c Makefile ci/expected-dt-needed.txt
-grep -rn '#\[link\|extern "C"\|__asm__("' rust-modules/src src   # against the diff, not the tree
+    rust-modules/net/src/net.rs src/starfish.c Makefile ci/expected-dt-needed.txt
+grep -rn '#\[link\|extern "C"\|__asm__("' rust-modules/src rust-modules/net/src src   # against the diff, not the tree
 ```
 
 ### 1. Decide, out loud, whether you are grading an ELF or grading source

@@ -48,20 +48,20 @@ static DIAL_ARMED: AtomicBool = AtomicBool::new(false);
 
 /// Publish the dial's two decisions (`ui::glassload::Dial::publish` is the only writer). There is
 /// exactly one `Dial` in the process, so the last one to change owns the publication.
-pub(crate) fn publish_dial(step: i32, armed: bool) {
+pub fn publish_dial(step: i32, armed: bool) {
     DIAL_STEP.store(step, Ordering::Relaxed);
     DIAL_ARMED.store(armed, Ordering::Relaxed);
 }
 
 /// The live dial step, or -1. Rides the heartbeat and every profiler record.
 #[inline]
-pub(crate) fn dial_step() -> i32 {
+pub fn dial_step() -> i32 {
     DIAL_STEP.load(Ordering::Relaxed)
 }
 
 /// Is anything in the dial armed? The published half of `Dial::armed`, for the same readers.
 #[inline]
-pub(crate) fn dial_armed() -> bool {
+pub fn dial_armed() -> bool {
     DIAL_ARMED.load(Ordering::Relaxed)
 }
 
@@ -80,7 +80,7 @@ mod imp {
     /// and must be kept beside them. Its only job is to refuse a trigger that names nothing: an
     /// unknown filter arms the profiler, logs `on`, and then silently never matches — which reads
     /// exactly like "this phase costs nothing".
-    pub(crate) const PHASES: [&str; 32] = [
+    pub const PHASES: [&str; 32] = [
         "profile.empty",
         "frame.ui",
         "main.ui",
@@ -167,7 +167,7 @@ mod imp {
         static CPU: RefCell<CpuState> = const { RefCell::new(CpuState { frames: 0, acc: Vec::new() }) };
     }
 
-    pub(crate) fn set_cpu_enabled() {
+    pub fn set_cpu_enabled() {
         CPU_ON.store(true, Ordering::Relaxed);
         log("PROFILE CPU on: every phase, inclusive wall time on the render thread, no glFinish");
     }
@@ -283,7 +283,7 @@ mod imp {
         static STATE: RefCell<State> = const { RefCell::new(State::new()) };
     }
 
-    pub(crate) fn set_enabled(filter: &str) {
+    pub fn set_enabled(filter: &str) {
         let selected = match select(filter) {
             Ok(name) => name,
             Err(error) => {
@@ -296,7 +296,7 @@ mod imp {
         }
     }
 
-    pub(crate) fn set_hwcnt_enabled(filter: &str) {
+    pub fn set_hwcnt_enabled(filter: &str) {
         ON.store(false, Ordering::Relaxed);
         // Validate BEFORE attaching: an unusable name must not leave a vinstr client holding the
         // counter hardware powered for a run that will never sample.
@@ -506,7 +506,7 @@ mod imp {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn note_blur_config(
+    pub fn note_blur_config(
         reg: [f32; 4],
         rx: i32,
         ry: i32,
@@ -587,7 +587,7 @@ mod imp {
     }
 
     #[inline]
-    pub(crate) fn phase<R>(name: &'static str, draw: impl FnOnce() -> R) -> R {
+    pub fn phase<R>(name: &'static str, draw: impl FnOnce() -> R) -> R {
         if cpu_enabled() {
             return cpu_phase(name, draw);
         }
@@ -598,7 +598,7 @@ mod imp {
         }
     }
 
-    pub(crate) fn frame_end() {
+    pub fn frame_end() {
         crate::gpu_timer::frame_end();
         hwcnt_frame_end();
         cpu_frame_end();
@@ -606,31 +606,31 @@ mod imp {
 }
 
 #[cfg(feature = "devtriggers")]
-pub(crate) use imp::{
+pub use imp::{
     frame_end, note_blur_config, phase, set_cpu_enabled, set_enabled, set_hwcnt_enabled,
 };
 
 #[cfg(not(feature = "devtriggers"))]
-pub(crate) fn set_enabled(_filter: &str) {}
+pub fn set_enabled(_filter: &str) {}
 
 #[cfg(not(feature = "devtriggers"))]
-pub(crate) fn set_hwcnt_enabled(_filter: &str) {}
+pub fn set_hwcnt_enabled(_filter: &str) {}
 
 #[cfg(not(feature = "devtriggers"))]
-pub(crate) fn set_cpu_enabled() {}
+pub fn set_cpu_enabled() {}
 
 #[cfg(not(feature = "devtriggers"))]
 #[inline]
-pub(crate) fn phase<R>(_name: &'static str, f: impl FnOnce() -> R) -> R {
+pub fn phase<R>(_name: &'static str, f: impl FnOnce() -> R) -> R {
     f()
 }
 
 #[cfg(not(feature = "devtriggers"))]
-pub(crate) fn frame_end() {}
+pub fn frame_end() {}
 
 #[cfg(not(feature = "devtriggers"))]
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn note_blur_config(
+pub fn note_blur_config(
     _reg: [f32; 4],
     _rx: i32,
     _ry: i32,
