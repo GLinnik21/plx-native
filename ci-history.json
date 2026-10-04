@@ -1,4 +1,4 @@
-{"updated":"2026-10-04T09:06:35Z",
+{"updated":"2026-10-04T09:18:55Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -460,5 +460,6 @@
 {"id":37177722992,"at":"2026-10-04T04:41:18Z","sha":"dd0d5a319","title":"Home: cards are shared (Arc<PmsMovie>), so a publication clones pointers (#395)","pr":416,"jobs":{"macOS simulator build + launch":1058,"Windows launcher syntax":15,"Linux simulator build + launch":216}},
 {"id":37180521613,"at":"2026-10-04T05:39:26Z","sha":"93881c8d5","title":"plx_ui: the tex pending-bytes test no longer races other tests on the shared counter","pr":419,"jobs":{"Windows launcher syntax":16,"macOS simulator build + launch":1032,"Linux simulator build + launch":197}},
 {"id":37181801581,"at":"2026-10-04T06:05:50Z","sha":"aacae2f75","title":"Split: the telemetry layer is its own crate (plx_telemetry)","pr":421,"jobs":{"macOS simulator build + launch":925,"Linux simulator build + launch":165,"Windows launcher syntax":16}},
-{"id":37182625708,"at":"2026-10-04T06:22:40Z","sha":"115848302","title":"Home: simplify the hub-merge code left by the #395 sequence","pr":420,"jobs":{"Linux simulator build + launch":219,"Windows launcher syntax":16,"macOS simulator build + launch":994}}
+{"id":37182625708,"at":"2026-10-04T06:22:40Z","sha":"115848302","title":"Home: simplify the hub-merge code left by the #395 sequence","pr":420,"jobs":{"Linux simulator build + launch":219,"Windows launcher syntax":16,"macOS simulator build + launch":994}},
+{"id":37190808762,"at":"2026-10-04T09:01:30Z","sha":"a32ca0418","title":"plx_platform: the umask test runs in a child process, so it cannot make other tests' files unreadable","pr":423,"jobs":{"Linux simulator build + launch":201,"Windows launcher syntax":14,"macOS simulator build + launch":990}}
 ]}
