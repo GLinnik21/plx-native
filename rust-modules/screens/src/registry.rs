@@ -992,6 +992,12 @@ pub trait CollectionLike: AppLike + Sized {
 /// that needs `plx_data::metadata::MetadataView` rather than the app-concrete `Bridge`.
 pub trait MetadataLike: AppLike + Sized {
     fn metadata<'a>(cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a>;
+    /// The subtitle search the player's Search page reads. PROVIDED, defaulting to `None` — a host
+    /// that offers no search shows no Search row — so the many test hosts that only need metadata
+    /// owe nothing; the production host overrides it with the store's view.
+    fn subtitle_search<'a>(_cx: &Cx<'a, Self>) -> Option<plx_data::subsearch::SubSearchView<'a>> {
+        None
+    }
 }
 
 /// A host that publishes Home's retained catalog view. The view is borrowed from the rig-owned
@@ -1709,7 +1715,8 @@ where
             AppArg::AccountMenu => Box::new(crate::account_menu::AccountMenuScreen::new(entry)),
             AppArg::ItemMenu(arg) => Box::new(crate::item_menu::ItemMenuScreen::new(entry, arg.clone())),
             AppArg::PlayerOverlay(arg) => Box::new(
-                crate::player::overlay::PlayerOverlayScreen::new(H::session(cx), H::metadata(cx), entry, arg.kind),
+                crate::player::overlay::PlayerOverlayScreen::new_with(
+                    H::session(cx), H::metadata(cx), entry, arg.kind, H::subtitle_search(cx).is_some()),
             ),
             AppArg::AltSources(arg) => Box::new(
                 crate::alt_sources::AltSourcesScreen::new(entry, arg.clone(), H::metadata(cx)),

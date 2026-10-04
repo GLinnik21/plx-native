@@ -1161,6 +1161,11 @@ server needs telling.
 The delivered file is reachable at the created stream's `key` through the ordinary sidecar route
 (§`/library/streams/{id}`), so an OpenSubtitles `.srt` renders through the existing sidecar path.
 
+`tests/mock_pms.py` (`MockPms.subtitle_search`) models this section — the 3-letter 500, the empty
+answer, single-use candidate keys, and an install that creates a NEW selected external stream with
+a fetchable sidecar — and is the only place the download may be exercised end to end. Its install
+is immediate; the real one is asynchronous, as above.
+
 ---
 
 ## App data-layer summary

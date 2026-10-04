@@ -122,7 +122,7 @@ impl DownloadPhase {
 }
 
 /// Every mutation of the subtitle-search model.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubSearchCmd {
     /// Open (or keep) the search for one item. Idempotent for the same item and language, so the
     /// menu re-opening shows the answer already paid for instead of searching again.
@@ -206,6 +206,42 @@ impl<'a> SubSearchView<'a> {
     pub fn item(self) -> Option<(ServerId, &'a str)> { self.open.map(|o| (o.sid, o.rk.as_str())) }
     /// The generation a [`SubSearchCmd::Download`] must quote.
     pub fn gen(self) -> u32 { self.gen }
+
+    /// Nothing open — what a host that offers no subtitle search hands a screen.
+    pub const IDLE: SubSearchView<'static> = SubSearchView { open: None, gen: 0 };
+
+    /// An owned, comparable copy of the model AS IT CONCERNS `(sid, rk)`: the model holds one item
+    /// (the last one searched), and a search that belongs to a different item — the previous
+    /// episode's — must read as nothing open, never as this item's results.
+    pub fn snapshot_for(self, sid: ServerId, rk: &str) -> SubSearchSnapshot {
+        let mine = self.open.filter(|o| plx_plex::plex::same_item((o.sid, &o.rk), (sid, rk)));
+        match mine {
+            None => SubSearchSnapshot::idle(self.gen),
+            Some(o) => SubSearchSnapshot {
+                status: o.status, failure: o.failure, hits: o.hits.clone(), lang: o.lang.clone(),
+                download: o.download.clone(), gen: self.gen,
+            },
+        }
+    }
+}
+
+/// What a panel keeps of the model for one item, compared per frame so a landing refreshes the page
+/// it is on and nothing else does. `gen` is the generation a download press must quote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubSearchSnapshot {
+    pub status: SearchStatus,
+    pub failure: Option<SearchFailure>,
+    pub hits: Vec<SubHit>,
+    pub lang: String,
+    pub download: DownloadPhase,
+    pub gen: u32,
+}
+
+impl SubSearchSnapshot {
+    pub fn idle(gen: u32) -> Self {
+        SubSearchSnapshot { status: SearchStatus::Idle, failure: None, hits: Vec::new(),
+            lang: String::new(), download: DownloadPhase::None, gen }
+    }
 }
 
 #[derive(Default)]

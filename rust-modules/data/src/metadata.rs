@@ -2471,6 +2471,19 @@ fn retire_playing_item(state: &mut MetadataState) {
     state.skipped.clear();
 }
 
+/// MAIN THREAD: add one subtitle the server just installed to the playing item. Only for the same
+/// `(sid, rk)` — a landing for an item the viewer has since left is dropped — and only once. The
+/// rest of the leaf (markers, chapters, the skipped set) is left exactly as it was.
+fn append_playing_sub(state: &mut MetadataState, sid: plx_plex::plex::ServerId, rk: &str, stream: Stream) -> bool {
+    let Some(pt) = state.playing.as_mut() else { return false };
+    if !plx_plex::plex::same_item((pt.sid, &pt.rk), (sid, rk)) || pt.subs.iter().any(|s| s.id == stream.id) {
+        return false;
+    }
+    plx_base::eventlog::log(&format!("playing item: rk={rk} gained subtitle stream {}", stream.id));
+    pt.subs.push(stream);
+    true
+}
+
 /// MAIN THREAD: install a fetched playing-item store.
 fn install_playing(state: &mut MetadataState, pt: Option<PlayingItem>) {
     state.skipped.clear(); // a different leaf's markers, so a fresh slate
@@ -3467,6 +3480,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             install_playing(state, p);
             true
         }
+        MetadataCmd::AppendPlayingSub { sid, rk, stream } => append_playing_sub(state, sid, &rk, stream),
         MetadataCmd::MarkSkipped(m) => {
             mark_skipped(state, m);
             true

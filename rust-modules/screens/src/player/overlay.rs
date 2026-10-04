@@ -273,16 +273,36 @@ fn subtitle_yours_langs(ps: &plx_media::route::PlaybackSession, meta: plx_data::
     yours
 }
 
+/// The language the Search page opens on: the account's subtitle language, else the menu's own
+/// "your languages" (the playing audio's, the current subtitle's), else English. The store folds it
+/// onto the two-letter code the server accepts.
+fn search_default_lang(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> String {
+    plx_media::route::cur_sub_pref_lang(ps)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .or_else(|| subtitle_yours_langs(ps, meta).into_iter().find(|l| plx_data::subsearch::fold_language(l).is_some()))
+        .unwrap_or_else(|| "en".to_string())
+}
+
 impl PlayerOverlayScreen {
     /// Every panel here answers on exactly one focus group — see each `*Part`'s own `groups()`
     /// (restructure phase 12); this screen never holds more than one panel at a time, so there is
     /// no second id to reserve.
     const GROUP: GroupId = GroupId(0);
 
+    /// [`Self::new_with`] without a search offer — the tests' host; the app mounts through
+    /// `new_with`, asking its host.
+    #[cfg(test)]
     pub fn new(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
+        Self::new_with(ps, meta, entry, kind, false)
+    }
+
+    /// [`Self::new`] for a host that can run a subtitle search (`MetadataLike::subtitle_search`):
+    /// the Tracks panel is built offering it, never offered it later (`TrackMenuState::new_with`).
+    pub fn new_with(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind, offer_search: bool) -> Self {
         let panel = match kind {
             OverlayKind::Tracks { tab } => Panel::Tracks(plx_base::diag::spans::span("tmnew", || {
-                plx_appkit::track_menu::TrackMenuState::new(ps, meta, tab, subtitle_yours_langs(ps, meta))
+                plx_appkit::track_menu::TrackMenuState::new_with(ps, meta, tab, subtitle_yours_langs(ps, meta), offer_search)
             })),
             OverlayKind::Info => Panel::Info(plx_appkit::info_panel::InfoPanelState::new()),
             OverlayKind::Chapters => {
@@ -426,7 +446,8 @@ impl PlayerOverlayScreen {
         match &mut self.panel {
             Panel::Tracks(p) => match p.commit_sub_track(i, meta) {
                 TrackOk::Commit { commit, .. } => Some(commit),
-                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::Inert | TrackOk::Navigated => None,
+                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::Inert | TrackOk::Navigated
+                | TrackOk::Search(_) => None,
             },
             _ => None,
         }
@@ -449,7 +470,8 @@ impl PlayerOverlayScreen {
             p.focus_row(row);
             return match p.on_ok(meta) {
                 TrackOk::Commit { commit, .. } => Some(commit),
-                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::Inert | TrackOk::Navigated => None,
+                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::Inert | TrackOk::Navigated
+                | TrackOk::Search(_) => None,
             };
         }
         None
@@ -524,6 +546,15 @@ impl PlayerOverlayScreen {
                 // a dim row (Timing while subtitles are Off, a locked Style row): nothing happens and
                 // the panel stays. A Nav row opened a page: the panel stays with its rows replaced.
                 TrackOk::Inert | TrackOk::Navigated => self.moved(fx),
+                // a search or a download: the store performs it, and the panel STAYS — the viewer
+                // is watching the result land
+                TrackOk::Search(cmd) => {
+                    fx.push(Fx::App(AppFx::Store(
+                        plx_data::stores::StoreId::SubtitleSearch,
+                        plx_data::stores::StoreCmd::SubtitleSearch(cmd),
+                    )));
+                    self.moved(fx);
+                }
                 TrackOk::OpenTiming => {
                     // The Tracks→Timing hand-off (plan §4): dismiss THIS entry and ask for a fresh
                     // `Timing` overlay. `open_player_overlay` sees a different slot
@@ -829,8 +860,44 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
             }
             ScreenEvent::Tick(tick) => {
                 let dt = tick.dt();
+                let mut installed = false;
                 match &mut self.panel {
-                    Panel::Tracks(p) => p.update(dt, cx.measure, ps, H::metadata(cx)),
+                    Panel::Tracks(p) => {
+                        if let Some(view) = H::subtitle_search(cx) {
+                            let (sid, rk) = (plx_media::route::cur_sid(ps), plx_media::route::cur_rk(ps));
+                            // opened LAZILY: only once the viewer is on the Search pages, so opening
+                            // the menu never puts a query to the server's subtitle agent. `Open` is
+                            // idempotent for the same item, so re-sending it until the store's view
+                            // catches up is harmless.
+                            let ours = view.item().is_some_and(|item| plx_plex::plex::same_item(item, (sid, &rk)));
+                            if p.wants_search() && !ours {
+                                let lang = search_default_lang(ps, H::metadata(cx));
+                                fx.push(Fx::App(AppFx::Store(
+                                    plx_data::stores::StoreId::SubtitleSearch,
+                                    plx_data::stores::StoreCmd::SubtitleSearch(
+                                        plx_data::subsearch::SubSearchCmd::Open { sid, rk: rk.clone(), lang },
+                                    ),
+                                )));
+                            }
+                            // the store lands, polls an install and spawns only while it is pumped,
+                            // and this panel is what pumps it
+                            fx.push(Fx::App(AppFx::StoreWork(plx_data::stores::StoreWork::SubtitleSearch)));
+                            p.set_search(view.snapshot_for(sid, &rk));
+                            // the download landed: list it on the playing item, then select it by
+                            // the same request a pick on its row makes, and close like any pick
+                            if let Some((stream, commit)) = p.take_search_commit() {
+                                fx.push(Fx::App(AppFx::Store(
+                                    plx_data::stores::StoreId::Metadata,
+                                    plx_data::stores::StoreCmd::Metadata(
+                                        plx_data::stores::metadata::MetadataCmd::AppendPlayingSub { sid, rk, stream },
+                                    ),
+                                )));
+                                Self::ask(fx, PlayerReq::CommitTrack(commit));
+                                installed = true;
+                            }
+                        }
+                        p.update(dt, cx.measure, ps, H::metadata(cx))
+                    }
                     Panel::Info(p) => p.update(dt),
                     Panel::Chapters(p) => p.update(dt, H::metadata(cx)),
                     Panel::More(p) => p.update(dt, cx.measure, ps),
@@ -840,7 +907,10 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                 // the rule `app/run.rs` kept as "keep the HUD alive while the track menu / Info
                 // card / Chapters strip is open", stated once here by the surface that IS open.
                 // A panel that HIDES the HUD (the Timing capsule) does not share its read time.
-                if self.kind.extends_hud() {
+                if installed {
+                    self.dismiss(fx);
+                    self.closing(fx);
+                } else if self.kind.extends_hud() {
                     Self::ask(fx, PlayerReq::ExtendHud(HUD_LINGER_MS));
                 }
                 Handled::Yes
