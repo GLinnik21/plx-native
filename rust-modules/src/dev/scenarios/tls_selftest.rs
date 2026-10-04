@@ -219,7 +219,7 @@ impl Selftest {
     }
 
     fn media(&self, r: u32) -> Plane {
-        use crate::curlio::{CurlSource, OpenErr};
+        use plx_media::curlio::{CurlSource, OpenErr};
         let refused = |what: String| Plane { line: format!("tls-selftest r={r} media: refused {what} pin_held={}", self.pin_held()), ok: false, key: false };
         let reservation = match CurlSource::reserve_open() {
             Ok(res) => res,

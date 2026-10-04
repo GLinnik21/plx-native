@@ -474,7 +474,7 @@ mod input_event_tests {
 ///
 /// `true` means the token was accepted and injected/requested, not that the screen necessarily
 /// changed — pressing DOWN at the bottom of a list is still a successfully delivered command.
-pub(crate) fn dispatch_remote_token(tok: &str, ps: &crate::route::PlaybackSession) -> bool {
+pub(crate) fn dispatch_remote_token(tok: &str, ps: &plx_media::route::PlaybackSession) -> bool {
     // As the SDL loop: a modal's input is its own. NOT for `pat:`, which is not input at all — it
     // changes the PAGE's ground directly, and a frozen host must be retaken to show it.
     let _own_input = if tok.starts_with("pat:") {

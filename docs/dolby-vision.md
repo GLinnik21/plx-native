@@ -140,7 +140,7 @@ frame-gated `setMediaVideoData`. No decoded frame is needed and no state is read
 
 ### The `SOUND_ERROR_019` retraction
 
-`src/starfish.c` and `rust-modules/src/player/CLAUDE.md` said, from the **initial commit**
+`src/starfish.c` and `rust-modules/media/src/player/CLAUDE.md` said, from the **initial commit**
 (`f2523483`), that audio must never be fed to ACB because it causes `SOUND_ERROR_019`, and that
 `setMediaAudioData` is therefore unused. The clause sat beside the 3-arg-taskId note, which does
 carry its evidence.

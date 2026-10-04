@@ -7,22 +7,15 @@
 //! boot shim. The crate's C surface is tiny: C calls `plex_run` (port.rs), writes the fallback
 //! image marker through `plx_crash_write_image_marker`, re-enters the native-crash spool through
 //! `plx_sentry_spool_external`, and forwards the two Starfish callbacks (`sf_on_event`/
-//! `acb_on_event`, player/mod.rs). Everything else is Rust-internal (the per-module `repr(C)`
+//! `acb_on_event`, `plx_media`'s player/mod.rs). Everything else is Rust-internal (the per-module `repr(C)`
 //! shapes are migration legacy, not ABI).
-mod abr; // client-managed fixed-session HLS controller: estimate, propose, prime, then commit
 mod app; // run_application — the Rust app core / event loop (the entry inverted from main.c; port.rs's `plex_run` hands over to it)
 mod appkit; // widgets shared by several screens, composed from `ui` over application types (the player HUD, the track menus, the Sources row model)
-mod aq;
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
 mod coldstart; // retires old last-page bookmarks; authenticated cold boots now stay on Home
-mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)
 mod dev; // the /tmp/plxnative-* trigger surface, behind one `devtriggers` feature — read it before adding a trigger
-#[macro_use]
-mod ff; // THE demuxer — the FFmpeg 9.0 this app BUNDLES and pins (majors 63/63/61), dlopen'd by absolute path beside the binary, never the television's
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
-mod hls; // strict parser/auth/timeline for the measured one-variant PMS HLS shape
 mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound command long-poll
-mod player; // buffer-feed video engine (was playback.c) — step 5
 // Pure RELEASE_LINE-parsing helpers, `include!`d verbatim by build.rs so `cargo test --lib`
 // actually runs their unit tests (see the module for why). Nothing in the app itself calls
 // them at runtime — the version rule they implement is applied once, at compile time, by
@@ -33,7 +26,6 @@ mod player; // buffer-feed video engine (was playback.c) — step 5
 mod release_line;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys
 mod screens; // the application's OWNED screens (restructure phase 5b): the Settings family on the dispatcher
-mod route; // play_movie route selection (direct-play vs transcode) — step 3
 #[cfg(feature = "hostsim")]
 mod shot; // simulator screenshots: read the frame back and write a PNG (see the module doc)
 mod system;

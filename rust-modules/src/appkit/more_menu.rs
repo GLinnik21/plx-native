@@ -26,7 +26,7 @@
 //! the root: the diagnostics switch is an overflow affordance, something a viewer reaches for once,
 //! to photograph a bug, not a control anyone returns to.
 //!
-//! **Quality** (the page) is the [`crate::route::Quality`] ladder — Original, fixed rungs, and Auto once its
+//! **Quality** (the page) is the [`plx_media::route::Quality`] ladder — Original, fixed rungs, and Auto once its
 //! playback readiness gate opens — and its rows carry
 //! [`Row::checked`]'s LEADING checkmark, which means "the active one of several". That is the same
 //! design-system rule from the other side: **a mark says where you are and a word says what is set,
@@ -55,7 +55,7 @@
 //! play *and* the container remux, which is the only way a cap can bind at all. Original preserves
 //! the source unchanged. Auto is exposed only through `route::auto_quality_ready()`, the named
 //! fail-closed gate owned by the integrated HLS prime/swap path. The whole argument is
-//! [`crate::route::Quality`]'s doc.
+//! [`plx_media::route::Quality`]'s doc.
 //!
 //! It binds every future play, **and it re-decides the one on screen** — because this menu is the
 //! ladder's only entry point, so a rung that waited for the next play would be a control that
@@ -83,8 +83,8 @@ pub enum Action {
     None,
     /// flip [`crate::app::diagnostics`]'s overlay on/off
     ToggleStats,
-    /// select a rung of the playback-quality ladder ([`crate::route::set_quality`])
-    SetQuality(crate::route::Quality),
+    /// select a rung of the playback-quality ladder ([`plx_media::route::set_quality`])
+    SetQuality(plx_media::route::Quality),
     /// **Lab builds only** — snapshot and upload the diagnostic ring (`crate::lab`). Here as well
     /// as in `account_menu` because the account menu is unreachable during playback, and playback
     /// is what a Cloud Test Lab session is usually reproducing.
@@ -158,7 +158,7 @@ pub(crate) struct MoreMenuState {
     rows: Vec<Action>,
     forced: bool,
     /// The rung the root's Quality row reads out and the Quality page checks, as of the last build.
-    current: crate::route::Quality,
+    current: plx_media::route::Quality,
     /// The pages pushed above the root, outermost first (empty = the root): each remembers the row
     /// that opened it and the scroll it was left at ([`page_stack`]).
     pages: PageStack<MorePage, MoreRow>,
@@ -173,7 +173,7 @@ pub(crate) struct MoreMenuState {
 /// hash, so reordering the menu moves no key.
 impl FormId for Action {
     fn key(&self) -> RowKey {
-        use crate::route::Quality;
+        use plx_media::route::Quality;
         RowKey(match self {
             Action::None => 0,
             Action::ToggleStats => 1,
@@ -209,10 +209,10 @@ fn quality_offered(rows: &[Action], forced: bool) -> bool {
 /// The ROOT as a pure form: the Quality drill-in (headerless, like the Subtitles root's Style —
 /// it reads out the current rung as its value), then Options.
 fn root_form(
-    ps: &crate::route::PlaybackSession,
+    ps: &plx_media::route::PlaybackSession,
     rows: &[Action],
     forced: bool,
-    current: crate::route::Quality,
+    current: plx_media::route::Quality,
 ) -> MoreForm {
     let mut options = FormSection::new(plx_platform::i18n::msg::widgets_menu_options());
     for a in rows.iter().copied().filter(|a| !matches!(a, Action::SetQuality(_))) {
@@ -230,9 +230,9 @@ fn root_form(
 
 /// The Quality PAGE: one checked-rung row per rung of `rows`, the current one checked.
 fn quality_form(
-    ps: &crate::route::PlaybackSession,
+    ps: &plx_media::route::PlaybackSession,
     rows: &[Action],
-    current: crate::route::Quality,
+    current: plx_media::route::Quality,
 ) -> MoreForm {
     let sec = rows.iter().copied().filter(|a| matches!(a, Action::SetQuality(_))).fold(
         FormSection::new(""),
@@ -246,10 +246,10 @@ fn quality_form(
 }
 
 impl MoreMenuState {
-    fn open_focused(ps: &crate::route::PlaybackSession, quality: Option<crate::route::Quality>) -> Self {
-        let forced = crate::route::forced_direct_play(ps);
+    fn open_focused(ps: &plx_media::route::PlaybackSession, quality: Option<plx_media::route::Quality>) -> Self {
+        let forced = plx_media::route::forced_direct_play(ps);
         let rows = rows_for(forced);
-        let current = crate::route::quality();
+        let current = plx_media::route::quality();
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true; // a short action list — BODY labels, like the profile menu
         form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
@@ -278,7 +278,7 @@ impl MoreMenuState {
     }
 
     /// The form of a pushed page, from the panel's own read-outs.
-    fn page_form(&self, ps: &crate::route::PlaybackSession, page: MorePage) -> MoreForm {
+    fn page_form(&self, ps: &plx_media::route::PlaybackSession, page: MorePage) -> MoreForm {
         match page {
             MorePage::Quality => quality_form(ps, &self.rows, self.current),
         }
@@ -295,7 +295,7 @@ impl MoreMenuState {
     /// Open `page` above the current one: remember the opener and its scroll, install the page's
     /// rows (the pill snaps, the scroll returns to the top, focus lands on [`Self::page_initial`])
     /// and its title band, and start the slide.
-    fn push(&mut self, ps: &crate::route::PlaybackSession, page: MorePage) {
+    fn push(&mut self, ps: &plx_media::route::PlaybackSession, page: MorePage) {
         let Some(return_id) = self.form.selected_id().copied() else { return };
         self.pages.push(page, return_id, self.form.table.scroll_pos());
         let leaving = page_stack::leave_page(&mut self.form);
@@ -308,7 +308,7 @@ impl MoreMenuState {
 
     /// Pop the top page: the root comes back exactly as it was left — the opener focused by id, the
     /// scroll reinstated ([`FormTable::restore`]). `false` at the root (nothing popped).
-    pub(crate) fn pop(&mut self, ps: &crate::route::PlaybackSession) -> bool {
+    pub(crate) fn pop(&mut self, ps: &plx_media::route::PlaybackSession) -> bool {
         let Some(saved) = self.pages.pop() else { return false };
         let leaving = page_stack::leave_page(&mut self.form);
         self.motion.begin_slide(leaving, -1.0);
@@ -320,7 +320,7 @@ impl MoreMenuState {
 
     /// **RIGHT**: on a Nav row it enters — the same as OK; anywhere else nothing happens (this
     /// popover has no tabs to switch).
-    pub(crate) fn on_right(&mut self, ps: &crate::route::PlaybackSession) {
+    pub(crate) fn on_right(&mut self, ps: &plx_media::route::PlaybackSession) {
         let sel = self.form.table.sel.max(0) as usize;
         if matches!(self.form.binding_at(sel).map(|b| &b.kind), Some(RowKind::Nav(_))) {
             if let Some(Activation::Push(dest)) = self.form.activate(sel) {
@@ -347,19 +347,19 @@ impl MoreMenuState {
     /// Quality page it is refreshed IN PLACE (focus kept by id, the checked rung following the
     /// pick), and the page pops to the root when Quality stops being offered. The panel's height
     /// follows, and the card animates to it ([`Self::update`]). Returns whether it rebuilt.
-    pub(crate) fn refresh(&mut self, ps: &crate::route::PlaybackSession) -> bool {
-        let forced = crate::route::forced_direct_play(ps);
-        self.refresh_to(ps, forced, rows_for(forced), crate::route::quality())
+    pub(crate) fn refresh(&mut self, ps: &plx_media::route::PlaybackSession) -> bool {
+        let forced = plx_media::route::forced_direct_play(ps);
+        self.refresh_to(ps, forced, rows_for(forced), plx_media::route::quality())
     }
 
     /// [`Self::refresh`] against explicit answers (what a test or a probe supplies in place of the
     /// live route).
     fn refresh_to(
         &mut self,
-        ps: &crate::route::PlaybackSession,
+        ps: &plx_media::route::PlaybackSession,
         forced: bool,
         rows: Vec<Action>,
-        current: crate::route::Quality,
+        current: plx_media::route::Quality,
     ) -> bool {
         if forced == self.forced && rows == self.rows && current == self.current {
             return false;
@@ -389,7 +389,7 @@ impl MoreMenuState {
         true
     }
 
-    pub(crate) fn new(ps: &crate::route::PlaybackSession) -> Self {
+    pub(crate) fn new(ps: &plx_media::route::PlaybackSession) -> Self {
         Self::open_focused(ps, None)
     }
 
@@ -402,8 +402,8 @@ impl MoreMenuState {
     ///
     /// Under Force Direct Play the menu has no Quality section (see [`rows_for`]), and this is the
     /// same menu as [`Self::new`]; `screens::player::overlay` does not route here then.
-    pub(crate) fn new_quality(ps: &crate::route::PlaybackSession) -> Self {
-        Self::open_focused(ps, Some(crate::route::quality()))
+    pub(crate) fn new_quality(ps: &plx_media::route::PlaybackSession) -> Self {
+        Self::open_focused(ps, Some(plx_media::route::quality()))
     }
 
     /// Every row's focus key, in drawn order (for a test that walks the rows).
@@ -435,7 +435,7 @@ impl MoreMenuState {
 
     /// OK on the highlighted row: an action to perform (the container dismisses the panel
     /// afterward), or a Nav row that opened its page.
-    pub(crate) fn on_ok(&mut self, ps: &crate::route::PlaybackSession) -> MoreOk {
+    pub(crate) fn on_ok(&mut self, ps: &plx_media::route::PlaybackSession) -> MoreOk {
         match self.form.selected_id().and_then(|id| self.form.index_of(id)).and_then(|i| self.form.activate(i)) {
             Some(Activation::Action(act)) => MoreOk::Action(act),
             Some(Activation::Push(page)) => {
@@ -496,7 +496,7 @@ impl MoreMenuState {
         self.motion.warm_open(&self.form.table, || self.panel_rect(measure), measure);
     }
 
-    pub(crate) fn update(&mut self, dt: f32, measure: &dyn plx_machine::machine::Measure, ps: &crate::route::PlaybackSession) {
+    pub(crate) fn update(&mut self, dt: f32, measure: &dyn plx_machine::machine::Measure, ps: &plx_media::route::PlaybackSession) {
         self.refresh(ps);
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
         let natural = self.panel_rect(measure);
@@ -621,7 +621,7 @@ fn rows_for(forced: bool) -> Vec<Action> {
     let mut v: Vec<Action> = if forced {
         Vec::new()
     } else {
-        crate::route::available_quality_ladder()
+        plx_media::route::available_quality_ladder()
             .iter()
             .map(|q| Action::SetQuality(*q))
             .collect()
@@ -696,8 +696,8 @@ fn is_on(a: Action) -> bool {
 /// the row is drawn from it (`row_for`); passing it in is what lets the copy be tested without a
 /// resolved playback, and what keeps this function a statement about the LADDER rather than about
 /// global state.
-fn quality_detail(q: crate::route::Quality, source_decodable: bool) -> &'static str {
-    if q == crate::route::Quality::Original && !source_decodable {
+fn quality_detail(q: plx_media::route::Quality, source_decodable: bool) -> &'static str {
+    if q == plx_media::route::Quality::Original && !source_decodable {
         plx_ui::fmt::converts_on_server()
     } else {
         ""
@@ -708,9 +708,9 @@ fn quality_detail(q: crate::route::Quality, source_decodable: bool) -> &'static 
 /// builders) so the two idioms are decided in one place: a switch gets the trailing word, a picker
 /// rung gets the leading mark ([`FormSection::choice`] derives it from the current rung), and nothing gets
 /// both.
-fn row_for(ps: &crate::route::PlaybackSession, a: Action) -> Row {
+fn row_for(ps: &plx_media::route::PlaybackSession, a: Action) -> Row {
     match a {
-        Action::SetQuality(q) => Row::new(label(a)).detail(quality_detail(q, crate::route::source_decodable(ps))),
+        Action::SetQuality(q) => Row::new(label(a)).detail(quality_detail(q, plx_media::route::source_decodable(ps))),
         _ => Row::new(label(a)).toggle(is_on(a)),
     }
 }
@@ -749,7 +749,7 @@ mod tests {
     /// into four lines of noise.
     #[test]
     fn only_the_original_row_says_the_source_cannot_be_preserved() {
-        use crate::route::Quality;
+        use plx_media::route::Quality;
         assert_eq!(
             quality_detail(Quality::Original, false),
             "Converts on server"
@@ -759,7 +759,7 @@ mod tests {
             "",
             "a source the panel decodes needs no correction — Original means Original",
         );
-        for q in crate::route::QUALITY_LADDER {
+        for q in plx_media::route::QUALITY_LADDER {
             if q == Quality::Original {
                 continue;
             }
@@ -776,7 +776,7 @@ mod tests {
     #[test]
     fn the_conversion_notice_is_the_words_the_detail_page_already_uses() {
         assert_eq!(
-            quality_detail(crate::route::Quality::Original, false),
+            quality_detail(plx_media::route::Quality::Original, false),
             plx_ui::fmt::converts_on_server(),
         );
     }
@@ -788,7 +788,7 @@ mod tests {
         }
         // The full persisted ladder must keep finished UI copy even if the readiness gate is
         // deliberately closed again for a future protocol regression.
-        for q in crate::route::QUALITY_LADDER {
+        for q in plx_media::route::QUALITY_LADDER {
             assert!(
                 !label(Action::SetQuality(q)).is_empty(),
                 "{q:?} would draw a blank row when enabled"
@@ -808,8 +808,8 @@ mod tests {
     }
 
     /// A menu ROOT built from the row list, without a `PlaybackSession` beyond the default one.
-    fn menu(forced: bool, current: crate::route::Quality) -> MoreMenuState {
-        let ps = crate::route::PlaybackSession::default();
+    fn menu(forced: bool, current: plx_media::route::Quality) -> MoreMenuState {
+        let ps = plx_media::route::PlaybackSession::default();
         let rows = rows_for(forced);
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true;
@@ -818,8 +818,8 @@ mod tests {
     }
 
     /// The same menu with the Quality page pushed (and its slide skipped).
-    fn quality_page(current: crate::route::Quality) -> MoreMenuState {
-        let ps = crate::route::PlaybackSession::default();
+    fn quality_page(current: plx_media::route::Quality) -> MoreMenuState {
+        let ps = plx_media::route::PlaybackSession::default();
         let mut st = menu(false, current);
         st.focus_key(MoreRow::OpenQuality.key().0);
         assert_eq!(st.on_ok(&ps), MoreOk::Navigated);
@@ -839,13 +839,13 @@ mod tests {
         st.form.table.row_mut(i as i32).is_some_and(|r| r.checked)
     }
 
-    use crate::route::Quality;
+    use plx_media::route::Quality;
 
     /// Pressing each row commits ITS action, addressed by identity — never by a position: an
     /// Options row on the root and a rung on the Quality page.
     #[test]
     fn a_focused_row_commits_its_own_action() {
-        let ps = crate::route::PlaybackSession::default();
+        let ps = plx_media::route::PlaybackSession::default();
         let mut st = menu(false, Quality::P1080);
         for a in rows_for(false).into_iter().filter(|a| !matches!(a, Action::SetQuality(_))) {
             st.focus_key(a.key().0);
@@ -874,7 +874,7 @@ mod tests {
             "no rung on the root: {ids:?}"
         );
         let ladder: Vec<Action> =
-            crate::route::available_quality_ladder().iter().map(|q| Action::SetQuality(*q)).collect();
+            plx_media::route::available_quality_ladder().iter().map(|q| Action::SetQuality(*q)).collect();
         assert_eq!(order(&quality_page(Quality::Original)), ladder);
     }
 
@@ -882,7 +882,7 @@ mod tests {
     /// — as its value, and the page checks that rung and no other.
     #[test]
     fn the_quality_row_reads_the_current_rung_and_the_page_checks_it() {
-        for q in crate::route::QUALITY_LADDER {
+        for q in plx_media::route::QUALITY_LADDER {
             let mut st = menu(false, q);
             assert_eq!(value_of(&mut st, MoreRow::OpenQuality), Some(q.label()), "{q:?}");
             assert!(
@@ -890,7 +890,7 @@ mod tests {
                 "a drill-in row carries no check — a mark says where you are, a word says what is set"
             );
             let mut st = quality_page(q);
-            for rung in crate::route::QUALITY_LADDER {
+            for rung in plx_media::route::QUALITY_LADDER {
                 let id = MoreRow::Act(Action::SetQuality(rung));
                 if st.form.index_of(&id).is_some() {
                     assert_eq!(checked(&mut st, id), rung == q, "{rung:?} while {q:?} is current");
@@ -903,8 +903,8 @@ mod tests {
     /// title band comes and goes with the page, and BACK at the root pops nothing.
     #[test]
     fn push_lands_on_the_checked_rung_and_pop_restores_the_quality_row() {
-        let ps = crate::route::PlaybackSession::default();
-        for q in crate::route::available_quality_ladder() {
+        let ps = plx_media::route::PlaybackSession::default();
+        for q in plx_media::route::available_quality_ladder() {
             let mut st = menu(false, *q);
             assert!(!st.pop(&ps), "the root has nothing to pop");
             st.focus_key(MoreRow::OpenQuality.key().0);
@@ -924,7 +924,7 @@ mod tests {
     /// does nothing either (there is no deeper page and no tab to switch to).
     #[test]
     fn right_enters_the_quality_row_and_nothing_else() {
-        let ps = crate::route::PlaybackSession::default();
+        let ps = plx_media::route::PlaybackSession::default();
         let mut st = menu(false, Quality::P720);
         st.focus_key(Action::ToggleStats.key().0);
         st.on_right(&ps);
@@ -942,7 +942,7 @@ mod tests {
     fn warm_open_queues_the_opening_page_once_without_an_update() {
         use plx_ui::fixture::FixtureMeasure as M;
         let _serial = plx_base::testlock::serial();
-        let ps = crate::route::PlaybackSession::default();
+        let ps = plx_media::route::PlaybackSession::default();
         for st in [MoreMenuState::new(&ps), MoreMenuState::new_quality(&ps)] {
             plx_gfx::text::reset_prewarm_for_test();
             st.warm_open(&M);
@@ -958,14 +958,14 @@ mod tests {
     #[test]
     fn the_quality_entry_opens_on_the_page_and_the_ordinary_entry_on_the_root() {
         let _serial = plx_base::testlock::serial();
-        let ps = crate::route::PlaybackSession::default();
+        let ps = plx_media::route::PlaybackSession::default();
         let st = MoreMenuState::new(&ps);
         assert_eq!(st.page(), None);
         let st = MoreMenuState::new_quality(&ps);
         assert_eq!(st.page(), Some(MorePage::Quality));
         assert!(!st.transitioning(), "the entry is not a slide");
         assert_eq!(st.form.table.title(), Some("Quality"));
-        let active = MoreRow::Act(Action::SetQuality(crate::route::quality()));
+        let active = MoreRow::Act(Action::SetQuality(plx_media::route::quality()));
         if st.form.index_of(&active).is_some() {
             assert_eq!(st.form.selected_id(), Some(&active), "the active rung is focused");
         }
@@ -975,7 +975,7 @@ mod tests {
     /// the press still commits the row's own action.
     #[test]
     fn a_reordered_menu_resolves_every_key_to_the_same_action() {
-        let ps = crate::route::PlaybackSession::default();
+        let ps = plx_media::route::PlaybackSession::default();
         let mut rows = rows_for(false);
         rows.reverse();
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
@@ -1022,7 +1022,7 @@ mod tests {
     /// it, so none is offered and a quality entry lands on the first Options row.
     #[test]
     fn forced_direct_play_offers_no_quality_row_and_lands_on_the_first_option() {
-        let ps = crate::route::PlaybackSession::default();
+        let ps = plx_media::route::PlaybackSession::default();
         let forced = rows_for(true);
         assert!(
             !forced.iter().any(|a| matches!(a, Action::SetQuality(_))),
@@ -1032,7 +1032,7 @@ mod tests {
         assert!(!quality_offered(&forced, true));
         assert!(!quality_offered(&[Action::ToggleStats], false), "an empty ladder offers no page to open");
         assert!(quality_offered(&rows_for(false), false));
-        for q in crate::route::QUALITY_LADDER {
+        for q in plx_media::route::QUALITY_LADDER {
             let mut st = menu(true, q);
             assert!(st.form.index_of(&MoreRow::OpenQuality).is_none());
             assert_eq!(st.on_ok(&ps), MoreOk::Action(Action::ToggleStats), "a vanished rung opens on the first option");
@@ -1045,7 +1045,7 @@ mod tests {
             .copied()
             .filter(|a| matches!(a, Action::SetQuality(_)))
             .collect();
-        let expected: Vec<Action> = crate::route::available_quality_ladder()
+        let expected: Vec<Action> = plx_media::route::available_quality_ladder()
             .iter()
             .map(|q| Action::SetQuality(*q))
             .collect();
@@ -1058,7 +1058,7 @@ mod tests {
     /// and the focused row by id (the checked rung when the focused one left).
     #[test]
     fn a_live_rung_change_refreshes_the_open_page_in_place() {
-        let ps = crate::route::PlaybackSession::default();
+        let ps = plx_media::route::PlaybackSession::default();
         let mut st = quality_page(Quality::P1080);
         st.focus_key(Action::SetQuality(Quality::P720).key().0);
         let before = st.form.table.sel;
@@ -1085,7 +1085,7 @@ mod tests {
     /// comes back without the Quality row.
     #[test]
     fn quality_becoming_unavailable_pops_the_page_to_the_root() {
-        let ps = crate::route::PlaybackSession::default();
+        let ps = plx_media::route::PlaybackSession::default();
         let mut st = quality_page(Quality::P1080);
         assert!(st.refresh_to(&ps, true, rows_for(true), Quality::P1080));
         assert_eq!(st.page(), None);
@@ -1109,7 +1109,7 @@ mod tests {
     /// them.
     #[test]
     fn every_key_is_distinct_and_below_the_band() {
-        let mut all: Vec<MoreRow> = crate::route::QUALITY_LADDER.iter().map(|q| MoreRow::Act(Action::SetQuality(*q))).collect();
+        let mut all: Vec<MoreRow> = plx_media::route::QUALITY_LADDER.iter().map(|q| MoreRow::Act(Action::SetQuality(*q))).collect();
         all.extend([MoreRow::OpenQuality, MoreRow::Act(Action::ToggleStats), MoreRow::Act(Action::SendDiagnostics)]);
         let mut keys: Vec<u32> = all.iter().map(|a| a.key().0).collect();
         keys.sort_unstable();
@@ -1145,14 +1145,14 @@ mod tests {
     fn a_push_and_a_pop_slide_and_then_rest() {
         let _serial = plx_base::testlock::serial();
         const DT: f32 = 1.0 / 60.0;
-        let ps = crate::route::PlaybackSession::default();
+        let ps = plx_media::route::PlaybackSession::default();
         let m = plx_base::fontcov::advances::ShippedMeasure;
         let step = |st: &mut MoreMenuState| {
             plx_machine::idle::frame_begin(DT);
             st.update(DT, &m, &ps);
             plx_machine::idle::present_moving()
         };
-        let mut st = menu(false, crate::route::quality());
+        let mut st = menu(false, plx_media::route::quality());
         st.motion.step(DT, st.panel_rect(&m));
         assert!(!step(&mut st), "an opened menu is at rest");
         st.focus_key(MoreRow::OpenQuality.key().0);
@@ -1188,7 +1188,7 @@ mod tests {
     fn a_changed_row_set_resizes_the_card_with_a_spring_and_then_rests() {
         let _serial = plx_base::testlock::serial();
         const DT: f32 = 1.0 / 60.0;
-        let ps = crate::route::PlaybackSession::default();
+        let ps = plx_media::route::PlaybackSession::default();
         let m = plx_base::fontcov::advances::ShippedMeasure;
         let step = |st: &mut MoreMenuState| {
             plx_machine::idle::frame_begin(DT);
@@ -1196,7 +1196,7 @@ mod tests {
             plx_machine::idle::present_moving()
         };
         // opened under Force Direct Play: no Quality row, a short panel
-        let mut st = menu(true, crate::route::quality());
+        let mut st = menu(true, plx_media::route::quality());
         let short = st.panel_rect(&m);
         st.motion.step(DT, short); // the open: the first step places the card AT its layout
         assert!(!st.transitioning(), "a freshly opened panel is at rest");
@@ -1258,8 +1258,8 @@ mod focus_tests {
     fn three_row_menu() -> MoreMenuState {
         let mut sec = FormSection::new("Quality");
         for (a, label) in [
-            (Action::SetQuality(crate::route::Quality::Original), "Rung A"),
-            (Action::SetQuality(crate::route::Quality::Auto), "Rung B"),
+            (Action::SetQuality(plx_media::route::Quality::Original), "Rung A"),
+            (Action::SetQuality(plx_media::route::Quality::Auto), "Rung B"),
             (Action::ToggleStats, "Stats for nerds"),
         ] {
             sec = sec.item(MoreRow::Act(a), RowKind::Button, a, Row::new(label));
@@ -1271,7 +1271,7 @@ mod focus_tests {
             form,
             rows: Vec::new(),
             forced: false,
-            current: crate::route::Quality::Auto,
+            current: plx_media::route::Quality::Auto,
             pages: PageStack::new(),
             motion: PanelMotion::new(),
         }
@@ -1361,7 +1361,7 @@ mod focus_tests {
     #[test]
     fn every_row_fits_the_panel_in_every_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-        let ps = crate::route::PlaybackSession::default();
+        let ps = plx_media::route::PlaybackSession::default();
         let mut out = Vec::new();
         let rows = rows_for(false);
         let mut check = |tag: &str, form: &MoreTable| {
@@ -1371,7 +1371,7 @@ mod focus_tests {
         };
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
-            for q in crate::route::QUALITY_LADDER {
+            for q in plx_media::route::QUALITY_LADDER {
                 let mut root = MoreMenuState::new(&ps);
                 root.form.set(root_form(&ps, &rows, false, q), None);
                 check(language.tag(), &root.form);

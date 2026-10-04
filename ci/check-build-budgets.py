@@ -15,7 +15,7 @@ of the same tree, so a red result is always a real change to the tree.
 * binary_bytes                 the stripped binary `make ipk` stages (measured in the cross-build job)
 * packages_*                   third-party packages the app crate compiles for the ARM target
 * duplicate_versions_*         crate names in more than one version on the normal-edge graph
-* source_lines                 lines of Rust in rust-modules/src and every split-out layer crate (rust-modules/base/src, rust-modules/machine/src, rust-modules/net/src, rust-modules/platform/src, rust-modules/gfx/src, rust-modules/ui/src, rust-modules/plex/src, rust-modules/telemetry/src, rust-modules/data/src, rust-modules/session/src); mode "warn", never fails
+* source_lines                 lines of Rust in rust-modules/src and every split-out layer crate (rust-modules/base/src, rust-modules/machine/src, rust-modules/net/src, rust-modules/platform/src, rust-modules/gfx/src, rust-modules/ui/src, rust-modules/plex/src, rust-modules/telemetry/src, rust-modules/data/src, rust-modules/session/src, rust-modules/media/src); mode "warn", never fails
 
 Exit status: 0 all within budget (warn-mode overruns print ::warning::), 1 a fail-mode budget is
 exceeded, 2 the budgets file or an input is unusable.
@@ -237,7 +237,7 @@ def main(argv=None) -> int:
     ap.add_argument("--graph", action="store_true")
     ap.add_argument("--tree-default")
     ap.add_argument("--tree-no-default")
-    ap.add_argument("--src", action="append", help="a source directory to count; repeat for each crate (rust-modules/src, rust-modules/base/src, rust-modules/machine/src, rust-modules/net/src, rust-modules/platform/src, rust-modules/gfx/src, rust-modules/ui/src, rust-modules/plex/src, rust-modules/telemetry/src, rust-modules/data/src, rust-modules/session/src)")
+    ap.add_argument("--src", action="append", help="a source directory to count; repeat for each crate (rust-modules/src, rust-modules/base/src, rust-modules/machine/src, rust-modules/net/src, rust-modules/platform/src, rust-modules/gfx/src, rust-modules/ui/src, rust-modules/plex/src, rust-modules/telemetry/src, rust-modules/data/src, rust-modules/session/src, rust-modules/media/src)")
     args = ap.parse_args(argv)
     try:
         budgets = load_budgets(Path(args.budgets))

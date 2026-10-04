@@ -463,12 +463,12 @@ impl Transport {
                 title.as_ptr(),
             );
         }
-        let live_ns = crate::player::playpos_ns();
+        let live_ns = plx_media::player::playpos_ns();
         crate::appkit::player_hud::draw_playbar(
             p,
             Playbar {
                 pos_ns: if self.scrubbing() { self.scrub_ns } else { live_ns },
-                dur_ns: crate::player::duration_ns(),
+                dur_ns: plx_media::player::duration_ns(),
                 // The trailer's playbar is not FOCUSABLE and a pointer cannot drag it — the tick
                 // knob everywhere else on this transport is a read-out — but LEFT/RIGHT do move
                 // it now, same as the player HUD's own scrubber.

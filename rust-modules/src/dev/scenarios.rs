@@ -369,7 +369,7 @@ pub(crate) fn arm_audio_enhancements() {
             return;
         }
     };
-    crate::player::set_audio_enhancements(a);
+    plx_media::player::set_audio_enhancements(a);
     #[cfg(feature = "devtriggers")]
     plx_base::eventlog::log(&format!(
         "audioenh: forced boost_dialog={} normalize_loudness={} by /tmp/plxnative-audioenh",
@@ -885,7 +885,7 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
         let playurl = plx_base::devtrig::flag("playurl");
         if plx_base::devtrig::flag("autoplay") || playurl {
             let requested = if playurl || plx_base::devtrig::flag("h265") {
-                crate::route::clear_url(&mut app.player.session);
+                plx_media::route::clear_url(&mut app.player.session);
                 true
             } else {
                 let pidx = plx_base::devtrig::read("playidx")
@@ -897,7 +897,7 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
                     snapshot.view().hub(hub).and_then(|h| h.items.get(col))
                 });
                 if let Some(pmm) = pmm {
-                    let requested = crate::route::request_play_movie(&mut app.player.session, app.bridge.metadata_mut(), pmm, &crate::app::playback::movie_ctx(pmm));
+                    let requested = plx_media::route::request_play_movie(&mut app.player.session, app.bridge.metadata_mut(), pmm, &crate::app::playback::movie_ctx(pmm));
                     if requested {
                         // ASYNC (phase 11): nothing here reads `metadata::current()` — the play
                         // plan came from the catalog row itself. The detail is wanted only so the
@@ -1227,7 +1227,7 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
     }
     #[cfg(feature = "devtriggers")]
     plx_base::eventlog::log(&format!("plxnative-play: rk={rk} server={} start", sid.raw()));
-    if crate::route::request_play(&mut app.player.session, app.bridge.metadata_mut(), sid, &rk, &part, &vc, &ac, &title, "") {
+    if plx_media::route::request_play(&mut app.player.session, app.bridge.metadata_mut(), sid, &rk, &part, &vc, &ac, &title, "") {
         let resume = plx_data::metadata::resume_ns(resume_ms, dur_ms);
         crate::app::playback::start_playback(&mut app.player.session,
             &mut app.adapters.player,
@@ -1265,7 +1265,7 @@ fn autoseek_arm(app: &mut App, fr: &mut Frame) {
             if steps.is_empty() {
                 steps.push("140".to_string());
             }
-            app.scenarios.seek_script_last = crate::player::playpos_ns();
+            app.scenarios.seek_script_last = plx_media::player::playpos_ns();
             app.scenarios.seek_script_at = fr.now.wrapping_sub(app.scenarios.seek_gap_ms).wrapping_add(first_delay_ms);
             app.scenarios.seek_script = steps;
         }
@@ -1294,7 +1294,7 @@ fn qualityswitch_arm(app: &mut App, fr: &mut Frame) {
         const QUALITY_SWITCH_OBSERVE_MS: u32 = 12_000;
         let playing = matches!(app.route(), AppArg::Player)
             && crate::app::playback::dur() > 0
-            && crate::player::is_playing(&app.player.session);
+            && plx_media::player::is_playing(&app.player.session);
         if !playing {
             app.scenarios.quality_playing_since = None;
         } else {
@@ -1316,7 +1316,7 @@ fn qualityswitch_arm(app: &mut App, fr: &mut Frame) {
         let q = app.scenarios.quality_script.remove(0);
         app.scenarios.quality_script_at = fr.now;
         plx_base::eventlog::log(&format!("quality: switch → {} ({} left)", super::quality_wire_name(q), app.scenarios.quality_script.len()));
-        crate::route::set_quality(&mut app.player.session, q);
+        plx_media::route::set_quality(&mut app.player.session, q);
     }
 }
 
@@ -1336,7 +1336,7 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
         // the stop is kept in movie time, so re-arming is idempotent.
         #[cfg(feature = "hostsim")]
         if let Some(ms) = at_ms {
-            crate::player::stop_sim_clock_at(Some(i64::from(ms) * 1_000_000));
+            plx_media::player::stop_sim_clock_at(Some(i64::from(ms) * 1_000_000));
         }
         let reached = at_ms.is_none_or(|ms| crate::app::playback::playpos() >= i64::from(ms) * 1_000_000);
         if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, pause_at, 0) && reached {
@@ -1348,7 +1348,7 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
                 app.scenarios.pause_script = None;
                 app.scenarios.pause_resume_at = hold_ms.map(|hold| fr.now.wrapping_add(hold));
                 #[cfg(feature = "hostsim")]
-                crate::player::stop_sim_clock_at(None);
+                plx_media::player::stop_sim_clock_at(None);
                 pin_headless_hud(app, fr.now, None);
             }
         }
@@ -1663,7 +1663,7 @@ fn subtiming_step(now: u32, armed_at: u32, cur_sid: i64, want_sid: i64) -> Subti
 fn subtiming_arm(app: &mut App, fr: &mut Frame) {
     use plx_data::metadata::sub_layout::is_image_sub_codec;
     if let Some(SubtimingPending { sid: want_sid, armed_at }) = app.scenarios.subtiming.pending {
-        let cur_sid = crate::route::cur_sub_sid(&app.player.session);
+        let cur_sid = plx_media::route::cur_sub_sid(&app.player.session);
         match subtiming_step(fr.now, armed_at, cur_sid, want_sid) {
             SubtimingStep::Wait => {}
             step => {
@@ -1684,8 +1684,8 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
         return;
     }
     if !matches!(app.route(), AppArg::Player)
-        || crate::route::cur_rk(&app.player.session).is_empty()
-        || crate::route::is_transcoding(&app.player.session)
+        || plx_media::route::cur_rk(&app.player.session).is_empty()
+        || plx_media::route::is_transcoding(&app.player.session)
     {
         return;
     }
@@ -1703,7 +1703,7 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
     let stream_id = item.subs[i].id;
     let render_ordinal = plx_data::metadata::sub_render_ordinal(&item.subs, i);
     app.scenarios.subtiming.tried = true;
-    if crate::route::cur_sub_sid(&app.player.session) == stream_id {
+    if plx_media::route::cur_sub_sid(&app.player.session) == stream_id {
         plx_base::eventlog::log(&format!("subtiming: already sid={stream_id} — opened without a commit"));
         open_timing(app);
         return;
@@ -1809,7 +1809,7 @@ mod subtiming_step_tests {
 }
 
 fn marker_arm(app: &mut App, _fr: &mut Frame) {
-    if !app.scenarios.marker_tried && matches!(app.route(), AppArg::Player) && crate::player::is_playing(&mut app.player.session) {
+    if !app.scenarios.marker_tried && matches!(app.route(), AppArg::Player) && plx_media::player::is_playing(&mut app.player.session) {
         match plx_base::devtrig::read("marker") {
             Some(s) => {
                 let want = if s.eq_ignore_ascii_case("intro") {
@@ -1917,7 +1917,7 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     moreosc_arm(app, fr);
     marker_arm(app, fr);
     if crate::app::bridge::player(&app.pages).is_some() {
-        crate::player::failure_fixture(&mut app.player.session);
+        plx_media::player::failure_fixture(&mut app.player.session);
     }
     true
 }

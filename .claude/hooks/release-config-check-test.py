@@ -72,6 +72,7 @@ CASES = [
     (FIRE, "the telemetry layer crate's source", edit("/repo/rust-modules/telemetry/src/telemetry/sender.rs"), ROOT),
     (FIRE, "the data layer crate\'s source", edit("/repo/rust-modules/data/src/pms.rs"), ROOT),
     (FIRE, "the session layer crate\'s source", edit("/repo/rust-modules/session/src/auth.rs"), ROOT),
+    (FIRE, "the media layer crate\\'s source", edit("/repo/rust-modules/media/src/player/mod.rs"), ROOT),
     (FIRE, "MultiEdit", edit("/repo/rust-modules/src/app/run.rs", tool="MultiEdit"), ROOT),
     (FIRE, "relative to root", edit("rust-modules/src/route.rs"), ROOT),
     (FIRE, "relative to a subdir", edit("src/plex/client.rs"), "/repo/rust-modules"),

@@ -9,7 +9,7 @@ gated per reference by ci/check-module-layers.py) cut it to 13 by step L14 (the 
 ci/module-cycle-baseline.json), whose remaining edges are ones that
 gate allows (this tool sees `diag` as one node). THIS gate only stops the cycle
 absorbing more modules. It holds MEMBERSHIP, not edges: another reference between two
-modules that are already on the cycle (another `player` -> `route`) does not fail it.
+modules that are already on the cycle (another `app` -> `dev`) does not fail it.
 `ci/module-cycle-baseline.json` records the modules that sit on the cycle today, and this script
 fails when
 

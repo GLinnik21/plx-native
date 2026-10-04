@@ -106,7 +106,7 @@ pub(crate) fn install_panic_logger() {
 ///   telemetry/consent legacy-file sweep a durable sign-out runs. It exists only where the sweep does
 ///   (ARM, not the simulator, not a test build); unset, `plex` reads it as already retired.
 pub(crate) fn install_plex_seams() {
-    plx_plex::plex::session::install_auto_quality_ready(crate::route::auto_quality_ready);
+    plx_plex::plex::session::install_auto_quality_ready(plx_media::route::auto_quality_ready);
     #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
     plx_plex::plex::session::install_account_clear_cleanup(plx_telemetry::telemetry::cleanup_after_account_clear);
 }
@@ -183,7 +183,7 @@ mod seam_order_tests {
             .expect("end of enter_application")
             .0;
         let eraser = body
-            .find("crate::player::report::install_trace_eraser();")
+            .find("plx_media::player::report::install_trace_eraser();")
             .expect("enter_application must install telemetry's error-trace eraser");
         let telemetry = body
             .find(".then(pre_boot_diagnostics)")
@@ -490,7 +490,7 @@ pub(crate) unsafe fn boot(
 ) -> Result<App, c_int> {
     // The Up Next still prefetch `route::pump_play` asks for is `ui`'s, which `route` may not name,
     // so it is handed over here, before any playback can land. Replay boots take it too.
-    crate::route::install_up_next_still_warm(super::playback::warm_up_next_still);
+    plx_media::route::install_up_next_still_warm(super::playback::warm_up_next_still);
     let initial = match &preflight {
         super::bootstrap::Preflight::Live => None,
         super::bootstrap::Preflight::Record => {
@@ -858,18 +858,18 @@ pub(crate) unsafe fn construct(
     // Install-wide playback preference, restored before any route can resolve a stream.
     // A legacy file with no value resolves to Original; a new file can choose Auto only
     // through route's explicit readiness gate (session::load records that decision once).
-    crate::route::restore_quality(
+    plx_media::route::restore_quality(
         if controlled { session.playback_quality() }
         else { crate::dev::playback_quality_override().unwrap_or_else(|| session.playback_quality()) },
     );
-    crate::route::restore_direct_play_mode(session.direct_play_mode());
-    crate::route::restore_subtitle_size(session.subtitle_size());
-    crate::route::restore_subtitle_position(session.subtitle_position());
-    crate::route::restore_next_episode_mode(session.next_episode_mode());
-    crate::route::restore_skip_interval(session.skip_interval());
+    plx_media::route::restore_direct_play_mode(session.direct_play_mode());
+    plx_media::route::restore_subtitle_size(session.subtitle_size());
+    plx_media::route::restore_subtitle_position(session.subtitle_position());
+    plx_media::route::restore_next_episode_mode(session.next_episode_mode());
+    plx_media::route::restore_skip_interval(session.skip_interval());
     // The subtitle tone rides the same file and the same moment: a preference, restored once.
-    crate::player::restore_subtitle_tone(session.subtitle_tone());
-    crate::player::restore_audio_enhancements(session.audio_enhancements());
+    plx_media::player::restore_subtitle_tone(session.subtitle_tone());
+    plx_media::player::restore_audio_enhancements(session.audio_enhancements());
     // dev: /tmp/plxnative-audioenh=off|boost|loudness — force the PERSISTED enhancement
     // preference right after it was restored from whatever the install actually has saved, so a
     // harness case's starting preference never depends on what an earlier run's pick left behind.
@@ -985,8 +985,8 @@ pub(crate) unsafe fn construct(
         activate_session(&mut bridge, &mut pages, &mut super::recorder::Recplay::Off)
     };
     if !controlled {
-        crate::player::acb_init(&mt);
-        crate::ff::boot(); // Live playback resource boot; controlled Home cannot invoke ABI probes.
+        plx_media::player::acb_init(&mt);
+        plx_media::ff::boot(); // Live playback resource boot; controlled Home cannot invoke ABI probes.
     }
                        // dev: /tmp/plxnative-logintest validates the plex.tv account path end-to-end on the device — a
                        // real typed create_pin() through the libcurl transport + DTO deserialize. Logs only the
@@ -1044,7 +1044,7 @@ pub(crate) unsafe fn construct(
     // `rm` rather than a redeploy.
     if !controlled {
         plx_ui::testpat::boot();
-        crate::player::seed_dev_track_names();
+        plx_media::player::seed_dev_track_names();
     }
     if let Some(initial) = &initial {
         plx_machine::idle::set_enabled(!plx_base::devtrig::listed(&initial.triggers, "noidle"));
@@ -1242,12 +1242,12 @@ pub(crate) unsafe fn construct(
     // deferred press's liveness beat, and nothing else since phase 12).
     let modal_repeat = RepeatGate::IDLE;
     let marker_tried = false; // dev: the /tmp/plxnative-marker jump has been resolved
-    let player = crate::player::machine::Player::new();
+    let player = plx_media::player::machine::Player::new();
     // The token stops being an argument here and becomes a field. `PlayerAdapter::new` CONSUMES
     // it, so the adapter is the only thing in the process that holds one, and a `&mut` to it is
     // what every native-session call now asks for. See `player::adapter`.
     let adapters = super::Adapters {
-        player: crate::player::adapter::PlayerAdapter::new(mt),
+        player: plx_media::player::adapter::PlayerAdapter::new(mt),
     };
     let repause_at = 0i64;
     // ui::press click state: a grid-card OK is deferred (press-in on down, activate on the

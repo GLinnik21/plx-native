@@ -111,10 +111,10 @@ pub(crate) struct AppViews<'a> {
     pub(crate) metadata: plx_data::metadata::MetadataView<'a>,
     /// **The playback session, as this frame's publication** (spec §2.3, phase 9). The Player
     /// machine (`App.player`) owns the value; `Split` can only lend what the RIG owns, so the loop
-    /// copies the decisions in once per frame ([`crate::route::PlaybackSession::publication`]) and
+    /// copies the decisions in once per frame ([`plx_media::route::PlaybackSession::publication`]) and
     /// a screen reads them here. A screen that wants to CHANGE the playback emits an effect
     /// (`AppFx::Player`, `ContentReq::Play`) — there is no `&mut` on this path by construction.
-    pub(crate) session: &'a crate::route::PlaybackSession,
+    pub(crate) session: &'a plx_media::route::PlaybackSession,
 }
 
 impl Bridge {
@@ -126,7 +126,7 @@ impl Bridge {
 
     /// [`Self::views`] reading `session` as the playback publication — what a test rig with no
     /// player of its own passes.
-    pub(crate) fn views_with<'a>(&'a self, session: &'a crate::route::PlaybackSession) -> AppViews<'a> {
+    pub(crate) fn views_with<'a>(&'a self, session: &'a plx_media::route::PlaybackSession) -> AppViews<'a> {
         AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
@@ -217,7 +217,7 @@ fn execute_endpoint_outcomes_with(
 }
 
 impl crate::screens::registry::PlayerLike for AppHost {
-    fn session<'a>(cx: &Cx<'a, Self>) -> &'a crate::route::PlaybackSession { cx.views.session }
+    fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession { cx.views.session }
 }
 
 impl crate::screens::registry::SearchLike for AppHost {
@@ -308,7 +308,7 @@ pub(crate) struct Bridge {
     mounter: AppMounter,
     /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
     /// [`Bridge::publish_playback`] from the loop, once per iteration.
-    playback: crate::route::PlaybackSession,
+    playback: plx_media::route::PlaybackSession,
     /// Was the publication above refreshed on the last frame? The one bit that lets the retirement
     /// of a stale publication be a single assignment rather than a per-frame one.
     playback_live: bool,
@@ -535,7 +535,7 @@ impl Bridge {
             consent_adapter,
             stores,
             mounter: AppMounter::default(),
-            playback: crate::route::PlaybackSession::IDLE,
+            playback: plx_media::route::PlaybackSession::IDLE,
             playback_live: false,
             video_plane: false,
             measure: plx_ui::rec::Measurements::Live(measure),
@@ -1261,12 +1261,12 @@ impl Bridge {
         self.video_plane = bound;
     }
 
-    pub(crate) fn publish_playback(&mut self, session: &crate::route::PlaybackSession, live: bool) {
+    pub(crate) fn publish_playback(&mut self, session: &plx_media::route::PlaybackSession, live: bool) {
         if live {
             self.playback = session.publication();
             self.playback_live = true;
         } else if self.playback_live {
-            self.playback = crate::route::PlaybackSession::IDLE;
+            self.playback = plx_media::route::PlaybackSession::IDLE;
             self.playback_live = false;
         }
     }
@@ -2161,7 +2161,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
 /// to take and nothing to freeze (`ui/popover.rs`'s `HostPolicy::Live` says exactly this about the
 /// player route). `survives_failure` is the `…` popover's alone — see `OverlayKind`.
 pub(crate) fn open_player_overlay(
-    ps: &crate::route::PlaybackSession,
+    ps: &plx_media::route::PlaybackSession,
     meta: plx_data::metadata::MetadataView<'_>,
     d: &mut Dispatcher<AppHost>,
     kind: crate::screens::player::overlay::OverlayKind,
@@ -2529,16 +2529,16 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         // process. Re-read only at this one credentials handoff so the old account's in-memory
         // preference cannot leak into the new session.
         let saved = plx_plex::plex::session::peek();
-        crate::route::restore_quality(
+        plx_media::route::restore_quality(
             crate::dev::playback_quality_override().unwrap_or_else(|| saved.playback_quality()),
         );
-        crate::route::restore_direct_play_mode(saved.direct_play_mode());
-        crate::route::restore_subtitle_size(saved.subtitle_size());
-        crate::route::restore_subtitle_position(saved.subtitle_position());
-        crate::route::restore_next_episode_mode(saved.next_episode_mode());
-        crate::route::restore_skip_interval(saved.skip_interval());
-        crate::player::restore_subtitle_tone(saved.subtitle_tone());
-        crate::player::restore_audio_enhancements(saved.audio_enhancements());
+        plx_media::route::restore_direct_play_mode(saved.direct_play_mode());
+        plx_media::route::restore_subtitle_size(saved.subtitle_size());
+        plx_media::route::restore_subtitle_position(saved.subtitle_position());
+        plx_media::route::restore_next_episode_mode(saved.next_episode_mode());
+        plx_media::route::restore_skip_interval(saved.skip_interval());
+        plx_media::player::restore_subtitle_tone(saved.subtitle_tone());
+        plx_media::player::restore_audio_enhancements(saved.audio_enhancements());
         let endpoints = super::boot::install_pms_owned(bridge, &c.origin,
             &c.address, &c.token, c.tier, c.pin.as_ref(), &c.install);
         execute_endpoint_outcomes(pages, endpoints);
@@ -3410,8 +3410,8 @@ mod preference_effect_tests {
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let temp = plx_plex::plex::session::TempSession::new("controlled-preference-effects");
         let before = std::fs::read(temp.path()).unwrap();
-        let quality = crate::route::quality();
-        let mode = crate::route::direct_play_mode();
+        let quality = plx_media::route::quality();
+        let mode = plx_media::route::direct_play_mode();
         for replay in [false, true] {
             let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
             let mut bridge = Bridge::controlled_home(|| 0, &initial, &mt, replay);
@@ -3425,9 +3425,9 @@ mod preference_effect_tests {
             for save_quality in [false, true] {
                 let (reply, receipt) = mpsc::channel();
                 let command = if save_quality {
-                    PreferenceCmd::Quality { quality: crate::route::Quality::P480, reply }
+                    PreferenceCmd::Quality { quality: plx_media::route::Quality::P480, reply }
                 } else {
-                    PreferenceCmd::DirectPlay { mode: crate::route::DirectPlayMode::Forced, reply }
+                    PreferenceCmd::DirectPlay { mode: plx_media::route::DirectPlayMode::Forced, reply }
                 };
                 bridge.app_effect(MachineId::Instance(InstanceId(1)), AppFx::Preferences(command), &mut out);
                 assert!(matches!(receipt.try_recv(), Err(TryRecvError::Disconnected)),
@@ -3436,8 +3436,8 @@ mod preference_effect_tests {
             assert_eq!(bridge.controlled_failure(), Some("unsupported controlled preferences effect"));
             assert!(emitted.is_empty());
         }
-        assert_eq!(crate::route::quality(), quality);
-        assert_eq!(crate::route::direct_play_mode(), mode);
+        assert_eq!(plx_media::route::quality(), quality);
+        assert_eq!(plx_media::route::direct_play_mode(), mode);
         assert_eq!(std::fs::read(temp.path()).unwrap(), before);
     }
 }

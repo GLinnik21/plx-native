@@ -8,13 +8,13 @@ L14, which a split hides from them, and the gate does not check impl coherence. 
 off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
 entries are gone, and the gate fails on any reference from outside the port to a member of it. It
 is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
-up the split. **Ten of the fourteen layers, `base`, `machine`, `platform`, `gfx`, `net`, `ui`,
-`plex`, `telemetry`, `data` and `session`, are their own crates, `plx_base`, `plx_machine`,
-`plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`, `plx_data` and
-`plx_session`** (`rust-modules/base/`, `machine/`, `platform/`, `gfx/`, `net/`, `ui/`, `plex/`,
-`telemetry/`, `data/` and `session/`; "Split 1: base" to "Split 10 (session)" below, and "Splits 9
-and 10 together" for how the last two were combined); the other four (`media`, `appkit`, `screens`,
-`app`) are still modules of `plxnative-modules`.
+up the split. **Eleven of the fourteen layers, `base`, `machine`, `platform`, `gfx`, `net`, `ui`,
+`plex`, `telemetry`, `data`, `session` and `media`, are their own crates, `plx_base`,
+`plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`,
+`plx_data`, `plx_session` and `plx_media`** (`rust-modules/base/`, `machine/`, `platform/`, `gfx/`,
+`net/`, `ui/`, `plex/`, `telemetry/`, `data/`, `session/` and `media/`; "Split 1: base" to "Split
+11 (media)" below, and "Splits 9 and 10 together" for how those two were combined); the other three
+(`appkit`, `screens`, `app`) are still modules of `plxnative-modules`.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
@@ -1498,6 +1498,125 @@ edit is 7.5 s faster and an edit in a layer 5 to 8 s: 54k lines (`data` and `ses
 longer recompile behind it, and an edit in `gfx` or `ui`, which neither new crate depends on,
 rebuilds the application only. The no-op build is 0.1 s in both.
 
+### Split 11 (media)
+
+`media` was extracted eleventh: `rust-modules/media/` is the workspace member `plx_media` (an `rlib`,
+`uses = base machine platform gfx net plex telemetry data`; the manifest names those eight, with
+`plx_gfx` optional behind `hostsim` because only the simulator's `player::sim_video` draws), holding
+`ff` (the bundled-FFmpeg demuxer), `aq`, `abr`, `hls`, `curlio`, `player` (the buffer-feed engine,
+`player/CLAUDE.md` with it) and `route`: 70 files, 84,579 lines. It is the layer with the FFI, and
+the one that held the last import cycle of the application, `abr curlio ff hls player route`, which
+is now inside one crate where a cycle is legal. The 11 root-level files the modules include by
+`#[path]` (`ff_acquisition.rs`, `ff_test_support.rs`, eight `ff_*_tests.rs`,
+`curlio_keymode_tests.rs`) moved with them. Mechanically (`split-media-rewrite.py`): `git mv`, 49
+application files from `crate::<member>` to `plx_media::<member>`, `pub(crate)` to `pub` in 37 moved
+files (`pub(super)` only where it was written at the top level of a file whose parent was the crate
+root), and one intra-doc link to `screens` unbracketed. The module-cycle baseline now reads "3
+modules on the cycle (`app dev textinput`), 10 outside". What it taught:
+
+- **FFI and the final link: proven in the artifact, not assumed.** The crate holds every
+  `dynlib!` table of FFmpeg (`ff.rs`, four), libass (`player/ass.rs`) and the second libcurl table
+  (`curlio.rs`), `player::ffi`'s `extern "C"` block (the Starfish/ACB verbs, 29 undefined
+  symbols the Makefile's link resolves), and the two `#[no_mangle] extern "C"` callbacks
+  `src/starfish.c` calls, `sf_on_event` and `acb_on_event`. All of it moved byte for byte apart from
+  visibility; the crate has no build script and no `#[link]`, like `plx_telemetry`. The ARM
+  staticlib built the way the Makefile builds it (`PLX_RELEASE=1 cargo rustc --release --target
+  arm-unknown-linux-gnueabi --lib --crate-type staticlib --no-default-features`) from `main` and from
+  the branch has the same 291 defined C-ABI symbols (the six entry points `plex_run`,
+  `plx_runtime_path`, `plx_crash_write_image_marker`, `plx_sentry_spool_external`, `sf_on_event` and
+  `acb_on_event` among them) and the same 279 undefined non-Rust symbols, by `llvm-nm`; `ci/expected-dt-needed.txt`
+  and `LIBS_REAL` did not change. A `#[no_mangle]` item of an upstream rlib is kept in the
+  staticlib under `lto = "fat"`: that is the claim the diff checks, and it holds.
+- **The port fence is unchanged.** `player::ffi` is in `[port webos]`, and the fence reads a
+  reference by module name, so `plx_media::player::ffi::StarfishSink` in `port.rs` is the one
+  allowed use. A `use plx_media::player::ffi::..` added to `appkit` and a
+  `use crate::player::ffi::..` added to `route/plan.rs` both fail `ci/check-module-layers.py`.
+- **`player::ffi` keeps the old `not(test)`, and that is deliberate.** Every other `test` in a
+  `cfg` of the crate's non-test code became `any(test, feature = "test-support")` (177 lines, by
+  `split-media-gate.py`, 147 remain: 29 flipped back because only the crate's own tests use them and
+  rustc calls them dead under `test-support` alone: `abr::sim`, the `ffi_host` test hooks, the
+  `route` fault and active-route hooks, the `plan` pick functions, `curlio`'s URL policy probe,
+  `parse_playurl`, and the two `hostsim` regression modules). `mod ffi` is the exception:
+  `cargo check --lib --tests` builds the application library without `cfg(test)` but with this
+  crate's `test-support` on (dev-dependency features unify into the lib in that command, which
+  `make check` runs), and `port.rs` names `StarfishSink` in every such build. With `not(any(test,
+  feature = "test-support"))` the module vanished and the lint step failed to compile
+  `port.rs`. `ffi` is `not(test)` of THIS crate only now: the crate's own tests still
+  contain no Starfish externs, and the application's test binary carries the module but installs
+  `NoSink` (port.rs), so no live code reaches an extern and the linker drops them (`nm` of the
+  application's test binary finds none of `sf_load`, `sf_play`, `vp_create_window`, `acb_start`).
+  That is the one place where the single-crate guarantee "a host test references no Starfish
+  extern" became "no live code does"; Linux CI's `host unit tests` jobs (default features and
+  `hostsim`) link and pass it.
+- **Every `cfg(test)` arm was read, not only the six `--report` named.** The six
+  (`player::preview::{reset_for_test, force_playing_for_test}`, `player::{restore_state_for_test,
+  swap_state_for_test, failtest_policy_shape_for_test, every_failure_row}`) are
+  `any(test, feature = "test-support")`. The arms `--report` cannot see: the feed clock
+  (`engine.rs` steps a fake clock under test), `route::plan`'s `dv_decision` override,
+  `route::decision::settle_plan_start_in_unit_test` and the up-next still warm
+  (`cfg(not(test))`, keeps the poster texture path out of host tests), `player::ass::asset_dir` (the
+  `CARGO_MANIFEST_DIR/../../pkg` override, one level deeper than it was) and `sink()` (the hostsim
+  test sink). Each `not(test)` arm became `not(any(test, feature = "test-support"))`, which is
+  true in every shipping build. One seam used a fixture inside a `cfg(test)` module,
+  `enhancement_test_session` calling `test_support::test_original_candidate`; the fixture now lives
+  in `route/decision.rs` beside the seam and `decision_test_support.rs` re-exports it. The crate
+  declares `lab-diagnostics` (two `cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))`)
+  and forwards `devtriggers` and `hostsim`; `devtools` and `threadcheck` are not used. The
+  crate dev-depends on itself with `devtriggers` (the rule of "Splits 9 and 10 together"), so
+  `cargo test -p plx_media` alone runs its 924 tests (6 ignored, 930 listed) and builds with the
+  `hostsim` set as well.
+- **The seams were checked in the artifact, per crate.** In the `plx_media` rlib of a `--release
+  --no-default-features` build `strings` finds none of 36 seam names (`enhancement_test_session`,
+  `test_original_candidate`, `restore_state_for_test`, `swap_state_for_test`,
+  `reset_for_test`, `force_playing_for_test`, `failtest_policy_shape_for_test`, `every_failure_row`,
+  `FEED_TEST_CLOCK_US`, `drain_test_elapsed`, ...); the `--features test-support` control build
+  finds 29 of the 36 (the other seven are inlined or `hostsim`-only). `cargo tree -e normal` lists
+  no `test-support` with the default features or with `--no-default-features`. `cargo tree -e
+  normal,build -f '{p} [{f}]'` for `plxnative-modules` differs from `main`'s by one line,
+  `plx_media v0.0.0 [default,..]`, in the default, release and `hostsim` configurations.
+- **Gates that read the old location.** `ci/check-deps.sh` has `SRC_MEDIA` wherever it reads
+  `SRC_SESSION`, and the rules that named the directories by path follow the files: `wall`
+  (`route/plan.rs`), `mutators` (`route/`, `player/`) and `sink` (`player/` is the exemption, and
+  `$SRC_MEDIA` joined the scan). `ci/check-statics.sh` gates `media/src/route/decision.rs` and
+  `media/src/player/engine.rs` (its path check is loud). `ci/check-localization.py` listed six
+  `player/` and `route/` files and keyed `FILE_CALLS` by `rust-modules/src/player/ass.rs`, which
+  would have gone silent without failing; both read `media/src` now and the missing-path test
+  names `player/ass.rs`. The eventlog scrub test's root list gained `../media/src`.
+  `player/report.rs`'s `fetch_update` test moved with the crate and its root list (`src`,
+  `ui/src`, relative to the manifest) would have silently walked the media crate alone;
+  it now walks the application and every layer crate (the nine layers that had left before this
+  split were not in it either) and requires over 500 files. `tests/test_harness.py` (`TREE_INPUTS`,
+  `FF`, `FF_RS`, `WINDOW_RS`, the player source reads), `tools/abr-production-census.py` and
+  `tools/test_abr_calibrate_plant.py` (`abr/ladder.rs`, `abr/sim.rs`), the `-p` lists, `--src`,
+  `RUST_INPUTS`, `tools/cargo-seed.py`, `ci/test_no_host_staticlib.py`, the release hook, the
+  module-cycle baseline, `AGENTS.md`'s pointer to `player/CLAUDE.md` and the build-bench scenario
+  (`media`, "Edit leaf (plx_media units.rs)"; added, not run) follow. Paths relative to the file moved
+  one level (`ff.rs`'s `include_bytes!` of the DTS fixture, `ass.rs`'s `pkg`, and the `pkg` fallback and
+  the MKV fixture of `ff_image_subtitle_tests.rs`, which are `#[ignore]`d and so unread by any plain
+  run). `make check-ffmpeg` and `make check-ass` ran `cargo test --lib ff::image_subtitle_tests` and
+  `player::ass::tests` against the application package, which would have matched zero tests after the
+  move and stayed green: both name `-p plx_media` now (they need the host FFmpeg and libass builds,
+  which this lane did not have, so the ignored tests themselves were listed, not run).
+- **Proven by temporary violating edits, reverted byte for byte** (`split-media-violate.py`):
+  `SDL_GetTicks(` in `media/src/player/pump.rs` fails `ticks`; a `/tmp/plxnative-` literal in
+  `hls.rs` fails `tmppath`; an `Instant::now()` in `route/plan.rs` fails `wall`; naming
+  `tv::sink::installed` in `route/plan.rs` fails `sink`; a `std::thread::spawn` in `abr/units.rs`
+  fails `threads`; `static mut SESSION` in `route/decision.rs` fails `ci/check-statics.sh`;
+  `use plx_ui::theme` in `hls.rs` fails the layer gate; an English `Err("..")` in
+  `player/ass.rs` fails the localization gate through the moved `FILE_CALLS` key; and a
+  `log(&format!(.., d.title))` in `route/plan.rs` fails `no_log_call_site_interpolates_viewing_content`
+  in `plx_base` with the new path in the message.
+- **No orphan-rule hazard, no version hand-in.** The crate has no inherent `impl` of a type of
+  another crate and no foreign-trait-for-foreign-type impl; the compiler was the checker. It reads
+  no `PLX_*` variable and has no `env!` of one; the three `CARGO_MANIFEST_DIR` and
+  `include_bytes!` uses were fixed for the extra directory level and checked by running. `curlio`
+  declares libcurl's `curl_multi_*` table itself; the easy-handle table it shares with the
+  transport is `plx_net`'s, as before. `--report` lists `media` as ready and 8 `cfg(test)` items
+  named across layers remain (`appkit` and `screens` only).
+- **Tests.** The default-features suite lists 5637 tests on `main` and 5637 here, in twelve binaries
+  now (`plx_media` 930 of them, taken from the application's 2841 which is 1911): 157 + 66 + 218 +
+  94 + 128 + 756 + 458 + 236 + 425 + 258 + 930 + 1911.
+
 ## What the split cost the binary, and how the release profile pays it back
 
 The split made the shipped binary bigger, split by split. Every layer crate is compiled on its own,
@@ -1516,6 +1635,7 @@ features, dev flavour), and CI's "Binary size budget" table reported:
 | telemetry | 12,148,252 |
 | data, session, no LTO | 12,553,756 |
 | data, session, `lto = "fat"` and `codegen-units = 1` | 11,098,900 |
+| media, `lto = "fat"` and `codegen-units = 1` | 11,168,524 |
 
 The last no-LTO figure is over the 12,426,000 limit, which made Splits 9 and 10 (data, session) red. The two
 `[profile.release]` keys in `rust-modules/Cargo.toml` take the result below the pre-split size,

@@ -24,30 +24,30 @@ fn audio_picker(account: &Account, field: PickerKind) -> PickerPage {
 fn a_picker_opens_on_the_checked_option_with_position_keys() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("picker-opens-checked");
-    let previous = crate::route::quality();
-    crate::route::restore_quality(Quality::P480);
+    let previous = plx_media::route::quality();
+    plx_media::route::restore_quality(Quality::P480);
     let page = PickerPage::new(EntryId(0), PickerKind::Quality);
-    let ladder = crate::route::available_quality_ladder();
+    let ladder = plx_media::route::available_quality_ladder();
     let at = ladder.iter().position(|q| *q == Quality::P480).unwrap();
     assert_eq!(page.state.selected, at as u32, "the cursor starts on the checked option");
     assert_eq!(page.form.key_at(at), Some(RowKey(at as u32)), "an option's key is its position");
     assert_eq!(page.state.checked, at as u32);
-    crate::route::restore_quality(previous);
+    plx_media::route::restore_quality(previous);
 }
 
 #[test]
 fn choosing_the_checked_value_pops_without_a_write() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("picker-checked-noop");
-    let previous = crate::route::quality();
-    crate::route::restore_quality(Quality::P480);
+    let previous = plx_media::route::quality();
+    plx_media::route::restore_quality(Quality::P480);
     let mut page = PickerPage::new(EntryId(0), PickerKind::Quality);
     let key = page.state.selected;
     let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
     assert!(popped(&emitted));
     assert_eq!(preference_commands(&emitted), 0);
     assert!(page.txn.pending.is_none());
-    crate::route::restore_quality(previous);
+    plx_media::route::restore_quality(previous);
 }
 
 /// OK on the already-checked language is not a change and must not write to the account, least of
@@ -96,11 +96,11 @@ fn a_durable_account_receipt_pops_and_a_failed_one_keeps_the_page_with_retry() {
 fn a_local_write_pops_on_its_receipt_and_a_refusal_keeps_the_page() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("picker-local");
-    let previous = crate::route::quality();
-    crate::route::restore_quality(Quality::Original);
+    let previous = plx_media::route::quality();
+    plx_media::route::restore_quality(Quality::Original);
     for ok in [true, false] {
         let mut page = PickerPage::new(EntryId(0), PickerKind::Quality);
-        let other = crate::route::available_quality_ladder().iter().position(|q| *q != Quality::Original).unwrap() as u32;
+        let other = plx_media::route::available_quality_ladder().iter().position(|q| *q != Quality::Original).unwrap() as u32;
         let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
         let Some(Fx::App(AppFx::Preferences(PreferenceCmd::Quality { reply, .. }))) = emitted.into_iter().map(|e| e.fx)
             .find(|f| matches!(f, Fx::App(AppFx::Preferences(_)))) else { panic!("a quality pick saves locally") };
@@ -109,14 +109,14 @@ fn a_local_write_pops_on_its_receipt_and_a_refusal_keeps_the_page() {
         assert_eq!(popped(&emitted), ok);
         assert_eq!(page.state.io.status.is_empty(), ok);
     }
-    crate::route::restore_quality(previous);
+    plx_media::route::restore_quality(previous);
 }
 
 #[test]
 fn force_requires_acknowledgement_and_cancel_never_saves() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("force-confirm-cancel");
-    crate::route::restore_direct_play_mode(DirectPlayMode::Auto);
+    plx_media::route::restore_direct_play_mode(DirectPlayMode::Auto);
     let mut page = PickerPage::new(EntryId(0), PickerKind::DirectPlay);
     let forced = key_of(&page, &Value::DirectPlay(DirectPlayMode::Forced));
     let emitted = drive(&mut page, ScreenEvent::Activate(forced), forced);
@@ -124,22 +124,22 @@ fn force_requires_acknowledgement_and_cancel_never_saves() {
     assert!(!page.alert.choice(), "Cancel is the default answer");
     assert_eq!(preference_commands(&emitted), 0, "opening the warning must not persist Force");
     assert!(page.txn.pending.is_none());
-    assert_eq!(crate::route::direct_play_mode(), DirectPlayMode::Auto);
+    assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Auto);
     let cancel = ScreenEvent::Input(InputEvent { at: Tick::default(), source: Source::RemoteFifo,
         kind: InputKind::Key { key: Key::Back, edge: Edge::Down, sym: 0, wcode: 0, at_edge: false } });
     let emitted = drive(&mut page, cancel, ALERT);
     assert!(!page.alert.is_open());
     assert_eq!(preference_commands(&emitted), 0);
     assert!(page.txn.pending.is_none());
-    assert_eq!(crate::route::direct_play_mode(), DirectPlayMode::Auto);
+    assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Auto);
 }
 
 #[test]
 fn confirming_force_emits_a_preference_effect_without_executing_it() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("force-confirm-yes");
-    let previous = crate::route::direct_play_mode();
-    crate::route::restore_direct_play_mode(DirectPlayMode::Auto);
+    let previous = plx_media::route::direct_play_mode();
+    plx_media::route::restore_direct_play_mode(DirectPlayMode::Auto);
     let mut page = PickerPage::new(EntryId(0), PickerKind::DirectPlay);
     let forced = key_of(&page, &Value::DirectPlay(DirectPlayMode::Forced));
     drive(&mut page, ScreenEvent::Activate(forced), forced);
@@ -147,9 +147,9 @@ fn confirming_force_emits_a_preference_effect_without_executing_it() {
     assert!(page.state.io.busy);
     assert!(emitted.iter().any(|event| matches!(&event.fx,
         Fx::App(AppFx::Preferences(PreferenceCmd::DirectPlay { mode: DirectPlayMode::Forced, .. })))));
-    assert_eq!(crate::route::direct_play_mode(), DirectPlayMode::Auto,
+    assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Auto,
         "only an admitted app executor can persist and activate Force");
-    crate::route::restore_direct_play_mode(previous);
+    plx_media::route::restore_direct_play_mode(previous);
 }
 
 /// A request captured for a profile that is no longer active must not be written through: the
@@ -192,9 +192,9 @@ fn back_is_held_while_an_account_write_is_in_flight() {
 fn the_subtitle_pickers_write_locally_and_pop_on_the_receipt() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("picker-subtitle-local");
-    let (size, position) = (crate::route::subtitle_size(), crate::route::subtitle_position());
-    crate::route::restore_subtitle_size(crate::route::SubtitleSize::Medium);
-    crate::route::restore_subtitle_position(crate::route::SubtitlePosition::Low);
+    let (size, position) = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
+    plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::Low);
     for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition] {
         let mut page = PickerPage::new(EntryId(0), field);
         let checked = page.state.checked;
@@ -214,8 +214,8 @@ fn the_subtitle_pickers_write_locally_and_pop_on_the_receipt() {
         reply.send(true).unwrap();
         assert!(popped(&drive(&mut page, tick(), other)), "{field:?}: pops on the receipt");
     }
-    crate::route::restore_subtitle_size(size);
-    crate::route::restore_subtitle_position(position);
+    plx_media::route::restore_subtitle_size(size);
+    plx_media::route::restore_subtitle_position(position);
 }
 
 /// The optimistic path publishes the live value before the receipt: the open picker moves its
@@ -224,15 +224,15 @@ fn the_subtitle_pickers_write_locally_and_pop_on_the_receipt() {
 fn the_size_picker_moves_its_checkmark_when_the_live_value_is_published() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("picker-optimistic-check");
-    let (size, position) = (crate::route::subtitle_size(), crate::route::subtitle_position());
-    crate::route::restore_subtitle_size(crate::route::SubtitleSize::Medium);
+    let (size, position) = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
     let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize);
     let before = page.state.checked;
-    crate::route::restore_subtitle_size(crate::route::SubtitleSize::Large);
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Large);
     drive(&mut page, tick(), before);
     assert_ne!(page.state.checked, before, "the checked option follows the published value");
-    crate::route::restore_subtitle_size(size);
-    crate::route::restore_subtitle_position(position);
+    plx_media::route::restore_subtitle_size(size);
+    plx_media::route::restore_subtitle_position(position);
 }
 
 /// A failed Size write leaves the live value (and so the checkmark) on the new rung while the disk
@@ -241,15 +241,15 @@ fn the_size_picker_moves_its_checkmark_when_the_live_value_is_published() {
 fn ok_on_the_checked_size_after_a_failed_write_retries_the_write() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("picker-size-retry");
-    let (size, position) = (crate::route::subtitle_size(), crate::route::subtitle_position());
-    crate::route::restore_subtitle_size(crate::route::SubtitleSize::Medium);
+    let (size, position) = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
     let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize);
     let other = if page.state.checked == 0 { 1 } else { 0 };
     let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
     let reply = emitted.into_iter().find_map(|e| match e.fx {
         Fx::App(AppFx::Preferences(PreferenceCmd::SubtitleSize { size, reply })) => {
             // what select_subtitle_size does on the main thread before the write lands
-            crate::route::restore_subtitle_size(size);
+            plx_media::route::restore_subtitle_size(size);
             Some(reply)
         }
         _ => None,
@@ -260,8 +260,8 @@ fn ok_on_the_checked_size_after_a_failed_write_retries_the_write() {
     let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
     assert!(!popped(&emitted), "OK on the unsaved checked row does not pop");
     assert_eq!(preference_commands(&emitted), 1, "it writes again");
-    crate::route::restore_subtitle_size(size);
-    crate::route::restore_subtitle_position(position);
+    plx_media::route::restore_subtitle_size(size);
+    plx_media::route::restore_subtitle_position(position);
 }
 
 /// Subtitle size and position are LOCAL per-television settings. Opening their picker must not

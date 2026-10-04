@@ -31,7 +31,7 @@ pub(super) fn execute(command: PreferenceCmd) {
         }
         PreferenceCmd::Quality { quality, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
-                let _ = reply.send(crate::route::set_default_quality(quality));
+                let _ = reply.send(plx_media::route::set_default_quality(quality));
                 plx_machine::idle::invalidate();
             });
         }
@@ -43,28 +43,28 @@ pub(super) fn execute(command: PreferenceCmd) {
         }
         PreferenceCmd::DirectPlay { mode, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
-                let _ = reply.send(crate::route::set_direct_play_mode(mode));
+                let _ = reply.send(plx_media::route::set_direct_play_mode(mode));
                 plx_machine::idle::invalidate();
             });
         }
         PreferenceCmd::NextEpisode { mode, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
-                let _ = reply.send(crate::route::set_next_episode_mode(mode));
+                let _ = reply.send(plx_media::route::set_next_episode_mode(mode));
                 plx_machine::idle::invalidate();
             });
         }
         PreferenceCmd::SkipInterval { interval, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
-                let _ = reply.send(crate::route::set_skip_interval(interval));
+                let _ = reply.send(plx_media::route::set_skip_interval(interval));
                 plx_machine::idle::invalidate();
             });
         }
         // The optimistic picks run HERE, on the main thread: the live value is published before
         // anything is persisted and the persistence rides the storage worker on its own
         // (`route::select_subtitle_size`), so there is no outer worker submission to republish.
-        PreferenceCmd::SubtitleSize { size, reply } => crate::route::select_subtitle_size(size, Some(reply)),
+        PreferenceCmd::SubtitleSize { size, reply } => plx_media::route::select_subtitle_size(size, Some(reply)),
         PreferenceCmd::SubtitlePosition { position, reply } => {
-            crate::route::select_subtitle_position(position, Some(reply))
+            plx_media::route::select_subtitle_position(position, Some(reply))
         }
     }
 }

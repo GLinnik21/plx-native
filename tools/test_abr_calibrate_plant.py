@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for `tools/abr-calibrate-plant.py`, and the gate that stops `sim.rs` going stale again.
 
-**The gate is the point of this file.** `rust-modules/src/abr/sim.rs` is the closed-loop plant the
+**The gate is the point of this file.** `rust-modules/media/src/abr/sim.rs` is the closed-loop plant the
 ABR controller is graded against, and its operating points were three numbers somebody typed. The
 fixture pack was rebuilt underneath them — at rung 720 the delivered rate moved 1381 -> 806 kbps
 (1.72x), at rung 4000 the other way — and nothing failed, because nothing recomputes a constant.
@@ -30,7 +30,7 @@ cp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cp)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SIM_RS = ROOT / "rust-modules" / "src" / "abr" / "sim.rs"
+SIM_RS = ROOT / "rust-modules" / "media" / "src" / "abr" / "sim.rs"
 
 
 def rust_arms(source: str, fn: str) -> dict[int, tuple]:

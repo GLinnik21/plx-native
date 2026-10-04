@@ -64,7 +64,7 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-LADDER_RS = REPO / "rust-modules" / "src" / "abr" / "ladder.rs"
+LADDER_RS = REPO / "rust-modules" / "media" / "src" / "abr" / "ladder.rs"
 PROBE = REPO / "tools" / "pms-hls-probe.py"
 
 

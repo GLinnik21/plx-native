@@ -272,7 +272,7 @@ H.264 Load was refused by the pipeline before a byte was fed.
 
 ### 3.1 The line
 
-`rust-modules/src/player/engine.rs:601`, in the streamed-A/V branch of `apply_plan`:
+`rust-modules/media/src/player/engine.rs:601`, in the streamed-A/V branch of `apply_plan`:
 
 ```rust
 // Sink envelope = the panel max (4K) regardless of codec; the pipeline reads the

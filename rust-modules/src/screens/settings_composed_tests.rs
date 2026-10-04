@@ -521,10 +521,10 @@ fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_i
 fn playback_picker_seats_the_saved_option_and_restores_its_parent_row() {
     let _g = plx_base::testlock::serial();
     let _sess = scratch_session("composed-playback-picker-seat");
-    let previous_quality = crate::route::quality();
-    let previous_mode = crate::route::direct_play_mode();
-    crate::route::restore_quality(crate::route::Quality::P480);
-    crate::route::restore_direct_play_mode(crate::route::DirectPlayMode::Auto);
+    let previous_quality = plx_media::route::quality();
+    let previous_mode = plx_media::route::direct_play_mode();
+    plx_media::route::restore_quality(plx_media::route::Quality::P480);
+    plx_media::route::restore_direct_play_mode(plx_media::route::DirectPlayMode::Auto);
     for back in [Key::Back, Key::Left] {
         let (mut d, mut rig, id) = consent_opened(SettingsPage::Playback);
         // A real DOWN/UP gives the engine an explicit parent cursor at Default quality.
@@ -540,11 +540,11 @@ fn playback_picker_seats_the_saved_option_and_restores_its_parent_row() {
         assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 0 }),
             "{back:?} restores Default quality, not the picker's remembered row 6");
         assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)));
-        assert_eq!(crate::route::quality(), crate::route::Quality::P480,
+        assert_eq!(plx_media::route::quality(), plx_media::route::Quality::P480,
             "leaving the picker does not change the saved preference");
     }
-    crate::route::restore_quality(previous_quality);
-    crate::route::restore_direct_play_mode(previous_mode);
+    plx_media::route::restore_quality(previous_quality);
+    plx_media::route::restore_direct_play_mode(previous_mode);
 }
 
 
@@ -626,8 +626,8 @@ fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
     use plx_machine::machine::{Edge, InputKind};
     let _g = plx_base::testlock::serial();
     let _sess = scratch_session("composed-force-warning");
-    let previous = crate::route::direct_play_mode();
-    crate::route::restore_direct_play_mode(crate::route::DirectPlayMode::Auto);
+    let previous = plx_media::route::direct_play_mode();
+    plx_media::route::restore_direct_play_mode(plx_media::route::DirectPlayMode::Auto);
     let ok = |ms| {
         let down = key(Key::Ok, tick(ms));
         let mut up = down.clone();
@@ -656,15 +656,15 @@ fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
         assert!(!path(&d, id).contains("confirm=true"), "the chosen answer closes the warning");
         if confirm {
             assert!(matches!(rig.preference_commands.pop(), Some(registry::PreferenceCmd::DirectPlay {
-                mode: crate::route::DirectPlayMode::Forced, ..
+                mode: plx_media::route::DirectPlayMode::Forced, ..
             })), "Enable Force emits the admitted persistence request");
         } else {
             assert!(rig.preference_commands.is_empty(), "Cancel must never request persistence");
         }
-        assert_eq!(crate::route::direct_play_mode(), crate::route::DirectPlayMode::Auto,
+        assert_eq!(plx_media::route::direct_play_mode(), plx_media::route::DirectPlayMode::Auto,
             "the composed fixture executes no live persistence");
     }
-    crate::route::restore_direct_play_mode(previous);
+    plx_media::route::restore_direct_play_mode(previous);
 }
 
 /// Owner report: entering Audio & Subtitles from the Settings root landed focus on the LAST row

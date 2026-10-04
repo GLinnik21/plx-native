@@ -60,7 +60,7 @@ pub(crate) fn rect(row: &CardRow, index: usize, top: f32, at_drawn: bool) -> Rec
 pub(crate) fn play(d: &Detail, key: u32) -> Option<PlayIntent> {
     let extra = locate(key).and_then(|i| d.extras.get(i)).filter(|e| e.playable())?;
     Some(PlayIntent::Item {
-        sid: crate::route::item_sid(d.sid),
+        sid: plx_media::route::item_sid(d.sid),
         rk: extra.rk.clone(),
         part: extra.part.clone(),
         vcodec: extra.vcodec.clone(),

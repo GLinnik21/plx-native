@@ -264,9 +264,9 @@ type TrackTable = FormTable<TrackRow, (), TrackPage>;
 /// route it rides, the reason it is disabled, and the live subtitle effect its note names.
 type EnhState = (
     Option<plx_plex::plex::AudioEnhancements>,
-    Option<crate::route::EnhancementRoute>,
-    Option<crate::route::DisabledReason>,
-    crate::route::SubtitleEffect,
+    Option<plx_media::route::EnhancementRoute>,
+    Option<plx_media::route::DisabledReason>,
+    plx_media::route::SubtitleEffect,
 );
 
 /// **A tab root's natural panel rect** — the layout of `table` as the panel would hug it. Each
@@ -336,8 +336,8 @@ struct SubSig {
     renderer: SubRenderer,
     transcoding: bool,
     own_burn: bool,
-    enhancement: Option<crate::route::EnhancementRoute>,
-    effect: crate::route::SubtitleEffect,
+    enhancement: Option<plx_media::route::EnhancementRoute>,
+    effect: plx_media::route::SubtitleEffect,
 }
 
 impl SubSig {
@@ -408,17 +408,17 @@ pub(crate) struct TrackMenuState {
     /// The route [`Self::enhance_shown`] would take, kept alongside it (`Some` iff `enhance_shown`
     /// is `Some`) — the Audio tab's consequence note (M7: a burned subtitle, a dropped Dolby Vision
     /// declaration) reads the flavour, not just whether the toggle is on.
-    enhance_route: Option<crate::route::EnhancementRoute>,
+    enhance_route: Option<plx_media::route::EnhancementRoute>,
     /// Why the toggle is drawn dim with a reason instead of offered — `Some` only when the owner's
     /// "hidden stays ONLY for no Plex Pass" direction (2026-09-29) applies a plain-language reason
     /// instead of the older silent absence (I1/I2 now covers the Plex-Pass gate alone).
     /// `None` together with [`Self::enhance_shown`]'s `None` means the rows are HIDDEN entirely.
-    enhance_disabled: Option<crate::route::DisabledReason>,
+    enhance_disabled: Option<plx_media::route::DisabledReason>,
     /// What is on screen right now (M7) — read alongside [`Self::enhance_route`] purely for the
     /// Audio tab's consequence NOTE, which needs to tell "no subtitle" apart from "an unaffected
-    /// sidecar" even though [`enhancement_availability`](crate::route::EnhancementAvailability)
-    /// folds both into the same [`crate::route::EnhancementRoute::Remux`].
-    enhance_subtitle_effect: crate::route::SubtitleEffect,
+    /// sidecar" even though [`enhancement_availability`](plx_media::route::EnhancementAvailability)
+    /// folds both into the same [`plx_media::route::EnhancementRoute::Remux`].
+    enhance_subtitle_effect: plx_media::route::SubtitleEffect,
     /// The Audio tab's focused row identity, banked across a live rows-VANISH: the enhancement
     /// offer can drop for a poll or two on a route change this menu never asked for (a subtitle
     /// switched on mid-play, a momentary refusal) and return before the viewer presses anything.
@@ -451,7 +451,7 @@ pub(crate) struct TrackMenuState {
 pub(crate) enum TrackCommit {
     /// The frozen `CarriedAudio` snapshot for the picked row (issue #266), built via
     /// `CarriedAudio::from_stream` from the exact `metadata::Stream` the row was drawn from.
-    Audio(crate::route::CarriedAudio),
+    Audio(plx_media::route::CarriedAudio),
     /// The Audio tab's Boost dialog / Normalize loudness toggle rows (issue #266): the full
     /// preference after the flip, so the loop's `player::request_audio_enhancement` has both
     /// bits regardless of which row was pressed. Built from [`TrackMenuState::enhance_shown`],
@@ -519,7 +519,7 @@ impl TrackMenuState {
     /// pick a specific tab this way; the plain open path passes 0. `yours` is "your languages" in
     /// preference order (pref, playing audio, current subtitle) — see [`Self::yours`].
     pub(crate) fn new(
-        ps: &crate::route::PlaybackSession,
+        ps: &plx_media::route::PlaybackSession,
         meta: metadata::MetadataView<'_>,
         tab: c_int,
         yours: Vec<String>,
@@ -529,10 +529,10 @@ impl TrackMenuState {
             active_audio: 0,
             active_sub: -1,
             form: TrackTable::new(BAND_BASE),
-            offset_ms: crate::player::subtitle_offset_ms(),
-            tone: crate::player::subtitle_tone(),
-            size: crate::route::subtitle_size(),
-            position: crate::route::subtitle_position(),
+            offset_ms: plx_media::player::subtitle_offset_ms(),
+            tone: plx_media::player::subtitle_tone(),
+            size: plx_media::route::subtitle_size(),
+            position: plx_media::route::subtitle_position(),
             pages: PageStack::new(),
             renderer: SubRenderer::Text,
             sub_sig: None,
@@ -542,7 +542,7 @@ impl TrackMenuState {
             enhance_shown: None,
             enhance_route: None,
             enhance_disabled: None,
-            enhance_subtitle_effect: crate::route::SubtitleEffect::None,
+            enhance_subtitle_effect: plx_media::route::SubtitleEffect::None,
             sticky_audio_target: None,
             motion: PanelMotion::new(),
             background_owner: None,
@@ -669,14 +669,14 @@ impl TrackMenuState {
     /// flagged default is checked. Free function (no `&self`) so both [`Self::sync_item`] (on
     /// every open) and the live poll below (PR #309 field report) derive the SAME pair the same
     /// way — the desync that report caught was exactly two readers of this answer drifting apart.
-    fn derive_active(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (c_int, c_int) {
+    fn derive_active(ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (c_int, c_int) {
         (Self::derive_active_audio(ps, meta), Self::derive_active_sub(ps, meta))
     }
 
     /// The Audio tab's half of [`Self::derive_active`].
-    fn derive_active_audio(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> c_int {
+    fn derive_active_audio(ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> c_int {
         let Some(t) = tracks(meta) else { return 0 };
-        let asid = crate::route::cur_audio_sid(ps);
+        let asid = plx_media::route::cur_audio_sid(ps);
         (asid > 0)
             .then(|| t.audio.iter().position(|s| s.id == asid))
             .flatten()
@@ -686,9 +686,9 @@ impl TrackMenuState {
 
     /// The Subtitles tab's half of [`Self::derive_active`] — what the live poll scans alone, the
     /// audio half being discarded there.
-    fn derive_active_sub(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> c_int {
+    fn derive_active_sub(ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> c_int {
         let Some(t) = tracks(meta) else { return -1 };
-        let ssid = crate::route::cur_sub_sid(ps);
+        let ssid = plx_media::route::cur_sub_sid(ps);
         (ssid > 0)
             .then(|| t.subs.iter().position(|s| s.id == ssid))
             .flatten()
@@ -699,7 +699,7 @@ impl TrackMenuState {
     /// [`Self::derive_active`] on every open — the menu can never show a stale or desynced
     /// checkmark at the moment it appears. Deliberately does NOT touch `tab`:
     /// [`TrackMenuState::new`] sets it directly.
-    fn sync_item(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+    fn sync_item(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
         let (audio, sub) = Self::derive_active(ps, meta);
         self.active_audio = audio;
         self.active_sub = sub;
@@ -729,7 +729,7 @@ impl TrackMenuState {
     /// holds ([`SubSig::page_availability`]: the renderer, or whether Style is shown / locked), so a
     /// Style page never outlives the renderer or the lock its Size and Position rows were built for
     /// while a track list or enhancement change it does not read leaves it alone.
-    fn poll_subtitle_state(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+    fn poll_subtitle_state(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
         let live_sub = Self::derive_active_sub(ps, meta);
         let sig = self.sub_sig_for(ps, meta, live_sub);
         if self.sub_sig.as_ref() == Some(&sig) {
@@ -785,7 +785,7 @@ impl TrackMenuState {
 
     /// The Subtitles root's rebuild signature for `active`, read fresh off the route and the
     /// item. [`Self::layout`] stores the same value it builds from.
-    fn sub_sig_for(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, active: c_int) -> SubSig {
+    fn sub_sig_for(&self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, active: c_int) -> SubSig {
         let item = tracks(meta);
         let offered = visible_subs(ps, meta);
         let subs = item
@@ -799,8 +799,8 @@ impl TrackMenuState {
             subs,
             active,
             renderer,
-            transcoding: crate::route::is_transcoding(ps),
-            own_burn: crate::route::live_is_own_burn(ps),
+            transcoding: plx_media::route::is_transcoding(ps),
+            own_burn: plx_media::route::live_is_own_burn(ps),
             enhancement,
             effect,
         }
@@ -895,7 +895,7 @@ impl TrackMenuState {
     /// Show `tab` (0=Audio, 1=Subtitles) on a menu that is ALREADY open — the second disc pressed
     /// while the first one's tab is showing. Same body as the LEFT/RIGHT arm below, which is why
     /// that arm calls this rather than repeating it.
-    pub(crate) fn focus_tab(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) {
+    pub(crate) fn focus_tab(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) {
         if tab != self.tab {
             self.tab = tab;
             self.rebuild(ps, meta, tab, false); // swap the whole list → snap the pill, no long glide
@@ -958,7 +958,7 @@ impl TrackMenuState {
                                 feature: plx_telemetry::diag::schema::Feature::AudioTrack,
                             });
                             return TrackOk::Commit {
-                                commit: TrackCommit::Audio(crate::route::CarriedAudio::from_stream(s, ord)),
+                                commit: TrackCommit::Audio(plx_media::route::CarriedAudio::from_stream(s, ord)),
                                 keep_open: false,
                             };
                         }
@@ -1207,7 +1207,7 @@ impl TrackMenuState {
 
     /// Pop the top page: the page beneath comes back exactly as it was left — the opener focused
     /// by id, the scroll reinstated ([`FormTable::restore`]). `false` at the root (nothing popped).
-    pub(crate) fn pop(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> bool {
+    pub(crate) fn pop(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> bool {
         let Some(saved) = self.pages.pop() else { return false };
         let leaving = page_stack::leave_page(&mut self.form);
         self.motion.begin_slide(leaving, -1.0);
@@ -1231,7 +1231,7 @@ impl TrackMenuState {
     }
 
     /// **LEFT**: pop a sub-page, else (on a root) the tab switch as before.
-    pub(crate) fn on_left(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+    pub(crate) fn on_left(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
         if !self.pop(ps, meta) {
             self.focus_tab(ps, meta, 0);
         }
@@ -1239,7 +1239,7 @@ impl TrackMenuState {
 
     /// **RIGHT**: on a Nav row it enters — the same as OK, and inert on a disabled one at the form
     /// layer — else the tab switch as before.
-    pub(crate) fn on_right(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+    pub(crate) fn on_right(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
         let sel = self.form.table.sel.max(0) as usize;
         if matches!(self.form.binding_at(sel).map(|b| &b.kind), Some(RowKind::Nav(_))) {
             if let Some(Activation::Push(dest)) = self.form.activate(sel) {
@@ -1252,8 +1252,8 @@ impl TrackMenuState {
 
     /// The plain-language reason a `Disabled` pair is drawn dim (owner direction, 2026-09-29): every
     /// gate but "no Plex Pass" now says why instead of vanishing.
-    fn enh_reason_text(reason: crate::route::DisabledReason) -> String {
-        use crate::route::DisabledReason;
+    fn enh_reason_text(reason: plx_media::route::DisabledReason) -> String {
+        use plx_media::route::DisabledReason;
         match reason {
             DisabledReason::NotAnalyzed => plx_platform::i18n::msg::widgets_tracks_enh_reason_not_analyzed(),
             DisabledReason::DolbyVisionUnusable => plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_unusable(),
@@ -1267,10 +1267,10 @@ impl TrackMenuState {
     /// The plain-language consequence note an `Offered` pair carries (M7) — `None` for the
     /// ordinary case (no subtitle on screen), since there is nothing to say.
     fn enh_note_text(
-        route: crate::route::EnhancementRoute,
-        subtitle_effect: crate::route::SubtitleEffect,
+        route: plx_media::route::EnhancementRoute,
+        subtitle_effect: plx_media::route::SubtitleEffect,
     ) -> Option<String> {
-        use crate::route::{EnhancementRoute, SubtitleEffect};
+        use plx_media::route::{EnhancementRoute, SubtitleEffect};
         match route {
             EnhancementRoute::Burn => Some(plx_platform::i18n::msg::widgets_tracks_enh_note_burn().to_string()),
             EnhancementRoute::RemuxDropsDolbyVision => {
@@ -1306,7 +1306,7 @@ impl TrackMenuState {
             Some(t) => t,
             None => return Form::new().section(sec),
         };
-        let names = crate::player::SHARED.track_names.lock().unwrap();
+        let names = plx_media::player::SHARED.track_names.lock().unwrap();
         for (i, s) in d.audio.iter().enumerate() {
             let lang = if s.lang.is_empty() {
                 plx_platform::i18n::msg::widgets_tracks_unknown()
@@ -1388,7 +1388,7 @@ impl TrackMenuState {
     /// (`metadata::sub_layout::sub_sections`) is asked, so what a row IS can never disagree with
     /// what was drawn. Also stores the [`SubSig`] and renderer the root is built from, for the
     /// poll and the Style page's locks.
-    fn layout(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> TrackForm {
+    fn layout(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> TrackForm {
         // M7 follow-up: while the live route is actually burning a subtitle in, Timing and Style
         // stay drawn (dim, with a reason) instead of being omitted the way an ordinary
         // non-enhancement transcode omits both — a viewer who turned the enhancement on must still
@@ -1412,9 +1412,9 @@ impl TrackMenuState {
 
     /// The Subtitles root's form and the model it was built from, storing nothing: [`Self::layout`]
     /// keeps what it needs from the model, [`Self::warm_other_tab`] only draws the form.
-    fn sub_root_form(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (TrackForm, SubModel) {
-        let locked = crate::route::live_is_own_burn(ps);
-        let show_timing = !crate::route::is_transcoding(ps) || locked;
+    fn sub_root_form(&self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (TrackForm, SubModel) {
+        let locked = plx_media::route::live_is_own_burn(ps);
+        let show_timing = !plx_media::route::is_transcoding(ps) || locked;
         let model = self.sub_model(ps, meta, show_timing);
         (table_form(&model, self.active_sub, self.offset_ms, locked), model)
     }
@@ -1422,10 +1422,10 @@ impl TrackMenuState {
     /// The Subtitles model for the current item and route — the one place the root and the pages
     /// behind it are asked for, so what the root's Other languages row promises and what its page
     /// lists come from the same answer.
-    fn sub_model(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, show_timing: bool) -> SubModel {
+    fn sub_model(&self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, show_timing: bool) -> SubModel {
         let subs: &[metadata::Stream] = tracks(meta).map(|t| t.subs.as_slice()).unwrap_or(&[]);
         let offered = visible_subs(ps, meta);
-        let names = crate::player::SHARED.track_names.lock().unwrap();
+        let names = plx_media::player::SHARED.track_names.lock().unwrap();
         sub_layout::sub_sections(subs, &offered, &names, &self.yours, show_timing)
     }
 
@@ -1433,13 +1433,13 @@ impl TrackMenuState {
     /// off the live route in one place — [`Self::rebuild`] and [`Self::update`] both need exactly
     /// this triple, and computing it once here keeps them from independently re-deriving it (and
     /// risking disagreement).
-    fn enh_state(ps: &crate::route::PlaybackSession) -> EnhState {
-        use crate::route::EnhancementAvailability;
-        let subtitle_effect = crate::route::live_subtitle_effect(ps);
-        match crate::route::menu_enhancement_availability(ps) {
+    fn enh_state(ps: &plx_media::route::PlaybackSession) -> EnhState {
+        use plx_media::route::EnhancementAvailability;
+        let subtitle_effect = plx_media::route::live_subtitle_effect(ps);
+        match plx_media::route::menu_enhancement_availability(ps) {
             EnhancementAvailability::Hidden => (None, None, None, subtitle_effect),
             EnhancementAvailability::Offered(route) => (
-                Some(crate::route::displayed_audio_enhancements(ps)),
+                Some(plx_media::route::displayed_audio_enhancements(ps)),
                 Some(route),
                 None,
                 subtitle_effect,
@@ -1448,7 +1448,7 @@ impl TrackMenuState {
         }
     }
 
-    fn rebuild(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int, slide: bool) {
+    fn rebuild(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int, slide: bool) {
         if tab == 0 {
             let (shown, route, disabled, subtitle_effect) = Self::enh_state(ps);
             self.rebuild_audio(shown, route, disabled, subtitle_effect, meta, slide);
@@ -1490,9 +1490,9 @@ impl TrackMenuState {
     fn rebuild_audio(
         &mut self,
         enhance_shown: Option<plx_plex::plex::AudioEnhancements>,
-        enhance_route: Option<crate::route::EnhancementRoute>,
-        enhance_disabled: Option<crate::route::DisabledReason>,
-        enhance_subtitle_effect: crate::route::SubtitleEffect,
+        enhance_route: Option<plx_media::route::EnhancementRoute>,
+        enhance_disabled: Option<plx_media::route::DisabledReason>,
+        enhance_subtitle_effect: plx_media::route::SubtitleEffect,
         meta: metadata::MetadataView<'_>,
         slide: bool,
     ) {
@@ -1557,7 +1557,7 @@ impl TrackMenuState {
         &mut self,
         dt: f32,
         measure: &dyn plx_machine::machine::Measure,
-        ps: &crate::route::PlaybackSession,
+        ps: &plx_media::route::PlaybackSession,
         meta: metadata::MetadataView<'_>,
     ) {
         if self.tab == 0 {
@@ -1604,7 +1604,7 @@ impl TrackMenuState {
     /// drops it ([`Drop`]).
     fn warm_other_tab(
         &mut self,
-        ps: &crate::route::PlaybackSession,
+        ps: &plx_media::route::PlaybackSession,
         meta: metadata::MetadataView<'_>,
         measure: &dyn plx_machine::machine::Measure,
     ) {
@@ -1751,14 +1751,14 @@ fn n_audio(meta: metadata::MetadataView<'_>) -> c_int {
 }
 /// Subtitle rows offered on this route: text sidecars can be drawn on direct play;
 /// all sidecars are offered during transcoding, when the server burns them.
-fn visible_subs(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Vec<usize> {
+fn visible_subs(ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Vec<usize> {
     tracks(meta)
         .map(|t| {
             t.subs
                 .iter()
                 .enumerate()
                 .filter(|(_, s)| {
-                    !s.external || s.sidecar_renderable() || crate::route::is_transcoding(ps)
+                    !s.external || s.sidecar_renderable() || plx_media::route::is_transcoding(ps)
                 })
                 .map(|(i, _)| i)
                 .collect()
@@ -2002,7 +2002,7 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::player::TrackNames;
+    use plx_media::player::TrackNames;
     use plx_ui::table::TableView;
 
     /// The focus element of the `i`-th Audio row — a test names a row by its identity, never by
@@ -2299,9 +2299,9 @@ mod tests {
     #[test]
     fn targets_map_flat_rows_to_off_sub_timing_and_style_in_drawn_order() {
         let _g = plx_base::testlock::serial();
-        crate::player::sidecar::reset();
-        crate::player::set_subtitle_offset(0);
-        let ps = crate::route::PlaybackSession::IDLE;
+        plx_media::player::sidecar::reset();
+        plx_media::player::set_subtitle_offset(0);
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let store = store_with(vec![plx_data::metadata::Stream {
             id: 1,
             index: 0,
@@ -2322,8 +2322,8 @@ mod tests {
     #[test]
     fn a_rebuild_lands_on_the_checked_sub_inside_a_multitrack_group() {
         let _g = plx_base::testlock::serial();
-        crate::player::sidecar::reset();
-        let ps = crate::route::PlaybackSession::IDLE;
+        plx_media::player::sidecar::reset();
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let store = store_with(vec![
             plx_data::metadata::Stream {
                 id: 1,
@@ -2356,8 +2356,8 @@ mod tests {
     #[test]
     fn sub_track_for_target_finds_tracks_and_skips_off_timing_and_color() {
         let _g = plx_base::testlock::serial();
-        crate::player::sidecar::reset();
-        let ps = crate::route::PlaybackSession::IDLE;
+        plx_media::player::sidecar::reset();
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let store = store_with(vec![
             stream(1, 0, "English", "eng", "A"),
             stream(2, 1, "French", "fra", "B"),
@@ -2378,10 +2378,10 @@ mod tests {
     #[test]
     fn sidecar_and_settings_rows_map_to_their_own_commits_in_one_menu() {
         let _g = plx_base::testlock::serial();
-        crate::player::sidecar::reset();
-        crate::player::set_subtitle_offset(0);
-        crate::player::restore_subtitle_tone(SubtitleTone::White);
-        let ps = crate::route::PlaybackSession::IDLE;
+        plx_media::player::sidecar::reset();
+        plx_media::player::set_subtitle_offset(0);
+        plx_media::player::restore_subtitle_tone(SubtitleTone::White);
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let store = store_with(vec![
             plx_data::metadata::Stream {
                 id: 41,
@@ -2456,9 +2456,9 @@ mod tests {
     #[test]
     fn timing_returns_open_timing_once_a_subtitle_is_active_and_is_inert_while_off() {
         let _g = plx_base::testlock::serial();
-        crate::player::sidecar::reset();
-        crate::player::set_subtitle_offset(0);
-        let ps = crate::route::PlaybackSession::IDLE;
+        plx_media::player::sidecar::reset();
+        plx_media::player::set_subtitle_offset(0);
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let store = store_with(vec![plx_data::metadata::Stream {
             id: 1,
             index: 0,
@@ -2535,7 +2535,7 @@ mod tests {
     /// forced every caller to reassemble by hand.
     #[test]
     fn audio_commit_carries_carried_audio() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let store = store_with_audio(vec![
             plx_data::metadata::Stream {
                 id: 10,
@@ -2563,7 +2563,7 @@ mod tests {
         assert_eq!(
             outcome,
             TrackOk::Commit {
-                commit: TrackCommit::Audio(crate::route::CarriedAudio {
+                commit: TrackCommit::Audio(plx_media::route::CarriedAudio {
                     sid: 20,
                     ordinal: 1,
                     codec: "eac3".into(),
@@ -2580,7 +2580,7 @@ mod tests {
     /// behaviour this test protects against a regression in.
     #[test]
     fn audio_reselecting_the_active_row_dismisses_without_a_commit() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let store = store_with_audio(vec![plx_data::metadata::Stream {
             id: 10,
             index: 0,
@@ -2600,7 +2600,7 @@ mod tests {
     #[test]
     fn audio_targets_map_one_row_per_track_with_no_enhancement() {
         for n in [0usize, 1, 3] {
-            let ps = crate::route::PlaybackSession::IDLE;
+            let ps = plx_media::route::PlaybackSession::IDLE;
             let audio = (0..n)
                 .map(|i| plx_data::metadata::Stream {
                     id: 10 + i as i64,
@@ -2629,7 +2629,7 @@ mod tests {
 mod enhancement_menu_tests {
     use super::*;
     use super::tests::store_with_audio;
-    use crate::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture};
+    use plx_media::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture};
 
     /// One playing audio track — enough for `tracks(meta)` to be `Some` so `build_audio` does not
     /// take its "no playing item" early return. The enhancement offer itself is driven entirely by
@@ -2647,14 +2647,14 @@ mod enhancement_menu_tests {
 
     /// Build the Audio tab against `route`. Caller holds `testlock::serial()` — `EnhTestFixture`
     /// touches the process-global server registry and (when `in_flight`) `PLAYER_CONTROL`.
-    fn audio_tab(route: EnhTestFixture) -> (TrackMenuState, crate::route::PlaybackSession) {
+    fn audio_tab(route: EnhTestFixture) -> (TrackMenuState, plx_media::route::PlaybackSession) {
         let (ps, _sid) = enhancement_test_session(route);
         let store = one_track_store();
         let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
         (menu, ps)
     }
 
-    fn teardown(ps: &crate::route::PlaybackSession) {
+    fn teardown(ps: &plx_media::route::PlaybackSession) {
         reset_player_control_for_test(ps);
         plx_plex::plex::reset_servers_for_test();
     }
@@ -2728,7 +2728,7 @@ mod enhancement_menu_tests {
     fn enh_rows_disabled_incapable_track() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { carried_capable: Some(false), ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::NotAnalyzed));
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotAnalyzed));
         let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_not_analyzed());
         teardown(&ps);
@@ -2741,7 +2741,7 @@ mod enhancement_menu_tests {
     fn enh_rows_offered_dv_drops_declaration() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { dv_declared: true, ..Default::default() });
-        assert_eq!(menu.enhance_route, Some(crate::route::EnhancementRoute::RemuxDropsDolbyVision));
+        assert_eq!(menu.enhance_route, Some(plx_media::route::EnhancementRoute::RemuxDropsDolbyVision));
         assert!(menu.enhance_shown.is_some());
         let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_note_dv_off());
@@ -2755,7 +2755,7 @@ mod enhancement_menu_tests {
     fn enh_rows_disabled_dv_unusable_base() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { dv_base_unusable: true, ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::DolbyVisionUnusable));
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::DolbyVisionUnusable));
         assert_eq!(menu.enhance_shown, None);
         let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_unusable());
@@ -2770,10 +2770,10 @@ mod enhancement_menu_tests {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture {
             dv_declared: true,
-            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
             ..Default::default()
         });
-        assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::DolbyVisionSubtitle));
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::DolbyVisionSubtitle));
         let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_subtitle());
         teardown(&ps);
@@ -2785,10 +2785,10 @@ mod enhancement_menu_tests {
     fn enh_rows_offered_embedded_subtitle_burns() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture {
-            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
             ..Default::default()
         });
-        assert_eq!(menu.enhance_route, Some(crate::route::EnhancementRoute::Burn));
+        assert_eq!(menu.enhance_route, Some(plx_media::route::EnhancementRoute::Burn));
         assert!(menu.enhance_shown.is_some());
         let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_note_burn());
@@ -2801,10 +2801,10 @@ mod enhancement_menu_tests {
     fn enh_rows_offered_sidecar_subtitle_unaffected() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture {
-            subtitle_effect: crate::route::SubtitleEffect::Sidecar,
+            subtitle_effect: plx_media::route::SubtitleEffect::Sidecar,
             ..Default::default()
         });
-        assert_eq!(menu.enhance_route, Some(crate::route::EnhancementRoute::Remux));
+        assert_eq!(menu.enhance_route, Some(plx_media::route::EnhancementRoute::Remux));
         assert!(menu.enhance_shown.is_some());
         let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_note_sidecar());
@@ -2818,7 +2818,7 @@ mod enhancement_menu_tests {
     fn enh_rows_disabled_hls() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::NotOriginalQuality));
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
         let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_quality());
         teardown(&ps);
@@ -2828,7 +2828,7 @@ mod enhancement_menu_tests {
     fn enh_rows_disabled_reencode_rung() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::NotOriginalQuality));
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
         teardown(&ps);
     }
 
@@ -2836,7 +2836,7 @@ mod enhancement_menu_tests {
     fn enh_rows_disabled_relay() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::NotOriginalQuality));
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
         teardown(&ps);
     }
 
@@ -2846,7 +2846,7 @@ mod enhancement_menu_tests {
     fn enh_rows_disabled_forced() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { base_present: false, ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::NotOriginalQuality));
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
         teardown(&ps);
     }
 
@@ -2854,7 +2854,7 @@ mod enhancement_menu_tests {
     fn enh_rows_disabled_refused() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { refused: true, ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::ServerRefused));
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::ServerRefused));
         let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_refused());
         teardown(&ps);
@@ -2864,7 +2864,7 @@ mod enhancement_menu_tests {
     fn enh_rows_disabled_server_default_audio() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { carried_capable: None, ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::NotAnalyzed));
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotAnalyzed));
         teardown(&ps);
     }
 
@@ -3004,10 +3004,10 @@ mod enhancement_menu_tests {
         // In flight (a user edit queued, not yet settled): the row reads the DESIRED preference.
         let _g = plx_base::testlock::serial();
         let desired = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
-        crate::player::set_audio_enhancements(desired);
+        plx_media::player::set_audio_enhancements(desired);
         let (menu, ps) = audio_tab(EnhTestFixture { in_flight: true, ..Default::default() });
         assert_eq!(menu.enhance_shown, Some(desired));
-        crate::player::set_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
+        plx_media::player::set_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
         teardown(&ps);
     }
 
@@ -3036,7 +3036,7 @@ mod enhancement_menu_tests {
         );
         // M7: the refusal is now a plain-language `Disabled` reason, not a vanished section — the
         // rows stay, dim, reading Off, with a one-line note naming why.
-        assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::ServerRefused));
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::ServerRefused));
         assert_eq!(menu.form.table.sections.len(), 2, "the headerless DSP section stays, dim, with its reason");
         assert_eq!(menu.form.table.sections[1].rows[1].toggle, Some(false));
         assert!(menu.form.table.sections[1].rows[1].dim);
@@ -3520,7 +3520,7 @@ mod enhancement_menu_tests {
     /// Build the Subtitles tab against `route`, with one embedded subtitle track whose PMS id
     /// (999) matches `enhancement_test_session`'s own `cur_sub_sid` for a non-`None`
     /// `subtitle_effect` — the Subtitles-tab counterpart of [`audio_tab`].
-    fn subtitles_tab(route: EnhTestFixture) -> (TrackMenuState, crate::route::PlaybackSession) {
+    fn subtitles_tab(route: EnhTestFixture) -> (TrackMenuState, plx_media::route::PlaybackSession) {
         let (ps, _sid) = enhancement_test_session(route);
         let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
         let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
@@ -3540,7 +3540,7 @@ mod enhancement_menu_tests {
     fn subtitles_tab_dims_timing_and_color_under_live_burn() {
         let _g = plx_base::testlock::serial();
         let (menu, ps) = subtitles_tab(EnhTestFixture {
-            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
             applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
             applied_burn: true,
             ..Default::default()
@@ -3577,7 +3577,7 @@ mod enhancement_menu_tests {
         // of an ordinary (non-enhancement) transcode omitting Timing outright.
         let (menu, ps) = subtitles_tab(EnhTestFixture {
             remux: None,
-            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
             ..Default::default()
         });
         assert!(!menu.own_burn_built());
@@ -3594,7 +3594,7 @@ mod enhancement_menu_tests {
     fn subtitles_ok_on_locked_timing_and_color_is_inert() {
         let _g = plx_base::testlock::serial();
         let (mut menu, ps) = subtitles_tab(EnhTestFixture {
-            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
             applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
             applied_burn: true,
             ..Default::default()
@@ -3619,7 +3619,7 @@ mod enhancement_menu_tests {
     fn subtitles_off_stays_live_under_a_burn() {
         let _g = plx_base::testlock::serial();
         let (mut menu, ps) = subtitles_tab(EnhTestFixture {
-            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
             applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
             applied_burn: true,
             ..Default::default()
@@ -3655,7 +3655,7 @@ mod enhancement_menu_tests {
         // `subtitle_first_pick_while_plain_enhanced_remux_burns_it` (route/decision_audio_
         // enhancement_tests.rs) drives before its own live pick.
         let (mut menu, _ps_before) = subtitles_tab(EnhTestFixture {
-            subtitle_effect: crate::route::SubtitleEffect::None,
+            subtitle_effect: plx_media::route::SubtitleEffect::None,
             applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
             applied_burn: false,
             ..Default::default()
@@ -3667,7 +3667,7 @@ mod enhancement_menu_tests {
         // `PlaybackSession` standing in for the live one having moved on while this menu instance
         // sat untouched — `ps` is process-external state the menu never owns a copy of).
         let (ps_after, _sid) = enhancement_test_session(EnhTestFixture {
-            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
             applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
             applied_burn: true,
             ..Default::default()
@@ -3697,7 +3697,7 @@ mod enhancement_menu_tests {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             let (menu, ps) = subtitles_tab(EnhTestFixture {
-                subtitle_effect: crate::route::SubtitleEffect::Embedded,
+                subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
                 applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
                 applied_burn: true,
                 ..Default::default()
@@ -3721,7 +3721,7 @@ mod enhancement_menu_tests {
         let _g = plx_base::testlock::serial();
         let _guard = language_on_this_thread_for_test(Preference::Es);
         let (menu, ps) = subtitles_tab(EnhTestFixture {
-            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
             applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
             applied_burn: true,
             ..Default::default()
@@ -3798,7 +3798,7 @@ mod focus_tests {
             enhance_shown: None,
             enhance_route: None,
             enhance_disabled: None,
-            enhance_subtitle_effect: crate::route::SubtitleEffect::None,
+            enhance_subtitle_effect: plx_media::route::SubtitleEffect::None,
             sticky_audio_target: None,
             motion: PanelMotion::new(),
             background_owner: None,
@@ -3969,7 +3969,7 @@ mod keyed_form_tests {
     use super::tests::{store_with, store_with_audio, stream};
     use super::*;
     use plx_ui::form::RowKeys;
-    use crate::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture};
+    use plx_media::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture};
 
     fn audio(id: i64, index: i64, default: bool) -> metadata::Stream {
         metadata::Stream { id, index, codec: "aac".into(), channels: 2, default, ..Default::default() }
@@ -4026,8 +4026,8 @@ mod keyed_form_tests {
     #[test]
     fn focus_keys_are_stable_when_a_subtitle_track_is_added() {
         let _g = plx_base::testlock::serial();
-        crate::player::sidecar::reset();
-        let ps = crate::route::PlaybackSession::IDLE;
+        plx_media::player::sidecar::reset();
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let two = vec![stream(1, 0, "English", "eng", ""), stream(2, 1, "French", "fra", "")];
         let mut three = two.clone();
         three.push(stream(3, 2, "Arabic", "ara", "")); // "yours" ranks Arabic first
@@ -4052,8 +4052,8 @@ mod keyed_form_tests {
     #[test]
     fn an_open_lang_is_the_same_row_when_tracks_are_added() {
         let _g = plx_base::testlock::serial();
-        crate::player::sidecar::reset();
-        let ps = crate::route::PlaybackSession::IDLE;
+        plx_media::player::sidecar::reset();
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let base = vec![
             stream(1, 0, "German", "deu", ""),
             stream(2, 1, "French", "fra", ""),
@@ -4082,8 +4082,8 @@ mod keyed_form_tests {
     #[test]
     fn initial_focus_lands_on_the_active_track_on_both_tabs() {
         let _g = plx_base::testlock::serial();
-        crate::player::sidecar::reset();
-        let ps = crate::route::PlaybackSession::IDLE;
+        plx_media::player::sidecar::reset();
+        let ps = plx_media::route::PlaybackSession::IDLE;
         // Audio: the flagged default (IDLE records no sid) is the SECOND track
         let store = store_with_audio(vec![audio(501, 0, false), audio(502, 1, true), audio(503, 2, false)]);
         let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
@@ -4108,9 +4108,9 @@ mod keyed_form_tests {
 mod style_page_tests {
     use super::tests::{store_with, stream};
     use super::*;
-    use crate::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture, SubtitleEffect};
+    use plx_media::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture, SubtitleEffect};
 
-    fn teardown(ps: &crate::route::PlaybackSession) {
+    fn teardown(ps: &plx_media::route::PlaybackSession) {
         reset_player_control_for_test(ps);
         plx_plex::plex::reset_servers_for_test();
     }
@@ -4119,7 +4119,7 @@ mod style_page_tests {
     fn open_with(
         codec: &str,
         effect: SubtitleEffect,
-    ) -> (TrackMenuState, crate::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
+    ) -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
         let (ps, _sid) = enhancement_test_session(EnhTestFixture {
             remux: None,
             subtitle_effect: effect,
@@ -4132,7 +4132,7 @@ mod style_page_tests {
         (menu, ps, store)
     }
 
-    fn open_text() -> (TrackMenuState, crate::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
+    fn open_text() -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
         open_with("srt", SubtitleEffect::Sidecar)
     }
 
@@ -4500,9 +4500,9 @@ mod style_page_tests {
 mod language_page_tests {
     use super::tests::{store_with, stream};
     use super::*;
-    use crate::route::reset_player_control_for_test;
+    use plx_media::route::reset_player_control_for_test;
 
-    fn teardown(ps: &crate::route::PlaybackSession) {
+    fn teardown(ps: &plx_media::route::PlaybackSession) {
         reset_player_control_for_test(ps);
         plx_plex::plex::reset_servers_for_test();
     }
@@ -4537,9 +4537,9 @@ mod language_page_tests {
         v
     }
 
-    fn open(subs: Vec<metadata::Stream>) -> (TrackMenuState, crate::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
-        let _ = crate::player::sidecar::reset();
-        let ps = crate::route::PlaybackSession::IDLE;
+    fn open(subs: Vec<metadata::Stream>) -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
+        let _ = plx_media::player::sidecar::reset();
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let store = store_with(subs);
         let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
         (menu, ps, store)
@@ -4727,8 +4727,8 @@ mod language_page_tests {
     fn a_vanished_language_pops_to_the_root_and_a_changed_one_refreshes_in_place() {
         let _g = plx_base::testlock::serial();
         let store = store_with(sidecar_french(["/a.srt", "/b.srt", "/c.srt"]));
-        let _ = crate::player::sidecar::reset();
-        let ps = crate::route::PlaybackSession::IDLE;
+        let _ = plx_media::player::sidecar::reset();
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
         focus_id(&mut menu, TrackRow::OpenOther);
         menu.on_ok(store.view());
@@ -4832,9 +4832,9 @@ mod language_page_tests {
     /// The same landing on the live poll's fallback, when the viewer's own row left the root.
     #[test]
     fn the_poll_fallback_lands_on_other_languages_when_the_active_track_is_behind_it() {
-        use crate::route::{enhancement_test_session, EnhTestFixture, SubtitleEffect};
+        use plx_media::route::{enhancement_test_session, EnhTestFixture, SubtitleEffect};
         let _g = plx_base::testlock::serial();
-        let _ = crate::player::sidecar::reset();
+        let _ = plx_media::player::sidecar::reset();
         // cur_sub_sid is 999: no such stream yet
         let (ps, _sid) = enhancement_test_session(EnhTestFixture { subtitle_effect: SubtitleEffect::Embedded, ..Default::default() });
         let yours = vec!["eng".into(), "spa".into(), "fra".into()];
@@ -4908,8 +4908,8 @@ mod language_page_tests {
     fn a_language_page_that_drops_to_one_track_stays_and_pops_onto_the_single_row() {
         let _g = plx_base::testlock::serial();
         let store = store_with(sidecar_french(["/a.srt", "/b.srt", "/c.srt"]));
-        let _ = crate::player::sidecar::reset();
-        let ps = crate::route::PlaybackSession::IDLE;
+        let _ = plx_media::player::sidecar::reset();
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
         open_language_named(&mut menu, &store, "French");
         let store2 = store_with(sidecar_french(["/a.srt", "", ""]));
@@ -4929,8 +4929,8 @@ mod language_page_tests {
     fn a_single_track_language_that_grows_keeps_the_focus_on_its_new_row() {
         let _g = plx_base::testlock::serial();
         let store = store_with(sidecar_french(["/a.srt", "", ""]));
-        let _ = crate::player::sidecar::reset();
-        let ps = crate::route::PlaybackSession::IDLE;
+        let _ = plx_media::player::sidecar::reset();
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
         focus_id(&mut menu, TrackRow::OpenOther);
         menu.on_ok(store.view());
@@ -5014,11 +5014,11 @@ mod motion_tests {
     use super::tests::{store_with, stream};
     use super::*;
     use plx_base::fontcov::advances::ShippedMeasure;
-    use crate::route::reset_player_control_for_test;
+    use plx_media::route::reset_player_control_for_test;
 
     const DT: f32 = 1.0 / 60.0;
 
-    fn teardown(ps: &crate::route::PlaybackSession) {
+    fn teardown(ps: &plx_media::route::PlaybackSession) {
         reset_player_control_for_test(ps);
         plx_plex::plex::reset_servers_for_test();
     }
@@ -5032,9 +5032,9 @@ mod motion_tests {
         ]
     }
 
-    fn open() -> (TrackMenuState, crate::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
-        let _ = crate::player::sidecar::reset();
-        let ps = crate::route::PlaybackSession::IDLE;
+    fn open() -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
+        let _ = plx_media::player::sidecar::reset();
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let store = store_with(subs());
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
         // the first update places the card AT its layout: the open is the appear animation's
@@ -5045,13 +5045,13 @@ mod motion_tests {
 
     /// One loop frame, as the dispatcher runs it: forget last frame's motion, then update. Returns
     /// whether a spring moved (what keeps the present gate awake).
-    fn frame(menu: &mut TrackMenuState, ps: &crate::route::PlaybackSession, store: &plx_data::stores::metadata::MetadataStore) -> bool {
+    fn frame(menu: &mut TrackMenuState, ps: &plx_media::route::PlaybackSession, store: &plx_data::stores::metadata::MetadataStore) -> bool {
         plx_machine::idle::frame_begin(DT);
         menu.update(DT, &ShippedMeasure, ps, store.view());
         plx_machine::idle::present_moving()
     }
 
-    fn run(menu: &mut TrackMenuState, ps: &crate::route::PlaybackSession, store: &plx_data::stores::metadata::MetadataStore, n: usize) {
+    fn run(menu: &mut TrackMenuState, ps: &plx_media::route::PlaybackSession, store: &plx_data::stores::metadata::MetadataStore, n: usize) {
         for _ in 0..n {
             frame(menu, ps, store);
         }

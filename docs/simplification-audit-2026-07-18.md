@@ -20,7 +20,7 @@ Ordered by value-per-effort. Findings the value-lens marked *not worthwhile* are
 
 ### Quick wins (small effort)
 
-**A. Fix the FFmpeg-demuxer documentation inversion** — `CLAUDE.md:103` (also `:128`), `rust-modules/src/ff.rs:21`
+**A. Fix the FFmpeg-demuxer documentation inversion** — `CLAUDE.md:103` (also `:128`), `rust-modules/media/src/ff.rs:21`
 Why: `CLAUDE.md:103` calls `ff.rs` "an opt-in alternate demuxer (bisect via `/tmp/plxnative-demux=ff`) … not yet the default." The code says the opposite: `USE_FF` defaults to `true` (`ff.rs:23`), `boot()` (437–446) logs "demuxer = libavformat" by default and only falls back to `mkv.rs` when the trigger equals `"mkv"`. `ff::use_ff()` gates the live demux path (`threads.rs:65`, `pump.rs:117/126/176`), so the doc names the wrong demuxer *and* the wrong bisect trigger — pointing a debugger at the wrong file. The in-function comment at `ff.rs:437-439` already states the correct behavior. Change: rewrite `:103` to "libavformat is the DEFAULT demuxer; `/tmp/plxnative-demux=mkv` falls back to `mkv.rs` (still the live fallback, not removed)"; fix the stale `:128` "opt-in FFmpeg demuxer" and the `ff.rs:21` doc-comment in the same pass. Risk: none (docs).
 
 **B. Truth-up the typed Plex layer's "unused" claims** — `rust-modules/src/plex/mod.rs:9-11` (+ redundant `account.rs:14`, `session.rs:6`); `docs/plex-native-plan.md:15,559`

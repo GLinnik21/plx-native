@@ -38,7 +38,7 @@ Plan to finish #42 Kodi-parity buffer-feed hardening. The remaining gaps collaps
 
 ### Step 1: Two-lane per-ES feed split (keystone) on the existing main pump  _(medium)_
 
-**Files:** `rust-modules/src/aq.rs`, `rust-modules/src/ff.rs`, `rust-modules/src/player/engine.rs`, `rust-modules/src/player/pump.rs`, `rust-modules/src/player/threads.rs`
+**Files:** `rust-modules/media/src/aq.rs`, `rust-modules/media/src/ff.rs`, `rust-modules/media/src/player/engine.rs`, `rust-modules/media/src/player/pump.rs`, `rust-modules/media/src/player/threads.rs`
 
 **Approach.** Give each queue its own cap: add max_bytes: c_long to AuQueue, add aq_init_cap(q,cap) (keep aq_init defaulting to AQ_MAX_BYTES), and replace the AQ_MAX_BYTES ref in aq_push's backpressure while-loop (aq.rs:88) with (*q).max_bytes. In start_bufferfeed (engine.rs:247-273) allocate TWO AuQueue boxes: aq_video (~8MB, matches srcBufferLevelVideo) and aq_audio (~1MB, matches srcBufferLevelAudio), and hand both to the demux thread via a SendPtr pair. Change ff::demux (ff.rs:812 signature) to take both queue ptrs and route the es=1 aq_push (ff.rs:1017) to aq_video and the es=2 aq_push (ff.rs:1029) to aq_audio; update threads::stream_thread (threads.rs:60) accordingly; leave legacy mkv.rs single-queue and gate two-lane behind crate::ff::use_ff(). In engine.rs replace Engine.aq/pending/max_fed_pts (engine.rs:56,64,71) with aq_video/aq_audio, pending_video/pending_audio, max_fed_video_pts/max_fed_audio_pts (keep seek_base_pts/rebase on the video lane). Refactor feed_stream (engine.rs:570) into feed_lane(eng,es): pop that lane into its pending, apply that lane's budget vs SHARED.pres_fed, sf_feed, update that lane's max_fed_pts, and on 'B' BufferFull OR over-budget break ONLY that lane (leaving its pending set). Each pump tick call feed_lane(audio) first then feed_lane(video). Preserve the rebase invariant: the first post-seek VIDEO keyframe (es==1) still sets SHARED.pts_shift, and the AUDIO lane HOLDS (feeds nothing, keeps pending) until eng.rebase_pending clears. drain_aq/teardown (engine.rs:491-497,541) drain+destroy BOTH queues and clear BOTH pendings.
 
@@ -48,7 +48,7 @@ Plan to finish #42 Kodi-parity buffer-feed hardening. The remaining gaps collaps
 
 ### Step 2: Move feeding off the SDL main loop onto dedicated per-lane feeder threads (~10ms)  _(large)_
 
-**Files:** `rust-modules/src/player/engine.rs`, `rust-modules/src/player/pump.rs`, `rust-modules/src/player/shared.rs`, `src/starfish.c`, `rust-modules/src/player/ffi.rs`
+**Files:** `rust-modules/media/src/player/engine.rs`, `rust-modules/media/src/player/pump.rs`, `rust-modules/media/src/player/shared.rs`, `src/starfish.c`, `rust-modules/media/src/player/ffi.rs`
 
 **Approach.** Spawn two dedicated feeder threads (video+audio) in start_bufferfeed alongside the load_th spawn (engine.rs:282), each owning its lane's feed_lane loop from step 1: pop the lane queue, throttle vs SHARED.pres_fed, sf_feed; on 'B' keep the AU pending and sleep ~10ms then retry (mirrors Kodi Get(10ms)+PutBack+sleep_for(10ms) instead of waiting a 16.7ms vsync tick); sleep ~10ms when over-budget/paused/no-data rather than busy-spin. Remove the feed_stream(eng) call from pump (pump.rs:196-202) so pump stays control-only (ACB bind SM, Loading->Play, seek arming); keep feed_sample on the pump. Migrate the feed-loop state the feeder now mutates (max_fed_video/audio_pts, seek_base_pts, rebase_pending, flushed, prime_play) from main-thread Engine fields into SHARED atoms (shared.rs), add a feeder-abort AtomicBool (or reuse aq_abort). Route the first-post-seek-keyframe control calls (sf_set_time_to_decode/sf_set_content_info/sf_send_segment + prime sf_play, engine.rs:596-654) onto the feeder under a new seam mutex. In starfish.c wrap every g_smp verb (sf_feed vs sf_play/sf_pause/sf_flush/sf_unload/sf_set_*) in one pthread_mutex (ss4s StarfishPlayerLock style) so off-thread Feed cannot race control. In teardown (engine.rs:462-490) set feeder-abort + JOIN both feeders BEFORE sf_unload/sf_destroy/aq_destroy, mirroring the existing stream_th/cues_th abort+join.
 
@@ -58,7 +58,7 @@ Plan to finish #42 Kodi-parity buffer-feed hardening. The remaining gaps collaps
 
 ### Step 3: Seek-reanchor parity cleanup (reset throttle inputs, paused-seek preview, reconcile prime)  _(small)_
 
-**Files:** `rust-modules/src/player/pump.rs`, `rust-modules/src/player/engine.rs`, `rust-modules/src/player/shared.rs`
+**Files:** `rust-modules/media/src/player/pump.rs`, `rust-modules/media/src/player/engine.rs`, `rust-modules/media/src/player/shared.rs`
 
 **Approach.** The in-place reanchor primitive already fully matches Kodi on 4.5 (flush + setTimeToDecode({position:pts}) + webOS<11 setContentInfo(ES) fallback + sendSegmentEvent + real-absolute-PTS). Close the residual behavioral divergences: (1) in the in-place ff seek arm (pump.rs:128-130) reset SHARED.pres_fed to the seek target (or a NO_PTS sentinel the throttle treats as feed-freely) AND reset BOTH per-lane fed-pts high-waters (max_fed_video/audio_pts): mirrors Kodi Flush resetting m_fedVideoPts AND m_fedAudioPts, so after prime->Play the feed-ahead throttle doesn't compare against the stale pre-seek presented pts. (2) For a seek issued while TX.paused (the feed gate at pump.rs:196), allow feed_lane(video) up to and INCLUDING the first post-seek keyframe (bounded, no prime/Play, stay paused) so the video plane previews the target frame (Kodi speed-0 present-one-frame). (3) Once step 2's feeder+two-lane bound the demux-reopen gap, make the sf_pause()+prime_play (pump.rs:82/130) a runtime-gated fallback rather than unconditional: keep playing across the seek like Kodi, reserving prime only when the reopen gap is still large.
 
@@ -68,7 +68,7 @@ Plan to finish #42 Kodi-parity buffer-feed hardening. The remaining gaps collaps
 
 ### Step 4: Load timeout / abort so a stuck Load can't hang in Stage::Loading  _(small)_
 
-**Files:** `rust-modules/src/player/engine.rs`, `rust-modules/src/player/pump.rs`, `rust-modules/src/player/threads.rs`, `rust-modules/src/player/shared.rs`
+**Files:** `rust-modules/media/src/player/engine.rs`, `rust-modules/media/src/player/pump.rs`, `rust-modules/media/src/player/threads.rs`, `rust-modules/media/src/player/shared.rs`
 
 **Approach.** Bound the wait for loadCompleted so an unreachable/slow server doesn't leave the pump spinning forever in Stage::Loading (pump.rs:148). Record a load-arm SDL-ticks timestamp in start_bufferfeed (engine.rs:297) or a SHARED atomic; in pump's Loading branch, if neither SHARED.load_completed nor sf_is_load_completed() has fired within a generous cap (~8-10s wall), log 'Load timeout -> abort', call teardown (stop_bufferfeed, for_reload=false) and return to the shelf (or one retry). load_thread (threads.rs:224) already returns quickly from sf_load so the join stays safe; the cap only governs the loadCompleted event. This is the prerequisite the eof/unload step lists (a synchronous Unload is only safe if Load can't wedge first).
 
@@ -78,7 +78,7 @@ Plan to finish #42 Kodi-parity buffer-feed hardening. The remaining gaps collaps
 
 ### Step 5: pushEOS at true EOF + synchronous Unload (wait UNLOADCOMPLETED before destruct)  _(medium)_
 
-**Files:** `src/starfish.c`, `src/starfish.h`, `stub/starfish_stub.c`, `rust-modules/src/player/ffi.rs`, `rust-modules/src/player/engine.rs`, `rust-modules/src/player/mod.rs`, `rust-modules/src/player/shared.rs`
+**Files:** `src/starfish.c`, `src/starfish.h`, `stub/starfish_stub.c`, `rust-modules/media/src/player/ffi.rs`, `rust-modules/media/src/player/engine.rs`, `rust-modules/media/src/player/mod.rs`, `rust-modules/media/src/player/shared.rs`
 
 **Approach.** pushEOS: add extern int SMP_pushEOS(void*) __asm__("_ZN17StarfishMediaAPIs7pushEOSEv") and int sf_push_eos(void){ return g_smp_ready? SMP_pushEOS(g_smp):0; } in starfish.c (near sf_unload:94), prototype in starfish.h, empty body void _ZN17StarfishMediaAPIs7pushEOSEv(void){} in stub/starfish_stub.c (rebuild the stub .so: the ARM link resolves against it), sf_push_eos()->c_int in ffi.rs. Add eos_pushed: bool to Engine (init false in start_bufferfeed). In the VIDEO feed_lane null-pop branch (was engine.rs:582 which ignores the eof out-param), when eof!=0 && !eos_pushed && stage>=Streaming call sf_push_eos() once, set eos_pushed, log 'EOS pushed at true EOF': key EOS to the VIDEO lane drain (Kodi VIDEO_DRAIN). Synchronous Unload: add unload_completed: AtomicBool to Shared + reset in reset_session (shared.rs). In mod.rs sf_on_event_inner (next to the loadCompleted parse, mod.rs:280) add if find(b, b"unloadCompleted") { SHARED.unload_completed.store(true, Relaxed) }. In teardown step 3 (engine.rs:483-490): store unload_completed=false, sf_unload(), then a bounded ~1s poll (100x check-then-10ms sleep) until unload_completed (log a timeout like Kodi), THEN acb_unload(), THEN sf_destroy().
 
@@ -88,7 +88,7 @@ Plan to finish #42 Kodi-parity buffer-feed hardening. The remaining gaps collaps
 
 ### Step 6: Real esInfo videoWidth/Height + fps rational + adaptiveResolution (serde_json payload builder)  _(medium)_
 
-**Files:** `rust-modules/src/route.rs`, `rust-modules/src/player/engine.rs`, `rust-modules/src/ff.rs`
+**Files:** `rust-modules/src/route.rs`, `rust-modules/media/src/player/engine.rs`, `rust-modules/media/src/ff.rs`
 
 **Approach.** Our Load is built pre-demux from frozen JSON strings, so source geometry from Plex metadata (already fetched). Add STREAM_W/STREAM_H/STREAM_FPS_NUM/STREAM_FPS_DEN statics + stream_dims()/stream_fps() accessors in route.rs near STREAM_VCODEC (route.rs:39-40), populated in build_stream (route.rs:463-492) from the selected video Media@width/@height and Stream@frameRate. Convert the decimal fps to Kodi's rational: 23.976->24000/1001, 29.97->30000/1001, 59.94->60000/1001, 24/25/30/50/60->x/1, else round(fps*1000)/1000; emit 0/0 when frameRate is absent; transcode -> target dims with fps 0/0 (unknown post-encode). Replace build_av_payload's brittle nested .replace() chain (engine.rs:130-137) with a serde_json builder that injects into contents.esInfo: always videoWidth/videoHeight when >0, and videoFpsValue/videoFpsScale ONLY when both non-zero (exact Kodi guard). Add adaptiveStreaming.adaptiveResolution=true and drive maxWidth/maxHeight/maxFrameRate from a codec-keyed panel ceiling (H264 1080p, H265 2160p) instead of the hardcoded 1920/1080/30->60 replace. Keep pauseAtDecodeTime=false (existing on-device finding at engine.rs:16-20). This is the first consumer of the JSON builder: audio blocks (step 7) reuse it.
 
@@ -98,7 +98,7 @@ Plan to finish #42 Kodi-parity buffer-feed hardening. The remaining gaps collaps
 
 ### Step 7: Per-codec ac3PlusInfo/aacInfo audio blocks + immersive=ATMOS  _(medium)_
 
-**Files:** `rust-modules/src/plex/models.rs`, `rust-modules/src/metadata.rs`, `rust-modules/src/route.rs`, `rust-modules/src/player/engine.rs`
+**Files:** `rust-modules/src/plex/models.rs`, `rust-modules/src/metadata.rs`, `rust-modules/src/route.rs`, `rust-modules/media/src/player/engine.rs`
 
 **Approach.** We emit only the audio codec STRING; add the per-codec config object Kodi/ss4s send. Plumb the raw material the chain currently drops: add samplingRate + profile to plex/models.rs Stream (next to channels); surface channels+samplingRate+atmos-hint per track from metadata.rs audio_tracks(); add STREAM_ACHANNELS/STREAM_ASAMPLERATE/STREAM_AIMMERSIVE statics+accessors in route.rs set in build_stream from the CHOSEN track (consistent with STREAM_ACODEC / pick_dp_audio so a native audio-track switch configures the fed track), transcode -> 6ch/48000/immersive=false. In engine.rs build_av_payload (now the serde_json builder from step 6) splice into contents: AC3/'AC3 PLUS' -> ac3PlusInfo{channels:C (+2 when atmos), frequency:S/1000.0}; AAC -> aacInfo{channels:C, profile:2, format:'adts', frequency:S/1000.0}; and a contents-level immersive:'ATMOS' when atmos. Ship channels/frequency first; gate immersive behind a reliable Plex-sourced Atmos signal (FFmpeg n3.3 predates AV_PROFILE_EAC3_DDP_ATMOS, so ff.rs can't detect it: only cross-check channels/sample_rate at ff.rs:1027).
 
@@ -108,7 +108,7 @@ Plan to finish #42 Kodi-parity buffer-feed hardening. The remaining gaps collaps
 
 ### Step 8: setHdrInfo() out-of-band HDR seam (HDR10/HLG), called LOADCOMPLETED->Play  _(medium)_ — ⛔ DROPPED (setHdrInfo absent on webOS 4.5; keep in-band SEI)
 
-**Files:** `src/starfish.c`, `src/starfish.h`, `stub/starfish_stub.c`, `rust-modules/src/player/ffi.rs`, `rust-modules/src/player/shared.rs`, `rust-modules/src/ff.rs`, `rust-modules/src/player/pump.rs`
+**Files:** `src/starfish.c`, `src/starfish.h`, `stub/starfish_stub.c`, `rust-modules/media/src/player/ffi.rs`, `rust-modules/media/src/player/shared.rs`, `rust-modules/media/src/ff.rs`, `rust-modules/media/src/player/pump.rs`
 
 **Approach.** Add a WEAK mangled extern SMP_setHdrInfo __asm__("_ZN17StarfishMediaAPIs10setHdrInfoEPKc") __attribute__((weak)) + int sf_set_hdr_info(const char*){ if(!g_smp_ready||!SMP_setHdrInfo) return 0; ... } in starfish.c (NULL-check is mandatory: symbol may be absent on 4.5, a strong ref would fail app load), prototype in starfish.h, stub body in starfish_stub.c, ffi.rs decl. Add SHARED.hdr_payload: Mutex<Option<CString>> (cleared in reset_session so each Load re-derives). In ff::demux after selecting vst/vcp (ff.rs:900-913) add av_stream_get_side_data extern + AVMasteringDisplayMetadata/AVContentLightMetadata structs + consts (MASTERING=79, CONTENT_LIGHT=81, SMPTE2084=16, ARIB_STD_B67=18, RANGE_JPEG=2); map (*vcp).color_trc->hdrType (16 HDR10 / 18 HLG, else skip); build sei from mastering side-data using master's G,B,R order (display_primaries[1],[2],[0]; x50000 chroma; x10000 BOTH luminances) + optional content-light (maxCLL/maxFALL); if sei is empty return None (send nothing: Kodi's TV-crash guard); else build {hdrType, mediaSei, mediaVui{transferCharacteristics:color_trc, colorPrimaries:color_primaries, matrixCoeffs:color_space, videoFullRangeFlag:(color_range==2)}} using the webOS-4.5 (version<5) mediaSei/mediaVui keys, store the CString in SHARED.hdr_payload. In pump.rs Stage::Loading->Play (pump.rs:148-164), BEFORE sf_play and before the prime branch, if hdr_payload is Some call sf_set_hdr_info once and log rv. Gate the whole send behind a dev trigger (/tmp/plxnative-hdr) for A/B.
 
@@ -118,7 +118,7 @@ Plan to finish #42 Kodi-parity buffer-feed hardening. The remaining gaps collaps
 
 ### Step 9: Mirror ACB PAUSED/PLAYING state on transport pause/resume  _(small)_
 
-**Files:** `rust-modules/src/player/mod.rs`, `src/starfish.c`, `src/starfish.h`, `rust-modules/src/player/ffi.rs`
+**Files:** `rust-modules/media/src/player/mod.rs`, `src/starfish.c`, `src/starfish.h`, `rust-modules/media/src/player/ffi.rs`
 
 **Approach.** Kodi sets the ACB PLAYSTATE alongside pipeline Pause/Play; we only call sf_pause/sf_play (mod.rs:34-39) and never update ACB. Add #define PLAYSTATE_PAUSED 3 + void acb_pause(void){ if(g_acb) AcbAPI_setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PAUSED, &g_taskId); } and acb_resume (PLAYSTATE_PLAYING) verbs in starfish.c near acb_unload (starfish.c:180), prototypes in starfish.h, ffi.rs decls. In mod.rs pause()/resume(), after sf_pause()/sf_play(), also call acb_pause()/acb_resume() when ACB_OK and the ACB is bound (stage>=Bound). Keep it main-thread (called from the pump/main transport path).
 

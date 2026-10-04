@@ -44,8 +44,8 @@ impl Host for TestHost {
 }
 
 impl crate::screens::registry::PlayerLike for TestHost {
-    fn session<'a>(_cx: &Cx<'a, Self>) -> &'a crate::route::PlaybackSession {
-        crate::route::idle_session_for_test()
+    fn session<'a>(_cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
+        plx_media::route::idle_session_for_test()
     }
 }
 
@@ -174,7 +174,7 @@ const MODAL: [(OverlayKind, &str); 3] = [
 /// same toggle. Either way the panel is untouched, which is the half `Fx::Nav(Dismiss)` grades.
 #[test]
 fn a_transport_key_is_forwarded_by_a_modal_panel_and_leaves_it_up() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     for (kind, name) in MODAL {
         for (wcode, want) in [
             (WCODE_PAUSE, Some(false)),
@@ -202,7 +202,7 @@ fn a_transport_key_is_forwarded_by_a_modal_panel_and_leaves_it_up() {
 /// stays the panel's own, since dismissing a modal is not a focus move.
 #[test]
 fn a_fresh_direction_and_ok_fall_through_to_the_engine_and_back_is_still_the_panels_own() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     for (kind, name) in MODAL {
         let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, reqs, _) = press(&mut page, SDLK_UP, 0, Edge::Down);
@@ -227,7 +227,7 @@ fn a_fresh_direction_and_ok_fall_through_to_the_engine_and_back_is_still_the_pan
 /// would end playback underneath a still-open panel.
 #[test]
 fn stop_stays_swallowed_by_the_three_reading_panels() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     for (kind, name) in MODAL {
         let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_STOP, Edge::Down);
@@ -242,7 +242,7 @@ fn stop_stays_swallowed_by_the_three_reading_panels() {
 /// the failure read-out's own recovery path.
 #[test]
 fn the_options_popover_keeps_the_old_swallow_everything_behaviour() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     for wcode in [WCODE_PAUSE, WCODE_PLAY, WCODE_PLAYPAUSE] {
         let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
         let (handled, reqs, dismissed) = press(&mut page, 0, wcode, Edge::Down);
@@ -257,7 +257,7 @@ fn the_options_popover_keeps_the_old_swallow_everything_behaviour() {
 
 #[test]
 fn back_dismisses_more_at_the_root_and_pops_the_quality_page_first() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     // the ordinary entry is the root: BACK dismisses
     let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
     let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
@@ -300,7 +300,7 @@ fn more_open(page: &mut PlayerOverlayScreen, row: MoreRow) -> (Handled, Vec<Play
 fn the_quality_row_pushes_and_left_back_and_the_title_pop() {
     use plx_ui::consts::{SDLK_LEFT, SDLK_RIGHT};
     let _g = plx_base::testlock::serial();
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { quality: false });
     assert_eq!(more_page(&page), None);
@@ -330,11 +330,11 @@ fn the_quality_row_pushes_and_left_back_and_the_title_pop() {
 
     // a rung on the page commits `More(SetQuality)` and dismisses
     more_open(&mut page, MoreRow::OpenQuality);
-    let rung = MoreRow::Act(MoreAction::SetQuality(crate::route::Quality::P720));
+    let rung = MoreRow::Act(MoreAction::SetQuality(plx_media::route::Quality::P720));
     let (_, reqs, dismissed) = more_open(&mut page, rung);
     assert!(dismissed, "a rung pick closes the menu, as it always did");
     assert!(
-        reqs.iter().any(|r| matches!(r, PlayerReq::More(MoreAction::SetQuality(crate::route::Quality::P720)))),
+        reqs.iter().any(|r| matches!(r, PlayerReq::More(MoreAction::SetQuality(plx_media::route::Quality::P720)))),
         "the pick reports the ordinary SetQuality request: {reqs:?}"
     );
 }
@@ -345,7 +345,7 @@ fn the_quality_row_pushes_and_left_back_and_the_title_pop() {
 fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
     use plx_ui::screen::{DrawFrame, Screen};
     let _g = plx_base::testlock::serial();
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { quality: false });
     let stops_of = |page: &PlayerOverlayScreen| {
@@ -390,7 +390,7 @@ fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
 /// press before it, which is what `rearm` is for.
 #[test]
 fn a_held_direction_is_paced_and_a_fresh_press_is_never_swallowed() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
     // A fresh press rearms the cadence and is handed to the engine.
     let (handled, ..) = press(&mut page, SDLK_DOWN, 0, Edge::Down);
@@ -416,7 +416,7 @@ fn a_held_direction_is_paced_and_a_fresh_press_is_never_swallowed() {
 /// other panel — see `activate`/`press_commit` below for what a resolved hit does now.
 #[test]
 fn a_click_no_longer_scans_pixels_or_dismisses_inside_step() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     for (kind, name) in MODAL.into_iter().chain([(OverlayKind::More { quality: false }, "More")]) {
         let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, reqs, dismissed) = click(&mut page, 10.0, 10.0);
@@ -432,7 +432,7 @@ fn a_click_no_longer_scans_pixels_or_dismisses_inside_step() {
 /// either way, and it is the exact case the package brief names.
 #[test]
 fn groups_publishes_the_active_panels_real_row_count() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let mut groups = Vec::new();
     Focusable::<TestHost>::groups(&page, &cx(), &mut groups);
@@ -447,7 +447,7 @@ fn groups_publishes_the_active_panels_real_row_count() {
 /// for every key regardless of which — the hit map needs the real rect to resolve a click at all.
 #[test]
 fn place_answers_each_rows_own_rect_not_one_full_screen_stop() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let first: Placed = Focusable::<TestHost>::place(&page, &0u32, &cx(), At::Drawn).expect("row 0 places");
     let second: Placed = Focusable::<TestHost>::place(&page, &1u32, &cx(), At::Drawn).expect("row 1 places");
@@ -473,7 +473,7 @@ fn place_answers_each_rows_own_rect_not_one_full_screen_stop() {
 /// panel's own cursor could never follow an engine-driven move at all.
 #[test]
 fn focus_moved_writes_the_new_cursor_into_the_open_panel() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     assert_eq!(page.sel(), 0);
     let (_, reqs, _) = deliver(
@@ -492,7 +492,7 @@ fn focus_moved_writes_the_new_cursor_into_the_open_panel() {
 /// `Key::Ok` arms.
 #[test]
 fn activate_commits_the_bare_rows_directly() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
     let (_, _, dismissed) = activate(&mut page, 0);
     assert!(dismissed, "Tracks: Activate commits and dismisses");
@@ -514,7 +514,7 @@ fn activate_commits_the_bare_rows_directly() {
 /// a commit.
 #[test]
 fn resolve_menupick_row_parses_a_number_or_an_audio_tab_name() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let audio_page =
         PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
     assert_eq!(audio_page.resolve_menupick_row("3"), Some(3), "a plain row number always resolves");
@@ -553,8 +553,8 @@ fn tracks_selected(page: &PlayerOverlayScreen) -> Option<TrackRow> {
 #[test]
 fn a_style_pick_commits_without_dismissing_the_tracks_panel() {
     let _g = plx_base::testlock::serial(); // the panel seeds its tone from the player's global
-    crate::player::restore_subtitle_tone(plx_plex::plex::session::SubtitleTone::White);
-    let ps = crate::route::PlaybackSession::IDLE;
+    plx_media::player::restore_subtitle_tone(plx_plex::plex::session::SubtitleTone::White);
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     // no playing item: Off, then the headerless Timing + Style section; the element is the row's KEY
@@ -593,7 +593,7 @@ fn a_style_pick_commits_without_dismissing_the_tracks_panel() {
 fn back_and_left_pop_a_sub_page_and_right_enters_a_nav_row() {
     use plx_ui::consts::{SDLK_LEFT, SDLK_RIGHT};
     let _g = plx_base::testlock::serial();
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
 
@@ -631,7 +631,7 @@ fn back_and_left_pop_a_sub_page_and_right_enters_a_nav_row() {
 fn clicking_the_title_band_pops_one_page() {
     use plx_ui::screen::DrawFrame;
     let _g = plx_base::testlock::serial();
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
 
@@ -668,7 +668,7 @@ fn clicking_the_title_band_pops_one_page() {
 fn the_pointer_is_held_while_a_page_slides_and_released_at_rest() {
     use plx_ui::screen::{DrawFrame, Screen};
     let _g = plx_base::testlock::serial();
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     let tick = |page: &mut PlayerOverlayScreen, ms: u32| {
@@ -709,7 +709,7 @@ fn the_pointer_is_held_while_a_page_slides_and_released_at_rest() {
 fn the_replay_canon_includes_the_page_path_and_return_ids() {
     use plx_machine::machine::{Canon, LogicalState};
     let _g = plx_base::testlock::serial();
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let fp = |page: &PlayerOverlayScreen| {
         let mut c = Canon::new();
@@ -745,9 +745,9 @@ fn the_replay_canon_includes_the_page_path_and_return_ids() {
 #[test]
 fn ok_on_the_dim_timing_row_while_off_keeps_the_panel_open() {
     let _g = plx_base::testlock::serial();
-    crate::player::sidecar::reset();
-    crate::player::set_subtitle_offset(0);
-    let ps = crate::route::PlaybackSession::IDLE;
+    plx_media::player::sidecar::reset();
+    plx_media::player::set_subtitle_offset(0);
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     // no playing item: Off, then Timing, then Color — and Off is the checked row
@@ -768,10 +768,10 @@ fn ok_on_the_dim_timing_row_while_off_keeps_the_panel_open() {
 /// A playing item whose audio is English and whose subtitles are `subs`: the audio's language is
 /// "yours" (`subtitle_yours_langs`), so English subtitles are rows on the Subtitles root, not behind
 /// "Other languages".
-fn english_audio_with_subs(ps: &crate::route::PlaybackSession, subs: Vec<plx_data::metadata::Stream>) -> plx_data::metadata::PlayingItem {
+fn english_audio_with_subs(ps: &plx_media::route::PlaybackSession, subs: Vec<plx_data::metadata::Stream>) -> plx_data::metadata::PlayingItem {
     let mut item = plx_data::metadata::PlayingItem::with_subs(subs);
     item.audio = vec![plx_data::metadata::Stream {
-        id: crate::route::cur_audio_sid(ps),
+        id: plx_media::route::cur_audio_sid(ps),
         lang: "English".into(),
         lang_code: "eng".into(),
         codec: "ac3".into(),
@@ -790,9 +790,9 @@ fn english_audio_with_subs(ps: &crate::route::PlaybackSession, subs: Vec<plx_dat
 #[test]
 fn open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud() {
     let _g = plx_base::testlock::serial();
-    crate::player::sidecar::reset();
-    crate::player::set_subtitle_offset(0);
-    let ps = crate::route::PlaybackSession::IDLE;
+    plx_media::player::sidecar::reset();
+    plx_media::player::set_subtitle_offset(0);
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let mut store = plx_data::stores::metadata::MetadataStore::default();
     assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(
         english_audio_with_subs(&ps, vec![plx_data::metadata::Stream {
@@ -833,9 +833,9 @@ fn timings_word_and_slot() {
 #[test]
 fn timing_left_and_right_commit_subtitle_offset() {
     let _g = plx_base::testlock::serial();
-    crate::player::sidecar::reset();
-    crate::player::set_subtitle_offset(0);
-    let ps = crate::route::PlaybackSession::IDLE;
+    plx_media::player::sidecar::reset();
+    plx_media::player::set_subtitle_offset(0);
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
     let (handled, reqs, dismissed) = press(&mut page, plx_ui::consts::SDLK_RIGHT, 0, Edge::Down);
     assert_eq!(handled, Handled::Yes, "the capsule owns every key, never falls through");
@@ -861,9 +861,9 @@ fn timing_left_and_right_commit_subtitle_offset() {
 #[test]
 fn timing_ok_and_back_close_and_keep_the_offset() {
     let _g = plx_base::testlock::serial();
-    crate::player::sidecar::reset();
-    crate::player::set_subtitle_offset(300);
-    let ps = crate::route::PlaybackSession::IDLE;
+    plx_media::player::sidecar::reset();
+    plx_media::player::set_subtitle_offset(300);
+    let ps = plx_media::route::PlaybackSession::IDLE;
     for (sym, wcode) in [(SDLK_RETURN, 0), (0, WCODE_BACK)] {
         let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
         let (handled, reqs, dismissed) = press(&mut page, sym, wcode, Edge::Down);
@@ -879,9 +879,9 @@ fn timing_ok_and_back_close_and_keep_the_offset() {
 #[test]
 fn timing_forwards_transport_and_leaves_the_capsule_up() {
     let _g = plx_base::testlock::serial();
-    crate::player::sidecar::reset();
-    crate::player::set_subtitle_offset(0);
-    let ps = crate::route::PlaybackSession::IDLE;
+    plx_media::player::sidecar::reset();
+    plx_media::player::set_subtitle_offset(0);
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
     let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_PAUSE, Edge::Down);
     assert_eq!(handled, Handled::Yes);
@@ -895,9 +895,9 @@ fn timing_forwards_transport_and_leaves_the_capsule_up() {
 #[test]
 fn timing_ticks_do_not_extend_the_hud() {
     let _g = plx_base::testlock::serial();
-    crate::player::sidecar::reset();
-    crate::player::set_subtitle_offset(0);
-    let ps = crate::route::PlaybackSession::IDLE;
+    plx_media::player::sidecar::reset();
+    plx_media::player::set_subtitle_offset(0);
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
     let (_, reqs, _) = deliver(&mut page, ScreenEvent::Tick(Tick { ms: 1_016, dt_us: 16_000 }));
     assert!(
@@ -913,7 +913,7 @@ fn timing_ticks_do_not_extend_the_hud() {
 /// (`PlayerReq::ArmInfoPress`, read back on the spring-back by `commit_info_press`).
 #[test]
 fn infos_activate_and_press_commit_take_different_roads() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let (_, reqs, dismissed) = activate(&mut page, 0);
     assert!(dismissed, "a pointer click applies the card's action at once");
@@ -929,7 +929,7 @@ fn infos_activate_and_press_commit_take_different_roads() {
 /// `PressCommit` on release seeks and dismisses, exactly as the old ladder's `Key::Ok` did.
 #[test]
 fn chapters_press_commit_seeks_and_dismisses() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Chapters);
     let (_, _, dismissed) = press_commit(&mut page, 0);
     assert!(
@@ -945,7 +945,7 @@ fn chapters_press_commit_seeks_and_dismisses() {
 #[test]
 fn tracks_edge_key_switches_tab_instead_of_moving_within_the_group() {
     use plx_ui::consts::SDLK_RIGHT;
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
     assert!(matches!(page.kind(), OverlayKind::Tracks { .. }));
     let (handled, ..) = press_at_edge(&mut page, SDLK_RIGHT);
@@ -959,7 +959,7 @@ fn tracks_edge_key_switches_tab_instead_of_moving_within_the_group() {
 #[test]
 fn the_overlay_answers_engine_for_both_focus_and_hits() {
     use plx_ui::screen::{FocusSource, HitSource, Screen};
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     assert_eq!(Screen::<TestHost>::focus_source(&page), FocusSource::Engine);
     assert_eq!(Screen::<TestHost>::hit_source(&page), HitSource::Engine);
@@ -969,7 +969,7 @@ fn the_overlay_answers_engine_for_both_focus_and_hits() {
 /// round-trip property `screens/player/mod.rs`'s own `Focusable` suite pins for its four.
 #[test]
 fn the_active_groups_seat_round_trips_through_group_of() {
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let mut groups = Vec::new();
     Focusable::<TestHost>::groups(&page, &cx(), &mut groups);
@@ -1003,7 +1003,7 @@ fn the_active_groups_seat_round_trips_through_group_of() {
 fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() {
     use plx_ui::screen::{Screen, UnderlaySource};
     use plx_ui::theme::underlay::{DIM_PLAYER, DIM_SHEET};
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let corners = [[0.1, 0.5, 0.2], [0.2, 0.4, 0.1], [0.6, 0.2, 0.1], [0.1, 0.1, 0.4]];
     let mut store = plx_data::stores::metadata::MetadataStore::default();
     assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(plx_data::metadata::PlayingItem {
@@ -1038,8 +1038,8 @@ fn a_pointer_click_activates_the_row_it_hit_by_key() {
     use plx_ui::hit::HitMap;
     use plx_ui::screen::DrawFrame;
     let _g = plx_base::testlock::serial();
-    crate::player::sidecar::reset();
-    let ps = crate::route::PlaybackSession::IDLE;
+    plx_media::player::sidecar::reset();
+    let ps = plx_media::route::PlaybackSession::IDLE;
     let mut store = plx_data::stores::metadata::MetadataStore::default();
     let sub = |id: i64, index: i64, lang: &str, code: &str| plx_data::metadata::Stream {
         id,
@@ -1097,7 +1097,7 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
     use plx_ui::hit::{pointer_gaps, HitMap};
     use plx_ui::screen::DrawFrame;
     let _g = plx_base::testlock::serial();
-    let ps = crate::route::PlaybackSession::IDLE;
+    let ps = plx_media::route::PlaybackSession::IDLE;
     for kind in [
         OverlayKind::Tracks { tab: 0 },
         OverlayKind::Tracks { tab: 1 },

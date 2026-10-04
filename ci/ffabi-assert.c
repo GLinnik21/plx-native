@@ -1,4 +1,4 @@
-/* Compile-time proof that rust-modules/src/ff.rs's FFmpeg ABI constants match the FFmpeg the app
+/* Compile-time proof that rust-modules/media/src/ff.rs's FFmpeg ABI constants match the FFmpeg the app
  * SHIPS — compiled against the very headers those libraries were built from.
  *
  * WHAT CHANGED. This file used to check offsets against the TELEVISION's FFmpeg, re-derived from

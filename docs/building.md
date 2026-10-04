@@ -157,7 +157,7 @@ grade frame rate, so a green CI run says nothing about pacing.
 
 **Two checks CI runs that `make check` does not**, and which are easy to break locally: the shipping
 feature set (`cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
---no-default-features`) after any `rust-modules/src/**.rs` edit, and a firmware-compatibility review
+--no-default-features`) after any `rust-modules/src/**.rs` or `rust-modules/*/src/**.rs` edit, and a firmware-compatibility review
 of anything touching FFI, linkage, `dynlib!`, Starfish, ACB, curl or the bundled FFmpeg —
 `tools/fwcompat.py` grades the binary against 14 real firmware images in under a second.
 

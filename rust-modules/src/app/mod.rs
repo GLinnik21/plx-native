@@ -4,7 +4,7 @@
 //! (main.c) sets up the log and fallback crash tracer, calls the Rust image-marker and native-spool
 //! entries when required, then calls `plex_run` (port.rs), which hands over to `run_application`.
 //! The only application subsystem left in C is the starfish.c C++/ACB seam (the engine itself is
-//! Rust: crate::player).
+//! Rust: plx_media::player).
 #![allow(non_upper_case_globals)]
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::Ordering::Relaxed;
@@ -213,8 +213,8 @@ use crate::screens::registry::AppArg;
 /// The adapter tree (spec §2.2). An adapter owns OS/FFI resources and holds no logical state; the
 /// decisions live in the machines beside it.
 pub(crate) struct Adapters {
-    /// The Starfish/ACB session slot and the `MainThread` token — see [`crate::player::adapter`].
-    pub(crate) player: crate::player::adapter::PlayerAdapter,
+    /// The Starfish/ACB session slot and the `MainThread` token — see [`plx_media::player::adapter`].
+    pub(crate) player: plx_media::player::adapter::PlayerAdapter,
 }
 
 /// The app core's state, gathered from `run_application`'s loop-locals (UI restructure spec v4
@@ -269,9 +269,9 @@ pub(crate) struct App {
     pub(crate) diagnostics: diagnostics::Diagnostics,
     /// **The Player machine** (restructure spec §2.2, phase 9): the playback session that was
     /// `route::decision::SESSION`, the app-switch lifecycle that was `App.foreground`, and this
-    /// frame's tick. Reached as a parameter from here down — `crate::player::machine`'s doc says
+    /// frame's tick. Reached as a parameter from here down — `plx_media::player::machine`'s doc says
     /// why the pipeline's own handles are a separate field.
-    pub(crate) player: crate::player::machine::Player,
+    pub(crate) player: plx_media::player::machine::Player,
     /// **The ADAPTERS** (restructure spec §2.2, phase 9) — the OS/FFI resources the machines act
     /// through. One so far: the Player's, which holds the native session that was
     /// `player::engine::ENGINE` together with the main-thread token that confines it.
@@ -539,7 +539,7 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
     // Telemetry erases the player's in-memory error trace (withdrawal, sign-out, its own boot load
     // below) through a hook that is a no-op while unset. On every boot, before anything can play:
     // a failed preview seals a trace without ever passing `player::report::requested`.
-    crate::player::report::install_trace_eraser();
+    plx_media::player::report::install_trace_eraser();
     let preflight = match bootstrap::Preflight::detect() {
         Ok(mode) => mode,
         Err(reason) => { log(&format!("replay: REFUSED — {reason}")); return Err(1); }

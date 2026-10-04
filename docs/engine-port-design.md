@@ -1,7 +1,7 @@
 # Engine port design (Rust-first step 5)
 
 > Synthesized design for porting the buffer-feed video engine (src/playback.c)
-> to Rust (`rust-modules/src/player/`). From the design-engine-port workflow.
+> to Rust (`rust-modules/media/src/player/`). From the design-engine-port workflow.
 
 I have everything I need. Here is the concrete design.
 
@@ -14,7 +14,7 @@ I have everything I need. Here is the concrete design.
 Split into a **`player/` directory of five files**, not one `player.rs`. The engine has four genuinely distinct concerns (lifecycle, main-thread pump, worker threads, the C seam) plus a shared-state definition that all four import. A single file would put the `#[no_mangle]` library-thread callbacks next to the main-thread pump and invite exactly the confusion this port must eliminate. The split *is* the race-safety argument: each file's threading domain is stated at the top.
 
 ```
-rust-modules/src/player/
+rust-modules/media/src/player/
 ├── mod.rs      pub(crate) API surface + the two #[no_mangle] callbacks + the
 │               SHARED/TX statics.  This is the file app.rs / player_hud.rs see.
 ├── shared.rs   struct Shared, struct Transport, CueEnt, Stage — all interior-
@@ -510,4 +510,4 @@ plus `pub(crate)` on `AuNode`/`AuQueue` visibility already present, and `aq_is_a
 - **Cue UAF guard** — `cues_abort` + join before the `Vec` is cleared; `keep_cues` keeps only a fully-loaded table.
 - **Duration liveness** — republished by the demux read trampoline from the same thread that writes it, so the HUD sees duration the instant Info is parsed, without the C's unguarded 64-bit cross-thread read.
 
-**Key files**: `src/playback.c` (source, to delete), `src/starfish.c`+`.h` (the seam, stays C), and the new `rust-modules/src/player/{mod,shared,engine,pump,threads,ffi}.rs`; touched: `rust-modules/src/{lib,app,route,aq}.rs` and `rust-modules/src/ui/player_hud.rs`.
+**Key files**: `src/playback.c` (source, to delete), `src/starfish.c`+`.h` (the seam, stays C), and the new `rust-modules/media/src/player/{mod,shared,engine,pump,threads,ffi}.rs`; touched: `rust-modules/src/{lib,app,route,aq}.rs` and `rust-modules/src/ui/player_hud.rs`.

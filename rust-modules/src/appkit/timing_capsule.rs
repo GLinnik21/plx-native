@@ -18,11 +18,11 @@ use plx_ui::{theme, Painter, Rect, Spring};
 use std::ffi::CString;
 
 /// The capsule's step for an ordinary tap or the first few repeats of a held press
-/// ([`crate::player::SUBTITLE_OFFSET_STEP_MS`]).
-const STEP_MS: i64 = crate::player::SUBTITLE_OFFSET_STEP_MS;
+/// ([`plx_media::player::SUBTITLE_OFFSET_STEP_MS`]).
+const STEP_MS: i64 = plx_media::player::SUBTITLE_OFFSET_STEP_MS;
 /// The faster step a held press earns after [`FAST_AFTER_REPEATS`] admitted repeats
-/// ([`crate::player::SUBTITLE_OFFSET_FAST_STEP_MS`]).
-const FAST_STEP_MS: i64 = crate::player::SUBTITLE_OFFSET_FAST_STEP_MS;
+/// ([`plx_media::player::SUBTITLE_OFFSET_FAST_STEP_MS`]).
+const FAST_STEP_MS: i64 = plx_media::player::SUBTITLE_OFFSET_FAST_STEP_MS;
 /// How many ADMITTED repeats (not raw hardware ticks — the overlay's own `RepeatGate` already
 /// thinned those) a held press takes before [`FAST_STEP_MS`] replaces [`STEP_MS`].
 const FAST_AFTER_REPEATS: u32 = 8;
@@ -100,7 +100,7 @@ pub(crate) enum CapsuleOut {
 
 /// The capsule's whole state. `offset_ms` starts at whatever the Subtitles panel's Timing row was
 /// showing (`TrackMenuState::offset_ms`), and `lo`/`hi` are seeded once, at open, from
-/// [`crate::player::subtitle_offset_range_ms`] — the ONE range rule the player's own clamp
+/// [`plx_media::player::subtitle_offset_range_ms`] — the ONE range rule the player's own clamp
 /// (`player::set_subtitle_offset`) also obeys, so this control can never offer a step the player
 /// refuses.
 pub(crate) struct TimingCapsule {

@@ -66,8 +66,8 @@ landing_hero.rs, detail_layout.rs}}`), `cargo test --lib` (default + `hostsim`) 
   this task wanted surfaced was already there.
 
 **Status (original).** Design plan, not yet implemented. Targets the existing background-trailer feature
-(`e5739f9e feat: add trailer support and extras handling`, `rust-modules/src/player/preview.rs` +
-`rust-modules/src/screens/detail/{mod.rs,hero.rs}`). Read `rust-modules/src/player/CLAUDE.md` and
+(`e5739f9e feat: add trailer support and extras handling`, `rust-modules/media/src/player/preview.rs` +
+`rust-modules/src/screens/detail/{mod.rs,hero.rs}`). Read `rust-modules/media/src/player/CLAUDE.md` and
 `rust-modules/src/ui/CLAUDE.md` before implementing — this plan assumes both.
 
 **Goal**, as given:
@@ -680,7 +680,7 @@ gate for anything that moves pixels)**
 
 | File | Change |
 |---|---|
-| `rust-modules/src/player/preview.rs` | `DWELL_S` 4.5 → 2.0 |
+| `rust-modules/media/src/player/preview.rs` | `DWELL_S` 4.5 → 2.0 |
 | `rust-modules/src/ui/landing_hero.rs` | new `PROMOTED_FIELD` constant |
 | `rust-modules/src/ui/detail_layout.rs` | new `PREVIEW_LOGO_X/Y/MAX_W` constants |
 | `rust-modules/src/ui/hero_logo.rs` | new interpolated-bounds path for a continuous Hero↔Compact transform (§2.2) |

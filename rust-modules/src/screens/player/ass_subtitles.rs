@@ -1,7 +1,7 @@
 //! Player-owned ASS texture cache. Native parsing/rasterization is the worker's job;
 //! the frame thread submits its clock and uploads only a changed completed image.
 //! Authored placement is retained even while the transport HUD is visible.
-use crate::player::{ass, ass_source, sidecar};
+use plx_media::player::{ass, ass_source, sidecar};
 use plx_ui::{
     consts::{SCR_H, SCR_W},
     Painter, Rect,
@@ -15,16 +15,16 @@ pub(crate) struct AssSubtitles {
     clock: ass_source::Clock,
     textures: Vec<CachedTexture>,
     uploaded: u64,
-    viewport: crate::player::video_geometry::Viewport,
+    viewport: plx_media::player::video_geometry::Viewport,
 }
 
 impl AssSubtitles {
-    pub(crate) fn update(&mut self, ps: &crate::route::PlaybackSession, now: u32) {
-        let source = if crate::route::is_transcoding(ps) || crate::player::loading(ps) {
+    pub(crate) fn update(&mut self, ps: &plx_media::route::PlaybackSession, now: u32) {
+        let source = if plx_media::route::is_transcoding(ps) || plx_media::player::loading(ps) {
             None
         } else {
             sidecar::ass_source(false)
-                .or_else(|| ass_source::selected(crate::player::desired_sub_idx()))
+                .or_else(|| ass_source::selected(plx_media::player::desired_sub_idx()))
         };
         let Some(source) = source else {
             if self.source != 0 {
@@ -40,13 +40,13 @@ impl AssSubtitles {
             self.frame = None;
         }
         let clock = self.clock.sample(
-            crate::player::playpos_ns(),
+            plx_media::player::playpos_ns(),
             now,
-            crate::player::is_playing(ps),
+            plx_media::player::is_playing(ps),
         );
-        let clock = clock.saturating_sub(crate::player::subtitle_offset_ms());
-        let (coded_w, coded_h) = crate::player::video_raster();
-        let viewport = crate::player::video_viewport(SCR_W as i32, SCR_H as i32);
+        let clock = clock.saturating_sub(plx_media::player::subtitle_offset_ms());
+        let (coded_w, coded_h) = plx_media::player::video_raster();
+        let viewport = plx_media::player::video_viewport(SCR_W as i32, SCR_H as i32);
         if self.viewport != viewport {
             self.viewport = viewport;
             self.frame = None;
@@ -122,7 +122,7 @@ impl AssSubtitles {
     }
 
     pub(crate) fn error(&self) -> Option<&'static str> {
-        self.frame.as_ref().and_then(|f| f.error).map(crate::player::ass::Fault::message)
+        self.frame.as_ref().and_then(|f| f.error).map(plx_media::player::ass::Fault::message)
     }
 
     pub(crate) fn release(&mut self) {

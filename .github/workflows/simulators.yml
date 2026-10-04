@@ -8,7 +8,7 @@ on:
       - '.github/actions/apt-install/**'
       - 'Makefile'
       - 'rust-modules/**'
-      # Nested guides such as rust-modules/src/player/CLAUDE.md read by no gate in this workflow;
+      # Nested guides such as rust-modules/media/src/player/CLAUDE.md read by no gate in this workflow;
       # a docs-only edit there should not cost a ~20 min macOS+Linux simulator build.
       - '!rust-modules/**/*.md'
       - 'src/svg.c'

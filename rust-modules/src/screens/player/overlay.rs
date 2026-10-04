@@ -249,21 +249,21 @@ pub(crate) struct PlayerOverlayScreen {
 /// preference this play resolved under (the show's own, else the account's —
 /// `route::cur_sub_pref_lang`), then the playing audio's language, then the current subtitle's
 /// own — each only if it names one. `ui/` never sees a Plex account type, only these codes.
-fn subtitle_yours_langs(ps: &crate::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> Vec<String> {
+fn subtitle_yours_langs(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> Vec<String> {
     let mut yours = Vec::new();
-    if let Some(pref) = crate::route::cur_sub_pref_lang(ps) {
+    if let Some(pref) = plx_media::route::cur_sub_pref_lang(ps) {
         if !pref.trim().is_empty() {
             yours.push(pref.to_string());
         }
     }
     if let Some(item) = meta.playing() {
-        let asid = crate::route::cur_audio_sid(ps);
+        let asid = plx_media::route::cur_audio_sid(ps);
         if let Some(a) = item.audio.iter().find(|s| s.id == asid) {
             if !a.lang_code.trim().is_empty() {
                 yours.push(a.lang_code.clone());
             }
         }
-        let ssid = crate::route::cur_sub_sid(ps);
+        let ssid = plx_media::route::cur_sub_sid(ps);
         if let Some(s) = item.subs.iter().find(|s| s.id == ssid) {
             if !s.lang_code.trim().is_empty() {
                 yours.push(s.lang_code.clone());
@@ -279,7 +279,7 @@ impl PlayerOverlayScreen {
     /// no second id to reserve.
     const GROUP: GroupId = GroupId(0);
 
-    pub(crate) fn new(ps: &crate::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
+    pub(crate) fn new(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
         let panel = match kind {
             OverlayKind::Tracks { tab } => Panel::Tracks(plx_base::diag::spans::span("tmnew", || {
                 crate::appkit::track_menu::TrackMenuState::new(ps, meta, tab, subtitle_yours_langs(ps, meta))
@@ -293,15 +293,15 @@ impl PlayerOverlayScreen {
             }
             // Force Direct Play offers no Quality section, so there is no rung to land on: a
             // quality entry is the ordinary menu then (`more_menu::rows_for`).
-            OverlayKind::More { quality: true } if crate::route::forced_direct_play(ps) => {
+            OverlayKind::More { quality: true } if plx_media::route::forced_direct_play(ps) => {
                 Panel::More(crate::appkit::more_menu::MoreMenuState::new(ps))
             }
             OverlayKind::More { quality: true } => {
                 Panel::More(crate::appkit::more_menu::MoreMenuState::new_quality(ps))
             }
             OverlayKind::Timing => {
-                let (lo, hi) = crate::player::subtitle_offset_range_ms();
-                Panel::Timing(TimingCapsule::new(crate::player::subtitle_offset_ms(), lo, hi))
+                let (lo, hi) = plx_media::player::subtitle_offset_range_ms();
+                Panel::Timing(TimingCapsule::new(plx_media::player::subtitle_offset_ms(), lo, hi))
             }
         };
         Self {
@@ -322,7 +322,7 @@ impl PlayerOverlayScreen {
     /// their own tab, so the second press has to move the tab of the entry that exists rather than
     /// present a second one — `same_instance` says they ARE the same instance, and this is the
     /// other half of that: what "the same instance, at a different address" does.
-    pub(crate) fn retarget(&mut self, ps: &crate::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, kind: OverlayKind) {
+    pub(crate) fn retarget(&mut self, ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, kind: OverlayKind) {
         if kind.slot() != self.kind.slot() {
             return;
         }
@@ -500,7 +500,7 @@ impl PlayerOverlayScreen {
     /// old ladder's `Key::Ok` arms did.
     fn activate<H: AppLike + crate::screens::registry::MetadataLike>(
         &mut self,
-        ps: &crate::route::PlaybackSession,
+        ps: &plx_media::route::PlaybackSession,
         cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>,
     ) {
@@ -578,7 +578,7 @@ impl PlayerOverlayScreen {
     /// and either does nothing otherwise (no tabs to switch).
     fn edge_key<H: AppLike + crate::screens::registry::MetadataLike>(
         &mut self,
-        ps: &crate::route::PlaybackSession,
+        ps: &plx_media::route::PlaybackSession,
         cx: &Cx<'_, H>,
         key: consts::Key,
         fx: &mut Effects<'_, H>,
@@ -625,7 +625,7 @@ impl PlayerOverlayScreen {
     /// and Chapters also hand the transport the ordinary linger.
     fn key<H: AppLike + crate::screens::registry::MetadataLike>(
         &mut self,
-        ps: &crate::route::PlaybackSession,
+        ps: &plx_media::route::PlaybackSession,
         cx: &Cx<'_, H>,
         key: consts::Key,
         edge: Edge,

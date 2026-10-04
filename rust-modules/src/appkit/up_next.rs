@@ -33,7 +33,7 @@
 //! exist: `continuous=1` is per-show, and a final episode returns `totalCount=1`, so the queue
 //! never hands us a different show. Sourcing it from Continue Watching is the owner's call.)*
 #![allow(dead_code)]
-use crate::route::UpNext;
+use plx_media::route::UpNext;
 use plx_ui::label::{HAlign, Label};
 use plx_ui::theme;
 use plx_ui::widgets::{draw_card, Button, ControlGround};
@@ -169,9 +169,9 @@ pub(crate) fn expired(&self, now: u32) -> bool {
 /// The descriptor to start, cloned off the `&'static` store. Cloning is mandatory, not tidiness:
 /// `route::request_play_up_next` clears `UP_NEXT` as its first act, so handing it a borrow of the
 /// static would be a use-after-free the borrow checker cannot see through a `'static` lifetime.
-pub(crate) fn take(&mut self, ps: &crate::route::PlaybackSession) -> Option<UpNext> {
+pub(crate) fn take(&mut self, ps: &plx_media::route::PlaybackSession) -> Option<UpNext> {
     self.cancel();
-    crate::route::up_next(ps).cloned()
+    plx_media::route::up_next(ps).cloned()
 }
 
 /// Per-session reset — a new playback must not inherit the previous episode's countdown OR its
@@ -281,7 +281,7 @@ fn caption(u: &UpNext) -> String {
 }
 
 pub(crate) fn draw(
-    ps: &crate::route::PlaybackSession,
+    ps: &plx_media::route::PlaybackSession,
     row: &mut crate::appkit::player_hud::TransportRow,
     up: &Countdown,
     p: Painter,
@@ -290,7 +290,7 @@ pub(crate) fn draw(
     now: u32,
     measure: &dyn plx_machine::machine::Measure,
 ) {
-    let Some(u) = crate::route::up_next(ps) else {
+    let Some(u) = plx_media::route::up_next(ps) else {
         return;
     };
     let l = layout(row, measure);
@@ -302,7 +302,7 @@ pub(crate) fn draw(
     draw_card(
         p,
         l.still,
-        crate::route::item_sid(crate::route::cur_sid(ps)).raw(),
+        plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw(),
         &u.thumb,
         (480, 270),
         10.0,

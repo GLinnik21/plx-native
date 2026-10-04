@@ -162,6 +162,7 @@ class InventoryTests(unittest.TestCase):
             finally: sys.argv = argv
         self.assertEqual(rc, 1)
         for needle in ('rust-modules/session/src/auth/owner.rs: a listed product file is missing',
+                       'rust-modules/media/src/player/ass.rs: a listed product file is missing',
                        'rust-modules/data/src/metadata.rs: a listed product file is missing',
                        'rust-modules/data/src/person.rs: a listed product file is missing',
                        'rust-modules/src/screens: a directory this gate reads is missing'):

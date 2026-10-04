@@ -188,7 +188,7 @@ plx_base::devtrig::latched_flag!(
 ///
 /// Call once per frame, AFTER the frame's input has been handled and the screen drawn, so what is
 /// recorded is the state a key press has already moved rather than the state it is about to.
-pub(crate) fn sample(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) {
+pub(crate) fn sample(ps: &plx_media::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) {
     if !armed() {
         return;
     }
@@ -210,18 +210,18 @@ pub(crate) fn sample(ps: &crate::route::PlaybackSession, route: &str, screen: Sc
 /// one of those screens fingerprints as its route word and nothing else. `app::recorder`'s
 /// `state_hash` folds `Dispatcher::state_hash` in beside this line for exactly that reason; a
 /// replay graded on this alone would call a press that opened the wrong family page `SAME`.
-pub(crate) fn line(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) -> String {
+pub(crate) fn line(ps: &plx_media::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) -> String {
     fingerprint_content(ps, route, screen, hud, ctrl, content, meta)
 }
 
 /// Build the line. Split out from [`sample`] so its determinism and its grammar are host-testable
 /// without a log file or a change-detection state.
 #[cfg(test)]
-fn fingerprint(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, meta: plx_data::metadata::MetadataView<'_>) -> String {
+fn fingerprint(ps: &plx_media::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, meta: plx_data::metadata::MetadataView<'_>) -> String {
     fingerprint_content(ps, route, screen, hud, ctrl, "", meta)
 }
 
-fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) -> String {
+fn fingerprint_content(ps: &plx_media::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) -> String {
     let mut s = String::with_capacity(192);
     s.push_str("focus route=");
     s.push_str(route);
@@ -236,7 +236,7 @@ fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: 
 /// One screen's own fields. Split out of [`fingerprint`] so a popover ROUTE could spend it on its
 /// HOST — the popover's line is the host's state plus the panel's, and there is no other way to say
 /// that without five copies of the host arms.
-fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) {
+fn push_fields(ps: &plx_media::route::PlaybackSession, s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) {
     match screen {
         Screen::Login { phase, has_control } => {
             // The phase is still most of this screen's state — it is a projection of the auth
@@ -281,7 +281,7 @@ fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Scree
 
 
 /// The player: the HUD cursor, what the control row currently holds, and each panel's own state.
-fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot, meta: plx_data::metadata::MetadataView<'_>) {
+fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot, meta: plx_data::metadata::MetadataView<'_>) {
     // `upnext` is the PLAYER INSTANCE's countdown since phase 9, so it arrives on `content` with
     // the panels' fields rather than being read off a module global here.
     let slot = match ctrl {
@@ -444,7 +444,7 @@ mod tests {
     /// which read process-global stores that other modules' tests mutate.
     #[test]
     fn a_fingerprint_is_stable_while_nothing_moves() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
         for (rn, sc) in every_screen() {
             let a = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs, test_store().view());
@@ -458,7 +458,7 @@ mod tests {
     /// bring a space, a URL or path would bring a slash, and either would fail here.
     #[test]
     fn the_line_is_one_ordered_row_of_safe_key_value_pairs() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
         for (rn, sc) in every_screen() {
             let line = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs, test_store().view());
@@ -489,7 +489,7 @@ mod tests {
     /// two fingerprints key by key instead of re-parsing a variable schema.
     #[test]
     fn one_screen_always_carries_the_same_keys() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
         let keys = |rn, sc, ctrl| {
             fingerprint(&ps, rn, sc, hud(), ctrl, test_store().view())
@@ -544,7 +544,7 @@ mod tests {
     /// one assertion that fails if a future edit prints a constant where a getter belongs.
     #[test]
     fn moving_the_hud_cursor_changes_the_line() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
         let at = |f, btn, tab| {
             fingerprint(&ps, 
@@ -601,7 +601,7 @@ mod tests {
     /// `moving_the_hud_cursor_changes_the_line` above, for this screen's own one cursor.
     #[test]
     fn the_login_screens_stalled_control_appearing_is_observable() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
         let without = fingerprint(&ps, "login", Screen::Login { phase: plx_session::auth::Phase::Idle, has_control: false }, hud(), ControlSlot::Discs, test_store().view());
         let with = fingerprint(&ps, "login", Screen::Login { phase: plx_session::auth::Phase::Idle, has_control: true }, hud(), ControlSlot::Discs, test_store().view());

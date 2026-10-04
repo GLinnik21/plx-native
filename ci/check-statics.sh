@@ -31,6 +31,8 @@ UI=rust-modules/ui/src
 # The data layer is its own crate (docs/module-layers.md, Split 9); its files were $SRC/stores, $SRC/pms.rs,
 # $SRC/metadata*, $SRC/person.rs and $SRC/search.
 DATA=rust-modules/data/src
+# The media layer is its own crate (docs/module-layers.md, Split 11); its files were $SRC/route and $SRC/player.
+MEDIA=rust-modules/media/src
 fails=0
 fail() { echo "::error::check-statics: $*"; fails=$((fails+1)); }
 ok()   { echo "  ok — $*"; }
@@ -41,7 +43,7 @@ ok()   { echo "  ok — $*"; }
 # path is now a loud gate failure, not a swallowed scan of nothing.
 GATED_MUT_PATHS=("$UI" "$SRC/appkit" "$SRC/screens" "$DATA/person.rs" "$DATA/metadata.rs" "$DATA/metadata" "$DATA/pms.rs" "$DATA/stores")
 GATED_WIDE_PATHS=("$DATA/search")
-for p in "${GATED_MUT_PATHS[@]}" "${GATED_WIDE_PATHS[@]}" "$SRC/route/decision.rs" "$SRC/player/engine.rs" "$UI/press.rs"; do
+for p in "${GATED_MUT_PATHS[@]}" "${GATED_WIDE_PATHS[@]}" "$MEDIA/route/decision.rs" "$MEDIA/player/engine.rs" "$UI/press.rs"; do
   [ -e "$p" ] || fail "gated path missing: $p — the statics gate would silently scan nothing here"
 done
 
@@ -49,8 +51,8 @@ done
 matches() {
   { grep -rnE --include='*.rs' '^\s*static mut [A-Za-z_][A-Za-z_0-9]*' "${GATED_MUT_PATHS[@]}"
     grep -rnE --include='*.rs' '^\s*(pub(\(crate\))? )?static (mut )?[A-Za-z_][A-Za-z_0-9]*' "${GATED_WIDE_PATHS[@]}"
-    grep -nE '^\s*static mut SESSION\b' "$SRC/route/decision.rs" | sed "s|^|$SRC/route/decision.rs:|"
-    grep -nE '^\s*static mut ENGINE\b' "$SRC/player/engine.rs" | sed "s|^|$SRC/player/engine.rs:|"
+    grep -nE '^\s*static mut SESSION\b' "$MEDIA/route/decision.rs" | sed "s|^|$MEDIA/route/decision.rs:|"
+    grep -nE '^\s*static mut ENGINE\b' "$MEDIA/player/engine.rs" | sed "s|^|$MEDIA/player/engine.rs:|"
     grep -nE '^\s*static mut S\b' "$UI/press.rs" | sed "s|^|$UI/press.rs:|"
   } | sed -E "s/^([^:]+):[0-9]+:[[:space:]]*(pub(\(crate\))? )?static (mut )?([A-Za-z_][A-Za-z_0-9]*).*/\1	\5/" | sort -u
 }
@@ -83,7 +85,7 @@ done < <(grep -v '^#' "$migr")
 if [ "$stale" -eq 0 ]; then ok "no stale allowlist entry"; else fail "$stale stale allowlist entr(ies) — delete them with the static"; fi
 
 # the three machine globals: reported by name so the phase-9 deletion is visible here.
-for g in "$SRC/route/decision.rs	SESSION" "$SRC/player/engine.rs	ENGINE" "$UI/press.rs	S"; do
+for g in "$MEDIA/route/decision.rs	SESSION" "$MEDIA/player/engine.rs	ENGINE" "$UI/press.rs	S"; do
   p="${g%%	*}"; n="${g##*	}"
   if grep -qE "^${p}	${n}$" <<<"$all"; then echo "    pending: $p $n (allowlisted under migration)"; else ok "global gone: $p $n"; fi
 done

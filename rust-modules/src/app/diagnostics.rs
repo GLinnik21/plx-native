@@ -33,7 +33,7 @@
 //! same kind of row (issue #163), fixed there by skipping the draw rather than reordering it.
 //!
 //! **Off the player the panel shows a DIFFERENT set of rows, and that is not a decoration.** Every
-//! pipeline row reads a [`crate::player::Diag`] that has never been filled in, so all nine of them
+//! pipeline row reads a [`plx_media::player::Diag`] that has never been filled in, so all nine of them
 //! report a zero — `stream never opened`, `no callbacks`, `NOTHING demuxed` — and most carry a
 //! fault tint. Photographed on a Home screen where nothing is wrong, that is a picture of a broken
 //! app, which is the exact opposite of what this panel is for. So when nothing has been asked to
@@ -102,7 +102,7 @@
 //!   photograph into an attributable one.
 //!
 //! The enforcement is structural: every row is built by [`pipeline_rows`]/[`model_rows`] from one
-//! [`crate::player::Diag`] snapshot and a small set of route facts. The compositor's opaque window
+//! [`plx_media::player::Diag`] snapshot and a small set of route facts. The compositor's opaque window
 //! id is reduced to `window ready`/`NO WINDOW`; the only server-derived text is the PMS release and
 //! Pass state, never its name or address. There is no generic "push a string to diagnostics" path,
 //! so adding a field is a deliberate edit to the file that carries these rules.
@@ -116,7 +116,7 @@ use std::sync::atomic::Ordering;
 // The one bit that crosses a module boundary without an instance. It is owned by `player` (the
 // pump samples its diagnostics only while the panel is up, and `player` may not name `app`); this
 // module is its only writer.
-use crate::player::DIAG_READOUT_ON as ON;
+use plx_media::player::DIAG_READOUT_ON as ON;
 
 /// **The read-out's own state, as ONE `App` field** (`app.diagnostics`; spec §0 done-criterion 1).
 ///
@@ -340,8 +340,8 @@ impl SweepHistory {
     fn record(
         &mut self,
         epoch: u32,
-        d: &crate::player::Diag,
-        selected: crate::route::Quality,
+        d: &plx_media::player::Diag,
+        selected: plx_media::route::Quality,
         now: u32,
     ) {
         if !self.has_epoch || self.epoch != epoch {
@@ -409,7 +409,7 @@ impl Diagnostics {
     ///
     /// The panel being switched ON is its own re-sample: the rising edge of [`ON`] is what the
     /// static-era `kick()` expressed by zeroing the deadline from three modules away.
-    pub(crate) fn update(&mut self, ps: &crate::route::PlaybackSession, now: u32) {
+    pub(crate) fn update(&mut self, ps: &plx_media::route::PlaybackSession, now: u32) {
         let on = enabled();
         let woke = on && !self.was_on;
         self.was_on = on;
@@ -423,12 +423,12 @@ impl Diagnostics {
         // ONE sample feeding the whole panel. Calling `diag()` per block would let one row report
         // "no frames" beside a position taken a moment later — a panel that tells a story that
         // never happened is worse than no panel.
-        let d = crate::player::diag(ps);
+        let d = plx_media::player::diag(ps);
         let prev = self.prev_fed;
         self.head = header(ps, &d, now);
         // ONE decision per sample, held with the rows it chose. Deciding this in `draw` instead
         // would let the panel measure one list and paint another on the frame the first Load lands.
-        let idle = never_played(&d, crate::player::state(ps));
+        let idle = never_played(&d, plx_media::player::state(ps));
         self.idle = idle;
         self.head_lines = wrap_header(&self.head, self.panel_width() - 2.0 * PAD);
         self.rows = if idle { device_rows() } else { Vec::new() };
@@ -439,9 +439,9 @@ impl Diagnostics {
         };
         self.prev_fed = (d.fed_v, d.fed_a, now);
         self.history.record(
-            crate::route::playback_trace_generation(),
+            plx_media::route::playback_trace_generation(),
             &d,
-            crate::route::quality(),
+            plx_media::route::quality(),
             now,
         );
         self.chart_values = chart_values(&self.history);
@@ -457,7 +457,7 @@ impl Diagnostics {
 /// verdict's slot and drew in its bold face, so a photograph of a FAILED playback showed the
 /// firmware where the failure reason should have been. Both facts are now wrapped independently
 /// and drawn in full, so the array's length remains the semantic contract.
-fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32) -> [String; 2] {
+fn header(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, now: u32) -> [String; 2] {
     let w = plx_platform::tv::device::info();
     let os = if w.major == 0 {
         plx_platform::i18n::msg::browse_diagnostics_unknown_os().to_string()
@@ -488,9 +488,9 @@ fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32)
 }
 
 /// The verdict text: what the pipeline thinks it is doing, wrapped in the diagnostic header.
-fn playback_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32) -> String {
-    use crate::player::PlaybackState as S;
-    let s = match crate::player::state(ps) {
+fn playback_line(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, now: u32) -> String {
+    use plx_media::player::PlaybackState as S;
+    let s = match plx_media::player::state(ps) {
         S::Idle => plx_platform::i18n::msg::browse_diagnostics_idle(),
         S::Resolving => plx_platform::i18n::msg::browse_diagnostics_resolving(),
         S::Connecting => plx_platform::i18n::msg::browse_diagnostics_connecting(),
@@ -502,20 +502,20 @@ fn playback_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, no
     // The reason is part of every Error verdict — bare "Playback error" made the reviewer derive
     // "the server dropped the video track" from the server's own transcoder logs (issue #22);
     // this line is the photograph that should have said it.
-    if matches!(crate::player::state(ps), S::Error) {
-        return match crate::player::error_reason(ps) {
+    if matches!(plx_media::player::state(ps), S::Error) {
+        return match plx_media::player::error_reason(ps) {
             "" => s.to_string(),
             why => format!("{s} — {why}"),
         };
     }
-    if crate::player::TX.paused.load(Ordering::Relaxed) {
+    if plx_media::player::TX.paused.load(Ordering::Relaxed) {
         // the frozen clock must DISARM while paused — a paused picture is not a stalled one
         return plx_platform::i18n::msg::browse_diagnostics_paused(s);
     }
     // A stream that says "Playing" while nothing has moved for seconds is the failure with no
     // error at all: the app freezes on its last frame and every other row still reads healthy.
     let stuck = since(d.frame_at, now) / 1000;
-    if matches!(crate::player::state(ps), S::Playing) && d.seen_frame && stuck >= STALL_MS / 1000 {
+    if matches!(plx_media::player::state(ps), S::Playing) && d.seen_frame && stuck >= STALL_MS / 1000 {
         return plx_platform::i18n::msg::browse_diagnostics_stalled(stuck as i64, s);
     }
     s.to_string()
@@ -533,8 +533,8 @@ fn playback_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, no
 /// row — the one sentence that says where such an attempt is stuck.
 ///
 /// Pure, with the process-global state passed in, so both arms are host-testable.
-fn never_played(d: &crate::player::Diag, st: crate::player::PlaybackState) -> bool {
-    matches!(st, crate::player::PlaybackState::Idle) && d.load_at == 0
+fn never_played(d: &plx_media::player::Diag, st: plx_media::player::PlaybackState) -> bool {
+    matches!(st, plx_media::player::PlaybackState::Idle) && d.load_at == 0
 }
 
 /// **The read-out with no playback behind it: what this SET is.**
@@ -634,7 +634,7 @@ fn device_rows() -> Vec<Field> {
 /// byte from the chosen PMS connection to the television plane.  The right column is the adaptive
 /// model.  Fixed playback keeps every right-hand row and says `inactive`; that stability is what
 /// makes a LAN/Original photograph directly comparable with a remote/HLS one.
-fn columns(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> [Vec<Field>; 2] {
+fn columns(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, prev: (i64, i64, u32), now: u32) -> [Vec<Field>; 2] {
     [pipeline_rows(ps, d, prev, now), model_rows(ps, d)]
 }
 
@@ -642,23 +642,23 @@ fn columns(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i
 /// vectors independently and never clones them — so this is `cfg(test)`, which `plx_ui`'s `lib.rs`'s
 /// blanket `#![allow(dead_code)]` had been standing in for.
 #[cfg(test)]
-fn rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
+fn rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
     columns(ps, d, prev, now).into_iter().flatten().collect()
 }
 
-fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
+fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
     let mut v = Vec::with_capacity(LEFT_ROWS);
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_connection(), connection_line(ps)));
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_route(), route_line(ps, d)));
 
     let mut video = chain(
-        crate::route::source_vcodec(ps),
-        crate::route::stream_vcodec(ps),
+        plx_media::route::source_vcodec(ps),
+        plx_media::route::stream_vcodec(ps),
         d.load_v_str(),
     );
-    let dv = crate::route::stream_dovi(ps);
+    let dv = plx_media::route::stream_dovi(ps);
     if dv.present {
-        let decision = crate::route::stream_dv_decision(ps);
+        let decision = plx_media::route::stream_dv_decision(ps);
         video.push_str(&format!(
             " · Dolby Vision P{}.{} · {} ({})",
             dv.profile,
@@ -670,20 +670,20 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_video(), video));
 
     let mut audio = chain(
-        crate::route::source_acodec(ps),
-        crate::route::stream_acodec(ps),
+        plx_media::route::source_acodec(ps),
+        plx_media::route::stream_acodec(ps),
         if d.load_a == 0 {
             plx_platform::i18n::msg::browse_diagnostics_no_audio_payload()
         } else {
             d.load_a_str()
         },
     );
-    if crate::route::stream_immersive(ps) {
+    if plx_media::route::stream_immersive(ps) {
         audio.push_str(" · Dolby Atmos");
     }
     // Issue #266: only when the server DEMONSTRABLY applied the DSP — `Unverified`/`Refused`/`Off`
     // say nothing was provably added to this stream, so the row must not claim it.
-    let applied = crate::route::applied_audio_enhancements(ps);
+    let applied = plx_media::route::applied_audio_enhancements(ps);
     if applied.boost_dialog {
         audio.push_str(" · dialog boost");
     }
@@ -700,7 +700,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     // route's value is what WE told it. Nothing in this process counts presented frames (the
     // position callback ticks at 5 Hz whatever the picture does), so an unlabelled number here is
     // the silent-instrument trap on a photographed surface.
-    let route_fps = crate::route::stream_fps(ps);
+    let route_fps = plx_media::route::stream_fps(ps);
     let (fps_milli, fps_src) = if d.video_fps_milli > 0 {
         (d.video_fps_milli, plx_platform::i18n::msg::browse_diagnostics_pipeline_fps())
     } else if route_fps > 0.0 {
@@ -782,7 +782,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
         )
         .fault(!d.pushed_any || (d.fed_v == 0 && d.load_completed) || d.feed_is_fault()),
     );
-    let (cv, ca) = crate::player::aq_caps();
+    let (cv, ca) = plx_media::player::aq_caps();
     v.push(Field::new(
         plx_platform::i18n::msg::browse_diagnostics_field_queues(),
         plx_platform::i18n::msg::browse_diagnostics_queues(&decimal(mb_f(d.aq_audio), 2), &decimal(mb_f(ca), 1), &decimal(mb_f(d.aq_video), 1), &decimal(mb_f(cv), 1)),
@@ -799,7 +799,7 @@ use plx_ui::fmt::decimal;
 
 /// The video feeder's state in the UI language. `Diag::feed_state_str` is the lab snapshot's wire
 /// spelling of the same states and stays English.
-fn feed_state_label(d: &crate::player::Diag) -> &'static str {
+fn feed_state_label(d: &plx_media::player::Diag) -> &'static str {
     use plx_platform::i18n::msg;
     match d.feed_state {
         1 => msg::browse_diagnostics_feed_accepting(),
@@ -824,8 +824,8 @@ fn fps_milli_str(fps_milli: i64) -> String {
     }
 }
 
-fn connection_line(ps: &crate::route::PlaybackSession) -> String {
-    let sid = crate::route::cur_sid(ps);
+fn connection_line(ps: &plx_media::route::PlaybackSession) -> String {
+    let sid = plx_media::route::cur_sid(ps);
     let Some(client) = plx_plex::plex::client_for(sid) else {
         return plx_platform::i18n::msg::browse_diagnostics_standalone().to_string();
     };
@@ -844,14 +844,14 @@ fn connection_line(ps: &crate::route::PlaybackSession) -> String {
     )
 }
 
-fn route_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> String {
-    let transport = if d.abr_mode == crate::player::ABR_MODE_HLS || crate::route::is_segmented_hls(ps)
+fn route_line(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag) -> String {
+    let transport = if d.abr_mode == plx_media::player::ABR_MODE_HLS || plx_media::route::is_segmented_hls(ps)
     {
         "HLS"
     } else {
         plx_platform::i18n::msg::browse_diagnostics_progressive()
     };
-    let transform = match (crate::route::is_transcoding(ps), crate::route::is_remux(ps)) {
+    let transform = match (plx_media::route::is_transcoding(ps), plx_media::route::is_remux(ps)) {
         (false, _) => plx_platform::i18n::msg::browse_diagnostics_direct_play(),
         (true, true) => plx_platform::i18n::msg::browse_diagnostics_remux(),
         (true, false) => plx_platform::i18n::msg::browse_diagnostics_transcode(),
@@ -859,7 +859,7 @@ fn route_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> St
     // Issue #266: the server's own verdict on the Plex Pass DSP ask, distinct from `transform`
     // (which only says remux vs re-encode) — absent entirely while the enhancement is Off, so an
     // ordinary playback's route line is unchanged.
-    match crate::route::cur_enhancement_label(ps) {
+    match plx_media::route::cur_enhancement_label(ps) {
         Some(word) => format!("{transport} · {transform} · enh={word}"),
         None => format!("{transport} · {transform}"),
     }
@@ -867,17 +867,17 @@ fn route_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> St
 
 /// The video plane's whole state as one sentence, and whether it is a fault. Split out because the
 /// two seams answer with different facts and the row must not grow a branch per firmware.
-fn plane_line(d: &crate::player::Diag) -> (String, bool) {
+fn plane_line(d: &plx_media::player::Diag) -> (String, bool) {
     // The firmware family is dropped from the two healthy labels — `vp_mode_str`'s
     // "(webOS 4)" / "(webOS 5+)" restates what the header's own `webOS 4.10.2` already says, and
     // it is 11 characters this row does not have. The FAULT arm keeps its full sentence.
     let mode = match d.vp_mode {
-        crate::player::VP_EXPORTED => plx_platform::i18n::msg::browse_diagnostics_exported_window(),
-        crate::player::VP_ACB => "ACB",
+        plx_media::player::VP_EXPORTED => plx_platform::i18n::msg::browse_diagnostics_exported_window(),
+        plx_media::player::VP_ACB => "ACB",
         _ => plx_platform::i18n::msg::browse_diagnostics_no_video_path(),
     };
     match d.vp_mode {
-        crate::player::VP_EXPORTED => {
+        plx_media::player::VP_EXPORTED => {
             // The identifier itself is not useful evidence and is the only unbounded string in a
             // field row.  The state we need is whether the compositor gave us one at all.
             let win = if d.window_id.is_empty() {
@@ -897,7 +897,7 @@ fn plane_line(d: &crate::player::Diag) -> (String, bool) {
                 d.window_id.is_empty() || d.place_rv == i32::MIN || d.place_rv == 0,
             )
         }
-        crate::player::VP_ACB => (
+        plx_media::player::VP_ACB => (
             format!(
                 "{mode} · {}",
                 match (d.acb_ok, d.stage) {
@@ -911,7 +911,7 @@ fn plane_line(d: &crate::player::Diag) -> (String, bool) {
         ),
         // `VP_NONE` and anything unrecognised: there is no video path at all, which is always a
         // fault and is the first row a reader should reach on a set that shows no picture.
-        crate::player::VP_NONE | _ => (mode.to_string(), true),
+        plx_media::player::VP_NONE | _ => (mode.to_string(), true),
     }
 }
 
@@ -929,11 +929,11 @@ const STALL_MS: u32 = 8_000;
 
 /// The frame count with its clock. `frames` is SEEK-scoped, so "0" has three meanings and the
 /// panel has to say which.
-fn frames_str(d: &crate::player::Diag, now: u32) -> String {
+fn frames_str(d: &plx_media::player::Diag, now: u32) -> String {
     // Paused, the frame count SHOULD stop moving. Reporting that as "frozen" sends a reader after
     // a fault that is just the pause button — the verdict line already disarms its own stall clock
     // for exactly this reason, and this row has to agree with it or the panel contradicts itself.
-    if crate::player::TX.paused.load(Ordering::Relaxed) {
+    if plx_media::player::TX.paused.load(Ordering::Relaxed) {
         return match d.frames {
             0 if !d.seen_frame => plx_platform::i18n::msg::browse_diagnostics_none_yet().to_string(),
             n => n.to_string(),
@@ -952,16 +952,16 @@ fn frames_str(d: &crate::player::Diag, now: u32) -> String {
 /// Build the fixed right-hand schema.  `inactive` is data: it says that a manual selection owns the
 /// playback and no Auto estimate should be inferred from the empty cells.  Deleting those cells
 /// made every mode a different panel and is the regression this shape prevents.
-fn model_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> Vec<Field> {
+fn model_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag) -> Vec<Field> {
     let mut v = Vec::with_capacity(RIGHT_ROWS);
     // One selection snapshot for the whole block.  A quality press must not leave Mode saying
     // Auto while the lower rows have already formatted the new manual state.
-    abr_rows(ps, d, crate::route::quality(), &mut v);
+    abr_rows(ps, d, plx_media::route::quality(), &mut v);
     debug_assert_eq!(v.len(), RIGHT_ROWS);
     v
 }
 
-fn abr_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, selected: crate::route::Quality, v: &mut Vec<Field>) {
+fn abr_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, selected: plx_media::route::Quality, v: &mut Vec<Field>) {
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_mode(), abr_mode(d, selected)));
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_quality(), abr_quality(d, selected)));
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_sample(), abr_link(d, selected)));
@@ -969,18 +969,18 @@ fn abr_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, selecte
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_buffer(), abr_buffer(d, selected)));
     v.push(
         Field::new(plx_platform::i18n::msg::browse_diagnostics_field_risk(), abr_risk(d, selected))
-            .fault(d.abr_why == crate::player::ABR_WHY_STARVATION),
+            .fault(d.abr_why == plx_media::player::ABR_WHY_STARVATION),
     );
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_acquisition(), abr_acquisition_cadence(ps, d)));
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_action(), abr_action(d, selected)));
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_reason(), abr_reason(d, selected)));
 }
 
-fn abr_mode(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
+fn abr_mode(d: &plx_media::player::Diag, selected: plx_media::route::Quality) -> String {
     match d.abr_mode {
-        crate::player::ABR_MODE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_auto_original().to_string(),
-        crate::player::ABR_MODE_HLS => plx_platform::i18n::msg::browse_diagnostics_auto_hls().to_string(),
-        _ if selected == crate::route::Quality::Auto => plx_platform::i18n::msg::browse_diagnostics_auto_idle().to_string(),
+        plx_media::player::ABR_MODE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_auto_original().to_string(),
+        plx_media::player::ABR_MODE_HLS => plx_platform::i18n::msg::browse_diagnostics_auto_hls().to_string(),
+        _ if selected == plx_media::route::Quality::Auto => plx_platform::i18n::msg::browse_diagnostics_auto_idle().to_string(),
         _ => plx_platform::i18n::msg::browse_diagnostics_manual_quality(&selected.label()),
     }
 }
@@ -988,8 +988,8 @@ fn abr_mode(d: &crate::player::Diag, selected: crate::route::Quality) -> String 
 /// The controller has no published state (`abr_mode == 0`).  Distinguish an explicit manual
 /// selection from Auto being selected on a path that did not arm an adaptive session; calling the
 /// latter "fixed by user" is exactly the contradiction the simulator screenshot exposed.
-fn inactive_model(selected: crate::route::Quality, absent: &'static str) -> String {
-    if selected == crate::route::Quality::Auto {
+fn inactive_model(selected: plx_media::route::Quality, absent: &'static str) -> String {
+    if selected == plx_media::route::Quality::Auto {
         plx_platform::i18n::msg::browse_diagnostics_model_idle(absent)
     } else {
         plx_platform::i18n::msg::browse_diagnostics_manual_inactive().to_string()
@@ -999,7 +999,7 @@ fn inactive_model(selected: crate::route::Quality, absent: &'static str) -> Stri
 /// The last request's observed transfer rate.  It is deliberately NOT called connection speed:
 /// an HLS object can only deliver the bytes it contains, so the observation is censored by current
 /// demand rather than being an independent speed test to the server.
-fn abr_link(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
+fn abr_link(d: &plx_media::player::Diag, selected: plx_media::route::Quality) -> String {
     if d.abr_mode == 0 {
         return inactive_model(selected, plx_platform::i18n::msg::browse_diagnostics_not_sampled());
     }
@@ -1018,14 +1018,14 @@ fn abr_link(d: &crate::player::Diag, selected: crate::route::Quality) -> String 
 
 /// What the decision may spend, beside what the current delivery demands.  Keeping it separate
 /// from [`abr_link`] prevents a capped object sample from masquerading as physical link capacity.
-fn abr_budget(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
+fn abr_budget(d: &plx_media::player::Diag, selected: plx_media::route::Quality) -> String {
     if d.abr_mode == 0 {
         return inactive_model(selected, plx_platform::i18n::msg::browse_diagnostics_not_computed());
     }
     if d.abr_safe_kbps < 0 {
         return plx_platform::i18n::msg::browse_diagnostics_budget_pending().to_string();
     }
-    let demand = if d.abr_mode == crate::player::ABR_MODE_HLS {
+    let demand = if d.abr_mode == plx_media::player::ABR_MODE_HLS {
         d.abr_media_kbps
     } else {
         d.abr_kbps
@@ -1040,21 +1040,21 @@ fn abr_budget(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
 /// The OBSERVED buffer dynamics only.  The controller's conservative counterfactual horizon is a
 /// different quantity and lives on [`abr_risk`]; mixing the two produced the photographed
 /// `+0.2 s/s · starves in 116 s` contradiction.
-fn observed_buffer_ms(d: &crate::player::Diag) -> Option<i64> {
+fn observed_buffer_ms(d: &plx_media::player::Diag) -> Option<i64> {
     d.playable_buffer_ms
         .or_else(|| (d.abr_mode != 0 && d.abr_buffer_ms >= 0).then_some(d.abr_buffer_ms))
 }
 
-fn abr_buffer(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
+fn abr_buffer(d: &plx_media::player::Diag, selected: plx_media::route::Quality) -> String {
     let Some(buffer_ms) = observed_buffer_ms(d) else {
-        return if d.abr_mode == 0 && selected == crate::route::Quality::Auto {
+        return if d.abr_mode == 0 && selected == plx_media::route::Quality::Auto {
             plx_platform::i18n::msg::browse_diagnostics_timestamps_idle().to_string()
         } else {
             plx_platform::i18n::msg::browse_diagnostics_timestamps().to_string()
         };
     };
     if d.abr_mode == 0 {
-        return if selected == crate::route::Quality::Auto {
+        return if selected == plx_media::route::Quality::Auto {
             plx_platform::i18n::msg::browse_diagnostics_reserve_idle(&decimal(buffer_ms as f64 / 1_000.0, 1))
         } else {
             plx_platform::i18n::msg::browse_diagnostics_reserve(&decimal(buffer_ms as f64 / 1_000.0, 1))
@@ -1068,15 +1068,15 @@ fn abr_buffer(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
     plx_platform::i18n::msg::browse_diagnostics_buffer_trend(&decimal(buffer_ms as f64 / 1_000.0, 1), &plx_ui::fmt::signed_decimal(d.abr_slope_ms_per_s as f64 / 1_000.0, 2), trend)
 }
 
-fn risk_percent(d: &crate::player::Diag) -> Option<i64> {
+fn risk_percent(d: &plx_media::player::Diag) -> Option<i64> {
     (d.abr_risk >= 0)
-        .then(|| d.abr_risk.saturating_mul(100) / i64::from(crate::abr::RISK_SCORE_MAX).max(1))
+        .then(|| d.abr_risk.saturating_mul(100) / i64::from(plx_media::abr::RISK_SCORE_MAX).max(1))
 }
 
 /// The discounted model's what-if horizon, explicitly labelled as such.  A finite value is not a
 /// fault by itself: with a filling observed buffer it is evidence about uncertainty, not a claim
 /// that playback is currently draining.
-fn abr_risk(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
+fn abr_risk(d: &plx_media::player::Diag, selected: plx_media::route::Quality) -> String {
     if d.abr_mode == 0 {
         return inactive_model(selected, plx_platform::i18n::msg::browse_diagnostics_not_computed());
     }
@@ -1097,11 +1097,11 @@ fn abr_risk(d: &crate::player::Diag, selected: crate::route::Quality) -> String 
 ///
 /// `predicted` projects the same total-acquisition observation through the candidate's calibrated
 /// work class for diagnostics only. Neither number is charged as a second admission gate.
-fn abr_acquisition_cadence(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> String {
-    if !crate::route::is_transcoding(ps) {
+fn abr_acquisition_cadence(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag) -> String {
+    if !plx_media::route::is_transcoding(ps) {
         return plx_platform::i18n::msg::browse_diagnostics_direct_unsampled().to_string();
     }
-    if crate::route::is_remux(ps) {
+    if plx_media::route::is_remux(ps) {
         return plx_platform::i18n::msg::browse_diagnostics_copy_unsampled().to_string();
     }
     if d.abr_ratio_pm < 0 {
@@ -1125,7 +1125,7 @@ fn abr_raster(kbps: i64) -> &'static str {
     let Ok(kbps) = u32::try_from(kbps) else {
         return plx_platform::i18n::msg::browse_diagnostics_unknown_raster();
     };
-    let Some(rung) = crate::abr::LADDER.iter().find(|r| r.kbps() == kbps) else {
+    let Some(rung) = plx_media::abr::LADDER.iter().find(|r| r.kbps() == kbps) else {
         return plx_platform::i18n::msg::browse_diagnostics_unknown_raster();
     };
     match rung.raster() {
@@ -1149,14 +1149,14 @@ fn abr_rate(kbps: i64) -> String {
 /// Demand is what the current delivery has to carry, not the request ceiling when PMS emitted a
 /// smaller VBR stream. Manual fixed HLS has no segment estimator, so its explicit ceiling is the
 /// honest planning demand; Original uses the whole-file transport rate captured by the resolve.
-fn chart_demand_kbps(d: &crate::player::Diag, selected: crate::route::Quality) -> i64 {
+fn chart_demand_kbps(d: &plx_media::player::Diag, selected: plx_media::route::Quality) -> i64 {
     match d.abr_mode {
-        crate::player::ABR_MODE_HLS => [d.abr_media_kbps, d.abr_declared_kbps, d.abr_kbps]
+        plx_media::player::ABR_MODE_HLS => [d.abr_media_kbps, d.abr_declared_kbps, d.abr_kbps]
             .into_iter()
             .find(|&v| v > 0)
             .unwrap_or(-1),
-        crate::player::ABR_MODE_ORIGINAL if d.abr_kbps > 0 => d.abr_kbps,
-        _ if selected == crate::route::Quality::Original && d.source_kbps > 0 => d.source_kbps,
+        plx_media::player::ABR_MODE_ORIGINAL if d.abr_kbps > 0 => d.abr_kbps,
+        _ if selected == plx_media::route::Quality::Original && d.source_kbps > 0 => d.source_kbps,
         _ => selected.ceiling().map_or(-1, |c| i64::from(c.max_kbps)),
     }
 }
@@ -1257,7 +1257,7 @@ fn chart_key_width(&self) -> f32 {
 }
 }
 
-fn decoded_raster(d: &crate::player::Diag) -> String {
+fn decoded_raster(d: &plx_media::player::Diag) -> String {
     match (d.video_w, d.video_h) {
         (w, h) if w > 0 && h > 0 => format!("{w}×{h}"),
         _ => plx_platform::i18n::msg::browse_diagnostics_awaiting_frames().to_string(),
@@ -1268,10 +1268,10 @@ fn decoded_raster(d: &crate::player::Diag) -> String {
 /// line: what the client requested as a ceiling, what PMS says it produced, and what the decoder
 /// actually opened.  The controller's next choice belongs in Action; repeating it here made the
 /// widest real row wrap and therefore made every row below it move between photographs.
-fn abr_quality(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
+fn abr_quality(d: &plx_media::player::Diag, selected: plx_media::route::Quality) -> String {
     match d.abr_mode {
-        crate::player::ABR_MODE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_quality_original(&decoded_raster(d), &abr_rate(d.abr_kbps)),
-        crate::player::ABR_MODE_HLS => {
+        plx_media::player::ABR_MODE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_quality_original(&decoded_raster(d), &abr_rate(d.abr_kbps)),
+        plx_media::player::ABR_MODE_HLS => {
             let mut now = plx_platform::i18n::msg::browse_diagnostics_quality_request(abr_raster(d.abr_kbps), &abr_rate(d.abr_kbps));
             if d.abr_declared_kbps > 0 {
                 now.push_str(&format!(" · PMS {}", abr_rate(d.abr_declared_kbps)));
@@ -1283,15 +1283,15 @@ fn abr_quality(d: &crate::player::Diag, selected: crate::route::Quality) -> Stri
     }
 }
 
-fn abr_action(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
+fn abr_action(d: &plx_media::player::Diag, selected: plx_media::route::Quality) -> String {
     if d.abr_mode == 0 {
-        return if selected == crate::route::Quality::Auto {
+        return if selected == plx_media::route::Quality::Auto {
             plx_platform::i18n::msg::browse_diagnostics_none_idle().to_string()
         } else {
             plx_platform::i18n::msg::browse_diagnostics_fixed_user().to_string()
         };
     }
-    if d.abr_mode == crate::player::ABR_MODE_ORIGINAL {
+    if d.abr_mode == plx_media::player::ABR_MODE_ORIGINAL {
         // **How long has this been going on**, in seconds of WALL clock. It printed a count of
         // measurement windows, and a window was 750 ms of ACTIVE BODY-READ time — a clock that
         // stops under backpressure, i.e. exactly when the buffer is healthy — so "3 windows" named
@@ -1308,24 +1308,24 @@ fn abr_action(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
     }
     let target = abr_rate(d.abr_target_kbps);
     let action = match d.abr_action {
-        crate::player::ABR_ACTION_STEADY
+        plx_media::player::ABR_ACTION_STEADY
             if d.abr_optimal_kbps > 0 && d.abr_optimal_kbps != d.abr_kbps =>
         {
             plx_platform::i18n::msg::browse_diagnostics_hold_requested(&abr_rate(d.abr_optimal_kbps))
         }
-        crate::player::ABR_ACTION_STEADY => plx_platform::i18n::msg::browse_diagnostics_hold_current().to_string(),
-        crate::player::ABR_ACTION_PRIME_DOWN => plx_platform::i18n::msg::browse_diagnostics_prime_down(&target),
-        crate::player::ABR_ACTION_PRIME_UP => plx_platform::i18n::msg::browse_diagnostics_prime_up(&target),
-        crate::player::ABR_ACTION_COMMIT_DOWN => plx_platform::i18n::msg::browse_diagnostics_changed_down(&target),
-        crate::player::ABR_ACTION_COMMIT_UP => plx_platform::i18n::msg::browse_diagnostics_changed_up(&target),
-        crate::player::ABR_ACTION_REJECT_DOWN => plx_platform::i18n::msg::browse_diagnostics_target_rejected(&target),
-        crate::player::ABR_ACTION_REJECT_UP => plx_platform::i18n::msg::browse_diagnostics_target_rejected(&target),
-        crate::player::ABR_ACTION_PROBE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_checking_original().to_string(),
-        crate::player::ABR_ACTION_RECOVER_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_recover_original().to_string(),
-        crate::player::ABR_ACTION_ORIGINAL_PROBE_FAILED => plx_platform::i18n::msg::browse_diagnostics_original_check_failed(&if d.abr_failure_status > 0 { format!(" · HTTP {}", d.abr_failure_status) } else { String::new() }),
-        crate::player::ABR_ACTION_PRIME_REFRESH => plx_platform::i18n::msg::browse_diagnostics_refreshing(&target),
-        crate::player::ABR_ACTION_COMMIT_REFRESH => plx_platform::i18n::msg::browse_diagnostics_refreshed(&target),
-        crate::player::ABR_ACTION_REJECT_REFRESH => {
+        plx_media::player::ABR_ACTION_STEADY => plx_platform::i18n::msg::browse_diagnostics_hold_current().to_string(),
+        plx_media::player::ABR_ACTION_PRIME_DOWN => plx_platform::i18n::msg::browse_diagnostics_prime_down(&target),
+        plx_media::player::ABR_ACTION_PRIME_UP => plx_platform::i18n::msg::browse_diagnostics_prime_up(&target),
+        plx_media::player::ABR_ACTION_COMMIT_DOWN => plx_platform::i18n::msg::browse_diagnostics_changed_down(&target),
+        plx_media::player::ABR_ACTION_COMMIT_UP => plx_platform::i18n::msg::browse_diagnostics_changed_up(&target),
+        plx_media::player::ABR_ACTION_REJECT_DOWN => plx_platform::i18n::msg::browse_diagnostics_target_rejected(&target),
+        plx_media::player::ABR_ACTION_REJECT_UP => plx_platform::i18n::msg::browse_diagnostics_target_rejected(&target),
+        plx_media::player::ABR_ACTION_PROBE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_checking_original().to_string(),
+        plx_media::player::ABR_ACTION_RECOVER_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_recover_original().to_string(),
+        plx_media::player::ABR_ACTION_ORIGINAL_PROBE_FAILED => plx_platform::i18n::msg::browse_diagnostics_original_check_failed(&if d.abr_failure_status > 0 { format!(" · HTTP {}", d.abr_failure_status) } else { String::new() }),
+        plx_media::player::ABR_ACTION_PRIME_REFRESH => plx_platform::i18n::msg::browse_diagnostics_refreshing(&target),
+        plx_media::player::ABR_ACTION_COMMIT_REFRESH => plx_platform::i18n::msg::browse_diagnostics_refreshed(&target),
+        plx_media::player::ABR_ACTION_REJECT_REFRESH => {
             plx_platform::i18n::msg::browse_diagnostics_response_unchanged().to_string()
         }
         _ => plx_platform::i18n::msg::browse_diagnostics_starting().to_string(),
@@ -1333,7 +1333,7 @@ fn abr_action(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
     action
 }
 
-fn abr_reason(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
+fn abr_reason(d: &plx_media::player::Diag, selected: plx_media::route::Quality) -> String {
     // A typed source failure is playback evidence, not an HLS-only controller field. Keep it
     // visible through rollback, a manual pin and the short controller-restart interval; otherwise
     // the exact HTTP status disappears behind the generic "no adaptive session" sentence.
@@ -1341,13 +1341,13 @@ fn abr_reason(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
         return reason;
     }
     if d.abr_mode == 0 {
-        return if selected == crate::route::Quality::Auto {
+        return if selected == plx_media::route::Quality::Auto {
             plx_platform::i18n::msg::browse_diagnostics_no_adaptive().to_string()
         } else {
             plx_platform::i18n::msg::browse_diagnostics_controller_inactive().to_string()
         };
     }
-    if d.abr_mode == crate::player::ABR_MODE_ORIGINAL {
+    if d.abr_mode == plx_media::player::ABR_MODE_ORIGINAL {
         return if d.abr_unsafe_deficit_ms <= 0 {
             plx_platform::i18n::msg::browse_diagnostics_sample_sustains().to_string()
         } else {
@@ -1359,25 +1359,25 @@ fn abr_reason(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
         .to_string()
 }
 
-fn original_failure_reason(d: &crate::player::Diag) -> Option<String> {
+fn original_failure_reason(d: &plx_media::player::Diag) -> Option<String> {
     let status = d.abr_failure_status;
     match d.abr_failure_kind {
-        crate::player::ABR_FAILURE_ORIGINAL_HTTP => Some(match status {
+        plx_media::player::ABR_FAILURE_ORIGINAL_HTTP => Some(match status {
             503 | 509 => plx_platform::i18n::msg::browse_diagnostics_http_refused(&status.to_string()),
             500..=599 => plx_platform::i18n::msg::browse_diagnostics_http_failed(&status.to_string()),
             n if n > 0 => plx_platform::i18n::msg::browse_diagnostics_http_rejected(&n.to_string()),
             _ => plx_platform::i18n::msg::browse_diagnostics_original_rejected().to_string(),
         }),
-        crate::player::ABR_FAILURE_ORIGINAL_DEADLINE => {
+        plx_media::player::ABR_FAILURE_ORIGINAL_DEADLINE => {
             Some(plx_platform::i18n::msg::browse_diagnostics_original_timeout().to_string())
         }
-        crate::player::ABR_FAILURE_ORIGINAL_TRANSPORT => {
+        plx_media::player::ABR_FAILURE_ORIGINAL_TRANSPORT => {
             Some(plx_platform::i18n::msg::browse_diagnostics_original_connect_failed().to_string())
         }
-        crate::player::ABR_FAILURE_ORIGINAL_NO_BODY => {
+        plx_media::player::ABR_FAILURE_ORIGINAL_NO_BODY => {
             Some(plx_platform::i18n::msg::browse_diagnostics_original_empty().to_string())
         }
-        crate::player::ABR_FAILURE_ORIGINAL_OPEN => Some(if status > 0 {
+        plx_media::player::ABR_FAILURE_ORIGINAL_OPEN => Some(if status > 0 {
             plx_platform::i18n::msg::browse_diagnostics_open_http_failed(&status.to_string())
         } else {
             plx_platform::i18n::msg::browse_diagnostics_original_open_failed().to_string()
@@ -1390,31 +1390,31 @@ fn original_failure_reason(d: &crate::player::Diag) -> Option<String> {
 /// "nothing has decided yet", which is a real state at the top of a playback rather than a fault.
 fn abr_why_text(why: u8) -> Option<&'static str> {
     match why {
-        crate::player::ABR_WHY_SAFE_BUDGET => Some(plx_platform::i18n::msg::browse_diagnostics_link_room()),
-        crate::player::ABR_WHY_UNSAFE_STATE => Some(plx_platform::i18n::msg::browse_diagnostics_losing_reserve()),
-        crate::player::ABR_WHY_PRODUCTION => Some(plx_platform::i18n::msg::browse_diagnostics_acquisition_behind()),
-        crate::player::ABR_WHY_BUFFER => Some(plx_platform::i18n::msg::browse_diagnostics_reserve_low()),
+        plx_media::player::ABR_WHY_SAFE_BUDGET => Some(plx_platform::i18n::msg::browse_diagnostics_link_room()),
+        plx_media::player::ABR_WHY_UNSAFE_STATE => Some(plx_platform::i18n::msg::browse_diagnostics_losing_reserve()),
+        plx_media::player::ABR_WHY_PRODUCTION => Some(plx_platform::i18n::msg::browse_diagnostics_acquisition_behind()),
+        plx_media::player::ABR_WHY_BUFFER => Some(plx_platform::i18n::msg::browse_diagnostics_reserve_low()),
         // Deliberately not phrased as a constraint like the codes above: this is the state where
         // the controller has nothing left to try, and a reader watching the picture stop is owed
         // that rather than a fifth thing that sounds like a knob.
-        crate::player::ABR_WHY_LADDER_FLOOR => Some(plx_platform::i18n::msg::browse_diagnostics_lowest_quality()),
+        plx_media::player::ABR_WHY_LADDER_FLOOR => Some(plx_platform::i18n::msg::browse_diagnostics_lowest_quality()),
         // The one code that names a DEADLINE rather than a conservation deficit. "current stream
         // losing reserve" says the completed delivery bag costs more wall time than media it
         // supplies; this says the reserve is now too short to reach the next credit at all.
-        crate::player::ABR_WHY_STARVATION => Some(plx_platform::i18n::msg::browse_diagnostics_buffer_exhausted()),
-        crate::player::ABR_WHY_REJECT_BACKOFF => Some(plx_platform::i18n::msg::browse_diagnostics_candidate_failed()),
+        plx_media::player::ABR_WHY_STARVATION => Some(plx_platform::i18n::msg::browse_diagnostics_buffer_exhausted()),
+        plx_media::player::ABR_WHY_REJECT_BACKOFF => Some(plx_platform::i18n::msg::browse_diagnostics_candidate_failed()),
         // Phrased for the person holding the phone, not for the controller: what they can see is
         // that the picture is not improving, and these three are the three different reasons.
-        crate::player::ABR_WHY_NO_TARGET => Some(plx_platform::i18n::msg::browse_diagnostics_no_better()),
-        crate::player::ABR_WHY_EVIDENCE => Some(plx_platform::i18n::msg::browse_diagnostics_measuring()),
-        crate::player::ABR_WHY_AT_BEST => Some(plx_platform::i18n::msg::browse_diagnostics_at_best()),
-        crate::player::ABR_WHY_RESERVE_UNKNOWN => Some(plx_platform::i18n::msg::browse_diagnostics_waiting_audio()),
-        crate::player::ABR_WHY_DEADLINE_ROLLBACK => Some(plx_platform::i18n::msg::browse_diagnostics_deadline_rollback()),
-        crate::player::ABR_WHY_RESPONSE_LIMITED => Some(plx_platform::i18n::msg::browse_diagnostics_response_limited()),
+        plx_media::player::ABR_WHY_NO_TARGET => Some(plx_platform::i18n::msg::browse_diagnostics_no_better()),
+        plx_media::player::ABR_WHY_EVIDENCE => Some(plx_platform::i18n::msg::browse_diagnostics_measuring()),
+        plx_media::player::ABR_WHY_AT_BEST => Some(plx_platform::i18n::msg::browse_diagnostics_at_best()),
+        plx_media::player::ABR_WHY_RESERVE_UNKNOWN => Some(plx_platform::i18n::msg::browse_diagnostics_waiting_audio()),
+        plx_media::player::ABR_WHY_DEADLINE_ROLLBACK => Some(plx_platform::i18n::msg::browse_diagnostics_deadline_rollback()),
+        plx_media::player::ABR_WHY_RESPONSE_LIMITED => Some(plx_platform::i18n::msg::browse_diagnostics_response_limited()),
         // The one code here whose constraint is the VIEWER rather than the link or the server, so
         // it says so: the picture could improve and the improvement is not worth another visible
         // change this soon after the last one.
-        crate::player::ABR_WHY_SWITCH_COST => Some(plx_platform::i18n::msg::browse_diagnostics_switch_hold()),
+        plx_media::player::ABR_WHY_SWITCH_COST => Some(plx_platform::i18n::msg::browse_diagnostics_switch_hold()),
         _ => None,
     }
 }
@@ -1427,7 +1427,7 @@ fn abr_why_text(why: u8) -> Option<&'static str> {
 /// audio half is fixed by the codec (AC3 packs 1536 samples, so ~31/s at 48 kHz), not by the
 /// content, so it gets no unit that would imply otherwise. It read `AU/s` until someone outside
 /// the project asked what an AU was.
-fn fed_rate(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> String {
+fn fed_rate(d: &plx_media::player::Diag, prev: (i64, i64, u32), now: u32) -> String {
     match fed_rates(d, prev, now) {
         Some((rv, ra)) => plx_platform::i18n::msg::browse_diagnostics_fed_rate(&plx_platform::i18n::current().number(ra), &plx_platform::i18n::current().number(rv)),
         None => "—".to_string(),
@@ -1438,7 +1438,7 @@ fn fed_rate(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> String 
 ///
 /// `None` — not `(0, 0)` — when there is no previous sample: a lane that has genuinely stopped
 /// also reads zero, and the two must not be the same value.
-fn fed_rates(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Option<(i64, i64)> {
+fn fed_rates(d: &plx_media::player::Diag, prev: (i64, i64, u32), now: u32) -> Option<(i64, i64)> {
     let (pv, pa, at) = prev;
     if at == 0 || now <= at {
         return None;
@@ -1451,7 +1451,7 @@ fn fed_rates(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Option
 }
 
 /// How far the audio lane trails the video lane, in whole seconds of stream time.
-fn skew(d: &crate::player::Diag) -> String {
+fn skew(d: &plx_media::player::Diag) -> String {
     if d.fed_v_pts == 0 && d.fed_a_pts == 0 {
         return "—".to_string();
     }
@@ -1463,7 +1463,7 @@ fn skew(d: &crate::player::Diag) -> String {
 /// interleave a fraction of a second either way; whole seconds mean one lane has stopped.
 const SKEW_FAULT_MS: i64 = 3_000;
 
-fn skew_bad(d: &crate::player::Diag) -> bool {
+fn skew_bad(d: &plx_media::player::Diag) -> bool {
     (d.fed_v_pts != 0 || d.fed_a_pts != 0)
         && ((d.fed_v_pts - d.fed_a_pts) / 1_000_000).abs() > SKEW_FAULT_MS
 }
@@ -1874,7 +1874,7 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::route::{reset_player_control_for_test, EnhTestFixture};
+    use plx_media::route::{reset_player_control_for_test, EnhTestFixture};
 
     /// `enhancement_test_session` registers a synthetic server AND a playback session; every
     /// caller must undo both in the same order, and the five call sites below once repeated that
@@ -1882,18 +1882,18 @@ mod tests {
     /// guard stand in for the `PlaybackSession` at every read site, and `Drop` runs the identical
     /// teardown at the identical point — end of the owning block — that the manual calls did.
     struct EnhTestSession {
-        ps: crate::route::PlaybackSession,
+        ps: plx_media::route::PlaybackSession,
     }
 
     impl EnhTestSession {
         fn new(fixture: EnhTestFixture) -> Self {
-            let (ps, _sid) = crate::route::enhancement_test_session(fixture);
+            let (ps, _sid) = plx_media::route::enhancement_test_session(fixture);
             Self { ps }
         }
     }
 
     impl std::ops::Deref for EnhTestSession {
-        type Target = crate::route::PlaybackSession;
+        type Target = plx_media::route::PlaybackSession;
         fn deref(&self) -> &Self::Target {
             &self.ps
         }
@@ -1920,7 +1920,7 @@ mod tests {
             (both, true, false),   // Refused: asked, but the server did not honour it
         ] {
             let ps = EnhTestSession::new(EnhTestFixture { applied, refused, ..Default::default() });
-            let d = crate::player::Diag::default();
+            let d = plx_media::player::Diag::default();
             let audio_row = pipeline_rows(&ps, &d, (0, 0, 0), 0)
                 .into_iter()
                 .find(|f| f.key == plx_platform::i18n::msg::browse_diagnostics_field_audio())
@@ -1941,7 +1941,7 @@ mod tests {
     fn route_line_shows_refused_and_unverified() {
         let _g = plx_base::testlock::serial();
         let asked = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
-        let d = crate::player::Diag::default();
+        let d = plx_media::player::Diag::default();
 
         {
             let ps = EnhTestSession::new(EnhTestFixture::default());
@@ -2128,23 +2128,23 @@ mod tests {
 
     #[test]
     fn manual_original_keeps_the_same_demand_lane() {
-        let d = crate::player::Diag {
+        let d = plx_media::player::Diag {
             source_kbps: 28_000,
             ..Default::default()
         };
         assert_eq!(
-            chart_demand_kbps(&d, crate::route::Quality::Original),
+            chart_demand_kbps(&d, plx_media::route::Quality::Original),
             28_000
         );
-        let hls = crate::player::Diag {
-            abr_mode: crate::player::ABR_MODE_HLS,
+        let hls = plx_media::player::Diag {
+            abr_mode: plx_media::player::ABR_MODE_HLS,
             abr_kbps: 22_000,
             abr_declared_kbps: 18_600,
             abr_media_kbps: 17_900,
             ..Default::default()
         };
         assert_eq!(
-            chart_demand_kbps(&hls, crate::route::Quality::Auto),
+            chart_demand_kbps(&hls, plx_media::route::Quality::Auto),
             17_900,
             "actual measured HLS demand outranks both PMS declaration and request ceiling",
         );
@@ -2153,21 +2153,21 @@ mod tests {
     /// The row budgets are the design: mode changes replace values, never geometry.
     #[test]
     fn the_read_out_never_outgrows_its_budget() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         // Every video-plane shape and every Auto shape: the exported path states more about the
         // plane than ACB does, and Auto trades the FFmpeg row for its five model rows — neither
         // may change the budget.
         for vp in [
-            crate::player::VP_ACB,
-            crate::player::VP_EXPORTED,
-            crate::player::VP_NONE,
+            plx_media::player::VP_ACB,
+            plx_media::player::VP_EXPORTED,
+            plx_media::player::VP_NONE,
         ] {
             for abr_mode in [
                 0,
-                crate::player::ABR_MODE_ORIGINAL,
-                crate::player::ABR_MODE_HLS,
+                plx_media::player::ABR_MODE_ORIGINAL,
+                plx_media::player::ABR_MODE_HLS,
             ] {
-                let d = crate::player::Diag {
+                let d = plx_media::player::Diag {
                     vp_mode: vp,
                     abr_mode,
                     ..Default::default()
@@ -2184,10 +2184,10 @@ mod tests {
     /// every pipeline fact to a different y between photographs.
     #[test]
     fn every_delivery_mode_keeps_the_same_schema() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let schema = |mode| {
             rows(&ps, 
-                &crate::player::Diag {
+                &plx_media::player::Diag {
                     abr_mode: mode,
                     ..Default::default()
                 },
@@ -2208,12 +2208,12 @@ mod tests {
             "the end-to-end cadence was mislabeled as server state"
         );
         assert_eq!(
-            schema(crate::player::ABR_MODE_ORIGINAL),
+            schema(plx_media::player::ABR_MODE_ORIGINAL),
             fixed,
             "Original moved or added rows"
         );
         assert_eq!(
-            schema(crate::player::ABR_MODE_HLS),
+            schema(plx_media::player::ABR_MODE_HLS),
             fixed,
             "HLS moved or added rows"
         );
@@ -2225,9 +2225,9 @@ mod tests {
     /// prediction the controller did not make.
     #[test]
     fn a_conservative_horizon_does_not_overrule_an_observed_filling_buffer() {
-        let ps = crate::route::PlaybackSession::IDLE;
-        let d = crate::player::Diag {
-            abr_mode: crate::player::ABR_MODE_HLS,
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let d = plx_media::player::Diag {
+            abr_mode: plx_media::player::ABR_MODE_HLS,
             abr_kbps: 320,
             abr_safe_kbps: 301,
             abr_net_kbps: 499,
@@ -2238,7 +2238,7 @@ mod tests {
             ..Default::default()
         };
         let mut fields = Vec::new();
-        abr_rows(&ps, &d, crate::route::Quality::Auto, &mut fields);
+        abr_rows(&ps, &d, plx_media::route::Quality::Auto, &mut fields);
         let buffer = fields
             .iter()
             .find(|f| f.key == "Buffer")
@@ -2272,16 +2272,16 @@ mod tests {
 
     #[test]
     fn manual_quality_keeps_the_same_observed_buffer_instrument() {
-        let d = crate::player::Diag {
+        let d = plx_media::player::Diag {
             playable_buffer_ms: Some(12_345),
             ..Default::default()
         };
         assert_eq!(
-            abr_buffer(&d, crate::route::Quality::Original),
+            abr_buffer(&d, plx_media::route::Quality::Original),
             "12.3 s · observed reserve",
         );
         assert_eq!(
-            abr_buffer(&d, crate::route::Quality::P720),
+            abr_buffer(&d, plx_media::route::Quality::P720),
             "12.3 s · observed reserve",
         );
     }
@@ -2292,12 +2292,12 @@ mod tests {
     /// composed lines are written to fit. Grade the composition, not just the count.
     #[test]
     fn every_composed_row_fits_one_line() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         // The widest realistic values: a three-stage codec chain, a 4K raster with a position and
         // a skew, and the full model line with every optional part present.
-        let d = crate::player::Diag {
-            vp_mode: crate::player::VP_EXPORTED,
-            abr_mode: crate::player::ABR_MODE_HLS,
+        let d = plx_media::player::Diag {
+            vp_mode: plx_media::player::VP_EXPORTED,
+            abr_mode: plx_media::player::ABR_MODE_HLS,
             video_w: 3_840,
             video_h: 2_160,
             pos_ns: 3_600_000_000_000,
@@ -2316,8 +2316,8 @@ mod tests {
             abr_ratio_pm: 950,
             abr_pred_pm: 1_050,
             abr_risk: 3,
-            abr_why: crate::player::ABR_WHY_PRODUCTION,
-            abr_action: crate::player::ABR_ACTION_PRIME_DOWN,
+            abr_why: plx_media::player::ABR_WHY_PRODUCTION,
+            abr_action: plx_media::player::ABR_ACTION_PRIME_DOWN,
             abr_target_kbps: 14_000,
             cb_count: 812,
             http_status: 200,
@@ -2352,8 +2352,8 @@ mod tests {
     /// too — and there the pipeline block is precisely what a reader wants.
     #[test]
     fn only_a_session_that_never_loaded_gets_the_device_block() {
-        use crate::player::PlaybackState as S;
-        let fresh = crate::player::Diag::default();
+        use plx_media::player::PlaybackState as S;
+        let fresh = plx_media::player::Diag::default();
         assert!(never_played(&fresh, S::Idle), "boot, nothing asked to play");
         // Every non-idle state keeps the pipeline block, including the two that precede a Load and
         // so still have `load_at == 0` — those are where "Load waiting · no connection" is the
@@ -2369,7 +2369,7 @@ mod tests {
             assert!(!never_played(&fresh, st), "{st:?} is a playback attempt");
         }
         // …and back at Idle after something HAS played, the post-mortem is the point.
-        let played = crate::player::Diag {
+        let played = plx_media::player::Diag {
             load_at: 4_200,
             ..Default::default()
         };
@@ -2461,10 +2461,10 @@ mod tests {
     /// not happen" must say it.
     #[test]
     fn a_dead_session_marks_its_faults() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         // `load_at` a full stall-window in the past: a Load that completed SECONDS ago with no
         // frame is the fault. The same session one tick after Load is NOT — see the test below.
-        let d = crate::player::Diag {
+        let d = plx_media::player::Diag {
             load_completed: true,
             load_at: 1_000,
             ..Default::default()
@@ -2516,18 +2516,18 @@ mod tests {
     /// `panel_rect` now; this grades that the reservation actually survives to the draw.
     #[test]
     fn the_chart_keeps_its_band_whatever_the_rows_do() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         for vp in [
-            crate::player::VP_ACB,
-            crate::player::VP_EXPORTED,
-            crate::player::VP_NONE,
+            plx_media::player::VP_ACB,
+            plx_media::player::VP_EXPORTED,
+            plx_media::player::VP_NONE,
         ] {
             for abr_mode in [
                 0,
-                crate::player::ABR_MODE_ORIGINAL,
-                crate::player::ABR_MODE_HLS,
+                plx_media::player::ABR_MODE_ORIGINAL,
+                plx_media::player::ABR_MODE_HLS,
             ] {
-                let d = crate::player::Diag {
+                let d = plx_media::player::Diag {
                     vp_mode: vp,
                     abr_mode,
                     ..Default::default()
@@ -2552,7 +2552,7 @@ mod tests {
     /// the last decision went the way it did.
     #[test]
     fn the_model_block_states_every_input_it_decides_on() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let val = |v: &[Field], key: &str| {
             v.iter()
                 .find(|f| f.key == key)
@@ -2560,15 +2560,15 @@ mod tests {
                 .unwrap_or("missing")
                 .to_string()
         };
-        let build_with = |d: &crate::player::Diag, selected: crate::route::Quality| {
+        let build_with = |d: &plx_media::player::Diag, selected: plx_media::route::Quality| {
             let mut v = Vec::new();
             abr_rows(&ps, d, selected, &mut v);
             v
         };
-        let build = |d: &crate::player::Diag| build_with(d, crate::route::Quality::Auto);
+        let build = |d: &plx_media::player::Diag| build_with(d, plx_media::route::Quality::Auto);
 
-        let original = crate::player::Diag {
-            abr_mode: crate::player::ABR_MODE_ORIGINAL,
+        let original = plx_media::player::Diag {
+            abr_mode: plx_media::player::ABR_MODE_ORIGINAL,
             abr_kbps: 11_356,
             abr_net_kbps: 4_016,
             abr_safe_kbps: 3_800,
@@ -2607,8 +2607,8 @@ mod tests {
         // thirty.
         let at = |ms: i64| {
             val(
-                &build(&crate::player::Diag {
-                    abr_mode: crate::player::ABR_MODE_ORIGINAL,
+                &build(&plx_media::player::Diag {
+                    abr_mode: plx_media::player::ABR_MODE_ORIGINAL,
                     abr_unsafe_deficit_ms: ms,
                     ..Default::default()
                 }),
@@ -2622,8 +2622,8 @@ mod tests {
             plx_ui::widgets::Tone::Fault
         );
 
-        let hls = crate::player::Diag {
-            abr_mode: crate::player::ABR_MODE_HLS,
+        let hls = plx_media::player::Diag {
+            abr_mode: plx_media::player::ABR_MODE_HLS,
             abr_kbps: 4_000,
             abr_optimal_kbps: 10_000,
             abr_net_kbps: 12_400,
@@ -2636,8 +2636,8 @@ mod tests {
             abr_ratio_pm: 420,
             abr_pred_pm: 900,
             abr_risk: 0,
-            abr_why: crate::player::ABR_WHY_SAFE_BUDGET,
-            abr_action: crate::player::ABR_ACTION_COMMIT_UP,
+            abr_why: plx_media::player::ABR_WHY_SAFE_BUDGET,
+            abr_action: plx_media::player::ABR_ACTION_COMMIT_UP,
             abr_target_kbps: 4_000,
             abr_declared_kbps: 3_493,
             abr_media_kbps: 3_200,
@@ -2664,8 +2664,8 @@ mod tests {
         // Device trace, 2026-08-30: the request/controller said 22 Mbps / 4K while PMS declared
         // 896 kbps and every decoded segment was 720x404. The panel must expose all three facts
         // rather than promote a ceiling into a statement about the picture.
-        let mismatched = build(&crate::player::Diag {
-            abr_mode: crate::player::ABR_MODE_HLS,
+        let mismatched = build(&plx_media::player::Diag {
+            abr_mode: plx_media::player::ABR_MODE_HLS,
             abr_kbps: 22_000,
             abr_declared_kbps: 896,
             abr_media_kbps: 1_051,
@@ -2681,9 +2681,9 @@ mod tests {
 
         // Every actuator on the ladder names its raster, including the ones added after this panel
         // was written — the failure mode is a photograph reading `unknown raster`.
-        for rung in crate::abr::LADDER {
-            let probe = crate::player::Diag {
-                abr_mode: crate::player::ABR_MODE_HLS,
+        for rung in plx_media::abr::LADDER {
+            let probe = plx_media::player::Diag {
+                abr_mode: plx_media::player::ABR_MODE_HLS,
                 abr_kbps: i64::from(rung.kbps()),
                 abr_optimal_kbps: -1,
                 ..Default::default()
@@ -2694,28 +2694,28 @@ mod tests {
             );
         }
 
-        let probing = crate::player::Diag {
-            abr_mode: crate::player::ABR_MODE_HLS,
+        let probing = plx_media::player::Diag {
+            abr_mode: plx_media::player::ABR_MODE_HLS,
             abr_risk: -1,
-            abr_action: crate::player::ABR_ACTION_PROBE_ORIGINAL,
+            abr_action: plx_media::player::ABR_ACTION_PROBE_ORIGINAL,
             ..Default::default()
         };
         assert_eq!(val(&build(&probing), "Action"), "checking Original link");
-        let recovering = crate::player::Diag {
-            abr_mode: crate::player::ABR_MODE_HLS,
+        let recovering = plx_media::player::Diag {
+            abr_mode: plx_media::player::ABR_MODE_HLS,
             abr_risk: -1,
-            abr_action: crate::player::ABR_ACTION_RECOVER_ORIGINAL,
+            abr_action: plx_media::player::ABR_ACTION_RECOVER_ORIGINAL,
             ..Default::default()
         };
         assert_eq!(
             val(&build(&recovering), "Action"),
             "switching back to Original"
         );
-        let unavailable = crate::player::Diag {
-            abr_mode: crate::player::ABR_MODE_HLS,
+        let unavailable = plx_media::player::Diag {
+            abr_mode: plx_media::player::ABR_MODE_HLS,
             abr_risk: -1,
-            abr_action: crate::player::ABR_ACTION_ORIGINAL_PROBE_FAILED,
-            abr_failure_kind: crate::player::ABR_FAILURE_ORIGINAL_HTTP,
+            abr_action: plx_media::player::ABR_ACTION_ORIGINAL_PROBE_FAILED,
+            abr_failure_kind: plx_media::player::ABR_FAILURE_ORIGINAL_HTTP,
             abr_failure_status: 503,
             ..Default::default()
         };
@@ -2728,11 +2728,11 @@ mod tests {
             "PMS refused Original source · HTTP 503",
         );
 
-        let refreshing = crate::player::Diag {
-            abr_mode: crate::player::ABR_MODE_HLS,
-            abr_action: crate::player::ABR_ACTION_PRIME_REFRESH,
+        let refreshing = plx_media::player::Diag {
+            abr_mode: plx_media::player::ABR_MODE_HLS,
+            abr_action: plx_media::player::ABR_ACTION_PRIME_REFRESH,
             abr_target_kbps: 22_000,
-            abr_why: crate::player::ABR_WHY_RESPONSE_LIMITED,
+            abr_why: plx_media::player::ABR_WHY_RESPONSE_LIMITED,
             ..Default::default()
         };
         assert_eq!(
@@ -2747,8 +2747,8 @@ mod tests {
         // A fixed rung keeps the schema. Model-only rows state that they are inactive, while the
         // physical buffer instrument remains present and waits for media timestamps.
         let fixed = build_with(
-            &crate::player::Diag::default(),
-            crate::route::Quality::Original,
+            &plx_media::player::Diag::default(),
+            plx_media::route::Quality::Original,
         );
         assert_eq!(fixed.len(), RIGHT_ROWS);
         for key in ["Sample", "Conservative", "Risk"] {
@@ -2762,7 +2762,7 @@ mod tests {
         // The visual simulator starts its raw fixture with Auto selected but no adaptive session.
         // That state used to read `Auto · starting` beside `fixed by user`, which cannot both be
         // true. It is an idle Auto controller, not a manual choice and not an active estimate.
-        let idle_auto = build_with(&crate::player::Diag::default(), crate::route::Quality::Auto);
+        let idle_auto = build_with(&plx_media::player::Diag::default(), plx_media::route::Quality::Auto);
         assert_eq!(val(&idle_auto, "Mode"), "Auto · controller idle");
         assert_eq!(val(&idle_auto, "Sample"), "not sampled · controller idle");
         assert_eq!(
@@ -2778,12 +2778,12 @@ mod tests {
         assert_eq!(val(&idle_auto, "Reason"), "no adaptive session");
 
         let idle_after_original_failure = build_with(
-            &crate::player::Diag {
-                abr_failure_kind: crate::player::ABR_FAILURE_ORIGINAL_HTTP,
+            &plx_media::player::Diag {
+                abr_failure_kind: plx_media::player::ABR_FAILURE_ORIGINAL_HTTP,
                 abr_failure_status: 500,
                 ..Default::default()
             },
-            crate::route::Quality::Auto,
+            plx_media::route::Quality::Auto,
         );
         assert_eq!(
             val(&idle_after_original_failure, "Reason"),
@@ -2792,15 +2792,15 @@ mod tests {
         );
 
         let hls_backoff = build_with(
-            &crate::player::Diag {
-                abr_mode: crate::player::ABR_MODE_HLS,
+            &plx_media::player::Diag {
+                abr_mode: plx_media::player::ABR_MODE_HLS,
                 abr_kbps: 18_600,
                 abr_optimal_kbps: 22_000,
-                abr_action: crate::player::ABR_ACTION_STEADY,
-                abr_why: crate::player::ABR_WHY_REJECT_BACKOFF,
+                abr_action: plx_media::player::ABR_ACTION_STEADY,
+                abr_why: plx_media::player::ABR_WHY_REJECT_BACKOFF,
                 ..Default::default()
             },
-            crate::route::Quality::Auto,
+            plx_media::route::Quality::Auto,
         );
         assert_eq!(val(&hls_backoff, "Action"), "hold · model asks 22.0 Mbps");
         assert_eq!(
@@ -2831,8 +2831,8 @@ mod tests {
     /// healthy — and only the rate and the skew can see it.
     #[test]
     fn a_stalled_audio_lane_is_visible_even_though_its_total_is_large() {
-        let ps = crate::route::PlaybackSession::IDLE;
-        let d = crate::player::Diag {
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let d = plx_media::player::Diag {
             load_completed: true,
             pushed_any: true,
             fed_v: 5_000,
@@ -2868,12 +2868,12 @@ mod tests {
     /// stall. Without this distinction the panel cries wolf on every single playback.
     #[test]
     fn a_freshly_completed_load_with_no_frames_yet_is_not_a_fault() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         // Serialized: `frames_str` reads the process-wide `player::TX.paused`, which the paused
         // test below toggles under this same lock — without it, this test can observe the paused
         // branch ("none yet") where it asserts the running clock ("none in 0 s") and flake.
         let _g = plx_base::testlock::serial();
-        let d = crate::player::Diag {
+        let d = plx_media::player::Diag {
             load_completed: true,
             load_at: 1_000,
             ..Default::default()
@@ -2902,9 +2902,9 @@ mod tests {
     /// its reader after a fault that is just the pause button. Reported from the wild on 0.2.1.
     #[test]
     fn a_paused_stream_does_not_report_its_frames_as_frozen() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
-        let d = crate::player::Diag {
+        let d = plx_media::player::Diag {
             load_completed: true,
             seen_frame: true,
             frames: 190,
@@ -2913,9 +2913,9 @@ mod tests {
         };
         let long_after = 1_000 + STALL_MS + 8_000;
 
-        crate::player::TX.paused.store(true, Ordering::Relaxed);
+        plx_media::player::TX.paused.store(true, Ordering::Relaxed);
         let paused = rows(&ps, &d, (0, 0, 0), long_after);
-        crate::player::TX.paused.store(false, Ordering::Relaxed);
+        plx_media::player::TX.paused.store(false, Ordering::Relaxed);
         let playing = rows(&ps, &d, (0, 0, 0), long_after);
 
         let f = |v: &Vec<Field>| {
@@ -2938,17 +2938,17 @@ mod tests {
     /// a connection that was refused, and a connection that answered and delivered nothing.
     #[test]
     fn the_http_row_splits_the_open_failures() {
-        let ps = crate::route::PlaybackSession::IDLE;
-        let row = |d: &crate::player::Diag| {
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let row = |d: &plx_media::player::Diag| {
             rows(&ps, d, (0, 0, 0), 1_000)
                 .into_iter()
                 .find(|f| f.key == "Transfer")
                 .unwrap()
         };
-        let none = row(&crate::player::Diag::default());
+        let none = row(&plx_media::player::Diag::default());
         assert!(none.val.as_deref().unwrap().ends_with("no connection"));
 
-        let refused = row(&crate::player::Diag {
+        let refused = row(&plx_media::player::Diag {
             http_status: 401,
             ..Default::default()
         });
@@ -2960,7 +2960,7 @@ mod tests {
         assert_eq!(refused.tone, plx_ui::widgets::Tone::Fault);
 
         // answered fine and delivered bytes — the fault is downstream, and this row says so
-        let ok = row(&crate::player::Diag {
+        let ok = row(&plx_media::player::Diag {
             http_status: 200,
             net_rx: 13_000_000,
             cb_count: 4,
@@ -2979,7 +2979,7 @@ mod tests {
     /// tint — both are ordinary moments in a healthy stream; only an outright refusal is.
     #[test]
     fn the_feed_row_splits_a_dead_producer_from_a_dead_sink() {
-        let f = |st: u8| crate::player::Diag {
+        let f = |st: u8| plx_media::player::Diag {
             feed_state: st,
             ..Default::default()
         };
@@ -2997,8 +2997,8 @@ mod tests {
     /// "died after a long healthy run" are different readings.
     #[test]
     fn a_latched_pipeline_error_outranks_a_healthy_callback_count() {
-        let ps = crate::route::PlaybackSession::IDLE;
-        let d = crate::player::Diag {
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let d = plx_media::player::Diag {
             cb_count: 812,
             cb_err: 18,
             cb_err_at: 4,
@@ -3021,7 +3021,7 @@ mod tests {
     /// apart by construction, and flagging that would cry wolf on every healthy playback.
     #[test]
     fn ordinary_interleave_is_not_a_fault() {
-        let d = crate::player::Diag {
+        let d = plx_media::player::Diag {
             fed_v_pts: 10_400_000_000,
             fed_a_pts: 10_000_000_000, // 0.4 s
             ..Default::default()
@@ -3034,15 +3034,15 @@ mod tests {
     /// confident 0.0 s that reads as "both lanes are in step".
     #[test]
     fn skew_is_unknown_before_anything_is_fed() {
-        assert_eq!(skew(&crate::player::Diag::default()), "—");
-        assert!(!skew_bad(&crate::player::Diag::default()));
+        assert_eq!(skew(&plx_media::player::Diag::default()), "—");
+        assert!(!skew_bad(&plx_media::player::Diag::default()));
     }
 
     /// No previous sample, and a backwards clock (an SDL tick wrap), must both yield no rate
     /// rather than a negative one that would read as a fault.
     #[test]
     fn a_rate_needs_two_samples_and_a_forward_clock() {
-        let d = crate::player::Diag {
+        let d = plx_media::player::Diag {
             fed_v: 10,
             fed_a: 10,
             ..Default::default()
@@ -3110,9 +3110,9 @@ mod tests {
     /// tone is a property of the ROW, fixed at build time, so it is assertable regardless.)
     #[test]
     fn the_server_row_is_never_a_fault() {
-        let ps = crate::route::PlaybackSession::IDLE;
+        let ps = plx_media::route::PlaybackSession::IDLE;
         // Topology and server capability are facts on the stable Connection row, never failures.
-        let d = crate::player::Diag::default();
+        let d = plx_media::player::Diag::default();
         let row = rows(&ps, &d, (0, 0, 0), 1_000)
             .into_iter()
             .find(|f| f.key == "Connection")
@@ -3122,7 +3122,7 @@ mod tests {
 
     #[test]
     fn playback_diagnostics_show_the_frozen_dv_presentation() {
-        let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
         let dovi = plx_data::metadata::Dovi {
             present: true,
             profile: 8,
@@ -3130,7 +3130,7 @@ mod tests {
             el_present: false,
             ..plx_data::metadata::Dovi::NONE
         };
-        assert!(crate::route::set_stream_declaration_for_test(
+        assert!(plx_media::route::set_stream_declaration_for_test(
             &mut ps,
             "hevc",
             "eac3",
@@ -3139,7 +3139,7 @@ mod tests {
             false,
             plx_platform::devcaps::dv::DvCapability::Supported,
         ));
-        let video = rows(&ps, &crate::player::Diag::default(), (0, 0, 0), 1_000)
+        let video = rows(&ps, &plx_media::player::Diag::default(), (0, 0, 0), 1_000)
             .into_iter()
             .find(|field| field.key == "Video")
             .and_then(|field| field.val)
@@ -3182,17 +3182,17 @@ mod tests {
     /// itself is pinned in `webos.rs`; this pins the SENTENCE the panel prints.)
     #[test]
     fn an_unknown_firmware_is_named_as_unknown() {
-        let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
         // "No session" is a PRECONDITION on three crate globals, not a property of a default
         // `Diag`: `player::state()` derives from the pump's `pb_state` and the route's refusal
         // flags, and the hostsim engine tests drive the real pump — which stores `Error` on a
         // refused Load/Play — without restoring it. Establish the state this test asserts about,
         // and hand back whatever was there (see `[[test-suite-global-pollution]]`).
-        let prev = crate::player::swap_state_for_test(crate::player::PlaybackState::Idle);
-        crate::route::clear_play_verdict_for_test(&mut ps);
-        let head = header(&ps, &crate::player::Diag::default(), 1_000);
-        crate::player::restore_state_for_test(prev);
+        let prev = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Idle);
+        plx_media::route::clear_play_verdict_for_test(&mut ps);
+        let head = header(&ps, &plx_media::player::Diag::default(), 1_000);
+        plx_media::player::restore_state_for_test(prev);
         // The firmware rides the IDENTITY line now (head[0]); head[1] is the verdict, and the two
         // being one array is what stops the firmware taking the verdict's slot again.
         let line = &head[0];
