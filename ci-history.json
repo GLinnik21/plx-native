@@ -1,4 +1,4 @@
-{"updated":"2026-10-04T11:00:27Z",
+{"updated":"2026-10-04T11:12:01Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -466,5 +466,6 @@
 {"id":37182625708,"at":"2026-10-04T06:22:40Z","sha":"115848302","title":"Home: simplify the hub-merge code left by the #395 sequence","pr":420,"jobs":{"Linux simulator build + launch":219,"Windows launcher syntax":16,"macOS simulator build + launch":994}},
 {"id":37190808762,"at":"2026-10-04T09:01:30Z","sha":"a32ca0418","title":"plx_platform: the umask test runs in a child process, so it cannot make other tests' files unreadable","pr":423,"jobs":{"Linux simulator build + launch":201,"Windows launcher syntax":14,"macOS simulator build + launch":990}},
 {"id":37193135109,"at":"2026-10-04T09:44:48Z","sha":"4ed534fc2","title":"Split: the data and session layers are their own crates (plx_data, plx_session)","pr":422,"jobs":{"Windows launcher syntax":20,"macOS simulator build + launch":851,"Linux simulator build + launch":258}},
-{"id":37195093417,"at":"2026-10-04T10:21:18Z","sha":"7efa65ddc","title":"Library: the shelf run is sized to the published shelves; resting rows are not stepped","pr":429,"jobs":{"Windows launcher syntax":18,"macOS simulator build + launch":848,"Linux simulator build + launch":311}}
+{"id":37195093417,"at":"2026-10-04T10:21:18Z","sha":"7efa65ddc","title":"Library: the shelf run is sized to the published shelves; resting rows are not stepped","pr":429,"jobs":{"Windows launcher syntax":18,"macOS simulator build + launch":848,"Linux simulator build + launch":311}},
+{"id":37196864846,"at":"2026-10-04T10:53:52Z","sha":"239c8a6f0","title":"Library: no shelf cap; a shelf is published whole or not at all","pr":428,"jobs":{"Linux simulator build + launch":197,"macOS simulator build + launch":1070,"Windows launcher syntax":20}}
 ]}
