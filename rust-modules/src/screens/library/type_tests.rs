@@ -214,6 +214,6 @@ fn an_empty_answer_under_shelves_stands_below_its_heading() {
     assert_eq!(top, page.layout.grid_top(), "directly under the heading row");
     assert!(page.layout.doc_h() >= top + h, "the band is part of the document, so it can scroll into view");
     let frame = page.status_frame();
-    let shelf_bottom = page.layout.shelf_y(0, page.scroll.pos) + page.layout.shelf_pitch(0);
+    let shelf_bottom = page.layout.shelf_y(&page.run, 0, page.scroll.pos) + page.layout.shelf_pitch(&page.run, 0);
     assert!(frame.y >= shelf_bottom, "the read-out ({}) must not overlap the shelf above ({shelf_bottom})", frame.y);
 }

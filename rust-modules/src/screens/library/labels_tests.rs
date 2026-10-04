@@ -8,7 +8,7 @@ use plx_ui::{Painter, Rect};
 use std::os::raw::c_int;
 use plx_data::stores::browse::SecKind;
 use super::draw::shelf_label;
-use super::layout::{self, Layout, shelf_pitch, COLS, CONTENT_TOP, GRID_RIGHT, MAX_LETTERS,
+use super::layout::{self, Layout, ShelfRun, shelf_pitch, COLS, CONTENT_TOP, GRID_RIGHT, MAX_LETTERS,
     RAIL_CAP_PAD, RAIL_TRACK_W};
 
 #[test]
@@ -102,6 +102,7 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
     );
     let bare = Layout::new(false, &[], 40, true);
     let head = Layout::new(true, &[plx_ui::consts::ROW_PITCH], 40, true);
+    let head_run = ShelfRun::of(&[plx_ui::consts::ROW_PITCH]);
     let screen = crate::screens::library::LibraryScreen::new(
         EntryId(1),
         InstanceId(1),
@@ -150,7 +151,7 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
             "library shelf heading (first)",
             Rect::new(
                 MARGIN_X,
-                CONTENT_TOP + head.shelf_origin(0) - plx_ui::consts::TITLE_DY,
+                CONTENT_TOP + head.shelf_origin(&head_run, 0) - plx_ui::consts::TITLE_DY,
                 CARD_W,
                 plx_ui::consts::TITLE_DY,
             ),
@@ -159,7 +160,7 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
             "library shelf tile (first)",
             Rect::new(
                 MARGIN_X,
-                CONTENT_TOP + head.shelf_origin(0) + plx_ui::consts::CARD_DY,
+                CONTENT_TOP + head.shelf_origin(&head_run, 0) + plx_ui::consts::CARD_DY,
                 CARD_W,
                 CARD_H,
             ),
@@ -340,9 +341,10 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         // …and the document sums the ACTUAL pitches, so a mixed page puts the grid where the
         // shelves above it really end
         let mixed = Layout::new(true, &[landscape, poster, landscape], 40, true);
-        assert_eq!(mixed.shelf_origin(0), mixed.library_h());
-        assert_eq!(mixed.shelf_origin(1), mixed.library_h() + landscape);
-        assert_eq!(mixed.shelf_origin(2), mixed.library_h() + landscape + poster);
+        let run = ShelfRun::of(&[landscape, poster, landscape]);
+        assert_eq!(mixed.shelf_origin(&run, 0), mixed.library_h());
+        assert_eq!(mixed.shelf_origin(&run, 1), mixed.library_h() + landscape);
+        assert_eq!(mixed.shelf_origin(&run, 2), mixed.library_h() + landscape + poster);
         assert_eq!(
             mixed.grid_block_top(),
             mixed.library_h() + 2.0 * landscape + poster

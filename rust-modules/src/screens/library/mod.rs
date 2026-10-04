@@ -55,7 +55,7 @@ use plx_ui::screen::{
 use plx_ui::{Rect, Spring};
 use plx_ui::xfade::Xfade;
 use identity::{KeyRegistry, KeyRegion, region_of_elem};
-use layout::{Layout, Block, CONTENT_TOP, MAX_SHELVES};
+use layout::{Layout, Block, ShelfRun, CONTENT_TOP};
 #[cfg(test)]
 use layout::COLS;
 use parts::{GridPart, RailPart, GRID_GROUP, RAIL_GROUP};
@@ -163,6 +163,11 @@ pub(crate) struct LibraryScreen {
     shelf_publication: Option<(plx_data::browse::section_hubs::HubsId, u64)>,
     layout: Layout,
     target_layout: Layout,
+    /// The shelves stacked for `layout` (live pitches) and `target_layout` (the pitches the
+    /// springs are heading to). Derived from `shelves` and refilled by every `relayout`; not
+    /// canon, since each `Layout` already writes the run's height.
+    run: ShelfRun,
+    target_run: ShelfRun,
     scroll: Spring,
     scroll_target: f32,
     restore_scroll: Option<f32>,
@@ -195,6 +200,9 @@ pub(crate) struct LibraryScreen {
     clock: super::clock_readout::ClockWatch,
     /// The question, asked from the failed read-out's *Connect*.
     plaintext_alert: super::plaintext_question::PlaintextAlert,
+    /// Shelf rows the document draw and the stop recorder looked at, for the windowing test.
+    #[cfg(test)]
+    shelf_visits: std::cell::Cell<usize>,
 }
 
 impl LibraryScreen {
@@ -211,6 +219,7 @@ impl LibraryScreen {
             toolbar: TOOLBAR_GROUP,
             libraries: Vec::new(), shelves: Vec::new(), section: None, epoch: None, query: None, grid_reset_pending: false,
             shelf_publication: None, layout, target_layout: layout,
+            run: ShelfRun::default(), target_run: ShelfRun::default(),
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
             viewports: Vec::new(),
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
@@ -221,6 +230,7 @@ impl LibraryScreen {
             plaintext: Default::default(),
             clock: Default::default(),
             plaintext_alert: super::plaintext_question::PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL, PLAINTEXT_CONNECT),
+            #[cfg(test)] shelf_visits: std::cell::Cell::new(0),
         }
     }
 
@@ -389,7 +399,7 @@ impl LibraryScreen {
         if self.shelf_publication != publication {
             let mut old = std::mem::take(&mut self.shelves);
             if let Some(section) = &identity {
-                for (index, shelf) in hubs.shelves().iter().take(MAX_SHELVES).enumerate() {
+                for (index, shelf) in hubs.shelves().iter().enumerate() {
                     let group = GroupId(self.keys.register(
                         LibraryIdentity::Control { section: section.clone(), kind: "shelf-group".into(), key: shelf.id.clone() },
                         GroupId(0), index));
@@ -433,9 +443,9 @@ impl LibraryScreen {
         let grid_focus = focus.filter(|key| key.entry == self.entry)
             .and_then(|key| self.pair.detail.index_of(key.elem));
         self.pair.detail.focus_row(grid_focus.map(|index| index / self.layout.cols()), false);
-        let pitches: Vec<_> = self.shelves.iter().map(|row| layout::shelf_pitch(row.landscape, row.motion.band_expand())).collect();
-        let targets: Vec<_> = self.shelves.iter().map(|row| layout::shelf_pitch(row.landscape,
-            f32::from(focus.is_some_and(|key| row.elems.contains(&key.elem))))).collect();
+        self.run.set(self.shelves.iter().map(|row| layout::shelf_pitch(row.landscape, row.motion.band_expand())));
+        self.target_run.set(self.shelves.iter().map(|row| layout::shelf_pitch(row.landscape,
+            f32::from(focus.is_some_and(|key| row.elems.contains(&key.elem))))));
         let rows = self.pair.detail.elems.len().div_ceil(self.layout.cols());
         // A grid transaction's commit empties the store (`browse::requery`) while the grid is
         // dark and its answer is in flight. The shelves, heading and TYPE chip around it are
@@ -451,10 +461,10 @@ impl LibraryScreen {
             || (self.section.is_some() && self.wanted_kind.is_none() && self.readout == Readout::Empty);
         let episodes = self.layout.is_episodes();
         self.layout = if self.readout == Readout::Failed {
-            Layout::failed(!self.libraries.is_empty(), &pitches)
-        } else { Layout::new(!self.libraries.is_empty(), &pitches, rows, grid_head) }.with_episodes(episodes)
+            Layout::failed(!self.libraries.is_empty(), self.run.pitches())
+        } else { Layout::new(!self.libraries.is_empty(), self.run.pitches(), rows, grid_head) }.with_episodes(episodes)
             .with_grid_bands(self.pair.detail.band_geometry());
-        self.target_layout = Layout::new(!self.libraries.is_empty(), &targets, rows, grid_head).with_episodes(episodes)
+        self.target_layout = Layout::new(!self.libraries.is_empty(), self.target_run.pitches(), rows, grid_head).with_episodes(episodes)
             .with_grid_focus(grid_focus.map(|index| index / self.layout.cols()));
         if self.grid_reset_pending {
             self.scroll_target = self.target_layout.row_reveal(0);
@@ -518,7 +528,7 @@ impl LibraryScreen {
             Some(self.target_layout.row_reveal(index / self.layout.cols()))
         } else if let Some(index) = self.shelves.iter().position(|row|
             row.elems.contains(&key.elem) || row.heading_elem() == Some(key.elem)) {
-            Some(self.target_layout.shelf_reveal(index))
+            Some(self.target_layout.shelf_reveal(&self.target_run, index))
         } else if matches!(key.elem, TYPE | SORT | FILTER) {
             Some(self.target_layout.grid_block_top().clamp(0.0, self.target_layout.max_scroll()))
         } else if self.libraries.iter().any(|(elem, _)| *elem == key.elem) || key.elem == RETRY {
@@ -968,7 +978,14 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                     self.ground.key(colours, plx_ui::widgets::PageGround::CARD_W, dt);
                     for row in &mut self.shelves {
                         let col = focused.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
+                        // A row at exact rest is a fixed point of `update`: skipping it changes no
+                        // bit, and with hundreds of shelves stepping each one every frame is the
+                        // page's whole cost.
+                        if col.is_none() && row.motion.at_exact_rest() { continue; }
                         row.motion.update(row.elems.len(), col, if row.landscape { &RowStyle::EPISODE } else { &RowStyle::HOME }, dt);
+                        // `step` never lands a released spring exactly on rest; snap it once the
+                        // idle gate calls it settled so the row stops being stepped (as Home does).
+                        if col.is_none() { row.motion.park(); }
                     }
                     self.scroll.step(self.scroll_target, K_SCROLL, dt);
                     let grid_focus = focused.filter(|key| key.entry == self.entry)
@@ -983,7 +1000,7 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                     let settled = shelves || !self.page_fade.is_swapping() || self.restore_scroll.is_none();
                     if self.initial && settled && self.layout.first().is_some() && self.seed_cursor(cx, fx) {
                         self.initial = false;
-                        let group = match self.layout.seat_for_scroll(self.scroll.pos, self.layout.visible_rows(self.scroll.pos).0) {
+                        let group = match self.layout.seat_for_scroll(&self.run, self.scroll.pos, self.layout.visible_rows(self.scroll.pos).0) {
                             Some(Block::Grid(_)) => self.pair.groups_config().detail,
                             Some(Block::Shelf(index)) => self.shelves[index].group,
                             _ => self.first_group(),
@@ -1086,7 +1103,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
             out.push(row_group(LIBRARY_GROUP, self.libraries.len(), Rect::new(MARGIN_X, CONTENT_TOP - self.scroll.pos, layout::GRID_RIGHT - MARGIN_X, 52.0), ElemKind::Control));
         }
         for (index, row) in self.shelves.iter().enumerate() {
-            let mut shelf = row_group(row.group, row.elems.len(), Rect::new(MARGIN_X, self.target_layout.shelf_y(index, self.scroll_target) + CARD_DY, SCR_W - 2.0 * MARGIN_X, row_style(row).h), ElemKind::Card);
+            let mut shelf = row_group(row.group, row.elems.len(), Rect::new(MARGIN_X, self.target_layout.shelf_y(&self.target_run, index, self.scroll_target) + CARD_DY, SCR_W - 2.0 * MARGIN_X, row_style(row).h), ElemKind::Card);
             if let Some((group, elem)) = row.heading {
                 if let Some(rect) = self.heading_rect(index, cx, At::SpringTarget) {
                     out.push(plx_ui::linked_heading::group_spec(group, rect));
@@ -1194,7 +1211,7 @@ impl LibraryScreen {
         let row = &self.shelves[index];
         let style = row_style(row);
         plx_ui::card_row::tile_rect(col, MARGIN_X, style.w + style.gap, row.motion.scroll_x(),
-            self.layout.shelf_y(index, self.scroll.pos) + CARD_DY, (style.w, style.h)).scaled(row.motion.scale(col))
+            self.layout.shelf_y(&self.run, index, self.scroll.pos) + CARD_DY, (style.w, style.h)).scaled(row.motion.scale(col))
     }
     fn shelf_rect_at<H: LibraryLike>(&self, index: usize, col: usize, cx: &Cx<'_, H>, at: At) -> Rect {
         if at == At::Drawn {
@@ -1209,7 +1226,7 @@ impl LibraryScreen {
         let x = focused.map(|col| plx_ui::card_row::scroll_into_view(row.motion.scroll_x(), col,
             row.elems.len(), style.w, style.gap, SCR_W - 2.0 * MARGIN_X)).unwrap_or(row.motion.scroll_x());
         plx_ui::card_row::tile_rect(col, MARGIN_X, style.w + style.gap, x,
-            self.target_layout.shelf_y(index, self.scroll_target) + CARD_DY, (style.w, style.h))
+            self.target_layout.shelf_y(&self.target_run, index, self.scroll_target) + CARD_DY, (style.w, style.h))
             .scaled(if focused == Some(col) { style.focus_scale } else { 1.0 })
     }
     /// The linked heading of shelf `index`, over the published hub's own title.
@@ -1225,8 +1242,8 @@ impl LibraryScreen {
         let row = &self.shelves[index];
         let focused = cx.focus.current.is_some_and(|key| key.entry == self.entry && Some(key.elem) == row.heading_elem());
         let y = match at {
-            At::Drawn => self.layout.shelf_y(index, self.scroll.pos) - plx_ui::consts::TITLE_DY - row.motion.lift(),
-            At::SpringTarget => self.target_layout.shelf_y(index, self.scroll_target) - plx_ui::consts::TITLE_DY,
+            At::Drawn => self.layout.shelf_y(&self.run, index, self.scroll.pos) - plx_ui::consts::TITLE_DY - row.motion.lift(),
+            At::SpringTarget => self.target_layout.shelf_y(&self.target_run, index, self.scroll_target) - plx_ui::consts::TITLE_DY,
         };
         Some(heading.face_rect(MARGIN_X, y, f32::from(focused), &heading.measure(cx.measure)))
     }
