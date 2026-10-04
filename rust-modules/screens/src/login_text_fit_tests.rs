@@ -54,6 +54,7 @@ fn reasons() -> Vec<(&'static str, String)> {
         ("switch_invalid", msg::browse_auth_switch_invalid().into()),
         ("switch_retry", msg::browse_auth_switch_retry().into()),
         ("timeout", msg::browse_auth_timeout().into()),
+        ("tls_untrusted", msg::browse_auth_tls_untrusted().into()),
         ("unreachable", msg::browse_auth_unreachable().into()),
     ];
     for count in [1, 3, 12] {
@@ -76,6 +77,34 @@ fn every_sign_in_reason_fits_the_read_out_slot_in_every_language() {
         }
     }
     assert!(out.is_empty(), "reasons the read-out would end in an ellipsis:\n  {}", out.join("\n  "));
+}
+
+/// **The three reasons a profile switch can fail for a server's sake fit the picker's own line.**
+/// Who's watching draws a failed switch as ONE centred line under the avatars (`profiles.rs`, the
+/// non-read-out arm), not in the two-line read-out slot, and `Painter::text` neither wraps nor
+/// clips: a sentence wider than the safe area runs off the panel. `no_source_access` was the only
+/// copy that ever reached it for a server; `servers_unreachable` and `tls_untrusted` now do too, so
+/// each is measured at BODY with the device's own advances against the safe-area width, in every
+/// shipped language and with a long profile name.
+#[test]
+fn the_server_failure_reasons_fit_the_pickers_one_line_in_every_language() {
+    use plx_machine::machine::Measure;
+    let column = plx_ui::consts::SAFE.w;
+    let mut over = Vec::new();
+    for language in [Preference::En, Preference::Es, Preference::Be] {
+        let _guard = language_on_this_thread_for_test(language);
+        for (key, text) in [
+            ("no_source_access", msg::browse_auth_no_source_access("Alexandra Konstantinopolskaya")),
+            ("servers_unreachable", msg::browse_auth_servers_unreachable().into()),
+            ("tls_untrusted", msg::browse_auth_tls_untrusted().into()),
+        ] {
+            let width = ShippedMeasure.width_str(&text, plx_ui::theme::size::BODY, false);
+            if width > column {
+                over.push(format!("{} browse.auth.{key}: {width}px of {column}px: {text:?}", language.tag()));
+            }
+        }
+    }
+    assert!(over.is_empty(), "the picker draws these on one line and would run off the safe area:\n  {}", over.join("\n  "));
 }
 
 /// **The failed read-out says who signed in only when it was told a name.** A name composes the
