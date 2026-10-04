@@ -64,21 +64,21 @@ REPO_ROOT = SCRIPT_DIR.parent
 PAGES = {
     "install-and-verify.md": {
         "route": "/install/",
-        "title": "Install Plex on LG webOS TV with PlxNative — No Root Required",
+        "title": "Install Plex on LG webOS TV: Unofficial PlxNative App, No Root",
         # Short, sensible label for the breadcrumb rich result (not derived from the SEO
         # title above by splitting on " — ": that title no longer ends in "PlxNative").
         "name": "Install",
         "description": (
-            "How to get Plex on an LG webOS TV: step-by-step guide to installing the PlxNative Plex "
-            "app with Developer Mode or Homebrew Channel. No root required."
+            "How to get Plex on an LG webOS TV: step-by-step guide to installing PlxNative, an unofficial "
+            "third-party Plex client, with Developer Mode or Homebrew Channel. No root required."
         ),
     },
     "troubleshooting.md": {
         "route": "/troubleshooting/",
-        "title": "Plex on LG webOS Not Working? PlxNative Troubleshooting",
+        "title": "Plex on LG webOS Not Working? Unofficial PlxNative Troubleshooting",
         "name": "Troubleshooting",
         "description": (
-            "Fixes for common PlxNative problems on LG webOS TVs: the app tile doing nothing, "
+            "Fixes for common problems with PlxNative, an unofficial Plex client for LG webOS TVs: the app tile doing nothing, "
             "an expired Developer Mode session, sign-in, and playback failures."
         ),
     },
