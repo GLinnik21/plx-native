@@ -762,7 +762,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **Collections the item belongs to are never shown** — `minor` / `medium`
   The official detail page surfaces an item's collections as links into that collection.
-  *Where:* rust-modules/src/metadata.rs (`CollectionShelf`, from the member's `collection.related.*` hub), rust-modules/src/screens/detail/collection.rs (the linked shelf heading)
+  *Where:* rust-modules/src/metadata.rs (`CollectionShelf`, from the member's `collection.related.*` hub), rust-modules/screens/src/detail/collection.rs (the linked shelf heading)
   *Verified:* Addressed by #205: the detail page's collection shelf links into the collection page. Member `Collection[]` tags are not deserialized — the shelf is fed by the `/related` collection hub, which names the collection by its tag id. Collection tag ids and collection ratingKeys are distinct; the collection store resolves a tag to its full collection row by tag id (`index`), then exact title.
 
 - **Social action row (like, clap-with-count, more)** — `polish` / `medium`
@@ -893,7 +893,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **No way to enter the grid with a preset query (a hub's "See All")** — `minor` / `medium`
   In the official client every hub row has a "See All" that opens the library grid pre-sorted/pre-filtered to that hub (Recently Added → the grid sorted by addedAt desc). Our grid can only ever be entered at whatever query the section last remembered — the owned Library uses a `SectionAddress` and `BrowseCmd::Addressed` for its own controls, but no external hub action supplies a preset query.
-  *Where:* `rust-modules/src/stores/browse.rs` (`SectionAddress`/`LibraryWork::Commit`), `rust-modules/src/screens/library/`, and the missing hub-heading activation in the owned Home/app path.
+  *Where:* `rust-modules/src/stores/browse.rs` (`SectionAddress`/`LibraryWork::Commit`), `rust-modules/screens/src/library/`, and the missing hub-heading activation in the owned Home/app path.
   *Verified:* CONFIRMED. The Browse command vocabulary can apply sort/filter edits emitted by the Library itself, but no `See All` effect or preset-query entry point exists from a hub. The retained per-Bridge state restores only what that BrowseStore already remembered during its lifetime; it does not provide a hub-specific preset. A tree-wide search finds no `See All` implementation.
 
 - **Grid posters carry a title/year only while focused** — `polish` / `small`

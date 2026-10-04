@@ -70,7 +70,7 @@ fn no_required_content_enters_the_safe_area_exclusion_zone() {
     probe("player_hud", &plx_appkit::player_hud::overscan_rects);
 
     // ---- the panels, each at the widest/tallest state its own clamp admits ---------------
-    probe("account_menu", &crate::screens::account_menu::overscan_rects);
+    probe("account_menu", &plx_screens::account_menu::overscan_rects);
     probe("track_menu", &plx_appkit::track_menu::overscan_rects);
     probe("more_menu", &plx_appkit::more_menu::overscan_rects);
     probe("stats", &crate::app::diagnostics::overscan_rects);
@@ -104,10 +104,10 @@ fn no_required_content_enters_the_safe_area_exclusion_zone() {
     ));
 
     // Search: the bare query line, and the scope line below it.
-    r.push(("search field", crate::screens::search::layout::FIELD));
+    r.push(("search field", plx_screens::search::layout::FIELD));
     r.push((
         "search first shelf heading",
-        Rect::new(MARGIN_X, crate::screens::search::layout::CONTENT_TOP, 400.0, 40.0),
+        Rect::new(MARGIN_X, plx_screens::search::layout::CONTENT_TOP, 400.0, 40.0),
     ));
 
     // Person: the portrait at the margin, and the air the reveal keeps under a shelf.

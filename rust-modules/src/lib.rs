@@ -24,7 +24,6 @@ mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound comm
 #[cfg(test)]
 mod release_line;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys
-mod screens; // the application's OWNED screens (restructure phase 5b): the Settings family on the dispatcher
 #[cfg(feature = "hostsim")]
 mod shot; // simulator screenshots: read the frame back and write a PNG (see the module doc)
 mod system;

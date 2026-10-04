@@ -213,7 +213,7 @@ pub(crate) fn state_fp() -> u64 {
     shapes.push(RESOLUTION_SHAPE);
     shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
     shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
-    shapes.extend_from_slice(crate::screens::registry::SCREEN_SHAPES);
+    shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
     plx_ui::rec::state_fp(&shapes)
 }
 
@@ -577,11 +577,11 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
             Err(reason) => self.refuse(reason),
         }
     }
-    fn result(&mut self, _frame: u64, addr: &plx_machine::machine::Addr, msg: &crate::screens::registry::AppMsg) {
+    fn result(&mut self, _frame: u64, addr: &plx_machine::machine::Addr, msg: &plx_screens::registry::AppMsg) {
         if let Self::Replaying(replay) = self {
             let payload = match msg {
-                crate::screens::registry::AppMsg::HubsResult(result) => Some(plx_data::pms::record::encode(result)),
-                crate::screens::registry::AppMsg::Store(plx_data::stores::StoreCmd::Browse(
+                plx_screens::registry::AppMsg::HubsResult(result) => Some(plx_data::pms::record::encode(result)),
+                plx_screens::registry::AppMsg::Store(plx_data::stores::StoreCmd::Browse(
                     plx_data::stores::browse::BrowseCmd::Discovery(result))) => Some(plx_data::browse::record::encode(result)),
                 _ => None,
             };
@@ -604,8 +604,8 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
         }
         let Self::Recording(rec) = self else { return };
         let payload = match msg {
-            crate::screens::registry::AppMsg::HubsResult(result) => plx_data::pms::record::encode(result),
-            crate::screens::registry::AppMsg::Store(plx_data::stores::StoreCmd::Browse(
+            plx_screens::registry::AppMsg::HubsResult(result) => plx_data::pms::record::encode(result),
+            plx_screens::registry::AppMsg::Store(plx_data::stores::StoreCmd::Browse(
                 plx_data::stores::browse::BrowseCmd::Discovery(result))) => plx_data::browse::record::encode(result),
             _ => { self.refuse("unsupported adapter result"); return; },
         };
@@ -902,12 +902,12 @@ impl Recplay {
             let msg = if discovery {
                 let result = plx_data::browse::record::decode(envelope.payload, &mut client)?;
                 if result.request_id() != envelope.req { return Err("result request mismatch"); }
-                crate::screens::registry::AppMsg::Store(plx_data::stores::StoreCmd::Browse(
+                plx_screens::registry::AppMsg::Store(plx_data::stores::StoreCmd::Browse(
                     plx_data::stores::browse::BrowseCmd::Discovery(result)))
             } else {
                 let result = plx_data::pms::record::decode(envelope.payload, &mut client)?;
                 if result.request_id() != envelope.req { return Err("result request mismatch"); }
-                crate::screens::registry::AppMsg::HubsResult(result)
+                plx_screens::registry::AppMsg::HubsResult(result)
             };
             out.push((plx_machine::machine::Addr { to, req: plx_machine::machine::RequestId(envelope.req) },
                 msg));
@@ -1355,7 +1355,7 @@ mod tests {
     fn product_pre_resolution_wire_shape_is_refused_before_boot() {
         let mut before=APP_SHAPES.to_vec();
         before.push(super::super::bootstrap::CONTENT_SHAPE);
-        before.extend_from_slice(crate::screens::registry::SCREEN_SHAPES);
+        before.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
         let old=plx_ui::rec::state_fp(&before);
         assert_ne!(old,state_fp());
         let manifest=json!({"schema":plx_ui::rec::SCHEMA,"state_fp":old}).to_string();
@@ -1592,7 +1592,7 @@ mod tests {
         fn focus(&mut self,f:u64,a:Option<(u32,u32,Option<u32>)>){plx_ui::dispatch::Tap::<Product>::focus(self.rec,f,a);}
         fn input(&mut self,f:u64,e:&plx_machine::machine::InputEvent<u32>){plx_ui::dispatch::Tap::<Product>::input(self.rec,f,e);}
         fn effect(&mut self,f:u64,e:&plx_machine::machine::Stamped<Product>){plx_ui::dispatch::Tap::<Product>::effect(self.rec,f,e);}
-        fn result(&mut self,f:u64,a:&plx_machine::machine::Addr,m:&crate::screens::registry::AppMsg){plx_ui::dispatch::Tap::<Product>::result(self.rec,f,a,m);}
+        fn result(&mut self,f:u64,a:&plx_machine::machine::Addr,m:&plx_screens::registry::AppMsg){plx_ui::dispatch::Tap::<Product>::result(self.rec,f,a,m);}
     }
 
     fn product_settings_run(rec:&mut Recplay, changed_focus:bool, changed_hit:bool) -> Vec<u64> {
@@ -1606,7 +1606,7 @@ mod tests {
         let mut d=Dispatcher::<Product>::new();
         let mut rig=bridge::Bridge::for_test(||0);
         rec.prepare_resources(&mut rig);
-        bridge::show_page(&mut d,crate::screens::registry::AppArg::Settings(crate::screens::family::SettingsPage::Root));
+        bridge::show_page(&mut d,plx_screens::registry::AppArg::Settings(plx_screens::family::SettingsPage::Root));
         let mut hashes=Vec::new();
         for f in 0..7 {
             let tick=Tick {ms:f*100,dt_us:16000};
@@ -1745,8 +1745,8 @@ mod tests {
             let mut d=Dispatcher::<Product>::new();
             let mut rig=bridge::Bridge::for_test(||0);
             rec.prepare_resources(&mut rig);
-            bridge::show_page(&mut d,crate::screens::registry::AppArg::Settings(
-                crate::screens::family::SettingsPage::ConsentStage(0)));
+            bridge::show_page(&mut d,plx_screens::registry::AppArg::Settings(
+                plx_screens::family::SettingsPage::ConsentStage(0)));
             let mut states=Vec::new();
             let mut focuses=Vec::new();
             for (f,key) in [None,Some(Key::Right),Some(Key::Right),Some(Key::Left),
@@ -2094,7 +2094,7 @@ mod tests {
     fn replay_grades_result_payloads_addresses_order_and_missing_or_extra_arrivals() {
         use plx_ui::dispatch::Tap;
         use plx_machine::machine::{Addr, MachineId, RequestId};
-        use crate::screens::registry::AppMsg;
+        use plx_screens::registry::AppMsg;
         let _guard = plx_base::testlock::serial();
         let mut state = plx_data::pms::PmsState::default();
         let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
@@ -2605,7 +2605,7 @@ mod tests {
         old_app[3] = "AppFrame{route:str,overlay:str,focus:str,tree:u64}";
         assert_eq!(plx_ui::rec::state_fp(&old_app), 0x79dc_9274_0550_1805,
             "retain the predecessor app census pin, not a rewritten recording");
-        old_app.extend_from_slice(crate::screens::registry::SCREEN_SHAPES);
+        old_app.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
         let old = plx_ui::rec::state_fp(&old_app);
         assert_ne!(old, state_fp());
         let manifest = format!(r#"{{"schema": {}, "state_fp": {old}}}"#, plx_ui::rec::SCHEMA);
@@ -2642,7 +2642,7 @@ mod tests {
         let writer = Writer::open(Box::new(sink), &Header::new(state_fp(), &init), 0).unwrap();
         let mut rec = Recplay::Recording(Rec { w:writer,f:0,focus:None,events:false,spent_ns:0,failure:None });
         Tap::effect(&mut rec, 0, &Stamped { from:MachineId::Nav,
-            fx:Fx::Nav(NavOp::Root(crate::screens::registry::AppArg::Search)) });
+            fx:Fx::Nav(NavOp::Root(plx_screens::registry::AppArg::Search)) });
         assert!(rec.failure().is_some());
         let Recplay::Recording(rec) = &rec else { unreachable!() };
         assert!(rec.w.stopped());

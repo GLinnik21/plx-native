@@ -1,6 +1,6 @@
 //! **Stats for nerds** — the on-screen diagnostics read-out, toggled from the player's `…` overflow
 //! popover ([`plx_appkit::more_menu`]) and, since 2026-08-29, from the account menu
-//! ([`crate::screens::account_menu`]) on every other route.
+//! ([`plx_screens::account_menu`]) on every other route.
 //!
 //! # Where this lives, and why it is not a screen (restructure phase 10)
 //!

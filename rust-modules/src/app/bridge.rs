@@ -38,14 +38,14 @@
 
 use std::ffi::CStr;
 
-use crate::screens::family::SettingsPage;
-use crate::screens::player::HudPolicy;
-use crate::screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
+use plx_screens::family::SettingsPage;
+use plx_screens::player::HudPolicy;
+use plx_screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
 use plx_data::stores::{StoreCmd, StoreEv, StoreId};
 use plx_ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
 use plx_ui::dispatch::{CxParts, Dispatcher, FrameReport, Rig, Split};
 #[cfg(test)]
-use crate::screens::registry::every_surface_arg;
+use plx_screens::registry::every_surface_arg;
 #[cfg(test)]
 use plx_ui::dispatch::NoTap;
 use plx_ui::frame::Budget;
@@ -175,13 +175,13 @@ impl HomeLike for AppHost {
     fn hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::pms::HubsView<'a> { cx.views.hubs }
 }
 
-impl crate::screens::registry::CollectionLike for AppHost {
+impl plx_screens::registry::CollectionLike for AppHost {
     fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> {
         cx.views.collection
     }
 }
 
-impl crate::screens::registry::AuthLike for AppHost {
+impl plx_screens::registry::AuthLike for AppHost {
     fn auth<'a>(cx: &Cx<'a, Self>) -> plx_session::auth::SessionRead<'a> { cx.views.auth }
 }
 
@@ -216,25 +216,25 @@ fn execute_endpoint_outcomes_with(
     }
 }
 
-impl crate::screens::registry::PlayerLike for AppHost {
+impl plx_screens::registry::PlayerLike for AppHost {
     fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession { cx.views.session }
 }
 
-impl crate::screens::registry::SearchLike for AppHost {
+impl plx_screens::registry::SearchLike for AppHost {
     fn search<'a>(cx: &Cx<'a, Self>) -> plx_data::search::view::SearchView<'a> { cx.views.search }
 }
 
-impl crate::screens::registry::LibraryLike for AppHost {
+impl plx_screens::registry::LibraryLike for AppHost {
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.section_hubs }
 }
 
-impl crate::screens::registry::PersonLike for AppHost {
+impl plx_screens::registry::PersonLike for AppHost {
     fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> { cx.views.person }
 }
 
-impl crate::screens::registry::MetadataLike for AppHost {
+impl plx_screens::registry::MetadataLike for AppHost {
     fn metadata<'a>(cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> { cx.views.metadata }
 }
 
@@ -338,20 +338,20 @@ pub(crate) struct Bridge {
     /// `update_home_chrome` is called from.
     strip: plx_ui::widgets::StripRender,
     home_commands: std::collections::VecDeque<HomeCmd>,
-    library_commands: std::collections::VecDeque<crate::screens::registry::LibraryCmd>,
+    library_commands: std::collections::VecDeque<plx_screens::registry::LibraryCmd>,
     consent: ConsentMachine,
     /// Requests the owned screens made of the loop this frame (§14), drained by [`frame`]'s caller.
     reqs: Vec<LoopReq>,
     content_reqs: Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)>,
     home_reqs: Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)>,
     library_reqs: Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)>,
-    search_reqs: Vec<(MachineId, crate::screens::registry::SearchReq, ReturnState<u32, PageMemory>)>,
+    search_reqs: Vec<(MachineId, plx_screens::registry::SearchReq, ReturnState<u32, PageMemory>)>,
     /// What the player's overlay surfaces asked of the loop this frame (§14) — drained by
     /// `playback::player_requests`, which holds the `MainThread` token they cannot.
-    player_reqs: Vec<crate::screens::registry::PlayerReq>,
+    player_reqs: Vec<plx_screens::registry::PlayerReq>,
     /// …and what the item context menu asked, drained by `content::content_requests` — which holds
     /// the route, the trail and the playback session's `&mut` that its dispatch needs.
-    item_menu_reqs: Vec<crate::screens::registry::ItemMenuReq>,
+    item_menu_reqs: Vec<plx_screens::registry::ItemMenuReq>,
     #[cfg(test)]
     keyboard_calls: Vec<bool>,
     #[cfg(test)]
@@ -612,21 +612,21 @@ impl Bridge {
         std::mem::take(&mut self.library_reqs)
     }
 
-    pub(crate) fn take_player_reqs(&mut self) -> Vec<crate::screens::registry::PlayerReq> {
+    pub(crate) fn take_player_reqs(&mut self) -> Vec<plx_screens::registry::PlayerReq> {
         std::mem::take(&mut self.player_reqs)
     }
 
-    pub(crate) fn take_item_menu_reqs(&mut self) -> Vec<crate::screens::registry::ItemMenuReq> {
+    pub(crate) fn take_item_menu_reqs(&mut self) -> Vec<plx_screens::registry::ItemMenuReq> {
         std::mem::take(&mut self.item_menu_reqs)
     }
 
-    pub(crate) fn take_search_reqs(&mut self) -> Vec<(MachineId, crate::screens::registry::SearchReq, ReturnState<u32, PageMemory>)> {
+    pub(crate) fn take_search_reqs(&mut self) -> Vec<(MachineId, plx_screens::registry::SearchReq, ReturnState<u32, PageMemory>)> {
         std::mem::take(&mut self.search_reqs)
     }
 
     pub(crate) fn search_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
         -> Option<(plx_data::search::Item, plx_ui::popover::Opener)> {
-        let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::search::SearchScreen>()?;
+        let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<plx_screens::search::SearchScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
@@ -645,7 +645,7 @@ impl Bridge {
 
     pub(crate) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
         -> Option<(plx_data::pms::PmsMovie, plx_ui::popover::Opener)> {
-        let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::library::LibraryScreen>()?;
+        let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<plx_screens::library::LibraryScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
@@ -654,8 +654,8 @@ impl Bridge {
         Some((item, plx_ui::popover::Opener { rect: Some(rect), ..plx_ui::popover::Opener::NONE }))
     }
 
-    pub(crate) fn library_command(d: &mut Dispatcher<AppHost>, command: crate::screens::registry::LibraryCmd) {
-        if let crate::screens::registry::LibraryCmd::SwitchStep(_) = command {
+    pub(crate) fn library_command(d: &mut Dispatcher<AppHost>, command: plx_screens::registry::LibraryCmd) {
+        if let plx_screens::registry::LibraryCmd::SwitchStep(_) = command {
             if let Some(InputOwner::Entry(owner)) = d.nav.input_owner() {
                 if let Some(entry) = d.nav.entry(owner).filter(|entry| matches!(entry.arg, AppArg::LibraryMenu(_))) {
                     if let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) {
@@ -677,7 +677,7 @@ impl Bridge {
     pub(crate) fn library_grid_position(d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
         let entry = d.nav.top_page()?;
         let page = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
-            .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>())?;
+            .and_then(|page| page.downcast_ref::<plx_screens::library::LibraryScreen>())?;
         page.grid_position(d.input.engine.current(InputOwner::Entry(entry.id)))
     }
 
@@ -686,7 +686,7 @@ impl Bridge {
     pub(crate) fn library_grid_extent(d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
         let entry = d.nav.top_page()?;
         let page = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
-            .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>())?;
+            .and_then(|page| page.downcast_ref::<plx_screens::library::LibraryScreen>())?;
         page.grid_extent()
     }
 
@@ -694,7 +694,7 @@ impl Bridge {
     pub(crate) fn library_listed(d: &Dispatcher<AppHost>) -> Option<plx_data::browse::LibraryType> {
         let entry = d.nav.top_page()?;
         let page = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
-            .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>())?;
+            .and_then(|page| page.downcast_ref::<plx_screens::library::LibraryScreen>())?;
         Some(page.listed())
     }
 
@@ -702,21 +702,21 @@ impl Bridge {
     pub(crate) fn library_shelf_position(d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
         let entry = d.nav.top_page()?;
         let page = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
-            .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>())?;
+            .and_then(|page| page.downcast_ref::<plx_screens::library::LibraryScreen>())?;
         page.shelf_position(d.input.engine.current(InputOwner::Entry(entry.id)))
     }
 
     pub(crate) fn library_card_focused(d: &Dispatcher<AppHost>) -> bool {
         let Some(entry) = d.nav.top_page() else { return false };
         let Some(page) = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
-            .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>()) else { return false };
+            .and_then(|page| page.downcast_ref::<plx_screens::library::LibraryScreen>()) else { return false };
         matches!(page.probe_viewport(d.input.engine.current(InputOwner::Entry(entry.id))).0, "grid" | "shelf")
     }
 
     pub(crate) fn enter_library(&mut self, kind: plx_data::browse::SecKind) {
         self.mounter.library_kind = Some(kind);
         self.library_commands.clear();
-        self.library_commands.push_back(crate::screens::registry::LibraryCmd::Enter(kind));
+        self.library_commands.push_back(plx_screens::registry::LibraryCmd::Enter(kind));
     }
 
     fn deliver_library_commands(&mut self, d: &mut Dispatcher<AppHost>) {
@@ -731,20 +731,20 @@ impl Bridge {
             let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
                 focus: plx_machine::machine::FocusRead { current: Some(key) , ..Default::default() }, owner: InputOwner::Entry(entry) };
             let cx = parts.cx::<AppHost>(self.views(), &self.measure);
-            screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?
+            screen.as_any()?.downcast_ref::<plx_screens::home::HomeScreen>()?
                 .focused_rect::<AppHost>(Some(key), &cx, At::Drawn)
         });
         plx_ui::popover::Opener { rect, ..plx_ui::popover::Opener::NONE }
     }
 
     /// Restore a detail page that is about to mount to a `Spot` no `ReturnState` holds — see
-    /// [`crate::screens::registry::DetailSeed`].
+    /// [`plx_screens::registry::DetailSeed`].
     pub(crate) fn seed_detail(&mut self, sid: plx_plex::plex::ServerId, rk: &str, spot: plx_data::metadata::Spot) {
-        self.mounter.seed = Some(crate::screens::registry::DetailSeed { sid, rk: rk.to_string(), spot });
+        self.mounter.seed = Some(plx_screens::registry::DetailSeed { sid, rk: rk.to_string(), spot });
     }
 
     /// Where the next player instance returns to — see `AppMounter::player_origin`.
-    pub(crate) fn seed_player_origin(&mut self, origin: crate::screens::player::Origin) {
+    pub(crate) fn seed_player_origin(&mut self, origin: plx_screens::player::Origin) {
         self.mounter.player_origin = Some(origin);
     }
 
@@ -759,10 +759,10 @@ impl Bridge {
         d.input.engine.current(InputOwner::Entry(entry))
     }
 
-    fn with_home<R>(&self, d: &Dispatcher<AppHost>, f: impl for<'a> FnOnce(&crate::screens::home::HomeScreen,
+    fn with_home<R>(&self, d: &Dispatcher<AppHost>, f: impl for<'a> FnOnce(&plx_screens::home::HomeScreen,
         &'a Cx<'a, AppHost>, Option<FocusKey<u32>>) -> R) -> Option<R> {
         let entry = d.nav.top_page()?;
-        let home = entry.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?;
+        let home = entry.inst.as_ref()?.screen.as_any()?.downcast_ref::<plx_screens::home::HomeScreen>()?;
         let focus = Self::home_focus(d);
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
@@ -802,7 +802,7 @@ impl Bridge {
         let route = &route;
         let search = *route == AppArg::Search;
         if matches!(route, AppArg::Home | AppArg::Library) || search {
-            d.nav.tabs.strip_fallback = Some(if search { plx_ui::dispatch::STRIP_BASE + 3 } else { crate::screens::home::STRIP_HOME_ELEM });
+            d.nav.tabs.strip_fallback = Some(if search { plx_ui::dispatch::STRIP_BASE + 3 } else { plx_screens::home::STRIP_HOME_ELEM });
             if let Some(io) = &self.home_io {
                 refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(),
                     Some((&io.profile, &io.preferences)));
@@ -892,8 +892,8 @@ impl Bridge {
     pub(crate) fn request_home_menu(&mut self, d: &Dispatcher<AppHost>) -> bool {
         let Some(entry) = d.nav.top_page() else { return false };
         let Some(home) = entry.inst.as_ref().and_then(|i| i.screen.as_any())
-            .and_then(|s| s.downcast_ref::<crate::screens::home::HomeScreen>()) else { return false };
-        if <crate::screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home) { return false; }
+            .and_then(|s| s.downcast_ref::<plx_screens::home::HomeScreen>()) else { return false };
+        if <plx_screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home) { return false; }
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: Self::home_focus(d) , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
@@ -907,7 +907,7 @@ impl Bridge {
     /// a `MenuHost` for the loop to put on `app.route`; the surface's argument carries all of it
     /// now, including the two bits that variant existed to say.
     pub(crate) fn content_menu_arg(&self, d: &Dispatcher<AppHost>, entry: EntryId, ret: &ReturnState<u32, PageMemory>)
-        -> Option<crate::screens::registry::ItemMenuArg> {
+        -> Option<plx_screens::registry::ItemMenuArg> {
         let e = d.nav.entry(entry)?;
         let screen = e.inst.as_ref()?.screen.as_any()?;
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
@@ -917,10 +917,10 @@ impl Bridge {
         parts.owner = plx_machine::machine::InputOwner::Entry(entry);
         parts.focus.current = ret.focus;
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
-        if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
+        if let Some(page) = screen.downcast_ref::<plx_screens::detail::DetailScreen>() {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
-            let meta = <AppHost as crate::screens::registry::MetadataLike>::metadata(&cx);
+            let meta = <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx);
             if let Some((rk, mark)) = page.focused_season(ret.focus, meta) {
                 Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark }, entry, ret.focus, rect))
             } else if let Some((rk, mark)) = page.focused_episode(ret.focus, meta) {
@@ -929,18 +929,18 @@ impl Bridge {
             } else {
                 // …a RELATED tile is a DIFFERENT item standing on the same page: an ordinary card
                 // row, which is exactly what `MenuHost::Related` existed to say.
-                let item = page.focused_related(ret.focus, meta).filter(|m| crate::screens::item_menu::has_actions(m))?;
+                let item = page.focused_related(ret.focus, meta).filter(|m| plx_screens::item_menu::has_actions(m))?;
                 Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
             }
         } else {
             // A card page — Person or Collection — answers its focused card and where it sits.
-            let (item, rect) = if let Some(page) = screen.downcast_ref::<crate::screens::person::PersonScreen>() {
+            let (item, rect) = if let Some(page) = screen.downcast_ref::<plx_screens::person::PersonScreen>() {
                 (page.focused_item(ret.focus, &cx), page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn))
             } else {
-                let page = screen.downcast_ref::<crate::screens::collection::CollectionScreen>()?;
+                let page = screen.downcast_ref::<plx_screens::collection::CollectionScreen>()?;
                 (page.focused_item(ret.focus, &cx), page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn))
             };
-            let item = item.filter(|m| crate::screens::item_menu::has_actions(m))?;
+            let item = item.filter(|m| plx_screens::item_menu::has_actions(m))?;
             Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
         }
     }
@@ -1970,14 +1970,14 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     // `osel=`), because a recording taken before this phase and one taken after must be
     // comparable. `haschap=` stays in `push_player`: it is a fact about the ITEM, not the panel.
     if matches!(page.arg, AppArg::Player) {
-        use crate::screens::player::overlay::{OverlayKind, Panel};
+        use plx_screens::player::overlay::{OverlayKind, Panel};
         let player = page.inst.as_ref().and_then(|i| i.screen.as_any())
-            .and_then(|s| s.downcast_ref::<crate::screens::player::PlayerScreen>());
+            .and_then(|s| s.downcast_ref::<plx_screens::player::PlayerScreen>());
         let surface = d.nav.modals.surfaces.iter().rev()
             .filter(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_)))
             .find_map(|s| s.entry.inst.as_ref())
             .and_then(|i| i.screen.as_any())
-            .and_then(|s| s.downcast_ref::<crate::screens::player::overlay::PlayerOverlayScreen>());
+            .and_then(|s| s.downcast_ref::<plx_screens::player::overlay::PlayerOverlayScreen>());
         let kind = surface.map(|s| s.kind());
         let is = |want: fn(&OverlayKind) -> bool| kind.as_ref().is_some_and(want);
         let sel = surface.map_or(0, |s| s.sel());
@@ -2003,7 +2003,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     }
     if matches!(page.arg, AppArg::Home) {
         let Some(home) = page.inst.as_ref().and_then(|i| i.screen.as_any())
-            .and_then(|s| s.downcast_ref::<crate::screens::home::HomeScreen>()) else { return String::new() };
+            .and_then(|s| s.downcast_ref::<plx_screens::home::HomeScreen>()) else { return String::new() };
         let focus = Bridge::home_focus(d);
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
@@ -2017,13 +2017,13 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         };
         let grid = home.snap_target() >= 0.5;
         let mut out = format!(" snapt={} snapp={} hf={hf} row={row} col={col}", grid as u8,
-            (!<crate::screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home)) as u8);
+            (!<plx_screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home)) as u8);
         crate::focusprobe::push_item(&mut out, if grid { home.focused_item::<AppHost>(focus, &cx) } else { home.hero_item::<AppHost>(&cx) });
         return out;
     }
     if matches!(page.arg, AppArg::Library) {
         let Some(library) = page.inst.as_ref().and_then(|i| i.screen.as_any())
-            .and_then(|s| s.downcast_ref::<crate::screens::library::LibraryScreen>()) else { return String::new() };
+            .and_then(|s| s.downcast_ref::<plx_screens::library::LibraryScreen>()) else { return String::new() };
         let focus = d.input.engine.current(InputOwner::Entry(page.id));
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
@@ -2043,7 +2043,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     }
     if matches!(page.arg, AppArg::Search) {
         let Some(search) = page.inst.as_ref().and_then(|i| i.screen.as_any())
-            .and_then(|s| s.downcast_ref::<crate::screens::search::SearchScreen>()) else { return String::new() };
+            .and_then(|s| s.downcast_ref::<plx_screens::search::SearchScreen>()) else { return String::new() };
         let focus = d.input.engine.current(InputOwner::Entry(page.id));
         // The shared bar decides Chip/Strip first — those elems live outside this screen's own
         // group space (`SearchScreen::probe`'s doc), so asking the screen about them would just
@@ -2107,8 +2107,8 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             crate::focusprobe::push_rk(&mut out, rk);
             out.push_str(" ep=");
             let episode = instance.screen.as_any()
-                .and_then(|s| s.downcast_ref::<crate::screens::detail::DetailScreen>())
-                .and_then(|s| s.focused_episode(focus, <AppHost as crate::screens::registry::MetadataLike>::metadata(&cx)));
+                .and_then(|s| s.downcast_ref::<plx_screens::detail::DetailScreen>())
+                .and_then(|s| s.focused_episode(focus, <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx)));
             if let Some((rk, mark)) = episode {
                 crate::focusprobe::push_rk(&mut out, &rk);
                 out.push_str(match mark {
@@ -2123,7 +2123,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
                 && d.nav.entry(owner).is_some_and(|e| matches!(e.arg, AppArg::Content(ContentArg::Filmography { .. })));
             let _ = write!(out, " card={} filmography={}", card as u8, filmography as u8);
             let item = instance.screen.as_any()
-                .and_then(|s| s.downcast_ref::<crate::screens::person::PersonScreen>())
+                .and_then(|s| s.downcast_ref::<plx_screens::person::PersonScreen>())
                 .and_then(|s| s.focused_item(focus, &cx));
             if let Some(item) = item {
                 let _ = write!(out, " sid={} rk=", item.sid.raw());
@@ -2132,7 +2132,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         }
         AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef { rk, sec, tag, .. })) => {
             let item = instance.screen.as_any()
-                .and_then(|screen| screen.downcast_ref::<crate::screens::collection::CollectionScreen>())
+                .and_then(|screen| screen.downcast_ref::<plx_screens::collection::CollectionScreen>())
                 .and_then(|screen| screen.focused_item(focus, &cx));
             let _ = write!(out, " card={} collection_rk=", card as u8);
             crate::focusprobe::push_rk(&mut out, rk);
@@ -2164,7 +2164,7 @@ pub(crate) fn open_player_overlay(
     ps: &plx_media::route::PlaybackSession,
     meta: plx_data::metadata::MetadataView<'_>,
     d: &mut Dispatcher<AppHost>,
-    kind: crate::screens::player::overlay::OverlayKind,
+    kind: plx_screens::player::overlay::OverlayKind,
 ) {
     // Already up? Then this press is a re-ADDRESS of the entry that exists — the Audio disc
     // pressed while the Subtitles tab is showing — and never a second surface of the same kind.
@@ -2178,7 +2178,7 @@ pub(crate) fn open_player_overlay(
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::PlayerOverlay(
-            crate::screens::player::overlay::PlayerOverlayArg { kind },
+            plx_screens::player::overlay::PlayerOverlayArg { kind },
         )),
     );
 }
@@ -2186,7 +2186,7 @@ pub(crate) fn open_player_overlay(
 /// Which player panel owns input right now, if one does.
 pub(crate) fn player_overlay_kind(
     d: &Dispatcher<AppHost>,
-) -> Option<crate::screens::player::overlay::OverlayKind> {
+) -> Option<plx_screens::player::overlay::OverlayKind> {
     let InputOwner::Entry(id) = d.nav.input_owner()? else { return None };
     match &d.nav.entry(id)?.arg {
         AppArg::PlayerOverlay(arg) => Some(arg.kind),
@@ -2274,7 +2274,7 @@ pub(crate) fn dismiss_player_overlays(d: &mut Dispatcher<AppHost>) {
 /// (`plxnative-menupick`) and for the focus probe's `sel=`.
 pub(crate) fn player_overlay_mut(
     d: &mut Dispatcher<AppHost>,
-) -> Option<&mut crate::screens::player::overlay::PlayerOverlayScreen> {
+) -> Option<&mut plx_screens::player::overlay::PlayerOverlayScreen> {
     let InputOwner::Entry(id) = d.nav.input_owner()? else { return None };
     d.nav
         .entry_mut(id)?
@@ -2282,7 +2282,7 @@ pub(crate) fn player_overlay_mut(
         .as_mut()?
         .screen
         .as_any_mut()?
-        .downcast_mut::<crate::screens::player::overlay::PlayerOverlayScreen>()
+        .downcast_mut::<plx_screens::player::overlay::PlayerOverlayScreen>()
 }
 
 /// **Open one of the Detail page's own panels on the container tree** (§6.2's page-owned panels).
@@ -2301,7 +2301,7 @@ pub(crate) fn open_content_panel(
     d: &mut Dispatcher<AppHost>,
     host: InstanceId,
     subject: Option<(plx_plex::plex::ServerId, &str)>,
-    panel: crate::screens::registry::ContentPanel,
+    panel: plx_screens::registry::ContentPanel,
 ) {
     // WHICH surface a panel is — its style and its argument — is the registry's
     // (`ContentPanel::surface`), so a new page-owned panel is declared where the screen is. What is
@@ -2321,7 +2321,7 @@ pub(crate) fn open_content_panel(
 /// headless trigger) resolves to the panel's own centred fallback HERE, once, rather than every
 /// frame inside the screen.
 fn anchor_bits(rect: Option<plx_ui::Rect>) -> [u32; 4] {
-    let r = rect.unwrap_or_else(crate::screens::item_menu::fallback_anchor);
+    let r = rect.unwrap_or_else(plx_screens::item_menu::fallback_anchor);
     [r.x.to_bits(), r.y.to_bits(), r.w.to_bits(), r.h.to_bits()]
 }
 
@@ -2336,8 +2336,8 @@ pub(crate) fn card_menu_arg(
     host: EntryId,
     focus: Option<FocusKey<u32>>,
     rect: Option<plx_ui::Rect>,
-) -> crate::screens::registry::ItemMenuArg {
-    crate::screens::registry::ItemMenuArg {
+) -> plx_screens::registry::ItemMenuArg {
+    plx_screens::registry::ItemMenuArg {
         sid: item.sid, // the ROW's server, not the current one
         rk: item.rk.clone(),
         kind: ItemMenuKind::Card { row: Box::new(item.clone()), from_deck },
@@ -2359,8 +2359,8 @@ fn strip_menu_arg(
     host: EntryId,
     focus: Option<FocusKey<u32>>,
     rect: Option<plx_ui::Rect>,
-) -> crate::screens::registry::ItemMenuArg {
-    crate::screens::registry::ItemMenuArg {
+) -> plx_screens::registry::ItemMenuArg {
+    plx_screens::registry::ItemMenuArg {
         sid,
         rk: rk.to_string(),
         loaded_episode: matches!(kind, ItemMenuKind::Episode { .. }),
@@ -2380,7 +2380,7 @@ fn strip_menu_arg(
 /// while the menu owns input. That was `Popover::caching_host()` plus the loop's own
 /// `Route::ItemMenu` draw/update arms — one policy stated in three places — and it is the
 /// container's single answer now.
-pub(crate) fn open_item_menu(d: &mut Dispatcher<AppHost>, arg: crate::screens::registry::ItemMenuArg) {
+pub(crate) fn open_item_menu(d: &mut Dispatcher<AppHost>, arg: plx_screens::registry::ItemMenuArg) {
     if surface_up(d, |a| matches!(a, AppArg::ItemMenu(_))) {
         return;
     }
@@ -2400,7 +2400,7 @@ pub(crate) fn item_menu_up(d: &Dispatcher<AppHost>) -> bool {
 
 /// The item menu's own instance — its cursor and its captured opener, read where the container is
 /// in scope, exactly as the player's panels are.
-pub(crate) fn item_menu(d: &Dispatcher<AppHost>) -> Option<&crate::screens::item_menu::ItemMenuScreen> {
+pub(crate) fn item_menu(d: &Dispatcher<AppHost>) -> Option<&plx_screens::item_menu::ItemMenuScreen> {
     d.nav
         .modals
         .surfaces
@@ -2411,7 +2411,7 @@ pub(crate) fn item_menu(d: &Dispatcher<AppHost>) -> Option<&crate::screens::item
         .as_ref()?
         .screen
         .as_any()?
-        .downcast_ref::<crate::screens::item_menu::ItemMenuScreen>()
+        .downcast_ref::<plx_screens::item_menu::ItemMenuScreen>()
 }
 
 /// **Present the profile menu** over whichever bar-wearing page is on top (idempotent while it is
@@ -2439,7 +2439,7 @@ pub(crate) fn account_menu_up(d: &Dispatcher<AppHost>) -> bool {
 /// container is in scope, exactly as the player's panels are.
 pub(crate) fn account_menu(
     d: &Dispatcher<AppHost>,
-) -> Option<&crate::screens::account_menu::AccountMenuScreen> {
+) -> Option<&plx_screens::account_menu::AccountMenuScreen> {
     d.nav
         .modals
         .surfaces
@@ -2450,7 +2450,7 @@ pub(crate) fn account_menu(
         .as_ref()?
         .screen
         .as_any()?
-        .downcast_ref::<crate::screens::account_menu::AccountMenuScreen>()
+        .downcast_ref::<plx_screens::account_menu::AccountMenuScreen>()
 }
 
 /// Present the Settings surface at its root (idempotent while it is up) — the account menu's
@@ -2953,7 +2953,7 @@ fn tracks_probe(d: &Dispatcher<AppHost>) -> (bool, i32) {
         .inst
         .as_ref()
         .and_then(|i| i.screen.as_any())
-        .and_then(|a| a.downcast_ref::<crate::screens::tracks_panel::TracksPanelScreen>())
+        .and_then(|a| a.downcast_ref::<plx_screens::tracks_panel::TracksPanelScreen>())
         .map(|p| p.page())
         .unwrap_or(0);
     (true, page)
@@ -3004,19 +3004,19 @@ pub(crate) fn consent_up(d: &Dispatcher<AppHost>) -> bool {
 /// The pair mirrors `Dispatcher::top_page`'s own shape rather than searching the whole tree: an
 /// overlay presented on the player's page-owned `ModalStack` is a SURFACE, so the player stays the
 /// top PAGE and this keeps answering with it while a panel is up.
-pub(crate) fn player(d: &Dispatcher<AppHost>) -> Option<&crate::screens::player::PlayerScreen> {
+pub(crate) fn player(d: &Dispatcher<AppHost>) -> Option<&plx_screens::player::PlayerScreen> {
     d.nav
         .top_page()?
         .inst
         .as_ref()?
         .screen
         .as_any()?
-        .downcast_ref::<crate::screens::player::PlayerScreen>()
+        .downcast_ref::<plx_screens::player::PlayerScreen>()
 }
 
 pub(crate) fn player_mut(
     d: &mut Dispatcher<AppHost>,
-) -> Option<&mut crate::screens::player::PlayerScreen> {
+) -> Option<&mut plx_screens::player::PlayerScreen> {
     let entry = d.nav.top_page()?.id;
     d.nav
         .entry_mut(entry)?
@@ -3024,7 +3024,7 @@ pub(crate) fn player_mut(
         .as_mut()?
         .screen
         .as_any_mut()?
-        .downcast_mut::<crate::screens::player::PlayerScreen>()
+        .downcast_mut::<plx_screens::player::PlayerScreen>()
 }
 
 /// **The top page answers its own keys** — the engine owns the input for it.
@@ -3041,7 +3041,7 @@ pub(crate) fn page_owned(d: &Dispatcher<AppHost>) -> bool {
 pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>) -> bool {
     !d.surface_up()
         && d.top_screen().and_then(|screen| screen.as_any())
-            .is_some_and(|screen| screen.is::<crate::screens::search::SearchScreen>())
+            .is_some_and(|screen| screen.is::<plx_screens::search::SearchScreen>())
 }
 
 pub(crate) fn owns_input(d: &Dispatcher<AppHost>) -> bool {
@@ -3402,7 +3402,7 @@ mod collection_lifecycle_tests;
 #[cfg(test)]
 mod preference_effect_tests {
     use super::*;
-    use crate::screens::registry::PreferenceCmd;
+    use plx_screens::registry::PreferenceCmd;
     use std::sync::mpsc::{self, TryRecvError};
 
     #[test]

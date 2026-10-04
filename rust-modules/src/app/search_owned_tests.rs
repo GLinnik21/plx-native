@@ -9,7 +9,7 @@ use super::test_support::frame;
 
 fn owned_search_probe(d: &Dispatcher<AppHost>) -> String {
     let screen = d.top_screen().expect("Search mounted");
-    assert!(screen.as_any().unwrap().is::<crate::screens::search::SearchScreen>());
+    assert!(screen.as_any().unwrap().is::<plx_screens::search::SearchScreen>());
     let mut probe = String::new();
     screen.state().probe(&mut probe);
     probe
@@ -96,10 +96,10 @@ fn every_back_reachable_owned_page_is_retained_and_restored_by_identity() {
         assert_eq!(screen.name(), host);
         let any = screen.as_any().expect("product screen downcast seam");
         assert!(match host {
-            "home" => any.is::<crate::screens::home::HomeScreen>(),
-            "library" => any.is::<crate::screens::library::LibraryScreen>(),
-            "detail" => any.is::<crate::screens::detail::DetailScreen>(),
-            "person" => any.is::<crate::screens::person::PersonScreen>(),
+            "home" => any.is::<plx_screens::home::HomeScreen>(),
+            "library" => any.is::<plx_screens::library::LibraryScreen>(),
+            "detail" => any.is::<plx_screens::detail::DetailScreen>(),
+            "person" => any.is::<plx_screens::person::PersonScreen>(),
             _ => false,
         }, "{host} must be its real owned screen type, not a fixture body");
         let child = match host {
@@ -165,7 +165,7 @@ fn owned_search_is_covered_for_a_result_then_unmounted_for_good_at_home() {
     let search_entry = d.nav.top_page().unwrap().id;
     let search_instance = d.nav.instance_of(search_entry).unwrap();
     assert!(d.top_screen().unwrap().as_any().unwrap()
-        .is::<crate::screens::search::SearchScreen>());
+        .is::<plx_screens::search::SearchScreen>());
 
     super::frame(&mut d, &mut rig, tick(2), script_key(Key::Ok, tick(2)));
     assert!(d.input.keyboard);
@@ -225,7 +225,7 @@ fn owned_search_external_departure_never_submits_the_draft() {
     let cx = parts.cx::<AppHost>(split.views, split.measure);
     for event in [ScreenEvent::Suspend, ScreenEvent::Cover, ScreenEvent::Unmount,
         ScreenEvent::WillLeave(plx_machine::machine::Leave::Deeper)] {
-        let mut screen = crate::screens::search::SearchScreen::new(EntryId(1), InstanceId(1));
+        let mut screen = plx_screens::search::SearchScreen::new(EntryId(1), InstanceId(1));
         let mut out = Vec::new();
         let mut present = Present::new();
         {
@@ -252,7 +252,7 @@ fn owned_search_ticks_request_search_work_once_after_step() {
         owner: InputOwner::Entry(EntryId(1)) };
     let split = rig.split();
     let cx = parts.cx::<AppHost>(split.views, split.measure);
-    let mut screen = crate::screens::search::SearchScreen::new(EntryId(1), InstanceId(1));
+    let mut screen = plx_screens::search::SearchScreen::new(EntryId(1), InstanceId(1));
     let mut out = Vec::new();
     let mut present = Present::new();
     {
@@ -490,7 +490,7 @@ fn covering_owned_search_releases_its_native_keyboard() {
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Ok, tick(1)));
     assert_eq!(rig.keyboard_calls, [true]);
-    d.request(MachineId::Nav, NavOp::Present(AppArg::Settings(crate::screens::family::SettingsPage::Root)));
+    d.request(MachineId::Nav, NavOp::Present(AppArg::Settings(plx_screens::family::SettingsPage::Root)));
     frame(&mut d, &mut rig, AppArg::Search, tick(2), vec![]);
     assert!(!d.input.keyboard, "the system keyboard cannot trap input above a new application modal");
     assert!(d.input.keyboard_owner.is_none());
@@ -611,14 +611,14 @@ fn owned_search_result_keys_are_server_scoped_and_survive_same_query_reordering(
     frame(&mut d, &mut rig, AppArg::Search, tick(4), script_key(Key::Ok, tick(4)));
     for i in 5..35 { frame(&mut d, &mut rig, AppArg::Search, tick(i), vec![]); }
     assert!(rig.search_reqs.iter().any(|(_, req, _)| matches!(req,
-        crate::screens::registry::SearchReq::Detail { sid, rk } if *sid == b && rk == "same-local-key")));
+        plx_screens::registry::SearchReq::Detail { sid, rk } if *sid == b && rk == "same-local-key")));
     assert!(!rig.search_reqs.iter().any(|(_, req, _)| matches!(req,
-        crate::screens::registry::SearchReq::Detail { sid, .. } if *sid == a)));
+        plx_screens::registry::SearchReq::Detail { sid, .. } if *sid == a)));
     let requests = rig.take_search_reqs();
     assert!(!requests.is_empty());
     assert!(rig.take_search_reqs().is_empty(), "requests execute only once");
     let (_, _, ret) = requests.iter().find(|(_, req, _)| matches!(req,
-        crate::screens::registry::SearchReq::Detail { .. })).unwrap();
+        plx_screens::registry::SearchReq::Detail { .. })).unwrap();
     let entry = d.nav.top_page().unwrap().id;
     let (selected, opener) = rig.search_selection(&d, entry, ret.focus).unwrap();
     assert!(matches!(selected, plx_data::search::Item::Media(item) if item.sid == b));
@@ -628,7 +628,7 @@ fn owned_search_result_keys_are_server_scoped_and_survive_same_query_reordering(
     assert!(rig.search_selection(&d, entry, Some(foreign)).is_none());
     frame(&mut d, &mut rig, AppArg::Search, tick(35), script_key(Key::Back, tick(35)));
     assert!(rig.take_search_reqs().iter().any(|(_, req, _)| matches!(req,
-        crate::screens::registry::SearchReq::Back)), "BACK differs from selecting the Home pill");
+        plx_screens::registry::SearchReq::Back)), "BACK differs from selecting the Home pill");
     plx_plex::plex::reset_servers_for_test();
 }
 
@@ -692,7 +692,7 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
             rig.search = rig.stores.search_snapshot(rig.directory.view());
         }
         let cx = parts.cx::<AppHost>(rig.views_with(plx_media::route::idle_session_for_test()), &rig.measure);
-        let mut restored = crate::screens::search::SearchScreen::new(key.entry, InstanceId(900));
+        let mut restored = plx_screens::search::SearchScreen::new(key.entry, InstanceId(900));
         restored.restore(memory);
         let mut present = plx_machine::present::Present::new();
         let mut commands = Vec::new();
@@ -1078,11 +1078,11 @@ fn owned_search_ok_on_a_collection_requests_its_collection_page() {
     for i in 3..33 { frame(&mut d, &mut rig, AppArg::Search, tick(i), vec![]); }
     let requests = rig.take_search_reqs();
     let (_, _, ret) = requests.iter().find(|(_, req, _)| matches!(req,
-        crate::screens::registry::SearchReq::Collection { sid, rk, tag }
+        plx_screens::registry::SearchReq::Collection { sid, rk, tag }
             if *sid == a && rk == "50007" && *tag == 7))
         .expect("OK on a collection requests its page");
     assert!(!requests.iter().any(|(_, req, _)| matches!(req,
-        crate::screens::registry::SearchReq::Detail { .. })), "never an item detail");
+        plx_screens::registry::SearchReq::Detail { .. })), "never an item detail");
     let entry = d.nav.top_page().unwrap().id;
     let (selected, _) = rig.search_selection(&d, entry, ret.focus).unwrap();
     assert!(matches!(selected, plx_data::search::Item::Collection(c) if c.item.rk == "50007"));

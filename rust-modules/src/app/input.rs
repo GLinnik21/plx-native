@@ -121,14 +121,14 @@ pub(crate) unsafe fn activate_card(
     mm: &plx_data::pms::PmsMovie,
     want_play: bool,
     hud_ms: u32,
-    mut ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    mut ret: Option<plx_ui::screen::ReturnState<u32, plx_screens::registry::PageMemory>>,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     menu_play_await: &mut Option<MenuPlayAwait>,
     now: u32,
 ) {
     if mm.kind == plx_data::pms::KIND_COLLECTION {
-        let arg = crate::screens::registry::AppArg::Content(
+        let arg = plx_screens::registry::AppArg::Content(
             collection_content_arg(mm));
         match ret.take() {
             Some(ret) => super::bridge::nav_push_with_return(pages, arg, ret),
@@ -183,8 +183,8 @@ pub(crate) unsafe fn activate_card(
     }
 }
 
-fn collection_content_arg(mm: &plx_data::pms::PmsMovie) -> crate::screens::registry::ContentArg {
-    crate::screens::registry::ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_rk(
+fn collection_content_arg(mm: &plx_data::pms::PmsMovie) -> plx_screens::registry::ContentArg {
+    plx_screens::registry::ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_rk(
         mm.sid, &mm.rk, mm.sec, &mm.title))
 }
 
@@ -345,7 +345,7 @@ mod activate_card_tests {
     /// press frame. A row that is not the captured one does nothing.
     #[test]
     fn the_menu_play_row_on_a_show_or_season_card_takes_the_want_play_path() {
-        use crate::screens::item_menu::Action;
+        use plx_screens::item_menu::Action;
         let _guard = plx_base::testlock::serial();
         let mut ps = plx_media::route::PlaybackSession::default();
         let mt = unsafe { plx_base::task::MainThread::assume() };
@@ -370,7 +370,7 @@ mod activate_card_tests {
             show_rk: "show-1".into(), season_index: 4, ..Default::default() };
         for (card, expect, season_index) in [(&show, "show-1", None), (&season, "show-1", Some(4))] {
             let mut menu_play_await = None;
-            let req = |act, item| crate::screens::registry::ItemMenuReq {
+            let req = |act, item| plx_screens::registry::ItemMenuReq {
                 act, sid, item, loaded_episode: false, from_home: false };
             // a key that is not the captured row's: nothing happens
             unsafe { apply_item_action(&mut ps, &mut pa, req(Action::Play("other".into()), Some(card.clone())),
@@ -404,7 +404,7 @@ mod activate_card_tests {
             &mut pages, &mut bridge, &mut menu_play_await, 0); }
         assert!(pages.has_pending_navigation(), "a collection must queue its own page");
         assert!(matches!(collection_content_arg(&collection),
-            crate::screens::registry::ContentArg::Collection(id)
+            plx_screens::registry::ContentArg::Collection(id)
                 if id.rk == "50001" && id.sec == 0 && id.tag == 0 && id.name.is_empty()));
         assert!(menu_play_await.is_none(), "a collection must not arm playback");
         assert!(!plx_data::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
@@ -445,7 +445,7 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
     }
 }
 
-/// Perform an item-menu [`Action`](crate::screens::item_menu::Action) — the ONE dispatch, drained
+/// Perform an item-menu [`Action`](plx_screens::item_menu::Action) — the ONE dispatch, drained
 /// from `AppFx::ItemMenu` after every dispatcher frame (`content::content_requests`). The menu
 /// itself only reports the choice; every route flip, server call and refresh is here.
 ///
@@ -473,7 +473,7 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
 pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
-    req: crate::screens::registry::ItemMenuReq,
+    req: plx_screens::registry::ItemMenuReq,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     resources: &mut R,
@@ -481,8 +481,8 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
     now: u32,
 ) {
     let mut playback = LiveItemPlayback(resources);
-    use crate::screens::item_menu::Action;
-    let crate::screens::registry::ItemMenuReq { act, sid, item, loaded_episode, from_home } = req;
+    use plx_screens::item_menu::Action;
+    let plx_screens::registry::ItemMenuReq { act, sid, item, loaded_episode, from_home } = req;
     // `sid` is WHICH SERVER this menu's rows are about, captured when the panel was presented.
     // Every arm below turns an rk into a fetch, a scrobble or a play, and resolving one against
     // `plex::current_server()` is the reported bug itself: on a merged Continue Watching shelf,
@@ -531,8 +531,8 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // which walks the Related shelf for exactly this case.
             let detail = loaded_episode.then(|| ()).and_then(|()| {
                 let entry = pages.nav.top_page()?;
-                let crate::screens::registry::AppArg::Content(
-                    crate::screens::registry::ContentArg::Detail { sid, rk: detail_rk },
+                let plx_screens::registry::AppArg::Content(
+                    plx_screens::registry::ContentArg::Detail { sid, rk: detail_rk },
                 ) = &entry.arg else { return None };
                 Some(plx_data::stores::viewstate::DetailRefresh {
                     sid: *sid,
@@ -622,7 +622,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             if rk.is_empty() || part.is_empty() {
                 return;
             }
-            let intent = crate::screens::registry::PlayIntent::Item {
+            let intent = plx_screens::registry::PlayIntent::Item {
                 sid,
                 rk,
                 part,
@@ -1002,7 +1002,7 @@ pub(crate) fn maybe_ask_consent(pages: &mut plx_ui::dispatch::Dispatcher<super::
         super::bridge::open_first_run_consent_at(pages, stage);
         return;
     }
-    if crate::screens::consent::should_show(&c, crate::dev::any_trigger_present()) {
+    if plx_screens::consent::should_show(&c, crate::dev::any_trigger_present()) {
         super::bridge::open_first_run_consent(pages);
     }
 }
@@ -1348,9 +1348,9 @@ pub(crate) unsafe fn key_ok(
             *ok_armed = true;
         } else if vis && focus == 2 {
             if tab == 0 {
-                super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::Info);
+                super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, plx_screens::player::overlay::OverlayKind::Info);
             } else if tab == 1 {
-                super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::Chapters);
+                super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, plx_screens::player::overlay::OverlayKind::Chapters);
             }
         } else {
             let np = !super::lifecycle::viewer_paused();

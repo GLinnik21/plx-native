@@ -7,7 +7,7 @@ use super::super::{
     content, playback,
 };
 use plx_plex::plex::ServerId;
-use crate::screens::registry::{AppArg, ContentArg, ItemMenuKind};
+use plx_screens::registry::{AppArg, ContentArg, ItemMenuKind};
 use plx_ui::dispatch::Dispatcher;
 use plx_machine::machine::Key;
 use plx_ui::screen::ScreenArg;
@@ -146,7 +146,7 @@ fn chain(host: AppArg, episode: bool, accept_request: bool, accept_start: bool) 
     }
     assert_eq!(
         d.focus().map(|f| (f.entry, f.elem)),
-        Some((menu, crate::screens::item_menu::ItemRow::PlayFromStart.focus_key()))
+        Some((menu, plx_screens::item_menu::ItemRow::PlayFromStart.focus_key()))
     );
     frame(&mut d, &mut rig, &mut now, Some(Key::Ok));
     assert_eq!(

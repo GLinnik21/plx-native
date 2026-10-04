@@ -47,7 +47,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                 .unwrap()
                 .as_any()
                 .unwrap()
-                .downcast_ref::<crate::screens::library::LibraryScreen>()
+                .downcast_ref::<plx_screens::library::LibraryScreen>()
                 .unwrap()
                 .probe_viewport(d.focus())
         };
@@ -127,7 +127,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                 .screen
                 .as_any()
                 .unwrap()
-                .downcast_ref::<crate::screens::library::LibraryScreen>()
+                .downcast_ref::<plx_screens::library::LibraryScreen>()
                 .unwrap();
             let parts = CxParts {
                 tick: tick(n),

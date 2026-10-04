@@ -682,6 +682,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_screens"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "plx_appkit",
+ "plx_base",
+ "plx_data",
+ "plx_gfx",
+ "plx_machine",
+ "plx_media",
+ "plx_net",
+ "plx_platform",
+ "plx_plex",
+ "plx_screens",
+ "plx_session",
+ "plx_telemetry",
+ "plx_ui",
+ "serde_json",
+]
+
+[[package]]
 name = "plx_session"
 version = "0.0.0"
 dependencies = [
@@ -739,6 +760,7 @@ dependencies = [
  "plx_net",
  "plx_platform",
  "plx_plex",
+ "plx_screens",
  "plx_session",
  "plx_telemetry",
  "plx_ui",

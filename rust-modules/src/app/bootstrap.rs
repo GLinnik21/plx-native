@@ -232,7 +232,7 @@ impl Initial {
         let s = &self.session;
         if self.version != 1 { return Err("unsupported initial version"); }
         if self.primary_client == 0 { return Err("invalid primary client binding"); }
-        if crate::screens::consent::should_show(&self.consent, self.automated) {
+        if plx_screens::consent::should_show(&self.consent, self.automated) {
             return Err("unsupported initial consent route");
         }
         if !self.home.validate_boot() { return Err("unsupported populated Home initial state"); }

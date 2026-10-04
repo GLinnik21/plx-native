@@ -8,13 +8,23 @@ L14, which a split hides from them, and the gate does not check impl coherence. 
 off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
 entries are gone, and the gate fails on any reference from outside the port to a member of it. It
 is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
-up the split. **Twelve of the fourteen layers, `base`, `machine`, `platform`, `gfx`, `net`, `ui`,
-`plex`, `telemetry`, `data`, `session`, `media` and `appkit`, are their own crates, `plx_base`,
-`plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`,
-`plx_data`, `plx_session`, `plx_media` and `plx_appkit`** (`rust-modules/base/`, `machine/`,
-`platform/`, `gfx/`, `net/`, `ui/`, `plex/`, `telemetry/`, `data/`, `session/`, `media/` and
-`appkit/`; "Split 1: base" to "Split 12 (appkit)" below, and "Splits 9 and 10 together" for how those
-two were combined); the other two (`screens`, `app`) are still modules of `plxnative-modules`.
+up the split. **Thirteen of the fourteen layers, `base`, `machine`, `platform`, `gfx`, `net`, `ui`,
+`plex`, `telemetry`, `data`, `session`, `media`, `appkit` and `screens`, are their own crates,
+`plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`,
+`plx_data`, `plx_session`, `plx_media`, `plx_appkit` and `plx_screens`** (`rust-modules/base/`,
+`machine/`, `platform/`, `gfx/`, `net/`, `ui/`, `plex/`, `telemetry/`, `data/`, `session/`, `media/`,
+`appkit/` and `screens/`; "Split 1: base" to "Split 13 (screens)" below, and "Splits 9 and 10
+together" for how those two were combined). **The split is finished.** What is left in
+`rust-modules/src/` is the last layer, `app`, and it stays the top crate `plxnative-modules`: the
+loop, its adapters, every dev and diagnostic surface, and the application's side of the port
+(`port`, `system`, and the other `[port webos]` members that are not in a layer crate). They are
+the one `staticlib` the Makefile links and the one place that may name every other layer, so there
+is nothing below it to split off. **Decision: the `[port webos]` members stay where they are**
+(`webos`, `keymanager` and `system` are modules of `plx_platform`, `player::ffi` of `plx_media`, and
+`port` of the top crate) **until a second TV OS exists.** A port crate now would have one
+customer and a boundary drawn from guesses about the second; the fence in `ci/check-module-layers.py`
+(a reference from outside `[port webos]` to a member of it fails) already holds the line a crate
+would, and L15b is where the port's OS-neutral shape is worked out.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
@@ -1695,6 +1705,111 @@ doc links that named `screens`, `app`, `lab` and `focusprobe` unbracketed. What 
   plx_appkit` alone and the application's tests alone passed on three runs each. `--report` lists
   `appkit` as ready and 4 `cfg(test)` items named across layers remain (`screens` only).
 
+### Split 13 (screens)
+
+`screens` was extracted thirteenth and last: `rust-modules/screens/` is the workspace member
+`plx_screens` (an `rlib`, `uses = base machine platform gfx net plex telemetry ui data session media
+appkit`; the manifest names all twelve), holding every screen the dispatcher mounts (Home, the
+library, detail, search, person, the player screen, the Settings family with consent, onboarding,
+legal, profiles and preferences, the account, item and alternate-sources menus) and the `registry`
+that names them: 101 Rust files and `CLAUDE.md`, 79,815 lines. Like `ui` and `appkit` it is one
+module, so the manifest says `[package.metadata.plx] mount = "screens"` and `src/lib.rs` is what was
+`screens/mod.rs`. Mechanically (`split-screens-rewrite.py`): `git mv`, 36 application files
+from `crate::screens` to `plx_screens`, `crate::screens::x` to `crate::x` inside the crate (43
+files), `pub(crate)` to `pub` in 49 moved files, and the doc links that named `app` or `lab`
+unbracketed (there were none left to rewrite). What it taught:
+
+- **No orphan-rule hit and no macro.** The compiler found no foreign-for-foreign impl in `screens`
+  (the one the appkit split found, `impl Default for SubtitleBitmaps`, had already moved), and the
+  crate has no `macro_rules!`. `legal.rs`'s `include_str!("../../../LICENSE")` needed no change: the
+  file is as deep under the repository root as it was.
+- **A build script variable reaches one crate only.** `legal.rs` read `env!("PLX_BUILD_SHA")` and
+  `env!("PLX_VERSION")`, which `rust-modules/build.rs` publishes to the top crate. The version is
+  `plx_plex::plex::identity::version()` already (the application hands it in at the top of
+  `enter_application`). The commit has the same shape now: `legal::set_build_sha`, a `OnceLock`
+  that panics in a shipping build when read first and answers `unknown` under `test-support`, is
+  handed `env!("PLX_BUILD_SHA")` as the third statement of `enter_application`, and
+  `app::boot::seam_order_tests` pins the order and the single call site. The rule that derives the
+  commit stays written once, in `build.rs`.
+- **`--report` named four items; the compiler named five more.** The four
+  (`account_menu::overscan_rects`, `DetailScreen::return_waiting_for_test`, `OverlayKind::ALL`,
+  `registry::every_surface_arg`) are `any(test, feature = "test-support")` now. Method calls are
+  invisible to `--report`, so `cargo check --lib --tests` of the application found
+  `LibraryScreen::toolbar_group`, `DetailScreen::{refresh_for_test, restore_target_for_test}` and
+  the two `focus_key` methods (`account_menu::Action`, `item_menu::ItemRow`); 9 attribute lines
+  in all, by `split-screens-gate1.py`. The other `cfg(test)` lines of the crate are 67 test-module
+  declarations and a few dozen fields, counters and helpers that only the crate's own tests read
+  (`shelf_visits`, `register_probes`, `test_ops`, `draft_rebuilds`); they stay `cfg(test)`, since
+  widening them would only put test bookkeeping into other crates' builds. Every `cfg(test)` /
+  `cfg!(test)` arm was read. One was a real behaviour change in waiting: `login.rs`'s
+  `harness_driven` began with `if cfg!(test) { return false; }`, which is false in the application's
+  tests now that the crate is built without `cfg(test)`; it reads `cfg!(any(test, feature =
+  "test-support"))`, so a trigger file on a developer's disk cannot change an application test. The
+  one `cfg(not(test))` (`tracks_panel.rs`, `cfg_attr(not(test), allow(unused_imports))`) only
+  silences a lint and compiles the same in a shipping build.
+- **The crate's dependencies are not the manifest of `ui`.** `serde_json` is a normal dependency
+  (the consent preview pretty-prints the real wire bodies); `libc` is a dev-dependency (`login`'s
+  helper-failure tests name `ENOENT`). `devtriggers` and `test-support` forward to all twelve layers
+  below, and the crate dev-depends on itself with `devtriggers` (the rule of "Splits 9 and 10
+  together"), so `cargo test -p plx_screens` alone runs its 1,106 tests. Its test binary draws, so
+  it has the shared host-link `build.rs` of `plx_ui`, `plx_gfx` and `plx_appkit` (it prints
+  nothing on the television).
+- **The layer rule is stronger and one gate changed shape.** `plx_screens` cannot name the
+  application any more: there is no cargo edge from it to `plxnative-modules` (a temporary
+  `plxnative-modules = { path = ".." }` makes `cargo metadata` fail with a dependency cycle), and
+  `crate::app` does not resolve inside the crate. `ci/check-module-layers.py` does not see this
+  case (a mounted crate's `crate::app` is read as `screens::app`, which is no module), so
+  the `layer` gate of `ci/check-deps.sh` keeps grepping for the spelling `crate::app::` / `super::app::`
+  in `rust-modules/screens/src` and is shown to fire on it. The `sibling` gate had read
+  `crate::screens::<b>`; the crate root is the module `screens` now, so a sibling is `crate::<b>`
+  (the crate root holds only `mod` declarations, so there is no other `crate::x` to confuse it
+  with).
+- **Gates that read the old location.** `ci/check-deps.sh` has `SRC_SCREENS` in every whole-tree list
+  that ends at `$SRC_APPKIT` (and the rules that named `$SRC/screens` by path, `wall`, `mutators`,
+  `nav`, `layer`, `sessionwrite`, `ladder` and `sibling`, follow the files); the owner rules' one
+  shared pass and `textmeasure` read `$SRC` alone and would have gone silent without failing, so
+  both scan the crate too. `ci/check-statics.sh` gates `screens/src` (its path check is loud),
+  `ci/localization-exceptions.json` keys `login.rs` by its new path, and `ci/check-localization.py`
+  read `rust-modules/src/screens` as a product-string directory (its missing-path self test listed
+  it); the crate is a source directory and a constants source now. The eventlog scrub test's root
+  list gained `../screens/src`, and so did `player/report.rs`'s `fetch_update` walk. Two `plx_ui`
+  tests read `src/screens` by `CARGO_MANIFEST_DIR` (`containers::tests::no_surface_states_its_own_dim_weight`
+  and `widgets_glass_budget_tests`, which also lists seven screen files by path) and
+  `settings_nav_structure_tests` walked its own `src/screens`; all read the crate's `src` now.
+  The `-p` lists (Makefile, workflow, `tools/build-bench.py` and the tests that pin them, the
+  skill and docs that spell them), `--src` for the line budget, `RUST_INPUTS`,
+  `tools/cargo-seed.py`, `ci/test_no_host_staticlib.py`, the release hook, `tests/test_harness.py`'s
+  `TREE_INPUTS` and the build-bench scenario (`screens`, "Edit leaf (plx_screens clock_readout.rs)";
+  added, not run) follow. The module-cycle baseline is re-recorded: the same 3 modules on the
+  cycle, 8 outside it (9 before).
+- **The seam was checked in the artifact, per crate.** In the `plx_screens` rlib of a `--release`
+  build with the feature off, `strings` finds none of six seam names (`every_surface_arg`,
+  `return_waiting_for_test`, `restore_target_for_test`, `refresh_for_test`, `toolbar_group`,
+  `overscan_rects`); the `--features test-support` control build finds four of them (the
+  others are inlined). `cargo tree -e normal` lists no `test-support` with the default features or
+  with `--no-default-features`, and `cargo tree -e features,normal,build` for `plxnative-modules`
+  differs from `main`'s by two lines (`plx_screens v0.0.0` and its `default` feature) in the default and release configurations.
+- **FFI and linkage are untouched, proven in the artifact.** The crate declares no `extern "C"`,
+  `#[no_mangle]` or `dynlib!`. The ARM staticlib built the way the Makefile builds it from `main` and
+  from the branch has the same 291 defined C-ABI symbols and the same 279 undefined non-Rust symbols
+  by `llvm-nm`.
+- **The pins and recordings did not move.** `SCREEN_SHAPES_PIN` and the three replay anchors under
+  `tests/fixtures/replay/` are byte-identical to `main`'s, and nothing the shapes record names a
+  crate (the crate has no `type_name`, `module_path!` or `file!`). `tests/replay_fixtures.py` against the simulator built from this tree replays the three fixtures in both modes with 3 fixtures, 6 replays, 0 failures and every verdict SAME (the target the Makefile spells `check-replay` builds the same simulator first).
+- **Proven by temporary violating edits, reverted byte for byte** (`split-screens-violate.py`): a
+  `use crate::filmography::..` in `person.rs`, or `crate::home::..` in `detail/cast.rs`, fails
+  `sibling`; `plx_ui::nav::` in `clock_readout.rs` fails `nav`; `crate::app::run()` in `family.rs`
+  fails `layer`; `Instant::now()` in `profiles.rs` fails `wall`; `session::load(` in `login.rs`
+  fails `sessionwrite`; `fn move_focus` in `search/mod.rs` fails `ladder`; `SDL_GetTicks(` in
+  `home/mod.rs` fails `ticks`; `static mut` there fails `ci/check-statics.sh`; a
+  `use plx_media::player::ffi::..` in `lib.rs` fails the port fence; an English `Label::new("..")`
+  in `clock_readout.rs` fails `ci/check-localization.py`; and a `log(&format!(.., d.title))` in
+  `library/mod.rs` fails `no_log_call_site_interpolates_viewing_content` in `plx_base`.
+- **Tests.** The default-features suite lists 5,661 tests on `main` and the same here, in
+  fourteen binaries now (`plx_screens` 1,106 of them, taken from the application's 1,712 which is
+  606). `cargo test -p plx_screens` alone and the application's tests alone passed on three runs
+  each. `--report` lists every layer as ready and no `cfg(test)` item named across layers.
+
 ## What the split cost the binary, and how the release profile pays it back
 
 The split made the shipped binary bigger, split by split. Every layer crate is compiled on its own,
@@ -1714,6 +1829,8 @@ features, dev flavour), and CI's "Binary size budget" table reported:
 | data, session, no LTO | 12,553,756 |
 | data, session, `lto = "fat"` and `codegen-units = 1` | 11,098,900 |
 | media, `lto = "fat"` and `codegen-units = 1` | 11,168,524 |
+| appkit | 11,168,524 (unchanged) |
+| screens | 11,246,348 |
 
 The last no-LTO figure is over the 12,426,000 limit, which made Splits 9 and 10 (data, session) red. The two
 `[profile.release]` keys in `rust-modules/Cargo.toml` take the result below the pre-split size,

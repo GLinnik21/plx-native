@@ -145,7 +145,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     frame(&mut d, &mut rig, AppArg::Library, tick(1), vec![]);
     Bridge::library_command(
         &mut d,
-        crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 },
+        plx_screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 },
     );
     for i in 2..80 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
@@ -177,9 +177,9 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(
-            crate::screens::registry::LibraryMenuArg {
+            plx_screens::registry::LibraryMenuArg {
                 host: d.nav.top_page().unwrap().inst.as_ref().unwrap().id,
-                kind: crate::screens::registry::LibraryMenuKind::Filter,
+                kind: plx_screens::registry::LibraryMenuKind::Filter,
                 anchor: [0; 4],
                 target: plx_data::stores::browse::SectionAddress {
                     epoch: listing_id.epoch,
@@ -222,7 +222,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     frame(&mut d, &mut rig, AppArg::Library, tick(120), vec![]);
     Bridge::library_command(
         &mut d,
-        crate::screens::registry::LibraryCmd::FocusGrid { row: 3, col: 1 },
+        plx_screens::registry::LibraryCmd::FocusGrid { row: 3, col: 1 },
     );
     for i in 121..200 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);

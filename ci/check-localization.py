@@ -327,21 +327,22 @@ CONST_SRCS = (*LAYER_SRCS, 'rust-modules/base/src', 'rust-modules/machine/src', 
               'rust-modules/plex/src', 'rust-modules/telemetry/src', 'rust-modules/data/src',
               'rust-modules/session/src',
               'rust-modules/media/src',
-              'rust-modules/appkit/src')
+              'rust-modules/appkit/src',
+              'rust-modules/screens/src')
 
 
 def missing_roots(root: Path) -> list[str]:
     """The directories this gate walks that are not there. A listed FILE that is missing is reported
     by `main`; a missing DIRECTORY would make `rglob` yield nothing, which reads as "no findings".
     Every crate split so far moved files this gate named, and it skipped them without a word."""
-    dirs = ['rust-modules/src/screens', 'rust-modules/src', *CONST_SRCS]
+    dirs = ['rust-modules/src', *CONST_SRCS]
     return [d for d in dirs if not (root / d).is_dir()]
 
 
 def source_paths(root: Path):
     src = root / 'rust-modules/src'
     platform = root / LAYER_SRCS[0]
-    for base, folders in ((src, ('screens',)), (root / LAYER_SRCS[2], ('',)), (root / 'rust-modules/appkit/src', ('',))):
+    for base, folders in ((root / LAYER_SRCS[2], ('',)), (root / 'rust-modules/appkit/src', ('',)), (root / 'rust-modules/screens/src', ('',))):
         for folder in folders:
             for path in sorted((base / folder).rglob('*.rs')):
                 if path.name not in FIXTURES and not any('test' in part for part in path.relative_to(base).parts): yield path

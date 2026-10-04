@@ -39,7 +39,7 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
     frame(&mut d, &mut rig, AppArg::Library, tick(1), vec![]);
     Bridge::library_command(
         &mut d,
-        crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 },
+        plx_screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 },
     );
     for i in 2..80 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
@@ -92,7 +92,7 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
         .unwrap()
         .as_any()
         .unwrap()
-        .downcast_ref::<crate::screens::library::LibraryScreen>()
+        .downcast_ref::<plx_screens::library::LibraryScreen>()
         .unwrap()
         .toolbar_group();
     d.emit(
@@ -145,7 +145,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     Bridge::library_command(
         &mut d,
-        crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 },
+        plx_screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 },
     );
     for i in 1..80 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
@@ -167,7 +167,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         .unwrap()
         .as_any()
         .unwrap()
-        .downcast_ref::<crate::screens::library::LibraryScreen>()
+        .downcast_ref::<plx_screens::library::LibraryScreen>()
         .unwrap()
         .toolbar_group();
     d.emit(
@@ -195,7 +195,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         .unwrap()
         .as_any()
         .unwrap()
-        .downcast_ref::<crate::screens::library::LibraryScreen>()
+        .downcast_ref::<plx_screens::library::LibraryScreen>()
         .unwrap();
     assert_eq!(
         page.probe_viewport(Some(toolbar)).0,
@@ -231,12 +231,12 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
             _ => None,
         })
         .unwrap_or_else(|| panic!("the real toolbar activation must request its menu: {evidence}"));
-    assert_eq!(kind, crate::screens::registry::LibraryMenuKind::Filter);
+    assert_eq!(kind, plx_screens::registry::LibraryMenuKind::Filter);
     d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(
-            crate::screens::registry::LibraryMenuArg {
+            plx_screens::registry::LibraryMenuArg {
                 host: instance,
                 kind,
                 anchor,
@@ -292,7 +292,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         .iter()
         .find(|key| {
             matches!(&key.identity,
-        crate::screens::registry::LibraryIdentity::Grid { sid: item_sid, rk, section }
+        plx_screens::registry::LibraryIdentity::Grid { sid: item_sid, rk, section }
             if *item_sid == sid && rk == "1" && section.key == target.section)
         })
         .unwrap()
@@ -330,7 +330,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         .unwrap()
         .as_any()
         .unwrap()
-        .downcast_ref::<crate::screens::library::LibraryScreen>()
+        .downcast_ref::<plx_screens::library::LibraryScreen>()
         .unwrap();
     assert_eq!(page.grid_position(d.focus()).map(|(row, _)| row), Some(0));
 }

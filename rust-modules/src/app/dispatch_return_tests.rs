@@ -8,7 +8,7 @@
 //! `stores` it names, and not in the UI library (docs/module-layers.md, step L13).
 
 use super::AppHost;
-use crate::screens::registry::{AppFx, LibraryReq};
+use plx_screens::registry::{AppFx, LibraryReq};
 use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_ui::dispatch::{CxParts, Dispatcher, FrameReport, NoTap, Rig, Split};

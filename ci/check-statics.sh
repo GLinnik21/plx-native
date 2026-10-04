@@ -35,6 +35,8 @@ DATA=rust-modules/data/src
 MEDIA=rust-modules/media/src
 # The appkit layer is its own crate (docs/module-layers.md, Split 12); its files were $SRC/appkit.
 APPKIT=rust-modules/appkit/src
+# The screens layer is its own crate (docs/module-layers.md, Split 13); its files were $SRC/screens.
+SCREENS=rust-modules/screens/src
 fails=0
 fail() { echo "::error::check-statics: $*"; fails=$((fails+1)); }
 ok()   { echo "  ok — $*"; }
@@ -43,7 +45,7 @@ ok()   { echo "  ok — $*"; }
 # silently drop out of the gate the way `"$SRC/person"` (never a real path — Person is the file
 # `person.rs`) used to. `2>/dev/null` on the grep itself is gone for the same reason: a missing
 # path is now a loud gate failure, not a swallowed scan of nothing.
-GATED_MUT_PATHS=("$UI" "$APPKIT" "$SRC/screens" "$DATA/person.rs" "$DATA/metadata.rs" "$DATA/metadata" "$DATA/pms.rs" "$DATA/stores")
+GATED_MUT_PATHS=("$UI" "$APPKIT" "$SCREENS" "$DATA/person.rs" "$DATA/metadata.rs" "$DATA/metadata" "$DATA/pms.rs" "$DATA/stores")
 GATED_WIDE_PATHS=("$DATA/search")
 for p in "${GATED_MUT_PATHS[@]}" "${GATED_WIDE_PATHS[@]}" "$MEDIA/route/decision.rs" "$MEDIA/player/engine.rs" "$UI/press.rs"; do
   [ -e "$p" ] || fail "gated path missing: $p — the statics gate would silently scan nothing here"

@@ -1758,7 +1758,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                     AppArg::Player
                         if matches!(
                             super::bridge::player_overlay_kind(&app.pages),
-                            Some(crate::screens::player::overlay::OverlayKind::Info)
+                            Some(plx_screens::player::overlay::OverlayKind::Info)
                         ) =>
                     {
                         commit_info_press(&mut app.player.session,
@@ -1880,13 +1880,13 @@ pub(super) fn finish_local_erasure(bridge: &super::bridge::Bridge,
 
 /// The request-to-performer boundary for root navigation. The live loop and owned-screen
 /// tests consume the same emitted enum here, without constructing a native App or a route oracle.
-pub(super) fn reduce_navigation_request(request: crate::screens::registry::LoopReq,
+pub(super) fn reduce_navigation_request(request: plx_screens::registry::LoopReq,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>)
-    -> Result<(), crate::screens::registry::LoopReq> {
+    -> Result<(), plx_screens::registry::LoopReq> {
     match request {
         // Root BACK belongs to platform Home; first-run Onboard BACK has an in-app destination.
-        crate::screens::registry::LoopReq::BackAtRoot => back_at_root(),
-        crate::screens::registry::LoopReq::OnboardBack => enter_profiles_from_onboard(pages),
+        plx_screens::registry::LoopReq::BackAtRoot => back_at_root(),
+        plx_screens::registry::LoopReq::OnboardBack => enter_profiles_from_onboard(pages),
         other => return Err(other),
     }
     Ok(())
@@ -1902,8 +1902,8 @@ fn loop_requests(app: &mut App) {
             // BACK at a root the platform owns. The FIRST consent stage is the fourth such root
             // and the one the 2026-09-03 rule could not reach until this phase — see the key
             // ladder's dispatcher arm for why a `Popover` could not tell the two BACKs apart.
-            crate::screens::registry::LoopReq::BackAtRoot |
-            crate::screens::registry::LoopReq::OnboardBack => unreachable!("root request reduced above"),
+            plx_screens::registry::LoopReq::BackAtRoot |
+            plx_screens::registry::LoopReq::OnboardBack => unreachable!("root request reduced above"),
             // Privacy & data → Delete all local data, confirmed. The sweep signs the account out,
             // so the surface goes with the screen under it: there is no host left for its
             // dismissal fade to run over, which is what `settings::hide()` used to say by hand.
@@ -1924,17 +1924,17 @@ fn loop_requests(app: &mut App) {
             // site and for the same reason (`consent.rs::close_delete_and_menu`'s comment): it
             // forces a recapture, so the alert's exit shows whatever is actually on screen now —
             // the incoming sign-in page — rather than a ghost of the screen the sweep just erased.
-            crate::screens::registry::LoopReq::DeleteAllLocalData => {
+            plx_screens::registry::LoopReq::DeleteAllLocalData => {
                 if request_local_erasure(&mut app.rec, &mut app.bridge, &mut app.pages) {
                     app.boot_initial = None;
                 }
             }
-            crate::screens::registry::LoopReq::LocalDataErased => {
+            plx_screens::registry::LoopReq::LocalDataErased => {
                 finish_local_erasure(&app.bridge, &mut app.pages);
             }
             // First-run Favourites finished (Start watching, or the retry that found nothing to
             // pin): Home, with the trail reset so BACK from it is the root press.
-            crate::screens::registry::LoopReq::OnboardDone => {
+            plx_screens::registry::LoopReq::OnboardDone => {
                 enter_home_from_onboard(&mut app.pages);
             }
             // Phase 10, the profile menu's five rows. The surface has already asked the container
@@ -1943,7 +1943,7 @@ fn loop_requests(app: &mut App) {
             // No `enter()` on any of the three route flips (phase 6): naming the route is the
             // whole of mounting the owned screen it lands on — see
             // `enter_profiles_from_onboard`'s doc.
-            crate::screens::registry::LoopReq::AccountChangeProfile => {
+            plx_screens::registry::LoopReq::AccountChangeProfile => {
                 super::bridge::execute_session_command(&mut app.pages,
                     plx_session::auth::SessionCmd::StartSwitch(plx_session::auth::Picker::ChangeProfile));
                 // **`switch_profile`, not a bare `Root(Profiles)`.** Every page of the outgoing
@@ -1951,11 +1951,11 @@ fn loop_requests(app: &mut App) {
                 // `switching_profile_leaves_the_container_holding_nothing_of_the_previous_profile`.
                 super::bridge::switch_profile(&mut app.pages);
             }
-            crate::screens::registry::LoopReq::AccountSignIn => {
+            plx_screens::registry::LoopReq::AccountSignIn => {
                 super::bridge::execute_session_command(&mut app.pages, plx_session::auth::SessionCmd::StartLogin);
                 super::bridge::nav_root(&mut app.pages, AppArg::Login);
             }
-            crate::screens::registry::LoopReq::AccountSignOut => {
+            plx_screens::registry::LoopReq::AccountSignOut => {
                 super::bridge::execute_session_command(&mut app.pages, plx_session::auth::SessionCmd::SignOut);
                 super::bridge::nav_root(&mut app.pages, AppArg::Login);
             }
@@ -1966,12 +1966,12 @@ fn loop_requests(app: &mut App) {
             // `(Frozen, Cached)` and never returns the page to `HostRender::Live` — the snapshot
             // survives the handover, which is what
             // `account_to_settings_never_unfreezes_the_host` pins.
-            crate::screens::registry::LoopReq::AccountSettings => {
+            plx_screens::registry::LoopReq::AccountSettings => {
                 super::bridge::open_settings(&mut app.pages);
             }
             // `ps` is threaded rather than read from a global (lane D's lab gate: `player::diag`
             // has taken a `&PlaybackSession` since phase 9, and `lab::request_upload` with it).
-            crate::screens::registry::LoopReq::AccountSendDiagnostics => {
+            plx_screens::registry::LoopReq::AccountSendDiagnostics => {
                 crate::lab::request_upload("menu", &app.player.session);
             }
         }
@@ -2304,8 +2304,8 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         let busy = plx_appkit::player_hud::busy(&app.player.session);
                         let bare_middle = !matches!(
                             super::bridge::player_overlay_kind(&app.pages),
-                            Some(crate::screens::player::overlay::OverlayKind::Info)
-                                | Some(crate::screens::player::overlay::OverlayKind::Chapters)
+                            Some(plx_screens::player::overlay::OverlayKind::Info)
+                                | Some(plx_screens::player::overlay::OverlayKind::Chapters)
                         );
                         // Both subtitle paths lift clear of the transport for the same reason and
                         // by the same test — an open track menu counts, since that is exactly when
@@ -2530,7 +2530,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 // difference in this line's values across phase 5b (`focusprobe::Screen`).
                 AppArg::Onboard => {
                     let (list, row) = match app.pages.focus_record() {
-                        Some((_, elem, _)) if elem < crate::screens::registry::BAND => {
+                        Some((_, elem, _)) if elem < plx_screens::registry::BAND => {
                             (true, elem as i32)
                         }
                         _ => (false, -1),
@@ -2544,11 +2544,11 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 // already names as `route=`, and the panel's own fields ride on `content` like
                 // every other surface's — `bridge::content_probe`.)
                 AppArg::Library => crate::focusprobe::Screen::Library,
-                AppArg::Content(crate::screens::registry::ContentArg::Detail { .. }) =>
+                AppArg::Content(plx_screens::registry::ContentArg::Detail { .. }) =>
                     crate::focusprobe::Screen::Detail,
-                AppArg::Content(crate::screens::registry::ContentArg::Person { .. }
-                    | crate::screens::registry::ContentArg::Filmography { .. }) => crate::focusprobe::Screen::Person,
-                AppArg::Content(crate::screens::registry::ContentArg::Collection(_)) =>
+                AppArg::Content(plx_screens::registry::ContentArg::Person { .. }
+                    | plx_screens::registry::ContentArg::Filmography { .. }) => crate::focusprobe::Screen::Person,
+                AppArg::Content(plx_screens::registry::ContentArg::Collection(_)) =>
                     crate::focusprobe::Screen::Collection,
                 AppArg::Search => crate::focusprobe::Screen::Search,
                 // The same words the heartbeat's `overlay=` uses, and — since phase 9 — from the
@@ -3129,7 +3129,7 @@ mod lifecycle_regression_tests {
         assert!(app.scenarios.content_boot.is_some());
         frame(&mut app, fr.now + 16);
         assert!(matches!(app.pages.top_arg(), Some(AppArg::Content(
-            crate::screens::registry::ContentArg::Detail { rk, .. })) if rk == "1001"));
+            plx_screens::registry::ContentArg::Detail { rk, .. })) if rk == "1001"));
     }
 
     #[cfg(feature = "devtriggers")]
@@ -3270,7 +3270,7 @@ mod lifecycle_regression_tests {
         for fifo in [true, false] {
             let mut app = app();
             super::super::bridge::show_page(&mut app.pages,
-                AppArg::Settings(crate::screens::family::SettingsPage::Root));
+                AppArg::Settings(plx_screens::family::SettingsPage::Root));
             frame(&mut app, 0);
             let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
             if fifo {
@@ -3334,7 +3334,7 @@ mod lifecycle_regression_tests {
         // this map isolates the FIFO -> SDL -> app -> dispatcher -> scrub ownership boundary.
         use plx_ui::{screen::{Activate, Hover, Stop}, Rect};
         use plx_machine::{machine::{FocusKey, Tick}};
-        use crate::screens::registry::PlayerReq;
+        use plx_screens::registry::PlayerReq;
         let key = FocusKey { elem: plx_appkit::player_hud::ELEM_SCRUB,
             ..app.pages.focus().expect("the player has a scrub seat") };
         let rect = plx_appkit::player_hud::scrub_hit_rect();
@@ -3371,7 +3371,7 @@ mod lifecycle_regression_tests {
         for controlled in [false,true] {
             let mut app=app();
             super::super::bridge::show_page(&mut app.pages,
-                AppArg::Settings(crate::screens::family::SettingsPage::Root));
+                AppArg::Settings(plx_screens::family::SettingsPage::Root));
             frame(&mut app,0);
             if controlled {
                 app.boot_initial=Some(super::super::bootstrap::Initial::synthetic_home(1,32517,Some("root".into())).unwrap());
@@ -3415,7 +3415,7 @@ mod lifecycle_regression_tests {
         use plx_machine::{machine::Tick};
         let _serial=plx_base::testlock::serial();
         let mut app=app();
-        super::super::bridge::show_page(&mut app.pages,AppArg::Settings(crate::screens::family::SettingsPage::Root));
+        super::super::bridge::show_page(&mut app.pages,AppArg::Settings(plx_screens::family::SettingsPage::Root));
         frame(&mut app,0);
         let key=app.pages.focus().unwrap();
         app.pages.input.hit.fill(vec![Stop {key,rect:Rect::FULL,rest_rect:Rect::FULL,clip:Rect::FULL,
@@ -3923,7 +3923,7 @@ mod lifecycle_regression_tests {
             &mut rig.app.player.repair,
             &mut rig.app.player.session,
             &mut rig.app.adapters.player,
-            vec![crate::screens::registry::PlayerReq::Exit],
+            vec![plx_screens::registry::PlayerReq::Exit],
             fr.now,
             &mut rig.app.refresh_hubs_at,
             &mut rig.app.pages,
@@ -4047,7 +4047,7 @@ mod lifecycle_regression_tests {
     }
 
     fn detail_arg(sid: plx_plex::plex::ServerId) -> AppArg {
-        AppArg::Content(crate::screens::registry::ContentArg::Detail { sid, rk: "1".into() })
+        AppArg::Content(plx_screens::registry::ContentArg::Detail { sid, rk: "1".into() })
     }
 
     /// Field report: Home → a detail page → Play → BACK landed on HOME. BACK must land on the

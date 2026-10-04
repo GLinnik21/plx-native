@@ -30,7 +30,7 @@ table in §1, §8.3, §8.4, the goal's bullet 4 and the third decision bullet):
   (`screens::detail::trailer::hint_shown`), fading in with the picture and out on promotion or
   collapse.
 
-The current record is `rust-modules/src/screens/detail/trailer.rs`, `player/preview.rs`'s module
+The current record is `rust-modules/screens/src/detail/trailer.rs`, `player/preview.rs`'s module
 doc and `hero.rs`'s `focusable`/`visible_ctls`.
 
 **Status (2026-09-15): implemented.** All host-testable pieces below landed
@@ -67,7 +67,7 @@ landing_hero.rs, detail_layout.rs}}`), `cargo test --lib` (default + `hostsim`) 
 
 **Status (original).** Design plan, not yet implemented. Targets the existing background-trailer feature
 (`e5739f9e feat: add trailer support and extras handling`, `rust-modules/media/src/player/preview.rs` +
-`rust-modules/src/screens/detail/{mod.rs,hero.rs}`). Read `rust-modules/media/src/player/CLAUDE.md` and
+`rust-modules/screens/src/detail/{mod.rs,hero.rs}`). Read `rust-modules/media/src/player/CLAUDE.md` and
 `rust-modules/src/ui/CLAUDE.md` before implementing — this plan assumes both.
 
 **Goal**, as given:
@@ -685,8 +685,8 @@ gate for anything that moves pixels)**
 | `rust-modules/src/ui/detail_layout.rs` | new `PREVIEW_LOGO_X/Y/MAX_W` constants |
 | `rust-modules/src/ui/hero_logo.rs` | new interpolated-bounds path for a continuous Hero↔Compact transform (§2.2) |
 | `rust-modules/src/ui/consts.rs` | new `K_PREVIEW_LOGO` spring rate |
-| `rust-modules/src/screens/detail/hero.rs` | new `hero::visible_ctls` (full-trailer control filter), its host tests |
-| `rust-modules/src/screens/detail/mod.rs` | new `preview_logo` (Spring), `preview_synopsis`, `preview_field` fields; `preview_tick` target logic for all three plus the split `prose`/`synopsis` targets; `draw_hero`/`draw_backdrop`/`draw_buttons` reading them; new DOWN key arm; focus-collapse wiring through `reconcile`; all associated host tests |
+| `rust-modules/screens/src/detail/hero.rs` | new `hero::visible_ctls` (full-trailer control filter), its host tests |
+| `rust-modules/screens/src/detail/mod.rs` | new `preview_logo` (Spring), `preview_synopsis`, `preview_field` fields; `preview_tick` target logic for all three plus the split `prose`/`synopsis` targets; `draw_hero`/`draw_backdrop`/`draw_buttons` reading them; new DOWN key arm; focus-collapse wiring through `reconcile`; all associated host tests |
 | `rust-modules/src/ui/widgets.rs` (`hero_scrim_a`'s test module, wherever the anchor table lives — see `ui/CLAUDE.md`'s `widgets.rs` row) | new anchor-table row for synopsis-over-bound-video legibility (§2.3) |
 
 ## 7. Explicitly out of scope
@@ -1060,9 +1060,9 @@ behavior with no regression test is one accidental refactor away from breaking s
 
 | File | Change |
 |---|---|
-| `rust-modules/src/screens/detail/mod.rs` | swap Cast/Extras order in `sections()` (§8.1); shared `hero_active` local + new `preview_played_for`/`preview_started_for`/`preview_had_picture` fields + gate/set logic in `preview_tick`, `request_preview` capturing `preview_started_for`, both new fields added to the `WillLeave`/`Unmount` reset block (§8.2); new `preview_base_scrim` field + ease target + fold into idle-gate `\|` chain (§8.3); `draw_backdrop` multiplies `base_scrim_a` by `preview_base_scrim` (§8.3) |
-| `rust-modules/src/screens/detail/section.rs` | update `is_hide_anchor`'s stale comment describing Extras' old position (§8.1) |
-| `rust-modules/src/screens/detail/tests.rs` | rename + update the section-order pinning test, plus a new `compact_title_hide_pos` pixel-identity regression test (§8.1, eng review issue 3A); new play-once tests: natural-EOS suppression (both the sitting-still case AND the full-trailer-mode-completion case the eng review's outside-voice pass found missing), abandon-then-return still replays, item-change resets, leave-and-return resets via the `WillLeave`/`Unmount` path (§8.2); new scrim-fade test: `preview_base_scrim` eases to 0/1 correctly and reports idle-gate motion (§8.3); new `reconcile`/`valid`/`place` Restart→Play regression test (§8.4) |
+| `rust-modules/screens/src/detail/mod.rs` | swap Cast/Extras order in `sections()` (§8.1); shared `hero_active` local + new `preview_played_for`/`preview_started_for`/`preview_had_picture` fields + gate/set logic in `preview_tick`, `request_preview` capturing `preview_started_for`, both new fields added to the `WillLeave`/`Unmount` reset block (§8.2); new `preview_base_scrim` field + ease target + fold into idle-gate `\|` chain (§8.3); `draw_backdrop` multiplies `base_scrim_a` by `preview_base_scrim` (§8.3) |
+| `rust-modules/screens/src/detail/section.rs` | update `is_hide_anchor`'s stale comment describing Extras' old position (§8.1) |
+| `rust-modules/screens/src/detail/tests.rs` | rename + update the section-order pinning test, plus a new `compact_title_hide_pos` pixel-identity regression test (§8.1, eng review issue 3A); new play-once tests: natural-EOS suppression (both the sitting-still case AND the full-trailer-mode-completion case the eng review's outside-voice pass found missing), abandon-then-return still replays, item-change resets, leave-and-return resets via the `WillLeave`/`Unmount` path (§8.2); new scrim-fade test: `preview_base_scrim` eases to 0/1 correctly and reports idle-gate motion (§8.3); new `reconcile`/`valid`/`place` Restart→Play regression test (§8.4) |
 
 ### 8.6 Verification
 
@@ -1287,27 +1287,27 @@ Claude Code or Codex; checkbox as you ship.
 
 - [ ] **T1 (P1, human: ~30min / CC: ~8min)** — screens/detail — Fix play-once suppression: `hero_active` extraction, corrected EOS condition, `preview_started_for` capture, leave-reset
   - Surfaced by: Outside voice — EOS-detection ordering bug (`preview_promoted` clears after the naive check reads it) + missing `WillLeave`/`Unmount` reset
-  - Files: `rust-modules/src/screens/detail/mod.rs`
+  - Files: `rust-modules/screens/src/detail/mod.rs`
   - Verify: new host tests in T6 below; `make check`
 - [ ] **T2 (P1, human: ~10min / CC: ~3min)** — screens/detail — Swap Extras/Cast order in `sections()`, update `is_hide_anchor` comment
   - Surfaced by: Design review §8.1 + eng review issue 3A verification (`LayoutCache`/`Spot` confirmed identity-keyed, safe to reorder)
-  - Files: `rust-modules/src/screens/detail/mod.rs`, `rust-modules/src/screens/detail/section.rs`
+  - Files: `rust-modules/screens/src/detail/mod.rs`, `rust-modules/screens/src/detail/section.rs`
   - Verify: updated pinning test + new `compact_title_hide_pos` test (T5); device capture per §8.6
 - [ ] **T3 (P1, human: ~15min / CC: ~4min)** — screens/detail — Wire `preview_base_scrim`: new eased scalar, fold into idle-gate chain, multiply into `draw_backdrop`
   - Surfaced by: Design review §8.3 — `base_scrim_a` was completely unwired from full-trailer mode
-  - Files: `rust-modules/src/screens/detail/mod.rs`
+  - Files: `rust-modules/screens/src/detail/mod.rs`
   - Verify: state-table test extension + idle-gate settle test; device UP/BACK cycle capture
 - [ ] **T4 (P2, human: ~20min / CC: ~5min)** — screens/detail — Add `reconcile`/`valid`/`place` Restart→Play regression test in full-trailer mode
   - Surfaced by: Original plan §5 called this CRITICAL; never added. Design review §8.4 closed the gap
-  - Files: `rust-modules/src/screens/detail/tests.rs`
+  - Files: `rust-modules/screens/src/detail/tests.rs`
   - Verify: `make check` — expected to pass immediately (closing coverage, not fixing a bug)
 - [ ] **T5 (P2, human: ~15min / CC: ~4min)** — screens/detail — Add `compact_title_hide_pos` pixel-identity regression test across the Extras/Cast reorder
   - Surfaced by: Eng review issue 3A — closes the `detail-sections-array-position-traps` hazard class with a test, not just a source read
-  - Files: `rust-modules/src/screens/detail/tests.rs`
+  - Files: `rust-modules/screens/src/detail/tests.rs`
   - Verify: `make check`
 - [ ] **T6 (P2, human: ~30min / CC: ~8min)** — screens/detail — Add play-once host tests: natural EOS (sitting-still + full-trailer-mode), abandon-preserves-replay, item-change reset, leave-reset
   - Surfaced by: Design review §8.6 + eng review outside-voice cases 2, 5, 6
-  - Files: `rust-modules/src/screens/detail/tests.rs`
+  - Files: `rust-modules/screens/src/detail/tests.rs`
   - Verify: `make check` — cases 2 and 6 must be written to fail against the uncorrected/unfixed code first, per this repo's reproduce-fail-fix-pass rule
 
 JSONL artifact: `~/.gstack/projects/MrcRjs-plx-native/tasks-eng-review-20260915-144303.jsonl` (6 tasks, for `/autoplan` aggregation).

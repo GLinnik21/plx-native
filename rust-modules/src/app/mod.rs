@@ -204,7 +204,7 @@ use plx_base::eventlog::log;
 // registry owns the concrete `ScreenArg` and the one `mount` match, so `app/` reads it here
 // rather than declaring it. Imported at the tree's root because every module under `app/`
 // that requests a navigation names it.
-use crate::screens::registry::AppArg;
+use plx_screens::registry::AppArg;
 /// The shared top strip's vocabulary: what a pill INDEX means. Every site that turns a pill into a
 /// destination `match`es on this, so a pill the app has not been taught about is a compile error
 /// rather than a silent library open — see `widgets::Pill`.
@@ -534,6 +534,10 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
     // graded for this exact contiguous string (`ci/check-package.py`); second, before anything can
     // build an envelope or an SDK option.
     plx_telemetry::telemetry::set_release(concat!("plxnative@", env!("PLX_VERSION")));
+    // The commit About and Source print: `PLX_BUILD_SHA` reaches this crate only, so the screens
+    // crate is handed it (it panics in a shipping build if asked first); third, before any screen
+    // can draw.
+    plx_screens::legal::set_build_sha(env!("PLX_BUILD_SHA"));
     // The hooks `plex` is handed for what it cannot name; first, so no session load precedes them.
     install_plex_seams();
     // Telemetry erases the player's in-memory error trace (withdrawal, sign-out, its own boot load

@@ -67,7 +67,7 @@ fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
         &mut d,
         host,
         Some((here, "m1")),
-        crate::screens::registry::ContentPanel::AltSources { anchor: [300.0f32, 800.0, 300.0, 60.0].map(f32::to_bits) },
+        plx_screens::registry::ContentPanel::AltSources { anchor: [300.0f32, 800.0, 300.0, 60.0].map(f32::to_bits) },
     );
     run(&mut d, &mut rig, &mut t, detail_arg("m1"), 40);
     let panel = d.nav.modals.surfaces.first().expect("the picker is up").entry.id;
@@ -145,7 +145,7 @@ fn panel_sel(d: &Dispatcher<AppHost>, entry: EntryId) -> i32 {
         .entry(entry)
         .and_then(|e| e.inst.as_ref())
         .and_then(|i| i.screen.as_any())
-        .and_then(|s| s.downcast_ref::<crate::screens::alt_sources::AltSourcesScreen>())
+        .and_then(|s| s.downcast_ref::<plx_screens::alt_sources::AltSourcesScreen>())
         .expect("the picker")
         .form
         .table
@@ -171,7 +171,7 @@ fn panel_sel(d: &Dispatcher<AppHost>, entry: EntryId) -> i32 {
 /// assertion fails.
 #[test]
 fn an_alt_sources_anchor_travels_on_its_arg() {
-    use crate::screens::alt_sources::{AltSourcesArg, AltSourcesScreen};
+    use plx_screens::alt_sources::{AltSourcesArg, AltSourcesScreen};
     let _guard = plx_base::testlock::serial();
     let arg = |x: f32, y: f32| AltSourcesArg {
         host: InstanceId(1),

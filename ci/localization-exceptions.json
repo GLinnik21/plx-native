@@ -1,6 +1,6 @@
 [
   {
-    "path": "rust-modules/src/screens/login.rs",
+    "path": "rust-modules/screens/src/login.rs",
     "boundary": "TextView::new",
     "text": "plex.tv/link",
     "reason": "Plex sign-in URL is an exact service destination; it must not be translated."
