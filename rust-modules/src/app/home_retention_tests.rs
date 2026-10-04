@@ -78,10 +78,10 @@ fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
         HomeHubIdentity::Ephemeral { generation: 9, ordinal: 0 }];
     let memory = HomeMemory {
         groups: groups.iter().enumerate().map(|(i, identity)| HomeGroupKey { identity: identity.clone(), group: i as u32 }).collect(),
-        items: vec![
+        items: std::sync::Arc::new(vec![
             HomeItemKey { elem: 10, identity: HomeItemIdentity::Item { hub: groups[0].clone(), sid, rk: "1".into() }, last_row: 0, last_col: 0 },
             HomeItemKey { elem: 11, identity: HomeItemIdentity::Slot { hub: groups[3].clone(), generation: 9, ordinal: 0 }, last_row: 0, last_col: 0 },
-        ], next_elem: 12, next_group: 4, carousel: Some((sid, "1".into())), strip_chosen: false,
+        ]), next_elem: 12, next_group: 4, carousel: Some((sid, "1".into())), strip_chosen: false,
         ..Default::default()
     };
     let ret = ReturnState { memory: PageMemory::Home(memory), ..Default::default() };

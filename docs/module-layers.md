@@ -991,15 +991,16 @@ four lower layers'. Its 458 tests run in their own binary. What it taught beyond
 ### Splits 6 and 7 together: what the combination needed, and the measurement
 
 The two splits were made in parallel from the same commit and landed as one change, on a `main`
-that had moved by two Home changes meanwhile. Combining them:
+that moved twice meanwhile (four changes, three of them to Home). Combining them:
 
 - **The files both touched are lists again.** 42 files conflicted: the same 22 lists as in Splits 4
   and 5 plus 20 source files in which one lane rewrote `crate::ui::` and the other `crate::plex::`
   on the same line (and three doc comments in the moved `plex` files that named `crate::ui`). The
   token-level three-way merge resolved all but two prose hunks; it left two list joins that were
   not valid TOML (`"plx_ui/devtriggers",\n, "plx_plex/devtriggers"]`), so read every merged
-  manifest. Both rewrite scripts were re-run on the result: the `ui` one changed nothing, the
-  `plex` one rewrote the `crate::plex` paths `main` had added to `screens/home/mod.rs` since.
+  manifest. Both rewrite scripts were re-run on the result and again after each move of `main`: they
+  rewrote the `crate::ui`/`crate::plex` paths `main` had added to `screens/home/mod.rs` since, and
+  where `main` conflicted with the rewritten file its version was taken and rewritten again.
 - **The gates still fire in the combination**, proven by temporary violating edits: `plx_ui`
   naming `plx_plex`, `plx_plex` naming `plx_ui`, and `plx_platform::webos`/`::keymanager` named
   from `ui/src`, `plex/src` and `coldstart.rs` each fail `ci/check-module-layers.py` (the mounted
@@ -1040,7 +1041,7 @@ lanes were building, both sets carry load warnings, so read the minima). Before,
 edit in `plx_base` 35.3 s (min 35.1), in `plx_machine` 34.6 s (min 34.6), in `plx_platform` 34.6 s
 (min 34.0), in `plx_gfx` 33.0 s (min 32.8), in `plx_net` 33.0 s (min 32.0), of the application
 crate 32.4 s (min 31.5), the hub edit (`ui/mod.rs`) 32.3 s (min 31.8), the unit suite 76.0 s (min
-75.2) with 5613 tests. After: an edit in `plx_base` 30.9 s (min 27.8), in `plx_machine` 27.9 s
+75.2) with 5613 tests. After (measured before `main`'s second move, which adds Home tests): an edit in `plx_base` 30.9 s (min 27.8), in `plx_machine` 27.9 s
 (min 27.2), in `plx_platform` 28.1 s (min 26.7), in `plx_gfx` 25.3 s (min 24.2), in `plx_net`
 26.3 s (min 24.2), in `plx_ui` 24.4 s (min 23.7), in `plx_plex` 24.7 s (min 24.1), of the
 application crate 21.8 s (min 21.6), the hub edit (`plx_ui`'s `lib.rs`) 23.8 s (min 23.6), and the

@@ -1518,8 +1518,8 @@ fn the_home_census_covers_input_motion_and_current_projection() {
         |s| s.grid.scroll_y.vel = 1.0,
         |s| s.grid.scroll_target = 100.0,
         |s| s.rows[0].elems.swap(0, 1),
-        |s| s.items[0].last_row += 1,
-        |s| s.items[0].last_col += 1,
+        |s| Arc::make_mut(&mut s.items)[0].last_row += 1,
+        |s| Arc::make_mut(&mut s.items)[0].last_col += 1,
         |s| s.projected_generation = None,
         |s| s.hero_pop.step(Some(0), 0.016),
         |s| s.grid.shelves[0].update(3, Some(1), &RowStyle::HOME, 0.016),
@@ -2974,7 +2974,7 @@ fn key_index_agrees_with_a_scan_of_the_table() {
     r.restore(&memory);
     republish(&mut r, &mut state, &adapter, 4, 4);
     for screen in [&s, &r] {
-        for key in &screen.items {
+        for key in screen.items.iter() {
             assert_eq!(screen.find_item(&key.identity), screen.items.iter().position(|k| k.identity == key.identity));
         }
         for key in &screen.groups {
@@ -3025,4 +3025,152 @@ fn stops_are_recorded_only_for_rows_on_screen_or_focused() {
         recorded.sort_unstable();
         assert_eq!(recorded, elems(&s, &expected_rows));
     }
+}
+
+/// Publish `hubs` named hubs of `items` cards into `s`; an empty id (and no key) makes the hub
+/// `Ephemeral`.
+fn republish_named(
+    s: &mut HomeScreen,
+    state: &mut crate::pms::PmsState,
+    adapter: &std::sync::Arc<crate::pms::PmsAdapter>,
+    hubs: &[&str],
+    items: usize,
+    focus: Option<FocusKey<u32>>,
+) {
+    let rows: Vec<(&str, &str, &str)> = hubs.iter().map(|id| (*id, "", "Row")).collect();
+    crate::pms::seed_named_hubs_for_test(state, adapter, items, &rows);
+    let snapshot = crate::pms::hubs_snapshot(state);
+    s.sync_catalog(&cx(snapshot.view(), focus));
+}
+
+fn assert_indexes_agree(s: &HomeScreen) {
+    for key in s.items.iter() {
+        assert_eq!(s.find_item(&key.identity), s.items.iter().position(|k| k.identity == key.identity));
+    }
+    for key in &s.groups {
+        assert_eq!(s.find_group(&key.identity), s.groups.iter().position(|k| k.identity == key.identity));
+    }
+    assert_eq!(s.item_index.values().map(HubKeys::len).sum::<usize>(), s.items.len());
+    assert_eq!(s.group_index.len(), s.groups.len());
+}
+
+#[test]
+fn volatile_keys_do_not_accumulate_across_publications() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    for _ in 0..20 {
+        republish_named(&mut s, &mut state, &adapter, &["", "", ""], 4, None);
+    }
+    // Only the shown publication and the one before it are kept.
+    assert!(s.items.len() <= 2 * 12, "{} keys after 20 publications", s.items.len());
+    assert!(s.groups.len() <= 3, "{} groups after 20 publications", s.groups.len());
+    assert_eq!(s.rows.len(), 3);
+    assert_indexes_agree(&s);
+}
+
+#[test]
+fn the_focused_vanished_key_survives_a_prune() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    republish_named(&mut s, &mut state, &adapter, &[""], 4, None);
+    let (focused, other) = (s.rows[0].elems[1], s.rows[0].elems[2]);
+    let focus = Some(FocusKey { entry: EntryId(7), elem: focused });
+    for _ in 0..4 {
+        republish_named(&mut s, &mut state, &adapter, &[""], 4, focus);
+    }
+    assert!(s.items.iter().any(|k| k.elem == focused), "the focused key was pruned");
+    assert!(!s.items.iter().any(|k| k.elem == other), "an unfocused vanished key was kept");
+    assert_indexes_agree(&s);
+}
+
+#[test]
+fn focus_recovers_to_the_same_row_after_its_card_rotates_out() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    republish(&mut s, &mut state, &adapter, 4, 5);
+    let focused = s.rows[2].elems[3];
+    let focus = FocusKey { entry: EntryId(7), elem: focused };
+    // The card (rk "4" in every row) leaves the catalog, and a few publications pass.
+    for _ in 0..4 {
+        crate::pms::seed_grid_for_test(&mut state, &adapter, 4, 5);
+        crate::pms::remove_test_item(&mut state, "4");
+        let snapshot = crate::pms::hubs_snapshot(&state);
+        s.sync_catalog(&cx(snapshot.view(), Some(focus)));
+    }
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    assert_eq!(s.locate(focused), None, "the card is gone");
+    let got = Focusable::<TestHost>::reconcile(&s, focus, &cx(snapshot.view(), Some(focus)));
+    assert!(s.rows[2].elems.contains(&got.elem), "recovered outside the row");
+}
+
+#[test]
+fn memory_shares_the_key_table() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    republish(&mut s, &mut state, &adapter, 4, 5);
+    let memory = match <HomeScreen as Screen<TestHost>>::memory(&s) {
+        PageMemory::Home(m) => m,
+        _ => unreachable!(),
+    };
+    assert!(Arc::ptr_eq(&memory.items, &s.items));
+    // The same catalog republished moves no card and mints no key: still one table.
+    republish(&mut s, &mut state, &adapter, 4, 5);
+    assert!(Arc::ptr_eq(&memory.items, &s.items), "an unchanged republication copied the table");
+    // A new row writes the table, which must not reach what memory took.
+    let before = memory.items.len();
+    republish(&mut s, &mut state, &adapter, 5, 5);
+    assert!(!Arc::ptr_eq(&memory.items, &s.items));
+    assert_eq!(memory.items.len(), before);
+    assert_eq!(s.items.len(), before + 5);
+}
+
+/// A Home whose hubs carry identifiers and whose cards carry rating keys never loses a key while
+/// it stays under the cap: the table is exactly what it was before pruning existed (replay
+/// fixtures hash it).
+#[test]
+fn a_stable_home_under_the_cap_prunes_nothing() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    let mut table: Vec<HomeItemKey> = Vec::new();
+    for (rows, items) in [(3, 4), (5, 4), (2, 6), (5, 4), (1, 1), (4, 5), (4, 5)] {
+        republish(&mut s, &mut state, &adapter, rows, items);
+        // Every earlier key is still there, in the same place, with the same elem; only
+        // `last_row`/`last_col` follow the cards.
+        assert!(s.items.len() >= table.len());
+        for (kept, old) in s.items.iter().zip(&table) {
+            assert_eq!((&kept.identity, kept.elem), (&old.identity, old.elem));
+        }
+        table = s.items.to_vec();
+        assert_indexes_agree(&s);
+    }
+}
+
+#[test]
+fn stable_keys_are_bounded_oldest_first() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    let ids: Vec<String> = (0..100).map(|i| format!("hub.{i}")).collect();
+    for id in &ids {
+        republish_named(&mut s, &mut state, &adapter, &[id.as_str()], 4, None);
+    }
+    let cap = 2 * 4 + 256;
+    assert!(s.items.len() <= cap, "{} keys", s.items.len());
+    assert!(s.items.len() > 4 * 2, "the window is not just the last two publications");
+    // The newest survive and the table is still in elem order.
+    let elems: Vec<u32> = s.items.iter().map(|k| k.elem).collect();
+    assert!(elems.windows(2).all(|w| w[0] < w[1]));
+    assert_eq!(elems.last().copied(), s.rows[0].elems.last().copied());
+    assert_indexes_agree(&s);
 }
