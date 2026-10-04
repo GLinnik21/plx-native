@@ -27,19 +27,19 @@ pub(crate) struct LegacyMeasure;
 
 impl LegacyMeasure {
     pub(crate) fn bounds(&self, s: &CStr, sz: c_int, bold: bool) -> (f32,f32) {
-        crate::text::text_bounds(s.as_ptr(),sz,bold as c_int)
+        plx_gfx::text::text_bounds(s.as_ptr(),sz,bold as c_int)
     }
 }
 
 impl plx_machine::machine::Measure for LegacyMeasure {
     fn width(&self, s: &CStr, sz: c_int, bold: bool) -> f32 {
-        crate::text::text_width(s.as_ptr(), sz, bold as c_int)
+        plx_gfx::text::text_width(s.as_ptr(), sz, bold as c_int)
     }
     fn cap_h(&self, sz: c_int) -> f32 {
-        crate::text::cap_h(sz, 0)
+        plx_gfx::text::cap_h(sz, 0)
     }
     fn line_h(&self, sz: c_int) -> f32 {
-        crate::text::text_height(sz, 0)
+        plx_gfx::text::text_height(sz, 0)
     }
     fn live_font(&self) -> bool {
         true
@@ -65,13 +65,13 @@ impl Glass {
         rest_dy: f32,
         radius: f32,
         tint: [f32; 4],
-        rim: crate::gfx::GlassRim,
-        face: crate::gfx::GlassFace,
+        rim: plx_gfx::gfx::GlassRim,
+        face: plx_gfx::gfx::GlassFace,
         mat: theme::Material,
     ) -> bool {
         // A bare painter outside a frame cannot name an underlay. Never silently fall through
         // to the synthetic load dial's independent scratch-cache policy.
-        if !crate::ui::frame::backdrop::active() || !crate::gfx::live_blur_available() { return false; }
+        if !crate::ui::frame::backdrop::active() || !plx_gfx::gfx::live_blur_available() { return false; }
         p.backdrop_blur(r, rest_dy, radius, tint, rim, face, mat.deep())
     }
 }
@@ -419,8 +419,8 @@ pub(crate) fn still_line(
     // The pair is authored from the BOTTOM up, because that is what the two insets are about: the
     // sub line's baseline sits at the tile's own bottom inset and the label stacks above it.
     let (lsz, ssz) = (theme::size::LABEL, theme::size::CAPTION);
-    let (sct, scb) = crate::text::text_cap_band(ssz, 0);
-    let (_, lcb) = crate::text::text_cap_band(lsz, 1);
+    let (sct, scb) = plx_gfx::text::text_cap_band(ssz, 0);
+    let (_, lcb) = plx_gfx::text::text_cap_band(lsz, 1);
     let bot = if has_bar {
         STILL_LINE_BOT_BAR
     } else {
@@ -571,7 +571,7 @@ pub(crate) const STILL_LINE_GAP: f32 = 8.0;
 /// (`img.rs`'s decode-budget note): a 2:3 headshot asked for at 300×300 comes back 300×450, and
 /// sampling all of it into a 190-px circle squashed every portrait-shot actor to two-thirds of
 /// their height. The crop's placement is the art's ([`art_crop`]); an undecoded texture is
-/// [`crate::gfx::UV_FULL`], as `Rect::cover_uv` documents.
+/// [`plx_gfx::gfx::UV_FULL`], as `Rect::cover_uv` documents.
 ///
 /// Pure, and the seam every art tile goes through — the shelf, the Library grid, Search, the
 /// person page's portrait, the profile picker, extras, cast — so no one of them can draw a picture
@@ -932,7 +932,7 @@ fn veil_tex() -> std::os::raw::c_uint {
             px[i + 3] = (a * 255.0).round() as u8;
         }
     }
-    let tex = crate::gfx::upload_rgba(0, n as std::os::raw::c_int, n as std::os::raw::c_int, px.as_ptr());
+    let tex = plx_gfx::gfx::upload_rgba(0, n as std::os::raw::c_int, n as std::os::raw::c_int, px.as_ptr());
     VEIL_TEX.store(tex, Relaxed);
     tex
 }
@@ -1201,7 +1201,7 @@ const SCRIM_CORNER_BANDS: usize = 3;
 ///   the focus pop moved the geometry. Splitting the band at the played fraction removes the overlap
 ///   rather than trying to tune around it.
 pub(crate) fn progress_bar(p: Painter, card: Rect, rad: f32, h: f32, frac: f32) {
-    let snap = |y: f32| crate::gfx::snap(y + p.dy) - p.dy;
+    let snap = |y: f32| plx_gfx::gfx::snap(y + p.dy) - p.dy;
     let bottom = card.y + card.h;
     let top = snap(bottom - h.min(card.h));
     if bottom <= top {
@@ -1285,7 +1285,7 @@ pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4
     p.text(
         lc.as_ptr(),
         x + KEYLINE_PAD_X,
-        crate::text::text_vcenter_y(theme::size::CAPTION, KEYLINE_BOLD, cy),
+        plx_gfx::text::text_vcenter_y(theme::size::CAPTION, KEYLINE_BOLD, cy),
         theme::size::CAPTION,
         col,
         0,
@@ -1390,7 +1390,7 @@ pub(crate) fn key_cap(
             p.text(
                 label.as_ptr(),
                 x + (w - tw) * 0.5,
-                crate::text::text_vcenter_y(theme::size::MICRO, KEYCAP_BOLD, cy),
+                plx_gfx::text::text_vcenter_y(theme::size::MICRO, KEYCAP_BOLD, cy),
                 theme::size::MICRO,
                 ink,
                 0,
@@ -1516,7 +1516,7 @@ impl<'a> KeyHint<'a> {
         measure: &dyn plx_machine::machine::Measure,
     ) {
         let sz = theme::size::CAPTION;
-        let ty = crate::text::text_vcenter_y(sz, 0, cy);
+        let ty = plx_gfx::text::text_vcenter_y(sz, 0, cy);
         let layout = self.layout(measure);
         p.text(self.pre.as_ptr(), x, ty, sz, theme::TEXT_TERTIARY, 0, 0);
         key_cap(p, x + layout.key_x, cy, self.key, theme::TEXT_SECONDARY, measure);
@@ -1832,8 +1832,8 @@ pub(crate) fn still_ground(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
         0.0,
         rad,
         [1.0, 1.0, 1.0, 1.0],
-        crate::gfx::GlassRim::Standing,
-        crate::gfx::GlassFace::NONE,
+        plx_gfx::gfx::GlassRim::Standing,
+        plx_gfx::gfx::GlassFace::NONE,
         theme::Material::UltraThin,
     ) {
         // The frost the LABEL is read against. A blur alone is not legibility — a bright still
@@ -1871,7 +1871,7 @@ pub(crate) fn art_scrim(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
     // disagree by up to a pixel, and the row between them is covered by neither the gradient nor the
     // first band: the artwork shows through it as a bright hairline across the whole tile. It only
     // appears once the strip's scroll spring settles somewhere fractional, which is nearly always.
-    let snap = |y: f32| crate::gfx::snap(y + p.dy) - p.dy;
+    let snap = |y: f32| plx_gfx::gfx::snap(y + p.dy) - p.dy;
     let bottom = card.y + card.h;
     let top = snap(bottom - h);
     let seam = snap(bottom - rad).max(top);
@@ -2020,7 +2020,7 @@ pub(crate) fn hero_scrim_right_a(x: f32, y: f32, strength: f32) -> f32 {
 ///
 /// **Quad 0 and quad 1 abut exactly**, and must keep doing so: quad 0's bottom pair (`bl→br` =
 /// edge→none) is identical to quad 1's top pair (`tl→tr` = edge→none) at every x, and the two share
-/// one float y. The reflex here is to reach for [`crate::gfx::snap`] — don't. [`art_scrim`]'s fallback snaps
+/// one float y. The reflex here is to reach for [`plx_gfx::gfx::snap`] — don't. [`art_scrim`]'s fallback snaps
 /// because an integer-truncated *scissor* meets a float *fill*; these are fill-to-fill quads
 /// sharing an edge, where the rasterizer's own fill rule already guarantees neither a gap (one row
 /// of unscrimmed BRIGHT artwork) nor a double-cover (one row of doubled scrim). Snapping would be
@@ -2107,7 +2107,7 @@ pub(crate) fn set_hero_ground(on: bool) {
 /// May a hero draw its ground in one pass? Both halves must hold: the trigger, and a program that
 /// actually linked (`gfx::hero_ground_ok`) — a driver that refused it keeps the shipped picture.
 pub(crate) fn hero_ground_armed() -> bool {
-    HERO_GROUND.load(std::sync::atomic::Ordering::Relaxed) && crate::gfx::hero_ground_ok()
+    HERO_GROUND.load(std::sync::atomic::Ordering::Relaxed) && plx_gfx::gfx::hero_ground_ok()
 }
 
 /// The one-pass ground's WEDGE field, exactly as `fs_hero.frag` evaluates it from the same four
@@ -2300,9 +2300,9 @@ pub(crate) fn profile_chip_at(mx: f32, my: f32) -> bool {
 /// `max(u_tint.a * cov, rimw)`, so the rim is deliberately allowed to exceed its surface's own
 /// coverage and a tint faded to nothing leaves a full-strength hairline behind. At `e == 1` this is
 /// the track's face to the bit — the band is ONE material at rest, which is the whole claim.
-fn chip_face(face: crate::gfx::GlassFace, e: f32) -> crate::gfx::GlassFace {
+fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::GlassFace {
     let fade = |c: [f32; 4]| [c[0], c[1], c[2], c[3] * e];
-    crate::gfx::GlassFace {
+    plx_gfx::gfx::GlassFace {
         scrim_top: fade(face.scrim_top),
         scrim_bot: fade(face.scrim_bot),
         rim: fade(face.rim),
@@ -2334,7 +2334,7 @@ fn chip_face(face: crate::gfx::GlassFace, e: f32) -> crate::gfx::GlassFace {
 /// The tab band publishes the shared face on `GlassPlan`; both surfaces automatically declare
 /// their current rectangles in the same chrome layer. The planner captures their union once,
 /// and separates their z bands automatically if their sampling regions overlap.
-fn chip_capsule(p: Painter, cap: Rect, e: f32, bar_material: Option<crate::gfx::GlassFace>) -> bool {
+fn chip_capsule(p: Painter, cap: Rect, e: f32, bar_material: Option<plx_gfx::gfx::GlassFace>) -> bool {
     let face = match bar_material {
         None => return false,
         Some(f) => chip_face(f, e),
@@ -2347,7 +2347,7 @@ fn chip_capsule(p: Painter, cap: Rect, e: f32, bar_material: Option<crate::gfx::
         [1.0, 1.0, 1.0, e],
         // A container, exactly as the track is one — same lamp, same 12px chamfer, same 24px lens.
         // The two capsules are the same object seen twice, so nothing about the edge may differ.
-        crate::gfx::GlassRim::Standing,
+        plx_gfx::gfx::GlassRim::Standing,
         face,
         theme::Material::UltraThin,
     )
@@ -2419,7 +2419,7 @@ pub(crate) fn profile_chip_text(
     initial: &str,
     measure: &dyn plx_machine::machine::Measure,
 ) -> (CString, CString, f32) {
-    let name = CString::new(crate::text::elide_by(label, CHIP_NAME_MAX, false, |t| {
+    let name = CString::new(plx_gfx::text::elide_by(label, CHIP_NAME_MAX, false, |t| {
         measure.width_str(t, theme::size::BODY, true)
     }))
     .unwrap_or_default();
@@ -2433,7 +2433,7 @@ pub(crate) fn profile_chip_text(
 /// `Bridge`), while `bar_material` comes from the application-owned `GlassPlan`. Normal chrome and
 /// its bare-`fn` lift receive those same owner publications rather than recovering either through
 /// a static.
-pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32, bar_material: Option<crate::gfx::GlassFace>) {
+pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32, bar_material: Option<plx_gfx::gfx::GlassFace>) {
     let r = CHIP_FRAME;
     let expand = chip_expand;
     let d = r.w;
@@ -2468,7 +2468,7 @@ pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expa
         // already made room for them instead of smearing across the grow
         let na = ((e - 0.55) / 0.45).clamp(0.0, 1.0);
         if na > 0.004 {
-            let ty = crate::text::text_vcenter_y(theme::size::BODY, 1, r.cy());
+            let ty = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, r.cy());
             p.alpha(na).text(
                 name_c.as_ptr(),
                 r.x + d + CHIP_NAME_GAP,
@@ -2510,7 +2510,7 @@ pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expa
                 theme::TEXT_SECONDARY,
             );
         } else {
-            let ty = crate::text::text_vcenter_y(theme::size::HEADLINE, 1, r.y + d * 0.5);
+            let ty = plx_gfx::text::text_vcenter_y(theme::size::HEADLINE, 1, r.y + d * 0.5);
             p.text(
                 initial_c.as_ptr(),
                 r.x + d * 0.5,
@@ -2825,7 +2825,7 @@ impl View for CircleButton {
                 let tx = ix + isz + gap;
                 let a = (((r.x + r.w) - (tx + label_w * self.scale)) / tail).clamp(0.0, 1.0);
                 if a > 0.004 {
-                    let ty = crate::text::text_vcenter_y(theme::size::BODY, 1, r.y + d * 0.5);
+                    let ty = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, r.y + d * 0.5);
                     // …and the clip stays, as the backstop the ramp makes invisible: a caller whose
                     // frame does not come from `cap_w` would otherwise paint a label out over the
                     // page (the design's own `overflow:hidden`).
@@ -3219,10 +3219,10 @@ impl AmbientWash {
         ramp: Option<WashRamp>,
     ) -> bool {
         let art = art.filter(|a| a.tex != 0);
-        let split = art.and_then(|a| art_wash_split(r, a.rect)).filter(|_| crate::gfx::art_wash_ok());
+        let split = art.and_then(|a| art_wash_split(r, a.rect)).filter(|_| plx_gfx::gfx::art_wash_ok());
         let art_taken = split.is_some();
         // The ramp sits over the art: it can only join the wash if the art did (or there is none).
-        let ramp = ramp.filter(|_| crate::gfx::wash_ink_ok() && (art.is_none() || art_taken));
+        let ramp = ramp.filter(|_| plx_gfx::gfx::wash_ink_ok() && (art.is_none() || art_taken));
         let (over, bands) = match split {
             Some((over, bands)) => (Some(over), bands),
             None => (None, [Some(r), None, None, None]),
@@ -4423,7 +4423,7 @@ pub(crate) fn diagnostic_lines(value: &str, width: f32, bold: bool) -> Vec<Strin
         use plx_machine::machine::Measure;
         CString::new(s)
             .ok()
-            .map(|c| crate::text::TtfMeasure.width(&c, FIELD_VAL_SZ, bold))
+            .map(|c| plx_gfx::text::TtfMeasure.width(&c, FIELD_VAL_SZ, bold))
             .filter(|w| *w > 0.0)
     };
     // The library unit-test target deliberately does not link SDL_ttf.  Its conservative fallback
@@ -5544,13 +5544,13 @@ enum BarMaterial {
     /// driver with no render target, or a source pass
     Flat,
     /// the glass track's solved face; the chip reproduces it locally without sampling the backdrop
-    Glass(crate::gfx::GlassFace),
+    Glass(plx_gfx::gfx::GlassFace),
 }
 
 /// **How fast the drawn weight follows the solve, and why the two rates are not the same number.**
 ///
 /// [`track_alpha_for`] is exact and it is also a STEP. The ground can only be read twice a second
-/// (a hero holds for seconds — [`crate::gfx::sample_ground`] holds that reasoning) and the answer
+/// (a hero holds for seconds — [`plx_gfx::gfx::sample_ground`] holds that reasoning) and the answer
 /// is one of 25 rungs, so applied straight to the draw the bar's weight changes in visible jumps as
 /// artwork moves under it. Reported from the panel as the bar "glitching", which is the right word
 /// for it: a material that steps does not read as responding to the picture, it reads as broken.
@@ -5617,7 +5617,7 @@ impl TabBand {
         track_density_step(dt, &mut self.density);
     }
 
-    pub(crate) fn face(&self) -> Option<crate::gfx::GlassFace> {
+    pub(crate) fn face(&self) -> Option<plx_gfx::gfx::GlassFace> {
         match self.material {
             BarMaterial::Flat => None,
             BarMaterial::Glass(face) => Some(face),
@@ -5635,7 +5635,7 @@ impl TabBand {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_face(&mut self, face: crate::gfx::GlassFace) {
+    pub(crate) fn set_face(&mut self, face: plx_gfx::gfx::GlassFace) {
         self.material = BarMaterial::Glass(face);
     }
 }
@@ -6092,27 +6092,27 @@ const GLASS_TRACK_TOUCH_MAX: f32 = crate::ui::consts::SCR_W - 2.0 * (CHIP_CAP_MA
 /// The track's blurred region HEIGHT, in authored px.
 ///
 /// The top clamps to 0 — the track's own top edge (`TOP_BAR_Y - TAB_TRACK_PAD` = 54) is inside
-/// [`crate::gfx::BLUR_MARGIN`] 88 of the panel edge — so the whole region is
+/// [`plx_gfx::gfx::BLUR_MARGIN`] 88 of the panel edge — so the whole region is
 /// `0 .. TOP_BAR_BOTTOM + BLUR_MARGIN`. If the bar ever drops far enough that the top stops
 /// clamping, this over-states the region and [`the_whole_bands_glass_fits_one_region_budget`] (which
 /// asks `gfx::blur_region` itself, not this) is what will say so.
-const BAND_REGION_H: f32 = TOP_BAR_BOTTOM + crate::gfx::BLUR_MARGIN;
+const BAND_REGION_H: f32 = TOP_BAR_BOTTOM + plx_gfx::gfx::BLUR_MARGIN;
 
-/// [`crate::gfx::GLASS_REGION_BUDGET`], restated here because that constant is `cfg(test)` on a
+/// [`plx_gfx::gfx::GLASS_REGION_BUDGET`], restated here because that constant is `cfg(test)` on a
 /// deliberate argument — *"a number the shipping build never reads should not pretend to"* — and
 /// this one IS read by the shipping build, through [`GLASS_TRACK_MAX`]. The duplication is closed by
 /// an equality ([`tests::the_band_budget_restated_here_is_the_measured_one`]) rather than by a
 /// comment, which is the same trade `CHIP_CAP_MAX_R` makes against the rect `chip_cap` draws.
 const BAND_REGION_BUDGET: f32 = 300_000.0;
 
-/// The band's blurred region LEFT edge — the chip capsule's own left grown [`crate::gfx::BLUR_MARGIN`],
+/// The band's blurred region LEFT edge — the chip capsule's own left grown [`plx_gfx::gfx::BLUR_MARGIN`],
 /// clamped to the panel. It used to clamp to 0 and no longer does: the capsule starts at `MARGIN_X`
 /// 96 (it was 82 when the chip sat at a 90px margin with no [`TAB_TRACK_PAD`] inset), so the grab
 /// begins at 8. Written out because [`GLASS_TRACK_BUDGET_MAX`] is a closed form of what
 /// `gfx::blur_region_union` computes, and an assumed-0 left edge silently overcharges it by 16px of
 /// track — which is safe but wrong, and wrong in a constant the shipping build reads.
 const BAND_REGION_X0: f32 = {
-    let x = CHIP_FRAME.x - TAB_TRACK_PAD - crate::gfx::BLUR_MARGIN;
+    let x = CHIP_FRAME.x - TAB_TRACK_PAD - plx_gfx::gfx::BLUR_MARGIN;
     if x > 0.0 {
         x
     } else {
@@ -6124,7 +6124,7 @@ const BAND_REGION_X0: f32 = {
 /// `[BAND_REGION_X0, (SCR_W + w) / 2 + BLUR_MARGIN] x BAND_REGION_H`.
 const GLASS_TRACK_BUDGET_MAX: f32 = 2.0
     * (BAND_REGION_BUDGET / BAND_REGION_H + BAND_REGION_X0
-        - (crate::ui::consts::SCR_W * 0.5 + crate::gfx::BLUR_MARGIN));
+        - (crate::ui::consts::SCR_W * 0.5 + plx_gfx::gfx::BLUR_MARGIN));
 
 /// Is the shared tab track wearing glass this frame?
 ///
@@ -6453,7 +6453,7 @@ impl StripRender {
         let (cr, cg, cb) = theme::CLEAR_RGB; // the app ground, as the token that names it
         let flat_ground = [cr, cg, cb];
         let ground = if glass_on || groundlog {
-            crate::gfx::sample_ground([track.x, track.y, track.w, track.h], settled)
+            plx_gfx::gfx::sample_ground([track.x, track.y, track.w, track.h], settled)
                 .unwrap_or(flat_ground)
         } else {
             flat_ground
@@ -6480,7 +6480,7 @@ impl StripRender {
                     "track_ground rgb={:.3},{:.3},{:.3} L*={:.1} span={:.1} want={:.3} drawn={:.3} rect={:.0},{:.0},{:.0},{:.0}",
                     ground[0], ground[1], ground[2],
                     lstar([ground[0], ground[1], ground[2], 1.0]),
-                    crate::gfx::ground_span(),
+                    plx_gfx::gfx::ground_span(),
                     track_alpha_for(ground), drawn,
                     track.x, track.y, track.w, track.h,
                 ));
@@ -6495,7 +6495,7 @@ impl StripRender {
             let face = {
                 let (gt, gb) = tab_glass_stops(ground, &mut band.density);
                 let (rim, rim_lit) = track_rim(gt[3]);
-                crate::gfx::GlassFace {
+                plx_gfx::gfx::GlassFace {
                     scrim_top: gt,
                     scrim_bot: gb,
                     rim,
@@ -6516,7 +6516,7 @@ impl StripRender {
                 // and the one the panel treatment gets wrong here: 76px tall has 20px of interior
                 // left once a 28px chamfer has run in from both edges, so the "rim" stops being an
                 // edge and becomes most of the object.
-                crate::gfx::GlassRim::Standing,
+                plx_gfx::gfx::GlassRim::Standing,
                 face,
                 // The bar is UltraThin by construction: it takes no extra sample, so the page comes
                 // through as sharp as the chain left it. Its FROST is not read from the scale at all
@@ -7357,7 +7357,7 @@ impl View for Button {
         self.plate(p, r, face);
         // center the [icon + gap + label] group in the pill; the label sits on the pill centre by
         // its cap band, so descenders (the g's in "From Beginning") don't drag the caps upward
-        let ty = crate::text::text_vcenter_y(self.sz, 1, r.y + r.h * 0.5);
+        let ty = plx_gfx::text::text_vcenter_y(self.sz, 1, r.y + r.h * 0.5);
         // `Button` draws through the generic retui `View::draw` (no `Measure` parameter; see the
         // identical note on `TabPill::draw` above). `TtfMeasure` wraps the same `text_width`.
         let tw = {
@@ -7555,7 +7555,7 @@ pub(crate) fn pass_capsule(
         p.rring(r, PASS_RAD, PASS_STROKE, theme::PASS_GOLD);
         theme::PASS_GOLD
     };
-    let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 1, cy);
+    let ty = plx_gfx::text::text_vcenter_y(theme::size::CAPTION, 1, cy);
     let mut cx = x + PASS_PAD_X;
     for c in PASS_CHARS {
         p.text(c.as_ptr(), cx, ty, theme::size::CAPTION, ink, 0, 1);
@@ -7617,7 +7617,7 @@ pub(crate) fn badge(
             theme::CONTROL_IDLE_INK
         }
     };
-    let ty = crate::text::text_vcenter_y(sz, 1, cy);
+    let ty = plx_gfx::text::text_vcenter_y(sz, 1, cy);
     // [glyph + gap + label] centred in the chip as ONE run — the same composition `Button::draw`
     // uses, so a chip and a pill put their icon in the same optical place. With no icon `lead` is 0
     // and this collapses to the label centred on its own, which is what it always did.
@@ -7734,12 +7734,12 @@ pub(crate) fn rating_group(
     // The caption sits on the SCORE's baseline, not on its own centre: the design aligns the row
     // by baseline (`align-items:baseline`), so a MICRO caption beside a LABEL number must share
     // the number's baseline or it floats. `text::baseline_y` is that rule, shared.
-    let base = crate::text::baseline_y(
+    let base = plx_gfx::text::baseline_y(
         theme::size::MICRO,
         1,
         theme::size::LABEL,
         1,
-        crate::text::text_vcenter_y(theme::size::LABEL, 1, cy),
+        plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, cy),
     );
     p.text(
         cap.as_ptr(),
@@ -7766,7 +7766,7 @@ pub(crate) fn rating_group(
             bx += RATING_MARK_D + RATING_GAP;
         }
         if let Ok(v) = std::ffi::CString::new(cell.value) {
-            let ty = crate::text::text_vcenter_y(theme::size::LABEL, 1, cy);
+            let ty = plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, cy);
             p.text(
                 v.as_ptr(),
                 bx,
@@ -7821,7 +7821,7 @@ fn rating_group_measures_each_run_once_and_returns_its_drawn_width() {
     let drawn = rating_group(Painter::recording(), 64.0, 100.0, "Provider", &cells, &measure);
     assert!((drawn - expected).abs() < 0.001);
     assert_eq!(measure.0.get(), runs, "the draw must not repeat its entire measurement walk");
-    crate::text::take_measure_fault();
+    plx_gfx::text::take_measure_fault();
 }
 
 #[cfg(test)]

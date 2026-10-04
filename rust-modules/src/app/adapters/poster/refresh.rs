@@ -98,9 +98,9 @@ fn run() {
         // Failed refresh leaves both the cached file and already-published texture untouched.
         if let Some(bytes) = super::fetch_image(job.client, &job.path) {
             let (mut w, mut h) = (0, 0);
-            let px = crate::img::img_decode_rgba(bytes.as_ptr(), bytes.len() as i32, &mut w, &mut h);
+            let px = plx_gfx::img::img_decode_rgba(bytes.as_ptr(), bytes.len() as i32, &mut w, &mut h);
             if !px.is_null() {
-                crate::img::img_free(px);
+                plx_gfx::img::img_free(px);
                 plx_platform::imgcache::write_at(job.epoch, &job.key, &bytes);
             }
         }

@@ -160,25 +160,25 @@ impl Rect {
 /// `text::draw_text` for a glyph quad, `ui::text_lift::lifted` for focus geometry). `s == 1.0` is
 /// the identity and every method returns its input untouched.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) struct Zoom {
+pub struct Zoom {
     pub s: f32,
     pub ox: f32,
     pub oy: f32,
 }
 
 impl Zoom {
-    pub(crate) const NONE: Zoom = Zoom { s: 1.0, ox: 0.0, oy: 0.0 };
+    pub const NONE: Zoom = Zoom { s: 1.0, ox: 0.0, oy: 0.0 };
 
     /// `s` about the point at fraction `origin` of `r` (`(0.5, 0.5)` centre, `(0.5, 0.0)` top edge).
-    pub(crate) fn about(r: Rect, origin: (f32, f32), s: f32) -> Self {
+    pub fn about(r: Rect, origin: (f32, f32), s: f32) -> Self {
         Self { s, ox: r.x + r.w * origin.0, oy: r.y + r.h * origin.1 }
     }
     #[inline]
-    pub(crate) fn is_none(self) -> bool {
+    pub fn is_none(self) -> bool {
         self.s == 1.0
     }
     #[inline]
-    pub(crate) fn map(self, r: Rect) -> Rect {
+    pub fn map(self, r: Rect) -> Rect {
         if self.is_none() {
             return r;
         }
@@ -191,7 +191,7 @@ impl Zoom {
     }
     /// The vertical half of [`map`](Self::map), for an absolute screen y (a fade band).
     #[inline]
-    pub(crate) fn map_y(self, y: f32) -> f32 {
+    pub fn map_y(self, y: f32) -> f32 {
         if self.is_none() { y } else { self.oy + (y - self.oy) * self.s }
     }
 }

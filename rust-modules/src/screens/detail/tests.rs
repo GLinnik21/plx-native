@@ -3371,7 +3371,7 @@ fn a_show_walk_derives_the_layout_identity_once_not_once_per_stop() {
 
     let full_walk = stamped(&mut || {
         let mut f = DrawFrame::new(&context, crate::ui::Painter::recording());
-        crate::gfx::without_frame_clear(|| Screen::<TestHost>::draw(&mut screen, &mut f));
+        plx_gfx::gfx::without_frame_clear(|| Screen::<TestHost>::draw(&mut screen, &mut f));
     });
     assert!(full_walk <= EPISODES, "one draw hashed {full_walk} episodes for a {EPISODES}-episode season");
     clear();

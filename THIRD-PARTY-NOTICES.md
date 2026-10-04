@@ -204,7 +204,7 @@ trademark statement "Source is a trademark of Adobe in the United States and/or 
 
 *Why it ships:* it is the second link of the application's font fallback chain. Inter covers no
 Hangul, Kana or Han, so without this face every Korean, Japanese and Chinese title in a Plex
-library renders as empty boxes. See `rust-modules/src/text.rs` for the chain and
+library renders as empty boxes. See `rust-modules/gfx/src/text.rs` for the chain and
 `rust-modules/src/fontcov.rs` for the coverage each face is required to have.
 
 ### 2.4 Rust code statically linked into `plxnative`

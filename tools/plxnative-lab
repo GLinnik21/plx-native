@@ -804,7 +804,7 @@ def cmd_start(args) -> int:
 
 
 def lab_json(st: dict) -> str:
-    """Exactly what `pkg/lab.json` must contain — see `rust-modules/src/labcfg/config.rs`."""
+    """Exactly what `pkg/lab.json` must contain — see `rust-modules/platform/src/labcfg/config.rs`."""
     return json.dumps({
         "endpoint": f"{st['hostname']}:{st['port']}",
         "session": st["session"],

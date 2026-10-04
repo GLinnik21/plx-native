@@ -38,7 +38,7 @@ pub enum RenderStrategy {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ScrimLiftRead<'a> {
     pub(crate) chrome: Option<crate::ui::widgets::ChromeRead<'a>>,
-    pub(crate) bar_material: Option<crate::gfx::GlassFace>,
+    pub(crate) bar_material: Option<plx_gfx::gfx::GlassFace>,
 }
 
 pub(crate) type ScrimLift = for<'a> fn(ScrimLiftRead<'a>);
@@ -807,7 +807,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     /// anything (`if !f.records_stops() { return; }` at the top of each `record_stops`), and
     /// [`Self::stop`] refuses outside it as the backstop for inline producers.
     pub fn records_stops(&self) -> bool {
-        !self.painter.is_recording() && !crate::gfx::blur_source_pass()
+        !self.painter.is_recording() && !plx_gfx::gfx::blur_source_pass()
     }
 
     pub fn stops(&self) -> &[Stop<H::Elem>] {
@@ -891,8 +891,8 @@ fn apply_scissor(r: Option<Rect>) {
 #[cfg(not(test))]
 fn gl_scissor(r: Option<Rect>) {
     match r {
-        Some(r) => crate::gfx::clip_set(r.x, r.y, r.w, r.h),
-        None => crate::gfx::clip_clear(),
+        Some(r) => plx_gfx::gfx::clip_set(r.x, r.y, r.w, r.h),
+        None => plx_gfx::gfx::clip_clear(),
     }
 }
 

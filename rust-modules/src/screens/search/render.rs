@@ -135,7 +135,7 @@ fn count_keys(shelves: &[crate::search::Shelf]) -> [Option<(Kind, usize)>; 5] {
 }
 
 pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>) {
-    crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
+    plx_gfx::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
     let p = f.painter.alpha(f.page_alpha);
     screen.ground.draw(p, Rect::FULL);
     field(screen, f, p);
@@ -221,10 +221,10 @@ fn field<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p: 
         rect.w,
         screen.editing,
     );
-    let (cap_top, cap_base) = crate::text::text_cap_band(theme::size::HERO, 1);
+    let (cap_top, cap_base) = plx_gfx::text::text_cap_band(theme::size::HERO, 1);
     let pad = descent_pad(
         rect.h,
-        crate::text::text_height(theme::size::HERO, 1),
+        plx_gfx::text::text_height(theme::size::HERO, 1),
         cap_top,
         cap_base,
     );
@@ -233,7 +233,7 @@ fn field<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p: 
         Label::new(data.run.as_ptr(), theme::size::HERO, ink)
             .bold()
             .draw(p, Rect::new(rect.x + run_dx, rect.y, rect.w, rect.h));
-        let text_y = crate::text::text_vcenter_y(theme::size::HERO, 1, rect.cy());
+        let text_y = plx_gfx::text::text_vcenter_y(theme::size::HERO, 1, rect.cy());
         if caret_shown(screen.editing, screen.blink_us < super::BLINK_US) {
             p.rect(
                 Rect::new(
@@ -249,7 +249,7 @@ fn field<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p: 
             );
         }
         if ghost_shown(&data.query) {
-            let y = crate::text::baseline_y(theme::size::BODY, 0, theme::size::HERO, 1, text_y);
+            let y = plx_gfx::text::baseline_y(theme::size::BODY, 0, theme::size::HERO, 1, text_y);
             p.text(
                 plx_platform::i18n::msg::browse_search_one_more_c().as_ptr(),
                 rect.x + caret_dx + CARET_W + GHOST_GAP,
@@ -532,7 +532,7 @@ fn elide(
     bold: bool,
     measure: &dyn plx_machine::machine::Measure,
 ) -> String {
-    crate::text::elide_by(text, width, false, |s| {
+    plx_gfx::text::elide_by(text, width, false, |s| {
         measure.width(&cstring(s), size, bold)
     })
 }

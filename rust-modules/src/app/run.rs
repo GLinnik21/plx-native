@@ -314,10 +314,10 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
     // once, before the springs step, so the held appear spring and the present gate below read
     // the same answer — and, being the machine's speed rather than the inputs, recorded or
     // supplied by the recorder like any other environmental observation.
-    let text = crate::text::prewarm_pending();
-    crate::gfx::snapshot_frame_begin(|snapshot| {
+    let text = plx_gfx::text::prewarm_pending();
+    plx_gfx::gfx::snapshot_frame_begin(|snapshot| {
         let seen = app.rec.capture_readiness(crate::ui::rec::Readiness { snapshot, text });
-        crate::text::latch_surface_text_pending(seen.text);
+        plx_gfx::text::latch_surface_text_pending(seen.text);
         seen.snapshot
     });
     // ui::press (tvOS click) — advance the dip/spring every frame; when a deferred activation
@@ -415,9 +415,9 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // asked-for quiet, invalidate so the NEXT present is the settled frame and `maybe_capture`
     // takes it. Before the decision below, so that invalidate selects this very frame.
     #[cfg(feature = "hostsim")]
-    crate::shot::tick(fr.now, app.pages.budget.has_queued_work() || crate::gfx::snapshot_pending()
+    crate::shot::tick(fr.now, app.pages.budget.has_queued_work() || plx_gfx::gfx::snapshot_pending()
         || app.scenarios.shots.pending());
-    fr.present = !crate::gfx::snapshot_pending()
+    fr.present = !plx_gfx::gfx::snapshot_pending()
         && app.window_activity.allow_present(
             plx_machine::idle::should_present(fr.now) || app.pages.budget.has_queued_work(),
         );
@@ -505,10 +505,10 @@ unsafe fn present_and_swap(
 ) {
     if fr.present {
         // the glyph cache's frame serial (phase 11, text.rs's hot window): a drawn frame
-        crate::text::begin_frame();
+        plx_gfx::text::begin_frame();
         // A finished underlay-field reduction is read HERE, before framebuffer 0 holds anything
         // of this frame — a read between the page and the surfaces splits its render pass.
-        crate::gfx::field_frame_begin();
+        plx_gfx::gfx::field_frame_begin();
         let (_vx, _vy, _vw, _vh) = draw(app, fr);
         app.instr.mark(plx_base::diag::heartbeat::Phase::Draw); // draw
         // dev capture stream: grab this finished frame before the swap (after the last draw,
@@ -548,7 +548,7 @@ unsafe fn present_and_swap(
         app.window_activity.presented(fr.player);
         // One increment, then nothing: re-ask EGL for the back buffer's AGE after real
         // presents have happened. The boot reading is 0 by construction. See `egl.rs`.
-        crate::egl::late_probe();
+        plx_gfx::egl::late_probe();
         #[cfg(feature = "devtools")]
         {
             app.buffer_flip_count = (app.buffer_flip_count + 1) % 60;
@@ -558,19 +558,19 @@ unsafe fn present_and_swap(
         // idle gate skipped would pace the profiler's once-per-N-frames log off frames
         // that ran no phases at all.
         crate::ui::profile::frame_end();
-        crate::ui::overdraw::frame_end();
+        plx_gfx::overdraw::frame_end();
         // Same reason, same gate: the blur's region accounting is per DRAWN frame. It rolls
         // "what every glass surface asked for this frame" into the region the next frame's
         // first snapshot is taken at. Once that union is known, several surfaces share one
         // capture; a first discovery frame may still need a second non-contained grab.
-        crate::gfx::blur_frame_end();
+        plx_gfx::gfx::blur_frame_end();
         app.glass.sources.borrow_mut().finish();
         // …and a queued underlay-field reduction has had one more drawn frame to finish in.
-        crate::gfx::field_frame_end();
+        plx_gfx::gfx::field_frame_end();
         // …and a frame that captured the page leaves a fence the next frames wait on.
-        crate::gfx::snapshot_frame_end();
+        plx_gfx::gfx::snapshot_frame_end();
         // …and a ground probe's queued copy is read back here, between frames, if it is done.
-        crate::gfx::ground_probes_frame_end();
+        plx_gfx::gfx::ground_probes_frame_end();
         plx_machine::idle::note_present(fr.now);
         // The poster-gate scenes' frame counter, at the same post-swap seam as the present count
         // above. It was called from inside `note_present`; `plx_machine::idle` is the machine layer and
@@ -586,7 +586,7 @@ unsafe fn present_and_swap(
         // The one stretch of main-thread time nothing is waiting on: spend a bounded slice of it
         // opening the theme faces and loading their glyph metrics (`text::warm_fonts_idle`), so
         // a page's first layout does not pay for them inside a transition. A no-op once warm.
-        crate::text::warm_fonts_idle(FONT_WARM_SLICE_US, plx_base::diag::heartbeat::now_us);
+        plx_gfx::text::warm_fonts_idle(FONT_WARM_SLICE_US, plx_base::diag::heartbeat::now_us);
         // Device and macOS presented frames block in swap; WSLg/X11 presented frames use the
         // software budget above. A skipped frame reaches neither path, so sleep here to keep a
         // settled screen from becoming a CPU spinner.
@@ -2242,7 +2242,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
             // EXPERIMENT (`/tmp/plxnative-egldamage`), no-op without the trigger. FIRST, before
             // any GL command of this frame: `EGL_KHR_partial_update` only permits a damage
             // region to be declared before rendering begins. See `egl.rs`.
-            crate::egl::frame_damage();
+            plx_gfx::egl::frame_damage();
             // dev: the backdrop-glass LOAD DIAL and the blurred-transition prototype
             // (`/tmp/plxnative-glassload`, `/tmp/plxnative-navblur`). Both are no-ops when
             // their trigger is absent. HERE and not below the gate, because the dial's cadence
@@ -2362,7 +2362,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             if page_owned {
                                 app.pages.draw_with_glass_below(&mut app.bridge, &mut app.glass, true, ceiling);
                             } else {
-                                crate::gfx::frame_clear(crate::ui::theme::CLEAR_RGB.0, crate::ui::theme::CLEAR_RGB.1, crate::ui::theme::CLEAR_RGB.2);
+                                plx_gfx::gfx::frame_clear(crate::ui::theme::CLEAR_RGB.0, crate::ui::theme::CLEAR_RGB.1, crate::ui::theme::CLEAR_RGB.2);
                             }
                             if plan != super::bridge::PagePlan::SurfacesOnly && Z::OPENER < ceiling {
                                 let _opener = crate::ui::frame::backdrop::layer(Z::OPENER, false);
@@ -2379,11 +2379,11 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // A band intersecting lower glass captures that composite in visible order.
                         for (ceiling, rect) in jobs {
                             let _source_walk = crate::ui::frame::backdrop::enter(sources.clone(), ceiling);
-                            let reg = crate::gfx::blur_region(rect.x, rect.y, rect.w, rect.h);
+                            let reg = plx_gfx::gfx::blur_region(rect.x, rect.y, rect.w, rect.h);
                             // `src`: one blur source job, its replay of the page prefix included.
                             plx_base::diag::spans::span("src", || {
-                                if crate::gfx::blur_snapshot_direct(reg, &mut || page(ceiling)) {
-                                    crate::gfx::retain_backdrop(ceiling);
+                                if plx_gfx::gfx::blur_snapshot_direct(reg, &mut || page(ceiling)) {
+                                    plx_gfx::gfx::retain_backdrop(ceiling);
                                 }
                             });
                         }
@@ -2440,7 +2440,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             } else {
                                 crate::ui::theme::DIAG_FLIP_B
                             };
-                            crate::gfx::draw_number(
+                            plx_gfx::gfx::draw_number(
                                 app.fps_shown,
                                 SCR_W as f32 - 70.0,
                                 64.0,
@@ -2469,7 +2469,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
         crate::dev::scenarios::bench_frame_tick(app, fr.present, fr.now);
         fr.rn = super::words::route_word(&app.route());
     let rn = fr.rn;
-    if crate::text::take_measure_fault() && !app.measure_fault_logged {
+    if plx_gfx::text::take_measure_fault() && !app.measure_fault_logged {
         // once per process: the layout that was built on estimates is the thing to go and look at
         app.measure_fault_logged = true;
         log("text: a width was measured with NO FONT loaded — layout is on average-advance estimates");
@@ -2640,7 +2640,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
             // Two atomic swaps a frame is what "per frame" costs; the comment here claimed it
             // was already being paid.
             let (uploads, upload_px) = super::adapters::poster::take_upload_stats();
-            let (cards, cards_off) = crate::gfx::take_card_stats();
+            let (cards, cards_off) = plx_gfx::gfx::take_card_stats();
             app.instr.note_frame_counters(plx_base::diag::heartbeat::FrameCounters {
                 uploads,
                 upload_px,
@@ -2765,7 +2765,7 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
                 format!(
                     " load={} snap={}",
                     crate::ui::glassload::step_index(),
-                    crate::gfx::take_blur_snapshots()
+                    plx_gfx::gfx::take_blur_snapshots()
                 )
             } else {
                 String::new()
@@ -2792,7 +2792,7 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
                     admitted: budget.admitted,
                     refused: budget.refused,
                     solo: budget.solo.map(|c| c.name()),
-                    evicted_hot: crate::text::take_evicted_hot(),
+                    evicted_hot: plx_gfx::text::take_evicted_hot(),
                 },
                 app.rec.take_spent_us(),
             );

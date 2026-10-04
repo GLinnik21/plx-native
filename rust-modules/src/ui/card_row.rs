@@ -558,7 +558,7 @@ pub(crate) fn draw_heading(
             Ok(cs) => p.text(
                 cs.as_ptr(),
                 x + dx,
-                crate::text::baseline_y(sz, bold, theme::size::HEADLINE, 1, y),
+                plx_gfx::text::baseline_y(sz, bold, theme::size::HEADLINE, 1, y),
                 sz,
                 ink,
                 0,
@@ -594,7 +594,7 @@ pub(crate) fn bounded_heading_flow(
         }
         if max_w.is_finite() {
             let owned =
-                crate::text::elide_by(s, room, false, |t| measure.width_str(t, sz, bold != 0));
+                plx_gfx::text::elide_by(s, room, false, |t| measure.width_str(t, sz, bold != 0));
             run(&owned, dx, sz, bold, ink)
         } else {
             run(s, dx, sz, bold, ink)
@@ -634,7 +634,7 @@ pub(crate) fn paint_visible(p: Painter, rect: Rect, scale: f32, labelled: bool) 
     let visible = bounds.intersect(Rect::FULL);
     visible.w > 0.0 && visible.h > 0.0
         && (crate::ui::frame::backdrop::discovering()
-            || !crate::gfx::culled(bounds.x, bounds.y, bounds.w, bounds.h))
+            || !plx_gfx::gfx::culled(bounds.x, bounds.y, bounds.w, bounds.h))
 }
 
 /// A non-focused cell body: the art tile + an optional resume bar. `rect` is the caller's
@@ -1298,7 +1298,7 @@ fn title_marquee(
     let lead = glyph_lead(sz, glyph);
     let budget = (at.w - lead).max(0.0);
     let draw_glyph = |gx: f32| {
-        let (ct, cb) = crate::text::text_cap_band(sz, bold);
+        let (ct, cb) = plx_gfx::text::text_cap_band(sz, bold);
         let icy = y + (ct + cb) * 0.5; // centre the glyph on the name's cap band
         crate::ui::icons::draw(
             p,
@@ -1399,7 +1399,7 @@ fn draw_label_block(
 ) {
     let full = under_budget(sty);
     let csz = theme::size::CAPTION;
-    let elide_caption = |s: &str, w: f32| crate::text::elide_by(s, w, false, |t| measure.width_str(t, csz, false));
+    let elide_caption = |s: &str, w: f32| plx_gfx::text::elide_by(s, w, false, |t| measure.width_str(t, csz, false));
     // Measured once and threaded through: the title's drawn width feeds both how wide the block
     // is asked to be and (unchanged) how title_marquee decides plain vs. looping.
     let title_w_val = label.title.as_ref().map(|t| title_w(t.as_ptr(), measure));
@@ -1462,7 +1462,7 @@ mod tests {
         sources.borrow_mut().begin(vec![]);
         let _walk = backdrop::discover(sources);
         let card = super::Rect::new(100.0, 200.0, 400.0, 220.0);
-        assert!(crate::gfx::culled(card.x, card.y, card.w, card.h));
+        assert!(plx_gfx::gfx::culled(card.x, card.y, card.w, card.h));
         assert!(super::paint_visible(super::Painter::root(), card, 1.0, true));
         assert!(super::paint_visible(super::Painter::recording(), card, 1.0, true));
         let offscreen = super::Rect::new(100.0, -500.0, 400.0, 220.0);

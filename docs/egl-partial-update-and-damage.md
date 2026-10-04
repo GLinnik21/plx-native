@@ -33,7 +33,7 @@ in eight locked batches. Branch `blur/e7-opaque`.
 
 ## 1. The EGL capability probe
 
-`rust-modules/src/egl.rs`, called once from `app.rs` after `SDL_GL_CreateContext`. Read-only,
+`rust-modules/gfx/src/egl.rs`, called once from `app.rs` after `SDL_GL_CreateContext`. Read-only,
 always on, ~5 lines in the event log.
 
 ### 1a. It does not link libEGL, and must not
@@ -133,7 +133,7 @@ words 4 / 14 / 20 / 26 / 27, which are already in `hwcnt::COUNTERS` — that agr
 | gator `hardware_counter_names`, T820 block 2 | `T820_FRAG_TRANS_ELIM` |
 | modern libmali `gen.h` | `T820_FRAG_TRANS_ELIM` |
 
-Added to **both** `rust-modules/src/hwcnt.rs` and `tools/analyze-hwcnt.py`; the host test that
+Added to **both** `rust-modules/gfx/src/hwcnt.rs` and `tools/analyze-hwcnt.py`; the host test that
 asserts the two tables are identical still passes (756 tests).
 
 **The `PRFCNT_EN` check.** The profiler logs `jm=0xff tiler=0x1f l2=0xffff sc0=0xffff sc1=0xffff`.

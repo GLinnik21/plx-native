@@ -154,9 +154,9 @@ impl ReadoutCase {
 /// commonest way a television "has no internet". A `net::RequestFailure` like the one libcurl's
 /// `CURLE_COULDNT_RESOLVE_HOST` produces, planted only into the one call it replaces — never into
 /// `net`'s own records, which other callers read as real evidence (0.6.6's reason, kept).
-fn synthetic_dns_failure() -> crate::net::RequestFailure {
-    crate::net::RequestFailure {
-        cause: crate::net::RequestError::Transport,
+fn synthetic_dns_failure() -> plx_net::net::RequestFailure {
+    plx_net::net::RequestFailure {
+        cause: plx_net::net::RequestError::Transport,
         status: None,
         body_limit: None,
         curl_rc: Some(6),

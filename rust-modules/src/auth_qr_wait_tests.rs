@@ -141,7 +141,7 @@ impl RetryClock for RetryScript {
 
 #[test]
 fn account_retry_runner_uses_the_interactive_ladder_and_lets_the_last_attempt_answer() {
-    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+    let dns = Err(plx_net::net::RequestFailure { cause: plx_net::net::RequestError::Transport,
         status: None, body_limit: None, curl_rc: Some(6) });
     let mut answers = vec![Err(dns), Err(dns), Ok("servers")].into_iter();
     let mut clock = RetryScript { elapsed: Duration::ZERO, waits: Vec::new(), cancel: false };
@@ -157,7 +157,7 @@ fn account_retry_runner_uses_the_interactive_ladder_and_lets_the_last_attempt_an
 #[test]
 fn account_retry_runner_cancels_and_does_not_guess_at_retry_after() {
     let mut cancelled = RetryScript { elapsed: Duration::ZERO, waits: Vec::new(), cancel: true };
-    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+    let dns = Err(plx_net::net::RequestFailure { cause: plx_net::net::RequestError::Transport,
         status: None, body_limit: None, curl_rc: Some(6) });
     let run = retry_account_call::<()>(INTERACTIVE_ACCOUNT, &mut cancelled, |_, _, _| {},
         |_| Err(dns));
@@ -193,7 +193,7 @@ fn account_retry_budget_charges_time_spent_inside_requests() {
     let elapsed = Rc::new(Cell::new(Duration::ZERO));
     let mut clock = SharedClock(Rc::clone(&elapsed));
     let mut remaining = Vec::new();
-    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+    let dns = Err(plx_net::net::RequestFailure { cause: plx_net::net::RequestError::Transport,
         status: None, body_limit: None, curl_rc: Some(6) });
     let run = retry_account_call::<()>(BACKGROUND_ACCOUNT, &mut clock, |_, _, _| {}, |left| {
         remaining.push(left);
@@ -399,8 +399,8 @@ fn a_codes_lifetime_is_read_from_the_pin_and_clamped_at_both_ends() {
 }
 
 fn dns_miss() -> PinPoll {
-    PinPoll::Unreachable(Err(crate::net::RequestFailure {
-        cause: crate::net::RequestError::Transport,
+    PinPoll::Unreachable(Err(plx_net::net::RequestFailure {
+        cause: plx_net::net::RequestError::Transport,
         status: None,
         body_limit: None,
         curl_rc: Some(6),
@@ -425,7 +425,7 @@ fn two_unanswered_polls_in_a_row_report_link_trouble_once_and_an_answer_clears_i
     assert_eq!(w.troubles.len(), 2, "one report for the run of three, one clearance: {:?}", w.troubles);
     let stall = w.troubles[0].expect("the first report is the stall");
     assert_eq!(stall.unanswered, 2, "reported at the second miss, not the third");
-    assert!(matches!(stall.last, Err(crate::net::RequestFailure { curl_rc: Some(6), .. })),
+    assert!(matches!(stall.last, Err(plx_net::net::RequestFailure { curl_rc: Some(6), .. })),
         "with the latest miss's evidence");
     assert!(stall.failing_for > Duration::ZERO, "since the FIRST miss of the run");
     assert_eq!(w.troubles[1], None, "an answer clears it");

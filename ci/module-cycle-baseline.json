@@ -10,7 +10,7 @@
     "viewstate"
   ],
   "size": 8,
-  "outside_count": 43,
+  "outside_count": 26,
   "other_cycles": [
     [
       "abr",
@@ -19,13 +19,6 @@
       "hls",
       "player",
       "route"
-    ],
-    [
-      "gfx",
-      "gpu_timer",
-      "img",
-      "text",
-      "ui"
     ],
     [
       "app",

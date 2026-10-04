@@ -765,7 +765,7 @@ impl Flow<'_> {
                 // elide by CHARACTER, which `text::elide` does — the file path and every language
                 // name here can be non-ASCII (`"Українська"`), and a byte-wise cut would split a
                 // UTF-8 sequence
-                let cut = crate::text::elide_by(s, w, false, |t| self.tm.width_str(t, sz, bold));
+                let cut = plx_gfx::text::elide_by(s, w, false, |t| self.tm.width_str(t, sz, bold));
                 if let Ok(cs) = CString::new(cut) {
                     let mut l = Label::new(cs.as_ptr(), sz, col).v(VAlign::CapTop).h(align);
                     if bold {
@@ -849,7 +849,7 @@ fn track_line(f: &mut Flow, row: &TrackRow, x: f32, w: f32) {
         if a > 0.002 {
             let pa = f.p.alpha(a);
             let nw = w * NAME_FRAC;
-            if let Ok(cs) = CString::new(crate::text::elide_by(&row.name, nw, false, |t| {
+            if let Ok(cs) = CString::new(plx_gfx::text::elide_by(&row.name, nw, false, |t| {
                 f.tm.width_str(t, theme::size::LABEL, true)
             })) {
                 Label::new(cs.as_ptr(), theme::size::LABEL, theme::TEXT_HEADING)
@@ -863,8 +863,8 @@ fn track_line(f: &mut Flow, row: &TrackRow, x: f32, w: f32) {
                 // which at a smaller rung is not the same cap-top — `baseline_y` is the helper
                 // that exists so this is not a hand-tuned offset
                 let dy =
-                    crate::text::baseline_y(theme::size::CAPTION, 0, theme::size::LABEL, 1, f.y);
-                if let Ok(cs) = CString::new(crate::text::elide_by(&row.detail, dw, false, |t| {
+                    plx_gfx::text::baseline_y(theme::size::CAPTION, 0, theme::size::LABEL, 1, f.y);
+                if let Ok(cs) = CString::new(plx_gfx::text::elide_by(&row.detail, dw, false, |t| {
                     f.tm.width_str(t, theme::size::CAPTION, false)
                 })) {
                     Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
@@ -1002,7 +1002,7 @@ impl TracksPanelScreen {
             .v(VAlign::CapTop)
             .draw(p, Rect::new(cx, y, cw, theme::alert::EYEBROW_LEAD));
         y += theme::alert::EYEBROW_LEAD + GAP_EYEBROW_TITLE;
-        if let Ok(cs) = CString::new(crate::text::elide_by(&d.title, cw, false, |t| {
+        if let Ok(cs) = CString::new(plx_gfx::text::elide_by(&d.title, cw, false, |t| {
             measure.width_str(t, theme::size::TITLE, true)
         })) {
             Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY).h(theme::alert::TEXT_ALIGN)
@@ -1014,7 +1014,7 @@ impl TracksPanelScreen {
         // the server's own path for the part. One line, ellipsised, micro, tertiary — it is the
         // panel's subject, not its content, and it can be arbitrarily long.
         if !d.file.is_empty() {
-            if let Ok(cs) = CString::new(crate::text::elide_by(&d.file, cw, false, |t| {
+            if let Ok(cs) = CString::new(plx_gfx::text::elide_by(&d.file, cw, false, |t| {
                 measure.width_str(t, theme::size::MICRO, false)
             })) {
                 Label::new(cs.as_ptr(), theme::size::MICRO, theme::TEXT_TERTIARY).h(theme::alert::TEXT_ALIGN)

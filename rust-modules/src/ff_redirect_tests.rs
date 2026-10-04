@@ -119,7 +119,7 @@ fn hls_open_plain(
     port: u16,
     request_path: &str,
 ) -> (Result<(String, i64), String>, Box<HttpStream>) {
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut net = HlsNet {
         hs: &mut *hs,
@@ -141,14 +141,14 @@ fn hls_open_plain(
         Ok((Src::Idle, _, _)) => Err("idle".into()),
         Err(e) => Err(format!("{e:?}")),
     };
-    crate::stream::http_close(&mut *hs);
+    plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
     (outcome, hs)
 }
 
 /// A progressive open through the production helper, reduced to where it landed.
 fn progressive_open(port: u16, path: &str) -> Result<(String, i64), String> {
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
     let origin = crate::plex::Origin::http("127.0.0.1", port as i32);
     let opened = open_plain_progressive(&mut *hs, &origin, path, &mut *aq);
@@ -158,7 +158,7 @@ fn progressive_open(port: u16, path: &str) -> Result<(String, i64), String> {
         Ok((Src::Idle, _)) => Err("idle".into()),
         Err(e) => Err(format!("{e:?}")),
     };
-    crate::stream::http_close(&mut *hs);
+    plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
     outcome
 }
@@ -203,7 +203,7 @@ fn a_seek_reopen_follows_a_relative_302_and_keeps_its_range() {
             not_found()
         }
     });
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut state = AvioState {
         src: Src::Socket {
@@ -230,7 +230,7 @@ fn a_seek_reopen_follows_a_relative_302_and_keeps_its_range() {
         Src::Socket { path, .. } => path.to_string_lossy().into_owned(),
         _ => "<not a socket>".into(),
     };
-    crate::stream::http_close(&mut *hs);
+    plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
     assert_eq!(
         at, 2,
@@ -284,7 +284,7 @@ fn a_redirect_loop_is_bounded_and_fails() {
     assert!(outcome.is_err(), "a loop must fail: {outcome:?}");
     assert_eq!(
         pms.requests().len(),
-        1 + crate::stream::redirect::MAX_HOPS as usize,
+        1 + plx_net::stream::redirect::MAX_HOPS as usize,
         "the first request plus exactly MAX_HOPS followed hops"
     );
 }
@@ -299,7 +299,7 @@ fn a_progressive_open_follows_a_302() {
             ok_body("ABCDEFGH")
         }
     });
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
     let origin = crate::plex::Origin::http("127.0.0.1", pms.port as i32);
     let opened = open_plain_progressive(
@@ -312,7 +312,7 @@ fn a_progressive_open_follows_a_302() {
         Ok((Src::Socket { path, .. }, size)) => Some((path.to_string_lossy().into_owned(), size)),
         _ => None,
     };
-    crate::stream::http_close(&mut *hs);
+    plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
     assert_eq!(
         outcome,
@@ -369,7 +369,7 @@ fn a_redirected_master_playlist_resolves_its_children_against_the_redirect_targe
             not_found()
         }
     });
-    let mut hs = crate::stream::http_stream_boxed();
+    let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut net = HlsNet {
         hs: &mut *hs,
@@ -388,7 +388,7 @@ fn a_redirected_master_playlist_resolves_its_children_against_the_redirect_targe
         .as_ref()
         .map(|c| c.media.path.clone())
         .map_err(|e| format!("{e:?}"));
-    crate::stream::http_close(&mut *hs);
+    plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
     assert_eq!(media, Ok("/new/variant.m3u8".to_string()));
 }

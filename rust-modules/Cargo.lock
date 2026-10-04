@@ -574,10 +574,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_gfx"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "libc",
+ "plx_base",
+ "plx_machine",
+]
+
+[[package]]
 name = "plx_machine"
 version = "0.0.0"
 dependencies = [
  "plx_base",
+]
+
+[[package]]
+name = "plx_net"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "plx_base",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -604,11 +626,11 @@ dependencies = [
  "image",
  "libc",
  "plx_base",
+ "plx_gfx",
  "plx_machine",
+ "plx_net",
  "plx_platform",
  "qrcodegen",
- "rcgen",
- "rustls",
  "serde",
  "serde_json",
 ]

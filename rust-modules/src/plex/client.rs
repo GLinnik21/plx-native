@@ -4,7 +4,7 @@
 //!   * `urlenc_str` / `QueryBuilder` — the ONLY place a value is percent-encoded or a query
 //!     string is assembled.
 //!   * `get_json`/`get_bytes`/`get_void`/`put`/`post` — the ONLY code that issues a PMS request.
-//!     They went straight at the raw socket in `crate::stream` until this layer learned to speak
+//!     They went straight at the raw socket in `plx_net::stream` until this layer learned to speak
 //!     to a server that is not on the LAN; they go through [`crate::http`] now, which dispatches
 //!     on the origin's SCHEME — `stream.rs` for plaintext, libcurl for TLS. Nothing below this
 //!     file knows there is more than one transport.
@@ -475,7 +475,7 @@ impl Client {
         decode_ip(self.ip_version.load(Relaxed))
     }
 
-    // ---- transport choke points: the only code that touches crate::stream ----
+    // ---- transport choke points: the only code that touches plx_net::stream ----
 
     /// The ONE call every choke point below makes — origin, token, transport, in that order.
     ///
@@ -687,7 +687,7 @@ impl Client {
     /// and the request must be the same bytes. Routing it through [`Client::get_bytes`] would
     /// append a second token — a URL with two `X-Plex-Token` params, whose meaning is the
     /// server's business and not ours. `pub(crate)` because `app/adapters/poster.rs` lives outside this
-    /// module tree; it exists so that file stops calling `crate::stream` behind this layer's
+    /// module tree; it exists so that file stops calling `plx_net::stream` behind this layer's
     /// back, which is what the module doc above has always claimed nothing does.
     ///
     /// The token is therefore in the CALLER's string. It must not be logged — the poster store
@@ -906,7 +906,7 @@ impl QueryBuilder {
 // ---- StreamUrl — the streaming return type ----
 
 /// A built playback target for the raw demux/cue sockets. NOT a fetched response — the player
-/// passes its origin and path straight to `crate::stream::http_open`. Range headers for seeks
+/// passes its origin and path straight to `plx_net::stream::http_open`. Range headers for seeks
 /// are added by the player as `http_open`'s `extra`, never by this layer. `path` includes the
 /// `?query&X-Plex-Token`.
 pub struct StreamUrl {
@@ -949,7 +949,7 @@ impl StreamUrl {
         }
     }
 
-    /// The host to DIAL — bare, never bracketed. `crate::stream` takes this; a URL takes
+    /// The host to DIAL — bare, never bracketed. `plx_net::stream` takes this; a URL takes
     /// [`StreamUrl::to_url`].
     pub fn host(&self) -> &str {
         self.origin.host()
@@ -1208,7 +1208,7 @@ mod tests {
     }
 
     /// `StreamUrl`'s two halves answer two different questions: [`StreamUrl::to_url`] is what
-    /// `route` STORES (a URL string) and [`StreamUrl::host`] is what `crate::stream` DIALS. The
+    /// `route` STORES (a URL string) and [`StreamUrl::host`] is what `plx_net::stream` DIALS. The
     /// engine really does round-trip the stored string through [`StreamUrl::parse`], so that trip
     /// is graded rather than assumed — and the `to_url` bytes are pinned, because a change there
     /// is a change to every playback URL in the app.

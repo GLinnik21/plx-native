@@ -15,7 +15,7 @@ use std::ffi::c_char;
 use std::mem::{size_of, zeroed};
 use std::ptr;
 
-pub(crate) const RAW_WORDS: usize = 320;
+pub const RAW_WORDS: usize = 320;
 const DUMP_SIZE: usize = RAW_WORDS * size_of::<u32>();
 const BUFFER_COUNT: u32 = 16;
 const MAP_SIZE: usize = DUMP_SIZE * BUFFER_COUNT as usize;
@@ -80,19 +80,19 @@ struct Metadata {
 }
 
 #[derive(Clone)]
-pub(crate) struct Sample {
-    pub(crate) timestamp_ns: u64,
-    pub(crate) event_id: u32,
-    pub(crate) words: [u32; RAW_WORDS],
+pub struct Sample {
+    pub timestamp_ns: u64,
+    pub event_id: u32,
+    pub words: [u32; RAW_WORDS],
 }
 
-pub(crate) struct Info {
-    pub(crate) api: u32,
-    pub(crate) hwver: u32,
-    pub(crate) dump_size: u32,
-    pub(crate) buffer_count: u32,
-    pub(crate) map_size: usize,
-    pub(crate) page_size: usize,
+pub struct Info {
+    pub api: u32,
+    pub hwver: u32,
+    pub dump_size: u32,
+    pub buffer_count: u32,
+    pub map_size: usize,
+    pub page_size: usize,
 }
 
 struct Fd(c_int);
@@ -368,7 +368,7 @@ impl Reader {
     }
 }
 
-pub(crate) fn init() -> Result<Info, String> {
+pub fn init() -> Result<Info, String> {
     let (reader, info) = Reader::open()?;
     READER.with(|slot| *slot.borrow_mut() = Some(reader));
     Ok(info)
@@ -379,7 +379,7 @@ pub(crate) fn init() -> Result<Info, String> {
 /// shader cores and L2 powered up for counting. A profiler that disabled itself on an error but
 /// stayed attached would go on perturbing the very numbers the next leg collects, so every path
 /// that gives up on profiling must come through here.
-pub(crate) fn shutdown() {
+pub fn shutdown() {
     READER.with(|slot| *slot.borrow_mut() = None);
 }
 
@@ -389,11 +389,11 @@ pub(crate) fn shutdown() {
 /// of four counters, so tiler words 20..63 are not enabled in hardware and `TILER_ACTIVE` (word 22)
 /// reads a flat zero no matter what the client bitmap asked for. Logging the mask is what tells a
 /// zero counter from a disabled one; without it the two are indistinguishable in the output.
-pub(crate) fn block_enables(sample: &Sample) -> [u32; 5] {
+pub fn block_enables(sample: &Sample) -> [u32; 5] {
     std::array::from_fn(|block| sample.words[block * BLOCK_WORDS + 2])
 }
 
-pub(crate) fn sample() -> Result<Sample, String> {
+pub fn sample() -> Result<Sample, String> {
     READER.with(|slot| {
         let mut slot = slot.borrow_mut();
         slot.as_mut()
@@ -416,13 +416,13 @@ enum Block {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct CounterSpec {
-    pub(crate) name: &'static str,
+pub struct CounterSpec {
+    pub name: &'static str,
     block: Block,
     word: usize,
 }
 
-pub(crate) const COUNTERS: [CounterSpec; 30] = [
+pub const COUNTERS: [CounterSpec; 30] = [
     CounterSpec {
         name: "GPU_ACTIVE",
         block: Block::Jm,
@@ -587,7 +587,7 @@ pub(crate) const COUNTERS: [CounterSpec; 30] = [
     },
 ];
 
-pub(crate) fn decode(sample: &Sample) -> [u64; COUNTERS.len()] {
+pub fn decode(sample: &Sample) -> [u64; COUNTERS.len()] {
     std::array::from_fn(|i| {
         let spec = COUNTERS[i];
         let at = |block: usize| sample.words[block * BLOCK_WORDS + spec.word] as u64;
@@ -632,7 +632,7 @@ mod tests {
     /// stale analyzer keeps mis-decoding captures that are otherwise still good.
     #[test]
     fn the_host_analyzer_decodes_the_same_words_as_the_app() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../tools/analyze-hwcnt.py");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/analyze-hwcnt.py");
         let source = std::fs::read_to_string(path).expect("analyze-hwcnt.py is readable");
         let table = source
             .split_once("SPECS = (")
