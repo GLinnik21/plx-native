@@ -158,14 +158,14 @@ fn removed_home_items_recover_near_their_old_slot_after_live_or_evicted_return()
 #[test]
 fn mounted_home_navigation_stays_inside_a_full_or_oversized_catalog() {
     let _guard = plx_base::testlock::serial();
-    for offered in [crate::pms::MAX_SHELVES, crate::pms::MAX_SHELVES + 5] {
+    for offered in [16, 21] {
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
         rig.stores.hubs.seed_grid_for_test(offered, 3);
         frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
         frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
         let mut i = 2;
-        for row in 0..crate::pms::MAX_SHELVES {
+        for row in 0..offered {
             frame(&mut d, &mut rig, AppArg::Home, tick(i), script_key(Key::Down, tick(i)));
             i += 1;
             assert_eq!(rig.with_home(&d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)),
@@ -175,7 +175,7 @@ fn mounted_home_navigation_stays_inside_a_full_or_oversized_catalog() {
         for _ in 0..3 {
             frame(&mut d, &mut rig, AppArg::Home, tick(i), script_key(Key::Down, tick(i)));
             i += 1;
-            assert_eq!(d.focus(), last, "DOWN cannot escape the capped final shelf");
+            assert_eq!(d.focus(), last, "DOWN cannot escape the final shelf");
         }
         let instance = d.nav.instance_of(last.unwrap().entry).unwrap();
         for (row, col) in [(usize::MAX, 0), (0, usize::MAX)] {
@@ -186,6 +186,24 @@ fn mounted_home_navigation_stays_inside_a_full_or_oversized_catalog() {
             assert_eq!(d.focus(), last, "an invalid addressed request must not displace focus");
         }
     }
+}
+
+#[test]
+fn mounted_home_walks_to_the_twentieth_row() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.stores.hubs.seed_grid_for_test(20, 3);
+    frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+    frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
+    let mut i = 2;
+    for row in 0..20 {
+        frame(&mut d, &mut rig, AppArg::Home, tick(i), script_key(Key::Down, tick(i)));
+        i += 1;
+        assert_eq!(rig.with_home(&d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)),
+            Some(Some((row, 0))), "row={row}");
+    }
+    assert_eq!(rig.with_home(&d, |home, _, _| home.shelf_len(19)), Some(Some(3)));
 }
 
 #[test]

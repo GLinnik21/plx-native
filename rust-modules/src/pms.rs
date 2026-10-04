@@ -35,18 +35,8 @@ pub(crate) mod initial;
 /// screen indexes into, not a per-server one — see [`allot`] for how the sources divide it.
 const PMS_MAX_MOVIES: usize = 256;
 
-/// Shelves Home holds at most, across every source — the number of rows the grid can actually
-/// address (the owned Home's `MAX_HUBS` is this constant, so the budget can never quietly stop matching
-/// the array it is budgeting for).
-///
-/// It matters far more with two servers than it ever did with one. The truncation is in SHELF
-/// ORDER, so a single greedy source — `/hubs` promotes several rows per library, and four
-/// libraries already overrun this — used to be able to spend the entire allowance before the next
-/// source got a row. That is starvation, and it is what [`allot`] exists to prevent.
-pub(crate) const MAX_SHELVES: usize = 16;
-
 /// Cards one shelf holds at most — the number the grid can address (the owned Home's `MAX_ITEMS` is this
-/// constant, for the same reason [`MAX_SHELVES`] is).
+/// constant).
 ///
 /// It was unreachable with one server, because `/hubs?count=12` bounds every shelf at 12. The
 /// MERGED deck is what reaches it: three sources' Continue Watching is up to 36 cards, and
@@ -867,7 +857,7 @@ fn project(
 /// This is the whole of the multi-server budget rule. Handing the budget out first-come (which is
 /// what a single running total does, and what this module did while there was only ever one server)
 /// means the first source spends it: `/hubs` promotes several rows per library, so a four-library
-/// server alone overruns [`MAX_SHELVES`] and a share behind it draws nothing at all.
+/// server alone can spend the whole card budget and a share behind it draws nothing at all.
 ///
 /// It is water-filling, not a flat `budget / n`: the smallest demand is served first and what it
 /// does not use is RE-DIVIDED among the rest, so a modest source costs nobody anything and two
@@ -961,42 +951,47 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     }
 
     // ---- 2. every other shelf, grouped by source ----
-    let shelf_want: Vec<usize> = live.iter().map(|(_, b)| b.shelves.len()).collect();
     let row_want: Vec<usize> = live
         .iter()
         .map(|(_, b)| b.shelves.iter().map(|s| s.items.len()).sum())
         .collect();
-    let shelves_for = allot(MAX_SHELVES - new_hubs.len(), &shelf_want);
     let rows_for = allot(PMS_MAX_MOVIES - new_cat.len(), &row_want);
 
     for (i, (handle, b)) in live.iter().enumerate() {
         let mut rows_left = rows_for[i];
-        for sh in b.shelves.iter().take(shelves_for[i]) {
-            let start = new_cat.len();
-            // Filtered BEFORE the take, so an unpinned library cannot spend a pinned one's row
+        for sh in &b.shelves {
+            // Filtered BEFORE the cap, so an unpinned library cannot spend a pinned one's row
             // budget — and a shelf left with nothing contributes no `HubRow` below, which is how an
             // unpinned library's whole shelf disappears rather than becoming an empty heading.
-            for m in sh
+            let items: Vec<&PmsMovie> = sh
                 .items
                 .iter()
                 .filter(|m| item_pinned(&pins, m))
-                .take(rows_left.min(MAX_SHELF_ITEMS))
-            {
+                .take(MAX_SHELF_ITEMS)
+                .collect();
+            // A shelf is published whole or not at all, and once one does not fit the source stops:
+            // skipping ahead to a smaller later shelf would reorder the household's Home.
+            if items.len() > rows_left {
+                break;
+            }
+            if items.is_empty() {
+                continue;
+            }
+            let start = new_cat.len();
+            for m in items {
                 new_cat.push(m.clone());
                 row_handle.push(handle);
             }
             rows_left -= new_cat.len() - start;
-            if new_cat.len() > start {
-                new_hubs.push(HubRow {
-                    title: sh.title.clone(),
-                    hub_id: sh.hub_id.clone(),
-                    key: sh.key.clone(),
-                    source: (*handle).to_string(),
-                    total: sh.total,
-                    start,
-                    len: new_cat.len() - start,
-                });
-            }
+            new_hubs.push(HubRow {
+                title: sh.title.clone(),
+                hub_id: sh.hub_id.clone(),
+                key: sh.key.clone(),
+                source: (*handle).to_string(),
+                total: sh.total,
+                start,
+                len: new_cat.len() - start,
+            });
         }
     }
 
