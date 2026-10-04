@@ -6119,6 +6119,291 @@ class _ParallelSuite(unittest.TestSuite):
         return result
 
 
+import contextlib
+import copy
+import urllib.request
+
+
+class FpsMock(unittest.TestCase):
+    """`./tests/run.py --fps --mock` (#395): scene selection, the mock's arguments, the fail-closed
+    identity check, the paced walk and its window, and the CLI's refusals. No TV, no account."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(TESTS_DIR, "manifest.json")) as fh:
+            cls.scenes = {s["name"]: s for s in json.load(fh)["fps_scenes"]}
+        import mock_fps
+        cls.mf = mock_fps
+
+    # --- scene selection --------------------------------------------------------------
+    def test_under_mock_only_scenes_with_a_mock_block_run(self):
+        runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), True)
+        names = {s["name"] for s in runnable}
+        self.assertEqual(names, {"home-grid", "home-grid-deep"})
+        self.assertEqual(len(runnable) + len(skipped), len(self.scenes))
+        for _, why in skipped:
+            self.assertIn("real library content", why)
+
+    def test_without_mock_a_mock_only_scene_is_skipped_and_the_rest_unchanged(self):
+        runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), False)
+        self.assertEqual([n for n, _ in skipped], ["home-grid-deep"])
+        self.assertIn("--mock", skipped[0][1])
+        self.assertIn("home-grid", {s["name"] for s in runnable})
+        self.assertEqual(len(runnable), len(self.scenes) - 1)
+
+    def test_no_scene_runnable_under_mock_names_a_library_item(self):
+        # a scene that needs a ratingKey from the overlay can never run without one
+        for s in self.scenes.values():
+            if self.mf.scene_mock(s) is not None:
+                self.assertNotIn("item", s, s["name"])
+                self.assertNotIn("needs_shared_server", s, s["name"])
+                self.assertEqual(s.get("tier", "ui"), "ui", s["name"])
+
+    def test_mock_server_args(self):
+        self.assertEqual(self.mf.mock_server_args(self.scenes["home-grid"]), [])
+        self.assertEqual(self.mf.mock_server_args(self.scenes["home-grid-deep"]),
+                         ["--home-hubs", "170"])
+        with self.assertRaises(ValueError):
+            self.mf.mock_server_args({"name": "x", "mock": {"home_hubs": -1}})
+
+    def test_an_exact_scene_name_selects_only_that_scene(self):
+        scenes = list(self.scenes.values())
+        self.assertEqual([s["name"] for s in run.fps_for_tiers(scenes, False, "home-grid")],
+                         ["home-grid"])
+        both = [s["name"] for s in run.fps_for_tiers(scenes, False, "home-gri")]
+        self.assertEqual(sorted(both), ["home-grid", "home-grid-deep"])
+
+    # --- the deep scene's definition ---------------------------------------------------
+    def test_deep_scene_is_modelled_on_home_grid_and_walks(self):
+        deep, grid = self.scenes["home-grid-deep"], self.scenes["home-grid"]
+        self.assertEqual(deep["route"], "home")
+        self.assertEqual(deep["loop_floor"], grid["loop_floor"])
+        self.assertEqual(deep["fps_floor"], grid["fps_floor"])
+        self.assertTrue(deep["mock"]["only"])
+        self.assertEqual(deep["mock"]["home_hubs"], 170)
+        self.assertNotIn("plxnative-homeosc", deep["triggers"])  # the walk is the stimulus
+        # the heartbeat carries frame_n/frame_gt33/... only while the frame-drop detector is armed
+        self.assertIn("plxnative-framedrop", deep["triggers"])
+        self.assertLessEqual(deep["walk"]["max_rows"], deep["mock"]["home_hubs"])
+
+    def test_every_walk_scene_has_run_secs_for_its_whole_walk(self):
+        for s in self.scenes.values():
+            if s.get("walk"):
+                self.assertLessEqual(self.mf.walk_secs_needed(s), s["run_secs"], s["name"])
+
+    def test_walk_plan_is_down_then_up_and_only_those_keys(self):
+        plan = self.mf.walk_plan(21, {"max_rows": 170})
+        self.assertEqual(plan, ["down"] * 21 + ["up"] * 21)
+        self.assertEqual(self.mf.walk_plan(500, {"max_rows": 170}).count("down"), 170)
+        self.assertEqual(set(self.mf.WALK_KEYS), {"down", "up"})
+
+    # --- the log: identity, landing, window --------------------------------------------
+    SYN = "pms: server 0 version=1.41.0.0000-synthetic plexPass=true"
+
+    def test_identity_accepts_only_the_synthetic_server(self):
+        ok, _ = self.mf.check_synthetic_identity(["boot", self.SYN])
+        self.assertTrue(ok)
+
+    def test_identity_fails_closed(self):
+        for lines in ([], ["install: id=x", "hubs: landed — 1 items, 1 shelves"],
+                      ["pms: server 0 version=1.41.9.9799-abcdef plexPass=true"],
+                      [self.SYN, "pms: server 1 version=1.40.0.7998-xyz plexPass=false"]):
+            ok, why = self.mf.check_synthetic_identity(lines)
+            self.assertFalse(ok, lines)
+            self.assertTrue(why)
+
+    def test_landed_reads_the_last_line_and_counts_refreshes(self):
+        lines = ["hubs: landed — 216 items, 18 shelves", "x", "hubs: landed — 300 items, 21 shelves"]
+        self.assertEqual(self.mf.landed(lines), (300, 21))
+        self.assertEqual(self.mf.landed_count(lines), 2)
+        self.assertIsNone(self.mf.landed(["nothing"]))
+
+    @staticmethod
+    def _beat(fps=40, gt33=1, mx=40.0):
+        return (f"loop=60 route=home fps={fps} worstframe=1.0ms carried=0 dropped=0 budget=0/0 "
+                f"evicted_hot=0 frame_n={fps} frame_gt16=10 frame_gt33={gt33} frame_gt50=0 "
+                f"frame_gt100=0 frame_max={mx}ms frame_p95=20.0ms frame_p99={mx}ms")
+
+    KEY = "[1] key type=0x300 raw=00"
+
+    def test_window_runs_first_key_to_last_plus_two_beats(self):
+        pre = [self._beat(fps=1)] * 3
+        mid = [self.KEY, self._beat(), self.KEY, self._beat()]
+        tail = [self._beat(), self._beat(), self._beat(fps=1)]
+        win = self.mf.walk_window(pre + mid + tail)
+        # the beat after the last key is the first of the two tail beats
+        self.assertEqual(win, mid + tail[:1])
+        self.assertIsNone(self.mf.walk_window(pre))
+
+    def test_frame_stats_sum_and_report_drops(self):
+        win = [self._beat(fps=50, gt33=2, mx=70.0), self._beat(fps=60, gt33=1, mx=20.0)]
+        st = self.mf.frame_stats(win)
+        self.assertEqual((st["beats"], st["frames"], st["gt33"], st["peak_fps"]), (2, 110, 3, 60))
+        self.assertEqual(st["max_ms"], 70.0)
+
+    # --- the mock process and the configured address -----------------------------------
+    def _config(self, host, port):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        path = os.path.join(d, "config.local.h")
+        with open(path, "w") as fh:
+            fh.write(f'#define PMS_HOST "{host}"\n#define PMS_PORT {port}\n#define PMS_TOKEN "SECRET"\n')
+        return path
+
+    def test_configured_endpoint_reads_host_and_port_only(self):
+        self.assertEqual(self.mf.configured_endpoint(self._config("127.0.0.1", 32499)),
+                         ("127.0.0.1", 32499))
+        with self.assertRaises(SystemExit):
+            self.mf.configured_endpoint("/nonexistent/config.local.h")
+
+    @staticmethod
+    def _free_port():
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def test_mock_pms_serves_the_scenes_hubs_and_the_guest_resolves_against_it(self):
+        port = self._free_port()
+        with self.mf.MockPms("127.0.0.1", port, ["--home-hubs", "7"]):
+            token = self.mf.resolve_mock_token(self._config("127.0.0.1", port))
+            self.assertEqual(token, "plxnative-mock-guest")
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/hubs", timeout=10) as r:
+                self.assertEqual(len(json.load(r)["MediaContainer"]["Hub"]), 7)
+        # stopped on exit: the address is free again
+        with socket.socket() as s:
+            self.assertNotEqual(s.connect_ex(("127.0.0.1", port)), 0)
+
+    def test_mock_refuses_a_busy_address(self):
+        with socket.socket() as busy:
+            busy.bind(("127.0.0.1", 0))
+            busy.listen(1)
+            with self.assertRaises(SystemExit) as cm:
+                self.mf.MockPms("127.0.0.1", busy.getsockname()[1]).start()
+            self.assertIn("already answers", str(cm.exception))
+
+    def test_guest_refuses_a_server_that_is_not_the_synthetic_mock(self):
+        import http.server
+
+        class Real(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                body = json.dumps({"MediaContainer": {"version": "1.41.9.9799-real"}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Real)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        with self.assertRaises(SystemExit) as cm:
+            self.mf.resolve_mock_token(self._config("127.0.0.1", srv.server_address[1]))
+        self.assertIn("refusing to run", str(cm.exception))
+
+    # --- run_fps_scene: the identity gate and the walk window grade the right thing ------
+    def _run_scene(self, scene, log, walker):
+        class P:
+            stdout, stderr = "\n".join(log), ""
+
+        class FakeWalk:
+            def __init__(self, *a, **k):
+                self.__dict__.update(walker)
+                self.cancel = threading.Event()
+
+            def start(self):
+                pass
+
+            def join(self, timeout=None):
+                pass
+
+        cfg = {"tv": "tv.invalid", "inject_token": True, "mock": {"host": "h", "port": 1}}
+        with mock.patch.object(run, "make", return_value=P), \
+                mock.patch.object(run, "apply_triggers"), \
+                mock.patch.object(run, "require_install"), \
+                mock.patch.object(run, "save_case_log"), \
+                mock.patch.object(run, "RUNDIR", "/r"), \
+                mock.patch.object(run, "EVENTLOG", "/r/e.log"), \
+                mock.patch.object(run.mock_fps, "KeyWalk", FakeWalk), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return run.run_fps_scene(scene, cfg, "tok")
+
+    def _deep_scene(self):
+        s = copy.deepcopy(self.scenes["home-grid-deep"])
+        s["walk"]["max_rows"] = 3
+        return s
+
+    def _walk_log(self, server=None, fps=40, keys=6):
+        out = [server or self.SYN, "hubs: landed — 90 items, 3 shelves"] + [self._beat(fps=1)] * 3
+        for _ in range(keys):
+            out += [self.KEY, self._beat(fps=fps)]
+        return out + [self._beat(fps=fps)] * 2 + [self._beat(fps=1)] * 5
+
+    OKWALK = {"rows": 3, "sent": 6, "error": None}
+
+    def test_walk_scene_passes_on_the_window_and_reports_drops(self):
+        ok, detail = self._run_scene(self._deep_scene(), self._walk_log(), self.OKWALK)
+        self.assertTrue(ok, detail)
+        self.assertIn("3 row(s) landed", detail)
+        self.assertIn("gt33=", detail)
+        self.assertIn("not graded", detail)
+
+    def test_walk_scene_fails_when_the_window_is_slow_even_if_the_idle_is_fine(self):
+        ok, detail = self._run_scene(self._deep_scene(), self._walk_log(fps=5), self.OKWALK)
+        self.assertFalse(ok)
+        self.assertIn("fps_floor", detail)
+
+    def test_walk_scene_fails_when_it_did_not_finish_or_no_key_arrived(self):
+        ok, detail = self._run_scene(self._deep_scene(), self._walk_log(),
+                                     {"rows": 3, "sent": 2, "error": None})
+        self.assertFalse(ok)
+        self.assertIn("never ran to completion", detail)
+        ok, detail = self._run_scene(self._deep_scene(), self._walk_log(keys=0), self.OKWALK)
+        self.assertFalse(ok)
+        self.assertIn("key type=0x300", detail)
+        ok, detail = self._run_scene(self._deep_scene(), self._walk_log(),
+                                     {"rows": None, "sent": 0, "error": "never landed"})
+        self.assertFalse(ok)
+        self.assertIn("never landed", detail)
+
+    def test_a_non_synthetic_server_in_the_log_fails_before_grading(self):
+        bad = "pms: server 0 version=1.41.9.9799-real plexPass=true"
+        ok, detail = self._run_scene(self._deep_scene(), self._walk_log(server=bad), self.OKWALK)
+        self.assertFalse(ok)
+        self.assertIn("non-synthetic", detail)
+
+    def test_an_app_that_never_named_a_server_fails_closed(self):
+        log = [ln for ln in self._walk_log() if not ln.startswith("pms:")]
+        ok, detail = self._run_scene(self._deep_scene(), log, self.OKWALK)
+        self.assertFalse(ok)
+        self.assertIn("never identified a server", detail)
+
+    # --- the CLI --------------------------------------------------------------------
+    def _cli(self, *argv):
+        return subprocess.run([sys.executable, os.path.join(TESTS_DIR, "run.py"), *argv],
+                              capture_output=True, text=True, timeout=120)
+
+    def test_cli_refuses_mock_outside_the_fps_tier_and_with_identities(self):
+        for argv, needle in ((["--mock"], "--fps"), (["--mock", "--server"], "--fps"),
+                             (["--mock", "--fps", "--owner"], "--owner"),
+                             (["--mock", "--fps", "--shared-server"], "--shared-server"),
+                             (["--mock", "--fps", "--graphics-profile"], "--graphics-profile"),
+                             (["--mock", "--print-test-token"], "--mock")):
+            p = self._cli(*argv)
+            self.assertNotEqual(p.returncode, 0, argv)
+            self.assertIn(needle, p.stdout + p.stderr, argv)
+
+    def test_cli_lists_the_mock_tags(self):
+        p = self._cli("--fps", "--mock", "--list")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        deep = [ln for ln in p.stdout.splitlines() if ln.startswith("fps:home-grid-deep")]
+        self.assertEqual(len(deep), 1)
+        self.assertIn("[mock-only]", deep[0])
+        grid = [ln for ln in p.stdout.splitlines() if ln.startswith("fps:home-grid ")]
+        self.assertIn("[mock ok]", grid[0])
+
+
 def load_tests(loader, tests, pattern):
     """Whole-module runs (`python3 tests/test_harness.py`, `make check`) run `DepGates` in
     parallel; naming a test on the command line still runs it alone, in the foreground.

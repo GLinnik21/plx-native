@@ -94,6 +94,7 @@ TV_SSH = os.path.join(REPO_ROOT, "tools", "tv-ssh")  # key-first ssh/scp front d
 
 sys.path.insert(0, TESTS_DIR)
 from serve_fixtures import serve, default_root as serve_fixtures_default_root  # noqa: E402  (needs TESTS_DIR on the path first)
+import mock_fps  # noqa: E402  (the --mock tier; same path juggling as above)
 sys.path.insert(0, TOOLS_DIR)
 from graphics_profile import (  # noqa: E402
     format_irq,
@@ -5833,11 +5834,20 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
 
     if before_run:
         before_run()
+    # A `walk` scene presses its own keys while `make run` is blocked in its fixed sleep.
+    walker = None
+    if scene.get("walk"):
+        walker = mock_fps.KeyWalk(ssh_argv, tv, EVENTLOG, f"{RUNDIR}/plxnative-remote", scene)
+        walker.start()
     try:
         proc = make(["run", f"TV={tv}", f"RUN_SECS={run_secs}"], timeout=run_secs + 90)
     except subprocess.TimeoutExpired:
         print("    [FAIL] make run timed out")
         return False, "make run timed out"
+    finally:
+        if walker is not None:
+            walker.cancel.set()
+            walker.join(timeout=30)
     lines = filter_log(proc.stdout + "\n" + proc.stderr)
     # FPS scenes are the runs most likely to carry profiler summaries.  Preserve them just like
     # playback cases when --save-logs is requested; otherwise teardown closes the app and the
@@ -5850,6 +5860,23 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     # against the wrong install's log, or against a release build that never read its triggers,
     # fails on the <5-samples guard and reads as "the app never reached this screen".
     require_install(lines, cfg)
+
+    # `--mock`: the log itself must prove the app talked to the synthetic mock and to nothing else.
+    # Checked BEFORE any grading so a scene that reached some other server cannot pass.
+    if cfg.get("mock"):
+        ok_id, why = mock_fps.check_synthetic_identity(lines)
+        if not ok_id:
+            msg = f"refusing to grade: {why}"
+            print(f"    [FAIL] {msg}")
+            return False, msg
+        print(f"    identity: {why}")
+    walk_detail = ""
+    if walker is not None:
+        walk_fail, lines, walk_detail = grade_walk_prelude(scene, lines, walker)
+        if walk_fail:
+            print(f"    [FAIL] {walk_fail}")
+            return False, walk_fail
+        warmup = scene["walk"].get("window_warmup_beats", 1)
 
     # A `bench` scene (push-100/modal-100/deep-100) is graded entirely off its own `bench:` lines
     # — see `grade_bench`/`grade_deep_bench`. It shares every line above (triggers, `make run`, log
@@ -5964,8 +5991,37 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     ok_r, detail_r = grade_required_log(scene, lines)
     ok = ok and ok_r
     detail += detail_r
+    detail += walk_detail
     print(f"    [{'PASS' if ok else 'FAIL'}] {detail}")
     return ok, detail
+
+
+def grade_walk_prelude(scene, lines, walker):
+    """Check a `walk` scene's stimulus really ran and cut its window out of the log.
+
+    Returns `(failure_message_or_None, window_lines, detail_suffix)`. The grading that follows is
+    the ordinary one (`loop_floor`, `fps_floor`) applied to the WINDOW only: the heartbeats between
+    the first and last key, plus a short tail. Whole-run grading would average the walk with the
+    boot and the idle tail, and a walk that failed to press anything would pass on the idle.
+    The frame statistics (`frame_gt33`, worst frame, ...) are reported in the detail, never gated.
+    """
+    if walker.error:
+        return f"the key walk failed: {walker.error}", lines, ""
+    rows = walker.rows or 0
+    want = 2 * min(rows, int(scene["walk"]["max_rows"]))
+    if walker.sent < want or want == 0:
+        return (f"the key walk sent {walker.sent} of {want} key(s) ({rows} row(s) landed); it "
+                f"never ran to completion — raise run_secs or look at the log"), lines, ""
+    window = mock_fps.walk_window(lines)
+    if window is None:
+        return ("no `key type=0x300` line in the event log: the app received none of the "
+                f"{walker.sent} key(s) the walk sent"), lines, ""
+    final = mock_fps.landed(lines)
+    stats = mock_fps.frame_stats(window, scene["route"])
+    keys_seen = sum(1 for ln in window if mock_fps.KEY_RE.search(ln))
+    detail = mock_fps.describe_walk(final[1] if final else rows, keys_seen, stats,
+                                    mock_fps.landed_count(lines))
+    return None, window, detail
 
 
 def fps_for_tiers(scenes, include_player, name_filter=None):
@@ -5973,9 +6029,43 @@ def fps_for_tiers(scenes, include_player, name_filter=None):
     — it decides from the SELECTED scenes whether a second server is needed, and resolving one for a
     player-tier scene that `--fps` was never going to run is a plex.tv round-trip for nothing."""
     tiers = {"ui"} | ({"player"} if include_player else set())
-    return [s for s in scenes
-            if s.get("tier", "ui") in tiers
-            and (not name_filter or name_filter in s["name"])]
+    in_tier = [s for s in scenes if s.get("tier", "ui") in tiers]
+    # An EXACT scene name selects that scene alone: `--filter home-grid` is the substring of
+    # `home-grid-deep` too, and a stress scene must not ride along with the scene it extends.
+    if name_filter and any(s["name"] == name_filter for s in in_tier):
+        return [s for s in in_tier if s["name"] == name_filter]
+    return [s for s in in_tier if not name_filter or name_filter in s["name"]]
+
+
+def quiet_tv(tv, sound=False):
+    """Panel OFF (and, once per run, sound OFF) through `tools/tv-session.sh` — the owner's standing
+    rule for every device run. Fails closed: a run that cannot blank the panel stops instead of
+    lighting a household's television for a stress walk. Never turns either on."""
+    session = os.path.join(REPO_ROOT, "tools", "tv-session.sh")
+    steps = [["screen", "off"]] + ([["sound", "off"]] if sound else [])
+    for step in steps:
+        r = subprocess.run([session, *step], env=dict(os.environ, TV=tv),
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            sys.exit(f"refusing to run: `tv-session.sh {' '.join(step)}` failed — the panel/sound "
+                     f"rule cannot be met:\n{(r.stdout + r.stderr).strip()[-400:]}")
+
+
+def run_mock_fps_scene(scene, cfg):
+    """One FPS scene against its own freshly started synthetic mock.
+
+    The mock lives exactly as long as the scene (each scene may ask for a different library), the
+    guest token is resolved only after the mock answers, from `tools/mock-guest.py`, which refuses
+    any server that is not the synthetic one, and the panel is re-blanked before every launch.
+    """
+    quiet_tv(cfg["tv"])
+    log = os.path.join(tempfile.gettempdir(), f"plx-mock-pms-{os.getpid()}-{scene['name']}.log")
+    args = mock_fps.mock_server_args(scene)
+    print(f"    mock: tests/mock_pms.py {' '.join(args) or '(default library)'}")
+    with mock_fps.MockPms(cfg["mock"]["host"], cfg["mock"]["port"], args, log_path=log):
+        token = mock_fps.resolve_mock_token(CONFIG_LOCAL_H)
+        return run_fps_scene(scene, cfg, token,
+                             extra_triggers=tuple(cfg.get("extra_triggers") or ()))
 
 
 def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
@@ -5991,9 +6081,15 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
           "(tools/tv-session.sh screen off; tools/tv-session.sh sound off) — the owner's "
           "standing directive")
     results = []
+    if cfg.get("mock"):
+        quiet_tv(cfg["tv"], sound=True)
     for s in scenes:
         try:
-            ok, detail = run_fps_scene(s, cfg, token, extra_triggers=tuple(cfg.get("extra_triggers") or ()))
+            if cfg.get("mock"):
+                ok, detail = run_mock_fps_scene(s, cfg)
+            else:
+                ok, detail = run_fps_scene(s, cfg, token,
+                                           extra_triggers=tuple(cfg.get("extra_triggers") or ()))
         except Exception as e:  # keep the batch going
             ok, detail = False, f"ERROR: {e}"
             print(f"    [FAIL] ERROR: {e}")
@@ -6268,6 +6364,15 @@ def main():
                     help="run the FPS regression suite (UI tier: home/detail, no video needed)")
     ap.add_argument("--fps-player", action="store_true",
                     help="FPS suite INCLUDING player-tier scenes (info/menu — needs playback, slower)")
+    ap.add_argument("--mock", action="store_true",
+                    help="with --fps/--fps-player: run the scenes that declare a `mock` block "
+                         "against the SYNTHETIC mock server (tests/mock_pms.py), which this run "
+                         "starts and stops itself at PMS_HOST:PMS_PORT from src/config.local.h with "
+                         "each scene's own arguments. Needs NO PMS_TOKEN, NO manifest.local.json "
+                         "and makes NO plex.tv call; boots the same synthetic guest as "
+                         "`tools/tv-session.sh up --guest --mock`, refuses a log whose server is "
+                         "not the synthetic one, and keeps the panel OFF and the sound OFF. "
+                         "Debug flavor only. Scenes with no `mock` block are skipped with a reason")
     ap.add_argument("--graphics-profile", action="store_true",
                     help="for exactly one selected FPS scene, run production pacing + passive "
                          "Mali IRQ + a separate HWCNT leg and save one diagnostic bundle")
@@ -6301,7 +6406,7 @@ def main():
         conflicting = [f for f, v in [
             ("--list", args.list), ("--server", args.server), ("--fps", args.fps),
             ("--fps-player", args.fps_player), ("--pipeline", args.pipeline),
-            ("--owner", args.owner), ("--build", args.build),
+            ("--owner", args.owner), ("--build", args.build), ("--mock", args.mock),
         ] if v]
         if conflicting:
             sys.exit(f"--print-test-token is standalone and cannot combine with {', '.join(conflicting)}")
@@ -6334,6 +6439,19 @@ def main():
     # The FPS scenes are on the server side of the line whatever else is asked: they navigate a
     # real signed-in Home, so without a token they grade a QR screen.
     server_tier = args.server or args.fps or args.fps_player
+    if args.mock:
+        # The synthetic library has no real items, no plex.tv account and one fabricated guest, so
+        # every flag that names one of those is a contradiction, not a preference to resolve.
+        if not (args.fps or args.fps_player):
+            sys.exit("--mock applies to the FPS scenes: combine it with --fps or --fps-player. "
+                     "(The library-backed --server cases need real content a mock cannot give.)")
+        bad = [f for f, v in [("--server", args.server), ("--owner", args.owner),
+                              ("--shared-server", args.shared_server), ("--suite", args.suite),
+                              ("--graphics-profile", args.graphics_profile),
+                              ("--pipeline", args.pipeline)] if v]
+        if bad:
+            sys.exit(f"--mock cannot combine with {', '.join(bad)}: it runs against the synthetic "
+                     f"mock as a synthetic guest, never an account")
     if args.pipeline and server_tier:
         # `--pipeline` is a no-op naming the default, so combining it with anything that selects
         # the other tier is not a preference to resolve — it is two contradictory instructions, and
@@ -6341,10 +6459,16 @@ def main():
         # not ask for and believe the result.
         sys.exit("--pipeline names the DEFAULT tier and cannot be combined with "
                  "--server/--fps/--fps-player, which select the server tier. Pick one.")
-    manifest = load_manifest(pipeline_only=not server_tier, tv_override=args.tv, for_listing=args.list)
+    # `--mock` reads the tracked matrix and the TV address only (the same loader the pipeline tier
+    # uses): no overlay, so no `pms` block, no test_user, no item keys and nothing for plex.tv.
+    manifest = load_manifest(pipeline_only=(not server_tier) or args.mock, tv_override=args.tv,
+                             for_listing=args.list)
     # BEFORE anything else, including --list: every path this run uses hangs off it, and the
     # queries are offline and side-effect free (see make_query / the Makefile's PURE_QUERY).
     resolve_flavour(args, manifest)
+    if args.mock and FLAVOUR != "debug":
+        sys.exit(f"--mock drives the debug install only (this run resolved FLAVOR={FLAVOUR}): the "
+                 f"synthetic guest is never injected into a user-facing build")
     cfg = {
         # `.get`, not `[…]`: under `--list` the overlay and `.tv-host` are both optional, so there
         # may be no address at all. Nothing on a listing path dials it — and a RUN cannot reach
@@ -6357,6 +6481,10 @@ def main():
         "save_logs": args.save_logs,
         "extra_triggers": [tuple(t.split("=", 1)) if "=" in t else (t, None) for t in args.extra_trigger],
     }
+    if args.mock and not args.list:
+        mock_host, mock_port = mock_fps.configured_endpoint(CONFIG_LOCAL_H)
+        cfg["mock"] = {"host": mock_host, "port": mock_port}
+        cfg["inject_token"] = True  # the synthetic guest token rides plxnative-token, as for tv-session
     cases = manifest["cases"]
     if args.suite:
         cases = [c for c in cases if case_suite(c) == args.suite]
@@ -6430,6 +6558,8 @@ def main():
             if s.get("coldopen_ceiling_ms") is not None:
                 gates += f" coldopen_ceiling_ms={s['coldopen_ceiling_ms']}"
             mark = "  [+2nd server]" if s.get("needs_shared_server") else ""
+            if mock_fps.scene_mock(s) is not None:
+                mark += "  [mock-only]" if s["mock"].get("only") else "  [mock ok]"
             mark += f"  [SKIP: {s['skip']}]" if s.get("skip") else ""
             print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} {gates}{mark}")
         print(f"\ninstall: {APPID} [{FLAVOUR}] — runtime root {RUNDIR}")
@@ -6504,6 +6634,10 @@ def main():
         # substitution reads scene["rk"] directly, and the KeyError landed in the batch's blanket
         # `except` as `[FAIL] ERROR: 'rk'` -- a false FAILURE, indistinguishable from a regression.
         selected, fps_skipped = partition_skips(selected)
+        # Which scenes THIS server can serve: under --mock only the ones that declare a `mock`
+        # block, and without it never a `mock.only` scene. Before anything reads a token.
+        selected, mock_skipped = mock_fps.partition_mock(selected, args.mock)
+        fps_skipped = list(fps_skipped) + mock_skipped
         scenes, _skipped = setup_shared(manifest, cfg, args, selected, "scene")
         # Bail BEFORE read_token() and arm_teardown(): arming commits to driving the television,
         # and its cleanup closes the app on every exit path -- including this one. A run with
@@ -6520,7 +6654,8 @@ def main():
         token = None
         # A second-server scene needs the FIRST server's token too, whatever its tier: without it
         # the app boots to QR sign-in and the scene grades a screen it never reached.
-        if fps_run_needs_token(scenes, bool(cfg.get("shared_server"))):
+        # `--mock` resolves its own synthetic token per scene, after that scene's mock is up.
+        if not args.mock and fps_run_needs_token(scenes, bool(cfg.get("shared_server"))):
             admin_token = read_token()
             test_user = manifest.get("test_user")
             if args.owner or not test_user:
