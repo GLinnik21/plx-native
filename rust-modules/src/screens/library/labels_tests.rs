@@ -208,7 +208,7 @@ fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
     let prior = crate::route::deck_press();
     let glyph = |mode, is_continue| {
         crate::route::restore_deck_press(mode);
-        let shelf = crate::browse::section_hubs::Shelf {
+        let shelf = plx_data::browse::section_hubs::Shelf {
             id: "x".into(), key: String::new(), link: None, total: 0, title: "On Deck".into(), is_continue,
             landscape: false, items: vec![PmsMovie { kind: 0, title: "Stardust".into(), ..Default::default() }],
         };

@@ -357,7 +357,7 @@ mod activate_card_tests {
         impl Drop for Cleanup {
             fn drop(&mut self) {
                 // SAFETY: captured from `bridge` just below, which outlives this guard.
-                unsafe { &mut *self.0 }.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
+                unsafe { &mut *self.0 }.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
                 plx_plex::plex::reset_servers_for_test();
             }
         }
@@ -365,8 +365,8 @@ mod activate_card_tests {
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("menu-play", "127.0.0.1", 1, "t", "c-menu-play");
 
-        let show = crate::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
-        let season = crate::pms::PmsMovie { sid, rk: "season-9".into(), kind: 2,
+        let show = plx_data::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
+        let season = plx_data::pms::PmsMovie { sid, rk: "season-9".into(), kind: 2,
             show_rk: "show-1".into(), season_index: 4, ..Default::default() };
         for (card, expect, season_index) in [(&show, "show-1", None), (&season, "show-1", Some(4))] {
             let mut menu_play_await = None;
@@ -383,7 +383,7 @@ mod activate_card_tests {
             let armed = menu_play_await.as_ref().unwrap_or_else(|| panic!("{} must arm the wait", card.rk));
             assert_eq!((armed.sid, armed.expect.as_str(), armed.season_index, armed.deadline),
                 (sid, expect, season_index, 7u32.wrapping_add(12_000)));
-            assert!(crate::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
+            assert!(plx_data::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
                 "the page's detail is requested, the play decision waits for the landing");
             assert!(!pages.has_pending_navigation(), "no premature navigation or playback");
         }

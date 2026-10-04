@@ -260,7 +260,7 @@ fn build_with(
     // First, so it is where the menu opens. It resumes when there is a resume point and the label
     // says which, in the words the hero's pill uses.
     // A show or season has no resume point of its own, so it says "Play".
-    let resumes = leaf && crate::metadata::resume_ns(m.resume_ms, m.dur_ns / 1_000_000) > 0;
+    let resumes = leaf && plx_data::metadata::resume_ns(m.resume_ms, m.dur_ns / 1_000_000) > 0;
     sec = sec.item_if(
         opens_details && (leaf || m.kind == 1 || m.kind == 2),
         ItemRow::Play,
