@@ -48,7 +48,7 @@ pub mod initial;
 /// source, never a truncated row. [`project`] does not truncate: one source's [`SourceBuild`] is
 /// bounded by what that server sends (12 cards per shelf, [`HUB_FETCH_COUNT`], times its hubs).
 /// Rows dropped by the bound are logged by [`pump`].
-const HOME_CARDS_MAX: usize = 2048;
+pub(crate) const HOME_CARDS_MAX: usize = 2048;
 
 /// Cards one shelf holds at most — the number the grid can address (the owned Home's `MAX_ITEMS` is this
 /// constant).
