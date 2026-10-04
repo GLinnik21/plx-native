@@ -929,6 +929,51 @@ fn a_corrected_credit_restamps_the_shelves_home_already_built() {
     crate::plex::reset_servers_for_test();
 }
 
+/// `n` shelves of `per` cards each, all in library `sec` of `slot`'s server.
+fn shelves_in(slot: u16, sec: i64, n: usize, per: usize) -> Vec<Shelf> {
+    (0..n)
+        .map(|s| {
+            let keys: Vec<String> = (0..per).map(|i| format!("{slot}-{s}-{i}")).collect();
+            shelf_in(slot, sec, &format!("S{slot}-{s}"), &format!("x.{slot}.{s}"),
+                &keys.iter().map(|r| r.as_str()).collect::<Vec<_>>())
+        })
+        .collect()
+}
+
+/// Issue #395: demand was counted from every item, so a library the user unpinned (whose items are
+/// filtered out and never drawn) held half of the card budget back from the visible one.
+#[test]
+fn an_unpinned_library_spends_no_card_budget() {
+    let srcs = [
+        src(0, "", HubState::Ready, Some(built(0, &[], shelves_in(0, 1, 30, 12)))),
+        src(1, "friend", HubState::Ready, Some(built(1, &[], shelves_in(1, 1, 30, 12)))),
+    ];
+    let scope = BrowseScope {
+        sections_gen: 0,
+        pins: vec![(sid(0), 1, true), (sid(1), 1, false)],
+    };
+    let (items, hubs, _) = merge_with_scope(&srcs, &scope);
+    assert!(hubs.iter().all(|h| h.source.is_empty()), "nothing of the unpinned library is drawn");
+    assert_eq!(items.len(), 252, "source 0 fills the budget alone: 21 whole shelves of 12");
+}
+
+/// A shelf longer than the per-shelf ceiling only ever publishes `MAX_SHELF_ITEMS`, so that is all
+/// the demand it may claim.
+#[test]
+fn a_long_shelf_claims_only_what_it_can_publish() {
+    let long = shelves_in(0, 1, 1, 200);
+    let srcs = [
+        src(0, "", HubState::Ready, Some(built(0, &[], long))),
+        src(1, "friend", HubState::Ready, Some(built(1, &[], shelves_in(1, 1, 25, 12)))),
+    ];
+    let (_, hubs, _) = merge_with_scope(&srcs, &BrowseScope::standalone());
+    let theirs: usize = hubs.iter().filter(|h| h.source == "friend").map(|h| h.len).sum();
+    assert_eq!(
+        theirs, 228,
+        "256 - 24 left for the friend: 19 whole shelves, not the 128-card half"
+    );
+}
+
 /// The same split over catalog ROWS, which is the cap the shelves' items come out of.
 #[test]
 fn the_row_budget_is_shared_too() {

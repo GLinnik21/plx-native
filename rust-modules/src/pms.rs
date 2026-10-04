@@ -951,24 +951,35 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     }
 
     // ---- 2. every other shelf, grouped by source ----
-    let row_want: Vec<usize> = live
+    // What each shelf would publish with an unlimited budget, computed ONCE so the demand handed to
+    // `allot` and the cards emitted below cannot disagree. Filtered BEFORE the cap, so an unpinned
+    // library cannot spend a pinned one's row budget (nor can items past the cap, which are never
+    // drawn), and a shelf left with nothing contributes no `HubRow` below, which is how an unpinned
+    // library's whole shelf disappears rather than becoming an empty heading.
+    let publishable: Vec<Vec<Vec<&PmsMovie>>> = live
         .iter()
-        .map(|(_, b)| b.shelves.iter().map(|s| s.items.len()).sum())
+        .map(|(_, b)| {
+            b.shelves
+                .iter()
+                .map(|sh| {
+                    sh.items
+                        .iter()
+                        .filter(|m| item_pinned(pins, m))
+                        .take(MAX_SHELF_ITEMS)
+                        .collect()
+                })
+                .collect()
+        })
+        .collect();
+    let row_want: Vec<usize> = publishable
+        .iter()
+        .map(|shelves| shelves.iter().map(Vec::len).sum())
         .collect();
     let rows_for = allot(PMS_MAX_MOVIES - new_cat.len(), &row_want);
 
     for (i, (handle, b)) in live.iter().enumerate() {
         let mut rows_left = rows_for[i];
-        for sh in &b.shelves {
-            // Filtered BEFORE the cap, so an unpinned library cannot spend a pinned one's row
-            // budget — and a shelf left with nothing contributes no `HubRow` below, which is how an
-            // unpinned library's whole shelf disappears rather than becoming an empty heading.
-            let items: Vec<&PmsMovie> = sh
-                .items
-                .iter()
-                .filter(|m| item_pinned(&pins, m))
-                .take(MAX_SHELF_ITEMS)
-                .collect();
+        for (sh, items) in b.shelves.iter().zip(&publishable[i]) {
             // A shelf is published whole or not at all, and once one does not fit the source stops:
             // skipping ahead to a smaller later shelf would reorder the household's Home.
             if items.len() > rows_left {
@@ -979,7 +990,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
             }
             let start = new_cat.len();
             for m in items {
-                new_cat.push(m.clone());
+                new_cat.push((*m).clone());
                 row_handle.push(handle);
             }
             rows_left -= new_cat.len() - start;
