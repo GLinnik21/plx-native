@@ -1420,15 +1420,20 @@ fn request_tls_evidence(
                 .unwrap_or_else(|e| e.into_inner()),
         )
     };
-    // **Key mode (issue #378) is only ever considered for a strictly verified, redirect-free https
-    // request** — never [`Tls::Pinned`] (which has already turned verification off for a reason of
-    // its own), never plaintext. `key` is that request's `host:port` in [`keypin`]'s tables, or
-    // `None` when the request can never use them.
+    // **Key mode (issue #378) and roots mode are only ever considered for a strictly verified,
+    // redirect-free https request** — never [`Tls::Pinned`] (which has already turned verification
+    // off for a reason of its own), never plaintext. `key` is that request's `host:port` in
+    // [`keypin`]'s tables, or `None` when the request can never use them. Which attempt follows a
+    // failed one is [`keypin::after_failure`]'s alone.
     let key = verified_https.then(|| keypin::key_of_url(url)).flatten();
     let mut mode = key.as_deref().map_or(keypin::Mode::Strict, keypin::begin);
-    // A strict attempt that failed with a date verify result, kept while key mode is tried: if libcurl
-    // cannot even be put in key mode, the request fails as it would have.
+    // The attempt that failed and led to the next rung ([`keypin::after_failure`]), kept while that
+    // rung is tried: if libcurl cannot even be put in that mode, the request fails as it would have.
     let mut held: Option<Attempt> = None;
+    // Whether an attempt of this request has already run against the bundled roots, so the bundle
+    // is never offered twice (a latched roots start the bundle refused, then strict, must not go
+    // back to it).
+    let mut roots_tried = false;
     // **One attempt = one fresh easy handle, one fresh response sink, the same inputs.** A retry
     // therefore cannot inherit per-attempt state (a partly filled body buffer, a read offset, a
     // header list the first handle owned): a failed TLS handshake sent nothing, and the second
@@ -1709,23 +1714,28 @@ fn request_tls_evidence(
     let started = std::time::Instant::now();
     let mut budget = t;
     let (done, final_mode) = loop {
+        roots_tried |= matches!(mode, keypin::Mode::Roots { .. });
         let Some(done) = attempt(&mode, budget)? else {
             // libcurl would not be put in key or roots mode. Never relax anything: the request
-            // fails as it would have (the strict failure held), or, when the mode was the latched
-            // START, goes strict after all.
+            // fails as it would have (the failure that led here held), or, when the mode was the
+            // latched START, goes strict after all.
             if let Some(key) = &key {
                 keypin::unlatch(key);
             }
             match held.take() {
-                Some(strict) => break (strict, keypin::Mode::Strict),
+                Some(earlier) => break (earlier, keypin::Mode::Strict),
                 None => {
                     mode = keypin::Mode::Strict;
                     continue;
                 }
             }
         };
-        if let (keypin::Mode::Strict, Some(key)) = (&mode, &key) {
-            if let Some(next) = keypin::after_strict_failure(key, done.rc, done.verify) {
+        if let Some(key) = &key {
+            // The bundle did not answer for this host: end its latch, whatever follows.
+            if matches!(mode, keypin::Mode::Roots { .. }) && keypin::is_roots_refusal(done.rc) {
+                keypin::roots_failed(key, done.rc, done.verify);
+            }
+            if let Some(next) = keypin::after_failure(key, &mode, done.rc, done.verify, roots_tried) {
                 match remaining_budget(t, started.elapsed()) {
                     Some(left) => {
                         budget = left;
@@ -1733,14 +1743,18 @@ fn request_tls_evidence(
                         mode = next;
                         continue;
                     }
-                    // Nothing is left to spend on the retry: the request fails as the strict
-                    // attempt did, inside the time the caller allowed.
+                    // Nothing is left to spend on the retry: the request fails as the attempt
+                    // that led here did, inside the time the caller allowed.
                     None => break (done, mode),
                 }
             } else if done.rc != 0 {
-                // No key mode to retry in: what this failure says about the host is a fact the app
-                // can tell a viewer about (a date failure with no key), or ends one (anything else).
-                keypin::strict_failure(key, done.rc, done.verify);
+                // No rung to retry in: what this failure says about the host is a fact the app can
+                // tell a viewer about (a date failure with no key), or ends one (anything else).
+                match &mode {
+                    keypin::Mode::Strict => keypin::strict_failure(key, done.rc, done.verify),
+                    keypin::Mode::Roots { .. } => keypin::roots_unanswered(key, done.rc, done.verify),
+                    keypin::Mode::Key { .. } => {}
+                }
             }
         }
         break (done, mode);
@@ -1754,9 +1768,6 @@ fn request_tls_evidence(
             keypin::Mode::Key { .. } if rc == keypin::PIN_MISMATCH => keypin::key_refused(key),
             keypin::Mode::Key { pin, verify } if established => keypin::key_established(key, pin, *verify),
             keypin::Mode::Roots { verify, .. } if established => keypin::roots_established(key, *verify),
-            // The bundle did not answer for this host: end the latch (a latched START that fails
-            // costs this request, and the next one goes strict again).
-            keypin::Mode::Roots { .. } if keypin::is_roots_refusal(rc) => keypin::roots_failed(key, rc, done_verify),
             _ => {}
         }
     }
@@ -2696,20 +2707,65 @@ pub mod keypin {
     /// Anything else (a name mismatch, a self-signed leaf, 51, a refused connection) is neither.
     /// Roots mode is for the NAMES a household's own server is reached by and nothing else: plex.tv,
     /// a telemetry sink or any other host that fails for this reason fails as before.
+    ///
+    /// The first rung of [`after_failure`], which is what both planes call.
     pub fn after_strict_failure(key: &str, rc: c_int, verify: Option<c_long>) -> Option<Mode> {
+        after_failure(key, &Mode::Strict, rc, verify, false)
+    }
+
+    /// **The whole ladder, one rung at a time.** An attempt that ran in `ran` failed with `rc` and
+    /// `verify`: which mode, if any, is the request's next attempt in? `roots_tried` is whether an
+    /// earlier attempt of THIS request already ran against the bundle. Both planes call this and
+    /// nothing else decides it, so they cannot disagree about a rung.
+    ///
+    /// * **After [`Mode::Strict`]**: a date failure goes to key mode when a key is held; a
+    ///   missing-issuer failure on a `*.plex.direct` name goes to roots mode when the bundle is on
+    ///   disk and this request has not already been refused by it.
+    /// * **After [`Mode::Roots`]**: a DATE failure goes to key mode when a key is held. This is the
+    ///   rung a television with an old trust store AND a wrong clock needs: strict fails on the
+    ///   missing issuer, the bundle verifies the chain and then refuses the dates, and the key the
+    ///   identity probe learned on an earlier good boot is the one thing left that recognises the
+    ///   server. Otherwise a roots attempt that STARTED the request (a latch, `verify` of `None`: no
+    ///   strict failure led there) and was refused for its verification (60 or 51) goes to
+    ///   [`Mode::Strict`] — the host's certificate may have moved to an issuer the device store now
+    ///   trusts but the bundle lacks, and a stale latch must not cost the request. A roots attempt
+    ///   that a strict failure led to has nowhere to go: the device store and the bundle have both
+    ///   said no.
+    /// * **After [`Mode::Key`]**: nothing. The key either matched or did not; it is the last rung.
+    ///
+    /// **Bounded by construction.** The longest chain is three attempts (a latched roots start,
+    /// strict, key; or strict, roots, key): the bundle is never tried twice (`roots_tried`), a date
+    /// failure never goes back to strict, and only a LATCHED roots start ever goes to strict.
+    pub fn after_failure(
+        key: &str,
+        ran: &Mode,
+        rc: c_int,
+        verify: Option<c_long>,
+        roots_tried: bool,
+    ) -> Option<Mode> {
+        // A date failure is the one thing a wrong clock explains, and the one thing only the
+        // remembered key can answer: it never goes back to strict and never to the bundle.
         if is_date_failure(rc, verify) {
-            let pin = state().table.get(key)?.clone();
-            return Some(Mode::Key { pin, verify });
+            return match ran {
+                Mode::Key { .. } => None,
+                Mode::Strict | Mode::Roots { .. } => {
+                    let pin = state().table.get(key)?.clone();
+                    Some(Mode::Key { pin, verify })
+                }
+            };
         }
-        if is_untrusted_issuer(rc, verify) && is_plex_direct(host_of_key(key)) {
-            let path = roots_bundle()?;
-            plx_base::eventlog::log(&format!(
-                "net: a plex.direct certificate failed the device trust store (X509 verify result {}) — retrying against the bundled public roots",
-                verify.unwrap_or_default()
-            ));
-            return Some(Mode::Roots { path, verify });
+        match ran {
+            Mode::Strict if !roots_tried && is_untrusted_issuer(rc, verify) && is_plex_direct(host_of_key(key)) => {
+                let path = roots_bundle()?;
+                plx_base::eventlog::log(&format!(
+                    "net: a plex.direct certificate failed the device trust store (X509 verify result {}) — retrying against the bundled public roots",
+                    verify.unwrap_or_default()
+                ));
+                Some(Mode::Roots { path, verify })
+            }
+            Mode::Roots { verify: None, .. } if is_roots_refusal(rc) => Some(Mode::Strict),
+            Mode::Strict | Mode::Roots { .. } | Mode::Key { .. } => None,
         }
-        None
     }
 
     /// A strict handshake completed: whatever latch stood for `key` is over, and so is whatever
@@ -2765,6 +2821,18 @@ pub mod keypin {
             "net: the bundled public roots did not verify the plex.direct certificate either (curl rc={rc}, X509 verify result {})",
             verify.map_or_else(|| "not reported".to_owned(), |v| v.to_string())
         ));
+    }
+
+    /// A roots-mode attempt failed and [`after_failure`] found no rung to retry in: record what that
+    /// says about `key`. Only a DATE failure says anything (the bundle verified the chain and the
+    /// television's clock refused the dates, and no key is held to recognise the server by), and it
+    /// says what a strict date failure with no key says ([`strict_failure`]: [`Blocked::NoKey`]).
+    /// Any other roots failure leaves the published facts alone: the strict attempt that led here
+    /// already recorded its own.
+    pub fn roots_unanswered(key: &str, rc: c_int, verify: Option<c_long>) {
+        if is_date_failure(rc, verify) {
+            strict_failure(key, rc, verify);
+        }
     }
 
     /// Does `rc` mean a roots-mode attempt was refused for its TLS verification, as opposed to the

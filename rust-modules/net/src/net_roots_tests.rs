@@ -15,6 +15,10 @@ const PLEX_DIRECT: &str = "127-0-0-1.0123456789abcdef0123456789abcdef.plex.direc
 struct Outcome {
     result: Result<Resp, RequestFailure>,
     latched: bool,
+    /// Is the host latched in KEY mode after the request?
+    key_latched: bool,
+    /// What the request published about the host ([`keypin::Blocked`]).
+    blocked: Option<keypin::Blocked>,
 }
 
 /// A leaf for `names` issued by a fresh test CA (whose PEM is `.pem`), valid now.
@@ -31,11 +35,25 @@ fn unrelated_store() -> String {
 /// double serving `cert`, with `device_pem` as the device store and `roots_pem` as the shipped
 /// bundle (`None`: no bundle installed).
 fn request_to(host: &str, cert: Arc<TestCert>, device_pem: &str, roots_pem: Option<&str>, tag: &str) -> Outcome {
+    request_with(host, cert, device_pem, roots_pem, tag, |_| {})
+}
+
+/// [`request_to`], with `setup` called with the host's [`keypin`] key after the loopback port is
+/// known and before the request: where a test holds a key for the host, or latches it.
+fn request_with(
+    host: &str,
+    cert: Arc<TestCert>,
+    device_pem: &str,
+    roots_pem: Option<&str>,
+    tag: &str,
+    setup: impl FnOnce(&str),
+) -> Outcome {
     let _device = TestCaGuard::install(device_pem, tag);
     let _roots = roots_pem.map(|p| keypin::test_roots::Guard::install(p, tag));
     let served = spawn_observed(cert, b"{}".to_vec());
     let key = keypin::key_of(host, i32::from(served.port));
     let _scoped = keypin::Scoped::watch(&key);
+    setup(&key);
     let pin = origin::ResolvePin::for_test(host, i32::from(served.port), std::net::IpAddr::from([127, 0, 0, 1]));
     let result = request_result_evidence(
         &format!("https://{host}:{}/identity", served.port),
@@ -48,7 +66,12 @@ fn request_to(host: &str, cert: Arc<TestCert>, device_pem: &str, roots_pem: Opti
         Some(&resolve::entry_of(&pin)),
         false,
     );
-    Outcome { result, latched: keypin::is_roots_latched(&key) }
+    Outcome {
+        result,
+        latched: keypin::is_roots_latched(&key),
+        key_latched: keypin::is_latched(&key),
+        blocked: keypin::fact_for(&key).blocked,
+    }
 }
 
 fn refused_with(out: &Outcome, rcs: &[i32]) {
@@ -124,6 +147,116 @@ fn a_certificate_for_another_name_never_succeeds_through_the_bundle() {
     let cert = leaf(&["some-other-name.example"]);
     // 51 is what libcurl 7.53.1 answers for a name mismatch; 60 is what 7.62+ answers.
     refused_with(&request_to(PLEX_DIRECT, Arc::clone(&cert), &unrelated_store(), Some(&cert.pem), "roots-mismatch"), &[51, 60]);
+}
+
+/// **A wrong clock behind an old trust store.** The device store lacks the issuer (strict fails
+/// with a missing-issuer verify result, so roots mode engages), and the television's clock is also
+/// wrong, so the bundle verifies the chain and then refuses the DATES. Roots mode is a dead end for
+/// that, and the key the identity probe learned on an earlier good boot is the one thing that can
+/// still recognise the server: it must be asked for, exactly as after a strict date failure.
+#[test]
+fn a_roots_attempt_that_fails_on_the_date_falls_through_to_the_remembered_key() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&[PLEX_DIRECT]);
+    let pin = leaf_pin(&cert);
+    let out = request_with(
+        PLEX_DIRECT, Arc::clone(&cert), &unrelated_store(), Some(&cert.pem), "roots-date-key",
+        |key| keypin::set_for_test(key, &pin),
+    );
+    let resp = out.result.expect("the remembered key must answer once the bundle has refused the date");
+    assert_eq!(resp.status, 200);
+    assert!(out.key_latched, "key mode answered, so the host is latched in it");
+    assert!(!out.latched, "the bundle did not answer for this host");
+}
+
+/// The same failure with no key held: nothing can recognise the server, and the app must be told
+/// why (`Blocked::NoKey` drives the "your television's clock" read-out), as for a strict date failure.
+#[test]
+fn a_roots_attempt_that_fails_on_the_date_with_no_key_held_publishes_no_key() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&[PLEX_DIRECT]);
+    let out = request_to(PLEX_DIRECT, Arc::clone(&cert), &unrelated_store(), Some(&cert.pem), "roots-date-nokey");
+    let failure = out.result.as_ref().err().expect("a date failure with no key is refused");
+    assert_eq!(failure.curl_rc, Some(60));
+    assert_eq!(failure.verify, Some(10), "the roots attempt decided the request, and it failed on the date");
+    assert_eq!(out.blocked, Some(keypin::Blocked::NoKey));
+    assert!(!out.latched && !out.key_latched);
+}
+
+/// **A latched roots start the bundle then refuses.** The host was served through the bundle (the
+/// latch), and since then its certificate moved to an issuer the device store trusts but the bundle
+/// lacks. The first request after that starts in roots mode, which cannot succeed, and must not cost
+/// the request: the latch ends AND the request goes strict once, in the same attempt budget.
+#[test]
+fn a_latched_roots_start_the_bundle_refuses_retries_once_in_strict() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = leaf(&[PLEX_DIRECT]);
+    let bundle_without_the_issuer = mint_cert(&["another-root.invalid"]).pem;
+    let out = request_with(
+        PLEX_DIRECT, Arc::clone(&cert), &cert.pem, Some(&bundle_without_the_issuer), "roots-latched-strict",
+        |key| keypin::roots_established_at(key, Some(20), std::time::Instant::now()),
+    );
+    let resp = out.result.expect("the device store holds the issuer, so the strict retry verifies");
+    assert_eq!(resp.status, 200);
+    assert!(!out.latched, "the refused latch is gone, and a strict success keeps it gone");
+}
+
+/// The retry is once: a latched start refused by the bundle, then refused by the device store too
+/// (the issuer is in neither), fails — it does not loop, and does not go back to the bundle.
+#[test]
+fn a_latched_roots_start_refused_by_both_stores_fails_after_one_strict_retry() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = leaf(&[PLEX_DIRECT]);
+    let bundle_without_the_issuer = mint_cert(&["another-root.invalid"]).pem;
+    let out = request_with(
+        PLEX_DIRECT, Arc::clone(&cert), &unrelated_store(), Some(&bundle_without_the_issuer), "roots-latched-both",
+        |key| keypin::roots_established_at(key, Some(20), std::time::Instant::now()),
+    );
+    let failure = out.result.as_ref().err().expect("neither store holds the issuer");
+    assert_eq!(failure.curl_rc, Some(60));
+    assert!(!out.latched, "the latch is over");
+}
+
+/// The ladder as a pure decision, [`keypin::after_failure`]: what follows each failed attempt.
+#[test]
+fn the_ladder_after_each_failed_attempt_is_bounded_and_never_repeats_the_bundle() {
+    let _serial = plx_base::testlock::serial();
+    let _bundle = keypin::test_roots::Guard::install(&mint_cert(&["ladder.invalid"]).pem, "roots-ladder");
+    let held = keypin::key_of(PLEX_DIRECT, 41010);
+    let bare = keypin::key_of(PLEX_DIRECT, 41011);
+    let _held = keypin::Scoped::new(held.clone(), &plx_base::spki::pin_from_spki_der(&[9; 8]));
+    let _bare = keypin::Scoped::watch(&bare);
+    let started = |verify| keypin::Mode::Roots { path: "p".into(), verify };
+    let kind = |m: Option<keypin::Mode>| match m {
+        None => "none",
+        Some(keypin::Mode::Strict) => "strict",
+        Some(keypin::Mode::Key { .. }) => "key",
+        Some(keypin::Mode::Roots { .. }) => "roots",
+    };
+    // After a strict failure: the date to the key, a missing issuer to the bundle, once.
+    assert_eq!(kind(keypin::after_failure(&held, &keypin::Mode::Strict, 60, Some(10), false)), "key");
+    assert_eq!(kind(keypin::after_failure(&held, &keypin::Mode::Strict, 60, Some(20), false)), "roots");
+    assert_eq!(kind(keypin::after_failure(&held, &keypin::Mode::Strict, 60, Some(20), true)), "none", "the bundle already refused it");
+    // After a roots attempt reached from a strict failure: only the date has anywhere to go.
+    assert_eq!(kind(keypin::after_failure(&held, &started(Some(20)), 60, Some(10), true)), "key");
+    assert_eq!(kind(keypin::after_failure(&bare, &started(Some(20)), 60, Some(10), true)), "none", "no key held");
+    for (rc, verify) in [(60, Some(20)), (60, Some(18)), (51, None), (28, None), (90, None)] {
+        assert_eq!(kind(keypin::after_failure(&held, &started(Some(20)), rc, verify, true)), "none", "rc {rc} verify {verify:?}");
+    }
+    // After a LATCHED roots start (no strict failure led there): a refusal goes strict, once.
+    assert_eq!(kind(keypin::after_failure(&held, &started(None), 60, Some(20), false)), "strict");
+    assert_eq!(kind(keypin::after_failure(&held, &started(None), 51, None, false)), "strict");
+    assert_eq!(kind(keypin::after_failure(&held, &started(None), 60, Some(10), false)), "key", "the date has the key first");
+    assert_eq!(kind(keypin::after_failure(&bare, &started(None), 60, Some(10), false)), "none", "a date failure never goes back to strict");
+    assert_eq!(kind(keypin::after_failure(&held, &started(None), 28, None, false)), "none", "a timeout is not the bundle's refusal");
+    // Key mode is the last rung.
+    let key_mode = keypin::Mode::Key { pin: "sha256//x".into(), verify: None };
+    assert_eq!(kind(keypin::after_failure(&held, &key_mode, 60, Some(10), true)), "none");
+    assert_eq!(kind(keypin::after_failure(&held, &key_mode, 90, None, false)), "none");
 }
 
 #[test]

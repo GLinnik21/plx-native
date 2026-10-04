@@ -834,18 +834,23 @@ impl CurlSource {
         // Key mode is for a verified-https request only; a plaintext URL has no key.
         let key = keypin::key_of_url(self.url.to_str().unwrap_or_default());
         let mut mode = key.as_deref().map_or(keypin::Mode::Strict, keypin::begin);
-        // The strict failure's log phrase, kept in case libcurl cannot be put in key mode after it.
+        // The failed attempt's log phrase, kept in case libcurl cannot be put in the mode that
+        // follows it.
         let mut held: Option<String> = None;
+        // Whether an attempt of this open has already run against the bundled roots: the bundle is
+        // never offered twice ([`keypin::after_failure`]).
+        let mut roots_tried = false;
         loop {
-            match self.start_attempt(at, range_end, deadline, checkpoint, &mode, key.as_deref())? {
+            roots_tried |= matches!(mode, keypin::Mode::Roots { .. });
+            match self.start_attempt(at, range_end, deadline, checkpoint, &mode, key.as_deref(), roots_tried)? {
                 Attempt::Done => return Ok(()),
                 Attempt::Retry(next, why) => {
                     held = Some(why);
                     mode = next;
                 }
                 Attempt::KeyRefused => {
-                    // Nothing was relaxed. Key mode was either the latched start (drop the latch
-                    // and go strict) or the retry (the request fails as it would have).
+                    // Nothing was relaxed. The fallback mode was either the latched start (drop the
+                    // latch and go strict) or the retry (the request fails as it would have).
                     match held.take() {
                         Some(why) => {
                             crate::player::log(&format!(
@@ -867,7 +872,9 @@ impl CurlSource {
 
     /// One attempt of [`start_range_until`](Self::start_range_until) in `mode`: a fresh easy handle,
     /// pumped until the response headers are in. `key` is the URL's `host:port` in `net::keypin`'s
-    /// tables, or `None` when the URL can never use them.
+    /// tables, or `None` when the URL can never use them. `roots_tried` is whether this open has
+    /// already run an attempt against the bundled roots (this one included), for
+    /// [`keypin::after_failure`].
     fn start_attempt(
         &mut self,
         at: i64,
@@ -876,6 +883,7 @@ impl CurlSource {
         checkpoint: &mut dyn Checkpoint,
         mode: &plx_net::net::keypin::Mode,
         key: Option<&str>,
+        roots_tried: bool,
     ) -> Result<Attempt, OpenErr> {
         use plx_net::net::keypin;
         self.stop();
@@ -1160,12 +1168,12 @@ impl CurlSource {
             match mode {
                 keypin::Mode::Strict if self.done && self.failed && self.rc == TLS_VERIFY_FAILED => {
                     let verify = plx_net::net::verify_result(self.easy);
-                    if let Some(next) = keypin::after_strict_failure(key, self.rc, verify) {
+                    if let Some(next) = keypin::after_failure(key, mode, self.rc, verify, roots_tried) {
                         let why = plx_net::net::tls_failure_reason(self.easy, self.rc).unwrap_or_default();
                         self.stop();
                         return Ok(Attempt::Retry(next, why));
                     }
-                    // No key mode to retry in: publish a date failure that no key could answer.
+                    // No rung to retry in: publish a date failure that no key could answer.
                     keypin::strict_failure(key, self.rc, verify);
                 }
                 keypin::Mode::Strict if established => keypin::strict_established(key),
@@ -1180,9 +1188,19 @@ impl CurlSource {
                 keypin::Mode::Key { pin, verify } if established => keypin::key_established(key, pin, *verify),
                 keypin::Mode::Roots { verify, .. } if established => keypin::roots_established(key, *verify),
                 // The bundle did not answer for this host: end its latch. `validate` logs the
-                // request's own failure line, so this adds the one verify-result line only.
+                // request's own failure line, so this adds the one verify-result line only. What
+                // follows is `keypin::after_failure`'s: a date failure goes to the remembered key
+                // (a wrong clock behind an old trust store), and a LATCHED start the bundle now
+                // refuses goes strict once; with no rung left a date failure is published.
                 keypin::Mode::Roots { .. } if self.done && self.failed && keypin::is_roots_refusal(self.rc) => {
-                    keypin::roots_failed(key, self.rc, plx_net::net::verify_result(self.easy));
+                    let verify = plx_net::net::verify_result(self.easy);
+                    keypin::roots_failed(key, self.rc, verify);
+                    if let Some(next) = keypin::after_failure(key, mode, self.rc, verify, roots_tried) {
+                        let why = plx_net::net::tls_failure_reason(self.easy, self.rc).unwrap_or_default();
+                        self.stop();
+                        return Ok(Attempt::Retry(next, why));
+                    }
+                    keypin::roots_unanswered(key, self.rc, verify);
                 }
                 _ => {}
             }
@@ -1956,10 +1974,11 @@ fn curl_why(rc: c_int) -> &'static str {
 enum Attempt {
     /// Headers are in and validated; the source is readable.
     Done,
-    /// A strict attempt failed with a verify result `net::keypin` has a fallback for (a date, with
-    /// a key held for the host; a missing issuer, for a `*.plex.direct` host with the roots bundle
-    /// on disk): try again in the given mode. Carries the strict failure's log phrase, to report
-    /// with `OpenErr::Transport(TLS_VERIFY_FAILED)` should libcurl turn out not to support the mode.
+    /// An attempt failed in a way `net::keypin::after_failure` has a next rung for (a date, with a
+    /// key held for the host; a missing issuer, for a `*.plex.direct` host with the roots bundle on
+    /// disk; a latched bundle start the bundle now refuses): try again in the given mode. Carries
+    /// the failed attempt's log phrase, to report with `OpenErr::Transport(TLS_VERIFY_FAILED)`
+    /// should libcurl turn out not to support the mode.
     Retry(plx_net::net::keypin::Mode, String),
     /// libcurl refused the fallback mode's options; the handle was discarded unrelaxed.
     KeyRefused,
