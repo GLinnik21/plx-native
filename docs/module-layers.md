@@ -8,11 +8,12 @@ L14, which a split hides from them, and the gate does not check impl coherence. 
 off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
 entries are gone, and the gate fails on any reference from outside the port to a member of it. It
 is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
-up the split. **The split has started: `base`, `machine`, `platform`, `gfx`, `net` and `plex` are
-their own crates, `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net` and `plx_plex`**
-(`rust-modules/base/`, `machine/`, `platform/`, `gfx/`, `net/` and `plex/`; "Split 1: base", "Split
-2: machine", "Split 3: platform", "Split 4 (gfx)", "Split 5 (net)" and "Split 7 (plex)" below); the
-other eight layers are still modules of `plxnative-modules`.
+up the split. **The split is half done: seven of the fourteen layers, `base`, `machine`, `platform`, `gfx`, `net`,
+`ui` and `plex`, are their own crates, `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`,
+`plx_ui` and `plx_plex`** (`rust-modules/base/`, `machine/`, `platform/`, `gfx/`, `net/`, `ui/` and
+`plex/`; "Split 1: base" to "Split 7 (plex)" below, and "Splits 6 and 7 together" for how the last
+two were combined); the other seven (`telemetry`, `data`, `session`, `media`, `appkit`, `screens`,
+`app`) are still modules of `plxnative-modules`.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
@@ -173,10 +174,8 @@ SET of top-level modules on the big cycle and fails when a module joins it, so i
 forming between modules this config puts in one layer. This gate is the fine one: it checks each
 reference against the target graph. They agree on direction. When a step shrinks the cycle, run
 `ci/check-module-cycle.py --update-baseline` in the same change. After L14 its baseline held 13
-modules (44 at baseline), and `ci/module-cycle-baseline.json` has the current set. It sees `ui` and
-`diag` as one node each, so the machine-layer and
-gfx-layer parts of `ui` and the base-layer parts of `diag` still close a cycle there with the
-layers that may name them. This gate, which sees the members, finds no upward reference.
+modules (44 at baseline), and `ci/module-cycle-baseline.json` has the current set. It sees `diag` as one node, so the base-layer parts of `diag` still close a cycle there with the
+layers that may name them (`ui` was the other such node until it became `plx_ui` and left that graph). This gate, which sees the members, finds no upward reference.
 
 Test code is gated too. After the split a crate's `#[cfg(test)]` code sees only that crate and its
 dependencies. A test that assembles `Bridge`, `AppHost` or a screen from a low layer is an
@@ -516,7 +515,7 @@ edit 39.0 s (min 33.4), and the unit suite 60.9 s with the same 5603 tests (157 
 That is the expected size, and it is small: `machine` is 4.1k of 450k lines, so the split buys the
 couple of seconds that crate cost per edit to everything above it. The gain is in the minima (the
 application edit is 5.7 s faster), not in the noisy medians; the crates that carry the line count
-(`gfx`, `plex`, `ui`, `screens`) are still inside the application crate.
+(`gfx`, `plex`, `ui`, `screens`) were still inside the application crate at that point.
 
 ### Split 3: platform
 
@@ -907,13 +906,13 @@ What it taught beyond the recipe and Splits 1 to 5:
   it. `make build-bench` has a `ui` scenario ("Edit leaf (plx_ui dwell.rs)") and its `hub`
   scenario, which appended a line to `ui/mod.rs`, appends to `plx_ui`'s `lib.rs` now, so it
   measures the same dependency (everything in the application names the crate root).
-- **The module-cycle baseline did not need re-recording.** The cycle is the same 8 modules; one
-  module moved from outside it to a smaller component, so the notice reads 25 outside against a
-  baseline of 26. `ci/check-module-cycle.py --update-baseline` records it when the wave lands.
+- **The module-cycle baseline is re-recorded with the wave.** The cycle is the same 8 modules; `ui`
+  left the application's graph (with `plex` and `http` of Split 7: 23 modules outside the cycle,
+  where the baseline said 26).
 
 ### Split 7 (plex)
 
-`plex` was extracted seventh (Split 6 is `ui`, in a parallel lane): `rust-modules/plex/` is the
+`plex` was extracted seventh (Split 6 is `ui`, above; the two were made in parallel): `rust-modules/plex/` is the
 workspace member `plx_plex` (an `rlib`, `uses = base machine platform net`), holding `plex` (the
 typed Plex API, the session store, `grant`, `probe`, `identity`, with its `CLAUDE.md`) and `http`
 (the one request door). The members kept their names, so a path is `plx_plex::plex::session::load`
@@ -957,9 +956,10 @@ four lower layers'. Its 458 tests run in their own binary. What it taught beyond
   `ci/version_rule.py`). The application hands it in as Split 3 did for `storage::diagnostics`:
   `plx_plex::plex::identity::set_version(env!("PLX_VERSION"))`, the first line of
   `enter_application`, and `identity::VERSION` is `identity::version()`. Unset, a `test-support`
-  build answers `0.0.0-test` and a shipping build asserts in debug and answers an obviously wrong
-  string, so a missed wiring cannot look plausible. `ci/check-package.py` still reads the three
-  copies of the number (it never read the Rust constant); its comment now says the crate reports
+  build answers `0.0.0-test` and a shipping build panics in every profile (the television's build is
+  `--release`, where a `debug_assert!` is compiled out), so a missed wiring cannot report a
+  placeholder to Plex; `app::boot::seam_order_tests` holds the hand-in as the first statement. `ci/check-package.py` still reads the three
+  copies of the number (it never read the Rust constant); its comments now say the crate reports
   the number it is handed. The one test that graded the derivation
   (`version_is_the_package_or_the_next_minor_dev`, with its `RELEASE_LINE` reader) moved to
   `release_line::tests`, because `CARGO_PKG_VERSION` and `PLX_RELEASE` are the application crate's.
@@ -982,7 +982,8 @@ four lower layers'. Its 458 tests run in their own binary. What it taught beyond
   the budget step gained `--src rust-modules/plex/src`; `RUST_INPUTS`, the harness's `TREE_INPUTS`
   and the `fpflags` file list, `tools/cargo-seed.py`, `ci/test_no_host_staticlib.py`, the
   release-configuration hook and `make build-bench` (scenario "Edit leaf (plx_plex retry.rs)")
-  know the crate. `module-cycle` is unchanged (the 8-module cycle, 24 modules outside it).
+  know the crate. `module-cycle` is the same 8-module cycle; with Split 6 the baseline records 23 modules outside it,
+  and the `http`/`plex` pair left its list of smaller cycles (both are inside `plx_plex`).
 - **FFI and the final link are untouched.** The layer has no `extern "C"`, `#[link]` or `dynlib!`;
   `plx_plex` compiles for the ARM target (`cargo check --target arm-unknown-linux-gnueabi --lib`
   with and without default features).

@@ -148,9 +148,9 @@ can follow.
 
 `ci/check-module-cycle.py` holds which top-level modules sit on the crate's module cycle, not the
 references between them: a module outside the cycle (or a new one) that gains a path into it fails
-with `file:line` (see "Module-cycle ratchet" in `docs/agent-reference.md`). Another `ui` ->
-`screens`/`app` reference between modules already on the cycle passes that
-gate (a `gfx`/`text` -> `ui` one no longer compiles: they are `plx_gfx`), so `ci/check-deps.sh` and review are what stop it; a green `module-cycle: ok` is not permission.
+with `file:line` (see "Module-cycle ratchet" in `docs/agent-reference.md`). A `ui` ->
+`screens`/`app` reference no longer compiles (`plx_ui` cannot see the application, and a `gfx`/`text` -> `ui` one cannot either: they are `plx_gfx`); between application modules already on the cycle another upward reference still passes that
+gate, so `ci/check-module-layers.py`, `ci/check-deps.sh` and review are what stop it; a green `module-cycle: ok` is not permission.
 
 `ui/` is generic over one application bundle and is compiled and tested against `FixtureHost`
 with no Plex type in scope (`fixture.rs`). If you find yourself reaching for `crate::plex` or

@@ -50,7 +50,7 @@
 #              catch on ITS spelling, not the original's.
 #
 # Phase 8 rule (§14, §6.2):
-#   nav      — a screen under rust-modules/src/screens/ never calls `crate::ui::nav::` (any
+#   nav      — a screen under rust-modules/src/screens/ never calls `plx_ui::nav::` (`crate::ui::nav::` before the ui split; any
 #              function) live; it reads `DrawFrame::{page_alpha,chrome_alpha,view_tab,
 #              blur_amount,nav_page_alpha}`, populated once per frame by `app/bridge.rs`'s
 #              `Rig::navigation_presentation`. `ui/`'s CONTAINERS (popover.rs, glassload.rs,

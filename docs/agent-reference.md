@@ -606,15 +606,15 @@ The intended layering is gfx/text/i18n < ui < screens < app and plex < route/pla
 few thin upward references once closed one strongly connected component of top-level modules
 holding 44 of them; the module-layer migration (`docs/module-layers.md`) cut it to 13 by step L14
 (`ci/module-cycle-baseline.json` has the current set), which is this tool's coarse view of edges
-the layer gate allows: it sees `ui` and `diag` as one node each, while `plx_machine::machine`/`plx_machine::idle`/`plx_gfx::overdraw` and `diag::{zlib,spans,heartbeat}` sit in lower
-layers. The gate does not untangle it; it stops it absorbing more modules. It builds the module graph from production code only (the
+the layer gate allows: it sees `diag` as one node, while `diag::{zlib,spans,heartbeat}` sit in a lower
+layer (`ui` left this graph when it became `plx_ui`). The gate does not untangle it; it stops it absorbing more modules. It builds the module graph from production code only (the
 module tree walked from `lib.rs`, `#[cfg(test)]` items and test-only files skipped, comments and
 strings blanked; the docstring lists what it cannot see), compares the cycle's members with
 `ci/module-cycle-baseline.json`, and **fails** when a module outside the baseline lands on a cycle
 - a new upward `crate::x` reference, or a new top-level module that lands inside the cycle - printing
 the `file:line` references into and out of that module. A member leaving the cycle only prints a
 notice. It holds the cycle's *membership*, not its edges: a further upward reference between two
-modules already on the cycle (a sixth `ui` -> `screens`) does not fail it. It runs in `make check-python` (so CI's `host-python` job), tested by
+modules already on the cycle (another `stores` -> `browse`) does not fail it. It runs in `make check-python` (so CI's `host-python` job), tested by
 `ci/test_module_cycle.py`.
 
 To fix a failure, remove the new path back: move the shared type down a layer, pass the value in as
@@ -1270,7 +1270,7 @@ behaviour; real GL copies, glyphs and presentation still need a device capture w
 There **is** a host unit suite, and it is not the real gate — both halves matter, and conflating
 them is how this section used to be wrong in three files at once.
 
-**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex` (a bare `cargo test --lib` runs the application crate only and skips every layer crate: `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`) runs the whole
+**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex` (a bare `cargo test --lib` runs the application crate only and skips every layer crate: `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`) runs the whole
 host suite on the dev Mac, no TV involved — and `make check` runs it a SECOND time under
 `--features hostsim`, because the host feed seam only exists there and the tests that need it are
 compiled out of the first pass (see the build section). **Treat every test COUNT in this section as

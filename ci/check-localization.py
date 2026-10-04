@@ -319,6 +319,12 @@ def scan(source: str, calls: dict[str, tuple[int, ...]] | None = None,
 # `gfx` holds `overdraw.rs`, which this gate read as `ui/overdraw.rs` before the split, and `ui`
 # is the whole of what this gate read as `rust-modules/src/ui`.
 LAYER_SRCS = ('rust-modules/platform/src', 'rust-modules/gfx/src', 'rust-modules/ui/src')
+# The constants table reads EVERY layer crate, not only the three above: a prose `const` is followed
+# across files, and `rust-modules/src` held all of them before the split. Without `plex` (which
+# also took `PlaybackQuality::label`, the quality row's text, out of the listed `route/decision.rs`)
+# a boundary naming one of its constants would pass unread.
+CONST_SRCS = (*LAYER_SRCS, 'rust-modules/base/src', 'rust-modules/machine/src', 'rust-modules/net/src',
+              'rust-modules/plex/src')
 
 
 def source_paths(root: Path):
@@ -335,12 +341,14 @@ def source_paths(root: Path):
     for rel in ('webos.rs', 'tv/device.rs', 'devcaps/dv.rs'):
         yield platform / rel
     yield root / LAYER_SRCS[1] / 'overdraw.rs'
+    # `PlaybackQuality::label` was `route/decision.rs`'s (listed above) until the plex split.
+    yield root / 'rust-modules/plex/src/plex/session.rs'
 
 
 def const_table(root: Path) -> dict[str, str]:
     """Every product module's prose constants, so a boundary in one file sees another's."""
     table = {}
-    for base in ('rust-modules/src', *LAYER_SRCS):
+    for base in ('rust-modules/src', *CONST_SRCS):
         for path in sorted((root / base).rglob('*.rs')):
             rel = path.relative_to(root / base)
             if path.name in FIXTURES or any('test' in part for part in rel.parts): continue

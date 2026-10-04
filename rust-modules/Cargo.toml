@@ -22,7 +22,7 @@ resolver = "2"
 name = "plxnative-modules"
 # THE version, in three places that ci/check-package.py keeps in step: here, pkg/appinfo.json
 # (which the ipk derives its filename and control entry from), and the X-Plex-Version this client
-# reports to both Plex services via src/plex/identity.rs. What the app reports is DERIVED from this
+# reports to both Plex services via plex/src/plex/identity.rs. What the app reports is DERIVED from this
 # rather than equal to it: build.rs publishes `PLX_VERSION`, which is this number exactly for a
 # RELEASE build and the next minor plus `-dev` for every other build, so a working tree does not
 # report itself as the last published release.
@@ -218,7 +218,7 @@ libc = "0.2"
 # JSON parsing for the pms module (replaces the C's hand-rolled string scrape)
 # std exposes the writer API used to bound manifest encoding before any filesystem write.
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
-# derive(Deserialize) for the typed plex API response models (src/plex/models.rs)
+# derive(Deserialize) for the typed plex API response models (plex/src/plex/models.rs)
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 
 [profile.release]

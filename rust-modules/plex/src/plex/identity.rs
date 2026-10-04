@@ -61,8 +61,12 @@ pub fn set_version(version: &'static str) {
 /// What this client reports as `X-Plex-Version` and in its `User-Agent`.
 ///
 /// Before [`set_version`] a test build answers a fixed placeholder (the layer's own tests build
-/// their headers without an application). A shipping build that gets here first is a wiring bug:
-/// it asserts in debug and reports an obviously-wrong string rather than a plausible one.
+/// their headers without an application). A shipping build that gets here first is a wiring bug,
+/// and it **panics in every profile** rather than answer: the television's build is `--release`,
+/// where a `debug_assert!` is compiled out, so a placeholder there would be sent to plex.tv and to
+/// every PMS as this client's `X-Plex-Version` with nothing to say it had happened. The order that
+/// makes this unreachable (`set_version` is the first statement of `app::enter_application`, the
+/// one entry point) is held by `app::boot::seam_order_tests`.
 pub fn version() -> &'static str {
     match VERSION.get() {
         Some(v) => v,
@@ -73,8 +77,7 @@ pub fn version() -> &'static str {
             }
             #[cfg(not(any(test, feature = "test-support")))]
             {
-                debug_assert!(false, "plex::identity::version read before set_version");
-                "0.0.0-unset"
+                panic!("plex::identity::version read before set_version: no request may report an unset X-Plex-Version")
             }
         }
     }

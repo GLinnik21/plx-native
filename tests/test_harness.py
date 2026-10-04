@@ -5229,7 +5229,7 @@ class DepGates(unittest.TestCase):
         "ci",
         "rust-modules/src",
         # The layer crates split out of `src`: `ci/check-deps.sh` reads them as `SRC_BASE`,
-        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM`, `SRC_GFX` and `SRC_PLEX`, so a copy without them grades a different
+        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM`, `SRC_GFX`, `SRC_UI` and `SRC_PLEX`, so a copy without them grades a different
         # tree than the checkout.
         "rust-modules/base/src",
         "rust-modules/machine/src",

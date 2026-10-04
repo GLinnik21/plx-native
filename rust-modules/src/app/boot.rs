@@ -113,6 +113,41 @@ pub(crate) fn install_plex_seams() {
 
 #[cfg(test)]
 mod seam_order_tests {
+    /// `plx_plex` reports the version it is handed (`plex::identity::set_version`) and, in a
+    /// shipping build, panics when asked for it earlier, so the hand-in has to be the first thing
+    /// the one entry point does: nothing before it can build a header or a `User-Agent`. It also
+    /// has to hand in `PLX_VERSION` itself, the string `ci/check-package.py` grades in the binary,
+    /// and no second production site may hand in anything else. Reads the source, like the tests
+    /// below, because no host test can run `enter_application`.
+    #[test]
+    fn the_plex_version_is_handed_in_first_and_only_there() {
+        let hand_in = concat!("plx_plex::plex::identity::", "set_version(env!(\"PLX_VERSION\"));");
+        let source = include_str!("mod.rs");
+        let body = source
+            .split_once("fn enter_application(")
+            .expect("enter_application")
+            .1
+            .split_once('{')
+            .expect("enter_application's body")
+            .1;
+        let first = body
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with("//"))
+            .expect("a first statement");
+        assert_eq!(first, hand_in, "set_version must be enter_application's first statement");
+        assert_eq!(
+            source.matches(concat!("identity::", "set_version(")).count(),
+            1,
+            "one production hand-in; a second could name a different version"
+        );
+        assert_eq!(
+            source.matches(concat!("enter_application(", "pms_host,pms_port)")).count(),
+            1,
+            "enter_application has one caller, run_application"
+        );
+    }
+
     /// `enter_application` installs the player's error-trace eraser before telemetry first loads a
     /// decision (`pre_boot_diagnostics` -> `telemetry::boot`, which already erases through it) and
     /// before anything can play. It was installed by `player::report::requested`, which a

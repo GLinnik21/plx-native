@@ -966,7 +966,7 @@ if IS_STABLE:
 check(appinfo["version"] == control["Version"],
       f'appinfo version == control Version ({appinfo["version"]})')
 # Cargo.toml is the FOURTH witness, and the one with a user-visible consequence: the diagnostics
-# read-out prints `plex::identity::VERSION`, which is derived from this number, and that panel is
+# read-out prints `plex::identity::version()`, which the app hands in and derives from this number, and that panel is
 # designed to be photographed into a bug report. A bump that missed Cargo.toml would ship a package
 # labelled 0.2.1 whose own on-screen version says 0.2.0 — precisely the disagreement `identity`
 # exists to make impossible, and nothing checked it until a release nearly went out that way.
