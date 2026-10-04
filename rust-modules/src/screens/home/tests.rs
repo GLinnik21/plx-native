@@ -2895,6 +2895,96 @@ fn locate_agrees_with_a_row_scan() {
     }
 }
 
+/// Publish a `rows` x `items` grid into `s`, as one more provider publication.
+fn republish(s: &mut HomeScreen, state: &mut crate::pms::PmsState, adapter: &std::sync::Arc<crate::pms::PmsAdapter>, rows: usize, items: usize) {
+    crate::pms::seed_grid_for_test(state, adapter, rows, items);
+    let snapshot = crate::pms::hubs_snapshot(state);
+    s.sync_catalog(&cx(snapshot.view(), None));
+}
+
+#[test]
+fn item_keys_are_stable_across_republication() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    republish(&mut s, &mut state, &adapter, 4, 5);
+    let first: Vec<Vec<u32>> = s.rows.iter().map(|r| r.elems.clone()).collect();
+    let table = s.items.clone();
+    // The same catalog again, and a wider one: no card already keyed changes its element, and the
+    // new cards take the next elements in publication order.
+    republish(&mut s, &mut state, &adapter, 4, 5);
+    assert_eq!(s.rows.iter().map(|r| r.elems.clone()).collect::<Vec<_>>(), first);
+    assert_eq!(s.items, table);
+    let next = s.next_elem;
+    republish(&mut s, &mut state, &adapter, 6, 5);
+    for (row, elems) in first.iter().enumerate() {
+        assert_eq!(&s.rows[row].elems, elems);
+    }
+    assert_eq!(s.items[..table.len()].iter().map(|k| k.elem).collect::<Vec<_>>(),
+        table.iter().map(|k| k.elem).collect::<Vec<_>>());
+    let fresh: Vec<u32> = s.rows[4..].iter().flat_map(|r| r.elems.iter().copied()).collect();
+    assert_eq!(fresh, (next..next + 10).collect::<Vec<_>>());
+}
+
+#[test]
+fn restore_merges_saved_keys_without_duplicates() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut a = HomeScreen::new(EntryId(7), InstanceId(9));
+    republish(&mut a, &mut state, &adapter, 3, 4);
+    let memory = match <HomeScreen as Screen<TestHost>>::memory(&a) {
+        PageMemory::Home(m) => m,
+        _ => unreachable!(),
+    };
+    // Restoring into an empty screen reproduces the table; restoring again, or into the screen
+    // that wrote it, adds nothing.
+    let mut b = HomeScreen::new(EntryId(7), InstanceId(10));
+    b.restore(&memory);
+    assert_eq!(b.items, a.items);
+    assert_eq!(b.groups, a.groups);
+    b.restore(&memory);
+    assert_eq!((b.items.len(), b.groups.len()), (a.items.len(), a.groups.len()));
+    let before = a.items.clone();
+    a.restore(&memory);
+    assert_eq!(a.items, before);
+    // A screen that restored first republishes onto the saved elements.
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    b.sync_catalog(&cx(snapshot.view(), None));
+    assert_eq!(b.rows.iter().map(|r| r.elems.clone()).collect::<Vec<_>>(),
+        a.rows.iter().map(|r| r.elems.clone()).collect::<Vec<_>>());
+    assert_eq!(b.items.len(), a.items.len());
+}
+
+#[test]
+fn key_index_agrees_with_a_scan_of_the_table() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    for (rows, items) in [(3, 4), (5, 4), (2, 6)] {
+        republish(&mut s, &mut state, &adapter, rows, items);
+    }
+    let memory = match <HomeScreen as Screen<TestHost>>::memory(&s) {
+        PageMemory::Home(m) => m,
+        _ => unreachable!(),
+    };
+    let mut r = HomeScreen::new(EntryId(7), InstanceId(10));
+    r.restore(&memory);
+    republish(&mut r, &mut state, &adapter, 4, 4);
+    for screen in [&s, &r] {
+        for key in &screen.items {
+            assert_eq!(screen.find_item(&key.identity), screen.items.iter().position(|k| k.identity == key.identity));
+        }
+        for key in &screen.groups {
+            assert_eq!(screen.find_group(&key.identity), screen.groups.iter().position(|k| k.identity == key.identity));
+        }
+        assert_eq!(screen.item_index.values().map(HubKeys::len).sum::<usize>(), screen.items.len());
+        assert_eq!(screen.group_index.len(), screen.groups.len());
+    }
+}
+
 #[test]
 fn stops_are_recorded_only_for_rows_on_screen_or_focused() {
     let _guard = plx_base::testlock::serial();

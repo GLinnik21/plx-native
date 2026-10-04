@@ -10,7 +10,7 @@
 //! modal style and restarts its countdown when the page becomes active again.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 
 use crate::pms::{HeroRef, HubIdentity, HubRef, HubsView, PmsMovie};
@@ -346,6 +346,27 @@ impl Backdrop {
     }
 }
 
+/// A card named by borrowed parts, so a lookup in the key table clones nothing.
+#[derive(Clone, Copy)]
+enum ItemRef<'a> {
+    Item { sid: crate::plex::ServerId, rk: &'a str },
+    Slot { generation: u32, ordinal: u32 },
+}
+
+/// One hub's entries in the key table: positions in `HomeScreen::items`.
+#[derive(Default)]
+struct HubKeys {
+    by_rk: HashMap<String, Vec<(crate::plex::ServerId, usize)>>,
+    slots: HashMap<(u32, u32), usize>,
+}
+
+impl HubKeys {
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.by_rk.values().map(Vec::len).sum::<usize>() + self.slots.len()
+    }
+}
+
 pub(crate) struct HomeScreen {
     entry: EntryId,
     instance: InstanceId,
@@ -358,6 +379,11 @@ pub(crate) struct HomeScreen {
     /// `elem` -> `(row, col)` for every card in `rows`, so [`HomeScreen::locate`] is a lookup
     /// rather than a scan of every row. Derived in `sync_catalog`; not canon.
     elem_at: HashMap<u32, (u32, u32)>,
+    /// `items` / `groups` looked up by identity, so keying a card is a hash probe rather than a
+    /// scan of the whole table. Positions into the two `Vec`s, which only ever grow; kept in step
+    /// by `push_item` / `push_group`, the only places either is pushed to. Derived, not canon.
+    item_index: HashMap<HomeHubIdentity, HubKeys>,
+    group_index: HashMap<HomeHubIdentity, usize>,
     projected_generation: Option<u32>,
     restored_scroll: Vec<(u32, f32)>,
     restore_reveal: bool,
@@ -415,6 +441,8 @@ impl HomeScreen {
             next_elem: FIRST_ITEM_ELEM,
             rows: Vec::new(),
             elem_at: HashMap::new(),
+            item_index: HashMap::new(),
+            group_index: HashMap::new(),
             projected_generation: None,
             restored_scroll: Vec::new(),
             restore_reveal: false,
@@ -442,25 +470,22 @@ impl HomeScreen {
     }
 
     pub(crate) fn restore(&mut self, memory: &HomeMemory) {
+        let mut taken_groups: HashSet<u32> = self.groups.iter().map(|k| k.group).collect();
         for saved in &memory.groups {
-            if !self.groups.iter().any(|k| k.identity == saved.identity) {
-                assert!(
-                    !self.groups.iter().any(|k| k.group == saved.group),
-                    "restored Home group collision"
-                );
-                self.groups.push(saved.clone());
+            if self.find_group(&saved.identity).is_none() {
+                assert!(taken_groups.insert(saved.group), "restored Home group collision");
+                self.push_group(saved.clone());
             }
         }
+        let mut taken_elems: HashSet<u32> = self.items.iter().map(|k| k.elem).collect();
         for saved in &memory.items {
-            if let Some(existing) = self.items.iter_mut().find(|k| k.identity == saved.identity) {
+            if let Some(index) = self.find_item(&saved.identity) {
+                let existing = &mut self.items[index];
                 existing.last_row = saved.last_row;
                 existing.last_col = saved.last_col;
             } else {
-                assert!(
-                    !self.items.iter().any(|k| k.elem == saved.elem),
-                    "restored Home element collision"
-                );
-                self.items.push(saved.clone());
+                assert!(taken_elems.insert(saved.elem), "restored Home element collision");
+                self.push_item(saved.clone());
             }
         }
         self.next_group = self.next_group.max(memory.next_group).max(FIRST_HUB_GROUP);
@@ -493,24 +518,69 @@ impl HomeScreen {
         }
     }
 
+    fn find_group(&self, identity: &HomeHubIdentity) -> Option<usize> {
+        self.group_index.get(identity).copied()
+    }
+
+    fn push_group(&mut self, key: HomeGroupKey) {
+        // First wins, as the scan this replaced did.
+        self.group_index.entry(key.identity.clone()).or_insert(self.groups.len());
+        self.groups.push(key);
+    }
+
     fn group_for(&mut self, identity: &HomeHubIdentity) -> GroupId {
-        if let Some(k) = self.groups.iter().find(|k| &k.identity == identity) {
-            return GroupId(k.group);
+        if let Some(index) = self.find_group(identity) {
+            return GroupId(self.groups[index].group);
         }
         let group = self.next_group.max(FIRST_HUB_GROUP);
         self.next_group = group
             .checked_add(1)
             .expect("Home group-key space exhausted");
         assert!(group < HEADING_BASE, "Home groups overlap the linked headings");
-        self.groups.push(HomeGroupKey {
+        self.push_group(HomeGroupKey {
             identity: identity.clone(),
             group,
         });
         GroupId(group)
     }
 
-    fn item_registration(&mut self, identity: HomeItemIdentity) -> &mut HomeItemKey {
-        if let Some(index) = self.items.iter().position(|k| k.identity == identity) {
+    /// Where `identity` sits in `items`. A probe by borrowed parts: no `String` is cloned.
+    fn find_item(&self, identity: &HomeItemIdentity) -> Option<usize> {
+        match identity {
+            HomeItemIdentity::Item { hub, sid, rk } => self.item_slot(hub, ItemRef::Item { sid: *sid, rk }),
+            HomeItemIdentity::Slot { hub, generation, ordinal } => {
+                self.item_slot(hub, ItemRef::Slot { generation: *generation, ordinal: *ordinal })
+            }
+        }
+    }
+
+    fn item_slot(&self, hub: &HomeHubIdentity, item: ItemRef<'_>) -> Option<usize> {
+        let keys = self.item_index.get(hub)?;
+        match item {
+            ItemRef::Item { sid, rk } => keys.by_rk.get(rk)?.iter().find(|(s, _)| *s == sid).map(|&(_, i)| i),
+            ItemRef::Slot { generation, ordinal } => keys.slots.get(&(generation, ordinal)).copied(),
+        }
+    }
+
+    fn push_item(&mut self, key: HomeItemKey) {
+        let index = self.items.len();
+        // First wins, as the scan this replaced did.
+        match &key.identity {
+            HomeItemIdentity::Item { hub, sid, rk } => {
+                let sids = self.item_index.entry(hub.clone()).or_default().by_rk.entry(rk.clone()).or_default();
+                if !sids.iter().any(|(s, _)| s == sid) {
+                    sids.push((*sid, index));
+                }
+            }
+            HomeItemIdentity::Slot { hub, generation, ordinal } => {
+                self.item_index.entry(hub.clone()).or_default().slots.entry((*generation, *ordinal)).or_insert(index);
+            }
+        }
+        self.items.push(key);
+    }
+
+    fn item_registration(&mut self, hub: &HomeHubIdentity, item: ItemRef<'_>) -> &mut HomeItemKey {
+        if let Some(index) = self.item_slot(hub, item) {
             return &mut self.items[index];
         }
         let elem = self.next_elem.max(FIRST_ITEM_ELEM);
@@ -518,13 +588,23 @@ impl HomeScreen {
             .checked_add(1)
             .expect("Home element-key space exhausted");
         assert!(elem < HEADING_BASE, "Home elements overlap the linked headings");
-        self.items.push(HomeItemKey { identity, elem, last_row: 0, last_col: 0 });
+        let identity = match item {
+            ItemRef::Item { sid, rk } => HomeItemIdentity::Item { hub: hub.clone(), sid, rk: rk.to_owned() },
+            ItemRef::Slot { generation, ordinal } => HomeItemIdentity::Slot { hub: hub.clone(), generation, ordinal },
+        };
+        self.push_item(HomeItemKey { identity, elem, last_row: 0, last_col: 0 });
         self.items.last_mut().unwrap()
     }
 
     #[cfg(test)]
     fn elem_for(&mut self, identity: HomeItemIdentity) -> u32 {
-        self.item_registration(identity).elem
+        let (hub, item) = match &identity {
+            HomeItemIdentity::Item { hub, sid, rk } => (hub, ItemRef::Item { sid: *sid, rk }),
+            HomeItemIdentity::Slot { hub, generation, ordinal } => {
+                (hub, ItemRef::Slot { generation: *generation, ordinal: *ordinal })
+            }
+        };
+        self.item_registration(hub, item).elem
     }
 
     fn sync_catalog<H: HomeLike>(&mut self, cx: &Cx<'_, H>) {
@@ -539,20 +619,12 @@ impl HomeScreen {
             let group = self.group_for(&identity);
             let mut elems = Vec::with_capacity(hub.items.len().min(MAX_ITEMS));
             for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate() {
-                let item_identity = if item.rk.is_empty() {
-                    HomeItemIdentity::Slot {
-                        hub: identity.clone(),
-                        generation: view.generation,
-                        ordinal: col as u32,
-                    }
+                let item_ref = if item.rk.is_empty() {
+                    ItemRef::Slot { generation: view.generation, ordinal: col as u32 }
                 } else {
-                    HomeItemIdentity::Item {
-                        hub: identity.clone(),
-                        sid: item.sid,
-                        rk: item.rk.clone(),
-                    }
+                    ItemRef::Item { sid: item.sid, rk: &item.rk }
                 };
-                let key = self.item_registration(item_identity);
+                let key = self.item_registration(&identity, item_ref);
                 key.last_row = row as u32;
                 key.last_col = col as u32;
                 elems.push(key.elem);
@@ -1697,7 +1769,8 @@ impl LogicalState for HomeScreen {
         // is encoded below, including velocities that determine the next Tick's answer.
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
-            rows: _, elem_at: _, projected_generation: _, restored_scroll: _, restore_reveal: _, carousel: _,
+            // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
+            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, restored_scroll: _, restore_reveal: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
