@@ -92,10 +92,13 @@
 //! objection above does not arise. The list is owned by the easy handle it was set on (see
 //! `stop`), and a libcurl that answers `CURLE_UNKNOWN_OPTION` keeps resolving names itself.
 //!
-//! **TLS is strict, with one bounded exception (issue #378).** An open, reopen or seek whose strict
-//! handshake failed with a date verify result (a television with no battery clock) is
+//! **TLS is strict, with two bounded exceptions.** An open, reopen or seek whose strict
+//! handshake failed with a date verify result (a television with no battery clock, issue #378) is
 //! repeated once on a fresh easy handle, recognising the server by the key `net::keypin` remembers
-//! for that exact host and port, name check still on; see `start_range_until`.
+//! for that exact host and port, name check still on. One that failed with a missing-issuer verify
+//! result, for a `*.plex.direct` host, is repeated once against the bundled public roots
+//! (`net::keypin::Mode::Roots`), verification fully on. Same decision and option code as the
+//! control plane; see `start_range_until`.
 //!
 //! # Why the abort handle lives in a module-global REGISTRY
 //!
@@ -564,6 +567,9 @@ pub struct CurlSource {
     /// transfer. Replaced by the next attempt, and not cleared by `stop`, so it can never be freed
     /// under a handle libcurl may still reference.
     key_pin: Option<CString>,
+    /// The roots bundle path (`net::keypin::Mode::Roots`) the CURRENT attempt's easy handle was
+    /// given, held for the life of that attempt for the same reason as [`key_pin`](Self::key_pin).
+    roots_path: Option<CString>,
     /// The `CURLOPT_RESOLVE` entry for this URL's host, when `net::resolve` holds a pin for it —
     /// computed once at open, applied to every easy handle this source attaches (a seek is a fresh
     /// handle). The pinned name is a pure function of the host, so it cannot go stale mid-stream.
@@ -737,6 +743,7 @@ impl CurlSource {
             ua,
             range: None,
             key_pin: None,
+            roots_path: None,
             resolve_entry,
             resolve: std::ptr::null_mut(),
             xfer: Box::new(Xfer::new()),
@@ -808,7 +815,8 @@ impl CurlSource {
     /// its `next_check` only shortens a wait and never reaches `CURLOPT_TIMEOUT_MS`, which stays the
     /// caller's deadline alone.
     ///
-    /// **Every open, reopen and seek enters here, which is why key mode (issue #378) lives here.**
+    /// **Every open, reopen and seek enters here, which is why key mode (issue #378) and roots mode
+    /// live here.**
     /// An attempt is one fresh easy handle ([`start_attempt`](Self::start_attempt)); a strict
     /// attempt that failed with a date verify result, for a host `net::keypin` holds a key
     /// for, is followed by one more attempt recognising the server by that key. A failed handshake
@@ -993,12 +1001,32 @@ impl CurlSource {
             // The pin string is held in `self` for the life of the attempt, as `range` is.
             self.key_pin = match mode {
                 keypin::Mode::Key { pin, .. } => Some(CString::new(pin.as_str()).map_err(|_| OpenErr::Local)?),
-                keypin::Mode::Strict => None,
+                keypin::Mode::Strict | keypin::Mode::Roots { .. } => None,
             };
             if let Some(pin) = &self.key_pin {
                 if let Err(rc) = keypin::apply(easy, pin) {
                     crate::player::log(&format!(
                         "curlio: this libcurl refuses the key-mode options (rc={rc}) — the stream stays strict"
+                    ));
+                    plx_net::net::curl_easy_cleanup(easy);
+                    self.easy = std::ptr::null_mut();
+                    self.free_resolve_list();
+                    return Ok(Attempt::KeyRefused);
+                }
+            }
+            // **Roots mode** (`net::keypin`): the bundled public roots in place of this firmware's CA
+            // store, `VERIFYPEER`/`VERIFYHOST` still 1 and 2 (`apply_roots` states them again).
+            // After the test CA override above so it replaces that too. A libcurl that refuses
+            // `CURLOPT_CAINFO` is refused outright: nothing is sent against a trust store we did
+            // not select, and the open reports the strict failure it already had.
+            self.roots_path = match mode {
+                keypin::Mode::Roots { path, .. } => Some(CString::new(path.as_str()).map_err(|_| OpenErr::Local)?),
+                keypin::Mode::Strict | keypin::Mode::Key { .. } => None,
+            };
+            if let Some(path) = &self.roots_path {
+                if let Err(rc) = keypin::apply_roots(easy, path) {
+                    crate::player::log(&format!(
+                        "curlio: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"
                     ));
                     plx_net::net::curl_easy_cleanup(easy);
                     self.easy = std::ptr::null_mut();
@@ -1150,6 +1178,12 @@ impl CurlSource {
                     keypin::key_changed(key);
                 }
                 keypin::Mode::Key { pin, verify } if established => keypin::key_established(key, pin, *verify),
+                keypin::Mode::Roots { verify, .. } if established => keypin::roots_established(key, *verify),
+                // The bundle did not answer for this host: end its latch. `validate` logs the
+                // request's own failure line, so this adds the one verify-result line only.
+                keypin::Mode::Roots { .. } if self.done && self.failed && keypin::is_roots_refusal(self.rc) => {
+                    keypin::roots_failed(key, self.rc, plx_net::net::verify_result(self.easy));
+                }
                 _ => {}
             }
         }
@@ -1922,11 +1956,12 @@ fn curl_why(rc: c_int) -> &'static str {
 enum Attempt {
     /// Headers are in and validated; the source is readable.
     Done,
-    /// A strict attempt failed with a date verify result and `net::keypin` holds a key for
-    /// the host: try again in the given mode. Carries the strict failure's log phrase, to report
-    /// with `OpenErr::Transport(TLS_VERIFY_FAILED)` should libcurl turn out not to support key mode.
+    /// A strict attempt failed with a verify result `net::keypin` has a fallback for (a date, with
+    /// a key held for the host; a missing issuer, for a `*.plex.direct` host with the roots bundle
+    /// on disk): try again in the given mode. Carries the strict failure's log phrase, to report
+    /// with `OpenErr::Transport(TLS_VERIFY_FAILED)` should libcurl turn out not to support the mode.
     Retry(plx_net::net::keypin::Mode, String),
-    /// libcurl refused the key-mode options; the handle was discarded unrelaxed.
+    /// libcurl refused the fallback mode's options; the handle was discarded unrelaxed.
     KeyRefused,
 }
 
@@ -1934,6 +1969,12 @@ enum Attempt {
 #[cfg(test)]
 #[path = "curlio_keymode_tests.rs"]
 mod keymode_tests;
+
+/// The bundled public roots fallback, media plane: the same open/reopen/seek paths through the
+/// shared decision in `net::keypin`.
+#[cfg(test)]
+#[path = "curlio_roots_tests.rs"]
+mod roots_tests;
 
 #[cfg(test)]
 mod tests {

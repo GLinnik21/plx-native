@@ -276,7 +276,7 @@ def main():
 
     # paths::app_dir resolves Contents/Resources: both fonts and the dynamically
     # loaded native subtitle renderer must be placed there.
-    for f in ("appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt", "libass-plx.0.dylib"):
+    for f in ("appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt", "le-roots.pem", "libass-plx.0.dylib"):
         shutil.copy2(REPO / "pkg" / f, res / f)
     shutil.copy2(REPO / "LICENSE", res / "LICENSE.txt")
     shutil.copy2(REPO / "LICENSING.md", res / "LICENSING.md")

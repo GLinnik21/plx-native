@@ -161,6 +161,28 @@ per host and asked per machine; a host's fact is its latest strict outcome, clea
 a pin change or, for "no key", a later strict failure that is not about the date), and the first engagement of an app run raises ONE
 television toast (`app::clock_notice`; never retried, host-tested only until the set accepts it).
 
+**Roots mode: the bundled public roots stand in for a CA store that predates the issuer.** The other
+way a `*.plex.direct` handshake fails on an old television is not the clock but the issuer: Let's
+Encrypt moved to new roots in 2025 (ISRG Root YR, YE) and a 2020 firmware's store lacks them, so
+the strict handshake fails with rc 60 and verify result 20 (or 2, 21) at depth 1. When that is the
+failure, and the request's host is a `*.plex.direct` NAME (`keypin::is_plex_direct`: a suffix match
+on the URL's host with only DNS-name characters, so `plex.direct.evil.example`, `notplex.direct` and
+a `@`-smuggled authority do not count) and the shipped bundle `le-roots.pem` is in the app directory
+(`paths::in_app_dir`; root-owned and read-only on the set), the request is repeated once on a
+fresh handle with `CURLOPT_CAINFO` set to it. **Nothing is relaxed**: `VERIFYPEER` 1 and `VERIFYHOST`
+2 are stated again by `keypin::apply_roots`, so the chain, the dates and the name are all still checked,
+against four public roots (X1, X2, YR, YE) and nothing else beyond what the firmware's libcurl reads
+by default from a CA directory. A libcurl that refuses `CURLOPT_CAINFO` sends nothing and the
+request reports the strict failure. A missing bundle means the fallback never engages (one log line).
+**Disjoint from key mode by verify result**: key mode answers 9/10, roots mode 2/20/21, and a name
+mismatch, a self-signed leaf (18/19), plex.tv or any other host gets neither. After a success the
+host is latched in the same `keypin` state for 10 minutes on the monotonic clock (later requests
+skip the doomed strict handshake, the timer does not slide, a strict success or a refusal by the
+bundle clears it); both stacks share the decision, the control plane in `net::request_tls_evidence`
+and the media plane in `curlio::CurlSource::start_range_until`. Unlike key mode a roots-mode answer
+IS strictly verified, so it may teach `peer_pin`. The log carries one line when the fallback engages,
+one when it first succeeds and one when the bundle refuses too, naming only the verify result.
+
 **The who's-watching pick is seated from `Session::profiles` when plex.tv does not answer.** The
 first real outage (2026-09-06, `docs/measurements/offline-picker-red-tv-2026-09-06.log`) got past
 the pinned origin and then could seat nobody: every pick is a `POST /api/v2/home/users/{uuid}/switch`,
