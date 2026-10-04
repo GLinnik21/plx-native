@@ -549,7 +549,8 @@ player, transport and tracks auditors, and is counted once in the themes above.
   OS foreground, and elapsed staleness do not yet request a refresh.
 
 - **Home shelf/item caps silently drop server content** — `minor` / `medium`
-  The grid is a fixed [CardRow; 16] with a 24-cell spring array and the catalog is capped at 256 rows across all shelves, so a server that promotes more hubs than that simply loses the tail. The official home scrolls every hub the server returns.
+  **Partly fixed (issue #395):** Home's grid is a `Vec<CardRow>` sized to the published rows and the 16-shelf cap is gone, so every hub the server returns reaches Home; a shelf is published whole or not at all. What remains is the catalog's 256-card ceiling across all shelves: past it whole rows are dropped from the tail, never a partial row. Each shelf is also still capped at 24 cards. The official home scrolls every hub the server returns.
+  *Audit as first written (the fixed `[CardRow; 16]` since replaced):* the grid was a fixed [CardRow; 16] with a 24-cell spring array.
   *Where:* rust-modules/src/ui/home.rs (Vec<CardRow> instead of the fixed array, or virtualize rows by visibility) and rust-modules/src/pms.rs (drop or raise PMS_MAX_MOVIES). No endpoint change; /hubs already returns them.
   *Verified:* Confirmed: home.rs:102-103 MAX_HUBS=16 / MAX_ITEMS=24 with n_hubs_of clamping the uncapped pms::hub_count (home.rs:106-114) and a host test asserting the clamp at home.rs:924-933; card_row.rs:21 MAX_ROW_ITEMS=24 with scale(i.min(MAX_ROW_ITEMS-1)) at card_row.rs:142-144; pms.rs:8 PMS_MAX_MOVIES=256 with the break at pms.rs:284-287. Three corrections to the priority. (1) MAX_ITEMS=24 never binds today — pms.rs:234 requests home_hubs(12), so the server only ever sends 12 items per hub; the real per-shelf ceiling is our own count param (this is the same root cause as the missing 'see all', gap #10
 
