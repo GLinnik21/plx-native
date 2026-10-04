@@ -1438,3 +1438,131 @@ mod type_tests { include!("type_tests.rs"); }
 mod art_admission_tests { include!("art_admission_tests.rs"); }
 
 mod grid_motion_tests { include!("grid_motion_tests.rs"); }
+
+#[test]
+fn every_published_shelf_is_on_the_page_and_reachable() {
+    let _guard = plx_base::testlock::serial();
+    let session = plx_plex::plex::session::TempSession::new("library-fifteen-shelves");
+    session.watching("u-library-fifteen-shelves");
+    let titles: Vec<String> = (0..15).map(|i| format!("shelf-{i:02}")).collect();
+    let titles: Vec<&str> = titles.iter().map(String::as_str).collect();
+    let fixture = Fixture::shelves(&titles, 6);
+    let mut page = fixture.screen();
+    assert_eq!(page.shelves.len(), 15, "the page keeps every shelf the server published");
+    assert_eq!(page.layout.shelves, 15);
+    let mut engine = FocusEngine::new();
+    let first = page.key(page.shelves[0].elems[0]);
+    engine.set(OWNER, first, Some(page.shelves[0].group), By::Restore);
+    for _ in 0..14 { direction(&mut page, &mut engine, &fixture, Dir::Down); }
+    assert_eq!(engine.current(OWNER).map(|key| key.elem), Some(page.shelves[14].elems[0]),
+        "fourteen DOWN presses walk from the first shelf to the fifteenth");
+}
+
+/// Of 170 shelves only the handful whose band crosses the panel are drawn and recorded.
+#[test]
+fn draw_visits_only_shelves_in_the_window() {
+    let _guard = plx_base::testlock::serial();
+    let session = plx_plex::plex::session::TempSession::new("library-shelf-window");
+    session.watching("u-library-shelf-window");
+    let titles: Vec<String> = (0..170).map(|i| format!("shelf-{i:03}")).collect();
+    let titles: Vec<&str> = titles.iter().map(String::as_str).collect();
+    let fixture = Fixture::shelves(&titles, 6);
+    let mut page = fixture.screen();
+    assert_eq!(page.shelves.len(), 170);
+    let key = page.key(page.shelves[100].elems[0]);
+    let cx = fixture.cx(Some(key));
+    page.reveal(key, By::Pointer, &cx);
+    page.scroll.jump(page.scroll_target);
+    page.relayout(Some(key));
+    // `draw_page` rasterizes, which a host test cannot do; it loops over the same `shelf_window`
+    // the stop recorder does, so the recorder's visits and the window's width cover both.
+    let window = page.shelf_window();
+    assert!(window.contains(&100), "the focused shelf is in the window: {window:?}");
+    assert!(window.len() <= 8, "{window:?} of 170 shelves; the window holds a screenful");
+    page.shelf_visits.set(0);
+    let mut draw = DrawFrame::new(&cx, plx_ui::Painter::root());
+    page.record_stops(&mut draw);
+    let visited = page.shelf_visits.get();
+    assert!(visited >= 1, "the focused shelf at least is visited");
+    assert!(visited <= 8, "{visited} of 170 shelves visited; the window holds a screenful");
+}
+
+#[test]
+fn a_released_shelf_row_reaches_exact_rest() {
+    let _guard = plx_base::testlock::serial();
+    let session = plx_plex::plex::session::TempSession::new("library-shelf-rest");
+    session.watching("u-library-shelf-rest");
+    let fixture = Fixture::shelves(&["s0", "s1"], 12);
+    let mut page = fixture.screen();
+    let on = page.key(page.shelves[0].elems[3]);
+    let tick = |page: &mut LibraryScreen, focus| {
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        page.step(&ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }), &fixture.cx(focus),
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    };
+    for _ in 0..30 { tick(&mut page, Some(on)); }
+    assert!(!page.shelves[0].motion.at_exact_rest(), "a focused row is mid-spring");
+    let off = page.key(page.shelves[1].elems[0]);
+    for _ in 0..600 { tick(&mut page, Some(off)); }
+    assert!(page.shelves[0].motion.at_exact_rest(), "a released row parks instead of being stepped forever");
+}
+
+/// `run` and `target_run` are derived, with no dirty flag: every relayout refills both, so after
+/// any event that can move a pitch they equal a run built fresh from the shelves.
+#[test]
+fn the_runs_equal_a_fresh_recompute_after_every_kind_of_change() {
+    let _guard = plx_base::testlock::serial();
+    let session = plx_plex::plex::session::TempSession::new("library-run-fresh");
+    session.watching("u-library-run-fresh");
+    let fresh = |page: &LibraryScreen, focus: Option<FocusKey<u32>>| {
+        let live = layout::ShelfRun::of(&page.shelves.iter()
+            .map(|row| layout::shelf_pitch(row.landscape, row.motion.band_expand())).collect::<Vec<_>>());
+        let target = layout::ShelfRun::of(&page.shelves.iter()
+            .map(|row| layout::shelf_pitch(row.landscape, f32::from(focus.is_some_and(|key| row.elems.contains(&key.elem)))))
+            .collect::<Vec<_>>());
+        assert_eq!(page.run, live, "live run");
+        assert_eq!(page.target_run, target, "target run");
+        assert_eq!(page.layout.grid_block_top().to_bits(), (page.layout.library_h() + live.height()).to_bits());
+        assert_eq!(page.target_layout.grid_block_top().to_bits(), (page.target_layout.library_h() + target.height()).to_bits());
+    };
+    let tick = |page: &mut LibraryScreen, fixture: &Fixture, focus| {
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        page.step(&ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }), &fixture.cx(focus),
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    };
+    let fixture = Fixture::shelves(&["a", "b", "c"], 6);
+    let mut page = fixture.screen();
+    fresh(&page, None);
+    let on = page.key(page.shelves[1].elems[2]);
+    for _ in 0..12 { tick(&mut page, &fixture, Some(on)); fresh(&page, Some(on)); }
+    let other = page.key(page.shelves[2].elems[0]);
+    page.reveal(other, By::Pointer, &fixture.cx(Some(other)));
+    fresh(&page, Some(other));
+    for _ in 0..12 { tick(&mut page, &fixture, Some(other)); fresh(&page, Some(other)); }
+
+    let memory = page.page_memory();
+    let mut restored = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
+    restored.restore(&memory);
+    restored.sync(&fixture.cx(None));
+    fresh(&restored, None);
+
+    let mut fixture = fixture;
+    {
+        let stores = fixture.stores.as_ref().unwrap();
+        stores.browse.borrow_mut().seed_shelves_for_test(0, &["a", "b", "c", "d", "e"], 6);
+        let publication = stores.capture_browse(&mut fixture.directory);
+        fixture.listing = publication.listing;
+        fixture.hubs = publication.section_hubs;
+    }
+    page.sync(&fixture.cx(Some(other)));
+    assert_eq!(page.shelves.len(), 5);
+    fresh(&page, Some(other));
+
+    page.wanted_kind = Some(SecKind::Show);
+    page.sync(&fixture.cx(None));
+    assert!(page.shelves.is_empty());
+    fresh(&page, None);
+    assert_eq!(page.run.len(), 0);
+}

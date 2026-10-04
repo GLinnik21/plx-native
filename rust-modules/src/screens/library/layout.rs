@@ -7,7 +7,6 @@ use plx_ui::theme;
 pub(super) const COLS: usize = 6;
 const EPISODE_COLS: usize = 4;
 pub(super) const MAX_LIBRARY_PILLS: usize = 8;
-pub(super) const MAX_SHELVES: usize = 12;
 pub(super) use plx_ui::poster_grid::{GridBand, MAX_GRID_BANDS};
 pub(super) const MAX_LETTERS: usize = 64;
 pub(super) const CONTENT_TOP: f32 = plx_ui::consts::GRID_TOP_Y;
@@ -27,6 +26,68 @@ pub(super) const RAIL_BAND: f32 = RAIL_TRACK_W + theme::space::XS;
 pub(super) const GRID_RIGHT: f32 = SCR_W - MARGIN_X - RAIL_BAND;
 pub(super) const GRID_GAP: f32 =
     (GRID_RIGHT - MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32 - 1.0);
+
+/// The recommended shelves stacked down the document: one pitch each, however many the server
+/// published. `tops` holds the prefix sums (`tops[i]` is shelf `i`'s offset from the run's start,
+/// `tops[len]` the run's height), accumulated left to right in the order a straight
+/// `pitches[..i].iter().sum()` adds them, so every origin is bit-identical to that sum. Origin
+/// lookups are O(1) and the visible window is two binary searches, so a page of hundreds of
+/// shelves costs what its on-screen shelves cost. The page keeps two (live and spring target) and
+/// refills both into their existing capacity on every relayout. `Layout` stays `Copy`, so it
+/// carries only the run's height; shelf positions are asked of the run itself.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct ShelfRun {
+    tops: Vec<f32>,
+    pitches: Vec<f32>,
+}
+
+impl ShelfRun {
+    #[cfg(test)]
+    pub(super) fn of(pitches: &[f32]) -> Self {
+        let mut run = Self::default();
+        run.set(pitches.iter().copied());
+        run
+    }
+
+    /// Replace the run with these pitches, reusing the allocated capacity.
+    pub(super) fn set(&mut self, pitches: impl Iterator<Item = f32>) {
+        self.tops.clear();
+        self.pitches.clear();
+        let mut top = 0.0f32;
+        for pitch in pitches {
+            self.tops.push(top);
+            self.pitches.push(pitch);
+            top += pitch;
+        }
+        self.tops.push(top);
+    }
+
+    pub(super) fn len(&self) -> usize { self.pitches.len() }
+
+    /// The pitches the run was set from, in order.
+    pub(super) fn pitches(&self) -> &[f32] { &self.pitches }
+
+    /// Offset of shelf `index` from the run's start; past the end, the run's height.
+    pub(super) fn origin(&self, index: usize) -> f32 {
+        self.tops.get(index).copied().unwrap_or_else(|| self.height())
+    }
+
+    pub(super) fn pitch(&self, index: usize) -> f32 {
+        self.pitches.get(index).copied().unwrap_or(plx_ui::consts::ROW_PITCH)
+    }
+
+    pub(super) fn height(&self) -> f32 { self.tops.last().copied().unwrap_or(0.0) }
+
+    /// The shelves whose band `[origin, origin + pitch)` meets `top..bottom` (run coordinates),
+    /// widened by one pixel each side so the caller's exact on-screen test owns the edge.
+    pub(super) fn window(&self, top: f32, bottom: f32) -> std::ops::Range<usize> {
+        let n = self.len();
+        if n == 0 { return 0..0; }
+        let first = self.tops[1..].partition_point(|&end| end <= top - 1.0);
+        let end = self.tops[..n].partition_point(|&origin| origin < bottom + 1.0);
+        first..end.max(first)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Block {
@@ -48,17 +109,18 @@ pub(super) struct Layout {
     /// heading for its read-out, so the read-out scrolls with the page and never lands on a shelf.
     pub empty: bool,
     episodes: bool,
-    pitches: [f32; MAX_SHELVES],
+    /// Total height of the shelf run: the sequential sum of every shelf pitch.
+    shelf_run: f32,
     grid_bands: [GridBand; MAX_GRID_BANDS],
 }
 
 impl Layout {
-    pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,shelves:u32,rows:u32,grid_head:bool,status:bool,empty:bool,episodes:bool,pitches:[f32;12],grid_bands:[(row:u32,expansion:f32)]}";
+    pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,shelves:u32,rows:u32,grid_head:bool,status:bool,empty:bool,episodes:bool,shelf_run:f32,grid_bands:[(row:u32,expansion:f32)]}";
 
     pub(super) fn write(&self, c: &mut plx_machine::machine::Canon) {
-        let Self { libraries, shelves, rows, grid_head, status, empty, episodes, pitches, grid_bands } = self;
+        let Self { libraries, shelves, rows, grid_head, status, empty, episodes, shelf_run, grid_bands } = self;
         c.bool(*libraries).u32(*shelves as u32).u32(*rows as u32).bool(*grid_head).bool(*status).bool(*empty).bool(*episodes);
-        for pitch in pitches { c.f32(*pitch); }
+        c.f32(*shelf_run);
         c.seq(grid_bands.iter().filter(|band| band.row != usize::MAX).count());
         for band in grid_bands.iter().filter(|band| band.row != usize::MAX) {
             c.u32(band.row as u32).f32(band.expansion);
@@ -66,19 +128,15 @@ impl Layout {
     }
 
     pub(super) fn new(libraries: bool, shelf_pitches: &[f32], rows: usize, grid_head: bool) -> Self {
-        let mut pitches = [plx_ui::consts::ROW_PITCH; MAX_SHELVES];
-        for (to, from) in pitches.iter_mut().zip(shelf_pitches.iter().take(MAX_SHELVES)) {
-            *to = *from;
-        }
         Self {
             libraries,
-            shelves: shelf_pitches.len().min(MAX_SHELVES),
+            shelves: shelf_pitches.len(),
             rows,
             grid_head,
             status: false,
             empty: false,
             episodes: false,
-            pitches,
+            shelf_run: shelf_pitches.iter().sum::<f32>(),
             grid_bands: [GridBand::CLOSED; MAX_GRID_BANDS],
         }
     }
@@ -146,16 +204,14 @@ impl Layout {
         if self.libraries { LIBRARY_ROW_H } else { 0.0 }
     }
 
-    pub(super) fn shelf_pitch(&self, index: usize) -> f32 {
-        self.pitches.get(index).copied().unwrap_or(plx_ui::consts::ROW_PITCH)
-    }
+    pub(super) fn shelf_pitch(&self, run: &ShelfRun, index: usize) -> f32 { run.pitch(index) }
 
-    pub(super) fn shelf_origin(&self, index: usize) -> f32 {
-        self.library_h() + self.pitches[..index.min(self.shelves)].iter().sum::<f32>()
+    pub(super) fn shelf_origin(&self, run: &ShelfRun, index: usize) -> f32 {
+        self.library_h() + run.origin(index)
     }
 
     pub(super) fn grid_block_top(&self) -> f32 {
-        self.library_h() + self.pitches[..self.shelves].iter().sum::<f32>()
+        self.library_h() + self.shelf_run
     }
 
     pub(super) fn grid_top(&self) -> f32 {
@@ -166,8 +222,8 @@ impl Layout {
         CONTENT_TOP + self.row_top(row) - scroll
     }
 
-    pub(super) fn shelf_y(&self, shelf: usize, scroll: f32) -> f32 {
-        CONTENT_TOP + self.shelf_origin(shelf) - scroll
+    pub(super) fn shelf_y(&self, run: &ShelfRun, shelf: usize, scroll: f32) -> f32 {
+        CONTENT_TOP + self.shelf_origin(run, shelf) - scroll
     }
 
     pub(super) fn doc_to_grid(&self, scroll: f32) -> f32 { scroll - self.grid_top() }
@@ -189,8 +245,8 @@ impl Layout {
         top.clamp(0.0, self.max_scroll())
     }
 
-    pub(super) fn shelf_reveal(&self, shelf: usize) -> f32 {
-        (self.shelf_origin(shelf) - plx_ui::consts::TITLE_DY).clamp(0.0, self.max_scroll())
+    pub(super) fn shelf_reveal(&self, run: &ShelfRun, shelf: usize) -> f32 {
+        (self.shelf_origin(run, shelf) - plx_ui::consts::TITLE_DY).clamp(0.0, self.max_scroll())
     }
 
     pub(super) fn first(&self) -> Option<Block> {
@@ -201,14 +257,32 @@ impl Layout {
         else { None }
     }
 
-    pub(super) fn seat_for_scroll(&self, scroll: f32, saved_row: usize) -> Option<Block> {
+    pub(super) fn seat_for_scroll(&self, run: &ShelfRun, scroll: f32, saved_row: usize) -> Option<Block> {
         let first = self.first()?;
         if scroll <= 0.5 { return Some(first); }
         let mut best = (f32::INFINITY, first);
-        for shelf in 0..self.shelves {
-            let d = (self.shelf_reveal(shelf) - scroll).abs();
-            if d < best.0 { best = (d, Block::Shelf(shelf)); }
+        // `shelf_reveal` is nondecreasing in the index (the origin only grows and the clamp is
+        // monotone), so the nearest shelf is one of the two that bracket `scroll`. Each is taken
+        // at the FIRST index of its plateau (a clamped run shares one value), and the earlier
+        // wins a tie: exactly what the linear scan's strict `<` chose.
+        let first_at_least = |value: f32| {
+            let (mut lo, mut hi) = (0, self.shelves);
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                if self.shelf_reveal(run, mid) < value { lo = mid + 1 } else { hi = mid }
+            }
+            lo
+        };
+        let above = first_at_least(scroll);
+        if above > 0 {
+            let below = first_at_least(self.shelf_reveal(run, above - 1));
+            best = ((self.shelf_reveal(run, below) - scroll).abs(), Block::Shelf(below));
         }
+        if above < self.shelves {
+            let d = (self.shelf_reveal(run, above) - scroll).abs();
+            if d < best.0 { best = (d, Block::Shelf(above)); }
+        }
+
         if self.grid_head {
             for row in [saved_row.min(self.rows.saturating_sub(1)), 0] {
                 let d = (self.row_reveal(row) - scroll).abs();
@@ -338,6 +412,7 @@ mod tests {
         assert_eq!(chipped.grid_block_top(), LIBRARY_ROW_H, "the chip's block leads");
 
         let shelved = posters(true, 12, 40, true);
+        let run = ShelfRun::of(&[plx_ui::consts::ROW_PITCH; 12]);
         assert_eq!(
             shelved.grid_block_top(),
             LIBRARY_ROW_H + 12.0 * plx_ui::consts::ROW_PITCH,
@@ -345,9 +420,9 @@ mod tests {
         );
         // …and a shelf's own origin is the one Home hangs a shelf from, so `card_row` draws here
         // unchanged: heading at origin − TITLE_DY, cards at origin + CARD_DY
-        assert_eq!(shelved.shelf_origin(0), LIBRARY_ROW_H);
+        assert_eq!(shelved.shelf_origin(&run, 0), LIBRARY_ROW_H);
         assert_eq!(
-            shelved.shelf_origin(3) - shelved.shelf_origin(2),
+            shelved.shelf_origin(&run, 3) - shelved.shelf_origin(&run, 2),
             plx_ui::consts::ROW_PITCH
         );
 
@@ -458,8 +533,9 @@ mod tests {
         let portrait = shelf_pitch(false, 1.0);
         let landscape = shelf_pitch(true, 1.0);
         let lay = Layout::new(true, &[portrait, landscape], 10, true);
-        assert_eq!(lay.shelf_origin(0), LIBRARY_ROW_H);
-        assert_eq!(lay.shelf_origin(1), LIBRARY_ROW_H + portrait);
+        let run = ShelfRun::of(&[portrait, landscape]);
+        assert_eq!(lay.shelf_origin(&run, 0), LIBRARY_ROW_H);
+        assert_eq!(lay.shelf_origin(&run, 1), LIBRARY_ROW_H + portrait);
         assert_eq!(lay.grid_block_top(), LIBRARY_ROW_H + portrait + landscape);
         assert_eq!(lay.grid_top(), lay.grid_block_top() + GRID_HEAD_H);
         assert!(landscape < portrait);
@@ -467,7 +543,7 @@ mod tests {
 
     #[test]
     fn page_window_is_grid_local_with_a_large_header() {
-        let pitches = [shelf_pitch(false, 1.0); MAX_SHELVES];
+        let pitches = [shelf_pitch(false, 1.0); 12];
         let lay = Layout::new(true, &pitches, 80, true);
         assert_eq!(lay.visible_rows(0.0), (0, 1), "the legacy window prefetches row zero above the grid");
         let at_grid = lay.row_reveal(8);
@@ -501,8 +577,98 @@ mod tests {
     #[test]
     fn restored_scroll_seats_the_block_it_displays() {
         let lay = Layout::new(true, &[500.0, 360.0], 20, true);
-        assert_eq!(lay.seat_for_scroll(0.0, 12), Some(Block::LibraryRow));
-        assert_eq!(lay.seat_for_scroll(lay.shelf_reveal(1), 12), Some(Block::Shelf(1)));
-        assert_eq!(lay.seat_for_scroll(lay.row_reveal(12), 12), Some(Block::Grid(12)));
+        let run = ShelfRun::of(&[500.0, 360.0]);
+        assert_eq!(lay.seat_for_scroll(&run, 0.0, 12), Some(Block::LibraryRow));
+        assert_eq!(lay.seat_for_scroll(&run, lay.shelf_reveal(&run, 1), 12), Some(Block::Shelf(1)));
+        assert_eq!(lay.seat_for_scroll(&run, lay.row_reveal(12), 12), Some(Block::Grid(12)));
+    }
+
+    /// Mixed, non-representable pitches: the run's prefix sums must be the very bits a straight
+    /// `pitches[..i].iter().sum()` gives, or every shelf origin would drift a ulp from before.
+    #[test]
+    fn shelf_run_origins_are_bit_identical_to_the_straight_sum() {
+        let pitches: Vec<f32> = (0..170).map(|i| 301.37 + (i % 7) as f32 * 0.113 + (i % 3) as f32 * 59.9).collect();
+        let run = ShelfRun::of(&pitches);
+        let lay = Layout::new(true, &pitches, 10, true);
+        for i in 0..=pitches.len() + 2 {
+            let straight = pitches[..i.min(pitches.len())].iter().sum::<f32>();
+            // (an empty prefix sums to -0.0 in std and starts at 0.0 here: equal, and the sign of
+            // a zero is gone the moment `library_h` is added)
+            assert_eq!(run.origin(i), straight, "origin {i}");
+            if i > 0 { assert_eq!(run.origin(i).to_bits(), straight.to_bits(), "origin {i}"); }
+            assert_eq!(lay.shelf_origin(&run, i).to_bits(), (lay.library_h() + straight).to_bits());
+        }
+        assert_eq!(run.height().to_bits(), pitches.iter().sum::<f32>().to_bits());
+        assert_eq!(lay.grid_block_top().to_bits(), (lay.library_h() + run.height()).to_bits());
+        assert_eq!(run.pitch(5), pitches[5]);
+        assert_eq!(run.pitch(999), plx_ui::consts::ROW_PITCH);
+    }
+
+    #[test]
+    fn shelf_run_window_holds_exactly_the_shelves_meeting_the_span() {
+        let pitches: Vec<f32> = (0..50).map(|i| 300.0 + (i % 4) as f32 * 40.0).collect();
+        let run = ShelfRun::of(&pitches);
+        assert_eq!(ShelfRun::default().window(0.0, 1.0e6), 0..0);
+        assert_eq!(run.window(-1.0e6, -500.0), 0..0, "above the run");
+        assert_eq!(run.window(1.0e9, 2.0e9), 50..50, "below the run");
+        for (top, bottom) in [(0.0, 1080.0), (5000.0, 6080.0), (123.4, 456.7), (14000.0, 20000.0)] {
+            let window = run.window(top, bottom);
+            for i in 0..50 {
+                let meets = run.origin(i) < bottom && run.origin(i) + pitches[i] > top;
+                if meets { assert!(window.contains(&i), "{i} meets {top}..{bottom} but is outside {window:?}"); }
+                if !window.contains(&i) { assert!(!meets); }
+            }
+            assert!(bottom - top > 2000.0 || window.len() < 8, "{window:?}");
+        }
+    }
+
+    /// The binary search must choose what the old quadratic scan chose, ties and clamped runs
+    /// included: the earliest shelf nearest the scroll.
+    #[test]
+    fn seat_for_scroll_agrees_with_the_linear_scan() {
+        let pitches: Vec<f32> = (0..60).map(|i| shelf_pitch(i % 5 == 0, (i % 2) as f32)).collect();
+        let run = ShelfRun::of(&pitches);
+        for libraries in [false, true] {
+            for rows in [0usize, 30] {
+                let lay = Layout::new(libraries, &pitches, rows, true);
+                let linear = |scroll: f32, saved: usize| {
+                    let first = lay.first()?;
+                    if scroll <= 0.5 { return Some(first); }
+                    let mut best = (f32::INFINITY, first);
+                    for shelf in 0..lay.shelves {
+                        let d = (lay.shelf_reveal(&run, shelf) - scroll).abs();
+                        if d < best.0 { best = (d, Block::Shelf(shelf)); }
+                    }
+                    for row in [saved.min(lay.rows.saturating_sub(1)), 0] {
+                        let d = (lay.row_reveal(row) - scroll).abs();
+                        if d < best.0 { best = (d, if lay.rows > 0 { Block::Grid(row) } else { Block::Toolbar }); }
+                    }
+                    Some(best.1)
+                };
+                let end = lay.max_scroll() + 200.0;
+                let mut scroll = -5.0;
+                while scroll < end {
+                    assert_eq!(lay.seat_for_scroll(&run, scroll, 7), linear(scroll, 7), "scroll {scroll}");
+                    scroll += 37.3;
+                }
+                for shelf in 0..pitches.len() {
+                    let at = lay.shelf_reveal(&run, shelf);
+                    assert_eq!(lay.seat_for_scroll(&run, at, 7), linear(at, 7), "shelf {shelf}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn thirteen_shelves_push_the_grid_thirteen_pitches_down() {
+        for n in [13usize, 40, 170] {
+            let shelved = posters(true, n, 40, true);
+            assert_eq!(shelved.shelves, n, "the layout names every shelf it is given");
+            assert_eq!(
+                shelved.grid_block_top(),
+                LIBRARY_ROW_H + n as f32 * plx_ui::consts::ROW_PITCH,
+                "{n} shelves push the grid {n} pitches down"
+            );
+        }
     }
 }

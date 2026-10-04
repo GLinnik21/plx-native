@@ -298,3 +298,12 @@ diverged on 195 of 582 frames in both modes, every other counter zero; `6-settin
 the `park` call removed from `update_grid` (all three SAME, every counter zero on the clean tree).
 The anchor was recorded afresh on the unchanged shape (`tools/plxnative-rec import`, `anchor: true`
 restored by hand) and replayed SAME in Targets and Resolve on three consecutive runs.
+
+The Library's shelf run (#412: the layout carries the run's height, `shelf_run:f32`, where it
+carried twelve pitches, `pitches:[f32;12]`) moved the screen census (`SCREEN_SHAPES_PIN`,
+`8098562808894689397` -> `12436183593357900756`) on purpose and for no other reason: none of the
+three anchors mounts the Library, so no recorded behaviour is meant to change. The anchors
+recorded against shape `10119451143357529556` were observed being refused (`replay: REFUSED —
+invalid or incompatible recording`, all three, both modes), then all three were re-recorded on
+the simulator with `tools/plxnative-rec rerecord` against shape `3109788404986066319` and
+replayed SAME in Targets and Resolve (`make check-replay`) with every difference counter zero.
