@@ -4,17 +4,17 @@ use std::hash::{Hash, Hasher};
 
 use crate::metadata::Detail;
 use plx_machine::machine::{GroupId, Measure};
-use crate::ui::widgets::{self, SelMark, StripLay, TabGround, TabStrip};
-use crate::ui::{theme, Painter, Rect};
+use plx_ui::widgets::{self, SelMark, StripLay, TabGround, TabStrip};
+use plx_ui::{theme, Painter, Rect};
 
 pub(crate) const SEASON_ELEM_RANGE_START: u32 = 64;
 pub(crate) const SEASON_ELEM_RANGE_END: u32 = 128;
 pub(crate) const SEASON_GROUP: GroupId = GroupId(1);
-pub(crate) const ROW_H: f32 = crate::ui::widgets::StatusOverlay::CTRL_H;
+pub(crate) const ROW_H: f32 = plx_ui::widgets::StatusOverlay::CTRL_H;
 pub(crate) const SETTLE_S: f32 = 0.2;
 /// Content-space x of the first season's LABEL — one pill padding in from the content edge, so the
 /// first pill's frame starts exactly on `MARGIN_X` at scroll 0.
-const LEAD_LABEL_X: f32 = crate::ui::consts::MARGIN_X + widgets::STRIP_PAD;
+const LEAD_LABEL_X: f32 = plx_ui::consts::MARGIN_X + widgets::STRIP_PAD;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RestoreStep {
@@ -65,13 +65,13 @@ pub(crate) fn locate(key: u32) -> Option<usize> {
         .then(|| (key - SEASON_ELEM_RANGE_START) as usize)
 }
 
-pub(crate) fn watch_state(season: &crate::metadata::Season) -> crate::ui::widgets::PosterMark {
+pub(crate) fn watch_state(season: &crate::metadata::Season) -> plx_ui::widgets::PosterMark {
     if season.watched() {
-        crate::ui::widgets::PosterMark::Watched
+        plx_ui::widgets::PosterMark::Watched
     } else if season.viewed_leaf_count > 0 {
-        crate::ui::widgets::PosterMark::InProgress
+        plx_ui::widgets::PosterMark::InProgress
     } else {
-        crate::ui::widgets::PosterMark::None
+        plx_ui::widgets::PosterMark::None
     }
 }
 
@@ -147,9 +147,9 @@ impl Metrics {
             return current;
         };
         let lo = r.x + r.w + widgets::STRIP_ADVANCE
-            - (crate::ui::consts::SCR_W - crate::ui::consts::MARGIN_X);
-        let hi = r.x - widgets::STRIP_ADVANCE - crate::ui::consts::MARGIN_X;
-        crate::ui::card_row::reveal(current, lo, hi, f32::MAX)
+            - (plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X);
+        let hi = r.x - widgets::STRIP_ADVANCE - plx_ui::consts::MARGIN_X;
+        plx_ui::card_row::reveal(current, lo, hi, f32::MAX)
     }
 }
 
@@ -263,9 +263,9 @@ mod tests {
     #[test]
     fn the_first_season_pill_starts_on_the_content_edge_at_scroll_zero() {
         let mut metrics = Metrics::new();
-        metrics.update(&detail(), &crate::ui::fixture::FixtureMeasure);
+        metrics.update(&detail(), &plx_ui::fixture::FixtureMeasure);
         let first = metrics.rect(0, 0.0, 0.0).expect("a first pill");
-        assert_eq!(first.x, crate::ui::consts::MARGIN_X, "first pill plate x at scroll 0");
+        assert_eq!(first.x, plx_ui::consts::MARGIN_X, "first pill plate x at scroll 0");
         // and the scroll target for that pill leaves the row where it is
         assert_eq!(metrics.scroll_target(0.0, 0), 0.0);
     }
@@ -274,7 +274,7 @@ mod tests {
     fn season_tab_pills_cover_their_note_and_never_overlap() {
         let d = detail();
         let mut metrics = Metrics::new();
-        metrics.update(&d, &crate::ui::fixture::FixtureMeasure);
+        metrics.update(&d, &plx_ui::fixture::FixtureMeasure);
         for pair in metrics.lays().windows(2) {
             let left = widgets::strip_pill_rect(&pair[0], 0.0, ROW_H);
             let right = widgets::strip_pill_rect(&pair[1], 0.0, ROW_H);
@@ -286,22 +286,22 @@ mod tests {
     fn season_watch_state_uses_both_container_endpoints() {
         let mut season = detail().seasons.remove(0);
         season.leaf_count = 2;
-        assert_eq!(watch_state(&season), crate::ui::widgets::PosterMark::None);
+        assert_eq!(watch_state(&season), plx_ui::widgets::PosterMark::None);
         season.viewed_leaf_count = 1;
         assert_eq!(
             watch_state(&season),
-            crate::ui::widgets::PosterMark::InProgress
+            plx_ui::widgets::PosterMark::InProgress
         );
         season.viewed_leaf_count = season.leaf_count;
         assert_eq!(
             watch_state(&season),
-            crate::ui::widgets::PosterMark::Watched
+            plx_ui::widgets::PosterMark::Watched
         );
     }
 
     #[test]
     fn season_metrics_rebuild_once_after_a_same_identity_landing() {
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let mut metrics = Metrics::new();
         let mut d = detail();
         metrics.update(&d, &measure);

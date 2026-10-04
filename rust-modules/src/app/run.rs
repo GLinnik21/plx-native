@@ -42,7 +42,7 @@ use super::*;
 pub(super) fn recorder_end_frame(
     rec: &mut super::recorder::Recplay,
     bridge: &super::bridge::Bridge,
-    press: &crate::ui::press::Press,
+    press: &plx_ui::press::Press,
     route: &str,
     overlay: &str,
     focus: &str,
@@ -143,7 +143,7 @@ pub(crate) unsafe fn run(app: &mut App) {
 
         fr.now = clock::now();
         // Share the actual/replay frame timestamp, before spring dt is clamped.
-        crate::ui::card_motion::begin_frame(fr.now);
+        plx_ui::card_motion::begin_frame(fr.now);
         // **The Player machine's tick** (spec §4.1): set ONCE per iteration, from the same
         // `fr.now` every other phase of this frame reads. `PlaybackSession::auto_last_switch` — the
         // adaptive controller's "how long since the last visible rung change" — is stamped from
@@ -316,7 +316,7 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
     // supplied by the recorder like any other environmental observation.
     let text = plx_gfx::text::prewarm_pending();
     plx_gfx::gfx::snapshot_frame_begin(|snapshot| {
-        let seen = app.rec.capture_readiness(crate::ui::rec::Readiness { snapshot, text });
+        let seen = app.rec.capture_readiness(plx_ui::rec::Readiness { snapshot, text });
         plx_gfx::text::latch_surface_text_pending(seen.text);
         seen.snapshot
     });
@@ -373,7 +373,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // ---- whole-frame present gate (`plx_machine::idle`) --------------------------------------
     // A screen with nothing moving on it does not need to be re-sent to the panel. This
     // skips `glViewport`…`SDL_GL_SwapWindow` WHOLESALE — it is not dirty-RECTANGLE
-    // tracking, which `ui/mod.rs`'s renderer doc rejects: when this says yes, the frame
+    // tracking, which `plx_ui`'s `lib.rs` renderer doc rejects: when this says yes, the frame
     // below is byte-for-byte the immediate-mode frame it always was, clear and all.
     //
     // Measured cost of not doing this (2026-07-31): a still Home grid burns 16.0% of one
@@ -404,7 +404,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // settled screen. It was inert before phase 11: nothing in the product ever published a
     // queue to the budget, so `has_queued_work()` was permanently false and the upload had to
     // run BEFORE the decision (and invalidate) to happen at all.
-    crate::ui::tex::note_queued(&mut app.pages.budget);
+    plx_ui::tex::note_queued(&mut app.pages.budget);
     // Lifecycle is a hard outer gate: even noidle, a bound plane or queued uploads must
     // not reach EGL/Mali while SDL's window is backgrounded.
     //
@@ -440,7 +440,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         // A Tracks/More page's text, recorded in `update` or, on the mount frame, in the overlay's
         // `prepare` (`PanelMotion::prewarm_text`), and uploaded here: `fr.present` already carries the window-activity gate, so a frame that
         // does not present, or one while the window is backgrounded, uploads nothing.
-        crate::ui::panel_motion::PanelMotion::drain_queued_text(plx_base::diag::heartbeat::now_us);
+        plx_ui::panel_motion::PanelMotion::drain_queued_text(plx_base::diag::heartbeat::now_us);
         // The player's UltraBlur envelope, latched while nothing is open so the first Tracks/More
         // popover's open frame does not pay for it (`ModalUnderlay::preload`; an upload, hence here).
         app.pages.nav.modals.preload_underlay();
@@ -557,7 +557,7 @@ unsafe fn present_and_swap(
         // Inside the gate: `frame_end` is the end of a DRAWN frame. Counting frames the
         // idle gate skipped would pace the profiler's once-per-N-frames log off frames
         // that ran no phases at all.
-        crate::ui::profile::frame_end();
+        plx_ui::profile::frame_end();
         plx_gfx::overdraw::frame_end();
         // Same reason, same gate: the blur's region accounting is per DRAWN frame. It rolls
         // "what every glass surface asked for this frame" into the region the next frame's
@@ -576,7 +576,7 @@ unsafe fn present_and_swap(
         // above. It was called from inside `note_present`; `plx_machine::idle` is the machine layer and
         // no longer names `ui`'s metrics.
         #[cfg(feature = "devtriggers")]
-        crate::ui::card_motion_metrics::presented(fr.now);
+        plx_ui::card_motion_metrics::presented(fr.now);
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         if let Some(budget) = wslg_frame_budget {
             budget.finish();
@@ -708,7 +708,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     // APP's and may change the page under the panel (backgrounding drops Search's
     // editing layout), so its damage stays the page's and the snapshot is retaken.
     let _own_input = if is_input_event(et) {
-        crate::ui::popover::host::input_scope()
+        plx_ui::popover::host::input_scope()
     } else {
         None
     };
@@ -859,7 +859,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // unencrypted connections on: every plaintext grant ends here, and each server that
             // lost one is queued for a fresh discovery (requested by the upgrade retry's frame
             // step) that re-proves eligibility before minting again (`plex::grant`).
-            crate::plex::grant::network_changed();
+            plx_plex::plex::grant::network_changed();
             // Reacquire only on DID foreground, before playback restoration and rendering.
             restore_window(app.win);
             plx_machine::idle::invalidate();
@@ -1813,7 +1813,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
         // the route directly (rather than through `nav_to`) is deliberate: the question is what
         // the PANEL costs, and a page transition on the step boundary would put a cross-fade in
         // the middle of the leg being measured.
-        if crate::ui::glassload::armed() {
+        if plx_ui::glassload::armed() {
             let want = app.glass.wants_account();
             if want && app.route() == AppArg::Home {
                 super::bridge::open_account_menu(&mut app.pages);
@@ -1857,7 +1857,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
 /// the four things a Settings-family screen can decide that outlive the surface it decided them in.
 pub(super) fn request_local_erasure(rec: &mut super::recorder::Recplay,
     bridge: &mut super::bridge::Bridge,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) -> bool {
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) -> bool {
     if matches!(rec, super::recorder::Recplay::Replaying(_)) || bridge.is_controlled_replay() {
         rec.refuse("replay cannot authorize local erasure");
         return false;
@@ -1869,18 +1869,18 @@ pub(super) fn request_local_erasure(rec: &mut super::recorder::Recplay,
 }
 
 pub(super) fn finish_local_erasure(bridge: &super::bridge::Bridge,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     if delete_outcome(bridge.auth_read().0.delete_leftovers).to_sign_in {
         super::bridge::nav_root(pages, AppArg::Login);
     }
     super::bridge::dismiss_surfaces_now(pages);
-    crate::ui::popover::host::blur_invalidate();
+    plx_ui::popover::host::blur_invalidate();
 }
 
 /// The request-to-performer boundary for root navigation. The live loop and owned-screen
 /// tests consume the same emitted enum here, without constructing a native App or a route oracle.
 pub(super) fn reduce_navigation_request(request: crate::screens::registry::LoopReq,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>)
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>)
     -> Result<(), crate::screens::registry::LoopReq> {
     match request {
         // Root BACK belongs to platform Home; first-run Onboard BACK has an in-app destination.
@@ -2086,7 +2086,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // …and the lab upload's toast, which expires on a clock rather than a spring.
         crate::lab::update(fr.now);
         #[cfg(feature = "threadcheck")]
-        crate::ui::runtime_warning::update(app.boot_initial.is_some());
+        plx_ui::runtime_warning::update(app.boot_initial.is_some());
         // The Up Next countdown and the control row's focus pop are the PLAYER INSTANCE's and
         // are stepped from its own `Tick` for the reason `TransportRow::step` gives — the row is
         // not drawn on every frame of the route, so a spring advanced in the draw would run at a
@@ -2272,9 +2272,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
             // read of loop state, so the closure only borrows; nothing is moved out of the loop.
             // An empty selected phase provides the profiler floor for this build; it
             // deliberately issues no GL commands between its two boundaries.
-            crate::ui::profile::phase("profile.empty", || {});
-            crate::ui::profile::phase("frame.ui", || {
-                crate::ui::guard(|| {
+            plx_ui::profile::phase("profile.empty", || {});
+            plx_ui::profile::phase("frame.ui", || {
+                plx_ui::guard(|| {
                     if fr.player {
                         // `plx_platform::tv::window::clear_opaque_region()` used to be called here. It is
                         // §3.3 step 10's privileged call and belongs at the container library's
@@ -2343,10 +2343,10 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // debug assertion. A popover from this page halts the preview first, so
                         // this frame only skips while the picture is the intended ground.
                         if !(app.player.video_plane_bound && crate::route::is_preview(&app.player.session)) {
-                            plx_base::diag::spans::span("host", || crate::ui::popover::host::begin_frame(fr.underlay_moving));
+                            plx_base::diag::spans::span("host", || plx_ui::popover::host::begin_frame(fr.underlay_moving));
                         }
-                        use crate::ui::frame::backdrop::Z;
-                        let layers = app.pages.backdrop_layers(crate::ui::nav::page_alpha());
+                        use plx_ui::frame::backdrop::Z;
+                        let layers = app.pages.backdrop_layers(plx_ui::nav::page_alpha());
                         app.glass.sources.borrow_mut().begin(layers);
                         let sources = app.glass.sources.clone();
                         let _visible_walk = app.glass.walk(Z::ALL);
@@ -2356,21 +2356,21 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // One dispatcher walk supplies declarations, strict source prefixes and
                         // the visible frame. Only the visible walk advances the host cache.
                         let mut page = |ceiling: Z| {
-                            let _host = (!crate::ui::frame::backdrop::discovering() &&
-                                (ceiling == Z::ALL || crate::ui::popover::host::held_ceiling().is_some_and(|z| z < ceiling)))
-                                .then(crate::ui::popover::host::page_pass);
+                            let _host = (!plx_ui::frame::backdrop::discovering() &&
+                                (ceiling == Z::ALL || plx_ui::popover::host::held_ceiling().is_some_and(|z| z < ceiling)))
+                                .then(plx_ui::popover::host::page_pass);
                             if page_owned {
                                 app.pages.draw_with_glass_below(&mut app.bridge, &mut app.glass, true, ceiling);
                             } else {
-                                plx_gfx::gfx::frame_clear(crate::ui::theme::CLEAR_RGB.0, crate::ui::theme::CLEAR_RGB.1, crate::ui::theme::CLEAR_RGB.2);
+                                plx_gfx::gfx::frame_clear(plx_ui::theme::CLEAR_RGB.0, plx_ui::theme::CLEAR_RGB.1, plx_ui::theme::CLEAR_RGB.2);
                             }
                             if plan != super::bridge::PagePlan::SurfacesOnly && Z::OPENER < ceiling {
-                                let _opener = crate::ui::frame::backdrop::layer(Z::OPENER, false);
+                                let _opener = plx_ui::frame::backdrop::layer(Z::OPENER, false);
                                 app.bridge.redraw_opener(&app.pages);
                             }
                         };
                         {
-                            let _declarations = crate::ui::frame::backdrop::discover(sources.clone());
+                            let _declarations = plx_ui::frame::backdrop::discover(sources.clone());
                             plx_base::diag::spans::span("disc", || page(Z::ALL));
                         }
                         sources.borrow_mut().resolve();
@@ -2378,7 +2378,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // Independent bands replay only the strict prefix below their ceiling.
                         // A band intersecting lower glass captures that composite in visible order.
                         for (ceiling, rect) in jobs {
-                            let _source_walk = crate::ui::frame::backdrop::enter(sources.clone(), ceiling);
+                            let _source_walk = plx_ui::frame::backdrop::enter(sources.clone(), ceiling);
                             let reg = plx_gfx::gfx::blur_region(rect.x, rect.y, rect.w, rect.h);
                             // `src`: one blur source job, its replay of the page prefix included.
                             plx_base::diag::spans::span("src", || {
@@ -2389,7 +2389,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         }
                         // An opaque route ground replaces the page entirely.
                         if plan != super::bridge::PagePlan::SurfacesOnly {
-                            crate::ui::profile::phase("main.ui", || page(Z::ALL));
+                            plx_ui::profile::phase("main.ui", || page(Z::ALL));
                         }
                         // The diagnostics read-out, off the player. It drew ONLY inside the branch
                         // above until 2026-08-29, which is why its module doc had to warn that a
@@ -2436,9 +2436,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         #[cfg(feature = "devtools")]
                         if plx_base::surface::render_scale() == 1 {
                             let fps_col = if app.buffer_flip_count < 30 {
-                                crate::ui::theme::DIAG_FLIP_A
+                                plx_ui::theme::DIAG_FLIP_A
                             } else {
-                                crate::ui::theme::DIAG_FLIP_B
+                                plx_ui::theme::DIAG_FLIP_B
                             };
                             plx_gfx::gfx::draw_number(
                                 app.fps_shown,
@@ -2449,12 +2449,12 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             );
                         }
                     }
-                    crate::ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
+                    plx_ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
                                                      // The lab upload read-out, over everything, on every route — including the
                                                      // player, where the two branches above diverge and this one must not.
                     crate::lab::draw(app.diagnostics.frame_if_shown());
                     #[cfg(feature = "threadcheck")]
-                    crate::ui::runtime_warning::draw(app.boot_initial.is_some());
+                    plx_ui::runtime_warning::draw(app.boot_initial.is_some());
                 });
             });
     (vx, vy, vw, vh)
@@ -2654,7 +2654,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 format!(
                     "route={rn} dip={} load={} snapt={:.2} snap={:.3} {spans}{}",
                     app.pages.dip_word(),
-                    crate::ui::glassload::step_index(),
+                    plx_ui::glassload::step_index(),
                     app.bridge.home_snap_target(&app.pages),
                     app.bridge.home_snap_pos(&app.pages),
                     plx_platform::tv::window::frame_probe_fields()
@@ -2761,10 +2761,10 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
             // `worstframe=` so both harness regexes are untouched. `snap=` is the one
             // thing a cadence claim cannot be trusted without: it is the rate that RAN,
             // not the rate that was requested.
-            let ld = if crate::ui::glassload::armed() {
+            let ld = if plx_ui::glassload::armed() {
                 format!(
                     " load={} snap={}",
-                    crate::ui::glassload::step_index(),
+                    plx_ui::glassload::step_index(),
                     plx_gfx::gfx::take_blur_snapshots()
                 )
             } else {
@@ -3075,14 +3075,14 @@ mod lifecycle_regression_tests {
                     nobudget: Default::default(),
                 },
             },
-            input: crate::ui::input::Input::new(),
+            input: plx_ui::input::Input::new(),
             measure_fault_logged: Default::default(),
             rec: super::super::recorder::Recplay::Off,
             boot_initial: Default::default(),
             telemetry_guard: Default::default(),
             present: plx_machine::present::Present::new(),
             glass: Default::default(),
-            pages: crate::ui::dispatch::Dispatcher::new(),
+            pages: plx_ui::dispatch::Dispatcher::new(),
             inputs: Default::default(),
             bridge: super::super::bridge::Bridge::for_test(|| 0),
         };
@@ -3135,7 +3135,7 @@ mod lifecycle_regression_tests {
     #[test]
     fn a_recorded_raw_hang_probe_replays_without_missing_input() {
         use super::super::{bootstrap::{Initial, Preflight}, recorder::{Recplay, ReplayMode, state_fp}};
-        use crate::ui::{dispatch::Tap, rec::{Header, MemSink, Recording}};
+        use plx_ui::{dispatch::Tap, rec::{Header, MemSink, Recording}};
         let _serial = plx_base::testlock::serial();
         let mut app = app();
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
@@ -3173,7 +3173,7 @@ mod lifecycle_regression_tests {
     #[test]
     fn controlled_foreground_replays_once_without_platform_authority() {
         use super::super::{bootstrap::{Initial, Preflight}, recorder::{Recplay, ReplayMode, state_fp}};
-        use crate::ui::{dispatch::Tap, rec::{Header, Recording}};
+        use plx_ui::{dispatch::Tap, rec::{Header, Recording}};
         use plx_machine::{machine::Tick};
         let _serial = plx_base::testlock::serial();
         for mode in [ReplayMode::Targets, ReplayMode::Resolve] {
@@ -3182,9 +3182,9 @@ mod lifecycle_regression_tests {
             let recording = Recording {
                 header: Header::new(state_fp(), &initial),
                 frames: vec![
-                    crate::ui::rec::Frame { f: 0, tick: Some(Tick { ms: 0, dt_us: 0 }),
+                    plx_ui::rec::Frame { f: 0, tick: Some(Tick { ms: 0, dt_us: 0 }),
                         st: Some(7), focus: Some(None), ..Default::default() },
-                    crate::ui::rec::Frame { f: 1, tick: Some(Tick { ms: 16, dt_us: 16_000 }),
+                    plx_ui::rec::Frame { f: 1, tick: Some(Tick { ms: 16, dt_us: 16_000 }),
                         present: Some(true), st: Some(7), focus: Some(None),
                         inputs: vec![serde_json::json!({"f":1,"t":"in","kind":"lifecycle","code":0x105}),
                             serde_json::json!({"f":1,"t":"in","kind":"lifecycle","code":0x106})],
@@ -3199,7 +3199,7 @@ mod lifecycle_regression_tests {
 
             app.pages.suspend();
             app.window_activity.event(0x104);
-            let revision = crate::plex::grant::revision();
+            let revision = plx_plex::plex::grant::revision();
             let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
             for value in app.rec.replay_inputs() {
                 unsafe { replay_inject(&mut app, &mut fr, &value); }
@@ -3207,7 +3207,7 @@ mod lifecycle_regression_tests {
             assert!(!app.pages.nav.suspended, "recorded foreground reaches the navigation owner");
             assert!(!app.window_activity.allow_present(true),
                 "a recording cannot authorize EGL presentation while the real window is backgrounded");
-            assert_eq!(crate::plex::grant::revision(), revision,
+            assert_eq!(plx_plex::plex::grant::revision(), revision,
                 "recorded foreground has no network-grant authority");
 
             // The actual compositor's startup pair may arrive at another frame. It
@@ -3220,7 +3220,7 @@ mod lifecycle_regression_tests {
             assert_eq!(restored_windows, 1, "only the real DID foreground restores native handles");
             assert!(app.window_activity.allow_present(true));
             assert!(app.inputs.is_empty(), "ambient keys cannot enter the recorded scenario");
-            assert_eq!(crate::plex::grant::revision(), revision);
+            assert_eq!(plx_plex::plex::grant::revision(), revision);
             app.rec.present(true);
             Tap::focus(&mut app.rec, 1, None);
             assert!(app.rec.end_frame(&|| 7));
@@ -3331,7 +3331,7 @@ mod lifecycle_regression_tests {
         // Deliver the same collected edges through the dispatcher and the real player, one
         // frame per edge. Screen tests separately grade these coordinates against record_stops;
         // this map isolates the FIFO -> SDL -> app -> dispatcher -> scrub ownership boundary.
-        use crate::ui::{screen::{Activate, Hover, Stop}, Rect};
+        use plx_ui::{screen::{Activate, Hover, Stop}, Rect};
         use plx_machine::{machine::{FocusKey, Tick}};
         use crate::screens::registry::PlayerReq;
         let key = FocusKey { elem: crate::appkit::player_hud::ELEM_SCRUB,
@@ -3387,7 +3387,7 @@ mod lifecycle_regression_tests {
                     app.ptr.button_down,app.ptr.prev_mx.to_bits(),app.ptr.mot_accum.to_bits()));
                 app.inputs.clear();
             }
-            app.ev=encode_key(crate::ui::consts::SDLK_DOWN,0,true);
+            app.ev=encode_key(plx_ui::consts::SDLK_DOWN,0,true);
             event(&mut app,&mut fr,SDL_KEYDOWN);
             assert!(app.ptr.dpad_mode);
             assert_eq!(app.ptr.mot_accum,0.0);
@@ -3410,7 +3410,7 @@ mod lifecycle_regression_tests {
 
     #[test]
     fn controlled_sdl_records_one_owned_event_after_hitmap_for_each_pointer_edge() {
-        use crate::ui::{rec::{MemSink,Header,Recording}, screen::{Stop,Hover,Activate}, Rect};
+        use plx_ui::{rec::{MemSink,Header,Recording}, screen::{Stop,Hover,Activate}, Rect};
         use plx_machine::{machine::Tick};
         let _serial=plx_base::testlock::serial();
         let mut app=app();
@@ -3456,7 +3456,7 @@ mod lifecycle_regression_tests {
 
     struct Rig {
         app: App,
-        sid: crate::plex::ServerId,
+        sid: plx_plex::plex::ServerId,
         release: mpsc::Sender<()>,
         entered: mpsc::Receiver<()>,
         requests: Arc<Mutex<Vec<String>>>,
@@ -3492,7 +3492,7 @@ mod lifecycle_regression_tests {
         /// `successor: false` serves a one-row queue — a film, with no Up Next to hand off to — so
         /// an end of stream leaves the player instead of starting the next item.
         fn serving(successor: bool) -> Option<Rig> {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -3574,11 +3574,11 @@ mod lifecycle_regression_tests {
                 None => {
                     // See the doc comment above: nothing past this point has run yet, so undoing
                     // the initial reset is the whole cleanup owed.
-                    crate::plex::reset_servers_for_test();
+                    plx_plex::plex::reset_servers_for_test();
                     return None;
                 }
             };
-            let sid = crate::plex::register_for_test(
+            let sid = plx_plex::plex::register_for_test(
                 "lifecycle-fixture",
                 "127.0.0.1",
                 port as i32,
@@ -3686,7 +3686,7 @@ mod lifecycle_regression_tests {
             }
             crate::player::SHARED.reset_session();
             crate::route::reset_player_control_for_test(&self.app.player.session);
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
 
@@ -3970,7 +3970,7 @@ mod lifecycle_regression_tests {
     /// One loop iteration's navigation-bearing phases, in `run`'s order: the playback tick (EOS),
     /// the container's frame, the post-player restore, the drained requests and `update` (where a
     /// resolved plan lands).
-    use crate::ui::screen::ScreenArg;
+    use plx_ui::screen::ScreenArg;
 
     fn step(app: &mut App, t: &mut u32, inputs: Vec<plx_machine::machine::InputEvent<u32>>) {
         *t += 16;
@@ -3995,7 +3995,7 @@ mod lifecycle_regression_tests {
     /// which is the whole window the tests below are about. Returns the frame clock's start.
     fn product_transition(app: &mut App) -> u32 {
         app.pages.nav.tabs.stack.transition =
-            Box::new(crate::ui::containers::transition::PageDip::new());
+            Box::new(plx_ui::containers::transition::PageDip::new());
         0
     }
 
@@ -4038,14 +4038,14 @@ mod lifecycle_regression_tests {
     /// BACK as the remote spells it (ESC — the dev remote's own spelling of BACK in the field
     /// report): the player classifies `sym`/`wcode`, not the fixture's `Key`.
     fn back_key(ms: u32) -> plx_machine::machine::InputEvent<u32> {
-        let mut event = crate::ui::fixture::key(plx_machine::machine::Key::Back, crate::ui::fixture::tick(ms));
+        let mut event = plx_ui::fixture::key(plx_machine::machine::Key::Back, plx_ui::fixture::tick(ms));
         if let plx_machine::machine::InputKind::Key { sym, .. } = &mut event.kind {
-            *sym = crate::ui::consts::SDLK_ESCAPE;
+            *sym = plx_ui::consts::SDLK_ESCAPE;
         }
         event
     }
 
-    fn detail_arg(sid: crate::plex::ServerId) -> AppArg {
+    fn detail_arg(sid: plx_plex::plex::ServerId) -> AppArg {
         AppArg::Content(crate::screens::registry::ContentArg::Detail { sid, rk: "1".into() })
     }
 

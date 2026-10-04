@@ -33,7 +33,7 @@
 //! nothing more.
 
 use plx_net::net::{keypin, resolve};
-use crate::plex::{Origin, ResolvePin};
+use plx_plex::plex::{Origin, ResolvePin};
 use std::time::{Duration, Instant};
 
 /// Upper bounds, so a typo cannot park a thread (and a TV's network) for a day.
@@ -419,7 +419,7 @@ mod tests {
         let pin = plx_base::spki::pin_from_spki_der(&cert.spki_der);
         let mut run = run_for(port, &format!(r#","pin":"{pin}""#));
         assert!(keypin::holds(&run.key), "stated at construction");
-        let wipe = || crate::plex::session::project_server_keys(&crate::plex::session::Session::default(), false);
+        let wipe = || plx_plex::plex::session::project_server_keys(&plx_plex::plex::session::Session::default(), false);
 
         // The projection lands before the first handshake: the control plane is refused, and the
         // line does not claim a pin the table no longer holds.

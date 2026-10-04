@@ -80,7 +80,7 @@ const SDL_TEXTEDITING: u32 = 0x302;
 pub(crate) const SDL_TEXTINPUT: u32 = 0x303;
 // keysyms, the OK/BACK predicates and `classify` — the key VOCABULARY the ladder below dispatches
 // on — live in ui::consts (the single keycode home)
-use crate::ui::consts::{
+use plx_ui::consts::{
     classify, is_bound, is_ok, Key, SDLK_DOWN, SDLK_ESCAPE, SDLK_LEFT, SDLK_PAGEDOWN,
     SDLK_PAGEUP, SDLK_RETURN, SDLK_RIGHT, SDLK_UP, WCODE_CH_DOWN_KEY, WCODE_CH_UP_KEY, WCODE_PAUSE,
     WCODE_PLAY, WCODE_POINTER_HIDDEN, WCODE_STOP,
@@ -296,7 +296,7 @@ pub(crate) struct App {
     pub(crate) refresh_hubs_at: u32,
     /// The HTTPS retry for servers on a plaintext grant (`plex::grant::UpgradeRetry`), stepped
     /// every frame beside the view-state pump (`app/run.rs`).
-    pub(crate) plaintext_upgrade: crate::plex::grant::UpgradeRetry,
+    pub(crate) plaintext_upgrade: plx_plex::plex::grant::UpgradeRetry,
     ev: [u8; 128],
     remote: Option<crate::remote::Remote>,
     /// The SDL window (`SDL_CreateWindow`), for the swap.
@@ -317,7 +317,7 @@ pub(crate) struct App {
     /// (formerly `DevFlags`) — gathered on ONE struct (spec: `dev/scenarios.rs`'s module doc).
     pub(crate) scenarios: crate::dev::scenarios::Scenarios,
     /// The Input machine: owner of the press (restructure spec §2.2); the ladders borrow it.
-    pub(crate) input: crate::ui::input::Input,
+    pub(crate) input: plx_ui::input::Input,
     /// `text::take_measure_fault` has been reported once (the report is once per process).
     measure_fault_logged: bool,
     /// The recorder / replay driver (`plxnative-rec` / `plxnative-recplay`, spec §5.3/§5.5).
@@ -329,7 +329,7 @@ pub(crate) struct App {
     present: plx_machine::present::Present,
     /// The frame plan's GLASS half (spec §8.3): the layer/region source registry, shared chrome
     /// material and dev load dial. The budget half lives on the `Dispatcher` (§2.2).
-    pub(crate) glass: crate::ui::frame::glass::GlassPlan,
+    pub(crate) glass: plx_ui::frame::glass::GlassPlan,
     /// **The container tree, and since phase 12 (D1) it is the ONE navigation authority.** It was
     /// a shadow through 3b and a half-real tree through 5b, kept in step with an `App.route` field
     /// by `bridge::sync_page` on every frame; both the field and the mirror are deleted. Every
@@ -342,7 +342,7 @@ pub(crate) struct App {
     /// poster upload spent that one while the dispatcher's step-8 present decision consulted the
     /// other, whose queue flag had no writer at all, so the two halves of one mechanism could
     /// never agree with each other.
-    pub(crate) pages: crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+    pub(crate) pages: plx_ui::dispatch::Dispatcher<bridge::AppHost>,
     /// Inputs collected for the dispatcher this iteration (`bridge` module doc).
     pub(crate) inputs: Vec<plx_machine::machine::InputEvent<u32>>,
     /// What that dispatcher borrows: the mounter, the real `TtfMeasure`, the store deliveries,
@@ -372,7 +372,7 @@ impl App {
     /// Controlled construction receives decoded/captured inputs before bootstrap effects.
     pub(crate) unsafe fn from_init(initial: bootstrap::Initial, mode: bootstrap::Preflight,
         pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
-        deferred: Option<crate::plex::session::DeferredLoad>) -> Result<Self, c_int> {
+        deferred: Option<plx_plex::plex::session::DeferredLoad>) -> Result<Self, c_int> {
         boot::construct(pms_host, pms_port, mt, mode, Some(initial), deferred)
     }
     /// **Which page is on top** (spec §15.2) — the container's answer, and since D1 the ONLY one.
@@ -527,6 +527,9 @@ pub fn synthetic_home_initial(seed: u32, port: u16, settings: Option<String>)
 }
 
 fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_int> {
+    // What `plx_plex` reports as `X-Plex-Version` is this build's `PLX_VERSION`, which a
+    // `cargo:rustc-env` makes visible to this crate only; before anything can build a header.
+    plx_plex::plex::identity::set_version(env!("PLX_VERSION"));
     // The hooks `plex` is handed for what it cannot name; first, so no session load precedes them.
     install_plex_seams();
     // Telemetry erases the player's in-memory error trace (withdrawal, sign-out, its own boot load

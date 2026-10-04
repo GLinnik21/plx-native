@@ -146,11 +146,11 @@ fn all_auth_worker_bodies_are_observation_only() {
         "install_roster(",
         "publish_settled_probe(",
         "publish_settled_probes(",
-        "crate::plex::register_origin(",
-        "crate::plex::revoke_",
-        "crate::plex::finish_profile_switch(",
-        "crate::plex::publish_probe_result(",
-        "crate::plex::describe_server(",
+        "plx_plex::plex::register_origin(",
+        "plx_plex::plex::revoke_",
+        "plx_plex::plex::finish_profile_switch(",
+        "plx_plex::plex::publish_probe_result(",
+        "plx_plex::plex::describe_server(",
     ];
     for name in [
         "discover_and_store",

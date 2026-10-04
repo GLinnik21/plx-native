@@ -7,10 +7,10 @@
 //! belongs to the layer that owns all of those (docs/module-layers.md, step L13). The safe-area
 //! tokens it grades against are still `ui::consts`'.
 
-use crate::ui::consts::{
+use plx_ui::consts::{
     inside_safe, CARD_DY, CARD_H, CARD_W, GRID_TOP_Y, MARGIN_X, MARGIN_Y, SAFE, SCR_H, TITLE_DY,
 };
-use crate::ui::Rect;
+use plx_ui::Rect;
 
 /// **NO REQUIRED CONTENT ENTERS THE OVERSCAN EXCLUSION ZONE, ON EITHER AXIS.**
 ///
@@ -65,8 +65,8 @@ fn no_required_content_enters_the_safe_area_exclusion_zone() {
     };
 
     // ---- the shared chrome, and the screens composed on it ------------------------------
-    probe("widgets", &crate::ui::widgets::overscan_rects);
-    probe("detail", &crate::ui::detail_layout::overscan_rects);
+    probe("widgets", &plx_ui::widgets::overscan_rects);
+    probe("detail", &plx_ui::detail_layout::overscan_rects);
     probe("player_hud", &crate::appkit::player_hud::overscan_rects);
 
     // ---- the panels, each at the widest/tallest state its own clamp admits ---------------
@@ -81,7 +81,7 @@ fn no_required_content_enters_the_safe_area_exclusion_zone() {
     // first shelf heading is the highest ink the page draws under the bar.
     r.push((
         "home hero text column",
-        Rect::new(MARGIN_X, 380.0, crate::ui::landing_hero::COL_W, 400.0),
+        Rect::new(MARGIN_X, 380.0, plx_ui::landing_hero::COL_W, 400.0),
     ));
     r.push((
         "home first shelf heading (grid view)",
@@ -120,7 +120,7 @@ fn no_required_content_enters_the_safe_area_exclusion_zone() {
     // Onboarding + login: both centre or hang off the same margin.
     r.push((
         "onboard copy column",
-        Rect::new(MARGIN_X, 150.0, crate::ui::landing_hero::COL_W, 500.0),
+        Rect::new(MARGIN_X, 150.0, plx_ui::landing_hero::COL_W, 500.0),
     ));
 
     for (name, rect) in r {

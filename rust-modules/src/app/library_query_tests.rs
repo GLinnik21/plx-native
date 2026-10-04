@@ -11,23 +11,23 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
-    let session = crate::plex::session::TempSession::new("library-query-leave");
+    let session = plx_plex::plex::session::TempSession::new("library-query-leave");
     session.watching("u-library-query-leave");
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let sid =
-        crate::plex::register_for_test("query-leave-own", "127.0.0.1", 9, "synthetic", "fixture");
-    let shared = crate::plex::register_for_test(
+        plx_plex::plex::register_for_test("query-leave-own", "127.0.0.1", 9, "synthetic", "fixture");
+    let shared = plx_plex::plex::register_for_test(
         "query-leave-shared",
         "127.0.0.1",
         10,
         "synthetic",
         "fixture",
     );
-    crate::plex::set_current(sid);
+    plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
@@ -35,7 +35,7 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
     rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
-    d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+    d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
     frame(&mut d, &mut rig, AppArg::Library, tick(1), vec![]);
     Bridge::library_command(
         &mut d,
@@ -99,8 +99,8 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
         MachineId::Nav,
         Fx::Deliver(
             MachineId::Instance(instance),
-            Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
-                focus: crate::ui::screen::FocusTarget::ContainerGroup(heading),
+            Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
+                focus: plx_ui::screen::FocusTarget::ContainerGroup(heading),
             })),
         ),
     );
@@ -125,17 +125,17 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
-    let session = crate::plex::session::TempSession::new("library-covered-query-reset");
+    let session = plx_plex::plex::session::TempSession::new("library-covered-query-reset");
     session.watching("u-library-covered-query-reset");
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_for_test("query-own", "127.0.0.1", 9, "synthetic", "fixture");
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("query-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared =
-        crate::plex::register_for_test("query-shared", "127.0.0.1", 10, "synthetic", "fixture");
-    crate::plex::set_current(sid);
+        plx_plex::plex::register_for_test("query-shared", "127.0.0.1", 10, "synthetic", "fixture");
+    plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
@@ -174,8 +174,8 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         MachineId::Nav,
         Fx::Deliver(
             MachineId::Instance(instance),
-            Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
-                focus: crate::ui::screen::FocusTarget::ContainerGroup(heading),
+            Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
+                focus: plx_ui::screen::FocusTarget::ContainerGroup(heading),
             })),
         ),
     );
@@ -232,7 +232,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         })
         .unwrap_or_else(|| panic!("the real toolbar activation must request its menu: {evidence}"));
     assert_eq!(kind, crate::screens::registry::LibraryMenuKind::Filter);
-    d.nav.next_style = crate::ui::containers::modal::Style::Compact;
+    d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(

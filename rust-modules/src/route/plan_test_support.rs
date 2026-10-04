@@ -16,13 +16,13 @@ pub(super) const UNMEASURED: (i64, i64, i64) = (0, 0, 0); // PMS said nothing (a
 
 /// What `build_stream` computes, spelled once.
 pub(super) fn allowed(
-    link: Option<crate::plex::probe::Location>,
+    link: Option<plx_plex::plex::probe::Location>,
     q: Quality,
     src: (i64, i64, i64),
-) -> crate::plex::LinkPolicy {
-    let auto_original = q == Quality::Auto && link == Some(crate::plex::probe::Location::Local);
+) -> plx_plex::plex::LinkPolicy {
+    let auto_original = q == Quality::Auto && link == Some(plx_plex::plex::probe::Location::Local);
     flavors_allowed(
-        crate::plex::link_policy(link),
+        plx_plex::plex::link_policy(link),
         quality_policy(q, auto_original, src.0, src.1, src.2),
     )
 }

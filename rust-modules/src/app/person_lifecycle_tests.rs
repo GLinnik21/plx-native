@@ -30,12 +30,12 @@ fn reopening_an_evicted_same_identity_person_leaves_the_store_holding_it() {
         "the first mount's Enter(Fresh) must Open the person");
 
     // Fill the stack to exactly CAP live bodies, Person A still at the bottom and still live.
-    for i in 0..(crate::ui::containers::stack::CAP - 1) {
+    for i in 0..(plx_ui::containers::stack::CAP - 1) {
         nav_push(&mut d, detail_arg(&format!("filler-{i}")));
         frame(&mut d, &mut rig, tick(frame_no), vec![]);
         frame_no += 1;
     }
-    assert_eq!(d.nav.bodies().count(), crate::ui::containers::stack::CAP,
+    assert_eq!(d.nav.bodies().count(), plx_ui::containers::stack::CAP,
         "the stack must be exactly full before the reopening push");
     assert!(d.nav.entry(bottom).unwrap().inst.is_some(),
         "Person A's body must still be live and un-evicted right before the reopening push");

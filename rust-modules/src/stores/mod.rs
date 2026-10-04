@@ -29,8 +29,8 @@ use plx_machine::machine::StoreOrd;
 // with the same set the data layer's outcomes carry, and `plex` cannot name this module. Re-exported
 // so every store, adapter and screen keeps its spelling; `StoreEffectHost` is the name the stores'
 // machines are written against.
-pub(crate) use crate::plex::retry::{EndpointRefresh, EndpointRefreshSet};
-pub(crate) use crate::plex::retry::EndpointRefreshHost as StoreEffectHost;
+pub(crate) use plx_plex::plex::retry::{EndpointRefresh, EndpointRefreshSet};
+pub(crate) use plx_plex::plex::retry::EndpointRefreshHost as StoreEffectHost;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[must_use]

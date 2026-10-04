@@ -3,7 +3,7 @@
 //! activation or Plex viewing-history write is performed.
 use crate::app::{bridge::Bridge, App};
 use crate::screens::registry::{AppArg, HomeCmd, LibraryCmd};
-use crate::ui::card_motion_metrics::{self as metrics, Stats};
+use plx_ui::card_motion_metrics::{self as metrics, Stats};
 
 // The mock warm window demanded more than 8 MiB (persistent 44/50 ready probes).
 // 12 MiB fits that window while evicting old windows before 64 source slots recycle.
@@ -16,7 +16,7 @@ const PRESSURE_MIB: usize = 12;
 /// windows push the head's art out. The fixed 12 MiB alone was sized
 /// for seeds six rows apart; on a shallow catalog, whose seeds are closer and bring fewer new bytes,
 /// it holds nearly the whole grid, and the reversal crosses no evicted art until focus has already
-/// landed. Authored bytes in and out, as [`crate::ui::tex::scene_residency_budget`] takes.
+/// landed. Authored bytes in and out, as [`plx_ui::tex::scene_residency_budget`] takes.
 fn pressure_ceiling(window_bytes: usize) -> usize {
     (window_bytes + window_bytes / 2).min(PRESSURE_MIB << 20)
 }
@@ -114,9 +114,9 @@ fn eviction_plan(rows: usize, per_screen: usize) -> Result<Vec<Stage>, Unfit> {
 /// Where seating column `col` of an `n`-card Home shelf scrolls it, from rest: the same minimal
 /// reveal the shelf's own spring steers to.
 fn shelf_offset(col: usize, n: usize) -> f32 {
-    use crate::ui::card_row::{scroll_into_view, RowStyle};
+    use plx_ui::card_row::{scroll_into_view, RowStyle};
     let s = RowStyle::HOME;
-    scroll_into_view(0.0, col, n, s.w, s.gap, crate::ui::consts::SCR_W - 2.0 * s.margin_x)
+    scroll_into_view(0.0, col, n, s.w, s.gap, plx_ui::consts::SCR_W - 2.0 * s.margin_x)
 }
 
 /// Warm Home shelf 0 at its deepest card (at most column 11), go up to the hero, and dive back.
@@ -216,8 +216,8 @@ impl Scene {
             // the source's 64 identities recycle. This is the real cache's byte-LRU
             // transition, not a test setter manufacturing P_EVICTED slots. The eviction scene
             // tightens it to its measured window once warm (pressure_ceiling).
-            if mode != Mode::Settle { crate::ui::tex::scene_residency_budget(PRESSURE_MIB << 20); }
-            plx_base::eventlog::log(&format!("poster-gate: kind={} phase=armed budget_mib={}", mode.word(), if mode == Mode::Settle { crate::ui::tex::TEX_RESIDENT_BYTES_MAX >> 20 } else { PRESSURE_MIB }));
+            if mode != Mode::Settle { plx_ui::tex::scene_residency_budget(PRESSURE_MIB << 20); }
+            plx_base::eventlog::log(&format!("poster-gate: kind={} phase=armed budget_mib={}", mode.word(), if mode == Mode::Settle { plx_ui::tex::TEX_RESIDENT_BYTES_MAX >> 20 } else { PRESSURE_MIB }));
         }
     }
     fn positioned(app: &App, target: Target) -> bool {
@@ -305,7 +305,7 @@ impl Scene {
             Self::positioned(app, target) && app.bridge.home_motion_witness(&app.pages)
                 .is_some_and(|[snap, _, _]| snap >= threshold));
         let Some(ready) = stage.completion(elapsed, reached, stats.full()) else { return };
-        let window = self.drawn_bytes / crate::ui::tex::render_area();
+        let window = self.drawn_bytes / plx_ui::tex::render_area();
         report(mode.word(), stage.name, elapsed, stats, ready, self.witness, window);
         if !ready {
             self.finished = true;
@@ -316,7 +316,7 @@ impl Scene {
             // Size the pressure to the window the catalog actually drew (see pressure_ceiling).
             // Still the real cache's byte-LRU: the seeds' own uploads are what evict.
             let ceiling = pressure_ceiling(window);
-            crate::ui::tex::scene_residency_budget(ceiling);
+            plx_ui::tex::scene_residency_budget(ceiling);
             plx_base::eventlog::log(&format!("poster-gate: kind={} phase=ceiling window_kib={} budget_kib={}", mode.word(), window >> 10, ceiling >> 10));
         }
         self.finish_stage(now);
@@ -329,16 +329,16 @@ fn report(kind: &str, phase: &str, ms: u32, s: Stats, complete: bool, witness: O
         s.requested, s.requested_moving, s.refused_new, s.refused_evicted, s.refused_retry, s.rearmed, s.uploads, s.lost, s.last_draws, s.last_ready, complete as u8,
         (w.snap_begin * 1000.0).round() as i32, (w.snap_end * 1000.0).round() as i32,
         w.first.round() as i32, w.last.round() as i32, (w.max - w.min).round() as i32,
-        (w.max_velocity * 1000.0).round() as i32, window >> 10, (crate::ui::tex::resident_bytes() / crate::ui::tex::render_area()) >> 10));
+        (w.max_velocity * 1000.0).round() as i32, window >> 10, (plx_ui::tex::resident_bytes() / plx_ui::tex::render_area()) >> 10));
 }
 pub(crate) fn tick(app: &mut App, now: u32) {
     let mut scene = std::mem::take(&mut app.scenarios.poster_gate);
     if scene.mode.is_some() && !scene.finished {
-        let used = crate::ui::tex::bytes_used_since(scene.mark);
+        let used = plx_ui::tex::bytes_used_since(scene.mark);
         if used > 0 { scene.drawn_bytes = used; }
     }
     scene.advance(app, now);
-    if scene.mode.is_some() && !scene.finished { scene.mark = crate::ui::tex::use_clock(); }
+    if scene.mode.is_some() && !scene.finished { scene.mark = plx_ui::tex::use_clock(); }
     app.scenarios.poster_gate = scene;
 }
 
@@ -347,7 +347,7 @@ mod tests {
     use super::*;
     fn boundary_frame(now: u32) {
         metrics::frame();
-        let _scope = crate::ui::card_motion::Scope::moving_for_test();
+        let _scope = plx_ui::card_motion::Scope::moving_for_test();
         for _ in 0..6 { metrics::draw(true); }
         // Deliberately inject forbidden fast work. A gate must retain it even
         // when this is the first draw after a phase reports its completion.

@@ -104,7 +104,7 @@ mod tests {
         fx.state.publish_shelves_for_test(vec![Shelf {
             kind: Kind::Movie,
             items: vec![Item::Media(crate::pms::PmsMovie {
-                sid: crate::plex::ServerId::UNSET, rk: "retained-search".into(),
+                sid: plx_plex::plex::ServerId::UNSET, rk: "retained-search".into(),
                 title: "Synthetic result".into(), unwatched: true, ..Default::default()
             })],
         }]);
@@ -140,7 +140,7 @@ mod tests {
         assert_eq!(old.view().query_gen(), spaced.view().query_gen());
         assert_eq!(spaced.view().state(), State::Ready);
         assert!(Arc::ptr_eq(old.shelves.as_ref().unwrap(), spaced.shelves.as_ref().unwrap()));
-        assert!(!crate::search::set_watched_local_for_test(&mut fx.state, crate::plex::ServerId::UNSET, "absent", true));
+        assert!(!crate::search::set_watched_local_for_test(&mut fx.state, plx_plex::plex::ServerId::UNSET, "absent", true));
         assert!(Arc::ptr_eq(spaced.shelves.as_ref().unwrap(), fx.snapshot().shelves.as_ref().unwrap()));
     }
 
@@ -175,9 +175,9 @@ mod tests {
             _ => panic!("fixture must be a media item"),
         };
         assert!(!watched(&old));
-        assert!(!crate::search::set_watched_local_for_test(&mut fx.state, crate::plex::ServerId::from_raw(9), "retained-search", true));
+        assert!(!crate::search::set_watched_local_for_test(&mut fx.state, plx_plex::plex::ServerId::from_raw(9), "retained-search", true));
         assert!(Arc::ptr_eq(old.shelves.as_ref().unwrap(), fx.snapshot().shelves.as_ref().unwrap()));
-        assert!(crate::search::set_watched_local_for_test(&mut fx.state, crate::plex::ServerId::UNSET, "retained-search", true));
+        assert!(crate::search::set_watched_local_for_test(&mut fx.state, plx_plex::plex::ServerId::UNSET, "retained-search", true));
         let changed = fx.snapshot();
         assert!(!old.same_publication(&changed), "optimistic edits do not change the query epoch");
         assert!(!watched(&old));
@@ -190,11 +190,11 @@ mod tests {
     fn rebuilding_a_source_answer_replaces_only_the_new_publication() {
         let _guard = plx_base::testlock::serial();
         struct RegistryReset;
-        impl Drop for RegistryReset { fn drop(&mut self) { crate::plex::reset_servers_for_test(); } }
+        impl Drop for RegistryReset { fn drop(&mut self) { plx_plex::plex::reset_servers_for_test(); } }
         let _registry = RegistryReset;
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         let (mut fx, old) = publish_fixture();
-        let sid = crate::plex::register_for_test("search-view", "127.0.0.1", 9, "synthetic", "fixture");
+        let sid = plx_plex::plex::register_for_test("search-view", "127.0.0.1", 9, "synthetic", "fixture");
         let mut answer = [const { Vec::new() }; super::super::NKIND];
         answer[0].push(Item::Media(crate::pms::PmsMovie {
             sid, rk: "new-answer".into(), title: "Replacement result".into(), ..Default::default()

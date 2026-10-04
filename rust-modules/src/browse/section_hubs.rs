@@ -1,7 +1,7 @@
 //! **One library's own shelves** — the `Library Recommended` rows its server's owner arranged,
 //! quoted rather than composed.
 //!
-//! `GET /hubs/sections/{id}` ([`crate::plex::Client::library_hubs`], verified live 2026-09-05;
+//! `GET /hubs/sections/{id}` ([`plx_plex::plex::Client::library_hubs`], verified live 2026-09-05;
 //! `docs/pms-api.md` §3a is the record and five of its findings contradict the OpenAPI spec). The
 //! Library screen draws these above its A–Z grid, in one continuous scroll.
 //!
@@ -55,7 +55,7 @@
 //! dormancy at all — and the screen that draws the shelves is what woke it.
 #![allow(dead_code)] // the accessors are Landing 3's; see the Dormant note above
 
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use crate::pms::{listable, parse_item, PmsMovie, MAX_SHELF_ITEMS};
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -94,8 +94,8 @@ pub(crate) struct Shelf {
     /// `/library/collections/{rk}/children` — the collection its linked heading opens.
     pub(crate) key: String,
     /// Where a promoted `custom.collection.*` shelf's linked heading leads, classified once at
-    /// parse ([`crate::plex::collections::promoted_collection_link`]); `None` for every other hub.
-    pub(crate) link: Option<crate::plex::collections::CollectionRef>,
+    /// parse ([`plx_plex::plex::collections::promoted_collection_link`]); `None` for every other hub.
+    pub(crate) link: Option<plx_plex::plex::collections::CollectionRef>,
     /// Every item the hub's listing holds (`plex::Hub::total`), which `items` caps — a linked
     /// collection heading's "· N". 0 when the server named no total.
     pub(crate) total: usize,
@@ -403,7 +403,7 @@ impl super::BrowseState {
         let Some(sid) = self.section_sid(sec) else {
             return;
         };
-        let Some(client) = crate::plex::client_for(sid) else {
+        let Some(client) = plx_plex::plex::client_for(sid) else {
             return;
         };
         let token_gen = client.token_gen();
@@ -449,7 +449,7 @@ impl super::BrowseState {
         }
         let still_current = self
             .section_sid(result.sec)
-            .and_then(crate::plex::client_for)
+            .and_then(plx_plex::plex::client_for)
             .map(|client| {
                 std::ptr::eq(client, result.client) && client.token_gen() == result.token_gen
             })
@@ -588,7 +588,7 @@ fn edit_watched(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str, on: bool
     if !shelves
         .iter()
         .flat_map(|shelf| shelf.items.iter())
-        .any(|item| crate::plex::same_item((item.sid, &item.rk), (sid, rk)))
+        .any(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk)))
     {
         return false;
     }
@@ -596,7 +596,7 @@ fn edit_watched(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str, on: bool
         .iter_mut()
         .flat_map(|shelf| shelf.items.iter_mut())
     {
-        if crate::plex::same_item((item.sid, &item.rk), (sid, rk)) {
+        if plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk)) {
             crate::pms::set_watched(item, on);
         }
     }
@@ -608,7 +608,7 @@ fn drop_from_deck(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str) -> boo
         .iter()
         .filter(|shelf| shelf.is_continue)
         .flat_map(|shelf| shelf.items.iter())
-        .any(|item| crate::plex::same_item((item.sid, &item.rk), (sid, rk)))
+        .any(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk)))
     {
         return false;
     }
@@ -618,7 +618,7 @@ fn drop_from_deck(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str) -> boo
         let before = shelf.items.len();
         shelf
             .items
-            .retain(|item| !crate::plex::same_item((item.sid, &item.rk), (sid, rk)));
+            .retain(|item| !plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk)));
         hit |= shelf.items.len() != before;
     }
     shelves.retain(|shelf| !shelf.items.is_empty());
@@ -664,7 +664,7 @@ pub(crate) fn seed_named_shelves_for_owner_test(
             .map(|(id, key, title)| Shelf {
                 id: (*id).into(),
                 key: (*key).into(),
-                link: crate::plex::collections::promoted_collection_link(sid, id, key, title, section),
+                link: plx_plex::plex::collections::promoted_collection_link(sid, id, key, title, section),
                 total: per_row,
                 title: (*title).into(),
                 is_continue: shelf_is_continue(id, key),
@@ -729,7 +729,7 @@ pub(crate) fn seed_landscape_for_owner_test(
 pub(super) struct HubResult {
     epoch: u32,
     sec: usize,
-    client: &'static crate::plex::Client,
+    client: &'static plx_plex::plex::Client,
     token_gen: u32,
     /// `None` is a FAILED fetch — kept distinguishable from a successful answer that happens to be
     /// empty, which on this endpoint is a common and legitimate reply.
@@ -746,7 +746,7 @@ pub(super) struct HubResult {
 /// EMPTY hub is dropped entirely, which §3a measured as the common case (one movie section
 /// answered with 6 hubs of which 5 were empty), so this is required rather than tidy: a client
 /// that draws what it is given draws five headings over nothing.
-pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId, section: i64) -> Vec<Shelf> {
+pub(crate) fn parse_hubs(mc: &plx_plex::plex::MediaContainer, sid: ServerId, section: i64) -> Vec<Shelf> {
     let mut out = Vec::new();
     for hub in &mc.hub {
         if out.len() >= MAX_SHELVES {
@@ -771,12 +771,12 @@ pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId, sectio
             landscape: is_episode_shelf(&items),
             id: hub.hub_identifier.clone(),
             key: hub.key.clone(),
-            link: crate::plex::collections::promoted_collection_link(
+            link: plx_plex::plex::collections::promoted_collection_link(
                 sid, &hub.hub_identifier, &hub.key, &hub.title, section,
             ),
             total: hub.total(),
-            title: crate::plex::hub_title::localized_hub_title(
-                crate::plex::hub_title::Scope::Section,
+            title: plx_plex::plex::hub_title::localized_hub_title(
+                plx_plex::plex::hub_title::Scope::Section,
                 &hub.hub_identifier,
                 &hub.title,
             ),
@@ -868,7 +868,7 @@ mod tests {
         first
             .remembered
             .push((super::super::SecKind::Movie, "machine-a".into(), 7));
-        first.recorded = Some(crate::plex::session::HomePins {
+        first.recorded = Some(plx_plex::plex::session::HomePins {
             user: "profile-a".into(),
             asked: true,
             on: Vec::new(),
@@ -999,8 +999,8 @@ mod tests {
     /// The one parse seam these tests need: the wire envelope, exactly as `Client::get_json`
     /// unwraps it, so the fixtures below are graded through the real deserializer rather than a
     /// hand-built container that could not have come off a socket.
-    fn container(json: &str) -> crate::plex::MediaContainer {
-        serde_json::from_slice::<crate::plex::Envelope>(json.as_bytes())
+    fn container(json: &str) -> plx_plex::plex::MediaContainer {
+        serde_json::from_slice::<plx_plex::plex::Envelope>(json.as_bytes())
             .expect("the fixture parses")
             .media_container
     }
@@ -1068,7 +1068,7 @@ mod tests {
         assert_eq!(mixed.items[1].kind, 3, "an episode");
     }
 
-    /// The section-scope half of issue #12's fix (`crate::plex::hub_title`): a library's own
+    /// The section-scope half of issue #12's fix (`plx_plex::plex::hub_title`): a library's own
     /// `/hubs/sections/{id}` Recently Added hub (`tv.recentlyadded.1`/`movie.recentlyadded.1`,
     /// PMS's own title is a plain "Recently Added" here — §3a) renders THIS client's `be` catalog
     /// string under a `be` UI, the same unconditional override Home already gets, while a hub
@@ -1583,7 +1583,7 @@ mod tests {
     #[test]
     fn removing_from_the_deck_reaches_the_staged_set_as_well() {
         let _g = plx_base::testlock::serial();
-        let _t = crate::plex::session::TempSession::new("deckstage");
+        let _t = plx_plex::plex::session::TempSession::new("deckstage");
         _t.watching("u-deckstage");
         let mut state = super::super::BrowseState::default();
         super::super::seed_two_source_table_for_owner_test(&mut state);

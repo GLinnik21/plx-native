@@ -12,7 +12,7 @@
 use std::ffi::CStr;
 
 use plx_net::net::keypin::Blocked;
-use crate::ui::icons::Icon;
+use plx_ui::icons::Icon;
 
 /// The reason line and glyph for why key mode cannot help, or `None` when nothing says it cannot.
 pub(crate) fn reason_for(blocked: Option<Blocked>) -> Option<(&'static CStr, Icon)> {
@@ -62,10 +62,10 @@ impl ClockWatch {
 mod tests {
     use super::*;
     use plx_base::fontcov::advances::ShippedMeasure;
-    use crate::ui::fit::HEADROOM;
+    use plx_ui::fit::HEADROOM;
     use plx_platform::i18n::{language_on_this_thread_for_test, msg};
     use plx_net::net::keypin;
-    use crate::ui::widgets::StatusOverlay;
+    use plx_ui::widgets::StatusOverlay;
 
     #[test]
     fn each_cause_names_its_reason_and_the_clock_glyph_and_nothing_names_nothing() {

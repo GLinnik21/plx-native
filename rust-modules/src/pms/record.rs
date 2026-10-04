@@ -25,7 +25,7 @@ struct Payload {
     gen: u32,
     seq: u32,
     #[serde(with = "server_id")]
-    sid: crate::plex::ServerId,
+    sid: plx_plex::plex::ServerId,
     #[serde(deserialize_with = "required_option")]
     client: Option<u32>,
     token_gen: u32,
@@ -53,7 +53,7 @@ pub(crate) fn validate_binding(value: Value, instance: u32) -> Result<u32, &'sta
 /// Preserve the request's token generation verbatim so stale-token refusal still runs on delivery.
 pub(crate) fn decode(
     value: Value,
-    mut client: impl FnMut(u32) -> Option<&'static crate::plex::Client>,
+    mut client: impl FnMut(u32) -> Option<&'static plx_plex::plex::Client>,
 ) -> Result<Landing, &'static str> {
     let p: Payload = serde_json::from_value(value).map_err(|_| "invalid hubs result")?;
     if p.kind != "hubs" || p.version != 1 { return Err("unsupported hubs result"); }
@@ -71,15 +71,15 @@ pub(crate) fn decode(
 
 pub(super) mod server_id {
     use super::*;
-    pub fn serialize<S: serde::Serializer>(id: &crate::plex::ServerId, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: serde::Serializer>(id: &plx_plex::plex::ServerId, s: S) -> Result<S::Ok, S::Error> {
         id.raw().serialize(s)
     }
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<crate::plex::ServerId, D::Error> {
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<plx_plex::plex::ServerId, D::Error> {
         let n = u16::deserialize(d)?;
-        if usize::from(n) >= crate::plex::MAX_SERVERS && n != u16::MAX {
+        if usize::from(n) >= plx_plex::plex::MAX_SERVERS && n != u16::MAX {
             return Err(serde::de::Error::custom("invalid server slot"));
         }
-        Ok(crate::plex::ServerId::from_raw(n))
+        Ok(plx_plex::plex::ServerId::from_raw(n))
     }
 }
 
@@ -104,7 +104,7 @@ mod tests {
         // Exhaustive on purpose: adding a row field owes a codec/shape review, not an implicit
         // default in the only test claiming complete row preservation.
         let m = PmsMovie {
-            sid: crate::plex::ServerId::from_raw(3), sec: 8, title: "Episode".into(), year: 2026,
+            sid: plx_plex::plex::ServerId::from_raw(3), sec: 8, title: "Episode".into(), year: 2026,
             rating: "TV-14".into(), dur_ns: i64::MAX, part: "/part".into(), thumb: "/poster".into(),
             still: "/still".into(), art: "/art".into(), summary: "Summary".into(), rk: "17".into(),
             vcodec: "hevc".into(), acodec: "aac".into(),
@@ -157,9 +157,9 @@ mod tests {
     #[test]
     fn decoding_requires_the_exact_client_mapping_and_preserves_stale_token_tags() {
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test("codec-machine", "codec.invalid", 32400, "secret-codec-token", "private-device");
-        let old = crate::plex::client_for(sid).unwrap();
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("codec-machine", "codec.invalid", 32400, "secret-codec-token", "private-device");
+        let old = plx_plex::plex::client_for(sid).unwrap();
         let l = Landing { gen: 1, seq: 2, sid, client: Some(LandingClient::live(old)), token_gen: old.token_gen(), build: None };
         old.set_token("replacement-secret");
         let encoded = encode(&l);
@@ -172,9 +172,9 @@ mod tests {
         assert!(std::ptr::eq(restored.client.unwrap().resource, old));
         assert_eq!(restored.token_gen, l.token_gen);
         assert_ne!(restored.token_gen, old.token_gen(), "do not upgrade a stale request while decoding");
-        assert_eq!(crate::plex::register_for_test("codec-machine", "repointed.invalid", 32400,
+        assert_eq!(plx_plex::plex::register_for_test("codec-machine", "repointed.invalid", 32400,
             "repointed-secret", "private-device"), sid);
-        let current = crate::plex::client_for(sid).unwrap();
+        let current = plx_plex::plex::client_for(sid).unwrap();
         assert_ne!(current.instance_gen(), old.instance_gen());
         let stale = decode(encoded.clone(), |id| (id == old.instance_gen()).then_some(old)).unwrap();
         assert!(!std::ptr::eq(stale.client.unwrap().resource, current), "do not rebind a late arrival to the live slot");
@@ -182,8 +182,8 @@ mod tests {
         // Re-encoding that binding must retain the recorded identity, not its new allocation id.
         let remapped = decode(encoded.clone(), |_| Some(current)).unwrap();
         assert_eq!(encode(&remapped), encoded);
-        let other_sid = crate::plex::register_for_test("codec-other", "other.invalid", 32400, "other-secret", "private-device");
-        assert!(decode(encoded, |_| crate::plex::client_for(other_sid)).is_err());
-        crate::plex::reset_servers_for_test();
+        let other_sid = plx_plex::plex::register_for_test("codec-other", "other.invalid", 32400, "other-secret", "private-device");
+        assert!(decode(encoded, |_| plx_plex::plex::client_for(other_sid)).is_err());
+        plx_plex::plex::reset_servers_for_test();
     }
 }

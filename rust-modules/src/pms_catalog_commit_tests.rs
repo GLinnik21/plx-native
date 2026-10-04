@@ -7,7 +7,7 @@ use super::test_support::*;
 
 #[test]
 fn collection_rows_have_their_own_kind_and_unknown_types_are_not_listable() {
-    let row = |kind: &str| crate::plex::Metadata {
+    let row = |kind: &str| plx_plex::plex::Metadata {
         kind: kind.into(), rating_key: "42".into(), title: "Not a movie".into(),
         thumb: "/poster".into(), ..Default::default()
     };
@@ -24,7 +24,7 @@ fn collection_rows_have_their_own_kind_and_unknown_types_are_not_listable() {
 /// `childCount` into it, so a show's season count never masquerades as one.
 #[test]
 fn a_collection_row_carries_its_member_count() {
-    let row = |kind: &str, child_count: i64| crate::plex::Metadata {
+    let row = |kind: &str, child_count: i64| plx_plex::plex::Metadata {
         kind: kind.into(), rating_key: "50001".into(), title: "Trilogy".into(), child_count,
         ..Default::default()
     };
@@ -38,7 +38,7 @@ fn a_collection_row_carries_its_member_count() {
 /// bar, the item menu) trusts the row.
 #[test]
 fn a_collection_row_has_no_watch_or_resume_state() {
-    let row = crate::plex::Metadata {
+    let row = plx_plex::plex::Metadata {
         kind: "collection".into(), rating_key: "50001".into(), title: "Trilogy".into(),
         view_count: 2, view_offset: 60_000, duration: 120_000, leaf_count: 3, viewed_leaf_count: 3,
         ..Default::default()
@@ -128,7 +128,7 @@ fn home_group_falls_back_to_provider_key_not_label_or_position() {
 #[test]
 fn an_episode_keeps_its_own_still_without_a_show_poster() {
     let ep = |gp: &str| {
-        let it = crate::plex::Metadata {
+        let it = plx_plex::plex::Metadata {
             kind: "episode".into(),
             rating_key: "9".into(),
             title: "The Meeting".into(),
@@ -158,7 +158,7 @@ fn an_episode_keeps_its_own_still_without_a_show_poster() {
 
     // a MOVIE carries no still: its `thumb` already IS its own artwork
     let film = parse_item(
-        &crate::plex::Metadata {
+        &plx_plex::plex::Metadata {
             kind: "movie".into(),
             rating_key: "4".into(),
             title: "Snatch".into(),
@@ -172,7 +172,7 @@ fn an_episode_keeps_its_own_still_without_a_show_poster() {
 
 #[test]
 fn a_flat_season_listing_keeps_its_show_title_and_own_poster() {
-    let season: crate::plex::Metadata = serde_json::from_str(r#"{
+    let season: plx_plex::plex::Metadata = serde_json::from_str(r#"{
         "type":"season", "ratingKey":"17", "title":"Season 2", "index":2,
         "parentRatingKey":"9", "parentTitle":"Example Show", "thumb":"/season/poster"
     }"#).unwrap();

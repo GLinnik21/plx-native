@@ -9,16 +9,16 @@
 //! the SHOW, and a show container carries no `Chapter[]`.
 #![allow(dead_code)]
 use crate::metadata;
-use crate::ui::consts::{MARGIN_X, SCR_W};
-use crate::ui::frame::Budget;
-use crate::ui::geom::IndexElem;
+use plx_ui::consts::{MARGIN_X, SCR_W};
+use plx_ui::frame::Budget;
+use plx_ui::geom::IndexElem;
 use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host};
-use crate::ui::screen::{
+use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Part, Placed, Seat, Step, Stop,
 };
-use crate::ui::theme;
-use crate::ui::{Painter, Rect, Spring};
+use plx_ui::theme;
+use plx_ui::{Painter, Rect, Spring};
 use std::ffi::CString;
 use std::os::raw::c_int;
 
@@ -33,7 +33,7 @@ const CH_RAD: f32 = 10.0;
 /// Colour is the unkeyed focus edge ([`theme::CONTROL_RIM_FOCUS_UNKEYED`]); width is deliberately a
 /// step over that control's 1.25 so a 288-wide still reads as selected, not merely edged.
 const CH_FOCUS_RING_W: f32 = 2.5;
-use crate::ui::widgets::CARD_FOCUS_SCALE;
+use plx_ui::widgets::CARD_FOCUS_SCALE;
 
 /// The strip's whole state, owned by the container that mounts this panel — the modal PHASE and
 /// the appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw`
@@ -96,9 +96,9 @@ impl ChaptersState {
         self.sel = sel;
         let sctgt = scroll_target(sel);
         self.scroll.step(sctgt, 220.0, dt);
-        crate::ui::anim::probe("chapters.scroll", self.scroll.pos, self.scroll.vel, sctgt, dt);
+        plx_ui::anim::probe("chapters.scroll", self.scroll.pos, self.scroll.vel, sctgt, dt);
         self.scale.step(CARD_FOCUS_SCALE, 300.0, dt);
-        crate::ui::anim::probe(
+        plx_ui::anim::probe(
             "chapters.scale",
             self.scale.pos,
             self.scale.vel,
@@ -123,9 +123,9 @@ impl ChaptersState {
         let scale = self.scale.pos;
         // reproduces exactly what `Popover::painter(0.0, 20.0)` (no scrim + `content_painter(20.0)`)
         // used to draw, translated further by the strip's own horizontal scroll.
-        let p = crate::ui::Painter::root()
+        let p = plx_ui::Painter::root()
             .alpha(appear)
-            .translate(0.0, crate::ui::popover::Popover::RISE * (1.0 - appear))
+            .translate(0.0, plx_ui::popover::Popover::RISE * (1.0 - appear))
             .translate(-scroll, 0.0);
 
         // timecode uses SECONDARY (not the dim TERTIARY): it's drawn straight over the video, where the
@@ -134,12 +134,12 @@ impl ChaptersState {
         let dimc = theme::TEXT_SECONDARY;
         for (i, ch) in chs.iter().enumerate() {
             let x = MARGIN_X + i as f32 * (CH_W + CH_GAP);
-            if !crate::ui::on_axis(x - scroll, CH_W, SCR_W, 0.0) {
+            if !plx_ui::on_axis(x - scroll, CH_W, SCR_W, 0.0) {
                 continue; // culled off-screen (the shared cull primitive)
             }
             let focused = i as c_int == sel;
             let card = Rect::new(x, CH_TOP, CH_W, CH_H);
-            crate::ui::widgets::draw_card(
+            plx_ui::widgets::draw_card(
                 p,
                 card,
                 crate::route::item_sid(crate::route::cur_sid(ps)).raw(),
@@ -177,7 +177,7 @@ impl ChaptersState {
             })) {
                 p.text(tc.as_ptr(), x, ty, theme::size::LABEL, titc, 0, 1);
             }
-            if let Ok(sc) = CString::new(crate::ui::fmt::clock(ch.start_ms)) {
+            if let Ok(sc) = CString::new(plx_ui::fmt::clock(ch.start_ms)) {
                 p.text(sc.as_ptr(), x, ty + 34.0, theme::size::CAPTION, dimc, 0, 0);
             }
         }
@@ -220,7 +220,7 @@ fn card_rect(i: usize, scroll: f32) -> Rect {
 }
 
 /// The strip's own clip — every card's stop is bounded to it, matching the cull test
-/// [`ChaptersState::draw`] runs per card (`crate::ui::on_axis`).
+/// [`ChaptersState::draw`] runs per card (`plx_ui::on_axis`).
 fn strip_extent() -> Rect {
     Rect::new(0.0, CH_TOP, SCR_W, CH_H)
 }
@@ -358,12 +358,12 @@ mod focus_tests {
 
     struct HostFixture;
     impl Host for HostFixture {
-        type Arg = crate::ui::fixture::FixtureArg;
-        type Fx = crate::ui::fixture::FixtureFx;
-        type Msg = crate::ui::fixture::FixtureMsg;
+        type Arg = plx_ui::fixture::FixtureArg;
+        type Fx = plx_ui::fixture::FixtureFx;
+        type Msg = plx_ui::fixture::FixtureMsg;
         type Elem = u32;
         type Views<'a> = ();
-        type Init = crate::ui::fixture::FixtureInit;
+        type Init = plx_ui::fixture::FixtureInit;
         type Memory = ();
     }
 
@@ -375,7 +375,7 @@ mod focus_tests {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
     }
     fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         test(&Cx {
             views: (),
             tick: Tick::default(),

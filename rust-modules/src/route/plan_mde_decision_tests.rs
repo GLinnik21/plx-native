@@ -70,8 +70,8 @@ fn mkv_and_mp4_parts_are_direct_playable() {
 ///     the human line, and a server that stays quiet must not thereby become playable.
 #[test]
 fn a_2000_decision_is_a_refusal_and_quotes_the_reason_the_server_named() {
-    fn mc(json: &[u8]) -> crate::plex::MediaContainer {
-        serde_json::from_slice::<crate::plex::Envelope>(json)
+    fn mc(json: &[u8]) -> plx_plex::plex::MediaContainer {
+        serde_json::from_slice::<plx_plex::plex::Envelope>(json)
             .expect("parse")
             .media_container
     }
@@ -121,8 +121,8 @@ fn a_2000_decision_is_a_refusal_and_quotes_the_reason_the_server_named() {
 /// sentence is not among them — it is the one part that must never leave the television.
 #[test]
 fn a_refusal_keeps_the_two_decision_numbers_and_an_absent_one_stays_absent() {
-    fn mc(json: &[u8]) -> crate::plex::MediaContainer {
-        serde_json::from_slice::<crate::plex::Envelope>(json)
+    fn mc(json: &[u8]) -> plx_plex::plex::MediaContainer {
+        serde_json::from_slice::<plx_plex::plex::Envelope>(json)
             .expect("parse")
             .media_container
     }

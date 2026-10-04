@@ -3,12 +3,12 @@ use std::ffi::CString;
 use super::identity::{KeyRegistry, KeyRegion, region_of_elem};
 use super::layout::{rail_geom, rail_scroll_target, MAX_LETTERS, RAIL_CAP_PAD, RAIL_PITCH, RAIL_TRACK_W};
 use crate::screens::registry::{LibraryIdentity, LibraryLike, LibrarySectionIdentity};
-use crate::ui::consts::K_SCROLL;
-use crate::ui::frame::Budget;
+use plx_ui::consts::K_SCROLL;
+use plx_ui::frame::Budget;
 use plx_machine::machine::{Canon, Cx, EntryId, FocusKey, GroupId};
-use crate::ui::screen::{Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable,
+use plx_ui::screen::{Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable,
     GroupKind, GroupSpec, Hover, Part, Placed, Seat, Step, Stop};
-use crate::ui::{Rect, Spring, theme};
+use plx_ui::{Rect, Spring, theme};
 
 pub(super) struct RailPart {
     entry: EntryId,
@@ -142,11 +142,11 @@ impl RailPart {
             let focused = f.focus.current == Some(FocusKey { entry: self.entry, elem: self.elems[index] });
             let ink = if focused {
                 let disc = Rect::new(slot.cx() - 19.0, slot.cy() - 19.0, 38.0, 38.0);
-                q.rect(disc, 19.0, crate::ui::ACCENT, crate::ui::ACCENT, 0.0);
-                crate::ui::ACCENT_INK
+                q.rect(disc, 19.0, plx_ui::ACCENT, plx_ui::ACCENT, 0.0);
+                plx_ui::ACCENT_INK
             } else if current == Some(index) { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-            crate::ui::label::Label::new(label.as_ptr(), theme::size::CAPTION, ink).bold()
-                .h(crate::ui::label::HAlign::Center).draw(q, slot);
+            plx_ui::label::Label::new(label.as_ptr(), theme::size::CAPTION, ink).bold()
+                .h(plx_ui::label::HAlign::Center).draw(q, slot);
         }
         self.record_stops(f);
     }

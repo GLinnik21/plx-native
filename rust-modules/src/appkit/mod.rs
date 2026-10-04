@@ -15,7 +15,7 @@
 //! and never `screens` or `app`: a value the loop owns is passed in, and a behaviour a higher layer
 //! owns is a hook it registers at boot (`more_menu::install_stats_reader`, installed by
 //! `app::enter_application`). The files here moved out of `ui/` unchanged.
-// **This blankets the whole `appkit` tree**, as `ui/mod.rs`'s own `allow(dead_code)` did for these
+// **This blankets the whole `appkit` tree**, as `plx_ui`'s `lib.rs`'s own `allow(dead_code)` did for these
 // files while they lived there (that comment records why it is wider than it reads): the moved
 // files were never subject to the lint, and moving them must not make a different set of items
 // "dead".

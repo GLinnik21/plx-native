@@ -9,11 +9,11 @@ mod carry_matrix {
     use crate::auth::{AuthProgress, LoginProgress, RegistryProgress, SessionCmd};
     use crate::auth::owner::{AdmissionId, AdmissionState, CommitAdmission, CommitReply, Identity, Pending, Receipt,
         RegistryPlan, SessionEnvelope, SessionEvent, SessionFx, SessionOp, SessionWorkKey, StreamPhase};
-    use crate::plex::session::{Session, SourceRef, UserRef, ServerRef};
+    use plx_plex::plex::session::{Session, SourceRef, UserRef, ServerRef};
     use plx_machine::machine::{RequestId, Stamped};
 
     const EPOCH: u64 = u32::MAX as u64 + 191;
-    const BUDGET: usize = crate::ui::dispatch::MAX_STEPS_PRE as usize + crate::ui::dispatch::MAX_STEPS_POST as usize;
+    const BUDGET: usize = plx_ui::dispatch::MAX_STEPS_PRE as usize + plx_ui::dispatch::MAX_STEPS_POST as usize;
 
     #[derive(Default)]
     struct Trace {
@@ -22,7 +22,7 @@ mod carry_matrix {
         publications: usize,
         ready: usize,
     }
-    impl crate::ui::dispatch::Tap<AppHost> for Trace {
+    impl plx_ui::dispatch::Tap<AppHost> for Trace {
         fn effect(&mut self, _: u64, s: &Stamped<AppHost>) {
             match &s.fx {
                 Fx::App(AppFx::SessionEffect(SessionFx::Acknowledge(receipts))) => self.acks.extend(receipts),
@@ -51,7 +51,7 @@ mod carry_matrix {
             server: ServerRef { machine_id: source.machine_id.clone(), address: source.address.clone(),
                 origin_url: source.origin_url.clone(), port: source.port, token: source.token.clone(), ..Default::default() },
             sources: vec![source], home_users: ["profile-a", "profile-b"].into_iter().map(|uuid|
-                crate::plex::session::HomeUserRef { uuid: uuid.into(), title: uuid.into(), ..Default::default() }
+                plx_plex::plex::session::HomeUserRef { uuid: uuid.into(), title: uuid.into(), ..Default::default() }
             ).collect(), ..Default::default() }
     }
     fn rig(ops: &[(u32, SessionOp)]) -> Bridge {
@@ -75,7 +75,7 @@ mod carry_matrix {
         d.emit(MachineId::Session, Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::Session(event))));
     }
     fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<SessionEnvelope>, trace: &mut Trace)
-        -> crate::ui::dispatch::FrameReport {
+        -> plx_ui::dispatch::FrameReport {
         let results = records.into_iter().map(|r| (r.addr, AppMsg::Session(SessionEvent::Result(r)))).collect();
         d.frame_with(rig, Tick::default(), Vec::new(), results, trace, false)
     }
@@ -319,12 +319,12 @@ fn home_roster_failure_history(cached: bool, failure: u8) {
     use crate::auth::{SessionCmd, Phase};
     use crate::auth::owner::{SessionEvent, SessionWork, SessionOp, SessionWorkKey, SESSION_TOTAL_RESERVATIONS};
     use plx_machine::machine::RequestId;
-    let mut stored = crate::plex::session::Session {
+    let mut stored = plx_plex::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
         ..Default::default()
     };
     if cached {
-        stored.home_users.push(crate::plex::session::HomeUserRef {
+        stored.home_users.push(plx_plex::plex::session::HomeUserRef {
             uuid: "cached-user".into(), title: "Cached".into(), ..Default::default()
         });
     }
@@ -420,7 +420,7 @@ mod qr_exhaustion_guard {
         cancelled: Vec<u32>,
         retired: Vec<u32>,
     }
-    impl crate::ui::dispatch::Tap<AppHost> for Cancellation {
+    impl plx_ui::dispatch::Tap<AppHost> for Cancellation {
         fn effect(&mut self, _: u64, effect: &Stamped<AppHost>) {
             match &effect.fx {
                 Fx::App(AppFx::SessionEffect(SessionFx::Cancel { requests, .. })) =>
@@ -434,7 +434,7 @@ mod qr_exhaustion_guard {
     #[test]
     fn qr_allocator_exhaustion_cancel_and_retire_hold_running_producer_until_guard_ack() {
         let key = SessionWorkKey { epoch: u64::from(u32::MAX) + 181, op: SessionOp::Login };
-        let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
+        let mut init = crate::auth::SessionInit::captured(plx_plex::plex::session::Session {
             client_id: "synthetic-client".into(), ..Default::default()
         });
         init.epoch = key.epoch;
@@ -501,7 +501,7 @@ fn admission_refusal_correlation_survives_carried_acceptance_and_transferred_ter
     }
     let key = SessionWorkKey { epoch: u64::from(u32::MAX) + 171, op: SessionOp::Login };
     let fixture = |req| {
-        let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
+        let mut init = crate::auth::SessionInit::captured(plx_plex::plex::session::Session {
             client_id: "synthetic-client".into(), ..Default::default()
         });
         init.epoch = key.epoch;
@@ -523,7 +523,7 @@ fn admission_refusal_correlation_survives_carried_acceptance_and_transferred_ter
     let mut d = Dispatcher::<AppHost>::new();
     deliver(&mut rig, &mut d, SessionEvent::Admission(negative));
     assert_eq!(rig.session_subhash(), before, "resource acceptance protects even before its first observation/reply");
-    for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST {
+    for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST {
         execute_session_command(&mut d, crate::auth::SessionCmd::DismissPinError);
     }
     d.emit(MachineId::Session, Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::Session(
@@ -678,9 +678,9 @@ fn mounted_profiles_selection_crosses_owner_and_live_ack_with_constructor_and_co
     use plx_machine::machine::{PressId, RequestId};
     let _guard = plx_base::testlock::serial();
     let epoch = u64::from(u32::MAX) + 31;
-    let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
+    let mut init = crate::auth::SessionInit::captured(plx_plex::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
-        user: crate::plex::session::UserRef { uuid: "synthetic-user".into(),
+        user: plx_plex::plex::session::UserRef { uuid: "synthetic-user".into(),
             token: "synthetic-profile-token".into(), ..Default::default() }, ..Default::default()
     });
     init.epoch = epoch;
@@ -695,7 +695,7 @@ fn mounted_profiles_selection_crosses_owner_and_live_ack_with_constructor_and_co
         d.top_screen().unwrap().state().probe(&mut text);
         text
     };
-    for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST {
+    for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST {
         execute_session_command(&mut d, Command::NoteDeleteLeftovers(0));
     }
     d.request(MachineId::Nav, NavOp::Root(AppArg::Profiles));
@@ -712,7 +712,7 @@ fn mounted_profiles_selection_crosses_owner_and_live_ack_with_constructor_and_co
     // A committed press reaches the actual mounted screen and its real focus-selected action.
     // Gesture recognition itself is covered by the existing press tests; no Session command
     // is manufactured here for the selection.
-    for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 1 {
+    for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 1 {
         execute_session_command(&mut d, Command::NoteDeleteLeftovers(0));
     }
     d.emit(MachineId::Input, Fx::Deliver(MachineId::Instance(instance),
@@ -767,7 +767,7 @@ fn mounted_profiles_selection_crosses_owner_and_live_ack_with_constructor_and_co
 #[test]
 fn erased_publication_waits_for_carried_resource_completion() {
     use crate::auth::owner::Command;
-    let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
+    let mut init = crate::auth::SessionInit::captured(plx_plex::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
         ..Default::default()
     });
@@ -777,7 +777,7 @@ fn erased_publication_waits_for_carried_resource_completion() {
     let mut rig = Bridge::for_session_test(init);
     rig.session_adapter.fixture_resources().sweep_leftovers = 2;
     let mut d = Dispatcher::<AppHost>::new();
-    for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 1 {
+    for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 1 {
         execute_session_command(&mut d, Command::DismissPinError);
     }
     execute_session_command(&mut d, Command::EraseLocal);
@@ -819,7 +819,7 @@ fn erased_publication_waits_for_carried_resource_completion() {
 #[test]
 fn selection_acceptance_uses_exact_instance_correlation_and_full_epoch_through_carry() {
     use crate::auth::owner::{Command, ReplyTo};
-    use crate::ui::dispatch::Tap;
+    use plx_ui::dispatch::Tap;
     #[derive(Default)]
     struct Replies(Vec<(u32, u32, bool, u64)>);
     impl Tap<AppHost> for Replies {
@@ -835,9 +835,9 @@ fn selection_acceptance_uses_exact_instance_correlation_and_full_epoch_through_c
     for case in 0..5 {
         for carry in [false, true] {
             let epoch = if case == 4 { u64::MAX } else { u64::from(u32::MAX) + 23 };
-            let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
+            let mut init = crate::auth::SessionInit::captured(plx_plex::plex::session::Session {
                 client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
-                user: crate::plex::session::UserRef { uuid: "synthetic-user".into(),
+                user: plx_plex::plex::session::UserRef { uuid: "synthetic-user".into(),
                     token: "synthetic-profile-token".into(), ..Default::default() }, ..Default::default()
             });
             init.epoch = epoch;
@@ -851,7 +851,7 @@ fn selection_acceptance_uses_exact_instance_correlation_and_full_epoch_through_c
             let mut d = Dispatcher::<AppHost>::new();
             let mut replies = Replies::default();
             if carry {
-                for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 1 {
+                for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 1 {
                     execute_session_command(&mut d, Command::DismissPinError);
                 }
             }
@@ -895,7 +895,7 @@ fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_ac
     // frame_ingest also captures the OTHER stores. Serialize that real frame boundary;
     // Session's own resources remain private and every network operation is injected.
     let _guard = plx_base::testlock::serial();
-    let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
+    let mut init = crate::auth::SessionInit::captured(plx_plex::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
         ..Default::default()
     });
@@ -991,31 +991,31 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
     use crate::auth::owner::{RegistryPlan, SessionEvent, SessionWork};
     let _guard = plx_base::testlock::serial();
     for replacement in 0..3 {
-        crate::plex::reset_servers_for_test();
-        let initial_origin = crate::plex::Origin::http("127.0.0.1", 9);
-        let sid = crate::plex::register_pinned_with_client_id("synthetic-server", &initial_origin,
-            "synthetic-profile-token", None, "synthetic-client", crate::plex::ConnectionFacts::default());
-        let client = crate::plex::client_for(sid).unwrap();
+        plx_plex::plex::reset_servers_for_test();
+        let initial_origin = plx_plex::plex::Origin::http("127.0.0.1", 9);
+        let sid = plx_plex::plex::register_pinned_with_client_id("synthetic-server", &initial_origin,
+            "synthetic-profile-token", None, "synthetic-client", plx_plex::plex::ConnectionFacts::default());
+        let client = plx_plex::plex::client_for(sid).unwrap();
         let instance = client.instance_gen();
         let token_gen = client.token_gen();
-        let grant = crate::plex::session::SourceRef { machine_id: "synthetic-server".into(),
+        let grant = plx_plex::plex::session::SourceRef { machine_id: "synthetic-server".into(),
             name: "Synthetic server".into(), address: "127.0.0.1".into(), port: 9,
             origin_url: initial_origin.base(), token: "synthetic-profile-token".into(),
             owned: true, ..Default::default() };
-        let stored = crate::plex::session::Session {
+        let stored = plx_plex::plex::session::Session {
             client_id: "synthetic-client".into(), account_token: "synthetic-account-token".into(),
-            user: crate::plex::session::UserRef { uuid: "synthetic-profile".into(),
+            user: plx_plex::plex::session::UserRef { uuid: "synthetic-profile".into(),
                 token: grant.token.clone(), ..Default::default() },
-            server: crate::plex::session::ServerRef { machine_id: grant.machine_id.clone(),
+            server: plx_plex::plex::session::ServerRef { machine_id: grant.machine_id.clone(),
                 address: grant.address.clone(), port: grant.port, origin_url: grant.origin_url.clone(),
                 token: grant.token.clone(), ..Default::default() },
             sources: vec![grant.clone()], ..Default::default()
         };
-        let fresh = crate::plex::session::SourceRef {
+        let fresh = plx_plex::plex::session::SourceRef {
             address: "192.0.2.20".into(), port: 32400,
             origin_url: "https://192-0-2-20.synthetic.plex.direct:32400".into(),
             token: "synthetic-account-grant-not-profile-token".into(),
-            tier: Some(crate::plex::probe::Location::Local), ..grant.clone()
+            tier: Some(plx_plex::plex::probe::Location::Local), ..grant.clone()
         };
         let expected_origin = fresh.origin().unwrap();
         let expected_pin = fresh.resolve_pin().unwrap();
@@ -1030,8 +1030,8 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
             assert_eq!(lifecycle.token_gen, token_gen);
             assert_eq!(expected.profile_uuid, "synthetic-profile");
             let probe = crate::auth::settled_probe_for_test(&machine_id,
-                crate::plex::probe::Outcome::Reachable,
-                Some(crate::plex::probe::Location::Local), Some(fresh.address.clone()));
+                plx_plex::plex::probe::Outcome::Reachable,
+                Some(plx_plex::plex::probe::Location::Local), Some(fresh.address.clone()));
             assert!(output.complete(crate::auth::endpoint_work_fact(1, expected, lifecycle,
                 machine_id, Some(fresh), Some(probe))).is_ok());
         });
@@ -1042,21 +1042,21 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
         assert_eq!(records.len(), 1);
         assert!(rig.session_adapter.fixture_resources().registry_writes.is_empty());
         assert_eq!(rig.session_adapter.fixture_resources().disk.sources[0].origin_url, initial_origin.base());
-        rig.session_adapter.fixture_resources().disk.playback_quality = Some(crate::plex::session::PlaybackQuality::Original);
+        rig.session_adapter.fixture_resources().disk.playback_quality = Some(plx_plex::plex::session::PlaybackQuality::Original);
         match replacement {
             1 => {
                 client.set_token("synthetic-new-profile-token");
-                assert!(std::ptr::eq(client, crate::plex::client_for(sid).unwrap()));
+                assert!(std::ptr::eq(client, plx_plex::plex::client_for(sid).unwrap()));
                 assert_ne!(client.token_gen(), token_gen);
                 assert_eq!(client.instance_gen(), instance);
             }
             2 => {
-                let newer = crate::plex::Origin::http("127.0.0.1", 10);
-                let replaced_sid = crate::plex::register_pinned_with_client_id("synthetic-server", &newer,
-                    "synthetic-new-profile-token", None, "synthetic-client", crate::plex::ConnectionFacts::default());
+                let newer = plx_plex::plex::Origin::http("127.0.0.1", 10);
+                let replaced_sid = plx_plex::plex::register_pinned_with_client_id("synthetic-server", &newer,
+                    "synthetic-new-profile-token", None, "synthetic-client", plx_plex::plex::ConnectionFacts::default());
                 assert_eq!(replaced_sid, sid);
-                assert!(!std::ptr::eq(client, crate::plex::client_for(sid).unwrap()));
-                assert_ne!(crate::plex::client_for(sid).unwrap().instance_gen(), instance);
+                assert!(!std::ptr::eq(client, plx_plex::plex::client_for(sid).unwrap()));
+                assert_ne!(plx_plex::plex::client_for(sid).unwrap().instance_gen(), instance);
             }
             _ => {}
         }
@@ -1064,7 +1064,7 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
             AppMsg::Session(SessionEvent::Result(envelope)))).collect();
         d.frame_with(&mut rig, Tick { ms: 16, dt_us: 16_000 }, Vec::new(), results, &mut NoTap, false);
         let resources = rig.session_adapter.fixture_resources();
-        assert_eq!(resources.disk.playback_quality, Some(crate::plex::session::PlaybackQuality::Original));
+        assert_eq!(resources.disk.playback_quality, Some(plx_plex::plex::session::PlaybackQuality::Original));
         if replacement == 0 {
             let [RegistryPlan::Endpoint { source, .. }] = resources.registry_writes.as_slice()
                 else { panic!("positive endpoint observation did not commit exactly one route") };
@@ -1072,17 +1072,17 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
             assert_eq!(source.resolve_pin().as_ref(), Some(&expected_pin));
             assert_eq!(source.token, "synthetic-profile-token");
             assert_eq!(resources.disk.sources[0].origin_url, expected_origin.base());
-            let installed = crate::plex::client_for(sid).unwrap();
+            let installed = plx_plex::plex::client_for(sid).unwrap();
             assert_eq!(installed.origin(), &expected_origin);
             assert_eq!(installed.resolve_pin(), Some(&expected_pin));
         } else {
             assert!(resources.registry_writes.is_empty());
             assert_eq!(resources.disk.sources[0].origin_url, initial_origin.base());
-            assert_ne!(crate::plex::client_for(sid).unwrap().origin(), &expected_origin);
+            assert_ne!(plx_plex::plex::client_for(sid).unwrap().origin(), &expected_origin);
         }
         assert!(rig.session.snapshot_init().pending.is_empty());
         assert!(rig.session.snapshot_init().pending_commit.is_none());
         assert!(records.iter().all(|record| !rig.session_adapter.admitted(record)));
     }
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }

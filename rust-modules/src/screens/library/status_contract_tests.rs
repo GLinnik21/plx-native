@@ -1,10 +1,10 @@
 use super::super::{readout, LibraryScreen, Readout, FILTER, LIBRARY_GROUP, RETRY, SORT, STATUS_GROUP};
 use crate::stores::browse::{SecFetch, SecKind, SrcGroup, SourceState, SrcRow};
 use crate::screens::registry::{LibraryLike, PageMemory};
-use crate::ui::fixture::FixtureMeasure;
-use crate::ui::consts::SCR_W;
+use plx_ui::fixture::FixtureMeasure;
+use plx_ui::consts::SCR_W;
 use plx_machine::machine::{Canon, Cx, EntryId, FocusKey, FocusRead, Host, InputOwner, InstanceId, LogicalState, PressRead, ScreenId, Tick};
-use crate::ui::screen::{At, Focusable, GroupSpec, ScreenArg};
+use plx_ui::screen::{At, Focusable, GroupSpec, ScreenArg};
 
 #[derive(Clone)]
 struct Arg;
@@ -58,7 +58,7 @@ struct Fixture {
 
 impl Fixture {
     fn normal() -> Self {
-        let sid = crate::plex::ServerId::from_raw(0);
+        let sid = plx_plex::plex::ServerId::from_raw(0);
         let listing = crate::stores::browse::ListingSnapshot::fixture(
             sid,
             (0..36).map(|i| Some(crate::pms::PmsMovie {
@@ -78,7 +78,7 @@ impl Fixture {
 
     fn section(section: usize, key: i64, title: &str, current: bool) -> crate::stores::browse::SectionView {
         crate::stores::browse::SectionView {
-            sid: Some(crate::plex::ServerId::from_raw(0)),
+            sid: Some(plx_plex::plex::ServerId::from_raw(0)),
             key,
             kind: SecKind::Movie,
             row: SrcRow { section, title: title.into(), pinned: true, current, ..Default::default() },
@@ -86,7 +86,7 @@ impl Fixture {
     }
 
     fn listing(fetch: SecFetch, total: i64) -> crate::stores::browse::ListingSnapshot {
-        let sid = crate::plex::ServerId::from_raw(0);
+        let sid = plx_plex::plex::ServerId::from_raw(0);
         crate::stores::browse::ListingSnapshot::fixture(
             sid,
             (0..total.max(0) as usize).map(|i| Some(crate::pms::PmsMovie {
@@ -160,19 +160,19 @@ fn failed_status_occupies_content_and_keeps_only_navigation_and_retry() {
     let frame = page.status_frame();
     let retry = page.place(&RETRY, &cx, At::SpringTarget).expect("failed status publishes Retry placement").rect;
     assert!(frame.y >= crate::screens::library::layout::CONTENT_TOP);
-    assert!(crate::ui::consts::inside_safe(frame));
-    assert!(crate::ui::consts::inside_safe(retry));
+    assert!(plx_ui::consts::inside_safe(frame));
+    assert!(plx_ui::consts::inside_safe(retry));
     let status = groups.iter().find(|group| group.id == STATUS_GROUP).unwrap();
     assert_eq!([status.extent.x, status.extent.y, status.extent.w, status.extent.h],
         [retry.x, retry.y, retry.w, retry.h]);
-    assert_eq!(frame.x, crate::ui::consts::MARGIN_X);
-    assert_eq!(frame.w, SCR_W - 2.0 * crate::ui::consts::MARGIN_X);
+    assert_eq!(frame.x, plx_ui::consts::MARGIN_X);
+    assert_eq!(frame.w, SCR_W - 2.0 * plx_ui::consts::MARGIN_X);
 }
 
 #[test]
 fn empty_loading_and_failed_discovery_publish_no_false_grid_controls() {
     let _guard = plx_base::testlock::serial();
-    let sid = crate::plex::ServerId::from_raw(7);
+    let sid = plx_plex::plex::ServerId::from_raw(7);
     let scenarios = [
         ("reachable empty table", crate::stores::browse::DirectorySnapshot::fixture_source(
             1, sid, SrcGroup { name: "Cinema server".into(), handle: String::new(), state: SourceState::Reachable, tier: None }, SecFetch::Ready),

@@ -2,7 +2,7 @@
 //! a payload-free tag that could accidentally compare equal.
 use crate::screens::registry::{AppFx, AppMsg};
 use plx_machine::machine::{Delivery, Fx};
-use crate::ui::screen::ScreenEvent;
+use plx_ui::screen::ScreenEvent;
 use serde_json::{json, Value};
 
 fn focus(key: plx_machine::machine::FocusKey<u32>) -> Value { json!([key.entry.0,key.elem]) }
@@ -303,23 +303,23 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
                         ScreenEvent::Unmount | ScreenEvent::Suspend | ScreenEvent::Resume => Value::Null,
                         ScreenEvent::RestoreMemory(memory) => page_memory(memory)?,
                         ScreenEvent::Enter(enter) => match enter {
-                            crate::ui::screen::Enter::Restored => json!("restored"),
-                            crate::ui::screen::Enter::Fresh { focus:target } => json!({"fresh":match target {
-                                crate::ui::screen::FocusTarget::Elem(key) => json!({"elem":focus(*key)}),
-                                crate::ui::screen::FocusTarget::ContainerGroup(group) => json!({"group":group.0}),
+                            plx_ui::screen::Enter::Restored => json!("restored"),
+                            plx_ui::screen::Enter::Fresh { focus:target } => json!({"fresh":match target {
+                                plx_ui::screen::FocusTarget::Elem(key) => json!({"elem":focus(*key)}),
+                                plx_ui::screen::FocusTarget::ContainerGroup(group) => json!({"group":group.0}),
                                 // Distinct from `ContainerGroup`'s encoding on purpose: the two
                                 // resolve differently against the SAME remembered cursor (a
                                 // never-seen page vs. a plain re-entry), so a replay that could
                                 // not tell them apart from the recording would silently grade the
                                 // wrong seat — `FocusTarget`'s doc on `machine.rs` has the incident.
-                                crate::ui::screen::FocusTarget::FirstInGroup(group) => json!({"first_in_group":group.0}),
+                                plx_ui::screen::FocusTarget::FirstInGroup(group) => json!({"first_in_group":group.0}),
                                 // A strip pill's cover-and-mint (`stack.rs`'s `SelectTab` arm) —
                                 // same seat as `FirstInGroup`, distinct only in the `By` it
                                 // reports (`machine.rs`'s doc on the variant), so it gets its own
                                 // tag for the same reason `FirstInGroup` does: a replay that
                                 // could not tell the two apart from the recording would grade the
                                 // wrong arrival animation.
-                                crate::ui::screen::FocusTarget::FirstInGroupAnimated(group) => json!({"first_in_group_animated":group.0}),
+                                plx_ui::screen::FocusTarget::FirstInGroupAnimated(group) => json!({"first_in_group_animated":group.0}),
                             }}),
                         },
                         ScreenEvent::WillLeave(leave) => json!(match leave {
@@ -333,9 +333,9 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
                         ScreenEvent::Input(event) => input(event)?,
                         ScreenEvent::StoreChanged(store, generation) => json!([store.0,generation]),
                         ScreenEvent::FocusMoved { from, to, by } => json!({"from":from.map(focus),
-                            "to":focus(*to),"by":match by { crate::ui::screen::By::Dir => "dir",
-                                crate::ui::screen::By::Pointer => "pointer", crate::ui::screen::By::Restore => "restore",
-                                crate::ui::screen::By::Reconcile => "reconcile" }}),
+                            "to":focus(*to),"by":match by { plx_ui::screen::By::Dir => "dir",
+                                plx_ui::screen::By::Pointer => "pointer", plx_ui::screen::By::Restore => "restore",
+                                plx_ui::screen::By::Reconcile => "reconcile" }}),
                         ScreenEvent::App(msg) => message(msg)?,
                         ScreenEvent::Async(req, msg) => json!({"req":req.0,"message":message(msg)?}),
                     };
@@ -357,7 +357,7 @@ mod tests {
     fn controlled_content_records_preview_and_panel_payloads() {
         use crate::screens::registry::{AppFx, ContentPanel, ContentReq};
         use serde_json::json;
-        let sid = crate::plex::ServerId::from_raw(7);
+        let sid = plx_plex::plex::ServerId::from_raw(7);
         let cases = [
             (ContentReq::PreviewStart { sid, rk: "1001".into(), part: "/part".into(),
                 vcodec: "h264".into(), acodec: "aac".into(), title: "s12345678".into() },

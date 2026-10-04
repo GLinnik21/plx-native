@@ -12,7 +12,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
         edits: usize,
         commits: Vec<crate::stores::browse::QueryEdit>,
     }
-    impl crate::ui::dispatch::Tap<AppHost> for Trace {
+    impl plx_ui::dispatch::Tap<AppHost> for Trace {
         fn effect(&mut self, _: u64, effect: &plx_machine::machine::Stamped<AppHost>) {
             match &effect.fx {
                 Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::LibraryEdit { .. }))) => {
@@ -36,17 +36,17 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
-    let session = crate::plex::session::TempSession::new("library-back-before-floor");
+    let session = plx_plex::plex::session::TempSession::new("library-back-before-floor");
     session.watching("u-library-back-before-floor");
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_for_test("back-own", "127.0.0.1", 9, "synthetic", "fixture");
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("back-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared =
-        crate::plex::register_for_test("back-shared", "127.0.0.1", 10, "synthetic", "fixture");
-    crate::plex::set_current(sid);
+        plx_plex::plex::register_for_test("back-shared", "127.0.0.1", 10, "synthetic", "fixture");
+    plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
@@ -57,7 +57,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
     let page = d.nav.top_page().unwrap().id;
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     let listing = rig.listing.view().id().unwrap();
-    d.nav.next_style = crate::ui::containers::modal::Style::Compact;
+    d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::LibraryMenu(

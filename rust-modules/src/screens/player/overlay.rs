@@ -42,15 +42,15 @@ use std::os::raw::c_int;
 
 use crate::screens::registry::{AppFx, AppLike, PlayerReq};
 use crate::appkit::chapters_panel::{chapter_count, ChaptersPart};
-use crate::ui::consts;
-use crate::ui::frame::Budget;
+use plx_ui::consts;
+use plx_ui::frame::Budget;
 use crate::appkit::info_panel::InfoPanelPart;
 use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, LogicalState,
     Machine, NavOp,
 };
 use crate::appkit::more_menu::{MoreMenuPart, MoreOk};
-use crate::ui::screen::{
+use plx_ui::screen::{
     At, Dir, DrawFrame, FocusSource, Focusable, GroupSpec, HitSource, Part, Placed, RenderStrategy,
     Screen, ScreenEvent, Step,
 };
@@ -58,7 +58,7 @@ use crate::appkit::timing_capsule::{CapsuleOut, TimingCapsule};
 use crate::appkit::track_menu::{TrackMenuPart, TrackOk};
 
 use super::HudPolicy;
-use crate::ui::Rect;
+use plx_ui::Rect;
 
 use super::input::{HUD_LINGER_MS, HUD_MENU_MS};
 use crate::screens::registry::{RepeatGate, PANEL_REPEAT_MS};
@@ -235,7 +235,7 @@ pub(crate) struct PlayerOverlayScreen {
     /// ([`PANEL_REPEAT_MS`]).
     repeat: RepeatGate,
     /// The playing item's UltraBlur corners, read once at open — what this panel's dim inherits
-    /// ([`Scrim::over_video`](crate::ui::screen::Scrim::over_video)): the page under it is the
+    /// ([`Scrim::over_video`](plx_ui::screen::Scrim::over_video)): the page under it is the
     /// hardware video plane, which GL cannot sample.
     corners: Option<[[f32; 3]; 4]>,
     /// The panel draws nothing this frame (a FAILED playback hides the content panels with the
@@ -401,7 +401,7 @@ impl PlayerOverlayScreen {
     /// `false` when the panel is not More or its root offers no Quality row (Force Direct Play).
     pub(crate) fn seat_more_quality(&mut self) -> bool {
         match &mut self.panel {
-            Panel::More(p) => p.focus_key(crate::ui::form::FormId::key(&crate::appkit::more_menu::MoreRow::OpenQuality).0),
+            Panel::More(p) => p.focus_key(plx_ui::form::FormId::key(&crate::appkit::more_menu::MoreRow::OpenQuality).0),
             _ => false,
         }
     }
@@ -799,7 +799,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                 // THAT row before `activate` reads the panel's own cursor, so a click never acts
                 // on a neighbour the cursor happened to still hold
                 if let Panel::Tracks(p) = &mut self.panel {
-                    if crate::ui::page_stack::is_title_key(*elem) {
+                    if plx_ui::page_stack::is_title_key(*elem) {
                         // the "< TITLE" band: a click goes back one page, and acts on no row
                         p.pop(ps, H::metadata(cx));
                         self.moved(fx);
@@ -808,7 +808,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                     p.focus_key(*elem);
                 }
                 if let Panel::More(p) = &mut self.panel {
-                    if crate::ui::page_stack::is_title_key(*elem) {
+                    if plx_ui::page_stack::is_title_key(*elem) {
                         // the "< QUALITY" band: a click goes back one page, and acts on no row
                         p.pop(ps);
                         self.moved(fx);
@@ -988,16 +988,16 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
     /// through the stack's one field, latched from the playing item's UltraBlur corners because
     /// the page under it is the video plane. The Info card and the Chapters strip deliberately ask
     /// for none: they sit in the transport's own band and dim nothing.
-    fn scrim(&self) -> crate::ui::screen::Scrim {
-        use crate::ui::theme::underlay::{DIM_PLAYER, DIM_SHEET};
+    fn scrim(&self) -> plx_ui::screen::Scrim {
+        use plx_ui::theme::underlay::{DIM_PLAYER, DIM_SHEET};
         if self.suppressed {
-            return crate::ui::screen::Scrim::NONE;
+            return plx_ui::screen::Scrim::NONE;
         }
         match self.panel {
-            Panel::Tracks(_) => crate::ui::screen::Scrim::over_video(DIM_PLAYER, self.corners),
-            Panel::More(_) => crate::ui::screen::Scrim::over_video(DIM_SHEET, self.corners),
+            Panel::Tracks(_) => plx_ui::screen::Scrim::over_video(DIM_PLAYER, self.corners),
+            Panel::More(_) => plx_ui::screen::Scrim::over_video(DIM_SHEET, self.corners),
             // The capsule sits over the video like the Info card and the Chapters strip — no dim.
-            Panel::Info(_) | Panel::Chapters(_) | Panel::Timing(_) => crate::ui::screen::Scrim::NONE,
+            Panel::Info(_) | Panel::Chapters(_) | Panel::Timing(_) => plx_ui::screen::Scrim::NONE,
         }
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {

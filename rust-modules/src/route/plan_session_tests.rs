@@ -7,14 +7,14 @@ use super::test_support::*;
 
 #[test]
 fn a_clip_queue_row_does_not_arm_up_next() {
-    let clip = crate::plex::QueueRow {
+    let clip = plx_plex::plex::QueueRow {
         kind: "clip".into(),
         rk: "9".into(),
         part: "/p".into(),
         ..Default::default()
     };
     assert!(up_next_of(&clip).is_none());
-    let movie = crate::plex::QueueRow {
+    let movie = plx_plex::plex::QueueRow {
         kind: "movie".into(),
         rk: "1".into(),
         ..Default::default()
@@ -26,7 +26,7 @@ fn a_clip_queue_row_does_not_arm_up_next() {
 #[test]
 fn a_route_change_wins_over_an_expired_control_snapshot() {
     assert!(matches!(
-        classify_prime_decision(false, crate::plex::JsonDeadlineOutcome::Deadline),
+        classify_prime_decision(false, plx_plex::plex::JsonDeadlineOutcome::Deadline),
         Err(PrimeRefusal::Session),
     ));
 }
@@ -34,8 +34,8 @@ fn a_route_change_wins_over_an_expired_control_snapshot() {
 
 #[test]
 fn prime_refusals_follow_the_issued_cause_not_the_clock_at_return() {
-    let response = |status, body: &[u8]| crate::plex::JsonDeadlineOutcome::Response {
-        reply: crate::http::Reply {
+    let response = |status, body: &[u8]| plx_plex::plex::JsonDeadlineOutcome::Response {
+        reply: plx_plex::http::Reply {
             status,
             body: body.to_vec(),
             peer_pin: None,
@@ -51,11 +51,11 @@ fn prime_refusals_follow_the_issued_cause_not_the_clock_at_return() {
         Err(PrimeRefusal::Control),
     ));
     assert!(matches!(
-        classify_prime_decision(true, crate::plex::JsonDeadlineOutcome::Transport),
+        classify_prime_decision(true, plx_plex::plex::JsonDeadlineOutcome::Transport),
         Err(PrimeRefusal::Control),
     ));
     assert!(matches!(
-        classify_prime_decision(true, crate::plex::JsonDeadlineOutcome::Deadline),
+        classify_prime_decision(true, plx_plex::plex::JsonDeadlineOutcome::Deadline),
         Err(PrimeRefusal::Deadline),
     ));
     assert!(matches!(
@@ -63,7 +63,7 @@ fn prime_refusals_follow_the_issued_cause_not_the_clock_at_return() {
         Err(PrimeRefusal::Session),
     ));
     assert!(matches!(
-        classify_prime_decision(false, crate::plex::JsonDeadlineOutcome::Transport),
+        classify_prime_decision(false, plx_plex::plex::JsonDeadlineOutcome::Transport),
         Err(PrimeRefusal::Session),
     ));
 }

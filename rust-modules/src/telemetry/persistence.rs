@@ -1541,12 +1541,12 @@ mod upgrade_tests {
         let loaded = helper_load(&mut b, &[]);
         let next = super::super::consent::apply(&loaded, true, true, || Some("f".repeat(32)));
         let outcome = record_racing(&mut b, &next, |snapshot| {
-            let account = crate::plex::session::Session {
+            let account = plx_plex::plex::session::Session {
                 client_id: "synthetic-client-id".into(),
                 account_token: "synthetic-next-account".into(),
                 ..Default::default()
             };
-            let (mut public, protected) = crate::plex::session::split_canonical(&account).unwrap();
+            let (mut public, protected) = plx_plex::plex::session::split_canonical(&account).unwrap();
             public.consent = snapshot.state.public.consent.clone();
             public.scopes = snapshot.state.public.scopes.clone();
             public.ids = snapshot.state.public.ids.clone();

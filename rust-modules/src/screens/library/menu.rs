@@ -3,22 +3,22 @@ use crate::browse::{LibraryType, GenreEntry, SecKind, SortEntry, SrcGroup, SrcRo
 use crate::screens::registry::{AppFx, AppMsg, LibraryLike, LibraryMenuArg, LibraryMenuKind};
 use crate::stores::browse::{BrowseCmd, LibraryWork, QueryEdit, SectionAddress};
 use crate::stores::{StoreCmd, StoreId};
-use crate::ui::frame::Budget;
+use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
     LogicalState, Machine, MachineId, NavOp,
 };
-use crate::ui::screen::{
+use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
 };
-use crate::ui::form::{Binding, Form, FormSection, FormTable, RowKey, RowKind};
+use plx_ui::form::{Binding, Form, FormSection, FormTable, RowKey, RowKind};
 use crate::appkit::source_list::{self, Level, SrcTarget, Tail};
-use crate::ui::table::{Row, TableView};
+use plx_ui::table::{Row, TableView};
 use std::convert::Infallible;
 #[cfg(test)]
-use crate::ui::table::MENU_MAX_W;
-use crate::ui::Rect;
+use plx_ui::table::MENU_MAX_W;
+use plx_ui::Rect;
 use std::borrow::Cow;
 
 // The compact Library menu's existing corner geometry.
@@ -115,12 +115,12 @@ fn stamp_state(stamp: &mut Stamp, state: crate::browse::SourceState) {
     });
 }
 
-fn stamp_tier(stamp: &mut Stamp, tier: Option<crate::plex::probe::Location>) {
+fn stamp_tier(stamp: &mut Stamp, tier: Option<plx_plex::plex::probe::Location>) {
     stamp.tag(match tier {
         None => 0,
-        Some(crate::plex::probe::Location::Local) => 1,
-        Some(crate::plex::probe::Location::Remote) => 2,
-        Some(crate::plex::probe::Location::Relay) => 3,
+        Some(plx_plex::plex::probe::Location::Local) => 1,
+        Some(plx_plex::plex::probe::Location::Remote) => 2,
+        Some(plx_plex::plex::probe::Location::Relay) => 3,
     });
 }
 
@@ -239,9 +239,9 @@ fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDr
         if sort.key != crate::browse::PLAYS_SORT_KEY { row = row.server_label(); }
         if active {
             row = row.ticon(if sort_desc {
-                crate::ui::icons::Icon::ChevronDown
+                plx_ui::icons::Icon::ChevronDown
             } else {
-                crate::ui::icons::Icon::ChevronUp
+                plx_ui::icons::Icon::ChevronUp
             });
         }
         stamp.tag(8);
@@ -686,8 +686,8 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
     /// The COMPACT role — the card menu's weight, because this is the same object one page over: a
     /// chip-shaped control on a live page opening a list beside it. The page recedes (inheriting
     /// its own light through the container's field) and stays readable.
-    fn scrim(&self) -> crate::ui::screen::Scrim {
-        crate::ui::screen::Scrim::dim(crate::ui::theme::underlay::DIM_COMPACT)
+    fn scrim(&self) -> plx_ui::screen::Scrim {
+        plx_ui::screen::Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
@@ -697,8 +697,8 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
         // up can be read as the PANEL or as the host under it rather than as one `main.ui` total.
         let field = f.underlay;
         let frame = self.frame(measure);
-        crate::ui::profile::phase("lb.menu", || {
-            crate::ui::widgets::panel_ground(p, frame, PANEL_RADIUS, field);
+        plx_ui::profile::phase("lb.menu", || {
+            plx_ui::widgets::panel_ground(p, frame, PANEL_RADIUS, field);
             self.form.table.draw(p, frame, measure);
         });
         for index in 0..self.form.table.n_rows() as usize {
@@ -760,17 +760,17 @@ mod review_actions_tests;
 mod tests {
     use super::*;
     use crate::browse::{SecKind, SourceState};
-    use crate::plex::ServerId;
-    use crate::ui::fixture::FixtureMeasure;
+    use plx_plex::plex::ServerId;
+    use plx_ui::fixture::FixtureMeasure;
     use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
-    use crate::ui::screen::ScreenArg;
+    use plx_ui::screen::ScreenArg;
 
     /// A draft as a table lays it out — the drawn sections, and every focusable row as
     /// `(identity, action, table index)` — so a test reads WHAT the menu shows and binds without
     /// reaching into the form's internals.
     struct Laid {
         stamp: Vec<u8>,
-        sections: Vec<crate::ui::table::Section>,
+        sections: Vec<plx_ui::table::Section>,
         rows: Vec<(String, Action, i32)>,
         /// The table index the menu would seat: the draft's own pick, else the first row.
         selected: i32,
@@ -871,7 +871,7 @@ mod tests {
         let up = lay(sort_draft(&sorts, 0, false));
         assert_eq!(
             up.sections[0].rows[0].ticon,
-            Some(crate::ui::icons::Icon::ChevronUp)
+            Some(plx_ui::icons::Icon::ChevronUp)
         );
         assert!(matches!(
             up.rows[0].1,
@@ -881,7 +881,7 @@ mod tests {
         let down = lay(sort_draft(&sorts, 0, true));
         assert_eq!(
             down.sections[0].rows[0].ticon,
-            Some(crate::ui::icons::Icon::ChevronDown)
+            Some(plx_ui::icons::Icon::ChevronDown)
         );
         assert!(matches!(
             down.rows[0].1,
@@ -1226,7 +1226,7 @@ mod tests {
                 out.extend(table.app_fit_failures_hugged(&format!("{} {kind:?}", language.tag())));
             }
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 
     /// **The Sort, Filter and Genre popovers' app text fits the popover, in every shipped language**
@@ -1263,6 +1263,6 @@ mod tests {
                 out.extend(table.app_fit_failures_hugged(&format!("{tag} {name}")));
             }
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 }

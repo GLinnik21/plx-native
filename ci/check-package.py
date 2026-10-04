@@ -966,7 +966,7 @@ if IS_STABLE:
 check(appinfo["version"] == control["Version"],
       f'appinfo version == control Version ({appinfo["version"]})')
 # Cargo.toml is the FOURTH witness, and the one with a user-visible consequence: the diagnostics
-# read-out prints `plex::identity::VERSION`, which is derived from this number, and that panel is
+# read-out prints `plex::identity::version()`, which the app hands in and derives from this number, and that panel is
 # designed to be photographed into a bug report. A bump that missed Cargo.toml would ship a package
 # labelled 0.2.1 whose own on-screen version says 0.2.0 — precisely the disagreement `identity`
 # exists to make impossible, and nothing checked it until a release nearly went out that way.
@@ -1327,7 +1327,7 @@ check(re.fullmatch(r"\d+\.\d+\.\d+", appinfo["version"]) is not None,
 check(appinfo["type"] == "native", 'appinfo type == "native"')
 check(not appinfo["id"].startswith(("com.palm", "com.webos", "com.lge", "com.palmdts")),
       "app id avoids LG's reserved prefixes")
-# The crate version is a THIRD copy of the same number: plex/identity.rs sends it to both Plex
+# The crate version is a THIRD copy of the same number: plex/identity.rs reports it (handed in by the app) to both Plex
 # services as X-Plex-Version (through `PLX_VERSION`, which `build.rs` derives from it), so a build
 # whose Cargo.toml disagreed with appinfo.json would report a version no release ever had.
 # Nightly again the exception, and graded the same way as the first Cargo.toml witness above.

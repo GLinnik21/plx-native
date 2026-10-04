@@ -8,7 +8,7 @@ use super::test_support::*;
 #[test]
 fn no_draw_delete_disclosure_scroll_replays_from_recorded_measurements_without_answering() {
     use plx_machine::machine::Measure;
-    use crate::ui::rec::{Measurements, TableMeasure};
+    use plx_ui::rec::{Measurements, TableMeasure};
     // Deliberately large advances exercise future expanded disclosure text without changing any
     // production strings or injecting a draw-time extent into the alert.
     struct ExpandedMetrics;
@@ -21,7 +21,7 @@ fn no_draw_delete_disclosure_scroll_replays_from_recorded_measurements_without_a
     }
     static METRICS: ExpandedMetrics = ExpandedMetrics;
     let _guard = plx_base::testlock::serial();
-    let _no_live_font = crate::ui::text_view::ForbidLive::enter();
+    let _no_live_font = plx_ui::text_view::ForbidLive::enter();
     let run_without_drawing = |measure: &dyn Measure| {
         let fixture = FixtureMeasure;
         let mut cx = test_cx(&fixture);

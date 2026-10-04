@@ -34,12 +34,12 @@ fn original_is_unchanged_and_auto_original_is_an_explicit_measured_state() {
     for src in [UHD_REMUX, HD_BIG, HD_SMALL, UNMEASURED] {
         assert_eq!(
             quality_policy(Quality::Original, false, src.0, src.1, src.2),
-            crate::plex::LinkPolicy::UNRESTRICTED,
+            plx_plex::plex::LinkPolicy::UNRESTRICTED,
             "Original must restrict nothing, and {src:?} is not an exception"
         );
         assert_eq!(
             quality_policy(Quality::Auto, false, src.0, src.1, src.2),
-            crate::plex::LinkPolicy {
+            plx_plex::plex::LinkPolicy {
                 direct_play: false,
                 remux: false
             },
@@ -47,19 +47,19 @@ fn original_is_unchanged_and_auto_original_is_an_explicit_measured_state() {
         );
         assert_eq!(
             quality_policy(Quality::Auto, true, src.0, src.1, src.2),
-            crate::plex::LinkPolicy::UNRESTRICTED,
+            plx_plex::plex::LinkPolicy::UNRESTRICTED,
             "Auto's proven Original state must not start an encoder"
         );
         // …and composed, on every link tier, Original is exactly what the link alone said.
         for link in [
             None,
-            Some(crate::plex::probe::Location::Local),
-            Some(crate::plex::probe::Location::Remote),
-            Some(crate::plex::probe::Location::Relay),
+            Some(plx_plex::plex::probe::Location::Local),
+            Some(plx_plex::plex::probe::Location::Remote),
+            Some(plx_plex::plex::probe::Location::Relay),
         ] {
             assert_eq!(
                 allowed(link, Quality::Original, src),
-                crate::plex::link_policy(link),
+                plx_plex::plex::link_policy(link),
                 "Original changed the answer for link {link:?} on {src:?}"
             );
         }
@@ -229,7 +229,7 @@ fn a_source_over_the_ceiling_is_refused_the_remux_as_well() {
     );
     assert_eq!(
         p,
-        crate::plex::LinkPolicy {
+        plx_plex::plex::LinkPolicy {
             direct_play: false,
             remux: false
         }
@@ -251,8 +251,8 @@ fn a_relay_link_and_a_user_ceiling_compose_to_the_stricter_of_the_two() {
         for src in [UHD_REMUX, HD_BIG, HD_SMALL, UNMEASURED] {
             // relay denies both, and NOTHING a user can pick gives either back
             assert_eq!(
-                allowed(Some(crate::plex::probe::Location::Relay), q, src),
-                crate::plex::LinkPolicy {
+                allowed(Some(plx_plex::plex::probe::Location::Relay), q, src),
+                plx_plex::plex::LinkPolicy {
                     direct_play: false,
                     remux: false
                 },
@@ -261,11 +261,11 @@ fn a_relay_link_and_a_user_ceiling_compose_to_the_stricter_of_the_two() {
             // and on an unrestricted link the answer is the user's policy, unchanged
             for link in [
                 None,
-                Some(crate::plex::probe::Location::Local),
-                Some(crate::plex::probe::Location::Remote),
+                Some(plx_plex::plex::probe::Location::Local),
+                Some(plx_plex::plex::probe::Location::Remote),
             ] {
                 let auto_original =
-                    q == Quality::Auto && link == Some(crate::plex::probe::Location::Local);
+                    q == Quality::Auto && link == Some(plx_plex::plex::probe::Location::Local);
                 assert_eq!(
                     allowed(link, q, src),
                     quality_policy(q, auto_original, src.0, src.1, src.2),
@@ -286,8 +286,8 @@ fn a_relay_link_and_a_user_ceiling_compose_to_the_stricter_of_the_two() {
 /// The server half is graded on both arms: a ratingKey names an item only within one server.
 #[test]
 fn the_loaded_detail_describes_its_own_key_and_its_on_deck_episodes() {
-    let a = crate::plex::ServerId::from_raw(1);
-    let b = crate::plex::ServerId::from_raw(2);
+    let a = plx_plex::plex::ServerId::from_raw(1);
+    let b = plx_plex::plex::ServerId::from_raw(2);
     let show = crate::metadata::Detail {
         sid: a,
         rk: "100".into(),
@@ -322,7 +322,7 @@ fn the_loaded_detail_describes_its_own_key_and_its_on_deck_episodes() {
 
 #[test]
 fn a_trailer_play_judges_the_extra_file_not_the_parent_or_zero() {
-    let a = crate::plex::ServerId::from_raw(1);
+    let a = plx_plex::plex::ServerId::from_raw(1);
     let movie = crate::metadata::Detail {
         sid: a,
         rk: "7".into(),

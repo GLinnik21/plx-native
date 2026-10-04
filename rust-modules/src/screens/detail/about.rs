@@ -7,9 +7,9 @@ use std::ffi::CString;
 
 use crate::metadata::Detail;
 use plx_machine::machine::{GroupId, Measure};
-use crate::ui::text_lift::{draw_focused, TextLift, CENTRE};
-use crate::ui::text_view::TextView;
-use crate::ui::{theme, Painter, Rect};
+use plx_ui::text_lift::{draw_focused, TextLift, CENTRE};
+use plx_ui::text_view::TextView;
+use plx_ui::{theme, Painter, Rect};
 
 pub(crate) const ABOUT_ELEM_RANGE_START: u32 = 1664;
 pub(crate) const ABOUT_ELEM_RANGE_END: u32 = 1728;
@@ -73,7 +73,7 @@ pub(crate) fn locate(key: u32, tracks_available: bool) -> Option<usize> {
 
 pub(crate) struct Rows {
     dirty: bool,
-    identity: Option<(crate::plex::ServerId, String)>,
+    identity: Option<(plx_plex::plex::ServerId, String)>,
     info: Vec<(&'static str, String)>,
     orig_audio: Option<String>,
     audio_list: String,
@@ -104,7 +104,7 @@ impl Rows {
         self.dirty = false;
         self.identity = Some((d.sid, d.rk.clone()));
         self.info.clear();
-        let released = crate::ui::fmt::pretty_date(&d.aired, d.year);
+        let released = plx_ui::fmt::pretty_date(&d.aired, d.year);
         if !released.is_empty() {
             self.info.push((plx_platform::i18n::msg::browse_detail_released(), released));
         }
@@ -114,7 +114,7 @@ impl Rows {
             d.episodes.first().map(|e| e.dur_ms).unwrap_or(0)
         };
         if dur > 0 {
-            self.info.push((plx_platform::i18n::msg::browse_detail_runtime(), crate::ui::fmt::dur_long(dur)));
+            self.info.push((plx_platform::i18n::msg::browse_detail_runtime(), plx_ui::fmt::dur_long(dur)));
         }
         self.info.push((
             plx_platform::i18n::msg::browse_detail_rated(),
@@ -174,7 +174,7 @@ impl Rows {
     pub(crate) fn card_rect(&self, d: &Detail, top: f32, measure: &dyn Measure) -> Rect {
         let h = synopsis(&d.summary, measure).measure_h(SYNOPSIS_W).max(30.0);
         Rect::new(
-            crate::ui::consts::MARGIN_X,
+            plx_ui::consts::MARGIN_X,
             top + CARD_Y,
             CARD_W,
             CARD_PAD + 100.0 + h + CARD_PAD,
@@ -218,7 +218,7 @@ impl Rows {
         lang_lift: &TextLift,
         measure: &dyn plx_machine::machine::Measure,
     ) {
-        let x = crate::ui::consts::MARGIN_X;
+        let x = plx_ui::consts::MARGIN_X;
         p.text(
             plx_platform::i18n::msg::browse_detail_about_c().as_ptr(),
             x,
@@ -260,7 +260,7 @@ impl Rows {
             synopsis(&d.summary, measure)
                 .draw(p, Rect::new(ix, card.y + CARD_PAD + 100.0, SYNOPSIS_W, 0.0));
             p.text(
-                crate::ui::text_view::more_mark().as_ptr(),
+                plx_ui::text_view::more_mark().as_ptr(),
                 card.x + card.w - CARD_PAD,
                 card.y + card.h - CARD_PAD - theme::size::CAPTION as f32,
                 theme::size::CAPTION,
@@ -329,7 +329,7 @@ impl Rows {
             }
             if tracks {
                 p.text(
-                    crate::ui::text_view::more_mark().as_ptr(),
+                    plx_ui::text_view::more_mark().as_ptr(),
                     plate.x + plate.w - CARD_PAD,
                     languages_more_y(plate),
                     theme::size::CAPTION,
@@ -371,13 +371,13 @@ impl Rows {
         }
         let mut yy = y + 64.0;
         for (label, desc) in &self.access {
-            crate::ui::widgets::badge(
+            plx_ui::widgets::badge(
                 p,
                 x,
-                yy + crate::ui::widgets::BADGE_H * 0.5,
+                yy + plx_ui::widgets::BADGE_H * 0.5,
                 label,
                 None,
-                crate::ui::widgets::BadgeStyle::Filled,
+                plx_ui::widgets::BadgeStyle::Filled,
                 measure,
             );
             let h = TextView::new(desc, theme::size::CAPTION, theme::TEXT_HEADING)
@@ -436,14 +436,14 @@ mod tests {
     /// line runs under MORE unless that line fades too.
     #[test]
     fn an_untruncated_last_line_reaching_under_more_fades() {
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let fits = |n: usize| {
             let text = "word ".repeat(n);
             (!synopsis(&text, &measure).truncates(SYNOPSIS_W)).then_some(text)
         };
         let longest = (1..2000).map_while(fits).last().expect("some synopsis fits");
         let view = synopsis(&longest, &measure);
-        let mark = measure.width(crate::ui::text_view::more_mark(), theme::size::CAPTION, true);
+        let mark = measure.width(plx_ui::text_view::more_mark(), theme::size::CAPTION, true);
         assert!(!view.truncates(SYNOPSIS_W));
         assert!(view.last_line_w(SYNOPSIS_W) > SYNOPSIS_W - (mark + MORE_GAP),
             "precondition: the last line ends inside MORE's rect and its air");
@@ -457,7 +457,7 @@ mod tests {
     /// under it — and that line must NOT fade.
     #[test]
     fn the_languages_more_sits_below_the_audio_list_so_a_complete_last_line_stays_plain() {
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let fits = |n: usize| {
             let text = "English (AAC), ".repeat(n);
             (!audio_view(&text, &measure).truncates(LANG_W)).then_some(text)
@@ -499,7 +499,7 @@ mod tests {
     fn a_same_identity_metadata_landing_invalidates_cached_about_rows() {
         let mut rows = Rows::new();
         let first = Detail {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "movie".into(),
             rating: "PG".into(),
             dur_ms: 60_000,
@@ -537,7 +537,7 @@ mod tests {
 
     fn movie_with_audio() -> Detail {
         Detail {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "movie".into(),
             rating: "PG".into(),
             summary: "word ".repeat(40),
@@ -560,8 +560,8 @@ mod tests {
     }
 
     fn census(rows: &Rows, d: &Detail, card: &TextLift, lang: &TextLift) -> Vec<(u64, Rect)> {
-        let measure = crate::ui::fixture::FixtureMeasure;
-        crate::ui::draw_census::capture(|| rows.draw(Painter::recording(), d, 0.0, true, card, lang, &measure))
+        let measure = plx_ui::fixture::FixtureMeasure;
+        plx_ui::draw_census::capture(|| rows.draw(Painter::recording(), d, 0.0, true, card, lang, &measure))
     }
 
     /// A focused About card grows its own content and nothing else: the Information column, drawn
@@ -580,7 +580,7 @@ mod tests {
         let info_y = COL_Y; // `draw_information`'s heading
         let at = |c: &[(u64, Rect)]| {
             c.iter()
-                .find(|(tag, r)| *tag == 100 && r.x == crate::ui::consts::MARGIN_X && r.y == info_y)
+                .find(|(tag, r)| *tag == 100 && r.x == plx_ui::consts::MARGIN_X && r.y == info_y)
                 .map(|(_, r)| *r)
         };
         assert!(at(&at_rest).is_some(), "precondition: the Information heading is in the census");

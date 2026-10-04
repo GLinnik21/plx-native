@@ -106,10 +106,10 @@
 //! id is reduced to `window ready`/`NO WINDOW`; the only server-derived text is the PMS release and
 //! Pass state, never its name or address. There is no generic "push a string to diagnostics" path,
 //! so adding a field is a deliberate edit to the file that carries these rules.
-use crate::ui::label::Label;
+use plx_ui::label::Label;
 use plx_machine::machine::Measure;
-use crate::ui::widgets::{Field, FieldList, FIELD_COL_W};
-use crate::ui::{theme, Env, Painter, Rect, View};
+use plx_ui::widgets::{Field, FieldList, FIELD_COL_W};
+use plx_ui::{theme, Env, Painter, Rect, View};
 use std::cell::Cell;
 use std::ffi::CString;
 use std::sync::atomic::Ordering;
@@ -250,7 +250,7 @@ const RIGHT_ROWS: usize = 9;
 /// Compatibility name for the support-panel budget and its existing host assertions. Playback
 /// uses [`LEFT_ROWS`] as the taller of the two fixed columns; the pre-playback device card uses
 /// only the rows it actually has. **Test-only, and stated as such since this module left `ui/`**:
-/// `ui/mod.rs` carries a blanket `#![allow(dead_code)]` for widgets that land before their first
+/// `plx_ui`'s `lib.rs` carries a blanket `#![allow(dead_code)]` for widgets that land before their first
 /// caller, and it was covering these two.
 #[cfg(test)]
 const PANEL_ROWS: usize = LEFT_ROWS;
@@ -479,8 +479,8 @@ fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32)
             plx_platform::devcaps::dv::capability().compact_display(),
             &vh.to_string(),
             &os,
-            crate::plex::identity::PRODUCT,
-            crate::plex::identity::VERSION,
+            plx_plex::plex::identity::PRODUCT,
+            plx_plex::plex::identity::version(),
             &vw.to_string(),
         ),
         playback_line(ps, d, now),
@@ -623,8 +623,8 @@ fn device_rows() -> Vec<Field> {
     v.push(Field::new(
         plx_platform::i18n::msg::browse_diagnostics_field_server(),
         server_line(
-            &crate::plex::serverinfo::version(),
-            crate::plex::serverinfo::subscription(),
+            &plx_plex::plex::serverinfo::version(),
+            plx_plex::plex::serverinfo::subscription(),
         ),
     ));
     v
@@ -639,7 +639,7 @@ fn columns(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i
 }
 
 /// Flattened only for host assertions that inspect the whole schema.  Production draws the two
-/// vectors independently and never clones them — so this is `cfg(test)`, which `ui/mod.rs`'s
+/// vectors independently and never clones them — so this is `cfg(test)`, which `plx_ui`'s `lib.rs`'s
 /// blanket `#![allow(dead_code)]` had been standing in for.
 #[cfg(test)]
 fn rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
@@ -725,9 +725,9 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
         plx_platform::i18n::msg::browse_diagnostics_field_timeline(),
         format!(
             "{} / {}",
-            crate::ui::fmt::clock(d.pos_ns / 1_000_000),
+            plx_ui::fmt::clock(d.pos_ns / 1_000_000),
             if d.dur_ns > 0 {
-                crate::ui::fmt::clock(d.dur_ns / 1_000_000)
+                plx_ui::fmt::clock(d.dur_ns / 1_000_000)
             } else {
                 "?".into()
             },
@@ -795,7 +795,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     v
 }
 
-use crate::ui::fmt::decimal;
+use plx_ui::fmt::decimal;
 
 /// The video feeder's state in the UI language. `Diag::feed_state_str` is the lab snapshot's wire
 /// spelling of the same states and stays English.
@@ -826,20 +826,20 @@ fn fps_milli_str(fps_milli: i64) -> String {
 
 fn connection_line(ps: &crate::route::PlaybackSession) -> String {
     let sid = crate::route::cur_sid(ps);
-    let Some(client) = crate::plex::client_for(sid) else {
+    let Some(client) = plx_plex::plex::client_for(sid) else {
         return plx_platform::i18n::msg::browse_diagnostics_standalone().to_string();
     };
     let tier = match client.link() {
-        Some(crate::plex::probe::Location::Local) => "LAN",
-        Some(crate::plex::probe::Location::Remote) => plx_platform::i18n::msg::browse_diagnostics_remote(),
-        Some(crate::plex::probe::Location::Relay) => plx_platform::i18n::msg::browse_diagnostics_relay(),
+        Some(plx_plex::plex::probe::Location::Local) => "LAN",
+        Some(plx_plex::plex::probe::Location::Remote) => plx_platform::i18n::msg::browse_diagnostics_remote(),
+        Some(plx_plex::plex::probe::Location::Relay) => plx_platform::i18n::msg::browse_diagnostics_relay(),
         None => plx_platform::i18n::msg::browse_diagnostics_unknown_link(),
     };
     format!(
         "{tier} · PMS {}",
         server_line(
-            &crate::plex::serverinfo::version_of(sid),
-            crate::plex::serverinfo::subscription_of(sid),
+            &plx_plex::plex::serverinfo::version_of(sid),
+            plx_plex::plex::serverinfo::subscription_of(sid),
         )
     )
 }
@@ -1065,7 +1065,7 @@ fn abr_buffer(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
         std::cmp::Ordering::Less => plx_platform::i18n::msg::browse_diagnostics_draining(),
         std::cmp::Ordering::Equal => plx_platform::i18n::msg::browse_diagnostics_steady(),
     };
-    plx_platform::i18n::msg::browse_diagnostics_buffer_trend(&decimal(buffer_ms as f64 / 1_000.0, 1), &crate::ui::fmt::signed_decimal(d.abr_slope_ms_per_s as f64 / 1_000.0, 2), trend)
+    plx_platform::i18n::msg::browse_diagnostics_buffer_trend(&decimal(buffer_ms as f64 / 1_000.0, 1), &plx_ui::fmt::signed_decimal(d.abr_slope_ms_per_s as f64 / 1_000.0, 2), trend)
 }
 
 fn risk_percent(d: &crate::player::Diag) -> Option<i64> {
@@ -1142,7 +1142,7 @@ fn abr_rate(kbps: i64) -> String {
     if kbps <= 0 {
         plx_platform::i18n::msg::browse_diagnostics_unknown().to_string()
     } else {
-        crate::ui::fmt::bitrate(kbps)
+        plx_ui::fmt::bitrate(kbps)
     }
 }
 
@@ -1181,7 +1181,7 @@ fn network_activity_kbps(net_rx: i64, prev_net_rx: i64, prev_at: u32, now: u32) 
 fn chart_rate(kbps: i64) -> String {
     match kbps {
         ..=-1 => "—".to_string(),
-        0 => crate::ui::fmt::bitrate(0),
+        0 => plx_ui::fmt::bitrate(0),
         _ => abr_rate(kbps),
     }
 }
@@ -1303,7 +1303,7 @@ fn abr_action(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
         // the FIRST window, and a shortfall with a deep reserve never acts at all.
         return match d.abr_unsafe_deficit_ms {
             ms if ms <= 0 => plx_platform::i18n::msg::browse_diagnostics_watching_original().to_string(),
-            ms => plx_platform::i18n::msg::browse_diagnostics_fallback_evidence(&crate::ui::fmt::secs_short(ms)),
+            ms => plx_platform::i18n::msg::browse_diagnostics_fallback_evidence(&plx_ui::fmt::secs_short(ms)),
         };
     }
     let target = abr_rate(d.abr_target_kbps);
@@ -1456,7 +1456,7 @@ fn skew(d: &crate::player::Diag) -> String {
         return "—".to_string();
     }
     let ms = (d.fed_v_pts - d.fed_a_pts) / 1_000_000;
-    plx_platform::i18n::msg::core_seconds(&crate::ui::fmt::signed_decimal(ms as f64 / 1000.0, 1))
+    plx_platform::i18n::msg::core_seconds(&plx_ui::fmt::signed_decimal(ms as f64 / 1000.0, 1))
 }
 
 /// A lane trailing by more than this is starving rather than merely interleaved. Real containers
@@ -1502,8 +1502,8 @@ fn chain(src: String, sent: String, payload: &str) -> String {
 /// A server that answered but never named its subscription (a PMS predating the field) shows its
 /// release alone: the row must not claim a Pass state the server did not state. Pure so every arm
 /// is host-testable without touching the process-global store.
-fn server_line(version: &str, sub: crate::plex::serverinfo::Subscription) -> String {
-    use crate::plex::serverinfo::Subscription as S;
+fn server_line(version: &str, sub: plx_plex::plex::serverinfo::Subscription) -> String {
+    use plx_plex::plex::serverinfo::Subscription as S;
     if version.is_empty() {
         return plx_platform::i18n::msg::browse_diagnostics_not_queried().to_string();
     }
@@ -1536,7 +1536,7 @@ fn mb_f(b: i64) -> f64 {
 /// promote it there the moment a second screen wants it.
 fn mb(b: i64) -> String {
     match b {
-        b => crate::ui::fmt::bytes(b, (2, 1, 0)),
+        b => plx_ui::fmt::bytes(b, (2, 1, 0)),
     }
 }
 
@@ -1555,8 +1555,8 @@ const PANEL_W: f32 = 2.0 * FIELD_COL_W + COL_GAP + 2.0 * PAD;
 /// boundary. Called only at the sampling boundary, exactly like Field's cached value lines.
 fn wrap_header(head: &[String; 2], width: f32) -> [Vec<String>; 2] {
     [
-        crate::ui::widgets::diagnostic_lines(&head[0], width, false),
-        crate::ui::widgets::diagnostic_lines(&head[1], width, true),
+        plx_ui::widgets::diagnostic_lines(&head[0], width, false),
+        plx_ui::widgets::diagnostic_lines(&head[1], width, true),
     ]
 }
 
@@ -1613,7 +1613,7 @@ pub(crate) fn panel_rect(&self) -> Rect {
     // x on the app's own side margin, not [`MARGIN`]: the panel's whole output format is a
     // PHOTOGRAPH of a television, so it is the one overlay that must sit inside the overscan frame
     // even though nothing on it is pressable. 60 cleared it vertically and missed it by 36 across.
-    Rect::new(crate::ui::consts::MARGIN_X, MARGIN, self.panel_width(), h)
+    Rect::new(plx_ui::consts::MARGIN_X, MARGIN, self.panel_width(), h)
 }
 
 /// The panel's frame WHEN IT IS ON SCREEN — the only question another module asks of this one
@@ -1860,7 +1860,7 @@ fn draw_chart(&self, p: Painter, r: Rect) {
 }
 }
 
-/// The reserved playback footprint for the overscan audit ([`crate::ui::consts::SAFE`]). The
+/// The reserved playback footprint for the overscan audit ([`plx_ui::consts::SAFE`]). The
 /// default instance covers the row floor and single-line header. Multiline header growth and
 /// compact device-card layout have separate content-driven tests below.
 #[cfg(test)]
@@ -1902,7 +1902,7 @@ mod tests {
     impl Drop for EnhTestSession {
         fn drop(&mut self) {
             reset_player_control_for_test(&self.ps);
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
 
@@ -1913,10 +1913,10 @@ mod tests {
     #[test]
     fn audio_row_suffix_only_when_applied() {
         let _g = plx_base::testlock::serial();
-        let both = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
+        let both = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
         for (applied, refused, expect_suffix) in [
             (both, false, true),   // Applied: cur_enhancement derives Applied from `applied.any()`
-            (crate::plex::AudioEnhancements::NONE, false, false), // Off: nothing asked
+            (plx_plex::plex::AudioEnhancements::NONE, false, false), // Off: nothing asked
             (both, true, false),   // Refused: asked, but the server did not honour it
         ] {
             let ps = EnhTestSession::new(EnhTestFixture { applied, refused, ..Default::default() });
@@ -1940,7 +1940,7 @@ mod tests {
     #[test]
     fn route_line_shows_refused_and_unverified() {
         let _g = plx_base::testlock::serial();
-        let asked = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
+        let asked = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
         let d = crate::player::Diag::default();
 
         {
@@ -1971,7 +1971,7 @@ mod tests {
             assert!(route_line(&ps, &d).contains("enh=unverified"));
         }
     }
-    use crate::ui::consts::{SCR_H, SCR_W};
+    use plx_ui::consts::{SCR_H, SCR_W};
 
     fn header_fixture(idle: bool, head: [String; 2]) -> Diagnostics {
         let mut panel = Diagnostics { idle, head, ..Diagnostics::default() };
@@ -2011,7 +2011,7 @@ mod tests {
                 assert!(layout.sections_y >= layout.verdict_y
                     + panel.head_lines[1].len().max(1) as f32 * HEAD_LINE_H);
                 assert!(layout.fields_y >= layout.sections_y + HEAD_LINE_H);
-                assert!(crate::ui::consts::inside_safe(frame));
+                assert!(plx_ui::consts::inside_safe(frame));
                 assert!(frame.y + frame.h < crate::appkit::player_hud::CTRL_Y);
             }
         }
@@ -2254,7 +2254,7 @@ mod tests {
         );
         assert_ne!(
             buffer.tone,
-            crate::ui::widgets::Tone::Fault,
+            plx_ui::widgets::Tone::Fault,
             "a filling buffer is not a fault"
         );
         let risk = fields
@@ -2336,7 +2336,7 @@ mod tests {
             let Some(val) = f.val.as_deref() else {
                 continue;
             };
-            let lines = crate::ui::widgets::value_lines(val, FIELD_COL_W);
+            let lines = plx_ui::widgets::value_lines(val, FIELD_COL_W);
             assert_eq!(
                 lines.len(),
                 1,
@@ -2391,7 +2391,7 @@ mod tests {
             let Some(val) = f.val.as_deref() else {
                 continue;
             };
-            let lines = crate::ui::widgets::value_lines(val, FIELD_COL_W);
+            let lines = plx_ui::widgets::value_lines(val, FIELD_COL_W);
             assert_eq!(
                 lines.len(),
                 1,
@@ -2412,7 +2412,7 @@ mod tests {
         assert!(
             v.iter()
                 .find(|f| f.key == "Set")
-                .map(|f| f.tone == crate::ui::widgets::Tone::Fault)
+                .map(|f| f.tone == plx_ui::widgets::Tone::Fault)
                 .unwrap_or(false),
             "an unnamed set is a fault"
         );
@@ -2472,7 +2472,7 @@ mod tests {
         let v = rows(&ps, &d, (0, 0, 0), 1_000 + STALL_MS + 1);
         let faults: Vec<_> = v
             .iter()
-            .filter(|f| f.tone == crate::ui::widgets::Tone::Fault)
+            .filter(|f| f.tone == plx_ui::widgets::Tone::Fault)
             .map(|f| f.key)
             .collect();
         // One row per thing that did not happen: no video path, a Load with no callbacks, nothing
@@ -2501,11 +2501,11 @@ mod tests {
         // spelling 60 for both.
         let p = Diagnostics::default().panel_rect();
         assert!(
-            p.x + p.w <= SCR_W - crate::ui::consts::MARGIN_X,
+            p.x + p.w <= SCR_W - plx_ui::consts::MARGIN_X,
             "panel is wider than the safe frame"
         );
         assert!(
-            crate::ui::consts::inside_safe(p),
+            plx_ui::consts::inside_safe(p),
             "the read-out is photographed — it must clear the overscan frame"
         );
     }
@@ -2619,7 +2619,7 @@ mod tests {
         assert_eq!(at(0), "watching Original");
         assert_ne!(
             v.iter().find(|f| f.key == "Buffer").unwrap().tone,
-            crate::ui::widgets::Tone::Fault
+            plx_ui::widgets::Tone::Fault
         );
 
         let hls = crate::player::Diag {
@@ -2858,7 +2858,7 @@ mod tests {
         assert_eq!(sv, "+30.0 s");
         assert_eq!(
             sync.tone,
-            crate::ui::widgets::Tone::Fault,
+            plx_ui::widgets::Tone::Fault,
             "30 s of skew is a fault"
         );
     }
@@ -2882,7 +2882,7 @@ mod tests {
         let f = fresh.iter().find(|f| f.key == "Frames").unwrap();
         assert_ne!(
             f.tone,
-            crate::ui::widgets::Tone::Fault,
+            plx_ui::widgets::Tone::Fault,
             "0.1 s after Load is not a stall"
         );
         assert!(f.val.as_deref().unwrap().starts_with("none in 0 s"));
@@ -2891,7 +2891,7 @@ mod tests {
         let f = stalled.iter().find(|f| f.key == "Frames").unwrap();
         assert_eq!(
             f.tone,
-            crate::ui::widgets::Tone::Fault,
+            plx_ui::widgets::Tone::Fault,
             "12 s after Load with no frame IS"
         );
         assert!(f.val.as_deref().unwrap().starts_with("none in 12 s"));
@@ -2957,7 +2957,7 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("HTTP 401 · 0 B received"));
-        assert_eq!(refused.tone, crate::ui::widgets::Tone::Fault);
+        assert_eq!(refused.tone, plx_ui::widgets::Tone::Fault);
 
         // answered fine and delivered bytes — the fault is downstream, and this row says so
         let ok = row(&crate::player::Diag {
@@ -2971,7 +2971,7 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("HTTP 200 · 12.4 MB received"));
-        assert_ne!(ok.tone, crate::ui::widgets::Tone::Fault);
+        assert_ne!(ok.tone, plx_ui::widgets::Tone::Fault);
     }
 
     /// `queue empty` vs `BufferFull` is the row's whole purpose: a dead PRODUCER and a dead SINK
@@ -3014,7 +3014,7 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("812 callbacks · ERROR 18 at #4"));
-        assert_eq!(row.tone, crate::ui::widgets::Tone::Fault);
+        assert_eq!(row.tone, plx_ui::widgets::Tone::Fault);
     }
 
     /// Ordinary interleave is not a fault — containers put the two lanes a fraction of a second
@@ -3079,7 +3079,7 @@ mod tests {
     /// and a server that never named its subscription must not be assigned one either way.
     #[test]
     fn the_server_row_states_the_pass_tristate_without_guessing() {
-        use crate::plex::serverinfo::Subscription as S;
+        use plx_plex::plex::serverinfo::Subscription as S;
         assert_eq!(
             server_line("1.43.3.10861-cd85035e7", S::Yes),
             "1.43.3 · Plex Pass"
@@ -3117,7 +3117,7 @@ mod tests {
             .into_iter()
             .find(|f| f.key == "Connection")
             .expect("Connection row");
-        assert_ne!(row.tone, crate::ui::widgets::Tone::Fault);
+        assert_ne!(row.tone, plx_ui::widgets::Tone::Fault);
     }
 
     #[test]

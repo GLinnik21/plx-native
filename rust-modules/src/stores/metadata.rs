@@ -143,7 +143,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use plx_machine::machine::{Cx, Effects, Handled, Host, Machine};
 
 use super::StoreEv;
@@ -426,7 +426,7 @@ mod two_owner_tests {
     #[test]
     fn a_landing_reaches_only_the_owner_whose_adapter_it_was_minted_from() {
         let _guard = plx_base::testlock::serial();
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         let a_rk = "owner-a-item";
         let b_rk = "owner-b-item";
 

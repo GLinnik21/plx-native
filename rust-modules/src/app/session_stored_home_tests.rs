@@ -2,12 +2,12 @@
 //! Synthetic admitted observations here do not claim account discovery/network policy coverage.
 use super::*;
 use crate::auth::owner::{SessionEnvelope, SessionEvent, SessionWork};
-use crate::plex::session::{self, Session, SourceRef, ServerRef, UserRef};
+use plx_plex::plex::session::{self, Session, SourceRef, ServerRef, UserRef};
 
 struct Cleanup<'a>(&'a plx_base::task::MainThread);
 impl Drop for Cleanup<'_> {
     fn drop(&mut self) {
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         session::ProfilePublisher::new(self.0).publish(None, 0);
     }
 }
@@ -15,7 +15,7 @@ impl Drop for Cleanup<'_> {
 fn source(address: &str, token: &str) -> SourceRef {
     SourceRef { machine_id: "stored-machine".into(), name: "Synthetic".into(), address: address.into(),
         port: 32400, origin_url: format!("http://{address}:32400"), token: token.into(), owned: true,
-        tier: Some(crate::plex::probe::Location::Local), ..Default::default() }
+        tier: Some(plx_plex::plex::probe::Location::Local), ..Default::default() }
 }
 
 fn saved() -> Session {
@@ -48,14 +48,14 @@ fn inject_roster_terminal(rig: &mut Bridge, expected: crate::auth::SessionIdenti
     let epoch = rig.auth_read().0.flow_epoch;
     rig.session_adapter.inject_fixture_work(req, move |output, input| {
         assert!(matches!(input, SessionWork::ServerRoster { .. }));
-        let resource: crate::plex::account::Resource = serde_json::from_value(serde_json::json!({
+        let resource: plx_plex::plex::account::Resource = serde_json::from_value(serde_json::json!({
             "clientIdentifier":"stored-machine", "provides":"server"
         })).unwrap();
         output.progress(crate::auth::AuthProgress::Registry(crate::auth::RegistryProgress::Settled {
             epoch, expected: Some(expected.clone()),
             probe: crate::auth::settled_probe(
-                &crate::plex::probe::plan(&resource, crate::plex::CredentialPolicy::HttpsOnly),
-                crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local),
+                &plx_plex::plex::probe::plan(&resource, plx_plex::plex::CredentialPolicy::HttpsOnly),
+                plx_plex::plex::probe::Outcome::Reachable, Some(plx_plex::plex::probe::Location::Local),
                 Some("127.0.0.4".into())),
         })).unwrap();
         let roster = serde_json::from_value(serde_json::json!({
@@ -77,11 +77,11 @@ fn prove_home_observations(conflicting_owner: bool) {
     let tmp = session::TempSession::new("stored-home-owned-observations");
     let _cleanup = Cleanup(&mt);
     tmp.assert_only_target();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let disk = saved();
     session::save(&disk);
     let before = std::fs::read(tmp.path()).unwrap();
-    let id = crate::plex::register_for_test("stored-machine", "127.0.0.1", 32400,
+    let id = plx_plex::plex::register_for_test("stored-machine", "127.0.0.1", 32400,
         "profile-token-a", "synthetic-client");
     let mut owner_input = disk.clone();
     if conflicting_owner {
@@ -108,15 +108,15 @@ fn prove_home_observations(conflicting_owner: bool) {
     assert_eq!(records.len(), 2);
     let roster = records.pop().unwrap();
     frame(&mut rig, &mut d, records);
-    assert_eq!(crate::plex::server_probe_result(id), if conflicting_owner { None }
-        else { Some(crate::plex::probe::Outcome::Reachable) });
+    assert_eq!(plx_plex::plex::server_probe_result(id), if conflicting_owner { None }
+        else { Some(plx_plex::plex::probe::Outcome::Reachable) });
     frame(&mut rig, &mut d, vec![roster]);
     // A stored non-admin (the roster is unknown here, so admin cannot be proved) publishes the
     // credential-free probe but rejects the account-token roster endpoint and token.
     let address = "127.0.0.1";
     assert_eq!(session::peek().sources[0].address, address);
     assert_eq!(session::peek().sources[0].token, "profile-token-a");
-    assert_eq!(crate::plex::client_for(id).unwrap().host(), address);
+    assert_eq!(plx_plex::plex::client_for(id).unwrap().host(), address);
     assert!(rig.session.snapshot_init().persisted.can_go_local(),
         "stored Home now has an explicit owner; it does not require a default global Ctl");
 
@@ -126,8 +126,8 @@ fn prove_home_observations(conflicting_owner: bool) {
     rig.session_adapter.inject_fixture_work(req, move |output, input| {
         let SessionWork::Endpoint { expected, lifecycle, machine_id, .. } = input else { panic!("endpoint capture") };
         let probe = crate::auth::settled_probe_for_test(&machine_id,
-            crate::plex::probe::Outcome::Reachable,
-            Some(crate::plex::probe::Location::Local), Some("127.0.0.3".into()));
+            plx_plex::plex::probe::Outcome::Reachable,
+            Some(plx_plex::plex::probe::Location::Local), Some("127.0.0.3".into()));
         output.complete(crate::auth::endpoint_work_fact(epoch,
             if conflicting_owner { wrong_identity } else { expected }, lifecycle, machine_id,
             Some(source("127.0.0.3", "account-token-not-authoritative")), Some(probe))).unwrap();
@@ -154,8 +154,8 @@ fn prove_home_observations(conflicting_owner: bool) {
             frame(&mut rig, &mut d, vec![bad]);
             assert!(rig.session.snapshot_init().pending.contains_key(&req), "variant {variant}");
             assert_eq!(std::fs::read(tmp.path()).unwrap(), before);
-            assert_eq!(crate::plex::client_for(id).unwrap().host(), "127.0.0.1");
-            assert_eq!(crate::plex::server_probe_result(id), None);
+            assert_eq!(plx_plex::plex::client_for(id).unwrap().host(), "127.0.0.1");
+            assert_eq!(plx_plex::plex::server_probe_result(id), None);
         }
     }
     frame(&mut rig, &mut d, records);
@@ -164,7 +164,7 @@ fn prove_home_observations(conflicting_owner: bool) {
     assert_eq!(landed.sources[0].address, address);
     assert_eq!(landed.sources[0].token, "profile-token-a",
         "endpoint repair may move the profile's route but cannot import the account token");
-    assert_eq!(crate::plex::client_for(id).unwrap().host(), address);
+    assert_eq!(plx_plex::plex::client_for(id).unwrap().host(), address);
     if conflicting_owner { assert_eq!(std::fs::read(tmp.path()).unwrap(), before); }
     assert!(!rig.session.snapshot_init().pending.contains_key(&req),
         "a rejected but matching terminal must release its own endpoint flight");
@@ -203,11 +203,11 @@ fn admitted_endpoint_lifecycle_and_nonterminal_rejections_preserve_current_inter
         let tmp = session::TempSession::new("admitted-endpoint-negative");
         let _cleanup = Cleanup(&mt);
         tmp.assert_only_target();
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         let disk = saved();
         session::save(&disk);
         let before = std::fs::read(tmp.path()).unwrap();
-        let id = crate::plex::register_for_test("stored-machine", "127.0.0.1", 32400,
+        let id = plx_plex::plex::register_for_test("stored-machine", "127.0.0.1", 32400,
             "profile-token-a", "synthetic-client");
         let mut rig = Bridge::for_session_test(crate::auth::SessionInit::captured(disk));
         rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
@@ -217,8 +217,8 @@ fn admitted_endpoint_lifecycle_and_nonterminal_rejections_preserve_current_inter
         rig.session_adapter.inject_fixture_work(req, move |output, input| {
             let SessionWork::Endpoint { expected, lifecycle, machine_id, .. } = input else { panic!("endpoint capture") };
             let probe = crate::auth::settled_probe_for_test(&machine_id,
-                crate::plex::probe::Outcome::Reachable,
-                Some(crate::plex::probe::Location::Local), Some("127.0.0.9".into()));
+                plx_plex::plex::probe::Outcome::Reachable,
+                Some(plx_plex::plex::probe::Location::Local), Some("127.0.0.9".into()));
             output.complete(crate::auth::endpoint_work_fact(epoch, expected, lifecycle, machine_id,
                 Some(source("127.0.0.9", "unused-payload-token")), Some(probe))).unwrap();
         });
@@ -237,8 +237,8 @@ fn admitted_endpoint_lifecycle_and_nonterminal_rejections_preserve_current_inter
             "admitted malformed lifecycle/nonterminal cannot retire the current request");
         assert!(!rig.session_adapter.admitted(&bad), "unique delivered receipt is ACKed");
         assert_eq!(std::fs::read(tmp.path()).unwrap(), before);
-        assert_eq!(crate::plex::client_for(id).unwrap().host(), "127.0.0.1");
-        assert_eq!(crate::plex::server_probe_result(id), None);
+        assert_eq!(plx_plex::plex::client_for(id).unwrap().host(), "127.0.0.1");
+        assert_eq!(plx_plex::plex::server_probe_result(id), None);
         assert!(rig.take_session_ready().is_none());
         // This receipt was consumed; do not relabel/reuse it as a valid terminal. Real restart
         // retires the remaining logical interest (physical producer already returned above).
@@ -263,7 +263,7 @@ fn rejected_terminal_waits_in_owner_fifo_until_preceding_commit_ack() {
         let records = rig.session_adapter.take_results();
         assert_eq!(records.len(), 2);
         let req = records[0].addr.req.0;
-        for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - remaining {
+        for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - remaining {
             execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
         frame(&mut rig, &mut d, records.clone());

@@ -1,7 +1,7 @@
 //! Retained-view prose for the existing Library status surface.
 use std::ffi::{CStr, CString};
 use super::*;
-use crate::ui::widgets::{StatusKind, StatusOverlay};
+use plx_ui::widgets::{StatusKind, StatusOverlay};
 
 impl LibraryScreen {
     pub(super) fn status_overlay<'a, H: LibraryLike>(&self, cx: &Cx<'_, H>, caption: &'a CStr, reason: Option<&'a CStr>) -> StatusOverlay<'a> {
@@ -15,7 +15,7 @@ impl LibraryScreen {
         // empty answer keep the region.
         // Same untyped "can't reach" verdict as Home's — no typed cause here either, so the two
         // pages share the glyph.
-        let glyph = self.clock_cause().map_or(crate::ui::icons::Icon::ServerBadgeMinus, |(_, glyph)| glyph);
+        let glyph = self.clock_cause().map_or(plx_ui::icons::Icon::ServerBadgeMinus, |(_, glyph)| glyph);
         let mut overlay = StatusOverlay::new(self.status_frame(), caption, kind)
             .page(glyph).phase(cx.tick.ms)
             .focused(cx.focus.current == Some(self.key(RETRY)));
@@ -38,7 +38,7 @@ impl LibraryScreen {
     /// and the glyph alike: only a Failed read-out, and only when no plaintext offer holds the
     /// reason slot (that cause is the one the person can act on). From the held
     /// [`ClockWatch`](super::super::clock_readout::ClockWatch), so a frame's draw and hit rect agree.
-    fn clock_cause(&self) -> Option<(&'static CStr, crate::ui::icons::Icon)> {
+    fn clock_cause(&self) -> Option<(&'static CStr, plx_ui::icons::Icon)> {
         if self.readout != Readout::Failed || self.plaintext.verdict().is_some() { return None; }
         self.clock.reason()
     }
@@ -50,7 +50,7 @@ impl LibraryScreen {
     pub(super) fn watch_readout<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) -> bool {
         use super::super::plaintext_question::{asks, Near};
         let machine = (self.readout == Readout::Failed)
-            .then(|| H::directory(cx).source().and_then(|(sid, _)| crate::plex::client_for(*sid)))
+            .then(|| H::directory(cx).source().and_then(|(sid, _)| plx_plex::plex::client_for(*sid)))
             .flatten()
             .map(|client| client.machine_id());
         let offer_moved = self.plaintext.refresh(machine, Near::Only);
@@ -122,7 +122,7 @@ impl LibraryScreen {
         // The legacy readout occupies the fixed content region, inside the overscan frame.
         const STATUS_TOP: f32 = 232.0;
         Rect::new(MARGIN_X, STATUS_TOP, SCR_W - 2.0 * MARGIN_X,
-            SCR_H - STATUS_TOP - crate::ui::consts::MARGIN_Y)
+            SCR_H - STATUS_TOP - plx_ui::consts::MARGIN_Y)
     }
 }
 

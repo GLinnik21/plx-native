@@ -2,7 +2,7 @@
 //! `(server, path, w, h, png)` into an opaque [`PosterKey`] (a slot index), the transcode request
 //! path and its token, the fetch + decode workers, the disk tier (`imgcache`), the prefetch gate
 //! and the slot LRU. It delivers a decoded image as `tex::PosterReady` and holds NO texture: GL
-//! residency is the library's [`crate::ui::tex::TexCache`], reached through `ui::tex`'s free
+//! residency is the library's [`plx_ui::tex::TexCache`], reached through `ui::tex`'s free
 //! functions, and the seam between the two halves is the key. The library never names this
 //! module; it sees it as the [`tex::Source`] installed at [`init`].
 //!
@@ -47,9 +47,9 @@ mod refresh;
 mod trace;
 
 use plx_gfx::img;
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use plx_machine::machine::PosterKey;
-use crate::ui::tex::{self, Decoded, PosterError, PosterReady, Tex, Uploader, Warm};
+use plx_ui::tex::{self, Decoded, PosterError, PosterReady, Tex, Uploader, Warm};
 use std::os::raw::{c_int, c_uchar, c_uint};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
@@ -177,7 +177,7 @@ struct Pslot {
     gen: c_uint,   // bumped on eviction; stale-decode guard
     cache_gen: u64, // account epoch captured when queued, before any worker can race sign-out
     token_gen: u32, // the grant that built this request (profile switches need not erase disk)
-    /// The IDENTITY the art was claimed under ([`crate::plex::Client::grant_epoch`]). What a hit
+    /// The IDENTITY the art was claimed under ([`plx_plex::plex::Client::grant_epoch`]). What a hit
     /// must match: a same-user retoken keeps it (and the slot is re-keyed to the fresh request),
     /// a revocation — profile switch, sign-out — does not.
     grant_epoch: u32,
@@ -381,11 +381,11 @@ fn park_retry(s: &mut Pslot) {
 /// transient. Other completed HTTP answers are final: retrying a redirect we deliberately do not
 /// follow, an unsupported method/media type, or a missing item can never change this request.
 /// Bytes that arrived but did not decode are the decoder's verdict and final too.
-fn is_transient(outcome: &crate::plex::ArtFetch) -> bool {
+fn is_transient(outcome: &plx_plex::plex::ArtFetch) -> bool {
     match outcome {
-        crate::plex::ArtFetch::Bytes(_) => false,
-        crate::plex::ArtFetch::Status(s) => matches!(s, 401 | 403 | 408 | 429 | 500..=599),
-        crate::plex::ArtFetch::NoResponse => true,
+        plx_plex::plex::ArtFetch::Bytes(_) => false,
+        plx_plex::plex::ArtFetch::Status(s) => matches!(s, 401 | 403 | 408 | 429 | 500..=599),
+        plx_plex::plex::ArtFetch::NoResponse => true,
     }
 }
 
@@ -409,7 +409,7 @@ fn same_art(s: &Pslot, srv: ServerId, key: &[u8]) -> bool {
     held == key || sans_token(held) == sans_token(key)
 }
 
-/// `key` without its trailing credential. [`crate::plex::Client::with_token`] appends
+/// `key` without its trailing credential. [`plx_plex::plex::Client::with_token`] appends
 /// `X-Plex-Token=` as the LAST parameter of every built request (the test pinning the token to the
 /// end of the key holds that); a percent-encoded `url=` value cannot contain a literal `=`, so the
 /// last occurrence is the parameter. A key with no token (a baked fan key) is returned whole.
@@ -534,7 +534,7 @@ pub(crate) fn resident_art_survives_for_test(sid: ServerId, change: impl FnOnce(
     reset_key_memo();
     let before = built_key(sid, SRC, 2, 2, false).expect("a registered server builds a key").to_owned();
     {
-        let c = crate::plex::client_for(sid).expect("a registered server");
+        let c = plx_plex::plex::client_for(sid).expect("a registered server");
         let mut g = store();
         g.slots = [Pslot::ZERO; PT_CAP];
         let slot = &mut g.slots[0];
@@ -567,7 +567,7 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
     if path.is_empty() {
         return None;
     }
-    let c = crate::plex::client_for(srv)?;
+    let c = plx_plex::plex::client_for(srv)?;
     // SAFETY: main-thread only (every caller is a draw path), and the borrow is consumed by the
     // caller before the memo can be touched again; the `'static` is that discipline, not a fact.
     let memo = unsafe {
@@ -594,7 +594,7 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
 /// every store key and the fan baker's member fetches, so both name the same bytes on disk.
 /// Supersampled simulator renders (`surface::render_scale`, 1 on a television) ask the server
 /// for the pixels they will draw; the logical box stays the caller's.
-fn transcode_request(c: &crate::plex::Client, path: &str, w: c_int, h: c_int, png: bool) -> String {
+fn transcode_request(c: &plx_plex::plex::Client, path: &str, w: c_int, h: c_int, png: bool) -> String {
     let n = plx_base::surface::render_scale() as i64;
     c.image_transcode_path(path, w as i64 * n, h as i64 * n, png)
 }
@@ -630,7 +630,7 @@ static RESIDENCY_REARMED: AtomicU64 = AtomicU64::new(0);
 /// screen's diagnostic climb forever, because a refused arrival's cooldown keeps expiring and
 /// retrying even once no real eviction is happening at all. Kept on this seam — not folded into
 /// `tex.rs` — because that cache must stay ignorant of app-level metrics; the bool crossing it is
-/// the minimal signal [`card_motion_metrics`](crate::ui::card_motion_metrics) needs.
+/// the minimal signal [`card_motion_metrics`](plx_ui::card_motion_metrics) needs.
 static RESIDENCY_REFUSED: AtomicU64 = AtomicU64::new(0);
 
 /// The interval throttle's clock, and the `(lost, rearmed, refused)` triple the LAST emitted line
@@ -770,7 +770,7 @@ fn reset_residency_log_for_test() {
 
 /// The clearLogo transcode request box (was two bare literals inside the old `logo_tex`).
 /// `minSize=1` means COVER, not fit, so a 1:1 source comes back ~600×600 and a 5:1 one ~1200×240 —
-/// both comfortably above anything [`crate::ui::hero_logo`] draws (900×268 worst case), so a hero
+/// both comfortably above anything [`plx_ui::hero_logo`] draws (900×268 worst case), so a hero
 /// logo is always a downscale. Mirrored in `img.rs`'s decode-budget table; change both together.
 const LOGO_REQ_W: c_int = 600;
 const LOGO_REQ_H: c_int = 240;
@@ -797,11 +797,11 @@ fn logo_warm(srv: ServerId, rk: &str) -> Warm {
 
 /// An item's clearLogo (transparent PNG) as a cache key once its pixels are in — `None` while
 /// pending OR when the item has no logo (the store cannot tell those two apart — which is why the
-/// text→logo swap is still a cut, see [`crate::ui::hero_logo`]). `ui::tex::logo_src` adds the
+/// text→logo swap is still a cut, see [`plx_ui::hero_logo`]). `ui::tex::logo_src` adds the
 /// texture and its TRUE PIXEL SIZE.
 ///
 /// The ONE clearLogo resolve (home hero, detail hero, detail compact title all draw through it).
-/// How big it is DRAWN is a UI decision and lives in [`crate::ui::hero_logo::fit`]: this layer used
+/// How big it is DRAWN is a UI decision and lives in [`plx_ui::hero_logo::fit`]: this layer used
 /// to take a `max_w`×`max_h` box and contain-fit into it, which is how the same mark ended up three
 /// sizes in one app — the store never owned layout policy, it only looked as if it did.
 ///
@@ -854,7 +854,7 @@ type Hit = Option<PosterKey>;
 /// admitted. Three things decide, and `touch` is only the first: `touch` itself (LRU bookkeeping on
 /// every hit, and whether a P_EVICTED slot is eligible to recover at all), the speculation bound
 /// [`warm_admissible`] for a Warm, and the drawn card's placement scope
-/// ([`crate::ui::card_motion::declines_request`]) for a Draw. Unknown or moving card
+/// ([`plx_ui::card_motion::declines_request`]) for a Draw. Unknown or moving card
 /// placement declines new work; featured images outside that scope remain eligible.
 /// A refusal claims no source slot; a follow-up present samples placement again.
 fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
@@ -872,10 +872,10 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // would never see if it only guarded the miss. A HIT is deliberately untouched: art that is
     // already resident still draws and still takes its LRU touch, so declining never blanks a
     // tile that had its picture.
-    let decline = touch == Touch::Draw && crate::ui::card_motion::declines_request();
+    let decline = touch == Touch::Draw && plx_ui::card_motion::declines_request();
     let mut g = store();
     let cache_gen = plx_platform::imgcache::generation();
-    let (token_gen, grant_epoch) = crate::plex::client_for(srv)
+    let (token_gen, grant_epoch) = plx_plex::plex::client_for(srv)
         .map_or((0, 0), |c| (c.token_gen(), c.grant_epoch()));
     // hit? Matched on the picture and the identity, not the token string: discovery re-registering
     // a stored server under plex.tv's current grant for the same user moves `token_gen` (and the
@@ -920,14 +920,14 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     g.slots[i].retry_wake_sent = false;
                 } else if retry_due(&g.slots[i], now) {
                     if decline {
-                        crate::ui::card_motion::deferred();
+                        plx_ui::card_motion::deferred();
                         #[cfg(feature = "devtriggers")]
-                        crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::Retry);
+                        plx_ui::card_motion_metrics::refused(plx_ui::card_motion_metrics::Refused::Retry);
                         trace::outcome("declined_retry");
                         return (None, Warm::Known);
                     }
                     #[cfg(feature = "devtriggers")]
-                    crate::ui::card_motion_metrics::request();
+                    plx_ui::card_motion_metrics::request();
                     g.slots[i].state = P_WANT;
                     g.slots[i].retry_at = None;
                     g.slots[i].retry_wake_sent = false;
@@ -970,9 +970,9 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     return (None, Warm::Known);
                 }
                 if decline {
-                    crate::ui::card_motion::deferred();
+                    plx_ui::card_motion::deferred();
                     #[cfg(feature = "devtriggers")]
-                    crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::Evicted);
+                    plx_ui::card_motion_metrics::refused(plx_ui::card_motion_metrics::Refused::Evicted);
                     // The same deferral the cooldown just made, for the same reason: the slot
                     // stays EVICTED and the first draw at a settled speed re-arms it as usual.
                     trace::outcome("declined_evicted");
@@ -980,8 +980,8 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 }
                 #[cfg(feature = "devtriggers")]
                 {
-                    crate::ui::card_motion_metrics::request();
-                    crate::ui::card_motion_metrics::rearmed();
+                    plx_ui::card_motion_metrics::request();
+                    plx_ui::card_motion_metrics::rearmed();
                 }
                 g.slots[i].state = P_WANT;
                 g.slots[i].evict_wake_sent = false;
@@ -1039,9 +1039,9 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // in `TexCache::pending` at 375 KB each. The request is the last point at which this work
     // can still be declined for free.
     if decline {
-        crate::ui::card_motion::deferred();
+        plx_ui::card_motion::deferred();
         #[cfg(feature = "devtriggers")]
-        crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::New);
+        plx_ui::card_motion_metrics::refused(plx_ui::card_motion_metrics::Refused::New);
         trace::outcome("declined_new");
         return (None, Warm::Full);
     }
@@ -1104,7 +1104,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         img::img_free(old_px as *mut c_uchar);
     }
     #[cfg(feature = "devtriggers")]
-    crate::ui::card_motion_metrics::request();
+    plx_ui::card_motion_metrics::request();
     CV.notify_one();
     (None, Warm::Claimed)
 }
@@ -1124,9 +1124,9 @@ impl tex::Source for PosterSource {
         let kid = trace::key_id(srv, key.as_bytes());
         trace::set_current(id);
         let hit = lookup(sid, key, Touch::Draw).0;
-        let gate = match crate::ui::card_motion::verdict() {
-            Some(crate::ui::card_motion::Verdict::Unknown) => trace::Gate::Unknown,
-            Some(crate::ui::card_motion::Verdict::Moving) => trace::Gate::Moving,
+        let gate = match plx_ui::card_motion::verdict() {
+            Some(plx_ui::card_motion::Verdict::Unknown) => trace::Gate::Unknown,
+            Some(plx_ui::card_motion::Verdict::Moving) => trace::Gate::Moving,
             _ => trace::Gate::Open,
         };
         trace::probe(id, kid, hit.is_some_and(tex::resident), gate);
@@ -1203,7 +1203,7 @@ impl tex::Source for PosterSource {
             } else {
                 RESIDENCY_LOST.fetch_add(1, Ordering::Relaxed);
                 #[cfg(feature = "devtriggers")]
-                crate::ui::card_motion_metrics::evicted();
+                plx_ui::card_motion_metrics::evicted();
             }
             log_residency();
         }
@@ -1338,7 +1338,7 @@ impl Uploader for GfxUploader {
         let id = img::img_upload_rgba(d.rgba.as_ptr(), d.w as c_int, d.h as c_int);
         UP_CT.fetch_add(1, Ordering::Relaxed);
         #[cfg(feature = "devtriggers")]
-        crate::ui::card_motion_metrics::upload();
+        plx_ui::card_motion_metrics::upload();
         UP_PX.fetch_add((d.w as u64) * (d.h as u64), Ordering::Relaxed);
         Tex {
             id,
@@ -1370,7 +1370,7 @@ impl Uploader for GfxUploader {
 /// about, and no spring reports it. The cache's own `Provenance::Resource` note is the same
 /// statement to the phase-2 `Present` machine.
 pub(crate) fn prepare(
-    b: &mut crate::ui::frame::Budget,
+    b: &mut plx_ui::frame::Budget,
     present: &mut plx_machine::machine::PresentHandle<'_>,
     now_us: impl Fn() -> u64,
 ) -> usize {
@@ -1441,7 +1441,7 @@ impl ArtFail {
 /// **Why the SERVER is half the key.** With a friend's share registered beside our own, the
 /// interesting failure is the asymmetric one — ours answers and the share does not, because it is
 /// asleep or its token was revoked — and a cause-only latch would spend its single line on
-/// whichever failed first and hide the other for the rest of the process. [`crate::plex::MAX_SERVERS`]
+/// whichever failed first and hide the other for the rest of the process. [`plx_plex::plex::MAX_SERVERS`]
 /// is 16, so the extra dimension is one `u32` of bits per slot.
 ///
 /// **What is deliberately NOT in the line: the key.** It is a `/photo/:/transcode?…` path ending in
@@ -1457,10 +1457,10 @@ fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
     // `u16::MAX`, and the three store entry points take a raw key from any caller, so a slot's id
     // is not guaranteed to name a registry entry. Everything that does not name one shares the
     // last word.
-    const NWORD: usize = crate::plex::MAX_SERVERS + 1;
+    const NWORD: usize = plx_plex::plex::MAX_SERVERS + 1;
     static LOGGED: [AtomicU32; NWORD] = [const { AtomicU32::new(0) }; NWORD];
     let bit = 1u32 << cause as u32;
-    let word = &LOGGED[(srv.raw() as usize).min(crate::plex::MAX_SERVERS)];
+    let word = &LOGGED[(srv.raw() as usize).min(plx_plex::plex::MAX_SERVERS)];
     // fetch_or, not load-then-store: this loop runs on more than one thread (`posters_init` spawns
     // two), so two workers can reach the same cause for the same server at once and only
     // the one that flipped the bit may write the line.
@@ -1476,14 +1476,14 @@ fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
 /// Cumulative network attempts, including stale refreshes. No URL or credential is logged.
 static FETCHES: AtomicU64 = AtomicU64::new(0);
 
-fn fetch_image(client: &crate::plex::Client, path: &str) -> Option<Vec<u8>> {
+fn fetch_image(client: &plx_plex::plex::Client, path: &str) -> Option<Vec<u8>> {
     FETCHES.fetch_add(1, Ordering::Relaxed);
     client.fetch_built(path)
 }
 
 /// Use the persistent PMS identity, never its registration-order slot. An origin is the
 /// conservative fallback for injected/older sessions that have not learned a machine id yet.
-fn disk_namespace(client: &crate::plex::Client) -> String {
+fn disk_namespace(client: &plx_plex::plex::Client) -> String {
     if client.machine_id().is_empty() {
         format!("origin:{}", client.origin().base())
     } else {
@@ -1517,7 +1517,7 @@ struct Loaded<T> {
 /// removed and falls through to the network; only a fetched response that DECODES is written to
 /// disk, so a bad answer never replaces a good image.
 fn load_art<T>(
-    client: &crate::plex::Client,
+    client: &plx_plex::plex::Client,
     srv: ServerId,
     key_s: &str,
     cache_gen: u64,
@@ -1549,7 +1549,7 @@ fn load_art<T>(
     }
     FETCHES.fetch_add(1, Ordering::Relaxed);
     match client.fetch_built_outcome(key_s) {
-        crate::plex::ArtFetch::Bytes(b) if !b.is_empty() => {
+        plx_plex::plex::ArtFetch::Bytes(b) if !b.is_empty() => {
             out.art = decode(&b);
             if out.art.is_some() {
                 if let Some(k) = &disk {
@@ -1557,7 +1557,7 @@ fn load_art<T>(
                 }
             }
         }
-        crate::plex::ArtFetch::Bytes(_) => {
+        plx_plex::plex::ArtFetch::Bytes(_) => {
             out.transient = true;
             warn_fetch_failed(srv, ArtFail::Empty);
         }
@@ -1572,7 +1572,7 @@ fn load_art<T>(
 /// The worker's real [`fan::FanIo`]: the baked PNG under its own disk key, the collection's
 /// first members from the server that owns it, and each member poster through [`load_art`].
 struct WorkerFanIo<'a> {
-    client: &'a crate::plex::Client,
+    client: &'a plx_plex::plex::Client,
     srv: ServerId,
     rk: &'a str,
     cache_gen: u64,
@@ -1591,7 +1591,7 @@ impl WorkerFanIo<'_> {
     fn still_current(&self) -> bool {
         self.cache_gen == plx_platform::imgcache::generation()
             && self.client.token_gen() == self.token_gen
-            && crate::plex::session::current_profile_key() == self.profile
+            && plx_plex::plex::session::current_profile_key() == self.profile
     }
 }
 
@@ -1606,7 +1606,7 @@ impl fan::FanIo for WorkerFanIo<'_> {
         }
     }
     fn members(&mut self) -> fan::Got<fan::Members> {
-        use crate::plex::collections::CollectionOutcome as O;
+        use plx_plex::plex::collections::CollectionOutcome as O;
         match self.client.collection_children(self.rk, 0, fan::FAN_MEMBERS as i64) {
             O::Ok(page) => fan::Got::Ok(
                 page.metadata
@@ -1624,7 +1624,7 @@ impl fan::FanIo for WorkerFanIo<'_> {
         }
         // The box and builder a portrait card asks for the same poster with, so a member already
         // on screen (or on disk) is a cache hit rather than a second transcode at another size.
-        let (w, h) = crate::ui::widgets::POSTER_RES;
+        let (w, h) = plx_ui::widgets::POSTER_RES;
         let path = transcode_request(self.client, thumb, w, h, false);
         let loaded = load_art(self.client, self.srv, &path, self.cache_gen, |b| {
             plx_gfx::img::img_decode_owned(b).map(|(w, h, px)| fan::Rgba { w, h, px })
@@ -1648,14 +1648,14 @@ impl fan::FanIo for WorkerFanIo<'_> {
 /// Bake (or reload) one collection's fan. The disk namespace adds the active profile to the
 /// server identity because the members a server lists depend on whose restrictions apply.
 fn bake_fan(
-    client: &crate::plex::Client,
+    client: &plx_plex::plex::Client,
     srv: ServerId,
     rk: &str,
     stamp: &str,
     cache_gen: u64,
     token_gen: u32,
 ) -> fan::Got<fan::Rgba> {
-    let profile = crate::plex::session::current_profile_key();
+    let profile = plx_plex::plex::session::current_profile_key();
     let disk = if crate::dev::scenarios::imagecache_bypass_armed() {
         None
     } else {
@@ -1691,7 +1691,7 @@ fn poster_worker() {
         let mut transient = false;
         // Revoked servers cannot use disk as a route around sign-out. Keep this client snapshot
         // for both identity and transport; a later registry repoint must not mix the two.
-        if let Some(client) = crate::plex::client_for(srv)
+        if let Some(client) = plx_plex::plex::client_for(srv)
             .filter(|c| cache_gen == plx_platform::imgcache::generation() && c.token_gen() == token_gen)
         {
             if let Some((rk, stamp)) = fan::parse_fan_key(&key_s) {
@@ -1754,7 +1754,7 @@ fn poster_worker() {
 
 /// Spawn the poster workers. No config is threaded in: each request carries its own server
 /// (the slot's [`Pslot::srv`]), and the address behind it comes from the registry
-/// (`crate::plex::install` or a `register` must have run before a fetch can resolve).
+/// (`plx_plex::plex::install` or a `register` must have run before a fetch can resolve).
 pub(crate) fn init() {
     tex::install(&SOURCE);
     {
@@ -1851,7 +1851,7 @@ mod tests {
     struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
             reset_key_memo();
         }
     }
@@ -1859,10 +1859,10 @@ mod tests {
     /// `session::load`, which mints and PERSISTS a uuid on a host that has no session file.
     fn one_server() -> (Fresh, ServerId, &'static str) {
         let g = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         reset_key_memo();
         let tok = "tok-poster-test";
-        let sid = crate::plex::register_for_test(
+        let sid = plx_plex::plex::register_for_test(
             "poster-test",
             "127.0.0.1",
             32400,
@@ -2027,17 +2027,17 @@ mod tests {
     /// belong to different people (a managed profile shown the owner's restricted posters).
     #[test]
     fn a_fan_bake_is_not_persisted_across_a_retoken_or_a_profile_switch() {
-        struct Restore(std::sync::Arc<crate::plex::session::CurrentProfile>);
+        struct Restore(std::sync::Arc<plx_plex::plex::session::CurrentProfile>);
         impl Drop for Restore {
             fn drop(&mut self) {
-                crate::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation);
+                plx_plex::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation);
             }
         }
         let (_g, sid, _) = one_server();
-        let _restore = Restore(crate::plex::session::current_snapshot());
-        let profile = |uuid: &str| crate::plex::session::UserRef { uuid: uuid.into(), ..Default::default() };
-        crate::plex::session::publish_profile_for_test(Some(profile("profile-a")), 7);
-        let client = crate::plex::client_for(sid).unwrap();
+        let _restore = Restore(plx_plex::plex::session::current_snapshot());
+        let profile = |uuid: &str| plx_plex::plex::session::UserRef { uuid: uuid.into(), ..Default::default() };
+        plx_plex::plex::session::publish_profile_for_test(Some(profile("profile-a")), 7);
+        let client = plx_plex::plex::client_for(sid).unwrap();
         let io = |c| WorkerFanIo {
             client: c,
             srv: sid,
@@ -2045,12 +2045,12 @@ mod tests {
             cache_gen: plx_platform::imgcache::generation(),
             disk: None,
             token_gen: c.token_gen(),
-            profile: crate::plex::session::current_profile_key(),
+            profile: plx_plex::plex::session::current_profile_key(),
         };
 
         let started = io(client);
         assert!(started.still_current(), "an undisturbed bake may persist");
-        crate::plex::session::publish_profile_for_test(Some(profile("profile-b")), 8);
+        plx_plex::plex::session::publish_profile_for_test(Some(profile("profile-b")), 8);
         assert!(!started.still_current(), "the profile moved under the bake");
 
         let started = io(client);
@@ -2141,9 +2141,9 @@ mod tests {
     #[test]
     fn a_repoint_with_the_same_url_and_token_retires_the_old_request_generation() {
         let (_fresh, sid, tok) = one_server();
-        crate::ui::card_motion::begin_frame(crate::app::clock::now());
+        plx_ui::card_motion::begin_frame(crate::app::clock::now());
         let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
-        let old_generation = crate::plex::client_for(sid).unwrap().token_gen();
+        let old_generation = plx_plex::plex::client_for(sid).unwrap().token_gen();
         {
             let mut g = store();
             g.slots = [Pslot::ZERO; PT_CAP];
@@ -2155,9 +2155,9 @@ mod tests {
             set_key(slot, &path);
             slot.state = P_EVICTED;
         }
-        let repointed = crate::plex::register_for_test("poster-test", "127.0.0.2", 32400, tok, "cid-poster-test");
+        let repointed = plx_plex::plex::register_for_test("poster-test", "127.0.0.2", 32400, tok, "cid-poster-test");
         assert_eq!(repointed, sid);
-        let current_generation = crate::plex::client_for(sid).unwrap().token_gen();
+        let current_generation = plx_plex::plex::client_for(sid).unwrap().token_gen();
         assert_ne!(current_generation, old_generation);
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Claimed);
         assert!(store().slots.iter().any(|s| s.state == P_WANT
@@ -2177,7 +2177,7 @@ mod tests {
         // same identity, and neither may cost a tile its texture.
         for grant in ["tok-plex-tv-grant-for-the-same-user", tok] {
             let kept = resident_art_survives_for_test(sid, || {
-                let again = crate::plex::register_for_test(
+                let again = plx_plex::plex::register_for_test(
                     "poster-test", "127.0.0.1", 32400, grant, "cid-poster-test");
                 assert_eq!(again, sid, "discovery must reuse the stored server's slot");
             });
@@ -2192,11 +2192,11 @@ mod tests {
     #[test]
     fn a_retokened_retry_slot_fetches_with_the_fresh_grant_at_once() {
         let (_fresh, sid, _tok) = one_server();
-        crate::ui::card_motion::begin_frame(crate::app::clock::now());
+        plx_ui::card_motion::begin_frame(crate::app::clock::now());
         let src = "/library/metadata/42/thumb";
         let stale = key_for(sid, src, 2, 2, 0);
         {
-            let c = crate::plex::client_for(sid).unwrap();
+            let c = plx_plex::plex::client_for(sid).unwrap();
             let mut g = store();
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
@@ -2209,7 +2209,7 @@ mod tests {
             slot.attempts = 5;
             slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
         }
-        let again = crate::plex::register_for_test(
+        let again = plx_plex::plex::register_for_test(
             "poster-test", "127.0.0.1", 32400, "tok-plex-tv-grant-for-the-same-user", "cid-poster-test");
         assert_eq!(again, sid);
         let fresh = key_for(sid, src, 2, 2, 0);
@@ -2232,8 +2232,8 @@ mod tests {
     fn a_revocation_still_retires_resident_art() {
         let (_fresh, sid, tok) = one_server();
         let kept = resident_art_survives_for_test(sid, || {
-            crate::plex::revoke_for_profile_switch();
-            let again = crate::plex::register_for_test(
+            plx_plex::plex::revoke_for_profile_switch();
+            let again = plx_plex::plex::register_for_test(
                 "poster-test", "127.0.0.1", 32400, tok, "cid-poster-test");
             assert_eq!(again, sid);
         });
@@ -2254,8 +2254,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_DECODED;
             slot.px = 0;
@@ -2310,8 +2310,8 @@ mod tests {
             slot.state = P_READY;
             slot.srv = srv;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(srv).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(srv).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(srv).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(srv).unwrap().grant_epoch();
             set_key(slot, &path);
         }
 
@@ -2324,7 +2324,7 @@ mod tests {
             }),
         };
         tex::accept(decoded(PosterKey(0)));
-        let mut budget = crate::ui::frame::Budget::new();
+        let mut budget = plx_ui::frame::Budget::new();
         budget.begin_frame(0);
         let mut present = plx_machine::present::Present::new();
         let mut present_handle = plx_machine::machine::PresentHandle::of(&mut present);
@@ -2448,8 +2448,8 @@ mod tests {
             let mut g = store();
             g.slots = [Pslot::ZERO; PT_CAP];
             g.quit = false;
-            let gen = crate::plex::client_for(srv).unwrap().token_gen();
-            let epoch = crate::plex::client_for(srv).unwrap().grant_epoch();
+            let gen = plx_plex::plex::client_for(srv).unwrap().token_gen();
+            let epoch = plx_plex::plex::client_for(srv).unwrap().grant_epoch();
             let cache_gen = plx_platform::imgcache::generation();
             for (i, path) in [&path0, &path1].into_iter().enumerate() {
                 let slot = &mut g.slots[i];
@@ -2466,7 +2466,7 @@ mod tests {
             key,
             result: Ok(Decoded { w: 2, h: 2, rgba: vec![0; BYTES].into_boxed_slice() }),
         };
-        let mut budget = crate::ui::frame::Budget::new();
+        let mut budget = plx_ui::frame::Budget::new();
         let mut present = plx_machine::present::Present::new();
         let mut uploader = StubUp { next: 0 };
         let (lost0, _) = residency_counts_for_test();
@@ -2527,8 +2527,8 @@ mod tests {
         let path = key_for(sid, "/library/metadata/4242/thumb", 2, 2, 0);
         store().slots = [Pslot::ZERO; PT_CAP];
 
-        let motion = crate::ui::card_motion::Scope::moving_for_test();
-        assert!(crate::ui::card_motion::declines_request(), "the fixture is a fast scroll");
+        let motion = plx_ui::card_motion::Scope::moving_for_test();
+        assert!(plx_ui::card_motion::declines_request(), "the fixture is a fast scroll");
         let (hit, warm) = lookup(sid, &path, Touch::Draw);
         assert_eq!(hit, None, "a fast-scrolling miss resolves to no poster");
         assert_eq!(warm, Warm::Full, "and reports the attempt spent");
@@ -2537,7 +2537,7 @@ mod tests {
 
         // The settle is the whole difference — same key, same store, same call.
         drop(motion);
-        assert!(!crate::ui::card_motion::declines_request());
+        assert!(!plx_ui::card_motion::declines_request());
         let (_, warm) = lookup(sid, &path, Touch::Draw);
         assert_eq!(warm, Warm::Claimed, "a settled document claims the slot");
         assert_eq!(store().slots[0].state, P_WANT, "and queues it for a worker");
@@ -2555,24 +2555,24 @@ mod tests {
         tex::install(&SOURCE);
         tex::reset_for_test(16 * 1024 * 1024);
         store().slots = [Pslot::ZERO; PT_CAP];
-        let rect = crate::ui::Rect::new(0.0, 0.0, 250.0, 375.0);
+        let rect = plx_ui::Rect::new(0.0, 0.0, 250.0, 375.0);
         let mut item = crate::pms::PmsMovie::default();
         item.sid = sid;
         item.thumb = "/library/metadata/42/thumb".into();
         item.still = "/library/metadata/42/still".into();
-        crate::ui::widgets::resolve_card_art(crate::ui::Painter::recording(), rect,
-            &crate::ui::widgets::Art::Poster(Some(crate::screens::registry::tile_facts::of(&item))));
+        plx_ui::widgets::resolve_card_art(plx_ui::Painter::recording(), rect,
+            &plx_ui::widgets::Art::Poster(Some(crate::screens::registry::tile_facts::of(&item))));
         assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "text prewarming must not start poster work");
         for frame in 0..3 {
-            crate::ui::card_motion::begin_frame(frame * 16);
+            plx_ui::card_motion::begin_frame(frame * 16);
             plx_machine::idle::frame_begin(0.016);
             plx_machine::idle::take_local_damage();
-            let painter = crate::ui::Painter::root().translate(if frame == 0 { 0.0 } else { 80.0 }, 0.0);
+            let painter = plx_ui::Painter::root().translate(if frame == 0 { 0.0 } else { 80.0 }, 0.0);
             let facts = crate::screens::registry::tile_facts::of(&item);
-            for art in [crate::ui::widgets::Art::Poster(Some(facts)), crate::ui::widgets::Art::Still(Some(facts)),
-                crate::ui::widgets::Art::Thumb { sid: sid.raw(), key: "/test-thumb", res: (250, 375) },
-                crate::ui::widgets::Art::Person { sid: sid.raw(), key: "/test-person", res: (250, 250) }] {
-                crate::ui::widgets::resolve_card_art(painter, rect, &art);
+            for art in [plx_ui::widgets::Art::Poster(Some(facts)), plx_ui::widgets::Art::Still(Some(facts)),
+                plx_ui::widgets::Art::Thumb { sid: sid.raw(), key: "/test-thumb", res: (250, 375) },
+                plx_ui::widgets::Art::Person { sid: sid.raw(), key: "/test-person", res: (250, 250) }] {
+                plx_ui::widgets::resolve_card_art(painter, rect, &art);
             }
             if frame < 2 {
                 assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "unknown/moving cards must claim no slots");
@@ -2581,7 +2581,7 @@ mod tests {
                 assert_eq!(store().slots.iter().filter(|s| s.state == P_WANT).count(), 4, "all four settled variants must queue art");
             }
         }
-        assert!(!crate::ui::card_motion::declines_request(), "hero work after a card is outside its scope");
+        assert!(!plx_ui::card_motion::declines_request(), "hero work after a card is outside its scope");
         store().slots = [Pslot::ZERO; PT_CAP];
     }
 
@@ -2595,13 +2595,13 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_RETRY;
             slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
         }
-        let motion = crate::ui::card_motion::Scope::moving_for_test();
+        let motion = plx_ui::card_motion::Scope::moving_for_test();
         plx_machine::idle::take_local_damage();
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
             "the future retry must match its existing slot, not take the fresh-miss gate");
@@ -2637,8 +2637,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_EVICTED;
             // No eviction history, so the cooldown gate would admit this re-arm. That isolates
@@ -2647,7 +2647,7 @@ mod tests {
         }
         let (_, rearmed0) = residency_counts_for_test();
 
-        let motion = crate::ui::card_motion::Scope::moving_for_test();
+        let motion = plx_ui::card_motion::Scope::moving_for_test();
         let (hit, warm) = lookup(sid, &path, Touch::Draw);
         assert_eq!(hit, None, "an evicted slot has no pixels to hand back");
         assert_eq!(warm, Warm::Known, "the slot is known, merely left dormant");
@@ -2682,8 +2682,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_RETRY;
             slot.attempts = 1;
@@ -2691,7 +2691,7 @@ mod tests {
             slot.retry_at = Some(0);
         }
 
-        let motion = crate::ui::card_motion::Scope::moving_for_test();
+        let motion = plx_ui::card_motion::Scope::moving_for_test();
         let (hit, _) = lookup(sid, &path, Touch::Draw);
         assert_eq!(hit, None, "a parked retry has no pixels");
         assert_eq!(
@@ -2723,7 +2723,7 @@ mod tests {
     /// `a_ready_source_hit_recovers_after_its_texture_is_evicted`).
     #[test]
     fn residency_transitions_are_counted_exactly_once_each() {
-        use crate::ui::tex::Source as _;
+        use plx_ui::tex::Source as _;
 
         let (_fresh, sid, _) = one_server();
         let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
@@ -2733,8 +2733,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -2772,7 +2772,7 @@ mod tests {
     /// until their cooldown clears, which real time never does inside a tight loop.
     #[test]
     fn a_key_evicted_and_reevicted_in_rapid_succession_does_not_rearm_without_bound() {
-        use crate::ui::tex::Source as _;
+        use plx_ui::tex::Source as _;
 
         let (_fresh, sid, _) = one_server();
         let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
@@ -2782,8 +2782,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -2873,8 +2873,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_EVICTED;
         }
@@ -2925,8 +2925,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_EVICTED;
             slot.evict_attempts = 1;
@@ -2968,8 +2968,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_EVICTED;
             slot.evict_attempts = 1;
@@ -3007,7 +3007,7 @@ mod tests {
     /// the unrelated transient-fetch schedule.
     #[test]
     fn repeated_completed_recoveries_escalate_the_cooldown_to_its_cap() {
-        use crate::ui::tex::Source as _;
+        use plx_ui::tex::Source as _;
 
         let (_fresh, sid, _) = one_server();
         let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
@@ -3019,8 +3019,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -3079,7 +3079,7 @@ mod tests {
     /// churned it in ten whole seconds.
     #[test]
     fn an_eviction_gap_past_the_thrash_window_resets_the_escalation() {
-        use crate::ui::tex::Source as _;
+        use plx_ui::tex::Source as _;
 
         let (_fresh, sid, _) = one_server();
         let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
@@ -3090,8 +3090,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
             slot.evicted_at = Some(0);
@@ -3224,7 +3224,7 @@ mod tests {
     /// must catch the totals up, because that path does not consult the interval at all.
     #[test]
     fn a_rearm_inside_the_throttle_window_still_reaches_the_log_once_the_store_settles() {
-        use crate::ui::tex::Source as _;
+        use plx_ui::tex::Source as _;
 
         let (_fresh, sid, _) = one_server();
         reset_residency_log_for_test();
@@ -3235,8 +3235,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.srv = sid;
             slot.cache_gen = plx_platform::imgcache::generation();
-            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
-            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
+            slot.token_gen = plx_plex::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = plx_plex::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -3345,7 +3345,7 @@ mod tests {
     /// status that will not change is final.
     #[test]
     fn only_a_final_status_is_final() {
-        use crate::plex::ArtFetch;
+        use plx_plex::plex::ArtFetch;
         for s in [301, 400, 404, 405, 410, 414, 415, 422] {
             assert!(!is_transient(&ArtFetch::Status(s)), "{s} will not change");
         }

@@ -183,7 +183,7 @@ fn ranking_is_stable_so_each_servers_own_order_survives_the_pass() {
 fn a_tag_in_a_favourite_and_a_non_favourite_library_ranks_favourite_and_keeps_its_whole_count()
 {
     let sid = ServerId::from_raw(0);
-    let tag = |section: i64, count: i64| crate::plex::Tag {
+    let tag = |section: i64, count: i64| plx_plex::plex::Tag {
         tag: "Wallace Shawn".into(),
         tag_key: "gid-1".into(),
         id: 921,
@@ -191,8 +191,8 @@ fn a_tag_in_a_favourite_and_a_non_favourite_library_ranks_favourite_and_keeps_it
         library_section_id: section,
         ..Default::default()
     };
-    let mc = crate::plex::MediaContainer {
-        hub: vec![crate::plex::Hub {
+    let mc = plx_plex::plex::MediaContainer {
+        hub: vec![plx_plex::plex::Hub {
             hub_identifier: "actor".into(),
             kind: "actor".into(),
             directory: vec![tag(9, 5), tag(1, 3)],

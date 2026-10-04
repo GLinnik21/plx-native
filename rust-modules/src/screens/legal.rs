@@ -6,15 +6,15 @@
 
 use std::borrow::Cow;
 
-use crate::ui::document_reader::DocumentReader;
-use crate::ui::frame::Budget;
-use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use plx_ui::document_reader::DocumentReader;
+use plx_ui::frame::Budget;
+use plx_ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use plx_machine::machine::{Canon, Cx, Effects, EntryId, GroupId, Handled, Key, LogicalState, Machine};
-use crate::ui::route_screen::RouteLayout;
-use crate::ui::screen::{DrawFrame, FocusSource, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
-use crate::ui::table::Row;
-use crate::ui::table_screen::{DocumentFocus, DocumentScreen, Header, TableScreen};
-use crate::ui::{theme, Rect};
+use plx_ui::route_screen::RouteLayout;
+use plx_ui::screen::{DrawFrame, FocusSource, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
+use plx_ui::table::Row;
+use plx_ui::table_screen::{DocumentFocus, DocumentScreen, Header, TableScreen};
+use plx_ui::{theme, Rect};
 
 use super::family::{form_activate, form_focus, form_right_target, InnerHost, SettingsPage};
 use super::registry::word;
@@ -245,7 +245,7 @@ impl Machine<InnerHost> for LegalIndex {
     }
 }
 
-crate::focusable_via_view!(LegalIndex, InnerHost, view);
+plx_ui::focusable_via_view!(LegalIndex, InnerHost, view);
 
 impl Screen<InnerHost> for LegalIndex {
     fn name(&self) -> &'static str {
@@ -285,7 +285,7 @@ pub(crate) struct DocumentPage {
     title: &'static str,
     subtitle: &'static str,
     body: Cow<'static, str>,
-    qr: Option<crate::ui::qr::QrCode>,
+    qr: Option<plx_ui::qr::QrCode>,
     guide_caption: Option<&'static str>,
     word: &'static str,
     state: DocState,
@@ -371,7 +371,7 @@ impl DocumentPage {
             title: plx_platform::i18n::msg::settings_language_contribute(),
             subtitle: plx_platform::i18n::msg::settings_language_contribute_copy(),
             body: Cow::Owned(contribution_address()),
-            qr: crate::ui::qr::QrCode::new(plx_platform::i18n::CONTRIBUTE_URL).ok(),
+            qr: plx_ui::qr::QrCode::new(plx_platform::i18n::CONTRIBUTE_URL).ok(),
             guide_caption: Some(plx_platform::i18n::msg::settings_language_contribute_body()),
             word: "contribute",
             state: DocState { which: 0xfe, pos: 0 },
@@ -382,8 +382,8 @@ impl DocumentPage {
         RouteLayout::screen().document(true)
     }
 
-    fn guide(&self) -> Option<crate::ui::qr::QrLink<'_>> {
-        self.guide_caption.map(|caption| crate::ui::qr::QrLink::new(caption, self.body.as_ref()))
+    fn guide(&self) -> Option<plx_ui::qr::QrLink<'_>> {
+        self.guide_caption.map(|caption| plx_ui::qr::QrLink::new(caption, self.body.as_ref()))
     }
 
     fn view(&self) -> DocumentFocus<'_> {
@@ -439,7 +439,7 @@ impl Machine<InnerHost> for DocumentPage {
     }
 }
 
-crate::focusable_via_view!(DocumentPage, InnerHost, view);
+plx_ui::focusable_via_view!(DocumentPage, InnerHost, view);
 
 impl Screen<InnerHost> for DocumentPage {
     fn name(&self) -> &'static str {
@@ -512,14 +512,14 @@ pub(super) fn nav_items_for_test() -> Vec<(u32, SettingsPage)> {
 mod tests {
     use super::*;
 
-    use crate::ui::fixture::FixtureMeasure;
-    use crate::ui::hit::{HitMap, PointerKind};
+    use plx_ui::fixture::FixtureMeasure;
+    use plx_ui::hit::{HitMap, PointerKind};
     use plx_machine::machine::{
         Edge, FocusKey, FocusRead, Fx, InputEvent, InputKind, InputOwner, MachineId, NavOp, NavOpKind,
         PressRead, Source, Stamped, Tick,
     };
     use plx_machine::present::Present;
-    use crate::ui::screen::{Activate, By, EdgeRule, Focusable, Hover, Stop};
+    use plx_ui::screen::{Activate, By, EdgeRule, Focusable, Hover, Stop};
 
     #[test]
     fn contribution_manual_address_is_the_complete_qr_destination() {
@@ -642,11 +642,12 @@ mod tests {
     /// The About page names the binary the user is RUNNING.
     ///
     /// It was a hand-typed `PlxNative 0.5.0` that no bump script touched, so it could only ever
-    /// have been right by accident. Written against `identity::VERSION` rather than against
+    /// have been right by accident. Written against `identity::version()` rather than against
     /// `env!` again so that re-typing a literal here fails: on any developer build the two differ.
     #[test]
     fn about_names_the_running_version() {
-        let v = crate::plex::identity::VERSION;
+        plx_plex::plex::identity::set_version(env!("PLX_VERSION"));
+        let v = plx_plex::plex::identity::version();
         assert!(
             ABOUT.contains(&format!("Version {v}")),
             "About should name {v}, says: {ABOUT:?}"
@@ -692,7 +693,7 @@ mod tests {
             assert_eq!(row.detail, page.subtitle());
             assert_eq!(
                 row.ticon,
-                Some(crate::ui::icons::Icon::Chevron),
+                Some(plx_ui::icons::Icon::Chevron),
                 "{page:?} must open on a press of its own row"
             );
         }
@@ -1156,7 +1157,7 @@ mod tests {
     #[test]
     fn every_legal_row_fits_its_column_in_every_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-        let frame_w = crate::ui::route_screen::RouteLayout::screen().sectioned_table().w;
+        let frame_w = plx_ui::route_screen::RouteLayout::screen().sectioned_table().w;
         let mut out = Vec::new();
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
@@ -1164,6 +1165,6 @@ mod tests {
             let table = &LegalIndex::new(EntryId(0)).form.table;
             out.extend(table.app_fit_failures(frame_w, tag));
         }
-        crate::ui::table::assert_no_fit_failures(&out);
+        plx_ui::table::assert_no_fit_failures(&out);
     }
 }

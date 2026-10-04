@@ -1,25 +1,25 @@
 //! Pure geometry for the owned Library's single vertical document.
 
-use crate::ui::consts::{CARD_H, CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W};
-use crate::ui::card_row::RowStyle;
-use crate::ui::theme;
+use plx_ui::consts::{CARD_H, CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W};
+use plx_ui::card_row::RowStyle;
+use plx_ui::theme;
 
 pub(super) const COLS: usize = 6;
 const EPISODE_COLS: usize = 4;
 pub(super) const MAX_LIBRARY_PILLS: usize = 8;
 pub(super) const MAX_SHELVES: usize = 12;
-pub(super) use crate::ui::poster_grid::{GridBand, MAX_GRID_BANDS};
+pub(super) use plx_ui::poster_grid::{GridBand, MAX_GRID_BANDS};
 pub(super) const MAX_LETTERS: usize = 64;
-pub(super) const CONTENT_TOP: f32 = crate::ui::consts::GRID_TOP_Y;
-pub(super) const LIBRARY_ROW_H: f32 = crate::ui::widgets::StatusOverlay::CTRL_H + crate::ui::consts::CARD_DY + crate::ui::consts::TITLE_DY;
-pub(super) const GRID_HEAD_H: f32 = crate::ui::consts::TITLE_DY
-    + crate::ui::consts::CARD_DY
+pub(super) const CONTENT_TOP: f32 = plx_ui::consts::GRID_TOP_Y;
+pub(super) const LIBRARY_ROW_H: f32 = plx_ui::widgets::StatusOverlay::CTRL_H + plx_ui::consts::CARD_DY + plx_ui::consts::TITLE_DY;
+pub(super) const GRID_HEAD_H: f32 = plx_ui::consts::TITLE_DY
+    + plx_ui::consts::CARD_DY
     + 52.0
-    + crate::ui::consts::CARD_DY;
+    + plx_ui::consts::CARD_DY;
 #[cfg(test)]
 pub(super) const GRID_PITCH: f32 = CARD_H
-    + crate::ui::card_row::LABEL_BAND_COLLAPSED
-    + crate::ui::consts::UNDER_LABEL_AIR;
+    + plx_ui::card_row::LABEL_BAND_COLLAPSED
+    + plx_ui::consts::UNDER_LABEL_AIR;
 pub(super) const RAIL_TRACK_W: f32 = 44.0;
 pub(super) const RAIL_PITCH: f32 = 34.0;
 pub(super) const RAIL_CAP_PAD: f32 = 10.0;
@@ -66,7 +66,7 @@ impl Layout {
     }
 
     pub(super) fn new(libraries: bool, shelf_pitches: &[f32], rows: usize, grid_head: bool) -> Self {
-        let mut pitches = [crate::ui::consts::ROW_PITCH; MAX_SHELVES];
+        let mut pitches = [plx_ui::consts::ROW_PITCH; MAX_SHELVES];
         for (to, from) in pitches.iter_mut().zip(shelf_pitches.iter().take(MAX_SHELVES)) {
             *to = *from;
         }
@@ -96,7 +96,7 @@ impl Layout {
 
     pub(super) fn with_grid_focus(mut self, row: Option<usize>) -> Self {
         self.grid_bands = [GridBand::CLOSED; MAX_GRID_BANDS];
-        self.grid_bands[..1].copy_from_slice(&crate::ui::poster_grid::settled(row.filter(|&row| row < self.rows)));
+        self.grid_bands[..1].copy_from_slice(&plx_ui::poster_grid::settled(row.filter(|&row| row < self.rows)));
         self
     }
 
@@ -105,7 +105,7 @@ impl Layout {
     }
 
     fn band_growth_before(&self, row: usize) -> f32 {
-        crate::ui::poster_grid::growth_before(row.min(self.rows), &self.grid_bands)
+        plx_ui::poster_grid::growth_before(row.min(self.rows), &self.grid_bands)
     }
 
     fn row_top(&self, row: usize) -> f32 {
@@ -134,7 +134,7 @@ impl Layout {
     pub(super) fn card_h(&self) -> f32 { self.style().h }
 
     pub(super) fn grid_pitch(&self) -> f32 {
-        self.card_h() + crate::ui::card_row::LABEL_BAND_COLLAPSED + crate::ui::consts::UNDER_LABEL_AIR
+        self.card_h() + plx_ui::card_row::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR
     }
 
     pub(super) fn cell_x(&self, col: usize) -> f32 {
@@ -147,7 +147,7 @@ impl Layout {
     }
 
     pub(super) fn shelf_pitch(&self, index: usize) -> f32 {
-        self.pitches.get(index).copied().unwrap_or(crate::ui::consts::ROW_PITCH)
+        self.pitches.get(index).copied().unwrap_or(plx_ui::consts::ROW_PITCH)
     }
 
     pub(super) fn shelf_origin(&self, index: usize) -> f32 {
@@ -190,7 +190,7 @@ impl Layout {
     }
 
     pub(super) fn shelf_reveal(&self, shelf: usize) -> f32 {
-        (self.shelf_origin(shelf) - crate::ui::consts::TITLE_DY).clamp(0.0, self.max_scroll())
+        (self.shelf_origin(shelf) - plx_ui::consts::TITLE_DY).clamp(0.0, self.max_scroll())
     }
 
     pub(super) fn first(&self) -> Option<Block> {
@@ -253,7 +253,7 @@ pub(super) fn rail_geom(n: usize) -> (f32, f32, f32, f32) {
 pub(super) fn rail_scroll_target(scroll: f32, drive: usize, n: usize) -> f32 {
     let (_, _, height, max) = rail_geom(n);
     let drive = drive.min(n.saturating_sub(1)) as f32;
-    crate::ui::card_row::reveal(scroll, (drive + 2.0) * RAIL_PITCH - height,
+    plx_ui::card_row::reveal(scroll, (drive + 2.0) * RAIL_PITCH - height,
         (drive - 1.0) * RAIL_PITCH, max)
 }
 
@@ -280,10 +280,10 @@ pub(super) fn library_window(widths: &[f32], selected: usize, available: f32, ga
 }
 
 pub(super) fn shelf_pitch(landscape: bool, expanded: f32) -> f32 {
-    let art = if landscape { crate::ui::card_row::RowStyle::EPISODE.h } else { CARD_H };
-    crate::ui::consts::TITLE_DY + crate::ui::consts::CARD_DY + art
-        + crate::ui::card_row::under_band(expanded)
-        + crate::ui::consts::UNDER_LABEL_AIR
+    let art = if landscape { plx_ui::card_row::RowStyle::EPISODE.h } else { CARD_H };
+    plx_ui::consts::TITLE_DY + plx_ui::consts::CARD_DY + art
+        + plx_ui::card_row::under_band(expanded)
+        + plx_ui::consts::UNDER_LABEL_AIR
 }
 
 #[cfg(test)]
@@ -294,15 +294,15 @@ mod tests {
     fn all_rows_without_focus_use_the_shared_collapsed_band() {
         for episodes in [false, true] {
             let layout = Layout::new(false, &[], 10_000, true).with_episodes(episodes);
-            let pitch = layout.card_h() + crate::ui::card_row::under_band(0.0)
-                + crate::ui::consts::UNDER_LABEL_AIR;
+            let pitch = layout.card_h() + plx_ui::card_row::under_band(0.0)
+                + plx_ui::consts::UNDER_LABEL_AIR;
             assert!((layout.row_y(1, 0.0) - layout.row_y(0, 0.0) - pitch).abs() < 0.001);
         }
     }
 
     #[test]
     fn only_the_focused_all_row_reserves_its_caption_and_the_last_caption_fits() {
-        use crate::ui::card_row::{BAND_OPEN, UNDER_LABEL_H};
+        use plx_ui::card_row::{BAND_OPEN, UNDER_LABEL_H};
         for episodes in [false, true] {
             let compact = Layout::new(true, &[shelf_pitch(false, 0.0)], 40, true)
                 .with_episodes(episodes);
@@ -325,7 +325,7 @@ mod tests {
     }
 
     fn posters(libraries: bool, shelves: usize, rows: usize, grid_head: bool) -> Layout {
-        Layout::new(libraries, &vec![crate::ui::consts::ROW_PITCH; shelves], rows, grid_head)
+        Layout::new(libraries, &vec![plx_ui::consts::ROW_PITCH; shelves], rows, grid_head)
     }
 
     #[test]
@@ -340,7 +340,7 @@ mod tests {
         let shelved = posters(true, 12, 40, true);
         assert_eq!(
             shelved.grid_block_top(),
-            LIBRARY_ROW_H + 12.0 * crate::ui::consts::ROW_PITCH,
+            LIBRARY_ROW_H + 12.0 * plx_ui::consts::ROW_PITCH,
             "twelve shelves push the grid exactly twelve pitches down"
         );
         // …and a shelf's own origin is the one Home hangs a shelf from, so `card_row` draws here
@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(shelved.shelf_origin(0), LIBRARY_ROW_H);
         assert_eq!(
             shelved.shelf_origin(3) - shelved.shelf_origin(2),
-            crate::ui::consts::ROW_PITCH
+            plx_ui::consts::ROW_PITCH
         );
 
         // a grid with nothing in it draws no heading and no control row, so the block IS the grid

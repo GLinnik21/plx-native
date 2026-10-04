@@ -6,7 +6,7 @@ not. If this file and a pointer disagree, the pointer wins and this file is stal
 
 The full design and migration status lives in [docs/ui-system-migration.md](docs/ui-system-migration.md).
 The rules you must follow when writing UI code live in
-[rust-modules/src/ui/CLAUDE.md](rust-modules/src/ui/CLAUDE.md). Read that before touching a screen.
+[rust-modules/ui/src/CLAUDE.md](rust-modules/ui/src/CLAUDE.md). Read that before touching a screen.
 
 ## The surface
 
@@ -20,7 +20,7 @@ that number is a couch measurement rather than a taste call.
 
 ## Colour is two layers
 
-From `ui/CLAUDE.md` rule 1, enforced in `rust-modules/src/ui/theme.rs`:
+From `ui/CLAUDE.md` rule 1, enforced in `rust-modules/ui/src/theme.rs`:
 
 - A **role** says what a colour is for: `theme::TEXT_PRIMARY`, `theme::CONTROL_IDLE_FILL`,
   `theme::scrim(a)`. Roles are what call sites use.
@@ -74,7 +74,7 @@ can grade it. `widgets.rs`'s `hero_scrim_a` doc says it plainly: the contract "i
 is the arithmetic the anchor table in this module's tests reads, so the promise and the paint cannot
 come from two different curves."
 
-- Vertical ramp, [rust-modules/src/ui/landing_hero.rs](rust-modules/src/ui/landing_hero.rs):
+- Vertical ramp, [rust-modules/ui/src/landing_hero.rs](rust-modules/ui/src/landing_hero.rs):
   zero above `HERO_BASE_SCRIM_Y0` (0.34 of the screen, 367), `foot * MID_WEIGHT` at `KNEE_Y` (0.65
   of the screen, 702), and `foot = 0.30 + 0.64 * hero_a` at the bottom. The text stack builds upward
   from `TEXT_BOTTOM` 692 in a column of `COL_W` 660.
@@ -145,12 +145,12 @@ Its contextual answer verbs share one horizontal row, separated from BODY-sized 
 
 | Changing | Read first |
 |---|---|
-| any screen | `rust-modules/src/ui/CLAUDE.md`, then `docs/ui-system-migration.md` |
+| any screen | `rust-modules/ui/src/CLAUDE.md`, then `docs/ui-system-migration.md` |
 | adding a screen | `docs/ui-system-migration.md` section (E) |
-| a colour | `rust-modules/src/ui/theme.rs` |
+| a colour | `rust-modules/ui/src/theme.rs` |
 | a size | `rust-modules/gfx/src/gfx/tokens.rs` (`mod size`, re-exported as `theme::size`) |
-| anything behind hero text | `rust-modules/src/ui/landing_hero.rs` and `widgets.rs`'s scrim section, then re-grade the anchor table |
-| a horizontal row | `rust-modules/src/ui/card_row.rs` |
+| anything behind hero text | `rust-modules/ui/src/landing_hero.rs` and `widgets.rs`'s scrim section, then re-grade the anchor table |
+| a horizontal row | `rust-modules/ui/src/card_row.rs` |
 | playback UI | `rust-modules/src/player/CLAUDE.md` |
-| Plex data feeding UI | `rust-modules/src/plex/CLAUDE.md` and `docs/pms-api.md` |
+| Plex data feeding UI | `rust-modules/plex/src/plex/CLAUDE.md` and `docs/pms-api.md` |
 | known gaps against official clients | `docs/parity-gaps.md` |

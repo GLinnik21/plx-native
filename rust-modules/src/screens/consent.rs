@@ -17,24 +17,24 @@
 use std::borrow::Cow;
 
 use crate::telemetry::consent::{self, Consent};
-use crate::ui::decision_alert::{Choice as AlertChoice, DecisionAlert};
-use crate::ui::document_reader::DocumentReader;
-use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKeys, RowKind};
-use crate::ui::frame::Budget;
+use plx_ui::decision_alert::{Choice as AlertChoice, DecisionAlert};
+use plx_ui::document_reader::DocumentReader;
+use plx_ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKeys, RowKind};
+use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent, InputKind,
     Key, LogicalState, Machine, MachineId, NavOp,
 };
-use crate::ui::route_screen::RouteLayout;
-use crate::ui::screen::{
+use plx_ui::route_screen::RouteLayout;
+use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, FocusTarget,
     Focusable, GroupKind, GroupSpec, HitSource, Hover, Part, Placed, RenderStrategy, Screen,
     ScreenEvent, Seat, Step, Stop,
 };
-use crate::ui::table::{Row, TableView};
-use crate::ui::table_screen::{BandPart, DocumentFocus, DocumentScreen, Header, TableScreen};
-use crate::ui::widgets::CtlPop;
-use crate::ui::{theme, Rect};
+use plx_ui::table::{Row, TableView};
+use plx_ui::table_screen::{BandPart, DocumentFocus, DocumentScreen, Header, TableScreen};
+use plx_ui::widgets::CtlPop;
+use plx_ui::{theme, Rect};
 
 use super::family::{form_activate, form_focus, form_right_target, palette, InnerHost, SettingsPage, ALERT_GROUP, BAND_GROUP, TABLE_GROUP};
 use super::registry::{alert_index, band_index, word, AppFx, ConsentCmd, LoopReq, ALERT};
@@ -365,8 +365,8 @@ impl ConsentPage {
     fn first_run_layout(title: &str, body: &str, has_crumb: bool, table: &TableView,
         labels: &[&std::ffi::CStr], measure: &dyn plx_machine::machine::Measure) -> RouteLayout {
         let action_w = labels.iter().map(|label|
-            crate::ui::table_screen::pill_w(measure, label, theme::size::BODY)).sum::<f32>()
-            + crate::ui::widgets::CONTROL_GAP;
+            plx_ui::table_screen::pill_w(measure, label, theme::size::BODY)).sum::<f32>()
+            + plx_ui::widgets::CONTROL_GAP;
         let action_w = action_w.ceil();
         let reader = DocumentReader::new().with_size(theme::size::BODY);
         RouteLayout::screen_for_reading(action_w, table.measured_width(measure), |layout| {
@@ -668,7 +668,7 @@ impl Focusable<InnerHost> for ConsentView<'_> {
     }
 }
 
-crate::focusable_via_view!(ConsentPage, InnerHost, view);
+plx_ui::focusable_via_view!(ConsentPage, InnerHost, view);
 
 impl Machine<InnerHost> for ConsentPage {
     type Ev = ScreenEvent<InnerHost>;
@@ -944,7 +944,7 @@ impl Screen<InnerHost> for ConsentPage {
             if alert_open && self.alert.settled() {
                 for (i, r) in [frames.0, frames.1].into_iter().enumerate() {
                     f.stop(
-                        crate::ui::Painter::root(),
+                        plx_ui::Painter::root(),
                         Stop {
                             key: FocusKey {
                                 entry: self.entry,
@@ -1083,7 +1083,7 @@ impl PreviewPage {
     }
 }
 
-crate::focusable_via_view!(PreviewPage, InnerHost, view);
+plx_ui::focusable_via_view!(PreviewPage, InnerHost, view);
 
 impl Machine<InnerHost> for PreviewPage {
     type Ev = ScreenEvent<InnerHost>;

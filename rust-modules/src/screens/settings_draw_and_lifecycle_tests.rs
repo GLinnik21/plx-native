@@ -39,8 +39,8 @@ fn settings_scrim_and_entrance_alpha_compose_local_and_nav_page_alpha() {
 
 #[test]
 fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
-    use crate::ui::containers::stack::Entry;
-    use crate::ui::screen::NavPresentation;
+    use plx_ui::containers::stack::Entry;
+    use plx_ui::screen::NavPresentation;
     use std::{cell::RefCell, rc::Rc};
 
     let navigation = NavPresentation {
@@ -75,7 +75,7 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
         let mut surface = RouteSurface {
             entry: EntryId(0), id: InstanceId(0), kind: Family::Settings,
             inner, ids: Minter::default(),
-            push: Push { route: crate::ui::route_screen::RoutePush::at(pos), open: target == 1.0,
+            push: Push { route: plx_ui::route_screen::RoutePush::at(pos), open: target == 1.0,
                 leaving: popping.then(|| instance(3)) },
             ground: RouteGround::new(), ground_ready: false, remembered: Vec::new(),
         };
@@ -99,7 +99,7 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
 ///
 /// [`RootPage::rebuild`] asks [`signed_in`] whether this television has an account, once at
 /// construction and again on `Enter`, so TWICE per open. That question used to go through
-/// [`crate::plex::session::load`] — the read-modify-WRITE door, whose own doc says a read that
+/// [`plx_plex::plex::session::load`] — the read-modify-WRITE door, whose own doc says a read that
 /// can turn into a save "is not [an acceptable trade] on a path a keypress can reach", and
 /// "do not add a per-frame reader of this file". On this television the key manager is
 /// unusable ("session protection: no usable key manager; using the 0600 file fallback"), so

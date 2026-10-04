@@ -32,7 +32,7 @@
 
 use super::consent::{self, Permission, ONBOARDING_REPORT_SCOPE};
 use plx_net::net::{RequestError, RequestFailure};
-use crate::plex::session::async_persistence::{CompletionOutcome, Failure};
+use plx_plex::plex::session::async_persistence::{CompletionOutcome, Failure};
 use plx_platform::storage::wire::KeymanagerStage;
 use serde_json::Value;
 
@@ -151,7 +151,7 @@ impl IncidentKind {
 // (`LinkClass`), and the pure `classify` that coarsens it, are defined in `plex::probe`: the probe
 // grades its own transport failures in the same vocabulary and `plex` sits beneath this layer.
 // Re-exported, so every incident producer and reader keeps naming them here.
-pub(crate) use crate::plex::probe::{classify, LinkClass};
+pub(crate) use plx_plex::plex::probe::{classify, LinkClass};
 
 /// How many consecutive calls came back with no usable answer, bucketed — never the raw count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -377,9 +377,9 @@ pub(crate) struct IncidentContext {
     pub service_error_code: Option<i32>,
     /// Why discovery settled as insecure-only — only on
     /// [`DiscoveryClass::InsecureOnly`]. Every field closed; see
-    /// [`crate::plex::probe::InsecureEvidence`].
+    /// [`plx_plex::plex::probe::InsecureEvidence`].
     #[serde(default)]
-    pub insecure: Option<crate::plex::probe::InsecureEvidence>,
+    pub insecure: Option<plx_plex::plex::probe::InsecureEvidence>,
     /// What became of the "Connect without encryption?" offer for the server an insecure-only
     /// verdict speaks about — only when that server was eligible to be asked. A closed code; the
     /// server and its owner are never carried.
@@ -550,7 +550,7 @@ impl IncidentContext {
     }
 
     /// The evidence behind an insecure-only discovery verdict.
-    pub(crate) fn with_insecure(mut self, evidence: crate::plex::probe::InsecureEvidence) -> Self {
+    pub(crate) fn with_insecure(mut self, evidence: plx_plex::plex::probe::InsecureEvidence) -> Self {
         self.insecure = Some(evidence);
         self
     }
@@ -1150,12 +1150,12 @@ mod tests {
         assert_eq!(details_only, vec![IncidentKind::LinkStalled]);
     }
 
-    fn protection_failure(service_code: Option<i32>) -> crate::plex::session::persistence::ProtectionFailure {
+    fn protection_failure(service_code: Option<i32>) -> plx_plex::plex::session::persistence::ProtectionFailure {
         use plx_platform::storage::wire::{
             AuthPreservation, ErrorCode, KeymanagerFailure, KeymanagerFailureCategory,
             KeymanagerOperation,
         };
-        crate::plex::session::persistence::ProtectionFailure {
+        plx_plex::plex::session::persistence::ProtectionFailure {
             failure: KeymanagerFailure {
                 operation: KeymanagerOperation::Seal,
                 stage: KeymanagerStage::Finish,
@@ -1170,7 +1170,7 @@ mod tests {
 
     #[test]
     fn a_persistence_completion_maps_to_its_closed_class() {
-        use crate::plex::session::async_persistence::PersistOutcome;
+        use plx_plex::plex::session::async_persistence::PersistOutcome;
         let ctx = || IncidentContext::new(IncidentKind::SaveFailed, None);
         let sealed = ctx().with_persistence(&CompletionOutcome::Failed(Failure::Protection(
             protection_failure(Some(-3961)),
@@ -1236,7 +1236,7 @@ mod tests {
     /// An insecure-only verdict's evidence, every route bucket distinct so a key cannot be read
     /// off the wrong field.
     fn insecure_context() -> IncidentContext {
-        use crate::plex::probe::{AddressFamily, AddressScope, HttpsRoutes, InsecureEvidence, RouteOutcome};
+        use plx_plex::plex::probe::{AddressFamily, AddressScope, HttpsRoutes, InsecureEvidence, RouteOutcome};
         IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::InsecureOnly), None)
             .with_insecure(InsecureEvidence {
                 https: HttpsRoutes {

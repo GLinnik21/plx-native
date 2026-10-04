@@ -9,13 +9,13 @@ use super::*;
 use crate::screens::registry::AppMsg;
 use crate::search::view::SearchView;
 use crate::search::{Item, Shelf};
-use crate::ui::fixture::FixtureMeasure;
-use crate::ui::focus::{FocusEngine, Outcome};
-use crate::ui::hit::{HitMap, PointerKind};
-use crate::ui::screen::By;
+use plx_ui::fixture::FixtureMeasure;
+use plx_ui::focus::{FocusEngine, Outcome};
+use plx_ui::hit::{HitMap, PointerKind};
+use plx_ui::screen::By;
 use plx_machine::machine::{FocusRead, Host, InputEvent, PressRead, Source, Stamped, Tick};
 use plx_machine::present::Present;
-use crate::ui::screen::{Activate, Hover, ScreenArg, Stop};
+use plx_ui::screen::{Activate, Hover, ScreenArg, Stop};
 
 #[derive(Clone)]
 struct Arg;
@@ -178,10 +178,10 @@ fn hit(screen: &SearchScreen, fixture: &Fixture, elems: &[u32], x: f32, y: f32) 
 /// A profile that has remembered `terms`. The write comes BEFORE the switch deliberately: the
 /// recents store caches per profile GENERATION, so a file write behind an already-seated profile
 /// is not read until something moves that generation.
-fn watching(session: &crate::plex::session::TempSession, who: &str, terms: &[&str]) {
+fn watching(session: &plx_plex::plex::session::TempSession, who: &str, terms: &[&str]) {
     let terms: Vec<String> = terms.iter().map(|t| (*t).to_owned()).collect();
     let who_owned = who.to_owned();
-    crate::plex::session::update(|s| {
+    plx_plex::plex::session::update(|s| {
         let mut next = s.clone();
         next.set_recents_for(&who_owned, terms.clone());
         Some(next)
@@ -189,8 +189,8 @@ fn watching(session: &crate::plex::session::TempSession, who: &str, terms: &[&st
     session.watching(who);
 }
 
-fn remembering(tag: &str, terms: &[&str]) -> crate::plex::session::TempSession {
-    let session = crate::plex::session::TempSession::new(tag);
+fn remembering(tag: &str, terms: &[&str]) -> plx_plex::plex::session::TempSession {
+    let session = plx_plex::plex::session::TempSession::new(tag);
     watching(&session, tag, terms);
     session
 }
@@ -204,7 +204,7 @@ fn remembering(tag: &str, terms: &[&str]) -> crate::plex::session::TempSession {
 #[test]
 fn down_from_the_field_reaches_only_a_region_that_is_drawn() {
     let _serial = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("owned-search-handoff");
+    let session = plx_plex::plex::session::TempSession::new("owned-search-handoff");
 
     // (1) no query, no terms: nothing is under the field at all.
     watching(&session, "owned-search-handoff-fresh", &[]);
@@ -441,7 +441,7 @@ fn a_tile_scrolled_under_the_chrome_is_not_a_pointer_target() {
     fixture.query("chrome").shelves(vec![shelf(Kind::Movie, "t", 4)]);
     let mut screen = fixture.screen();
     let elem = screen.rows[0].elems[0];
-    let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
+    let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
     let rest = screen.row_rect(0, 0, At::Drawn);
 
     // Fully on screen: hit anywhere inside it.
@@ -471,7 +471,7 @@ fn the_fields_hit_rect_rides_the_scroll_and_stops_at_the_track() {
     let _serial = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut screen = fixture.screen();
-    let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
+    let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
     let at_rest = stop_of(&screen, &fixture, None, FIELD).unwrap();
     assert_eq!((at_rest.rect.y, at_rest.rect.h), (layout::FIELD.y, layout::FIELD.h),
         "an unscrolled screen must cost nothing: this is FIELD itself");
@@ -508,7 +508,7 @@ fn revealing_the_second_shelf_carries_the_query_field_under_the_track() {
     step_dir(&mut screen, &fixture, &mut engine, Dir::Down);
     assert!(screen.scroll_target > 0.0, "the second shelf is below the fold and must be revealed");
     for i in 0..120 { frame(&mut screen, &fixture, &engine, i); }
-    let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
+    let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
     assert!(screen.scroll.pos > layout::FIELD.y + layout::FIELD.h - floor,
         "the field must end up wholly under the track (scroll {})", screen.scroll.pos);
     assert!(stop_of(&screen, &fixture, None, FIELD)
@@ -698,20 +698,20 @@ fn the_panels_edit_keys_move_the_caret_clear_the_field_and_type_in_the_middle() 
         StoreCmd::Search(SearchCmd::SetQueryScoped { query, .. }))) if query == "сXуббота")),
         "every accepted edit is one scoped store command");
     let (handled, _, _) = deliver(&mut screen, &fixture, field,
-        key_event(Key::Other, crate::ui::consts::SDLK_BACKSPACE));
+        key_event(Key::Other, plx_ui::consts::SDLK_BACKSPACE));
     assert_eq!(handled, Handled::Yes, "editing, the screen consumes it");
     assert_eq!(screen.draft.query(), "суббота", "a whole codepoint, not one byte of a two-byte char");
 
     // Clear all is the whole field, wherever the caret was standing.
     deliver(&mut screen, &fixture, field, key_event(Key::Right, 0));
     let (handled, _, _) = deliver(&mut screen, &fixture, field,
-        key_event(Key::Other, crate::ui::consts::SDLK_CLEAR));
+        key_event(Key::Other, plx_ui::consts::SDLK_CLEAR));
     assert_eq!(handled, Handled::Yes, "the panel's Clear all is the screen's key");
     assert_eq!((screen.draft.query(), screen.draft.caret()), ("", 0));
 
     // An empty field still consumes Backspace — it is the field's — and edits nothing.
     let (handled, out, _) = deliver(&mut screen, &fixture, field,
-        key_event(Key::Other, crate::ui::consts::SDLK_BACKSPACE));
+        key_event(Key::Other, plx_ui::consts::SDLK_BACKSPACE));
     assert_eq!(handled, Handled::Yes);
     assert!(out.iter().all(|effect| !matches!(&effect.fx,
         Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(SearchCmd::SetQueryScoped { .. }))))),
@@ -775,14 +775,14 @@ fn the_shelf_flow_is_frozen_unless_the_shelves_hold_focus_with_the_keyboard_down
 // ---- the borrowed-source annotation -----------------------------------------------------------
 
 /// Three sources on one shelf: the household's own, and two shares with different handles.
-fn shared_shelf(fixture: &mut Fixture) -> [crate::plex::ServerId; 3] {
-    crate::plex::reset_servers_for_test();
-    let own = crate::plex::register_for_test("own-machine", "127.0.0.1", 1, "own", "annotation");
-    let a = crate::plex::register_for_test("share-a", "127.0.0.1", 2, "a", "annotation");
-    let b = crate::plex::register_for_test("share-b", "127.0.0.1", 3, "b", "annotation");
-    crate::plex::describe_server(own, "own-machine", "", crate::plex::GrantEvidence::ours());
-    crate::plex::describe_server(a, "share-a", "friend", crate::plex::GrantEvidence::outside());
-    crate::plex::describe_server(b, "share-b", "other", crate::plex::GrantEvidence::outside());
+fn shared_shelf(fixture: &mut Fixture) -> [plx_plex::plex::ServerId; 3] {
+    plx_plex::plex::reset_servers_for_test();
+    let own = plx_plex::plex::register_for_test("own-machine", "127.0.0.1", 1, "own", "annotation");
+    let a = plx_plex::plex::register_for_test("share-a", "127.0.0.1", 2, "a", "annotation");
+    let b = plx_plex::plex::register_for_test("share-b", "127.0.0.1", 3, "b", "annotation");
+    plx_plex::plex::describe_server(own, "own-machine", "", plx_plex::plex::GrantEvidence::ours());
+    plx_plex::plex::describe_server(a, "share-a", "friend", plx_plex::plex::GrantEvidence::outside());
+    plx_plex::plex::describe_server(b, "share-b", "other", plx_plex::plex::GrantEvidence::outside());
     let item = |sid| Item::Media(crate::pms::PmsMovie { sid, rk: format!("annotated-{sid:?}"),
         title: "Synthetic result".into(), ..Default::default() });
     fixture.query("annotated").shelves(vec![
@@ -853,7 +853,7 @@ fn the_owner_annotation_swaps_its_words_only_while_it_is_invisible() {
     for i in 480..560 { frame(&mut screen, &fixture, &engine, i); }
     assert_eq!(screen.owner_row, Some(1), "the annotation belongs to the row the cursor is in");
     assert_eq!(screen.owner, "", "…and that row's item is the household's own");
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// Legacy `results.rs`'s `a_settled_annotation_goes_quiet_and_a_moving_one_does_not` — the other
@@ -885,7 +885,7 @@ fn a_settled_annotation_goes_quiet_and_a_moving_one_does_not() {
         assert!(!frame(&mut screen, &fixture, &engine, 600 + i),
             "frame {i}: a settled annotation asked for a repaint");
     }
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// **A collection hit routes to the collection page, by ratingKey first and by section + tag id
@@ -895,13 +895,13 @@ fn a_settled_annotation_goes_quiet_and_a_moving_one_does_not() {
 /// wire row.
 #[test]
 fn a_collection_hit_routes_by_rating_key_or_by_section_and_tag_id() {
-    use crate::plex::collections::CollectionRef;
+    use plx_plex::plex::collections::CollectionRef;
     use crate::screens::registry::ContentArg;
     use crate::search::{CollectionHit, TagHit};
-    let sid = crate::plex::ServerId::from_raw(3);
+    let sid = plx_plex::plex::ServerId::from_raw(3);
 
     // a full `type=collection` row (`includeCollections=1`): both ids ride along
-    let row = crate::plex::Metadata {
+    let row = plx_plex::plex::Metadata {
         kind: "collection".into(),
         rating_key: "50007".into(),
         title: "Aardman Shorts".into(),
@@ -953,7 +953,7 @@ fn a_collection_hit_routes_by_rating_key_or_by_section_and_tag_id() {
 /// UI's formatter shared with every collection tile and the collection page).
 #[test]
 fn a_collection_shelf_counts_results_and_its_tiles_count_items() {
-    use crate::ui::fmt::item_count;
+    use plx_ui::fmt::item_count;
     assert_eq!(
         (crate::search::Kind::Collection.count_label(3), item_count(12)),
         ("3 results".to_owned(), "12 items".to_owned())

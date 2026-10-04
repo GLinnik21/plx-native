@@ -106,18 +106,18 @@ fn the_shared_fixture_resolves_the_defaults_over_a_recorded_answer() {
     let _g = plx_base::testlock::serial();
     let t = TempPins::new("fixture-owns-its-pins");
     t.watching("u-fixture-owns-its-pins");
-    let user = crate::plex::session::current_profile_key();
-    let lib = |machine: &str, key| crate::plex::session::PinnedLib {
+    let user = plx_plex::plex::session::current_profile_key();
+    let lib = |machine: &str, key| plx_plex::plex::session::PinnedLib {
         machine_id: machine.into(),
         key,
         extensions: Default::default(),
     };
     assert!(
-        crate::plex::session::update(|s| {
+        plx_plex::plex::session::update(|s| {
             let mut next = s.clone();
             next.set_pins_for(
                 &user,
-                crate::plex::session::HomePins {
+                plx_plex::plex::session::HomePins {
                     user: user.clone(),
                     asked: true,
                     on: vec![lib("mac-mini", 2)],
@@ -144,7 +144,7 @@ fn the_shared_fixture_resolves_the_defaults_over_a_recorded_answer() {
         "…and they are the OWNERSHIP defaults: yours On, a friend's Off"
     );
     assert!(
-        crate::plex::session::peek().pins_for(&user).is_none(),
+        plx_plex::plex::session::peek().pins_for(&user).is_none(),
         "the record was forgotten rather than worked around, so a later resolve agrees"
     );
 }
@@ -171,8 +171,8 @@ fn apply_pins_writes_the_whole_batch_in_one_record() {
         "every edit in the batch landed"
     );
 
-    let sess = crate::plex::session::peek();
-    let rec = sess.pins_for(&crate::plex::session::current_profile_key());
+    let sess = plx_plex::plex::session::peek();
+    let rec = sess.pins_for(&plx_plex::plex::session::current_profile_key());
     assert!(
         rec.is_some_and(|r| r.asked),
         "one commit is still a recorded answer"
@@ -208,9 +208,9 @@ fn an_answer_the_live_pin_already_agrees_with_is_recorded_anyway() {
     browse.state.apply_pins(&[(2, false)]);
     plx_base::storage_worker::drain_for_test();
 
-    let user = crate::plex::session::current_profile_key();
+    let user = plx_plex::plex::session::current_profile_key();
     assert_eq!(
-        crate::plex::session::peek().pins_for(&user).and_then(|r| r.answer("nas-home", 1)),
+        plx_plex::plex::session::peek().pins_for(&user).and_then(|r| r.answer("nas-home", 1)),
         Some(false),
         "the answer was written down rather than mistaken for the default it agreed with"
     );
@@ -242,18 +242,18 @@ fn a_commit_leaves_the_table_showing_what_it_saved() {
     let _g = plx_base::testlock::serial();
     let t = TempPins::new("commit-reconcile");
     t.watching("u-owner");
-    let user = crate::plex::session::current_profile_key();
-    let lib = |machine: &str, key| crate::plex::session::PinnedLib {
+    let user = plx_plex::plex::session::current_profile_key();
+    let lib = |machine: &str, key| plx_plex::plex::session::PinnedLib {
         machine_id: machine.into(),
         key,
         extensions: Default::default(),
     };
     assert!(
-        crate::plex::session::update(|s| {
+        plx_plex::plex::session::update(|s| {
             let mut next = s.clone();
             next.set_pins_for(
                 &user,
-                crate::plex::session::HomePins {
+                plx_plex::plex::session::HomePins {
                     user: user.clone(),
                     asked: true,
                     on: vec![lib("laptop", 1)],
@@ -285,7 +285,7 @@ fn a_commit_leaves_the_table_showing_what_it_saved() {
     browse.state.apply_pins(&[(1, true)]);
     plx_base::storage_worker::drain_for_test();
 
-    let saved = crate::plex::session::peek();
+    let saved = plx_plex::plex::session::peek();
     let recorded = saved.pins_for(&user).and_then(|r| r.answer("mac-mini", 1));
     assert_eq!(
         (browse.pinned(0), recorded),
@@ -332,7 +332,7 @@ fn a_commit_the_session_refuses_leaves_the_answer_on_screen() {
         br#"{"format":"plxnative-secure-session","version":99,"sealed":{}}"#,
     )
     .expect("the locked fixture");
-    crate::plex::session::invalidate_for_test();
+    plx_plex::plex::session::invalidate_for_test();
 
     // One of them switched off, and Done pressed.
     browse.state.apply_pins(&[(1, false)]);
@@ -345,8 +345,8 @@ fn a_commit_the_session_refuses_leaves_the_answer_on_screen() {
          record it was replacing, which restores exactly what the viewer just changed"
     );
     assert!(
-        crate::plex::session::peek()
-            .pins_for(&crate::plex::session::current_profile_key())
+        plx_plex::plex::session::peek()
+            .pins_for(&plx_plex::plex::session::current_profile_key())
             .is_none(),
         "…and nothing was recorded — the answer is this RUN's, and the record is untouched"
     );
@@ -1202,12 +1202,12 @@ fn the_movies_tab_prefers_the_households_library_over_a_friends() {
 
     // …and a REMEMBERED choice still wins outright: the tiebreak is only ever consulted when the
     // profile has not already said. Nothing about the household may second-guess that.
-    crate::plex::session::update(|session| {
+    plx_plex::plex::session::update(|session| {
         let mut next = session.clone();
-        let user = crate::plex::session::current_profile_key();
+        let user = plx_plex::plex::session::current_profile_key();
         next.last_library.retain(|l| l.user != user);
-        let mut libs = crate::plex::session::LastLibrary { user, ..Default::default() };
-        libs.libs.push(crate::plex::session::TypedLib {
+        let mut libs = plx_plex::plex::session::LastLibrary { user, ..Default::default() };
+        libs.libs.push(plx_plex::plex::session::TypedLib {
             kind: SecKind::Movie.wire().to_string(),
             machine_id: "nas-home".into(),
             key: 1,
@@ -1239,22 +1239,22 @@ fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
     struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _g = Fresh(plx_base::testlock::serial());
     let t = TempPins::new("late-roster");
     t.watching("u-managed");
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 
     // Both grants arrive `owned:false` — the family server included, which is what plex.tv tells
     // a managed profile. `home:false` on both, because this account is a Plex Home admin's and
     // that flag was measured `false` on every grant it has; `ownerId` is the whole signal.
-    let house = crate::plex::register_for_test("mac-mini", "127.0.0.1", 41001, "tok", "cid");
-    let friend = crate::plex::register_for_test("nas-home", "127.0.0.1", 41002, "tok", "cid");
-    let grant = |owner_id| crate::plex::GrantEvidence { owned: false, home: false, owner_id };
-    crate::plex::describe_server(house, "Mac mini", "", grant(ADMIN_ID));
-    crate::plex::describe_server(friend, "nas-home", "friend", grant(ADMIN_ID + 1));
+    let house = plx_plex::plex::register_for_test("mac-mini", "127.0.0.1", 41001, "tok", "cid");
+    let friend = plx_plex::plex::register_for_test("nas-home", "127.0.0.1", 41002, "tok", "cid");
+    let grant = |owner_id| plx_plex::plex::GrantEvidence { owned: false, home: false, owner_id };
+    plx_plex::plex::describe_server(house, "Mac mini", "", grant(ADMIN_ID));
+    plx_plex::plex::describe_server(friend, "nas-home", "friend", grant(ADMIN_ID + 1));
 
     let mut browse = TestBrowse::default();
     browse.sync_roster();
@@ -1296,14 +1296,14 @@ fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
     );
 
     // `/api/v2/home/users` lands: the admin and the managed user, and no zeroes.
-    let member = |id| crate::plex::session::HomeUserRef { id, ..Default::default() };
-    assert!(crate::plex::session::update(|session| {
+    let member = |id| plx_plex::plex::session::HomeUserRef { id, ..Default::default() };
+    assert!(plx_plex::plex::session::update(|session| {
         let mut next = session.clone();
         next.home_users = vec![member(ADMIN_ID), member(ADMIN_ID + 7)];
         Some(next)
     }));
     assert_eq!(
-        crate::plex::session::peek().household_ids(),
+        plx_plex::plex::session::peek().household_ids(),
         vec![ADMIN_ID, ADMIN_ID + 7],
         "the roster enumerates the house, and carries no zero and no watching-user id"
     );
@@ -1326,9 +1326,9 @@ fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
 
     // A recorded answer is not a default and is not corrected: the household's TV shows would
     // default On now, and they are Off because somebody said so.
-    let session = crate::plex::session::peek();
+    let session = plx_plex::plex::session::peek();
     let record = session
-        .pins_for(&crate::plex::session::current_profile_key())
+        .pins_for(&plx_plex::plex::session::current_profile_key())
         .expect("the answer reached the disk");
     assert_eq!(record.answer("mac-mini", 2), Some(false), "the decision");
     assert_eq!(

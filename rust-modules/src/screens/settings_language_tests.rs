@@ -2,7 +2,7 @@
 use super::*;
 use super::test_support::*;
 use plx_platform::i18n::Preference;
-use crate::ui::form::FormId;
+use plx_ui::form::FormId;
 use plx_machine::machine::{Edge, InputEvent, InputKind, Source};
 use plx_machine::present::Present;
 
@@ -82,7 +82,7 @@ fn language_entry_seats_the_engine_on_the_saved_preference() {
             entry, InstanceId(0), Family::Settings, SettingsPage::Language, crate::pms::HubsSnapshot::empty_for_test().view(),
         );
         let effects = step(&mut surface, ScreenEvent::Mount, None);
-        let mut engine = crate::ui::focus::FocusEngine::new();
+        let mut engine = plx_ui::focus::FocusEngine::new();
         let owner = plx_machine::machine::InputOwner::Entry(entry);
         // The modal lifecycle seats its generic group before draining queued mount effects.
         // Merely remembering another row after this does not move the current focus.
@@ -138,7 +138,7 @@ fn contribution_is_focusable_and_right_opens_the_guide() {
     page.step(&ScreenEvent::Input(InputEvent { at: Tick::default(), source: Source::Sdl,
         kind: InputKind::Key { key: Key::Right, sym: 0, wcode: 0, edge: Edge::Down, at_edge: true } }), &cx, &mut fx);
     assert!(out.iter().any(|effect| matches!(effect.fx, Fx::Nav(NavOp::Push(SettingsPage::Contribute)))));
-    assert!(crate::ui::qr::QrCode::new(plx_platform::i18n::CONTRIBUTE_URL).is_ok());
+    assert!(plx_ui::qr::QrCode::new(plx_platform::i18n::CONTRIBUTE_URL).is_ok());
 }
 
 #[test]

@@ -64,13 +64,13 @@
 //! one track two ways on two screens — and `appfont.ttf` (Inter) covers Cyrillic in full.
 #[cfg_attr(not(test), allow(unused_imports))]
 use crate::metadata::{self, Detail, Stream};
-use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
-use crate::ui::icons::Icon;
-use crate::ui::label::{HAlign, Label, VAlign};
-use crate::ui::popover::Popover;
-use crate::ui::theme;
-use crate::ui::widgets;
-use crate::ui::{Painter, Rect, Spring};
+use plx_ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
+use plx_ui::icons::Icon;
+use plx_ui::label::{HAlign, Label, VAlign};
+use plx_ui::popover::Popover;
+use plx_ui::theme;
+use plx_ui::widgets;
+use plx_ui::{Painter, Rect, Spring};
 use std::ffi::CString;
 use std::os::raw::c_int;
 
@@ -125,7 +125,7 @@ const GAP_RULE_BODY: f32 = theme::space::MD;
 /// a fixed band, which is what the design's `82x36` KeyCap is — a 32 band would be overflowed by
 /// 2px top and bottom, and the overflow would have been invisible in review because nothing draws
 /// an edge there.
-const FOOTER_H: f32 = crate::ui::widgets::KeyHint::height();
+const FOOTER_H: f32 = plx_ui::widgets::KeyHint::height();
 
 // Body rhythm — the design's `gap` values, one per nesting level.
 const SECTION_GAP: f32 = theme::space::LG; // 40 — between the grid / AUDIO / SUBTITLES blocks
@@ -164,7 +164,7 @@ fn body_rect() -> Rect {
         + widgets::HAIRLINE_H
         + GAP_RULE_BODY;
     let bottom = r.y + PANEL_H
-        - crate::ui::widgets::KeyHint::pad_below()
+        - plx_ui::widgets::KeyHint::pad_below()
         - FOOTER_H
         - theme::space::MD
         - widgets::HAIRLINE_H
@@ -204,7 +204,7 @@ pub(crate) fn fmt_size(bytes: i64) -> Option<String> {
     Some(if bytes < 1024 {
         plx_platform::i18n::msg::widgets_tracks_bytes(bytes)
     } else {
-        crate::ui::fmt::bytes(bytes, (2, 2, 2))
+        plx_ui::fmt::bytes(bytes, (2, 2, 2))
     })
 }
 
@@ -213,7 +213,7 @@ pub(crate) fn fmt_size(bytes: i64) -> Option<String> {
 pub(crate) fn fmt_bitrate(kbps: i64) -> Option<String> {
     match kbps {
         k if k <= 0 => None,
-        k => Some(crate::ui::fmt::bitrate(k)),
+        k => Some(plx_ui::fmt::bitrate(k)),
     }
 }
 
@@ -480,7 +480,7 @@ pub(crate) fn file_rows(d: &Detail) -> Vec<Pair> {
     push(plx_platform::i18n::msg::widgets_tracks_total_bitrate(), fmt_bitrate(d.bitrate));
     push(
         plx_platform::i18n::msg::widgets_tracks_duration(),
-        (d.dur_ms > 0).then(|| crate::ui::fmt::clock(d.dur_ms)),
+        (d.dur_ms > 0).then(|| plx_ui::fmt::clock(d.dur_ms)),
     );
     push(plx_platform::i18n::msg::widgets_tracks_aspect(), fmt_aspect(d.aspect_ratio));
     v
@@ -706,7 +706,7 @@ impl TracksPanelScreen {
         }
         let target = scroll_for(self.page, self.content_h, view);
         self.scroll.step(target, K_SCROLL, dt);
-        crate::ui::anim::probe("tracks.scroll", self.scroll.pos, self.scroll.vel, target, dt);
+        plx_ui::anim::probe("tracks.scroll", self.scroll.pos, self.scroll.vel, target, dt);
     }
 }
 
@@ -780,7 +780,7 @@ impl Flow<'_> {
     /// Is a block at the cursor inside the viewport at all? The shared cull test, so a long track
     /// list costs only the rows on screen — `on_axis` is the app's ONE off-axis predicate.
     fn visible(&self, h: f32) -> bool {
-        crate::ui::on_axis(self.y - self.band.y, h, self.band.h, 0.0)
+        plx_ui::on_axis(self.y - self.band.y, h, self.band.h, 0.0)
     }
 }
 
@@ -985,12 +985,12 @@ impl TracksPanelScreen {
         d: &Detail,
         appear: f32,
         measure: &dyn plx_machine::machine::Measure,
-        field: Option<&crate::ui::underlay::UnderlayField>,
+        field: Option<&plx_ui::underlay::UnderlayField>,
     ) {
         let r = panel_rect();
         let slide = RISE * (1.0 - appear);
         let p = Painter::root().alpha(appear).translate(0.0, slide);
-        crate::ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field);
+        plx_ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field);
 
         // ---- header ------------------------------------------------------------------------------
         let cx = r.x + PAD;
@@ -1058,7 +1058,7 @@ impl TracksPanelScreen {
         );
 
         // ---- footer ------------------------------------------------------------------------------
-        let fy = r.y + PANEL_H - crate::ui::widgets::KeyHint::pad_below() - FOOTER_H;
+        let fy = r.y + PANEL_H - plx_ui::widgets::KeyHint::pad_below() - FOOTER_H;
         rule(p, cx, fy - theme::space::MD - widgets::HAIRLINE_H, cw);
         let cy = fy + FOOTER_H * 0.5;
         // left: the two chevrons + "to scroll". Marks, not controls — there is nothing to focus, so
@@ -1066,7 +1066,7 @@ impl TracksPanelScreen {
         const GLYPH: f32 = 22.0;
         let mut gx = cx;
         for icon in [Icon::ChevronUp, Icon::ChevronDown] {
-            crate::ui::icons::draw(
+            plx_ui::icons::draw(
                 p,
                 icon,
                 Rect::new(gx, cy - GLYPH * 0.5, GLYPH, GLYPH),
@@ -1085,7 +1085,7 @@ impl TracksPanelScreen {
         // `right - width()`. (This was a local `key_cap_hint` that built its cap out of `keyline_chip`
         // — which HUGS its label's cap band, where the design's KeyCap is a fixed 82x36 with a MICRO
         // bold label. The shared cap is the fixed band, so the panels all draw one object.)
-        let back_hint = crate::ui::widgets::KeyHint::translated(plx_platform::i18n::msg::widgets_hint_return("\u{fffc}"), c"BACK");
+        let back_hint = plx_ui::widgets::KeyHint::translated(plx_platform::i18n::msg::widgets_hint_return("\u{fffc}"), c"BACK");
         back_hint.draw(p, cx + cw - back_hint.width(measure), cy, measure);
     }
 }
@@ -1093,7 +1093,7 @@ impl TracksPanelScreen {
 // ---- the Screen contract --------------------------------------------------------------------
 
 impl<H: crate::screens::registry::AppLike> plx_machine::machine::Machine<H> for TracksPanelScreen {
-    type Ev = crate::ui::screen::ScreenEvent<H>;
+    type Ev = plx_ui::screen::ScreenEvent<H>;
     fn step(
         &mut self,
         ev: &Self::Ev,
@@ -1101,7 +1101,7 @@ impl<H: crate::screens::registry::AppLike> plx_machine::machine::Machine<H> for 
         fx: &mut plx_machine::machine::Effects<'_, H>,
     ) -> plx_machine::machine::Handled {
         use plx_machine::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
-        use crate::ui::screen::ScreenEvent;
+        use plx_ui::screen::ScreenEvent;
         match ev {
             ScreenEvent::Tick(t) => {
                 self.tick(t.dt());
@@ -1150,17 +1150,17 @@ impl<H: crate::screens::registry::AppLike> plx_machine::machine::Machine<H> for 
 /// [`TracksPanelScreen::step`], which already declines nothing (BACK/OK/paging keys are all
 /// `Handled::Yes`), so the engine's own direction/OK arms in `after_step` never fire for this
 /// screen — the mechanism swap changes nothing this sheet's keys or clicks do.
-impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for TracksPanelScreen {
-    fn groups(&self, _cx: &plx_machine::machine::Cx<'_, H>, out: &mut Vec<crate::ui::screen::GroupSpec>) {
-        out.push(crate::ui::screen::GroupSpec {
+impl<H: crate::screens::registry::AppLike> plx_ui::screen::Focusable<H> for TracksPanelScreen {
+    fn groups(&self, _cx: &plx_machine::machine::Cx<'_, H>, out: &mut Vec<plx_ui::screen::GroupSpec>) {
+        out.push(plx_ui::screen::GroupSpec {
             id: plx_machine::machine::GroupId(0),
-            kind: crate::ui::screen::GroupKind::Document,
-            seat: crate::ui::screen::Seat::First,
-            reachable: crate::ui::screen::AxisMask::BOTH,
-            edge: [crate::ui::screen::EdgeRule::Stop; 4],
+            kind: plx_ui::screen::GroupKind::Document,
+            seat: plx_ui::screen::Seat::First,
+            reachable: plx_ui::screen::AxisMask::BOTH,
+            edge: [plx_ui::screen::EdgeRule::Stop; 4],
             extent: panel_rect(),
             len: 1,
-            elem: crate::ui::screen::ElemKind::Control,
+            elem: plx_ui::screen::ElemKind::Control,
         });
     }
     fn group_of(&self, key: &u32, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<plx_machine::machine::GroupId> {
@@ -1169,21 +1169,21 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for T
     fn neighbour(
         &self,
         _key: plx_machine::machine::FocusKey<u32>,
-        _dir: crate::ui::screen::Dir,
+        _dir: plx_ui::screen::Dir,
         _cx: &plx_machine::machine::Cx<'_, H>,
-    ) -> crate::ui::screen::Step<u32> {
+    ) -> plx_ui::screen::Step<u32> {
         // The one element never MOVES — paging is the screen's own arm, not the engine's (see the
         // impl doc) — so every direction answers `Edge`, which `EdgeRule::Stop` turns into "stay
         // put" rather than an escape off this standalone sheet.
-        crate::ui::screen::Step::Edge
+        plx_ui::screen::Step::Edge
     }
     fn place(
         &self,
         key: &u32,
         _cx: &plx_machine::machine::Cx<'_, H>,
-        _at: crate::ui::screen::At,
-    ) -> Option<crate::ui::screen::Placed> {
-        (*key == 0).then(|| crate::ui::screen::Placed {
+        _at: plx_ui::screen::At,
+    ) -> Option<plx_ui::screen::Placed> {
+        (*key == 0).then(|| plx_ui::screen::Placed {
             rect: panel_rect(),
             rest_rect: panel_rect(),
             clip: panel_rect(),
@@ -1207,7 +1207,7 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for T
     fn seat(
         &self,
         _g: plx_machine::machine::GroupId,
-        _from: crate::ui::screen::Placed,
+        _from: plx_ui::screen::Placed,
         _cx: &plx_machine::machine::Cx<'_, H>,
     ) -> plx_machine::machine::FocusKey<u32> {
         plx_machine::machine::FocusKey {
@@ -1229,7 +1229,7 @@ impl plx_machine::machine::LogicalState for TracksPanelScreen {
     }
 }
 
-impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLike> crate::ui::screen::Screen<H> for TracksPanelScreen {
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLike> plx_ui::screen::Screen<H> for TracksPanelScreen {
     fn name(&self) -> &'static str {
         "tracks"
     }
@@ -1239,7 +1239,7 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
     fn crumb(&self, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &plx_machine::machine::Cx<'_, H>) {}
+    fn prepare(&mut self, _b: &mut plx_ui::frame::Budget, _cx: &plx_machine::machine::Cx<'_, H>) {}
     /// The modal dim, asked for rather than drawn — the design's `scrimStill`, at the PANEL role
     /// ([`theme::underlay::DIM_PANEL`]). Nothing is lifted: this sheet replaces the middle of the frame and holds no
     /// control, so there is no element under it the dim must spare.
@@ -1251,10 +1251,10 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
     /// earlier than the surface pass this `draw` runs in — and multiplies by the appear spring and
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
     /// the in-`draw` version could reach.
-    fn scrim(&self) -> crate::ui::screen::Scrim {
-        crate::ui::screen::Scrim::dim(theme::underlay::DIM_PANEL)
+    fn scrim(&self) -> plx_ui::screen::Scrim {
+        plx_ui::screen::Scrim::dim(theme::underlay::DIM_PANEL)
     }
-    fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
+    fn draw(&mut self, f: &mut plx_ui::screen::DrawFrame<'_, '_, H>) {
         // **The item is the one that LANDED, not the page's.** The panel is presented over exactly
         // one page and dismissed with it, so in practice they are the same item; reading
         // `metadata::current()` keeps this module's own dependency at the store it always had
@@ -1269,16 +1269,16 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
         // `main.ui` total. It is the scene `fps:page-panel` grades.
         let measure = f.measure;
         let field = f.underlay;
-        crate::ui::profile::phase("dt.tracks", || self.paint(d, appear, measure, field));
+        plx_ui::profile::phase("dt.tracks", || self.paint(d, appear, measure, field));
     }
-    fn render(&self) -> crate::ui::screen::RenderStrategy {
-        crate::ui::screen::RenderStrategy::Page
+    fn render(&self) -> plx_ui::screen::RenderStrategy {
+        plx_ui::screen::RenderStrategy::Page
     }
-    fn focus_source(&self) -> crate::ui::screen::FocusSource {
-        crate::ui::screen::FocusSource::Engine
+    fn focus_source(&self) -> plx_ui::screen::FocusSource {
+        plx_ui::screen::FocusSource::Engine
     }
-    fn hit_source(&self) -> crate::ui::screen::HitSource {
-        crate::ui::screen::HitSource::Engine
+    fn hit_source(&self) -> plx_ui::screen::HitSource {
+        plx_ui::screen::HitSource::Engine
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -1477,7 +1477,7 @@ mod tests {
             Some("448 kbps"),
             "below a megabit stays kbps"
         );
-        assert_eq!(crate::ui::fmt::clock(9_610_336), "2:40:10");
+        assert_eq!(plx_ui::fmt::clock(9_610_336), "2:40:10");
         assert_eq!(fmt_aspect(2.35).as_deref(), Some("2.35"));
         assert_eq!(
             fmt_codec_profile("hevc", "main 10").as_deref(),
@@ -1837,7 +1837,7 @@ mod tests {
         Edge, EntryId, FocusKey, FocusRead, GroupId, Handled, Host, InputEvent, InputKind,
         InputOwner, Key, LogicalState, Machine, PressRead, Source, Tick,
     };
-    use crate::ui::screen::{At, Dir, Focusable, ScreenArg, ScreenEvent, Step};
+    use plx_ui::screen::{At, Dir, Focusable, ScreenArg, ScreenEvent, Step};
 
     #[derive(Clone)]
     struct FixtureArg;
@@ -1889,7 +1889,7 @@ mod tests {
         plx_machine::machine::Cx {
             views: (),
             tick: Tick::default(),
-            measure: &crate::ui::fixture::FixtureMeasure,
+            measure: &plx_ui::fixture::FixtureMeasure,
             focus: FocusRead { current: focus, ..Default::default() },
             press: PressRead::default(),
             owner: InputOwner::Entry(EntryId(9)),
@@ -1910,12 +1910,12 @@ mod tests {
     fn focus_and_hit_source_are_engine() {
         let p = panel(EntryId(1));
         assert_eq!(
-            <TracksPanelScreen as crate::ui::screen::Screen<HostFixture>>::focus_source(&p),
-            crate::ui::screen::FocusSource::Engine
+            <TracksPanelScreen as plx_ui::screen::Screen<HostFixture>>::focus_source(&p),
+            plx_ui::screen::FocusSource::Engine
         );
         assert_eq!(
-            <TracksPanelScreen as crate::ui::screen::Screen<HostFixture>>::hit_source(&p),
-            crate::ui::screen::HitSource::Engine
+            <TracksPanelScreen as plx_ui::screen::Screen<HostFixture>>::hit_source(&p),
+            plx_ui::screen::HitSource::Engine
         );
     }
 
@@ -1934,8 +1934,8 @@ mod tests {
         assert_eq!(groups.len(), 1, "one group: the page itself");
         let g = groups[0];
         assert_eq!(g.len, 1, "one element: there are no rows to walk");
-        assert!(matches!(g.kind, crate::ui::screen::GroupKind::Document));
-        assert!(g.edge.iter().all(|e| matches!(e, crate::ui::screen::EdgeRule::Stop)));
+        assert!(matches!(g.kind, plx_ui::screen::GroupKind::Document));
+        assert!(g.edge.iter().all(|e| matches!(e, plx_ui::screen::EdgeRule::Stop)));
         assert_eq!(
             (g.extent.x, g.extent.y, g.extent.w, g.extent.h),
             (panel_rect().x, panel_rect().y, panel_rect().w, panel_rect().h)

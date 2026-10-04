@@ -19,7 +19,7 @@ pub(crate) enum SearchCmd {
     /// Sign-out / profile switch: drop the query and every shelf.
     Reset,
     /// The optimistic half of a view-state write, on the result shelves.
-    SetWatchedLocal { sid: crate::plex::ServerId, rk: String, on: bool },
+    SetWatchedLocal { sid: plx_plex::plex::ServerId, rk: String, on: bool },
 }
 
 /// One Search owner: logical state, the worker adapter all current fetches capture, and notice.

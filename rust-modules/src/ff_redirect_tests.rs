@@ -110,7 +110,7 @@ fn request_line(head: &str) -> &str {
 
 fn hls_resource(port: u16) -> crate::hls::Resource {
     crate::hls::Resource {
-        origin: crate::plex::Origin::http("127.0.0.1", port as i32),
+        origin: plx_plex::plex::Origin::http("127.0.0.1", port as i32),
         path: "/unused".into(),
     }
 }
@@ -150,7 +150,7 @@ fn hls_open_plain(
 fn progressive_open(port: u16, path: &str) -> Result<(String, i64), String> {
     let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
-    let origin = crate::plex::Origin::http("127.0.0.1", port as i32);
+    let origin = plx_plex::plex::Origin::http("127.0.0.1", port as i32);
     let opened = open_plain_progressive(&mut *hs, &origin, path, &mut *aq);
     let outcome = match opened {
         Ok((Src::Socket { path, .. }, size)) => Ok((path.to_string_lossy().into_owned(), size)),
@@ -301,7 +301,7 @@ fn a_progressive_open_follows_a_302() {
     });
     let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
-    let origin = crate::plex::Origin::http("127.0.0.1", pms.port as i32);
+    let origin = plx_plex::plex::Origin::http("127.0.0.1", pms.port as i32);
     let opened = open_plain_progressive(
         &mut *hs,
         &origin,
@@ -375,7 +375,7 @@ fn a_redirected_master_playlist_resolves_its_children_against_the_redirect_targe
         hs: &mut *hs,
         curl: None,
     };
-    let origin = crate::plex::Origin::http("127.0.0.1", pms.port as i32);
+    let origin = plx_plex::plex::Origin::http("127.0.0.1", pms.port as i32);
     let cursor = hls_cursor_open(
         &origin,
         "/old/master.m3u8?X-Plex-Token=tok",

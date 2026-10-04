@@ -5,17 +5,17 @@
 
 use crate::metadata::{extra_play_context, Detail, Extra};
 use crate::screens::registry::PlayIntent;
-use crate::ui::card_row::{self, CardRow, RowStyle, TileLabel};
+use plx_ui::card_row::{self, CardRow, RowStyle, TileLabel};
 use plx_machine::machine::GroupId;
-use crate::ui::widgets::Art;
-use crate::ui::{theme, Painter, Rect};
+use plx_ui::widgets::Art;
+use plx_ui::{theme, Painter, Rect};
 
 pub(crate) const EXTRAS_ELEM_RANGE_START: u32 = 1728;
 /// Stops before published detail keys (`FIRST_ITEM_ELEM` 2048). 32 tiles is the shelf cap.
 pub(crate) const EXTRAS_ELEM_RANGE_END: u32 = 1760;
 pub(crate) const EXTRAS_GROUP: GroupId = GroupId(6);
 /// Heading cap top to card top — the SHARED shelf pitch, as on [`super::related`].
-pub(crate) const LABEL_H: f32 = crate::ui::consts::TITLE_DY + crate::ui::consts::CARD_DY;
+pub(crate) const LABEL_H: f32 = plx_ui::consts::TITLE_DY + plx_ui::consts::CARD_DY;
 const MAX: usize = (EXTRAS_ELEM_RANGE_END - EXTRAS_ELEM_RANGE_START) as usize;
 const STYLE: RowStyle = RowStyle::EPISODE;
 
@@ -43,7 +43,7 @@ pub(crate) fn block_h(band: f32) -> f32 {
 pub(crate) fn rect(row: &CardRow, index: usize, top: f32, at_drawn: bool) -> Rect {
     let base = card_row::tile_rect(
         index,
-        crate::ui::consts::MARGIN_X,
+        plx_ui::consts::MARGIN_X,
         STYLE.w + STYLE.gap,
         row.scroll_x(),
         top + LABEL_H,
@@ -93,7 +93,7 @@ pub(crate) fn draw(
     let lift = row.lift();
     p.text(
         plx_platform::i18n::msg::browse_detail_extras_c().as_ptr(),
-        crate::ui::consts::MARGIN_X,
+        plx_ui::consts::MARGIN_X,
         top - lift,
         theme::size::HEADLINE,
         theme::TEXT_HEADING,
@@ -109,7 +109,7 @@ pub(crate) fn draw(
         (STYLE.w, STYLE.h),
         STYLE.w + STYLE.gap,
         &STYLE,
-        crate::ui::consts::SCR_W,
+        plx_ui::consts::SCR_W,
         |i| d.extras.get(i).map(|e| thumb(d, e)).unwrap_or(Art::Thumb {
             sid: d.sid.raw(),
             key: "",
@@ -144,7 +144,7 @@ pub(crate) fn draw_focused(
     };
     let base = card_row::tile_rect(
         index,
-        crate::ui::consts::MARGIN_X,
+        plx_ui::consts::MARGIN_X,
         STYLE.w + STYLE.gap,
         row.scroll_x(),
         top + LABEL_H,

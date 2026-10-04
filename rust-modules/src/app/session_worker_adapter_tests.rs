@@ -12,9 +12,9 @@ use crate::auth::{
     profile_switch_worker_with_output, settled_probe_for_test, ProfileSwitchOutcomeProgress,
     ProfileSwitchProgress, ProfileWorkIo, SessionIdentity, SettledProbe, UserTile,
 };
-use crate::plex::account::{AccountClient, CallEvidence, Resource, SwitchOutcome, SwitchedUser};
-use crate::plex::probe::{self, Outcome};
-use crate::plex::session::SourceRef;
+use plx_plex::plex::account::{AccountClient, CallEvidence, Resource, SwitchOutcome, SwitchedUser};
+use plx_plex::plex::probe::{self, Outcome};
+use plx_plex::plex::session::SourceRef;
 use plx_machine::machine::RequestId;
 
 /// **The next account to sign in must be asked afresh.** The maintainer's scenario (2026-09-04):
@@ -38,7 +38,7 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
         fn drop(&mut self) {
             crate::telemetry::spool::set_test_path(None);
             crate::telemetry::redirect_for_test(None);
-            crate::plex::session::redirect_for_test(None);
+            plx_plex::plex::session::redirect_for_test(None);
             if let Some(c) = self.saved.take() {
                 consent::install(c);
             }
@@ -54,7 +54,7 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
         dir: dir.clone(),
         saved: consent::current(),
     };
-    crate::plex::session::redirect_for_test(Some(dir.join("auth.json")));
+    plx_plex::plex::session::redirect_for_test(Some(dir.join("auth.json")));
     let consent_file = dir.join("telemetry.json");
     crate::telemetry::redirect_for_test(Some(consent_file.clone()));
     crate::telemetry::spool::set_test_path(Some(dir.join("spool.jsonl")));
@@ -76,7 +76,7 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
         consent::current().expect("account A decision is published"),
     );
     let mut dispatcher =
-        crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
+        plx_ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
     dispatcher.emit(
         plx_machine::machine::MachineId::Session,
         plx_machine::machine::Fx::App(
@@ -90,7 +90,7 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
         plx_machine::machine::Tick::default(),
         Vec::new(),
         Vec::new(),
-        &mut crate::ui::dispatch::NoTap,
+        &mut plx_ui::dispatch::NoTap,
         false,
     );
 
@@ -130,7 +130,7 @@ fn instance_profile_worker_completes_offline_policy_on_its_own_landing() {
         adapter.launch(RequestId(1), SessionWorkKey { epoch, op: SessionOp::ProfileSwitch },
             true, |job| { job(); true }, move |output| {
                 profile_switch_worker_with_output(epoch, expected, stored, tile, None,
-                    false, &crate::plex::grant::PlaintextAsk::undecided(), &output,
+                    false, &plx_plex::plex::grant::PlaintextAsk::undecided(), &output,
                     |_, _, _| SwitchOutcome::Unreachable);
             }).unwrap();
     }
@@ -162,7 +162,7 @@ fn a_grant_verified_only_over_plaintext_reports_the_shared_insecure_only_copy() 
                 id: 1, uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-token".into(),
             })
         }
-        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, plx_plex::plex::account::CallEvidence> {
             Ok(vec![Resource {
                 name: "srv".into(), client_identifier: "srv".into(), provides: "server".into(),
                 owned: true, access_token: "srv-token".into(), ..Default::default()

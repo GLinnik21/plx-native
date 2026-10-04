@@ -620,6 +620,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_plex"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "plx_base",
+ "plx_machine",
+ "plx_net",
+ "plx_platform",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plx_ui"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "plx_base",
+ "plx_gfx",
+ "plx_machine",
+ "plx_platform",
+ "qrcodegen",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plxnative-modules"
 version = "0.7.0"
 dependencies = [
@@ -630,7 +657,8 @@ dependencies = [
  "plx_machine",
  "plx_net",
  "plx_platform",
- "qrcodegen",
+ "plx_plex",
+ "plx_ui",
  "serde",
  "serde_json",
 ]

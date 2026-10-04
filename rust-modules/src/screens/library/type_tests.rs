@@ -3,7 +3,7 @@ use crate::browse::LibraryType;
 
 fn tv_fixture(kind: LibraryType, total: usize) -> Fixture {
     let mut fixture = Fixture::new();
-    let sid = crate::plex::ServerId::from_raw(0);
+    let sid = plx_plex::plex::ServerId::from_raw(0);
     fixture.listing = fixture.listing.with_library_type(kind).with_total(total);
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
         crate::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Show,
@@ -22,7 +22,7 @@ fn tv_page(fixture: &Fixture) -> LibraryScreen {
 /// three of them collection rows.
 fn collections_fixture(total: usize) -> Fixture {
     let mut fixture = Fixture::new();
-    let sid = crate::plex::ServerId::from_raw(0);
+    let sid = plx_plex::plex::ServerId::from_raw(0);
     let rows = (0..total.min(3)).map(|i| crate::pms::PmsMovie {
         sid, rk: format!("{}", 50_001 + i), title: format!("Collection {i}"),
         kind: crate::pms::KIND_COLLECTION, child_count: i as i64 + 1, ..Default::default()

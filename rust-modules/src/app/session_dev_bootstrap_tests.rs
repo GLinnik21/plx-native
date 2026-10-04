@@ -7,9 +7,9 @@ fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>) {
 }
 
 fn dev_fixture() -> Bridge {
-    let saved = crate::plex::session::Session { client_id: "synthetic-device".into(),
+    let saved = plx_plex::plex::session::Session { client_id: "synthetic-device".into(),
         account_token: "synthetic-saved-a".into(), ..Default::default() };
-    let dev = crate::plex::session::ServerRef { address: "127.0.0.2".into(), port: 32400,
+    let dev = plx_plex::plex::session::ServerRef { address: "127.0.0.2".into(), port: 32400,
         token: "synthetic-dev-b".into(), ..Default::default() };
     let mut rig = Bridge::for_session_test(super::super::boot::captured_session_for_boot(saved.clone(), Some(dev), Vec::new()));
     // Explicit resource baseline is the actual saved A, not sanitized in-memory auth input.
@@ -30,7 +30,7 @@ fn dev_revoke_resource_completes_before_carried_ack_and_stale_ack_after_erase_is
         let ran = Arc::new(AtomicUsize::new(0));
         let signal = Arc::clone(&ran);
         rig.session_adapter.inject_fixture_work(2, move |_, _| { signal.fetch_add(1, Ordering::AcqRel); });
-        for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - remaining {
+        for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - remaining {
             execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
         execute_session_command(&mut d, crate::auth::SessionCmd::StartLogin);
@@ -148,7 +148,7 @@ fn carried_dev_ready_is_not_handed_off_after_erase() {
     for remaining in 1..16 {
         let mut rig = dev_fixture();
         let mut d = Dispatcher::<AppHost>::new();
-        for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - remaining {
+        for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - remaining {
             execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
         execute_session_command(&mut d, crate::auth::SessionCmd::ActivateDevBootstrap);
@@ -169,7 +169,7 @@ fn carried_dev_ready_is_not_handed_off_after_erase() {
 #[test]
 fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
     use crate::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, SessionEvent, SessionWork};
-    use crate::plex::session::{Session, ServerRef};
+    use plx_plex::plex::session::{Session, ServerRef};
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
     let _lock = plx_base::testlock::serial();
     for failures in [1, 2] {
@@ -248,7 +248,7 @@ fn dev_retry_is_inert_outside_error_and_restart_wait_remains_account_only() {
         execute_session_command(&mut d, SessionCmd::SelectProfile { index: 0, pin: None });
         execute_session_command(&mut d, SessionCmd::BackAtRoot { reply: ReplyTo { instance: 19, correlation: 2 } });
         execute_session_command(&mut d, SessionCmd::RefreshRoster);
-        execute_session_command(&mut d, SessionCmd::RequestEndpoint { sid: crate::plex::ServerId::from_raw(0) });
+        execute_session_command(&mut d, SessionCmd::RequestEndpoint { sid: plx_plex::plex::ServerId::from_raw(0) });
         execute_session_command(&mut d, SessionCmd::TakeReady);
         frame(&mut rig, &mut d);
         let mut after = rig.session.snapshot_init();
@@ -261,15 +261,15 @@ fn dev_retry_is_inert_outside_error_and_restart_wait_remains_account_only() {
 }
 impl Drop for Cleanup<'_> {
     fn drop(&mut self) {
-        crate::plex::reset_servers_for_test();
-        crate::plex::session::ProfilePublisher::new(self.0).publish(None, 0);
+        plx_plex::plex::reset_servers_for_test();
+        plx_plex::plex::session::ProfilePublisher::new(self.0).publish(None, 0);
     }
 }
 
 #[test]
 fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work() {
     use crate::auth::owner::{BootstrapAuthority, ReadyInstall, SessionWork};
-    use crate::plex::session::{self, Session, ServerRef, SourceRef};
+    use plx_plex::plex::session::{self, Session, ServerRef, SourceRef};
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
     let _lock = plx_base::testlock::serial();
     let mt = unsafe { plx_base::task::MainThread::assume() };
@@ -277,7 +277,7 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
         let tmp = session::TempSession::new("dev-bootstrap-owner");
         let _cleanup = Cleanup(&mt);
         tmp.assert_only_target();
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         let saved = Session { client_id: "synthetic-device".into(),
             account_token: if saved_account { "synthetic-account-a".into() } else { String::new() },
             ..Default::default() };
@@ -286,18 +286,18 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
         let before = std::fs::read(tmp.path()).ok();
         let primary = ServerRef { address: "127.0.0.2".into(), port: 32400,
             origin_url: "http://127.0.0.2:32400".into(), token: "synthetic-pms-b".into(),
-            tier: Some(crate::plex::probe::Location::Local), ..Default::default() };
+            tier: Some(plx_plex::plex::probe::Location::Local), ..Default::default() };
         let extra = SourceRef { machine_id: "synthetic-extra".into(), name: "Synthetic extra".into(),
             address: "192.0.2.3".into(), port: 32400,
             origin_url: "https://192-0-2-3.synthetic.plex.direct:32400".into(),
             token: "synthetic-extra-token".into(), shared_by: "Synthetic owner".into(), owned: false,
-            tier: Some(crate::plex::probe::Location::Remote), ..Default::default() };
+            tier: Some(plx_plex::plex::probe::Location::Remote), ..Default::default() };
         let init = super::super::boot::captured_session_for_boot(saved, Some(primary), vec![extra.clone()]);
         let mut rig = Bridge::for_session_test(init);
         rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
         let mut d = Dispatcher::<AppHost>::new();
         execute_session_command(&mut d, crate::auth::SessionCmd::ActivateDevBootstrap);
-        assert_eq!(crate::plex::server_ids().count(), 0);
+        assert_eq!(plx_plex::plex::server_ids().count(), 0);
         assert!(rig.take_session_ready().is_none());
         frame(&mut rig, &mut d);
         let ready = rig.take_session_ready().unwrap();
@@ -306,15 +306,15 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
         assert!(rig.take_session_ready().is_none());
         assert!(rig.auth_read().0.profile.is_none());
         assert_eq!(session::current_gen(), rig.auth_read().0.scope.0);
-        let ids: Vec<_> = crate::plex::server_ids().collect();
+        let ids: Vec<_> = plx_plex::plex::server_ids().collect();
         assert_eq!(ids.len(), 2);
-        assert_eq!(crate::plex::client_for(ids[0]).unwrap().origin().host(), "127.0.0.2");
-        let shared = crate::plex::client_for(ids[1]).unwrap();
+        assert_eq!(plx_plex::plex::client_for(ids[0]).unwrap().origin().host(), "127.0.0.2");
+        let shared = plx_plex::plex::client_for(ids[1]).unwrap();
         assert_eq!(shared.machine_id(), extra.machine_id);
         assert_eq!(shared.origin().base(), extra.origin_url);
         assert_eq!(shared.resolve_pin(), extra.resolve_pin().as_ref());
         assert_eq!(shared.link(), extra.tier);
-        let facts = crate::plex::server_facts(ids[1]).unwrap();
+        let facts = plx_plex::plex::server_facts(ids[1]).unwrap();
         assert_eq!(facts.name, extra.name);
         assert_eq!(facts.handle, extra.shared_by);
         assert_eq!(facts.owned, extra.owned);
@@ -330,20 +330,20 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
         let req = rig.session.snapshot_init().next_req + 2;
         let epoch = rig.auth_read().0.flow_epoch + 1;
         rig.session_adapter.inject_fixture_work(req, move |output, input| {
-            assert_eq!(crate::plex::server_ids().count(), 0, "revoke must execute BEFORE new account work");
+            assert_eq!(plx_plex::plex::server_ids().count(), 0, "revoke must execute BEFORE new account work");
             let SessionWork::Login { client_id } = input else { panic!("dev exit must start clean Login") };
             assert_eq!(client_id, "synthetic-device");
             signal.store(true, Ordering::Release);
             output.complete(crate::auth::LoginProgress::Failed { epoch, message: "synthetic stop".into(), incident: crate::auth::synthetic_incident(), plaintext: None, account: None }.into()).unwrap();
         });
-        for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 1 {
+        for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 1 {
             execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
         execute_session_command(&mut d, crate::auth::SessionCmd::StartLogin);
         frame(&mut rig, &mut d);
         assert!(!ran.load(Ordering::Acquire));
         assert!(rig.session.snapshot_init().pending_commit.is_some());
-        assert_eq!(crate::plex::server_ids().count(), 2, "revoke effect is genuinely carried");
+        assert_eq!(plx_plex::plex::server_ids().count(), 2, "revoke effect is genuinely carried");
         frame(&mut rig, &mut d);
         assert!(ran.load(Ordering::Acquire));
         let state = rig.session.snapshot_init();
@@ -356,7 +356,7 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
 
 #[test]
 fn dev_boot_capture_cannot_keep_saved_account_as_worker_authority() {
-    use crate::plex::session::{Session, ServerRef, UserRef};
+    use plx_plex::plex::session::{Session, ServerRef, UserRef};
     let saved = Session { client_id: "synthetic-client".into(), account_token: "synthetic-account-a".into(),
         user: UserRef { uuid: "synthetic-a".into(), token: "synthetic-profile-a".into(), ..Default::default() },
         ..Default::default() };
@@ -373,14 +373,14 @@ fn dev_boot_capture_cannot_keep_saved_account_as_worker_authority() {
 
 #[test]
 fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contract() {
-    use crate::plex::session::{self, Session, ServerRef};
+    use plx_plex::plex::session::{self, Session, ServerRef};
     let _lock = plx_base::testlock::serial();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     for disk_case in 0..3 {
         let tmp = session::TempSession::new("dev-login-replacement");
         let _cleanup = Cleanup(&mt);
         tmp.assert_only_target();
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         let saved = Session { client_id: "synthetic-device".into(),
             account_token: "synthetic-account-a".into(), ..Default::default() };
         session::save(&saved);

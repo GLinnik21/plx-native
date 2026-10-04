@@ -23,7 +23,7 @@ pub(super) fn frame(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: AppArg
 /// …and the same driver for the two frames that also want the effect tap or a supplied result
 /// set. Only the `goto` is the test's: everything after it is production's own frame.
 pub(super) fn frame_with_tap(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: AppArg, tick: Tick,
-    inputs: Vec<InputEvent<u32>>, tap: &mut dyn crate::ui::dispatch::Tap<AppHost>)
+    inputs: Vec<InputEvent<u32>>, tap: &mut dyn plx_ui::dispatch::Tap<AppHost>)
     -> (&'static str, FrameReport) {
     goto(d, route);
     presented(super::frame_with_tap(d, rig, tick, inputs, tap))
@@ -31,7 +31,7 @@ pub(super) fn frame_with_tap(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, rout
 
 pub(super) fn frame_with_results(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: AppArg, tick: Tick,
     inputs: Vec<InputEvent<u32>>, take: impl FnOnce() -> AppResults,
-    tap: &mut dyn crate::ui::dispatch::Tap<AppHost>) -> (&'static str, FrameReport) {
+    tap: &mut dyn plx_ui::dispatch::Tap<AppHost>) -> (&'static str, FrameReport) {
     goto(d, route);
     presented(super::frame_with_results(d, rig, tick, inputs, take, tap))
 }
@@ -40,13 +40,13 @@ pub(super) fn frame_with_results(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, 
 /// supply the identity. The fold puts the identity ON the argument, which is what makes the
 /// trail seeding this helper used to do unnecessary.
 pub(super) fn detail_arg(rk: &str) -> AppArg {
-    AppArg::Content(ContentArg::Detail { sid: crate::plex::ServerId::UNSET, rk: rk.into() })
+    AppArg::Content(ContentArg::Detail { sid: plx_plex::plex::ServerId::UNSET, rk: rk.into() })
 }
 
 /// …and a person page's.
 pub(super) fn person_arg(key: &str) -> AppArg {
     AppArg::Content(ContentArg::Person {
-        sid: crate::plex::ServerId::UNSET,
+        sid: plx_plex::plex::ServerId::UNSET,
         key: key.into(),
         guid: format!("tag://{key}"),
         name: String::new(),
@@ -73,8 +73,8 @@ pub(super) fn notices(d: &Dispatcher<AppHost>) -> String {
 }
 
 pub(super) fn directory_policy_fixture(
-    own: crate::plex::ServerId,
-    hidden: crate::plex::ServerId,
+    own: plx_plex::plex::ServerId,
+    hidden: plx_plex::plex::ServerId,
 ) -> crate::stores::browse::DirectorySnapshot {
     let section = |sid, key, section, title: &str, pinned| {
         crate::stores::browse::SectionView {
@@ -102,13 +102,13 @@ impl Drop for DirectoryPolicyCleanup {
     fn drop(&mut self) {
         // Search and Hubs are now owned per-Bridge (`rig`, dropped with the test's own stack
         // frame), so there is no process-wide store state left for this cleanup to reset.
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 }
 
 /// A test frame is a presenting frame: the product drains the Tracks/More text prewarm on the
 /// presenting side of the present decision (`app::run::prepare_window`), after the frame's update.
 fn presented<R>(frame: R) -> R {
-    crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
+    plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
     frame
 }

@@ -270,7 +270,7 @@ fn a_landing_from_the_previous_query_is_discarded_but_still_releases_the_fetch()
     );
     assert_eq!(titles(&owner.state.shelves()[0]), ["A Close Shave"]);
     assert_eq!(owner.state.state(), State::Ready);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// A screen that can never be answered must not spin forever. With no server registered nothing

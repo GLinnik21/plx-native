@@ -3,7 +3,7 @@
 //! Other initial domains fail closed at preflight.
 
 use plx_machine::machine::{Canon, LogicalState};
-use crate::ui::rec::Recording;
+use plx_ui::rec::Recording;
 use serde::{Deserialize, Serialize};
 pub(crate) const CONTENT_SHAPE: &str = "ContentInitialV1{detail:str,detailsec:u32,detailok:bool,filmography:bool,personcredits:u32,nowan:bool};ContentResourcesV2{admission:Metadata(sid,rk,gen,client)|MetadataCancel(boundary,retired:DetailBatch)|Person(slot,gen,arg,guid,local?,client?,sid?),admitted:bool;result:DetailBatch(seq,req,terminal,Data(key,Option<Detail>)|Dropped(req)|Refused(req))|Person(slot,Mail(gen,Resolve|Media|Profile|Credits|Roles));PersonTerminal:slot+gen+kind-bound;DetailFloats:bits;ContentEffectsV1:complete_nav_store_request_return_memory}";
 pub(crate) mod effects;
@@ -16,11 +16,11 @@ mod attachment_tests;
 /// admission answer (including refusal); only recorded ingress completes admitted work.
 pub(crate) struct HomeIo {
     pub replay: bool,
-    pub preferences: crate::plex::session::Session,
+    pub preferences: plx_plex::plex::session::Session,
     pub requests: Vec<serde_json::Value>,
     pub admissions: std::collections::VecDeque<serde_json::Value>,
     pub failure: Option<&'static str>,
-    pub profile: std::sync::Arc<crate::plex::session::CurrentProfile>,
+    pub profile: std::sync::Arc<plx_plex::plex::session::CurrentProfile>,
 }
 
 impl HomeIo {
@@ -188,11 +188,11 @@ impl Initial {
     pub(crate) fn synthetic_home(seed: u32, port: u16, settings: Option<String>)
         -> Result<Self, &'static str> {
         if port == 0 { return Err("invalid synthetic port"); }
-        let saved = crate::plex::session::Session { client_id:format!("s{seed:08x}"), ..Default::default() };
-        let origin = crate::plex::Origin::http("127.0.0.1", i32::from(port));
-        let primary = crate::plex::session::ServerRef { address:"127.0.0.1".into(), port:i64::from(port),
+        let saved = plx_plex::plex::session::Session { client_id:format!("s{seed:08x}"), ..Default::default() };
+        let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(port));
+        let primary = plx_plex::plex::session::ServerRef { address:"127.0.0.1".into(), port:i64::from(port),
             origin_url:origin.base(),token:format!("s{:08x}",seed.wrapping_add(1)),
-            tier:Some(crate::plex::probe::Location::Local), ..Default::default() };
+            tier:Some(plx_plex::plex::probe::Location::Local), ..Default::default() };
         let initial = Self { version:1, session:crate::auth::SessionInit::captured_boot(saved,Some(primary),Vec::new()),
             consent:Default::default(),home:crate::pms::initial::Initial::fresh(),clock_start:0,
             entropy:Entropy::Seeded(seed),primary_client:1,automated:true,settings:settings.clone(),
@@ -203,21 +203,21 @@ impl Initial {
         initial.validate()?;
         Ok(initial)
     }
-    pub(crate) fn capture_home(host: &str, port: i32) -> Result<(Self, Option<crate::plex::session::DeferredLoad>), &'static str> {
+    pub(crate) fn capture_home(host: &str, port: i32) -> Result<(Self, Option<plx_plex::plex::session::DeferredLoad>), &'static str> {
         if let Some(value) = crate::dev::scenarios::app_init_value() {
             return Self::from_value(value?).map(|initial| (initial, None));
         }
         let token = crate::dev::scenarios::dev_token();
-        let (saved, entropy, deferred) = crate::plex::session::load_capturing_entropy();
-        let primary = (!token.is_empty()).then(|| crate::plex::session::ServerRef {
+        let (saved, entropy, deferred) = plx_plex::plex::session::load_capturing_entropy();
+        let primary = (!token.is_empty()).then(|| plx_plex::plex::session::ServerRef {
             address: host.into(), port: i64::from(port),
-            origin_url: crate::plex::Origin::http(host, port).base(), token,
-            tier: Some(crate::plex::probe::configured_tier(host)), ..Default::default()
+            origin_url: plx_plex::plex::Origin::http(host, port).base(), token,
+            tier: Some(plx_plex::plex::probe::configured_tier(host)), ..Default::default()
         });
         let initial = Self { version: 1,
             session: crate::auth::SessionInit::captured_boot(saved, primary, Vec::new()),
             consent: crate::telemetry::capture_initial(), clock_start: 0, entropy: Entropy::Captured(entropy),
-            primary_client: crate::plex::Client::capture_generation_seed(),
+            primary_client: plx_plex::plex::Client::capture_generation_seed(),
             automated: crate::dev::any_trigger_present(),
             settings: crate::dev::scenarios::settings_boot_value(),
             content: None,
@@ -250,7 +250,7 @@ impl Initial {
             != serde_json::to_value(s).map_err(|_| "invalid initial Session")? {
             return Err("incoherent initial Session");
         }
-        if crate::plex::Origin::parse(&primary.origin_url).is_none() || primary.token.is_empty() || !extras.is_empty() {
+        if plx_plex::plex::Origin::parse(&primary.origin_url).is_none() || primary.token.is_empty() || !extras.is_empty() {
             return Err("unsupported Home server binding");
         }
         if s.persisted.client_id.is_empty() { return Err("missing initial identity"); }
@@ -276,7 +276,7 @@ impl Initial {
             }
         }
         match self.entropy {
-            Entropy::Captured(Some(bytes)) if crate::plex::session::client_id_from_entropy(bytes) != s.persisted.client_id =>
+            Entropy::Captured(Some(bytes)) if plx_plex::plex::session::client_id_from_entropy(bytes) != s.persisted.client_id =>
                 return Err("initial entropy mismatch"),
             Entropy::Seeded(seed) if format!("s{seed:08x}") != s.persisted.client_id =>
                 return Err("initial seed mismatch"),

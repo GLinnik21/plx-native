@@ -3,7 +3,7 @@
 //! main-thread state, worker adapter and notice while `crate::browse` retains the core
 //! implementation.
 
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use plx_machine::machine::{Cx, Effects, Handled, Machine};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -27,10 +27,10 @@ pub(crate) use crate::browse::view::{
 /// Browse publication for this Bridge.
 pub(crate) mod onboard {
     pub(crate) fn asks(directory: super::DirectoryView<'_>) -> bool {
-        let session = crate::plex::session::peek();
-        crate::plex::pins::asks(
+        let session = plx_plex::plex::session::peek();
+        plx_plex::plex::pins::asks(
             directory.sources().len(),
-            session.pins_for(&crate::plex::session::current_profile_key()),
+            session.pins_for(&plx_plex::plex::session::current_profile_key()),
         )
     }
 }
@@ -216,7 +216,7 @@ impl BrowseStore {
     pub(crate) fn apply_discovery(
         &mut self,
         result: &crate::browse::record::Result,
-        preferences: &crate::plex::session::Session,
+        preferences: &plx_plex::plex::session::Session,
     ) -> super::StoreOutcome {
         let outcome = crate::browse::record::apply_to(
             &mut self.state, &self.adapter, result, Some(preferences));
@@ -229,7 +229,7 @@ impl BrowseStore {
     #[cfg(test)]
     pub(crate) fn spawn_page_for_test(
         &mut self,
-        client: &'static crate::plex::Client,
+        client: &'static plx_plex::plex::Client,
         title: &str,
     ) -> (std::sync::mpsc::SyncSender<()>, std::sync::mpsc::Receiver<()>) {
         crate::browse::spawn_owned_page_for_test(&self.state, &self.adapter, client, title)
@@ -372,7 +372,7 @@ impl BrowseStore {
     #[cfg(test)]
     pub(crate) fn queue_discovery_for_test(
         &mut self,
-        client: &'static crate::plex::Client,
+        client: &'static plx_plex::plex::Client,
         token_gen: u32,
         ok: bool,
     ) {
@@ -393,12 +393,12 @@ impl BrowseStore {
     }
 
     #[cfg(test)]
-    fn queue_genre_for_test(&mut self, client: &'static crate::plex::Client) {
+    fn queue_genre_for_test(&mut self, client: &'static plx_plex::plex::Client) {
         crate::browse::queue_genre_for_owner_test(&mut self.state, &self.adapter, client);
     }
 
     #[cfg(test)]
-    fn queue_page_failure_for_test(&mut self, client: &'static crate::plex::Client) {
+    fn queue_page_failure_for_test(&mut self, client: &'static plx_plex::plex::Client) {
         crate::browse::queue_page_failure_for_owner_test(&mut self.state, &self.adapter, client);
     }
 
@@ -530,7 +530,7 @@ mod contract_tests {
     #[test]
     fn snapshots_and_an_idle_pump_are_quiet() {
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         let stores = crate::stores::Stores::default();
         let _ = stores.take_notices();
         let before = stores.browse.borrow().gen();
@@ -550,7 +550,7 @@ mod contract_tests {
     #[test]
     fn hubs_housekeeping_notices_only_a_new_publication() {
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         let mut browse = BrowseStore::default();
         browse.seed_two_source_table_for_test();
         browse.seed_shelves_for_test(0, &["published"], 1);
@@ -582,12 +582,12 @@ mod contract_tests {
     #[test]
     fn an_owned_discovery_landing_is_consumed_once_and_noticed_once() {
         let _guard = plx_base::testlock::serial();
-        let session = crate::plex::session::TempSession::new("browse-preowner");
+        let session = plx_plex::plex::session::TempSession::new("browse-preowner");
         session.watching("u-browse-preowner");
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test(
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test(
             "browse-preowner", "127.0.0.1", 9, "synthetic", "fixture");
-        let client = crate::plex::client_for(sid).unwrap();
+        let client = plx_plex::plex::client_for(sid).unwrap();
         let stores = crate::stores::Stores::default();
         stores.browse.borrow_mut().queue_discovery_for_test(
             client, client.token_gen(), false);
@@ -600,26 +600,26 @@ mod contract_tests {
             "one discovery landing owes one notice on the addressed Browse owner");
         assert_eq!(stores.browse.borrow_mut().discover_pump().endpoints.iter().count(), 0,
             "the transferred adapter result is consumed exactly once");
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
     fn controlled_discovery_apply_and_directory_landing_each_bump_exactly_once() {
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test(
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test(
             "browse-owned-landings", "127.0.0.1", 9, "synthetic", "fixture");
         let stores = crate::stores::Stores::default();
         stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
         let _ = stores.take_notices();
-        let client = crate::plex::client_for(sid).unwrap();
+        let client = plx_plex::plex::client_for(sid).unwrap();
 
         stores.browse.borrow_mut().queue_discovery_for_test(
             client, client.token_gen(), true);
         let result = stores.browse.borrow_mut().take_discovery().unwrap();
         let before_discovery = stores.browse.borrow().gen();
         let _ = stores.browse.borrow_mut().apply_discovery(
-            &result, &crate::plex::session::Session::default());
+            &result, &plx_plex::plex::session::Session::default());
         assert_eq!(stores.browse.borrow().gen(), before_discovery + 1);
         assert_eq!(stores.take_notices(), [(StoreId::Browse, before_discovery + 1)]);
         assert!(stores.take_notices().is_empty());
@@ -632,18 +632,18 @@ mod contract_tests {
         assert_eq!(stores.take_notices(), [(StoreId::Browse, before_directory + 1)]);
         assert!(stores.take_notices().is_empty());
 
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
     fn reset_rotates_the_adapter_away_from_a_late_old_worker() {
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test(
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test(
             "browse-reset-worker", "127.0.0.1", 9, "synthetic", "fixture");
         let stores = crate::stores::Stores::default();
         stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
-        let client = crate::plex::client_for(sid).unwrap();
+        let client = plx_plex::plex::client_for(sid).unwrap();
         stores.browse.borrow_mut().prepare_page_for_test(sid);
         let old = Arc::clone(&stores.browse.borrow().adapter);
         let (release, landed) = stores.browse.borrow_mut()
@@ -661,24 +661,24 @@ mod contract_tests {
         assert!(crate::browse::adapter_fetching_for_test(&new),
             "a retired worker must not clear the replacement flight");
 
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
     fn roster_removal_rotates_transport_away_from_a_held_old_worker() {
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test(
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test(
             "browse-roster-retire", "127.0.0.1", 9, "synthetic", "fixture");
         let stores = crate::stores::Stores::default();
         stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
-        let client = crate::plex::client_for(sid).unwrap();
+        let client = plx_plex::plex::client_for(sid).unwrap();
         stores.browse.borrow_mut().prepare_page_for_test(sid);
         let old = Arc::clone(&stores.browse.borrow().adapter);
         let (release, landed) = stores.browse.borrow_mut()
             .spawn_page_for_test(client, "retired-by-roster");
 
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         assert!(stores.browse.borrow_mut().pump().changed);
         let new = Arc::clone(&stores.browse.borrow().adapter);
         assert!(!Arc::ptr_eq(&old, &new),
@@ -695,12 +695,12 @@ mod contract_tests {
     #[test]
     fn extracted_discovery_result_cannot_clear_the_post_reset_source_flight() {
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test(
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test(
             "browse-result-retire", "127.0.0.1", 9, "synthetic", "fixture");
         let stores = crate::stores::Stores::default();
         stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
-        let client = crate::plex::client_for(sid).unwrap();
+        let client = plx_plex::plex::client_for(sid).unwrap();
         stores.browse.borrow_mut().queue_discovery_for_test(
             client, client.token_gen(), true);
         let result = stores.browse.borrow_mut().take_discovery().unwrap();
@@ -711,14 +711,14 @@ mod contract_tests {
         let _ = stores.take_notices();
         let before = stores.browse.borrow().gen();
         let outcome = stores.browse.borrow_mut().apply_discovery(
-            &result, &crate::plex::session::Session::default());
+            &result, &plx_plex::plex::session::Session::default());
         assert!(!outcome.changed);
         assert_eq!(stores.browse.borrow().gen(), before);
         assert!(stores.take_notices().is_empty());
         assert!(crate::browse::adapter_src_fetching_for_test(&replacement),
             "a result extracted from the retired adapter must not release the new source flight");
 
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
@@ -726,13 +726,13 @@ mod contract_tests {
         let _guard = plx_base::testlock::serial();
         // `sync_roster_owned` also watches the process-global session generation. Keep it settled
         // so the exact notice count below grades this roster addition, not an async session read.
-        let _session = crate::plex::session::TempSession::new("controlled-roster-spawn-refused");
-        crate::plex::reset_servers_for_test();
+        let _session = plx_plex::plex::session::TempSession::new("controlled-roster-spawn-refused");
+        plx_plex::plex::reset_servers_for_test();
         let stores = crate::stores::Stores::default();
         let _ = stores.take_notices();
         let before_notice = stores.browse.borrow().gen();
         let before_sources = stores.browse.borrow().source_list_gen_for_test();
-        crate::plex::register_for_test(
+        plx_plex::plex::register_for_test(
             "", "127.0.0.1", 9, "synthetic", "fixture");
         let mut launches = 0;
         stores.browse_controlled_discover(&mut |_| {
@@ -761,18 +761,18 @@ mod contract_tests {
         assert_eq!(plx_machine::idle::take_local_damage(), 0,
             "an empty-to-empty machine identity must not invalidate the settled frame");
 
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
     fn direct_controlled_discovery_mutates_only_the_addressed_owner() {
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         let selected = crate::stores::Stores::default();
         let decoy = crate::stores::Stores::default();
         let selected_before = selected.browse.borrow().source_list_gen_for_test();
         let decoy_before = decoy.browse.borrow().source_list_gen_for_test();
-        crate::plex::register_for_test(
+        plx_plex::plex::register_for_test(
             "", "127.0.0.1", 9, "synthetic", "fixture");
 
         let mut launches = 0;
@@ -791,19 +791,19 @@ mod contract_tests {
             "the direct call owes exactly one notice from the addressed Browse owner");
         assert!(decoy.take_notices().is_empty());
 
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
     fn isolated_current_page_failure_is_one_observable_change_and_notice() {
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test(
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test(
             "browse-page-failure", "127.0.0.1", 9, "synthetic", "fixture");
-        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
+        plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Unreachable);
         let stores = crate::stores::Stores::default();
         stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
-        let client = crate::plex::client_for(sid).unwrap();
+        let client = plx_plex::plex::client_for(sid).unwrap();
         stores.browse.borrow_mut().prepare_page_for_test(sid);
         let _ = stores.browse.borrow_mut().discover_pump();
         let _ = stores.take_notices();
@@ -818,25 +818,25 @@ mod contract_tests {
         assert_eq!(stores.take_notices(), [(StoreId::Browse, before + 1)]);
         assert!(stores.take_notices().is_empty());
 
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
     fn library_switch_events_count_only_new_committed_choices() {
         let _guard = plx_base::testlock::serial();
-        let session = crate::plex::session::TempSession::new("library-switch-events");
+        let session = plx_plex::plex::session::TempSession::new("library-switch-events");
         session.watching("u-library-switch-events");
         struct Cleanup;
         impl Drop for Cleanup {
             fn drop(&mut self) {
-                crate::plex::reset_servers_for_test();
+                plx_plex::plex::reset_servers_for_test();
             }
         }
         let _cleanup = Cleanup;
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         let own =
-            crate::plex::register_for_test("switch-own", "127.0.0.1", 9, "synthetic", "fixture");
-        let shared = crate::plex::register_for_test(
+            plx_plex::plex::register_for_test("switch-own", "127.0.0.1", 9, "synthetic", "fixture");
+        let shared = plx_plex::plex::register_for_test(
             "switch-shared",
             "127.0.0.1",
             10,

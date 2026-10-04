@@ -341,7 +341,7 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
     );
 
     let master = crate::hls::Resource {
-        origin: crate::plex::Origin::http("127.0.0.1", 32400),
+        origin: plx_plex::plex::Origin::http("127.0.0.1", 32400),
         path: "/master.m3u8?X-Plex-Token=test-token".to_string(),
     };
     let auth = crate::hls::InheritedAuth::capture(&master).expect("fixture token pair");
@@ -666,7 +666,7 @@ const PROMPT: std::time::Duration = std::time::Duration::from_millis(1_500);
 const SHORT_DEADLINE: std::time::Duration = std::time::Duration::from_millis(60);
 
 fn segment_on(port: u16) -> (crate::hls::Segment, crate::hls::InheritedAuth) {
-    let origin = crate::plex::Origin::http("127.0.0.1", i32::from(port));
+    let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(port));
     let master = crate::hls::Resource {
         origin: origin.clone(),
         path: "/video/:/transcode/universal/session/t/base/index.m3u8?X-Plex-Token=test-token"
@@ -1207,7 +1207,7 @@ fn a_zero_byte_abort_reaches_the_controller_as_an_abandoned_sample() {
         audio_expected: true,
     };
     let master = crate::hls::Resource {
-        origin: crate::plex::Origin::http("127.0.0.1", 32400),
+        origin: plx_plex::plex::Origin::http("127.0.0.1", 32400),
         path: "/master.m3u8?X-Plex-Token=test-token".to_string(),
     };
     let cursor_at = |pending| HlsCursor {

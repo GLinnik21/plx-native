@@ -3,20 +3,20 @@
 use std::ffi::CString;
 
 use crate::metadata::Detail;
-use crate::plex::ServerId;
-use crate::ui::card_row::{self, CardRow, RowStyle};
-use crate::ui::label::{HAlign, Label, VAlign};
+use plx_plex::plex::ServerId;
+use plx_ui::card_row::{self, CardRow, RowStyle};
+use plx_ui::label::{HAlign, Label, VAlign};
 use plx_machine::machine::{GroupId, Measure};
-use crate::ui::text_view::TextView;
-use crate::ui::widgets::Art;
-use crate::ui::{theme, Painter, Rect};
+use plx_ui::text_view::TextView;
+use plx_ui::widgets::Art;
+use plx_ui::{theme, Painter, Rect};
 
 pub(crate) const CAST_ELEM_RANGE_START: u32 = 1152;
 pub(crate) const CAST_ELEM_RANGE_END: u32 = 1664;
 pub(crate) const CAST_GROUP: GroupId = GroupId(4);
 /// Heading cap top to card top — the SHARED shelf pitch, stated as the sum rather than as the 60
 /// it has always been, so the three detail shelves move together (see [`super::related::LABEL_H`]).
-pub(crate) const LABEL_H: f32 = crate::ui::consts::TITLE_DY + crate::ui::consts::CARD_DY;
+pub(crate) const LABEL_H: f32 = plx_ui::consts::TITLE_DY + plx_ui::consts::CARD_DY;
 const SLOT: f32 = 230.0;
 const NAME_GAP: f32 = theme::space::MD + theme::space::XS;
 const ROLE_LEADING: f32 = theme::size::CAPTION as f32 + theme::space::XS;
@@ -71,7 +71,7 @@ pub(crate) fn action(d: &Detail, key: u32) -> Action {
 pub(crate) fn rect(row: &CardRow, index: usize, top: f32, at_drawn: bool) -> Rect {
     let base = card_row::tile_rect(
         index,
-        crate::ui::consts::MARGIN_X,
+        plx_ui::consts::MARGIN_X,
         SLOT,
         row.scroll_x(),
         top + LABEL_H,
@@ -103,7 +103,7 @@ pub(crate) fn draw(
 ) {
     p.text(
         plx_platform::i18n::msg::browse_detail_cast_c().as_ptr(),
-        crate::ui::consts::MARGIN_X,
+        plx_ui::consts::MARGIN_X,
         top - row.lift(),
         theme::size::HEADLINE,
         theme::TEXT_HEADING,
@@ -120,7 +120,7 @@ pub(crate) fn draw(
         (RowStyle::CAST.w, RowStyle::CAST.h),
         SLOT,
         &RowStyle::CAST,
-        crate::ui::consts::SCR_W,
+        plx_ui::consts::SCR_W,
         |i| {
             d.credit(i)
                 .map(|c| Art::Person {
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn cast_name_elision_uses_the_remaining_width_for_a_partial_surname() {
         let measure = LabelMeasure;
-        let center = crate::ui::consts::MARGIN_X + RowStyle::CAST.w * 0.5;
+        let center = plx_ui::consts::MARGIN_X + RowStyle::CAST.w * 0.5;
         let (frame, _) = label_frames(center, 100.0, 0.0, &measure);
         let text = name_caption("Алена Сяргеева 6", frame.w, true, &measure);
         assert!(text.starts_with("Алена С"), "single-line elision must not discard the whole surname: {text}");
@@ -241,7 +241,7 @@ mod tests {
     fn a_cast_label_moves_off_screen_with_its_tile_and_keeps_its_own_width() {
         let measure = LabelMeasure;
         let budget = SLOT - theme::space::SM;
-        let scr_w = crate::ui::consts::SCR_W;
+        let scr_w = plx_ui::consts::SCR_W;
         for cx in [-40.0, 60.0, scr_w - 60.0, scr_w + 40.0, 2300.0 + scr_w - 60.0] {
             let (name, role) = label_frames(cx, 100.0, pop_drop(RowStyle::CAST.focus_scale), &measure);
             for frame in [name, role] {
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn combined_crew_captions_fit_two_caption_lines_at_both_safe_edges() {
         let measure = LabelMeasure;
-        let safe = crate::ui::consts::SAFE;
+        let safe = plx_ui::consts::SAFE;
         for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be] {
             let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
             let caption = plx_platform::i18n::msg::browse_crew_director_writer_in(&locale);

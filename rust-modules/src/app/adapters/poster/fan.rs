@@ -15,11 +15,11 @@
 //! and never become GL textures. A warm disk hit decodes the baked PNG and fetches nothing.
 //!
 //! A custom poster (`/library/metadata/{rk}/thumb/…`) is untouched: only a path that
-//! [`crate::plex::collections::composite_parts`] reads as a composite is rerouted, at key
+//! [`plx_plex::plex::collections::composite_parts`] reads as a composite is rerouted, at key
 //! build time, to the synthetic `/plx/fan/{rk}/{stamp}` key this module parses back. The server's
 //! composite is never a fallback: no usable member art is [`Got::Final`].
 
-use crate::plex::collections::composite_parts;
+use plx_plex::plex::collections::composite_parts;
 
 /// The store key prefix of a baked fan. Not a server path: the worker recognises it before any
 /// request is built, and it carries no token by construction.
@@ -103,7 +103,7 @@ impl Rgba {
 }
 
 /// One fanned member: its decoded poster and, when the server sent a non-black one, its
-/// `UltraBlurColors` in [`crate::plex::models::UltraBlurColors::corners`]' ring order (0–1).
+/// `UltraBlurColors` in [`plx_plex::plex::models::UltraBlurColors::corners`]' ring order (0–1).
 pub(super) struct Member {
     pub poster: Rgba,
     pub blur: Option<[[f32; 3]; 4]>,
@@ -142,13 +142,13 @@ const RIM_W_MOCK: f32 = 1.0;
 const RIM_ALPHA: f32 = 0.18;
 /// `.scr { height:45%; background:linear-gradient(transparent, rgba(0,0,0,.55)) }`: the scrim
 /// starts at 55% of the height and darkens LINEARLY to 0.55 at the bottom edge.
-const SCRIM_FROM: f32 = crate::ui::collection_tile::FAN_SCRIM_FROM;
+const SCRIM_FROM: f32 = plx_ui::collection_tile::FAN_SCRIM_FROM;
 const SCRIM_MAX: f32 = 0.55;
 
 // The deck — where each member lands, its tilt and the deck's scale — is shared with the name's
 // placement (`ui::collection_tile::fan_member`), so the name's band is computed from the members
 // this bake actually draws.
-use crate::ui::collection_tile::{FanMember, FAN_BACK_LEFT as BACK_LEFT, FAN_BACK_RIGHT as BACK_RIGHT,
+use plx_ui::collection_tile::{FanMember, FAN_BACK_LEFT as BACK_LEFT, FAN_BACK_RIGHT as BACK_RIGHT,
     FAN_FRONT as FRONT};
 
 /// Composite the fan in the mock's paint order: the UltraBlur ground (`.ubg`), the scrim
@@ -217,7 +217,7 @@ fn draw(dst: &mut Rgba, src: &Rgba, p: &FanMember) {
         return;
     }
     let (wf, hf) = (dst.w as f32, dst.h as f32);
-    let placed = crate::ui::collection_tile::fan_member(p, wf, hf);
+    let placed = plx_ui::collection_tile::fan_member(p, wf, hf);
     let (hw, hh, cx, cy) = (placed.hw, placed.hh, placed.cx, placed.cy);
     let r = mock_px(MEMBER_RADIUS_MOCK);
     let rim = mock_px(RIM_W_MOCK);

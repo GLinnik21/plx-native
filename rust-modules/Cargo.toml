@@ -1,19 +1,28 @@
 # A cargo workspace with this package as its ROOT; the other members are the storage helper and the
-# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/;
+# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/, ui/, plex/;
 # docs/module-layers.md).
 # The root keeps the literal `version` below (release tooling reads it), `make`/CI run their usual
 # commands from this directory against this package (a bare `cargo test`/`check`/`build` here still
 # means the app only), and the helper is built with an explicit `-p plxnative-storage`. One
 # `Cargo.lock`, one `.cargo/config.toml` and the same target directories serve both.
 [workspace]
-members = ["base", "machine", "net", "platform", "gfx", "storage"]
+members = [
+    "base",
+    "machine",
+    "net",
+    "platform",
+    "gfx",
+    "ui",
+    "plex",
+    "storage",
+]
 resolver = "2"
 
 [package]
 name = "plxnative-modules"
 # THE version, in three places that ci/check-package.py keeps in step: here, pkg/appinfo.json
 # (which the ipk derives its filename and control entry from), and the X-Plex-Version this client
-# reports to both Plex services via src/plex/identity.rs. What the app reports is DERIVED from this
+# reports to both Plex services via plex/src/plex/identity.rs. What the app reports is DERIVED from this
 # rather than equal to it: build.rs publishes `PLX_VERSION`, which is this number exactly for a
 # RELEASE build and the next minor plus `-dev` for every other build, so a working tree does not
 # report itself as the last published release.
@@ -70,10 +79,18 @@ devtools = ["plx_gfx/devtools"]
 # Nothing in the dev loop constrains this: `make run`/`run-stream` touch `/tmp` only to clear and
 # read back the event log, and `tests/run.py` builds with plain `make` — the harness never builds
 # a release binary, so gating the whole surface costs it nothing.
-devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_net/devtriggers", "plx_platform/devtriggers", "plx_gfx/devtriggers"]
+devtriggers = [
+    "plx_base/devtriggers",
+    "plx_machine/devtriggers",
+    "plx_net/devtriggers",
+    "plx_platform/devtriggers",
+    "plx_gfx/devtriggers",
+    "plx_ui/devtriggers",
+    "plx_plex/devtriggers",
+]
 # The one deliberate behavioural difference of dev builds: make main-thread violations LOUDER
 # (abort/warning), never change a code path that succeeds. Dropped by --no-default-features.
-threadcheck = ["plx_base/threadcheck"]
+threadcheck = ["plx_base/threadcheck", "plx_ui/threadcheck"]
 # **Cloud Lab Bridge** — the ring buffer, Blue-button upload and authenticated long-poll command
 # channel for a television in LG Cloud Test Lab, where there is no ssh, no console and no way to
 # download a file. See `rust-modules/src/lab/` and `docs/lab-diagnostics.md`.
@@ -126,7 +143,7 @@ lab-diagnostics = ["plx_base/lab-diagnostics", "plx_net/lab-diagnostics", "plx_p
 # (LG's SDL fork shifts SDL_KeyboardEvent; stock SDL2 does not), and the wayland/glib calls that
 # have no host equivalent. Everything else — all of `ui/`, the whole Plex data layer, the demux
 # orchestration — is compiled identically for both.
-hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_gfx/hostsim"]
+hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_gfx/hostsim", "plx_plex/hostsim"]
 
 # Warnings are ERRORS, for both workspace packages, in every cargo invocation — build, check, test, clippy, the
 # ARM cross-build and the simulator alike. The tree reached zero warnings in all four
@@ -187,6 +204,13 @@ plx_gfx = { path = "gfx" }
 # The net layer (ci/module-layers.ini `[net]`): libcurl HTTPS and the plaintext socket stream. Its
 # fixtures need `rcgen` and `rustls`, which therefore left this crate's dev-dependencies.
 plx_net = { path = "net" }
+# The ui layer (ci/module-layers.ini `[ui]`): the UI library, with no application type in it. It
+# owns the QR encoder, so `qrcodegen` left this manifest.
+plx_ui = { path = "ui" }
+# The plex layer (ci/module-layers.ini `[plex]`): the typed Plex API, the session store, the grant
+# and probe logic and `http`, the one request door. It reports the app version it is handed
+# (`plex::identity::set_version`) rather than reading `PLX_VERSION`, which reaches one crate only.
+plx_plex = { path = "plex" }
 # safe pure-Rust JPEG/PNG decoders — replaces vendored stb_image.h (~8k lines C)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # raw socket/libc FFI for the stream module (correct constants + struct layouts)
@@ -194,9 +218,8 @@ libc = "0.2"
 # JSON parsing for the pms module (replaces the C's hand-rolled string scrape)
 # std exposes the writer API used to bound manifest encoding before any filesystem write.
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
-# derive(Deserialize) for the typed plex API response models (src/plex/models.rs)
+# derive(Deserialize) for the typed plex API response models (plex/src/plex/models.rs)
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
-qrcodegen = "=1.8.0"
 
 [profile.release]
 opt-level = 2
@@ -214,3 +237,7 @@ plx_platform = { path = "platform", features = ["test-support"] }
 plx_gfx = { path = "gfx", features = ["test-support"] }
 # Likewise the net layer's loopback PMS fixtures, `keypin`/`resolve` seams and canned responses.
 plx_net = { path = "net", features = ["test-support"] }
+# Likewise the ui layer's seams (`table::assert_no_fit_failures`, `draw_census`, `tex::reset_for_test`, ...).
+plx_ui = { path = "ui", features = ["test-support"] }
+# Likewise the plex layer's session fixtures and `*_for_test` seams.
+plx_plex = { path = "plex", features = ["test-support"] }

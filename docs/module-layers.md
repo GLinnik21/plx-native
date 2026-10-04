@@ -8,11 +8,12 @@ L14, which a split hides from them, and the gate does not check impl coherence. 
 off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
 entries are gone, and the gate fails on any reference from outside the port to a member of it. It
 is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
-up the split. **The split has started: `base`, `machine`, `platform`, `gfx` and `net` are their own
-crates, `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx` and `plx_net`** (`rust-modules/base/`,
-`machine/`, `platform/`, `gfx/` and `net/`; "Split 1: base", "Split 2: machine", "Split 3:
-platform", "Split 4 (gfx)" and "Split 5 (net)" below); the other nine layers are still modules of
-`plxnative-modules`.
+up the split. **The split is half done: seven of the fourteen layers, `base`, `machine`, `platform`, `gfx`, `net`,
+`ui` and `plex`, are their own crates, `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`,
+`plx_ui` and `plx_plex`** (`rust-modules/base/`, `machine/`, `platform/`, `gfx/`, `net/`, `ui/` and
+`plex/`; "Split 1: base" to "Split 7 (plex)" below, and "Splits 6 and 7 together" for how the last
+two were combined); the other seven (`telemetry`, `data`, `session`, `media`, `appkit`, `screens`,
+`app`) are still modules of `plxnative-modules`.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
@@ -140,7 +141,7 @@ Four choices that were not obvious:
   it can become a crate on top. L15b is the open step that makes it a port another OS could fill.
 
 This agrees with the hand-written rules already gated by `ci/check-deps.sh` (the tables in
-`ui/CLAUDE.md` and `screens/CLAUDE.md`). `ui` names no application type, `screens` never names
+`rust-modules/ui/src/CLAUDE.md` and `screens/CLAUDE.md`). `ui` names no application type, `screens` never names
 `app`, and `stores` names `ui::machine`, which is now its own layer. It is stricter in two places.
 The six files of the `machine` layer, and `overdraw.rs` in `gfx` (it was `ui/overdraw.rs`), may no
 longer name the rest of `ui/`, and the machine files may also not name `gfx`, `text` or `i18n`, which the `ui/` row of
@@ -173,10 +174,8 @@ SET of top-level modules on the big cycle and fails when a module joins it, so i
 forming between modules this config puts in one layer. This gate is the fine one: it checks each
 reference against the target graph. They agree on direction. When a step shrinks the cycle, run
 `ci/check-module-cycle.py --update-baseline` in the same change. After L14 its baseline held 13
-modules (44 at baseline), and `ci/module-cycle-baseline.json` has the current set. It sees `ui` and
-`diag` as one node each, so the machine-layer and
-gfx-layer parts of `ui` and the base-layer parts of `diag` still close a cycle there with the
-layers that may name them. This gate, which sees the members, finds no upward reference.
+modules (44 at baseline), and `ci/module-cycle-baseline.json` has the current set. It sees `diag` as one node, so the base-layer parts of `diag` still close a cycle there with the
+layers that may name them (`ui` was the other such node until it became `plx_ui` and left that graph). This gate, which sees the members, finds no upward reference.
 
 Test code is gated too. After the split a crate's `#[cfg(test)]` code sees only that crate and its
 dependencies. A test that assembles `Bridge`, `AppHost` or a screen from a low layer is an
@@ -516,7 +515,7 @@ edit 39.0 s (min 33.4), and the unit suite 60.9 s with the same 5603 tests (157 
 That is the expected size, and it is small: `machine` is 4.1k of 450k lines, so the split buys the
 couple of seconds that crate cost per edit to everything above it. The gain is in the minima (the
 application edit is 5.7 s faster), not in the noisy medians; the crates that carry the line count
-(`gfx`, `plex`, `ui`, `screens`) are still inside the application crate.
+(`gfx`, `plex`, `ui`, `screens`) were still inside the application crate at that point.
 
 ### Split 3: platform
 
@@ -813,6 +812,246 @@ tests (the base moved: 3 new Home tests). Every edit is 1.4 to 2.4 s faster, whi
 450k lines leaving the application crate buys; the application crate is still about 27 s of every
 row. The unit suite is 5 s slower: six test binaries are linked and started where four were, and
 the two new ones link SDL/GL (`plx_gfx`) and build the TLS fixtures (`plx_net`).
+
+### Split 6 (ui)
+
+`ui` was extracted sixth: `rust-modules/ui/` is the workspace member `plx_ui` (an `rlib`,
+`uses = base machine platform gfx`; the manifest depends on all four), holding everything that was
+`rust-modules/src/ui/`: 59k lines, about sixty modules, the widgets, containers, frame, focus engine,
+recorder and the fixtures they are tested against. Nothing under `ui/` belongs to a layer above it
+(`appkit` and `screens` are top-level modules), so nothing stayed behind and the application has no
+`mod ui;` any more. `ui/mod.rs` is `rust-modules/ui/src/lib.rs`, and `crate::ui::theme` is
+`plx_ui::theme` (153 application files, by script). The crate owns the QR encoder, so
+`qrcodegen` left the application's manifest; its features are `devtriggers` and `threadcheck`
+(forwarded) and `test-support` (new, enables the four lower layers').
+What it taught beyond the recipe and Splits 1 to 5:
+
+- **A layer that is one module needs a mount, not a root.** `ci/module_graph.py` read every layer
+  crate's `lib.rs` as "the crate root again", which is right for `base` or `machine` (many
+  top-level modules) and wrong for `ui`: its `lib.rs` holds items (`Painter`, `draw_census`,
+  `Zoom`, ...) that belong to the `ui` layer, and listing 63 top-level members instead would have
+  moved those items into `crate`, the application's layer. The manifest now says
+  `[package.metadata.plx] mount = "ui"`; the analyzer resolves `crate::`/`$crate::` inside the crate
+  and `plx_ui::` outside it under module `ui`, so `[ui] members = ui` is unchanged and `--report`
+  lists `ui::table::assert_no_fit_failures`, not `table::...`. `ci/test_module_graph.py` pins it.
+  A later layer whose crate is one module (`session`'s `auth`, if it splits alone) uses the same key.
+- **`--report`'s 12 items were again a fraction of the `cfg(test)` surface.** The compiler found the
+  other named items (about forty, all `pub fn` helpers of `table`, `panel_motion`, `rec`, `widgets`,
+  ...) as soon as the application's tests built: `cargo check --lib --tests` failed with 353 errors
+  before the gating and passes after. What it cannot find is behaviour. Six places in `ui` switch on
+  `cfg(test)`/`cfg(not(test))` and a dependent's tests would have run the shipping arm: the scissor
+  call of `screen::gl_scissor`, `underlay::upload`, the text-measure closure of
+  `widgets::value_lines`, the field kick in `containers::modal`, the `FrameCache` that
+  `popover::host` is built against, and the recording hooks of `draw_census` in `lib.rs`. Each is `cfg(any(test, feature =
+  "test-support"))` now, the shipping arms `cfg(not(any(...)))`. The last one lived inside
+  `popover_host_tests.rs`, a test file; its no-GL stand-in moved to `popover_host_mock.rs` so the
+  dependents get it without the tests. `fixture.rs` and `testapp.rs` are whole-file `#![cfg(test)]`
+  and are `test-support` too (the application's screen tests are built on `FixtureHost`).
+- **A layer's test binary has to link what it reaches.** As in `gfx`, the drawing tests make GL, SDL
+  and nanosvg symbols live, and a `cargo:rustc-link-arg` reaches only the package that prints it,
+  so `plx_ui` has its own `build.rs` that includes the shared `build_support/host_link.rs`. Without
+  it `cargo test -p plx_ui` fails to link on `_svg_rasterize_rgba`. It links nothing on the television.
+- **Six tests read sources through `CARGO_MANIFEST_DIR`, and the manifest directory moved a level
+  down.** Five failed loudly on the first run (`fixture`'s video-plane and loop-source pins,
+  `press`'s ownership test, `containers::tests::no_surface_states_its_own_dim_weight`,
+  `widgets_glass_budget_tests`); each reads `../` now, because they inspect the application's
+  `appkit/` and `screens/` too. The sixth would have passed silently:
+  `player::report`'s "no `fetch_update`" walk only has to find 50 files, and the 63 files of `ui`
+  left its root without any failure. It walks `ui/src` as well now; the eventlog scrub test gained
+  `../ui/src` for the same reason. Grep for `CARGO_MANIFEST_DIR` and `read_dir` in every moved file.
+  A seventh is a string rather than a path: `press`'s "App owns Input" assertion greps
+  `app/mod.rs` for the spelling `input: crate::input::Input`, which the script rewrote in the
+  assertion (to `crate::input`, wrong) and in the application (to `plx_ui::input`, right).
+- **`$crate` and the two exported macros.** `focusable_via_composed!` and `focusable_via_view!`
+  are `#[macro_export]`, so they live at the root of `plx_ui` and the six invocations in the
+  application spell `plx_ui::focusable_via_view!`; a `crate::focusable_via_view!` left in the application is
+  "cannot find macro in the crate root" plus six unsatisfied `Focusable` bounds. Their bodies name
+  `$crate::screen::...` and `plx_machine::machine::...`: the second works because every crate that
+  invokes them depends on `plx_machine`, which `ci/module-layers.ini` guarantees for `appkit` and
+  `screens`. `include_str!("../../../assets/icons/...")` needed no change: `rust-modules/src/ui/`
+  and `rust-modules/ui/src/` are the same depth below the repository root.
+- **`pub(crate)` became `pub` across the crate, including `pub mod` for every module** (a private
+  module of a `pub` item is still dead code to rustc once the item has no outside caller), and
+  `cargo check -p plx_ui --features test-support` is clean, so no `pub` item hides dead code under
+  the feature. No `#[expect(dead_code)]` became unfulfilled and no orphan-rule hazard appeared:
+  the traits in `plx_ui` (`Focusable`, `Part`, `Screen`, `Adapters`) are implemented in the
+  application for application types, which is legal.
+- **Intra-doc links to layers above lose their brackets.** The `[`crate::appkit::...`]` and
+  `[`crate::screens::...`]` links in the moved comments name modules `plx_ui` cannot see; the script
+  strips the brackets (the gfx split did the same) so the names stay readable.
+- **Gates scoped by the path or the spelling of the moved files.** `ci/check-deps.sh` has
+  `SRC_UI`: the `wall`, `mutators`, `sessionwrite`, `uistorage`, `ladder` and `textmeasure`-seam
+  rules named `$SRC/ui`, and the whole-tree rules (`libm`, `ticks`, `effect`, `legacy`, `frame`,
+  `threads`, `tmppath`, `dt`, `sink`, `route`) scanned `$SRC` and now also `$SRC_UI`. Two of them
+  would have gone silent rather than red: `nav` grepped for `crate::ui::nav::` in `screens/` (the
+  spelling is `plx_ui::nav::` now) and `mutators` masks a screen's own `crate::ui::x::y(` call
+  before matching. Both accept either spelling. Proven by planting a violation in a copy of the
+  file and reading the gate go red, then restoring it byte for byte: `wall` (an `Instant::now()` in
+  `ui/src/dwell.rs`), `uistorage` (`plx_platform::storage::` in `fmt.rs`), `nav`
+  (`plx_ui::nav::` in `screens/about_panel.rs`), `textmeasure` (`plx_gfx::text::text_width(` in
+  `fmt.rs`), `sessionwrite` and `ticks`. `ci/check-statics.sh` named `$SRC/ui` for its gated paths
+  and fails loudly on a missing one (it did not need the fix to be noticed, which is the better way
+  to be wrong); `ci/check-localization.py` read `screens`, `ui` and `appkit` under `rust-modules/src`
+  and would have scanned 63 files fewer without a word, so it reads `rust-modules/ui/src` as a
+  layer source (and the constants table); `ci/allow/{libm,statics}.txt` name the new paths.
+- **Tooling that knows the tree's shape**: the `-p` lists (`... -p plx_gfx -p plx_net -p plx_ui`)
+  in the Makefile, the workflow, `tools/build-bench.py` and the tests that pin them;
+  `--src rust-modules/ui/src` for the line budget (and the budget's description);
+  `RUST_INPUTS`; `tools/cargo-seed.py` keys on the new manifest; `ci/test_no_host_staticlib.py` holds
+  the crate to `rlib`; `ci/test_build_not_always_dirty.py` fails on `plx_ui` as well (its build
+  script prints `rerun-if-changed` only); the release-configuration hook treats an edit in `ui/src`
+  as a shipping-feature risk; the harness's private tree copy and the `fpflags` rule include the
+  crate's `Cargo.toml` and `build.rs`; `tests/test_harness.py`'s `rec.rs` schema read follows the
+  file; `ui/src/CLAUDE.md` moved with the code and `AGENTS.md`/`docs/agent-reference.md` point at
+  it. `make build-bench` has a `ui` scenario ("Edit leaf (plx_ui dwell.rs)") and its `hub`
+  scenario, which appended a line to `ui/mod.rs`, appends to `plx_ui`'s `lib.rs` now, so it
+  measures the same dependency (everything in the application names the crate root).
+- **The module-cycle baseline is re-recorded with the wave.** The cycle is the same 8 modules; `ui`
+  left the application's graph (with `plex` and `http` of Split 7: 23 modules outside the cycle,
+  where the baseline said 26).
+
+### Split 7 (plex)
+
+`plex` was extracted seventh (Split 6 is `ui`, above; the two were made in parallel): `rust-modules/plex/` is the
+workspace member `plx_plex` (an `rlib`, `uses = base machine platform net`), holding `plex` (the
+typed Plex API, the session store, `grant`, `probe`, `identity`, with its `CLAUDE.md`) and `http`
+(the one request door). The members kept their names, so a path is `plx_plex::plex::session::load`
+and `plx_plex::http::...`, and every `crate::plex::` *inside* the moved files stayed valid; only the
+3 897 references in 213 application files changed, by `split-plex-rewrite.py` (`crate::plex` and
+`crate::http` to `plx_plex::plex` and `plx_plex::http`, `pub(crate)` to `pub`). The crate
+depends on `plx_base`, `plx_machine`, `plx_platform` and `plx_net`, owns no build script and links
+nothing. Features: `devtriggers` and `hostsim` are forwarded, `test-support` is new and enables the
+four lower layers'. Its 458 tests run in their own binary. What it taught beyond the recipe:
+
+- **`--report`'s 21 items were the smaller half of the test seam.** Most of `plex::session`'s
+  behaviour hangs on `cfg(test)`: the redirected store file (`TEST_FILE`, `auth_paths`,
+  `fallback_file`), the per-thread cache read and clock hooks, the `cfg(not(test))` shipping arms
+  beside them (`read_live_locked`, `Instant::now`, the migration candidates) and the test-mode
+  `testlock` assertions in `grant` and `servers`. A dependent's tests build `plx_plex` without
+  `cfg(test)`, so every one of them would have run in its shipping form: a test through
+  `TempSession` would have written the real credential store. The rule applied is mechanical, not
+  per item: **every `test` inside any `cfg(..)` or `cfg!(..)` of the layer's non-test files became
+  `any(test, feature = "test-support")`** (94 lines by `split-plex-gate.py`, which skips only
+  `mod tests` / `mod *_tests` / `mod test_support` and the wholly-test files), so a dependent's tests
+  get exactly the behaviour the layer had under `cfg(test)`. Two forms hid from the first pass:
+  `cfg!(all(.., not(test)))` (a *macro*, in `session.rs` and `install_preferences.rs`) and seven
+  `#[cfg(all(` attributes in `session/persistence.rs` whose `not(test)` sits alone on its own line,
+  which a per-line rewrite cannot see. After any such rewrite, grep for a bare `not(test)`.
+- **This is the security-relevant seam, so the shipping build was checked for it.** With the
+  feature off, `cargo check -p plx_plex --lib` and the application's `--lib` (default features and
+  `--no-default-features`, host and `arm-unknown-linux-gnueabi`) compile and the `*_for_test` seams
+  do not exist: the symbols are absent from the rlib (`TempSession`, `redirect_for_test`,
+  `CACHE_READ_FOR_TEST` found by `strings` only in the `test-support` build). The feature is enabled
+  from `[dev-dependencies]` only, which cargo does not apply to a normal build.
+- **An orphan-rule hazard did appear: an inherent `impl` in a higher layer.** `route/decision.rs`
+  had `impl Quality { ceiling, label, from_index, index }` where `Quality` is `plex`'s
+  `PlaybackQuality`, legal in one crate and E0116 in two. `ceiling` and `label` (which build a
+  `plex::Ceiling` and a localized row) moved onto `PlaybackQuality` in `plex::session`, beside its
+  other methods; `from_index` and `index` read the route-owned `QUALITY_LADDER`, so they became
+  private free functions of `decision.rs` (`quality_from_index`, `quality_index`). Look for `impl X`
+  without a trait in the layers above, not only for trait impls.
+- **A `cargo:rustc-env` reaches one crate, and the version is the thing that needed it.**
+  `identity.rs` reported `env!("PLX_VERSION")` as `X-Plex-Version` and in the `User-Agent`.
+  Re-deriving the rule in a second build script would be a third copy of it (`build.rs`,
+  `ci/version_rule.py`). The application hands it in as Split 3 did for `storage::diagnostics`:
+  `plx_plex::plex::identity::set_version(env!("PLX_VERSION"))`, the first line of
+  `enter_application`, and `identity::VERSION` is `identity::version()`. Unset, a `test-support`
+  build answers `0.0.0-test` and a shipping build panics in every profile (the television's build is
+  `--release`, where a `debug_assert!` is compiled out), so a missed wiring cannot report a
+  placeholder to Plex; `app::boot::seam_order_tests` holds the hand-in as the first statement. `ci/check-package.py` still reads the three
+  copies of the number (it never read the Rust constant); its comments now say the crate reports
+  the number it is handed. The one test that graded the derivation
+  (`version_is_the_package_or_the_next_minor_dev`, with its `RELEASE_LINE` reader) moved to
+  `release_line::tests`, because `CARGO_PKG_VERSION` and `PLX_RELEASE` are the application crate's.
+- **A hidden dependency on a dependency's default features.** `plex::session`'s key-mode tests call
+  `plx_net::net::keypin::is_latched`, which `plx_net` gates `any(test, feature = "devtriggers")`.
+  The application's tests always had `devtriggers` (a default feature); `plx_plex` has none, so
+  its own tests did not compile. The two keypin readers are `test-support` too now. Expect this
+  whenever a layer's tests reach a lower layer's dev-trigger readers.
+- **Fixtures by relative path.** `session/migration_tests.rs` `include_str!`s
+  `tests/fixtures/persistence/*` four directories up; the crate is one directory deeper (five).
+  `replay_manifest_session_is_byte_stable` reads `tests/fixtures/replay` through
+  `CARGO_MANIFEST_DIR/..`, now `../..`.
+- **Gates.** `ci/check-deps.sh` reads `SRC_PLEX` wherever it reads `SRC_NET` (the whole-tree rules:
+  libm, ticks, effect, legacy, dt, frame, spawn, tmppath) and `wholly_test_files` classifies the
+  crate's test files. Proven by temporary violating edits rather than by reading: an
+  `SDL_GetTicks(` in `plex/src/http.rs` fails `ticks`, and a `log(&format!(.., d.title))` in
+  `plex/src/plex/retry.rs` fails the eventlog scrub scan (its root list gained `../plex/src`; these
+  are the files that handle tokens and URLs). The `-p` lists gained `-p plx_plex` (Makefile,
+  workflow, `tools/build-bench.py` and the tests that pin them, the docs that quote them);
+  the budget step gained `--src rust-modules/plex/src`; `RUST_INPUTS`, the harness's `TREE_INPUTS`
+  and the `fpflags` file list, `tools/cargo-seed.py`, `ci/test_no_host_staticlib.py`, the
+  release-configuration hook and `make build-bench` (scenario "Edit leaf (plx_plex retry.rs)")
+  know the crate. `module-cycle` is the same 8-module cycle; with Split 6 the baseline records 23 modules outside it,
+  and the `http`/`plex` pair left its list of smaller cycles (both are inside `plx_plex`).
+- **FFI and the final link are untouched.** The layer has no `extern "C"`, `#[link]` or `dynlib!`;
+  `plx_plex` compiles for the ARM target (`cargo check --target arm-unknown-linux-gnueabi --lib`
+  with and without default features).
+
+### Splits 6 and 7 together: what the combination needed, and the measurement
+
+The two splits were made in parallel from the same commit and landed as one change, on a `main`
+that moved twice meanwhile (four changes, three of them to Home). Combining them:
+
+- **The files both touched are lists again.** 42 files conflicted: the same 22 lists as in Splits 4
+  and 5 plus 20 source files in which one lane rewrote `crate::ui::` and the other `crate::plex::`
+  on the same line (and three doc comments in the moved `plex` files that named `crate::ui`). The
+  token-level three-way merge resolved all but two prose hunks; it left two list joins that were
+  not valid TOML (`"plx_ui/devtriggers",\n, "plx_plex/devtriggers"]`), so read every merged
+  manifest. Both rewrite scripts were re-run on the result and again after each move of `main`: they
+  rewrote the `crate::ui`/`crate::plex` paths `main` had added to `screens/home/mod.rs` since, and
+  where `main` conflicted with the rewritten file its version was taken and rewritten again.
+- **The gates still fire in the combination**, proven by temporary violating edits: `plx_ui`
+  naming `plx_plex`, `plx_plex` naming `plx_ui`, and `plx_platform::webos`/`::keymanager` named
+  from `ui/src`, `plex/src` and `coldstart.rs` each fail `ci/check-module-layers.py` (the mounted
+  crate is reported as `[ui]`); `nav`, `textmeasure` (in `ui/src` and in the application), `wall`,
+  `uistorage`, `ticks`, `threads`, `tmppath` and `effect` fail `ci/check-deps.sh` from the new
+  crates; an English literal in `ui/src/dwell.rs` fails `ci/check-localization.py`; a
+  `log(&format!(.., d.title))` in `ui/src`, `plex/src` or `screens/home` fails the eventlog scrub
+  scan. A reference from `plx_ui` to the application is not the layer gate's to catch: the crate
+  has no such dependency, so it does not compile.
+- **One gate had gone quiet, and it was neither lane's own.** `ci/check-localization.py` reads a
+  fixed list of product files, and `route/decision.rs` was on it for the quality row's text. The
+  plex split moved that text (`PlaybackQuality::label`) into `plex/session.rs`, which the gate did
+  not read, and its constants table read `platform`, `gfx` and `ui` only. It reads
+  `plex/src/plex/session.rs` and every layer crate's constants now. When an inherent method moves
+  down a layer, look for the gates that listed its old file.
+- **The security-relevant seams were checked in the artifact, not in the manifest.** In a host
+  release build of the application with `--no-default-features`, and in the ARM shipping archive
+  itself (`PLX_RELEASE=1 cargo rustc --release --target arm-unknown-linux-gnueabi --lib
+  --crate-type staticlib --no-default-features`), `nm` and `strings` find none of `TempSession`,
+  `redirect_for_test`, `with_io_for_test`, `invalidate_for_test`, `reads_for_test`,
+  `store_for_test`, `loopback_pms`, `test_ca_bundle`, `is_latched` or `keypin::holds`; with default
+  features only the two keypin readers exist (they are the `tls-selftest` dev trigger's, as before
+  the split); a `--features test-support` build of `plx_plex` has all of them, which is what shows
+  the search can find them. `cargo tree -e normal -f '{p} [{f}]'` lists no `test-support` on any
+  crate for either feature set (`-e normal,dev` lists it 28 times): with `resolver = "2"` a
+  `[dev-dependencies]` feature reaches test and `--tests` builds only.
+- **An unset version is a panic, not a placeholder.** Split 7 left `identity::version()` answering
+  `0.0.0-unset` behind a `debug_assert!`, and the television's build is `--release`. Nothing can
+  reach it today (`set_version` is the first statement of `enter_application`, which has one
+  caller), and a source-order test now holds that; if it is ever reached, the process stops instead
+  of labelling itself with a version no release had.
+- **The simulator draws the same screens.** `plxnative-sim` against `tests/mock_pms.py` (the seed
+  library, the placeholder token, plex.tv replaced by the mock) settles on Home and on a library
+  page, and the captures match the same captures from `main` apart from the frame-pacing tick.
+
+Measured effect (`make build-bench`, same machine, 3 interleaved runs each, non-incremental; other
+lanes were building, both sets carry load warnings, so read the minima). Before, on `cab5834f`: an
+edit in `plx_base` 35.3 s (min 35.1), in `plx_machine` 34.6 s (min 34.6), in `plx_platform` 34.6 s
+(min 34.0), in `plx_gfx` 33.0 s (min 32.8), in `plx_net` 33.0 s (min 32.0), of the application
+crate 32.4 s (min 31.5), the hub edit (`ui/mod.rs`) 32.3 s (min 31.8), the unit suite 76.0 s (min
+75.2) with 5613 tests. After (measured before `main`'s second move, which adds Home tests): an edit in `plx_base` 30.9 s (min 27.8), in `plx_machine` 27.9 s
+(min 27.2), in `plx_platform` 28.1 s (min 26.7), in `plx_gfx` 25.3 s (min 24.2), in `plx_net`
+26.3 s (min 24.2), in `plx_ui` 24.4 s (min 23.7), in `plx_plex` 24.7 s (min 24.1), of the
+application crate 21.8 s (min 21.6), the hub edit (`plx_ui`'s `lib.rs`) 23.8 s (min 23.6), and the
+unit suite 72.0 s (min 71.7) with 5614 tests (the one added is the hand-in order test). An
+application edit is about 10 s faster and an edit in a layer 6 to 8 s: 92k of 450k lines (`ui` 59k, `plex` 33k) no longer
+recompile behind it. The unit suite did not grow this time, with eight test binaries where there
+were six: the row is the run of a built suite, cargo runs the binaries one after another, and the
+time is the tests themselves (per binary, one run: the application 59.9 s before and 43.8 s after,
+`plx_plex` 9.3 s, `plx_gfx` 6.1 s, `plx_ui` 5.3 s, the other four under 3 s together), not linking
+or starting them.
 
 ## Limits of the analysis
 

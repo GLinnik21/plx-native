@@ -1,9 +1,9 @@
 //! Search's document geometry. Both engine placement and rendering use these expressions.
 use crate::search::Kind;
-use crate::ui::card_row::{self, RowStyle};
-use crate::ui::consts::{CARD_H, CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W};
+use plx_ui::card_row::{self, RowStyle};
+use plx_ui::consts::{CARD_H, CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W};
 use plx_machine::machine::GroupId;
-use crate::ui::Rect;
+use plx_ui::Rect;
 
 /// `pub(crate)`, alongside this module itself (`screens/search/mod.rs`'s `pub(crate) mod layout`)
 /// so `ui::consts`'s overscan-rects audit can reach it as `crate::screens::search::layout::FIELD`
@@ -20,7 +20,7 @@ pub(super) const SCOPE_Y: f32 = FIELD.y + FIELD.h + 12.0;
 pub(crate) const CONTENT_TOP: f32 = 300.0;
 pub(super) const HEAD_TO_ROW: f32 = 60.0;
 pub(super) const KEYBOARD_H: f32 = 324.0;
-pub(super) const SCOPE_H: f32 = crate::ui::theme::size::CAPTION as f32 * 1.35;
+pub(super) const SCOPE_H: f32 = plx_ui::theme::size::CAPTION as f32 * 1.35;
 pub(super) const CLEAR_H: f32 = 60.0;
 pub(super) const RECENT_CAP: usize = crate::search::recents::CAP;
 
@@ -53,7 +53,7 @@ pub(super) fn block_h(kind: Kind, expansion: f32) -> f32 {
     HEAD_TO_ROW + style(kind).h + caption_band(expansion)
 }
 pub(super) fn caption_band(expansion: f32) -> f32 {
-    crate::ui::consts::UNDER_LABEL_AIR + card_row::under_band(expansion)
+    plx_ui::consts::UNDER_LABEL_AIR + card_row::under_band(expansion)
 }
 pub(super) fn top(kinds: &[Kind], index: usize, expansion: impl Fn(usize) -> f32) -> f32 {
     CONTENT_TOP
@@ -82,21 +82,21 @@ pub(super) fn reveal(scroll: f32, kinds: &[Kind], focused: usize) -> f32 {
 pub(super) fn recent(slot: usize, scroll: f32) -> Rect {
     Rect::new(
         MARGIN_X,
-        CONTENT_TOP + crate::ui::table::HDR_H + slot as f32 * crate::ui::table::ROW_H - scroll,
+        CONTENT_TOP + plx_ui::table::HDR_H + slot as f32 * plx_ui::table::ROW_H - scroll,
         820.0,
-        crate::ui::table::ROW_H,
+        plx_ui::table::ROW_H,
     )
 }
 pub(super) fn clear(terms: usize, scroll: f32, measure: &dyn plx_machine::machine::Measure) -> Rect {
-    let width = crate::ui::widgets::Button::pill_w_measured(
+    let width = plx_ui::widgets::Button::pill_w_measured(
         plx_platform::i18n::msg::browse_search_clear_c(),
-        crate::ui::theme::size::BODY,
+        plx_ui::theme::size::BODY,
         false,
         false,
         measure,
     );
     Rect::new(
-        MARGIN_X + crate::ui::table::CONTENT_X,
+        MARGIN_X + plx_ui::table::CONTENT_X,
         recent_block_bottom(terms, scroll) - CLEAR_H,
         width,
         CLEAR_H,
@@ -104,7 +104,7 @@ pub(super) fn clear(terms: usize, scroll: f32, measure: &dyn plx_machine::machin
 }
 
 pub(super) fn recent_block_bottom(terms: usize, scroll: f32) -> f32 {
-    recent(terms.min(RECENT_CAP), scroll).y + crate::ui::theme::space::MD + CLEAR_H
+    recent(terms.min(RECENT_CAP), scroll).y + plx_ui::theme::space::MD + CLEAR_H
 }
 
 pub(super) fn empty_band(editing: bool) -> Rect {
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn the_reserved_caption_band_holds_the_block_the_shared_component_draws() {
-        let drawn = crate::ui::card_row::TileLabel::height(true);
+        let drawn = plx_ui::card_row::TileLabel::height(true);
         assert!(
             drawn <= caption_band(1.0),
             "the label block draws {drawn}px into a band of {}px",
@@ -161,9 +161,9 @@ mod tests {
                 i - 1
             );
         }
-        assert_eq!(block_h(Kind::Movie, 1.0), crate::ui::consts::ROW_PITCH);
-        assert_eq!(block_h(Kind::Show, 1.0), crate::ui::consts::ROW_PITCH);
-        assert_eq!(block_h(Kind::Collection, 1.0), crate::ui::consts::ROW_PITCH);
+        assert_eq!(block_h(Kind::Movie, 1.0), plx_ui::consts::ROW_PITCH);
+        assert_eq!(block_h(Kind::Show, 1.0), plx_ui::consts::ROW_PITCH);
+        assert_eq!(block_h(Kind::Collection, 1.0), plx_ui::consts::ROW_PITCH);
         assert_eq!(
             block_h(Kind::Episode, 1.0),
             HEAD_TO_ROW + 236.0 + caption_band(1.0)
@@ -263,7 +263,7 @@ mod tests {
         let kbd_top = SCR_H - KEYBOARD_H;
         let clearance = kbd_top - recent_block_bottom(RECENT_CAP, 0.0);
         assert!(
-            clearance >= crate::ui::theme::space::LG,
+            clearance >= plx_ui::theme::space::LG,
             "a full block ends at {} and the keyboard starts at {kbd_top} — {clearance}px",
             recent_block_bottom(RECENT_CAP, 0.0)
         );

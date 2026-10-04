@@ -270,7 +270,7 @@ STANDARD hub rather than forwarding it as-is** (issue #12, investigated 2026-09-
 UI showed some hub titles in Belarusian and others in Russian/English on one Home screen).
 `plex::client::headers`/`pms_headers` still send the literal selected UI tag (`en`/`es`/`be` —
 `identity::language()` → `i18n::current().language().tag()`) on **every** PMS operation, hubs
-included (`rust-modules/src/plex/client.rs`'s
+included (`rust-modules/plex/src/plex/client.rs`'s
 `pms_headers_carry_the_literal_selected_ui_language_be_included` test pins that for all three
 shipped tags) — that part of the earlier record stands. What changed is that neither
 `screens/home/mod.rs` nor a library's own browse grid renders `hub.title` unconditionally:
@@ -800,7 +800,7 @@ GET /photo/:/transcode?width={w}&height={h}&minSize=1&url={urlencoded thumb-or-a
     [&format=png]&X-Plex-Token=...
 ```
 
-This is exactly what `plex::Client::image_transcode_path` (`rust-modules/src/plex/transcoder.rs`)
+This is exactly what `plex::Client::image_transcode_path` (`rust-modules/plex/src/plex/transcoder.rs`)
 builds; no other image request exists. `url` is the URL-encoded value of `thumb`/`art`/
 `grandparentThumb` (e.g. `%2Flibrary%2Fmetadata%2F1%2Fthumb%2F1778526065`). `format=png` is sent
 only for a clearLogo, which needs its alpha. **No `upscale` parameter is sent.**
@@ -1041,7 +1041,7 @@ also the one whose exact effect this repo has **not** measured. Settling that ne
 against a PMS, which nobody has run.
 
 **What THIS app sends is a subset of the table, and the two must not be read as one.**
-`rust-modules/src/plex/client.rs::playback_identity` (constants in `plex/identity.rs`) always emits
+`rust-modules/plex/src/plex/client.rs::playback_identity` (constants in `plex/identity.rs`) always emits
 nine fields: `X-Plex-Client-Identifier`, `-Product`, `-Version`, `-Platform`, `-Platform-Version`,
 `-Device`, `-Device-Name`, `-Model` and `-Provides`, plus the token. The central PMS request choke
 point sends **`X-Plex-Language` as a header** on every operation, using the UI language resolved

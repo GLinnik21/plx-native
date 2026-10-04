@@ -4,7 +4,7 @@
 use super::*;
 use crate::auth::owner::ReplyTo;
 use crate::auth::{Phase, Picker, SessionCmd, SessionInit};
-use crate::plex::session::{self, HomeUserRef, ServerRef, Session, SourceRef, UserRef};
+use plx_plex::plex::session::{self, HomeUserRef, ServerRef, Session, SourceRef, UserRef};
 
 fn stored(protected: bool) -> Session {
     let uuid = if protected { "adult" } else { "kid" };
@@ -178,7 +178,7 @@ fn back_out_of_the_boot_picker_refuses_a_pin_protected_profile_and_nothing_else(
 struct ResourceCleanup<'a>(&'a plx_base::task::MainThread);
 impl Drop for ResourceCleanup<'_> {
     fn drop(&mut self) {
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         session::ProfilePublisher::new(self.0).publish(None, 0);
     }
 }
@@ -189,7 +189,7 @@ fn live_detachment() {
     let tmp = session::TempSession::new("picker-owner-detachment");
     let _cleanup = ResourceCleanup(&mt);
     tmp.assert_only_target();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let saved = stored(true);
     session::save(&saved);
     let disk = std::fs::read(tmp.path()).unwrap();
@@ -340,7 +340,7 @@ fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
     let mut rig = rig(account);
     // Production's dispatcher (`app/boot.rs`): the PageDip route transition, not the tests' cut.
     let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
-        crate::ui::containers::transition::PageDip::new(),
+        plx_ui::containers::transition::PageDip::new(),
     ));
 
     // The QR screen was the root before the sign-in completed.
@@ -416,7 +416,7 @@ fn login_phase_follower_settles_and_does_not_recycle_the_qr_screen() {
     let mut rig = Bridge::for_session_test(init);
     // Production's dispatcher (`app/boot.rs`): the PageDip route transition, not the tests' cut.
     let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
-        crate::ui::containers::transition::PageDip::new(),
+        plx_ui::containers::transition::PageDip::new(),
     ));
 
     // `app/boot.rs`: the QR screen is minted as the root once, before the loop's first iteration.

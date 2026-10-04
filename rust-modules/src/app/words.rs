@@ -69,7 +69,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
 #[cfg(test)]
 pub(crate) fn every_route() -> [AppArg; 10] {
     use crate::screens::registry::ContentArg;
-    let sid = crate::plex::ServerId::UNSET;
+    let sid = plx_plex::plex::ServerId::UNSET;
     [
         AppArg::Login,
         AppArg::Profiles,
@@ -80,7 +80,7 @@ pub(crate) fn every_route() -> [AppArg; 10] {
         AppArg::Content(ContentArg::Person {
             sid, key: String::new(), guid: String::new(), name: String::new(), thumb: String::new(),
         }),
-        AppArg::Content(ContentArg::Collection(crate::plex::collections::CollectionRef::by_tag(sid, 0, 1, ""))),
+        AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_tag(sid, 0, 1, ""))),
         AppArg::Search,
         AppArg::Player,
     ]
@@ -98,7 +98,7 @@ pub(crate) fn every_route() -> [AppArg; 10] {
 /// all beside the bridge's: the player with nothing over it prints ` overlay=none`, which is a
 /// statement about the ROUTE that the container cannot make. (Five arms stood here, one per
 /// `Route::Player { overlay }` value, until phase 9 made the panels surfaces.)
-pub(crate) fn overlay_word(pages: &crate::ui::dispatch::Dispatcher<bridge::AppHost>, route: &AppArg) -> Option<&'static str> {
+pub(crate) fn overlay_word(pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>, route: &AppArg) -> Option<&'static str> {
     bridge::overlay_word(pages).or(matches!(route, AppArg::Player).then_some(NO_OVERLAY))
 }
 
@@ -108,7 +108,7 @@ pub(crate) const NO_OVERLAY: &str = "none";
 /// The heartbeat's ` overlay=<word>` suffix, prefix and all, empty when there is none. The prefix
 /// is built HERE rather than baked into every word because the words are the SCREENS' own and a
 /// screen has no business knowing what the heartbeat's grammar looks like.
-pub(crate) fn overlay_suffix(pages: &crate::ui::dispatch::Dispatcher<bridge::AppHost>, route: &AppArg) -> String {
+pub(crate) fn overlay_suffix(pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>, route: &AppArg) -> String {
     overlay_word(pages, route).map_or(String::new(), |w| format!(" overlay={w}"))
 }
 
@@ -272,7 +272,7 @@ mod heartbeat_word_tests {
         // container says nothing and the ROUTE decides, which is exactly the state every BARE
         // playback frame is in. It is the one word no screen owns, which is why it is added by
         // `overlay_words` rather than derived.
-        let empty = crate::ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
+        let empty = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
         assert_eq!(overlay_word(&empty, &AppArg::Player), Some(NO_OVERLAY));
         assert_eq!(overlay_word(&empty, &AppArg::Home), None);
         assert_eq!(super::overlay_suffix(&empty, &AppArg::Player), " overlay=none");

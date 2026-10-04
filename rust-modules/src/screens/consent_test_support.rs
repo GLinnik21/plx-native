@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) use crate::screens::registry::BAND;
-pub(super) use crate::ui::fixture::FixtureMeasure;
+pub(super) use plx_ui::fixture::FixtureMeasure;
 pub(super) use plx_machine::machine::{
     Edge, FocusRead, InputOwner, InstanceId, PressId, PressRead, PresentHandle, Source, Stamped, Tick,
 };

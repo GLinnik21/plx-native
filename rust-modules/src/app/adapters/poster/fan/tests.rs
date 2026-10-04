@@ -74,13 +74,13 @@ fn corners_come_from_their_poster_and_the_front_poster_is_on_top() {
 /// The output pixel containing the point `(lx, ly)` of a member's own frame, for a member placed
 /// by `p` (the same rotation [`draw`] inverts), and that member's half-extents.
 fn pixel_of(p: &FanMember, lx: f32, ly: f32) -> (u32, u32) {
-    let m = crate::ui::collection_tile::fan_member(p, FAN_W as f32, FAN_H as f32);
+    let m = plx_ui::collection_tile::fan_member(p, FAN_W as f32, FAN_H as f32);
     let (dx, dy) = (lx * m.cosine() - ly * m.sin, lx * m.sin + ly * m.cosine());
     ((m.cx + dx).floor() as u32, (m.cy + dy).floor() as u32)
 }
 
 fn member_half() -> (f32, f32) {
-    let m = crate::ui::collection_tile::fan_member(&FRONT, FAN_W as f32, FAN_H as f32);
+    let m = plx_ui::collection_tile::fan_member(&FRONT, FAN_W as f32, FAN_H as f32);
     (m.hw, m.hh)
 }
 

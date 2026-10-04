@@ -16,11 +16,11 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   reference. Read the relevant section before changing a subsystem; do not load the whole file
   when a narrower section is enough.
 - Before playback work, read `rust-modules/src/player/CLAUDE.md`.
-- Before Plex data-layer work, read `rust-modules/src/plex/CLAUDE.md` and `docs/pms-api.md`.
-- Before UI work, read `rust-modules/src/ui/CLAUDE.md` and use the shared theme, layout, and widget
+- Before Plex data-layer work, read `rust-modules/plex/src/plex/CLAUDE.md` and `docs/pms-api.md`.
+- Before UI work, read `rust-modules/ui/src/CLAUDE.md` and use the shared theme, layout, and widget
   systems instead of adding screen-local visual primitives. Before touching a screen, also read
   `rust-modules/src/screens/CLAUDE.md`; the restructure's design record is
-  `docs/ui-restructure-spec-v4.md`, which `ui/mod.rs` cites by section number.
+  `docs/ui-restructure-spec-v4.md`, which `rust-modules/ui/src/lib.rs` cites by section number.
 - Repository skills live in `.agents/skills/`. Use the matching skill whenever its description
   fits the task; the TV, simulator, FFI, release, and verification workflows have non-obvious
   constraints that generic commands miss.

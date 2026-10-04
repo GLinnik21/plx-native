@@ -217,7 +217,7 @@ document continues painting underneath its glass.
 
 ## 2. The data layer
 
-`GET /hubs/search?query=…&limit=…` — `plex::Client::search` in `rust-modules/src/plex/hubs.rs`,
+`GET /hubs/search?query=…&limit=…` — `plex::Client::search` in `rust-modules/plex/src/plex/hubs.rs`,
 written long before this screen and dead until now. Four facts were **measured against PMS 1.43.3**
 rather than taken from the spec, and each one decides something:
 

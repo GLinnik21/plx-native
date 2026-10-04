@@ -21,9 +21,9 @@
 //! it did, which matters when the upload is triggered from the playback failure read-out — the
 //! screen a tester most wants a snapshot of, and one whose own key arm swallows everything.
 use super::upload;
-use crate::ui::consts::{MARGIN_X, SCR_W};
-use crate::ui::label::Label;
-use crate::ui::{theme, Painter, Rect};
+use plx_ui::consts::{MARGIN_X, SCR_W};
+use plx_ui::label::Label;
+use plx_ui::{theme, Painter, Rect};
 use std::ffi::CString;
 
 const W: f32 = 560.0;
@@ -83,7 +83,7 @@ pub(crate) fn draw(stats: Option<Rect>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::consts::SAFE;
+    use plx_ui::consts::SAFE;
 
     /// The read-out must sit inside the overscan frame: a lab television is one nobody here can
     /// look at, so nothing about this may depend on the panel showing its outermost pixels.

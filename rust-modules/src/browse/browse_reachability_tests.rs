@@ -98,7 +98,7 @@ fn not_probed_reads_as_reachable_and_only_a_failed_dial_dims_a_group() {
 fn insecure_only_reads_unreachable_and_a_status_fold_cannot_erase_it() {
     let _g = plx_base::testlock::serial();
     assert_eq!(
-        source_state(Some(crate::plex::probe::Outcome::InsecureOnly)),
+        source_state(Some(plx_plex::plex::probe::Outcome::InsecureOnly)),
         SourceState::InsecureOnly
     );
     let mut s = a_source("nas-home", "friend", true);
@@ -127,17 +127,17 @@ fn registry_probe_state_and_tier_seed_and_update_the_browse_source() {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let _cleanup = Cleanup;
     let mut browse = TestBrowse::default();
 
-    let sid = crate::plex::register_for_test("mach-A", "10.0.0.1", 32400, "tok", "cid");
-    crate::plex::client_for(sid)
+    let sid = plx_plex::plex::register_for_test("mach-A", "10.0.0.1", 32400, "tok", "cid");
+    plx_plex::plex::client_for(sid)
         .unwrap()
-        .set_link(crate::plex::probe::Location::Remote);
+        .set_link(plx_plex::plex::probe::Location::Remote);
     browse.sync_roster();
     assert_eq!(
         browse.state.sources()[0].state,
@@ -146,32 +146,32 @@ fn registry_probe_state_and_tier_seed_and_update_the_browse_source() {
     );
     assert_eq!(
         browse.state.sources()[0].tier,
-        Some(crate::plex::probe::Location::Remote)
+        Some(plx_plex::plex::probe::Location::Remote)
     );
 
-    crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+    plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Unauthorized);
     browse.sync_roster();
     assert_eq!(browse.state.sources()[0].state, SourceState::Unauthorized);
     assert_eq!(
         browse.state.sources()[0].tier,
-        Some(crate::plex::probe::Location::Remote),
+        Some(plx_plex::plex::probe::Location::Remote),
         "cached route metadata is retained"
     );
 
-    crate::plex::client_for(sid)
+    plx_plex::plex::client_for(sid)
         .unwrap()
-        .set_link(crate::plex::probe::Location::Relay);
-    crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Reachable);
+        .set_link(plx_plex::plex::probe::Location::Relay);
+    plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Reachable);
     browse.sync_roster();
     assert_eq!(browse.state.sources()[0].state, SourceState::Reachable);
-    assert_eq!(browse.state.sources()[0].tier, Some(crate::plex::probe::Location::Relay));
+    assert_eq!(browse.state.sources()[0].tier, Some(plx_plex::plex::probe::Location::Relay));
 
-    crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
+    plx_plex::plex::publish_probe_result(sid, plx_plex::plex::probe::Outcome::Unreachable);
     browse.sync_roster();
     assert_eq!(browse.state.sources()[0].state, SourceState::Unreachable);
     assert_eq!(
         browse.state.sources()[0].tier,
-        Some(crate::plex::probe::Location::Relay),
+        Some(plx_plex::plex::probe::Location::Relay),
         "offline does not erase the last route"
     );
 }
@@ -383,8 +383,8 @@ fn a_watched_edit_reaches_every_section_and_only_the_right_server() {
     let _g = plx_base::testlock::serial();
     let mut browse = TestBrowse::default();
     seed_one_section(&mut browse);
-    let sid = crate::plex::ServerId::UNSET;
-    let other = crate::plex::ServerId::from_raw(1);
+    let sid = plx_plex::plex::ServerId::UNSET;
+    let other = plx_plex::plex::ServerId::from_raw(1);
     let row = |sid, rk: &str, resume: i64| {
         let mut m = PmsMovie::default();
         m.sid = sid;

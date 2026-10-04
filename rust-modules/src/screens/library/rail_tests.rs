@@ -1,6 +1,6 @@
 //! Original fixed-pitch and reveal assertions, exercised against the production rail geometry.
 use super::layout::{rail_geom, rail_scroll_target, RAIL_PITCH};
-use crate::ui::consts::SCR_H;
+use plx_ui::consts::SCR_H;
 const GRID_TOP: f32 = 232.0;
 
     #[test]

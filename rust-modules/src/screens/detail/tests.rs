@@ -6,7 +6,7 @@
 
 use super::*;
 use plx_machine::machine::{Chrome, Host, InputEvent, PressRead, ScreenId};
-use crate::ui::screen::{At, Focusable, ScreenArg};
+use plx_ui::screen::{At, Focusable, ScreenArg};
 
 #[derive(Clone, PartialEq, Eq)]
 struct TestArg;
@@ -117,9 +117,9 @@ fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailS
         episode_scroll: Spring::at(0.0),
         tab_scroll: Spring::at(0.0),
         episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
-        episode_text_lift: [crate::ui::text_lift::TextLift::new(); EP_SCALE_MAX],
-        about_card_lift: crate::ui::text_lift::TextLift::new(),
-        about_lang_lift: crate::ui::text_lift::TextLift::new(),
+        episode_text_lift: [plx_ui::text_lift::TextLift::new(); EP_SCALE_MAX],
+        about_card_lift: plx_ui::text_lift::TextLift::new(),
+        about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: CardRow::new(),
         collection: CardRow::new(),
         extras: CardRow::new(),
@@ -192,7 +192,7 @@ fn clear() {
     // empty one — the addressed store cannot MIS-answer, but it can answer for an item a later
     // test happens to reuse the pair of.
     test_store().run(crate::stores::metadata::MetadataCmd::AltInstall {
-        sid: crate::plex::ServerId::UNSET,
+        sid: plx_plex::plex::ServerId::UNSET,
         rk: String::new(),
         copies: Vec::new(),
     });
@@ -218,7 +218,7 @@ fn step(
         }
         _ => event,
     };
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let context = cx(&measure, focus);
     let mut effects = Vec::new();
     let mut present = plx_machine::present::Present::new();
@@ -328,7 +328,7 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
                 let mut screen = bare(&guard, sid, "show");
                 screen.refresh = phase;
                 let generation = crate::metadata::detail_generation_for_test(test_store().adapter_ref());
-                let (_, entered) = step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Restored), None);
+                let (_, entered) = step(&mut screen, &ScreenEvent::Enter(plx_ui::screen::Enter::Restored), None);
                 // Both request paths (the direct RequestDetail push and start_reconciliation's
                 // own) only ENQUEUE the command; a real Bridge applies it on its next dispatch
                 // turn. This file drives no dispatcher, so it must apply it itself before reading
@@ -401,7 +401,7 @@ fn enter_restored_promotion_survives_a_stale_terminal_before_admission_t2() {
 
     // Enter(Restored) promotes Deferred -> Requested and pushes RequestDetail, synchronously with
     // the phase flip, but the pushed effect is not yet admitted to the store.
-    let (_, entered) = step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Restored), None);
+    let (_, entered) = step(&mut screen, &ScreenEvent::Enter(plx_ui::screen::Enter::Restored), None);
     assert_eq!(screen.refresh, DetailRefreshPhase::Requested, "Enter(Restored) must promote the obligation");
     assert!(
         entered.iter().any(|e| matches!(
@@ -501,7 +501,7 @@ fn a_spot_round_trips_through_the_page_it_describes() {
         .collect();
     let _guard = install(d);
     let mut screen = bare(&_guard, sid, "show");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     for (elem, section, col, text) in [
         (hero::ELEM_PLAY, 0, 0, false),
         (hero::ELEM_MARK_WATCHED, 0, 1, false),
@@ -556,7 +556,7 @@ fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
     let _guard = plx_base::testlock::serial();
     crate::metadata::set_current_for_test(test_store().state_mut(), None);
     let mut screen = bare(&_guard, sid, "show");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let want = FocusKey {
         entry: EntryId(7),
         elem: hero::ELEM_PLAY,
@@ -610,7 +610,7 @@ fn a_movie_spot_does_not_wait_for_a_season_that_will_never_land() {
         season: None,
         ..Default::default()
     }, test_store().view());
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let restored = Focusable::<TestHost>::reconcile(
         &screen,
         FocusKey {
@@ -734,8 +734,8 @@ fn apply_metadata_effects(effects: &[plx_machine::machine::Stamped<TestHost>]) {
 fn the_episode_text_highlight_fits_the_block_the_flow_already_reserves() {
     let d = detail(ServerId::UNSET, "show");
     for (i, ep) in d.episodes.iter().enumerate() {
-        let r = episodes::meta_rect(ep, i, 0.0, 0.0, &crate::ui::fixture::FixtureMeasure);
-        assert!(r.y + r.h <= episodes::block_h(&d, &crate::ui::fixture::FixtureMeasure) + theme::space::SM);
+        let r = episodes::meta_rect(ep, i, 0.0, 0.0, &plx_ui::fixture::FixtureMeasure);
+        assert!(r.y + r.h <= episodes::block_h(&d, &plx_ui::fixture::FixtureMeasure) + theme::space::SM);
     }
 }
 
@@ -815,8 +815,8 @@ fn opening_a_catalog_row_mounts_on_it_without_blocking_on_the_fetch() {
     // the same step that publishes it), not on construction — a real Bridge delivers Mount then
     // Enter right after the Push this test simulates by driving both directly.
     step(&mut screen, &ScreenEvent::Mount, None);
-    let (_, entered) = step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
-        focus: crate::ui::screen::FocusTarget::ContainerGroup(plx_machine::machine::GroupId(0)),
+    let (_, entered) = step(&mut screen, &ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
+        focus: plx_ui::screen::FocusTarget::ContainerGroup(plx_machine::machine::GroupId(0)),
     }), None);
     apply_metadata_effects(&entered);
     assert!(
@@ -853,7 +853,7 @@ fn hero_focus_is_clamped_when_the_control_set_shrinks_under_it() {
         ..Default::default()
     });
     let screen = bare(&_guard, sid, "show");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let got = Focusable::<TestHost>::reconcile(
         &screen,
         FocusKey {
@@ -877,7 +877,7 @@ fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
         ..Default::default()
     });
     let screen = bare(&_guard, sid, "show");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let want = FocusKey {
         entry: EntryId(7),
         elem: hero::ELEM_MARK_WATCHED,
@@ -941,7 +941,7 @@ fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_
     d.cur_season = 1;
     d.episodes.push(episode("e3", 3));
     let _guard = install(d);
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let want = FocusKey {
         entry: EntryId(7),
         elem: episodes::elem(0, episodes::Row::Still).unwrap(),
@@ -1007,7 +1007,7 @@ fn a_landed_view_state_refresh_puts_the_browsed_season_back_and_never_steers_ano
         Some("e2"),
         test_store().view(),
     );
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let got = Focusable::<TestHost>::reconcile(
         &screen,
         FocusKey {
@@ -1080,11 +1080,11 @@ fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
 #[test]
 fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
     let _guard = plx_base::testlock::serial();
-    use crate::ui::hit::{HitMap, PointerKind};
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_for_test("hero-hit-own", "127.0.0.1", 1, "t", "c1");
-    let other = crate::plex::register_for_test("hero-hit-other", "127.0.0.1", 2, "t", "c2");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    use plx_ui::hit::{HitMap, PointerKind};
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("hero-hit-own", "127.0.0.1", 1, "t", "c1");
+    let other = plx_plex::plex::register_for_test("hero-hit-other", "127.0.0.1", 2, "t", "c2");
+    let measure = plx_ui::fixture::FixtureMeasure;
     let context = cx(&measure, None);
     let mut sizes = std::collections::BTreeSet::new();
     let mut cases = 0;
@@ -1151,7 +1151,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                                 let placed = Focusable::<TestHost>::place(&screen, &key.elem, &context, At::Drawn).expect("every drawn control places");
                                 // Same primitive geometry used by draw_buttons; its painter scroll
                                 // translation must match the screen-space hit placement exactly.
-                                let mut painted = hero::hero_btn_rect_at(set, i, screen.hero_chain(&crate::ui::fixture::FixtureMeasure, test_store().view()).btn_y, widths);
+                                let mut painted = hero::hero_btn_rect_at(set, i, screen.hero_chain(&plx_ui::fixture::FixtureMeasure, test_store().view()).btn_y, widths);
                                 painted.y -= scroll;
                                 assert_eq!((placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
                                     (painted.x, painted.y, painted.w, painted.h),
@@ -1187,7 +1187,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
     assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
     assert_eq!(cases, 192);
     clear();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// **A pointer click must not be able to reach the hero row — Play included — while full-trailer
@@ -1205,9 +1205,9 @@ fn full_trailer_mode_registers_no_hero_stops_at_all() {
     screen.preview_promoted = true;
     crate::player::preview::force_playing_for_test();
     assert!(screen.full_trailer(), "the fixture must land in full-trailer mode for this test to mean anything");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let context = cx(&measure, Some(hero::HeroCtl::Play.elem()));
-    let mut draw = DrawFrame::new(&context, crate::ui::Painter::root());
+    let mut draw = DrawFrame::new(&context, plx_ui::Painter::root());
     screen.record_stops(&mut draw);
     let stops = draw.into_stops();
     let set = screen.hero_set(test_store().view());
@@ -1365,8 +1365,8 @@ fn preview_tick_does_not_read_the_session_file_every_frame() {
 
     // A readable session, so `preview::enabled()`'s `peek()` call has real Ready bytes behind it,
     // rather than the trivially-cheap Missing/default path.
-    let _session = crate::plex::session::TempSession::new("detail-preview-fps");
-    crate::plex::session::save(&crate::plex::session::Session {
+    let _session = plx_plex::plex::session::TempSession::new("detail-preview-fps");
+    plx_plex::plex::session::save(&plx_plex::plex::session::Session {
         client_id: "cid-detail-preview-fps".into(),
         trailer_autoplay: true,
         ..Default::default()
@@ -1381,13 +1381,13 @@ fn preview_tick_does_not_read_the_session_file_every_frame() {
     );
     let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
 
-    crate::plex::session::reset_reads_for_test();
+    plx_plex::plex::session::reset_reads_for_test();
     let mut now = 0u32;
     for _ in 0..30 {
         now += 16;
         screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
     }
-    let reads = crate::plex::session::reads_for_test();
+    let reads = plx_plex::plex::session::reads_for_test();
     assert_eq!(
         reads, 0,
         "preview_tick must not re-read the session file every frame -- {reads} session reads over \
@@ -1467,12 +1467,12 @@ fn a_long_synopsis_keeps_the_first_section_one_region_gap_below_the_buttons() {
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
     let detail = screen.detail(test_store().view()).unwrap();
-    let chain = screen.hero_chain(&crate::ui::fixture::FixtureMeasure, test_store().view());
+    let chain = screen.hero_chain(&plx_ui::fixture::FixtureMeasure, test_store().view());
     assert_eq!(
-        screen.section_top(1, detail, &crate::ui::fixture::FixtureMeasure),
+        screen.section_top(1, detail, &plx_ui::fixture::FixtureMeasure),
         chain.btn_y + hero::CD + theme::space::XL
     );
-    assert_eq!(screen.content_top(&crate::ui::fixture::FixtureMeasure, test_store().view()), screen.section_top(1, detail, &crate::ui::fixture::FixtureMeasure));
+    assert_eq!(screen.content_top(&plx_ui::fixture::FixtureMeasure, test_store().view()), screen.section_top(1, detail, &plx_ui::fixture::FixtureMeasure));
     clear();
 }
 
@@ -1490,13 +1490,13 @@ fn the_hero_chain_is_identical_whether_or_not_the_trailer_preview_has_faded_its_
     let _guard = install(d);
     let mut screen = bare(&_guard, sid, "show");
 
-    let rest = screen.compute_hero_chain(screen.detail(test_store().view()), &crate::ui::fixture::FixtureMeasure);
+    let rest = screen.compute_hero_chain(screen.detail(test_store().view()), &plx_ui::fixture::FixtureMeasure);
 
     screen.preview_prose = 0.0;
     screen.preview_synopsis = 0.0;
     screen.preview_chrome = 0.0;
     screen.preview_field = 0.0;
-    let faded = screen.compute_hero_chain(screen.detail(test_store().view()), &crate::ui::fixture::FixtureMeasure);
+    let faded = screen.compute_hero_chain(screen.detail(test_store().view()), &plx_ui::fixture::FixtureMeasure);
 
     assert_eq!(rest.meta_y, faded.meta_y, "meta line must not move when it fades");
     assert_eq!(rest.ratings_y, faded.ratings_y, "ratings row must not move when it fades");
@@ -2015,8 +2015,8 @@ fn leaving_the_page_resets_play_once_state_alongside_the_existing_preview_fields
 #[test]
 fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply() {
     let _guard = plx_base::testlock::serial();
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_for_test("detail-watch", "127.0.0.1", 1, "t", "c");
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("detail-watch", "127.0.0.1", 1, "t", "c");
     crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
         sid,
         rk: "movie".into(),
@@ -2045,7 +2045,7 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
     assert!(!test_store().view().current().unwrap().watched,
         "the screen must not call the process-global compatibility facade itself");
     clear();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -2117,7 +2117,7 @@ fn a_pending_season_settle_reports_motion_from_inside_advance() {
         Some(to.elem),
     );
     assert_eq!(screen.pending_season, Some(1));
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let context = cx(&measure, Some(to.elem));
     let mut present = plx_machine::present::Present::new();
     let _ = present.take(0);
@@ -2153,7 +2153,7 @@ fn the_loading_spinner_reports_motion_on_every_tick_while_unloaded() {
     let guard = plx_base::testlock::serial();
     let mut screen = bare(&guard, sid, "show");
     assert!(screen.detail(test_store().view()).is_none(), "no metadata installed for this test");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let context = cx(&measure, None);
     let mut present = plx_machine::present::Present::new();
     let _ = present.take(0);
@@ -2429,13 +2429,13 @@ fn section_tops_do_not_remeasure_per_credit() {
     impl plx_machine::machine::Measure for CountMeasure {
         fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
             self.widths.set(self.widths.get() + 1);
-            crate::ui::fixture::FixtureMeasure.width(s, sz, bold)
+            plx_ui::fixture::FixtureMeasure.width(s, sz, bold)
         }
         fn cap_h(&self, sz: i32) -> f32 {
-            crate::ui::fixture::FixtureMeasure.cap_h(sz)
+            plx_ui::fixture::FixtureMeasure.cap_h(sz)
         }
         fn line_h(&self, sz: i32) -> f32 {
-            crate::ui::fixture::FixtureMeasure.line_h(sz)
+            plx_ui::fixture::FixtureMeasure.line_h(sz)
         }
     }
 
@@ -2514,7 +2514,7 @@ fn cached_section_tops_match_the_stacking_walk() {
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
     let detail = screen.detail(test_store().view()).expect("installed");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
 
     let cast_first = screen.section_top(4, detail, &measure);
     let seasons = screen.section_top(1, detail, &measure);
@@ -2532,7 +2532,7 @@ fn cached_section_tops_match_the_stacking_walk() {
     // region gap stacked on top of it. Hard-coding `SECTION_GAP` here is what made this test read
     // the layout as 42px out when the shelves stopped double-spacing.
     let gap = |above: i32, below: i32| DetailScreen::section_gap(above, Some(below));
-    assert_eq!(gap(4, 3), crate::ui::consts::UNDER_LABEL_AIR, "a shelf brings its own band");
+    assert_eq!(gap(4, 3), plx_ui::consts::UNDER_LABEL_AIR, "a shelf brings its own band");
     assert_eq!(gap(2, 4), super::SECTION_GAP, "a bare list does not");
 
     assert_eq!(seasons, screen.content_top(&measure, test_store().view()));
@@ -2565,7 +2565,7 @@ fn a_replaced_episode_list_moves_the_cast_row() {
     }];
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let before = screen.section_top(4, screen.detail(test_store().view()).expect("installed"), &measure);
 
     let mut taller = detail(sid, "show");
@@ -2613,7 +2613,7 @@ fn a_movie_without_a_filmstrip_sits_its_first_block_on_content_top() {
     });
     let screen = bare(&_guard, sid, "movie");
     let detail = screen.detail(test_store().view()).expect("installed");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let top = screen.content_top(&measure, test_store().view());
     assert_eq!(screen.section_top(4, detail, &measure), top);
     assert_eq!(
@@ -2643,13 +2643,13 @@ fn ticking_the_page_allows_layout_to_remeasure() {
     impl plx_machine::machine::Measure for CountMeasure {
         fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
             self.widths.set(self.widths.get() + 1);
-            crate::ui::fixture::FixtureMeasure.width(s, sz, bold)
+            plx_ui::fixture::FixtureMeasure.width(s, sz, bold)
         }
         fn cap_h(&self, sz: i32) -> f32 {
-            crate::ui::fixture::FixtureMeasure.cap_h(sz)
+            plx_ui::fixture::FixtureMeasure.cap_h(sz)
         }
         fn line_h(&self, sz: i32) -> f32 {
-            crate::ui::fixture::FixtureMeasure.line_h(sz)
+            plx_ui::fixture::FixtureMeasure.line_h(sz)
         }
     }
 
@@ -2714,8 +2714,8 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     );
     // The pinned title is no longer anchored to a NAMED section: it leaves as soon as the first
     // block below the hero starts to travel, whichever section that is.
-    let first_top = screen.section_top_settled(sections[1], loaded, &crate::ui::fixture::FixtureMeasure);
-    let hide_at = first_top - crate::ui::detail_layout::TOP_MARGIN;
+    let first_top = screen.section_top_settled(sections[1], loaded, &plx_ui::fixture::FixtureMeasure);
+    let hide_at = first_top - plx_ui::detail_layout::TOP_MARGIN;
     assert_eq!(super::compact_title_alpha(hide_at, first_top, 0.0), 1.0);
     assert_eq!(super::compact_title_alpha(hide_at + 400.0, first_top, 0.0), 0.0);
 
@@ -2762,8 +2762,8 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     assert_eq!(&sections[..n], &[0, 4, 6, 3, 5]);
     // Same rule on a movie, whose first below-hero section is Cast rather than the season strip:
     // the title is out by the time that block has moved a fraction of its own height.
-    let first_top = screen.section_top_settled(sections[1], &movie, &crate::ui::fixture::FixtureMeasure);
-    let hide_at = first_top - crate::ui::detail_layout::TOP_MARGIN;
+    let first_top = screen.section_top_settled(sections[1], &movie, &plx_ui::fixture::FixtureMeasure);
+    let hide_at = first_top - plx_ui::detail_layout::TOP_MARGIN;
     assert!(super::compact_title_alpha(hide_at - 1.0, first_top, 0.0) > 0.99);
     assert!(super::compact_title_alpha(hide_at + 400.0, first_top, 0.0) < 0.01);
     clear();
@@ -2803,7 +2803,7 @@ fn cast_section_top_is_keyed_by_identity_not_array_position() {
         &[0, 4, 3, 5],
         "Cast sits at array position 1, three away from its own SectionId discriminant (4)"
     );
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let cast_top = screen.section_top(section::SectionId::Cast.raw(), loaded, &measure);
     let content_top = screen.content_top(&measure, test_store().view());
     let layout_end = screen.ensure_layout(loaded, &measure).end;
@@ -2821,7 +2821,7 @@ fn cast_section_top_is_keyed_by_identity_not_array_position() {
 const LEGACY_TEST_MAP: &[(&str, &str)] = &[
     (
         "the_backdrop_dithers_only_while_the_scroll_is_at_rest",
-        "ui/detail_layout.rs",
+        "ui/src/detail_layout.rs",
     ),
     (
         "the_two_spellings_of_the_conversion_notice_are_the_same_bytes",
@@ -2869,23 +2869,23 @@ const LEGACY_TEST_MAP: &[(&str, &str)] = &[
     ),
     (
         "the_facts_row_stops_short_of_the_people_column",
-        "ui/detail_layout.rs",
+        "ui/src/detail_layout.rs",
     ),
     (
         "the_people_column_grows_upward_off_the_button_row",
-        "ui/detail_layout.rs",
+        "ui/src/detail_layout.rs",
     ),
     (
         "a_movie_hides_across_its_second_below_hero_block_not_its_first",
-        "ui/detail_layout.rs",
+        "ui/src/detail_layout.rs",
     ),
     (
         "a_movie_with_only_one_below_hero_block_keeps_the_first_block_rule",
-        "ui/detail_layout.rs",
+        "ui/src/detail_layout.rs",
     ),
     (
         "no_below_hero_section_means_nothing_to_hide_across",
-        "ui/detail_layout.rs",
+        "ui/src/detail_layout.rs",
     ),
     (
         "the_cast_pop_is_clearly_visible_and_never_touches_a_neighbour",
@@ -2909,7 +2909,7 @@ const LEGACY_TEST_MAP: &[(&str, &str)] = &[
     ),
     (
         "the_crew_credit_costs_the_chain_no_vertical_space",
-        "ui/detail_layout.rs",
+        "ui/src/detail_layout.rs",
     ),
     (
         "a_shows_hero_is_about_the_servers_on_deck_episode_or_the_series",
@@ -2917,11 +2917,11 @@ const LEGACY_TEST_MAP: &[(&str, &str)] = &[
     ),
     (
         "the_ratings_band_is_reserved_when_there_are_scores_and_never_otherwise",
-        "ui/detail_layout.rs",
+        "ui/src/detail_layout.rs",
     ),
     (
         "a_two_line_blurb_lands_the_chain_on_the_mockups_own_ys",
-        "ui/detail_layout.rs",
+        "ui/src/detail_layout.rs",
     ),
     (
         "a_crew_only_item_still_gets_the_cast_and_crew_shelf",
@@ -3151,20 +3151,20 @@ fn collection_movie(sid: ServerId) -> Detail {
 
 fn collection_move(
     screen: &DetailScreen,
-    engine: &mut crate::ui::focus::FocusEngine<u32>,
+    engine: &mut plx_ui::focus::FocusEngine<u32>,
     dir: Dir,
-) -> crate::ui::focus::Outcome<u32> {
+) -> plx_ui::focus::Outcome<u32> {
     let owner = plx_machine::machine::InputOwner::Entry(EntryId(7));
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let context = Cx { focus: engine.read(owner), ..cx(&measure, None) };
     let mut links = Vec::new();
     Screen::<TestHost>::links(screen, &mut links);
     engine.move_dir(owner, screen, &links, dir, &context)
 }
 
-fn moved_to(outcome: crate::ui::focus::Outcome<u32>, why: &str) -> u32 {
+fn moved_to(outcome: plx_ui::focus::Outcome<u32>, why: &str) -> u32 {
     match outcome {
-        crate::ui::focus::Outcome::Moved { to, .. } => to.elem,
+        plx_ui::focus::Outcome::Moved { to, .. } => to.elem,
         other => panic!("{why}: expected a move, got {other:?}"),
     }
 }
@@ -3178,7 +3178,7 @@ fn the_collection_shelf_sits_above_related_under_a_linked_heading() {
     let d = screen.detail(meta).unwrap();
     let (sections, n) = screen.sections(Some(d));
     assert_eq!(&sections[..n], &[0, 7, 3, 5], "collection, then Related, then About");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     assert!(screen.section_top(7, d, &measure) < screen.section_top(3, d, &measure));
 
     assert_eq!(screen.engine_key(collection::HEADING_ELEM), Some(collection::HEADING_ELEM),
@@ -3211,7 +3211,7 @@ fn a_page_without_a_collection_declares_no_collection_stops() {
     let meta = test_store().view();
     let (sections, n) = screen.sections(screen.detail(meta));
     assert!(!sections[..n].contains(&7));
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let mut groups = Vec::new();
     Focusable::<TestHost>::groups(&screen, &cx(&measure, None), &mut groups);
     assert!(groups.iter().all(|g| g.id != collection::HEADING_GROUP && g.id != collection::COLLECTION_GROUP));
@@ -3222,7 +3222,7 @@ fn a_page_without_a_collection_declares_no_collection_stops() {
 
 #[test]
 fn up_from_a_member_reaches_the_heading_and_down_returns_to_that_member() {
-    use crate::ui::focus::{FocusEngine, Outcome};
+    use plx_ui::focus::{FocusEngine, Outcome};
     let sid = ServerId::UNSET;
     let _guard = install(collection_movie(sid));
     let screen = bare(&_guard, sid, "m1");
@@ -3276,20 +3276,20 @@ fn ok_on_the_heading_opens_the_collection_and_ok_on_a_member_opens_its_detail() 
 
 #[test]
 fn the_heading_is_a_hover_focus_stop_that_wins_over_the_member_cards() {
-    use crate::ui::hit::{HitMap, PointerKind};
+    use plx_ui::hit::{HitMap, PointerKind};
     let sid = ServerId::UNSET;
     let _guard = install(collection_movie(sid));
     let mut screen = bare(&_guard, sid, "m1");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let top = {
         let d = screen.detail(test_store().view()).unwrap();
-        screen.section_top(7, d, &measure) - crate::ui::detail_layout::TOP_MARGIN
+        screen.section_top(7, d, &measure) - plx_ui::detail_layout::TOP_MARGIN
     };
     screen.scroll.jump(top);
     screen.scroll_target = top;
     let heading = FocusKey { entry: EntryId(7), elem: collection::HEADING_ELEM };
     let context = cx(&measure, Some(heading.elem));
-    let mut draw = DrawFrame::new(&context, crate::ui::Painter::root());
+    let mut draw = DrawFrame::new(&context, plx_ui::Painter::root());
     screen.record_stops(&mut draw);
     let stops = draw.into_stops();
     let at = stops.iter().position(|s| s.key == heading).expect("the heading registers a stop");
@@ -3325,7 +3325,7 @@ fn member_keys_follow_the_member_and_the_heading_spot_restores_the_heading() {
         SpotFacts::of(&screen, test_store().view()));
     assert_eq!((spot.section, spot.col), (7, -1));
     screen.restore(&spot, test_store().view());
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let restored = Focusable::<TestHost>::reconcile(&screen,
         FocusKey { entry: EntryId(7), elem: hero::ELEM_PLAY }, &cx(&measure, None));
     assert_eq!(restored.elem, collection::HEADING_ELEM, "Back from the collection page lands on the heading");
@@ -3354,7 +3354,7 @@ fn a_show_walk_derives_the_layout_identity_once_not_once_per_stop() {
         .collect();
     let _guard = install(show);
     let mut screen = bare(&_guard, sid, "show");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let context = cx(&measure, None);
     let stamped = |walk: &mut dyn FnMut()| {
         STAMPED_EPISODES.with(|n| n.set(0));
@@ -3363,14 +3363,14 @@ fn a_show_walk_derives_the_layout_identity_once_not_once_per_stop() {
     };
 
     let bare_walk = stamped(&mut || {
-        let mut f = DrawFrame::new(&context, crate::ui::Painter::root());
+        let mut f = DrawFrame::new(&context, plx_ui::Painter::root());
         screen.record_stops(&mut f);
         assert!(f.stops().len() >= 2 * EPISODES, "the fixture must register a stop per episode row");
     });
     assert!(bare_walk <= EPISODES, "record_stops hashed {bare_walk} episodes for a {EPISODES}-episode season");
 
     let full_walk = stamped(&mut || {
-        let mut f = DrawFrame::new(&context, crate::ui::Painter::recording());
+        let mut f = DrawFrame::new(&context, plx_ui::Painter::recording());
         plx_gfx::gfx::without_frame_clear(|| Screen::<TestHost>::draw(&mut screen, &mut f));
     });
     assert!(full_walk <= EPISODES, "one draw hashed {full_walk} episodes for a {EPISODES}-episode season");
@@ -3385,32 +3385,32 @@ fn a_show_walk_derives_the_layout_identity_once_not_once_per_stop() {
 /// no layout identity and register nothing.
 #[test]
 fn record_stops_places_nothing_outside_the_visible_walk() {
-    use crate::ui::frame::backdrop::{self, Z};
+    use plx_ui::frame::backdrop::{self, Z};
     const EPISODES: usize = 24;
     let sid = ServerId::UNSET;
     let mut show = detail(sid, "show");
     show.episodes = (1..=EPISODES as i64).map(|i| episode(&format!("e{i}"), i)).collect();
     let _guard = install(show);
     let screen = bare(&_guard, sid, "show");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let context = cx(&measure, None);
-    let walk = |painter: crate::ui::Painter| {
+    let walk = |painter: plx_ui::Painter| {
         STAMPED_EPISODES.with(|n| n.set(0));
         let mut f = DrawFrame::new(&context, painter);
         screen.record_stops(&mut f);
         (f.stops().len(), STAMPED_EPISODES.with(|n| n.get()))
     };
-    let (visible, _) = walk(crate::ui::Painter::root());
+    let (visible, _) = walk(plx_ui::Painter::root());
     assert!(visible >= 2 * EPISODES, "the visible walk registers every episode row ({visible})");
     let sources = std::rc::Rc::new(std::cell::RefCell::new(backdrop::Sources::default()));
     {
         let _discovery = backdrop::discover(sources.clone());
-        assert_eq!(walk(crate::ui::Painter::root()), (0, 0), "backdrop discovery placed stops");
+        assert_eq!(walk(plx_ui::Painter::root()), (0, 0), "backdrop discovery placed stops");
     }
     {
         let _source = backdrop::enter(sources, Z::OPENER);
-        assert_eq!(walk(crate::ui::Painter::root()), (0, 0), "a blur source walk placed stops");
+        assert_eq!(walk(plx_ui::Painter::root()), (0, 0), "a blur source walk placed stops");
     }
-    assert_eq!(walk(crate::ui::Painter::recording()), (0, 0), "the text prewarm walk placed stops");
+    assert_eq!(walk(plx_ui::Painter::recording()), (0, 0), "the text prewarm walk placed stops");
     clear();
 }

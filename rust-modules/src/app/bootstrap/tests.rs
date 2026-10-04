@@ -109,7 +109,7 @@ fn typed_initial_roundtrip_and_hidden_input_hash_are_complete() {
     changed.consent.errors = true;
     changed.validate().unwrap();
     assert_ne!(changed.hash(), initial.hash(), "automation hides the prompt, not its logical initial decision");
-    let press = crate::ui::press::Press::new();
+    let press = plx_ui::press::Press::new();
     assert_ne!(super::super::recorder::state_hash(&press,"home","","",0,0,0,initial.hash()),
         super::super::recorder::state_hash(&press,"home","","",0,0,0,changed.hash()));
     assert!(Initial::decode(serde_json::to_value(&changed).unwrap(),initial.hash()).is_err());
@@ -148,22 +148,22 @@ fn screen_input_codec_retains_full_time_source_edge_and_hit_identity() {
 }
 
 fn activate(bridge: &mut super::super::bridge::Bridge) {
-    let mut dispatcher = crate::ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
+    let mut dispatcher = plx_ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
     super::super::bridge::execute_session_command(&mut dispatcher,crate::auth::SessionCmd::ActivateDevBootstrap);
-    dispatcher.frame_with(bridge,Tick::default(),Vec::new(),Vec::new(),&mut crate::ui::dispatch::NoTap,false);
+    dispatcher.frame_with(bridge,Tick::default(),Vec::new(),Vec::new(),&mut plx_ui::dispatch::NoTap,false);
     assert!(bridge.take_session_ready().is_some());
 }
 
 #[test]
 fn normal_and_controlled_activation_publish_the_owner_supplied_scope() {
     let _serial = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("controlled-profile-boundary");
+    let session = plx_plex::plex::session::TempSession::new("controlled-profile-boundary");
     session.assert_only_target();
     let before = std::fs::read(session.path()).unwrap();
     struct RegistryCleanup;
-    impl Drop for RegistryCleanup { fn drop(&mut self) { crate::plex::reset_servers_for_test(); } }
+    impl Drop for RegistryCleanup { fn drop(&mut self) { plx_plex::plex::reset_servers_for_test(); } }
     let _cleanup = RegistryCleanup;
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = Initial::synthetic_home(19,9,None).unwrap();
     let mut live = super::super::bridge::Bridge::new(
@@ -173,9 +173,9 @@ fn normal_and_controlled_activation_publish_the_owner_supplied_scope() {
     let live_owner = live.snapshot_session_init();
     assert_eq!(live_view.generation,live_owner.profile_scope.0);
     assert_ne!(live_view.generation,0);
-    let ambient = crate::plex::session::current_snapshot();
-    crate::plex::reset_servers_for_test();
-    crate::plex::Client::restore_generation_seed(initial.primary_client).unwrap();
+    let ambient = plx_plex::plex::session::current_snapshot();
+    plx_plex::plex::reset_servers_for_test();
+    plx_plex::plex::Client::restore_generation_seed(initial.primary_client).unwrap();
     let mut controlled = super::super::bridge::Bridge::controlled_home(||0,&initial,&mt,true);
     let retained = controlled.profile_resource_view().unwrap();
     activate(&mut controlled);
@@ -184,7 +184,7 @@ fn normal_and_controlled_activation_publish_the_owner_supplied_scope() {
     assert_eq!(scoped.generation,live_view.generation);
     assert_eq!(serde_json::to_value(&scoped.user).unwrap(),serde_json::to_value(&live_view.user).unwrap());
     assert_eq!(retained.generation,0,"old scoped resource read remains immutable");
-    assert!(std::sync::Arc::ptr_eq(&ambient,&crate::plex::session::current_snapshot()),"scoped replay never replaces ambient publication");
+    assert!(std::sync::Arc::ptr_eq(&ambient,&plx_plex::plex::session::current_snapshot()),"scoped replay never replaces ambient publication");
     assert_eq!(std::fs::read(session.path()).unwrap(),before);
     controlled.bind_primary(initial.primary_client).unwrap();
     let client = controlled.recorded_client(initial.primary_client).unwrap();
@@ -207,7 +207,7 @@ fn normal_and_controlled_activation_publish_the_owner_supplied_scope() {
 #[test]
 fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
     let _serial = plx_base::testlock::serial();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let mut initial = Initial::synthetic_home(41, 17, None).unwrap();
     initial.content = Some(ContentInitial {
@@ -217,7 +217,7 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
     crate::stores::tape::init(initial.person_credits(), false);
     plx_machine::landgate::arm_recording();
     let mut bridge = super::super::bridge::Bridge::controlled_home(||0,&initial,&mt,false);
-    let sid = crate::plex::ServerId::UNSET;
+    let sid = plx_plex::plex::ServerId::UNSET;
     crate::stores::tape::begin(Default::default(), Default::default());
     let gen = crate::metadata::begin_detail_for_test(bridge.metadata_mut().adapter_ref(), sid, "show");
     {
@@ -233,15 +233,15 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
     crate::stores::tape::finish();
     plx_machine::landgate::disarm();
     crate::stores::tape::reset_for_test();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 fn recording(initial: &Initial) -> Recording {
-    let mut header = crate::ui::rec::Header::new(super::super::recorder::state_fp(),initial);
+    let mut header = plx_ui::rec::Header::new(super::super::recorder::state_fp(),initial);
     header.init_data = serde_json::to_value(initial).unwrap();
     header.features = super::super::recorder::features();
     header.triggers = initial.triggers.clone();
-    Recording { header,frames:vec![crate::ui::rec::Frame { f:0,tick:Some(Tick::default()),st:Some(0),..Default::default() }],
+    Recording { header,frames:vec![plx_ui::rec::Frame { f:0,tick:Some(Tick::default()),st:Some(0),..Default::default() }],
         metrics:Default::default(),stopped_at:None }
 }
 
@@ -253,10 +253,10 @@ fn whole_record_preflight_rejects_bad_late_results_and_markers_without_resources
     record.frames[0].st = None;
     assert!(super::super::recorder::validate_controlled(&record,&initial).is_err(),"missing state grades cannot produce an empty SAME");
     record.frames[0].st = Some(0);
-    record.frames.push(crate::ui::rec::Frame { f:1,tick:Some(Tick {ms:16,dt_us:16000}),
+    record.frames.push(plx_ui::rec::Frame { f:1,tick:Some(Tick {ms:16,dt_us:16000}),
         results:vec![json!({"f":1,"t":"async","to":"store:1","req":1,"payload":{
             "kind":"hubs","version":1,"gen":1,"seq":1,"sid":0,"client":1,"token_gen":1,"build":null}})],
-        lands:vec![(1,1,1)],st:Some(0),present:Some(false),readiness:Some(crate::ui::rec::Readiness { snapshot: true, text: false }),..Default::default() });
+        lands:vec![(1,1,1)],st:Some(0),present:Some(false),readiness:Some(plx_ui::rec::Readiness { snapshot: true, text: false }),..Default::default() });
     super::super::recorder::validate_controlled(&record,&initial).unwrap();
     record.frames[1].present = None;
     assert!(super::super::recorder::validate_controlled(&record,&initial).is_err());
@@ -278,9 +278,9 @@ fn whole_record_preflight_rejects_bad_late_results_and_markers_without_resources
 #[test]
 fn controlled_hubs_commands_preserve_normal_store_notice_bookkeeping() {
     let _serial = plx_base::testlock::serial();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let mt = unsafe { plx_base::task::MainThread::assume() };
-    let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
+    let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
     let mut io = HomeIo { replay:true,preferences:Default::default(),requests:Vec::new(),admissions:Default::default(),
         failure:None,profile:publisher.snapshot() };
     let mut hubs = crate::stores::hubs::HubsStore::default();
@@ -300,62 +300,62 @@ fn controlled_hubs_commands_preserve_normal_store_notice_bookkeeping() {
 #[test]
 fn controlled_admission_records_real_discovery_spawn_refusal() {
     let _serial = plx_base::testlock::serial();
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_for_test("s00000001", "127.0.0.1", 9, "s00000002", "s00000003");
-    assert!(crate::plex::set_current(sid));
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("s00000001", "127.0.0.1", 9, "s00000002", "s00000003");
+    assert!(plx_plex::plex::set_current(sid));
     let mt = unsafe { plx_base::task::MainThread::assume() };
-    let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
+    let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
     let mut io = HomeIo { replay:false,preferences:Default::default(),requests:Vec::new(),admissions:Default::default(),
         failure:None,profile:publisher.snapshot() };
     let stores = crate::stores::Stores::default();
     io.discovery_owned_with(&stores, &mut |_| false);
     assert_eq!(io.requests.len(), 1);
     assert_eq!(io.requests[0]["admitted"], serde_json::json!(false), "real refusal must be recorded");
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
 fn controlled_admission_records_real_hubs_spawn_refusal() {
     let _serial = plx_base::testlock::serial();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     let mut hubs = crate::stores::hubs::HubsStore::default();
     assert!(hubs.run(crate::stores::hubs::HubsCmd::Reset).changed);
-    let sid = crate::plex::register_for_test("s00000001", "127.0.0.1", 9, "s00000002", "s00000003");
-    assert!(crate::plex::set_current(sid));
+    let sid = plx_plex::plex::register_for_test("s00000001", "127.0.0.1", 9, "s00000002", "s00000003");
+    assert!(plx_plex::plex::set_current(sid));
     let mt = unsafe { plx_base::task::MainThread::assume() };
-    let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
+    let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
     let mut io = HomeIo { replay:false,preferences:Default::default(),requests:Vec::new(),admissions:Default::default(),
         failure:None,profile:publisher.snapshot() };
     assert!(crate::pms::with_refused_fetches_for_test(|| io.hubs(&mut hubs, Some(crate::stores::hubs::HubsCmd::RefetchHubs), 0.0)).changed);
     assert_eq!(io.requests.len(), 1);
     assert_eq!(io.requests[0]["admitted"], serde_json::json!(false), "real refusal must be recorded");
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
 fn controlled_hubs_replays_refusal_retry_and_success() {
     let _serial = plx_base::testlock::serial();
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_for_test("s00000001", "127.0.0.1", 9, "s00000002", "s00000003");
-    assert!(crate::plex::set_current(sid));
-    let client = crate::plex::client_for(sid).unwrap();
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("s00000001", "127.0.0.1", 9, "s00000002", "s00000003");
+    assert!(plx_plex::plex::set_current(sid));
+    let client = plx_plex::plex::client_for(sid).unwrap();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = crate::pms::initial::Initial::fresh();
     let mut transcript: Vec<Vec<serde_json::Value>> = Vec::new();
     let mut states = Vec::new();
     let mut completion = None;
-    let mut parsed: Option<crate::ui::rec::Recording> = None;
+    let mut parsed: Option<plx_ui::rec::Recording> = None;
     for replay in [false, true] {
         let (state, adapter) = initial.restore(&mt).unwrap();
         let mut hubs = crate::stores::hubs::HubsStore::from_parts(state, adapter);
-        let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
+        let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
         let mut io = HomeIo { replay,preferences:Default::default(),requests:Vec::new(),
             admissions:Default::default(),failure:None,profile:publisher.snapshot() };
         let mut attempts = 0;
-        let sink = crate::ui::rec::MemSink::default();
+        let sink = plx_ui::rec::MemSink::default();
         let bytes = sink.segments.clone();
-        let header = crate::ui::rec::Header::new(17,&crate::ui::press::Press::new());
-        let mut writer = crate::ui::rec::Writer::open(Box::new(sink),&header,0).unwrap();
+        let header = plx_ui::rec::Header::new(17,&plx_ui::press::Press::new());
+        let mut writer = plx_ui::rec::Writer::open(Box::new(sink),&header,0).unwrap();
         for frame in 0..160 {
             if replay {
                 io.admissions = parsed.as_ref().unwrap().frames[frame].effects.iter()
@@ -400,13 +400,13 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
         writer.finish().unwrap();
         if !replay {
             let bytes = bytes.borrow();
-            parsed = Some(crate::ui::rec::Recording::parse(&header.to_json().to_string(),
+            parsed = Some(plx_ui::rec::Recording::parse(&header.to_json().to_string(),
                 &bytes.iter().map(Vec::as_slice).collect::<Vec<_>>(),17).unwrap());
         }
     }
     assert_eq!(transcript[0][0]["admitted"],serde_json::json!(false));
     assert_eq!(transcript.iter().flatten().filter(|r| r["admitted"] == true).count(),1);
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// Section/page/directory discovery's refusal -> backoff -> retry -> success, recorded through the real
@@ -419,13 +419,13 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
     // `browse`'s own tests call `registered_source` (private to that module), minus its table.
     struct ResetServers;
     impl Drop for ResetServers {
-        fn drop(&mut self) { crate::plex::reset_servers_for_test(); }
+        fn drop(&mut self) { plx_plex::plex::reset_servers_for_test(); }
     }
-    crate::plex::reset_servers_for_test();
-    let sid = crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "old", "cid");
-    assert!(crate::plex::set_current(sid));
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("browse-life", "10.0.0.1", 32400, "old", "cid");
+    assert!(plx_plex::plex::set_current(sid));
     let _cleanup = ResetServers;
-    let client = crate::plex::client_for(sid).unwrap();
+    let client = plx_plex::plex::client_for(sid).unwrap();
     let stores = crate::stores::Stores::default();
     // Two independent executions start from this pre-request store value (the epoch a freshly
     // reset table starts from). No worker is running: only the OS executor is substituted, below
@@ -435,12 +435,12 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
     let mut transcript: Vec<std::collections::VecDeque<serde_json::Value>> = Vec::new();
     let mut states = Vec::new();
     let mut successful_result = None;
-    let mut parsed: Option<crate::ui::rec::Recording> = None;
+    let mut parsed: Option<plx_ui::rec::Recording> = None;
     for replay in [false, true] {
         // seed_sources is a reset fixture; restore the same pre-execution epoch on each
         // independent run, never to cancel or bypass a guard during either history.
         stores.browse.borrow_mut().prepare_discovery_replay_for_test(sid, initial_epoch);
-        let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
+        let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
         let mut io = HomeIo {
             replay,
             preferences: Default::default(),
@@ -450,10 +450,10 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
             profile: publisher.snapshot(),
         };
         let mut attempts = 0;
-        let sink = crate::ui::rec::MemSink::default();
+        let sink = plx_ui::rec::MemSink::default();
         let bytes = sink.segments.clone();
-        let header = crate::ui::rec::Header::new(17, &crate::ui::press::Press::new());
-        let mut writer = crate::ui::rec::Writer::open(Box::new(sink), &header, 0).unwrap();
+        let header = plx_ui::rec::Header::new(17, &plx_ui::press::Press::new());
+        let mut writer = plx_ui::rec::Writer::open(Box::new(sink), &header, 0).unwrap();
         for frame in 0..=602 {
             if replay {
                 io.admissions = parsed.as_ref().unwrap().frames[frame]
@@ -529,7 +529,7 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
         if !replay {
             let bytes = bytes.borrow();
             parsed = Some(
-                crate::ui::rec::Recording::parse(
+                plx_ui::rec::Recording::parse(
                     &header.to_json().to_string(),
                     &bytes.iter().map(Vec::as_slice).collect::<Vec<_>>(),
                     17,
@@ -548,7 +548,7 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
 fn admission_replay_requires_full_request_identity_and_boolean_outcome() {
     let _serial = plx_base::testlock::serial();
     let mt = unsafe { plx_base::task::MainThread::assume() };
-    let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
+    let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
     let request = serde_json::json!({"kind":"hubs","epoch":u32::MAX,"req":u32::MAX,
         "sid":0,"client":u32::MAX,"token_gen":u32::MAX});
     let mut recorded = request.clone(); recorded["admitted"] = serde_json::json!(false);

@@ -682,7 +682,7 @@ it is written down here rather than built.
 
 ## 9. How this was measured
 
-**The instrument.** A load dial (`rust-modules/src/ui/glassload.rs`, `/tmp/plxnative-glassload`)
+**The instrument.** A load dial (`rust-modules/ui/src/glassload.rs`, `/tmp/plxnative-glassload`)
 draws N surfaces of a chosen size and kind — backdrop glass, poster card, or flat photograph — over
 the real Home screen, at a chosen blur-refresh cadence. It **cycles its own configurations on a
 timer inside one launch**, six seconds each, repeating for the length of the run. That is not a
@@ -797,7 +797,7 @@ same dial in the same launch.
 > `nav_glass_*` family and the `/tmp/plxnative-navglass` trigger were all DELETED on 2026-09-05,
 > when Search became one scrolling document and left the band with no caller at all (the Library had
 > stopped drawing one the same day). `git log -S nav_scrim` and the retirement note in
-> `rust-modules/src/ui/widgets.rs` are the recipe; reproducing any of this needs the band REBUILT on
+> `rust-modules/ui/src/widgets.rs` are the recipe; reproducing any of this needs the band REBUILT on
 > a screen with fixed top chrome, and no route has one today. **What survives is the verdict and its
 > numbers, which is the durable half — read on for those, and read every "arm the trigger"
 > instruction below as history.**

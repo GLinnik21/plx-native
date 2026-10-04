@@ -14,10 +14,10 @@
 //! the screen owns — so the key policy, the auto-hide and the hint's visibility are all host-
 //! testable without driving the process-wide `player::preview` singleton or a live engine.
 
-use crate::ui::icons::Icon;
+use plx_ui::icons::Icon;
 use crate::appkit::player_hud::{Knob, Playbar, TransportMark};
-use crate::ui::widgets::KeyHint;
-use crate::ui::{consts, theme, Painter};
+use plx_ui::widgets::KeyHint;
+use plx_ui::{consts, theme, Painter};
 use std::ffi::CString;
 
 /// How long the trailer transport lingers after the key that raised it, and how long
@@ -623,7 +623,7 @@ mod tests {
     /// **The trailer shares the Skip interval**: a fresh press hops the chosen length, both ways.
     #[test]
     fn a_fresh_press_hops_the_chosen_skip_interval() {
-        use crate::plex::session::SkipInterval;
+        use plx_plex::plex::session::SkipInterval;
         let _g = plx_base::testlock::serial();
         const S: i64 = 1_000_000_000;
         let (dur, live) = (200 * S, 100 * S);

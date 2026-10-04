@@ -1,9 +1,9 @@
 use super::*;
-use crate::ui::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
-use crate::ui::fixture::{tick, FixtureMeasure};
+use plx_ui::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
+use plx_ui::fixture::{tick, FixtureMeasure};
 use plx_machine::machine::{Chrome, Host, InputOwner, InstanceId, MachineId, NavOp, ScreenId, TimerId};
 use plx_machine::present::Present;
-use crate::ui::screen::{Mounter, ReturnState, ScreenArg};
+use plx_ui::screen::{Mounter, ReturnState, ScreenArg};
 
 #[derive(Clone, PartialEq, Eq)]
 struct Arg(String);
@@ -76,9 +76,9 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         refresh_gen: 0,
         scroll_target: 0.0, episode_scroll: Spring::at(0.0), tab_scroll: Spring::at(0.0),
         episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
-        episode_text_lift: [crate::ui::text_lift::TextLift::new(); EP_SCALE_MAX],
-        about_card_lift: crate::ui::text_lift::TextLift::new(),
-        about_lang_lift: crate::ui::text_lift::TextLift::new(),
+        episode_text_lift: [plx_ui::text_lift::TextLift::new(); EP_SCALE_MAX],
+        about_card_lift: plx_ui::text_lift::TextLift::new(),
+        about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: CardRow::new(), collection: CardRow::new(),
         extras: CardRow::new(),
         cast: CardRow::new(), tabs: TabStrip::new(), season_pop: CtlPop::new(),
@@ -147,7 +147,7 @@ fn boot_with(detail: Detail) -> (Dispatcher<TestHost>, TestRig) {
     test_store().run(MetadataCmd::Clear);
     crate::metadata::set_current_for_test(test_store().state_mut(), Some(detail));
     let mut d = Dispatcher::new();
-    d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+    d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
     let mut rig = TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec::new() };
     d.request(MachineId::Nav, NavOp::Root(Arg("a".into())));
     frame(&mut d, &mut rig, 0);
@@ -242,7 +242,7 @@ fn an_evicted_detail_reuses_its_item_registry_after_a_reordered_landing() {
     let key = first(&d, related::RELATED_GROUP);
     let old_instance = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
-    for i in 0..=crate::ui::containers::stack::CAP {
+    for i in 0..=plx_ui::containers::stack::CAP {
         let rk = format!("covered-{i}");
         d.request(MachineId::Nav, NavOp::Push(Arg(rk.clone())));
         crate::metadata::set_current_for_test(test_store().state_mut(), Some(item(&rk, false)));
@@ -366,7 +366,7 @@ fn cold_entry_argument_and_return_memory_both_change_the_tree_hash() {
     let (mut d, mut rig) = boot();
     let key = first(&d, related::RELATED_GROUP);
     d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
-    for i in 0..=crate::ui::containers::stack::CAP {
+    for i in 0..=plx_ui::containers::stack::CAP {
         let rk = format!("covered-{i}");
         d.request(MachineId::Nav, NavOp::Push(Arg(rk.clone())));
         crate::metadata::set_current_for_test(test_store().state_mut(), Some(item(&rk, false)));
@@ -395,7 +395,7 @@ fn cold_entry_argument_and_return_memory_both_change_the_tree_hash() {
 /// without the catalog — what `ci/check-localization.py` hunts for in source, caught here on the
 /// drawn page itself.
 fn stray_runs(detail: Detail, server_values: &[&str]) -> Vec<String> {
-    use crate::ui::screen::DrawFrame;
+    use plx_ui::screen::DrawFrame;
     let _pseudo = plx_platform::i18n::pseudo_on_this_thread_for_test();
     let (mut d, _rig) = boot_with(detail);
     let runs = plx_gfx::text::capture_text_runs_for_test(|| {
@@ -405,7 +405,7 @@ fn stray_runs(detail: Detail, server_values: &[&str]) -> Vec<String> {
         let measure = FixtureMeasure;
         let cx = Cx::<TestHost> { views: (), tick: tick(32), measure: &measure,
             press: Default::default(), focus: Default::default(), owner };
-        let mut f = DrawFrame::new(&cx, crate::ui::Painter::recording());
+        let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
         plx_gfx::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
     });
     assert!(runs.iter().any(|run| run.contains("[!!")), "the page drew catalog text: {runs:?}");
@@ -465,22 +465,22 @@ fn show(n: i64) -> Detail {
 /// frame, by `(command tag, whether it lands off-screen)` — through the recording painter, which
 /// walks exactly the tree a real frame walks with no GL behind it.
 fn census(detail: Detail) -> std::collections::BTreeMap<(u64, bool), usize> {
-    use crate::ui::screen::DrawFrame;
+    use plx_ui::screen::DrawFrame;
     let (mut d, _rig) = boot_with(detail);
-    let log = crate::ui::draw_census::capture(|| {
+    let log = plx_ui::draw_census::capture(|| {
         let entry = d.nav.tabs.stack.top_mut().expect("detail page");
         let owner = InputOwner::Entry(entry.id);
         let inst = entry.inst.as_mut().expect("mounted detail");
         let measure = FixtureMeasure;
         let cx = Cx::<TestHost> { views: (), tick: tick(32), measure: &measure,
             press: Default::default(), focus: Default::default(), owner };
-        let mut f = DrawFrame::new(&cx, crate::ui::Painter::recording());
+        let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
         plx_gfx::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
     });
     let mut out = std::collections::BTreeMap::new();
     for (tag, r) in log {
-        let off = r.x >= crate::ui::consts::SCR_W || r.x + r.w.max(1.0) <= 0.0
-            || r.y >= crate::ui::consts::SCR_H || r.y + r.h.max(1.0) <= 0.0;
+        let off = r.x >= plx_ui::consts::SCR_W || r.x + r.w.max(1.0) <= 0.0
+            || r.y >= plx_ui::consts::SCR_H || r.y + r.h.max(1.0) <= 0.0;
         *out.entry((tag, off)).or_insert(0) += 1;
     }
     out

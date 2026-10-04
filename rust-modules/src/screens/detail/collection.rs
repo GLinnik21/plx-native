@@ -6,10 +6,10 @@
 
 use crate::metadata::{CollectionShelf, Detail};
 use crate::pms::PmsMovie;
-use crate::ui::card_row::CardRow;
-use crate::ui::linked_heading::LinkedHeading;
+use plx_ui::card_row::CardRow;
+use plx_ui::linked_heading::LinkedHeading;
 use plx_machine::machine::{GroupId, Measure};
-use crate::ui::{Painter, Rect};
+use plx_ui::{Painter, Rect};
 
 use super::related;
 
@@ -79,7 +79,7 @@ pub(crate) fn heading_rect(
 ) -> Rect {
     let h = heading(c);
     let m = h.measure(measure);
-    h.face_rect(crate::ui::consts::MARGIN_X, top - lift, f32::from(focused), &m)
+    h.face_rect(plx_ui::consts::MARGIN_X, top - lift, f32::from(focused), &m)
 }
 
 pub(crate) fn rect(row: &CardRow, index: usize, top: f32, at_drawn: bool) -> Rect {
@@ -104,7 +104,7 @@ pub(crate) fn draw(
     let m = h.measure(measure);
     h.draw(
         p,
-        crate::ui::consts::MARGIN_X,
+        plx_ui::consts::MARGIN_X,
         top - row.lift(),
         f32::from(heading_focused),
         &m,

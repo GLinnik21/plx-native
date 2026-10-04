@@ -8,7 +8,7 @@
 //!
 //! ## The endpoint, and what it actually returns
 //!
-//! `GET /hubs/search?query=…&limit=…` ([`crate::plex::Client::search`], written long before this
+//! `GET /hubs/search?query=…&limit=…` ([`plx_plex::plex::Client::search`], written long before this
 //! screen and dead until now). The spec says it "is intended to be very fast, and called as the
 //! user types", which is the design this store is built for. Three things were measured against
 //! PMS 1.43.3 rather than taken from the spec, each of which decides something here:
@@ -18,7 +18,7 @@
 //! - **Hub ORDER moves per query** — `sta` ranks people first, `star` ranks films first. So the
 //!   shelf order here is FIXED ([`KINDS`]) and ranking is honoured only *inside* a shelf.
 //!   Reordering shelves per keystroke would move the row under the user's focus while they type.
-//! - **Items arrive in two different containers** — see [`crate::plex::Hub::directory`]. That is
+//! - **Items arrive in two different containers** — see [`plx_plex::plex::Hub::directory`]. That is
 //!   why [`Item`] is an enum instead of one struct. Collections are asked for with
 //!   `includeCollections=1`, which makes them full `Metadata[]` rows ([`Item::Collection`]) rather
 //!   than tag rows; a server that ignores the flag still sends tags, which [`project`] turns into
@@ -28,7 +28,7 @@
 //!
 //! Search is single-server: `/hubs/search` answers for the machine you asked, and
 //! `docs/shared-servers.md` states that nothing aggregates server-side — the merge is the client's
-//! job. So this fans out one query per [`crate::plex::server_ids`] and merges into the shelves
+//! job. So this fans out one query per [`plx_plex::plex::server_ids`] and merges into the shelves
 //! below, which is why every [`Item`] carries its own `ServerId`.
 //!
 //! The merge is **round robin** ([`merge`]), not source-by-source the way Home groups its shelves.
@@ -89,7 +89,7 @@
 //! a worker spawned before the reset can only ever complete into the retired mailbox it captured.
 #![allow(dead_code)]
 
-use crate::plex::ServerId;
+use plx_plex::plex::ServerId;
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
 use std::sync::Arc;
@@ -167,7 +167,7 @@ impl Kind {
 /// it, because the two open different screens and a struct with half its fields permanently empty
 /// invites code that forgets which half it is holding.
 ///
-/// It is a projection of [`crate::plex::Tag`] — the SAME record the detail page's cast row is
+/// It is a projection of [`plx_plex::plex::Tag`] — the SAME record the detail page's cast row is
 /// built from, which is what lets a search hit be handed to the person page unchanged (and lets
 /// `Tag::is_person` match one against a credit).
 #[derive(Clone, Default)]
@@ -215,7 +215,7 @@ pub(crate) struct TagHit {
     /// the user can play.
     ///
     /// It has to be carried rather than derived, and that is the whole reason this field exists:
-    /// the wire's `Tag` has a `library_section_id` ([`crate::plex::Tag`]) and this projection drops
+    /// the wire's `Tag` has a `library_section_id` ([`plx_plex::plex::Tag`]) and this projection drops
     /// it, because a tag arrives once per SECTION and the two folds below — per response, then
     /// across servers — sum those rows into one. After the fold there is no section left to ask
     /// about. So the bit is attached before the first fold and **OR'd** at both: a person in one
@@ -224,7 +224,7 @@ pub(crate) struct TagHit {
 }
 
 /// A collection result as the server sends it when asked with `includeCollections=1`
-/// ([`crate::plex::Client::search`]): a full `type=collection` `Metadata[]` row. The row itself is
+/// ([`plx_plex::plex::Client::search`]): a full `type=collection` `Metadata[]` row. The row itself is
 /// the ordinary card DTO ([`crate::pms::KIND_COLLECTION`], so the poster, the ambient blur and the
 /// poster store's keying are the ones every other tile uses); the two numbers beside it are the
 /// one [`PmsMovie`] has no field for and the collection route needs (its `child_count` is the
@@ -240,7 +240,7 @@ pub(crate) struct CollectionHit {
 
 impl CollectionHit {
     /// WORKER THREAD: one `type=collection` search row.
-    pub(crate) fn from_row(m: &crate::plex::Metadata, sid: ServerId) -> Self {
+    pub(crate) fn from_row(m: &plx_plex::plex::Metadata, sid: ServerId) -> Self {
         Self { item: parse_item(m, sid), tag: m.index }
     }
 
@@ -264,7 +264,7 @@ impl CollectionHit {
     pub(crate) fn route(&self) -> Option<crate::stores::ContentArg> {
         let by_tag = self.tag > 0 && self.item.sec > 0;
         (!self.item.rk.is_empty() || by_tag).then(|| crate::stores::ContentArg::Collection(
-            crate::plex::collections::CollectionRef {
+            plx_plex::plex::collections::CollectionRef {
                 sid: self.item.sid,
                 rk: self.item.rk.clone(),
                 sec: self.item.sec,
@@ -448,7 +448,7 @@ const SHELF_MAX: usize = crate::pms::MAX_SHELF_ITEMS;
 
 /// Fetch-slot ceiling — the registry's own `MAX_SERVERS`, named rather than copied, so raising the
 /// ceiling cannot leave this module quietly never asking the extra servers.
-const NSRC: usize = crate::plex::MAX_SERVERS;
+const NSRC: usize = plx_plex::plex::MAX_SERVERS;
 
 /// What one source's finished fetch delivers. `None` means the fetch FAILED (transport, parse, or
 /// a panicking worker) and must be retried — kept distinguishable from a successful answer that
@@ -530,7 +530,7 @@ impl Source {
 /// A profile switch can additionally deactivate only the middle slot, so even that post-sign-out
 /// window is not necessarily contiguous. Collecting at most 16 indices is the honest shape.
 fn slots() -> Vec<usize> {
-    crate::plex::server_ids()
+    plx_plex::plex::server_ids()
         .filter_map(|id| ((id.raw() as usize) < NSRC).then_some(id.raw() as usize))
         .collect()
 }
@@ -709,7 +709,7 @@ impl SearchState {
         plx_base::testlock::assert_held("the search store (publish_shelves_for_test)");
         // A published catalog represents completed source answers, not merely painted rows over
         // still-pending requests. Keep it valid when a real owned-screen Tick pumps the store.
-        self.visible = crate::plex::server_roster_gen();
+        self.visible = plx_plex::plex::server_roster_gen();
         snapshot_favs(self);
         for i in slots() {
             let items = std::array::from_fn(|k| {
@@ -808,7 +808,7 @@ fn set_watched_local(state: &mut SearchState, sid: ServerId, rk: &str, on: bool)
     let mut hit = false;
     let mut flip = |it: &mut Item| {
         if let Item::Media(m) = it {
-            if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
+            if plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)) {
                 crate::pms::set_watched(m, on);
                 hit = true;
             }
@@ -821,7 +821,7 @@ fn set_watched_local(state: &mut SearchState, sid: ServerId, rk: &str, on: bool)
         // A write outside the visible result cap must not clone a retained catalog it cannot
         // change. The catalog itself is bounded by KINDS × SHELF_MAX, never library-sized.
         if shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it,
-            Item::Media(m) if crate::plex::same_item((m.sid, &m.rk), (sid, rk)))) {
+            Item::Media(m) if plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)))) {
             for it in Arc::make_mut(shelves).iter_mut().flat_map(|s| &mut s.items) { flip(it); }
         }
     }
@@ -926,7 +926,7 @@ fn pump_with_optional_directory(
     gate: &plx_machine::landgate::Gate,
 ) -> bool {
     let live = slots();
-    let visible = crate::plex::server_roster_gen();
+    let visible = plx_plex::plex::server_roster_gen();
     let roster_changed = state.visible != visible;
     state.visible = visible;
     if roster_changed {
@@ -1249,7 +1249,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
             // sectionId 0 = every section, which `opt_int` sends by omitting it. The Search screen
             // is deliberately account-wide: `sectionId` only RANKS (measured — every other
             // section's rows still come back), so it could not scope this even if we wanted it to.
-            let mc = crate::plex::client_for(sid)?.search(&q, LIMIT, 0)?;
+            let mc = plx_plex::plex::client_for(sid)?.search(&q, LIMIT, 0)?;
             Some(project(&mc, sid, &favs))
         })
         .unwrap_or(None);
@@ -1270,7 +1270,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
 /// Person shelf, in hub order, which is the ONE place the "one shelf, two hubs" rule of
 /// [`Kind::hubs`] is actually applied.
 fn project(
-    mc: &crate::plex::MediaContainer,
+    mc: &plx_plex::plex::MediaContainer,
     sid: ServerId,
     favs: &[(ServerId, i64, bool)],
 ) -> Projection {
@@ -1350,7 +1350,7 @@ fn same_tag(a: &TagHit, b: &TagHit) -> bool {
 /// Matched on `hubIdentifier` — the stable, locale-independent name — with `type` as a fallback:
 /// on `/hubs/search` this server sets both to the same slug (as does `plex-openapi.json`'s own
 /// worked example), so the fallback costs nothing and covers a server that prefixes one of them.
-fn kind_index(hub: &crate::plex::Hub) -> Option<usize> {
+fn kind_index(hub: &plx_plex::plex::Hub) -> Option<usize> {
     KINDS.iter().position(|k| {
         k.hubs()
             .iter()
@@ -1363,7 +1363,7 @@ fn kind_index(hub: &crate::plex::Hub) -> Option<usize> {
 /// The numeric id is carried as a STRING and left empty when the server sent none, because 0 is
 /// "absent" on the wire (`Tag::id`) and a literal `"0"` downstream would address a person that does
 /// not exist — the same trap `Tag::is_person` documents from the other side.
-fn tag_hit(t: &crate::plex::Tag, sid: ServerId, favs: &[(ServerId, i64, bool)]) -> TagHit {
+fn tag_hit(t: &plx_plex::plex::Tag, sid: ServerId, favs: &[(ServerId, i64, bool)]) -> TagHit {
     TagHit {
         sid,
         fav: section_is_fav(favs, sid, t.library_section_id),
@@ -1385,7 +1385,7 @@ fn tag_hit(t: &crate::plex::Tag, sid: ServerId, favs: &[(ServerId, i64, bool)]) 
 /// else. Called beside the Browse `BrowseCmd::Reset` command.
 fn reset(state: &mut SearchState, adapter: &Arc<SearchAdapter>) {
     supersede(state, adapter);
-    state.visible = crate::plex::server_roster_gen();
+    state.visible = plx_plex::plex::server_roster_gen();
     state.query = None;
     state.shelves = None;
     state.state = State::Idle;
@@ -1409,7 +1409,7 @@ fn run_with_optional_directory(
             true
         }
         SearchCmd::SetQueryScoped { profile_generation, query } => {
-            if profile_generation != crate::plex::session::current_gen() { return false; }
+            if profile_generation != plx_plex::plex::session::current_gen() { return false; }
             match directory {
                 Some(directory) => set_query_from_directory(state, adapter, &query, directory),
                 None => set_query(state, adapter, &query),

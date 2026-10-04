@@ -8,10 +8,10 @@ use std::ffi::CString;
 
 use crate::metadata::{Detail, Episode};
 use plx_machine::machine::GroupId;
-use crate::ui::text_lift::{TextLift, TOP_CENTRE};
-use crate::ui::text_view::TextView;
-use crate::ui::widgets::{self, PosterMark};
-use crate::ui::{on_axis, theme, Painter, Rect};
+use plx_ui::text_lift::{TextLift, TOP_CENTRE};
+use plx_ui::text_view::TextView;
+use plx_ui::widgets::{self, PosterMark};
+use plx_ui::{on_axis, theme, Painter, Rect};
 
 pub(crate) const EPISODES_ELEM_RANGE_START: u32 = 128;
 pub(crate) const EPISODES_ELEM_RANGE_END: u32 = 640;
@@ -65,7 +65,7 @@ pub(crate) fn locate(key: u32) -> Option<(usize, Row)> {
 pub(crate) enum Action {
     None,
     Play(usize),
-    OpenDetail(crate::plex::ServerId, String),
+    OpenDetail(plx_plex::plex::ServerId, String),
 }
 
 pub(crate) fn action(d: &Detail, key: u32, loading: bool) -> Action {
@@ -85,7 +85,7 @@ pub(crate) fn action(d: &Detail, key: u32, loading: bool) -> Action {
 }
 
 pub(crate) fn strip_x(i: usize) -> f32 {
-    crate::ui::consts::MARGIN_X + i as f32 * (W + GAP)
+    plx_ui::consts::MARGIN_X + i as f32 * (W + GAP)
 }
 
 pub(crate) fn still_rect(i: usize, top: f32, scroll: f32) -> Rect {
@@ -162,7 +162,7 @@ fn state(ep: &Episode) -> State {
     if in_progress {
         return State {
             glyph: Glyph::None,
-            label: crate::ui::fmt::time_left(ep.dur_ms - ep.resume_ms),
+            label: plx_ui::fmt::time_left(ep.dur_ms - ep.resume_ms),
             progress: Some((ep.resume_ms as f32 / ep.dur_ms as f32).clamp(0.0, 1.0)),
         };
     }
@@ -173,7 +173,7 @@ fn state(ep: &Episode) -> State {
             Glyph::Play
         },
         label: if ep.dur_ms > 0 {
-            crate::ui::fmt::dur_long(ep.dur_ms)
+            plx_ui::fmt::dur_long(ep.dur_ms)
         } else {
             String::new()
         },
@@ -218,7 +218,7 @@ pub(crate) fn draw(
     let cap_top = kicker_cap_top();
     for (i, ep) in d.episodes.iter().take(MAX_ITEMS).enumerate() {
         let x = strip_x(i);
-        if !on_axis(x - scroll, W, crate::ui::consts::SCR_W, 0.0) {
+        if !on_axis(x - scroll, W, plx_ui::consts::SCR_W, 0.0) {
             continue;
         }
         draw_cell(p, d, i, ep, focused, scale(i), &lift(i), cap_top, measure);
@@ -348,7 +348,7 @@ fn draw_cell(
             .max_lines(SUMMARY_MAX_LINES)
             .draw(p, Rect::new(text_x, text_top + summary_y, TEXT_W, 0.0));
         }
-        let date = crate::ui::fmt::pretty_date(&ep.aired, 0);
+        let date = plx_ui::fmt::pretty_date(&ep.aired, 0);
         if let Ok(date) = CString::new(date) {
             let width = p.text(
                 date.as_ptr(),
@@ -361,7 +361,7 @@ fn draw_cell(
             );
             if !ep.rating.is_empty() {
                 let (top, baseline) = plx_gfx::text::text_cap_band(theme::size::MICRO, 0);
-                crate::ui::widgets::keyline_chip(
+                plx_ui::widgets::keyline_chip(
                     p,
                     text_x + width + theme::space::SM,
                     text_top + date_y + (top + baseline) * 0.5,
@@ -381,7 +381,7 @@ fn draw_cell(
     let platter_top = text_top + kicker_cap_top - PLATTER_PAD;
     let content_h = content_h_with_pad - META_BOTTOM_PAD - kicker_cap_top;
     let platter = Rect::new(x, platter_top, W, content_h + 2.0 * PLATTER_PAD);
-    crate::ui::text_lift::draw(p, platter, CARD_RADIUS, lift, plate_factor, TOP_CENTRE, labels);
+    plx_ui::text_lift::draw(p, platter, CARD_RADIUS, lift, plate_factor, TOP_CENTRE, labels);
 }
 
 #[cfg(test)]
@@ -483,26 +483,26 @@ mod tests {
     #[test]
     fn the_state_line_clears_the_full_bleed_bar_at_every_pop_phase() {
         const BAR_H: f32 = 5.0;
-        assert!(crate::ui::widgets::STILL_LINE_BOT > BAR_H);
+        assert!(plx_ui::widgets::STILL_LINE_BOT > BAR_H);
         assert!(
-            crate::ui::widgets::STILL_SCRIM_H_1
-                > crate::ui::widgets::STILL_LINE_BOT + crate::ui::widgets::STILL_GLYPH_D
+            plx_ui::widgets::STILL_SCRIM_H_1
+                > plx_ui::widgets::STILL_LINE_BOT + plx_ui::widgets::STILL_GLYPH_D
         );
         let card = Rect::new(0.0, 0.0, W, H);
-        for scale in [1.0, 1.045, theme::EP_CARD_FOCUS_SCALE, crate::ui::widgets::CARD_FOCUS_SCALE] {
+        for scale in [1.0, 1.045, theme::EP_CARD_FOCUS_SCALE, plx_ui::widgets::CARD_FOCUS_SCALE] {
             let drawn = card.scaled(scale);
             let bar = Rect::new(drawn.x, drawn.y + drawn.h - BAR_H, drawn.w, BAR_H);
             assert_eq!((bar.x, bar.w), (drawn.x, drawn.w), "the bar is full bleed");
             assert!((bar.y + bar.h - (drawn.y + drawn.h)).abs() < 0.01);
-            assert!(crate::ui::widgets::STILL_SCRIM_H_1 < drawn.h);
+            assert!(plx_ui::widgets::STILL_SCRIM_H_1 < drawn.h);
         }
     }
 
     fn cell_census(scale: f32, lift: &TextLift) -> Vec<(u64, Rect)> {
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let d = Detail::default();
         let ep = Episode { dur_ms: 100, ..Default::default() };
-        crate::ui::draw_census::capture(|| {
+        plx_ui::draw_census::capture(|| {
             draw_cell(Painter::recording(), &d, 0, &ep, None, scale, lift, kicker_cap_top(), &measure)
         })
     }
@@ -542,9 +542,9 @@ mod tests {
         for i in 0..20 {
             assert_eq!(
                 strip_x(i),
-                crate::ui::card_row::tile_rect(
+                plx_ui::card_row::tile_rect(
                     i,
-                    crate::ui::consts::MARGIN_X,
+                    plx_ui::consts::MARGIN_X,
                     W + GAP,
                     0.0,
                     0.0,

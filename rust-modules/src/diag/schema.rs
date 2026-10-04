@@ -174,11 +174,11 @@ pub(crate) enum Feature {
     /// **A viewer set the Next episode preference** (Settings → Video & playback) to one of its
     /// three modes. The mode is the whole payload: a closed set of three codes, fired once per
     /// change, never per playback and never with anything about what was playing.
-    NextEpisode(crate::plex::session::NextEpisodeMode),
+    NextEpisode(plx_plex::plex::session::NextEpisodeMode),
     /// **A viewer set the Skip interval preference** (Settings → Video & playback) to one of its
     /// five lengths. The length is the whole payload: a closed set of five codes, fired once per
     /// durable change, never per press and never with anything about what was playing.
-    SkipInterval(crate::plex::session::SkipInterval),
+    SkipInterval(plx_plex::plex::session::SkipInterval),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,16 +212,16 @@ impl Feature {
             Self::LibrarySwitch => "library_switch",
             Self::AudioEnhancement => "audio_enhancement",
             Self::NextEpisode(mode) => match mode {
-                crate::plex::session::NextEpisodeMode::Countdown => "next_episode_countdown",
-                crate::plex::session::NextEpisodeMode::AfterCredits => "next_episode_after_credits",
-                crate::plex::session::NextEpisodeMode::Off => "next_episode_off",
+                plx_plex::plex::session::NextEpisodeMode::Countdown => "next_episode_countdown",
+                plx_plex::plex::session::NextEpisodeMode::AfterCredits => "next_episode_after_credits",
+                plx_plex::plex::session::NextEpisodeMode::Off => "next_episode_off",
             },
             Self::SkipInterval(interval) => match interval {
-                crate::plex::session::SkipInterval::Seconds5 => "skip_interval_5s",
-                crate::plex::session::SkipInterval::Seconds10 => "skip_interval_10s",
-                crate::plex::session::SkipInterval::Seconds15 => "skip_interval_15s",
-                crate::plex::session::SkipInterval::Seconds30 => "skip_interval_30s",
-                crate::plex::session::SkipInterval::Seconds60 => "skip_interval_60s",
+                plx_plex::plex::session::SkipInterval::Seconds5 => "skip_interval_5s",
+                plx_plex::plex::session::SkipInterval::Seconds10 => "skip_interval_10s",
+                plx_plex::plex::session::SkipInterval::Seconds15 => "skip_interval_15s",
+                plx_plex::plex::session::SkipInterval::Seconds30 => "skip_interval_30s",
+                plx_plex::plex::session::SkipInterval::Seconds60 => "skip_interval_60s",
             },
         }
     }
@@ -348,26 +348,26 @@ impl UsageContext {
     /// so gets fields at all, possibly `unknown`); `server.is_none()` omits both regardless of
     /// `link`/`ip`, matching [`Self::current`]'s server-less behaviour exactly.
     pub(crate) fn for_snapshot(
-        server: Option<crate::plex::ServerId>,
-        link: Option<crate::plex::probe::Location>,
-        ip: Option<crate::plex::IpVersion>,
+        server: Option<plx_plex::plex::ServerId>,
+        link: Option<plx_plex::plex::probe::Location>,
+        ip: Option<plx_plex::plex::IpVersion>,
     ) -> Self {
         Self::build(server.map(|_| (link, ip)))
     }
 
-    fn build(connection: Option<(Option<crate::plex::probe::Location>, Option<crate::plex::IpVersion>)>) -> Self {
+    fn build(connection: Option<(Option<plx_plex::plex::probe::Location>, Option<plx_plex::plex::IpVersion>)>) -> Self {
         let os = plx_platform::tv::device::info();
         let hw = plx_platform::tv::device::device();
         let connection = connection.map(|(link, ip)| {
             let connection = match link {
-                Some(crate::plex::probe::Location::Local) => "local",
-                Some(crate::plex::probe::Location::Remote) => "remote",
-                Some(crate::plex::probe::Location::Relay) => "relay",
+                Some(plx_plex::plex::probe::Location::Local) => "local",
+                Some(plx_plex::plex::probe::Location::Remote) => "remote",
+                Some(plx_plex::plex::probe::Location::Relay) => "relay",
                 None => "unknown",
             };
             let ip = match ip {
-                Some(crate::plex::IpVersion::V4) => "v4",
-                Some(crate::plex::IpVersion::V6) => "v6",
+                Some(plx_plex::plex::IpVersion::V4) => "v4",
+                Some(plx_plex::plex::IpVersion::V6) => "v6",
                 None => "unknown",
             };
             (connection, ip)
@@ -450,9 +450,9 @@ impl UsageEnvelope {
         event: DiagEvent,
         occurred_at_ms: u64,
         session_id: &str,
-        server: crate::plex::ServerId,
-        link: Option<crate::plex::probe::Location>,
-        ip: Option<crate::plex::IpVersion>,
+        server: plx_plex::plex::ServerId,
+        link: Option<plx_plex::plex::probe::Location>,
+        ip: Option<plx_plex::plex::IpVersion>,
     ) -> Self {
         Self::capture_with_context(
             event,
@@ -895,7 +895,7 @@ mod tests {
     /// fixed codes — the mode and nothing else, with no free-text field to put anything in.
     #[test]
     fn the_next_episode_setting_reports_only_its_mode() {
-        use crate::plex::session::NextEpisodeMode;
+        use plx_plex::plex::session::NextEpisodeMode;
         let sent: Vec<_> = NextEpisodeMode::LADDER
             .iter()
             .map(|&mode| serialize(DiagEvent::FeatureUsed { feature: Feature::NextEpisode(mode) }))
@@ -915,7 +915,7 @@ mod tests {
     /// fixed codes — the length and nothing else, with no free-text field to put anything in.
     #[test]
     fn the_skip_interval_setting_reports_only_its_length() {
-        use crate::plex::session::SkipInterval;
+        use plx_plex::plex::session::SkipInterval;
         let sent: Vec<_> = SkipInterval::LADDER
             .iter()
             .map(|&interval| serialize(DiagEvent::FeatureUsed { feature: Feature::SkipInterval(interval) }))

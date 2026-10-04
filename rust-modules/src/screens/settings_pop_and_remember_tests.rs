@@ -6,7 +6,7 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 use plx_machine::present::Present;
-use crate::ui::screen::By;
+use plx_ui::screen::By;
 
 #[test]
 fn only_current_inner_instance_can_project_remembered_selection() {

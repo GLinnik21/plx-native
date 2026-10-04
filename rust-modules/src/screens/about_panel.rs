@@ -35,7 +35,7 @@
 //! state of its own at all. The only key it answers is BACK (and OK, see [`AboutPanelScreen`]),
 //! because §1E states the family rule: *"only 1D carries a control — the read-only panels close on
 //! BACK."* So the closing `Press [BACK] to return` line is not a hint, it is the whole affordance,
-//! and it is the shared [`crate::ui::widgets::KeyHint`].
+//! and it is the shared [`plx_ui::widgets::KeyHint`].
 //!
 //! **A `Style::Alert` surface on the container tree** since restructure phase 10 (§6.2) — the
 //! shape it always had, stated to the container instead of implied, and the FIRST conversion §0's
@@ -65,12 +65,12 @@
 //! a property of the host snapshot rather than a condition of the material. It still clears the
 //! design's `--glass-edge-clear` 68 on all four sides ([`EDGE_CLEAR`]) — a layout margin now.
 
-use crate::ui::consts::{SCR_H, SCR_W};
-use crate::ui::text_view::TextView;
-use crate::ui::theme;
-use crate::ui::widgets;
-use crate::ui::widgets::KeyHint;
-use crate::ui::{Painter, Rect};
+use plx_ui::consts::{SCR_H, SCR_W};
+use plx_ui::text_view::TextView;
+use plx_ui::theme;
+use plx_ui::widgets;
+use plx_ui::widgets::KeyHint;
+use plx_ui::{Painter, Rect};
 
 // ---- the frame -------------------------------------------------------------------------------
 
@@ -250,7 +250,7 @@ pub(crate) const SHAPE: &str = "AboutPanelScreen{}";
 /// **How far the sheet rises as it appears, in px** — `Popover::RISE`, the one number the whole
 /// panel family shares so that two surfaces leaving together read as one movement. The container
 /// owns the spring; this is only the distance it drives.
-const RISE: f32 = crate::ui::popover::Popover::RISE;
+const RISE: f32 = plx_ui::popover::Popover::RISE;
 
 /// **Whose prose the sheet reads.** The panel is the same §1A sheet behind two pages' `MORE`: the
 /// Detail page's About card (`metadata::current()`) and the Collection page's 3-line summary
@@ -298,7 +298,7 @@ impl AboutPanelScreen {
         tagline: &str,
         appear: f32,
         measure: &dyn plx_machine::machine::Measure,
-        field: Option<&crate::ui::underlay::UnderlayField>,
+        field: Option<&plx_ui::underlay::UnderlayField>,
     ) {
         let slide = RISE * (1.0 - appear);
         let p = Painter::root().alpha(appear).translate(0.0, slide);
@@ -322,7 +322,7 @@ impl AboutPanelScreen {
         let r = panel_rect(s.h);
 
         // ---- ground ----
-        crate::ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field);
+        plx_ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field);
 
         // ---- content ----
         let cx = r.x + PAD;
@@ -374,7 +374,7 @@ impl AboutPanelScreen {
 }
 
 impl<H: crate::screens::registry::AppLike> plx_machine::machine::Machine<H> for AboutPanelScreen {
-    type Ev = crate::ui::screen::ScreenEvent<H>;
+    type Ev = plx_ui::screen::ScreenEvent<H>;
     fn step(
         &mut self,
         ev: &Self::Ev,
@@ -382,7 +382,7 @@ impl<H: crate::screens::registry::AppLike> plx_machine::machine::Machine<H> for 
         fx: &mut plx_machine::machine::Effects<'_, H>,
     ) -> plx_machine::machine::Handled {
         use plx_machine::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
-        use crate::ui::screen::ScreenEvent;
+        use plx_ui::screen::ScreenEvent;
         match ev {
             ScreenEvent::Input(input) => match input.kind {
                 // **BACK and OK both close, and OK is the deliberate half.** The design says only
@@ -431,25 +431,25 @@ impl<H: crate::screens::registry::AppLike> plx_machine::machine::Machine<H> for 
 /// the same `FocusEngine` entry points `ui/dispatch.rs` calls. The panel's own `step` still
 /// swallows every key and click itself (BACK/OK dismiss, everything else is eaten), unchanged by
 /// which source the container reads.
-impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for AboutPanelScreen {
-    fn groups(&self, _cx: &plx_machine::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
+impl<H: crate::screens::registry::AppLike> plx_ui::screen::Focusable<H> for AboutPanelScreen {
+    fn groups(&self, _cx: &plx_machine::machine::Cx<'_, H>, _out: &mut Vec<plx_ui::screen::GroupSpec>) {}
     fn group_of(&self, _key: &u32, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<plx_machine::machine::GroupId> {
         None
     }
     fn neighbour(
         &self,
         _key: plx_machine::machine::FocusKey<u32>,
-        _dir: crate::ui::screen::Dir,
+        _dir: plx_ui::screen::Dir,
         _cx: &plx_machine::machine::Cx<'_, H>,
-    ) -> crate::ui::screen::Step<u32> {
-        crate::ui::screen::Step::Edge
+    ) -> plx_ui::screen::Step<u32> {
+        plx_ui::screen::Step::Edge
     }
     fn place(
         &self,
         _key: &u32,
         _cx: &plx_machine::machine::Cx<'_, H>,
-        _at: crate::ui::screen::At,
-    ) -> Option<crate::ui::screen::Placed> {
+        _at: plx_ui::screen::At,
+    ) -> Option<plx_ui::screen::Placed> {
         None
     }
     fn reconcile(
@@ -462,7 +462,7 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for A
     fn seat(
         &self,
         _g: plx_machine::machine::GroupId,
-        _from: crate::ui::screen::Placed,
+        _from: plx_ui::screen::Placed,
         _cx: &plx_machine::machine::Cx<'_, H>,
     ) -> plx_machine::machine::FocusKey<u32> {
         plx_machine::machine::FocusKey {
@@ -479,7 +479,7 @@ impl plx_machine::machine::LogicalState for AboutPanelScreen {
     }
 }
 
-impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLike + crate::screens::registry::CollectionLike> crate::ui::screen::Screen<H> for AboutPanelScreen {
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLike + crate::screens::registry::CollectionLike> plx_ui::screen::Screen<H> for AboutPanelScreen {
     fn name(&self) -> &'static str {
         "about"
     }
@@ -489,7 +489,7 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
     fn crumb(&self, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &plx_machine::machine::Cx<'_, H>) {}
+    fn prepare(&mut self, _b: &mut plx_ui::frame::Budget, _cx: &plx_machine::machine::Cx<'_, H>) {}
     /// The modal dim, asked for rather than drawn.
     ///
     /// **Nothing is LIFTED back out of it.** `Scrim::lifting` exists for a panel that is ABOUT an
@@ -504,11 +504,11 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
     /// earlier than the surface pass this `draw` runs in — and multiplies by the appear spring and
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
     /// the page-drawn version could reach.
-    fn scrim(&self) -> crate::ui::screen::Scrim {
+    fn scrim(&self) -> plx_ui::screen::Scrim {
         // the mock's `scrimStill` — the PANEL role every read-only alert shares
-        crate::ui::screen::Scrim::dim(theme::underlay::DIM_PANEL)
+        plx_ui::screen::Scrim::dim(theme::underlay::DIM_PANEL)
     }
-    fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
+    fn draw(&mut self, f: &mut plx_ui::screen::DrawFrame<'_, '_, H>) {
         // **The item is the one that LANDED, not the page's.** The panel is presented over exactly
         // one page and dismissed with it, so in practice they are the same item; reading
         // `metadata::current()` keeps this module's dependency at the store it always had rather
@@ -532,16 +532,16 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
         // this sheet is up can be read as the PANEL or as the host under it rather than as one
         // `main.ui` total.
         let field = f.underlay;
-        crate::ui::profile::phase("dt.about", || self.paint(summary, tagline, appear, measure, field));
+        plx_ui::profile::phase("dt.about", || self.paint(summary, tagline, appear, measure, field));
     }
-    fn render(&self) -> crate::ui::screen::RenderStrategy {
-        crate::ui::screen::RenderStrategy::Page
+    fn render(&self) -> plx_ui::screen::RenderStrategy {
+        plx_ui::screen::RenderStrategy::Page
     }
-    fn focus_source(&self) -> crate::ui::screen::FocusSource {
-        crate::ui::screen::FocusSource::Engine
+    fn focus_source(&self) -> plx_ui::screen::FocusSource {
+        plx_ui::screen::FocusSource::Engine
     }
-    fn hit_source(&self) -> crate::ui::screen::HitSource {
-        crate::ui::screen::HitSource::Engine
+    fn hit_source(&self) -> plx_ui::screen::HitSource {
+        plx_ui::screen::HitSource::Engine
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -765,7 +765,7 @@ mod tests {
         Source, Stamped, Tick,
     };
     use plx_machine::present::Present;
-    use crate::ui::screen::{ScreenArg, ScreenEvent};
+    use plx_ui::screen::{ScreenArg, ScreenEvent};
 
     #[derive(Clone, PartialEq, Eq)]
     struct TestArg;
@@ -831,7 +831,7 @@ mod tests {
 
     const ENTRY: EntryId = EntryId(7);
 
-    fn cx(measure: &crate::ui::fixture::FixtureMeasure) -> Cx<'_, TestHost> {
+    fn cx(measure: &plx_ui::fixture::FixtureMeasure) -> Cx<'_, TestHost> {
         Cx {
             views: (),
             tick: Tick::default(),
@@ -844,7 +844,7 @@ mod tests {
 
     /// What one input does to a fresh panel: the effects it emitted, and whether it was consumed.
     fn press(kind: InputKind<u32>) -> (Vec<Stamped<TestHost>>, Handled) {
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let cx = cx(&measure);
         let (mut out, mut present) = (Vec::new(), Present::new());
         let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Nav, &mut present);
@@ -923,11 +923,11 @@ mod tests {
     /// forbids this module from taking).
     #[test]
     fn engine_paths_are_inert_on_a_panel_with_no_focusable_element() {
-        use crate::ui::focus::{FocusEngine, Outcome};
+        use plx_ui::focus::{FocusEngine, Outcome};
         use plx_machine::machine::GroupId;
-        use crate::ui::screen::FocusTarget;
+        use plx_ui::screen::FocusTarget;
 
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let cx = cx(&measure);
         let panel = AboutPanelScreen::new(ENTRY);
         let owner = InputOwner::Entry(ENTRY);
@@ -946,13 +946,13 @@ mod tests {
         let outcome = engine.reconcile(owner, &panel, &cx);
         assert!(matches!(outcome, Outcome::Nothing));
 
-        use crate::ui::screen::Screen;
+        use plx_ui::screen::Screen;
         assert_eq!(
             (
                 Screen::<TestHost>::focus_source(&panel),
                 Screen::<TestHost>::hit_source(&panel),
             ),
-            (crate::ui::screen::FocusSource::Engine, crate::ui::screen::HitSource::Engine),
+            (plx_ui::screen::FocusSource::Engine, plx_ui::screen::HitSource::Engine),
             "the conversion this test guards"
         );
     }

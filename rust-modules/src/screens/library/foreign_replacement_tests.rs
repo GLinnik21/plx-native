@@ -1,7 +1,7 @@
 //! Foreign table replacement must remount incoming content, not inherit the outgoing cursor.
 use super::*;
-use crate::ui::fixture::{FixtureArg, FixtureMeasure};
-use crate::ui::focus::{FocusEngine, Outcome};
+use plx_ui::fixture::{FixtureArg, FixtureMeasure};
+use plx_ui::focus::{FocusEngine, Outcome};
 use plx_machine::machine::{Host, InputOwner, Tick};
 
 struct TestHost;
@@ -44,7 +44,7 @@ struct Publication {
 impl Publication {
     fn replace(
         stores: &crate::stores::Stores,
-        sids: [crate::plex::ServerId; 2],
+        sids: [plx_plex::plex::ServerId; 2],
         current: usize,
     ) -> Self {
         stores.browse.borrow_mut().seed_registered_table_for_test(sids);
@@ -151,19 +151,19 @@ impl Publication {
 #[test]
 fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_viewport_once() {
     let _guard = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("library-foreign-replacement");
+    let session = plx_plex::plex::session::TempSession::new("library-foreign-replacement");
     session.watching("u-library-foreign-replacement");
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
-    crate::plex::reset_servers_for_test();
-    let own = crate::plex::register_for_test("foreign-own", "127.0.0.1", 9, "synthetic", "fixture");
+    plx_plex::plex::reset_servers_for_test();
+    let own = plx_plex::plex::register_for_test("foreign-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared =
-        crate::plex::register_for_test("foreign-shared", "127.0.0.1", 10, "synthetic", "fixture");
+        plx_plex::plex::register_for_test("foreign-shared", "127.0.0.1", 10, "synthetic", "fixture");
     for incoming_index in [0, 2] {
         let stores = crate::stores::Stores::default();
         let outgoing = Publication::replace(&stores, [own, shared], 0);

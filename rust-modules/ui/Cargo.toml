@@ -1,0 +1,55 @@
+[package]
+name = "plx_ui"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "PlxNative ui layer: the UI library (theme, widgets, containers, the frame, the focus engine, the recorder), with no application type in it."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+build = "build.rs"
+
+[lib]
+name = "plx_ui"
+# An rlib the application crate links, never an archive of its own: the one staticlib is the
+# application crate's (ci/test_no_host_staticlib.py holds that line for this crate too). It links
+# nothing on the television; its build script exists for the host test binary (see build.rs).
+crate-type = ["rlib"]
+
+# ci/module_graph.py reads this crate as part of the same module tree as the application, and
+# `src/lib.rs` is what was `ui/mod.rs`: the root of module `ui`, not of the application. The mount
+# is that module's name, so `plx_ui::theme::ACCENT` and the `crate::theme` written in this crate
+# both resolve to `ui::theme`, the member `[ui]` of ci/module-layers.ini lists.
+[package.metadata.plx]
+mount = "ui"
+
+[features]
+default = []
+# Forwarded from the application crate, which is the only one that sets them. Each is named here
+# only because some code in this crate has a `cfg` on it (`threadcheck`: the runtime-warning
+# surface; `devtriggers`: the dev instruments of `tex`, `glassload`, `testpat`, ...).
+devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_platform/devtriggers", "plx_gfx/devtriggers"]
+threadcheck = ["plx_base/threadcheck"]
+# The `cfg(test)` seams other crates' tests use (see lib.rs) plus the test-mode behaviour that
+# `cfg(test)` alone cannot give a dependent (the GL calls a host test must not make, the draw
+# census). Enabled from the dependents' `[dev-dependencies]`; never in a shipped build. It enables
+# the lower layers' own `test-support` because the seams here call into them.
+test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_gfx/test-support"]
+
+[dependencies]
+plx_base = { path = "../base" }
+plx_machine = { path = "../machine" }
+plx_platform = { path = "../platform" }
+plx_gfx = { path = "../gfx" }
+libc = "0.2"
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+qrcodegen = "=1.8.0"
+
+[dev-dependencies]
+plx_base = { path = "../base", features = ["test-support"] }
+plx_machine = { path = "../machine", features = ["test-support"] }
+plx_platform = { path = "../platform", features = ["test-support"] }
+plx_gfx = { path = "../gfx", features = ["test-support"] }
+
+[lints]
+workspace = true

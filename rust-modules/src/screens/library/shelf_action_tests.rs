@@ -1,7 +1,7 @@
 //! Activation ports: a deck promises playback; discovery, even an episode, does not.
 use super::*;
-use crate::ui::fixture::{FixtureArg, FixtureMeasure};
-use crate::ui::focus::FocusEngine;
+use plx_ui::fixture::{FixtureArg, FixtureMeasure};
+use plx_ui::focus::FocusEngine;
 use plx_machine::machine::{Host, InputOwner, PressId, PressRead, Tick};
 
 struct TestHost;
@@ -36,7 +36,7 @@ impl LibraryLike for TestHost {
 #[test]
 fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
     let _guard = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("library-shelf-actions");
+    let session = plx_plex::plex::session::TempSession::new("library-shelf-actions");
     session.watching("u-library-shelf-actions");
     let stores = crate::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
@@ -145,10 +145,10 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
 /// the heading is a hover-focus pointer stop. Every other shelf keeps its plain heading.
 #[test]
 fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection() {
-    use crate::ui::focus::Outcome;
-    use crate::ui::screen::{DrawFrame, Hover};
+    use plx_ui::focus::Outcome;
+    use plx_ui::screen::{DrawFrame, Hover};
     let _guard = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("library-linked-heading");
+    let session = plx_plex::plex::session::TempSession::new("library-linked-heading");
     session.watching("u-library-linked-heading");
     let stores = crate::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
@@ -223,7 +223,7 @@ fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection()
     // Pointer: the heading registers a hover-focus stop on its drawn face.
     page.relayout(engine.current(owner));
     let context = cx(&engine);
-    let mut frame = DrawFrame::new(&context, crate::ui::Painter::root());
+    let mut frame = DrawFrame::new(&context, plx_ui::Painter::root());
     page.record_stops(&mut frame);
     let stops = frame.into_stops();
     let stop = stops.iter().find(|stop| stop.key.elem == heading).expect("heading stop");

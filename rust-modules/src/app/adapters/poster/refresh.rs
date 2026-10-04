@@ -13,7 +13,7 @@ const QUEUE_CAP: usize = 32;
 const RECENT_CAP: usize = 8192;
 
 struct Job {
-    client: &'static crate::plex::Client,
+    client: &'static plx_plex::plex::Client,
     path: String,
     key: DiskKey,
     epoch: u64,
@@ -52,7 +52,7 @@ static QUEUE: Mutex<Option<Queue>> = Mutex::new(None);
 static READY: Condvar = Condvar::new();
 static WORKER: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
-pub(super) fn enqueue(client: &'static crate::plex::Client, path: String, key: DiskKey, epoch: u64, token_gen: u32) {
+pub(super) fn enqueue(client: &'static plx_plex::plex::Client, path: String, key: DiskKey, epoch: u64, token_gen: u32) {
     if epoch != plx_platform::imgcache::generation() { return; }
     let mut q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     if q.as_mut().is_some_and(|q| q.push(Job { client, path, key, epoch, token_gen })) {
@@ -87,7 +87,7 @@ fn run() {
             loop {
                 let Some(q) = guard.as_mut() else { return; };
                 if !q.running { return; }
-                if !q.jobs.is_empty() && super::store_idle() && crate::ui::tex::pending_bytes() == 0 {
+                if !q.jobs.is_empty() && super::store_idle() && plx_ui::tex::pending_bytes() == 0 {
                     break q.jobs.pop_front().unwrap();
                 }
                 guard = READY.wait_timeout(guard, Duration::from_millis(250))
@@ -110,23 +110,23 @@ fn run() {
 /// Profile changes retain disk images but retire their old request credentials. A client can
 /// also be replaced at a new origin without changing the account's disk-cache epoch.
 fn grant_is_current(job: &Job) -> bool {
-    crate::plex::client_for(job.client.id()).is_some_and(|live|
+    plx_plex::plex::client_for(job.client.id()).is_some_and(|live|
         std::ptr::eq(live, job.client) && live.token_gen() == job.token_gen)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn job(client: &'static crate::plex::Client, i: usize, epoch: u64) -> Job {
+    fn job(client: &'static plx_plex::plex::Client, i: usize, epoch: u64) -> Job {
         let path = format!("/photo/:/transcode?url=%2Fthumb%2F{i}&width=250&height=375");
         Job { client, key: plx_platform::imgcache::classify("fixture", &path).unwrap(), path, epoch, token_gen: client.token_gen() }
     }
     #[test]
     fn refreshes_are_bounded_deduplicated_and_retired_with_the_account() {
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test("refresh-fixture", "127.0.0.1", 1, "fixture", "fixture");
-        let client = crate::plex::client_for(sid).unwrap();
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("refresh-fixture", "127.0.0.1", 1, "fixture", "fixture");
+        let client = plx_plex::plex::client_for(sid).unwrap();
         let old_grant = job(client, 0, 1);
         assert!(grant_is_current(&old_grant));
         let job = |i, epoch| job(client, i, epoch);
@@ -145,8 +145,8 @@ mod tests {
         assert_eq!(q.epoch, 2);
         q.running = false;
         assert!(!q.push(job(1, 2)));
-        crate::plex::register_for_test("refresh-fixture", "127.0.0.1", 1, "changed-grant", "fixture");
+        plx_plex::plex::register_for_test("refresh-fixture", "127.0.0.1", 1, "changed-grant", "fixture");
         assert!(!grant_is_current(&old_grant), "queued old-profile credentials must never refresh");
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 }

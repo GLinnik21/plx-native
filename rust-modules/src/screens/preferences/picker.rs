@@ -17,8 +17,8 @@
 //! page, shows the status and — for the account fields — a Retry row. BACK is held while an account
 //! write is in flight, so the receipt always lands on a page that can publish it to its parent.
 use super::*;
-use crate::ui::decision_prompt::{DecisionPrompt, PromptStep};
-use crate::ui::screen::{At, Dir, Focusable, GroupSpec, Placed, Step};
+use plx_ui::decision_prompt::{DecisionPrompt, PromptStep};
+use plx_ui::screen::{At, Dir, Focusable, GroupSpec, Placed, Step};
 use super::super::family::ALERT_GROUP;
 use super::super::registry::ALERT;
 
@@ -89,8 +89,8 @@ impl PickerPage {
     /// write the checked row is live but not on disk, and OK on it must retry rather than pop.
     fn durable(&self, value: &Value) -> bool {
         match value {
-            Value::SubtitleSize(v) => crate::plex::session::peek().subtitle_size() == *v,
-            Value::SubtitlePosition(v) => crate::plex::session::peek().subtitle_position() == *v,
+            Value::SubtitleSize(v) => plx_plex::plex::session::peek().subtitle_size() == *v,
+            Value::SubtitlePosition(v) => plx_plex::plex::session::peek().subtitle_position() == *v,
             _ => true,
         }
     }
@@ -324,7 +324,7 @@ impl Screen<InnerHost> for PickerPage {
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
-        crate::ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
+        plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
         self.alert.draw(f, self.entry);
     }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }

@@ -37,11 +37,11 @@
 //! **Springs are not the only clock, and that is the standing hazard.** Anything that animates
 //! from raw time — a millisecond ramp, a phase accumulator, a countdown — is invisible to (1) by
 //! construction and must report through (2) itself. Two did not, and both froze in the product:
-//! [`Xfade`](crate::ui::xfade) (every CONTENT cross-fade — the Library's grid and page, Search's
-//! results, Filmography's preview) and [`Spinner`](crate::ui::widgets::Spinner)
+//! `Xfade` (`plx_ui::xfade`) (every CONTENT cross-fade — the Library's grid and page, Search's
+//! results, Filmography's preview) and `Spinner` (`plx_ui::widgets::Spinner`)
 //! (every loading read-out). They report from their own advance and draw respectively; the reasons
 //! those two sides differ are on each call. `Xfade` was the ROUTE dip too until restructure phase
-//! 12 (D1) lifted that onto [`PageDip`](crate::ui::containers::transition::PageDip), which is
+//! 12 (D1) lifted that onto `PageDip` (`plx_ui::containers::transition::PageDip`), which is
 //! inside the container and reports `Motion` from its own `tick` by construction. `docs/retui-invalidation-design.md` is the accepted
 //! plan for closing the class properly, by making `dt` a capability rather than an `f32`.
 //!
@@ -336,7 +336,7 @@ pub fn settled(pos: f32, target: f32, vel: f32) -> bool {
     (pos - target).abs() <= t && (vel * DT.with(|d| d.get())).abs() <= t
 }
 
-/// A [`Spring::jump`](crate::ui::Spring::jump) teleported a value that was not already there.
+/// A `Spring::jump` (`plx_ui::Spring::jump`) teleported a value that was not already there.
 ///
 /// This is [`invalidate`], not a motion report, and the distinction is load-bearing: a jump can
 /// happen inside an event handler, which runs BEFORE [`frame_begin`] clears the motion flag — so a
@@ -516,8 +516,8 @@ pub fn frame_begin(dt: f32) {
 }
 
 /// A monotonic millisecond reading, for a clock-driven animator that has no `Tick` of its own to
-/// hand it — the same hazard the module doc calls out for [`Xfade`](crate::ui::xfade::Xfade) and
-/// [`Spinner`](crate::ui::widgets::Spinner): a millisecond ramp is invisible to [`note_spring`] and
+/// hand it — the same hazard the module doc calls out for `Xfade` (`plx_ui::xfade::Xfade`) and
+/// `Spinner` (`plx_ui::widgets::Spinner`): a millisecond ramp is invisible to [`note_spring`] and
 /// must report through [`invalidate`] itself. `card_row`'s focused-title marquee is the third —
 /// it advances from inside `draw`, reached through a generic `Column::draw_child` trait method
 /// and several call sites across three lanes' files, none of which carries a `Tick` — so it reads

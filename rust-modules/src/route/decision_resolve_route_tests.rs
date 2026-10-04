@@ -140,7 +140,7 @@ fn backgrounding_an_unproven_original_rearms_frame_proof_on_a_new_load() {
     { let s = &mut ps; {
         s.url = "http://fixture.invalid/hls/master.m3u8".into();
         s.tsession = "foreground-held-hls".into();
-        s.cur_contract.delivery = crate::plex::TranscodeDelivery::FixedHls {
+        s.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
             seconds_per_segment: 2,
         };
         s.cur_contract.ceiling = Some(crate::abr::Rung::P480.ceiling());
@@ -155,7 +155,7 @@ fn backgrounding_an_unproven_original_rearms_frame_proof_on_a_new_load() {
     { let s = &mut ps; {
         s.url = "https://example.invalid/source.mkv".into();
         s.tsession.clear();
-        s.cur_contract.delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
+        s.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::ProgressiveMkv;
         s.cur_contract.ceiling = None;
     } };
     set_pending_original(&ps, pending, true);
@@ -222,7 +222,7 @@ fn accepted_original_load_stays_in_trial_until_a_frame_or_rollback() {
     { let s = &mut ps; {
         s.url = "http://fixture.invalid/hls/master.m3u8".into();
         s.tsession = "held-hls".into();
-        s.cur_contract.delivery = crate::plex::TranscodeDelivery::FixedHls {
+        s.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
             seconds_per_segment: 2,
         };
         s.cur_contract.ceiling = Some(crate::abr::Rung::P480.ceiling());
@@ -237,7 +237,7 @@ fn accepted_original_load_stays_in_trial_until_a_frame_or_rollback() {
     { let s = &mut ps; {
         s.url = "https://example.invalid/source.mkv".into();
         s.tsession.clear();
-        s.cur_contract.delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
+        s.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::ProgressiveMkv;
         s.cur_contract.ceiling = None;
     } };
     set_pending_original(&ps, pending, true);
@@ -351,8 +351,8 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
         contract_revision: old_contract,
         plan: Plan {
             url: "https://example.invalid/old-contract.mkv".into(),
-            contract: crate::plex::EncodeContract {
-                delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: plx_plex::plex::EncodeContract {
+                delivery: plx_plex::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
                 ceiling: Some(crate::abr::Rung::P480.ceiling()),
@@ -565,7 +565,7 @@ fn rejected_route_effect_restores_the_whole_applied_projection() {
         s.url = "http://fixture.invalid/applied-480.m3u8".into();
         s.tsession = "applied-480".into();
         s.cur_contract.remux = false;
-        s.cur_contract.delivery = crate::plex::TranscodeDelivery::FixedHls {
+        s.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
             seconds_per_segment: 2,
         };
         s.cur_contract.no_video_copy = true;
@@ -586,7 +586,7 @@ fn rejected_route_effect_restores_the_whole_applied_projection() {
     { let s = &mut ps; {
         s.url = "http://fixture.invalid/not-yet-applied-4k.m3u8".into();
         s.tsession = "not-yet-applied-4k".into();
-        s.cur_contract.delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
+        s.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::ProgressiveMkv;
         s.cur_contract.no_video_copy = false;
         s.cur_contract.ceiling = Some(crate::abr::Rung::Uhd.ceiling());
         s.cur_auto_original_watched = true;
@@ -606,7 +606,7 @@ fn rejected_route_effect_restores_the_whole_applied_projection() {
     assert_eq!(restored.tsession, "applied-480");
     assert_eq!(
         restored.contract.delivery,
-        crate::plex::TranscodeDelivery::FixedHls {
+        plx_plex::plex::TranscodeDelivery::FixedHls {
             seconds_per_segment: 2,
         },
     );
@@ -633,7 +633,7 @@ fn hls_commit_during_a_staged_user_contract_merges_only_physical_fields() {
     { let s = &mut ps; {
         s.url = "http://fixture.invalid/old-480.m3u8".into();
         s.tsession = "old-480".into();
-        s.cur_contract.delivery = crate::plex::TranscodeDelivery::FixedHls {
+        s.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
             seconds_per_segment: 2,
         };
         s.cur_contract.ceiling = Some(crate::abr::Rung::P480.ceiling());
@@ -725,8 +725,8 @@ fn pinning_the_live_auto_hls_rung_fences_its_worker_before_projection_changes() 
             url: "http://fixture.invalid/4000/master.m3u8".into(),
             sess: "logical-auto".into(),
             tsession: "encoder-auto-720".into(),
-            contract: crate::plex::EncodeContract {
-                delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: plx_plex::plex::EncodeContract {
+                delivery: plx_plex::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
                 ceiling: Some(crate::abr::Rung::P720.ceiling()),
@@ -753,7 +753,7 @@ fn pinning_the_live_auto_hls_rung_fences_its_worker_before_projection_changes() 
     assert_eq!(quality(), Quality::P720);
     assert_eq!(
         cur_delivery(&ps),
-        crate::plex::TranscodeDelivery::ProgressiveMkv,
+        plx_plex::plex::TranscodeDelivery::ProgressiveMkv,
     );
     assert_eq!(
         publish_automatic_route_intent(AutomaticRouteIntent::HlsToOriginal {
@@ -787,8 +787,8 @@ fn reselecting_the_exact_quality_does_not_fence_the_current_worker() {
         Plan {
             url: "http://fixture.invalid/4000/master.m3u8".into(),
             tsession: "encoder-auto-720".into(),
-            contract: crate::plex::EncodeContract {
-                delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: plx_plex::plex::EncodeContract {
+                delivery: plx_plex::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
                 ceiling: Some(crate::abr::Rung::P720.ceiling()),
@@ -840,8 +840,8 @@ fn subtitle_off_keeps_a_pending_original_recovery() {
         Plan {
             url: "http://fixture.invalid/4000/master.m3u8".into(),
             tsession: "encoder-subtitle-off".into(),
-            contract: crate::plex::EncodeContract {
-                delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: plx_plex::plex::EncodeContract {
+                delivery: plx_plex::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
                 ceiling: Some(crate::abr::Rung::P720.ceiling()),
@@ -886,8 +886,8 @@ fn a_direct_subtitle_change_keeps_the_original_watchdog_ticket_current() {
     apply_plan(&mut ps,
         Plan {
             url: "https://example.invalid/source.mkv".into(),
-            contract: crate::plex::EncodeContract {
-                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+            contract: plx_plex::plex::EncodeContract {
+                delivery: plx_plex::plex::TranscodeDelivery::ProgressiveMkv,
                 ceiling: None,
                 ..Default::default()
             },
@@ -925,8 +925,8 @@ fn subtitle_on_invalidates_a_pending_original_recovery() {
         Plan {
             url: "http://fixture.invalid/4000/master.m3u8".into(),
             tsession: "encoder-subtitle-on".into(),
-            contract: crate::plex::EncodeContract {
-                delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: plx_plex::plex::EncodeContract {
+                delivery: plx_plex::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
                 ceiling: Some(crate::abr::Rung::P720.ceiling()),
@@ -964,8 +964,8 @@ fn audio_change_invalidates_a_pending_original_recovery() {
         Plan {
             url: "http://fixture.invalid/4000/master.m3u8".into(),
             tsession: "encoder-audio-change".into(),
-            contract: crate::plex::EncodeContract {
-                delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: plx_plex::plex::EncodeContract {
+                delivery: plx_plex::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
                 ceiling: Some(crate::abr::Rung::P720.ceiling()),
@@ -1287,7 +1287,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         }
         tx.send(requests).unwrap();
     });
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "stale-resolve",
         "127.0.0.1",
         port,
@@ -1353,7 +1353,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         assert!(request.contains("closeResourceSession=1"), "{request}");
     }
 
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     reset_session(&mut ps);
 }
 
@@ -1416,24 +1416,24 @@ fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         suppress_enhancement: false,
     };
-    reset_track_selection(crate::plex::ServerId::UNSET, "rk-no-memory", Some(retry));
+    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(retry));
     assert_eq!(
         crate::player::subtitle_offset_ms(),
         2_000,
         "a retry of the same item must keep the offset tuned against its subtitle",
     );
-    reset_track_selection(crate::plex::ServerId::UNSET, "rk-no-memory", None);
+    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "a new item with no remembered correction starts at 0");
 
     // A sidecar's advance survives the reset (which deselects the sidecar) and is held to the
     // range of whatever the landing re-selected: kept for the sidecar, dropped for anything else.
     let advanced = RetryContext { sub_offset_ms: -2_000, ..retry };
-    reset_track_selection(crate::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
+    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
     assert_eq!(crate::player::subtitle_offset_ms(), -2_000);
     crate::player::sidecar::select_without_fetch_for_test(23);
     crate::player::reclamp_subtitle_offset();
     assert_eq!(crate::player::subtitle_offset_ms(), -2_000, "the sidecar landed again");
-    reset_track_selection(crate::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
+    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
     crate::player::reclamp_subtitle_offset();
     assert_eq!(
         crate::player::subtitle_offset_ms(),
@@ -1643,7 +1643,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
         write_partial(&mut socket, probe_bytes);
     });
 
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "probe-lifecycle",
         "127.0.0.1",
         port,
@@ -1704,7 +1704,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
 
     server.join().unwrap();
     install_active_encoder("");
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     reset_session(&mut ps);
 }
 
@@ -1744,7 +1744,7 @@ fn a_rejected_original_probe_keeps_hls_and_produces_no_capacity_observation() {
             .expect("server refusal");
     });
 
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "probe-bodyless",
         "127.0.0.1",
         port,
@@ -1793,7 +1793,7 @@ fn a_rejected_original_probe_keeps_hls_and_produces_no_capacity_observation() {
 
     server.join().unwrap();
     install_active_encoder("");
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     reset_session(&mut ps);
 }
 
@@ -1832,7 +1832,7 @@ fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
         write_partial(&mut socket, probe_bytes);
     });
 
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "probe-stale",
         "127.0.0.1",
         port,
@@ -1877,7 +1877,7 @@ fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
 
     server.join().unwrap();
     install_active_encoder("");
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     reset_session(&mut ps);
 }
 
@@ -1936,14 +1936,14 @@ fn cold_source_preflight_uses_the_playback_identity_and_does_not_close_it() {
         tx.send(requests).expect("publish cold request set");
     });
 
-    let sid = crate::plex::register_for_test(
+    let sid = plx_plex::plex::register_for_test(
         "probe-cold",
         "127.0.0.1",
         port,
         "tok",
         "cid-probe-cold",
     );
-    let client = crate::plex::client_for(sid).expect("test server installed");
+    let client = plx_plex::plex::client_for(sid).expect("test server installed");
     let url = client
         .direct_play_url("/library/parts/1/file.mkv", "cold-logical")
         .to_url();
@@ -1969,7 +1969,7 @@ fn cold_source_preflight_uses_the_playback_identity_and_does_not_close_it() {
     );
 
     server.join().unwrap();
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     reset_session(&mut ps);
 }
 
@@ -2086,7 +2086,7 @@ fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
 #[test]
 fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
     // `playback_preview_with_capability_for_test` reads the process-global quality ceiling
-    // (`quality()`) and the server registry (`crate::plex::client_for`), same as
+    // (`quality()`) and the server registry (`plx_plex::plex::client_for`), same as
     // `the_preview_tells_a_container_remux_apart_from_a_re_encode` above it. Without this guard
     // another thread's test can move either between the two assertions below and flip
     // DirectPlay/Converts out from under this one — see `plx_base::testlock` for why the lock (not a
@@ -2161,8 +2161,8 @@ fn sidecar_on_invalidates_a_pending_original_recovery() {
         Plan {
             url: "http://fixture.invalid/4000/master.m3u8".into(),
             tsession: "encoder-subtitle-on".into(),
-            contract: crate::plex::EncodeContract {
-                delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: plx_plex::plex::EncodeContract {
+                delivery: plx_plex::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
                 ceiling: Some(crate::abr::Rung::P720.ceiling()),
@@ -2201,8 +2201,8 @@ fn picking_a_different_subtitle_track_resets_the_offset_and_re_picking_it_keeps_
     apply_plan(&mut ps,
         Plan {
             url: "https://example.invalid/source.mkv".into(),
-            contract: crate::plex::EncodeContract {
-                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+            contract: plx_plex::plex::EncodeContract {
+                delivery: plx_plex::plex::TranscodeDelivery::ProgressiveMkv,
                 ceiling: None,
                 ..Default::default()
             },
@@ -2239,9 +2239,9 @@ fn picking_a_different_subtitle_track_resets_the_offset_and_re_picking_it_keeps_
 fn a_subtitle_offset_survives_a_resume_of_the_same_item() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let session = crate::plex::session::TempSession::new("subtitle-offset-resume");
+    let session = plx_plex::plex::session::TempSession::new("subtitle-offset-resume");
     session.watching("u-resume");
-    let sid = crate::plex::register_for_test("machine-resume", "10.0.0.9", 32400, "tok", "cid-resume");
+    let sid = plx_plex::plex::register_for_test("machine-resume", "10.0.0.9", 32400, "tok", "cid-resume");
     apply_plan(&mut ps, Plan::default(), "rk-resume-a");
     swap_cur_sid_for_test(&mut ps, sid);
 
@@ -2263,7 +2263,7 @@ fn a_subtitle_offset_survives_a_resume_of_the_same_item() {
     reset_track_selection(sid, "rk-resume-a", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "Original forgets the correction");
 
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
     crate::player::reset_subtitle();
     crate::player::set_subtitle_offset(0);
 }
@@ -2276,7 +2276,7 @@ fn a_subtitle_offset_survives_a_resume_of_the_same_item() {
 fn retry_after_start_failure_suppresses_enhancement() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let enh = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
+    let enh = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
     crate::player::restore_audio_enhancements(enh);
     let sid = unregistered_sid();
     let fresh_env = |ps: &PlaybackSession| {
@@ -2290,7 +2290,7 @@ fn retry_after_start_failure_suppresses_enhancement() {
     assert!(rescue.suppress_enhancement);
     let mut env = fresh_env(&ps);
     apply_retry_enhancement(&mut env, rescue);
-    assert_eq!(env.audio_enhancements, crate::plex::AudioEnhancements::NONE);
+    assert_eq!(env.audio_enhancements, plx_plex::plex::AudioEnhancements::NONE);
 
     // The contract-change re-resolve of the same playback does not suppress.
     let inflight = current_retry_context(&ps, 5_000);
@@ -2300,7 +2300,7 @@ fn retry_after_start_failure_suppresses_enhancement() {
     assert_eq!(env.audio_enhancements, enh);
 
     // Nor does a rescue of a playback that carried no enhancement.
-    ps.cur_contract.audio = crate::plex::AudioEnhancements::NONE;
+    ps.cur_contract.audio = plx_plex::plex::AudioEnhancements::NONE;
     let plain = rescue_retry_context(&ps, 5_000);
     assert!(!plain.suppress_enhancement);
     let mut env = fresh_env(&ps);
@@ -2308,5 +2308,5 @@ fn retry_after_start_failure_suppresses_enhancement() {
     assert_eq!(env.audio_enhancements, enh, "the viewer's preference is never rewritten");
     assert_eq!(crate::player::audio_enhancements(), enh, "suppression is per-resolve, not persisted");
 
-    crate::player::restore_audio_enhancements(crate::plex::AudioEnhancements::NONE);
+    crate::player::restore_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
 }

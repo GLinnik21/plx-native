@@ -592,7 +592,7 @@ class ReplayFixtures(unittest.TestCase):
         value among committed anchors, and reports (without reddening `make check`) any
         quarantined fixture whose `state_fp` has drifted onto the current value — at that point
         the quarantine itself is stale and should be lifted."""
-        rec_rs_path = os.path.join(REPO_ROOT, "rust-modules", "src", "ui", "rec.rs")
+        rec_rs_path = os.path.join(REPO_ROOT, "rust-modules", "ui", "src", "rec.rs")
         with open(rec_rs_path, encoding="utf-8") as f:
             rec_rs = f.read()
         m = re.search(r"(?m)^pub const SCHEMA: u32 = (\d+);", rec_rs)
@@ -5229,20 +5229,25 @@ class DepGates(unittest.TestCase):
         "ci",
         "rust-modules/src",
         # The layer crates split out of `src`: `ci/check-deps.sh` reads them as `SRC_BASE`,
-        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM` and `SRC_GFX`, so a copy without them grades a different
+        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM`, `SRC_GFX`, `SRC_UI` and `SRC_PLEX`, so a copy without them grades a different
         # tree than the checkout.
         "rust-modules/base/src",
         "rust-modules/machine/src",
         "rust-modules/net/src",
         "rust-modules/platform/src",
         "rust-modules/gfx/src",
+        "rust-modules/ui/src",
+        "rust-modules/plex/src",
         "rust-modules/Cargo.toml",
         "rust-modules/build.rs",
         "rust-modules/net/Cargo.toml",
+        "rust-modules/plex/Cargo.toml",
         "rust-modules/platform/Cargo.toml",
         "rust-modules/platform/build.rs",
         "rust-modules/gfx/Cargo.toml",
         "rust-modules/gfx/build.rs",
+        "rust-modules/ui/Cargo.toml",
+        "rust-modules/ui/build.rs",
         "rust-modules/storage/Cargo.toml",
         "rust-modules/storage/build.rs",
         "rust-modules/.cargo",
@@ -5292,9 +5297,10 @@ class DepGates(unittest.TestCase):
         """The untouched copy above cannot see an input that was left out of `TREE_INPUTS` -- a
         gate that scans nothing is green. So plant what the `fpflags` rule looks for in each file
         it scans, inside the copy, and require the rule to go red naming it."""
-        for rel in ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/platform/Cargo.toml",
+        for rel in ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/plex/Cargo.toml", "rust-modules/platform/Cargo.toml",
                     "rust-modules/platform/build.rs", "rust-modules/gfx/Cargo.toml",
-                    "rust-modules/gfx/build.rs", "rust-modules/storage/Cargo.toml",
+                    "rust-modules/gfx/build.rs", "rust-modules/ui/Cargo.toml", "rust-modules/ui/build.rs",
+                    "rust-modules/storage/Cargo.toml",
                     "rust-modules/storage/build.rs", "rust-modules/.cargo/config.toml", "Makefile"):
             with self.subTest(input=rel):
                 target = os.path.join(self.tree, rel)

@@ -135,8 +135,8 @@ fn candidate_audio_none_matches_legacy_payload() {
             acodec: "aac".into(),
             src_vcodec: "hevc".into(),
             src_acodec: "eac3".into(),
-            contract: crate::plex::EncodeContract {
-                delivery: crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+            contract: plx_plex::plex::EncodeContract {
+                delivery: plx_plex::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
                 ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
                 ..Default::default()
             },

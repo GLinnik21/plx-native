@@ -1,10 +1,10 @@
 //! Application-owned data for the shared bar. Capture before stepping a frame; paint consumes
 //! borrowed strings and never opens the session file or polls the Browse vocabulary.
 
-use crate::ui::containers::tabs::StripMember;
-use crate::ui::dispatch::STRIP_BASE;
+use plx_ui::containers::tabs::StripMember;
+use plx_ui::dispatch::STRIP_BASE;
 use plx_machine::machine::{FocusKey, Measure};
-use crate::ui::widgets::{self, ChromeRead, ProfileChipRead, TabLabels, TopFocus};
+use plx_ui::widgets::{self, ChromeRead, ProfileChipRead, TabLabels, TopFocus};
 use crate::stores::browse::{DirectoryView, SecKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,7 +57,7 @@ fn pill_index(
 pub(crate) struct ChromeSnapshot {
     tabs_generation: Option<u32>,
     profile_generation: Option<u32>,
-    session_watch: crate::plex::session::VisibleSessionWatch,
+    session_watch: plx_plex::plex::session::VisibleSessionWatch,
     labels: Vec<String>,
     keys: Vec<u32>,
     widths: Vec<f32>,
@@ -73,7 +73,7 @@ impl ChromeSnapshot {
     }
 
     pub(crate) fn refresh_with_profile(&mut self, measure: &dyn Measure, directory: DirectoryView<'_>,
-        captured: Option<(&crate::plex::session::CurrentProfile, &crate::plex::session::Session)>) {
+        captured: Option<(&plx_plex::plex::session::CurrentProfile, &plx_plex::plex::session::Session)>) {
         let generation = directory.tabs_gen();
         if self.tabs_generation != Some(generation) {
             self.labels.clear();
@@ -93,12 +93,12 @@ impl ChromeSnapshot {
             self.widths = widgets::tab_widths(&self.labels, measure);
             self.tabs_generation = Some(generation);
         }
-        let generation = captured.map_or_else(crate::plex::session::current_gen, |(profile, _)| profile.generation);
+        let generation = captured.map_or_else(plx_plex::plex::session::current_gen, |(profile, _)| profile.generation);
         let session_changed = captured.is_none() && self.session_watch.changed();
         if self.profile_generation != Some(generation) || session_changed {
-            let current = captured.map_or_else(crate::plex::session::current, |(profile, _)| profile.user.clone());
+            let current = captured.map_or_else(plx_plex::plex::session::current, |(profile, _)| profile.user.clone());
             let account = if let Some((_, saved)) = captured { saved.account(current.as_ref()) }
-                else { crate::plex::session::peek().account(current.as_ref()) };
+                else { plx_plex::plex::session::peek().account(current.as_ref()) };
             self.thumb = current.map(|user| user.thumb).unwrap_or_default();
             let label = crate::screens::account_menu::chip_label(&account);
             let initial = account.name.as_deref().and_then(|name| name.chars().next())
@@ -125,7 +125,7 @@ impl ChromeSnapshot {
     pub(crate) fn profile(&self) -> ProfileChipRead<'_> {
         // The avatar is drawn against the BROWSED server, which is read where the chrome is
         // published: the library does not ask which server is current.
-        ProfileChipRead { src: crate::plex::current_server().raw(), thumb: &self.thumb,
+        ProfileChipRead { src: plx_plex::plex::current_server().raw(), thumb: &self.thumb,
             initial: &self.initial, name: &self.name, name_w: self.name_w }
     }
 
@@ -171,7 +171,7 @@ mod tests {
 
     fn directory(kinds: &[SecKind]) -> DirectorySnapshot {
         DirectorySnapshot::fixture(7, 0, kinds.iter().enumerate().map(|(i, &kind)| SectionView {
-            sid: Some(crate::plex::ServerId::from_raw((i / 2) as u16)),
+            sid: Some(plx_plex::plex::ServerId::from_raw((i / 2) as u16)),
             key: i as i64 + 1,
             kind,
             row: SrcRow { section: i, title: format!("Library {i}"), pinned: true,
@@ -182,19 +182,19 @@ mod tests {
     #[test]
     fn session_refresh_rebuilds_the_profile_chip_without_a_profile_switch() {
         let _serial = plx_base::testlock::serial();
-        let _session = crate::plex::session::TempSession::new("chrome-session-refresh");
+        let _session = plx_plex::plex::session::TempSession::new("chrome-session-refresh");
         let mut snapshot = ChromeSnapshot::default();
         let directory = directory(&[]);
-        crate::plex::session::install_transient_for_test(true);
-        snapshot.refresh(&crate::ui::fixture::FixtureMeasure, directory.view());
+        plx_plex::plex::session::install_transient_for_test(true);
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
         assert_eq!(snapshot.name.to_str().unwrap(), "Sign in");
-        crate::plex::session::save(&crate::plex::session::Session {
+        plx_plex::plex::session::save(&plx_plex::plex::session::Session {
             client_id: "synthetic-client".into(), account_token: "synthetic-token".into(),
-            home_users: vec![crate::plex::session::HomeUserRef {
+            home_users: vec![plx_plex::plex::session::HomeUserRef {
                 title: "Synthetic owner".into(), admin: true, ..Default::default()
             }], ..Default::default()
         });
-        snapshot.refresh(&crate::ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
         assert_eq!(snapshot.name.to_str().unwrap(), "Synthetic owner");
     }
 
@@ -216,9 +216,9 @@ mod tests {
     fn four_libraries_on_two_servers_publish_two_type_destinations() {
         let directory = directory(&[SecKind::Movie, SecKind::Show, SecKind::Movie, SecKind::Show]);
         let mut snapshot = ChromeSnapshot {
-            profile_generation: Some(crate::plex::session::current_gen()), ..Default::default()
+            profile_generation: Some(plx_plex::plex::session::current_gen()), ..Default::default()
         };
-        snapshot.refresh(&crate::ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
         assert_eq!(snapshot.keys, vec![STRIP_BASE, STRIP_BASE + 1, STRIP_BASE + 2, STRIP_BASE + 3]);
         assert_eq!(&snapshot.labels[..3], &["Home", "Movies", "TV Shows"]);
         let mut members = Vec::new();
@@ -259,11 +259,11 @@ mod tests {
     #[test]
     fn shared_widgets_read_no_live_application_vocabulary() {
         let src = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui/widgets.rs"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/src/widgets.rs"),
         ).expect("read widgets.rs");
         let live = src.lines().filter(|line| !line.trim_start().starts_with("//"))
             .collect::<Vec<_>>().join("\n");
-        for forbidden in ["crate::browse::", "crate::plex::session::", "crate::screens::"] {
+        for forbidden in ["crate::browse::", "plx_plex::plex::session::", "crate::screens::"] {
             assert!(!live.contains(forbidden),
                 "shared widgets must consume captured app projections, found {forbidden}");
         }

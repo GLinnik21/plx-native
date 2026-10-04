@@ -1,6 +1,6 @@
 use super::*;
 use crate::telemetry::consent::{self, Consent};
-use crate::ui::dispatch::NoTap;
+use plx_ui::dispatch::NoTap;
 
 struct PublishedSnapshot(Option<Consent>);
 

@@ -120,7 +120,7 @@ pub(crate) struct Scenarios {
     pub(crate) seek_script_at: u32,
     pub(crate) seek_gap_ms: u32,
     pub(crate) seek_script_last: i64,
-    pub(crate) quality_script: Vec<crate::plex::session::PlaybackQuality>,
+    pub(crate) quality_script: Vec<plx_plex::plex::session::PlaybackQuality>,
     pub(crate) quality_script_at: u32,
     pub(crate) quality_gap_ms: u32,
     pub(crate) quality_tried: bool,
@@ -133,7 +133,7 @@ pub(crate) struct Scenarios {
     pub(crate) play_tried: bool,
     /// `/tmp/plxnative-play=<rk>` between its ASYNC request and the landing it plays from:
     /// `(server, ratingKey, the frame clock at which the wait gives up)`. See [`play_arm`].
-    pub(crate) play_await: Option<(crate::plex::ServerId, String, u32)>,
+    pub(crate) play_await: Option<(plx_plex::plex::ServerId, String, u32)>,
     pub(crate) menu_tried: bool,
     pub(crate) menupick_tried: bool,
     /// dev: the row `/tmp/plxnative-menupick` still owes the track menu, as its RAW second field
@@ -208,8 +208,8 @@ pub(crate) fn dev_token() -> String {
 
 /// Optional primary endpoint for a synthetic PMS fixture. Used only with the explicitly
 /// injected dev token; a persisted account is never redirected. Absent in shipping builds.
-pub(crate) fn pms_origin() -> Option<crate::plex::Origin> {
-    plx_base::devtrig::read("pms-origin").and_then(|s| crate::plex::Origin::parse(s.trim()))
+pub(crate) fn pms_origin() -> Option<plx_plex::plex::Origin> {
+    plx_base::devtrig::read("pms-origin").and_then(|s| plx_plex::plex::Origin::parse(s.trim()))
 }
 
 plx_base::devtrig::latched_flag! { pub(crate) fn imagecache_stats_armed = "imagecache-stats"; }
@@ -232,8 +232,8 @@ pub(crate) fn pickuser_index() -> Option<usize> {
 pub(crate) fn arm_logintest() {
     if plx_base::devtrig::flag("logintest") {
         let _ = plx_base::task::spawn_small("logintest", || {
-            let sess = crate::plex::session::load();
-            let ac = crate::plex::account::AccountClient::new(&sess.client_id, None);
+            let sess = plx_plex::plex::session::load();
+            let ac = plx_plex::plex::account::AccountClient::new(&sess.client_id, None);
             match ac.create_pin() {
                 Ok(p) => plx_base::eventlog::log(&format!(
                     "logintest: create_pin ok id={} code_len={} authToken_null={}",
@@ -242,7 +242,7 @@ pub(crate) fn arm_logintest() {
                     p.auth_token.is_none()
                 )),
                 Err(evidence) => plx_base::eventlog::log(&format!("logintest: create_pin FAILED ({})",
-                    crate::plex::account::describe_evidence(&evidence))),
+                    plx_plex::plex::account::describe_evidence(&evidence))),
             }
         });
     }
@@ -256,19 +256,19 @@ pub(crate) fn arm_stillclock() {
 /// `/tmp/plxnative-anim` — the animation-diagnostic overlay (off by default).
 pub(crate) fn arm_anim() {
     if plx_base::devtrig::flag("anim") {
-        crate::ui::anim::set_enabled(true);
+        plx_ui::anim::set_enabled(true);
     }
 }
 
 /// `/tmp/plxnative-glassload` — the backdrop-glass LOAD DIAL.
-pub(crate) fn arm_glassload(glass: &mut crate::ui::frame::glass::GlassPlan) {
+pub(crate) fn arm_glassload(glass: &mut plx_ui::frame::glass::GlassPlan) {
     if let Some(v) = plx_base::devtrig::read("glassload") {
         glass.configure_dial(&v);
     }
 }
 
 /// `/tmp/plxnative-navblur` — the blurred-route-transition prototype.
-pub(crate) fn arm_navblur(glass: &mut crate::ui::frame::glass::GlassPlan) {
+pub(crate) fn arm_navblur(glass: &mut plx_ui::frame::glass::GlassPlan) {
     if let Some(v) = plx_base::devtrig::read("navblur") {
         glass.configure_navblur(&v);
     }
@@ -291,7 +291,7 @@ pub(crate) fn arm_drawmask() {
 /// `/tmp/plxnative-heroground` — the one-pass hero ground A/B.
 pub(crate) fn arm_heroground() {
     if plx_base::devtrig::flag("heroground") {
-        crate::ui::widgets::set_hero_ground(true);
+        plx_ui::widgets::set_hero_ground(true);
         #[cfg(feature = "devtriggers")]
         plx_base::eventlog::log("hero: one-pass ground ENABLED by /tmp/plxnative-heroground");
     }
@@ -312,8 +312,8 @@ pub(crate) fn arm_profile_hwcnt() {
         (Some(_), Some(_)) => {
             plx_base::eventlog::log("PROFILE disabled: remove either /tmp/plxnative-profile or /tmp/plxnative-hwcnt");
         }
-        (Some(filter), None) => crate::ui::profile::set_enabled(&filter),
-        (None, Some(filter)) => crate::ui::profile::set_hwcnt_enabled(&filter),
+        (Some(filter), None) => plx_ui::profile::set_enabled(&filter),
+        (None, Some(filter)) => plx_ui::profile::set_hwcnt_enabled(&filter),
         (None, None) => {}
     }
 }
@@ -323,7 +323,7 @@ pub(crate) fn arm_profile_hwcnt() {}
 /// `/tmp/plxnative-cpuprof` — the render thread's own per-phase CPU clock.
 pub(crate) fn arm_cpuprof() {
     if plx_base::devtrig::flag("cpuprof") {
-        crate::ui::profile::set_cpu_enabled();
+        plx_ui::profile::set_cpu_enabled();
     }
 }
 
@@ -359,9 +359,9 @@ pub(crate) fn arm_noidle() {
 pub(crate) fn arm_audio_enhancements() {
     let Some(v) = plx_base::devtrig::read("audioenh") else { return };
     let a = match v.trim() {
-        "off" => crate::plex::AudioEnhancements::NONE,
-        "boost" => crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
-        "loudness" => crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+        "off" => plx_plex::plex::AudioEnhancements::NONE,
+        "boost" => plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+        "loudness" => plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
         #[allow(unused_variables)]
         other => {
             #[cfg(feature = "devtriggers")]
@@ -544,7 +544,7 @@ pub(crate) fn replay_trigger_value() -> Option<String> {
 pub(crate) struct ContentBoot {
     /// The page this boot is waiting for, as its own identity. It was a `ui::trail::Node` — a
     /// whole history entry — for the `(sid, rk)` pair and the `Spot`'s season inside it.
-    sid: crate::plex::ServerId,
+    sid: plx_plex::plex::ServerId,
     rk: String,
     season: Option<i64>,
     down: u32,
@@ -561,18 +561,18 @@ pub(crate) struct ContentBoot {
 }
 
 impl ContentBoot {
-    fn controlled(sid: crate::plex::ServerId, input: &crate::app::bootstrap::ContentInitial) -> Self {
+    fn controlled(sid: plx_plex::plex::ServerId, input: &crate::app::bootstrap::ContentInitial) -> Self {
         Self { sid, rk: input.detail.clone(), season:None, down:input.detailsec, right:0,
             activate:input.detailok, filmography:input.filmography, bio:false,
             waiting_person:false, ready_seen:false }
     }
     /// Is the page this boot is waiting for the one on top?
-    fn is_top(&self, d: &crate::ui::dispatch::Dispatcher<crate::app::bridge::AppHost>) -> bool {
+    fn is_top(&self, d: &plx_ui::dispatch::Dispatcher<crate::app::bridge::AppHost>) -> bool {
         matches!(d.top_arg(), Some(AppArg::Content(crate::screens::registry::ContentArg::Detail { sid, rk }))
             if *sid == self.sid && *rk == self.rk)
     }
 
-    pub(crate) fn new(sid: crate::plex::ServerId, rk: String) -> Self {
+    pub(crate) fn new(sid: plx_plex::plex::ServerId, rk: String) -> Self {
         Self {
             sid,
             rk,
@@ -604,7 +604,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
     use crate::app::bridge;
     use crate::screens::registry::{AppArg, ContentArg};
     use plx_machine::machine::{Delivery, Fx, MachineId, NavOp};
-    use crate::ui::screen::ScreenEvent;
+    use plx_ui::screen::ScreenEvent;
 
     let Some(mut boot) = app.scenarios.content_boot.take() else { return };
     let ready = if boot.waiting_person {
@@ -665,7 +665,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
     if boot.waiting_person {
         let person = app.pages.nav.top_page().map(|e| e.arg.clone());
         if let Some(AppArg::Content(ContentArg::Person { sid, key, .. })) = person {
-            app.pages.nav.next_style = crate::ui::containers::modal::Style::Opaque { snapshot: true };
+            app.pages.nav.next_style = plx_ui::containers::modal::Style::Opaque { snapshot: true };
             app.pages.request(MachineId::Nav, NavOp::Present(AppArg::Content(
                 ContentArg::Filmography { sid, key })));
             return;
@@ -744,8 +744,8 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
     app.scenarios.content_boot = Some(boot);
 }
 
-fn detail_boot_ready(sid: crate::plex::ServerId, rk: &str, want_season: Option<i64>,
-    loaded: Option<(crate::plex::ServerId, &str, Option<i64>)>, detail_loading: bool, season_loading: bool) -> bool {
+fn detail_boot_ready(sid: plx_plex::plex::ServerId, rk: &str, want_season: Option<i64>,
+    loaded: Option<(plx_plex::plex::ServerId, &str, Option<i64>)>, detail_loading: bool, season_loading: bool) -> bool {
     !detail_loading && !season_loading && loaded.is_some_and(|(server, key, season)|
         server == sid && key == rk && want_season.is_none_or(|wanted| season == Some(wanted)))
 }
@@ -756,7 +756,7 @@ mod content_boot_tests {
 
     #[test]
     fn delayed_detail_and_season_landings_do_not_consume_headless_directions() {
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         let mut boot = ContentBoot { sid, rk: "1001".into(), season: Some(2), down: 2, right: 1,
             activate: true, filmography: false, bio: false, waiting_person: false, ready_seen: false };
         let ready_for = |loaded, d, sl| detail_boot_ready(sid, "1001", Some(2), loaded, d, sl);
@@ -791,7 +791,7 @@ mod content_boot_tests {
 /// not covered by a host test; a full `App`/SDL frame would be needed to reach it).
 pub(crate) fn apply_search_boot_trigger(
     q: &str,
-    d: &mut crate::ui::dispatch::Dispatcher<crate::app::bridge::AppHost>,
+    d: &mut plx_ui::dispatch::Dispatcher<crate::app::bridge::AppHost>,
     bridge: &mut crate::app::bridge::Bridge,
 ) {
     bridge.search_run(crate::stores::search::SearchCmd::SetQuery(q.trim().to_string()));
@@ -1128,7 +1128,7 @@ fn collection_arm(app: &mut App, fr: &mut Frame) -> bool {
         }
     };
     crate::app::bridge::nav_push(&mut app.pages, AppArg::Content(
-        crate::screens::registry::ContentArg::Collection(crate::plex::collections::CollectionRef::by_rk(
+        crate::screens::registry::ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_rk(
             sid, &rk, 0, plx_platform::i18n::msg::browse_collection_kind()))));
     #[cfg(feature = "devtriggers")]
     plx_base::eventlog::log(&format!("plxnative-collection: rk={rk} server={} start", sid.raw()));
@@ -1193,7 +1193,7 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
         return;
     }
     let leaf = app.bridge.metadata_view().current()
-        .filter(|d| crate::plex::same_item((d.sid, &d.rk), (sid, &rk)))
+        .filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, &rk)))
         .map(|d| {
             if !d.part.is_empty() {
                 (d.part.clone(), d.vcodec.clone(), d.acodec.clone(), d.title.clone(), d.resume_ms, d.dur_ms)
@@ -1933,7 +1933,7 @@ pub(crate) fn controlled_each_frame(app: &mut App, fr: &mut Frame) -> bool {
         && fr.now.wrapping_sub(app.t0) > 500 {
         app.scenarios.detail_tried = true;
         if let Some(input) = app.boot_initial.as_ref().and_then(|init| init.content.as_ref()) {
-            let sid = crate::plex::ServerId::from_raw(0);
+            let sid = plx_plex::plex::ServerId::from_raw(0);
             app.scenarios.content_boot = Some(ContentBoot::controlled(sid, input));
             crate::app::bridge::open_detail(&mut app.pages, &mut app.bridge, sid, &input.detail, None, None);
         }
@@ -1987,7 +1987,7 @@ pub(crate) fn nav_osc_tick(app: &mut App, now: u32) {
             AppArg::Home if !app.scenarios.dev.nav_osc_rk.is_empty() => {
                 let rk = app.scenarios.dev.nav_osc_rk.clone();
                 crate::app::bridge::open_detail(&mut app.pages, &mut app.bridge,
-                    crate::plex::current_server(), &rk, None, None);
+                    plx_plex::plex::current_server(), &rk, None, None);
             }
             AppArg::Content(_) => crate::app::bridge::nav_pop(&mut app.pages),
             AppArg::Home => {
@@ -2035,9 +2035,9 @@ pub(crate) fn home_fold_osc_tick(app: &mut App, now: u32) {
 pub(crate) fn home_osc_tick(app: &mut App, now: u32) {
     if app.scenarios.dev.home_osc && now.wrapping_sub(app.scenarios.home_osc_last) > 350 {
         app.scenarios.home_osc_last = now;
-        let sym = if (now / 3000) % 2 == 0 { crate::ui::consts::SDLK_DOWN } else { crate::ui::consts::SDLK_UP };
+        let sym = if (now / 3000) % 2 == 0 { plx_ui::consts::SDLK_DOWN } else { plx_ui::consts::SDLK_UP };
         app.inputs.extend(crate::app::bridge::script_key(
-            if sym == crate::ui::consts::SDLK_DOWN { Key::Down } else { Key::Up },
+            if sym == plx_ui::consts::SDLK_DOWN { Key::Down } else { Key::Up },
             Tick { ms: now, dt_us: 0 }));
     }
 }
@@ -2063,9 +2063,9 @@ pub(crate) fn lib_switch_tick(app: &mut App, now: u32) {
 pub(crate) fn search_osc_tick(app: &mut App, now: u32) {
     if matches!(app.route(), AppArg::Search) && app.scenarios.dev.search_osc && now.wrapping_sub(app.scenarios.search_osc_last) > 350 {
         app.scenarios.search_osc_last = now;
-        let sym = if (now / 3000) % 2 == 0 { crate::ui::consts::SDLK_DOWN } else { crate::ui::consts::SDLK_UP };
+        let sym = if (now / 3000) % 2 == 0 { plx_ui::consts::SDLK_DOWN } else { plx_ui::consts::SDLK_UP };
         app.inputs.extend(crate::app::bridge::script_key(
-            if sym == crate::ui::consts::SDLK_DOWN { Key::Down } else { Key::Up },
+            if sym == plx_ui::consts::SDLK_DOWN { Key::Down } else { Key::Up },
             Tick { ms: now, dt_us: 0 }));
     }
 }
@@ -2176,7 +2176,7 @@ fn push_bench_open(app: &mut App, target: bench::PushTarget) -> bench::PushTarge
         bench::PushTarget::Detail => {
             let rk = app.scenarios.push_bench.as_ref().unwrap().rk.clone();
             crate::app::bridge::open_detail(&mut app.pages, &mut app.bridge,
-                crate::plex::current_server(), &rk, None, None);
+                plx_plex::plex::current_server(), &rk, None, None);
             bench::PushTarget::Detail
         }
         bench::PushTarget::Person => {
@@ -2295,7 +2295,7 @@ fn modal_bench_open(app: &mut App, target: bench::ModalTarget) {
         bench::ModalTarget::ItemMenu => {
             let Some(host) = app.pages.nav.top_page().map(|e| e.id) else { return };
             let rk = app.scenarios.modal_bench.as_ref().unwrap().rk.clone();
-            let sid = crate::plex::current_server();
+            let sid = plx_plex::plex::current_server();
             let anchor_rect = crate::screens::item_menu::fallback_anchor();
             let arg = ItemMenuArg {
                 sid,
@@ -2389,7 +2389,7 @@ fn deep_bench_open(app: &mut App, target: bench::PushTarget) -> bench::PushTarge
         bench::PushTarget::Detail => {
             let rk = app.scenarios.deep_bench.as_ref().unwrap().rk.clone();
             crate::app::bridge::open_detail(&mut app.pages, &mut app.bridge,
-                crate::plex::current_server(), &rk, None, None);
+                plx_plex::plex::current_server(), &rk, None, None);
             bench::PushTarget::Detail
         }
         bench::PushTarget::Person => {
@@ -2577,7 +2577,7 @@ pub(crate) fn consent_override() -> Option<String> {
 /// names in the binary's bytes, where `ci/check-package.py` grades them.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
-    crate::ui::rec::mode_value(&plx_base::devtrig::path("rec")).map_err(|_| "invalid recorder trigger")
+    plx_ui::rec::mode_value(&plx_base::devtrig::path("rec")).map_err(|_| "invalid recorder trigger")
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
@@ -2587,7 +2587,7 @@ pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
 /// `/tmp/plxnative-recplay` — see [`rec_trigger`].
 #[cfg(feature = "devtriggers")]
 pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
-    crate::ui::rec::mode_value(&plx_base::devtrig::path("recplay")).map_err(|_| "invalid replay trigger")
+    plx_ui::rec::mode_value(&plx_base::devtrig::path("recplay")).map_err(|_| "invalid replay trigger")
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
@@ -2600,7 +2600,7 @@ pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
 #[cfg(feature = "devtriggers")]
 pub(crate) fn app_init_value() -> Option<Result<serde_json::Value, &'static str>> {
     plx_base::devtrig::flag("app-init").then(|| {
-        crate::ui::rec::initial_value(&plx_base::devtrig::path("app-init"))
+        plx_ui::rec::initial_value(&plx_base::devtrig::path("app-init"))
             .map_err(|_| "invalid explicit initial input")
     })
 }

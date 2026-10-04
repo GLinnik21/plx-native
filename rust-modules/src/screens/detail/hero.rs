@@ -25,11 +25,11 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
 
 use crate::metadata::{Detail, Episode, Extra};
-use crate::ui::label::HAlign;
+use plx_ui::label::HAlign;
 use plx_machine::machine::{GroupId, Measure};
-use crate::ui::text_view::TextView;
-use crate::ui::widgets::{CircleButton, PosterMark};
-use crate::ui::{theme, Painter, Rect};
+use plx_ui::text_view::TextView;
+use plx_ui::widgets::{CircleButton, PosterMark};
+use plx_ui::{theme, Painter, Rect};
 
 /// The hero's whole `u32` elem namespace. A later Detail package's own range must start here.
 pub(crate) const HERO_ELEM_RANGE_END: u32 = 64;
@@ -52,15 +52,15 @@ const PW: f32 = 168.0;
 
 /// The row's inter-control air and its disc diameter — the SHARED control-family numbers
 /// (`ui::widgets::CTRL_GAP`/`StatusOverlay::CTRL_H`), not a second copy of them.
-const CGAP: f32 = crate::ui::widgets::CTRL_GAP;
-pub(crate) const CD: f32 = crate::ui::widgets::StatusOverlay::CTRL_H;
+const CGAP: f32 = plx_ui::widgets::CTRL_GAP;
+pub(crate) const CD: f32 = plx_ui::widgets::StatusOverlay::CTRL_H;
 const PEOPLE_MAX_LINES: usize = 2;
 const PEOPLE_CAST: usize = 3;
 const PEOPLE_LABEL_INK: [f32; 4] = theme::TEXT_TERTIARY;
 const FACTS_SEP_PAD: f32 = theme::space::SM;
-const FACTS_R: f32 = crate::ui::consts::SCR_W
-    - crate::ui::consts::MARGIN_X
-    - crate::ui::detail_layout::PEOPLE_W
+const FACTS_R: f32 = plx_ui::consts::SCR_W
+    - plx_ui::consts::MARGIN_X
+    - plx_ui::detail_layout::PEOPLE_W
     - theme::space::SM;
 
 /// Duplicated from `widgets::Button`'s own PRIVATE `BTN_ICON_RATIO`/`BTN_ICON_GAP` (1.15, 12.0):
@@ -345,7 +345,7 @@ fn pill_w(measure: &dyn Measure, label: &CStr, sz: i32, icon: bool, trailing: bo
     } else {
         (0.0, 0.0)
     };
-    isz + gap + measure.width(label, sz, true) + tgap + tsz + crate::ui::widgets::BTN_PILL_AIR
+    isz + gap + measure.width(label, sz, true) + tgap + tsz + plx_ui::widgets::BTN_PILL_AIR
 }
 
 pub(crate) fn hero_pill_w(measure: &dyn Measure, has_restart: bool) -> f32 {
@@ -377,7 +377,7 @@ pub(crate) struct HeroWidths {
 /// measured widths. Ported verbatim from `ui/detail.rs::hero_btn_rect_at`.
 pub(crate) fn hero_btn_rect_at(set: HeroSet, i: usize, y: f32, cw: HeroWidths) -> Rect {
     let (v, n) = hero_ctls(set);
-    let mut x = crate::ui::consts::MARGIN_X;
+    let mut x = plx_ui::consts::MARGIN_X;
     let mut w = cw.pill;
     for (k, c) in v[..n].iter().enumerate() {
         w = match c {
@@ -499,8 +499,8 @@ pub(crate) fn has_people(d: &Detail) -> bool {
 }
 
 pub(crate) fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure) {
-    use crate::ui::detail_layout::PEOPLE_W;
-    let x = crate::ui::consts::SCR_W - crate::ui::consts::MARGIN_X - PEOPLE_W;
+    use plx_ui::detail_layout::PEOPLE_W;
+    let x = plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X - PEOPLE_W;
     let mut bottom = button_y + CD;
     if !d.cast.is_empty() {
         let names: Vec<&str> = d
@@ -517,7 +517,7 @@ pub(crate) fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn M
 }
 
 fn people_line(p: Painter, label: &str, names: &[&str], x: f32, bottom: f32, measure: &dyn Measure) -> f32 {
-    use crate::ui::detail_layout::{PEOPLE_INK, PEOPLE_LEAD, PEOPLE_W};
+    use plx_ui::detail_layout::{PEOPLE_INK, PEOPLE_LEAD, PEOPLE_W};
     let names = names
         .iter()
         .map(|name| name.replace(' ', "\u{a0}"))
@@ -535,10 +535,10 @@ fn people_line(p: Painter, label: &str, names: &[&str], x: f32, bottom: f32, mea
 
 fn hero_facts(d: &Detail) -> (String, Option<String>) {
     if let Some(ep) = hero_episode(d) {
-        let runtime = (ep.dur_ms >= 60_000).then(|| crate::ui::fmt::dur_long(ep.dur_ms));
-        return (crate::ui::fmt::pretty_date(&ep.aired, 0), runtime);
+        let runtime = (ep.dur_ms >= 60_000).then(|| plx_ui::fmt::dur_long(ep.dur_ms));
+        return (plx_ui::fmt::pretty_date(&ep.aired, 0), runtime);
     }
-    let date = crate::ui::fmt::pretty_date(&d.aired, d.year);
+    let date = plx_ui::fmt::pretty_date(&d.aired, d.year);
     if d.is_show {
         let seasons = d.seasons.len();
         if seasons == 0 {
@@ -553,7 +553,7 @@ fn hero_facts(d: &Detail) -> (String, Option<String>) {
     }
     (
         date,
-        (d.dur_ms >= 60_000).then(|| crate::ui::fmt::dur_long(d.dur_ms)),
+        (d.dur_ms >= 60_000).then(|| plx_ui::fmt::dur_long(d.dur_ms)),
     )
 }
 
@@ -567,10 +567,10 @@ enum PlayNote {
 fn play_note(
     preview: crate::route::Preview,
     hdr: bool,
-    subscription: crate::plex::serverinfo::Subscription,
+    subscription: plx_plex::plex::serverinfo::Subscription,
 ) -> PlayNote {
     let converts = preview == crate::route::Preview::Converts;
-    let no_pass = subscription == crate::plex::serverinfo::Subscription::No;
+    let no_pass = subscription == plx_plex::plex::serverinfo::Subscription::No;
     if converts && no_pass && hdr {
         PlayNote::Warn
     } else if converts && no_pass {
@@ -580,8 +580,8 @@ fn play_note(
     }
 }
 
-fn item_subscription(d: &Detail) -> crate::plex::serverinfo::Subscription {
-    crate::plex::serverinfo::subscription_of(d.sid)
+fn item_subscription(d: &Detail) -> plx_plex::plex::serverinfo::Subscription {
+    plx_plex::plex::serverinfo::subscription_of(d.sid)
 }
 
 const FACTS_GLYPH_D: f32 = theme::size::CAPTION as f32;
@@ -618,11 +618,11 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
                 crate::route::Preview::Remux => plx_platform::i18n::msg::browse_detail_direct_stream_c(),
                 crate::route::Preview::Converts => converts_on_server_c(),
             },
-            crate::ui::detail_layout::FACTS_INK,
+            plx_ui::detail_layout::FACTS_INK,
             0,
         )),
         PlayNote::Soft => {
-            push(Bit::Word(converts_on_server_c(), crate::ui::detail_layout::FACTS_INK, 0));
+            push(Bit::Word(converts_on_server_c(), plx_ui::detail_layout::FACTS_INK, 0));
             push(Bit::Sep(theme::space::SM));
             push(Bit::Word(
                 plx_platform::i18n::msg::browse_detail_hardware_needs_c(),
@@ -651,7 +651,7 @@ fn bit_w(bit: Bit, measure: &dyn plx_machine::machine::Measure) -> f32 {
         Bit::Sep(gap) => 2.0 * gap + measure.width(c"\u{b7}", theme::size::CAPTION, false),
         Bit::Glyph => FACTS_GLYPH_D,
         Bit::Air(gap) => gap,
-        Bit::Capsule => crate::ui::widgets::pass_capsule_w(measure),
+        Bit::Capsule => plx_ui::widgets::pass_capsule_w(measure),
     }
 }
 
@@ -690,16 +690,16 @@ fn draw_play_mode(
                 bx += bit_w(*bit, measure);
             }
             Bit::Glyph => {
-                crate::ui::icons::draw(
+                plx_ui::icons::draw(
                     p,
-                    crate::ui::icons::Icon::Alert,
+                    plx_ui::icons::Icon::Alert,
                     Rect::new(bx, cy - FACTS_GLYPH_D * 0.5, FACTS_GLYPH_D, FACTS_GLYPH_D),
                     theme::TEXT_SECONDARY,
                 );
                 bx += FACTS_GLYPH_D;
             }
             Bit::Air(gap) => bx += gap,
-            Bit::Capsule => bx += crate::ui::widgets::pass_capsule(p, bx, cy, false, measure),
+            Bit::Capsule => bx += plx_ui::widgets::pass_capsule(p, bx, cy, false, measure),
         }
     }
     bx - x
@@ -755,7 +755,7 @@ fn facts_flow(
         if any {
             dx += separator(&mut run, dx);
         }
-        dx += run(part, dx, theme::size::CAPTION, crate::ui::detail_layout::FACTS_INK);
+        dx += run(part, dx, theme::size::CAPTION, plx_ui::detail_layout::FACTS_INK);
         any = true;
     }
     let mode_w = mode(dx, any);
@@ -765,7 +765,7 @@ fn facts_flow(
         if any {
             dx += separator(&mut run, dx);
         }
-        dx += run(credit, dx, theme::size::CAPTION, crate::ui::detail_layout::FACTS_INK);
+        dx += run(credit, dx, theme::size::CAPTION, plx_ui::detail_layout::FACTS_INK);
     }
     dx
 }
@@ -773,7 +773,7 @@ fn facts_flow(
 pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) {
     let (date, extent) = hero_facts(d);
     let extent = extent.as_deref().unwrap_or("");
-    let credit = crate::ui::fmt::shared_by(&d.source()).unwrap_or_default();
+    let credit = plx_ui::fmt::shared_by(&d.source()).unwrap_or_default();
     let width = |fit: FactsFit| {
         facts_flow(
             &[date.as_str(), if fit.extent { extent } else { "" }],
@@ -784,12 +784,12 @@ pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machi
     };
     let fit = facts_fit(
         !credit.is_empty(),
-        FACTS_R - crate::ui::consts::MARGIN_X,
+        FACTS_R - plx_ui::consts::MARGIN_X,
         width,
     );
     let elided;
     let date = if fit.elide {
-        let budget = (FACTS_R - crate::ui::consts::MARGIN_X - play_mode_w(d, true, measure)).max(0.0);
+        let budget = (FACTS_R - plx_ui::consts::MARGIN_X - play_mode_w(d, true, measure)).max(0.0);
         elided = plx_gfx::text::elide_by(&date, budget, false, |t| {
             measure.width_str(t, theme::size::CAPTION, false)
         });
@@ -806,7 +806,7 @@ pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machi
                 .map(|text| {
                     p.text(
                         text.as_ptr(),
-                        crate::ui::consts::MARGIN_X + dx,
+                        plx_ui::consts::MARGIN_X + dx,
                         y,
                         size,
                         color,
@@ -816,7 +816,7 @@ pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machi
                 })
                 .unwrap_or(0.0)
         },
-        |dx, after| draw_play_mode(p, d, crate::ui::consts::MARGIN_X + dx, y, after, measure),
+        |dx, after| draw_play_mode(p, d, plx_ui::consts::MARGIN_X + dx, y, after, measure),
     );
 }
 
@@ -1080,13 +1080,13 @@ mod tests {
     fn the_two_spellings_of_the_conversion_notice_are_the_same_bytes() {
         assert_eq!(
             converts_on_server_c().to_str().unwrap(),
-            crate::ui::fmt::converts_on_server()
+            plx_ui::fmt::converts_on_server()
         );
     }
 
     #[test]
     fn how_it_plays_resolves_the_full_docs_truth_table() {
-        use crate::plex::serverinfo::Subscription::{No, Unknown, Yes};
+        use plx_plex::plex::serverinfo::Subscription::{No, Unknown, Yes};
         use crate::route::Preview::{Converts, DirectPlay, Remux};
         for preview in [DirectPlay, Remux, Converts] {
             for hdr in [false, true] {
@@ -1105,17 +1105,17 @@ mod tests {
     #[test]
     fn the_pass_note_judges_the_items_own_server_not_the_browsed_one() {
         let _guard = plx_base::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        let own = crate::plex::register_for_test("own", "127.0.0.1", 1, "t", "c1");
-        let shared = crate::plex::register_for_test("shared", "127.0.0.2", 2, "t", "c2");
-        crate::plex::serverinfo::store_for_test(
+        plx_plex::plex::reset_servers_for_test();
+        let own = plx_plex::plex::register_for_test("own", "127.0.0.1", 1, "t", "c1");
+        let shared = plx_plex::plex::register_for_test("shared", "127.0.0.2", 2, "t", "c2");
+        plx_plex::plex::serverinfo::store_for_test(
             own,
-            crate::plex::serverinfo::Subscription::Yes,
+            plx_plex::plex::serverinfo::Subscription::Yes,
             "1",
         );
-        crate::plex::serverinfo::store_for_test(
+        plx_plex::plex::serverinfo::store_for_test(
             shared,
-            crate::plex::serverinfo::Subscription::No,
+            plx_plex::plex::serverinfo::Subscription::No,
             "1",
         );
         let borrowed = Detail {
@@ -1128,13 +1128,13 @@ mod tests {
         };
         assert_eq!(
             item_subscription(&borrowed),
-            crate::plex::serverinfo::Subscription::No
+            plx_plex::plex::serverinfo::Subscription::No
         );
         assert_eq!(
             item_subscription(&ours),
-            crate::plex::serverinfo::Subscription::Yes
+            plx_plex::plex::serverinfo::Subscription::Yes
         );
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
@@ -1345,7 +1345,7 @@ mod tests {
     #[test]
     fn the_optimistic_flip_settles_a_leaf_at_once_and_a_container_a_round_trip_late() {
         let _guard = plx_base::testlock::serial();
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
             sid,
             rk: "movie".into(),
@@ -1499,7 +1499,7 @@ mod tests {
 
     #[test]
     fn the_real_verbs_all_fit_the_widest_row() {
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let wide = HeroSet {
             restart: true,
             trailer: true,
@@ -1736,9 +1736,9 @@ mod tests {
     fn the_trailer_unfurl_spring_reports_while_opening_and_is_quiet_at_rest() {
         let _g = plx_base::testlock::serial();
         plx_machine::idle::reset_for_test();
-        let mut springs = [crate::ui::Spring::at(0.0); 3];
+        let mut springs = [plx_ui::Spring::at(0.0); 3];
         for spring in springs.iter_mut() {
-            spring.step(0.0, crate::ui::widgets::K_DISC_UNFURL, 1.0 / 60.0);
+            spring.step(0.0, plx_ui::widgets::K_DISC_UNFURL, 1.0 / 60.0);
             assert!(
                 spring.pos.abs() < 0.01 && spring.vel.abs() < 0.01,
                 "a trailer=false set must not keep springs moving"
@@ -1754,7 +1754,7 @@ mod tests {
         );
 
         plx_machine::idle::frame_begin(1.0 / 60.0);
-        springs[1].step(1.0, crate::ui::widgets::K_DISC_UNFURL, 1.0 / 60.0);
+        springs[1].step(1.0, plx_ui::widgets::K_DISC_UNFURL, 1.0 / 60.0);
         assert!(
             plx_machine::idle::should_present(10_032),
             "opening the trailer disc reports motion"
@@ -1763,7 +1763,7 @@ mod tests {
 
         for _ in 0..240 {
             plx_machine::idle::frame_begin(1.0 / 60.0);
-            springs[1].step(1.0, crate::ui::widgets::K_DISC_UNFURL, 1.0 / 60.0);
+            springs[1].step(1.0, plx_ui::widgets::K_DISC_UNFURL, 1.0 / 60.0);
         }
         assert!(
             (springs[1].pos - 1.0).abs() < 0.01 && springs[1].vel.abs() < 0.01,

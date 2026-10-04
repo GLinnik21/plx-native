@@ -43,12 +43,12 @@
 //! been the third. The discrete transitions ([`open`]/[`close`]/[`move_focus`]) still call
 //! `idle::invalidate` because a state change is not motion.
 use crate::person::Person;
-use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
-use crate::ui::label::{Label, VAlign};
-use crate::ui::text_view::TextView;
-use crate::ui::theme;
-use crate::ui::widgets;
-use crate::ui::{Painter, Rect, Spring};
+use plx_ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
+use plx_ui::label::{Label, VAlign};
+use plx_ui::text_view::TextView;
+use plx_ui::theme;
+use plx_ui::widgets;
+use plx_ui::{Painter, Rect, Spring};
 use std::ffi::CString;
 use std::os::raw::c_uint;
 
@@ -59,7 +59,7 @@ use std::os::raw::c_uint;
 const PANEL_W: f32 = 1120.0;
 /// **676, and it was 700 until 2026-08-22** — the design's figure less the 24px this panel used to
 /// leave under its BACK hint, exactly as its two siblings were trimmed. See
-/// [`crate::ui::widgets::KeyHint::pad_below`] for the argument and [`content_rect`] for why the body
+/// [`plx_ui::widgets::KeyHint::pad_below`] for the argument and [`content_rect`] for why the body
 /// does not lose those 24 with it.
 const PANEL_H: f32 = 676.0;
 /// The one padding, on all four sides. Quoted with [`theme::ALERT_PANEL_RAD`] because the two constrain
@@ -109,7 +109,7 @@ pub(crate) const SHAPE: &str = "PersonBioScreen{page:usize,scroll:Spring{pos:f32
 
 /// **How far the sheet rises as it appears, in px** — `Popover::RISE`, the one number the whole
 /// panel family shares. The container owns the spring; this is only the distance it drives.
-const RISE: f32 = crate::ui::popover::Popover::RISE;
+const RISE: f32 = plx_ui::popover::Popover::RISE;
 
 /// The person page's biography, in full. Presented on that page's own `ModalStack`
 /// (`registry::ContentPanel::Bio`), dismissed by BACK; UP/DOWN page the prose.
@@ -168,8 +168,8 @@ impl PersonBioScreen {
         let (_, pages) = person.map(page_state).unwrap_or((0.0, 1));
         self.page = self.page.clamp(1, pages);
         let want = person.map(|person| scroll_for_page(person, self.page)).unwrap_or(0.0);
-        self.scroll.step(want, crate::ui::consts::K_SCROLL, dt);
-        crate::ui::anim::probe("personbio.scroll", self.scroll.pos, self.scroll.vel, want, dt);
+        self.scroll.step(want, plx_ui::consts::K_SCROLL, dt);
+        plx_ui::anim::probe("personbio.scroll", self.scroll.pos, self.scroll.vel, want, dt);
         // No per-frame `note_own_damage` here: the container's own-motion scope attributes this
         // spring AND every invalidate this step raises to the panel, and a claim made per frame
         // with no invalidate behind it over-counts — on a frame where a poster landed on the page
@@ -184,12 +184,12 @@ impl PersonBioScreen {
         person: &Person,
         appear: f32,
         measure: &dyn plx_machine::machine::Measure,
-        field: Option<&crate::ui::underlay::UnderlayField>,
+        field: Option<&plx_ui::underlay::UnderlayField>,
     ) {
         let slide = RISE * (1.0 - appear);
         let p = Painter::root().alpha(appear).translate(0.0, slide);
         let panel = panel_rect();
-        crate::ui::widgets::panel_ground(p, panel, theme::ALERT_PANEL_RAD, field);
+        plx_ui::widgets::panel_ground(p, panel, theme::ALERT_PANEL_RAD, field);
 
         let c = content_rect();
         draw_head(p, person, c, measure);
@@ -216,7 +216,7 @@ impl PersonBioScreen {
 }
 
 impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike> plx_machine::machine::Machine<H> for PersonBioScreen {
-    type Ev = crate::ui::screen::ScreenEvent<H>;
+    type Ev = plx_ui::screen::ScreenEvent<H>;
     fn step(
         &mut self,
         ev: &Self::Ev,
@@ -224,7 +224,7 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike
         fx: &mut plx_machine::machine::Effects<'_, H>,
     ) -> plx_machine::machine::Handled {
         use plx_machine::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
-        use crate::ui::screen::ScreenEvent;
+        use plx_ui::screen::ScreenEvent;
         match ev {
             ScreenEvent::Tick(t) => {
                 self.tick(t.dt(), H::person(cx).current());
@@ -269,25 +269,25 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike
 /// the same `FocusEngine` entry points `ui/dispatch.rs` calls. The page cursor stays exactly what
 /// it always was: `Self::page`, moved by `step_page` from the screen's own `step`, sprung to by
 /// `tick` — the engine has no opinion about it, under either source.
-impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike> crate::ui::screen::Focusable<H> for PersonBioScreen {
-    fn groups(&self, _cx: &plx_machine::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike> plx_ui::screen::Focusable<H> for PersonBioScreen {
+    fn groups(&self, _cx: &plx_machine::machine::Cx<'_, H>, _out: &mut Vec<plx_ui::screen::GroupSpec>) {}
     fn group_of(&self, _key: &u32, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<plx_machine::machine::GroupId> {
         None
     }
     fn neighbour(
         &self,
         _key: plx_machine::machine::FocusKey<u32>,
-        _dir: crate::ui::screen::Dir,
+        _dir: plx_ui::screen::Dir,
         _cx: &plx_machine::machine::Cx<'_, H>,
-    ) -> crate::ui::screen::Step<u32> {
-        crate::ui::screen::Step::Edge
+    ) -> plx_ui::screen::Step<u32> {
+        plx_ui::screen::Step::Edge
     }
     fn place(
         &self,
         _key: &u32,
         _cx: &plx_machine::machine::Cx<'_, H>,
-        _at: crate::ui::screen::At,
-    ) -> Option<crate::ui::screen::Placed> {
+        _at: plx_ui::screen::At,
+    ) -> Option<plx_ui::screen::Placed> {
         None
     }
     fn reconcile(
@@ -300,7 +300,7 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike
     fn seat(
         &self,
         _g: plx_machine::machine::GroupId,
-        _from: crate::ui::screen::Placed,
+        _from: plx_ui::screen::Placed,
         _cx: &plx_machine::machine::Cx<'_, H>,
     ) -> plx_machine::machine::FocusKey<u32> {
         plx_machine::machine::FocusKey { entry: self.entry, elem: 0 }
@@ -316,7 +316,7 @@ impl plx_machine::machine::LogicalState for PersonBioScreen {
     }
 }
 
-impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike> crate::ui::screen::Screen<H> for PersonBioScreen {
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike> plx_ui::screen::Screen<H> for PersonBioScreen {
     fn name(&self) -> &'static str {
         "bio"
     }
@@ -326,7 +326,7 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike
     fn crumb(&self, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &plx_machine::machine::Cx<'_, H>) {}
+    fn prepare(&mut self, _b: &mut plx_ui::frame::Budget, _cx: &plx_machine::machine::Cx<'_, H>) {}
     /// The page dim, at the PROSE role. Heavier than a menu's on purpose — see the module doc's
     /// point 1: this page draws the person's own name at `size::DISPLAY` directly behind this
     /// sheet's top corner, and the page around a panel of fine print should recede further than
@@ -334,10 +334,10 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike
     /// `theme::SCRIM_TEXT_A` as this role's weight.
     ///
     /// Nothing is lifted: the sheet replaces the middle of the frame and holds no control.
-    fn scrim(&self) -> crate::ui::screen::Scrim {
-        crate::ui::screen::Scrim::dim(theme::underlay::DIM_PROSE)
+    fn scrim(&self) -> plx_ui::screen::Scrim {
+        plx_ui::screen::Scrim::dim(theme::underlay::DIM_PROSE)
     }
-    fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
+    fn draw(&mut self, f: &mut plx_ui::screen::DrawFrame<'_, '_, H>) {
         // **A surface is never part of a blur source.** The direct blur-source path (the chrome's
         // glass — the only glass there is) re-renders the host page into a small target; a
         // panel drawn into it would be blurred into the bar under its own frost.
@@ -348,16 +348,16 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike
         let appear = f.page_alpha;
         let measure = f.measure;
         let field = f.underlay;
-        crate::ui::profile::phase("dt.bio", || self.paint(person, appear, measure, field));
+        plx_ui::profile::phase("dt.bio", || self.paint(person, appear, measure, field));
     }
-    fn render(&self) -> crate::ui::screen::RenderStrategy {
-        crate::ui::screen::RenderStrategy::Page
+    fn render(&self) -> plx_ui::screen::RenderStrategy {
+        plx_ui::screen::RenderStrategy::Page
     }
-    fn focus_source(&self) -> crate::ui::screen::FocusSource {
-        crate::ui::screen::FocusSource::Engine
+    fn focus_source(&self) -> plx_ui::screen::FocusSource {
+        plx_ui::screen::FocusSource::Engine
     }
-    fn hit_source(&self) -> crate::ui::screen::HitSource {
-        crate::ui::screen::HitSource::Engine
+    fn hit_source(&self) -> plx_ui::screen::HitSource {
+        plx_ui::screen::HitSource::Engine
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -587,8 +587,8 @@ fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::ma
 
     let runs = meta_runs(
         &person.roles.join(", "),
-        &crate::ui::fmt::pretty_date(&person.born, 0),
-        &crate::ui::fmt::pretty_date(&person.died, 0),
+        &plx_ui::fmt::pretty_date(&person.born, 0),
+        &plx_ui::fmt::pretty_date(&person.died, 0),
         &person.birthplace,
     );
     if !runs.is_empty() {
@@ -620,7 +620,7 @@ fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::ma
 /// clear of the clip are still paired inside this one function, because the scissor is global GL
 /// state.
 ///
-/// Paragraphs off the viewport are CULLED through the shared [`crate::ui::on_axis`] rather than
+/// Paragraphs off the viewport are CULLED through the shared [`plx_ui::on_axis`] rather than
 /// merely clipped: a `TextView::draw` submits every one of its wrapped lines, so a long biography
 /// would otherwise pay for the whole document on every frame of a page transition.
 fn draw_bio(p: Painter, person: &Person, view: Rect, scroll: f32, max_scroll: f32) {
@@ -636,7 +636,7 @@ fn draw_bio(p: Painter, person: &Person, view: Rect, scroll: f32, max_scroll: f3
     for para in paras {
         let v = para_view(para).edge_fade(top, bot);
         let h = v.measure_h(w);
-        if crate::ui::on_axis(y - view.y, h, view.h, 0.0) {
+        if plx_ui::on_axis(y - view.y, h, view.h, 0.0) {
             v.draw(p, Rect::new(view.x, y, w, 0.0));
         }
         y += h + PARA_GAP;
@@ -727,7 +727,7 @@ mod tests {
     /// track across the pages, and that the LAST page's fill ends on the track's end.
     #[test]
     fn the_rail_fill_walks_its_track_and_ends_flush() {
-        use crate::ui::widgets::rail_geom;
+        use plx_ui::widgets::rail_geom;
         // a single page is not railed at all, but the geometry still answers sanely
         assert_eq!(rail_geom(1, 1), (0.0, 1.0));
 
@@ -870,7 +870,7 @@ mod tests {
         Source, Stamped, Tick,
     };
     use plx_machine::present::Present;
-    use crate::ui::screen::{ScreenArg, ScreenEvent};
+    use plx_ui::screen::{ScreenArg, ScreenEvent};
 
     #[derive(Clone, PartialEq, Eq)]
     struct TestArg;
@@ -918,7 +918,7 @@ mod tests {
 
     const ENTRY: EntryId = EntryId(7);
 
-    fn cx(measure: &crate::ui::fixture::FixtureMeasure) -> Cx<'_, TestHost> {
+    fn cx(measure: &plx_ui::fixture::FixtureMeasure) -> Cx<'_, TestHost> {
         Cx {
             views: crate::person::PersonView::default(),
             tick: Tick::default(),
@@ -931,7 +931,7 @@ mod tests {
 
     /// What one input does to a fresh panel: the effects it emitted, and whether it was consumed.
     fn press(kind: InputKind<u32>) -> (Vec<Stamped<TestHost>>, Handled) {
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let cx = cx(&measure);
         let (mut out, mut present) = (Vec::new(), Present::new());
         let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Nav, &mut present);
@@ -1030,11 +1030,11 @@ mod tests {
     /// dispatcher itself (a sibling dependency the layer gate forbids this module from taking).
     #[test]
     fn engine_paths_are_inert_on_a_panel_with_no_focusable_element() {
-        use crate::ui::focus::{FocusEngine, Outcome};
+        use plx_ui::focus::{FocusEngine, Outcome};
         use plx_machine::machine::GroupId;
-        use crate::ui::screen::FocusTarget;
+        use plx_ui::screen::FocusTarget;
 
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let cx = cx(&measure);
         let panel = PersonBioScreen::new(ENTRY);
         let owner = InputOwner::Entry(ENTRY);
@@ -1056,13 +1056,13 @@ mod tests {
         // The page cursor itself is unaffected — it only ever moves from `step_page`/`tick`.
         assert_eq!(panel.page, 1);
 
-        use crate::ui::screen::Screen;
+        use plx_ui::screen::Screen;
         assert_eq!(
             (
                 Screen::<TestHost>::focus_source(&panel),
                 Screen::<TestHost>::hit_source(&panel),
             ),
-            (crate::ui::screen::FocusSource::Engine, crate::ui::screen::HitSource::Engine),
+            (plx_ui::screen::FocusSource::Engine, plx_ui::screen::HitSource::Engine),
             "the conversion this test guards"
         );
     }

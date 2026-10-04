@@ -3,7 +3,7 @@
 Every `Screen` impl the dispatcher mounts, steps, focuses and draws lives here: 82 files across
 this directory and the `detail/`, `home/`, `library/`, `player/` and `search/` families. This is
 the APPLICATION half of the restructure; the library half is `../ui/`, whose
-[`CLAUDE.md`](../ui/CLAUDE.md) carries the token rules, the architecture and the rendering
+[`CLAUDE.md`](../../ui/src/CLAUDE.md) carries the token rules, the architecture and the rendering
 policy. Read that one first — its four rules bind here too.
 
 **`mod.rs` and `registry.rs` already document themselves.** Both carry substantial `//!` docs and
@@ -35,7 +35,7 @@ The spec's done-criterion 5 is a measured claim, not an aspiration: *a new scree
 nothing else.* Two conversions were run to prove it, and
 [`docs/ui-system-migration.md` §(E)](../../../docs/ui-system-migration.md) records what
 `git diff --name-only` actually said for each — the real answer is those four plus `screens/mod.rs`,
-`ui/mod.rs` and `ci/allow/statics-migration.txt`.
+`rust-modules/ui/src/lib.rs` and `ci/allow/statics-migration.txt`.
 
 If your change is reaching further than that list, the design says stop and ask why: the variant,
 the screen id, the `mount` arm and the recorded shape (`SCREEN_SHAPES`) all live in `registry.rs`
@@ -77,7 +77,7 @@ A screen that builds a `TableView` ships a `fit_report` test over its REAL build
 builder that takes its inputs as arguments, as `preferences::field_form` and
 `settings::root_form` do) across `i18n::SHIPPED`, asserting `TableView::app_fit_failures` is empty.
 Text that comes from a server or a user is marked with the `server_*` builders so it is exempt;
-never mark the app's own fallback strings. See `ui/CLAUDE.md`, "Localization and shared reading
+never mark the app's own fallback strings. See `rust-modules/ui/src/CLAUDE.md`, "Localization and shared reading
 layout", for what to do when a string does not fit.
 
 A page on a `ui::form::FormTable` (the Settings root, Playback / Audio & Subtitles, Language, the Legal index, Privacy & data and the item / account / more / track menus, the source list, the Alternate-sources panel and the Library menu)
@@ -93,7 +93,7 @@ Every Settings drill-down is a family-stack push through `family::form_activate`
 
 ## Verifying a screen change
 
-Captures are the check — see the `ui-sim` and `which-tier` skills, and `../ui/CLAUDE.md`'s
+Captures are the check — see the `ui-sim` and `which-tier` skills, and `../../ui/src/CLAUDE.md`'s
 "When you're done". Two traps specific to this directory:
 
 - A screen's `name()` is the heartbeat word and must stay byte-identical to the route word the

@@ -56,9 +56,9 @@ pub(crate) fn event(e: schema::DiagEvent) {
 /// only for that test.
 pub(crate) fn event_for_connection(
     e: schema::DiagEvent,
-    server: crate::plex::ServerId,
-    link: Option<crate::plex::probe::Location>,
-    ip: Option<crate::plex::IpVersion>,
+    server: plx_plex::plex::ServerId,
+    link: Option<plx_plex::plex::probe::Location>,
+    ip: Option<plx_plex::plex::IpVersion>,
 ) {
     event_for(e, ServerContext::Snapshot(server, link, ip));
 }
@@ -68,9 +68,9 @@ pub(crate) fn event_for_connection(
 enum ServerContext {
     None,
     Snapshot(
-        crate::plex::ServerId,
-        Option<crate::plex::probe::Location>,
-        Option<crate::plex::IpVersion>,
+        plx_plex::plex::ServerId,
+        Option<plx_plex::plex::probe::Location>,
+        Option<plx_plex::plex::IpVersion>,
     ),
 }
 

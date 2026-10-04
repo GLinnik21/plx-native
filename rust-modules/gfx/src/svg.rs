@@ -1,5 +1,5 @@
 //! Runtime SVG rasterizer FFI (src/svg.c / nanosvg). Rasterizes a vector icon *asset* to an
-//! RGBA mask at a target pixel size; `crate::ui::icons` uploads that as a GL texture and tints
+//! RGBA mask at a target pixel size; `plx_ui::icons` uploads that as a GL texture and tints
 //! it per state. White where drawn (author icons in #ffffff), alpha = coverage.
 use std::os::raw::{c_char, c_int, c_uchar};
 

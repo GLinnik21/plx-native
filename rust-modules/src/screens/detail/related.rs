@@ -3,10 +3,10 @@
 use crate::metadata::Detail;
 use crate::pms::PmsMovie;
 use crate::screens::registry::tile_facts;
-use crate::ui::card_row::{self, CardRow, RowStyle};
+use plx_ui::card_row::{self, CardRow, RowStyle};
 use plx_machine::machine::GroupId;
-use crate::ui::widgets::Art;
-use crate::ui::{theme, Painter, Rect};
+use plx_ui::widgets::Art;
+use plx_ui::{theme, Painter, Rect};
 
 pub(crate) const RELATED_ELEM_RANGE_START: u32 = 640;
 pub(crate) const RELATED_ELEM_RANGE_END: u32 = 1152;
@@ -14,7 +14,7 @@ pub(crate) const RELATED_GROUP: GroupId = GroupId(3);
 /// Heading cap top to card top — the SHARED shelf pitch (`consts::TITLE_DY + CARD_DY`), the same
 /// 60 a Home or Library shelf puts between its heading and its posters. It was a local 46, so the
 /// one object this page shares with every browsing screen sat 14px tighter here than anywhere else.
-pub(crate) const LABEL_H: f32 = crate::ui::consts::TITLE_DY + crate::ui::consts::CARD_DY;
+pub(crate) const LABEL_H: f32 = plx_ui::consts::TITLE_DY + plx_ui::consts::CARD_DY;
 
 pub(crate) fn elem(index: usize) -> Option<u32> {
     (index < (RELATED_ELEM_RANGE_END - RELATED_ELEM_RANGE_START) as usize)
@@ -30,7 +30,7 @@ pub(crate) fn locate(key: u32) -> Option<usize> {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Action {
     None,
-    OpenDetail(crate::plex::ServerId, String),
+    OpenDetail(plx_plex::plex::ServerId, String),
 }
 
 pub(crate) fn action(d: &Detail, key: u32) -> Action {
@@ -50,7 +50,7 @@ pub(crate) fn item<'a>(d: &'a Detail, key: u32) -> Option<&'a PmsMovie> {
 pub(crate) fn rect(row: &CardRow, index: usize, top: f32, at_drawn: bool) -> Rect {
     let base = card_row::tile_rect(
         index,
-        crate::ui::consts::MARGIN_X,
+        plx_ui::consts::MARGIN_X,
         RowStyle::HOME.w + RowStyle::HOME.gap,
         row.scroll_x(),
         top + LABEL_H,
@@ -82,7 +82,7 @@ pub(crate) fn draw(
     let lift = row.lift();
     p.text(
         plx_platform::i18n::msg::browse_detail_related_c().as_ptr(),
-        crate::ui::consts::MARGIN_X,
+        plx_ui::consts::MARGIN_X,
         top - lift,
         theme::size::HEADLINE,
         theme::TEXT_HEADING,
@@ -111,7 +111,7 @@ pub(crate) fn draw_strip(
         (RowStyle::HOME.w, RowStyle::HOME.h),
         RowStyle::HOME.w + RowStyle::HOME.gap,
         &RowStyle::HOME,
-        crate::ui::consts::SCR_W,
+        plx_ui::consts::SCR_W,
         |i| Art::Poster(items.get(i).map(tile_facts::of)),
         |i| items.get(i).and_then(|m| m.resume_frac()),
         |i| card_row::TileLabel::title(&items[i].title),
@@ -147,7 +147,7 @@ pub(crate) fn draw_focused_in(
     };
     let base = card_row::tile_rect(
         index,
-        crate::ui::consts::MARGIN_X,
+        plx_ui::consts::MARGIN_X,
         RowStyle::HOME.w + RowStyle::HOME.gap,
         row.scroll_x(),
         top + LABEL_H,
@@ -187,7 +187,7 @@ mod tests {
         for i in 0..12 {
             let expected = card_row::tile_rect(
                 i,
-                crate::ui::consts::MARGIN_X,
+                plx_ui::consts::MARGIN_X,
                 RowStyle::HOME.w + RowStyle::HOME.gap,
                 row.scroll_x(),
                 200.0 + LABEL_H,

@@ -24,13 +24,11 @@ mod diag; // typed usage schema plus log/lab scrub, ring and zlib; native crashe
 mod ff; // THE demuxer — the FFmpeg 9.0 this app BUNDLES and pins (majors 63/63/61), dlopen'd by absolute path beside the binary, never the television's
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
 mod hls; // strict parser/auth/timeline for the measured one-variant PMS HLS shape
-mod http; // the ONE door out of the control plane: dispatch a Plex REST request on its origin's scheme (stream.rs for http, net.rs/libcurl for https)
 mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound command long-poll
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
 mod person; // person/actor page data layer: the header handed in by the cast row + /library/people/{id}/media
 mod collection; // collection page model: tag resolution, header metadata and paged members
 mod player; // buffer-feed video engine (was playback.c) — step 5
-mod plex; // typed Plex API layer (rust-modules/src/plex/) — one method per PMS operation (the live READ layer; playback ops still in route.rs)
 mod pms;
 // Pure RELEASE_LINE-parsing helpers, `include!`d verbatim by build.rs so `cargo test --lib`
 // actually runs their unit tests (see the module for why). Nothing in the app itself calls
@@ -52,7 +50,6 @@ mod telemetry; // the opt-in crash + usage channels: consent, the spool, the wor
 mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
 
 mod textinput; // the TV's own on-screen keyboard, via plain SDL_StartTextInput (see the module doc)
-mod ui;
 
 /// The instance root, for the simulator binary.
 ///

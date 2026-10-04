@@ -1,7 +1,7 @@
 //! Owned engine ports for requested kinds, source-row seating and document navigation.
 use super::*;
-use crate::ui::fixture::{FixtureArg, FixtureMeasure};
-use crate::ui::focus::{FocusEngine, Outcome};
+use plx_ui::fixture::{FixtureArg, FixtureMeasure};
+use plx_ui::focus::{FocusEngine, Outcome};
 use plx_machine::machine::{Host, InputOwner, Tick};
 
 struct TestHost;
@@ -55,7 +55,7 @@ impl Fixture {
         // settled and empty) — a section reveal waits for its shelves to settle.
         stores.browse.borrow_mut().seed_shelves_for_test(0, &titles, 4);
         let epoch = stores.browse.borrow().table_epoch_for_test();
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         let sections = (0..libraries)
             .map(|i| crate::stores::browse::SectionView {
                 // `SectionView` no longer carries an ownership bit at all (issue #100/#165 — see
@@ -87,7 +87,7 @@ impl Fixture {
         fixture
     }
     fn publish(&mut self, current: usize, items: usize) {
-        let sid = crate::plex::ServerId::UNSET;
+        let sid = plx_plex::plex::ServerId::UNSET;
         let kind = if self
             .sections
             .get(current)
@@ -209,7 +209,7 @@ fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_
             AppFx::Store(_, StoreCmd::Browse(BrowseCmd::Addressed { .. }))
         )));
     }
-    let sid = crate::plex::ServerId::UNSET;
+    let sid = plx_plex::plex::ServerId::UNSET;
     fixture.sections = vec![
         crate::stores::browse::SectionView {
             sid: Some(sid),
@@ -277,7 +277,7 @@ fn an_external_sources_selection_reseats_the_library_row_once_not_on_metadata_re
     )));
     let target = SectionAddress {
         epoch: fixture.epoch,
-        sid: crate::plex::ServerId::UNSET,
+        sid: plx_plex::plex::ServerId::UNSET,
         section: 3,
     };
     fixture.step(
@@ -492,7 +492,7 @@ fn opened_before_its_shelves(kind: SecKind, opened: Opened) -> (Fixture, Library
     fixture.publish(0, 24);
     let mut page = LibraryScreen::new(ENTRY, InstanceId(19), kind);
     let mut engine = FocusEngine::new();
-    let tab = FocusKey { entry: ENTRY, elem: crate::ui::dispatch::STRIP_BASE + 1 };
+    let tab = FocusKey { entry: ENTRY, elem: plx_ui::dispatch::STRIP_BASE + 1 };
     match opened {
         Opened::Pointer => { engine.set(OWNER, tab, Some(STRIP), By::Pointer); }
         Opened::Keyboard => { engine.set(OWNER, tab, Some(STRIP), By::Dir); }

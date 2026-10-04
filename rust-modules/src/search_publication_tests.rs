@@ -108,7 +108,7 @@ fn a_failed_source_backs_off_alone_and_the_others_still_answer() {
     );
     assert!(!owner.adapter.fetch[0].busy()
         && !owner.adapter.fetch[1].busy());
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// The duplicate-spawn race [`IN_FLIGHT`] admits to can leave two workers out for one source at
@@ -146,5 +146,5 @@ fn a_late_failure_cannot_unsay_an_answer_this_source_already_gave() {
         RETRY_FRAMES - 1,
         "no backoff — only the sentinel ticked"
     );
-    crate::plex::reset_servers_for_test();
+    plx_plex::plex::reset_servers_for_test();
 }

@@ -1,5 +1,5 @@
 //! **The who's-watching picker, as an owned `Screen`** (restructure spec §13, phase 6 —
-//! `ui/profiles.rs` moved). The avatar row (`crate::ui::card_row`, a circular `RowStyle::PROFILES`
+//! `ui/profiles.rs` moved). The avatar row (`plx_ui::card_row`, a circular `RowStyle::PROFILES`
 //! shelf — the same shelf motion the poster rows use) plus the "Sign out" footer, and the PIN
 //! keypad for a protected profile. With nobody to offer (#132's read-out) the footer gives way to
 //! the read-out's own control row: a focused *Back* whose OK is the BACK key, then *Sign out*.
@@ -92,23 +92,23 @@ use std::ffi::CString;
 use std::sync::Arc;
 
 use crate::auth::{self, Phase};
-use crate::ui::card_row;
-use crate::ui::frame::Budget;
-use crate::ui::geom;
-use crate::ui::icons;
+use plx_ui::card_row;
+use plx_ui::frame::Budget;
+use plx_ui::geom;
+use plx_ui::icons;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key,
     LogicalState, Machine, Measure, Tick,
 };
 use plx_machine::present::Provenance;
-use crate::ui::route_screen::RouteGround;
-use crate::ui::screen::{
+use plx_ui::route_screen::RouteGround;
+use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, FocusTarget,
     Focusable, GroupKind, GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent,
     Seat, Step, Stop,
 };
-use crate::ui::widgets::{self, Art, Button, CtlPop, Spinner, StatusKind, StatusOverlay};
-use crate::ui::{consts::SCR_H, consts::SCR_W, theme, Env, Painter, Rect, View};
+use plx_ui::widgets::{self, Art, Button, CtlPop, Spinner, StatusKind, StatusOverlay};
+use plx_ui::{consts::SCR_H, consts::SCR_W, theme, Env, Painter, Rect, View};
 
 use super::registry::{word, AppFx, AppLike, AppMsg, AuthLike};
 
@@ -224,7 +224,7 @@ fn readout_overlay(reason: &std::ffi::CStr, back: bool) -> StatusOverlay<'_> {
     // never draws the read-out for any other cause — so the glyph is the fixed one that kind maps
     // to rather than a re-derivation through an `IncidentContext` this screen doesn't hold.
     let o = StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::settings_profiles_failed_c(), StatusKind::Failed)
-        .page(crate::ui::icons::Icon::PeopleBadgeAlert)
+        .page(plx_ui::icons::Icon::PeopleBadgeAlert)
         .reason(reason);
     if back {
         o.action(plx_platform::i18n::msg::settings_back_c()).secondary(Some(plx_platform::i18n::msg::settings_account_sign_out_c()))
@@ -1744,7 +1744,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             card_row::draw_tile(
                 p,
                 Art::Thumb {
-                    sid: crate::plex::current_server().raw(),
+                    sid: plx_plex::plex::current_server().raw(),
                     key: &u.thumb,
                     res: (300, 300),
                 },
@@ -1779,12 +1779,12 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
                 self.row_sty.h,
             );
             // fold the ui::press click dip into the focused avatar's pop (1.0 when idle)
-            let sc = self.row.scale(i) * crate::ui::press::scale();
+            let sc = self.row.scale(i) * plx_ui::press::scale();
             Self::draw_name(p, u, cx_, true, f.measure);
             card_row::draw_focused(
                 p,
                 Art::Thumb {
-                    sid: crate::plex::current_server().raw(),
+                    sid: plx_plex::plex::current_server().raw(),
                     key: &u.thumb,
                     res: (300, 300),
                 },

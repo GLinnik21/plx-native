@@ -5,10 +5,10 @@
 //! any strip geometry or pointer inverse.
 
 use super::*;
-use crate::ui::focus::{FocusEngine, Outcome};
-use crate::ui::hit::{HitMap, PointerKind};
+use plx_ui::focus::{FocusEngine, Outcome};
+use plx_ui::hit::{HitMap, PointerKind};
 use plx_machine::machine::{Chrome, Host, InputOwner, PressRead, ScreenId};
-use crate::ui::screen::{Activate, At, By, Focusable, Hover, ScreenArg, Stop};
+use plx_ui::screen::{Activate, At, By, Focusable, Hover, ScreenArg, Stop};
 
 #[derive(Clone, PartialEq, Eq)]
 struct TestArg;
@@ -105,9 +105,9 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         episode_scroll: Spring::at(0.0),
         tab_scroll: Spring::at(0.0),
         episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
-        episode_text_lift: [crate::ui::text_lift::TextLift::new(); EP_SCALE_MAX],
-        about_card_lift: crate::ui::text_lift::TextLift::new(),
-        about_lang_lift: crate::ui::text_lift::TextLift::new(),
+        episode_text_lift: [plx_ui::text_lift::TextLift::new(); EP_SCALE_MAX],
+        about_card_lift: plx_ui::text_lift::TextLift::new(),
+        about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: CardRow::new(),
         collection: CardRow::new(),
         extras: CardRow::new(),
@@ -207,7 +207,7 @@ fn populated_detail_geometry_uses_recorded_metrics() {
         ep.summary = "Episode prose must also use the supplied metrics. ".repeat(8);
     }
     let _serial = install(d);
-    crate::ui::rec::assert_measured_geometry(|measure| {
+    plx_ui::rec::assert_measured_geometry(|measure| {
         let mut s = bare(sid, "show");
         let meta = test_store().view();
         s.about_rows.update(s.detail(meta).unwrap());
@@ -267,13 +267,13 @@ fn expect_move(outcome: Outcome<u32>, expectation: &str) -> FocusKey<u32> {
 fn scroll_to(screen: &mut DetailScreen, section: i32) {
     let top = {
         let detail = screen.detail(test_store().view()).expect("fixture detail must be mounted");
-        screen.section_top(section, detail, &crate::ui::fixture::FixtureMeasure)
+        screen.section_top(section, detail, &plx_ui::fixture::FixtureMeasure)
     };
     screen.scroll.jump(top);
     screen.scroll_target = top;
 }
 
-fn assert_strip_hit_geometry(screen: &DetailScreen, elems: &[u32], measure: &crate::ui::fixture::FixtureMeasure) {
+fn assert_strip_hit_geometry(screen: &DetailScreen, elems: &[u32], measure: &plx_ui::fixture::FixtureMeasure) {
     let context = cx(measure, None);
     let placed: Vec<_> = elems.iter().filter_map(|elem| {
         let elem = screen.engine_key(*elem).expect("fixture item has an engine identity");
@@ -337,7 +337,7 @@ fn detail_focus_navigation_walks_the_filmstrip_through_tabs_and_both_rows() {
     let sid = ServerId::UNSET;
     let _guard = install(fixture(sid));
     let mut screen = bare(sid, "show");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let detail = test_store().view().current().expect("fixture detail must be mounted");
     screen.season_metrics.update(detail, &measure);
     let context = cx(&measure, None);
@@ -418,7 +418,7 @@ fn detail_focus_places_and_hit_map_agree_for_all_three_scrolled_strips() {
     let sid = ServerId::UNSET;
     let _guard = install(fixture(sid));
     let mut screen = bare(sid, "show");
-    let measure = crate::ui::fixture::FixtureMeasure;
+    let measure = plx_ui::fixture::FixtureMeasure;
     let episode_elems: Vec<_> = (0..12).map(|i| episodes::elem(i, episodes::Row::Still).unwrap()).collect();
     let related_elems: Vec<_> = (0..12).map(|i| related::elem(i).unwrap()).collect();
     let cast_elems: Vec<_> = (0..12).map(|i| cast::elem(i).unwrap()).collect();
@@ -431,12 +431,12 @@ fn detail_focus_places_and_hit_map_agree_for_all_three_scrolled_strips() {
 
     for focus in [0, 6, 11] {
         for _ in 0..180 {
-            screen.related.update(12, Some(focus), &crate::ui::card_row::RowStyle::HOME, 1.0 / 60.0);
-            screen.cast.update(12, Some(focus), &crate::ui::card_row::RowStyle::CAST, 1.0 / 60.0);
+            screen.related.update(12, Some(focus), &plx_ui::card_row::RowStyle::HOME, 1.0 / 60.0);
+            screen.cast.update(12, Some(focus), &plx_ui::card_row::RowStyle::CAST, 1.0 / 60.0);
         }
         for _ in 0..180 {
-            screen.related.update(12, None, &crate::ui::card_row::RowStyle::HOME, 1.0 / 60.0);
-            screen.cast.update(12, None, &crate::ui::card_row::RowStyle::CAST, 1.0 / 60.0);
+            screen.related.update(12, None, &plx_ui::card_row::RowStyle::HOME, 1.0 / 60.0);
+            screen.cast.update(12, None, &plx_ui::card_row::RowStyle::CAST, 1.0 / 60.0);
         }
         scroll_to(&mut screen, 3);
         assert_strip_hit_geometry(&screen, &related_elems, &measure);
@@ -475,7 +475,7 @@ fn detail_focus_up_from_filmstrip_lands_on_the_selected_season_not_the_nearest_t
     {
         let _guard = install(fixture_with_seasons(sid, 5, 0));
         let mut screen = bare(sid, "show");
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let detail = test_store().view().current().expect("fixture detail must be mounted");
         screen.season_metrics.update(detail, &measure);
         let context = cx(&measure, None);
@@ -509,7 +509,7 @@ fn detail_focus_up_from_filmstrip_lands_on_the_selected_season_not_the_nearest_t
     {
         let _guard = install(fixture_with_seasons(sid, 5, 4));
         let mut screen = bare(sid, "show");
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let detail = test_store().view().current().expect("fixture detail must be mounted");
         screen.season_metrics.update(detail, &measure);
         let context = cx(&measure, None);

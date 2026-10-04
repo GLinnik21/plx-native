@@ -524,7 +524,7 @@ fn a_sign_in_whose_commit_is_refused_offers_its_own_failure() {
         arrival,
         admission: CommitAdmission::Rejected {
             revision: None,
-            rejection: crate::plex::session::async_persistence::RejectionKind::Capacity,
+            rejection: plx_plex::plex::session::async_persistence::RejectionKind::Capacity,
         },
     }));
     assert_eq!(owner.read().0.phase, Phase::Error);

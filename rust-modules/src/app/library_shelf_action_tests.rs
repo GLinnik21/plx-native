@@ -8,22 +8,22 @@ use super::test_support::{frame};
 #[test]
 fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
     let _guard = plx_base::testlock::serial();
-    let session = crate::plex::session::TempSession::new("library-shelf-hold");
+    let session = plx_plex::plex::session::TempSession::new("library-shelf-hold");
     session.watching("u-library-shelf-hold");
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
     for row in 0..2 {
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
         let own =
-            crate::plex::register_for_test("shelf-own", "127.0.0.1", 9, "synthetic", "fixture");
+            plx_plex::plex::register_for_test("shelf-own", "127.0.0.1", 9, "synthetic", "fixture");
         let shared =
-            crate::plex::register_for_test("shelf-shared", "127.0.0.1", 10, "synthetic", "fixture");
-        crate::plex::set_current(own);
+            plx_plex::plex::register_for_test("shelf-shared", "127.0.0.1", 10, "synthetic", "fixture");
+        plx_plex::plex::set_current(own);
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
         rig.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
@@ -113,7 +113,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         assert!(d.input.press.is_live());
         let mut requests = Vec::new();
         let mut saw_scaled_press = false;
-        let rect = |r: crate::ui::Rect| [r.x, r.y, r.w, r.h];
+        let rect = |r: plx_ui::Rect| [r.x, r.y, r.w, r.h];
         for n in i + 1..i + 80 {
             frame(&mut d, &mut rig, AppArg::Library, tick(n), vec![]);
             assert_eq!(d.focus(), Some(key));

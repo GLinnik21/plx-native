@@ -4,19 +4,19 @@
 //! while it's open and hides the normal transport middle behind it. Data from crate::metadata.
 #![allow(dead_code)]
 use crate::metadata;
-use crate::ui::consts::{SCR_H, SCR_W};
-use crate::ui::frame::Budget;
-use crate::ui::geom::IndexElem;
-use crate::ui::icons::Icon;
+use plx_ui::consts::{SCR_H, SCR_W};
+use plx_ui::frame::Budget;
+use plx_ui::geom::IndexElem;
+use plx_ui::icons::Icon;
 use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host};
-use crate::ui::screen::{
+use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Part, Placed, Seat, Step, Stop,
 };
-use crate::ui::text_view::TextView;
-use crate::ui::theme;
-use crate::ui::widgets::{badge, badge_w, resolve_tex_wh_on, BadgeStyle};
-use crate::ui::{Painter, Rect, View};
+use plx_ui::text_view::TextView;
+use plx_ui::theme;
+use plx_ui::widgets::{badge, badge_w, resolve_tex_wh_on, BadgeStyle};
+use plx_ui::{Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::c_int;
 
@@ -38,16 +38,16 @@ pub enum InfoAction {
 /// takes the appear fraction as a parameter instead of stepping its own `Popover`.
 pub(crate) struct InfoPanelState {
     focus: c_int, // index into the action-button column
-    /// The action column's FOCUS POP — one spring per button ([`crate::ui::widgets::CtlPop`]). Two,
+    /// The action column's FOCUS POP — one spring per button ([`plx_ui::widgets::CtlPop`]). Two,
     /// the whole of [`actions`].
-    ctl_pop: crate::ui::widgets::CtlPop<2>,
+    ctl_pop: plx_ui::widgets::CtlPop<2>,
 }
 
 impl InfoPanelState {
     pub(crate) fn new() -> Self {
         InfoPanelState {
             focus: 0,
-            ctl_pop: crate::ui::widgets::CtlPop::new(),
+            ctl_pop: plx_ui::widgets::CtlPop::new(),
         }
     }
 
@@ -131,7 +131,7 @@ impl InfoPanelState {
         // `Popover::painter(0.0, 20.0)` (i.e. no scrim + `Popover::content_painter(20.0)`) drew.
         let p = Painter::root()
             .alpha(appear)
-            .translate(0.0, crate::ui::popover::Popover::RISE * (1.0 - appear));
+            .translate(0.0, plx_ui::popover::Popover::RISE * (1.0 - appear));
 
         // Resolve the playing leaf's fields: `now_playing` describes the episode (show title + SxEy
         // + its still) or the movie; the loaded `Detail` backs the capability badges + genres.
@@ -209,7 +209,7 @@ impl InfoPanelState {
                 // cropped to the 16:9 box, never squashed: a 4:3 still or a movie's art of any
                 // aspect comes back at its own shape (`minSize=1` covers the box, it does not fit it)
                 let still = Rect::new(sx, sy, sw, sh);
-                let uv = still.cover_uv(tw, th, crate::ui::Crop::Centre);
+                let uv = still.cover_uv(tw, th, plx_ui::Crop::Centre);
                 p.tex_uv(t, uv, still, 16.0, theme::TINT_WHITE);
                 drawn = true;
             }
@@ -226,7 +226,7 @@ impl InfoPanelState {
         // action buttons (right column)
         let acts = actions(meta);
         let focus = self.focus;
-        let env = crate::ui::Env::inert();
+        let env = plx_ui::Env::inert();
         for (i, label) in acts.iter().enumerate() {
             let icon = if i == 0 {
                 Icon::Play
@@ -234,7 +234,7 @@ impl InfoPanelState {
                 Icon::Info
             };
             if let Ok(cs) = CString::new(*label) {
-                crate::ui::widgets::Button::new(cs.as_ptr(), theme::size::BODY, button_rect(i, measure))
+                plx_ui::widgets::Button::new(cs.as_ptr(), theme::size::BODY, button_rect(i, measure))
                     .icon(icon)
                     .focused(i as c_int == focus)
                     .scale(self.ctl_pop.scale(i))
@@ -302,7 +302,7 @@ impl InfoPanelState {
                 meta.push(year.to_string());
             }
             if dur_ms > 0 {
-                meta.push(crate::ui::fmt::dur_short(dur_ms));
+                meta.push(plx_ui::fmt::dur_short(dur_ms));
             }
             let meta_line = (!meta.is_empty()).then(|| meta.join("   \u{b7}   "));
 
@@ -632,7 +632,7 @@ fn button_rect(i: usize, measure: &dyn plx_machine::machine::Measure) -> Rect {
         plx_platform::i18n::msg::widgets_info_go_movie_c(),
     ];
     let bw = labels.iter().map(|label| {
-        crate::ui::widgets::Button::pill_w_measured(label, theme::size::BODY, true, false, measure)
+        plx_ui::widgets::Button::pill_w_measured(label, theme::size::BODY, true, false, measure)
     }).fold(352.0f32, f32::max);
     let bh = 70.0f32;
     let bx = card.x + card.w - pad - bw;
@@ -845,7 +845,7 @@ mod tests {
     fn chip_gap_matches_this_rows_fixed_spacing_rule() {
         let text = ChipKind::Text {
             bold: 0,
-            col: crate::ui::theme::TEXT_PRIMARY,
+            col: plx_ui::theme::TEXT_PRIMARY,
         };
         // whichever chip ends up first pays nothing, regardless of its own kind
         assert_eq!(chip_gap(None, text), 0.0);
@@ -1017,17 +1017,17 @@ mod focus_tests {
 
     struct HostFixture;
     impl Host for HostFixture {
-        type Arg = crate::ui::fixture::FixtureArg;
-        type Fx = crate::ui::fixture::FixtureFx;
-        type Msg = crate::ui::fixture::FixtureMsg;
+        type Arg = plx_ui::fixture::FixtureArg;
+        type Fx = plx_ui::fixture::FixtureFx;
+        type Msg = plx_ui::fixture::FixtureMsg;
         type Elem = u32;
         type Views<'a> = ();
-        type Init = crate::ui::fixture::FixtureInit;
+        type Init = plx_ui::fixture::FixtureInit;
         type Memory = ();
     }
 
     fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         test(&Cx {
             views: (),
             tick: Tick::default(),
@@ -1085,7 +1085,7 @@ mod focus_tests {
     /// "From Beginning" above "Go to Show"/"Go to Movie".
     #[test]
     fn the_two_buttons_share_a_column_and_stack_in_draw_order() {
-        let measure = crate::ui::fixture::FixtureMeasure;
+        let measure = plx_ui::fixture::FixtureMeasure;
         let (a, b) = (button_rect(0, &measure), button_rect(1, &measure));
         assert_eq!(a.x, b.x);
         assert_eq!(a.w, b.w);
@@ -1137,7 +1137,7 @@ mod focus_tests {
         assert!(is_episode(test_store().view()), "a show parent labels Go to Show");
 
         crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
-            sid: crate::plex::ServerId::UNSET,
+            sid: plx_plex::plex::ServerId::UNSET,
             rk: "parent-show".into(),
             kind: "show".into(),
             is_show: true,
@@ -1151,7 +1151,7 @@ mod focus_tests {
             }],
             ..Default::default()
         }));
-        let trailer = crate::metadata::trailer_now_playing(test_store().state(), crate::plex::ServerId::UNSET, "9");
+        let trailer = crate::metadata::trailer_now_playing(test_store().state(), plx_plex::plex::ServerId::UNSET, "9");
         test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(trailer));
         let mut playing = InfoPanelState::new();
         playing.set_focus(1);

@@ -206,7 +206,7 @@ mod root_back_tests {
         let _guard = plx_base::testlock::serial();
         plx_platform::tv::home::release_root_press();
         let before = plx_platform::tv::home::home_requests();
-        let mut d = crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
+        let mut d = plx_ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
         let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
         crate::app::bridge::nav_root(&mut d, crate::screens::registry::AppArg::Home);
         crate::app::bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick::default(), vec![]);
@@ -238,13 +238,13 @@ mod root_back_tests {
         let _guard = plx_base::testlock::serial();
         plx_platform::tv::home::release_root_press();
         let before = plx_platform::tv::home::home_requests();
-        let mut d = crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
+        let mut d = plx_ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
         let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
         crate::app::bridge::nav_root(&mut d, crate::screens::registry::AppArg::Home);
         crate::app::bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick::default(), vec![]);
         crate::app::bridge::nav_push(&mut d, crate::screens::registry::AppArg::Content(
             crate::screens::registry::ContentArg::Detail {
-                sid: crate::plex::ServerId::UNSET, rk: "nonroot-back".into(),
+                sid: plx_plex::plex::ServerId::UNSET, rk: "nonroot-back".into(),
             }));
         crate::app::bridge::frame(&mut d, &mut rig,
             plx_machine::machine::Tick { ms: 16, dt_us: 16_000 }, vec![]);
@@ -272,7 +272,7 @@ mod root_back_tests {
     #[test]
     fn onboard_back_request_mounts_the_owned_profiles_screen() {
         let _guard = plx_base::testlock::serial();
-        let mut d = crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
+        let mut d = plx_ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
         let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
         crate::app::bridge::nav_root(&mut d, crate::screens::registry::AppArg::Onboard);
         crate::app::bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick::default(), vec![]);

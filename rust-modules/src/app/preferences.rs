@@ -1,7 +1,7 @@
 //! Live executor for Settings preference effects. The bridge's controlled-IO guard must admit
 //! the effect before this entrypoint: profile capture, thread admission and persistence all live
 //! here, never in a screen constructor or step.
-use crate::plex::account::{PreferenceError, PreferenceRequest};
+use plx_plex::plex::account::{PreferenceError, PreferenceRequest};
 use crate::screens::registry::{AccountPreferenceReply, PreferenceCmd};
 
 pub(super) fn execute(command: PreferenceCmd) {
@@ -37,7 +37,7 @@ pub(super) fn execute(command: PreferenceCmd) {
         }
         PreferenceCmd::Language { language, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
-                let _ = reply.send(crate::plex::session::set_language(language));
+                let _ = reply.send(plx_plex::plex::session::set_language(language));
                 plx_machine::idle::invalidate();
             });
         }

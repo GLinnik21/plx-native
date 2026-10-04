@@ -6,22 +6,22 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::screens::registry::{tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
-use crate::ui::card_row;
-use crate::ui::consts::{MARGIN_X, SCR_H};
-use crate::ui::frame::Budget;
+use plx_ui::card_row;
+use plx_ui::consts::{MARGIN_X, SCR_H};
+use plx_ui::frame::Budget;
 use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId};
-use crate::ui::screen::{
+use plx_ui::screen::{
     Activate, At, AxisMask, Dir, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Hover, Part,
     Placed, Seat, Step, Stop,
 };
-use crate::ui::widgets::Art;
-use crate::ui::{Rect, Spring};
+use plx_ui::widgets::Art;
+use plx_ui::{Rect, Spring};
 
 use super::identity::KeyRegistry;
 use super::layout::{
     GridBand, Layout, CONTENT_TOP, GRID_RIGHT, MAX_GRID_BANDS,
 };
-use crate::ui::poster_grid::GridBands;
+use plx_ui::poster_grid::GridBands;
 
 pub(super) const GRID_GROUP: GroupId = GroupId(0x4c49_4201);
 pub(super) const RAIL_GROUP: GroupId = GroupId(0x4c49_4202);
@@ -35,13 +35,13 @@ pub(super) fn grid_art(item: &crate::pms::PmsMovie) -> Art<'_> {
 pub(super) fn grid_label(item: &crate::pms::PmsMovie) -> card_row::TileLabel {
     if item.kind == 3 {
         let name = if item.title.is_empty() || item.title == item.show_title {
-            crate::ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64)
+            plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64)
         } else { item.title.clone() };
         // The shared still overlay already names the show and episode address on the artwork.
         // Focus reveals the episode title and release date, as it does on an episode shelf.
         return if item.aired.is_empty() && item.year <= 0 { card_row::TileLabel::title(&name) }
         else { card_row::TileLabel::titled(&name,
-            &crate::ui::fmt::pretty_date(&item.aired, item.year as i64)) };
+            &plx_ui::fmt::pretty_date(&item.aired, item.year as i64)) };
     }
     card_row::poster_label(&tile_facts::of(item))
 }
@@ -117,7 +117,7 @@ pub(super) struct GridPart {
     group: GroupId,
     pub(super) elems: Vec<u32>,
     known: Vec<(u32, usize)>,
-    identity: Option<(u32, crate::plex::ServerId, i64, u32)>,
+    identity: Option<(u32, plx_plex::plex::ServerId, i64, u32)>,
     layout: Layout,
     scroll: f32,
     target_layout: Layout,
@@ -407,7 +407,7 @@ impl GridPart {
     }
 
     /// The scale the focused cell's TREATMENT is drawn at — what
-    /// [`card_row::draw_focused`](crate::ui::card_row::draw_focused) is handed as its `s`, and
+    /// [`card_row::draw_focused`](plx_ui::card_row::draw_focused) is handed as its `s`, and
     /// therefore THE scale [`rect_at`](Self::rect_at) built that cell's rect from: the live pop
     /// times the live press. `draw_focused` divides by it twice (the shadow/sheen ramp and the
     /// label's anchor at the unscaled card bottom), so handing it anything else is not a
@@ -426,7 +426,7 @@ impl GridPart {
         (lo.saturating_mul(cols), hi.saturating_mul(cols).min(self.elems.len()))
     }
 
-    pub(super) fn record_stops<H: LibraryLike>(&self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
+    pub(super) fn record_stops<H: LibraryLike>(&self, f: &mut plx_ui::screen::DrawFrame<'_, '_, H>) {
         if !f.records_stops() { return; }
         let (lo, hi) = self.visible_window();
         for index in lo..hi {
@@ -438,7 +438,7 @@ impl GridPart {
         }
     }
 
-    pub(super) fn draw_focused<H: LibraryLike>(&self, f: &crate::ui::screen::DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
+    pub(super) fn draw_focused<H: LibraryLike>(&self, f: &plx_ui::screen::DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
         let Some(index) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.index_of(key.elem)) else { return };
         let Some(item) = H::listing(f.cx).item(index) else { return };
         let p = f.painter.alpha(f.page_alpha);
@@ -455,7 +455,7 @@ impl GridPart {
         // let go under the press, as a shelf's do (`RowMotion::scale` × `f.press.scale`)
         card_row::draw_focused(p, grid_art(item), rect, scale, &style, resume, &label, f.measure);
         if item.kind == 3 {
-            crate::ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), false, f.measure);
+            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), false, f.measure);
         }
     }
 }
@@ -501,7 +501,7 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
 
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
         let Some(index) = self.index_of(key.elem) else { return Step::Edge };
-        let next = crate::ui::poster_grid::neighbour(index, self.elems.len(), self.target_layout.cols(), dir);
+        let next = plx_ui::poster_grid::neighbour(index, self.elems.len(), self.target_layout.cols(), dir);
         next.map_or(Step::Edge, |i| Step::Move(FocusKey { entry: key.entry, elem: self.elems[i] }))
     }
 
@@ -566,7 +566,7 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
 impl<H: LibraryLike> Part<H> for GridPart {
     fn prepare(&mut self, _budget: &mut Budget, _cx: &Cx<'_, H>) {}
 
-    fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>, _rect: Rect) {
+    fn draw(&mut self, f: &mut plx_ui::screen::DrawFrame<'_, '_, H>, _rect: Rect) {
         let view = H::listing(f.cx);
         let focus = f.focus.current.filter(|key| key.entry == self.entry);
         let (lo, hi) = self.visible_window();
@@ -586,7 +586,7 @@ impl<H: LibraryLike> Part<H> for GridPart {
             let resume = if item.kind == 3 { None } else { item.resume_frac() };
             card_row::draw_tile(p, grid_art(item), rect, scale, &style, resume);
             if item.kind == 3 {
-                crate::ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), false, f.measure);
+                plx_ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), false, f.measure);
             }
         }
         self.draw_focused(f, focus);
@@ -597,8 +597,8 @@ impl<H: LibraryLike> Part<H> for GridPart {
 #[cfg(test)]
 mod pop_tests {
     use super::*;
-    use crate::ui::card_row::RowStyle;
-    use crate::ui::consts::{CARD_H, CARD_W};
+    use plx_ui::card_row::RowStyle;
+    use plx_ui::consts::{CARD_H, CARD_W};
     use plx_machine::machine::{EntryId, GroupId};
 
     #[test]

@@ -12,7 +12,7 @@
 //!   [`TileFacts::resume`], so the bar, the watched mark and the Continue Watching caption cannot
 //!   read it differently;
 //! - **whether a thumb is the server's generated collection composite** is
-//!   [`crate::plex::collections::composite_parts`], answered here as `composite_thumb`;
+//!   [`plx_plex::plex::collections::composite_parts`], answered here as `composite_thumb`;
 //! - **what kind a row is** is the row's numeric `kind`, named here.
 //!
 //! Cheap by construction: every text field is a borrow of the row, so building one per tile per
@@ -22,7 +22,7 @@
 use std::os::raw::c_int;
 
 use crate::pms::{PmsMovie, KIND_COLLECTION};
-use crate::ui::tile::{Resume, TileFacts, TileKind};
+use plx_ui::tile::{Resume, TileFacts, TileKind};
 
 /// What `ui` reads of `m`. The result borrows from the row for `'a`, and carries the row's address
 /// as [`TileFacts::owner`], which is how a card's placement history stays keyed to the ROW and not
@@ -58,7 +58,7 @@ pub(crate) fn of(m: &PmsMovie) -> TileFacts<'_> {
 /// (`/library/collections/{rk}/composite/{stamp}`), the thumb the poster store bakes into our fan
 /// and whose collection name the card then sets live. A custom poster, or no art at all, is not.
 pub(crate) fn is_composite_thumb(thumb: &str) -> bool {
-    crate::plex::collections::composite_parts(thumb).is_some()
+    plx_plex::plex::collections::composite_parts(thumb).is_some()
 }
 
 /// The row's numeric kind (`0` movie, `1` show, `2` season, `3` episode, `4` collection), named.
@@ -78,7 +78,7 @@ fn kind_of(kind: c_int) -> TileKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::widgets::{poster_mark, row_watch_state, PosterMark};
+    use plx_ui::widgets::{poster_mark, row_watch_state, PosterMark};
 
     /// A MOVIE row at a given watched state. `dur_ns` is 100 min, so `resume_ms` reads as a
     /// percentage of the way in. For a LEAF the two flags really are each other's negation.

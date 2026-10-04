@@ -95,7 +95,7 @@ Ranked by blast radius, which is also the order to report findings in:
 1. **`AGENTS.md`** (root). Loaded into every Codex session and imported by Claude, so a false claim
    here is repeated to every agent. A finding here outranks the identical finding anywhere else.
 2. **`docs/agent-reference.md` and the three nested `docs/agent-reference.md` guides** under
-   `rust-modules/src/ui/`, `rust-modules/src/plex/`, and `rust-modules/src/player/`. The long-form
+   `rust-modules/ui/src/`, `rust-modules/plex/src/plex/`, and `rust-modules/src/player/`. The long-form
    reference is imported by Claude and routed from `AGENTS.md`; each nested guide is the "read this
    before touching X" file for its directory,
    and the root file delegates whole subjects to them (the Starfish/ACB ABI and bind-order rules

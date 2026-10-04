@@ -7,12 +7,12 @@
 mod tests {
     use super::super::*;
     use crate::auth::owner::{SessionEvent, SessionWork};
-    use crate::plex::session::{self, ProfileCreds, Session, ServerRef, SourceRef, UserRef};
+    use plx_plex::plex::session::{self, ProfileCreds, Session, ServerRef, SourceRef, UserRef};
 
     struct Cleanup<'a>(&'a plx_base::task::MainThread);
     impl Drop for Cleanup<'_> {
         fn drop(&mut self) {
-            crate::plex::reset_servers_for_test();
+            plx_plex::plex::reset_servers_for_test();
             session::ProfilePublisher::new(self.0).publish(None, 0);
         }
     }
@@ -30,7 +30,7 @@ mod tests {
         let tmp = session::TempSession::new("owner-plaintext-repair");
         let _cleanup = Cleanup(&mt);
         tmp.assert_only_target();
-        crate::plex::reset_servers_for_test();
+        plx_plex::plex::reset_servers_for_test();
 
         let plain = SourceRef {
             machine_id: "synthetic-server".into(),
@@ -60,7 +60,7 @@ mod tests {
         };
         session::save(&saved);
 
-        let id = crate::plex::register_for_test("synthetic-server", "192.0.2.10", 32400,
+        let id = plx_plex::plex::register_for_test("synthetic-server", "192.0.2.10", 32400,
             "synthetic-token", "synthetic-client");
         let mut init = crate::auth::SessionInit::captured(saved);
         init.epoch = u64::from(u32::MAX) + 91;
@@ -82,13 +82,13 @@ mod tests {
                         let fresh = SourceRef {
                             address: "192.0.2.10".into(),
                             origin_url: "https://192-0-2-10.example.plex.direct:32400".into(),
-                            tier: Some(crate::plex::probe::Location::Local),
+                            tier: Some(plx_plex::plex::probe::Location::Local),
                             ..SourceRef::default()
                         };
                         (Some(fresh), crate::auth::settled_probe(
-                            &crate::plex::probe::plan(resource, crate::plex::CredentialPolicy::HttpsOnly),
-                            crate::plex::probe::Outcome::Reachable,
-                            Some(crate::plex::probe::Location::Local),
+                            &plx_plex::plex::probe::plan(resource, plx_plex::plex::CredentialPolicy::HttpsOnly),
+                            plx_plex::plex::probe::Outcome::Reachable,
+                            Some(plx_plex::plex::probe::Location::Local),
                             Some("192.0.2.10".into())))
                     });
             }).join().expect("endpoint worker failed");
