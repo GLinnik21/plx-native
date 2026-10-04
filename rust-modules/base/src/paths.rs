@@ -336,8 +336,9 @@ pub fn runtime_dir() -> &'static Path {
 /// looks like from the other side: a root-owned event log the jailed app cannot write leaves the
 /// file at 0 bytes, which every tool in this repo reports as "no line found", i.e. exactly like a
 /// total regression. `/tmp` on the television is itself 1777 for this reason; a per-install root
-/// inside it must not be stricter. `create_dir_all` applies the process umask to its mode, which
-/// would silently drop the group/other bits, hence the explicit `set_permissions` after it.
+/// inside it must not be stricter. `mkdir` applies the process umask to its mode, which would
+/// silently drop the group/other bits, hence the explicit `fchmod` after it ([`share_runtime_dir`],
+/// which also refuses to widen a symlink or a directory this uid does not own).
 ///
 /// Best-effort and silent by necessity: this runs inside [`runtime_dir`]'s `OnceLock` initializer,
 /// where logging deadlocks (see that function's doc). A failure here surfaces as the log the app
@@ -350,11 +351,38 @@ fn ensure_runtime_dir(d: &Path) {
     if ENV_STEERABLE || d == Path::new(DEFAULT_RUNTIME_DIR) {
         return;
     }
-    let _ = std::fs::create_dir_all(d);
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o1777));
+    share_runtime_dir(d, unsafe { libc::geteuid() });
+}
+
+/// The body of [`ensure_runtime_dir`], with the uid it must own the directory as passed in so a test
+/// can stand in a foreign owner.
+///
+/// **What stands at the name decides what gets widened, so it is looked at before it is chmod'ed.**
+/// The path is in the shared, sticky `/tmp`, where a co-resident app can plant a SYMLINK to a
+/// directory this app owns (a path-based `chmod` follows it and makes the TARGET 1777) or create the
+/// directory first under its own uid. So: `mkdir` (never `create_dir_all`, which follows a symlink at
+/// the final component and calls it "exists"), then open the directory with `O_NOFOLLOW` and
+/// `fchmod` THAT descriptor after `fstat` says it is a directory owned by `owner`. Nothing is
+/// checked by path and used by path, so there is no window between the check and the chmod. A refusal
+/// is silent, for the reason [`ensure_runtime_dir`] gives, and surfaces as the log the app could not
+/// open.
+#[cfg(unix)]
+fn share_runtime_dir(d: &Path, owner: u32) {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let _ = std::fs::create_dir(d);
+    let Ok(dir) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(d)
+    else {
+        return;
+    };
+    match dir.metadata() {
+        Ok(meta) if meta.file_type().is_dir() && meta.uid() == owner => {
+            let _ = dir.set_permissions(std::fs::Permissions::from_mode(0o1777));
+        }
+        _ => {}
     }
 }
 
@@ -695,6 +723,53 @@ pub fn obsolete_last_place_candidates() -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    /// The runtime root is a path in the shared, sticky `/tmp`, and `ensure_runtime_dir` chmods it
+    /// 1777 — so what stands at that name decides what gets widened. A co-resident app that can
+    /// create names in `/tmp` can plant a SYMLINK there to a directory this app owns (a plain
+    /// `set_permissions` follows it and makes the TARGET 1777), or pre-create the directory under
+    /// its own uid. Neither may be chmod'ed: only a real directory this uid owns is ours to widen.
+    #[cfg(unix)]
+    #[test]
+    fn the_runtime_root_is_never_chmoded_through_a_symlink_or_when_foreign_owned() {
+        use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+        let base = std::env::temp_dir().join(format!("plx-runtime-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir(&base).unwrap();
+        let euid = unsafe { libc::geteuid() };
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().mode() & 0o7777;
+
+        // A name that does not exist is created, and made 1777 whatever the umask says.
+        let fresh = base.join("fresh");
+        super::share_runtime_dir(&fresh, euid);
+        assert_eq!(mode(&fresh), 0o1777, "a new runtime root is world-writable and sticky");
+
+        // A real directory this uid owns is widened (the install-time shape: created, then chmod'ed).
+        let ours = base.join("ours");
+        std::fs::create_dir(&ours).unwrap();
+        std::fs::set_permissions(&ours, std::fs::Permissions::from_mode(0o700)).unwrap();
+        super::share_runtime_dir(&ours, euid);
+        assert_eq!(mode(&ours), 0o1777);
+
+        // A symlink at the name is refused: its target keeps its mode.
+        let target = base.join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let link = base.join("link");
+        symlink(&target, &link).unwrap();
+        super::share_runtime_dir(&link, euid);
+        assert_eq!(mode(&target), 0o700, "a symlinked runtime root must not widen its target");
+
+        // A directory owned by someone else is refused (a foreign uid is simulated by passing a
+        // different expected owner; the directory itself is ours, at 0700).
+        let foreign = base.join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        std::fs::set_permissions(&foreign, std::fs::Permissions::from_mode(0o700)).unwrap();
+        super::share_runtime_dir(&foreign, euid.wrapping_add(1));
+        assert_eq!(mode(&foreign), 0o700, "a directory another uid owns is not ours to chmod");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn c_boot_log_sinks_are_in_the_shared_runtime_catalog() {
         let source = include_str!("../../../src/main.c");

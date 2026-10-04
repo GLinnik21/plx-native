@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>   /* fchmod — the log sinks are created 0640, see open_fd_log */
+#include <errno.h>      /* open_fd_log tells a missing sink (create it) from a refused one */
 
 FILE *elogf = NULL;   /* shared event/diagnostic log (extern in app.h); used by the
                        * crash handler here and by the starfish.c seam. Opened "w" each
@@ -112,15 +113,32 @@ static FILE *open_event_log(void) {
  * log and stderr verbatim. Keep credentials out of anything that can be printed to stderr.
  *
  * The fixed path lives in shared `/tmp`, so opening is also a security boundary: `O_NOFOLLOW`
- * rejects symlinks; `fstat` requires a regular file owned by this app uid; only after that check
- * may `fchmod` or a requested truncate touch the inode. The `fchmod` is what makes the mode
- * independent of the umask and corrects an append target that survived from a 0600 release. */
+ * rejects symlinks; `fstat` on the OPENED descriptor requires a regular file owned by this app uid
+ * with exactly ONE link; only after that check may `fchmod` or a requested truncate touch the
+ * inode. The `fchmod` is what makes the mode independent of the umask and corrects an append
+ * target that survived from a 0600 release.
+ *
+ * `st_nlink == 1` is the hard-link half of the boundary. A co-resident app in gid 5000 that can
+ * link names in the sticky `/tmp` can `link(2)` one of OUR 0600 files (the `auth.json` session
+ * fallback lives in the same runtime directory) onto a sink name when `fs.protected_hardlinks` is
+ * off: the open then lands on an inode that is a regular file and ours, so every other check
+ * passes, and the `fchmod` would publish it to the group while a requested truncate would empty
+ * it. A sink with a second name is therefore somebody else's inode and is refused, untouched.
+ *
+ * An existing file is opened WITHOUT `O_CREAT`; only a name that does not exist is created, with
+ * `O_EXCL`, so the `fchmod` below runs on an inode this process just made or on a single-link one it
+ * already owned, and never on whatever happened to be at the name. */
 static int open_fd_log(const char *path, int flags) {
     const int truncate = flags & O_TRUNC;
-    int fd = open(path, (flags & ~O_TRUNC) | O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0640);
+    const int base = (flags & ~O_TRUNC) | O_WRONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK;
+    int fd = open(path, base);
+    if (fd < 0 && errno == ENOENT) {
+        fd = open(path, base | O_CREAT | O_EXCL, 0640);
+        if (fd < 0 && errno == EEXIST) fd = open(path, base); /* lost a race to a creator: re-check it */
+    }
     if (fd < 0) return -1;
     struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid()) {
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1) {
         close(fd);
         return -1;
     }

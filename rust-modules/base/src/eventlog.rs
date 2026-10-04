@@ -76,20 +76,45 @@ pub fn events_log() -> std::path::PathBuf {
 /// files; `docs/distribution.md` §6.9 states that residual risk and the audit behind it.
 const LOG_MODE: u32 = 0o640;
 
-/// Open the event log for append at [`LOG_MODE`], refusing anything but a regular file this process
-/// owns (`O_NOFOLLOW` rejects a symlink planted in the shared `/tmp`). The mode is set with
-/// `fchmod` rather than trusted to `open(2)`, so it does not depend on the umask and an append
-/// target that survived from a 0600 release is corrected on its first write.
-fn open_log_append(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+/// Open a log sink for append at [`LOG_MODE`] — **the one open discipline every Rust-side sink
+/// goes through** (the event log below and the panic hook's crash log in `app::boot`), the twin of
+/// `src/main.c`'s `open_fd_log`. The path is in the shared, sticky `/tmp`, so the open is a
+/// security boundary and refuses, with the file untouched:
+///
+/// * a symlink (`O_NOFOLLOW`);
+/// * anything that is not a regular file, or is not owned by this process's uid;
+/// * **a file with more than one link** (`st_nlink != 1`). A co-resident app in the same gid that
+///   can link names in `/tmp` can `link(2)` one of OUR 0600 files — the `auth.json` session
+///   fallback sits in the same runtime directory — onto a sink name when `fs.protected_hardlinks`
+///   is off. The open then lands on an inode that passes every other check because it IS ours, and
+///   the `fchmod` below would publish it to the group. Asked of the OPENED descriptor, so there is
+///   no window between the check and the use.
+///
+/// An existing name is opened without `O_CREAT`; only a name that does not exist is created, with
+/// `O_EXCL`, so the mode correction runs on an inode this process just made or on a single-link one
+/// it already owned. The mode is set with `fchmod` rather than trusted to `open(2)`, so it does not
+/// depend on the umask and an append target that survived from a 0600 release is corrected on its
+/// first write.
+pub fn open_log_append(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(LOG_MODE)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)?;
+    let open = |create: bool| {
+        let mut options = std::fs::OpenOptions::new();
+        options.append(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+        if create {
+            options.create_new(true).mode(LOG_MODE);
+        }
+        options.open(path)
+    };
+    let file = match open(false) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match open(true) {
+            // Lost a race to another creator (the C shim, a second thread): check that file instead.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => open(false)?,
+            other => other?,
+        },
+        other => other?,
+    };
     let meta = file.metadata()?;
-    if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
+    if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.nlink() != 1 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "unsafe log sink",
@@ -234,6 +259,43 @@ mod log_sink_tests {
         let _ = std::fs::remove_file(sink);
         let _ = std::fs::remove_file(victim);
         let _ = std::fs::remove_dir(dir);
+    }
+
+    /// **The hard-link confused deputy.** A co-resident app in the shared gid can `link(2)` one of
+    /// OUR files onto a sink name in the shared, sticky `/tmp` (when `fs.protected_hardlinks` is
+    /// off, which the television's kernel config does not promise). The open then lands on an inode
+    /// that passes `O_NOFOLLOW`, `S_ISREG` and "owned by us" because it IS ours; widening its mode
+    /// would publish a file that was 0600 on purpose (the `auth.json` session fallback lives in the
+    /// same runtime directory). `st_nlink != 1` is the only thing that tells it from a real sink, and
+    /// it has to be asked of the OPENED descriptor.
+    #[test]
+    fn a_sink_hard_linked_to_another_file_is_refused_and_that_file_is_untouched() {
+        use std::os::unix::fs::MetadataExt;
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir().join(format!("plx-rust-log-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let other = dir.join("auth.json");
+        let sink = dir.join("sink");
+        std::fs::write(&other, b"session").unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::hard_link(&other, &sink).unwrap();
+
+        assert!(
+            open_log_append(&sink).is_err(),
+            "a sink with a second name is somebody else's inode"
+        );
+        let meta = std::fs::metadata(&other).unwrap();
+        assert_eq!(meta.mode() & 0o7777, 0o600, "the other file's mode is never widened");
+        assert_eq!(std::fs::read(&other).unwrap(), b"session", "and never written to");
+        assert_eq!(meta.nlink(), 2, "the refusal removes nothing either");
+
+        // The same file with its second name gone is an ordinary single-link survivor again, so
+        // the upgrade correction (a 0600 file left by an older release becomes 0640) still runs.
+        std::fs::remove_file(&sink).unwrap();
+        drop(open_log_append(&other).unwrap());
+        assert_eq!(std::fs::metadata(&other).unwrap().mode() & 0o7777, 0o640);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A umask is PROCESS-wide, so the body runs in a CHILD copy of the test binary (selected by
