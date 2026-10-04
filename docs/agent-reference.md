@@ -195,7 +195,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   a **no-op** host test build (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session --no-run`; it reports from cargo's JSON `fresh`
   flag whether the app crate was rebuilt and flags a recompile as UNEXPECTED, the
   `ci/test_build_not_always_dirty.py` hazard); an **edit-rebuild** after appending a comment to a
-  leaf file of each crate (`plx_base`'s `cbuf.rs`, `plx_machine`'s `landgate.rs`, `plx_platform`'s `devcaps.rs`, `plx_gfx`'s `overdraw.rs`, `plx_net`'s `stream_redirect.rs`, `plx_ui`'s `dwell.rs`, `plx_plex`'s `retry.rs`, `plx_telemetry`'s `window.rs`, `plx_data`'s `tape.rs`, the application's `coldstart.rs`) and to a hub (`plx_ui`'s `lib.rs`), non-incremental (`CARGO_INCREMENTAL=0`, the
+  leaf file of each crate (`plx_base`'s `cbuf.rs`, `plx_machine`'s `landgate.rs`, `plx_platform`'s `devcaps.rs`, `plx_gfx`'s `overdraw.rs`, `plx_net`'s `stream_redirect.rs`, `plx_ui`'s `dwell.rs`, `plx_plex`'s `retry.rs`, `plx_telemetry`'s `window.rs`, `plx_data`'s `tape.rs`, `plx_session`'s `scripted.rs`, the application's `coldstart.rs`) and to a hub (`plx_ui`'s `lib.rs`), non-incremental (`CARGO_INCREMENTAL=0`, the
   default `target`) and incremental (`CARGO_INCREMENTAL=1`, `target-fast`; skipped with a note when
   that tree is absent unless `--cold`); the **unit suite** run on a warm tree with its `test
   result:` counts; the **ARM staticlib** line after touching `lib.rs` plus the archive's size and
@@ -614,7 +614,7 @@ strings blanked; the docstring lists what it cannot see), compares the cycle's m
 - a new upward `crate::x` reference, or a new top-level module that lands inside the cycle - printing
 the `file:line` references into and out of that module. A member leaving the cycle only prints a
 notice. It holds the cycle's *membership*, not its edges: a further upward reference between two
-modules already on the cycle (another `stores` -> `browse`) does not fail it. It runs in `make check-python` (so CI's `host-python` job), tested by
+modules already on the cycle (another `player` -> `route`) does not fail it. It runs in `make check-python` (so CI's `host-python` job), tested by
 `ci/test_module_cycle.py`.
 
 To fix a failure, remove the new path back: move the shared type down a layer, pass the value in as
@@ -1270,7 +1270,7 @@ behaviour; real GL copies, glyphs and presentation still need a device capture w
 There **is** a host unit suite, and it is not the real gate — both halves matter, and conflating
 them is how this section used to be wrong in three files at once.
 
-**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session` (a bare `cargo test --lib` runs the application crate only and skips every layer crate: `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`) runs the whole
+**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session` (a bare `cargo test --lib` runs the application crate only and skips every layer crate: `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`, `plx_data`, `plx_session`) runs the whole
 host suite on the dev Mac, no TV involved — and `make check` runs it a SECOND time under
 `--features hostsim`, because the host feed seam only exists there and the tests that need it are
 compiled out of the first pass (see the build section). **Treat every test COUNT in this section as
@@ -1337,10 +1337,10 @@ you get without waking a television. What it covers today, by module:
   — see `tools/sockprobe.c` above, where `shutdown`-during-`connect` behaves oppositely on the two
   kernels. A socket assertion that passes here is evidence about macOS, not about the TV.
   **(3) Some app async seams remain process-wide**, so some tests are serialized rather than parallel:
-  `metadata.rs`'s test that drives `set_current_for_test` still takes `lib.rs`'s crate-wide
-  `testlock::serial()` — not because its own state is global any more (`MetadataState` and
+  `metadata.rs`'s test that drives `set_current_for_test` still takes
+  `plx_base::testlock::serial()` (one lock per test binary: `plx_data`'s tests and the application's each have their own) — not because its own state is global any more (`MetadataState` and
   `MetadataAdapter`, detail and season mailboxes included, are per-owner fields now, like the other
-  five stores), but because `set_current_for_test`'s `assert_held` enforces the SAME crate-wide
+  five stores), but because `set_current_for_test`'s `assert_held` enforces the SAME
   lock the genuinely-still-global seams (route's play mailbox, the player's SHARED block) also
   take, and the convention is one lock, not one per module. Browse, Hubs, Metadata, Person, Search
   and ViewState are all owned now: a production `Bridge` owns each store's state, adapters and

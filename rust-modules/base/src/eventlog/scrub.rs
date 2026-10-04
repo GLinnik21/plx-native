@@ -1017,7 +1017,7 @@ mod tests {
     /// switch-diagnostic lines, which log the roster tile's name as household identity.
     #[test]
     fn the_tile_title_exception_still_applies_inside_auth_rs() {
-        let path = std::path::Path::new("rust-modules/src/auth.rs");
+        let path = std::path::Path::new("rust-modules/session/src/auth.rs");
         let call = "log(&format!(\"auth: switch '{}' -> ok\", tile.title));";
         assert!(
             banned_hits_in_call(path, 1, call).is_empty(),

@@ -124,8 +124,8 @@ ships, because `-Z build-std` is what ships.
    exactly this: on the TV's kernel `shutdown(2)` **does** abort a `connect(2)` in progress, while
    on Darwin the same call makes `connect_timeout` report *success* on a socket that never
    connected. A socket assertion passing here is evidence about macOS.
-3. **Some tests are serialized on crate globals**, not parallel. `metadata.rs`'s take `lib.rs`'s
-   crate-wide `testlock::serial()`, and so does every owned-screen test that seeds a store —
+3. **Some tests are serialized on crate globals**, not parallel. `metadata.rs`'s take
+   `plx_base::testlock::serial()` (one lock per test binary), and so does every owned-screen test that seeds a store —
    an owned screen keeps no focus of its own (the `FocusEngine` does), but `pms`'s catalog statics
    are shared across modules. `ui/xfade.rs` is the cautionary case, and its own module doc says why:
    pure value semantics **with one exception that costs them their parallelism** — `tick` reports

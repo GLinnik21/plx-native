@@ -149,5 +149,23 @@ class InventoryTests(unittest.TestCase):
         }'''
         self.assertEqual(self.texts(source), {'Filmography', 'items', 'SEASON {}'})
 
+    def test_every_listed_path_exists_and_a_missing_one_fails(self):
+        # Three crate splits moved a listed file and the gate skipped it silently. In the real tree
+        # nothing is missing; in an empty one every directory and every listed file is reported.
+        import contextlib, io, tempfile
+        root = Path(__file__).resolve().parent.parent
+        self.assertEqual(checker.missing_roots(root), [])
+        self.assertEqual([p for p in checker.source_paths(root) if not p.is_file()], [])
+        with tempfile.TemporaryDirectory() as empty, contextlib.redirect_stderr(io.StringIO()) as err:
+            argv, sys.argv = sys.argv, ['check-localization.py', '--root', empty]
+            try: rc = checker.main()
+            finally: sys.argv = argv
+        self.assertEqual(rc, 1)
+        for needle in ('rust-modules/session/src/auth/owner.rs: a listed product file is missing',
+                       'rust-modules/data/src/metadata.rs: a listed product file is missing',
+                       'rust-modules/data/src/person.rs: a listed product file is missing',
+                       'rust-modules/src/screens: a directory this gate reads is missing'):
+            self.assertIn(needle, err.getvalue())
+
 if __name__ == '__main__':
     unittest.main()

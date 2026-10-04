@@ -578,6 +578,7 @@ name = "plx_data"
 version = "0.0.0"
 dependencies = [
  "plx_base",
+ "plx_data",
  "plx_machine",
  "plx_net",
  "plx_platform",
@@ -656,6 +657,7 @@ dependencies = [
  "plx_net",
  "plx_platform",
  "plx_plex",
+ "plx_session",
  "plx_telemetry",
  "serde",
  "serde_json",

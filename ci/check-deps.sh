@@ -19,7 +19,7 @@
 #
 # Phase 4 rule (D3 rewrite, phase 12):
 #   mutators — a screen (ui/, screens/) or the loop (app/) never calls a data module's MUTATOR directly
-#              (`crate::browse::set_cur(`, `crate::search::set_query(`, …): every mutation is a
+#              (`plx_data::browse::set_cur(`, `plx_data::search::set_query(`, …): every mutation is a
 #              `StoreCmd` applied through the owner's run/step method (e.g. `Bridge::<store>_run`)
 #              (spec §14, the (caller, mutator) allowlist — `docs/stores-as-machines.md`). PRODUCTION lines only:
 #              a `#[cfg(test)] mod` seeds a store however it likes. The player side joins in phase

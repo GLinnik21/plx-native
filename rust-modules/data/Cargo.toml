@@ -42,12 +42,17 @@ plx_base = { path = "../base", features = ["test-support"] }
 plx_machine = { path = "../machine", features = ["test-support"] }
 plx_platform = { path = "../platform", features = ["test-support"] }
 plx_net = { path = "../net", features = ["test-support"] }
-# `devtriggers` is the plex layer's credential policy for a plaintext origin (`CredentialPolicy::
-# AllowPlaintext`): the browse and search fixtures register an `http://10.0.0.1` server and select it,
-# which a build without it refuses. The application's tests always had it (a default feature); this
-# keeps `cargo test -p plx_data` alone as green as the full suite. Dev-dependency features reach test
-# builds only, never a shipped one.
-plx_plex = { path = "../plex", features = ["test-support", "devtriggers"] }
+# THE RULE for a layer crate whose own tests need the development feature set (the same in every
+# crate that has it): the crate dev-depends on ITSELF with `devtriggers`, so `cargo test -p plx_data`
+# alone builds the crate and every layer below it exactly as the Makefile's suite does (the
+# application's default features forward `devtriggers` to all of them). Here it is the plex
+# layer's credential policy for a plaintext origin (`CredentialPolicy::AllowPlaintext`): the browse and
+# search fixtures register an `http://10.0.0.1` server and select it, which a build without the feature
+# refuses (39 tests), and three tests of this crate exist only under its own `devtriggers`.
+# A dev-dependency feature reaches test builds only (`resolver = "2"`): `cargo tree -e normal` shows
+# no `devtriggers` under `--no-default-features`, which is the shipping set.
+plx_data = { path = ".", features = ["devtriggers"] }
+plx_plex = { path = "../plex", features = ["test-support"] }
 plx_telemetry = { path = "../telemetry", features = ["test-support"] }
 
 [lints]
