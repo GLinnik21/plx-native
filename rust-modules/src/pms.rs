@@ -146,7 +146,7 @@ impl PmsMovie {
 #[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HomeCatalog {
-    items: Vec<PmsMovie>,
+    items: Vec<Arc<PmsMovie>>,
     hubs: Vec<HubRow>,
     heroes: Vec<HeroSlot>,
 }
@@ -212,7 +212,7 @@ fn published_home(state: &PmsState) -> &Arc<HomeCatalog> {
 }
 
 #[cfg(test)]
-fn catalog(state: &PmsState) -> &Vec<PmsMovie> {
+fn catalog(state: &PmsState) -> &Vec<Arc<PmsMovie>> {
     &published_home(state).items
 }
 
@@ -220,7 +220,7 @@ fn catalog(state: &PmsState) -> &Vec<PmsMovie> {
 /// itself.
 #[cfg(test)]
 pub(crate) fn movie(state: &PmsState, i: usize) -> Option<&PmsMovie> {
-    catalog(state).get(i)
+    catalog(state).get(i).map(|m| &**m)
 }
 /// Catalog index of the row `(sid, rk)` names, or -1.
 ///
@@ -467,7 +467,7 @@ pub(crate) struct HubRef<'a> {
     pub(crate) source: &'a str,
     /// Every item the shelf's listing holds (0 when unknown); `items` is the capped page.
     pub(crate) total: usize,
-    pub(crate) items: &'a [PmsMovie],
+    pub(crate) items: &'a [Arc<PmsMovie>],
 }
 
 /// Provider identities are tagged: a listing key cannot collide with an identifier that
@@ -482,7 +482,7 @@ pub(crate) enum HubIdentity<'a> {
     Key { sid: ServerId, key: &'a str },
 }
 
-fn stable_hub_identity<'a>(row: &'a HubRow, items: &[PmsMovie]) -> Option<HubIdentity<'a>> {
+fn stable_hub_identity<'a>(row: &'a HubRow, items: &[Arc<PmsMovie>]) -> Option<HubIdentity<'a>> {
     if row.len == 0 { return None; }
     let sid = items.get(row.start)?.sid;
     if row.hub_id == "home.continue" { Some(HubIdentity::ContinueWatching) }
@@ -513,13 +513,13 @@ impl<'a> HubsView<'a> {
     }
     pub(crate) fn hero(self, index: usize) -> Option<HeroRef<'a>> {
         let slot = self.data.heroes.get(index)?;
-        Some(HeroRef { item: self.data.items.get(slot.idx)?, source: &slot.source })
+        Some(HeroRef { item: &**self.data.items.get(slot.idx)?, source: &slot.source })
     }
 
     /// Server-scoped catalog lookup by `(sid, rk)`, over the retained publication rather than a
     /// global — see [`index_of_rk`]'s doc for why the scan must not compare `rk` alone.
     pub(crate) fn find(self, sid: ServerId, rk: &str) -> Option<&'a PmsMovie> {
-        self.data.items.iter().find(|m| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)))
+        self.data.items.iter().find(|m| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk))).map(|m| &**m)
     }
 }
 
@@ -661,14 +661,15 @@ fn apply_edit(b: &mut SourceBuild, sid: ServerId, rk: &str, edit: LocalEdit) -> 
         LocalEdit::Watched(on) => {
             let mut hit = false;
             for c in b.cw.iter_mut() {
-                if mine(&c.m) {
-                    set_watched(&mut c.m, on);
+                if mine(&*c.m) {
+                    set_watched(Arc::make_mut(&mut c.m), on);
                     hit = true;
                 }
             }
             for m in b.shelves.iter_mut().flat_map(|s| s.items.iter_mut()) {
-                if mine(m) {
-                    set_watched(m, on);
+                // test the shared card first: `make_mut` clones only the card that matches
+                if mine(&**m) {
+                    set_watched(Arc::make_mut(m), on);
                     hit = true;
                 }
             }
@@ -676,7 +677,7 @@ fn apply_edit(b: &mut SourceBuild, sid: ServerId, rk: &str, edit: LocalEdit) -> 
         }
         LocalEdit::LeftTheDeck => {
             let before = b.cw.len();
-            b.cw.retain(|c| !mine(&c.m));
+            b.cw.retain(|c| !mine(&*c.m));
             b.cw.len() != before
         }
     }
@@ -701,7 +702,7 @@ pub(crate) fn set_watched(m: &mut PmsMovie, on: bool) {
 }
 
 /// The catalog/hubs/pool triple the merge produces, before it is committed.
-type HubBuild = (Vec<PmsMovie>, Vec<HubRow>, Vec<HeroSlot>);
+type HubBuild = (Vec<Arc<PmsMovie>>, Vec<HubRow>, Vec<HeroSlot>);
 
 // ---- one source's contribution -----------------------------------------------------------------
 
@@ -713,7 +714,7 @@ type HubBuild = (Vec<PmsMovie>, Vec<HubRow>, Vec<HeroSlot>);
 #[serde(deny_unknown_fields)]
 struct CwItem {
     last_viewed_at: i64,
-    m: PmsMovie,
+    m: Arc<PmsMovie>,
 }
 
 /// One shelf as a source projected it: rows already parsed, filtered and stamped with the server
@@ -724,7 +725,7 @@ struct Shelf {
     title: String,
     hub_id: String,
     key: String,
-    items: Vec<PmsMovie>,
+    items: Vec<Arc<PmsMovie>>,
     /// Every item the hub's listing holds (`plex::Hub::total`) — a collection shelf's "· N".
     #[serde(default)]
     total: usize,
@@ -794,7 +795,7 @@ fn project(
             .filter_map(|it| {
                 keep(it).map(|m| CwItem {
                     last_viewed_at: it.last_viewed_at,
-                    m,
+                    m: Arc::new(m),
                 })
             })
             .collect();
@@ -822,7 +823,7 @@ fn project(
         if hub.hub_identifier == "home.continue" || hub.hub_identifier == "home.ondeck" {
             continue; // superseded by the dedicated hub above
         }
-        let items: Vec<PmsMovie> = hub.metadata.iter().filter_map(&keep).collect();
+        let items: Vec<Arc<PmsMovie>> = hub.metadata.iter().filter_map(&keep).map(Arc::new).collect();
         if items.is_empty() {
             continue;
         }
@@ -914,7 +915,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
         .filter_map(|s| s.last.as_ref().map(|b| (s.handle.as_str(), b)))
         .collect();
 
-    let mut new_cat: Vec<PmsMovie> = Vec::new();
+    let mut new_cat: Vec<Arc<PmsMovie>> = Vec::new();
     let mut new_hubs: Vec<HubRow> = Vec::new();
     // Parallel to `new_cat`: the HANDLE of the source each row came from. The hero pool is the only
     // reader, and it needs the fact per ITEM rather than per shelf — the merged deck's own `source`
@@ -933,7 +934,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     cw.sort_by(|a, b| b.1.last_viewed_at.cmp(&a.1.last_viewed_at));
     cw.truncate(MAX_SHELF_ITEMS);
     for (h, c) in &cw {
-        new_cat.push(c.m.clone());
+        new_cat.push(Arc::clone(&c.m));
         row_handle.push(h);
     }
     if !new_cat.is_empty() {
@@ -956,7 +957,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     // library cannot spend a pinned one's row budget (nor can items past the cap, which are never
     // drawn), and a shelf left with nothing contributes no `HubRow` below, which is how an unpinned
     // library's whole shelf disappears rather than becoming an empty heading.
-    let publishable: Vec<Vec<Vec<&PmsMovie>>> = live
+    let publishable: Vec<Vec<Vec<&Arc<PmsMovie>>>> = live
         .iter()
         .map(|(_, b)| {
             b.shelves
@@ -990,7 +991,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
             }
             let start = new_cat.len();
             for m in items {
-                new_cat.push((*m).clone());
+                new_cat.push(Arc::clone(m));
                 row_handle.push(handle);
             }
             rows_left -= new_cat.len() - start;
@@ -1970,13 +1971,13 @@ fn build_test(n: usize) -> SourceBuild {
             hub_id: "home.continue".into(),
             key: String::new(),
             items: (0..n)
-                .map(|i| PmsMovie {
+                .map(|i| Arc::new(PmsMovie {
                     rk: (i + 1).to_string(),
                     // One backdrop per item, as a real catalog has: a test that asks WHICH
                     // backdrop was requested (Home's neighbour preload) needs them told apart.
                     art: format!("/art/{}", i + 1),
                     ..PmsMovie::default()
-                })
+                }))
                 .collect(),
             total: 0,
         }],
@@ -2023,7 +2024,7 @@ pub(crate) fn seed_two_library_home_for_test(
         sections.len() >= 2 && sections[..2].iter().all(|section| section.sid == Some(sid)),
         "the two-library Home fixture requires two sections on its server"
     );
-    let item = |section: &crate::stores::browse::SectionView, rk: &str| PmsMovie {
+    let item = |section: &crate::stores::browse::SectionView, rk: &str| Arc::new(PmsMovie {
         sid,
         sec: section.key,
         rk: rk.into(),
@@ -2031,7 +2032,7 @@ pub(crate) fn seed_two_library_home_for_test(
         thumb: "/t.jpg".into(),
         art: "/a.jpg".into(),
         ..Default::default()
-    };
+    });
     let mut source = Src::new(sid, String::new());
     source.state = HubState::Ready;
     source.last = Some(SourceBuild {
@@ -2066,7 +2067,7 @@ fn seed_with_scope_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, sid
         let mut build = build_test(items);
         for shelf in &mut build.shelves {
             for item in &mut shelf.items {
-                item.sid = sid;
+                Arc::make_mut(item).sid = sid;
             }
         }
         s.last = Some(build);

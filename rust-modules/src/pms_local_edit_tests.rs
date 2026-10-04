@@ -193,3 +193,54 @@ fn scoped_optimistic_edit_cannot_restore_an_unpinned_sibling_library() {
     assert!(hub_item(&o.state, 0, 0).unwrap().watched);
     reset(&mut o.state, &o.adapter);
 }
+
+/// A publication hands the catalog the source's own cards: cloning a pointer per card, not the
+/// card, is what keeps a Home publication cheap enough on the main thread to hold thousands.
+#[test]
+fn a_publication_shares_cards_with_its_source() {
+    let _g = plx_base::testlock::serial();
+    let mut source = Src::new(sid(0), String::new());
+    source.state = HubState::Ready;
+    source.last = Some(built(
+        0,
+        &[(9, "7")],
+        vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])],
+    ));
+    let srcs = vec![source];
+    let (cat, hubs, _pool) = merge(&srcs);
+    let last = srcs[0].last.as_ref().unwrap();
+
+    assert_eq!(hubs.len(), 2, "the deck and one shelf");
+    assert!(Arc::ptr_eq(&cat[0], &last.cw[0].m), "the deck card is the source's card");
+    assert!(Arc::ptr_eq(&cat[1], &last.shelves[0].items[0]), "a shelf card is the source's card");
+    assert!(Arc::ptr_eq(&cat[2], &last.shelves[0].items[1]));
+}
+
+/// A watched flip on a card that is on several shelves must clone exactly the cards it changes:
+/// the predicate is tested on the shared reference first, so a card that does not match is never
+/// copied (`Arc::make_mut` on every card would deep-clone the whole catalog).
+#[test]
+fn a_watched_edit_clones_exactly_one_card() {
+    let _g = plx_base::testlock::serial();
+    let mut b = built(
+        0,
+        &[(9, "7"), (8, "8")],
+        vec![shelf(0, "Recently Added", "home.movies.recent", &["8", "9", "10"])],
+    );
+    let before = b.clone(); // shares every card with `b`
+    assert!(apply_edit(&mut b, sid(0), "8", LocalEdit::Watched(true)));
+
+    // "8" is on the deck and on the shelf: those two cards (and only those) were copied
+    let changed = |a: &Arc<PmsMovie>, c: &Arc<PmsMovie>| !Arc::ptr_eq(a, c);
+    assert!(changed(&b.cw[1].m, &before.cw[1].m));
+    assert!(changed(&b.shelves[0].items[0], &before.shelves[0].items[0]));
+    assert!(b.cw[1].m.watched && b.shelves[0].items[0].watched);
+    assert!(Arc::ptr_eq(&b.cw[0].m, &before.cw[0].m), "an unrelated deck card is not copied");
+    for i in [1, 2] {
+        assert!(
+            Arc::ptr_eq(&b.shelves[0].items[i], &before.shelves[0].items[i]),
+            "shelf card {i} is not copied"
+        );
+    }
+    assert!(!before.cw[1].m.watched, "the source's own card is untouched");
+}

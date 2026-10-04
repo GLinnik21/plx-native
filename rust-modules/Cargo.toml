@@ -219,7 +219,7 @@ libc = "0.2"
 # std exposes the writer API used to bound manifest encoding before any filesystem write.
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
 # derive(Deserialize) for the typed plex API response models (plex/src/plex/models.rs)
-serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc", "rc"] }
 
 [profile.release]
 opt-level = 2

@@ -932,7 +932,7 @@ impl HomeScreen {
     }
 
     fn item_at<'a>(&self, view: HubsView<'a>, row: usize, col: usize) -> Option<&'a PmsMovie> {
-        self.hub(view, row)?.items.get(col)
+        self.hub(view, row)?.items.get(col).map(|m| &**m)
     }
 
     fn env(&self, dt: f32) -> Env {

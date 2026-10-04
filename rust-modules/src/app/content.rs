@@ -684,7 +684,8 @@ fn home_requests(app: &mut App, now: u32) {
 
 fn home_item<'a>(view: crate::pms::HubsView<'a>, sid: plx_plex::plex::ServerId, rk: &str) -> Option<&'a crate::pms::PmsMovie> {
     (0..view.hub_count()).find_map(|i| view.hub(i)?.items.iter()
-        .find(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk))))
+        .find(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk)))
+        .map(|item| &**item))
 }
 
 /// Resolve identity against the retained selected item, never against the current server.
