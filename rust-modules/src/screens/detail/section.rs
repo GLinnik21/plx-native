@@ -5,9 +5,9 @@
 //! in visual order begins to travel (`super::compact_title_alpha`), so adding a section cannot
 //! leave a 72px wordmark drawn over it. A section without a
 //! slot cannot be stored by accident: the slot index is this enum's discriminant, and
-//! [`crate::metadata::SPOT_SECTION_SLOTS`] is that count.
+//! [`plx_data::metadata::SPOT_SECTION_SLOTS`] is that count.
 
-use crate::metadata::SPOT_SECTION_SLOTS;
+use plx_data::metadata::SPOT_SECTION_SLOTS;
 
 pub(crate) const SLOTS: usize = SPOT_SECTION_SLOTS;
 

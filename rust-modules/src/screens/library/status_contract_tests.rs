@@ -1,5 +1,5 @@
 use super::super::{readout, LibraryScreen, Readout, FILTER, LIBRARY_GROUP, RETRY, SORT, STATUS_GROUP};
-use crate::stores::browse::{SecFetch, SecKind, SrcGroup, SourceState, SrcRow};
+use plx_data::stores::browse::{SecFetch, SecKind, SrcGroup, SourceState, SrcRow};
 use crate::screens::registry::{LibraryLike, PageMemory};
 use plx_ui::fixture::FixtureMeasure;
 use plx_ui::consts::SCR_W;
@@ -25,9 +25,9 @@ struct StatusHost;
 
 #[derive(Clone, Copy)]
 struct Views<'a> {
-    listing: crate::stores::browse::ListingView<'a>,
-    directory: crate::stores::browse::DirectoryView<'a>,
-    hubs: crate::stores::browse::HubsView<'a>,
+    listing: plx_data::stores::browse::ListingView<'a>,
+    directory: plx_data::stores::browse::DirectoryView<'a>,
+    hubs: plx_data::stores::browse::HubsView<'a>,
 }
 
 impl Host for StatusHost {
@@ -41,27 +41,27 @@ impl Host for StatusHost {
 }
 
 impl LibraryLike for StatusHost {
-    fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> { cx.views.listing }
-    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> { cx.views.directory }
-    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> { cx.views.hubs }
+    fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }
 }
 
 const ENTRY: EntryId = EntryId(91);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 struct Fixture {
-    listing: crate::stores::browse::ListingSnapshot,
-    directory: crate::stores::browse::DirectorySnapshot,
-    hubs: crate::stores::browse::HubsSnapshot,
+    listing: plx_data::stores::browse::ListingSnapshot,
+    directory: plx_data::stores::browse::DirectorySnapshot,
+    hubs: plx_data::stores::browse::HubsSnapshot,
     measure: FixtureMeasure,
 }
 
 impl Fixture {
     fn normal() -> Self {
         let sid = plx_plex::plex::ServerId::from_raw(0);
-        let listing = crate::stores::browse::ListingSnapshot::fixture(
+        let listing = plx_data::stores::browse::ListingSnapshot::fixture(
             sid,
-            (0..36).map(|i| Some(crate::pms::PmsMovie {
+            (0..36).map(|i| Some(plx_data::pms::PmsMovie {
                 sid,
                 rk: format!("status-{i}"),
                 title: format!("Status {i}"),
@@ -69,15 +69,15 @@ impl Fixture {
             })).collect(),
             vec![("A".into(), 18), ("Z".into(), 18)],
         );
-        let directory = crate::stores::browse::DirectorySnapshot::fixture(1, 0, vec![
+        let directory = plx_data::stores::browse::DirectorySnapshot::fixture(1, 0, vec![
             Self::section(0, 1, "Cinema", true),
             Self::section(1, 2, "Television", false),
         ]);
-        Self { listing, directory, hubs: crate::stores::browse::HubsSnapshot::empty(), measure: FixtureMeasure }
+        Self { listing, directory, hubs: plx_data::stores::browse::HubsSnapshot::empty(), measure: FixtureMeasure }
     }
 
-    fn section(section: usize, key: i64, title: &str, current: bool) -> crate::stores::browse::SectionView {
-        crate::stores::browse::SectionView {
+    fn section(section: usize, key: i64, title: &str, current: bool) -> plx_data::stores::browse::SectionView {
+        plx_data::stores::browse::SectionView {
             sid: Some(plx_plex::plex::ServerId::from_raw(0)),
             key,
             kind: SecKind::Movie,
@@ -85,11 +85,11 @@ impl Fixture {
         }
     }
 
-    fn listing(fetch: SecFetch, total: i64) -> crate::stores::browse::ListingSnapshot {
+    fn listing(fetch: SecFetch, total: i64) -> plx_data::stores::browse::ListingSnapshot {
         let sid = plx_plex::plex::ServerId::from_raw(0);
-        crate::stores::browse::ListingSnapshot::fixture(
+        plx_data::stores::browse::ListingSnapshot::fixture(
             sid,
-            (0..total.max(0) as usize).map(|i| Some(crate::pms::PmsMovie {
+            (0..total.max(0) as usize).map(|i| Some(plx_data::pms::PmsMovie {
                 sid,
                 rk: format!("status-{i}"),
                 title: format!("Status {i}"),
@@ -174,14 +174,14 @@ fn empty_loading_and_failed_discovery_publish_no_false_grid_controls() {
     let _guard = plx_base::testlock::serial();
     let sid = plx_plex::plex::ServerId::from_raw(7);
     let scenarios = [
-        ("reachable empty table", crate::stores::browse::DirectorySnapshot::fixture_source(
+        ("reachable empty table", plx_data::stores::browse::DirectorySnapshot::fixture_source(
             1, sid, SrcGroup { name: "Cinema server".into(), handle: String::new(), state: SourceState::Reachable, tier: None }, SecFetch::Ready),
             Fixture::listing(SecFetch::Loading, -1), Readout::Empty, false),
-        ("still discovering table", crate::stores::browse::DirectorySnapshot::default(),
-            crate::stores::browse::ListingSnapshot::absent(), Readout::Loading, false),
-        ("failed sections", crate::stores::browse::DirectorySnapshot::fixture_source(
+        ("still discovering table", plx_data::stores::browse::DirectorySnapshot::default(),
+            plx_data::stores::browse::ListingSnapshot::absent(), Readout::Loading, false),
+        ("failed sections", plx_data::stores::browse::DirectorySnapshot::fixture_source(
             2, sid, SrcGroup { name: "Cinema server".into(), handle: "friend".into(), state: SourceState::Unreachable, tier: None }, SecFetch::Failed),
-            crate::stores::browse::ListingSnapshot::absent(), Readout::Failed, true),
+            plx_data::stores::browse::ListingSnapshot::absent(), Readout::Failed, true),
     ];
 
     for (name, directory, listing, expected, retry) in scenarios {

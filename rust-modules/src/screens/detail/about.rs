@@ -5,7 +5,7 @@
 
 use std::ffi::CString;
 
-use crate::metadata::Detail;
+use plx_data::metadata::Detail;
 use plx_machine::machine::{GroupId, Measure};
 use plx_ui::text_lift::{draw_focused, TextLift, CENTRE};
 use plx_ui::text_view::TextView;
@@ -541,7 +541,7 @@ mod tests {
             rk: "movie".into(),
             rating: "PG".into(),
             summary: "word ".repeat(40),
-            audio: vec![crate::metadata::Stream {
+            audio: vec![plx_data::metadata::Stream {
                 lang: "en".into(),
                 codec: "ac3".into(),
                 ..Default::default()

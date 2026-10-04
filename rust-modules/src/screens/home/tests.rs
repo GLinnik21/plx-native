@@ -136,10 +136,10 @@ fn top_band_focus_walks_to_the_last_section_whatever_the_count() {
 #[test]
 fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let s = screen(snapshot.view());
     let mut groups = Vec::new();
     Focusable::<TestHost>::groups(&s, &cx(snapshot.view(), None), &mut groups);
@@ -153,10 +153,10 @@ fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
 #[test]
 fn the_pager_is_not_a_focus_stop_and_the_rows_end_pages_instead() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let context = cx(
         snapshot.view(),
@@ -188,10 +188,10 @@ fn the_pager_is_not_a_focus_stop_and_the_rows_end_pages_instead() {
 #[test]
 fn the_top_band_reports_the_chip_and_the_pills_as_one_answer() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 1, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let s = screen(snapshot.view());
     let mut links = Vec::new();
     <HomeScreen as Screen<TestHost>>::links(&s, &mut links);
@@ -221,10 +221,10 @@ fn the_top_band_walks_permanent_pills_not_the_section_table() {
 #[test]
 fn step_row_stays_inside_the_addressable_rows() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let s = screen(snapshot.view());
     let first = first_card(&s);
     assert!(matches!(
@@ -244,22 +244,22 @@ fn step_row_stays_inside_the_addressable_rows() {
 #[test]
 fn the_status_readout_tells_loading_empty_and_failed_apart() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     for (hub_state, kind, action) in [
-        (crate::pms::HubState::Loading, StatusKind::Working, false),
-        (crate::pms::HubState::Failed, StatusKind::Failed, true),
-        (crate::pms::HubState::Ready, StatusKind::Empty, true),
+        (plx_data::pms::HubState::Loading, StatusKind::Working, false),
+        (plx_data::pms::HubState::Failed, StatusKind::Failed, true),
+        (plx_data::pms::HubState::Ready, StatusKind::Empty, true),
     ] {
-        crate::pms::seed_for_test(&mut state, &adapter, 0, hub_state);
-        let snapshot = crate::pms::hubs_snapshot(&state);
+        plx_data::pms::seed_for_test(&mut state, &adapter, 0, hub_state);
+        let snapshot = plx_data::pms::hubs_snapshot(&state);
         let (_, got, got_action) = status_read(snapshot.view()).unwrap();
         assert_eq!(got, kind);
         assert_eq!(got_action.is_some(), action);
     }
-    for hub_state in [crate::pms::HubState::Ready, crate::pms::HubState::Failed] {
-        crate::pms::seed_for_test(&mut state, &adapter, 3, hub_state);
-        assert!(status_read(crate::pms::hubs_snapshot(&state).view()).is_none(),
+    for hub_state in [plx_data::pms::HubState::Ready, plx_data::pms::HubState::Failed] {
+        plx_data::pms::seed_for_test(&mut state, &adapter, 3, hub_state);
+        assert!(status_read(plx_data::pms::hubs_snapshot(&state).view()).is_none(),
             "a failed refresh retains playable content, not a replacement readout");
     }
 }
@@ -273,10 +273,10 @@ fn the_status_readout_tells_loading_empty_and_failed_apart() {
 fn a_failed_home_stands_on_the_page_readout_lines() {
     use plx_ui::widgets::StatusOverlay;
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Failed);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let (caption, kind, action) = status_read(snapshot.view()).unwrap();
     assert_eq!((caption.to_str().unwrap(), kind), ("Can\u{2019}t reach your Plex server", StatusKind::Failed));
     assert_eq!(action.unwrap().to_str().unwrap(), "Try again");
@@ -305,10 +305,10 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     let key = keypin::key_of("home-clock.invalid", 32400);
     let _scoped = keypin::Scoped::watch_machine("home-clock-machine", &key);
     let _current = current_server_for_test("home-clock-machine");
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Failed);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let view = snapshot.view();
     let mut s = screen(view);
     let measure = FixtureMeasure;
@@ -339,9 +339,9 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     assert_eq!(overlay.reason, Some(plx_platform::i18n::msg::browse_clock_key_changed_c()));
 
     // A read-out that has not failed takes no reason, whatever the fact says.
-    for hub_state in [crate::pms::HubState::Loading, crate::pms::HubState::Ready] {
-        crate::pms::seed_for_test(&mut state, &adapter, 0, hub_state);
-        let snapshot = crate::pms::hubs_snapshot(&state);
+    for hub_state in [plx_data::pms::HubState::Loading, plx_data::pms::HubState::Ready] {
+        plx_data::pms::seed_for_test(&mut state, &adapter, 0, hub_state);
+        let snapshot = plx_data::pms::hubs_snapshot(&state);
         let overlay = status_overlay(snapshot.view(), &s.plaintext, &s.clock).unwrap();
         assert_eq!((overlay.reason, overlay.glyph), (None, None), "{hub_state:?}");
     }
@@ -387,10 +387,10 @@ fn a_failed_home_ignores_a_clock_fact_about_another_server() {
     let elsewhere = keypin::key_of("home-elsewhere.invalid", 32400);
     let _scoped = keypin::Scoped::watch_machine("home-elsewhere-machine", &elsewhere);
     let _current = current_server_for_test("home-here-machine");
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Failed);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let view = snapshot.view();
     let mut s = screen(view);
 
@@ -413,10 +413,10 @@ fn observe_card(h: &mut plx_ui::card_motion::History, s: &HomeScreen, ms: u32) -
 fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
     use plx_ui::card_motion::{History, Verdict};
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let late_dive_frame = |offset: f32| {
         let mut s = screen(snapshot.view());
         s.snap.jump(0.9);
@@ -436,10 +436,10 @@ fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
 fn the_hero_to_grid_dive_is_observed_from_card_placement_and_then_settles() {
     use plx_ui::card_motion::{History, Verdict};
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let mut h = History::default();
     s.snap.jump(0.0);
@@ -469,10 +469,10 @@ fn no_shelves_means_no_grid_snap() {
 #[test]
 fn the_status_screen_takes_ok_but_never_the_top_band() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Failed);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let entry = s.entry;
     let (_, retry, _) = step(
@@ -495,8 +495,8 @@ fn the_status_screen_takes_ok_but_never_the_top_band() {
         assert!(!out.iter().any(|s| matches!(&s.fx,
             Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Retry))))));
     }
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Failed);
-    let populated = crate::pms::hubs_snapshot(&state);
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Failed);
+    let populated = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(populated.view());
     let (_, out, _) = step(&mut s, populated.view(), None, &ScreenEvent::Activate(HERO_PLAY_ELEM));
     assert!(has_home(&out, |r| matches!(r, HomeReq::Play { .. })));
@@ -522,10 +522,10 @@ fn pointer_hit_column_matches_the_drawn_card_at_every_snap_phase() {
 #[test]
 fn drawn_hero_geometry_follows_slide_and_the_captured_press_scale() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.outgoing = s.carousel.clone();
     assert!(s.outgoing.is_some());
@@ -563,10 +563,10 @@ fn drawn_hero_geometry_follows_slide_and_the_captured_press_scale() {
 #[test]
 fn status_action_geometry_does_not_inherit_the_previous_hero_pop_or_slide() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Failed);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     for _ in 0..80 { s.hero_pop.step(Some(0), 0.016); }
     s.outgoing = Some((plx_plex::plex::ServerId::UNSET, "old".into()));
@@ -583,10 +583,10 @@ fn status_action_geometry_does_not_inherit_the_previous_hero_pop_or_slide() {
 #[test]
 fn drawn_card_geometry_includes_press_but_its_rest_anchor_does_not() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     for _ in 0..80 { s.grid.shelves[0].update(3, Some(0), &RowStyle::HOME, 0.016); }
@@ -1325,10 +1325,10 @@ fn the_meta_lines_bound_keeps_the_run_inside_the_hero_wedge() {
 #[test]
 fn engine_links_hero_to_the_first_shelf_and_back() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let s = screen(snapshot.view());
     let owner = InputOwner::Entry(s.entry);
     let hero = FocusKey {
@@ -1349,10 +1349,10 @@ fn engine_links_hero_to_the_first_shelf_and_back() {
 #[test]
 fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let second_elem = s.elem_for(HomeItemIdentity::Item {
         hub: HomeHubIdentity::Key {
@@ -1392,10 +1392,10 @@ fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
 #[test]
 fn down_from_the_last_shelf_never_reenters_the_offscreen_hero() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     s.snap_target = 1.0;
@@ -1478,10 +1478,10 @@ fn memory_round_trip_preserves_registries_and_carousel_identity() {
 #[test]
 fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut hero_picture = screen(snapshot.view());
     let mut grid_picture = screen(snapshot.view());
     for s in [&mut hero_picture, &mut grid_picture] {
@@ -1504,10 +1504,10 @@ fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
 #[test]
 fn the_home_census_covers_input_motion_and_current_projection() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let baseline = screen(snapshot.view()).hash();
     let changes: &[fn(&mut HomeScreen)] = &[
         |s| s.snap.vel = 1.0,
@@ -1540,7 +1540,7 @@ fn the_home_census_covers_input_motion_and_current_projection() {
 /// place that sees both.
 #[test]
 fn the_data_shelf_cap_is_the_card_rows_capacity() {
-    assert_eq!(crate::pms::MAX_SHELF_ITEMS, plx_ui::card_row::MAX_ROW_ITEMS);
+    assert_eq!(plx_data::pms::MAX_SHELF_ITEMS, plx_ui::card_row::MAX_ROW_ITEMS);
 }
 
 #[test]
@@ -1557,10 +1557,10 @@ fn paint_only_backdrop_and_spinner_state_do_not_change_the_canonical_hash() {
 #[test]
 fn an_explicit_hero_reseat_keeps_the_fold_animation_unlike_page_restoration() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     s.snap_target = 1.0;
@@ -1576,15 +1576,15 @@ fn an_explicit_hero_reseat_keeps_the_fold_animation_unlike_page_restoration() {
 #[test]
 fn shelf_viewports_follow_identity_across_a_catalog_reorder() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_grid_for_test(&mut state, &adapter, 2, 24);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 2, 24);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let identity = s.rows[0].identity.clone();
     s.grid.shelves[0].restore_scroll(900.0, 24, &RowStyle::HOME);
-    crate::pms::reverse_test_hubs(&mut state);
-    let changed = crate::pms::hubs_snapshot(&state);
+    plx_data::pms::reverse_test_hubs(&mut state);
+    let changed = plx_data::pms::hubs_snapshot(&state);
     s.sync_catalog(&cx(changed.view(), None));
     assert_eq!(s.rows[1].identity, identity);
     assert_eq!(s.grid.shelves[1].scroll_x(), 900.0);
@@ -1594,17 +1594,17 @@ fn shelf_viewports_follow_identity_across_a_catalog_reorder() {
 #[test]
 fn the_grid_holds_one_motion_row_per_published_row() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_grid_for_test(&mut state, &adapter, 5, 24);
-    let five = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 5, 24);
+    let five = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(five.view());
     assert_eq!(s.rows.len(), 5);
     assert_eq!(s.grid.shelves.len(), s.rows.len());
     let kept = s.rows[1].identity.clone();
     s.grid.shelves[1].restore_scroll(900.0, 24, &RowStyle::HOME);
-    crate::pms::seed_grid_for_test(&mut state, &adapter, 3, 24);
-    let three = crate::pms::hubs_snapshot(&state);
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 3, 24);
+    let three = plx_data::pms::hubs_snapshot(&state);
     s.sync_catalog(&cx(three.view(), None));
     assert_eq!(s.rows.len(), 3);
     assert_eq!(s.grid.shelves.len(), 3, "the grid shrinks with the published rows");
@@ -1617,15 +1617,15 @@ fn the_grid_holds_one_motion_row_per_published_row() {
 #[test]
 fn an_empty_loading_publication_does_not_consume_restored_viewports() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_grid_for_test(&mut state, &adapter, 2, 24);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 2, 24);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut original = screen(snapshot.view());
     original.grid.shelves[1].restore_scroll(900.0, 24, &RowStyle::HOME);
     let PageMemory::Home(memory) = <HomeScreen as Screen<TestHost>>::memory(&original) else { unreachable!() };
-    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Loading);
-    let loading = crate::pms::hubs_snapshot(&state);
+    plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Loading);
+    let loading = plx_data::pms::hubs_snapshot(&state);
     let mut restored = screen(loading.view());
     restored.restore(&memory);
     restored.sync_catalog(&cx(loading.view(), None));
@@ -1633,8 +1633,8 @@ fn an_empty_loading_publication_does_not_consume_restored_viewports() {
     let PageMemory::Home(pending) = <HomeScreen as Screen<TestHost>>::memory(&restored) else { unreachable!() };
     let mut restored = screen(loading.view());
     restored.restore(&pending);
-    crate::pms::seed_grid_for_test(&mut state, &adapter, 2, 24);
-    let ready = crate::pms::hubs_snapshot(&state);
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 2, 24);
+    let ready = plx_data::pms::hubs_snapshot(&state);
     restored.sync_catalog(&cx(ready.view(), None));
     assert_eq!(restored.grid.shelves[1].scroll_x(), 900.0);
 }
@@ -1652,10 +1652,10 @@ fn viewport_memory_is_canonical_because_return_reuses_it() {
 #[test]
 fn visible_tick_emits_both_store_work_requests_after_the_step() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Loading);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Loading);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let (_, out, _) = step(
         &mut s,
@@ -1679,10 +1679,10 @@ fn visible_tick_emits_both_store_work_requests_after_the_step() {
 #[test]
 fn continue_watching_commit_plays_while_an_ordinary_shelf_opens_detail() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let card = first_card(&s);
     let (_, play, _) = step(
@@ -1714,10 +1714,10 @@ fn continue_watching_commit_plays_while_an_ordinary_shelf_opens_detail() {
 #[test]
 fn holding_a_shelf_card_opens_the_item_menu_without_activation() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 1, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     s.snap_target = 1.0;
@@ -1741,10 +1741,10 @@ fn holding_a_shelf_card_opens_the_item_menu_without_activation() {
 #[test]
 fn a_partially_visible_focused_row_allows_hover_to_its_neighbors_only() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     s.grid.shelves[0].update(2, Some(0), &RowStyle::HOME, 1.0);
@@ -1766,10 +1766,10 @@ fn a_partially_visible_focused_row_allows_hover_to_its_neighbors_only() {
 #[test]
 fn drawn_stops_feed_the_real_hit_map_with_scoped_card_keys() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let card = first_card(&s);
     s.snap.jump(1.0);
@@ -1795,10 +1795,10 @@ fn drawn_stops_feed_the_real_hit_map_with_scoped_card_keys() {
 #[test]
 fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.carousel = Some((plx_plex::plex::ServerId::UNSET, "2".into()));
     let hero = FocusKey {
@@ -1833,10 +1833,10 @@ fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint(
 #[test]
 fn back_from_grid_folds_to_hero_before_root_back() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 1, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let card = first_card(&s);
     s.snap.jump(1.0);
@@ -1883,10 +1883,10 @@ fn enter_target(out: &[Stamped<TestHost>]) -> Option<FocusTarget<u32>> {
 #[test]
 fn addressed_focus_commands_reseat_only_through_enter_fresh() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let card = first_card(&s);
 
@@ -1928,10 +1928,10 @@ fn addressed_focus_commands_reseat_only_through_enter_fresh() {
 #[test]
 fn addressed_carousel_commands_mutate_the_owned_identity_not_focus() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
 
     let (handled, _, _) = step(
@@ -1957,15 +1957,15 @@ fn addressed_carousel_commands_mutate_the_owned_identity_not_focus() {
 #[test]
 fn loading_has_no_phantom_hero_and_terminal_status_has_one_action() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     for (hub_state, expected) in [
-        (crate::pms::HubState::Loading, 0),
-        (crate::pms::HubState::Failed, 1),
-        (crate::pms::HubState::Ready, 1),
+        (plx_data::pms::HubState::Loading, 0),
+        (plx_data::pms::HubState::Failed, 1),
+        (plx_data::pms::HubState::Ready, 1),
     ] {
-        crate::pms::seed_for_test(&mut state, &adapter, 0, hub_state);
-        let snapshot = crate::pms::hubs_snapshot(&state);
+        plx_data::pms::seed_for_test(&mut state, &adapter, 0, hub_state);
+        let snapshot = plx_data::pms::hubs_snapshot(&state);
         let s = screen(snapshot.view());
         let context = cx(snapshot.view(), None);
         let mut groups = Vec::new();
@@ -1989,18 +1989,18 @@ fn loading_has_no_phantom_hero_and_terminal_status_has_one_action() {
 #[test]
 fn first_catalog_landing_reseats_the_default_cta_unless_the_strip_was_chosen() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Loading);
-    let empty = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Loading);
+    let empty = plx_data::pms::hubs_snapshot(&state);
     let mut automatic = screen(empty.view());
     let fallback = FocusKey {
         entry: automatic.entry,
         elem: STRIP_ACCOUNT_ELEM,
     };
 
-    crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
-    let landed = crate::pms::hubs_snapshot(&state);
+    plx_data::pms::seed_for_test(&mut state, &adapter, 1, plx_data::pms::HubState::Ready);
+    let landed = plx_data::pms::hubs_snapshot(&state);
     let (_, out, _) = step(
         &mut automatic,
         landed.view(),
@@ -2015,8 +2015,8 @@ fn first_catalog_landing_reseats_the_default_cta_unless_the_strip_was_chosen() {
         Some(FocusTarget::ContainerGroup(HERO_GROUP))
     ));
 
-    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Loading);
-    let empty = crate::pms::hubs_snapshot(&state);
+    plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Loading);
+    let empty = plx_data::pms::hubs_snapshot(&state);
     let mut chosen = screen(empty.view());
     let moved = ScreenEvent::FocusMoved {
         from: None,
@@ -2024,8 +2024,8 @@ fn first_catalog_landing_reseats_the_default_cta_unless_the_strip_was_chosen() {
         by: By::Pointer,
     };
     let _ = step(&mut chosen, empty.view(), Some(fallback), &moved);
-    crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
-    let landed = crate::pms::hubs_snapshot(&state);
+    plx_data::pms::seed_for_test(&mut state, &adapter, 1, plx_data::pms::HubState::Ready);
+    let landed = plx_data::pms::hubs_snapshot(&state);
     let (_, out, _) = step(
         &mut chosen,
         landed.view(),
@@ -2041,10 +2041,10 @@ fn first_catalog_landing_reseats_the_default_cta_unless_the_strip_was_chosen() {
 #[test]
 fn addressed_item_menu_uses_the_current_owned_grid_item() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 1, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     s.snap_target = 1.0;
@@ -2064,10 +2064,10 @@ fn addressed_item_menu_uses_the_current_owned_grid_item() {
 #[test]
 fn parent_read_only_api_projects_engine_focus_without_setters() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let s = screen(snapshot.view());
     let card = first_card(&s);
     let context = cx(snapshot.view(), Some(card));
@@ -2106,10 +2106,10 @@ fn parent_read_only_api_projects_engine_focus_without_setters() {
 #[test]
 fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let view = snapshot.view();
     assert!(view.hero_count() > 1, "the auto-advance only arms with more than one hero slot");
     let mut s = screen(view);
@@ -2154,10 +2154,10 @@ fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
 #[test]
 fn the_hero_does_not_advance_while_a_modal_covers_home() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let view = snapshot.view();
     assert!(view.hero_count() > 1, "the auto-advance only arms with more than one hero slot");
     let mut s = screen(view);
@@ -2183,10 +2183,10 @@ fn the_hero_does_not_advance_while_a_modal_covers_home() {
 #[test]
 fn the_hero_countdown_restarts_when_the_last_modal_is_dismissed() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let view = snapshot.view();
     let mut s = screen(view);
     s.hero_auto = 0.25;
@@ -2217,10 +2217,10 @@ fn the_hero_countdown_restarts_when_the_last_modal_is_dismissed() {
 #[test]
 fn a_pinned_hero_never_auto_advances() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let view = snapshot.view();
     let mut s = screen(view);
     let (handled, _, _) = step(&mut s, view, None, &ScreenEvent::App(AppMsg::Home(HomeCmd::PinHero(1))));
@@ -2245,10 +2245,10 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     use plx_plex::plex::session::PlaintextChoice;
     let _guard = plx_base::testlock::serial();
     plx_plex::plex::grant::reset_for_test();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Failed);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let view = snapshot.view();
     let mut s = screen(view);
     let entry = s.entry;
@@ -2314,11 +2314,11 @@ const COLLECTION_ROWS: [(&str, &str, &str); 3] = [
 ];
 
 fn collection_home(
-    state: &mut crate::pms::PmsState,
-    adapter: &std::sync::Arc<crate::pms::PmsAdapter>,
-) -> crate::pms::HubsSnapshot {
-    crate::pms::seed_named_hubs_for_test(state, adapter, 6, &COLLECTION_ROWS);
-    crate::pms::hubs_snapshot(state)
+    state: &mut plx_data::pms::PmsState,
+    adapter: &std::sync::Arc<plx_data::pms::PmsAdapter>,
+) -> plx_data::pms::HubsSnapshot {
+    plx_data::pms::seed_named_hubs_for_test(state, adapter, 6, &COLLECTION_ROWS);
+    plx_data::pms::hubs_snapshot(state)
 }
 
 fn on_grid(s: &mut HomeScreen) {
@@ -2348,8 +2348,8 @@ fn move_from(
 #[test]
 fn only_a_promoted_collection_shelf_gets_a_linked_heading() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
     let s = screen(snapshot.view());
     assert_eq!(s.rows.len(), 3);
@@ -2373,8 +2373,8 @@ fn only_a_promoted_collection_shelf_gets_a_linked_heading() {
 #[test]
 fn up_from_any_collection_card_reaches_the_heading_and_down_returns_to_that_card() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
     let mut s = screen(snapshot.view());
     on_grid(&mut s);
@@ -2407,8 +2407,8 @@ fn up_from_any_collection_card_reaches_the_heading_and_down_returns_to_that_card
 #[test]
 fn down_from_the_shelf_above_stops_on_the_heading_and_plain_shelves_keep_projection() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
     let mut s = screen(snapshot.view());
     on_grid(&mut s);
@@ -2434,8 +2434,8 @@ fn down_from_the_shelf_above_stops_on_the_heading_and_plain_shelves_keep_project
 #[test]
 fn ok_on_the_linked_heading_opens_the_collection_page() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
     let mut s = screen(snapshot.view());
     on_grid(&mut s);
@@ -2455,8 +2455,8 @@ fn ok_on_the_linked_heading_opens_the_collection_page() {
 #[test]
 fn the_heading_keeps_focus_on_the_grid_and_reveals_its_row() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
     let mut s = screen(snapshot.view());
     on_grid(&mut s);
@@ -2479,8 +2479,8 @@ fn the_heading_keeps_focus_on_the_grid_and_reveals_its_row() {
 #[test]
 fn the_linked_heading_is_a_hover_focus_stop_that_wins_over_the_cards() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
     let mut s = screen(snapshot.view());
     on_grid(&mut s);
@@ -2508,8 +2508,8 @@ fn the_linked_heading_is_a_hover_focus_stop_that_wins_over_the_cards() {
 #[test]
 fn back_from_the_collection_page_returns_focus_to_the_heading() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
     let original = screen(snapshot.view());
     let heading = heading_key(&original, 1);
@@ -2532,10 +2532,10 @@ fn back_from_the_collection_page_returns_focus_to_the_heading() {
 #[test]
 fn a_shelf_heading_on_screen_is_drawn_while_its_cards_are_still_below_the_edge() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let view = snapshot.view();
     let mut s = screen(view);
     s.snap.jump(1.0);
@@ -2672,10 +2672,10 @@ fn a_manual_hero_flip_lands_on_a_preloaded_backdrop_with_no_ground_frame() {
     plx_ui::tex::reset_for_test(64 << 20);
     HERO_ART.with(|a| *a.borrow_mut() = HeroArtState { busy: true, ..Default::default() });
 
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 4, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 4, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let view = snapshot.view();
     let n = view.hero_count();
     assert!(n >= 3, "the test needs two distinct neighbours, got {n} hero slots");
@@ -2764,10 +2764,10 @@ fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdro
     plx_ui::tex::reset_for_test(64 << 20);
     HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
 
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 4, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 4, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let view = snapshot.view();
     let n = view.hero_count();
     assert!(n >= 3, "the test needs three distinct heroes, got {n}");
@@ -2849,10 +2849,10 @@ fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdro
 #[test]
 fn decorative_wash_and_hero_pop_do_not_hold_page_quiescence() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     s.snap_target = 1.0;
@@ -2873,10 +2873,10 @@ fn decorative_wash_and_hero_pop_do_not_hold_page_quiescence() {
 #[test]
 fn locate_agrees_with_a_row_scan() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_grid_for_test(&mut state, &adapter, 5, 7);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 5, 7);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let s = screen(snapshot.view());
     let scan = |elem: u32| s.rows.iter().enumerate().find_map(|(row, hub)| {
         hub.elems.iter().position(|&e| e == elem).map(|col| Located::Item(row, col))
@@ -2896,17 +2896,17 @@ fn locate_agrees_with_a_row_scan() {
 }
 
 /// Publish a `rows` x `items` grid into `s`, as one more provider publication.
-fn republish(s: &mut HomeScreen, state: &mut crate::pms::PmsState, adapter: &std::sync::Arc<crate::pms::PmsAdapter>, rows: usize, items: usize) {
-    crate::pms::seed_grid_for_test(state, adapter, rows, items);
-    let snapshot = crate::pms::hubs_snapshot(state);
+fn republish(s: &mut HomeScreen, state: &mut plx_data::pms::PmsState, adapter: &std::sync::Arc<plx_data::pms::PmsAdapter>, rows: usize, items: usize) {
+    plx_data::pms::seed_grid_for_test(state, adapter, rows, items);
+    let snapshot = plx_data::pms::hubs_snapshot(state);
     s.sync_catalog(&cx(snapshot.view(), None));
 }
 
 #[test]
 fn item_keys_are_stable_across_republication() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
     republish(&mut s, &mut state, &adapter, 4, 5);
     let first: Vec<Vec<u32>> = s.rows.iter().map(|r| r.elems.clone()).collect();
@@ -2930,8 +2930,8 @@ fn item_keys_are_stable_across_republication() {
 #[test]
 fn restore_merges_saved_keys_without_duplicates() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut a = HomeScreen::new(EntryId(7), InstanceId(9));
     republish(&mut a, &mut state, &adapter, 3, 4);
     let memory = match <HomeScreen as Screen<TestHost>>::memory(&a) {
@@ -2950,7 +2950,7 @@ fn restore_merges_saved_keys_without_duplicates() {
     a.restore(&memory);
     assert_eq!(a.items, before);
     // A screen that restored first republishes onto the saved elements.
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     b.sync_catalog(&cx(snapshot.view(), None));
     assert_eq!(b.rows.iter().map(|r| r.elems.clone()).collect::<Vec<_>>(),
         a.rows.iter().map(|r| r.elems.clone()).collect::<Vec<_>>());
@@ -2960,8 +2960,8 @@ fn restore_merges_saved_keys_without_duplicates() {
 #[test]
 fn key_index_agrees_with_a_scan_of_the_table() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
     for (rows, items) in [(3, 4), (5, 4), (2, 6)] {
         republish(&mut s, &mut state, &adapter, rows, items);
@@ -2988,10 +2988,10 @@ fn key_index_agrees_with_a_scan_of_the_table() {
 #[test]
 fn stops_are_recorded_only_for_rows_on_screen_or_focused() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_grid_for_test(&mut state, &adapter, 16, 3);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 16, 3);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     s.snap_target = 1.0;
@@ -3031,15 +3031,15 @@ fn stops_are_recorded_only_for_rows_on_screen_or_focused() {
 /// `Ephemeral`.
 fn republish_named(
     s: &mut HomeScreen,
-    state: &mut crate::pms::PmsState,
-    adapter: &std::sync::Arc<crate::pms::PmsAdapter>,
+    state: &mut plx_data::pms::PmsState,
+    adapter: &std::sync::Arc<plx_data::pms::PmsAdapter>,
     hubs: &[&str],
     items: usize,
     focus: Option<FocusKey<u32>>,
 ) {
     let rows: Vec<(&str, &str, &str)> = hubs.iter().map(|id| (*id, "", "Row")).collect();
-    crate::pms::seed_named_hubs_for_test(state, adapter, items, &rows);
-    let snapshot = crate::pms::hubs_snapshot(state);
+    plx_data::pms::seed_named_hubs_for_test(state, adapter, items, &rows);
+    let snapshot = plx_data::pms::hubs_snapshot(state);
     s.sync_catalog(&cx(snapshot.view(), focus));
 }
 
@@ -3057,8 +3057,8 @@ fn assert_indexes_agree(s: &HomeScreen) {
 #[test]
 fn volatile_keys_do_not_accumulate_across_publications() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
     for _ in 0..20 {
         republish_named(&mut s, &mut state, &adapter, &["", "", ""], 4, None);
@@ -3073,8 +3073,8 @@ fn volatile_keys_do_not_accumulate_across_publications() {
 #[test]
 fn the_focused_vanished_key_survives_a_prune() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
     republish_named(&mut s, &mut state, &adapter, &[""], 4, None);
     let (focused, other) = (s.rows[0].elems[1], s.rows[0].elems[2]);
@@ -3090,20 +3090,20 @@ fn the_focused_vanished_key_survives_a_prune() {
 #[test]
 fn focus_recovers_to_the_same_row_after_its_card_rotates_out() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
     republish(&mut s, &mut state, &adapter, 4, 5);
     let focused = s.rows[2].elems[3];
     let focus = FocusKey { entry: EntryId(7), elem: focused };
     // The card (rk "4" in every row) leaves the catalog, and a few publications pass.
     for _ in 0..4 {
-        crate::pms::seed_grid_for_test(&mut state, &adapter, 4, 5);
-        crate::pms::remove_test_item(&mut state, "4");
-        let snapshot = crate::pms::hubs_snapshot(&state);
+        plx_data::pms::seed_grid_for_test(&mut state, &adapter, 4, 5);
+        plx_data::pms::remove_test_item(&mut state, "4");
+        let snapshot = plx_data::pms::hubs_snapshot(&state);
         s.sync_catalog(&cx(snapshot.view(), Some(focus)));
     }
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     assert_eq!(s.locate(focused), None, "the card is gone");
     let got = Focusable::<TestHost>::reconcile(&s, focus, &cx(snapshot.view(), Some(focus)));
     assert!(s.rows[2].elems.contains(&got.elem), "recovered outside the row");
@@ -3112,8 +3112,8 @@ fn focus_recovers_to_the_same_row_after_its_card_rotates_out() {
 #[test]
 fn memory_shares_the_key_table() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
     republish(&mut s, &mut state, &adapter, 4, 5);
     let memory = match <HomeScreen as Screen<TestHost>>::memory(&s) {
@@ -3138,8 +3138,8 @@ fn memory_shares_the_key_table() {
 #[test]
 fn a_stable_home_under_the_cap_prunes_nothing() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
     let mut table: Vec<HomeItemKey> = Vec::new();
     for (rows, items) in [(3, 4), (5, 4), (2, 6), (5, 4), (1, 1), (4, 5), (4, 5)] {
@@ -3161,12 +3161,12 @@ fn a_stable_home_under_the_cap_prunes_nothing() {
 #[test]
 fn walking_focus_down_leaves_every_released_row_at_exact_rest() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
     let rows = 12;
     republish(&mut s, &mut state, &adapter, rows, 4);
-    let snapshot = crate::pms::hubs_snapshot(&state);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
     s.snap.jump(1.0);
     s.snap_target = 1.0;
     let dt = 1.0 / 60.0;
@@ -3189,8 +3189,8 @@ fn walking_focus_down_leaves_every_released_row_at_exact_rest() {
 #[test]
 fn stable_keys_are_bounded_oldest_first() {
     let _guard = plx_base::testlock::serial();
-    let mut state = crate::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
     let ids: Vec<String> = (0..100).map(|i| format!("hub.{i}")).collect();
     for id in &ids {

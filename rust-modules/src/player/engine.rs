@@ -761,7 +761,7 @@ fn with_immersive(p: &str, audio: &str, atmos: bool) -> String {
 ///
 /// PURE, so the splice is host-testable; the decision arrives from route state and is the SAME
 /// frozen value `route::build_stream` gated direct play on
-/// ([`crate::metadata::Dovi::presentation`]).
+/// ([`plx_data::metadata::Dovi::presentation`]).
 ///
 /// **Why this one node is the fix, from the television's own binaries** (decompiled 2026-08-21,
 /// webOS 4.10.2 `libpf`): `CustomPipeline::parseOptionStringSpi` builds the literal key
@@ -788,11 +788,11 @@ fn with_immersive(p: &str, audio: &str, atmos: bool) -> String {
 /// The anchor is `"provider":"plxnative"` — the last key of `contents` and, by the test below,
 /// present exactly once in `PAYLOAD_AV`. A `replace` that finds nothing is a silent no-node, which
 /// is why the miss is logged rather than assumed away.
-fn with_dolby_hdr_info(p: &str, video: &str, dv: crate::metadata::DvPresentation) -> String {
+fn with_dolby_hdr_info(p: &str, video: &str, dv: plx_data::metadata::DvPresentation) -> String {
     let Some(n) = dv.declared() else {
         return p.to_string();
     };
-    if crate::metadata::dv_node_suppressed() {
+    if plx_data::metadata::dv_node_suppressed() {
         #[cfg(feature = "devtriggers")]
         log(&format!(
             "dv: DolbyHdrInfo P{} SUPPRESSED by /tmp/plxnative-dvnonode (direct play kept)",
@@ -2865,7 +2865,7 @@ mod native_lifecycle_host_seam_tests {
 #[cfg(test)]
 mod payload_tests {
     use super::{build_av_payload, with_dolby_hdr_info, with_immersive, SinkEnvelope, PAYLOAD_AV, PAYLOAD_H265, PAYLOAD_V};
-    use crate::metadata::Dovi;
+    use plx_data::metadata::Dovi;
 
     fn p5() -> Dovi {
         Dovi {
@@ -2946,7 +2946,7 @@ mod payload_tests {
         assert!(fresh.declared().is_some(), "a subsequent decision sees Supported");
         assert_eq!(
             crate::route::stream_dv_presentation(&ps),
-            crate::metadata::DvPresentation::NotDv,
+            plx_data::metadata::DvPresentation::NotDv,
         );
         let payload = build_av_payload(
             &ps,

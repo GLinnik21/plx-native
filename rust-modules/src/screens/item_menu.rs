@@ -43,7 +43,7 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::os::raw::c_int;
 
-use crate::pms::PmsMovie;
+use plx_data::pms::PmsMovie;
 use crate::screens::registry::{tile_facts, RepeatGate, PANEL_REPEAT_MS};
 use crate::screens::registry::{AppFx, AppLike, ItemMenuArg, ItemMenuKind, ItemMenuReq};
 use plx_ui::consts::*;
@@ -104,10 +104,10 @@ impl Action {
     /// emits one row: with this menu's part-watched PAIR both rows would carry the same bool, so one
     /// would invert to its neighbour's write and silently do the opposite of its own label. Now the
     /// glyph the user aimed at IS the verb, and nothing downstream re-reads the item.
-    pub(crate) fn watch_write(&self) -> Option<crate::viewstate::Write> {
+    pub(crate) fn watch_write(&self) -> Option<plx_data::viewstate::Write> {
         match self {
-            Action::MarkWatched(_) => Some(crate::viewstate::Write::Watched),
-            Action::MarkUnwatched(_) => Some(crate::viewstate::Write::Unwatched),
+            Action::MarkWatched(_) => Some(plx_data::viewstate::Write::Watched),
+            Action::MarkUnwatched(_) => Some(plx_data::viewstate::Write::Unwatched),
             _ => None,
         }
     }
@@ -172,7 +172,7 @@ pub(crate) const SHAPE: &str =
 /// Is `m` an item the menu has anything to offer? A leaf or a show/season — i.e. everything the
 /// home shelves carry. Kept as a predicate so the caller can decline to present an empty panel.
 pub(crate) fn has_actions(m: &PmsMovie) -> bool {
-    m.kind != crate::pms::KIND_COLLECTION && !m.rk.is_empty()
+    m.kind != plx_data::pms::KIND_COLLECTION && !m.rk.is_empty()
 }
 
 /// A menu row's identity: which of the seven rows it is. Hand-assigned keys, never a position —
@@ -227,7 +227,7 @@ fn build(m: &PmsMovie, from_deck: bool) -> ItemForm {
     build_with(m, from_deck, None)
 }
 
-fn build_with(m: &PmsMovie, from_deck: bool, trailer: Option<&crate::metadata::Extra>) -> ItemForm {
+fn build_with(m: &PmsMovie, from_deck: bool, trailer: Option<&plx_data::metadata::Extra>) -> ItemForm {
     let leaf = m.kind == 0 || m.kind == 3;
     let mut sec = FormSection::new(""); // no header: the card behind the panel IS the title
 
@@ -328,7 +328,7 @@ fn state_rows(
     rk: &str,
     mark: PosterMark,
     leaf: bool,
-    trailer: Option<&crate::metadata::Extra>,
+    trailer: Option<&plx_data::metadata::Extra>,
     parent_title: &str,
 ) -> FormSection<ItemRow, Action, Infallible> {
     let playable = trailer.filter(|e| e.playable());
@@ -459,8 +459,8 @@ pub(crate) struct ItemMenuScreen {
 fn cached_trailer(
     sid: plx_plex::plex::ServerId,
     m: &PmsMovie,
-    meta: crate::metadata::MetadataView<'_>,
-) -> Option<crate::metadata::Extra> {
+    meta: plx_data::metadata::MetadataView<'_>,
+) -> Option<plx_data::metadata::Extra> {
     if m.kind != 0 && m.kind != 1 {
         return None;
     }
@@ -485,7 +485,7 @@ impl ItemMenuScreen {
     /// The rows, built ONCE at `Mount`. A hub refetch can re-order the catalog underneath an open
     /// panel, so nothing here is rebuilt while the menu is up — which is also why every [`Action`]
     /// carries the identity it needs rather than an index.
-    fn build_rows(&mut self, meta: crate::metadata::MetadataView<'_>) {
+    fn build_rows(&mut self, meta: plx_data::metadata::MetadataView<'_>) {
         if self.built {
             return;
         }
@@ -825,7 +825,7 @@ mod tests {
     fn build(m: &PmsMovie, from_deck: bool) -> Built {
         built(super::build(m, from_deck))
     }
-    fn build_with(m: &PmsMovie, from_deck: bool, trailer: Option<&crate::metadata::Extra>) -> Built {
+    fn build_with(m: &PmsMovie, from_deck: bool, trailer: Option<&plx_data::metadata::Extra>) -> Built {
         built(super::build_with(m, from_deck, trailer))
     }
     fn build_episode(rk: &str, mark: PosterMark) -> Built {
@@ -867,7 +867,7 @@ mod tests {
     /// The write each row commits, paired with its label — the projection every row-set assertion
     /// below is really about, since a label and its verb living in two places is the bug this
     /// module's `Action` split closed.
-    fn verbs(menu: &Built) -> Vec<(String, Option<crate::viewstate::Write>)> {
+    fn verbs(menu: &Built) -> Vec<(String, Option<plx_data::viewstate::Write>)> {
         let table = &menu.0.table;
         (0..table.n_rows() as usize)
             .map(|i| {
@@ -911,7 +911,7 @@ mod tests {
         );
         assert_eq!(
             menu.action(ItemRow::MarkUnwatched).watch_write(),
-            Some(crate::viewstate::Write::Unwatched),
+            Some(plx_data::viewstate::Write::Unwatched),
             "a finished item has one end left to be sent to"
         );
         // a movie has no show, so no second navigation row
@@ -920,7 +920,7 @@ mod tests {
 
     #[test]
     fn a_collection_has_no_item_menu_actions() {
-        let collection = PmsMovie { rk: "42".into(), kind: crate::pms::KIND_COLLECTION,
+        let collection = PmsMovie { rk: "42".into(), kind: plx_data::pms::KIND_COLLECTION,
             ..Default::default() };
         assert!(!has_actions(&collection), "a collection menu must not be openable before its page exists");
     }
@@ -937,11 +937,11 @@ mod tests {
         );
         assert_eq!(
             menu.action(ItemRow::MarkWatched).watch_write(),
-            Some(crate::viewstate::Write::Watched)
+            Some(plx_data::viewstate::Write::Watched)
         );
         assert_eq!(
             menu.action(ItemRow::MarkUnwatched).watch_write(),
-            Some(crate::viewstate::Write::Unwatched)
+            Some(plx_data::viewstate::Write::Unwatched)
         );
 
         // a show whose every leaf is seen is DONE, and offering to mark it watched again was the
@@ -1142,7 +1142,7 @@ mod tests {
             let mc = serde_json::from_str::<plx_plex::plex::Envelope>(&body)
                 .expect("parses")
                 .media_container;
-            crate::pms::parse_item(&mc.hub[0].metadata[0], plx_plex::plex::ServerId::UNSET)
+            plx_data::pms::parse_item(&mc.hub[0].metadata[0], plx_plex::plex::ServerId::UNSET)
         };
         let set = |json: &str| labels(&build(&row(json), false));
 
@@ -1203,7 +1203,7 @@ mod tests {
     /// would have been the same bool twice — one row doing its neighbour's write.
     #[test]
     fn every_watch_row_performs_the_verb_its_label_names() {
-        use crate::viewstate::Write;
+        use plx_data::viewstate::Write;
         let want = |l: &str| match l {
             "Mark as Watched" => Some(Write::Watched),
             "Mark as Unwatched" => Some(Write::Unwatched),
@@ -1548,16 +1548,16 @@ mod tests {
     thread_local! {
         // TEST ONLY: see `screens::detail::tests`'s `TEST_METADATA` for why this lives here
         // rather than being threaded as a parameter.
-        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+        static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
     }
 
-    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
     }
 
     impl crate::screens::registry::MetadataLike for HostFixture {
-        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
             test_store().view()
         }
     }
@@ -1660,8 +1660,8 @@ mod tests {
         with_cx(|cx| <ItemMenuScreen as Machine<HostFixture>>::step(s, &ev, cx, &mut fx))
     }
 
-    fn extra() -> crate::metadata::Extra {
-        crate::metadata::Extra {
+    fn extra() -> plx_data::metadata::Extra {
+        plx_data::metadata::Extra {
             rk: "99".into(),
             part: "/library/parts/trailer".into(),
             vcodec: "h264".into(),
@@ -1722,13 +1722,13 @@ mod tests {
     #[test]
     fn play_trailer_is_cache_only_on_the_loaded_detail() {
         let _g = plx_base::testlock::serial();
-        crate::metadata::set_current_for_test(test_store().state_mut(), None);
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
         assert!(
             cached_trailer(plx_plex::plex::ServerId::UNSET, &item(0, PosterMark::None), test_store().view()).is_none(),
             "no loaded Detail → no row"
         );
 
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(plx_data::metadata::Detail {
             sid: plx_plex::plex::ServerId::UNSET,
             rk: "42".into(),
             kind: "movie".into(),
@@ -1744,7 +1744,7 @@ mod tests {
             cached_trailer(plx_plex::plex::ServerId::UNSET, &other, test_store().view()).is_none(),
             "a related tile of a different item must not steal the loaded trailer"
         );
-        crate::metadata::set_current_for_test(test_store().state_mut(), None);
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     #[test]
@@ -1798,7 +1798,7 @@ mod tests {
         let widest = MENU_MAX_W;
         let measure = plx_base::fontcov::advances::ShippedMeasure;
         let marks = [PosterMark::None, PosterMark::InProgress, PosterMark::Watched];
-        let trailer = crate::metadata::Extra { rk: "9".into(), part: "/p".into(), ..Default::default() };
+        let trailer = plx_data::metadata::Extra { rk: "9".into(), part: "/p".into(), ..Default::default() };
         // A row captures its text when it is BUILT, so the menus are rebuilt inside each language.
         let all_menus = || {
             let mut menus: Vec<(String, Built)> = Vec::new();

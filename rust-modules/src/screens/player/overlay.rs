@@ -249,7 +249,7 @@ pub(crate) struct PlayerOverlayScreen {
 /// preference this play resolved under (the show's own, else the account's —
 /// `route::cur_sub_pref_lang`), then the playing audio's language, then the current subtitle's
 /// own — each only if it names one. `ui/` never sees a Plex account type, only these codes.
-fn subtitle_yours_langs(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> Vec<String> {
+fn subtitle_yours_langs(ps: &crate::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> Vec<String> {
     let mut yours = Vec::new();
     if let Some(pref) = crate::route::cur_sub_pref_lang(ps) {
         if !pref.trim().is_empty() {
@@ -279,7 +279,7 @@ impl PlayerOverlayScreen {
     /// no second id to reserve.
     const GROUP: GroupId = GroupId(0);
 
-    pub(crate) fn new(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
+    pub(crate) fn new(ps: &crate::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
         let panel = match kind {
             OverlayKind::Tracks { tab } => Panel::Tracks(plx_base::diag::spans::span("tmnew", || {
                 crate::appkit::track_menu::TrackMenuState::new(ps, meta, tab, subtitle_yours_langs(ps, meta))
@@ -322,7 +322,7 @@ impl PlayerOverlayScreen {
     /// their own tab, so the second press has to move the tab of the entry that exists rather than
     /// present a second one — `same_instance` says they ARE the same instance, and this is the
     /// other half of that: what "the same instance, at a different address" does.
-    pub(crate) fn retarget(&mut self, ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>, kind: OverlayKind) {
+    pub(crate) fn retarget(&mut self, ps: &crate::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, kind: OverlayKind) {
         if kind.slot() != self.kind.slot() {
             return;
         }
@@ -420,7 +420,7 @@ impl PlayerOverlayScreen {
     /// Like [`Self::pick_track_row`] it leaves the panel on screen.
     pub(crate) fn pick_sub_track(
         &mut self,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
         i: usize,
     ) -> Option<crate::appkit::track_menu::TrackCommit> {
         match &mut self.panel {
@@ -442,7 +442,7 @@ impl PlayerOverlayScreen {
     /// trigger exists to leave the chosen track's panel on screen for a capture.
     pub(crate) fn pick_track_row(
         &mut self,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
         row: c_int,
     ) -> Option<crate::appkit::track_menu::TrackCommit> {
         if let Panel::Tracks(p) = &mut self.panel {
@@ -463,7 +463,7 @@ impl PlayerOverlayScreen {
     /// silent no-op that returns an action.
     pub(crate) fn info_press_action(
         &mut self,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
     ) -> Option<crate::appkit::info_panel::InfoAction> {
         match &mut self.panel {
             Panel::Info(p) => Some(p.on_ok(meta)),

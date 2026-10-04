@@ -19,9 +19,9 @@ impl ScreenArg for Arg {
 pub(super) struct HostFixture;
 #[derive(Clone, Copy)]
 pub(super) struct Views<'a> {
-    listing: crate::stores::browse::ListingView<'a>,
-    directory: crate::stores::browse::DirectoryView<'a>,
-    hubs: crate::stores::browse::HubsView<'a>,
+    listing: plx_data::stores::browse::ListingView<'a>,
+    directory: plx_data::stores::browse::DirectoryView<'a>,
+    hubs: plx_data::stores::browse::HubsView<'a>,
 }
 impl Host for HostFixture {
     type Arg = Arg;
@@ -33,9 +33,9 @@ impl Host for HostFixture {
     type Memory = PageMemory;
 }
 impl LibraryLike for HostFixture {
-    fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> { cx.views.listing }
-    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> { cx.views.directory }
-    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> { cx.views.hubs }
+    fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }
 }
 const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
@@ -134,8 +134,8 @@ fn saved_last_all_row_opens_before_the_bookmark_scroll_is_clamped() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let saved_scroll = fixture.screen().layout.with_grid_focus(Some(5)).max_scroll();
-    fixture.listing = fixture.listing.clone().with_cursor(crate::stores::browse::Cursor {
-        at: crate::stores::browse::CursorAt::SlotIndex(35), scroll: saved_scroll,
+    fixture.listing = fixture.listing.clone().with_cursor(plx_data::stores::browse::Cursor {
+        at: plx_data::stores::browse::CursorAt::SlotIndex(35), scroll: saved_scroll,
     });
     let mut page = fixture.screen();
     let mut output = Vec::new();
@@ -203,10 +203,10 @@ fn duplicate_across_pages_keeps_full_projection_recovery_metadata() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let sid = plx_plex::plex::ServerId::from_raw(0);
-    let movie = |i| crate::pms::PmsMovie { sid, rk: format!("duplicate-test-{i}"), ..Default::default() };
+    let movie = |i| plx_data::pms::PmsMovie { sid, rk: format!("duplicate-test-{i}"), ..Default::default() };
     let mut items = (0..120).map(movie).collect::<Vec<_>>();
     items[85] = items[5].clone();
-    fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
+    fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid,
         items.iter().cloned().map(Some).collect(), Vec::new()).with_total(10_000);
     let mut partial = fixture.screen();
     let mut full = fixture.screen();
@@ -274,10 +274,10 @@ fn large_listing_publication_work_is_bounded_by_initial_slots_then_changed_page(
     const PAGE: usize = 60;
     let mut fixture = Fixture::new();
     let sid = plx_plex::plex::ServerId::from_raw(0);
-    let movies = |start: usize| (start..start + PAGE).map(|i| crate::pms::PmsMovie {
+    let movies = |start: usize| (start..start + PAGE).map(|i| plx_data::pms::PmsMovie {
         sid, rk: format!("large-{i}"), title: format!("Large {i}"), ..Default::default()
     }).collect::<Vec<_>>();
-    fixture.listing = crate::browse::view::ListingSnapshot::fixture(
+    fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(
         sid, movies(0).into_iter().map(Some).collect(), Vec::new()).with_total(TOTAL);
 
     let mut page = fixture.screen();
@@ -322,7 +322,7 @@ fn derived_grid_indexes_survive_reorder_truncation_clear_and_restore() {
         "a truncated item falls back through its last published slot");
 
     let memory = page.page_memory();
-    fixture.listing = crate::browse::view::ListingSnapshot::absent();
+    fixture.listing = plx_data::browse::view::ListingSnapshot::absent();
     page.sync(&fixture.cx(None));
     assert!(page.pair.detail.elems.is_empty());
     assert_eq!(page.pair.detail.index_of(stable), None);
@@ -342,8 +342,8 @@ fn down_from_a_missing_final_row_column_clamps_to_the_last_item() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let sid = plx_plex::plex::ServerId::from_raw(0);
-    fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
-        (0..8).map(|i| Some(crate::pms::PmsMovie { sid, rk: format!("{i}"), ..Default::default() })).collect(),
+    fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid,
+        (0..8).map(|i| Some(plx_data::pms::PmsMovie { sid, rk: format!("{i}"), ..Default::default() })).collect(),
         Vec::new());
     let mut page = fixture.screen();
     let mut engine = FocusEngine::new();
@@ -364,7 +364,7 @@ fn rail_eligibility_and_last_producer_hold_over_a_long_shelf() {
     let view = fixture.listing.view();
     let id = view.id().unwrap();
     let items = (0..view.total() as usize).map(|i| view.item(i).cloned()).collect();
-    fixture.listing = crate::browse::view::ListingSnapshot::fixture(id.sid, items,
+    fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(id.sid, items,
         (0..9).map(|i| (format!("{i}"), 14)).collect()).with_section(id.epoch, id.section);
     let mut page = fixture.screen();
     assert!(page.layout.row_y(0, page.scroll.pos) > SCR_H, "the fixture grid starts below the viewport");
@@ -401,8 +401,8 @@ fn owned_rail_keeps_the_fixed_legacy_origin_and_short_window() {
     for n in [9, 30] {
         let mut fixture = Fixture::new();
         let sid = plx_plex::plex::ServerId::from_raw(0);
-        fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
-            (0..36).map(|i| Some(crate::pms::PmsMovie { sid, rk: format!("{i}"), ..Default::default() })).collect(),
+        fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid,
+            (0..36).map(|i| Some(plx_data::pms::PmsMovie { sid, rk: format!("{i}"), ..Default::default() })).collect(),
             (0..n).map(|i| (format!("{i}"), 1)).collect());
         let page = fixture.screen();
         let mut groups = Vec::new();
@@ -419,10 +419,10 @@ fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason(
     let _guard = plx_base::testlock::serial();
     for owner in ["", "friend"] {
         let mut fixture = Fixture::new();
-        fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
-        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, plx_plex::plex::ServerId::from_raw(7),
-            crate::browse::SrcGroup { name: "Cinema server".into(), handle: owner.into(),
-                state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+        fixture.listing = plx_data::stores::browse::ListingSnapshot::empty_for_test();
+        fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture_source(4, plx_plex::plex::ServerId::from_raw(7),
+            plx_data::browse::SrcGroup { name: "Cinema server".into(), handle: owner.into(),
+                state: plx_data::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
         let page = fixture.screen();
         let cx = fixture.cx(Some(page.key(RETRY)));
         let (caption, reason) = page.status_text(&cx);
@@ -578,10 +578,10 @@ fn a_failed_library_section_and_a_failed_home_share_the_verdict_and_the_row() {
         .action(c"Try again");
     for owner in ["", "friend"] {
         let mut fixture = Fixture::new();
-        fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
-        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, plx_plex::plex::ServerId::from_raw(7),
-            crate::browse::SrcGroup { name: "Cinema server".into(), handle: owner.into(),
-                state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+        fixture.listing = plx_data::stores::browse::ListingSnapshot::empty_for_test();
+        fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture_source(4, plx_plex::plex::ServerId::from_raw(7),
+            plx_data::browse::SrcGroup { name: "Cinema server".into(), handle: owner.into(),
+                state: plx_data::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
         let page = fixture.screen();
         let cx = fixture.cx(Some(page.key(RETRY)));
         let (caption, reason) = page.status_text(&cx);
@@ -607,9 +607,9 @@ fn a_failed_library_section_and_a_failed_home_share_the_verdict_and_the_row() {
 fn a_fully_discovered_missing_kind_finishes_its_fade_and_has_no_foreign_grid() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
-        crate::browse::view::SectionView { sid: Some(plx_plex::plex::ServerId::from_raw(0)), key: 1,
-            kind: SecKind::Movie, row: crate::browse::SrcRow { section: 0, title: "Cinema".into(),
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, vec![
+        plx_data::browse::view::SectionView { sid: Some(plx_plex::plex::ServerId::from_raw(0)), key: 1,
+            kind: SecKind::Movie, row: plx_data::browse::SrcRow { section: 0, title: "Cinema".into(),
                 pinned: true, current: true, ..Default::default() } }]);
     let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Show);
     page.page_fade.mount();
@@ -715,12 +715,12 @@ fn a_compact_menu_keeps_the_host_store_pump_and_deferred_commit_live() {
     let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present);
     page.step(&ScreenEvent::Cover, &fixture.cx(None), &mut fx);
     page.step(&ScreenEvent::App(AppMsg::LibraryEdit { target,
-        edit: crate::stores::browse::QueryEdit::Unwatched(true) }), &fixture.cx(None), &mut fx);
+        edit: plx_data::stores::browse::QueryEdit::Unwatched(true) }), &fixture.cx(None), &mut fx);
     page.step(&ScreenEvent::Tick(Tick { ms: 80, dt_us: 80_000 }), &fixture.cx(None), &mut fx);
     drop(fx);
     assert!(out.iter().any(|effect| matches!(&effect.fx,
         Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed {
-            work: LibraryWork::Commit { query: Some(crate::stores::browse::QueryEdit::Unwatched(true)), .. }, .. }))))));
+            work: LibraryWork::Commit { query: Some(plx_data::stores::browse::QueryEdit::Unwatched(true)), .. }, .. }))))));
     assert!(out.iter().any(|effect| matches!(&effect.fx, Fx::App(AppFx::StoreWork(StoreWork::Browse)))),
         "the store must fetch the just-committed query while the compact menu remains open");
 }
@@ -798,10 +798,10 @@ fn pending_semantic_commits_change_the_library_state_hash() {
 // `pub(super)`, not private: `selector_matrix_tests.rs` (a sibling test module) reuses this
 // harness wholesale rather than duplicating it, per the guide at the top of that file.
 pub(super) struct Fixture {
-    stores: Option<crate::stores::Stores>,
-    listing: crate::stores::browse::ListingSnapshot,
-    pub(super) directory: crate::stores::browse::DirectorySnapshot,
-    hubs: crate::stores::browse::HubsSnapshot,
+    stores: Option<plx_data::stores::Stores>,
+    listing: plx_data::stores::browse::ListingSnapshot,
+    pub(super) directory: plx_data::stores::browse::DirectorySnapshot,
+    hubs: plx_data::stores::browse::HubsSnapshot,
     measure: FixtureMeasure,
 }
 
@@ -810,10 +810,10 @@ fn discovery_failure_retry_targets_the_source_without_a_section() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let sid = plx_plex::plex::ServerId::from_raw(7);
-    fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
-        crate::browse::SrcGroup { name: "Cinema server".into(), handle: "friend".into(),
-            state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+    fixture.listing = plx_data::stores::browse::ListingSnapshot::empty_for_test();
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture_source(4, sid,
+        plx_data::browse::SrcGroup { name: "Cinema server".into(), handle: "friend".into(),
+            state: plx_data::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
     let mut page = fixture.screen();
     assert!(fixture.listing.view().id().is_none());
     assert_eq!(page.readout, Readout::Failed);
@@ -841,10 +841,10 @@ fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
     plx_plex::plex::grant::reset_for_test();
     let sid = plx_plex::plex::register_pinned_with_client_id("lan-machine", &plx_plex::plex::Origin::http("192.168.1.50", 32400), "", None, "client", Default::default());
     let mut fixture = Fixture::new();
-    fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
-        crate::browse::SrcGroup { name: "Cinema server".into(), handle: String::new(),
-            state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+    fixture.listing = plx_data::stores::browse::ListingSnapshot::empty_for_test();
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture_source(4, sid,
+        plx_data::browse::SrcGroup { name: "Cinema server".into(), handle: String::new(),
+            state: plx_data::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
     let mut page = fixture.screen();
     let offer = |machine: &str| plx_plex::plex::grant::offered(plx_plex::plex::grant::scope(),
         plx_plex::plex::grant::PlaintextVerdict { machine_id: machine.into(), name: "nas".into(), shared_by: String::new(),
@@ -1006,7 +1006,7 @@ fn section_viewport_bookmarks_survive_switch_and_evicted_body() {
 impl Fixture {
     fn shelves(titles: &[&str], count: usize) -> Self {
         let mut fixture = Self::new();
-        let stores = crate::stores::Stores::default();
+        let stores = plx_data::stores::Stores::default();
         stores.browse.borrow_mut().seed_two_source_table_for_test();
         stores.capture_browse(&mut fixture.directory);
         stores.browse_run(BrowseCmd::SetCur(0));
@@ -1028,17 +1028,17 @@ impl Fixture {
 
     pub(super) fn new() -> Self {
         let sid = plx_plex::plex::ServerId::from_raw(0);
-        let listing = crate::browse::view::ListingSnapshot::fixture(sid, (0..36).map(|i|
-            Some(crate::pms::PmsMovie { sid, rk: format!("{}", i + 1), title: format!("s{i:04x}"), ..Default::default() })).collect(),
+        let listing = plx_data::browse::view::ListingSnapshot::fixture(sid, (0..36).map(|i|
+            Some(plx_data::pms::PmsMovie { sid, rk: format!("{}", i + 1), title: format!("s{i:04x}"), ..Default::default() })).collect(),
             vec![("A".into(), 18), ("Z".into(), 18)]);
-        let directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
-            crate::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Movie,
-                row: crate::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } }]);
+        let directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, vec![
+            plx_data::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Movie,
+                row: plx_data::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } }]);
         Self {
             stores: None,
             listing,
             directory,
-            hubs: crate::stores::browse::HubsSnapshot::empty_for_test(),
+            hubs: plx_data::stores::browse::HubsSnapshot::empty_for_test(),
             measure: FixtureMeasure,
         }
     }
@@ -1056,10 +1056,10 @@ impl Fixture {
     /// the sharing owner's ("" for the viewer's own server).
     fn failed_source(sid: plx_plex::plex::ServerId, handle: &str) -> Self {
         let mut fixture = Self::new();
-        fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
-        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
-            crate::browse::SrcGroup { name: "Cinema server".into(), handle: handle.into(),
-                state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+        fixture.listing = plx_data::stores::browse::ListingSnapshot::empty_for_test();
+        fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture_source(4, sid,
+            plx_data::browse::SrcGroup { name: "Cinema server".into(), handle: handle.into(),
+                state: plx_data::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
         fixture
     }
 }
@@ -1195,8 +1195,8 @@ fn removed_grid_key_keeps_its_typed_master_detail_reconciliation_path() {
     let mut page = fixture.screen();
     let original = page.key(page.pair.detail.elem_at(17).unwrap());
     let sid = plx_plex::plex::ServerId::from_raw(0);
-    fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
-        (0..35).map(|i| Some(crate::pms::PmsMovie { sid, rk: format!("{}", i + 100), ..Default::default() })).collect(),
+    fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid,
+        (0..35).map(|i| Some(plx_data::pms::PmsMovie { sid, rk: format!("{}", i + 100), ..Default::default() })).collect(),
         vec![("A".into(), 18), ("Z".into(), 17)]);
     page.sync(&fixture.cx(Some(original)));
     assert_eq!(<LibraryScreen as Focusable<HostFixture>>::group_of(&page, &original.elem, &fixture.cx(Some(original))), None);
@@ -1224,9 +1224,9 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let sid = plx_plex::plex::ServerId::from_raw(0);
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, (0..2).map(|i|
-        crate::browse::view::SectionView { sid: Some(sid), key: i as i64 + 1, kind: SecKind::Movie,
-            row: crate::browse::SrcRow { section: i, title: format!("s{i:04x}"), pinned: true, current: i == 0, ..Default::default() } }).collect());
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, (0..2).map(|i|
+        plx_data::browse::view::SectionView { sid: Some(sid), key: i as i64 + 1, kind: SecKind::Movie,
+            row: plx_data::browse::SrcRow { section: i, title: format!("s{i:04x}"), pinned: true, current: i == 0, ..Default::default() } }).collect());
     let mut page = fixture.screen();
     let mut output = Vec::new();
     let mut present = plx_machine::present::Present::new();
@@ -1242,12 +1242,12 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
     output.clear();
     let mut fx = Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present);
     page.step(&ScreenEvent::App(AppMsg::LibraryEdit { target,
-        edit: crate::stores::browse::QueryEdit::Sort { key: "titleSort".into(), desc: true } }), &fixture.cx(None), &mut fx);
+        edit: plx_data::stores::browse::QueryEdit::Sort { key: "titleSort".into(), desc: true } }), &fixture.cx(None), &mut fx);
     page.step(&ScreenEvent::WillLeave(plx_machine::machine::Leave::Deeper), &fixture.cx(None), &mut fx);
     drop(fx);
     assert!(output.iter().any(|effect| matches!(&effect.fx,
         Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed {
-            target, work: LibraryWork::Commit { select: true, query: Some(crate::stores::browse::QueryEdit::Sort { key, desc: true }), .. }
+            target, work: LibraryWork::Commit { select: true, query: Some(plx_data::stores::browse::QueryEdit::Sort { key, desc: true }), .. }
         }))) if *target == incoming && key == "titleSort")), "leaving flushes selection and semantic sort in one addressed store command");
 }
 
@@ -1270,9 +1270,9 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
 fn a_single_favourite_library_draws_no_selector() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
-        crate::browse::view::SectionView { sid: Some(plx_plex::plex::ServerId::from_raw(0)), key: 1,
-            kind: SecKind::Movie, row: crate::browse::SrcRow { section: 0, title: "Cinema".into(),
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, vec![
+        plx_data::browse::view::SectionView { sid: Some(plx_plex::plex::ServerId::from_raw(0)), key: 1,
+            kind: SecKind::Movie, row: plx_data::browse::SrcRow { section: 0, title: "Cinema".into(),
                 pinned: true, current: true, ..Default::default() } }]);
     let page = fixture.screen();
     assert!(page.libraries.is_empty(), "a lone favourite must clear the selector");
@@ -1294,10 +1294,10 @@ fn favorite_library_row_uses_shared_strip_geometry_and_incoming_type() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let sid = plx_plex::plex::ServerId::from_raw(0);
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, (0..4).map(|i|
-        crate::browse::view::SectionView { sid: Some(sid), key: i as i64 + 1,
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, (0..4).map(|i|
+        plx_data::browse::view::SectionView { sid: Some(sid), key: i as i64 + 1,
             kind: if i < 2 { SecKind::Movie } else { SecKind::Show },
-            row: crate::browse::SrcRow { section: i, title: format!("Library {i}"), pinned: true,
+            row: plx_data::browse::SrcRow { section: i, title: format!("Library {i}"), pinned: true,
                 current: i == 0, ..Default::default() } }).collect());
     let mut page = fixture.screen();
     let cx = fixture.cx(None);
@@ -1398,13 +1398,13 @@ fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
     // favourite clears it), so this is the minimal fixture that actually turns the strip on.
     let sid = plx_plex::plex::ServerId::from_raw(0);
     let sections = vec![
-        crate::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Movie,
-            row: crate::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } },
-        crate::browse::view::SectionView { sid: Some(sid), key: 2, kind: SecKind::Movie,
-            row: crate::browse::SrcRow { section: 1, title: "Anime".into(), pinned: true, ..Default::default() } },
+        plx_data::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Movie,
+            row: plx_data::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } },
+        plx_data::browse::view::SectionView { sid: Some(sid), key: 2, kind: SecKind::Movie,
+            row: plx_data::browse::SrcRow { section: 1, title: "Anime".into(), pinned: true, ..Default::default() } },
     ];
     let mut fixture = Fixture::new();
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, sections);
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, sections);
     fixture.listing = fixture.listing.clone().with_fetch(SecFetch::Failed, -1);
     let page = fixture.screen();
     assert_eq!(page.readout, Readout::Failed);

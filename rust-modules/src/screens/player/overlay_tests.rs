@@ -52,16 +52,16 @@ impl crate::screens::registry::PlayerLike for TestHost {
 thread_local! {
     // TEST ONLY: see `screens::detail::tests`'s `TEST_METADATA` for why this lives here rather
     // than being threaded as a parameter.
-    static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-        std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+        std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
 }
 
-fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
 impl crate::screens::registry::MetadataLike for TestHost {
-    fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+    fn metadata<'a>(_cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
         test_store().view()
     }
 }
@@ -181,7 +181,7 @@ fn a_transport_key_is_forwarded_by_a_modal_panel_and_leaves_it_up() {
             (WCODE_PLAY, Some(true)),
             (WCODE_PLAYPAUSE, None),
         ] {
-            let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
+            let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
             let (handled, reqs, dismissed) = press(&mut page, 0, wcode, Edge::Down);
             assert_eq!(handled, Handled::Yes, "{name}: the surface owns the press");
             assert_eq!(
@@ -204,7 +204,7 @@ fn a_transport_key_is_forwarded_by_a_modal_panel_and_leaves_it_up() {
 fn a_fresh_direction_and_ok_fall_through_to_the_engine_and_back_is_still_the_panels_own() {
     let ps = crate::route::PlaybackSession::IDLE;
     for (kind, name) in MODAL {
-        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
+        let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, reqs, _) = press(&mut page, SDLK_UP, 0, Edge::Down);
         assert_eq!(handled, Handled::No, "{name}: UP is now the engine's to move");
         assert!(
@@ -212,11 +212,11 @@ fn a_fresh_direction_and_ok_fall_through_to_the_engine_and_back_is_still_the_pan
             "{name}: UP is not a transport key",
         );
 
-        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
+        let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, ..) = press(&mut page, SDLK_RETURN, 0, Edge::Down);
         assert_eq!(handled, Handled::No, "{name}: OK is the engine's Activate/PressArm to answer");
 
-        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
+        let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, _, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
         assert_eq!(handled, Handled::Yes, "{name}: BACK is still the panel's");
         assert!(dismissed, "{name}: and BACK is what closes it");
@@ -229,7 +229,7 @@ fn a_fresh_direction_and_ok_fall_through_to_the_engine_and_back_is_still_the_pan
 fn stop_stays_swallowed_by_the_three_reading_panels() {
     let ps = crate::route::PlaybackSession::IDLE;
     for (kind, name) in MODAL {
-        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
+        let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_STOP, Edge::Down);
         assert_eq!(handled, Handled::Yes, "{name}: STOP is panel-owned");
         assert!(reqs.is_empty(), "{name}: STOP must not reach the player");
@@ -244,7 +244,7 @@ fn stop_stays_swallowed_by_the_three_reading_panels() {
 fn the_options_popover_keeps_the_old_swallow_everything_behaviour() {
     let ps = crate::route::PlaybackSession::IDLE;
     for wcode in [WCODE_PAUSE, WCODE_PLAY, WCODE_PLAYPAUSE] {
-        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
+        let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
         let (handled, reqs, dismissed) = press(&mut page, 0, wcode, Edge::Down);
         assert_eq!(handled, Handled::Yes);
         assert!(
@@ -259,13 +259,13 @@ fn the_options_popover_keeps_the_old_swallow_everything_behaviour() {
 fn back_dismisses_more_at_the_root_and_pops_the_quality_page_first() {
     let ps = crate::route::PlaybackSession::IDLE;
     // the ordinary entry is the root: BACK dismisses
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
     let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
     assert_eq!(handled, Handled::Yes, "More owns BACK");
     assert!(reqs.is_empty(), "BACK must not activate a More row");
     assert!(dismissed, "BACK must dismiss the More root");
     // the quality recovery entry opens ON the Quality page: BACK goes up one page, then dismisses
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: true });
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: true });
     assert_eq!(more_page(&page), Some(MorePage::Quality));
     let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
     assert_eq!(handled, Handled::Yes);
@@ -301,7 +301,7 @@ fn the_quality_row_pushes_and_left_back_and_the_title_pop() {
     use plx_ui::consts::{SDLK_LEFT, SDLK_RIGHT};
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
-    let meta = crate::stores::metadata::MetadataStore::default();
+    let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { quality: false });
     assert_eq!(more_page(&page), None);
 
@@ -346,7 +346,7 @@ fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
     use plx_ui::screen::{DrawFrame, Screen};
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
-    let meta = crate::stores::metadata::MetadataStore::default();
+    let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { quality: false });
     let stops_of = |page: &PlayerOverlayScreen| {
         let cx = cx();
@@ -391,7 +391,7 @@ fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
 #[test]
 fn a_held_direction_is_paced_and_a_fresh_press_is_never_swallowed() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
     // A fresh press rearms the cadence and is handed to the engine.
     let (handled, ..) = press(&mut page, SDLK_DOWN, 0, Edge::Down);
     assert_eq!(handled, Handled::No, "the fresh press falls through to the engine");
@@ -418,7 +418,7 @@ fn a_held_direction_is_paced_and_a_fresh_press_is_never_swallowed() {
 fn a_click_no_longer_scans_pixels_or_dismisses_inside_step() {
     let ps = crate::route::PlaybackSession::IDLE;
     for (kind, name) in MODAL.into_iter().chain([(OverlayKind::More { quality: false }, "More")]) {
-        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
+        let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, reqs, dismissed) = click(&mut page, 10.0, 10.0);
         assert_eq!(handled, Handled::No, "{name}: the engine's hit map resolves a click, not step");
         assert!(reqs.is_empty(), "{name}: step raises nothing from a raw click");
@@ -433,7 +433,7 @@ fn a_click_no_longer_scans_pixels_or_dismisses_inside_step() {
 #[test]
 fn groups_publishes_the_active_panels_real_row_count() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
+    let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let mut groups = Vec::new();
     Focusable::<TestHost>::groups(&page, &cx(), &mut groups);
     assert_eq!(groups.len(), 1, "one focus group for the action column");
@@ -448,7 +448,7 @@ fn groups_publishes_the_active_panels_real_row_count() {
 #[test]
 fn place_answers_each_rows_own_rect_not_one_full_screen_stop() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
+    let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let first: Placed = Focusable::<TestHost>::place(&page, &0u32, &cx(), At::Drawn).expect("row 0 places");
     let second: Placed = Focusable::<TestHost>::place(&page, &1u32, &cx(), At::Drawn).expect("row 1 places");
     assert_ne!(
@@ -474,7 +474,7 @@ fn place_answers_each_rows_own_rect_not_one_full_screen_stop() {
 #[test]
 fn focus_moved_writes_the_new_cursor_into_the_open_panel() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     assert_eq!(page.sel(), 0);
     let (_, reqs, _) = deliver(
         &mut page,
@@ -493,12 +493,12 @@ fn focus_moved_writes_the_new_cursor_into_the_open_panel() {
 #[test]
 fn activate_commits_the_bare_rows_directly() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
     let (_, _, dismissed) = activate(&mut page, 0);
     assert!(dismissed, "Tracks: Activate commits and dismisses");
 
     // an Options row: the root's first row is the Quality drill-in, which opens a page instead
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
     let (_, reqs, dismissed) = more_open(&mut page, MoreRow::Act(MoreAction::ToggleStats));
     assert!(dismissed, "More: Activate commits and dismisses");
     assert!(
@@ -516,7 +516,7 @@ fn activate_commits_the_bare_rows_directly() {
 fn resolve_menupick_row_parses_a_number_or_an_audio_tab_name() {
     let ps = crate::route::PlaybackSession::IDLE;
     let audio_page =
-        PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
+        PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
     assert_eq!(audio_page.resolve_menupick_row("3"), Some(3), "a plain row number always resolves");
     // no enhancement offered on an idle session with no playing item: the names resolve to nothing
     assert_eq!(audio_page.resolve_menupick_row("boost"), None);
@@ -524,7 +524,7 @@ fn resolve_menupick_row_parses_a_number_or_an_audio_tab_name() {
     assert_eq!(audio_page.resolve_menupick_row("not-a-thing"), None);
 
     let sub_page =
-        PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+        PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     assert_eq!(sub_page.resolve_menupick_row("2"), Some(2), "a plain row number still resolves on Subtitles");
     assert_eq!(sub_page.resolve_menupick_row("boost"), None, "names are an Audio-tab-only contract");
 }
@@ -555,7 +555,7 @@ fn a_style_pick_commits_without_dismissing_the_tracks_panel() {
     let _g = plx_base::testlock::serial(); // the panel seeds its tone from the player's global
     crate::player::restore_subtitle_tone(plx_plex::plex::session::SubtitleTone::White);
     let ps = crate::route::PlaybackSession::IDLE;
-    let meta = crate::stores::metadata::MetadataStore::default();
+    let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     // no playing item: Off, then the headerless Timing + Style section; the element is the row's KEY
     let (_, reqs, dismissed) = open_row(&mut page, TrackRow::Style);
@@ -594,7 +594,7 @@ fn back_and_left_pop_a_sub_page_and_right_enters_a_nav_row() {
     use plx_ui::consts::{SDLK_LEFT, SDLK_RIGHT};
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
-    let meta = crate::stores::metadata::MetadataStore::default();
+    let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
 
     // RIGHT on the Style row enters the page (an edge re-delivery, as the engine does)
@@ -632,7 +632,7 @@ fn clicking_the_title_band_pops_one_page() {
     use plx_ui::screen::DrawFrame;
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
-    let meta = crate::stores::metadata::MetadataStore::default();
+    let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
 
     let stops_of = |page: &PlayerOverlayScreen| {
@@ -669,7 +669,7 @@ fn the_pointer_is_held_while_a_page_slides_and_released_at_rest() {
     use plx_ui::screen::{DrawFrame, Screen};
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
-    let meta = crate::stores::metadata::MetadataStore::default();
+    let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     let tick = |page: &mut PlayerOverlayScreen, ms: u32| {
         plx_machine::idle::frame_begin(1.0 / 60.0);
@@ -710,7 +710,7 @@ fn the_replay_canon_includes_the_page_path_and_return_ids() {
     use plx_machine::machine::{Canon, LogicalState};
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
-    let meta = crate::stores::metadata::MetadataStore::default();
+    let meta = plx_data::stores::metadata::MetadataStore::default();
     let fp = |page: &PlayerOverlayScreen| {
         let mut c = Canon::new();
         page.write(&mut c);
@@ -748,7 +748,7 @@ fn ok_on_the_dim_timing_row_while_off_keeps_the_panel_open() {
     crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(0);
     let ps = crate::route::PlaybackSession::IDLE;
-    let meta = crate::stores::metadata::MetadataStore::default();
+    let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     // no playing item: Off, then Timing, then Color — and Off is the checked row
     let timing = TrackRow::Timing.key().0;
@@ -768,9 +768,9 @@ fn ok_on_the_dim_timing_row_while_off_keeps_the_panel_open() {
 /// A playing item whose audio is English and whose subtitles are `subs`: the audio's language is
 /// "yours" (`subtitle_yours_langs`), so English subtitles are rows on the Subtitles root, not behind
 /// "Other languages".
-fn english_audio_with_subs(ps: &crate::route::PlaybackSession, subs: Vec<crate::metadata::Stream>) -> crate::metadata::PlayingItem {
-    let mut item = crate::metadata::PlayingItem::with_subs(subs);
-    item.audio = vec![crate::metadata::Stream {
+fn english_audio_with_subs(ps: &crate::route::PlaybackSession, subs: Vec<plx_data::metadata::Stream>) -> plx_data::metadata::PlayingItem {
+    let mut item = plx_data::metadata::PlayingItem::with_subs(subs);
+    item.audio = vec![plx_data::metadata::Stream {
         id: crate::route::cur_audio_sid(ps),
         lang: "English".into(),
         lang_code: "eng".into(),
@@ -793,9 +793,9 @@ fn open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud() {
     crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(0);
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut store = crate::stores::metadata::MetadataStore::default();
-    assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
-        english_audio_with_subs(&ps, vec![crate::metadata::Stream {
+    let mut store = plx_data::stores::metadata::MetadataStore::default();
+    assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(
+        english_audio_with_subs(&ps, vec![plx_data::metadata::Stream {
             id: 1,
             index: 0,
             lang: "English".into(),
@@ -836,7 +836,7 @@ fn timing_left_and_right_commit_subtitle_offset() {
     crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(0);
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
     let (handled, reqs, dismissed) = press(&mut page, plx_ui::consts::SDLK_RIGHT, 0, Edge::Down);
     assert_eq!(handled, Handled::Yes, "the capsule owns every key, never falls through");
     assert!(!dismissed);
@@ -865,7 +865,7 @@ fn timing_ok_and_back_close_and_keep_the_offset() {
     crate::player::set_subtitle_offset(300);
     let ps = crate::route::PlaybackSession::IDLE;
     for (sym, wcode) in [(SDLK_RETURN, 0), (0, WCODE_BACK)] {
-        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
+        let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
         let (handled, reqs, dismissed) = press(&mut page, sym, wcode, Edge::Down);
         assert_eq!(handled, Handled::Yes);
         assert!(dismissed, "sym={sym} wcode={wcode}: closes the capsule");
@@ -882,7 +882,7 @@ fn timing_forwards_transport_and_leaves_the_capsule_up() {
     crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(0);
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
     let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_PAUSE, Edge::Down);
     assert_eq!(handled, Handled::Yes);
     assert_eq!(reqs, vec![PlayerReq::Transport(Some(false))]);
@@ -898,7 +898,7 @@ fn timing_ticks_do_not_extend_the_hud() {
     crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(0);
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
     let (_, reqs, _) = deliver(&mut page, ScreenEvent::Tick(Tick { ms: 1_016, dt_us: 16_000 }));
     assert!(
         !reqs.iter().any(|r| matches!(r, PlayerReq::ExtendHud(_))),
@@ -914,12 +914,12 @@ fn timing_ticks_do_not_extend_the_hud() {
 #[test]
 fn infos_activate_and_press_commit_take_different_roads() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let (_, reqs, dismissed) = activate(&mut page, 0);
     assert!(dismissed, "a pointer click applies the card's action at once");
     assert!(reqs.iter().any(|r| matches!(r, PlayerReq::Info(_))));
 
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let (_, reqs, dismissed) = press_commit(&mut page, 0);
     assert!(!dismissed, "a keyboard OK defers instead of acting now");
     assert!(reqs.iter().any(|r| matches!(r, PlayerReq::ArmInfoPress)));
@@ -930,7 +930,7 @@ fn infos_activate_and_press_commit_take_different_roads() {
 #[test]
 fn chapters_press_commit_seeks_and_dismisses() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Chapters);
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Chapters);
     let (_, _, dismissed) = press_commit(&mut page, 0);
     assert!(
         dismissed,
@@ -946,7 +946,7 @@ fn chapters_press_commit_seeks_and_dismisses() {
 fn tracks_edge_key_switches_tab_instead_of_moving_within_the_group() {
     use plx_ui::consts::SDLK_RIGHT;
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
     assert!(matches!(page.kind(), OverlayKind::Tracks { .. }));
     let (handled, ..) = press_at_edge(&mut page, SDLK_RIGHT);
     assert_eq!(handled, Handled::Yes, "the panel answers its own edge crossing");
@@ -960,7 +960,7 @@ fn tracks_edge_key_switches_tab_instead_of_moving_within_the_group() {
 fn the_overlay_answers_engine_for_both_focus_and_hits() {
     use plx_ui::screen::{FocusSource, HitSource, Screen};
     let ps = crate::route::PlaybackSession::IDLE;
-    let page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
+    let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     assert_eq!(Screen::<TestHost>::focus_source(&page), FocusSource::Engine);
     assert_eq!(Screen::<TestHost>::hit_source(&page), HitSource::Engine);
 }
@@ -970,7 +970,7 @@ fn the_overlay_answers_engine_for_both_focus_and_hits() {
 #[test]
 fn the_active_groups_seat_round_trips_through_group_of() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
+    let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let mut groups = Vec::new();
     Focusable::<TestHost>::groups(&page, &cx(), &mut groups);
     assert_eq!(groups.len(), 1, "one focus group for the action column");
@@ -1005,8 +1005,8 @@ fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() 
     use plx_ui::theme::underlay::{DIM_PLAYER, DIM_SHEET};
     let ps = crate::route::PlaybackSession::IDLE;
     let corners = [[0.1, 0.5, 0.2], [0.2, 0.4, 0.1], [0.6, 0.2, 0.1], [0.1, 0.1, 0.4]];
-    let mut store = crate::stores::metadata::MetadataStore::default();
-    assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(crate::metadata::PlayingItem {
+    let mut store = plx_data::stores::metadata::MetadataStore::default();
+    assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(plx_data::metadata::PlayingItem {
         sid: plx_plex::plex::ServerId::from_raw(0), rk: "rk".into(), show_rk: String::new(), audio: Vec::new(), subs: Vec::new(),
         video_fps: 0.0, width: 0, height: 0, bitrate: 0, dovi: Default::default(),
         markers: Vec::new(), chapters: Vec::new(), blur: Some(corners),
@@ -1024,7 +1024,7 @@ fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() 
             assert_eq!(scrim.source, UnderlaySource::Corners(corners), "{}: the item's own light", kind.word());
         }
     }
-    let bare = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
+    let bare = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
     assert_eq!(Screen::<TestHost>::scrim(&bare).source, UnderlaySource::Flat, "no envelope: the flat ink");
 }
 
@@ -1040,8 +1040,8 @@ fn a_pointer_click_activates_the_row_it_hit_by_key() {
     let _g = plx_base::testlock::serial();
     crate::player::sidecar::reset();
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut store = crate::stores::metadata::MetadataStore::default();
-    let sub = |id: i64, index: i64, lang: &str, code: &str| crate::metadata::Stream {
+    let mut store = plx_data::stores::metadata::MetadataStore::default();
+    let sub = |id: i64, index: i64, lang: &str, code: &str| plx_data::metadata::Stream {
         id,
         index,
         lang: lang.into(),
@@ -1049,7 +1049,7 @@ fn a_pointer_click_activates_the_row_it_hit_by_key() {
         codec: "srt".into(),
         ..Default::default()
     };
-    assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
+    assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(
         english_audio_with_subs(&ps, vec![sub(11, 0, "English", "eng"), sub(22, 1, "English", "eng")]),
     ))));
     let mut page = PlayerOverlayScreen::new(&ps, store.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
@@ -1106,7 +1106,7 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
         OverlayKind::More { quality: false },
         OverlayKind::More { quality: true },
     ] {
-        let page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
+        let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let cx = cx();
         let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
         page.record_stops(&mut f);

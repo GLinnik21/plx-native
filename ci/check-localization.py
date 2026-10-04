@@ -324,7 +324,7 @@ LAYER_SRCS = ('rust-modules/platform/src', 'rust-modules/gfx/src', 'rust-modules
 # also took `PlaybackQuality::label`, the quality row's text, out of the listed `route/decision.rs`)
 # a boundary naming one of its constants would pass unread.
 CONST_SRCS = (*LAYER_SRCS, 'rust-modules/base/src', 'rust-modules/machine/src', 'rust-modules/net/src',
-              'rust-modules/plex/src', 'rust-modules/telemetry/src')
+              'rust-modules/plex/src', 'rust-modules/telemetry/src', 'rust-modules/data/src')
 
 
 def source_paths(root: Path):
@@ -335,11 +335,14 @@ def source_paths(root: Path):
             for path in sorted((base / folder).rglob('*.rs')):
                 if path.name not in FIXTURES and not any('test' in part for part in path.relative_to(base).parts): yield path
     for rel in ('app/chrome.rs', 'app/diagnostics.rs', 'app/playback.rs', 'auth/owner.rs',
-                'metadata.rs', 'person.rs', 'player/ass.rs', 'player/mod.rs', 'player/shared.rs',
+                'player/ass.rs', 'player/mod.rs', 'player/shared.rs',
                 'player/sidecar.rs', 'route/decision.rs', 'route/plan.rs', 'lab/toast.rs'):
         yield src / rel
     for rel in ('webos.rs', 'tv/device.rs', 'devcaps/dv.rs'):
         yield platform / rel
+    # `metadata.rs` and `person.rs` were listed under `rust-modules/src` until the data split.
+    for rel in ('metadata.rs', 'person.rs'):
+        yield root / 'rust-modules/data/src' / rel
     yield root / LAYER_SRCS[1] / 'overdraw.rs'
     # `PlaybackQuality::label` was `route/decision.rs`'s (listed above) until the plex split.
     yield root / 'rust-modules/plex/src/plex/session.rs'

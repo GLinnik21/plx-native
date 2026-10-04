@@ -8,7 +8,7 @@
 //! `Instant::now`/`SystemTime::now`/`.elapsed()`; a function that needs wall time is not pure and
 //! belongs in `decision.rs`.
 
-use crate::metadata::lang_matches;
+use plx_data::metadata::lang_matches;
 use plx_plex::plex::ServerId;
 use std::sync::atomic::Ordering;
 
@@ -158,7 +158,7 @@ impl CarriedAudio {
     /// The constructor for a track whose facts were read: a copy of a `metadata::Stream` this
     /// resolve actually fetched and looked at, never assembled field-by-field, so nothing can hand
     /// out capability facts for a track nobody read. (The other is [`named`](Self::named).)
-    pub(crate) fn from_stream(s: &crate::metadata::Stream, ordinal: i32) -> Self {
+    pub(crate) fn from_stream(s: &plx_data::metadata::Stream, ordinal: i32) -> Self {
         CarriedAudio {
             sid: s.id,
             ordinal,
@@ -197,7 +197,7 @@ impl CarriedAudio {
 /// play), for `Plan::immersive`'s reason: `contents.immersive` describes the elementary stream the
 /// pipeline decodes, and on a remux or a transcode that is the server's output, not this track.
 fn carried_track(
-    tracks: &[crate::metadata::Stream],
+    tracks: &[plx_data::metadata::Stream],
     sid: i64,
     ordinal: i32,
     feeds_source: bool,
@@ -213,7 +213,7 @@ fn carried_track(
 /// Original candidate (which stays `None`, so a recovery falls back to the source codec), the
 /// playing session must keep the id it asked for even when nothing else about it is known.
 fn plan_track(
-    tracks: &[crate::metadata::Stream],
+    tracks: &[plx_data::metadata::Stream],
     sid: i64,
     ordinal: i32,
     feeds_source: bool,
@@ -233,8 +233,8 @@ pub(super) struct AutoOriginalCandidate {
     pub(super) direct: bool,
     pub(super) vcodec: String,
     pub(super) fps: f64,
-    pub(super) dovi: crate::metadata::Dovi,
-    pub(super) dv_decision: crate::metadata::DvDecision,
+    pub(super) dovi: plx_data::metadata::Dovi,
+    pub(super) dv_decision: plx_data::metadata::DvDecision,
     /// The audio track this candidate carries. `None` = server default, facts unknown (issue
     /// #266 fails closed on it: no enhancement is ever offered without a known, capable track).
     pub(super) audio: Option<CarriedAudio>,
@@ -695,13 +695,13 @@ pub(super) fn desired_audio(
 /// non-negative = an embedded demuxer ordinal. Mid-play the fact is read off the session instead
 /// (`route::decision::facts`); this is the resolve-time half.
 pub(super) fn subtitle_effect_of(
-    item: Option<&crate::metadata::PlayingItem>,
+    item: Option<&plx_data::metadata::PlayingItem>,
     sub_pick: Option<(i64, i32)>,
 ) -> SubtitleEffect {
     match sub_pick {
         Some((_, ord)) if ord < 0 => SubtitleEffect::Sidecar,
         Some(_) => SubtitleEffect::Embedded,
-        None if item.is_some_and(|i| crate::metadata::server_selected_sidecar(i).is_some()) => {
+        None if item.is_some_and(|i| plx_data::metadata::server_selected_sidecar(i).is_some()) => {
             SubtitleEffect::Sidecar
         }
         None => SubtitleEffect::None,
@@ -1027,7 +1027,7 @@ pub(crate) struct ResolveEnv {
     /// A retry carries the viewer's explicit Off as well as a positive subtitle id.
     pub subtitle_override: Option<i64>,
     /// the loaded detail's streams when it IS this item — saves the worker a GET
-    pub cached_item: Option<crate::metadata::PlayingItem>,
+    pub cached_item: Option<plx_data::metadata::PlayingItem>,
     /// The user's pick off the quality ladder, captured at the press like everything else here.
     /// The worker must not call [`quality`] itself for the reason this struct exists: it reads a
     /// process-global the main thread can move while the resolve is in flight.
@@ -1084,7 +1084,7 @@ pub(crate) struct ResolveEnv {
 /// The SERVER half of the test is load-bearing on both arms: a ratingKey names an item only within
 /// one server, so a bare-rk match against a colliding item on the other machine would hand the
 /// ceiling the wrong file's bitrate.
-pub(super) fn detail_describes(d: &crate::metadata::Detail, sid: ServerId, rk: &str) -> bool {
+pub(super) fn detail_describes(d: &plx_data::metadata::Detail, sid: ServerId, rk: &str) -> bool {
     plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk))
         || d.on_deck
             .as_ref()
@@ -1106,7 +1106,7 @@ pub(super) fn detail_describes(d: &crate::metadata::Detail, sid: ServerId, rk: &
 /// that never got an episode backfill and for an audio-only part, and PMS omits the field often
 /// enough that the whole-file fallback has to stay. Falling back is the conservative direction,
 /// which is the right one here — see [`plx_plex::plex::Ceiling::admits`].
-pub(super) fn source_kbps(d: &crate::metadata::Detail) -> i64 {
+pub(super) fn source_kbps(d: &plx_data::metadata::Detail) -> i64 {
     match d.video.as_ref().map(|v| v.bitrate) {
         Some(b) if b > 0 => b,
         _ => d.bitrate,
@@ -1117,7 +1117,7 @@ pub(super) fn source_kbps(d: &crate::metadata::Detail) -> i64 {
 /// loaded parent: using the movie's 4K figure (or 0, which [`plx_plex::plex::Ceiling::admits`]
 /// fails closed on) would force every non-Auto rung through the encoder.
 pub(super) fn resolve_src_kbps(
-    d: Option<&crate::metadata::Detail>,
+    d: Option<&plx_data::metadata::Detail>,
     sid: ServerId,
     rk: &str,
 ) -> i64 {
@@ -1169,10 +1169,10 @@ pub(crate) struct Plan {
     /// The direct-played file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo`
     /// node. Set on the DIRECT-PLAY branch only, beside `fps` and for the same reason: the
     /// transcode branch's payload describes the server's OUTPUT, which is not this file.
-    pub dovi: crate::metadata::Dovi,
+    pub dovi: plx_data::metadata::Dovi,
     /// The direct-play declaration resolved from one cached capability snapshot. Payload builds,
     /// reloads and recovery consume this stored answer; remux/transcode leave it at `NONE`.
-    pub dv_decision: crate::metadata::DvDecision,
+    pub dv_decision: plx_data::metadata::DvDecision,
     /// Does the direct-played audio track carry Dolby Atmos, for the Load payload's
     /// `contents.immersive` node. Set on the DIRECT-PLAY branch only, for the same reason `dovi`
     /// is: it describes the FILE's own elementary stream.
@@ -1232,7 +1232,7 @@ pub(crate) struct Plan {
     /// (`metadata::sub_layout::sub_sections`). `ui/` sees only this code, never a Plex account type.
     pub sub_pref_lang: Option<String>,
     /// the playing item's track store, fetched off-thread and installed by apply_plan
-    pub playing: Option<crate::metadata::PlayingItem>,
+    pub playing: Option<plx_data::metadata::PlayingItem>,
     /// The server's PRE-FLIGHT refusal (see [`refusal`]), when `/decision` said it can neither
     /// direct play nor convert this item. A plan carrying one has an EMPTY `url` by construction —
     /// that is how it fails, on the same path as every other unresolvable plan — and the sentence
@@ -1319,7 +1319,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     plan.playing = env
         .cached_item
         .clone()
-        .or_else(|| crate::metadata::fetch_playing_item(env.sid, rk));
+        .or_else(|| plx_data::metadata::fetch_playing_item(env.sid, rk));
     if let (Some(id), Some(item)) = (env.subtitle_override, plan.playing.as_mut()) {
         // The retry's explicit selection owns both embedded and sidecar restoration; a stale
         // server-side selection must not turn subtitles back on after the viewer chose Off.
@@ -1363,10 +1363,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // next route only; it cannot change this candidate between the gate and Starfish Load.
     #[cfg(test)]
     let dv_decision = match env.dv_capability {
-        Some(capability) => crate::metadata::DvDecision {
+        Some(capability) => plx_data::metadata::DvDecision {
             capability,
             presentation: dovi.presentation(
-                !crate::metadata::dv_withheld(),
+                !plx_data::metadata::dv_withheld(),
                 capability,
                 vcodec == "hevc",
             ),
@@ -1549,7 +1549,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             }).unwrap_or_default();
             if let Some(id) = env.subtitle_override {
                 p.subs.iter().position(|s| s.id == id && !s.external && embedded_subtitle_renderable(&s.codec))
-                    .and_then(|i| (id > 0).then_some((id, crate::metadata::sub_render_ordinal(&p.subs, i))))
+                    .and_then(|i| (id > 0).then_some((id, plx_data::metadata::sub_render_ordinal(&p.subs, i))))
             } else {
                 pick_dp_subtitle_account(&p.subs, &show_prefs, account, &audio_lang)
             }
@@ -1663,7 +1663,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         let audio_ordinal = if direct && aidx >= 0 {
             plan.playing
                 .as_ref()
-                .map(|p| crate::metadata::audio_ordinal(&p.audio, aidx as usize))
+                .map(|p| plx_data::metadata::audio_ordinal(&p.audio, aidx as usize))
                 .unwrap_or(aidx)
         } else {
             -1
@@ -1678,12 +1678,12 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             dovi: if direct {
                 dovi
             } else {
-                crate::metadata::Dovi::NONE
+                plx_data::metadata::Dovi::NONE
             },
             dv_decision: if direct {
                 dv_decision
             } else {
-                crate::metadata::DvDecision::NONE
+                plx_data::metadata::DvDecision::NONE
             },
             // The explicit pick's own fetched stream; a server-default candidate (no pick) is
             // `None` and recovery falls back to the source codec (`Session::src_acodec`).
@@ -2109,8 +2109,8 @@ fn fill_direct_plan(
     vcodec: &str,
     acodec: &str,
     audio_sel: Option<&(i32, String, i64)>,
-    dovi: crate::metadata::Dovi,
-    dv_decision: crate::metadata::DvDecision,
+    dovi: plx_data::metadata::Dovi,
+    dv_decision: plx_data::metadata::DvDecision,
     sub_pick: Option<(i64, i32)>,
 ) {
     let (aidx, achosen, asid) = audio_sel.cloned().unwrap_or((-1, acodec.to_string(), 0));
@@ -2162,7 +2162,7 @@ fn fill_direct_plan(
         plan.feed_audio_ordinal = Some(
             plan.playing
                 .as_ref()
-                .map(|p| crate::metadata::audio_ordinal(&p.audio, aidx as usize))
+                .map(|p| plx_data::metadata::audio_ordinal(&p.audio, aidx as usize))
                 .unwrap_or(aidx),
         );
     }
@@ -2224,7 +2224,7 @@ impl AccountAudioLanguage {
 /// host-testable; it intentionally contains only the language code, never account identity.
 fn account_audio_language_log(
     account: &AccountAudioLanguage,
-    tracks: &[crate::metadata::Stream],
+    tracks: &[plx_data::metadata::Stream],
     audio_sel: Option<&(i32, String, i64)>,
 ) -> String {
     match account {
@@ -2250,7 +2250,7 @@ fn account_audio_language_log(
                 .and_then(|(i, _, _)| usize::try_from(*i).ok())
                 .and_then(|i| tracks.get(i))
                 .is_some_and(|track| lang_matches(lang, &track.lang_code));
-            let matching_track = |track: &crate::metadata::Stream| {
+            let matching_track = |track: &plx_data::metadata::Stream| {
                 lang_matches(lang, &track.lang_code)
             };
             let direct_playable_match = tracks.iter().any(|track| {
@@ -2312,7 +2312,7 @@ enum AudioIntent<'a> {
 /// A PMS selection ranks first whatever its codec: the paths differ only in how they CARRY it (direct play
 /// takes a direct-playable sibling in its language, a re-encode encodes the track itself). A
 /// preference below it therefore never wins just because the pick is a DTS.
-fn audio_intents<'a>(tracks: &[crate::metadata::Stream], prefs: AudioLangPrefs<'a>) -> Vec<AudioIntent<'a>> {
+fn audio_intents<'a>(tracks: &[plx_data::metadata::Stream], prefs: AudioLangPrefs<'a>) -> Vec<AudioIntent<'a>> {
     let selection = tracks.iter().position(|s| s.selected && !s.default)
         .map(AudioIntent::Selection);
     let langs = prefs
@@ -2352,7 +2352,7 @@ fn audio_intents<'a>(tracks: &[crate::metadata::Stream], prefs: AudioLangPrefs<'
 /// which it has never been; see the tests at the foot of this file.
 #[cfg(test)]
 pub(super) fn pick_dp_audio(
-    tracks: &[crate::metadata::Stream],
+    tracks: &[plx_data::metadata::Stream],
     default_acodec: &str,
 ) -> Option<(i32, String, i64)> {
     pick_dp_audio_pref(tracks, default_acodec, AudioLangPrefs::default())
@@ -2363,7 +2363,7 @@ pub(super) fn pick_dp_audio(
 /// dub is the file's default flag the server's selection cannot tell it from no choice — so a
 /// series set to Hungarian opened in English (#160).
 pub(super) fn pick_dp_audio_pref(
-    tracks: &[crate::metadata::Stream],
+    tracks: &[plx_data::metadata::Stream],
     default_acodec: &str,
     prefs: AudioLangPrefs<'_>,
 ) -> Option<(i32, String, i64)> {
@@ -2379,7 +2379,7 @@ pub(super) fn audio_direct_plays(mode: DirectPlayMode, codec: &str, channels: i6
 }
 
 fn pick_dp_audio_mode(
-    tracks: &[crate::metadata::Stream], default_acodec: &str,
+    tracks: &[plx_data::metadata::Stream], default_acodec: &str,
     prefs: AudioLangPrefs<'_>, mode: DirectPlayMode,
 ) -> Option<(i32, String, i64)> {
     pick_dp_audio_eligible(tracks, default_acodec, prefs,
@@ -2387,7 +2387,7 @@ fn pick_dp_audio_mode(
 }
 
 fn pick_dp_audio_eligible(
-    tracks: &[crate::metadata::Stream], default_acodec: &str, prefs: AudioLangPrefs<'_>,
+    tracks: &[plx_data::metadata::Stream], default_acodec: &str, prefs: AudioLangPrefs<'_>,
     eligible: impl Fn(&str, i64) -> bool,
 ) -> Option<(i32, String, i64)> {
     let dp = |codec: &str| eligible(codec, 0);
@@ -2400,7 +2400,7 @@ fn pick_dp_audio_eligible(
         };
     }
     let pick = |i: usize| (i as i32, tracks[i].codec.to_lowercase(), tracks[i].id);
-    let dp_at = |s: &crate::metadata::Stream| eligible(&s.codec, s.channels);
+    let dp_at = |s: &plx_data::metadata::Stream| eligible(&s.codec, s.channels);
     let honoured = audio_intents(tracks, prefs).into_iter().find_map(|intent| match intent {
         AudioIntent::Selection(i) if dp_at(&tracks[i]) => Some(i),
         AudioIntent::Selection(i) => tracks
@@ -2445,7 +2445,7 @@ fn encode_audio_id(
     remux: bool,
     dp_audio_id: i64,
     env_audio_sid: i64,
-    tracks: &[crate::metadata::Stream],
+    tracks: &[plx_data::metadata::Stream],
     prefs: AudioLangPrefs<'_>,
 ) -> i64 {
     if remux {
@@ -2513,9 +2513,9 @@ fn embedded_subtitle_renderable(codec: &str) -> bool {
 ///     read-back is therefore ONE-WAY on that path: an item that starts as a transcode still PUTs
 ///     `subtitleStreamID=0`, which not only suppresses the burn but CLEARS the server's selection
 ///     for everyone. That predates this change; honouring it instead is the same burn decision.
-pub(super) fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64, i32)> {
+pub(super) fn pick_dp_subtitle(subs: &[plx_data::metadata::Stream]) -> Option<(i64, i32)> {
     let i = subs.iter().position(|s| s.selected && !s.external)?;
-    let ord = crate::metadata::sub_render_ordinal(subs, i);
+    let ord = plx_data::metadata::sub_render_ordinal(subs, i);
     // Both halves must be usable or neither is: the id is what the menu checkmark and the
     // timeline report key on, so rendering a stream we cannot NAME would show a subtitle while
     // the menu says Off. (`ord < 0` is unreachable through the `!external` filter above — it is
@@ -2533,13 +2533,13 @@ pub(super) fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64,
 /// we render but do not advertise (`vplayer`, …), is sent as `0` so MDE evaluates subs off
 /// instead of answering transcode (which then forbids a codec-copy remux).
 #[cfg(test)]
-fn mde_subtitle_stream_id(subs: &[crate::metadata::Stream]) -> i64 {
+fn mde_subtitle_stream_id(subs: &[plx_data::metadata::Stream]) -> i64 {
     mde_subtitle_id_of(subs, pick_dp_subtitle(subs))
 }
 
 /// [`mde_subtitle_stream_id`] for a subtitle already decided — the resolve decides ONCE
 /// (`pick_dp_subtitle_pref`) and names the result here.
-fn mde_subtitle_id_of(subs: &[crate::metadata::Stream], pick: Option<(i64, i32)>) -> i64 {
+fn mde_subtitle_id_of(subs: &[plx_data::metadata::Stream], pick: Option<(i64, i32)>) -> i64 {
     pick
         .and_then(|(id, _)| {
             subs.iter()
@@ -2563,13 +2563,13 @@ pub(super) struct SubtitleLangPrefs<'a> {
 
 #[cfg(test)]
 pub(super) fn pick_dp_subtitle_pref(
-    subs: &[crate::metadata::Stream], prefs: &plx_plex::plex::ShowLangPrefs, audio_lang: &str,
+    subs: &[plx_data::metadata::Stream], prefs: &plx_plex::plex::ShowLangPrefs, audio_lang: &str,
 ) -> Option<(i64, i32)> {
     pick_dp_subtitle_account(subs, prefs, SubtitleLangPrefs::default(), audio_lang)
 }
 
 fn pick_dp_subtitle_account(
-    subs: &[crate::metadata::Stream], prefs: &plx_plex::plex::ShowLangPrefs,
+    subs: &[plx_data::metadata::Stream], prefs: &plx_plex::plex::ShowLangPrefs,
     account: SubtitleLangPrefs<'_>, audio_lang: &str,
 ) -> Option<(i64, i32)> {
     if let Some(pick) = pick_dp_subtitle(subs) {
@@ -2589,11 +2589,11 @@ fn pick_dp_subtitle_account(
         return None;
     }
     let embedded = |i: usize| {
-        let ord = crate::metadata::sub_render_ordinal(subs, i);
+        let ord = plx_data::metadata::sub_render_ordinal(subs, i);
         (ord >= 0 && subs[i].id > 0).then_some((subs[i].id, ord))
     };
     let prefer_forced = account.forced == 1 || account.forced == 2;
-    let tiers: [&dyn Fn(&crate::metadata::Stream) -> bool; 3] = [
+    let tiers: [&dyn Fn(&plx_data::metadata::Stream) -> bool; 3] = [
         &|s| s.forced == prefer_forced && !s.sdh,
         &|s| s.forced == prefer_forced,
         &|_| true,
@@ -2610,7 +2610,7 @@ fn pick_dp_subtitle_account(
 }
 
 /// Software feed formats and Dolby Vision declaration support, independent of device limits.
-pub(super) fn video_feed_supported(vcodec: &str, dv: crate::metadata::DvPresentation) -> bool {
+pub(super) fn video_feed_supported(vcodec: &str, dv: plx_data::metadata::DvPresentation) -> bool {
     matches!(vcodec, "h264" | "hevc") && dv.refusal().is_none()
 }
 
@@ -2672,7 +2672,7 @@ pub(super) fn video_direct_plays(
     vcodec: &str,
     src_w: i64,
     src_h: i64,
-    dv: crate::metadata::DvPresentation,
+    dv: plx_data::metadata::DvPresentation,
     caps: &plx_platform::devcaps::Caps,
 ) -> bool {
     let codec_ok = vcodec == "h264" || (vcodec == "hevc" && caps.hevc);
@@ -2719,8 +2719,8 @@ pub(crate) fn playback_preview_of(
     vcodec: &str,
     width: i64,
     height: i64,
-    dv: crate::metadata::DvPresentation,
-    audio_streams: &[crate::metadata::Stream],
+    dv: plx_data::metadata::DvPresentation,
+    audio_streams: &[plx_data::metadata::Stream],
 ) -> Option<Preview> {
     if part.is_empty() {
         return None; // nothing playable loaded (a show still resolving its episode)

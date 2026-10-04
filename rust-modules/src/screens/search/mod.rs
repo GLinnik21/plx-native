@@ -13,10 +13,10 @@ mod tests;
 pub(crate) use memory::Memory;
 
 use std::borrow::Cow;
-use crate::search::{Item, Kind};
+use plx_data::search::{Item, Kind};
 use crate::screens::registry::{AppFx, HomeTab, PageMemory, SearchLike, SearchReq};
-use crate::stores::{StoreCmd, StoreId};
-use crate::stores::search::SearchCmd;
+use plx_data::stores::{StoreCmd, StoreId};
+use plx_data::stores::search::SearchCmd;
 use plx_ui::card_row::CardRow;
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::frame::Budget;
@@ -70,7 +70,7 @@ pub(crate) struct SearchScreen {
     recents: Vec<u32>,
     query_gen: u32,
     recent_clear_pending: bool,
-    publication: Option<crate::search::view::SearchSnapshot>,
+    publication: Option<plx_data::search::view::SearchSnapshot>,
     content_dirty: bool,
     fade: plx_ui::xfade::Xfade,
     ground: plx_ui::widgets::PageGround,
@@ -98,7 +98,7 @@ impl SearchScreen {
             notices: 0 }
     }
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
-    fn real_query(&self) -> bool { crate::search::terms(self.draft.query()).is_some() }
+    fn real_query(&self) -> bool { plx_data::search::terms(self.draft.query()).is_some() }
     fn field_hot<H: SearchLike>(&self, cx: &Cx<'_, H>) -> bool {
         self.editing || cx.focus.current == Some(self.key(FIELD))
     }
@@ -505,8 +505,8 @@ impl SearchScreen {
         };
     }
     fn tick<H: SearchLike>(&mut self, tick: plx_machine::machine::Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
-        fx.push(Fx::App(AppFx::StoreWork(crate::stores::StoreWork::BrowseDiscovery)));
-        fx.push(Fx::App(AppFx::StoreWork(crate::stores::StoreWork::Search { dt_us: tick.dt_us })));
+        fx.push(Fx::App(AppFx::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery)));
+        fx.push(Fx::App(AppFx::StoreWork(plx_data::stores::StoreWork::Search { dt_us: tick.dt_us })));
         if self.step_blink(tick.dt_us) { fx.invalidate(Provenance::Input); }
         for row in &mut self.rows {
             let focused = if self.editing { None } else {
@@ -514,7 +514,7 @@ impl SearchScreen {
             };
             row.motion.update(row.elems.len(), focused, &layout::style(row.kind), tick.dt());
         }
-        self.fade.tick(tick.dt(), !self.draft.pending() && H::search(cx).state() != crate::search::State::Searching);
+        self.fade.tick(tick.dt(), !self.draft.pending() && H::search(cx).state() != plx_data::search::State::Searching);
         let colours = cx.focus.current.and_then(|key| self.rows.iter().enumerate().find_map(|(row, model)|
             model.elems.iter().position(|elem| *elem == key.elem).and_then(|col|
                 H::search(cx).shelves().get(row)?.items.get(col)).and_then(|item| match item {

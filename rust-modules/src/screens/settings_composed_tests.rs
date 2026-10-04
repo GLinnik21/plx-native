@@ -79,9 +79,9 @@ impl Mounter<InnerHost> for SurfaceMounter {
             SettingsPage::About => mount_page(entry, SettingsPage::About, cx, fx),
             SettingsPage::ConsentStage(stage) => Box::new(RouteSurface::new(entry, id,
                 Family::FirstRunConsent, SettingsPage::ConsentStage(*stage),
-                crate::pms::HubsSnapshot::empty_for_test().view())),
+                plx_data::pms::HubsSnapshot::empty_for_test().view())),
             other => Box::new(RouteSurface::new(entry, id, Family::Settings, *other,
-                crate::pms::HubsSnapshot::empty_for_test().view())),
+                plx_data::pms::HubsSnapshot::empty_for_test().view())),
         }
     }
 }
@@ -89,8 +89,8 @@ impl Mounter<InnerHost> for SurfaceMounter {
 pub(super) struct SurfaceRig {
     mounter: SurfaceMounter,
     measure: FixtureMeasure,
-    stores: crate::stores::Stores,
-    directory: crate::stores::browse::DirectorySnapshot,
+    stores: plx_data::stores::Stores,
+    directory: plx_data::stores::browse::DirectorySnapshot,
     /// How many times BACK reached the root of the ROOT stack (the platform's Home).
     roots: u32,
     pub(super) preference_commands: Vec<registry::PreferenceCmd>,
@@ -101,7 +101,7 @@ impl SurfaceRig {
         Self {
             mounter: SurfaceMounter,
             measure: FixtureMeasure,
-            stores: crate::stores::Stores::default(),
+            stores: plx_data::stores::Stores::default(),
             directory: Default::default(),
             roots: 0,
             preference_commands: Vec::new(),

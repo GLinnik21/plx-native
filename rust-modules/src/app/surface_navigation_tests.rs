@@ -83,7 +83,7 @@ fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page(
     let before = rig.stores.gen(StoreId::Search);
     d.emit(
         MachineId::Nav,
-        Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(crate::stores::search::SearchCmd::Reset))),
+        Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(plx_data::stores::search::SearchCmd::Reset))),
     );
     frame(&mut d, &mut rig, route.clone(), tick(1), vec![]);
     assert_eq!(rig.stores.gen(StoreId::Search), before + 1, "the store was stepped in the drain");
@@ -94,7 +94,7 @@ fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page(
         MachineId::Nav,
         Fx::Deliver(
             MachineId::Store(StoreId::Browse.ord()),
-            Delivery::Machine(AppMsg::Store(StoreCmd::Search(crate::stores::search::SearchCmd::Reset))),
+            Delivery::Machine(AppMsg::Store(StoreCmd::Search(plx_data::stores::search::SearchCmd::Reset))),
         ),
     );
     frame(&mut d, &mut rig, route.clone(), tick(4), vec![]);
@@ -221,7 +221,7 @@ fn an_app_switch_parks_the_page_stack_and_gives_the_same_entries_back() {
 
 /// **Every test in this module that calls [`frame`] must hold `testlock::serial()`, even when
 /// it asserts nothing about the stores.** `frame`'s second act is
-/// `crate::stores::take_notices()`, which DRAINS a process-global dirty flag — so a test that
+/// `plx_data::stores::take_notices()`, which DRAINS a process-global dirty flag — so a test that
 /// merely walks the nav tree still consumes whatever notice another test was about to observe.
 /// This one had no guard until 2026-09-07 and stole
 /// `a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page`'s notice at
@@ -329,7 +329,7 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let home = d.nav.top_page().map(|e| e.id);
     assert_eq!(frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]).0, "player");
-    open_player_overlay(crate::route::idle_session_for_test(), crate::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Info);
+    open_player_overlay(crate::route::idle_session_for_test(), plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Info);
     frame(&mut d, &mut rig, AppArg::Player, tick(2), vec![]);
     assert!(player_overlay_up(&d), "the panel is on the player page's own ModalStack");
     // …`exit_player`'s own order: the panels are dismissed, then the route is the origin's.
@@ -370,7 +370,7 @@ fn player_diagnostics_hide_behind_any_open_player_overlay() {
     ] {
         open_player_overlay(
             crate::route::idle_session_for_test(),
-            crate::stores::metadata::MetadataStore::default().view(),
+            plx_data::stores::metadata::MetadataStore::default().view(),
             &mut d,
             kind,
         );
@@ -522,7 +522,7 @@ fn the_card_menu_is_a_surface_over_the_page_the_hold_happened_on() {
         frame(&mut d, &mut rig, route.clone(), tick(0), vec![]);
         let host = d.nav.top_page().expect("a host page").id;
         let host_owner = d.nav.input_owner();
-        let mut row = crate::pms::PmsMovie::default();
+        let mut row = plx_data::pms::PmsMovie::default();
         row.rk = "42".into();
         row.kind = 3;
         row.show_rk = "7".into();
@@ -582,7 +582,7 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let host = d.nav.top_page().unwrap().id;
-    let mut row = crate::pms::PmsMovie::default();
+    let mut row = plx_data::pms::PmsMovie::default();
     row.rk = "42".into();
     row.kind = 0; // a movie: [Go to Movie, —, Mark as Watched, Play from Start]
     row.unwatched = true;
@@ -732,7 +732,7 @@ fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_a
     assert!(instance.is_some(), "…with a live instance");
     let depth = d.nav.tabs.stack.depth();
     for kind in crate::screens::player::overlay::OverlayKind::ALL {
-        open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, kind);
+        open_player_overlay(&ps, plx_data::stores::metadata::MetadataStore::default().view(), &mut d, kind);
         frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]);
         assert_eq!(player_overlay_kind(&d), Some(kind), "{kind:?} is up");
         assert_eq!(
@@ -810,13 +810,13 @@ fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
 
-    open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Tracks { tab: 1 });
+    open_player_overlay(&ps, plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Tracks { tab: 1 });
     frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]);
     assert_eq!(player_overlay_kind(&d), Some(OverlayKind::Tracks { tab: 1 }));
 
     // The hand-off: dismiss Tracks, open Timing, in the one beat `activate`'s OpenTiming arm does.
     dismiss_player_overlays(&mut d);
-    open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Timing);
+    open_player_overlay(&ps, plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Timing);
     frame(&mut d, &mut rig, AppArg::Player, tick(2), vec![]);
 
     let surfaces: Vec<(OverlayKind, Phase)> = d
@@ -865,9 +865,9 @@ fn the_hud_state_helper_reads_every_phase_of_every_surface() {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
-    open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Tracks { tab: 1 });
+    open_player_overlay(&ps, plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Tracks { tab: 1 });
     frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]);
-    open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Timing);
+    open_player_overlay(&ps, plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Timing);
     frame(&mut d, &mut rig, AppArg::Player, tick(2), vec![]);
     crate::app::bridge::open_settings(&mut d);
     frame(&mut d, &mut rig, AppArg::Player, tick(3), vec![]);

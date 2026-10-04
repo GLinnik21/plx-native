@@ -78,7 +78,7 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    fn begin(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> Frame {
+    fn begin(ps: &crate::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> Frame {
         Frame {
             ctrl: crate::appkit::player_hud::slot(ps, meta),
             now: 0,
@@ -1526,12 +1526,12 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             app.refresh_hubs_at = 0;
             super::bridge::execute_endpoint_outcomes(
                 &mut app.pages,
-                app.bridge.hubs_run(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints,
+                app.bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints,
             );
             // …and every library's OWN shelves, for the same reason and at the same moment:
             // a finished playback moves Continue Watching and watch state, so invalidate each
             // Bridge-owned Browse store through `Bridge::browse_run`.
-            app.bridge.browse_run(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
+            app.bridge.browse_run(plx_data::stores::browse::BrowseCmd::HubsInvalidateAll);
             log("home: hubs refresh queued after playback");
         }
         // (The lost-keyup safety net and the CLIENT-SIDE LONG-PRESS REPEAT stood here — the one
@@ -3647,8 +3647,8 @@ mod lifecycle_regression_tests {
             frame(&mut self.app, 16);
             let player = super::super::bridge::player_mut(&mut self.app.pages).unwrap();
             player.up_next.tick(
-                crate::appkit::player_hud::ControlSlot::UpNext(crate::metadata::Marker {
-                    kind: crate::metadata::MarkerKind::Credits,
+                crate::appkit::player_hud::ControlSlot::UpNext(plx_data::metadata::Marker {
+                    kind: plx_data::metadata::MarkerKind::Credits,
                     start_ms: 0,
                     end_ms: 60_000,
                     final_seg: true,
@@ -4145,10 +4145,10 @@ mod lifecycle_regression_tests {
         rig.resolve();
         super::super::bridge::nav_push(&mut rig.app.pages, AppArg::Player);
         frame(&mut rig.app, 16);
-        crate::metadata::set_playing_markers_for_test(
+        plx_data::metadata::set_playing_markers_for_test(
             rig.app.bridge.metadata_mut().state_mut(),
-            vec![crate::metadata::Marker {
-                kind: crate::metadata::MarkerKind::Credits,
+            vec![plx_data::metadata::Marker {
+                kind: plx_data::metadata::MarkerKind::Credits,
                 start_ms: 0,
                 end_ms: 60_000,
                 final_seg: true,
@@ -4369,5 +4369,73 @@ mod video_plane_gate_tests {
             .find("let (_vx, _vy, _vw, _vh) = draw(app, fr);")
             .expect("the loop's draw");
         assert!(call < draw, "the compositor is told before the frame is drawn");
+    }
+}
+
+#[cfg(test)]
+mod pump_wiring_tests {
+    //! `app/run.rs`'s route-unconditional per-frame block has no host fixture — `App` needs a real
+    //! SDL/GL context — so this pins the source text itself, the same idiom
+    //! `app::words::focusprobe_player_overlay_delegates_to_the_shared_overlay_word_function` uses
+    //! for the identical reason. Why `pump_season()` needs this pin at all: see
+    //! `plx_data::stores::metadata`'s module doc, and the commit that added this test.
+    #[test]
+    fn the_route_unconditional_frame_update_pumps_the_season_landing_after_detail() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+        )
+        .expect("read run.rs");
+        // The exact statement shape `pump_detail()`'s own call already has, indentation included:
+        // a bare `.contains("pump_season()")` would still pass if the call were wrapped in a
+        // route/feature gate, buried behind a route check, or merely mentioned in a comment (none
+        // of which pump the mailbox route-unconditionally). Matching by WHOLE LINE (not a
+        // substring search, which extra leading indentation would still satisfy) against the
+        // literal `if app.bridge.metadata_pump_season() {` at the SAME indentation as
+        // `metadata_pump_detail()`'s own `if` proves it is a sibling statement in the same block
+        // — not nested one level deeper inside some other conditional.
+        //
+        // Stage C1 note: these two now name `Bridge`'s own owned-store wrappers
+        // (`metadata_pump_detail`/`metadata_pump_season`), not the old free
+        // `plx_data::stores::metadata::pump_detail`/`pump_season` — Metadata moved from a
+        // crate-global dispatcher to a per-`Bridge` owner in Stage B, and `run.rs`'s call site
+        // moved with it. The pin exists to catch exactly that kind of silent drop, so it must
+        // track the real call shape rather than the pre-ownership one.
+        const DETAIL_STMT: &str = "        if app.bridge.metadata_pump_detail() {";
+        const SEASON_STMT: &str = "        if app.bridge.metadata_pump_season() {";
+        let line_index = |needle: &str| {
+            src.lines().position(|line| line == needle)
+        };
+        let detail_at = line_index(DETAIL_STMT)
+            .expect("run.rs must still pump the async detail landing every frame, at this exact indentation");
+        let season_at = line_index(SEASON_STMT).unwrap_or_else(|| {
+            panic!(
+                "metadata_pump_season() must be called route-unconditionally, at the same nesting \
+                 depth as metadata_pump_detail() (found no `{SEASON_STMT}` line) — its call site \
+                 went missing in the phase-7 owned-screens migration and nothing replaced it, so \
+                 season_loading() never clears after a season switch: the episode row's spinner \
+                 spins forever and every episode press is refused (episodes::action gates on \
+                 season_loading())."
+            )
+        });
+        // metadata_pump_detail() must run FIRST: a landed detail's `install_landed_detail` calls
+        // `supersede_season()`, invalidating any season fetch for the item being replaced.
+        // Pumping season first could apply a stale season landing to CURRENT in the one frame
+        // before metadata_pump_detail() replaces it.
+        assert!(
+            season_at > detail_at,
+            "metadata_pump_season() must be pumped AFTER metadata_pump_detail(), not before — \
+             metadata_pump_detail() is what supersedes a stale in-flight season fetch when a \
+             fresh detail lands"
+        );
+        // Both statements must be in the SAME enclosing function: no line starting a new `fn` —
+        // a new function's own leading `fn`, not the word appearing mid-identifier — between them.
+        let no_intervening_fn = src.lines().skip(detail_at + 1).take(season_at - detail_at - 1)
+            .all(|line| !line.trim_start().starts_with("fn ")
+                && !line.trim_start().starts_with("pub"));
+        assert!(
+            no_intervening_fn,
+            "pump_detail() and pump_season() must be pumped from the same function — found what \
+             looks like an intervening function boundary between them"
+        );
     }
 }

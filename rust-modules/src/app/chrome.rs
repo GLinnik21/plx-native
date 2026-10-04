@@ -5,7 +5,7 @@ use plx_ui::containers::tabs::StripMember;
 use plx_ui::dispatch::STRIP_BASE;
 use plx_machine::machine::{FocusKey, Measure};
 use plx_ui::widgets::{self, ChromeRead, ProfileChipRead, TabLabels, TopFocus};
-use crate::stores::browse::{DirectoryView, SecKind};
+use plx_data::stores::browse::{DirectoryView, SecKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Pill {
@@ -166,7 +166,7 @@ impl ChromeSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stores::browse::{DirectorySnapshot, SectionView, SrcRow};
+    use plx_data::stores::browse::{DirectorySnapshot, SectionView, SrcRow};
     use plx_machine::machine::EntryId;
 
     fn directory(kinds: &[SecKind]) -> DirectorySnapshot {
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn every_projected_pill_round_trips_by_stable_section_identity() {
-        use crate::stores::browse::SecKind::{Movie, Show};
+        use plx_data::stores::browse::SecKind::{Movie, Show};
         let kinds = [Movie, Show];
         let at = |i| kinds.get(i).copied();
         let search = kinds.len() + 1;
@@ -252,7 +252,7 @@ mod tests {
     fn chrome_production_reads_only_its_retained_directory() {
         let src = include_str!("chrome.rs");
         let production = src.split("#[cfg(test)]").next().unwrap();
-        assert!(!production.contains("crate::browse::"),
+        assert!(!production.contains("plx_data::browse::"),
             "Chrome must read only its retained Browse directory");
     }
 
@@ -263,7 +263,7 @@ mod tests {
         ).expect("read widgets.rs");
         let live = src.lines().filter(|line| !line.trim_start().starts_with("//"))
             .collect::<Vec<_>>().join("\n");
-        for forbidden in ["crate::browse::", "plx_plex::plex::session::", "crate::screens::"] {
+        for forbidden in ["plx_data::browse::", "plx_plex::plex::session::", "crate::screens::"] {
             assert!(!live.contains(forbidden),
                 "shared widgets must consume captured app projections, found {forbidden}");
         }

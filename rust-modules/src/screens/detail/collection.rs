@@ -4,8 +4,8 @@
 //! shelf remembered, OK opens the collection page. The members are ordinary poster cards drawn by
 //! the same strip as Related ([`super::related::draw_strip`]).
 
-use crate::metadata::{CollectionShelf, Detail};
-use crate::pms::PmsMovie;
+use plx_data::metadata::{CollectionShelf, Detail};
+use plx_data::pms::PmsMovie;
 use plx_ui::card_row::CardRow;
 use plx_ui::linked_heading::LinkedHeading;
 use plx_machine::machine::{GroupId, Measure};
@@ -23,7 +23,7 @@ pub(crate) const COLLECTION_GROUP: GroupId = GroupId(7);
 pub(crate) const HEADING_GROUP: GroupId = GroupId(8);
 
 const _: () = assert!(
-    (COLLECTION_ELEM_RANGE_END - MEMBERS_START) as usize >= crate::metadata::COLLECTION_MAX
+    (COLLECTION_ELEM_RANGE_END - MEMBERS_START) as usize >= plx_data::metadata::COLLECTION_MAX
 );
 
 pub(crate) fn elem(index: usize) -> Option<u32> {
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn every_member_key_round_trips_and_never_names_the_heading() {
-        for i in 0..crate::metadata::COLLECTION_MAX {
+        for i in 0..plx_data::metadata::COLLECTION_MAX {
             assert_eq!(locate(elem(i).unwrap()), Some(i));
         }
         assert_eq!(locate(HEADING_ELEM), None);

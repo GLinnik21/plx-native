@@ -214,7 +214,7 @@ pub(crate) struct HudState {
     /// The last SEGMENT the control row offered. Sticky: it is never cleared back to None,
     /// so each segment raises the HUD exactly once per playback however often the row
     /// flickers.
-    pub(crate) last_offer: Option<(crate::metadata::MarkerKind, i64)>,
+    pub(crate) last_offer: Option<(plx_data::metadata::MarkerKind, i64)>,
     /// Did a stand-in own the control row last frame? The reset below is the EDGE of a
     /// stand-in vanishing under the focus ring — see `player_hud::standin_left_the_ring`,
     /// which is where that rule is written down and tested.

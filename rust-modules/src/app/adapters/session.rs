@@ -734,7 +734,7 @@ impl SessionAdapter {
 
     /// Credential revocation is immediate; the physical clear runs on the persistence FIFO.
     pub(crate) fn begin_erase(&mut self, epoch: u64, all_local: bool,
-        meta: &mut crate::stores::metadata::MetadataStore) -> Option<usize> {
+        meta: &mut plx_data::stores::metadata::MetadataStore) -> Option<usize> {
         if matches!(self.resources, Resources::Live { .. }) {
             for commit in &self.commits { commit.cancelled.store(true, Ordering::Release); }
             plx_plex::plex::revoke_all();
@@ -785,7 +785,7 @@ impl SessionAdapter {
         pending.retry_at = now.wrapping_add(STORAGE_RETRY_MS);
     }
 
-    pub(crate) fn take_erased(&mut self, meta: &mut crate::stores::metadata::MetadataStore)
+    pub(crate) fn take_erased(&mut self, meta: &mut plx_data::stores::metadata::MetadataStore)
         -> Option<crate::auth::owner::SessionEvent> {
         self.submit_erase();
         let pending = self.erasures.front()?;
@@ -814,7 +814,7 @@ impl SessionAdapter {
         Some(crate::auth::owner::SessionEvent::Erased { epoch: pending.epoch, leftovers })
     }
 
-    fn finish_erase(&mut self, all_local: bool, meta: &mut crate::stores::metadata::MetadataStore,
+    fn finish_erase(&mut self, all_local: bool, meta: &mut plx_data::stores::metadata::MetadataStore,
         worker_failures: Vec<String>) -> usize {
         let recording_leftovers = if all_local { std::mem::take(&mut self.recording_leftovers) } else { 0 };
         recording_leftovers + match &mut self.resources {
@@ -1296,7 +1296,7 @@ mod tests {
         let session = plx_plex::plex::session::TempSession::new("signin-after-erofs-signout");
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let (_erofs, mut adapter) = erase_behind_a_read_only_mount(&session, &mt);
-        let mut meta = crate::stores::metadata::MetadataStore::default();
+        let mut meta = plx_data::stores::metadata::MetadataStore::default();
         assert!(adapter.begin_erase(1, false, &mut meta).is_none());
         plx_base::storage_worker::drain_for_test();
         assert!(matches!(adapter.take_erased(&mut meta), Some(crate::auth::owner::SessionEvent::Erased { epoch: 1, .. })),
@@ -1320,7 +1320,7 @@ mod tests {
         let session = plx_plex::plex::session::TempSession::new("erase-local-erofs");
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let (_erofs, mut adapter) = erase_behind_a_read_only_mount(&session, &mt);
-        let mut meta = crate::stores::metadata::MetadataStore::default();
+        let mut meta = plx_data::stores::metadata::MetadataStore::default();
         assert!(adapter.begin_erase(7, true, &mut meta).is_none());
         plx_base::storage_worker::drain_for_test();
         assert!(matches!(adapter.take_erased(&mut meta), Some(crate::auth::owner::SessionEvent::Erased { epoch: 7, .. })),
@@ -1353,7 +1353,7 @@ mod tests {
         };
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
-        let mut meta = crate::stores::metadata::MetadataStore::default();
+        let mut meta = plx_data::stores::metadata::MetadataStore::default();
 
         assert!(adapter.begin_erase(1, false, &mut meta).is_none());
         plx_base::storage_worker::drain_for_test();
@@ -1412,7 +1412,7 @@ mod tests {
         crate::app::clock::set_replay(100);
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
-        let mut meta = crate::stores::metadata::MetadataStore::default();
+        let mut meta = plx_data::stores::metadata::MetadataStore::default();
         assert!(adapter.begin_erase(1, false, &mut meta).is_none());
         let mut waits = Vec::new();
         for _ in 0..7 {

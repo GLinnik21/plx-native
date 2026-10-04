@@ -436,16 +436,16 @@ fn captured_dev_sources(servers: &[crate::dev::DevServer]) -> Vec<plx_plex::plex
     // being fetched from server B: the same catalog index opening a different film.
 pub(super) fn activate_server_owned(
     bridge: &mut super::bridge::Bridge,
-) -> crate::stores::EndpointRefreshSet {
-    bridge.browse_run(crate::stores::browse::BrowseCmd::Reset);
+) -> plx_data::stores::EndpointRefreshSet {
+    bridge.browse_run(plx_data::stores::browse::BrowseCmd::Reset);
     bridge.refresh_browse_directory();
-    bridge.search_run(crate::stores::search::SearchCmd::Reset);
-    let _ = bridge.hubs_run(crate::stores::hubs::HubsCmd::Reset).changed;
-    bridge.person_run(crate::stores::person::PersonCmd::Reset);
-    bridge.collection_run(crate::stores::collection::CollectionCmd::Reset);
-    bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Reset);
-    bridge.metadata_run(crate::stores::metadata::MetadataCmd::Reset);
-    let mut endpoints = bridge.hubs_run(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints;
+    bridge.search_run(plx_data::stores::search::SearchCmd::Reset);
+    let _ = bridge.hubs_run(plx_data::stores::hubs::HubsCmd::Reset).changed;
+    bridge.person_run(plx_data::stores::person::PersonCmd::Reset);
+    bridge.collection_run(plx_data::stores::collection::CollectionCmd::Reset);
+    bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
+    bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::Reset);
+    let mut endpoints = bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints;
     endpoints.merge(bridge.browse_discover_pump().endpoints);
     log("pms: catalog activation queued");
     endpoints
@@ -466,7 +466,7 @@ pub(super) fn install_pms_owned(
     tier: Option<plx_plex::plex::probe::Location>,
     pin: Option<&plx_plex::plex::ResolvePin>,
     install: &crate::auth::owner::ReadyInstall,
-) -> crate::stores::EndpointRefreshSet {
+) -> plx_data::stores::EndpointRefreshSet {
     if let crate::auth::owner::ReadyInstall::PrimaryAndExtras(extras) = install {
         crate::auth::install_captured_registry(origin, address, token, tier, pin, extras, None);
     }
@@ -525,7 +525,7 @@ pub(crate) unsafe fn construct(
 ) -> Result<App, c_int> {
     let controlled = preflight.controlled();
     if let Some(initial) = &initial {
-        crate::stores::tape::init(initial.person_credits(), preflight.replay());
+        plx_data::stores::tape::init(initial.person_credits(), preflight.replay());
         initial.home.restore(&mt).map_err(|_| 1)?;
         plx_plex::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| 1)?;
     }
@@ -909,13 +909,13 @@ pub(crate) unsafe fn construct(
                     log("bootstrap: primary resource binding refused");
                     return BootTo::Login;
                 }
-                use crate::stores::{StoreCmd, StoreWork};
+                use plx_data::stores::{StoreCmd, StoreWork};
                 use plx_machine::machine::{Fx, MachineId};
                 use crate::screens::registry::AppFx;
                 for cmd in [
-                    StoreCmd::Browse(crate::stores::browse::BrowseCmd::Reset),
-                    StoreCmd::Hubs(crate::stores::hubs::HubsCmd::Reset),
-                    StoreCmd::Hubs(crate::stores::hubs::HubsCmd::RefetchHubs),
+                    StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Reset),
+                    StoreCmd::Hubs(plx_data::stores::hubs::HubsCmd::Reset),
+                    StoreCmd::Hubs(plx_data::stores::hubs::HubsCmd::RefetchHubs),
                 ] { pages.emit(MachineId::Nav, Fx::App(AppFx::Store(cmd.store(), cmd))); }
                 pages.emit(MachineId::Nav, Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
                 pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(), rec, false);
@@ -1283,7 +1283,7 @@ pub(crate) unsafe fn construct(
     bridge.refresh_browse_directory();
     let ask_first_run = || !controlled && (crate::dev::scenarios::firstrun_armed()
         || (!automated_boot()
-            && crate::stores::browse::onboard::asks(bridge.browse_directory())));
+            && plx_data::stores::browse::onboard::asks(bridge.browse_directory())));
     // The sign-in's telemetry question is PRESENTED on the container tree, and the tree lives on
     // the `App` this function is still assembling — so this boot arm records that it owes the
     // question and `maybe_ask_consent` is called once the struct exists, a few dozen lines down.

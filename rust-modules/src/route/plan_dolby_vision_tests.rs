@@ -472,7 +472,7 @@ fn base_layer_usability_by_profile() {
 /// question, not this one's.
 #[test]
 fn the_preview_calls_a_profile_5_item_a_conversion() {
-    let aac = [crate::metadata::Stream {
+    let aac = [plx_data::metadata::Stream {
         codec: "aac".into(),
         ..Default::default()
     }];

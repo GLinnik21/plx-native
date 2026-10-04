@@ -8,7 +8,7 @@
 //! the Chapters tab vanish for every episode started from a show detail page: `current()` is then
 //! the SHOW, and a show container carries no `Chapter[]`.
 #![allow(dead_code)]
-use crate::metadata;
+use plx_data::metadata;
 use plx_ui::consts::{MARGIN_X, SCR_W};
 use plx_ui::frame::Budget;
 use plx_ui::geom::IndexElem;
@@ -368,10 +368,10 @@ mod focus_tests {
     }
 
     thread_local! {
-        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+        static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
     }
-    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
     }
     fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {

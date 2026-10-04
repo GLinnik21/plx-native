@@ -945,7 +945,7 @@ fn eac3_joc_to_ac3_release_immersive_false() {
     let live = Live::start(EnhMode::Honor("ac3"));
     crate::player::restore_audio_enhancements(PREF);
     install(&mut ps, &live, Delivery::Remux(PREF), a2(), Some(candidate(true, a2(), None)), 0);
-    let stream = crate::metadata::Stream {
+    let stream = plx_data::metadata::Stream {
         id: 13,
         index: 3,
         codec: "ac3".into(),
@@ -1674,7 +1674,7 @@ fn subtitle_repick_while_cold_start_burn_keeps_the_burn() {
     client.set_link(plx_plex::plex::probe::Location::Local);
     plx_plex::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
 
-    let audio = crate::metadata::Stream {
+    let audio = plx_data::metadata::Stream {
         id: 10976,
         index: 1,
         lang_code: "eng".into(),
@@ -1686,7 +1686,7 @@ fn subtitle_repick_while_cold_start_burn_keeps_the_burn() {
         ..Default::default()
     };
     let sub = selected_sub(10980, "srt");
-    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "1804");
+    let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "1804");
     env.quality = Quality::Auto;
     env.pass = Subscription::Yes;
     env.audio_enhancements = PREF;
@@ -1742,7 +1742,7 @@ fn subtitle_first_pick_while_plain_enhanced_remux_burns_it() {
     client.set_link(plx_plex::plex::probe::Location::Local);
     plx_plex::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
 
-    let audio = crate::metadata::Stream {
+    let audio = plx_data::metadata::Stream {
         id: 10976,
         index: 1,
         lang_code: "eng".into(),
@@ -1756,7 +1756,7 @@ fn subtitle_first_pick_while_plain_enhanced_remux_burns_it() {
     // No track carries `selected: true` and no account/show subtitle preference is set, so
     // `pick_dp_subtitle_account` returns `None` — the cold start's own `sub=0`, same as the
     // device's first run.
-    let sub = crate::metadata::Stream {
+    let sub = plx_data::metadata::Stream {
         id: 10980,
         index: 0,
         lang_code: "eng".into(),
@@ -1764,7 +1764,7 @@ fn subtitle_first_pick_while_plain_enhanced_remux_burns_it() {
         selected: false,
         ..Default::default()
     };
-    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "1804");
+    let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "1804");
     env.quality = Quality::Auto;
     env.pass = Subscription::Yes;
     env.audio_enhancements = PREF;

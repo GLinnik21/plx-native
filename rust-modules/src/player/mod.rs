@@ -42,7 +42,7 @@ pub(crate) use shared::HlsAutomaticTransition;
 pub(crate) use shared::HlsClockFenceError;
 /// one rect of an image-subtitle display set — the demuxer builds them, the HUD draws them
 pub(crate) use shared::SubRect;
-pub(crate) use crate::metadata::track_names::TrackNames;
+pub(crate) use plx_data::metadata::track_names::TrackNames;
 pub(crate) use shared::UserPauseCursor;
 use shared::{
     HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume, Shared, SubBitmap, SubCue,

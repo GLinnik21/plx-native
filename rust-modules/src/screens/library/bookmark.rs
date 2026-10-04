@@ -23,8 +23,8 @@ impl LibraryScreen {
                 target,
                 LibraryWork::SaveCursor {
                     query: id.query,
-                    cursor: crate::browse::Cursor {
-                        at: crate::browse::CursorAt::SlotIndex(0),
+                    cursor: plx_data::browse::Cursor {
+                        at: plx_data::browse::CursorAt::SlotIndex(0),
                         scroll: self.target_layout.grid_block_top(),
                     },
                 },
@@ -48,8 +48,8 @@ impl LibraryScreen {
         let at = listing
             .item(index)
             .filter(|item| !item.rk.is_empty())
-            .map_or(crate::browse::CursorAt::SlotIndex(index), |item| {
-                crate::browse::CursorAt::ItemKey {
+            .map_or(plx_data::browse::CursorAt::SlotIndex(index), |item| {
+                plx_data::browse::CursorAt::ItemKey {
                     sid: item.sid,
                     rk: item.rk.clone(),
                     slot: index,
@@ -59,7 +59,7 @@ impl LibraryScreen {
             target,
             LibraryWork::SaveCursor {
                 query: id.query,
-                cursor: crate::browse::Cursor {
+                cursor: plx_data::browse::Cursor {
                     at,
                     scroll: self.scroll.pos,
                 },
@@ -86,10 +86,10 @@ impl LibraryScreen {
             return self.readout == Readout::Empty;
         }
         let (identity, slot) = match &cursor.at {
-            crate::browse::CursorAt::ItemKey { sid, rk, slot } => {
+            plx_data::browse::CursorAt::ItemKey { sid, rk, slot } => {
                 (Some((*sid, rk.as_str())), *slot)
             }
-            crate::browse::CursorAt::SlotIndex(slot) => (None, *slot),
+            plx_data::browse::CursorAt::SlotIndex(slot) => (None, *slot),
         };
         let stable = identity.and_then(|(sid, rk)| {
             self.keys.keys().iter().find_map(|key| {

@@ -3,7 +3,7 @@
 //! OK plays a playable extra only. A missing thumb draws the card placeholder. The hero Trailer
 //! disc is a separate control and stays until a preview path replaces it.
 
-use crate::metadata::{extra_play_context, Detail, Extra};
+use plx_data::metadata::{extra_play_context, Detail, Extra};
 use crate::screens::registry::PlayIntent;
 use plx_ui::card_row::{self, CardRow, RowStyle, TileLabel};
 use plx_machine::machine::GroupId;
@@ -215,7 +215,7 @@ mod tests {
             PlayIntent::Item { rk, part, context, .. } => {
                 assert_eq!(rk, "9");
                 assert_eq!(part, "/p");
-                assert_eq!(context, crate::metadata::EXTRA_CONTEXT);
+                assert_eq!(context, plx_data::metadata::EXTRA_CONTEXT);
             }
             PlayIntent::Movie(_) => panic!("an extra is not the parent movie"),
         }

@@ -72,7 +72,7 @@ impl Pointer {
 /// request and the landing that decides play-vs-open.**
 ///
 /// D7: this used to be `MetadataCmd::LoadDetailNow` — a BLOCKING fetch run on the press frame —
-/// followed immediately by a read of `crate::metadata::current()`, which only worked BECAUSE the
+/// followed immediately by a read of `plx_data::metadata::current()`, which only worked BECAUSE the
 /// load had already finished by the next statement (`load_detail_now`'s own doc: "every remaining
 /// call of this is a deliberate freeze"). `activate_card` now fires `MetadataCmd::RequestDetail`
 /// (non-blocking) and arms one of these; [`menu_play_tick`] is the continuation, run every frame
@@ -87,7 +87,7 @@ pub(crate) struct MenuPlayAwait {
     expect: String,
     /// `Some(season index)` for a season row — resolved into the loaded show's season list only
     /// once the parent has actually landed as `expect` (a strictly narrower guard than the old
-    /// blocking arm's, which read whatever `crate::metadata::current()` happened to hold even
+    /// blocking arm's, which read whatever `plx_data::metadata::current()` happened to hold even
     /// when the fetch had failed and it was a stale, unrelated show).
     season_index: Option<i64>,
     hud_ms: u32,
@@ -117,7 +117,7 @@ pub(crate) struct MenuPlayAwait {
 pub(crate) unsafe fn activate_card(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    mm: &crate::pms::PmsMovie,
+    mm: &plx_data::pms::PmsMovie,
     want_play: bool,
     hud_ms: u32,
     mut ret: Option<plx_ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
@@ -126,7 +126,7 @@ pub(crate) unsafe fn activate_card(
     menu_play_await: &mut Option<MenuPlayAwait>,
     now: u32,
 ) {
-    if mm.kind == crate::pms::KIND_COLLECTION {
+    if mm.kind == plx_data::pms::KIND_COLLECTION {
         let arg = crate::screens::registry::AppArg::Content(
             collection_content_arg(mm));
         match ret.take() {
@@ -153,7 +153,7 @@ pub(crate) unsafe fn activate_card(
                 };
                 // a show/season row's parent lives on the SAME server as the row itself
                 let sid = mm.sid;
-                bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
+                bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
                 *menu_play_await = Some(MenuPlayAwait {
                     sid,
                     expect,
@@ -182,14 +182,14 @@ pub(crate) unsafe fn activate_card(
     }
 }
 
-fn collection_content_arg(mm: &crate::pms::PmsMovie) -> crate::screens::registry::ContentArg {
+fn collection_content_arg(mm: &plx_data::pms::PmsMovie) -> crate::screens::registry::ContentArg {
     crate::screens::registry::ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_rk(
         mm.sid, &mm.rk, mm.sec, &mm.title))
 }
 
 /// The landing half of `activate_card`'s show/season Play — see [`MenuPlayAwait`]. Called every
 /// frame, route-unconditional, from the same site `app/run.rs` already pumps the detail landing
-/// from (right beside `crate::stores::metadata::pump_detail()`): a landing must never depend on
+/// from (right beside `plx_data::stores::metadata::pump_detail()`): a landing must never depend on
 /// which screen is mounted, since the press that started the wait may have come from Home while a
 /// different page is up by the time it settles.
 #[allow(clippy::too_many_arguments)]
@@ -239,7 +239,7 @@ pub(crate) unsafe fn menu_play_tick(
     // here is strictly narrower, not a new capability.
     if let Some(i) = season_index {
         if let Some(idx) = bridge.metadata_view().current().and_then(|d| d.seasons.iter().position(|s| s.index == i)) {
-            bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::LoadSeasonNow(idx));
+            bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::LoadSeasonNow(idx));
         }
     }
     if let Some(resume_ns) = super::playback::request_loaded_hero(ps, bridge.metadata_mut()) {
@@ -296,14 +296,14 @@ mod activate_card_tests {
             fn drop(&mut self) {
                 // SAFETY: captured from `bridge` just above, which outlives this guard for the
                 // whole test body.
-                unsafe { &mut *self.0 }.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
+                unsafe { &mut *self.0 }.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
                 plx_plex::plex::reset_servers_for_test();
             }
         }
         let _cleanup = Cleanup(&mut bridge as *mut _);
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("press-frame", "127.0.0.1", 1, "t", "c-press-frame");
-        let mm = crate::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
+        let mm = plx_data::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
 
         unsafe {
             activate_card(&mut ps, &mut pa, &mm, true, 1000, None,
@@ -311,7 +311,7 @@ mod activate_card_tests {
         }
 
         assert!(
-            crate::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
+            plx_data::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
             "the parent detail must still be IN FLIGHT right after the press — the play/open \
              decision must wait for menu_play_tick, not run on this call"
         );
@@ -347,8 +347,8 @@ mod activate_card_tests {
         let mut pages = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
         let mut bridge = super::bridge::Bridge::for_test(|| 0);
         let mut menu_play_await = None;
-        let collection = crate::pms::PmsMovie { rk: "50001".into(),
-            kind: crate::pms::KIND_COLLECTION, ..Default::default() };
+        let collection = plx_data::pms::PmsMovie { rk: "50001".into(),
+            kind: plx_data::pms::KIND_COLLECTION, ..Default::default() };
         unsafe { activate_card(&mut ps, &mut pa, &collection, false, 1000, None,
             &mut pages, &mut bridge, &mut menu_play_await, 0); }
         assert!(pages.has_pending_navigation(), "a collection must queue its own page");
@@ -356,7 +356,7 @@ mod activate_card_tests {
             crate::screens::registry::ContentArg::Collection(id)
                 if id.rk == "50001" && id.sec == 0 && id.tag == 0 && id.name.is_empty()));
         assert!(menu_play_await.is_none(), "a collection must not arm playback");
-        assert!(!crate::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
+        assert!(!plx_data::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
             "a collection must not request movie metadata");
     }
 }
@@ -384,7 +384,7 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
         &mut self,
         ps: &mut crate::route::PlaybackSession,
         pa: &mut crate::player::adapter::PlayerAdapter,
-        item: &crate::pms::PmsMovie,
+        item: &plx_data::pms::PmsMovie,
         pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
         bridge: &mut super::bridge::Bridge,
     ) {
@@ -458,7 +458,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
         // All three used to run inline, on this thread, justified as "~100ms LAN and deliberately
         // so". That priced one server on one LAN; with a share registered the item's server is
         // routinely remote or asleep, and the same press parked the whole UI for seconds — see
-        // `crate::viewstate`, which is where the reasoning, the ordering rules and the
+        // `plx_data::viewstate`, which is where the reasoning, the ordering rules and the
         // `client_for(sid)`-never-`client()` note now live.
         //
         // When the popover was over the DETAIL page, that page is re-read too — its exact address
@@ -480,7 +480,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
                 let crate::screens::registry::AppArg::Content(
                     crate::screens::registry::ContentArg::Detail { sid, rk: detail_rk },
                 ) = &entry.arg else { return None };
-                Some(crate::stores::viewstate::DetailRefresh {
+                Some(plx_data::stores::viewstate::DetailRefresh {
                     sid: *sid,
                     rk: detail_rk.clone(),
                     keep: Some(rk.clone()),
@@ -490,7 +490,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // detail page is holding belongs to the SHOW when this rk is one of its episodes. A
             // guid that is merely close marks a DIFFERENT title watched on every other source, so
             // `viewstate` looks the right one up from `(sid, rk)` on its own worker instead.
-            bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+            bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
                 sid, rk: rk.to_string(), write: w, detail, guid: String::new(),
             });
         }
@@ -510,8 +510,8 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // No guid, and it would be ignored if there were one: a deck removal does not follow
             // the title across sources (`viewstate::Write::propagates`) — your Continue Watching
             // row is yours, and hiding a friend's item from it is not a claim about their deck.
-            bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
-                sid, rk: rk.to_string(), write: crate::viewstate::Write::RemoveFromDeck,
+            bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
+                sid, rk: rk.to_string(), write: plx_data::viewstate::Write::RemoveFromDeck,
                 detail: None, guid: String::new(),
             });
         }
@@ -560,7 +560,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
                 vcodec,
                 acodec,
                 title,
-                context: crate::metadata::TRAILER_CONTEXT.to_string(),
+                context: plx_data::metadata::TRAILER_CONTEXT.to_string(),
             };
             // A press-and-hold context menu can reach here within the same beat as opening it,
             // which only STARTED the open preview's abandonment (`ContentReq::ItemMenu`'s own
@@ -1043,7 +1043,7 @@ fn sweep_local_files(persistent: impl IntoIterator<Item = std::path::PathBuf>,
     failures
 }
 
-pub(crate) fn delete_all_local_data(meta: &mut crate::stores::metadata::MetadataStore,
+pub(crate) fn delete_all_local_data(meta: &mut plx_data::stores::metadata::MetadataStore,
     mut failures: Vec<String>) -> Vec<String> {
     failures.extend(sweep_local_files(
         plx_base::paths::obsolete_last_place_candidates()
@@ -1053,10 +1053,10 @@ pub(crate) fn delete_all_local_data(meta: &mut crate::stores::metadata::Metadata
             .chain(plx_base::paths::telemetry_crashmark_candidates()),
         plx_base::paths::runtime_dir(),
     ));
-    meta.run(crate::stores::metadata::MetadataCmd::Clear);
+    meta.run(plx_data::stores::metadata::MetadataCmd::Clear);
     // No explicit `ClearRecents` here (phase 7 Search cutover retired the legacy screen's own
     // thin `recents::clear()` wrapper this used to call): recent Search terms
-    // live INSIDE the session file (`crate::search::recents`'s doc — "profile-scoped … the
+    // live INSIDE the session file (`plx_data::search::recents`'s doc — "profile-scoped … the
     // session's atomic worker door"), and the adapter already deleted that file
     // before this completion sweep. An explicit clear here would queue its own save
     // racing the ordered credential deletion — the worse of the two orders resurrects a stub session file

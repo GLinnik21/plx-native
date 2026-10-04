@@ -38,7 +38,7 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
     ] {
         for evict in [false, true] {
             let mut fixture = Fixture::new();
-            let stores = crate::stores::Stores::default();
+            let stores = plx_data::stores::Stores::default();
             stores.browse.borrow_mut().seed_two_source_table_for_test();
             stores.capture_browse(&mut fixture.directory);
             stores.browse_run(BrowseCmd::SetCur(0));
@@ -46,19 +46,19 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
                 let mut browse = stores.browse.borrow_mut();
                 browse.seed_items_for_test(120);
                 browse.seed_query_choices_for_test(vec![
-                    crate::stores::browse::SortEntry {
+                    plx_data::stores::browse::SortEntry {
                         desc_key: String::new(),
                         key: "titleSort".into(),
                         title: "Title".into(),
                         default_desc: false,
                     },
-                    crate::stores::browse::SortEntry {
+                    plx_data::stores::browse::SortEntry {
                         desc_key: String::new(),
                         key: "year".into(),
                         title: "Year".into(),
                         default_desc: false,
                     },
-                ], vec![crate::stores::browse::GenreEntry {
+                ], vec![plx_data::stores::browse::GenreEntry {
                     id: "g1".into(),
                     title: "Drama".into(),
                 }]);
@@ -121,7 +121,7 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
                 );
                 for effect in output.drain(..) {
                     if let Fx::App(AppFx::Store(_, command)) = effect.fx {
-                        if let crate::stores::StoreCmd::Browse(command) = command {
+                        if let plx_data::stores::StoreCmd::Browse(command) = command {
                             if matches!(
                             &command,
                             BrowseCmd::Addressed {

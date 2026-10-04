@@ -1,5 +1,5 @@
 //! Search's document geometry. Both engine placement and rendering use these expressions.
-use crate::search::Kind;
+use plx_data::search::Kind;
 use plx_ui::card_row::{self, RowStyle};
 use plx_ui::consts::{CARD_H, CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W};
 use plx_machine::machine::GroupId;
@@ -22,7 +22,7 @@ pub(super) const HEAD_TO_ROW: f32 = 60.0;
 pub(super) const KEYBOARD_H: f32 = 324.0;
 pub(super) const SCOPE_H: f32 = plx_ui::theme::size::CAPTION as f32 * 1.35;
 pub(super) const CLEAR_H: f32 = 60.0;
-pub(super) const RECENT_CAP: usize = crate::search::recents::CAP;
+pub(super) const RECENT_CAP: usize = plx_data::search::recents::CAP;
 
 pub(super) fn ordinal(kind: Kind) -> u32 {
     match kind {
@@ -138,7 +138,7 @@ mod tests {
     }
 
     const OPEN: fn(usize) -> f32 = |_| 1.0;
-    const ALL: [Kind; 5] = crate::search::KINDS;
+    const ALL: [Kind; 5] = plx_data::search::KINDS;
 
     #[test]
     fn the_reserved_caption_band_holds_the_block_the_shared_component_draws() {

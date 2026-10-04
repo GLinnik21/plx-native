@@ -2,19 +2,19 @@
 //! publication. These stay at the app boundary so they exercise the physically owned store the
 //! Bridge exposes, matching the Person lifecycle coverage beside this file.
 
-use crate::collection::{CollectionStatus, CollectionTarget};
+use plx_data::collection::{CollectionStatus, CollectionTarget};
 use plx_plex::plex::ServerId;
-use crate::stores::collection::CollectionCmd;
+use plx_data::stores::collection::CollectionCmd;
 
-fn open(store: &mut crate::stores::collection::CollectionStore, rk: &str, tag: i64) {
+fn open(store: &mut plx_data::stores::collection::CollectionStore, rk: &str, tag: i64) {
     store.run(CollectionCmd::Open { target: CollectionTarget { id: plx_plex::plex::collections::CollectionRef {
         sid: ServerId::UNSET, rk: rk.into(), sec: 8, tag, name: "Fixture Collection".into() },
-        want: crate::collection::PAGE_SIZE } });
+        want: plx_data::collection::PAGE_SIZE } });
 }
 
 #[test]
 fn stale_generation_is_dropped_and_tag_resolution_publishes_the_rating_key() {
-    let mut store = crate::stores::collection::CollectionStore::default();
+    let mut store = plx_data::stores::collection::CollectionStore::default();
     open(&mut store, "", 77);
     let old = store.generation_for_test();
     let adapter = store.adapter_for_test();
@@ -39,7 +39,7 @@ fn denied_missing_empty_and_transport_map_to_distinct_screen_states() {
         ("empty", 2, CollectionStatus::Empty),
         ("transport", 3, CollectionStatus::Failed),
     ] {
-        let mut store = crate::stores::collection::CollectionStore::default();
+        let mut store = plx_data::stores::collection::CollectionStore::default();
         open(&mut store, "50001", 77);
         let generation = store.generation_for_test();
         let adapter = store.adapter_for_test();
@@ -56,7 +56,7 @@ fn denied_missing_empty_and_transport_map_to_distinct_screen_states() {
 
 #[test]
 fn a_profile_or_server_reset_drops_the_page_and_its_in_flight_answer() {
-    let mut store = crate::stores::collection::CollectionStore::default();
+    let mut store = plx_data::stores::collection::CollectionStore::default();
     open(&mut store, "50001", 77);
     let old = store.generation_for_test();
     let old_adapter = store.adapter_for_test();

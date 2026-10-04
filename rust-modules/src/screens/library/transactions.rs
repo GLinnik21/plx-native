@@ -1,8 +1,8 @@
 //! Semantic deferred transactions for the page and grid fade scopes.
 
-use crate::browse::SecKind;
+use plx_data::browse::SecKind;
 use crate::screens::registry::LibrarySectionIdentity;
-use crate::stores::browse::ListingView;
+use plx_data::stores::browse::ListingView;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct SectionTarget {
@@ -36,7 +36,7 @@ pub(super) enum GridAction {
     Sort { key: String, desc: bool },
     Unwatched { desired: bool },
     Genre { id: Option<String> },
-    LibraryType(crate::browse::LibraryType),
+    LibraryType(plx_data::browse::LibraryType),
 }
 
 #[derive(Clone, Debug, Default)]

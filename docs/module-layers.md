@@ -1198,6 +1198,96 @@ application's 450k lines (`telemetry` 14.1k, `diag` 1.7k) no longer
 recompiling behind it buys, and the no-op build is 0.1 s in both. The unit suite gains one more test
 binary and is no slower.
 
+### Split 9 (data)
+
+`data` was extracted ninth, in parallel with the `session` lane: `rust-modules/data/` is the
+workspace member `plx_data` (an `rlib`, `uses = base machine platform net plex telemetry`; the
+manifest depends on `plx_base`, `plx_machine`, `plx_platform`, `plx_plex` and `plx_telemetry`, and
+on `plx_net` as a dev-dependency only, because one fixture test calls it), holding `stores` (one
+command vocabulary and one machine per data store), `pms` (the Home catalog), `browse`, `metadata`,
+`person`, `collection`, `search` and `viewstate`. The members kept their names, so a path is
+`plx_data::pms::seed_for_test` and every `crate::<member>::` *inside* the moved files stayed valid;
+only the references in 135 application files changed, by `split-data-rewrite.py` (`crate::<member>`
+to `plx_data::<member>`, `pub(crate)` to `pub`, the eight `mod` lines out of `lib.rs`). The root-level
+files the members include by `#[path]` (`pms_*_tests.rs`, `pms_test_support.rs`, `metadata_*`,
+`search_*`: 17 files) moved with their module into `data/src/`, because none of them names a higher
+layer. Features: `devtriggers` and `hostsim` are forwarded, `test-support` is new and enables the
+five lower layers'. Its 422 tests (425 with `devtriggers`) run in their own binary. It was the
+layer with the most `--report` items (26); the report lists 18 across all layers now and `data` is
+ready. What it taught beyond the recipe:
+
+- **Gate by rule, not by item.** Every `test` inside any `cfg(..)` of the layer's non-test code
+  became `any(test, feature = "test-support")` (243 lines, by `split-data-gate.py`, which skips the
+  attribute and body of `mod tests` / `mod *_tests` / `mod test_support` and the wholly-test files).
+  No `cfg(not(test))` arm hid from it except the shipping arms it switches: `metadata`'s detail
+  fetch (a test holds the fetch instead of spawning a thread), its two dev stand-ins, `person`'s two
+  plex.tv fetches (a test that reaches them fails to link) and `pms::run`'s `EditItem` arm. Then
+  the exceptions the compiler found under `--features test-support`: what only the layer's own
+  tests use stays `cfg(test)` (13 private items and two imports, because under `test-support`
+  alone they are dead code; `split-data-revert.py` flips them).
+- **A fixture inside a `cfg(test)` module cannot be named by a seam.** `seed_two_source_table_for_owner_test`
+  called `test_support::a_source`, a function of the `cfg(test)`-only fixtures module. The
+  `BrowseSource` literal moved beside the seams that seed it (`browse::a_source`, one function).
+- **A test that reads another layer's source moves up.** `stores/metadata.rs`'s
+  `pump_wiring_tests` pinned the text of the *application's* `app/run.rs`; it is now the last module
+  of `app/run.rs`. `stores/mod.rs`'s "data layers do not execute endpoint recovery" test reads
+  `pms.rs`, `browse/mod.rs` and `viewstate.rs` from `CARGO_MANIFEST_DIR/src`, which are the crate's
+  own, so it stays; its needle lost the `crate::` (the session layer is not nameable from data at
+  all, and the test now catches either spelling). `metadata/record.rs`'s replay fixture
+  `include_str!` gained a `../`.
+- **The tests need the dev-trigger credential policy, so `cargo test -p plx_data` alone has to
+  ask for it.** The browse and search fixtures register an `http://10.0.0.1` server and select it,
+  which `plex::origin` refuses unless `devtriggers` is on (39 tests failed alone, all green in the
+  unified build). `plx_data`'s `[dev-dependencies]` enable `plx_plex/devtriggers`; dev-dependency
+  features reach test builds only.
+- **Upward names were prose only.** Nothing in the layer named `ui`, `gfx`, `route`, `player`,
+  `screens`, `app`, `dev` or `auth` in code; seven intra-doc links did, and lost their brackets. No
+  orphan-rule hazard and no inherent `impl` in a higher layer appeared: `pms::initial::Sink` (the
+  trait whose `Canon` impl was moved down in Split 2) and the `Tile` impl for `PmsMovie` (the trait
+  is `plx_base`'s) are both inside the crate. `serde` needs the `rc` feature in this manifest too
+  (Home cards are `Arc<PmsMovie>`).
+- **Gates that read the old location.** `ci/check-deps.sh` reads `SRC_DATA` wherever it reads
+  `SRC_TELEMETRY`; the six `*-owner` rules scan `$SRC_DATA` for their declaration files, spell the
+  call pattern `(crate|plx_data)::` (the application now writes the second), and `OWNER_LINES` reads
+  `$SRC_DATA`; the `mutators-visibility` table reads the crate; the `wall` rule's `stores` root
+  moved. `ci/check-statics.sh` gates `data/src/{person.rs, metadata*, pms.rs, stores}` and
+  `search/` (and the two `recents.rs` entries of `ci/allow/statics.txt` follow, or the stale-entry
+  check fails). `ci/check-localization.py` listed `metadata.rs` and `person.rs` under the
+  application and skips a missing path without a word. `tests/test_harness.py`'s
+  planted-violation helpers resolve a store file in the private copy's `data/src` first. Also the
+  eventlog scrub test's root list (`../data/src`), `TREE_INPUTS` and the `fpflags` list,
+  `tools/cargo-seed.py`, `ci/test_no_host_staticlib.py`, the release-configuration hook, the
+  build-budget `--src` list, the `-p` lists, `RUST_INPUTS`, and `make build-bench` (scenario "Edit
+  leaf (plx_data tape.rs)"; added, not run). The module-cycle baseline had to change: the eight
+  data modules left the 8-module cycle, and the cycle of 6 (`abr curlio ff hls player route`) is the
+  remaining one.
+- **Proven by temporary violating edits, reverted byte for byte:** a `pub fn pump() {}` prepended to
+  `data/src/viewstate.rs` fails `viewstate-owner` in `ci/check-deps.sh`; an `SDL_GetTicks(` in
+  `data/src/pms.rs` fails `ticks`; an `Instant::now()` in `data/src/stores/hubs.rs` fails `wall`; a
+  `static mut` in `data/src/stores/mod.rs` fails `ci/check-statics.sh`; and a
+  `log(&format!(.., d.title))` in `data/src/pms.rs` fails
+  `no_log_call_site_interpolates_viewing_content` in `plx_base` with the new file's path in the
+  message (the scrub test's root list gained `../data/src`; these files carry titles, ratingKeys and
+  server identities). `ci/check-module-layers.py` reports the layer ready and `--report`'s count of
+  `cfg(test)` items named across layers went from 44 to 18.
+- **The shipping build was checked for the seams, in the artifact.** `cargo tree -e normal -f '{p} [{f}]'`
+  for `plxnative-modules` lists no `test-support` on any crate, with the default features and with
+  `--no-default-features` (`-e normal,dev` lists it 41 times). In the `plx_data` rlib of a
+  `--no-default-features` release build, `strings` finds none of `begin_detail_for_test`,
+  `land_detail_for_test`, `detail_generation_for_test`, `set_current_for_test`, `seed_for_test`,
+  `seed_grid_for_test`, `seed_named_hubs_for_test`, `with_refused_fetches_for_test`,
+  `with_refused_discovery_for_test`, `fixture_with_sources`, `queue_test_landing`,
+  `reverse_test_hubs`, `remove_test_item`, `land_for_test`, `publish_shelves_for_test`,
+  `hold_inflight_for_test`, `REFUSE_FETCH_FOR_TEST`, `REFUSE_DISCOVERY_FOR_TEST`,
+  `seed_items_for_owner_test`, `held_detail` or `seed_two_source_table_for_owner_test`; the
+  `--features test-support` control build of the same crate finds every one (1 to 8 times each),
+  and `nm` matches the seam names in 4 symbols there against 0. The ARM shipping archive built the
+  way the release is (`PLX_RELEASE=1 cargo rustc --release --target arm-unknown-linux-gnueabi --lib
+  --crate-type staticlib --no-default-features`) has none of them either.
+- **FFI and the final link are untouched.** The layer has no `extern "C"`, `#[link]`, `dynlib!`,
+  build script or `#[no_mangle]`; `cargo check --target arm-unknown-linux-gnueabi --lib` passes with
+  and without default features.
+
 ## Limits of the analysis
 
 - `cfg` predicates other than `test` count as possibly on, so the graph is the union of every

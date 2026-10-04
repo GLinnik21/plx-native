@@ -288,10 +288,10 @@ fn a_relay_link_and_a_user_ceiling_compose_to_the_stricter_of_the_two() {
 fn the_loaded_detail_describes_its_own_key_and_its_on_deck_episodes() {
     let a = plx_plex::plex::ServerId::from_raw(1);
     let b = plx_plex::plex::ServerId::from_raw(2);
-    let show = crate::metadata::Detail {
+    let show = plx_data::metadata::Detail {
         sid: a,
         rk: "100".into(),
-        on_deck: Some(crate::metadata::Episode {
+        on_deck: Some(plx_data::metadata::Episode {
             rk: "205".into(),
             ..Default::default()
         }),
@@ -310,7 +310,7 @@ fn the_loaded_detail_describes_its_own_key_and_its_on_deck_episodes() {
     assert!(!detail_describes(&show, b, "100"));
     assert!(!detail_describes(&show, b, "205"));
     // a movie has no on-deck episode and must still answer for itself
-    let movie = crate::metadata::Detail {
+    let movie = plx_data::metadata::Detail {
         sid: a,
         rk: "7".into(),
         ..Default::default()
@@ -323,15 +323,15 @@ fn the_loaded_detail_describes_its_own_key_and_its_on_deck_episodes() {
 #[test]
 fn a_trailer_play_judges_the_extra_file_not_the_parent_or_zero() {
     let a = plx_plex::plex::ServerId::from_raw(1);
-    let movie = crate::metadata::Detail {
+    let movie = plx_data::metadata::Detail {
         sid: a,
         rk: "7".into(),
         bitrate: 48_000,
-        video: Some(crate::metadata::Stream {
+        video: Some(plx_data::metadata::Stream {
             bitrate: 40_000,
             ..Default::default()
         }),
-        extras: vec![crate::metadata::Extra {
+        extras: vec![plx_data::metadata::Extra {
             rk: "9".into(),
             bitrate: 2_500,
             part: "/p".into(),
@@ -372,9 +372,9 @@ fn a_trailer_play_judges_the_extra_file_not_the_parent_or_zero() {
 /// which is the conservative direction and so the right one.
 #[test]
 fn the_source_rate_is_the_video_streams_own_where_the_server_gave_one() {
-    let with_video = crate::metadata::Detail {
+    let with_video = plx_data::metadata::Detail {
         bitrate: 8540, // 7900 video + a 640 kbps AC-3 track
-        video: Some(crate::metadata::Stream {
+        video: Some(plx_data::metadata::Stream {
             bitrate: 7900,
             ..Default::default()
         }),
@@ -391,19 +391,19 @@ fn the_source_rate_is_the_video_streams_own_where_the_server_gave_one() {
     );
 
     // no video record (a show with no episode backfill, an audio-only part) → whole-file
-    let bare = crate::metadata::Detail {
+    let bare = plx_data::metadata::Detail {
         bitrate: 8540,
         ..Default::default()
     };
     assert_eq!(source_kbps(&bare), 8540);
     // a video record PMS gave no bitrate for is not a measurement of 0 — fall back
-    let unmeasured_stream = crate::metadata::Detail {
+    let unmeasured_stream = plx_data::metadata::Detail {
         bitrate: 8540,
-        video: Some(crate::metadata::Stream::default()),
+        video: Some(plx_data::metadata::Stream::default()),
         ..Default::default()
     };
     assert_eq!(source_kbps(&unmeasured_stream), 8540);
     // nothing said at all stays 0, which `Ceiling::admits` fails closed on
-    assert_eq!(source_kbps(&crate::metadata::Detail::default()), 0);
+    assert_eq!(source_kbps(&plx_data::metadata::Detail::default()), 0);
 }
 

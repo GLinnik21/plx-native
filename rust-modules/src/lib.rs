@@ -14,7 +14,6 @@ mod app; // run_application — the Rust app core / event loop (the entry invert
 mod appkit; // widgets shared by several screens, composed from `ui` over application types (the player HUD, the track menus, the Sources row model)
 mod aq;
 mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
-mod browse; // Library browse: per-section paged catalog (sparse store + off-thread page fetches)
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
 mod coldstart; // retires old last-page bookmarks; authenticated cold boots now stay on Home
 mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)
@@ -24,11 +23,7 @@ mod ff; // THE demuxer — the FFmpeg 9.0 this app BUNDLES and pins (majors 63/6
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
 mod hls; // strict parser/auth/timeline for the measured one-variant PMS HLS shape
 mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound command long-poll
-mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
-mod person; // person/actor page data layer: the header handed in by the cast row + /library/people/{id}/media
-mod collection; // collection page model: tag resolution, header metadata and paged members
 mod player; // buffer-feed video engine (was playback.c) — step 5
-mod pms;
 // Pure RELEASE_LINE-parsing helpers, `include!`d verbatim by build.rs so `cargo test --lib`
 // actually runs their unit tests (see the module for why). Nothing in the app itself calls
 // them at runtime — the version rule they implement is applied once, at compile time, by
@@ -40,12 +35,9 @@ mod release_line;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys
 mod screens; // the application's OWNED screens (restructure phase 5b): the Settings family on the dispatcher
 mod route; // play_movie route selection (direct-play vs transcode) — step 3
-mod search; // Search data layer: /hubs/search fanned out across every source, merged into typed shelves
 #[cfg(feature = "hostsim")]
 mod shot; // simulator screenshots: read the frame back and write a PNG (see the module doc)
-mod stores; // stores as machines (restructure phase 4): one command vocabulary + one step per data store
 mod system;
-mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
 
 mod textinput; // the TV's own on-screen keyboard, via plain SDL_StartTextInput (see the module doc)
 

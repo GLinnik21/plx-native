@@ -794,7 +794,7 @@ pub(crate) fn apply_search_boot_trigger(
     d: &mut plx_ui::dispatch::Dispatcher<crate::app::bridge::AppHost>,
     bridge: &mut crate::app::bridge::Bridge,
 ) {
-    bridge.search_run(crate::stores::search::SearchCmd::SetQuery(q.trim().to_string()));
+    bridge.search_run(plx_data::stores::search::SearchCmd::SetQuery(q.trim().to_string()));
     // A peer of Home, exactly as an interactive press on the strip's last pill is: `SelectTab`,
     // not `Root` — boot has already rooted Home, and a pill press must still leave BACK returning
     // to it rather than discarding it.
@@ -905,7 +905,7 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
                         // `install_landed_detail` calls the same `sync_now_playing` the blocking
                         // load did. So there is nothing to wait for, and no reason to spend two
                         // PMS round trips of the SDL thread on the frame that starts a playback.
-                        app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid: pmm.sid, rk: pmm.rk.to_string() });
+                        app.bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid: pmm.sid, rk: pmm.rk.to_string() });
                     }
                     requested
                 } else {
@@ -937,8 +937,8 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
         }
         if let Some(s) = plx_base::devtrig::read("library") {
             let kind = match s.parse::<usize>().unwrap_or(0) {
-                1 => crate::stores::browse::SecKind::Show,
-                _ => crate::stores::browse::SecKind::Movie,
+                1 => plx_data::stores::browse::SecKind::Show,
+                _ => plx_data::stores::browse::SecKind::Movie,
             };
             app.bridge.enter_library(kind);
             // Same pill semantics as the search trigger above: boot has already rooted Home,
@@ -1099,7 +1099,7 @@ fn detail_arm(app: &mut App, fr: &mut Frame) -> bool {
                         return false;
                     }
                 };
-                app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
+                app.bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
                 #[cfg(feature = "devtriggers")]
                 plx_base::eventlog::log(&format!("plxnative-detail: rk={rk} server={} start", sid.raw()));
                 // A HARD CUT onto the page: at boot there is no outgoing screen to replace, so a
@@ -1173,7 +1173,7 @@ fn play_arm(app: &mut App, fr: &mut Frame) -> bool {
                         return false;
                     }
                 };
-                app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
+                app.bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
                 #[cfg(feature = "devtriggers")]
                 plx_base::eventlog::log(&format!("plxnative-play: rk={rk} server={} request", sid.raw()));
                 app.scenarios.play_await = Some((sid, rk.to_string(), fr.now.wrapping_add(12_000)));
@@ -1228,7 +1228,7 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
     #[cfg(feature = "devtriggers")]
     plx_base::eventlog::log(&format!("plxnative-play: rk={rk} server={} start", sid.raw()));
     if crate::route::request_play(&mut app.player.session, app.bridge.metadata_mut(), sid, &rk, &part, &vc, &ac, &title, "") {
-        let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
+        let resume = plx_data::metadata::resume_ns(resume_ms, dur_ms);
         crate::app::playback::start_playback(&mut app.player.session,
             &mut app.adapters.player,
             resume,
@@ -1661,7 +1661,7 @@ fn subtiming_step(now: u32, armed_at: u32, cur_sid: i64, want_sid: i64) -> Subti
 /// because the production capsule frame hides the HUD rather than pinning it
 /// (`OverlayKind::hud_policy`, `PlayerScreen::set_hud_policy`).
 fn subtiming_arm(app: &mut App, fr: &mut Frame) {
-    use crate::metadata::sub_layout::is_image_sub_codec;
+    use plx_data::metadata::sub_layout::is_image_sub_codec;
     if let Some(SubtimingPending { sid: want_sid, armed_at }) = app.scenarios.subtiming.pending {
         let cur_sid = crate::route::cur_sub_sid(&app.player.session);
         match subtiming_step(fr.now, armed_at, cur_sid, want_sid) {
@@ -1701,7 +1701,7 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
         return;
     };
     let stream_id = item.subs[i].id;
-    let render_ordinal = crate::metadata::sub_render_ordinal(&item.subs, i);
+    let render_ordinal = plx_data::metadata::sub_render_ordinal(&item.subs, i);
     app.scenarios.subtiming.tried = true;
     if crate::route::cur_sub_sid(&app.player.session) == stream_id {
         plx_base::eventlog::log(&format!("subtiming: already sid={stream_id} — opened without a commit"));
@@ -1813,9 +1813,9 @@ fn marker_arm(app: &mut App, _fr: &mut Frame) {
         match plx_base::devtrig::read("marker") {
             Some(s) => {
                 let want = if s.eq_ignore_ascii_case("intro") {
-                    crate::metadata::MarkerKind::Intro
+                    plx_data::metadata::MarkerKind::Intro
                 } else {
-                    crate::metadata::MarkerKind::Credits
+                    plx_data::metadata::MarkerKind::Credits
                 };
                 let meta = app.bridge.metadata_view();
                 let markers = meta.playing_markers();
@@ -1993,7 +1993,7 @@ pub(crate) fn nav_osc_tick(app: &mut App, now: u32) {
             AppArg::Home => {
                 if let Some(kind) = app.bridge.browse_directory().tab_kind(0) {
                     let tab = match kind {
-                        crate::stores::browse::SecKind::Show => HomeTab::Shows,
+                        plx_data::stores::browse::SecKind::Show => HomeTab::Shows,
                         _ => HomeTab::Movies,
                     };
                     crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge, tab, None, None);
@@ -2198,7 +2198,7 @@ fn push_bench_open(app: &mut App, target: bench::PushTarget) -> bench::PushTarge
         bench::PushTarget::Library => {
             if let Some(kind) = app.bridge.browse_directory().tab_kind(0) {
                 let tab = match kind {
-                    crate::stores::browse::SecKind::Show => HomeTab::Shows,
+                    plx_data::stores::browse::SecKind::Show => HomeTab::Shows,
                     _ => HomeTab::Movies,
                 };
                 crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge, tab, None, None);
@@ -2301,7 +2301,7 @@ fn modal_bench_open(app: &mut App, target: bench::ModalTarget) {
                 sid,
                 rk: rk.clone(),
                 kind: ItemMenuKind::Card {
-                    row: Box::new(crate::pms::PmsMovie { sid, rk, ..Default::default() }),
+                    row: Box::new(plx_data::pms::PmsMovie { sid, rk, ..Default::default() }),
                     from_deck: false,
                 },
                 host,

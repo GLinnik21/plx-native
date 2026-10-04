@@ -1,8 +1,8 @@
 //! A registered Library menu surface. Navigation owns its lifetime, phase, and input scope.
-use crate::browse::{LibraryType, GenreEntry, SecKind, SortEntry, SrcGroup, SrcRow};
+use plx_data::browse::{LibraryType, GenreEntry, SecKind, SortEntry, SrcGroup, SrcRow};
 use crate::screens::registry::{AppFx, AppMsg, LibraryLike, LibraryMenuArg, LibraryMenuKind};
-use crate::stores::browse::{BrowseCmd, LibraryWork, QueryEdit, SectionAddress};
-use crate::stores::{StoreCmd, StoreId};
+use plx_data::stores::browse::{BrowseCmd, LibraryWork, QueryEdit, SectionAddress};
+use plx_data::stores::{StoreCmd, StoreId};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
@@ -97,21 +97,21 @@ impl Stamp {
     }
 }
 
-fn stamp_kind(stamp: &mut Stamp, kind: Option<crate::browse::SecKind>) {
+fn stamp_kind(stamp: &mut Stamp, kind: Option<plx_data::browse::SecKind>) {
     stamp.tag(match kind {
         None => 0,
-        Some(crate::browse::SecKind::Movie) => 1,
-        Some(crate::browse::SecKind::Show) => 2,
+        Some(plx_data::browse::SecKind::Movie) => 1,
+        Some(plx_data::browse::SecKind::Show) => 2,
     });
 }
 
-fn stamp_state(stamp: &mut Stamp, state: crate::browse::SourceState) {
+fn stamp_state(stamp: &mut Stamp, state: plx_data::browse::SourceState) {
     stamp.tag(match state {
-        crate::browse::SourceState::NotProbed => 0,
-        crate::browse::SourceState::Reachable => 1,
-        crate::browse::SourceState::Unauthorized => 2,
-        crate::browse::SourceState::Unreachable => 3,
-        crate::browse::SourceState::InsecureOnly => 4,
+        plx_data::browse::SourceState::NotProbed => 0,
+        plx_data::browse::SourceState::Reachable => 1,
+        plx_data::browse::SourceState::Unauthorized => 2,
+        plx_data::browse::SourceState::Unreachable => 3,
+        plx_data::browse::SourceState::InsecureOnly => 4,
     });
 }
 
@@ -128,7 +128,7 @@ fn source_draft(
     epoch: u32,
     current: usize,
     groups: &[SrcGroup],
-    sections: &[crate::browse::view::SectionView],
+    sections: &[plx_data::browse::view::SectionView],
 ) -> MenuDraft {
     let kind = sections.get(current).map(|section| section.kind);
     let source_rows: Vec<SrcRow> = sections
@@ -236,7 +236,7 @@ fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDr
         };
         let mut row = Row::new(&sort.title).checked(active);
         // The server advertises every sort's title; the client-side Plays entry is the app's own.
-        if sort.key != crate::browse::PLAYS_SORT_KEY { row = row.server_label(); }
+        if sort.key != plx_data::browse::PLAYS_SORT_KEY { row = row.server_label(); }
         if active {
             row = row.ticon(if sort_desc {
                 plx_ui::icons::Icon::ChevronDown
@@ -269,8 +269,8 @@ fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDr
 /// The kind of the library `listing` lists — the section the directory names at the listing's own
 /// address, so the TYPE menu offers what THAT library can list.
 fn listing_kind(
-    listing: crate::stores::browse::ListingView<'_>,
-    directory: crate::stores::browse::DirectoryView<'_>,
+    listing: plx_data::stores::browse::ListingView<'_>,
+    directory: plx_data::stores::browse::DirectoryView<'_>,
 ) -> SecKind {
     listing.id().and_then(|id| directory.sections().iter()
         .find(|section| section.sid == Some(id.sid) && section.key == id.section))
@@ -439,8 +439,8 @@ impl LibraryMenu {
 
     fn draft(
         &self,
-        listing: crate::stores::browse::ListingView<'_>,
-        directory: crate::stores::browse::DirectoryView<'_>,
+        listing: plx_data::stores::browse::ListingView<'_>,
+        directory: plx_data::stores::browse::DirectoryView<'_>,
     ) -> MenuDraft {
         let title = match self.kind {
             LibraryMenuKind::Type => plx_platform::i18n::msg::browse_library_filter_by(),
@@ -759,7 +759,7 @@ mod review_actions_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browse::{SecKind, SourceState};
+    use plx_data::browse::{SecKind, SourceState};
     use plx_plex::plex::ServerId;
     use plx_ui::fixture::FixtureMeasure;
     use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
@@ -812,9 +812,9 @@ mod tests {
     struct HostFixture;
     #[derive(Clone, Copy)]
     struct Views<'a> {
-        listing: crate::stores::browse::ListingView<'a>,
-        directory: crate::stores::browse::DirectoryView<'a>,
-        hubs: crate::stores::browse::HubsView<'a>,
+        listing: plx_data::stores::browse::ListingView<'a>,
+        directory: plx_data::stores::browse::DirectoryView<'a>,
+        hubs: plx_data::stores::browse::HubsView<'a>,
     }
     impl Host for HostFixture {
         type Arg = Arg;
@@ -826,25 +826,25 @@ mod tests {
         type Memory = crate::screens::registry::PageMemory;
     }
     impl LibraryLike for HostFixture {
-        fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> {
+        fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> {
             cx.views.listing
         }
-        fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> {
+        fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
             cx.views.directory
         }
-        fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> {
+        fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> {
             cx.views.hubs
         }
     }
 
     fn with_cx<R>(test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
-        let listing = crate::browse::view::ListingSnapshot::fixture(
+        let listing = plx_data::browse::view::ListingSnapshot::fixture(
             ServerId::from_raw(1),
             Vec::new(),
             Vec::new(),
         );
-        let directory = crate::stores::browse::DirectorySnapshot::default();
-        let hubs = crate::stores::browse::HubsSnapshot::empty_for_test();
+        let directory = plx_data::stores::browse::DirectorySnapshot::default();
+        let hubs = plx_data::stores::browse::HubsSnapshot::empty_for_test();
         let measure = FixtureMeasure;
         test(&Cx {
             views: Views {
@@ -1000,7 +1000,7 @@ mod tests {
         assert_ne!(all.stamp, filtered.stamp);
     }
 
-    fn source_sections() -> (Vec<SrcGroup>, Vec<crate::browse::view::SectionView>) {
+    fn source_sections() -> (Vec<SrcGroup>, Vec<plx_data::browse::view::SectionView>) {
         let groups = vec![
             SrcGroup {
                 name: "Own NAS".into(),
@@ -1016,7 +1016,7 @@ mod tests {
             },
         ];
         let sections = vec![
-            crate::browse::view::SectionView {
+            plx_data::browse::view::SectionView {
                 sid: Some(ServerId::from_raw(1)),
                 key: 7,
                 kind: SecKind::Movie,
@@ -1030,7 +1030,7 @@ mod tests {
                     current: true,
                 },
             },
-            crate::browse::view::SectionView {
+            plx_data::browse::view::SectionView {
                 sid: Some(ServerId::from_raw(2)),
                 key: 7,
                 kind: SecKind::Movie,
@@ -1177,7 +1177,7 @@ mod tests {
         let mut shifted = sections.clone();
         shifted.insert(
             1,
-            crate::browse::view::SectionView {
+            plx_data::browse::view::SectionView {
                 sid: Some(ServerId::from_raw(1)),
                 key: 8,
                 kind: SecKind::Movie,
@@ -1237,7 +1237,7 @@ mod tests {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let sorts = vec![
             SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false },
-            SortEntry { key: crate::browse::PLAYS_SORT_KEY.into(), desc_key: String::new(),
+            SortEntry { key: plx_data::browse::PLAYS_SORT_KEY.into(), desc_key: String::new(),
                 title: plx_platform::i18n::msg::browse_library_plays().into(), default_desc: true },
         ];
         let genres = vec![GenreEntry { id: "1".into(), title: "Drama".into() }];

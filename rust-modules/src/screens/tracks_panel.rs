@@ -63,7 +63,7 @@
 //! said, which is what `appkit::track_menu` already does with the same tracks — the app must not name
 //! one track two ways on two screens — and `appfont.ttf` (Inter) covers Cyrillic in full.
 #[cfg_attr(not(test), allow(unused_imports))]
-use crate::metadata::{self, Detail, Stream};
+use plx_data::metadata::{self, Detail, Stream};
 use plx_ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use plx_ui::icons::Icon;
 use plx_ui::label::{HAlign, Label, VAlign};
@@ -406,7 +406,7 @@ pub(crate) fn audio_rows(audio: &[Stream]) -> Vec<TrackRow> {
 /// tell them apart; a forced track never merges into a full one. First-seen order is preserved,
 /// which is the server's order, so the list still reads in container sequence.
 pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
-    use crate::metadata::track_label;
+    use plx_data::metadata::track_label;
     // (key, name, detail-head, count) — a Vec rather than a map so first-seen order survives; a
     // subtitle list is a handful of entries, so the linear scan is not worth a hash.
     let mut out: Vec<(String, String, String, usize)> = Vec::new();
@@ -1872,16 +1872,16 @@ mod tests {
     thread_local! {
         // TEST ONLY: see `screens::detail::tests`'s `TEST_METADATA` for why this lives here
         // rather than being threaded as a parameter.
-        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+        static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
     }
 
-    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
     }
 
     impl crate::screens::registry::MetadataLike for HostFixture {
-        fn metadata<'a>(_cx: &plx_machine::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        fn metadata<'a>(_cx: &plx_machine::machine::Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
             test_store().view()
         }
     }

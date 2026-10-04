@@ -26,7 +26,7 @@ fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
     let before_gen = before.generation;
 
     rig.stores.browse.borrow_mut().run(
-        crate::stores::browse::BrowseCmd::ApplyPins(vec![(1, false)]));
+        plx_data::stores::browse::BrowseCmd::ApplyPins(vec![(1, false)]));
     rig.capture_views(&mut pages);
     rig.capture_chrome(&mut pages);
     let changed = rig.chrome.labels();
@@ -512,9 +512,9 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
     let b = plx_plex::plex::register_for_test("endpoint-b", "127.0.0.1", 10, "synthetic", "cid");
     plx_plex::plex::describe_server(a, "Synthetic", "Synthetic share", plx_plex::plex::GrantEvidence::outside());
     let expected = [b, a]; // Home's own-first observation order, deliberately not slot order.
-    crate::pms::with_refused_fetches_for_test(|| {
+    plx_data::pms::with_refused_fetches_for_test(|| {
         let mut rig = Bridge::for_test(|| 0);
-        for cmd in [crate::stores::hubs::HubsCmd::RefetchHubs, crate::stores::hubs::HubsCmd::Retry] {
+        for cmd in [plx_data::stores::hubs::HubsCmd::RefetchHubs, plx_data::stores::hubs::HubsCmd::Retry] {
             let _ = rig.stores.take_notices();
             let generation = rig.stores.gen(StoreId::Hubs);
             let outcome = rig.stores.hubs.run(cmd);
@@ -528,7 +528,7 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
         let mut out = Vec::new();
         let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Hubs.ord()), &mut present);
         rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
-            &AppMsg::Store(StoreCmd::Hubs(crate::stores::hubs::HubsCmd::Retry)), &parts, &mut fx);
+            &AppMsg::Store(StoreCmd::Hubs(plx_data::stores::hubs::HubsCmd::Retry)), &parts, &mut fx);
         drop(fx);
         assert_eq!(out.len(), 2, "one command per observed source");
         let mut executed = Vec::new();
@@ -547,7 +547,7 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
             executed.push(sid);
         }
         assert_eq!(executed, expected);
-        let mut stores = crate::stores::Stores::default();
+        let mut stores = plx_data::stores::Stores::default();
         stores.viewstate.borrow_mut().owe_hubs_refresh_for_test();
         let split = rig.split();
         let cx = parts.cx::<AppHost>(split.views, split.measure);
@@ -575,14 +575,14 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0].fx, Fx::App(AppFx::Session(
             crate::auth::SessionCmd::RequestEndpoint { sid })) if sid == b));
-        crate::browse::with_refused_discovery_for_test(|| {
+        plx_data::browse::with_refused_discovery_for_test(|| {
             let client = plx_plex::plex::client_for(a).unwrap();
             rig.stores.browse.borrow_mut().queue_discovery_for_test(
                 client, client.token_gen(), false);
             let mut out = Vec::new();
             let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Browse.ord()), &mut present);
             rig.deliver(MachineId::Store(StoreId::Browse.ord()),
-                &AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery), &parts, &mut fx);
+                &AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery), &parts, &mut fx);
             drop(fx);
             assert_eq!(out.len(), 1);
             assert!(matches!(out[0].fx, Fx::App(AppFx::Session(

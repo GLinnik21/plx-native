@@ -54,16 +54,16 @@ thread_local! {
     // owner API); this only changes WHERE the owner lives, not a second mechanism for reaching
     // it. `testlock::serial()` (already required before any of these helpers may be called)
     // keeps two tests from ever overlapping even if the runner reuses this thread.
-    static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-        std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+        std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
 }
 
-fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
 impl crate::screens::registry::MetadataLike for TestHost {
-    fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+    fn metadata<'a>(_cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
         test_store().view()
     }
 }
@@ -132,9 +132,9 @@ fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailS
         about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP),
         selected: {
-            let pms_state = crate::pms::PmsState::default();
-            crate::pms::movie(&pms_state, crate::pms::index_of_rk(&pms_state, sid, rk).max(0) as usize)
-                .filter(|_| crate::pms::index_of_rk(&pms_state, sid, rk) >= 0)
+            let pms_state = plx_data::pms::PmsState::default();
+            plx_data::pms::movie(&pms_state, plx_data::pms::index_of_rk(&pms_state, sid, rk).max(0) as usize)
+                .filter(|_| plx_data::pms::index_of_rk(&pms_state, sid, rk) >= 0)
                 .cloned()
         },
         spin_ms: 0.0,
@@ -147,8 +147,8 @@ fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailS
     screen
 }
 
-fn season(index: i64) -> crate::metadata::Season {
-    crate::metadata::Season {
+fn season(index: i64) -> plx_data::metadata::Season {
+    plx_data::metadata::Season {
         rk: format!("season-{index}"),
         index,
         title: format!("Season {index}"),
@@ -157,8 +157,8 @@ fn season(index: i64) -> crate::metadata::Season {
     }
 }
 
-fn episode(rk: &str, index: i64) -> crate::metadata::Episode {
-    crate::metadata::Episode {
+fn episode(rk: &str, index: i64) -> plx_data::metadata::Episode {
+    plx_data::metadata::Episode {
         rk: rk.into(),
         index,
         season: 1,
@@ -182,16 +182,16 @@ fn detail(sid: ServerId, rk: &str) -> Detail {
 
 fn install(d: Detail) -> plx_base::testlock::Serial {
     let guard = plx_base::testlock::serial();
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
     guard
 }
 
 fn clear() {
-    crate::metadata::set_current_for_test(test_store().state_mut(), None);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     // The *Also available* store outlives a page, so a test that seeded it hands the next one an
     // empty one — the addressed store cannot MIS-answer, but it can answer for an item a later
     // test happens to reuse the pair of.
-    test_store().run(crate::stores::metadata::MetadataCmd::AltInstall {
+    test_store().run(plx_data::stores::metadata::MetadataCmd::AltInstall {
         sid: plx_plex::plex::ServerId::UNSET,
         rk: String::new(),
         copies: Vec::new(),
@@ -315,19 +315,19 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
         for phase in [DetailRefreshPhase::None, DetailRefreshPhase::Deferred, DetailRefreshPhase::Requested] {
             for status in [None, Some(true), Some(false)] {
                 test_store().run(MetadataCmd::Clear);
-                crate::metadata::set_current_for_test(test_store().state_mut(), cached.then(|| detail(sid, "show")));
+                plx_data::metadata::set_current_for_test(test_store().state_mut(), cached.then(|| detail(sid, "show")));
                 let pending = status.and_then(|loading| {
-                    let generation = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
+                    let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
                     if !loading {
                         let (__s, __a) = test_store().split_for_test();
-                        crate::metadata::land_detail_for_test(__s, __a, sid, "show", generation, None);
+                        plx_data::metadata::land_detail_for_test(__s, __a, sid, "show", generation, None);
                     }
                     loading.then_some(generation)
                 });
                 assert_eq!(test_store().view().detail_request_status(sid, "show"), status);
                 let mut screen = bare(&guard, sid, "show");
                 screen.refresh = phase;
-                let generation = crate::metadata::detail_generation_for_test(test_store().adapter_ref());
+                let generation = plx_data::metadata::detail_generation_for_test(test_store().adapter_ref());
                 let (_, entered) = step(&mut screen, &ScreenEvent::Enter(plx_ui::screen::Enter::Restored), None);
                 // Both request paths (the direct RequestDetail push and start_reconciliation's
                 // own) only ENQUEUE the command; a real Bridge applies it on its next dispatch
@@ -339,7 +339,7 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
                     DetailRefreshPhase::Requested => u32::from(status.is_none()),
                     DetailRefreshPhase::None => u32::from(!cached && status != Some(true)),
                 };
-                assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), generation + requests,
+                assert_eq!(plx_data::metadata::detail_generation_for_test(test_store().adapter_ref()), generation + requests,
                     "cached={cached} phase={phase:?} status={status:?}");
                 pump_restore(&mut screen);
                 let expected = match (phase, status) {
@@ -354,11 +354,11 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
                 // otherwise this matrix exhausts the production reservation budget itself.
                 if let Some(generation) = pending {
                     let (__s, __a) = test_store().split_for_test();
-                    crate::metadata::land_detail_for_test(__s, __a, sid, "show", generation, None);
+                    plx_data::metadata::land_detail_for_test(__s, __a, sid, "show", generation, None);
                 }
                 if requests > 0 {
                     let (__s, __a) = test_store().split_for_test();
-                    crate::metadata::land_detail_for_test(__s, __a, sid, "show", generation + requests, None);
+                    plx_data::metadata::land_detail_for_test(__s, __a, sid, "show", generation + requests, None);
                 }
                 test_store().pump_detail();
             }
@@ -389,10 +389,10 @@ fn enter_restored_promotion_survives_a_stale_terminal_before_admission_t2() {
     let guard = install(detail(ServerId::UNSET, "show"));
     // Seed a stale, already-completed reconciliation at this exact address so the store answers
     // `Some(false)` (a completed reconciliation to consume) before the NEW request is admitted.
-    let generation = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "show");
+    let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "show");
     {
         let (__s, __a) = test_store().split_for_test();
-        crate::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "show", generation, None);
+        plx_data::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "show", generation, None);
     }
     assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "show"), Some(false));
 
@@ -463,8 +463,8 @@ fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_fai
     let sid = ServerId::UNSET;
     for success in [false, true] {
         test_store().run(MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(detail(sid, "show")));
-        let generation = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(detail(sid, "show")));
+        let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
         let mut screen = bare(&guard, sid, "show");
         screen.restore_episode(&Spot::default(), Some("e2"), test_store().view());
         screen.refresh = DetailRefreshPhase::Requested;
@@ -475,13 +475,13 @@ fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_fai
         assert!(screen.restore_intent.is_none());
         assert_eq!(screen.refresh, DetailRefreshPhase::Requested);
         let (__s, __a) = test_store().split_for_test();
-        assert_eq!(crate::metadata::land_detail_for_test(__s, __a, sid, "show", generation,
+        assert_eq!(plx_data::metadata::land_detail_for_test(__s, __a, sid, "show", generation,
             success.then(|| detail(sid, "show"))), success);
         step(&mut screen, &ScreenEvent::StoreChanged(StoreId::Metadata.ord(), generation), None);
         assert_eq!(screen.refresh, DetailRefreshPhase::None);
         assert!(screen.restore_intent.is_none());
         pump_restore(&mut screen);
-        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), generation);
+        assert_eq!(plx_data::metadata::detail_generation_for_test(test_store().adapter_ref()), generation);
     }
     test_store().run(MetadataCmd::Clear);
     clear();
@@ -493,7 +493,7 @@ fn a_spot_round_trips_through_the_page_it_describes() {
     let mut d = detail(sid, "show");
     d.cur_season = 1;
     d.related = (0..6)
-        .map(|i| crate::pms::PmsMovie {
+        .map(|i| plx_data::pms::PmsMovie {
             sid,
             rk: format!("r{i}"),
             ..Default::default()
@@ -534,7 +534,7 @@ fn a_spot_round_trips_through_the_page_it_describes() {
         assert_eq!(restored.elem, elem);
         screen.restore_intent = None;
     }
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
         sid,
         rk: "movie".into(),
         kind: "movie".into(),
@@ -554,7 +554,7 @@ fn a_spot_round_trips_through_the_page_it_describes() {
 fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
     let sid = ServerId::UNSET;
     let _guard = plx_base::testlock::serial();
-    crate::metadata::set_current_for_test(test_store().state_mut(), None);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     let mut screen = bare(&_guard, sid, "show");
     let measure = plx_ui::fixture::FixtureMeasure;
     let want = FocusKey {
@@ -576,7 +576,7 @@ fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
 
     let mut d = detail(sid, "show");
     d.related = vec![Default::default(), Default::default()];
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
     screen.restore(&spot, test_store().view());
     assert_eq!(
         Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None)).elem,
@@ -585,7 +585,7 @@ fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
     );
     let mut no_related = detail(sid, "show");
     no_related.related.clear();
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(no_related));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(no_related));
     screen.restore(&spot, test_store().view());
     assert_eq!(
         Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None)).elem,
@@ -659,7 +659,7 @@ fn the_related_shelf_raises_the_same_open_request() {
         "a row with no ratingKey is not a destination"
     );
     let mut d = detail(ServerId::UNSET, "show");
-    d.related = vec![crate::pms::PmsMovie {
+    d.related = vec![plx_data::pms::PmsMovie {
         sid: ServerId::UNSET,
         rk: "related".into(),
         ..Default::default()
@@ -686,7 +686,7 @@ fn the_related_shelf_raises_the_same_open_request() {
 fn an_open_request_does_not_outlive_its_page() {
     let sid = ServerId::UNSET;
     let mut d = detail(sid, "show");
-    d.related = vec![crate::pms::PmsMovie {
+    d.related = vec![plx_data::pms::PmsMovie {
         sid,
         rk: "related".into(),
         ..Default::default()
@@ -764,7 +764,7 @@ fn tracks_availability_is_detail_state_not_surface_state() {
 
     // This page is standing on a different item and its own fetch has not landed.
     let screen = DetailScreen::new(EntryId(7), ServerId::UNSET, "here".into(),
-        crate::pms::HubsSnapshot::empty_for_test().view());
+        plx_data::pms::HubsSnapshot::empty_for_test().view());
     assert!(
         !screen.tracks_available(test_store().view()),
         "the page has no item of its own yet, so there is no file it can describe"
@@ -775,12 +775,12 @@ fn tracks_availability_is_detail_state_not_surface_state() {
     );
 
     // The page's OWN item lands, and it is a show: its streams are episode 1's, so still no file.
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(detail(ServerId::UNSET, "here")));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(detail(ServerId::UNSET, "here")));
     assert!(!screen.tracks_available(test_store().view()), "a show has no file of its own");
     assert!(screen.locate(about::LANGUAGES_ELEM, test_store().view()).is_none());
 
     // A leaf with a part, on this page's own key: now the column is pressable.
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
         sid: ServerId::UNSET,
         rk: "here".into(),
         part: "/library/parts/751/1745595530/file.mp4".into(),
@@ -798,13 +798,13 @@ fn tracks_availability_is_detail_state_not_surface_state() {
 #[test]
 fn opening_a_catalog_row_mounts_on_it_without_blocking_on_the_fetch() {
     let _guard = plx_base::testlock::serial();
-    let mut pms_state = crate::pms::PmsState::default();
-    let pms_adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut pms_state, &pms_adapter, 3, crate::pms::HubState::Ready);
+    let mut pms_state = plx_data::pms::PmsState::default();
+    let pms_adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut pms_state, &pms_adapter, 3, plx_data::pms::HubState::Ready);
     test_store().run(MetadataCmd::Clear);
-    let row = crate::pms::movie(&pms_state, 1).expect("seeded catalog row");
+    let row = plx_data::pms::movie(&pms_state, 1).expect("seeded catalog row");
     let (sid, rk) = (row.sid, row.rk.clone());
-    let hubs_snap = crate::pms::hubs_snapshot(&pms_state);
+    let hubs_snap = plx_data::pms::hubs_snapshot(&pms_state);
     let mut screen = DetailScreen::new(EntryId(7), sid, rk.clone(), hubs_snap.view());
     assert_eq!((screen.sid, screen.rk.as_str()), (sid, rk.as_str()));
     assert!(
@@ -820,7 +820,7 @@ fn opening_a_catalog_row_mounts_on_it_without_blocking_on_the_fetch() {
     }), None);
     apply_metadata_effects(&entered);
     assert!(
-        crate::metadata::detail_loading(test_store().adapter_ref()),
+        plx_data::metadata::detail_loading(test_store().adapter_ref()),
         "the asynchronous request is in flight"
     );
     test_store().run(MetadataCmd::Clear);
@@ -831,7 +831,7 @@ fn a_crew_only_item_still_gets_the_cast_and_crew_shelf() {
     let _guard = plx_base::testlock::serial();
     let mut d = detail(ServerId::UNSET, "show");
     d.cast.clear();
-    d.crew.push(crate::metadata::Cast {
+    d.crew.push(plx_data::metadata::Cast {
         tag: "Writer".into(),
         role: "Writer".into(),
         thumb: String::new(),
@@ -960,7 +960,7 @@ fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_
 
     let mut changed_season = detail(sid, "show");
     changed_season.cur_season = 0;
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(changed_season));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(changed_season));
     screen.restore_intent = Some(RestoreIntent {
         spot: Spot {
             season: Some(2),
@@ -977,7 +977,7 @@ fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_
 
     let mut removed = detail(sid, "show");
     removed.cur_season = 1;
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(removed));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(removed));
     screen.restore_episode(&spot, Some("gone"), test_store().view());
     let fallback = Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None));
     assert_eq!(
@@ -1018,7 +1018,7 @@ fn a_landed_view_state_refresh_puts_the_browsed_season_back_and_never_steers_ano
     );
     assert_eq!(screen.locate(got.elem, test_store().view()).and_then(Located::local_key).and_then(episodes::locate), Some((1, episodes::Row::Still)));
 
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
         sid,
         rk: "other".into(),
         ..Default::default()
@@ -1092,11 +1092,11 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
         for alt in [false, true] {
             for watched in [false, true] {
                 for trailer in [false, true] {
-                    crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
+                    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
                         sid, rk: "hero-hit".into(), kind: "movie".into(), watched,
                         resume_ms: if restart { 30_000 } else { 0 }, dur_ms: 120_000,
                         extras: trailer
-                            .then(|| crate::metadata::Extra {
+                            .then(|| plx_data::metadata::Extra {
                                 rk: "trailer".into(),
                                 part: "/library/parts/trailer".into(),
                                 subtype: "trailer".into(),
@@ -1110,13 +1110,13 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     // The *Also available* control's gate is the STORE, addressed by the page's own
                     // pair — seeded here the way a landed cross-source resolve seeds it, never by
                     // opening the panel.
-                    test_store().run(crate::stores::metadata::MetadataCmd::AltInstall {
+                    test_store().run(plx_data::stores::metadata::MetadataCmd::AltInstall {
                         sid,
                         rk: "hero-hit".into(),
                         copies: if alt {
                             vec![
-                                crate::metadata::AltCopy { sid, rk: "hero-hit".into(), ..Default::default() },
-                                crate::metadata::AltCopy { sid: other, rk: "hero-copy".into(), ..Default::default() },
+                                plx_data::metadata::AltCopy { sid, rk: "hero-hit".into(), ..Default::default() },
+                                plx_data::metadata::AltCopy { sid: other, rk: "hero-copy".into(), ..Default::default() },
                             ]
                         } else {
                             Vec::new()
@@ -1441,7 +1441,7 @@ fn a_shows_hero_still_outranks_every_other_art() {
     let mut d = detail(sid, "show");
     d.art = "show-art".into();
     d.seasons[0].viewed_leaf_count = 1;
-    d.on_deck = Some(crate::metadata::Episode {
+    d.on_deck = Some(plx_data::metadata::Episode {
         thumb: "next-still".into(),
         resume_ms: 1,
         ..Default::default()
@@ -1457,7 +1457,7 @@ fn a_long_synopsis_keeps_the_first_section_one_region_gap_below_the_buttons() {
     let sid = ServerId::UNSET;
     let mut d = detail(sid, "show");
     d.summary = "A long synopsis whose wrapped lines make the hero taller. ".repeat(20);
-    d.crew.push(crate::metadata::Cast {
+    d.crew.push(plx_data::metadata::Cast {
         tag: "Writer".into(),
         role: "Writer".into(),
         thumb: String::new(),
@@ -1511,7 +1511,7 @@ fn only_holdable_media_and_season_cards_request_the_item_menu() {
     let sid = ServerId::UNSET;
     let mut d = detail(sid, "show");
     d.related = vec![Default::default()];
-    d.cast.push(crate::metadata::Cast {
+    d.cast.push(plx_data::metadata::Cast {
         tag: "Actor".into(),
         role: "Role".into(),
         thumb: String::new(),
@@ -2017,7 +2017,7 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
     let _guard = plx_base::testlock::serial();
     plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_for_test("detail-watch", "127.0.0.1", 1, "t", "c");
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
         sid,
         rk: "movie".into(),
         kind: "movie".into(),
@@ -2032,13 +2032,13 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
     );
     let addressed: Vec<_> = effects.iter().filter_map(|effect| match &effect.fx {
         Fx::App(AppFx::Store(StoreId::ViewState,
-            crate::stores::StoreCmd::ViewState(ViewStateCmd::Request {
+            plx_data::stores::StoreCmd::ViewState(ViewStateCmd::Request {
                 sid, rk, write, detail, guid,
             }))) => Some((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str())),
         _ => None,
     }).collect();
-    assert_eq!(addressed, [(sid, "movie", crate::viewstate::Write::Watched,
-        Some(&crate::stores::viewstate::DetailRefresh {
+    assert_eq!(addressed, [(sid, "movie", plx_data::viewstate::Write::Watched,
+        Some(&plx_data::stores::viewstate::DetailRefresh {
             sid, rk: "movie".into(), keep: None,
         }), "")],
         "Detail must address the typed ViewState command to its owning Bridge");
@@ -2177,8 +2177,8 @@ fn the_loading_spinner_reports_motion_on_every_tick_while_unloaded() {
     }
 }
 
-fn trailer_extra() -> crate::metadata::Extra {
-    crate::metadata::Extra {
+fn trailer_extra() -> plx_data::metadata::Extra {
+    plx_data::metadata::Extra {
         rk: "9".into(),
         part: "/library/parts/trailer".into(),
         vcodec: "h264".into(),
@@ -2211,8 +2211,8 @@ fn a_movie_trailer_disc_plays_the_extra_from_the_start() {
         extras: vec![extra.clone()],
         ..Default::default()
     });
-    test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(
-        crate::metadata::NowPlaying {
+    test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(
+        plx_data::metadata::NowPlaying {
             is_episode: true,
             is_real_episode: true,
             title: "Show".into(),
@@ -2245,7 +2245,7 @@ fn a_movie_trailer_disc_plays_the_extra_from_the_start() {
         } => {
             assert_eq!(rk, "9");
             assert_eq!(part, "/library/parts/trailer");
-            assert_eq!(context, crate::metadata::TRAILER_CONTEXT);
+            assert_eq!(context, plx_data::metadata::TRAILER_CONTEXT);
             assert_eq!(title, "Official Trailer");
         }
         _ => panic!("expected PlayIntent::Item for Trailer"),
@@ -2256,7 +2256,7 @@ fn a_movie_trailer_disc_plays_the_extra_from_the_start() {
         test_store().view().now_playing().is_some_and(|n| n.detail_rk == "show"),
         "activate queues Play; NowPlaying is installed only after request_play accepts"
     );
-    test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+    test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
     clear();
 }
 
@@ -2265,7 +2265,7 @@ fn a_show_trailer_disc_plays_the_extra_not_the_on_deck_episode() {
     let extra = trailer_extra();
     let mut d = detail(ServerId::UNSET, "show");
     d.extras = vec![extra];
-    d.on_deck = Some(crate::metadata::Episode {
+    d.on_deck = Some(plx_data::metadata::Episode {
         rk: "ep".into(),
         part: "/library/parts/ep".into(),
         vcodec: "hevc".into(),
@@ -2292,7 +2292,7 @@ fn a_show_trailer_disc_plays_the_extra_not_the_on_deck_episode() {
         ) => {
             assert_eq!(rk, "9");
             assert_eq!(part, "/library/parts/trailer");
-            assert_eq!(context, crate::metadata::TRAILER_CONTEXT);
+            assert_eq!(context, plx_data::metadata::TRAILER_CONTEXT);
         }
         _ => panic!("show Trailer must play the extra"),
     }
@@ -2305,7 +2305,7 @@ fn a_show_trailer_disc_plays_the_extra_not_the_on_deck_episode() {
         (PlayIntent::Item { rk, part, context, .. }, _) => {
             assert_ne!(rk.as_str(), "9");
             assert_ne!(part.as_str(), "/library/parts/trailer");
-            assert_ne!(context.as_str(), crate::metadata::TRAILER_CONTEXT);
+            assert_ne!(context.as_str(), plx_data::metadata::TRAILER_CONTEXT);
         }
         (PlayIntent::Movie(_), _) => {}
     }
@@ -2330,19 +2330,19 @@ fn a_movie_without_extras_does_not_offer_a_trailer_disc() {
 fn a_trailer_disc_requires_both_rk_and_part() {
     let _guard = plx_base::testlock::serial();
     let cases = [
-        crate::metadata::Extra {
+        plx_data::metadata::Extra {
             rk: String::new(),
             part: "/library/parts/trailer".into(),
             ..Default::default()
         },
-        crate::metadata::Extra {
+        plx_data::metadata::Extra {
             rk: "9".into(),
             part: String::new(),
             ..Default::default()
         },
     ];
-    test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(
-        crate::metadata::NowPlaying {
+    test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(
+        plx_data::metadata::NowPlaying {
             is_episode: true,
             is_real_episode: true,
             title: "Show".into(),
@@ -2358,7 +2358,7 @@ fn a_trailer_disc_requires_both_rk_and_part() {
         },
     )));
     for extra in cases {
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
             sid: ServerId::UNSET,
             rk: "movie".into(),
             kind: "movie".into(),
@@ -2386,7 +2386,7 @@ fn a_trailer_disc_requires_both_rk_and_part() {
             "a Trailer no-op must not wipe a leftover episode NowPlaying"
         );
     }
-    test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+    test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
     clear();
 }
 
@@ -2404,7 +2404,7 @@ fn extras_landing_does_not_grow_a_trailer_disc_or_move_play_identity() {
     assert!(!before.trailer);
     assert_eq!(hero::index_of(before, hero::HeroCtl::Play), Some(0));
     let play_elem = hero::HeroCtl::Play.elem();
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
         sid,
         rk: "movie".into(),
         kind: "movie".into(),
@@ -2444,7 +2444,7 @@ fn section_tops_do_not_remeasure_per_credit() {
     d.summary = "word ".repeat(80);
     d.episodes = (0..16).map(|i| episode(&format!("e{i}"), i as i64)).collect();
     d.cast = (0..77)
-        .map(|i| crate::metadata::Cast {
+        .map(|i| plx_data::metadata::Cast {
             tag: format!("Actor {i}"),
             role: "Role".into(),
             thumb: String::new(),
@@ -2503,7 +2503,7 @@ fn cached_section_tops_match_the_stacking_walk() {
             ep
         })
         .collect();
-    d.cast = vec![crate::metadata::Cast {
+    d.cast = vec![plx_data::metadata::Cast {
         tag: "Actor".into(),
         role: "Role".into(),
         thumb: String::new(),
@@ -2556,7 +2556,7 @@ fn cached_section_tops_match_the_stacking_walk() {
 fn a_replaced_episode_list_moves_the_cast_row() {
     let sid = ServerId::UNSET;
     let mut d = detail(sid, "show");
-    d.cast = vec![crate::metadata::Cast {
+    d.cast = vec![plx_data::metadata::Cast {
         tag: "Actor".into(),
         role: "Role".into(),
         thumb: String::new(),
@@ -2569,7 +2569,7 @@ fn a_replaced_episode_list_moves_the_cast_row() {
     let before = screen.section_top(4, screen.detail(test_store().view()).expect("installed"), &measure);
 
     let mut taller = detail(sid, "show");
-    taller.cast = vec![crate::metadata::Cast {
+    taller.cast = vec![plx_data::metadata::Cast {
         tag: "Actor".into(),
         role: "Role".into(),
         thumb: String::new(),
@@ -2584,7 +2584,7 @@ fn a_replaced_episode_list_moves_the_cast_row() {
             ep
         })
         .collect();
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(taller));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(taller));
     let after = screen.section_top(4, screen.detail(test_store().view()).expect("replaced"), &measure);
     assert!(
         after > before,
@@ -2601,7 +2601,7 @@ fn a_movie_without_a_filmstrip_sits_its_first_block_on_content_top() {
         rk: "movie".into(),
         kind: "movie".into(),
         summary: "word ".repeat(40),
-        cast: vec![crate::metadata::Cast {
+        cast: vec![plx_data::metadata::Cast {
             tag: "Actor".into(),
             role: "Role".into(),
             thumb: String::new(),
@@ -2685,7 +2685,7 @@ fn ticking_the_page_allows_layout_to_remeasure() {
 
 #[test]
 fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
-    let extra = crate::metadata::Extra {
+    let extra = plx_data::metadata::Extra {
         rk: "9".into(),
         part: "/p".into(),
         title: "Clip".into(),
@@ -2694,7 +2694,7 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
         ..Default::default()
     };
     let mut show = detail(ServerId::UNSET, "show");
-    show.cast.push(crate::metadata::Cast {
+    show.cast.push(plx_data::metadata::Cast {
         tag: "Actor".into(),
         role: "Lead".into(),
         thumb: String::new(),
@@ -2719,7 +2719,7 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     assert_eq!(super::compact_title_alpha(hide_at, first_top, 0.0), 1.0);
     assert_eq!(super::compact_title_alpha(hide_at + 400.0, first_top, 0.0), 0.0);
 
-    let mut spot = crate::metadata::Spot::default();
+    let mut spot = plx_data::metadata::Spot::default();
     spot.section = 6;
     spot.col = 1;
     screen.restore(&spot, test_store().view());
@@ -2731,7 +2731,7 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
         rk: "movie".into(),
         kind: "movie".into(),
         extras: vec![
-            crate::metadata::Extra {
+            plx_data::metadata::Extra {
                 rk: "9".into(),
                 part: "/p".into(),
                 title: "Clip".into(),
@@ -2739,7 +2739,7 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
                 extra_type: 5,
                 ..Default::default()
             },
-            crate::metadata::Extra {
+            plx_data::metadata::Extra {
                 rk: "8".into(),
                 part: "/q".into(),
                 title: "Trailer".into(),
@@ -2748,7 +2748,7 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
                 ..Default::default()
             },
         ],
-        cast: vec![crate::metadata::Cast {
+        cast: vec![plx_data::metadata::Cast {
             tag: "Actor".into(),
             role: "Lead".into(),
             thumb: String::new(),
@@ -2784,7 +2784,7 @@ fn cast_section_top_is_keyed_by_identity_not_array_position() {
         sid: ServerId::UNSET,
         rk: "movie-cast-pos".into(),
         kind: "movie".into(),
-        cast: vec![crate::metadata::Cast {
+        cast: vec![plx_data::metadata::Cast {
             tag: "Actor".into(),
             role: "Lead".into(),
             thumb: String::new(),
@@ -3127,8 +3127,8 @@ fn legacy_detail_inventory_has_73_unique_source_names() {
 
 // ---- The collection shelf (a member movie's collection, split out of Related) ----
 
-fn collection_member(sid: ServerId, rk: &str) -> crate::pms::PmsMovie {
-    crate::pms::PmsMovie { sid, rk: rk.into(), title: format!("Film {rk}"), sec: 1, ..Default::default() }
+fn collection_member(sid: ServerId, rk: &str) -> plx_data::pms::PmsMovie {
+    plx_data::pms::PmsMovie { sid, rk: rk.into(), title: format!("Film {rk}"), sec: 1, ..Default::default() }
 }
 
 fn collection_movie(sid: ServerId) -> Detail {
@@ -3137,7 +3137,7 @@ fn collection_movie(sid: ServerId) -> Detail {
         rk: "m1".into(),
         kind: "movie".into(),
         part: "/library/parts/1".into(),
-        collection: Some(crate::metadata::CollectionShelf {
+        collection: Some(plx_data::metadata::CollectionShelf {
             title: "Example Trilogy".into(),
             section: 1,
             tag: 812,
@@ -3316,7 +3316,7 @@ fn member_keys_follow_the_member_and_the_heading_spot_restores_the_heading() {
     let m3 = screen.engine_key(collection::elem(2).unwrap()).unwrap();
     let mut reordered = collection_movie(sid);
     reordered.collection.as_mut().unwrap().members.reverse();
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(reordered));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(reordered));
     screen.sync_keys(test_store().view());
     assert_eq!(screen.engine_key(collection::elem(1).unwrap()), Some(m3),
         "a refetch that reorders the collection keeps each member's key");
@@ -3346,7 +3346,7 @@ fn a_show_walk_derives_the_layout_identity_once_not_once_per_stop() {
     let sid = ServerId::UNSET;
     let mut show = detail(sid, "show");
     show.episodes = (1..=EPISODES as i64)
-        .map(|i| crate::metadata::Episode {
+        .map(|i| plx_data::metadata::Episode {
             summary: "A synopsis long enough to wrap onto every line the strip allows. ".repeat(4),
             aired: "2024-03-14".into(),
             ..episode(&format!("e{i}"), i)

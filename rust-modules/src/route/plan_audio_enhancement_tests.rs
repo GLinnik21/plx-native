@@ -18,8 +18,8 @@ const PREF: plx_plex::plex::AudioEnhancements = plx_plex::plex::AudioEnhancement
     normalize_loudness: true,
 };
 
-fn track(id: i64, codec: &str, channels: i64, capable: bool) -> crate::metadata::Stream {
-    crate::metadata::Stream {
+fn track(id: i64, codec: &str, channels: i64, capable: bool) -> plx_data::metadata::Stream {
+    plx_data::metadata::Stream {
         id,
         index: id,
         lang_code: "eng".into(),
@@ -47,7 +47,7 @@ fn resolve(
     media_bytes: usize,
     part: &str,
     acodec: &str,
-    item: impl FnOnce(ServerId) -> crate::metadata::PlayingItem,
+    item: impl FnOnce(ServerId) -> plx_data::metadata::PlayingItem,
     setup: impl FnOnce(&mut ResolveEnv, &plx_plex::plex::Client),
 ) -> Resolve {
     assert!(plx_net::net::global_init() && crate::curlio::available());
@@ -55,7 +55,7 @@ fn resolve(
     let sid = plx_plex::plex::register_for_test("enh-pms", "127.0.0.1", port, "token", "enh-client");
     let client = plx_plex::plex::client_for(sid).unwrap();
     client.set_link(plx_plex::plex::probe::Location::Local);
-    let mut env = ResolveEnv::snapshot(ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-enh");
+    let mut env = ResolveEnv::snapshot(ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-enh");
     env.quality = Quality::Original;
     env.pass = Subscription::Yes;
     env.audio_enhancements = PREF;
@@ -69,7 +69,7 @@ fn resolve(
 
 const MKV: &str = "/library/parts/960001/1/file.mkv";
 
-fn ac3_item(sid: ServerId) -> crate::metadata::PlayingItem {
+fn ac3_item(sid: ServerId) -> plx_data::metadata::PlayingItem {
     fourk_item(sid, vec![track(1, "ac3", 2, true)])
 }
 
@@ -118,7 +118,7 @@ fn pass_capable_ac3_local_original_is_enhanced_remux() {
         // Production's capture, not the test default: the snapshot reads serverinfo for `sid`.
         plx_plex::plex::serverinfo::store_for_test(env.sid, Subscription::Yes, "1.43.4");
         env.pass = Subscription::Unknown;
-        env.pass = ResolveEnv::snapshot(&PlaybackSession::IDLE, crate::stores::metadata::MetadataStore::default().view(), env.sid, "rk-enh").pass;
+        env.pass = ResolveEnv::snapshot(&PlaybackSession::IDLE, plx_data::stores::metadata::MetadataStore::default().view(), env.sid, "rk-enh").pass;
     });
     assert_enhanced(&r);
     let mde = mde_lines(&r.requests);
@@ -316,7 +316,7 @@ fn embedded_default_subtitle_with_enhancement_logs_applied_on_cold_start() {
 fn server_selected_external_srt_is_enhanced_remux_sidecar_unaffected() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let external = crate::metadata::Stream {
+    let external = plx_data::metadata::Stream {
         id: 77,
         codec: "srt".into(),
         key: "/library/streams/77".into(),

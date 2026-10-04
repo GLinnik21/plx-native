@@ -58,7 +58,7 @@ fn an_all_grid_tile_and_its_rows_animate_back_when_focus_leaves() {
 /// TYPE chip — must not move, and the incoming cards must first draw where they settle.
 #[test]
 fn a_type_switch_never_draws_the_empty_interim_layout() {
-    use crate::browse::LibraryType;
+    use plx_data::browse::LibraryType;
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 12);
     let mut page = fixture.screen();
@@ -138,8 +138,8 @@ fn a_section_switch_settles(order: Arrival, items: usize, restore: Option<f32>) 
         fixture.listing = publication.listing;
         if !grid { fixture.listing = fixture.listing.clone().with_fetch(SecFetch::Loading, -1).with_total(0); }
         if let Some(scroll) = restore {
-            fixture.listing = fixture.listing.clone().with_cursor(crate::stores::browse::Cursor {
-                at: crate::stores::browse::CursorAt::SlotIndex(0), scroll });
+            fixture.listing = fixture.listing.clone().with_cursor(plx_data::stores::browse::Cursor {
+                at: plx_data::stores::browse::CursorAt::SlotIndex(0), scroll });
         }
         fixture.hubs = publication.section_hubs;
     };

@@ -16,9 +16,9 @@ fn anchor_bits(rect: Rect) -> [u32; 3] {
 }
 
 fn source_cx<'a>(
-    listing: &'a crate::stores::browse::ListingSnapshot,
-    directory: &'a crate::stores::browse::DirectorySnapshot,
-    hubs: &'a crate::stores::browse::HubsSnapshot,
+    listing: &'a plx_data::stores::browse::ListingSnapshot,
+    directory: &'a plx_data::stores::browse::DirectorySnapshot,
+    hubs: &'a plx_data::stores::browse::HubsSnapshot,
     measure: &'a FixtureMeasure,
     tick: Tick,
 ) -> Cx<'a, HostFixture> {
@@ -41,11 +41,11 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     let _guard = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("menu-anchor-contract");
     session.watching("u-menu-anchor-contract");
-    let stores = crate::stores::Stores::default();
+    let stores = plx_data::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
-    stores.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    stores.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
     let measure = FixtureMeasure;
-    let mut first = crate::stores::browse::DirectorySnapshot::default();
+    let mut first = plx_data::stores::browse::DirectorySnapshot::default();
     let publication = stores.capture_browse(&mut first);
     let listing = publication.listing;
     let hubs = publication.section_hubs;
@@ -70,7 +70,7 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
         browse.append_section_for_test(1, 3, "New Films", SecKind::Movie);
         browse.set_pinned_for_test(4, true);
     }
-    let mut changed = crate::stores::browse::DirectorySnapshot::default();
+    let mut changed = plx_data::stores::browse::DirectorySnapshot::default();
     stores.capture_browse(&mut changed);
     let cx_changed = source_cx(&listing, &changed, &hubs, &measure, Tick { ms: 2, dt_us: 16_000 });
     old.step(
@@ -219,11 +219,11 @@ fn open_sources_refreshes_metadata_once_then_settles() {
     let _guard = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("menu-refresh-contract");
     session.watching("u-menu-refresh-contract");
-    let stores = crate::stores::Stores::default();
+    let stores = plx_data::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
-    stores.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    stores.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
     let measure = FixtureMeasure;
-    let mut first = crate::stores::browse::DirectorySnapshot::default();
+    let mut first = plx_data::stores::browse::DirectorySnapshot::default();
     let publication = stores.capture_browse(&mut first);
     let listing = publication.listing;
     let hubs = publication.section_hubs;
@@ -255,7 +255,7 @@ fn open_sources_refreshes_metadata_once_then_settles() {
         browse.append_section_for_test(1, 3, "New Films", SecKind::Movie);
         browse.set_pinned_for_test(4, true);
     }
-    let mut changed = crate::stores::browse::DirectorySnapshot::default();
+    let mut changed = plx_data::stores::browse::DirectorySnapshot::default();
     stores.capture_browse(&mut changed);
     let cx_changed = source_cx(&listing, &changed, &hubs, &measure, Tick { ms: 2, dt_us: 16_000 });
     effects(&mut menu, &cx_changed);

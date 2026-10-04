@@ -32,6 +32,10 @@ Scenarios (each a named row; `--only ID,ID` selects, `--quick` is `noop,leaf,siz
             (rust-modules/telemetry/src/telemetry/window.rs, in `plx_telemetry`): `plx_base`,
             `plx_platform`, `plx_net` and `plx_plex` stay fresh, the telemetry crate and the app
             crate behind it recompile.
+  data      ...after appending one to a leaf file of the DATA layer crate
+            (rust-modules/data/src/stores/tape.rs, in `plx_data`): `plx_base`, `plx_machine`,
+            `plx_platform`, `plx_plex` and `plx_telemetry` stay fresh, the data crate and the app
+            crate behind it recompile.
   app       ...after appending one to a leaf file of the app crate (rust-modules/src/coldstart.rs):
             `plx_base` stays fresh and only the app crate recompiles.
   hub       ...after appending one to a hub file (rust-modules/ui/src/lib.rs, the root of `plx_ui`,
@@ -39,7 +43,7 @@ Scenarios (each a named row; `--only ID,ID` selects, `--quick` is `noop,leaf,siz
   leaf-inc  `leaf` with CARGO_INCREMENTAL=1 in rust-modules/target-fast (the `make test-fast` tree).
   hub-inc   `hub`, incremental. The two -inc rows are skipped with a note when target-fast is
             absent, unless `--cold` (which builds it, untimed, first).
-  tests     the default-feature unit suite (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry`) on
+  tests     the default-feature unit suite (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data`) on
             a warm tree; the `test result:` counts of every crate are summed.
   arm       the ARM staticlib line (`cargo rustc ... --crate-type staticlib`) after touching lib.rs,
             then the archive's size and sha256. Skipped when the ARM archive was never built here;
@@ -95,6 +99,7 @@ NET_LEAF_FILE = "rust-modules/net/src/stream_redirect.rs"
 UI_LEAF_FILE = "rust-modules/ui/src/dwell.rs"
 PLEX_LEAF_FILE = "rust-modules/plex/src/plex/retry.rs"
 TELEMETRY_LEAF_FILE = "rust-modules/telemetry/src/telemetry/window.rs"
+DATA_LEAF_FILE = "rust-modules/data/src/stores/tape.rs"
 APP_LEAF_FILE = "rust-modules/src/coldstart.rs"
 HUB_FILE = "rust-modules/ui/src/lib.rs"
 TOUCH_FILE = "rust-modules/src/lib.rs"
@@ -107,17 +112,18 @@ NET_PACKAGE = "plx_net"
 UI_PACKAGE = "plx_ui"
 PLEX_PACKAGE = "plx_plex"
 TELEMETRY_PACKAGE = "plx_telemetry"
+DATA_PACKAGE = "plx_data"
 
 # The cargo subcommand skeletons the Makefile's recipes use. Everything else (toolchain, dirs,
 # feature flags, RUSTFLAGS) comes from `make -s print-bench-config`. ci/test_build_bench.py compares
 # these to the recipes in the Makefile.
-HOST_TEST_ARGS = ("test", "--lib", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform", "-p", "plx_gfx", "-p", "plx_net", "-p", "plx_ui", "-p", "plx_plex", "-p", "plx_telemetry")
+HOST_TEST_ARGS = ("test", "--lib", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform", "-p", "plx_gfx", "-p", "plx_net", "-p", "plx_ui", "-p", "plx_plex", "-p", "plx_telemetry", "-p", "plx_data")
 HOST_TEST_BUILD_ARGS = HOST_TEST_ARGS + ("--no-run", "--message-format=json")
 ARM_ARGS_HEAD = ("rustc", "--release", "--target")  # then the target triple
 ARM_ARGS_LIB = ("--lib", "--crate-type", "staticlib", "--target-dir")  # then the target dir
 ARM_ARGS_TAIL = ("--message-format=json-render-diagnostics",)  # after the feature flags
 
-ALL_SCENARIOS = ("noop", "leaf", "machine", "platform", "gfx", "net", "ui", "plex", "telemetry", "app", "hub", "leaf-inc", "hub-inc", "tests", "arm", "sizes")
+ALL_SCENARIOS = ("noop", "leaf", "machine", "platform", "gfx", "net", "ui", "plex", "telemetry", "data", "app", "hub", "leaf-inc", "hub-inc", "tests", "arm", "sizes")
 QUICK_SCENARIOS = ("noop", "leaf", "sizes")
 TITLES = {
     "noop": "No-op host test build",
@@ -129,6 +135,7 @@ TITLES = {
     "ui": "Edit leaf (plx_ui dwell.rs), non-incremental",
     "plex": "Edit leaf (plx_plex retry.rs), non-incremental",
     "telemetry": "Edit leaf (plx_telemetry window.rs), non-incremental",
+    "data": "Edit leaf (plx_data tape.rs), non-incremental",
     "app": "Edit leaf (app coldstart.rs), non-incremental",
     "hub": "Edit hub (plx_ui lib.rs), non-incremental",
     "leaf-inc": "Edit leaf (plx_base cbuf.rs), incremental",
@@ -138,7 +145,7 @@ TITLES = {
     "sizes": "Target dir sizes",
 }
 SWAP_WARN_PCT = 90.0
-EDIT_FILES = {"leaf": LEAF_FILE, "leaf-inc": LEAF_FILE, "machine": MACHINE_LEAF_FILE, "platform": PLATFORM_LEAF_FILE, "gfx": GFX_LEAF_FILE, "net": NET_LEAF_FILE, "ui": UI_LEAF_FILE, "plex": PLEX_LEAF_FILE, "telemetry": TELEMETRY_LEAF_FILE, "app": APP_LEAF_FILE, "hub": HUB_FILE, "hub-inc": HUB_FILE}
+EDIT_FILES = {"leaf": LEAF_FILE, "leaf-inc": LEAF_FILE, "machine": MACHINE_LEAF_FILE, "platform": PLATFORM_LEAF_FILE, "gfx": GFX_LEAF_FILE, "net": NET_LEAF_FILE, "ui": UI_LEAF_FILE, "plex": PLEX_LEAF_FILE, "telemetry": TELEMETRY_LEAF_FILE, "data": DATA_LEAF_FILE, "app": APP_LEAF_FILE, "hub": HUB_FILE, "hub-inc": HUB_FILE}
 
 
 class BenchError(Exception):
@@ -263,7 +270,7 @@ class Cargo:
 def summarize_artifacts(stdout: str) -> dict:
     """Read cargo's JSON records: how many units, how many were rebuilt, was the app crate."""
     total = rebuilt = 0
-    app_rebuilt = base_rebuilt = machine_rebuilt = platform_rebuilt = gfx_rebuilt = net_rebuilt = ui_rebuilt = plex_rebuilt = telemetry_rebuilt = False
+    app_rebuilt = base_rebuilt = machine_rebuilt = platform_rebuilt = gfx_rebuilt = net_rebuilt = ui_rebuilt = plex_rebuilt = telemetry_rebuilt = data_rebuilt = False
     for line in stdout.splitlines():
         try:
             rec = json.loads(line)
@@ -283,10 +290,11 @@ def summarize_artifacts(stdout: str) -> dict:
             ui_rebuilt = ui_rebuilt or UI_PACKAGE in str(rec.get("package_id", ""))
             plex_rebuilt = plex_rebuilt or PLEX_PACKAGE in str(rec.get("package_id", ""))
             telemetry_rebuilt = telemetry_rebuilt or TELEMETRY_PACKAGE in str(rec.get("package_id", ""))
+            data_rebuilt = data_rebuilt or DATA_PACKAGE in str(rec.get("package_id", ""))
     return {"units": total, "rebuilt": rebuilt, "app_rebuilt": app_rebuilt, "base_rebuilt": base_rebuilt,
             "machine_rebuilt": machine_rebuilt, "platform_rebuilt": platform_rebuilt,
             "gfx_rebuilt": gfx_rebuilt, "net_rebuilt": net_rebuilt, "ui_rebuilt": ui_rebuilt,
-            "plex_rebuilt": plex_rebuilt, "telemetry_rebuilt": telemetry_rebuilt}
+            "plex_rebuilt": plex_rebuilt, "telemetry_rebuilt": telemetry_rebuilt, "data_rebuilt": data_rebuilt}
 
 
 def parse_test_result(text: str) -> dict | None:
@@ -489,8 +497,10 @@ def row_info(sid: str, res: dict) -> str:
         xwhich = "yes" if xflags == {True} else "no" if xflags == {False} else "mixed"
         tflags = {s.get("telemetry_rebuilt", False) for s in samples}
         twhich = "yes" if tflags == {True} else "no" if tflags == {False} else "mixed"
+        dflags = {s.get("data_rebuilt", False) for s in samples}
+        dwhich = "yes" if dflags == {True} else "no" if dflags == {False} else "mixed"
         text = (f"app crate rebuilt: {which}, plx_base rebuilt: {bwhich}, plx_machine rebuilt: {mwhich}, "
-                f"plx_platform rebuilt: {pwhich}, plx_gfx rebuilt: {gwhich}, plx_net rebuilt: {nwhich}, plx_ui rebuilt: {uwhich}, plx_plex rebuilt: {xwhich}, plx_telemetry rebuilt: {twhich} "
+                f"plx_platform rebuilt: {pwhich}, plx_gfx rebuilt: {gwhich}, plx_net rebuilt: {nwhich}, plx_ui rebuilt: {uwhich}, plx_plex rebuilt: {xwhich}, plx_telemetry rebuilt: {twhich}, plx_data rebuilt: {dwhich} "
                 f"({last['rebuilt']}/{last['units']} units)")
         if sid == "noop" and True in flags:
             text += " **UNEXPECTED: a no-op build recompiled the app crate**"

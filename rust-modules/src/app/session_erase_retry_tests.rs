@@ -72,7 +72,7 @@ fn p1_adapter_does_not_complete_an_erase_with_an_incomplete_sweep() {
     ]);
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let mut adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
-    let mut meta = crate::stores::metadata::MetadataStore::default();
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
     assert!(adapter.begin_erase(1, false, &mut meta).is_none());
     plx_base::storage_worker::drain_for_test();
     assert!(adapter.take_erased(&mut meta).is_none(), "incomplete erase must remain retryable");

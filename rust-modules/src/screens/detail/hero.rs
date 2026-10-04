@@ -24,7 +24,7 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
 
-use crate::metadata::{Detail, Episode, Extra};
+use plx_data::metadata::{Detail, Episode, Extra};
 use plx_ui::label::HAlign;
 use plx_machine::machine::{GroupId, Measure};
 use plx_ui::text_view::TextView;
@@ -259,10 +259,10 @@ pub(crate) fn hero_episode(d: &Detail) -> Option<&Episode> {
 pub(crate) fn hero_resume_ns(d: &Detail) -> i64 {
     if d.is_show {
         hero_episode(d)
-            .map(|e| crate::metadata::resume_ns(e.resume_ms, e.dur_ms))
+            .map(|e| plx_data::metadata::resume_ns(e.resume_ms, e.dur_ms))
             .unwrap_or(0)
     } else {
-        crate::metadata::resume_ns(d.resume_ms, d.dur_ms)
+        plx_data::metadata::resume_ns(d.resume_ms, d.dur_ms)
     }
 }
 
@@ -829,11 +829,11 @@ mod tests {
     // `screens::detail::tests`'s `TEST_METADATA`) gives them a real, per-owner `MetadataStore`
     // without threading one through every helper here.
     thread_local! {
-        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+        static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
     }
 
-    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
     }
 
@@ -1222,8 +1222,8 @@ mod tests {
 
     #[test]
     fn the_crew_credit_names_the_right_job_for_the_kind_of_item() {
-        fn credit(name: &str, role: &str) -> crate::metadata::Cast {
-            crate::metadata::Cast {
+        fn credit(name: &str, role: &str) -> plx_data::metadata::Cast {
+            plx_data::metadata::Cast {
                 tag: name.into(),
                 role: role.into(),
                 thumb: String::new(),
@@ -1309,7 +1309,7 @@ mod tests {
     fn a_shows_hero_is_about_the_servers_on_deck_episode_or_the_series() {
         let mut d = Detail {
             is_show: true,
-            seasons: vec![crate::metadata::Season {
+            seasons: vec![plx_data::metadata::Season {
                 rk: "s1".into(),
                 index: 1,
                 title: "Season 1".into(),
@@ -1346,7 +1346,7 @@ mod tests {
     fn the_optimistic_flip_settles_a_leaf_at_once_and_a_container_a_round_trip_late() {
         let _guard = plx_base::testlock::serial();
         let sid = plx_plex::plex::ServerId::UNSET;
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
             sid,
             rk: "movie".into(),
             resume_ms: 1_800_000,
@@ -1354,7 +1354,7 @@ mod tests {
             ..Default::default()
         }));
         assert!(test_store().run(
-            crate::stores::metadata::MetadataCmd::SetWatchedLocal { sid, rk: "movie".into(), on: true }
+            plx_data::stores::metadata::MetadataCmd::SetWatchedLocal { sid, rk: "movie".into(), on: true }
         ));
         let movie = test_store().view().current().unwrap();
         assert_eq!(hero_mark(movie), PosterMark::Watched);
@@ -1363,11 +1363,11 @@ mod tests {
             "a leaf's restart disc disappears immediately"
         );
 
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
             sid,
             rk: "show".into(),
             is_show: true,
-            seasons: vec![crate::metadata::Season {
+            seasons: vec![plx_data::metadata::Season {
                 rk: "s1".into(),
                 index: 1,
                 title: "Season 1".into(),
@@ -1382,14 +1382,14 @@ mod tests {
             ..Default::default()
         }));
         assert!(test_store().run(
-            crate::stores::metadata::MetadataCmd::SetWatchedLocal { sid, rk: "show".into(), on: true }
+            plx_data::stores::metadata::MetadataCmd::SetWatchedLocal { sid, rk: "show".into(), on: true }
         ));
         assert_eq!(
             hero_mark(test_store().view().current().unwrap()),
             PosterMark::InProgress,
             "container progress remains server evidence until the re-read lands"
         );
-        crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
             sid,
             rk: "show".into(),
             is_show: true,
@@ -1400,7 +1400,7 @@ mod tests {
             hero_mark(test_store().view().current().unwrap()),
             PosterMark::Watched
         );
-        crate::metadata::set_current_for_test(test_store().state_mut(), None);
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     #[test]

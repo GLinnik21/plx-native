@@ -20,10 +20,10 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
     rig.stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
     let _ = rig.stores.take_notices();
 
-    assert!(rig.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+    assert!(rig.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
         sid,
         rk: "alpha".into(),
-        write: crate::viewstate::Write::Watched,
+        write: plx_data::viewstate::Write::Watched,
         detail: None,
         guid: String::new(),
     }));
@@ -48,7 +48,7 @@ fn separate_bridges_do_not_share_any_viewstate_owner_state_or_notice() {
 
     first.stores.viewstate.borrow_mut().seed_ownership_fixture_for_test();
     let before_reset = first.stores.viewstate.borrow().ownership_fixture_for_test();
-    second.viewstate_run(crate::stores::viewstate::ViewStateCmd::Reset);
+    second.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
     let after_reset = first.stores.viewstate.borrow().ownership_fixture_for_test();
 
     first.stores.viewstate.borrow_mut().seed_ownership_fixture_for_test();
@@ -74,7 +74,7 @@ fn reset_fences_a_late_old_viewstate_worker_from_the_post_reset_request() {
     let old_adapter = bridge.stores.viewstate.borrow().adapter_for_test();
     let finish_old_worker = bridge.stores.viewstate.borrow().late_completion_for_test();
 
-    bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Reset);
+    bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
     bridge.stores.viewstate.borrow_mut().seed_post_reset_flight_for_test();
     let new_adapter = bridge.stores.viewstate.borrow().adapter_for_test();
     assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
@@ -86,8 +86,8 @@ fn reset_fences_a_late_old_viewstate_worker_from_the_post_reset_request() {
         "a completion from the retired adapter must not satisfy the replacement request");
 }
 
-fn person_open(sid: plx_plex::plex::ServerId, name: &str) -> crate::stores::person::PersonCmd {
-    crate::stores::person::PersonCmd::Open {
+fn person_open(sid: plx_plex::plex::ServerId, name: &str) -> plx_data::stores::person::PersonCmd {
+    plx_data::stores::person::PersonCmd::Open {
         sid,
         key: "person-key".into(),
         guid: "plex://person/person-guid".into(),
@@ -96,8 +96,8 @@ fn person_open(sid: plx_plex::plex::ServerId, name: &str) -> crate::stores::pers
     }
 }
 
-fn person_item(sid: plx_plex::plex::ServerId, rk: &str, watched: bool) -> crate::pms::PmsMovie {
-    crate::pms::PmsMovie {
+fn person_item(sid: plx_plex::plex::ServerId, rk: &str, watched: bool) -> plx_data::pms::PmsMovie {
+    plx_data::pms::PmsMovie {
         sid,
         rk: rk.into(),
         watched,
@@ -106,7 +106,7 @@ fn person_item(sid: plx_plex::plex::ServerId, rk: &str, watched: bool) -> crate:
     }
 }
 
-fn deliver_person(rig: &mut Bridge, command: crate::stores::person::PersonCmd) {
+fn deliver_person(rig: &mut Bridge, command: plx_data::stores::person::PersonCmd) {
     let parts = CxParts { tick: Tick::default(), press: Default::default(),
         focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
     let mut out = Vec::new();
@@ -126,7 +126,7 @@ fn separate_bridges_do_not_share_any_person_owner_state_or_notice() {
     first.person_run(person_open(sid, "first-owner"));
     first.stores.person.seed_ownership_fixture_for_test();
     let before_reset = first.stores.person.ownership_fixture_for_test();
-    second.person_run(crate::stores::person::PersonCmd::Reset);
+    second.person_run(plx_data::stores::person::PersonCmd::Reset);
     let after_reset = first.stores.person.ownership_fixture_for_test();
 
     first.stores.person.seed_ownership_fixture_for_test();
@@ -155,7 +155,7 @@ fn person_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
     let old_adapter = bridge.stores.person.adapter_for_test();
     let finish_old_worker = bridge.stores.person.late_completion_for_test();
 
-    bridge.person_run(crate::stores::person::PersonCmd::Reset);
+    bridge.person_run(plx_data::stores::person::PersonCmd::Reset);
     bridge.person_run(person_open(sid, "post-reset-person"));
     let new_adapter = bridge.stores.person.adapter_for_test();
     assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
@@ -178,7 +178,7 @@ fn person_store_notifies_only_when_a_command_actually_changed_state() {
     let _ = bridge.stores.person.take_notice();
     let gen_before = bridge.stores.person.gen();
 
-    let changed = bridge.person_run(crate::stores::person::PersonCmd::SetWatchedLocal {
+    let changed = bridge.person_run(plx_data::stores::person::PersonCmd::SetWatchedLocal {
         sid, rk: "no-such-item".into(), on: true,
     });
 
@@ -195,7 +195,7 @@ fn person_reset_on_an_empty_store_still_notifies() {
     let mut bridge = Bridge::for_test(|| 0);
     let _ = bridge.stores.person.take_notice();
 
-    bridge.person_run(crate::stores::person::PersonCmd::Reset);
+    bridge.person_run(plx_data::stores::person::PersonCmd::Reset);
 
     assert!(bridge.stores.person.take_notice().is_some(),
         "Reset must still notify, even on an empty store, so a late owner picks up the rotation");
@@ -214,7 +214,7 @@ fn addressed_person_store_command_changes_and_notifies_only_its_bridge() {
     let _ = first.stores.take_notices();
     let _ = second.stores.take_notices();
 
-    deliver_person(&mut first, crate::stores::person::PersonCmd::SetWatchedLocal {
+    deliver_person(&mut first, plx_data::stores::person::PersonCmd::SetWatchedLocal {
         sid, rk: "movie".into(), on: true,
     });
 
@@ -256,10 +256,10 @@ fn viewstate_optimistic_edit_mutates_only_its_bridge_person_store() {
         let _ = bridge.stores.take_notices();
     }
 
-    assert!(first.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+    assert!(first.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
         sid,
         rk: "movie".into(),
-        write: crate::viewstate::Write::Watched,
+        write: plx_data::viewstate::Write::Watched,
         detail: None,
         guid: String::new(),
     }));
@@ -289,24 +289,24 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
         fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {
             match &stamped.fx {
                 Fx::App(AppFx::Store(StoreId::ViewState,
-                    StoreCmd::ViewState(crate::stores::viewstate::ViewStateCmd::Request {
+                    StoreCmd::ViewState(plx_data::stores::viewstate::ViewStateCmd::Request {
                         sid, rk, write, detail, guid,
                     }))) => {
                     assert_eq!((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str()),
-                        (self.sid, "movie", crate::viewstate::Write::Watched,
-                            Some(&crate::stores::viewstate::DetailRefresh {
+                        (self.sid, "movie", plx_data::viewstate::Write::Watched,
+                            Some(&plx_data::stores::viewstate::DetailRefresh {
                                 sid: self.sid, rk: "movie".into(), keep: None,
                             }), "plex://movie"));
                     self.app_effects += 1;
                 }
                 Fx::Deliver(MachineId::Store(ord), Delivery::Machine(AppMsg::Store(
-                    StoreCmd::ViewState(crate::stores::viewstate::ViewStateCmd::Request {
+                    StoreCmd::ViewState(plx_data::stores::viewstate::ViewStateCmd::Request {
                         sid, rk, write, detail, guid,
                     })))) => {
                     assert_eq!(*ord, StoreId::ViewState.ord());
                     assert_eq!((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str()),
-                        (self.sid, "movie", crate::viewstate::Write::Watched,
-                            Some(&crate::stores::viewstate::DetailRefresh {
+                        (self.sid, "movie", plx_data::viewstate::Write::Watched,
+                            Some(&plx_data::stores::viewstate::DetailRefresh {
                                 sid: self.sid, rk: "movie".into(), keep: None,
                             }), "plex://movie"));
                     self.store_deliveries += 1;
@@ -327,7 +327,7 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
     dispatcher.request(MachineId::Nav, NavOp::Root(route));
     dispatcher.frame_with(&mut rig, tick(0), Vec::new(), Vec::new(), &mut NoTap, false);
 
-    crate::metadata::set_current_for_test(rig.stores.metadata.state_mut(), Some(crate::metadata::Detail {
+    plx_data::metadata::set_current_for_test(rig.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
         sid,
         rk: "movie".into(),
         kind: "movie".into(),
@@ -371,16 +371,16 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
     rig.directory = directory_policy_fixture(own, hidden);
     let directory = rig.directory.clone();
 
-    crate::pms::with_refused_fetches_for_test(|| {
+    plx_data::pms::with_refused_fetches_for_test(|| {
         let _ = rig.stores.hubs.run_with_directory(
-            crate::stores::hubs::HubsCmd::Reset, directory.view());
+            plx_data::stores::hubs::HubsCmd::Reset, directory.view());
         let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
             owner: InputOwner::Entry(EntryId(0)) };
         let mut present = Present::new();
         let mut effects = Vec::new();
         let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);
         assert_eq!(rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
-            &AppMsg::Store(StoreCmd::Hubs(crate::stores::hubs::HubsCmd::RefetchHubs)),
+            &AppMsg::Store(StoreCmd::Hubs(plx_data::stores::hubs::HubsCmd::RefetchHubs)),
             &parts, &mut fx), Handled::Yes);
         drop(fx);
         assert_eq!(effects.iter().map(|effect| match &effect.fx {
@@ -404,19 +404,19 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
         assert_eq!(rig.stores.take_notices(), [(StoreId::Hubs, generation)],
             "one changed landing owes exactly one Hubs notice");
         let sources_after_land = rig.stores.hubs.run_with_directory(
-            crate::stores::hubs::HubsCmd::Retry, directory.view());
+            plx_data::stores::hubs::HubsCmd::Retry, directory.view());
         assert_eq!(sources_after_land.endpoints.iter().map(|request| request.sid).collect::<Vec<_>>(), [own],
             "landing must keep the retained frame directory");
 
         let _ = rig.stores.hubs.run_with_directory(
-            crate::stores::hubs::HubsCmd::Reset, directory.view());
+            plx_data::stores::hubs::HubsCmd::Reset, directory.view());
         let _ = rig.stores.hubs.run_with_directory(
-            crate::stores::hubs::HubsCmd::RefetchHubs, directory.view());
+            plx_data::stores::hubs::HubsCmd::RefetchHubs, directory.view());
         let _ = rig.stores.take_notices();
         effects.clear();
         let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);
         assert_eq!(rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
-            &AppMsg::StoreWork(crate::stores::StoreWork::Hubs), &parts, &mut fx), Handled::Yes);
+            &AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs), &parts, &mut fx), Handled::Yes);
         drop(fx);
         assert!(effects.is_empty(),
             "tick must not admit the source excluded by this frame's retained directory");
@@ -435,7 +435,7 @@ fn search_capture_and_pump_keep_the_frame_directory_policy() {
         "bridge-search-hidden", "127.0.0.1", 10, "synthetic", "fixture");
     let _cleanup = DirectoryPolicyCleanup;
     let mut rig = Bridge::for_test(|| 0);
-    rig.search_run(crate::stores::search::SearchCmd::Reset);
+    rig.search_run(plx_data::stores::search::SearchCmd::Reset);
 
     let mut pages = Dispatcher::<AppHost>::new();
     rig.capture_views(&mut pages);
@@ -446,7 +446,7 @@ fn search_capture_and_pump_keep_the_frame_directory_policy() {
 
     let directory = directory_policy_fixture(own, hidden);
     rig.directory = directory.clone();
-    rig.search_run(crate::stores::search::SearchCmd::SetQuery("same frame".into()));
+    rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("same frame".into()));
     let query_generation = rig.stores.search.query_gen();
     let _ = rig.stores.take_notices();
     let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
@@ -455,7 +455,7 @@ fn search_capture_and_pump_keep_the_frame_directory_policy() {
     let mut effects = Vec::new();
     let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Search.ord()), &mut present);
     assert_eq!(rig.deliver(MachineId::Store(StoreId::Search.ord()),
-        &AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us: 0 }), &parts, &mut fx), Handled::Yes);
+        &AppMsg::StoreWork(plx_data::stores::StoreWork::Search { dt_us: 0 }), &parts, &mut fx), Handled::Yes);
     assert_eq!(rig.stores.search.query_gen(), query_generation,
         "the pump must not supersede against a different directory in the same frame");
     assert!(rig.stores.take_notices().is_empty(),
@@ -490,9 +490,9 @@ fn separate_bridges_do_not_share_any_search_owner_state_or_notice() {
     first.stores.search.pump(0.0);
     second.stores.search.pump(0.0);
 
-    first.search_run(crate::stores::search::SearchCmd::SetQuery("first-owner".into()));
+    first.search_run(plx_data::stores::search::SearchCmd::SetQuery("first-owner".into()));
     let before_reset = first.stores.search.query().to_string();
-    second.search_run(crate::stores::search::SearchCmd::Reset);
+    second.search_run(plx_data::stores::search::SearchCmd::Reset);
     let after_reset = first.stores.search.query().to_string();
 
     assert_eq!(before_reset, after_reset, "resetting Bridge B must not clear Bridge A's query");
@@ -502,13 +502,13 @@ fn separate_bridges_do_not_share_any_search_owner_state_or_notice() {
     // Bridge A searches again (Bridge B's Reset above only had to leave A's TEXT alone; a fresh
     // query is what actually arms a fetch) and land a row straight into A's adapter, at A's own
     // generation, bypassing the worker.
-    first.search_run(crate::stores::search::SearchCmd::SetQuery("landed-owner".into()));
+    first.search_run(plx_data::stores::search::SearchCmd::SetQuery("landed-owner".into()));
     let gen = first.stores.search.query_gen();
     let idx = server.raw() as usize;
-    let item = crate::search::Item::Media(crate::pms::PmsMovie {
+    let item = plx_data::search::Item::Media(plx_data::pms::PmsMovie {
         sid: server, rk: "landed-row".into(), title: "Landed row".into(), ..Default::default()
     });
-    crate::search::land_for_test(&first.stores.search.adapter_for_test(), idx, gen, item);
+    plx_data::search::land_for_test(&first.stores.search.adapter_for_test(), idx, gen, item);
 
     // Bridge B pumps FIRST: if the two owners shared an adapter, this is the call that would have
     // picked A's landing up.
@@ -519,7 +519,7 @@ fn separate_bridges_do_not_share_any_search_owner_state_or_notice() {
     assert!(first.stores.search.pump(0.0), "Bridge A's own pump must land its own row");
     let shelves = first.stores.search.snapshot().view().shelves().to_vec();
     assert!(shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it,
-        crate::search::Item::Media(m) if m.rk == "landed-row")),
+        plx_data::search::Item::Media(m) if m.rk == "landed-row")),
         "Bridge A's pump must land the row addressed to its own adapter");
 
     let second_notices = second.stores.take_notices();
@@ -554,7 +554,7 @@ fn search_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
     let mut bridge = Bridge::for_test(|| 0);
     let old_adapter = bridge.stores.search.adapter_for_test();
 
-    bridge.search_run(crate::stores::search::SearchCmd::Reset);
+    bridge.search_run(plx_data::stores::search::SearchCmd::Reset);
     let new_adapter = bridge.stores.search.adapter_for_test();
     assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
         "reset must rotate the Search worker adapter");
@@ -565,10 +565,10 @@ fn search_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
     // would still match, if it could reach the current adapter at all).
     let gen = bridge.stores.search.query_gen();
     let idx = server.raw() as usize;
-    let item = crate::search::Item::Media(crate::pms::PmsMovie {
+    let item = plx_data::search::Item::Media(plx_data::pms::PmsMovie {
         sid: server, rk: "late-row".into(), title: "Late row".into(), ..Default::default()
     });
-    crate::search::land_for_test(&old_adapter, idx, gen, item);
+    plx_data::search::land_for_test(&old_adapter, idx, gen, item);
 
     // The retired adapter is orphaned, not observed: `pump` only ever drains the CURRENT adapter,
     // so a worker that captured `old_adapter` before the reset has nothing left to land into.
@@ -598,22 +598,22 @@ fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
     let mut bridge = Bridge::for_test(|| 0);
 
     // Seed the pre-reset profile's full owned state.
-    crate::metadata::set_current_for_test(bridge.stores.metadata.state_mut(), Some(crate::metadata::Detail {
+    plx_data::metadata::set_current_for_test(bridge.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
         sid, rk: "old-rk".into(), kind: "movie".into(), title: "Old Title".into(),
         guid: "plex://movie/old".into(), ..Default::default()
     }));
-    assert!(bridge.metadata_run(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(crate::metadata::NowPlaying {
+    assert!(bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
         is_episode: false, is_real_episode: false, title: "Old Playing".into(), ep_title: String::new(),
         season: 0, index: 0, summary: String::new(), year: 0, dur_ms: 0, rating: String::new(),
         thumb: String::new(), detail_rk: "old-rk".into(),
     }))));
-    assert!(bridge.metadata_run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(crate::metadata::PlayingItem {
+    assert!(bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(plx_data::metadata::PlayingItem {
         sid, rk: "old-rk".into(), show_rk: String::new(), audio: Vec::new(), subs: Vec::new(), video_fps: 0.0,
         width: 0, height: 0, bitrate: 0, dovi: Default::default(), markers: Vec::new(), chapters: Vec::new(), blur: None,
     }))));
-    bridge.metadata_run(crate::stores::metadata::MetadataCmd::AltInstall {
+    bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::AltInstall {
         sid, rk: "old-rk".into(),
-        copies: vec![crate::metadata::AltCopy { sid, rk: "old-rk".into(), ..Default::default() }],
+        copies: vec![plx_data::metadata::AltCopy { sid, rk: "old-rk".into(), ..Default::default() }],
     });
     assert!(!bridge.metadata_view().alt_copies(sid, "old-rk").is_empty(), "alt copies seeded");
     assert!(bridge.metadata_view().current().is_some());
@@ -621,9 +621,9 @@ fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
     assert!(bridge.metadata_view().playing().is_some());
 
     let old_adapter = bridge.stores.metadata.adapter_for_test();
-    let gen = crate::metadata::begin_detail_for_test(&old_adapter, sid, "late-rk");
+    let gen = plx_data::metadata::begin_detail_for_test(&old_adapter, sid, "late-rk");
 
-    assert!(bridge.metadata_run(crate::stores::metadata::MetadataCmd::Reset));
+    assert!(bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::Reset));
 
     let new_adapter = bridge.stores.metadata.adapter_for_test();
     assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
@@ -643,9 +643,9 @@ fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
     // one. Land its completion straight into the retired adapter, at the generation it reserved —
     // a witness state proves the completion is real and deliverable, not silently dropped for some
     // unrelated reason.
-    let mut witness = crate::metadata::MetadataState::default();
-    assert!(crate::metadata::land_detail_for_test(&mut witness, &old_adapter, sid, "late-rk", gen,
-        Some(crate::metadata::Detail { sid, rk: "late-rk".into(), title: "Late Title".into(), ..Default::default() })),
+    let mut witness = plx_data::metadata::MetadataState::default();
+    assert!(plx_data::metadata::land_detail_for_test(&mut witness, &old_adapter, sid, "late-rk", gen,
+        Some(plx_data::metadata::Detail { sid, rk: "late-rk".into(), title: "Late Title".into(), ..Default::default() })),
         "the pre-reset worker really completes onto the adapter it captured");
 
     // The live, post-reset store never touches the retired adapter, so its own pump has nothing

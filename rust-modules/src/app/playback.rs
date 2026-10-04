@@ -144,7 +144,7 @@ pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut
 pub(crate) fn retry_failed_playback(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    meta: &mut crate::stores::metadata::MetadataStore,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
     direct_play: Option<plx_plex::plex::session::DirectPlayMode>,
 ) -> bool {
     // URL/dev-trigger playback has no Plex descriptor.  Check BEFORE teardown: extinguishing its
@@ -182,7 +182,7 @@ pub(crate) fn retry_failed_playback(
 pub(crate) fn play_automatically(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    meta: &mut crate::stores::metadata::MetadataStore,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
 ) -> bool {
     use plx_plex::plex::session::DirectPlayMode;
     crate::route::restore_direct_play_mode(DirectPlayMode::Auto);
@@ -287,10 +287,10 @@ pub(crate) fn start_playback(
 /// return state: acceptance cannot invent where a session returns to.
 pub(super) trait PlaybackResources {
     fn request_movie(&mut self, ps: &mut crate::route::PlaybackSession,
-        meta: &mut crate::stores::metadata::MetadataStore, item: &crate::pms::PmsMovie) -> bool;
+        meta: &mut plx_data::stores::metadata::MetadataStore, item: &plx_data::pms::PmsMovie) -> bool;
     fn request_episode(&mut self, ps: &mut crate::route::PlaybackSession,
-        meta: &mut crate::stores::metadata::MetadataStore, rk: &str) -> bool;
-    fn describe_movie(&mut self, meta: &mut crate::stores::metadata::MetadataStore,
+        meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool;
+    fn describe_movie(&mut self, meta: &mut plx_data::stores::metadata::MetadataStore,
         sid: plx_plex::plex::ServerId, rk: &str);
     fn prepare_start(&mut self, ps: &mut crate::route::PlaybackSession,
         pa: &mut crate::player::adapter::PlayerAdapter, resume_ns: i64) -> bool;
@@ -299,7 +299,7 @@ pub(super) trait PlaybackResources {
 /// The HUD's context line for a catalog movie, `"2019 · PG-13 · 2h 15m"` — what
 /// `route::request_play_movie` takes as its `ctx`. Formatted here rather than in `route` because
 /// the runtime is `ui::fmt`'s and `route` may not name `ui`.
-pub(crate) fn movie_ctx(m: &crate::pms::PmsMovie) -> String {
+pub(crate) fn movie_ctx(m: &plx_data::pms::PmsMovie) -> String {
     let rating = if m.rating.is_empty() { "NR" } else { &m.rating };
     format!(
         "{} \u{b7} {} \u{b7} {}",
@@ -323,17 +323,17 @@ pub(super) struct LivePlaybackResources;
 
 impl PlaybackResources for LivePlaybackResources {
     fn request_movie(&mut self, ps: &mut crate::route::PlaybackSession,
-        meta: &mut crate::stores::metadata::MetadataStore, item: &crate::pms::PmsMovie) -> bool {
+        meta: &mut plx_data::stores::metadata::MetadataStore, item: &plx_data::pms::PmsMovie) -> bool {
         crate::route::request_play_movie(ps, meta, item, &movie_ctx(item))
     }
     fn request_episode(&mut self, ps: &mut crate::route::PlaybackSession,
-        meta: &mut crate::stores::metadata::MetadataStore, rk: &str) -> bool {
+        meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool {
         request_loaded_episode(ps, meta, rk)
     }
-    fn describe_movie(&mut self, meta: &mut crate::stores::metadata::MetadataStore,
+    fn describe_movie(&mut self, meta: &mut plx_data::stores::metadata::MetadataStore,
         sid: plx_plex::plex::ServerId, rk: &str) {
-        meta.run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        meta.run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
+        meta.run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        meta.run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
     }
     fn prepare_start(&mut self, ps: &mut crate::route::PlaybackSession,
         pa: &mut crate::player::adapter::PlayerAdapter, resume_ns: i64) -> bool {
@@ -419,7 +419,7 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
 }
 
 /// Legacy card launches resolve media data without creating an invisible Detail screen.
-pub(crate) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore) -> Option<i64> {
+pub(crate) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore) -> Option<i64> {
     let d = meta.view().current()?.clone();
     if d.kind == "show" || !d.seasons.is_empty() {
         let started = d.on_deck.as_ref().is_some_and(|e| e.resume_ms > 0)
@@ -427,22 +427,22 @@ pub(crate) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession, meta: 
         let ep = (if started { d.on_deck.as_ref() } else { None })
             .or_else(|| d.episodes.first())?
             .clone();
-        request_episode(ps, meta, &d, &ep).then(|| crate::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
+        request_episode(ps, meta, &d, &ep).then(|| plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
     } else {
         crate::route::request_play(ps, meta, crate::route::item_sid(d.sid), &d.rk, &d.part,
             &d.vcodec, &d.acodec, &d.title, "")
-            .then(|| crate::metadata::resume_ns(d.resume_ms, d.dur_ms))
+            .then(|| plx_data::metadata::resume_ns(d.resume_ms, d.dur_ms))
     }
 }
 
-pub(crate) fn request_loaded_episode(ps: &mut crate::route::PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, rk: &str) -> bool {
+pub(crate) fn request_loaded_episode(ps: &mut crate::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool {
     let Some(d) = meta.view().current().cloned() else { return false };
     let Some(ep) = d.episodes.iter().find(|e| e.rk == rk).cloned() else { return false };
     request_episode(ps, meta, &d, &ep)
 }
 
-fn request_episode(ps: &mut crate::route::PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, d: &crate::metadata::Detail, ep: &crate::metadata::Episode) -> bool {
-    meta.run(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(crate::metadata::NowPlaying {
+fn request_episode(ps: &mut crate::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, d: &plx_data::metadata::Detail, ep: &plx_data::metadata::Episode) -> bool {
+    meta.run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
         is_episode: true, is_real_episode: true, title: d.title.clone(), ep_title: ep.title.clone(),
         season: ep.season, index: ep.index, summary: ep.summary.clone(),
         year: ep.aired.get(..4).and_then(|s| s.parse().ok()).unwrap_or(0),
@@ -765,8 +765,8 @@ pub(crate) fn activate_ctrl_row(
         ControlSlot::Skip(pr) => {
             plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
                 feature: match pr.kind {
-                    crate::metadata::MarkerKind::Intro => plx_telemetry::diag::schema::Feature::SkipIntro,
-                    crate::metadata::MarkerKind::Credits => {
+                    plx_data::metadata::MarkerKind::Intro => plx_telemetry::diag::schema::Feature::SkipIntro,
+                    plx_data::metadata::MarkerKind::Credits => {
                         plx_telemetry::diag::schema::Feature::SkipCredits
                     }
                 },
@@ -776,7 +776,7 @@ pub(crate) fn activate_ctrl_row(
                     // Retire the segment FIRST: the seek lands on the preceding keyframe, which
                     // is usually still inside it, so without this the button comes straight back
                     // (see `metadata::mark_skipped`).
-                    bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
+                    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
                     request_seek(ns);
                     resume_if_paused(pa);
                     false
@@ -820,7 +820,7 @@ pub(crate) fn play_up_next(
     log(&format!("up next: S{}E{} rk={}", u.season, u.index, u.rk));
     let (rk, resume) = (
         u.rk.clone(),
-        crate::metadata::resume_ns(u.resume_ms, u.dur_ms),
+        plx_data::metadata::resume_ns(u.resume_ms, u.dur_ms),
     );
     close_player_overlays(pages);
     crate::player::stop_bufferfeed(ps, pa);
@@ -836,8 +836,8 @@ pub(crate) fn play_up_next(
     let sid = bridge.metadata_view().playing()
         .map(|p| p.sid)
         .unwrap_or_else(plx_plex::plex::current_server);
-    bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RetirePlaying);
-    bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
+    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RetirePlaying);
+    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
     start_playback(
         ps,
         pa,
@@ -860,7 +860,7 @@ pub(crate) fn play_up_next(
 pub(crate) unsafe fn play_item_now(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    mm: &crate::pms::PmsMovie,
+    mm: &plx_data::pms::PmsMovie,
     from_start: bool,
     from: Origin,
     hud_ms: u32,
@@ -876,7 +876,7 @@ pub(crate) unsafe fn play_item_now(
 pub(super) fn play_item_now_with<R: PlaybackResources>(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    mm: &crate::pms::PmsMovie,
+    mm: &plx_data::pms::PmsMovie,
     from_start: bool,
     from: Origin,
     hud_ms: u32,
@@ -909,7 +909,7 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
         if from_start {
             0
         } else {
-            crate::metadata::resume_ns(mm.resume_ms, mm.dur_ns / 1_000_000)
+            plx_data::metadata::resume_ns(mm.resume_ms, mm.dur_ns / 1_000_000)
         },
         from,
         hud_ms,
@@ -1361,7 +1361,7 @@ mod player_return_tests {
         }
 
         /// The `Spot` an entry's return memory is holding.
-        fn spot_of(&self, entry: plx_machine::machine::EntryId) -> crate::metadata::Spot {
+        fn spot_of(&self, entry: plx_machine::machine::EntryId) -> plx_data::metadata::Spot {
             match &self.d.nav.entry(entry).expect("the entry is on the stack").ret.memory {
                 PageMemory::Detail(memory) => memory.spot.clone(),
                 other => panic!("a detail entry remembers a detail page, not {other:?}"),
@@ -1467,7 +1467,7 @@ mod player_return_tests {
         let spot = p.spot_of(page);
         assert_ne!(
             spot,
-            crate::metadata::Spot::default(),
+            plx_data::metadata::Spot::default(),
             "the cursor really was moved before the session started: {spot:?}",
         );
         p.back_out();

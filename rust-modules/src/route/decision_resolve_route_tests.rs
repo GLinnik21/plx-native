@@ -365,7 +365,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
 
     // This is the reducer half of a quality edit after ResolveEnv was snapshotted.
     begin_user_contract_boundary();
-    assert_eq!(pump_play(&mut ps, &mut crate::stores::metadata::MetadataStore::default()), None);
+    assert_eq!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()), None);
     assert!(
         url(&ps).is_empty(),
         "the stale plan must never become the applied URL"
@@ -576,7 +576,7 @@ fn rejected_route_effect_restores_the_whole_applied_projection() {
         s.stream_vcodec = "h264".into();
         s.stream_acodec = "aac".into();
         s.stream_fps = 0.0;
-        s.stream_dovi = crate::metadata::Dovi::NONE;
+        s.stream_dovi = plx_data::metadata::Dovi::NONE;
         s.stream_immersive = false;
     } };
     restore_quality(Quality::Auto);
@@ -1310,7 +1310,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
     });
 
     assert_eq!(
-        pump_play(&mut ps, &mut crate::stores::metadata::MetadataStore::default()),
+        pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()),
         None,
         "the superseded plan may not be installed"
     );
@@ -1328,7 +1328,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         },
         rk: "refused-rk".into(),
     });
-    assert_eq!(pump_play(&mut ps, &mut crate::stores::metadata::MetadataStore::default()), None, "a refusal has no playable URL");
+    assert_eq!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()), None, "a refusal has no playable URL");
     assert!(
         play_refused(&ps),
         "its server verdict still reaches the error read-out"
@@ -2039,13 +2039,13 @@ fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::Original);
-    fn item(vcodec: &str, part: &str, acodec: &str) -> crate::metadata::Detail {
-        crate::metadata::Detail {
+    fn item(vcodec: &str, part: &str, acodec: &str) -> plx_data::metadata::Detail {
+        plx_data::metadata::Detail {
             vcodec: vcodec.to_string(),
             part: part.to_string(),
             width: 3840,
             height: 2160,
-            audio: vec![crate::metadata::Stream {
+            audio: vec![plx_data::metadata::Stream {
                 codec: acodec.to_string(),
                 ..Default::default()
             }],
@@ -2094,18 +2094,18 @@ fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::Original);
-    let mut show = crate::metadata::Detail {
+    let mut show = plx_data::metadata::Detail {
         is_show: true,
         part: String::new(),
         vcodec: String::new(),
         width: 3840,
         height: 1602,
         dovi: p5(),
-        audio: vec![crate::metadata::Stream {
+        audio: vec![plx_data::metadata::Stream {
             codec: "eac3".into(),
             ..Default::default()
         }],
-        on_deck: Some(crate::metadata::Episode {
+        on_deck: Some(plx_data::metadata::Episode {
             part: "/library/parts/1/2/on-deck.mkv".into(),
             vcodec: "hevc".into(),
             acodec: "eac3".into(),
@@ -2137,9 +2137,9 @@ fn restored_sidecar_is_part_of_the_route_contract() {
     let mut ps = PlaybackSession::IDLE;
     let _guard = fresh_registry(&mut ps);
     let sid = ServerId::from_raw(0);
-    let mut meta = crate::stores::metadata::MetadataStore::default();
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
     let playing = Some(fourk_item_with_subs(
-        sid, vec![], vec![crate::metadata::Stream {
+        sid, vec![], vec![plx_data::metadata::Stream {
             id: 77, external: true, selected: true, codec: "srt".into(),
             key: "/library/streams/77".into(), ..Default::default()
         }],
@@ -2280,7 +2280,7 @@ fn retry_after_start_failure_suppresses_enhancement() {
     crate::player::restore_audio_enhancements(enh);
     let sid = unregistered_sid();
     let fresh_env = |ps: &PlaybackSession| {
-        ResolveEnv::snapshot(ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-r")
+        ResolveEnv::snapshot(ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-r")
     };
     assert_eq!(fresh_env(&ps).audio_enhancements, enh, "the snapshot carries the preference");
 

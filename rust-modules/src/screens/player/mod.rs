@@ -238,7 +238,7 @@ impl PlayerScreen {
         ps: &crate::route::PlaybackSession,
         now: u32,
         measure: &dyn plx_machine::machine::Measure,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
     ) {
         crate::appkit::player_hud::draw_hud(
             ps,
@@ -794,7 +794,7 @@ impl PlayerScreen {
         edge: Edge,
         now: u32,
         fx: &mut Effects<'_, H>,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
     ) -> Handled {
         use consts::Key;
         // **A terminal failure owns the whole frame, so almost nothing may be driven on it.**
@@ -947,7 +947,7 @@ impl PlayerScreen {
         ps: &crate::route::PlaybackSession,
         key: consts::Key,
         now: u32,
-        meta: crate::metadata::MetadataView<'_>,
+        meta: plx_data::metadata::MetadataView<'_>,
     ) {
         let fwd = matches!(key, consts::Key::Right { .. });
         let dur = crate::player::duration_ns();
@@ -1823,7 +1823,7 @@ mod step_ladder_tests {
     /// judged at a point no control covers, since controls sit on top of its band by design.
     #[test]
     fn every_control_the_dpad_reaches_is_clickable_with_the_pointer_and_acts() {
-        use crate::metadata::{Marker, MarkerKind};
+        use plx_data::metadata::{Marker, MarkerKind};
         use crate::screens::registry::PlayerLike;
         use plx_ui::hit::{pointer_gaps, HitMap, PointerKind};
         use plx_machine::machine::FocusKey;
@@ -2586,14 +2586,14 @@ mod repair_confirmation_tests {
         fn session<'a>(cx: &Cx<'a, Self>) -> &'a crate::route::PlaybackSession { cx.views }
     }
     thread_local! {
-        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
-            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+        static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
     }
-    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
     }
     impl crate::screens::registry::MetadataLike for TestHost {
-        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
             test_store().view()
         }
     }

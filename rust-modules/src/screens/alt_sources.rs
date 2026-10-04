@@ -46,7 +46,7 @@
 //! navigation, which is `LibraryMenu`'s shape and keeps one owner of "what a press means here".
 //!
 //! This paragraph said "watch state does not travel between servers" flat, and half of that stopped
-//! being true when [`crate::viewstate`] began fanning a Mark as Watched out over every source
+//! being true when [`plx_data::viewstate`] began fanning a Mark as Watched out over every source
 //! holding the guid. The two halves are not the same claim and the split is the whole point: the
 //! **watched flag follows the TITLE** (having seen a film is not a fact about a host), while the
 //! **offset stays with the copy**. Nothing here changed — this panel still navigates rather than
@@ -69,7 +69,7 @@
 //! offer a different film — which is why the STORE is ADDRESSED on the `(server, ratingKey)` PAIR:
 //! a resolve outliving the page that asked for it is the normal case, not the exotic one. The
 //! store, the cross-source resolve that fills it and the headless `/tmp/plxnative-shared` stand-in
-//! all live in `crate::metadata`, beside the detail fetch whose landing kicks them; this module
+//! all live in `plx_data::metadata`, beside the detail fetch whose landing kicks them; this module
 //! ORDERS, MARKS and DRAWS and owns nothing else.
 //!
 //! **Rows are a SNAPSHOT, refreshed against a stamp.** `TableView` is built once and drawn from,
@@ -83,7 +83,7 @@
 use std::borrow::Cow;
 use std::convert::Infallible;
 
-use crate::metadata::AltCopy;
+use plx_data::metadata::AltCopy;
 use plx_plex::plex::ServerId;
 use crate::screens::registry::{AppLike, AppMsg, ContentArg, PageMemory};
 use plx_ui::consts::{SCR_H, SCR_W};
@@ -373,7 +373,7 @@ pub(crate) struct AltSourcesScreen {
 }
 
 impl AltSourcesScreen {
-    pub(crate) fn new(entry: EntryId, arg: AltSourcesArg, meta: crate::metadata::MetadataView<'_>) -> Self {
+    pub(crate) fn new(entry: EntryId, arg: AltSourcesArg, meta: plx_data::metadata::MetadataView<'_>) -> Self {
         let mut screen = Self {
             entry,
             arg,
@@ -392,7 +392,7 @@ impl AltSourcesScreen {
     /// film left `current` on our own server, no copy matched the pair, and the panel drew **no
     /// tick at all** — owner-reported. The tick answers "which of these am I looking at", and only
     /// the page knows; since phase 10 it says so on the argument.
-    fn live_rows(&self, meta: crate::metadata::MetadataView<'_>) -> Vec<AltRow> {
+    fn live_rows(&self, meta: plx_data::metadata::MetadataView<'_>) -> Vec<AltRow> {
         rows(
             meta.alt_copies(self.arg.sid, &self.arg.rk),
             self.arg.sid,
@@ -401,7 +401,7 @@ impl AltSourcesScreen {
     }
 
     /// Materialise the store into the table, when and only when the drawn content would differ.
-    fn refresh(&mut self, meta: crate::metadata::MetadataView<'_>) -> bool {
+    fn refresh(&mut self, meta: plx_data::metadata::MetadataView<'_>) -> bool {
         let next = self.live_rows(meta);
         if next == self.rows {
             return false;
@@ -411,7 +411,7 @@ impl AltSourcesScreen {
         true
     }
 
-    fn rebuild(&mut self, sel_mode: Sel, meta: crate::metadata::MetadataView<'_>) {
+    fn rebuild(&mut self, sel_mode: Sel, meta: plx_data::metadata::MetadataView<'_>) {
         if matches!(sel_mode, Sel::OnTheCopyYouAreOn) {
             self.rows = self.live_rows(meta);
         }
@@ -477,7 +477,7 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> M
                 Handled::Yes
             }
             ScreenEvent::StoreChanged(ord, _) => {
-                if *ord == crate::stores::StoreId::Metadata.ord() && self.refresh(H::metadata(cx)) {
+                if *ord == plx_data::stores::StoreId::Metadata.ord() && self.refresh(H::metadata(cx)) {
                     fx.invalidate(plx_machine::present::Provenance::Landing(fx.from()));
                 }
                 Handled::Yes

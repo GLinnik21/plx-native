@@ -11,7 +11,7 @@ use std::borrow::Cow;
 use std::ffi::CString;
 use std::os::raw::c_int;
 
-use crate::person::{Credit, Department};
+use plx_data::person::{Credit, Department};
 use plx_plex::plex::ServerId;
 use plx_ui::card_row;
 use plx_ui::consts::*;
@@ -224,7 +224,7 @@ impl FilmographyScreen {
         entry: EntryId,
         sid: ServerId,
         key: String,
-        person: crate::person::PersonView<'_>,
+        person: plx_data::person::PersonView<'_>,
     ) -> Self {
         let person = person.current().filter(|person| {
             plx_plex::plex::same_item((person.sid, person.key.as_str()), (sid, key.as_str()))
@@ -259,7 +259,7 @@ impl FilmographyScreen {
         screen
     }
 
-    fn person<'a, H: PersonLike>(&self, cx: &Cx<'a, H>) -> Option<&'a crate::person::Person> {
+    fn person<'a, H: PersonLike>(&self, cx: &Cx<'a, H>) -> Option<&'a plx_data::person::Person> {
         H::person(cx).current().filter(|p| {
             plx_plex::plex::same_item((p.sid, p.key.as_str()), (self.sid, self.key.as_str()))
         })
@@ -499,12 +499,12 @@ impl FilmographyScreen {
     fn rebuild_from(
         &mut self,
         focus: Option<plx_machine::machine::FocusKey<u32>>,
-        person: Option<&crate::person::Person>,
+        person: Option<&plx_data::person::Person>,
     ) {
         self.dirty = false;
         if let Some(p) = person {
             self.name = p.name.clone();
-            self.model = crate::person::filmography(p);
+            self.model = plx_data::person::filmography(p);
         }
         if !self.model.is_empty() && !self.model.iter().any(|d| d.title == self.department) {
             self.department = self
@@ -1008,7 +1008,7 @@ impl<H: ContentLike + PersonLike> Machine<H> for FilmographyScreen {
                 )));
                 Handled::Yes
             }
-            ScreenEvent::StoreChanged(ord, _) if *ord == crate::stores::StoreId::Person.ord() => {
+            ScreenEvent::StoreChanged(ord, _) if *ord == plx_data::stores::StoreId::Person.ord() => {
                 if self.person(cx).is_some() {
                     self.rebuild(cx.focus.current, cx);
                 }
@@ -1092,12 +1092,12 @@ mod tests {
         type Fx = AppFx;
         type Msg = super::super::registry::AppMsg;
         type Elem = u32;
-        type Views<'a> = crate::person::PersonView<'a>;
+        type Views<'a> = plx_data::person::PersonView<'a>;
         type Init = super::super::family::NoInit;
         type Memory = PageMemory;
     }
     impl PersonLike for FilmographyHost {
-        fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a> { cx.views }
+        fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> { cx.views }
     }
 
     fn dept(title: &str, rows: Vec<Credit>) -> Department {
@@ -1123,7 +1123,7 @@ mod tests {
         let mut s =
             FilmographyScreen::new(
                 EntryId(entry), ServerId::UNSET, format!("person-{entry}"),
-                crate::person::PersonView::default());
+                plx_data::person::PersonView::default());
         s.name = format!("Person {entry}");
         s.model = vec![
             dept(
@@ -1154,13 +1154,13 @@ mod tests {
 
     #[test]
     fn a_fresh_filmography_reads_only_the_person_view_it_is_given() {
-        let mut first = crate::stores::person::PersonStore::default();
-        first.run(crate::stores::person::PersonCmd::Open {
+        let mut first = plx_data::stores::person::PersonStore::default();
+        first.run(plx_data::stores::person::PersonCmd::Open {
             sid: ServerId::UNSET, key: "person".into(), guid: "guid".into(),
             name: "First owner".into(), thumb: String::new(),
         });
         first.install_credits_for_test(&[("Actor", 2)]);
-        let second = crate::stores::person::PersonStore::default();
+        let second = plx_data::stores::person::PersonStore::default();
 
         let page = FilmographyScreen::new(
             EntryId(1), ServerId::UNSET, "person".into(), first.view());
@@ -1190,7 +1190,7 @@ mod tests {
         focus: Option<plx_machine::machine::FocusKey<u32>>,
     ) -> Cx<'a, FilmographyHost> {
         Cx {
-            views: crate::person::PersonView::default(),
+            views: plx_data::person::PersonView::default(),
             tick: Tick::default(),
             measure,
             press: PressRead::default(),
@@ -1738,7 +1738,7 @@ mod tests {
         let mut remounted =
             FilmographyScreen::new(
                 EntryId(50), ServerId::UNSET, "person-50".to_string(),
-                crate::person::PersonView::default());
+                plx_data::person::PersonView::default());
         assert!(remounted.model.is_empty());
         remounted.restore(&memory, &cx(&FixtureMeasure, None));
         assert_eq!(remounted.department, "Writer");

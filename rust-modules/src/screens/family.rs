@@ -49,7 +49,7 @@ impl std::ops::DerefMut for SessionGround {
 }
 
 /// Prefer the already-published Home hero; otherwise observe the persisted seed as it lands.
-pub(crate) fn pre_home_ground(hubs: crate::pms::HubsView<'_>) -> SessionGround {
+pub(crate) fn pre_home_ground(hubs: plx_data::pms::HubsView<'_>) -> SessionGround {
     let live = hubs.hero(0).filter(|hero| hero.item.has_blur).map(|hero| hero.item.blur);
     if let Some(blur) = live {
         let _ = plx_base::storage_worker::submit_retained(move || plx_plex::plex::session::record_last_hero(blur));
@@ -232,7 +232,7 @@ impl Host for InnerHost {
     type Fx = AppFx;
     type Msg = AppMsg;
     type Elem = u32;
-    type Views<'a> = crate::stores::browse::DirectoryView<'a>;
+    type Views<'a> = plx_data::stores::browse::DirectoryView<'a>;
     type Init = NoInit;
     // No family page remembers anything on its own `ReturnState` today (`machine/src/machine.rs`'s
     // `Host::Memory` doc) — the surface's own `NavStack<InnerHost>` restores its child pages by
@@ -241,7 +241,7 @@ impl Host for InnerHost {
 }
 
 impl DirectoryLike for InnerHost {
-    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> {
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
         cx.views
     }
 }
@@ -393,7 +393,7 @@ mod session_tests {
         let mut saved = (*plx_plex::plex::session::peek()).clone();
         saved.last_hero_blur = Some([[0.2, 0.3, 0.4]; 4]);
         plx_plex::plex::session::install_transient_for_test(true);
-        let mut ground = super::pre_home_ground(crate::pms::HubsSnapshot::empty_for_test().view());
+        let mut ground = super::pre_home_ground(plx_data::pms::HubsSnapshot::empty_for_test().view());
         assert!(ground.seed.is_none());
         plx_plex::plex::session::save(&saved);
         assert!(ground.refresh());

@@ -32,7 +32,7 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
-    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
@@ -50,16 +50,16 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
         MachineId::Nav,
         Fx::App(AppFx::Store(
             StoreId::Browse,
-            crate::stores::StoreCmd::Browse(crate::stores::browse::BrowseCmd::Addressed {
-                target: crate::stores::browse::SectionAddress {
+            plx_data::stores::StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Addressed {
+                target: plx_data::stores::browse::SectionAddress {
                     epoch: id.epoch,
                     sid: id.sid,
                     section: id.section,
                 },
-                work: crate::stores::browse::LibraryWork::Commit {
+                work: plx_data::stores::browse::LibraryWork::Commit {
                     select: false,
                     choice: false,
-                    query: Some(crate::stores::browse::QueryEdit::Unwatched(true)),
+                    query: Some(plx_data::stores::browse::QueryEdit::Unwatched(true)),
                 },
             }),
         )),
@@ -74,9 +74,9 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
     let snapshot = rig.listing.clone();
     assert_eq!(snapshot.view().id(), Some(owned_id));
     assert_eq!(snapshot.view().total(), -1, "no new page has arrived");
-    assert!(snapshot.view().cursor().is_none_or(|cursor| matches!(cursor.at, crate::stores::browse::CursorAt::SlotIndex(0))),
+    assert!(snapshot.view().cursor().is_none_or(|cursor| matches!(cursor.at, plx_data::stores::browse::CursorAt::SlotIndex(0))),
         "the carried WillLeave save must not overwrite the new query with an old deep bookmark: {:?}", snapshot.view().cursor());
-    rig.enter_library(crate::stores::browse::SecKind::Movie);
+    rig.enter_library(plx_data::stores::browse::SecKind::Movie);
     for i in 81..86 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
@@ -140,7 +140,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
-    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     Bridge::library_command(

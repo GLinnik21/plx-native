@@ -10,7 +10,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
     #[derive(Default)]
     struct Trace {
         edits: usize,
-        commits: Vec<crate::stores::browse::QueryEdit>,
+        commits: Vec<plx_data::stores::browse::QueryEdit>,
     }
     impl plx_ui::dispatch::Tap<AppHost> for Trace {
         fn effect(&mut self, _: u64, effect: &plx_machine::machine::Stamped<AppHost>) {
@@ -20,9 +20,9 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
                 }
                 Fx::App(AppFx::Store(
                     _,
-                    crate::stores::StoreCmd::Browse(crate::stores::browse::BrowseCmd::Addressed {
+                    plx_data::stores::StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Addressed {
                         work:
-                            crate::stores::browse::LibraryWork::Commit {
+                            plx_data::stores::browse::LibraryWork::Commit {
                                 query: Some(edit), ..
                             },
                         ..
@@ -51,7 +51,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
-    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     let page = d.nav.top_page().unwrap().id;
@@ -65,7 +65,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
                 host,
                 kind: crate::screens::registry::LibraryMenuKind::Filter,
                 anchor: [0; 4],
-                target: crate::stores::browse::SectionAddress {
+                target: plx_data::stores::browse::SectionAddress {
                     epoch: listing.epoch,
                     sid: listing.sid,
                     section: listing.section,
@@ -139,7 +139,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
     }
     assert_eq!(
         trace.commits,
-        vec![crate::stores::browse::QueryEdit::Unwatched(true)],
+        vec![plx_data::stores::browse::QueryEdit::Unwatched(true)],
         "dismissal preserves the pending desired action and commits it exactly once"
     );
     assert!(rig.listing.view().unwatched());

@@ -8,13 +8,13 @@ use super::*;
 // Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module (see the
 // comment on the first one).
 #[cfg(feature = "devtriggers")]
-pub(super) fn p8() -> crate::metadata::Dovi {
-    crate::metadata::Dovi {
+pub(super) fn p8() -> plx_data::metadata::Dovi {
+    plx_data::metadata::Dovi {
         present: true,
         profile: 8,
         bl_compat: 1,
         el_present: false,
-        ..crate::metadata::Dovi::NONE
+        ..plx_data::metadata::Dovi::NONE
     }
 }
 
@@ -22,13 +22,13 @@ pub(super) fn p8() -> crate::metadata::Dovi {
 // Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module (see the
 // comment on the first one).
 #[cfg(feature = "devtriggers")]
-pub(super) fn p5() -> crate::metadata::Dovi {
-    crate::metadata::Dovi {
+pub(super) fn p5() -> plx_data::metadata::Dovi {
+    plx_data::metadata::Dovi {
         present: true,
         profile: 5,
         bl_compat: 0,
         el_present: false,
-        ..crate::metadata::Dovi::NONE
+        ..plx_data::metadata::Dovi::NONE
     }
 }
 
@@ -36,7 +36,7 @@ pub(super) fn p5() -> crate::metadata::Dovi {
 /// synthetic boundary explicit in the fixture layer so production `apply_plan` and tests of
 /// the start reducer both retain the real `Prepared -> Starting -> result` semantics.
 pub(super) fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) {
-    let start = super::apply_plan(ps, &mut crate::stores::metadata::MetadataStore::default(), plan, rk);
+    let start = super::apply_plan(ps, &mut plx_data::stores::metadata::MetadataStore::default(), plan, rk);
     settle_plan_start_in_unit_test(ps, start);
 }
 
@@ -58,8 +58,8 @@ pub(super) fn test_original_candidate(subtitle_ordinal: Option<i32>) -> AutoOrig
         direct: true,
         vcodec: "hevc".into(),
         fps: 23.976,
-        dovi: crate::metadata::Dovi::NONE,
-        dv_decision: crate::metadata::DvDecision::NONE,
+        dovi: plx_data::metadata::Dovi::NONE,
+        dv_decision: plx_data::metadata::DvDecision::NONE,
         audio: Some(CarriedAudio {
             sid: 42,
             ordinal: 1,
@@ -367,17 +367,17 @@ pub(super) fn selection_probe_pms(
 
 pub(super) fn fourk_item(
     sid: ServerId,
-    audio: Vec<crate::metadata::Stream>,
-) -> crate::metadata::PlayingItem {
+    audio: Vec<plx_data::metadata::Stream>,
+) -> plx_data::metadata::PlayingItem {
     fourk_item_with_subs(sid, audio, Vec::new())
 }
 
 pub(super) fn fourk_item_with_subs(
     sid: ServerId,
-    audio: Vec<crate::metadata::Stream>,
-    subs: Vec<crate::metadata::Stream>,
-) -> crate::metadata::PlayingItem {
-    crate::metadata::PlayingItem {
+    audio: Vec<plx_data::metadata::Stream>,
+    subs: Vec<plx_data::metadata::Stream>,
+) -> plx_data::metadata::PlayingItem {
+    plx_data::metadata::PlayingItem {
         sid,
         rk: "rk-4k".into(),
         show_rk: String::new(),
@@ -387,15 +387,15 @@ pub(super) fn fourk_item_with_subs(
         width: 3840,
         height: 2160,
         bitrate: 48_000,
-        dovi: crate::metadata::Dovi::NONE,
+        dovi: plx_data::metadata::Dovi::NONE,
         markers: Vec::new(),
         chapters: Vec::new(),
         blur: None,
     }
 }
 
-pub(super) fn eac3_track() -> crate::metadata::Stream {
-    crate::metadata::Stream {
+pub(super) fn eac3_track() -> plx_data::metadata::Stream {
+    plx_data::metadata::Stream {
         id: 36014,
         index: 1,
         lang_code: "eng".into(),
@@ -408,8 +408,8 @@ pub(super) fn eac3_track() -> crate::metadata::Stream {
     }
 }
 
-pub(super) fn selected_sub(id: i64, codec: &str) -> crate::metadata::Stream {
-    crate::metadata::Stream {
+pub(super) fn selected_sub(id: i64, codec: &str) -> plx_data::metadata::Stream {
+    plx_data::metadata::Stream {
         id,
         index: 0,
         lang_code: "eng".into(),

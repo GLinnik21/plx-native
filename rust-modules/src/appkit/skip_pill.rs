@@ -9,7 +9,7 @@
 //! `app.rs` RAISES the HUD once when a segment begins and parks focus here, so a bare OK still
 //! skips in one press instead of three.
 #![allow(dead_code)]
-use crate::metadata::{self, MarkerKind};
+use plx_data::metadata::{self, MarkerKind};
 use plx_ui::theme;
 use plx_ui::widgets::{Button, ControlGround};
 use plx_ui::{Env, Painter, Rect, View};

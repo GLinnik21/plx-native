@@ -41,44 +41,44 @@ impl HomeIo {
         admitted
     }
     #[cfg(test)]
-    pub fn hubs(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
-        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32) -> crate::stores::StoreOutcome {
+    pub fn hubs(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
+        cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32) -> plx_data::stores::StoreOutcome {
         let adapter = hubs.adapter();
-        self.hubs_with(hubs, cmd, dt, &mut |request| crate::pms::spawn_fetch(&adapter, request))
+        self.hubs_with(hubs, cmd, dt, &mut |request| plx_data::pms::spawn_fetch(&adapter, request))
     }
     #[cfg(test)]
-    fn hubs_with(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
-        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
-        launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> crate::stores::StoreOutcome {
+    fn hubs_with(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
+        cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
+        launch: &mut dyn FnMut(plx_data::pms::HubRequest) -> bool) -> plx_data::stores::StoreOutcome {
         hubs.controlled(cmd, dt, &mut |request| {
             let (epoch, req, sid, client, token_gen) = request.descriptor();
             self.admit(serde_json::json!({"kind":"hubs", "epoch":epoch,
                 "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
         })
     }
-    pub(crate) fn hubs_with_directory(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
-        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
-        directory: crate::stores::browse::DirectoryView<'_>) -> crate::stores::StoreOutcome {
+    pub(crate) fn hubs_with_directory(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
+        cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
+        directory: plx_data::stores::browse::DirectoryView<'_>) -> plx_data::stores::StoreOutcome {
         let adapter = hubs.adapter();
         self.hubs_with_directory_and_launch(hubs, cmd, dt, directory,
-            &mut |request| crate::pms::spawn_fetch(&adapter, request))
+            &mut |request| plx_data::pms::spawn_fetch(&adapter, request))
     }
-    fn hubs_with_directory_and_launch(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
-        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
-        directory: crate::stores::browse::DirectoryView<'_>,
-        launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> crate::stores::StoreOutcome {
+    fn hubs_with_directory_and_launch(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
+        cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
+        directory: plx_data::stores::browse::DirectoryView<'_>,
+        launch: &mut dyn FnMut(plx_data::pms::HubRequest) -> bool) -> plx_data::stores::StoreOutcome {
         hubs.controlled_with_directory(cmd, dt, directory, &mut |request| {
             let (epoch, req, sid, client, token_gen) = request.descriptor();
             self.admit(serde_json::json!({"kind":"hubs", "epoch":epoch,
                 "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
         })
     }
-    pub(crate) fn discovery_owned(&mut self, stores: &crate::stores::Stores) {
-        self.discovery_owned_with(stores, &mut crate::browse::execute_discovery);
+    pub(crate) fn discovery_owned(&mut self, stores: &plx_data::stores::Stores) {
+        self.discovery_owned_with(stores, &mut plx_data::browse::execute_discovery);
     }
 
-    pub(crate) fn discovery_owned_with(&mut self, stores: &crate::stores::Stores,
-        launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool) {
+    pub(crate) fn discovery_owned_with(&mut self, stores: &plx_data::stores::Stores,
+        launch: &mut dyn FnMut(plx_data::browse::DiscoveryRequest) -> bool) {
         stores.browse_controlled_discover(&mut |request| {
             self.admit(request.descriptor(), || launch(request))
         });
@@ -155,7 +155,7 @@ pub(crate) struct Initial {
     pub version: u32,
     pub session: crate::auth::SessionInit,
     pub consent: plx_telemetry::telemetry::consent::Consent,
-    pub home: crate::pms::initial::Initial,
+    pub home: plx_data::pms::initial::Initial,
     pub clock_start: u32,
     pub entropy: Entropy,
     pub primary_client: u32,
@@ -180,7 +180,7 @@ pub(crate) struct ContentInitial {
 
 impl Initial {
     /// The Filmography credit count the controlled content domain was booted with: what
-    /// `crate::stores::tape::init` is armed with (`None` outside the controlled content domain).
+    /// `plx_data::stores::tape::init` is armed with (`None` outside the controlled content domain).
     pub(crate) fn person_credits(&self) -> Option<u32> {
         self.content.as_ref().map(|v| v.personcredits)
     }
@@ -194,7 +194,7 @@ impl Initial {
             origin_url:origin.base(),token:format!("s{:08x}",seed.wrapping_add(1)),
             tier:Some(plx_plex::plex::probe::Location::Local), ..Default::default() };
         let initial = Self { version:1, session:crate::auth::SessionInit::captured_boot(saved,Some(primary),Vec::new()),
-            consent:Default::default(),home:crate::pms::initial::Initial::fresh(),clock_start:0,
+            consent:Default::default(),home:plx_data::pms::initial::Initial::fresh(),clock_start:0,
             entropy:Entropy::Seeded(seed),primary_client:1,automated:true,settings:settings.clone(),
             content:None, triggers:vec!["plxnative-app-init".into(),"plxnative-rec".into(),
                 "plxnative-focus".into(),"plxnative-noidle".into()] };
@@ -221,7 +221,7 @@ impl Initial {
             automated: crate::dev::any_trigger_present(),
             settings: crate::dev::scenarios::settings_boot_value(),
             content: None,
-            home: crate::pms::initial::Initial::fresh(),
+            home: plx_data::pms::initial::Initial::fresh(),
             triggers: crate::dev::armed_triggers(),
         };
         initial.validate()?;

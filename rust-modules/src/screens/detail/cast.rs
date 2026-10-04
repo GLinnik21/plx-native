@@ -2,7 +2,7 @@
 
 use std::ffi::CString;
 
-use crate::metadata::Detail;
+use plx_data::metadata::Detail;
 use plx_plex::plex::ServerId;
 use plx_ui::card_row::{self, CardRow, RowStyle};
 use plx_ui::label::{HAlign, Label, VAlign};
@@ -307,8 +307,8 @@ mod tests {
 
     #[test]
     fn ok_on_a_crew_tile_opens_that_crew_members_page_not_an_actor_at_the_same_index() {
-        fn credit(name: &str, role: &str, id: i64) -> crate::metadata::Cast {
-            crate::metadata::Cast {
+        fn credit(name: &str, role: &str, id: i64) -> plx_data::metadata::Cast {
+            plx_data::metadata::Cast {
                 tag: name.into(),
                 role: role.into(),
                 thumb: String::new(),

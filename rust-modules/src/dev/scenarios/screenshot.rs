@@ -16,7 +16,7 @@
 
 use crate::app::run::Frame;
 use crate::app::App;
-use crate::browse::LibraryType;
+use plx_data::browse::LibraryType;
 use crate::screens::registry::{AppArg, LibraryCmd, LibraryMenuKind};
 
 /// How long an arm keeps retrying for its data before it gives up and says so.

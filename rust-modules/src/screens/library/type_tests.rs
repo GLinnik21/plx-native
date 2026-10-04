@@ -1,13 +1,13 @@
 use super::*;
-use crate::browse::LibraryType;
+use plx_data::browse::LibraryType;
 
 fn tv_fixture(kind: LibraryType, total: usize) -> Fixture {
     let mut fixture = Fixture::new();
     let sid = plx_plex::plex::ServerId::from_raw(0);
     fixture.listing = fixture.listing.with_library_type(kind).with_total(total);
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
-        crate::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Show,
-            row: crate::browse::SrcRow { section: 0, title: "Television".into(), pinned: true, current: true, ..Default::default() } },
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, vec![
+        plx_data::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Show,
+            row: plx_data::browse::SrcRow { section: 0, title: "Television".into(), pinned: true, current: true, ..Default::default() } },
     ]);
     fixture
 }
@@ -23,9 +23,9 @@ fn tv_page(fixture: &Fixture) -> LibraryScreen {
 fn collections_fixture(total: usize) -> Fixture {
     let mut fixture = Fixture::new();
     let sid = plx_plex::plex::ServerId::from_raw(0);
-    let rows = (0..total.min(3)).map(|i| crate::pms::PmsMovie {
+    let rows = (0..total.min(3)).map(|i| plx_data::pms::PmsMovie {
         sid, rk: format!("{}", 50_001 + i), title: format!("Collection {i}"),
-        kind: crate::pms::KIND_COLLECTION, child_count: i as i64 + 1, ..Default::default()
+        kind: plx_data::pms::KIND_COLLECTION, child_count: i as i64 + 1, ..Default::default()
     }).collect();
     fixture.listing = fixture.listing.with_library_type(LibraryType::Collections).with_total(total).with_page(0, rows);
     fixture
