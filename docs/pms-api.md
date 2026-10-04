@@ -1081,6 +1081,88 @@ Client behavior expected by PMS (matches official clients):
 
 ---
 
+## 8. Subtitle search & download — `/library/metadata/{rk}/subtitles` (verified live 2026-10-04)
+
+The agent-backed subtitle search (the official client's "Search subtitles"). **`plex-openapi.json` is
+wrong about this endpoint in three ways and silent in a fourth**, which is why everything below was
+measured rather than read: the spec documents only `GET …/subtitles` with the summary *"Add a
+subtitle to a metadata item"*, marks it **admin-scoped**, gives it **no response schema at all**,
+and documents no download parameter. All four claims are contradicted or unanswered by the server.
+
+Measured against a **shared, non-owned** server (the case the spec's `admin` scope implies should
+fail). Both operations succeeded, so the admin scope is not enforced here for a shared library.
+
+### Search — `GET /library/metadata/{rk}/subtitles`
+
+| param | type | notes |
+|---|---|---|
+| `language` | string | **TWO-LETTER code only** — see the trap below |
+| `hearingImpaired` | 0/1 | |
+| `forced` | 0/1 | |
+
+Answers a `MediaContainer` whose rows arrive in **`Stream[]`** (`size` = row count; 10 for `en`,
+4 for `nl` on the sample item). A row is an ordinary subtitle `Stream` plus provider fields:
+
+```json
+{ "id": 1929523, "key": "/library/streams/1929523", "streamType": 3,
+  "codec": "srt", "format": "srt", "canAutoSync": false,
+  "language": "Nederlands", "languageCode": "nld", "languageTag": "nld",
+  "providerTitle": "OpenSubtitles", "score": "2301",
+  "sourceKey": "/library/streams/6923797",
+  "title": "ALIVE.2020.KOREAN.1080p.WEBRip.AAC2.0.x264-NOGRP",
+  "displayTitle": "Nederlands",
+  "extendedDisplayTitle": "ALIVE… (Nederlands SRT OpenSubtitles)" }
+```
+
+Types observed across every row: `id`/`streamType` int, `canAutoSync` bool, **everything else a
+string — `score` included**. `score` is `"2301"`, never `2301`, so it needs the lenient integer
+adapter; a strict field here fails the whole container and the screen shows no results at all.
+
+**TRAP — a 3-letter language code returns HTTP 500.** `language=en` answers 200; `language=eng` and
+`language=nld` answer a **bare-HTML `500 Internal Server Error`** (an unhandled server exception,
+not a Plex error body). The client must therefore send the 2-letter primary subtag, even though the
+rows themselves report `languageCode: "nld"`. Fold with `metadata::two_letter_code` before
+building the query, and never pass a stream's own code straight through. **Not `lang_key`**: its
+grouping key is the lexicographically smallest spelling, which for Dutch is `"dut"`.
+
+**TRAP — candidate `key`s are EPHEMERAL.** Each search mints new ids: the same four Dutch
+candidates were `/library/streams/1929511…14` on one call and `…1929520…23` on the next. A download
+issued with a key from an earlier search answers **200 and silently does nothing**. A key is only
+valid for the search that produced it, so the app must never cache or persist one across searches.
+
+### Download — `PUT /library/metadata/{rk}/subtitles?key={candidate key}`
+
+Answers **HTTP 200 with a zero-byte body**. It therefore names nothing: the id of the stream it
+creates is not returned, and the only way to identify it is to diff the item's subtitle streams.
+
+**The install is ASYNCHRONOUS.** The 200 means *accepted*, not *done*. An item fetched immediately
+after the PUT did **not** yet carry the new stream; it was present on a later read. A client that
+refreshes once, straight after the call, will reliably see nothing — it must re-read until the
+stream appears (or give up), never assume one round trip suffices.
+
+**The created stream takes a NEW id, unrelated to the candidate key.** Downloading candidate
+`/library/streams/1929514` produced stream **1929519**:
+
+```json
+{ "id": 1929519, "key": "/library/streams/1929519", "languageCode": "nld",
+  "codec": "srt", "format": "srt", "providerTitle": "OpenSubtitles",
+  "selected": true, "title": "ALIVE.2020.KOREAN.1080p.WEBRip.AAC2.0.x264-NOGRP" }
+```
+
+`title` carries the provider's release name, which is what lets a diff confirm *which* candidate
+landed. Note `external` is absent (`null`) on this endpoint — the app derives external from
+`streamType == 3 && !key.is_empty()`, which holds here.
+
+**PMS SELECTS the downloaded subtitle itself.** `1929519` came back `selected: true` while the
+previously selected English stream dropped to `null`. So the server-side selection is already done;
+a client still has to make its own client-side renderer pick it up, but it should not assume the
+server needs telling.
+
+The delivered file is reachable at the created stream's `key` through the ordinary sidecar route
+(§`/library/streams/{id}`), so an OpenSubtitles `.srt` renders through the existing sidecar path.
+
+---
+
 ## App data-layer summary
 
 - 3 startup requests: `/library/sections` (find movie/show keys), `/hubs/promoted` (home shelves, items include Media for instant resume), then lazy `/library/sections/{key}/all` pages of 50.

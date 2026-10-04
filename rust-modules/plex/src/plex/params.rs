@@ -285,6 +285,17 @@ pub struct StreamSelection {
     pub subtitle_stream_id: i64,
 }
 
+/// One agent-backed subtitle search (`GET /library/metadata/{rk}/subtitles`, `docs/pms-api.md` §8).
+///
+/// `language` is the code the CALLER wants; the op folds it to the 2-letter primary subtag PMS
+/// demands before it reaches the wire (see `subtitles::query_language` for why a 3-letter code is
+/// not merely rejected but crashes the server).
+pub struct SubtitleSearch {
+    pub language: String,
+    pub hearing_impaired: bool,
+    pub forced: bool,
+}
+
 /// One `/:/timeline` progress report (POST — the spec verb). `play_queue_*` empty = omit;
 /// `*_stream_id` 0 = omit. PMS exposes timeline playback and encoder ownership independently,
 /// but active HLS playback reports the current encoder's coupled wire identity so they remain
