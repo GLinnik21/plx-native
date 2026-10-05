@@ -445,8 +445,14 @@ class MakefileWiringTests(unittest.TestCase):
         m = re.search(r"cargo \+\$\(RUST_NIGHTLY\) (rustc .*?--message-format=json-render-diagnostics)", recipe)
         self.assertIsNotNone(m, "the Makefile no longer spells the staticlib cargo line this way")
         want = bb.arm_argv({"RUST_TARGET": "$(RUST_TARGET)", "RUST_TDIR": "$(RUST_TDIR)",
-                            "RUST_FEATFLAGS": "$(RUST_FEATFLAGS)"})
+                            "RUST_FEATFLAGS": "$(RUST_FEATFLAGS)", "ARM_PROFILE_FLAG": "$(ARM_PROFILE_FLAG)"})
         self.assertEqual(shlex.split(m.group(1)), want)
+
+    def test_arm_argv_follows_the_makefiles_profile(self):
+        base = {"RUST_TARGET": "arm-t", "RUST_TDIR": "target", "RUST_FEATFLAGS": ""}
+        self.assertEqual(bb.arm_argv(base)[:4], ["rustc", "--release", "--target", "arm-t"])
+        fast = bb.arm_argv(dict(base, ARM_PROFILE_FLAG="--profile tvdev"))
+        self.assertEqual(fast[:5], ["rustc", "--profile", "tvdev", "--target", "arm-t"])
 
     def test_print_bench_config_reports_the_recipes_values_and_no_credential(self):
         proc = self.make("-s", "print-bench-config", env={"PLX_SENTRY_DSN": "https://secret-dsn.invalid/1",
@@ -454,7 +460,7 @@ class MakefileWiringTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         cfg = dict(line.split("=", 1) for line in proc.stdout.splitlines())
         for key in ("RUST_NIGHTLY", "RUST_TDIR", "RUST_TARGET", "RUST_FEATFLAGS", "RUST_LIB", "RUST_ENV",
-                    "TEST_FAST_TDIR", "RELEASE"):
+                    "TEST_FAST_TDIR", "RELEASE", "ARM_PROFILE", "ARM_PROFILE_FLAG"):
             self.assertIn(key, cfg)
         self.assertEqual(cfg["TEST_FAST_TDIR"], "target-fast")
         self.assertEqual(cfg["RELEASE"], "")

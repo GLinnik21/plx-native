@@ -71,6 +71,36 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   runtime major-selected table returning: this picks between two ABIs of ONE version at COMPILE
   time, on evidence the compiler holds — and deriving the second half is what found
   `AVSubtitleRect` modelled with `flags` in the wrong place.
+- **`ARM_PROFILE` — which cargo profile the ARM build uses.** A plain local `make` / `make deploy`
+  builds the staticlib and the storage helper with `[profile.tvdev]` (`inherits = "release"`,
+  `lto = "off"`, `codegen-units = 16`), because the fat-LTO `release` profile that keeps the binary
+  under `ci/build-budgets.json` doubles the local edit-rebuild. Measured on a quiet M-series Mac
+  after touching a file in `rust-modules/screens/src/`: `make pkg/plxnative` 70 s on `release`
+  against 11 s on `tvdev`; the unstripped `pkg/plxnative` is 14.2 MB against 21.2 MB, and the
+  stripped one `make ipk` stages is 11.3 MB against 13.5 MB, so **a `tvdev` binary does not meet the
+  size budget and is never graded against it**. Same opt-level, panic strategy (unwind), debug info
+  and RUSTFLAGS, so it links and passes `ci/check-elf.sh` and `ci/check-package.py` the same way.
+  `release` is selected whenever `RELEASE=1`, `SYMBOLS=1`, `FLAVOR=stable|nightly` or a CI
+  environment (`CI` / `GITHUB_ACTIONS`, which GitHub sets on every job; the workflows are untouched
+  and `ci/test_arm_profile.py` pins the rule). `make ARM_PROFILE=release ...` (or `=tvdev`, on the
+  command line or in the environment) overrides it either way. **Anything that measures
+  performance on the TV (FPS, frame pacing, scroll smoothness, CPU/GPU) must use
+  `ARM_PROFILE=release`**: `tvdev` loses the cross-crate inlining the per-frame UI code relies on,
+  so its numbers are not the shipped ones. This is enforced rather than remembered: `make deploy`
+  writes the profile into `<app dir>/arm-profile` on the set, and `tests/run.py --fps` /
+  `--fps-player` / `--graphics-profile`, `tools/profile-graphics` and `tools/tv-sched-trace.sh`
+  read it through `tools/arm_profile_guard.py` and stop with a one-line message naming
+  `make ARM_PROFILE=release deploy` when it says `tvdev` (a missing record is a binary deployed
+  before the record existed or installed from a package, both release, and is accepted as
+  `unrecorded`). `tests/run.py --build` builds both goals with `ARM_PROFILE=release` for those runs
+  only; the playback, pipeline and server cases keep the fast default. The profile is printed in
+  the FPS suite's header and summary and written to the graphics-profile bundle's `metadata.json`
+  and `summary.txt` and to `profile-graphics`'s; `tests/test_arm_profile_guard.py` pins the rule.
+  Graders that only read captured evidence (`tools/image-cache-stress.py`, `tools/analyze-*`) cannot
+  know which binary produced it: run that evidence on a `release` deploy. The staticlib lands in
+  `rust-modules/<tdir>/arm-unknown-linux-gnueabi/<profile>/`, and a non-`release` profile adds
+  `+profile:tvdev` to `pkg/.build-config` (nothing is added for `release`, so shipped stamps are
+  unchanged), so switching profile relinks rather than reusing the other profile's archive.
 - `make deploy` — ships the binary and the native crash handler through a `.new` + `mv` dance (a
   running process holds their inodes), the bundled FFmpeg libraries with a retirement loop for any
   previous major, and — since 2026-09-02 — **everything else in ONE scp from `DEPLOY_FILES`**,
@@ -209,7 +239,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     jobs were one job until the split) only has the runs since.
   - *Budgets.* `ci/build-budgets.json` holds the deterministic ceilings and `ci/check-build-budgets.py`
     enforces them: the stripped ARM `plxnative` that `make ipk` stages (the cross-build job, dev
-    flavour), the number of third-party packages in the app crate's resolved graph for
+    flavour, `release` profile: CI selects it by itself, a local `make ipk` needs `ARM_PROFILE=release`), the number of third-party packages in the app crate's resolved graph for
     `arm-unknown-linux-gnueabi` (normal + build edges, dev-dependencies excluded; asked for both with
     default features and with `--no-default-features`, which is what ships), and the number of crate
     names present in two versions on the normal-edge graph (what `cargo tree -d --edges normal`
@@ -246,7 +276,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   default `target`) and incremental (`CARGO_INCREMENTAL=1`, `target-fast`; skipped with a note when
   that tree is absent unless `--cold`); the **unit suite** run on a warm tree, through the same
   `tools/cargo-test-parallel.py` wrapper the Makefile's recipes use (`UNIT_RUN` in `print-bench-config`), with its `test
-  result:` counts; the **ARM staticlib** line after touching `lib.rs` plus the archive's size and
+  result:` counts; the **ARM staticlib** line after touching `lib.rs` (in the profile `make` selects, so
+  `tvdev` unless `ARM_PROFILE=release` is passed) plus the archive's size and
   sha256 (skipped with a note when no ARM archive exists in this checkout, and it never starts the
   FFmpeg build); and the **sizes** of `rust-modules/target*`. `build-bench-quick` is no-op + leaf
   edit + sizes at one run; `ARGS='--only noop,leaf --runs 5'` selects any subset. The toolchain,

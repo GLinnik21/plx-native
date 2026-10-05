@@ -34,6 +34,9 @@
 # buffer cleared, and tracefs unmounted if THIS run mounted it. If somebody else already has events
 # enabled the run refuses rather than disturb them.
 #
+# It refuses (one line, naming `make ARM_PROFILE=release deploy`) when the binary on the set was built
+# with the fast `tvdev` profile, and prints the profile on stderr (tools/arm_profile_guard.py).
+#
 # Read the result with tools/analyze-sched-trace.py. The vsync interrupt is named `osd_irq` here.
 # Nothing identifying is printed: tools/tv-ssh keeps the address out of every line.
 #
@@ -87,6 +90,9 @@ if [ "$TEST" != 1 ]; then
   [ -n "$TV_HOST" ] || TV_HOST="$(make -s -C "$HERE/.." print-tv 2>/dev/null | head -1)"
   [ -n "$TV_HOST" ] || { echo "tv-sched-trace: no TV configured (.tv-host or TV_HOST)" >&2; exit 1; }
   TV="$TV_HOST" "$HERE/tv-lock.sh" require --quiet --why "tv-sched-trace.sh" || exit 1
+  # A trace of the fast-profile (tvdev, no LTO) binary does not show the shipped build's waits: stop
+  # (one line naming the fix) rather than record it. Read-only; names the profile on stderr.
+  python3 "$HERE/arm_profile_guard.py" --flavor "${FLAVOR:-debug}" || exit 1
 fi
 
 # Ring sizing. ~60k events/s across all CPUs measured (about 66k with the arch timer, now filtered

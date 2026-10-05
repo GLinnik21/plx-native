@@ -144,7 +144,8 @@ SCREENS_PACKAGE = "plx_screens"
 # these to the recipes in the Makefile.
 HOST_TEST_ARGS = ("test", "--lib", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform", "-p", "plx_gfx", "-p", "plx_net", "-p", "plx_ui", "-p", "plx_plex", "-p", "plx_telemetry", "-p", "plx_data", "-p", "plx_session", "-p", "plx_media", "-p", "plx_appkit", "-p", "plx_screens")
 HOST_TEST_BUILD_ARGS = HOST_TEST_ARGS + ("--no-run", "--message-format=json")
-ARM_ARGS_HEAD = ("rustc", "--release", "--target")  # then the target triple
+ARM_ARGS_HEAD = ("rustc",)  # then the Makefile's ARM_PROFILE_FLAG (`--release` / `--profile tvdev`)
+ARM_ARGS_TARGET = ("--target",)  # then the target triple
 ARM_ARGS_LIB = ("--lib", "--crate-type", "staticlib", "--target-dir")  # then the target dir
 ARM_ARGS_TAIL = ("--message-format=json-render-diagnostics",)  # after the feature flags
 
@@ -204,12 +205,15 @@ def read_make_config(repo: Path) -> dict[str, str]:
         raise Refused("print-bench-config did not report: " + ", ".join(missing))
     cfg.setdefault("RUST_FEATFLAGS", "")
     cfg.setdefault("RELEASE", "")
+    cfg.setdefault("ARM_PROFILE", "release")
+    cfg.setdefault("ARM_PROFILE_FLAG", "--release")
     return cfg
 
 
 def arm_argv(cfg: dict[str, str]) -> list[str]:
     """The ARM staticlib cargo argv, in the Makefile's order, after `cargo +<nightly>`."""
-    return [*ARM_ARGS_HEAD, cfg["RUST_TARGET"], *ARM_ARGS_LIB, cfg["RUST_TDIR"],
+    return [*ARM_ARGS_HEAD, *shlex.split(cfg.get("ARM_PROFILE_FLAG", "--release")), *ARM_ARGS_TARGET,
+            cfg["RUST_TARGET"], *ARM_ARGS_LIB, cfg["RUST_TDIR"],
             *shlex.split(cfg.get("RUST_FEATFLAGS", "")), *ARM_ARGS_TAIL]
 
 
