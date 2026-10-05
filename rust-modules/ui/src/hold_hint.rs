@@ -309,7 +309,7 @@ impl HoldHint {
         );
         x += lay.cap_w;
         if !lay.post.is_empty() {
-            x += RUN_GAP;
+            x += lay.post_gap;
             p.text(lay.post.as_ptr(), x, ty, sz, theme::TEXT_SECONDARY, 0, 0);
         }
     }
@@ -348,6 +348,9 @@ struct Layout {
     post: CString,
     pre_w: f32,
     cap_w: f32,
+    /// Space between the cap and the post run: the design's run gap, except none before closing
+    /// punctuation, which belongs to the cap's word ("{key}, каб адкрыць меню").
+    post_gap: f32,
     width: f32,
 }
 
@@ -361,8 +364,12 @@ impl Layout {
         let pre_w = if pre.is_empty() { 0.0 } else { measure.width(&pre, sz, false) };
         let post_w = if post.is_empty() { 0.0 } else { measure.width(&post, sz, false) };
         let cap_w = widgets::key_cap_w_with(CapFace::Label(KEY), CapMetrics::HINT, measure);
-        let gaps = RUN_GAP * (usize::from(!pre.is_empty()) + usize::from(!post.is_empty())) as f32;
-        Self { pre, post, pre_w, cap_w, width: 2.0 * PAD_X + pre_w + cap_w + post_w + gaps }
+        let post_gap = match post.to_bytes().first() {
+            None | Some(b',' | b'.' | b';' | b':' | b'!' | b'?') => 0.0,
+            Some(_) => RUN_GAP,
+        };
+        let pre_gap = if pre.is_empty() { 0.0 } else { RUN_GAP };
+        Self { pre, post, pre_w, cap_w, post_gap, width: 2.0 * PAD_X + pre_w + pre_gap + cap_w + post_gap + post_w }
     }
 
     /// The capsule's rect, `lift` px below its resting place.
@@ -665,6 +672,25 @@ mod tests {
         let sum = 2.0 * PAD_X + lay.pre_w + lay.cap_w + 2.0 * RUN_GAP
             + FixtureMeasure.width(c"for options", theme::size::CAPTION, false);
         assert!((lay.width - sum).abs() < 1e-3);
+    }
+
+    /// **Punctuation that opens the post-cap run sits tight on the cap.** The Belarusian sentence
+    /// is "Утрымлівайце {key}, каб адкрыць меню": the comma belongs to the cap's word, so the 16 px
+    /// run gap goes BETWEEN words and never before a comma; a post run that starts with a letter, or
+    /// a dash that needs its space, keeps the gap.
+    #[test]
+    fn a_post_run_that_starts_with_punctuation_attaches_to_the_cap() {
+        let m = &FixtureMeasure;
+        let w = |s: &std::ffi::CStr| m.width(s, theme::size::CAPTION, false);
+        let tight = Layout::resolve(m, "Hold \u{fffc}, to open the menu");
+        assert_eq!(tight.post.to_str().unwrap(), ", to open the menu");
+        assert_eq!(tight.post_gap, 0.0);
+        let sum = 2.0 * PAD_X + tight.pre_w + tight.cap_w + RUN_GAP + w(c", to open the menu");
+        assert!((tight.width - sum).abs() < 1e-3, "one gap (before the cap), none before the comma");
+        let words = Layout::resolve(m, "Hold \u{fffc} for options");
+        assert_eq!(words.post_gap, RUN_GAP);
+        let dash = Layout::resolve(m, "\u{fffc} \u{2014} back to the library");
+        assert_eq!(dash.post_gap, RUN_GAP, "a dash is a word-space mark, not closing punctuation");
     }
 
     /// **The glass is bounded by the same budget as the rest of the band's glass, and kept apart
