@@ -5310,24 +5310,32 @@ class DepGates(unittest.TestCase):
     def test_the_private_copy_carries_every_fpflags_input(self):
         """The untouched copy above cannot see an input that was left out of `TREE_INPUTS` -- a
         gate that scans nothing is green. So plant what the `fpflags` rule looks for in each file
-        it scans, inside the copy, and require the rule to go red naming it."""
-        for rel in ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/plex/Cargo.toml", "rust-modules/telemetry/Cargo.toml", "rust-modules/data/Cargo.toml", "rust-modules/session/Cargo.toml", "rust-modules/platform/Cargo.toml",
-                    "rust-modules/platform/build.rs", "rust-modules/gfx/Cargo.toml",
-                    "rust-modules/gfx/build.rs", "rust-modules/ui/Cargo.toml", "rust-modules/ui/build.rs",
-                    "rust-modules/storage/Cargo.toml",
-                    "rust-modules/storage/build.rs", "rust-modules/.cargo/config.toml", "Makefile"):
+        it scans, inside the copy, and require the rule to go red naming it.
+
+        All of them are planted at once and graded by ONE run: the rule prints one `path:line:text`
+        match per offending file, so a file the rule did not scan (or the copy did not carry)
+        is missing from the output and that input's subtest fails by name. Run one file at a
+        time this was 17 of the 73 `ci/check-deps.sh` runs in this class (about a quarter of
+        the module's CPU)."""
+        inputs = ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/plex/Cargo.toml", "rust-modules/telemetry/Cargo.toml", "rust-modules/data/Cargo.toml", "rust-modules/session/Cargo.toml", "rust-modules/media/Cargo.toml", "rust-modules/appkit/Cargo.toml", "rust-modules/appkit/build.rs", "rust-modules/screens/Cargo.toml", "rust-modules/screens/build.rs", "rust-modules/platform/Cargo.toml",
+                  "rust-modules/platform/build.rs", "rust-modules/gfx/Cargo.toml",
+                  "rust-modules/gfx/build.rs", "rust-modules/ui/Cargo.toml", "rust-modules/ui/build.rs",
+                  "rust-modules/storage/Cargo.toml",
+                  "rust-modules/storage/build.rs", "rust-modules/.cargo/config.toml", "Makefile")
+        for rel in inputs:
+            target = os.path.join(self.tree, rel)
+            self.assertTrue(os.path.exists(target), f"{rel} is not in the private copy (TREE_INPUTS)")
+            with open(target, "a", encoding="utf-8") as f:
+                f.write("\nrustflags = [\"-C\", \"target-feature=+fma\"]\n")
+        r = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
+                           capture_output=True, text=True)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("fpflags:", out)
+        reported = {line.split(":", 1)[0] for line in out.splitlines() if "target-feature=+fma" in line}
+        for rel in inputs:
             with self.subTest(input=rel):
-                target = os.path.join(self.tree, rel)
-                self.assertTrue(os.path.exists(target), f"{rel} is not in the private copy (TREE_INPUTS)")
-                with open(target, "a", encoding="utf-8") as f:
-                    f.write("\nrustflags = [\"-C\", \"target-feature=+fma\"]\n")
-                r = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
-                                   capture_output=True, text=True)
-                out = r.stdout + r.stderr
-                self.assertNotEqual(r.returncode, 0, out)
-                self.assertIn("fpflags:", out)
-                self.assertIn(rel, out)
-                shutil.copy2(os.path.join(self.ROOT, rel), target)
+                self.assertIn(rel, reported, out)
 
     def _plant(self, name, content):
         """Write `content` to a temp file under rust-modules/src that no ci/allow/*.txt names,
@@ -5392,6 +5400,42 @@ class DepGates(unittest.TestCase):
             with open(target, "w", encoding="utf-8") as f:
                 f.write(original)
 
+    def _prepend_files(self, fixtures):
+        """`_prepend` for several files at once, graded by ONE `ci/check-deps.sh` run.
+
+        `fixtures` maps a store-relative path to the module-level text to prepend. Each variant
+        a self-test wants to prove is rejected gets its OWN declaration (a distinct name), so the
+        one run still shows which variants the gate caught: `_assert_flagged` requires every one
+        by name. Run one variant at a time these were 34 of the 73 gate runs in this class, and a
+        run is ~7 s of CPU."""
+        originals = {}
+        try:
+            for relpath, content in fixtures.items():
+                target = self._store_file(relpath)
+                with open(target, encoding="utf-8") as f:
+                    originals[target] = f.read()
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(content + originals[target])
+            return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
+                                  capture_output=True, text=True)
+        finally:
+            for target, original in originals.items():
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(original)
+
+    def _assert_flagged(self, r, rule, flagged):
+        """The run failed, and the gate named `rule:` and printed, for each `(relpath, marker)`,
+        a `path:line:text` line of THAT file whose text holds `marker` -- so a variant the gate
+        missed fails by name even though the others were caught in the same run."""
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn(f"{rule}:", out)
+        for relpath, marker in flagged:
+            with self.subTest(file=relpath, flagged=marker):
+                self.assertTrue(
+                    any(f"/src/{relpath}:" in line and marker in line for line in out.splitlines()),
+                    f"{rule} did not flag {marker!r} in {relpath}\n{out}")
+
     def test_browse_owner_gate_rejects_a_republished_free_mutator(self):
         """A valid module-level declaration is rejected even without a call site."""
         r = self._prepend("browse/mod.rs", "\npub(crate) fn set_cur(i: usize) {}\n")
@@ -5401,28 +5445,22 @@ class DepGates(unittest.TestCase):
         self.assertIn("fn set_cur", out)
 
     def test_browse_owner_gate_rejects_all_free_declaration_modifiers(self):
-        for declaration in (
-            "    pub(super) fn set_cur(i: usize) {}\n",
-            "async fn set_cur(i: usize) {}\n",
-            "const fn set_cur(i: usize) {}\n",
-            "unsafe extern \"C\" fn set_cur(i: usize) {}\n",
-        ):
-            with self.subTest(declaration=declaration):
-                r = self._prepend("browse/mod.rs", "\n" + declaration)
-                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
-                self.assertIn("browse-owner:", r.stdout + r.stderr)
+        declarations = (
+            ("set_cur", "    pub(super) fn set_cur(i: usize) {}\n"),
+            ("cur", "async fn cur(i: usize) {}\n"),
+            ("reset", "const fn reset(i: usize) {}\n"),
+            ("requery", "unsafe extern \"C\" fn requery(i: usize) {}\n"),
+        )
+        r = self._prepend_files({"browse/mod.rs": "".join("\n" + d for _, d in declarations)})
+        self._assert_flagged(r, "browse-owner", [("browse/mod.rs", f"fn {n}") for n, _ in declarations])
 
     def test_browse_owner_gate_rejects_attributes_and_split_free_declarations(self):
-        for declaration in (
-            "#[inline] pub(super) const fn set_cur(i: usize) {}\n",
-            "#[inline]\npub(super)\nconst fn\nset_cur(i: usize) {}\n",
-        ):
-            with self.subTest(declaration=declaration):
-                r = self._prepend("browse/mod.rs", "\n" + declaration)
-                out = r.stdout + r.stderr
-                self.assertNotEqual(r.returncode, 0, out)
-                self.assertIn("browse-owner:", out)
-                self.assertIn("set_cur", out)
+        declarations = (
+            ("set_cur", "#[inline] pub(super) const fn set_cur(i: usize) {}\n"),
+            ("cur", "#[inline]\npub(super)\nconst fn\ncur(i: usize) {}\n"),
+        )
+        r = self._prepend_files({"browse/mod.rs": "".join("\n" + d for _, d in declarations)})
+        self._assert_flagged(r, "browse-owner", [("browse/mod.rs", name) for name, _ in declarations])
 
     def test_browse_owner_gate_is_nonvacuous_for_indented_free_declarations(self):
         r = self._prepend("browse/mod.rs", "\n    pub fn set_cur(i: usize) {}\n")
@@ -5453,14 +5491,15 @@ class DepGates(unittest.TestCase):
             'const ESCAPED_SCOPE: &str = "\\\\\\\"{";\n',
             "const ESCAPED_CHAR_SCOPE: char = '\\\'';\nconst LABEL_SCOPE: &str = \"{\";\n",
         )
-        for prefix in fixtures:
-            with self.subTest(prefix=prefix):
-                r = self._prepend(
-                    "browse/mod.rs",
-                    "\n" + prefix + "    pub(super) unsafe extern \"C\" fn set_cur(i: usize) {}\n",
-                )
-                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
-                self.assertIn("browse-owner:", r.stdout + r.stderr)
+        # One free fn per fixture, each under its own facade name, all in one file: a fixture the
+        # scanner mis-counts as an open scope hides its own fn (and so fails by name).
+        names = ("set_cur", "cur", "reset", "requery", "run", "pump", "sections", "sources", "states")
+        self.assertEqual(len(names), len(fixtures))
+        text = "".join(
+            "\n" + prefix + f"    pub(super) unsafe extern \"C\" fn {name}(i: usize) {{}}\n"
+            for prefix, name in zip(fixtures, names))
+        r = self._prepend_files({"browse/mod.rs": text})
+        self._assert_flagged(r, "browse-owner", [("browse/mod.rs", f"fn {n}(") for n in names])
 
     def test_browse_owner_gate_ignores_noncode_closing_braces_inside_an_impl(self):
         """A compiling impl fixture remains receiver-bound even when every Rust literal/comment
@@ -5485,30 +5524,23 @@ impl BrowseScopeFixture {
         self.assertIn("ok — browse-owner", r.stdout)
 
     def test_browse_owner_gate_rejects_retired_transport_declarations(self):
-        for relpath, declaration in (
-            ("browse/mod.rs", "    pub(crate) static LEGACY_ADAPTER: () = ();\n"),
-            ("stores/browse.rs", "    pub(super) static ACTIVE: () = ();\n"),
-            ("browse/mod.rs", "    static mut RETIRED_BROWSE: Option<BrowseState> = None;\n"),
-        ):
-            with self.subTest(declaration=declaration):
-                r = self._prepend(relpath, "\n" + declaration)
-                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
-                self.assertIn("browse-owner:", r.stdout + r.stderr)
+        declarations = (
+            ("browse/mod.rs", "LEGACY_ADAPTER", "    pub(crate) static LEGACY_ADAPTER: () = ();\n"),
+            ("stores/browse.rs", "ACTIVE", "    pub(super) static ACTIVE: () = ();\n"),
+            ("browse/mod.rs", "RETIRED_BROWSE", "    static mut RETIRED_BROWSE: Option<BrowseState> = None;\n"),
+        )
+        by_file = {}
+        for relpath, _, declaration in declarations:
+            by_file[relpath] = by_file.get(relpath, "") + "\n" + declaration
+        r = self._prepend_files(by_file)
+        self._assert_flagged(r, "browse-owner", [(relpath, name) for relpath, name, _ in declarations])
 
     def test_browse_owner_gate_rejects_retired_thread_local_selectors(self):
-        for relpath, selector in (
-            ("browse/mod.rs", "LEGACY_ADAPTER"),
-            ("stores/browse.rs", "ACTIVE"),
-        ):
-            with self.subTest(selector=selector):
-                r = self._prepend(
-                    relpath,
-                    f"\nthread_local! {{\n    static {selector}: () = ();\n}}\n",
-                )
-                out = r.stdout + r.stderr
-                self.assertNotEqual(r.returncode, 0, out)
-                self.assertIn("browse-owner:", out)
-                self.assertIn(f"static {selector}", out)
+        selectors = (("browse/mod.rs", "LEGACY_ADAPTER"), ("stores/browse.rs", "ACTIVE"))
+        r = self._prepend_files({
+            relpath: f"\nthread_local! {{\n    static {selector}: () = ();\n}}\n"
+            for relpath, selector in selectors})
+        self._assert_flagged(r, "browse-owner", [(relpath, f"static {selector}") for relpath, selector in selectors])
 
     def test_browse_owner_gate_accepts_unrelated_thread_local_state(self):
         r = self._prepend(
@@ -5553,29 +5585,25 @@ impl BrowseScopeFixture {
 
     def test_viewstate_owner_gate_rejects_a_republished_free_state_facade(self):
         """A free pump can only reach process state; the owned spelling requires a receiver."""
-        for declaration in (
-            "pub(crate) fn pump() {}\n",
-            "#[inline]\npub(super)\nconst fn\nis_busy() -> bool { false }\n",
-        ):
-            with self.subTest(declaration=declaration):
-                r = self._prepend("viewstate.rs", "\n" + declaration)
-                out = r.stdout + r.stderr
-                self.assertNotEqual(r.returncode, 0, out)
-                self.assertIn("viewstate-owner:", out)
+        declarations = (
+            ("pump", "pub(crate) fn pump() {}\n"),
+            ("is_busy", "#[inline]\npub(super)\nconst fn\nis_busy() -> bool { false }\n"),
+        )
+        r = self._prepend_files({"viewstate.rs": "".join("\n" + d for _, d in declarations)})
+        self._assert_flagged(r, "viewstate-owner", [("viewstate.rs", name) for name, _ in declarations])
 
     def test_viewstate_owner_gate_rejects_storage_transport_and_selector_statics(self):
         fixtures = (
-            ("viewstate.rs", "static mut QUEUE: Vec<()> = Vec::new();\n"),
-            ("viewstate.rs", "static MAIL: std::sync::Mutex<Option<()>> = std::sync::Mutex::new(None);\n"),
-            ("stores/viewstate.rs", "static RETIRED: Option<ViewStateStore> = None;\n"),
-            ("stores/viewstate.rs", "thread_local! {\n    static ACTIVE: () = ();\n}\n"),
+            ("viewstate.rs", "QUEUE", "static mut QUEUE: Vec<()> = Vec::new();\n"),
+            ("viewstate.rs", "MAIL", "static MAIL: std::sync::Mutex<Option<()>> = std::sync::Mutex::new(None);\n"),
+            ("stores/viewstate.rs", "RETIRED", "static RETIRED: Option<ViewStateStore> = None;\n"),
+            ("stores/viewstate.rs", "ACTIVE", "thread_local! {\n    static ACTIVE: () = ();\n}\n"),
         )
-        for relpath, declaration in fixtures:
-            with self.subTest(declaration=declaration):
-                r = self._prepend(relpath, "\n" + declaration)
-                out = r.stdout + r.stderr
-                self.assertNotEqual(r.returncode, 0, out)
-                self.assertIn("viewstate-owner:", out)
+        by_file = {}
+        for relpath, _, declaration in fixtures:
+            by_file[relpath] = by_file.get(relpath, "") + "\n" + declaration
+        r = self._prepend_files(by_file)
+        self._assert_flagged(r, "viewstate-owner", [(relpath, name) for relpath, name, _ in fixtures])
 
     def test_viewstate_owner_gate_accepts_receiver_bound_owned_methods(self):
         fixture = """
@@ -5622,31 +5650,27 @@ impl ViewStateOwnerGateFixture {
         self.assertIn(target + ":", result.stdout)
 
     def test_person_owner_gate_rejects_free_read_and_mutation_facades(self):
-        for declaration in (
-            "pub(crate) fn current() -> Option<()> { None }\n",
-            "#[inline]\npub(super)\nfn\npump() -> bool { false }\n",
-            "pub(crate) fn apply() {}\n",
-        ):
-            with self.subTest(declaration=declaration):
-                r = self._prepend("person.rs", "\n" + declaration)
-                out = r.stdout + r.stderr
-                self.assertNotEqual(r.returncode, 0, out)
-                self.assertIn("person-owner:", out)
+        declarations = (
+            ("current", "pub(crate) fn current() -> Option<()> { None }\n"),
+            ("pump", "#[inline]\npub(super)\nfn\npump() -> bool { false }\n"),
+            ("apply", "pub(crate) fn apply() {}\n"),
+        )
+        r = self._prepend_files({"person.rs": "".join("\n" + d for _, d in declarations)})
+        self._assert_flagged(r, "person-owner", [("person.rs", name) for name, _ in declarations])
 
     def test_person_owner_gate_rejects_model_transport_and_selector_statics(self):
         fixtures = (
-            ("person.rs", "static mut CURRENT: Option<Person> = None;\n"),
-            ("person.rs", "static FETCH: Option<Fetch> = None;\n"),
-            ("person.rs", "static RETRY_CD: [u32; 1] = [0];\n"),
-            ("stores/person.rs", "static RETIRED: Option<PersonStore> = None;\n"),
-            ("stores/person.rs", "thread_local! {\n    static ACTIVE: () = ();\n}\n"),
+            ("person.rs", "CURRENT", "static mut CURRENT: Option<Person> = None;\n"),
+            ("person.rs", "FETCH", "static FETCH: Option<Fetch> = None;\n"),
+            ("person.rs", "RETRY_CD", "static RETRY_CD: [u32; 1] = [0];\n"),
+            ("stores/person.rs", "RETIRED", "static RETIRED: Option<PersonStore> = None;\n"),
+            ("stores/person.rs", "ACTIVE", "thread_local! {\n    static ACTIVE: () = ();\n}\n"),
         )
-        for relpath, declaration in fixtures:
-            with self.subTest(declaration=declaration):
-                r = self._prepend(relpath, "\n" + declaration)
-                out = r.stdout + r.stderr
-                self.assertNotEqual(r.returncode, 0, out)
-                self.assertIn("person-owner:", out)
+        by_file = {}
+        for relpath, _, declaration in fixtures:
+            by_file[relpath] = by_file.get(relpath, "") + "\n" + declaration
+        r = self._prepend_files(by_file)
+        self._assert_flagged(r, "person-owner", [(relpath, name) for relpath, name, _ in fixtures])
 
     def test_person_owner_gate_accepts_receiver_bound_owned_methods(self):
         fixture = """

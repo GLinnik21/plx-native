@@ -213,7 +213,7 @@ class MakeCheckContractTests(unittest.TestCase):
         unlocked = "\n".join(recipe_of("check-unlocked"))
         self.assertIn("check-cargo", unlocked)
         self.assertIn("check-python", unlocked)
-        self.assertIn("\tpython3 ci/test_check_elf.py", recipe_of("check-python"))
+        self.assertIn("\tpython3 ci/test_check_elf.py", recipe_of("check-python-rest"))
 
 
 if __name__ == "__main__":

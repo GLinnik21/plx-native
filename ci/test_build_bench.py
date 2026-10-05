@@ -486,7 +486,7 @@ class MakefileWiringTests(unittest.TestCase):
         m = re.search(r"^SIDE_EFFECT_FREE = (.*)$", self.makefile, re.M)
         self.assertIsNotNone(m)
         self.assertTrue({"build-bench", "build-bench-quick"} <= set(m.group(1).split()))
-        self.assertIn("python3 ci/test_build_bench.py", self.recipe("check-python:"))
+        self.assertIn("python3 ci/test_build_bench.py", self.recipe("check-python-rest:"))
 
 
 if __name__ == "__main__":

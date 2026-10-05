@@ -142,8 +142,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   never interleaves; a failing branch is printed first and stops the other. `make check-cargo` and
   `make check-python` run one half alone. `check-cargo` is itself the serial union of
   `check-cargo-lint` (clippy + the lab-diagnostics type-check), `check-cargo-unit-default` and
-  `check-cargo-unit-hostsim`, and CI runs those three plus `check-python` as four parallel jobs
-  (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`) behind an aggregator named
+  `check-cargo-unit-hostsim`. `check-python` is likewise two branches run side by side,
+  `check-python-harness` (`tests/test_harness.py` alone, ~190 s) and `check-python-rest` (every
+  other gate). CI runs the three cargo targets plus those two as five parallel jobs
+  (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`, `host-python-harness`) behind an aggregator named
   `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens`
   **twice: once on the default feature set and once with `--features hostsim`**, which is not a
   duplicate run. The host feed seam (`player/ffi_host.rs`) exists ONLY in the hostsim
@@ -693,7 +695,7 @@ strings blanked; the docstring lists what it cannot see), compares the cycle's m
 - a new upward `crate::x` reference, or a new top-level module that lands inside the cycle - printing
 the `file:line` references into and out of that module. A member leaving the cycle only prints a
 notice. It holds the cycle's *membership*, not its edges: a further upward reference between two
-modules already on the cycle (another `app` -> `dev`) does not fail it. It runs in `make check-python` (so CI's `host-python` job), tested by
+modules already on the cycle (another `app` -> `dev`) does not fail it. It runs in `make check-python` (so CI's `host-python` job, via `check-python-rest`), tested by
 `ci/test_module_cycle.py`.
 
 To fix a failure, remove the new path back: move the shared type down a layer, pass the value in as
