@@ -404,6 +404,27 @@ class NoiseTests(unittest.TestCase):
             proc = sb.run("--runs", "1", "--only", "noop", env={"FAKE_SWAP_USED": "900.00"})
             self.assertNotIn("WARNING", proc.stdout)
 
+    def test_the_front_end_threads_the_rows_ran_with_are_reported(self):
+        with Sandbox() as sb:
+            out = sb.repo.parent / "threads.json"
+            proc = sb.run("--runs", "1", "--only", "noop", "--json", str(out))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("rustc front end: serial", proc.stdout)
+            self.assertEqual(json.loads(out.read_text())["front_end_threads"], 0)
+            proc = sb.run("--runs", "1", "--only", "noop", "--json", str(out),
+                          env={"CARGO_BUILD_RUSTFLAGS": "-Zthreads=8"})
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("rustc front end: 8 threads (-Zthreads)", proc.stdout)
+            self.assertEqual(json.loads(out.read_text())["front_end_threads"], 8)
+
+    def test_front_end_threads_reads_what_cargo_is_given(self):
+        self.assertEqual(bb.front_end_threads({}), 0)
+        self.assertEqual(bb.front_end_threads({"CARGO_BUILD_RUSTFLAGS": "-Zthreads=8"}), 8)
+        self.assertEqual(bb.front_end_threads({"CARGO_BUILD_RUSTFLAGS": "-Zthreads=1"}), 0)
+        # RUSTFLAGS is what cargo reads first, so it decides, flag or no flag
+        self.assertEqual(bb.front_end_threads({"RUSTFLAGS": "-C x", "CARGO_BUILD_RUSTFLAGS": "-Zthreads=8"}), 0)
+        self.assertEqual(bb.front_end_threads({"RUSTFLAGS": "-Z threads=4"}), 4)
+
     def test_a_noop_build_that_recompiles_the_app_is_flagged(self):
         with Sandbox() as sb:
             proc = sb.run("--runs", "1", "--only", "noop", env={"FAKE_ALWAYS_DIRTY": "1"})
