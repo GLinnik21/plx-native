@@ -6188,7 +6188,7 @@ class FpsMock(unittest.TestCase):
     def test_under_mock_only_scenes_with_a_mock_block_run(self):
         runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), True)
         names = {s["name"] for s in runnable}
-        self.assertEqual(names, {"home-grid", "home-grid-deep", "library-shelves-deep"})
+        self.assertEqual(names, {"home-grid", "home-grid-deep", "home-hint", "library-shelves-deep"})
         self.assertEqual(len(runnable) + len(skipped), len(self.scenes))
         for _, why in skipped:
             self.assertIn("real library content", why)

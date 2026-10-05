@@ -228,6 +228,16 @@ impl Press {
         s.holdable && s.phase == Phase::Down && now.wrapping_sub(s.down_at) >= LONG_MS
     }
 
+    /// How long the focused CARD has been held down right now, while that hold is still undecided:
+    /// `Some(ms)` from the key-down until the key-up (or the press's cancel), `None` otherwise — and
+    /// always `None` for a [`begin_ctl`] press, which has no hold gesture. Divide by [`LONG_MS`] for
+    /// the fraction of the hold elapsed; it keeps counting past it (the menu opens there and the
+    /// press is cancelled, which ends it). The hold hint's key cap fills from this.
+    pub fn held_ms(&self, now: u32) -> Option<u32> {
+        (self.holdable && self.phase == Phase::Down && self.release_at == 0)
+            .then(|| now.wrapping_sub(self.down_at))
+    }
+
     /// The current / most-recent press crossed into a press-and-hold (latched at [`LONG_MS`]; stays true
     /// until the next [`begin`]) — the AFTER-THE-FACT form of [`is_long`], for a caller that wants to
     /// branch tap-vs-hold on the release rather than act the instant the threshold is crossed.
@@ -615,5 +625,25 @@ mod tests {
             "…and the activation still commits after it"
         );
         rest(&mut p, &mut now);
+    }
+
+    /// **The hold's elapsed time, for the hold hint's cap fill:** counted from the key-down for a
+    /// CARD press only, and gone the moment the key is released or the press cancelled.
+    #[test]
+    fn held_ms_counts_a_card_hold_and_ends_with_the_key() {
+        let mut p = Press::new();
+        assert_eq!(p.held_ms(1000), None, "no press, no hold");
+        p.begin(1000);
+        assert_eq!(p.held_ms(1000), Some(0));
+        assert_eq!(p.held_ms(1250), Some(250));
+        p.release(1300);
+        assert_eq!(p.held_ms(1300), None, "released: the hold is decided");
+        let mut p = Press::new();
+        p.begin(2000);
+        p.cancel();
+        assert_eq!(p.held_ms(2100), None, "cancelled");
+        let mut p = Press::new();
+        p.begin_ctl(3000);
+        assert_eq!(p.held_ms(3200), None, "a control face has no hold gesture");
     }
 }

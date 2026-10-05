@@ -21,6 +21,7 @@ use plx_ui::card_row::{self, CardRow, RowStyle};
 use plx_ui::consts::*;
 use plx_ui::frame::Budget;
 use plx_ui::hero_logo::{self, HeroLogo, LogoRung};
+use plx_ui::hold_hint::{HintInput, HoldHint};
 use plx_ui::icons::Icon;
 use plx_ui::label::{Label, VAlign};
 use plx_ui::linked_heading::{self, LinkedHeading};
@@ -80,6 +81,9 @@ pub const STRIP_ACCOUNT_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 4;
 const MAX_ITEMS: usize = plx_data::pms::MAX_SHELF_ITEMS;
 const HERO_FLIP_CD: f32 = 0.35;
 const HERO_AUTO_S: f32 = 8.0;
+/// How near its target (px) a shelf's horizontal glide and the page's vertical reveal have to be
+/// before the focused tile counts as RESTED for the hold hint's dwell.
+const HINT_REST_PX: f32 = 0.5;
 const K_SLIDE: f32 = 130.0;
 const HERO_SLIDE_REST_PX: f32 = 0.5;
 /// How near its target the snap dive has to be, in snap units (0 = hero, 1 = grid), before this
@@ -430,6 +434,9 @@ pub struct HomeScreen {
     /// The question, asked from the read-out's *Connect*.
     plaintext_alert: PlaintextAlert,
     hero_pop: CtlPop<HERO_NBTN>,
+    /// The standing "Hold OK for options" capsule and its dwell/life schedule — a timer advanced by
+    /// `Tick`, not logical state (it is not in `SHAPE`, the way `status_ms` is not).
+    hold_hint: HoldHint,
     backdrop: Backdrop,
     grid: Grid,
 }
@@ -468,6 +475,7 @@ impl HomeScreen {
             clock: ClockWatch::default(),
             plaintext_alert: PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL_ELEM, PLAINTEXT_CONNECT_ELEM),
             hero_pop: CtlPop::new(),
+            hold_hint: HoldHint::new(),
             backdrop: Backdrop::new(),
             grid: Grid::new(),
         }
@@ -991,6 +999,36 @@ impl HomeScreen {
         self.layout_grid();
     }
 
+    /// The two screen-specific answers the hold hint needs (`ui::hold_hint`, "Adopting it"): which
+    /// SHELF TILE focus is resting on (`None` for the tab strip, the hero, a linked heading, a
+    /// covered page — a menu or modal is up — or the plaintext question), and whether everything
+    /// under it has stopped moving. The press clock is passed straight through.
+    fn hint_input<H: HomeLike>(&self, cx: &Cx<'_, H>, snap_moving: bool) -> HintInput {
+        let tile = cx.focus.current.filter(|key| key.entry == self.entry);
+        let focused = tile.and_then(|key| self.focused_grid(Some(key)).map(|at| (key.elem, at)));
+        let Some((elem, (row, col))) = focused.filter(|_| !self.covered && !self.plaintext_alert.is_open())
+        else {
+            return HintInput::default();
+        };
+        let count = self.rows.get(row).map_or(0, |r| r.elems.len());
+        let glide = self
+            .grid
+            .shelves
+            .get(row)
+            .map_or(0.0, |shelf| shelf.settle_lag(count, col, &RowStyle::HOME));
+        // The screenshot pipeline pins every free-running, time-driven animation (`stillclock`,
+        // `motion::phase_clocks_held`): a hint that stands up 1.5 s after a scene settles is one,
+        // and would put itself into every documentation figure that rests on a card. A real hold
+        // is input, not a clock, so it is not pinned.
+        let settled = !snap_moving
+            && !plx_machine::motion::phase_clocks_held()
+            && self.snap.pos >= 0.5
+            && self.visible_activation.is_none()
+            && glide.abs() < HINT_REST_PX
+            && (self.grid.scroll_y.pos - self.grid.scroll_target).abs() < HINT_REST_PX;
+        HintInput::new(Some(elem), settled, cx.press.held_ms)
+    }
+
     fn tick<H: HomeLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let dt = t.dt();
         self.sync_catalog(cx);
@@ -1114,6 +1152,8 @@ impl HomeScreen {
             dt,
         );
         self.prefetch(view);
+        let hint = self.hint_input(cx, snap_moving);
+        self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev));
 
         let moving = self.outgoing.is_some()
             || snap_moving
@@ -1426,6 +1466,8 @@ impl HomeScreen {
         plx_ui::profile::phase("hm.status", || self.draw_status(view, &env, p, focus));
         plx_ui::testpat::underlay(p);
         plx_ui::testpat::draw(p);
+        // A standing note, never a target: drawn over the page, records no stop and no hit rect.
+        self.hold_hint.draw(p, f.measure);
         if !self.plaintext_alert.visible() {
             // the question owns the pointer while it is up; nothing under it is a target
             self.record_stops(f, view);
@@ -1861,7 +1903,10 @@ impl LogicalState for HomeScreen {
             // The plaintext question is the grant table's (`plex::grant::offers`), which no
             // recording can raise, and its alert only paints over a failed read-out. The clock
             // fact is `net::keypin`'s, likewise unraisable by a recording.
-            plaintext: _, plaintext_alert: _, clock: _ } = self;
+            plaintext: _, plaintext_alert: _, clock: _,
+            // The hold hint is a paint-only standing note on a `Tick` timer: no input, reveal or
+            // focus decision reads it, and it is not hashed (the way `status_ms` is not).
+            hold_hint: _ } = self;
         c.f32(self.snap_target)
             .f32(self.snap.pos).f32(self.snap.vel)
             .f32(self.hero_flip_cd)

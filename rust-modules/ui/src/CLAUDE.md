@@ -332,7 +332,7 @@ in the same keyline rather than a `MICRO` word, because the chevron IS the key's
 the restructure, its spec section. It cannot go stale the way a hand-written table does: rename a
 module and the build breaks.
 
-**The `//!` doc at the top of each file is the detail** — 81 of the 86 files here carry one, and
+**The `//!` doc at the top of each file is the detail** — every file here should carry one, and
 they are the authority on their own module. Read the file's `//!` before changing it.
 
 This guide deliberately does NOT carry a per-file table. One existed, drifted 37 files out of
