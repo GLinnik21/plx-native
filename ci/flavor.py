@@ -170,9 +170,12 @@ def _selftest() -> int:
           f'nightly appinfo id == {STABLE_ID}.nightly (got {nightly["id"]})')
     check(nightly["title"] == f'{tracked_appinfo["title"]} Nightly',
           f'nightly appinfo title is "{tracked_appinfo["title"]} Nightly" (got {nightly["title"]!r})')
-    _tracked_major, _tracked_minor, _ = (int(x) for x in tracked_appinfo["version"].split("."))
-    check(nightly["version"] == f"{_tracked_major}.{_tracked_minor + 1}.0",
-          f'nightly appinfo version is the next minor on trunk (got {nightly["version"]!r})')
+    # The next minor on trunk, the next patch on a maintenance line (`RELEASE_LINE` present): the
+    # same rule `appinfo_for` applies, spelled once in `ci/version_rule.py`.
+    _want, _err = version_rule.next_version_triplet(tracked_appinfo["version"], _release_line_content())
+    check(_err is None and nightly["version"] == "{}.{}.{}".format(*_want),
+          'nightly appinfo version is the next minor on trunk, or the next patch on a maintenance line '
+          f'(got {nightly["version"]!r})')
     nightly_moved = {k for k in tracked_appinfo if nightly.get(k) != tracked_appinfo[k]}
     check(nightly_moved == {"id", "title", "version"},
           "only id, title and version differ between nightly and stable (also saw "
