@@ -86,7 +86,9 @@
 //! not reach a server one hop away. `CurlSource::open*` now asks `net::resolve` for a pin by the
 //! URL's host and port — recorded by the registry from the address plex.tv advertised beside the
 //! name, validated in `plex::origin::ResolvePin` — and applies it as ONE `CURLOPT_RESOLVE` entry
-//! on every easy handle it attaches. The hostname stays in the URL, so SNI and certificate
+//! on every easy handle it attaches, each handle dialling one URL: a redirect's target is looked up
+//! by its own host and port, so a hop to another `*.plex.direct` name is as offline-safe as the
+//! first request. The hostname stays in the URL, so SNI and certificate
 //! identity are untouched; libcurl simply never resolves it. There is no `getaddrinfo` here: the
 //! address comes from plex.tv, never from a resolver of ours, so the second-resolution-path
 //! objection above does not arise. The list is owned by the easy handle it was set on (see
@@ -100,9 +102,13 @@
 //! (`net::keypin::Mode::Roots`), verification fully on; and a roots attempt that then fails on the
 //! DATE (an old trust store behind a wrong clock) goes on to the remembered key, while a latched
 //! roots start the bundle now refuses goes strict once. Same decision (`keypin::after_failure`) and
-//! option code as the control plane; see `start_range_until`. **Redirects:** libcurl follows them
-//! (`CURLOPT_FOLLOWLOCATION`) and the CA file is per handle, not per hop, so a hop a roots-mode open
-//! is redirected to is verified against the bundle too.
+//! option code as the control plane; see `run_hop`. **Redirects:** this module follows them itself,
+//! one hop at a time (`CURLOPT_FOLLOWLOCATION` is 0; `start_range_until`, [`next_hop`]), because the CA
+//! file, the key pin and the resolve pin are per easy handle, not per hop: a hop libcurl followed
+//! would have been verified by whatever its server's handle was given, and its failure written into
+//! its server's facts. Each hop is a request of its own, to its own host, with its own ladder above;
+//! at most five are followed, a TLS request is never redirected to plaintext, and the original's
+//! query (where its token is) is never copied onto a hop.
 //!
 //! # Why the abort handle lives in a module-global REGISTRY
 //!
@@ -136,6 +142,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
 use plx_base::checkpoint::{self, Checkpoint, NoCheckpoint, Pacer};
+use plx_net::net::origin::{Origin, Scheme};
+use plx_net::stream::redirect::{is_redirect, resolve_location, same_origin, Target, MAX_HOPS};
+use plx_net::stream::{log_endpoint, LOCATION_CAP};
 
 pub type CURL = c_void;
 pub type CURLM = c_void;
@@ -184,6 +193,11 @@ const CURLMSG_DONE: c_int = 1;
 const CURLM_OK: c_int = 0;
 const CURL_WAIT_POLLIN: i16 = 0x0001;
 const CURLE_OPERATION_TIMEDOUT: c_int = 28;
+/// What a redirect refused for its protocol, and one past the hop cap, are reported as: the codes
+/// libcurl answered both with while it followed redirects itself, so a caller and a support log read
+/// the same thing they always did.
+const CURLE_UNSUPPORTED_PROTOCOL: c_int = 1;
+const CURLE_TOO_MANY_REDIRECTS: c_int = 47;
 use plx_net::net::keypin::TLS_VERIFY_FAILED;
 
 // curl.h option ids. STRINGPOINT/OBJECTPOINT/CBPOINT/SLISTPOINT = 10000, FUNCTIONPOINT = 20000,
@@ -199,7 +213,6 @@ const CURLOPT_HEADERDATA: c_int = 10029;
 const CURLOPT_NOPROGRESS: c_int = 43;
 const CURLOPT_FOLLOWLOCATION: c_int = 52;
 const CURLOPT_SSL_VERIFYPEER: c_int = 64;
-const CURLOPT_MAXREDIRS: c_int = 68;
 const CURLOPT_CONNECTTIMEOUT: c_int = 78;
 const CURLOPT_HEADERFUNCTION: c_int = 20079;
 const CURLOPT_SSL_VERIFYHOST: c_int = 81;
@@ -215,12 +228,12 @@ const CURLOPT_PROTOCOLS: c_int = 181;
 /// `host:port:address` DNS pre-population — the media plane's half of the offline fix. The option
 /// id and its non-fatal polarity are documented on `net::CURLOPT_RESOLVE` / `net::resolve`.
 const CURLOPT_RESOLVE: c_int = 10203;
-const CURLOPT_REDIR_PROTOCOLS: c_int = 182;
 const CURLPROTO_HTTP: c_long = 1 << 0;
 const CURLPROTO_HTTPS: c_long = 1 << 1;
 
 /// Protocol floor for redirects. A TLS request may never cross back into plaintext; an HTTP
 /// request may upgrade. Kept pure so the security rule is host-testable without a TLS fixture.
+/// [`next_hop`] applies it to every redirect before anything is dialled.
 fn allowed_redirect_protocols(url: &[u8]) -> c_long {
     if url.starts_with(b"https://") {
         CURLPROTO_HTTPS
@@ -237,6 +250,10 @@ fn allowed_redirect_protocols(url: &[u8]) -> c_long {
 /// next perform. 200 ms is therefore a *timer resolution*, not a teardown cost, and while bytes
 /// are flowing the wait returns on socket activity long before it.
 const WAIT_MS: c_int = 200;
+/// How much of a redirect's body is read, and for how long, before the hop is left
+/// ([`CurlSource::finish_redirect_body`]).
+const REDIRECT_BODY_MAX: usize = 16 * 1024;
+const REDIRECT_BODY_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
 /// Internal result used only by the segmented ABR prime. Ordinary [`CurlSource::read`] callers
 /// retain the public three-way contract (>0 bytes, 0 EOF, -1 failure/teardown).
 pub const READ_DEADLINE: c_int = -2;
@@ -511,11 +528,13 @@ pub enum OpenErr {
 struct Xfer {
     /// Body bytes received and not yet handed to the reader. Only ever appended to while EMPTY —
     /// [`CurlSource::read`] performs a transfer step exclusively when it has nothing left to
-    /// deliver, so this cannot grow without bound.
+    /// deliver, so this cannot grow without bound. The one other writer is a redirect's body, which
+    /// [`CurlSource::finish_redirect_body`] reads (and nobody delivers) up to a fixed bound.
     buf: Vec<u8>,
     /// How much of `buf` has already been delivered.
     pos: usize,
-    /// The status of the most recent response — the FINAL one, since a redirect resets it.
+    /// The status of the most recent response: the one the open is waiting on, or, for a `3xx`,
+    /// the one that sends it to its next hop ([`CurlSource::start_attempt`]).
     status: c_int,
     /// `Content-Length` of the current response body, or -1.
     body_len: i64,
@@ -524,7 +543,12 @@ struct Xfer {
     /// `Content-Range`'s first byte, or -1 when there was no `Content-Range` at all. This is what
     /// makes "the server answered 206 from the wrong offset" detectable.
     range_start: i64,
-    /// The final response's header block is complete: the point at which an open may return.
+    /// The `Location` of the response being read, as the server wrote it: empty when it sent none,
+    /// when it was too long to keep ([`LOCATION_CAP`], so that a truncated URL is never requested) or
+    /// when no response has begun. Cleared by each status line.
+    location: Vec<u8>,
+    /// The response's header block is complete: the point at which an open may return, or, for a
+    /// `3xx`, the point at which the next hop can be chosen. A `1xx` block is not that.
     headers_done: bool,
 }
 
@@ -537,6 +561,7 @@ impl Xfer {
             body_len: -1,
             range_total: -1,
             range_start: -1,
+            location: Vec::new(),
             headers_done: false,
         }
     }
@@ -547,6 +572,7 @@ impl Xfer {
         self.body_len = -1;
         self.range_total = -1;
         self.range_start = -1;
+        self.location.clear();
         self.headers_done = false;
     }
     fn pending(&self) -> usize {
@@ -563,7 +589,14 @@ pub struct CurlSource {
     /// The easy handle for the transfer currently attached to `multi`, or null between them. A
     /// seek is a fresh easy handle, because a Range is a request header.
     easy: *mut CURL,
+    /// The URL this source was opened, or last reopened, on: the first request of the chain every
+    /// open, reopen and seek replays. Never the URL a past chain ended at: a presigned CDN URL
+    /// expires, and the server that redirected to it is the one that can issue the next.
     url: CString,
+    /// The URL the CURRENT attempt's easy handle was given: [`url`](Self::url) for the first hop of
+    /// a chain, whatever a `Location` spelled for a later one. Held for the life of the attempt, as
+    /// `range` is.
+    hop_url: CString,
     ua: CString,
     range: Option<CString>,
     /// The key pin (`net::keypin`) the CURRENT attempt's easy handle was given, held for the life
@@ -574,9 +607,10 @@ pub struct CurlSource {
     /// The roots bundle path (`net::keypin::Mode::Roots`) the CURRENT attempt's easy handle was
     /// given, held for the life of that attempt for the same reason as [`key_pin`](Self::key_pin).
     roots_path: Option<CString>,
-    /// The `CURLOPT_RESOLVE` entry for this URL's host, when `net::resolve` holds a pin for it —
-    /// computed once at open, applied to every easy handle this source attaches (a seek is a fresh
-    /// handle). The pinned name is a pure function of the host, so it cannot go stale mid-stream.
+    /// The `CURLOPT_RESOLVE` entry for [`url`](Self::url)'s host, when `net::resolve` holds a pin for
+    /// it — computed at open and reopen, applied to the first hop of every chain this source runs (a
+    /// seek is a fresh handle). The pinned name is a pure function of the host, so it cannot go stale
+    /// mid-stream. A later hop's host has its own entry, looked up for that hop ([`Hop::of`]).
     resolve_entry: Option<CString>,
     /// The `curl_slist` built from `resolve_entry` for the CURRENT easy handle. **Owned by that
     /// handle**: libcurl keeps the pointer for the transfer's life, so it is freed only after the
@@ -720,19 +754,10 @@ impl CurlSource {
             return Err(OpenErr::Local);
         }
         // The resolve pin, by this URL's host and port — see `net::resolve` for why the media
-        // plane consults a table rather than carrying the pin. Looked up ONCE here; a seek reuses it.
+        // plane consults a table rather than carrying the pin. Looked up here for the first hop; a
+        // seek reuses it, and each later hop looks up its own.
         let (origin, _) = plx_plex::plex::origin::split(url);
-        let resolve_entry = plx_net::net::resolve::entry_for(origin.host(), origin.port());
-        // The offline reproduction (`/tmp/plxnative-nowan`): a name opens only with a pin.
-        if resolve_entry.is_none()
-            && plx_net::net::refuse_name(origin.host(), plx_net::net::API.connect_s)
-        {
-            return Err(OpenErr::Local);
-        }
-        let resolve_entry = resolve_entry
-            .map(CString::new)
-            .transpose()
-            .map_err(|_| OpenErr::Local)?;
+        let resolve_entry = resolve_entry_for(&origin)?;
         let url_c = CString::new(url).map_err(|_| OpenErr::Local)?;
         let ua = CString::new(plx_plex::plex::identity::user_agent()).map_err(|_| OpenErr::Local)?;
         let multi = unsafe { curl_multi_init() };
@@ -743,6 +768,7 @@ impl CurlSource {
         let mut src = Box::new(CurlSource {
             multi,
             easy: std::ptr::null_mut(),
+            hop_url: url_c.clone(),
             url: url_c,
             ua,
             range: None,
@@ -781,16 +807,7 @@ impl CurlSource {
             return Err(OpenErr::Local);
         }
         let (origin, _) = plx_plex::plex::origin::split(url);
-        let resolve_entry = plx_net::net::resolve::entry_for(origin.host(), origin.port());
-        if resolve_entry.is_none()
-            && plx_net::net::refuse_name(origin.host(), plx_net::net::API.connect_s)
-        {
-            return Err(OpenErr::Local);
-        }
-        self.resolve_entry = resolve_entry
-            .map(CString::new)
-            .transpose()
-            .map_err(|_| OpenErr::Local)?;
+        self.resolve_entry = resolve_entry_for(&origin)?;
         self.url = CString::new(url).map_err(|_| OpenErr::Local)?;
         self.off = 0;
         self.size = -1;
@@ -819,17 +836,15 @@ impl CurlSource {
     /// its `next_check` only shortens a wait and never reaches `CURLOPT_TIMEOUT_MS`, which stays the
     /// caller's deadline alone.
     ///
-    /// **Every open, reopen and seek enters here, which is why key mode (issue #378) and roots mode
-    /// live here.**
-    /// An attempt is one fresh easy handle ([`start_attempt`](Self::start_attempt)); a strict
-    /// attempt that failed with a date verify result, for a host `net::keypin` holds a key
-    /// for, is followed by one more attempt recognising the server by that key; a roots-mode attempt
-    /// that failed on the date is too, and a latched roots start that the bundle refuses is followed
-    /// by one strict attempt (`net::keypin::after_failure` decides every rung, at most three
-    /// attempts). A failed handshake
-    /// delivered nothing, and the next attempt begins by detaching the first's handle and
-    /// resetting the transfer state, so nothing carries over. The shared decision and the option
-    /// setting are `net::keypin`'s, the same ones the control plane uses.
+    /// **Every open, reopen and seek enters here, and here is where redirects are followed — one hop
+    /// at a time.** libcurl is told not to follow (`CURLOPT_FOLLOWLOCATION` 0): a `3xx` ends an
+    /// attempt, [`next_hop`] says where it goes, and the target is a request of its own, in its own
+    /// [`run_hop`](Self::run_hop), with its own TLS decision. The CA file, the key pin and the resolve
+    /// pin are per easy handle, not per hop, so a hop libcurl followed itself would have been
+    /// verified by whatever its server's handle was given — the bundled roots, a pinned key — and
+    /// would have written its failure into its SERVER's facts. At most [`MAX_HOPS`] redirects are
+    /// followed (six requests), and a seek or reopen replays the chain from `self.url`: a presigned
+    /// CDN URL expires, and the server that redirected to it can issue the next.
     fn start_range_until(
         &mut self,
         at: i64,
@@ -837,20 +852,57 @@ impl CurlSource {
         deadline: Option<std::time::Instant>,
         checkpoint: &mut dyn Checkpoint,
     ) -> Result<(), OpenErr> {
+        let original = self.url.to_str().map_err(|_| OpenErr::Local)?.to_owned();
+        let mut hop = Hop::first(&self.url, self.resolve_entry.clone());
+        loop {
+            match self.run_hop(at, range_end, deadline, checkpoint, &original, &hop)? {
+                None => return Ok(()),
+                Some(next) => hop = Hop::of(&next, hop.n + 1)?,
+            }
+        }
+    }
+
+    /// One hop of [`start_range_until`](Self::start_range_until): its request, in whatever mode it
+    /// takes. `Ok(None)` is a response whose headers are validated, the source readable;
+    /// `Ok(Some(target))` is a redirect to follow, the transfer already retired.
+    ///
+    /// **Key mode (issue #378) and roots mode live here.** An attempt is one fresh easy handle
+    /// ([`start_attempt`](Self::start_attempt)); a strict attempt that failed with a date verify
+    /// result, for a host `net::keypin` holds a key for, is followed by one more attempt recognising
+    /// the server by that key; a roots-mode attempt that failed on the date is too, and a latched
+    /// roots start that the bundle refuses is followed by one strict attempt
+    /// (`net::keypin::after_failure` decides every rung; at most three attempts PER HOP). A failed
+    /// handshake delivered nothing, and the next attempt begins by detaching the first's handle and
+    /// resetting the transfer state, so nothing carries over. The shared decision and the option
+    /// setting are `net::keypin`'s, the same ones the control plane uses.
+    ///
+    /// **All of the ladder's state is this call's**, so nothing one hop learns about its host can
+    /// reach the next hop's: which host's key the tables are asked for, the mode it starts in, whether
+    /// the bundle has been tried (it is offered once per hop, not once per open), and the failed
+    /// attempt's log phrase.
+    fn run_hop(
+        &mut self,
+        at: i64,
+        range_end: Option<i64>,
+        deadline: Option<std::time::Instant>,
+        checkpoint: &mut dyn Checkpoint,
+        original: &str,
+        hop: &Hop,
+    ) -> Result<Option<Target>, OpenErr> {
         use plx_net::net::keypin;
-        // Key mode is for a verified-https request only; a plaintext URL has no key.
-        let key = keypin::key_of_url(self.url.to_str().unwrap_or_default());
-        let mut mode = key.as_deref().map_or(keypin::Mode::Strict, keypin::begin);
+        let key = hop.key.as_deref();
+        let mut mode = key.map_or(keypin::Mode::Strict, keypin::begin);
         // The failed attempt's log phrase, kept in case libcurl cannot be put in the mode that
         // follows it.
         let mut held: Option<String> = None;
-        // Whether an attempt of this open has already run against the bundled roots: the bundle is
+        // Whether an attempt of this hop has already run against the bundled roots: the bundle is
         // never offered twice ([`keypin::after_failure`]).
         let mut roots_tried = false;
         loop {
             roots_tried |= matches!(mode, keypin::Mode::Roots { .. });
-            match self.start_attempt(at, range_end, deadline, checkpoint, &mode, key.as_deref(), roots_tried)? {
-                Attempt::Done => return Ok(()),
+            match self.start_attempt(at, range_end, deadline, checkpoint, original, hop, &mode, roots_tried)? {
+                Attempt::Done => return Ok(None),
+                Attempt::Redirect(next) => return Ok(Some(next)),
                 Attempt::Retry(next, why) => {
                     held = Some(why);
                     mode = next;
@@ -866,7 +918,7 @@ impl CurlSource {
                             return Err(OpenErr::Transport(TLS_VERIFY_FAILED));
                         }
                         None => {
-                            if let Some(key) = &key {
+                            if let Some(key) = key {
                                 keypin::unlatch(key);
                             }
                             mode = keypin::Mode::Strict;
@@ -877,9 +929,9 @@ impl CurlSource {
         }
     }
 
-    /// One attempt of [`start_range_until`](Self::start_range_until) in `mode`: a fresh easy handle,
-    /// pumped until the response headers are in. `key` is the URL's `host:port` in `net::keypin`'s
-    /// tables, or `None` when the URL can never use them. `roots_tried` is whether this open has
+    /// One attempt of [`run_hop`](Self::run_hop) in `mode`: a fresh easy handle for `hop`'s URL,
+    /// pumped until the response headers are in. `original` is the URL the chain began on, which
+    /// decides what a redirect may be to ([`next_hop`]). `roots_tried` is whether this hop has
     /// already run an attempt against the bundled roots (this one included), for
     /// [`keypin::after_failure`].
     fn start_attempt(
@@ -888,11 +940,15 @@ impl CurlSource {
         range_end: Option<i64>,
         deadline: Option<std::time::Instant>,
         checkpoint: &mut dyn Checkpoint,
+        original: &str,
+        hop: &Hop,
         mode: &plx_net::net::keypin::Mode,
-        key: Option<&str>,
         roots_tried: bool,
     ) -> Result<Attempt, OpenErr> {
         use plx_net::net::keypin;
+        // `hop.key` is the hop URL's `host:port` in `net::keypin`'s tables, or `None` when the URL can
+        // never use them.
+        let key = hop.key.as_deref();
         self.stop();
         if self.multi_failed {
             // A CURLM error describes this multi handle, not the remote byte range. Rebuild the
@@ -912,6 +968,7 @@ impl CurlSource {
         self.rc = 0;
         self.failed = false;
         self.readable = false;
+        self.hop_url = hop.url.clone();
         if self.abort.is_set() {
             return Err(OpenErr::Aborted);
         }
@@ -947,7 +1004,7 @@ impl CurlSource {
                 }};
             }
             let xp = &mut *self.xfer as *mut Xfer as *mut c_void;
-            plx_net::net::curl_easy_setopt_ptr(easy, CURLOPT_URL, self.url.as_ptr() as *const c_void);
+            plx_net::net::curl_easy_setopt_ptr(easy, CURLOPT_URL, self.hop_url.as_ptr() as *const c_void);
             plx_net::net::curl_easy_setopt_ptr(
                 easy,
                 CURLOPT_WRITEFUNCTION,
@@ -969,9 +1026,10 @@ impl CurlSource {
                 plx_net::net::curl_easy_setopt_ptr(easy, CURLOPT_RANGE, r.as_ptr() as *const c_void);
             }
             // The resolve pin, one list entry, owned by THIS easy handle (`stop` frees it after the
-            // handle, or abandons both). Not `require_setopt!`: a libcurl without the option keeps
-            // resolving the name itself, and that is a logged fact rather than a cancelled stream.
-            if let Some(r) = &self.resolve_entry {
+            // handle, or abandons both). It is the pin of THIS hop's host: a handle dials one URL.
+            // Not `require_setopt!`: a libcurl without the option keeps resolving the name itself,
+            // and that is a logged fact rather than a cancelled stream.
+            if let Some(r) = &hop.resolve_entry {
                 let l = plx_net::net::curl_slist_append(std::ptr::null_mut(), r.as_ptr());
                 if l.is_null() {
                     plx_net::net::curl_easy_cleanup(easy);
@@ -1052,20 +1110,17 @@ impl CurlSource {
             // We are on a worker thread; curl must not install signal handlers. This is also what
             // makes DNS uncancellable on a synchronous resolver — see the module doc.
             plx_net::net::curl_easy_setopt_long(easy, CURLOPT_NOSIGNAL, 1);
+            // libcurl does NOT follow redirects: a `3xx` is this attempt's answer, and where it goes
+            // is [`next_hop`]'s decision (below), made before anything is dialled, with the next
+            // host's TLS decision of its own. Explicit rather than left at the default, and
+            // `require_setopt!` like the options beside it: a libcurl that followed after all would
+            // verify the next host by this handle's CA file and key pin.
             require_setopt!(
-                plx_net::net::curl_easy_setopt_long(easy, CURLOPT_FOLLOWLOCATION, 1),
+                plx_net::net::curl_easy_setopt_long(easy, CURLOPT_FOLLOWLOCATION, 0),
                 "CURLOPT_FOLLOWLOCATION"
             );
-            require_setopt!(
-                plx_net::net::curl_easy_setopt_long(easy, CURLOPT_MAXREDIRS, 5),
-                "CURLOPT_MAXREDIRS"
-            );
-            // A redirect must not downgrade a TLS media request. On the television's libcurl
-            // 7.53.1 the redirect default is broader than HTTP(S), and even current curl permits
-            // https -> http unless the caller narrows it. The token is in the URL, so a downgrade
-            // would expose both it and the stream. A plaintext request may upgrade to TLS; a TLS
-            // request may remain TLS only.
-            let redirect_protocols = allowed_redirect_protocols(self.url.as_bytes());
+            // The first request may only be http(s), and so may every later one (`next_hop`; a
+            // redirect that would downgrade a TLS request is refused there, not by libcurl).
             require_setopt!(
                 plx_net::net::curl_easy_setopt_long(
                     easy,
@@ -1073,14 +1128,6 @@ impl CurlSource {
                     CURLPROTO_HTTP | CURLPROTO_HTTPS,
                 ),
                 "CURLOPT_PROTOCOLS"
-            );
-            require_setopt!(
-                plx_net::net::curl_easy_setopt_long(
-                    easy,
-                    CURLOPT_REDIR_PROTOCOLS,
-                    redirect_protocols
-                ),
-                "CURLOPT_REDIR_PROTOCOLS"
             );
             plx_net::net::curl_easy_setopt_long(easy, CURLOPT_CONNECTTIMEOUT, CONNECT_TIMEOUT_S);
             if let Some(at) = deadline {
@@ -1116,7 +1163,7 @@ impl CurlSource {
                 setup_timer_started.checked_add(std::time::Duration::from_millis(ms))
             })
         };
-        // Pump until the final response's headers are in, the transfer ends, or teardown fires.
+        // Pump until the response's headers are in, the transfer ends, or teardown fires.
         let mut pacer = Pacer::new(checkpoint);
         while !self.xfer.headers_done && !self.done {
             if self.abort.is_set() {
@@ -1212,6 +1259,36 @@ impl CurlSource {
                 _ => {}
             }
         }
+        // A redirect is followed from here, after the verdict above has recorded what this hop's
+        // handshake said about ITS host. It is decided from the status, which the verdict zeroes for
+        // a handshake whose pin did not confirm: a response a pin refused is never followed.
+        if is_redirect(self.xfer.status) && !self.failed && !self.abort.is_set() {
+            let status = self.xfer.status;
+            let current = hop.url.to_str().unwrap_or_default();
+            let location = std::str::from_utf8(&self.xfer.location).unwrap_or_default();
+            let next = match next_hop(original, current, status, location, hop.n) {
+                Ok(next) => next,
+                Err(e) => {
+                    let why = match e {
+                        OpenErr::Transport(CURLE_TOO_MANY_REDIRECTS) => format!("REFUSED: more than {MAX_HOPS} hops"),
+                        OpenErr::Transport(_) => "REFUSED: a redirect may not leave TLS for plaintext".to_owned(),
+                        _ => "has no usable Location".to_owned(),
+                    };
+                    crate::player::log(&format!("curlio: redirect {status} from {} {why}", log_target(target_of(current).as_ref())));
+                    self.stop();
+                    return Err(e);
+                }
+            };
+            let same = target_of(original).is_some_and(|first| same_origin(&first.origin, &next.origin));
+            crate::player::log(&format!(
+                "curlio: redirect {status} -> {} hop={} same_origin={same}",
+                log_target(Some(&next)),
+                hop.n + 1
+            ));
+            self.finish_redirect_body(deadline);
+            self.stop();
+            return Ok(Attempt::Redirect(next));
+        }
         self.validate(at, setup_timeout_at).map_err(|e| {
             self.stop();
             e
@@ -1292,6 +1369,29 @@ impl CurlSource {
         };
         self.readable = true;
         Ok(())
+    }
+
+    /// Read a redirect's body to its end, within [`REDIRECT_BODY_MAX`] bytes and [`REDIRECT_BODY_WAIT`],
+    /// before the hop is left. A `3xx` body is a line of HTML or nothing, and a transfer that has
+    /// finished is one whose connection libcurl keeps for the next request; one removed mid-body is
+    /// closed. Best effort by design: a body that does not finish inside the bounds, an abort, or a
+    /// multi failure costs the connection and nothing else — the `Location` is already in hand and
+    /// the next attempt resets the transfer and rebuilds a failed multi.
+    fn finish_redirect_body(&mut self, deadline: Option<std::time::Instant>) {
+        let mut until = std::time::Instant::now() + REDIRECT_BODY_WAIT;
+        if let Some(at) = deadline {
+            until = until.min(at);
+        }
+        while !self.done && !self.abort.is_set() && self.xfer.buf.len() <= REDIRECT_BODY_MAX {
+            let left_us = until.saturating_duration_since(std::time::Instant::now()).as_micros();
+            if left_us == 0 || self.perform().is_err() || self.done {
+                return;
+            }
+            let wait_ms = ((left_us.saturating_add(999) / 1_000).min(WAIT_MS as u128)) as c_int;
+            if !matches!(multi_wait(self.multi, &self.abort, wait_ms), Wait::Ready | Wait::Timeout) {
+                return;
+            }
+        }
     }
 
     /// One `curl_multi_perform`, reaping the completion message when the last handle finishes.
@@ -1737,6 +1837,131 @@ fn sample_throughput_with_reservation(
     })
 }
 
+/// The `CURLOPT_RESOLVE` entry for a request to `origin`: its pin in `net::resolve`, when that holds
+/// one. `Local` when the offline reproduction (`/tmp/plxnative-nowan`) refuses a name no pin covers.
+fn resolve_entry_for(origin: &Origin) -> Result<Option<CString>, OpenErr> {
+    let entry = plx_net::net::resolve::entry_for(origin.host(), origin.port());
+    if entry.is_none() && plx_net::net::refuse_name(origin.host(), plx_net::net::API.connect_s) {
+        return Err(OpenErr::Local);
+    }
+    entry.map(CString::new).transpose().map_err(|_| OpenErr::Local)
+}
+
+/// One request of a redirect chain, and what is looked up by the host it dials. Built afresh for
+/// every hop ([`CurlSource::start_range_until`]): what `net::keypin` knows and what `net::resolve`
+/// holds are facts about a host, and a hop is a different host from the one that sent it there.
+struct Hop {
+    /// Redirects followed to get here: 0 for the open's own URL.
+    n: u32,
+    url: CString,
+    /// The `CURLOPT_RESOLVE` entry for this URL's host and port, when `net::resolve` holds a pin.
+    resolve_entry: Option<CString>,
+    /// The URL's `host:port` in `net::keypin`'s tables, or `None` when it can never use them (not
+    /// https, or an authority that is not a plain `host[:port]`: see `keypin::key_of_url`).
+    key: Option<String>,
+}
+
+impl Hop {
+    /// The chain's first request: the URL the source was opened on, and the resolve entry open and
+    /// reopen already looked up (and, for the offline reproduction, already refused a name for).
+    fn first(url: &CString, resolve_entry: Option<CString>) -> Hop {
+        Hop {
+            n: 0,
+            key: plx_net::net::keypin::key_of_url(url.to_str().unwrap_or_default()),
+            url: url.clone(),
+            resolve_entry,
+        }
+    }
+
+    /// The request a redirect leads to, asked what every request to an origin is asked: may the
+    /// media plane send it there, and what is that host's pin. The URL is what `Location` spelled
+    /// ([`next_hop`]), so it carries none of the original's query.
+    fn of(target: &Target, n: u32) -> Result<Hop, OpenErr> {
+        let url = target.url();
+        if !media_url_allowed(&url) {
+            return Err(OpenErr::Local);
+        }
+        let resolve_entry = resolve_entry_for(&target.origin)?;
+        Ok(Hop {
+            n,
+            key: plx_net::net::keypin::key_of_url(&url),
+            url: CString::new(url).map_err(|_| OpenErr::Local)?,
+            resolve_entry,
+        })
+    }
+}
+
+/// The [`Target`] a URL names: `None` unless it is an absolute http(s) URL whose authority is a plain
+/// `host[:port]`. Read by `resolve_location` rather than `origin::split`, because `split` is a
+/// tolerant reading of a file that may be corrupt: it takes `https://user:pw@host/` for the host
+/// `user` and a URL with no port for `:32400`, where libcurl dials `host` and 443.
+fn target_of(url: &str) -> Option<Target> {
+    let abs = |scheme: &str| url.get(..scheme.len()).is_some_and(|s| s.eq_ignore_ascii_case(scheme));
+    (abs("https://") || abs("http://")).then(|| resolve_location(&no_base(), url)).flatten()
+}
+
+/// A base for resolving a `Location` that is absolute and so needs none.
+fn no_base() -> Target {
+    Target {
+        origin: Origin::new(Scheme::Http, "localhost", 80),
+        path: "/".to_owned(),
+    }
+}
+
+/// Where a redirect goes, decided before anything is dialled, or why it does not. `original` is the
+/// URL the chain began on and `current` the one that just answered; `hop` is the number of
+/// redirects already followed, so the request that answered was request `hop + 1`.
+///
+/// * **The target is exactly what `Location` spells**, resolved against `current` when it is
+///   relative. The original's query, the only place its token is, is never copied onto a hop; and a
+///   `Location` carrying userinfo is refused (`resolve_location`), as is a relative one against a
+///   `current` whose authority is not a plain `host[:port]` (see [`target_of`]): there is no origin
+///   to resolve it against. Both are a `Location` with nothing usable in it: `Status(status)`, the
+///   `3xx` itself, as a redirect that names nowhere has always been.
+/// * More than [`MAX_HOPS`] redirects is `Transport(47)` (`CURLE_TOO_MANY_REDIRECTS`: five followed
+///   is six requests, and the sixth answer is read and not followed).
+/// * A redirect may not go to a protocol it must not: [`allowed_redirect_protocols`] of `original`,
+///   and never plaintext from a `current` that is https, so a TLS request cannot cross back into
+///   plaintext at any hop. `Transport(1)` (`CURLE_UNSUPPORTED_PROTOCOL`), before the target is dialled.
+fn next_hop(original: &str, current: &str, status: c_int, location: &str, hop: u32) -> Result<Target, OpenErr> {
+    if !is_redirect(status) {
+        return Err(OpenErr::Status(status));
+    }
+    let loc = location.trim_matches(|c| c == ' ' || c == '\t');
+    let spells_scheme = |scheme: &str| loc.get(..scheme.len()).is_some_and(|s| s.eq_ignore_ascii_case(scheme));
+    let resolved = match target_of(current) {
+        Some(base) => resolve_location(&base, location),
+        None if spells_scheme("https://") || spells_scheme("http://") => resolve_location(&no_base(), location),
+        None => None,
+    };
+    let Some(next) = resolved else {
+        return Err(OpenErr::Status(status));
+    };
+    if hop >= MAX_HOPS {
+        return Err(OpenErr::Transport(CURLE_TOO_MANY_REDIRECTS));
+    }
+    let allowed = if current.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://")) {
+        CURLPROTO_HTTPS
+    } else {
+        allowed_redirect_protocols(original.as_bytes())
+    };
+    let wanted = if next.origin.is_tls() { CURLPROTO_HTTPS } else { CURLPROTO_HTTP };
+    if allowed & wanted == 0 {
+        return Err(OpenErr::Transport(CURLE_UNSUPPORTED_PROTOCOL));
+    }
+    Ok(next)
+}
+
+/// How a hop is written in the event log: its origin and its path, never its query (which is where a
+/// token or a presigned signature is). `None` is a URL this client cannot read an origin from, which
+/// is not written at all: its authority may carry credentials.
+fn log_target(target: Option<&Target>) -> String {
+    match target {
+        Some(t) => format!("{}{}", t.origin.log_form(), log_endpoint(&t.path)),
+        None => "an origin this client cannot read".to_owned(),
+    }
+}
+
 fn media_url_allowed(url: &str) -> bool {
     let (origin, path) = plx_plex::plex::origin::split(url);
     plx_plex::http::credential_transport_allowed(&origin, path, &[])
@@ -1840,7 +2065,7 @@ extern "C" fn write_cb(ptr: *mut c_char, size: usize, nmemb: usize, ud: *mut c_v
 }
 
 /// `CURLOPT_HEADERFUNCTION`: one header line at a time, including the blank line that ends a
-/// block, and including the lines of every intermediate response a redirect produces.
+/// block, and including the lines of every informational (`1xx`) response before the final one.
 extern "C" fn header_cb(ptr: *mut c_char, size: usize, nmemb: usize, ud: *mut c_void) -> usize {
     let n = size.saturating_mul(nmemb);
     if ud.is_null() || ptr.is_null() {
@@ -1859,10 +2084,11 @@ extern "C" fn header_cb(ptr: *mut c_char, size: usize, nmemb: usize, ud: *mut c_
 fn parse_header_line(x: &mut Xfer, line: &[u8]) {
     let t = trim_ascii(line);
     if t.is_empty() {
-        // End of a header block. A 1xx is informational and a 3xx is about to be followed, so
-        // neither is the FINAL response — marking either as done would stop an open early, with
-        // the wrong status in hand.
-        if !(100..200).contains(&x.status) && !(300..400).contains(&x.status) {
+        // End of a header block. A 1xx is informational and the response is still to come, so it
+        // is not the one the open waits on — marking it done would stop an open early, with the
+        // wrong status in hand. Every other block is: a `3xx` is followed by `start_attempt`, one
+        // hop at a time, not by libcurl.
+        if !(100..200).contains(&x.status) {
             x.headers_done = true;
         }
         return;
@@ -1873,6 +2099,7 @@ fn parse_header_line(x: &mut Xfer, line: &[u8]) {
         x.body_len = -1;
         x.range_total = -1;
         x.range_start = -1;
+        x.location.clear();
         x.headers_done = false;
         return;
     }
@@ -1882,6 +2109,9 @@ fn parse_header_line(x: &mut Xfer, line: &[u8]) {
         let (start, total) = parse_content_range(v);
         x.range_start = start;
         x.range_total = total;
+    } else if let Some(v) = header_value(t, b"location:") {
+        // Too long to keep is as good as absent: the open fails rather than request a truncated URL.
+        x.location = if v.len() <= LOCATION_CAP { v.to_vec() } else { Vec::new() };
     }
 }
 
@@ -1989,6 +2219,10 @@ enum Attempt {
     Retry(plx_net::net::keypin::Mode, String),
     /// libcurl refused the fallback mode's options; the handle was discarded unrelaxed.
     KeyRefused,
+    /// The response is a redirect to follow ([`next_hop`] chose the target), and the transfer is
+    /// retired. Returned after the attempt's verdict on its own host was recorded, and never for a
+    /// response whose pin did not confirm.
+    Redirect(Target),
 }
 
 /// Issue #378's media-plane half: key mode through a real `CurlSource` handshake.
@@ -2003,7 +2237,7 @@ mod keymode_tests;
 mod roots_tests;
 
 /// What a media open does with a `3xx` (hop cap, no downgrade, `Range`, relative `Location`, the
-/// token, the trust store a roots-mode hop is verified against), pinned for whoever follows it.
+/// token, and the TLS decision each hop makes for its own host), one hop at a time.
 #[cfg(test)]
 #[path = "curlio_redirect_tests.rs"]
 mod redirect_tests;
@@ -2684,18 +2918,25 @@ mod tests {
         );
         assert!(x.headers_done);
 
-        // A redirect's block must NOT end the open — the status that matters is the next one.
+        // A redirect's block is the response the open gets: libcurl does not follow, so there is no
+        // "next one" for it to wait for, and the `Location` it named is in hand.
         let mut r = Xfer::new();
         parse_header_line(&mut r, b"HTTP/1.1 302 Found\r\n");
+        parse_header_line(&mut r, b"Location: https://cdn.example/v.mkv?sig=abc\r\n");
+        parse_header_line(&mut r, b"Content-Length: 0\r\n");
         parse_header_line(&mut r, b"\r\n");
-        assert!(
-            !r.headers_done,
-            "a 3xx is followed, so its header block is not the final one"
-        );
-        parse_header_line(&mut r, b"HTTP/1.1 200 OK\r\n");
-        parse_header_line(&mut r, b"Content-Length: 99\r\n");
-        parse_header_line(&mut r, b"\r\n");
-        assert_eq!((r.status, r.body_len, r.headers_done), (200, 99, true));
+        assert_eq!((r.status, r.headers_done), (302, true));
+        assert_eq!(r.location, b"https://cdn.example/v.mkv?sig=abc");
+
+        // An informational block is not: the response it precedes is.
+        let mut i = Xfer::new();
+        parse_header_line(&mut i, b"HTTP/1.1 100 Continue\r\n");
+        parse_header_line(&mut i, b"\r\n");
+        assert!(!i.headers_done, "a 1xx is followed by the real response");
+        parse_header_line(&mut i, b"HTTP/1.1 200 OK\r\n");
+        parse_header_line(&mut i, b"Content-Length: 99\r\n");
+        parse_header_line(&mut i, b"\r\n");
+        assert_eq!((i.status, i.body_len, i.headers_done), (200, 99, true));
 
         // `bytes 0-9/*` — the RFC's unknown-total spelling — must read as unknown, not as 0.
         assert_eq!(parse_content_range(b"bytes 0-9/*"), (0, -1));
@@ -2705,6 +2946,117 @@ mod tests {
         parse_header_line(&mut b, b"Server: caf\xC3\x28\r\n");
         parse_header_line(&mut b, b"Content-Length: 8\r\n");
         assert_eq!((b.status, b.body_len), (200, 8));
+    }
+
+    /// The `Location` a response carries belongs to that response: a later status line clears it,
+    /// one too long to keep reads as absent (never truncated), and the name is matched like any
+    /// header's.
+    #[test]
+    fn a_location_belongs_to_the_response_that_sent_it_and_is_bounded() {
+        let mut x = Xfer::new();
+        parse_header_line(&mut x, b"HTTP/1.1 302 Found\r\n");
+        parse_header_line(&mut x, b"lOcAtIoN:   /next \r\n");
+        assert_eq!(x.location, b"/next");
+        parse_header_line(&mut x, b"HTTP/1.1 200 OK\r\n");
+        assert!(x.location.is_empty(), "a new status line starts a new response");
+
+        let long = format!("Location: https://cdn.example/{}\r\n", "a".repeat(LOCATION_CAP));
+        parse_header_line(&mut x, long.as_bytes());
+        assert!(x.location.is_empty(), "a Location over the cap is not kept, and never cut short");
+        let fits = format!("Location: {}\r\n", "b".repeat(LOCATION_CAP));
+        parse_header_line(&mut x, fits.as_bytes());
+        assert_eq!(x.location.len(), LOCATION_CAP);
+        x.reset();
+        assert!(x.location.is_empty());
+    }
+
+    const PMS: &str = "https://pms.example:32400/library/parts/1/file.mkv?X-Plex-Token=tok";
+
+    fn hop_of(location: &str) -> Result<String, OpenErr> {
+        next_hop(PMS, PMS, 302, location, 0).map(|t| t.url())
+    }
+
+    /// The target is what `Location` spells and nothing of the original's: not its query (the only
+    /// place its token is), and not its path when the `Location` is absolute.
+    #[test]
+    fn a_hop_is_exactly_what_the_location_spells() {
+        assert_eq!(hop_of("/cdn/v.mkv?sig=abc").unwrap(), "https://pms.example:32400/cdn/v.mkv?sig=abc");
+        assert_eq!(hop_of("v.mkv").unwrap(), "https://pms.example:32400/library/parts/1/v.mkv");
+        assert_eq!(hop_of("../v.mkv").unwrap(), "https://pms.example:32400/library/parts/v.mkv");
+        assert_eq!(hop_of("?part=2").unwrap(), "https://pms.example:32400/library/parts/1/file.mkv?part=2");
+        assert_eq!(hop_of("https://cdn.example/v.mkv?sig=abc#frag").unwrap(), "https://cdn.example:443/v.mkv?sig=abc");
+        assert_eq!(hop_of("//cdn.example:8443/v.mkv").unwrap(), "https://cdn.example:8443/v.mkv");
+        assert_eq!(hop_of("HTTPS://[2001:db8::1]:8443/a/./b").unwrap(), "https://[2001:db8::1]:8443/a/b");
+        for loc in ["/a", "https://cdn.example/a", "//cdn.example/a"] {
+            assert!(!hop_of(loc).unwrap().contains("X-Plex-Token"), "{loc}");
+        }
+    }
+
+    /// A relative `Location` resolves against the request that sent it, which for a URL with no port
+    /// is the scheme's port, not the PMS default `origin::split` would read it as.
+    #[test]
+    fn a_relative_location_on_a_url_with_no_port_keeps_the_schemes_port() {
+        let cdn = "https://cdn.example/a/b";
+        assert_eq!(next_hop(cdn, cdn, 301, "c", 0).unwrap().url(), "https://cdn.example:443/a/c");
+        assert_eq!(next_hop("http://a.example/x", "http://a.example/x", 307, "/y", 0).unwrap().url(), "http://a.example:80/y");
+    }
+
+    #[test]
+    fn a_location_with_userinfo_is_refused() {
+        for loc in ["https://user:pw@cdn.example/v.mkv", "https://token@cdn.example/v.mkv", "//user@cdn.example/v.mkv"] {
+            assert_eq!(hop_of(loc), Err(OpenErr::Status(302)), "{loc}");
+        }
+    }
+
+    /// Nothing relative can be resolved against an authority this client cannot read an origin from
+    /// (userinfo), and `origin::split` would read it wrongly: `https://u:p@host/` as the host `u`.
+    /// An absolute `Location` needs no base and is still followed.
+    #[test]
+    fn a_relative_location_is_refused_against_an_authority_that_is_not_a_plain_host() {
+        let odd = "https://user:pw@pms.example/library/parts/1/file.mkv";
+        for loc in ["/v.mkv", "v.mkv", "//cdn.example/v.mkv", "?x=1"] {
+            assert_eq!(next_hop(odd, odd, 302, loc, 0), Err(OpenErr::Status(302)), "{loc}");
+        }
+        assert_eq!(next_hop(odd, odd, 302, "https://cdn.example/v.mkv", 0).unwrap().url(), "https://cdn.example:443/v.mkv");
+        assert_eq!(target_of(odd), None);
+        assert_eq!(target_of("https://pms.example:32400/x").map(|t| t.url()), Some("https://pms.example:32400/x".to_owned()));
+        assert_eq!(target_of("pms.example:32400/x"), None, "no scheme: not a URL this reads an origin from");
+    }
+
+    #[test]
+    fn a_tls_request_is_never_redirected_to_plaintext_at_any_hop() {
+        assert_eq!(hop_of("http://cdn.example/v.mkv"), Err(OpenErr::Transport(CURLE_UNSUPPORTED_PROTOCOL)));
+        assert_eq!(hop_of("//cdn.example/v.mkv").map(|_| ()), Ok(()), "a scheme-relative Location keeps the scheme: https");
+        // The original is plaintext and may upgrade; once it is TLS it may not go back, whatever it began as.
+        let plain = "http://pms.example:32400/f.mkv";
+        assert!(next_hop(plain, plain, 302, "https://cdn.example/v.mkv", 0).is_ok());
+        assert!(next_hop(plain, plain, 302, "http://other.example/v.mkv", 0).is_ok());
+        assert_eq!(
+            next_hop(plain, "https://cdn.example/v.mkv", 302, "http://other.example/v.mkv", 1),
+            Err(OpenErr::Transport(CURLE_UNSUPPORTED_PROTOCOL))
+        );
+    }
+
+    /// Five redirects are followed (six requests); the sixth answer is read and not followed.
+    #[test]
+    fn the_sixth_redirect_is_too_many() {
+        assert!(next_hop(PMS, PMS, 302, "/a", MAX_HOPS - 1).is_ok(), "the fifth redirect is followed");
+        assert_eq!(next_hop(PMS, PMS, 302, "/a", MAX_HOPS), Err(OpenErr::Transport(CURLE_TOO_MANY_REDIRECTS)));
+        // A redirect that names nowhere is the 3xx itself, even past the cap: there is nothing to count.
+        assert_eq!(next_hop(PMS, PMS, 302, "", MAX_HOPS), Err(OpenErr::Status(302)));
+    }
+
+    #[test]
+    fn a_3xx_with_no_usable_location_is_its_own_status() {
+        for loc in ["", "   ", "ftp://cdn.example/v.mkv", "data:text/plain,x", "https://", "https://cdn.example:0/v.mkv", "/a b"] {
+            assert_eq!(hop_of(loc), Err(OpenErr::Status(302)), "{loc:?}");
+        }
+        for status in [300, 304, 200, 404, 0] {
+            assert_eq!(next_hop(PMS, PMS, status, "/a", 0), Err(OpenErr::Status(status)), "{status}");
+        }
+        for status in [301, 302, 303, 307, 308] {
+            assert!(next_hop(PMS, PMS, status, "/a", 0).is_ok(), "{status}");
+        }
     }
 
     #[test]

@@ -1,10 +1,10 @@
 //! Redirects, media plane: what `curlio::CurlSource` does when the server answers an open, a reopen
-//! or a seek with a `3xx`, pinned as it stands (libcurl follows, `CURLOPT_FOLLOWLOCATION`) so that a
-//! change to HOW the hops are followed has to say what it changed. Everything graded here is what
-//! the media plane promises whoever follows: the hop cap, the no-downgrade rule, the `Range` that
-//! rides every hop, a relative `Location`, which statuses are followed, what a `3xx` body and a
-//! missing `Location` do, what of the original URL a hop receives, and the trust store a
-//! `*.plex.direct` open in roots mode (`net::keypin`) verifies its hops against.
+//! or a seek with a `3xx`. It follows the hops itself, one request at a time (`next_hop`), and these
+//! tests grade what that promises whoever relies on it, and held before it did: the hop cap, the
+//! no-downgrade rule, the `Range` that rides every hop, a relative `Location`, which statuses are
+//! followed, what a `3xx` body and a missing `Location` do, what of the original URL a hop receives,
+//! and that a hop is a request of its own, to its own host, under its own TLS decision
+//! (`net::keypin`), whichever mode the host that sent it was in.
 //!
 //! The doubles are `net::spawn_scripted`'s: each records every request it reads, so a test can say
 //! what each hop received. Hosts are loopback ones and the synthetic `*.plex.direct` names of
@@ -133,7 +133,7 @@ fn a_redirect_from_https_to_plain_http_is_refused_and_the_plain_target_is_never_
     let err = CurlSource::open(&url_of("127.0.0.1", served.port, "/start"), 0)
         .err()
         .expect("a TLS media request may not be redirected into plaintext");
-    // CURLE_UNSUPPORTED_PROTOCOL: `CURLOPT_REDIR_PROTOCOLS` names https only for an https URL.
+    // CURLE_UNSUPPORTED_PROTOCOL: a hop from an https URL may only be https (`next_hop`).
     assert_eq!(err, OpenErr::Transport(1));
     assert_eq!(request_lines(&served), ["GET /start HTTP/1.1"], "the redirecting server was asked once");
     assert_eq!(plain.connections_but_a_probe(), 0, "the plaintext target was never connected to");
@@ -144,6 +144,78 @@ fn chain(hops: usize) -> Vec<(String, Reply)> {
     let mut routes: Vec<(String, Reply)> = (0..hops).map(|i| (format!("/h{i}"), Reply::redirect(302, &format!("/h{}", i + 1)))).collect();
     routes.push((format!("/h{hops}"), Reply::ok(media_body())));
     routes
+}
+
+/// A plaintext HTTP/1.1 server that keeps its connections alive, answers a request by its path with
+/// the response head and body `routes` holds for it (the body a moment AFTER the head, as a server
+/// that is still producing it sends it), and counts the connections it accepts: the double in which a
+/// connection libcurl kept after a redirect can be seen being handed to the next hop.
+/// (`spawn_scripted` closes every connection, which is what makes its accept counts one per request.)
+struct KeepAlive {
+    port: u16,
+    accepted: Arc<AtomicUsize>,
+}
+
+impl KeepAlive {
+    fn spawn(routes: Vec<(&'static str, Vec<u8>, Vec<u8>)>) -> KeepAlive {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind keep-alive listener");
+        let port = listener.local_addr().unwrap().port();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&accepted);
+        let routes = Arc::new(routes);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                count.fetch_add(1, Ordering::AcqRel);
+                let routes = Arc::clone(&routes);
+                std::thread::spawn(move || {
+                    let mut seen = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        while let Some(end) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&seen[..end]).into_owned();
+                            seen.drain(..end + 4);
+                            let path = head.split_whitespace().nth(1).unwrap_or_default().split('?').next().unwrap_or_default().to_owned();
+                            let (reply_head, reply_body) = routes
+                                .iter()
+                                .find(|(p, _, _)| *p == path)
+                                .map(|(_, h, b)| (h.clone(), b.clone()))
+                                .unwrap_or_else(|| (b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(), Vec::new()));
+                            let sent = stream.write_all(&reply_head).and_then(|_| stream.flush()).map(|_| std::thread::sleep(std::time::Duration::from_millis(50)));
+                            if sent.and_then(|_| stream.write_all(&reply_body)).is_err() {
+                                return;
+                            }
+                        }
+                        match stream.read(&mut buf) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => seen.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                });
+            }
+        });
+        KeepAlive { port, accepted }
+    }
+}
+
+/// **A redirect's connection is not wasted.** The hop is left only after its body has been read to its
+/// end, so libcurl keeps the connection, and the next request to the same server finds it in the
+/// source's connection cache: one connection for the redirect and the media, where a hop left
+/// mid-body would cost a second.
+#[test]
+fn the_connection_a_redirect_arrived_on_carries_the_next_hop_when_its_body_was_read() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    let note = b"moved, look over there. ".repeat(25);
+    let redirect = format!("HTTP/1.1 302 Found\r\nLocation: /video.mkv\r\nContent-Length: {}\r\n\r\n", note.len()).into_bytes();
+    let media = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", media_body().len()).into_bytes();
+    let served = KeepAlive::spawn(vec![("/start", redirect, note), ("/video.mkv", media, media_body())]);
+
+    let mut src = CurlSource::open(&format!("http://127.0.0.1:{}/start", served.port), 0).expect("the redirect is followed");
+    assert_eq!(src.status(), 200);
+    assert_eq!(read_to_end(&mut src), media_body());
+    assert_eq!(served.accepted.load(Ordering::Acquire), 1, "the hop reused the redirect's connection");
 }
 
 #[test]
@@ -173,7 +245,7 @@ fn a_chain_of_six_redirects_fails_as_too_many_after_exactly_six_requests() {
     let err = CurlSource::open(&url_of("127.0.0.1", served.port, "/h0"), 0)
         .err()
         .expect("the sixth redirect is over the cap");
-    // CURLE_TOO_MANY_REDIRECTS: `CURLOPT_MAXREDIRS` is 5.
+    // CURLE_TOO_MANY_REDIRECTS: five redirects are followed (`MAX_HOPS`).
     assert_eq!(err, OpenErr::Transport(47));
     assert_eq!(request_lines(&served).len(), 6, "the sixth answer is read, and not followed: {:?}", request_lines(&served));
 }
@@ -251,8 +323,8 @@ fn a_303_a_307_and_a_308_are_each_followed_with_a_get() {
     }
 }
 
-/// What a `302` with no `Location` is today: libcurl has nowhere to follow it to, so the `302` is the
-/// final response, and the open refuses it as the status it is.
+/// What a `302` with no `Location` is: there is nowhere to follow it to, so the `302` is the final
+/// response, and the open refuses it as the status it is.
 #[test]
 fn a_302_with_no_location_fails_the_open_as_status_302() {
     let _serial = plx_base::testlock::serial();
@@ -364,18 +436,12 @@ fn a_roots_mode_host_redirected_to_a_relative_path_on_itself_reads_the_body_thro
 }
 
 /// Two `*.plex.direct` names, neither verifiable by the device store, one CA (the bundle's) for both.
-/// The host the open starts on is not latched, so it goes strict, then roots, and is redirected to
-/// the second. Only the host the open began on is latched in roots mode afterwards; the second is
-/// verified by the bundle (the handle's CA file) without entering the ladder under its own key.
-///
-/// **Ignored: it is not hermetic while libcurl follows the hop.** The resolve pin is one
-/// `CURLOPT_RESOLVE` entry, for the URL the open began on, so the second name has no pin on that
-/// handle and the hop resolves it through DNS. It passes only where Plex's wildcard `plex.direct`
-/// DNS answers `127-0-0-1.<hash>.plex.direct` with `127.0.0.1` (observed on a networked host); offline,
-/// or behind a resolver that drops private answers, it ends in rc 6, and a test must not query a
-/// Plex domain. It runs again once each hop is dialled under its own pin (`resolve::entry_for`).
+/// Neither is latched, so the open goes strict, then roots, on the first, and is redirected to the
+/// second, which is a request of its own: it goes strict, then roots, under ITS key, from a ladder that
+/// remembers nothing the first hop's did (the bundle is offered once per hop, not once per open). Both
+/// end latched in roots mode. Each name reaches loopback through its own resolve pin, so the test
+/// needs no DNS.
 #[test]
-#[ignore = "the second *.plex.direct hop is resolved through DNS while libcurl follows redirects; hermetic once each hop gets its own resolve pin"]
 fn a_roots_mode_open_redirected_to_a_second_plex_direct_host_ends_in_the_media() {
     let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
@@ -389,6 +455,7 @@ fn a_roots_mode_open_redirected_to_a_second_plex_direct_host_ends_in_the_media()
     let first_key = keypin::key_of(PLEX_DIRECT, i32::from(first.port));
     let _w1 = keypin::Scoped::watch(&first_key);
     let _w2 = watch(SECOND_PLEX_DIRECT, second.port);
+    let second_key = keypin::key_of(SECOND_PLEX_DIRECT, i32::from(second.port));
 
     let mut src = CurlSource::open(&url_of(PLEX_DIRECT, first.port, "/start"), 0).expect("both hops are verified by the bundle");
     assert_eq!(src.status(), 200);
@@ -396,4 +463,32 @@ fn a_roots_mode_open_redirected_to_a_second_plex_direct_host_ends_in_the_media()
     assert_eq!(request_lines(&first), ["GET /start HTTP/1.1"]);
     assert_eq!(request_lines(&second), ["GET /video.mkv HTTP/1.1"]);
     assert!(keypin::is_roots_latched(&first_key), "the host the open began on is latched in roots mode");
+    assert!(keypin::is_roots_latched(&second_key), "so is the host it was redirected to: it went through the ladder under its own key");
+}
+
+/// The host a hop returns to is the host the open began on, unlatched at the start: the first request
+/// runs the ladder (strict fails, the bundle answers) and latches the host, and the second begins from
+/// that latch, in roots mode, with no doomed strict handshake of its own: three connections, not four.
+#[test]
+fn a_redirect_back_to_the_same_plex_direct_host_starts_its_second_hop_from_the_latch_the_first_set() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = leaf(&[PLEX_DIRECT]);
+    let served = spawn_scripted(
+        Arc::clone(&cert),
+        [("/start", Reply::redirect(302, "/video.mkv")), ("/video.mkv", Reply::ok(media_body()))],
+    );
+    let _device = TestCaGuard::install(&mint_cert(&["unrelated.invalid"]).pem, "redirect-roots-same-host-cold");
+    let _roots = keypin::test_roots::Guard::install(&cert.pem, "redirect-roots-same-host-cold");
+    pin_to_loopback(PLEX_DIRECT, served.port);
+    let key = keypin::key_of(PLEX_DIRECT, i32::from(served.port));
+    let _watch = keypin::Scoped::watch(&key);
+    assert!(!keypin::is_roots_latched(&key), "the open starts unlatched");
+
+    let mut src = CurlSource::open(&url_of(PLEX_DIRECT, served.port, "/start"), 0).expect("both hops are verified by the bundle");
+    assert_eq!(src.status(), 200);
+    assert_eq!(read_to_end(&mut src), media_body());
+    assert_eq!(request_lines(&served), ["GET /start HTTP/1.1", "GET /video.mkv HTTP/1.1"]);
+    assert_eq!(served.accepted(), 3, "the failed strict handshake and the bundle one for the first hop, one more for the second");
+    assert!(keypin::is_roots_latched(&key));
 }

@@ -222,52 +222,70 @@ fn a_media_open_with_a_plex_direct_name_in_the_userinfo_never_uses_the_bundle() 
     assert!(!keypin::is_roots_latched(&key));
 }
 
-/// **What a redirect does under roots mode, pinned as documented** (`THIRD-PARTY-NOTICES.md` §2.7,
-/// `plex/CLAUDE.md`): `CURLOPT_CAINFO` is per handle, not per hop, and `curlio` follows redirects in
-/// libcurl (`stream_redirect` hands an https hop over without going back through `keypin`). So once a
-/// `*.plex.direct` open is in roots mode, the hop it is redirected to is verified against the
-/// BUNDLE (plus any CA directory the firmware's libcurl reads by default), not the device's CA
-/// file: verification stays fully on for that hop's chain and name, but a
-/// target whose issuer only the device store holds is refused, and one whose issuer the bundle holds
-/// is accepted. The bundle is therefore consulted for a redirect target of a `*.plex.direct`
-/// request, and for no other request.
+/// **A hop is not served by the bundle just because the host that sent it was.** A `*.plex.direct`
+/// open that went through the bundle (strict failed on the missing issuer) is redirected to another
+/// host, and that host is a request of its own: it begins strict, against the device store, which is
+/// the store it is verified by. One CA issues the household's leaf and the redirect target's, and the
+/// bundle holds it, so a hop that inherited the open's trust store would verify; the device store
+/// holds nothing relevant, so the hop is refused (60 on the television's OpenSSL; this host's libcurl
+/// reports a refused hop certificate as 35). The household's own answer is not undone by it: the
+/// host that was served through the bundle stays latched, and the target, no `*.plex.direct` name,
+/// never asks for the bundle (`a_redirect_from_a_roots_mode_host_is_verified_against_the_device_store`
+/// is the hop that does verify).
 #[test]
-fn a_redirect_under_roots_mode_is_verified_against_the_bundle_not_the_device_store() {
+fn a_redirect_hop_is_not_verified_against_the_bundle_the_open_before_it_was_served_through() {
     let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
-    // One CA issues a leaf for BOTH the household server (a plex.direct name, which 302s) and the
-    // redirect target (the loopback address), so a one-certificate bundle can verify both hops.
     let cert = Arc::new(mint_ca_issued_cert(&[PLEX_DIRECT, "127.0.0.1"], ymd_from_now(-1), ymd_from_now(30)));
     let target = spawn_observed(Arc::clone(&cert), media_body());
     let redirecting = spawn_redirecting(Arc::clone(&cert), &format!("https://127.0.0.1:{}/video.mkv", target.port));
     pin_to_loopback(PLEX_DIRECT, redirecting.port);
     let key = keypin::key_of(PLEX_DIRECT, i32::from(redirecting.port));
     let _watch = keypin::Scoped::watch(&key);
-    let url = format!("https://{PLEX_DIRECT}:{}/video.mkv", redirecting.port);
+    let target_key = keypin::key_of("127.0.0.1", i32::from(target.port));
+    let _target_watch = keypin::Scoped::watch(&target_key);
+    let _device = TestCaGuard::install(&mint_cert(&["unrelated.invalid"]).pem, "roots-media-redirect-refused");
+    let _roots = keypin::test_roots::Guard::install(&cert.pem, "roots-media-redirect-refused");
 
-    // The device store holds NOTHING relevant, so the hop can only be verified by the bundle: it is.
-    {
-        let _device = TestCaGuard::install(&mint_cert(&["unrelated.invalid"]).pem, "roots-media-redirect-ok");
-        let _roots = keypin::test_roots::Guard::install(&cert.pem, "roots-media-redirect-ok");
-        let src = crate::curlio::CurlSource::open(&url, 0)
-            .expect("both hops are verified against the bundle, which holds their issuer");
-        assert_eq!(src.status(), 200);
-    }
-    // A hop whose issuer only the DEVICE store holds is refused: the device store is not consulted
-    // for it once the open is in roots mode. (60 on the television's OpenSSL; this host's libcurl
-    // reports a refused hop certificate as 35. What is graded is the contrast with the open above.)
-    {
-        let other = Arc::new(mint_ca_issued_cert(&["127.0.0.1"], ymd_from_now(-1), ymd_from_now(30)));
-        let elsewhere = spawn_observed(Arc::clone(&other), media_body());
-        let hopping = spawn_redirecting(Arc::clone(&cert), &format!("https://127.0.0.1:{}/video.mkv", elsewhere.port));
-        pin_to_loopback(PLEX_DIRECT, hopping.port);
-        let _device = TestCaGuard::install(&other.pem, "roots-media-redirect-refused");
-        let _roots = keypin::test_roots::Guard::install(&cert.pem, "roots-media-redirect-refused");
-        let err = crate::curlio::CurlSource::open(&format!("https://{PLEX_DIRECT}:{}/video.mkv", hopping.port), 0)
-            .err()
-            .expect("the hop is verified against the bundle, which does not hold its issuer");
-        assert!(matches!(err, crate::curlio::OpenErr::Transport(60 | 35)), "{err:?}");
-    }
+    let err = crate::curlio::CurlSource::open(&format!("https://{PLEX_DIRECT}:{}/video.mkv", redirecting.port), 0)
+        .err()
+        .expect("the hop is verified against the device store, which does not hold its issuer");
+    assert!(matches!(err, crate::curlio::OpenErr::Transport(60 | 35)), "{err:?}");
+    assert!(keypin::is_roots_latched(&key), "the household's own handshake was verified by the bundle");
+    assert!(!keypin::is_roots_latched(&target_key), "the bundle was never offered for the target");
+    assert_eq!(redirecting.accepted(), 2, "the failed strict handshake and the bundle one, and no third for the hop's failure");
+    assert_eq!(target.accepted(), 1, "the target was dialled once, strictly, and the client refused its certificate");
+}
+
+/// **A hop that fails verification is the hop's failure, not its server's.** A `*.plex.direct` server
+/// the device store verifies (strict, no roots mode) answers with a redirect to a host whose issuer
+/// the device store lacks. The hop's certificate failure belongs to the hop: it must not send the
+/// SERVER into roots mode (a retry of the server's own handshake against the bundle, and a log line
+/// saying the server's certificate failed the device store, which it did not). The household's
+/// connection count is the tell: one, never a second for a retry.
+#[test]
+fn a_redirect_hop_that_fails_verification_does_not_send_its_server_into_roots_mode() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    let household = Arc::new(mint_ca_issued_cert(&[PLEX_DIRECT], ymd_from_now(-1), ymd_from_now(30)));
+    let elsewhere = Arc::new(mint_ca_issued_cert(&["127.0.0.1"], ymd_from_now(-1), ymd_from_now(30)));
+    let target = spawn_observed(Arc::clone(&elsewhere), media_body());
+    let redirecting = spawn_redirecting(Arc::clone(&household), &format!("https://127.0.0.1:{}/video.mkv", target.port));
+    pin_to_loopback(PLEX_DIRECT, redirecting.port);
+    // The device store verifies the household and not the target; a bundle is on disk, so roots mode
+    // is available to a server that is wrongly sent there.
+    let _device = TestCaGuard::install(&household.pem, "roots-media-hop-fails");
+    let _roots = keypin::test_roots::Guard::install(&household.pem, "roots-media-hop-fails");
+    let key = keypin::key_of(PLEX_DIRECT, i32::from(redirecting.port));
+    let _watch = keypin::Scoped::watch(&key);
+    let _target_watch = keypin::Scoped::watch(&keypin::key_of("127.0.0.1", i32::from(target.port)));
+
+    let err = crate::curlio::CurlSource::open(&format!("https://{PLEX_DIRECT}:{}/video.mkv", redirecting.port), 0)
+        .err()
+        .expect("the hop's issuer is in neither store");
+    assert!(matches!(err, crate::curlio::OpenErr::Transport(60 | 35)), "the hop's own failure: {err:?}");
+    assert_eq!(redirecting.accepted(), 1, "the server was verified and asked once; the hop's failure did not retry it");
+    assert!(!keypin::is_roots_latched(&key), "the server never went through the bundle");
 }
 
 /// **A redirect hop is verified by the store ITS host selects.** A household server that is in roots
