@@ -1122,7 +1122,7 @@ mod loopback_pms {
     /// [`crate::curlio::CurlSource`] can open, seek and reopen against it. One request per
     /// connection (`Connection: close`); [`spawn_observed_keepalive`] is the persistent twin.
     pub fn spawn_observed(cert: Arc<TestCert>, body: Vec<u8>) -> Observed {
-        spawn_observed_conn(cert, body, false, None)
+        spawn_observed_conn(cert, body, false)
     }
 
     /// [`spawn_observed`] speaking persistent HTTP/1.1: every reply carries a `Content-Length` and
@@ -1130,29 +1130,168 @@ mod loopback_pms {
     /// real media server does, and the only double in which a libcurl connection cache can be seen
     /// handing one connection to a second transfer.
     pub fn spawn_observed_keepalive(cert: Arc<TestCert>, body: Vec<u8>) -> Observed {
-        spawn_observed_conn(cert, body, true, None)
+        spawn_observed_conn(cert, body, true)
     }
 
     /// [`spawn_observed`] answering EVERY request with a `302` to `location` instead of the body: the
     /// media server that sends a presigned CDN URL (`stream_redirect`'s case), for a test that
-    /// grades which trust store verifies the hop that follows.
+    /// grades which trust store verifies the hop that follows. A `location` that is relative
+    /// resolves back to this same double and is answered with the same `302`, so it loops;
+    /// [`spawn_scripted`] is the double for a chain.
     pub fn spawn_redirecting(cert: Arc<TestCert>, location: &str) -> Observed {
-        spawn_observed_conn(cert, Vec::new(), false, Some(location.to_owned()))
+        let reply = format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes();
+        spawn_tls_double(cert, false, move |_| reply.clone())
     }
 
-    fn spawn_observed_conn(cert: Arc<TestCert>, body: Vec<u8>, keep_alive: bool, redirect: Option<String>) -> Observed {
+    /// One answer of [`spawn_scripted`]: a status, an optional `Location` (absolute or relative, as
+    /// the server wrote it) and a body. A redirect may carry a body, and a redirect may have no
+    /// `Location` at all — both are things a real server sends and a client has to survive.
+    #[derive(Clone)]
+    pub struct Reply {
+        status: u16,
+        location: Option<String>,
+        body: Vec<u8>,
+    }
+
+    impl Reply {
+        /// `200` with `body`. Like [`spawn_observed`], a request carrying `Range: bytes=N-` is answered
+        /// with the tail of it from `N`, as `206` and a `Content-Range`.
+        pub fn ok(body: Vec<u8>) -> Reply {
+            Reply { status: 200, location: None, body }
+        }
+
+        /// A bare reply of `status` (`301`, `302`, `303`, `307`, `308`, `404` ...): no `Location`, no
+        /// body, until [`Reply::with_location`] or [`Reply::with_body`] say otherwise.
+        pub fn status(status: u16) -> Reply {
+            Reply { status, location: None, body: Vec::new() }
+        }
+
+        /// A redirect of `status` to `location`.
+        pub fn redirect(status: u16, location: &str) -> Reply {
+            Reply::status(status).with_location(location)
+        }
+
+        /// This reply with a `Location` header.
+        pub fn with_location(mut self, location: &str) -> Reply {
+            self.location = Some(location.to_owned());
+            self
+        }
+
+        /// This reply with a body: a `3xx` that explains itself, say.
+        pub fn with_body(mut self, body: Vec<u8>) -> Reply {
+            self.body = body;
+            self
+        }
+
+        fn reason(&self) -> &'static str {
+            match self.status {
+                200 => "OK",
+                206 => "Partial Content",
+                301 => "Moved Permanently",
+                302 => "Found",
+                303 => "See Other",
+                307 => "Temporary Redirect",
+                308 => "Permanent Redirect",
+                404 => "Not Found",
+                _ => "Test",
+            }
+        }
+
+        /// The bytes of this reply to a request that asked for the body from `start` (`Range`).
+        fn bytes(&self, start: Option<usize>, connection: &str) -> Vec<u8> {
+            if self.status == 200 {
+                return body_reply(&self.body, start, connection);
+            }
+            let mut out = format!("HTTP/1.1 {} {}\r\n", self.status, self.reason());
+            if let Some(location) = &self.location {
+                out.push_str(&format!("Location: {location}\r\n"));
+            }
+            out.push_str(&format!("Content-Length: {}\r\n{connection}\r\n", self.body.len()));
+            let mut out = out.into_bytes();
+            out.extend_from_slice(&self.body);
+            out
+        }
+    }
+
+    /// A TLS-only loopback double whose answer is chosen by the request's PATH (the query is
+    /// ignored for the match and recorded as sent): `routes` maps a path to a [`Reply`], and a path
+    /// that is not in it gets a `404`. The double for what [`spawn_redirecting`] cannot say — a
+    /// chain of hops, a relative `Location`, a `303` or a `308`, a `3xx` with a body or with none —
+    /// and, like [`spawn_observed`], it records every request (`Observed::requests`: the request
+    /// line with its query, then the headers, verbatim) and counts every accepted connection. One
+    /// request per connection (`Connection: close`).
+    pub fn spawn_scripted<S: Into<String>>(cert: Arc<TestCert>, routes: impl IntoIterator<Item = (S, Reply)>) -> Observed {
+        let routes: std::collections::HashMap<String, Reply> = routes.into_iter().map(|(path, reply)| (path.into(), reply)).collect();
+        spawn_tls_double(cert, false, move |request| {
+            let head = String::from_utf8_lossy(request);
+            let target = head.split_whitespace().nth(1).unwrap_or_default();
+            let path = target.split('?').next().unwrap_or_default();
+            match routes.get(path) {
+                Some(reply) => reply.bytes(range_start(request), "Connection: close\r\n"),
+                None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+            }
+        })
+    }
+
+    /// `N` of a request's `Range: bytes=N-`, when it carries one.
+    fn range_start(request: &[u8]) -> Option<usize> {
+        String::from_utf8_lossy(request)
+            .to_ascii_lowercase()
+            .lines()
+            .find_map(|l| l.strip_prefix("range: bytes="))
+            .and_then(|v| v.split('-').next())
+            .and_then(|v| v.trim().parse::<usize>().ok())
+    }
+
+    /// `body` as a media server answers a request for it: all of it with `200`, or the tail from
+    /// `start` with `206` and a `Content-Range` when the request asked for one.
+    fn body_reply(body: &[u8], start: Option<usize>, connection: &str) -> Vec<u8> {
+        match start {
+            Some(at) if at < body.len() => {
+                let tail = &body[at..];
+                let mut out = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {at}-{}/{}\r\n{connection}\r\n",
+                    tail.len(),
+                    body.len() - 1,
+                    body.len()
+                )
+                .into_bytes();
+                out.extend_from_slice(tail);
+                out
+            }
+            _ => {
+                let mut out = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{connection}\r\n",
+                    body.len()
+                )
+                .into_bytes();
+                out.extend_from_slice(body);
+                out
+            }
+        }
+    }
+
+    fn spawn_observed_conn(cert: Arc<TestCert>, body: Vec<u8>, keep_alive: bool) -> Observed {
+        let connection = if keep_alive { "" } else { "Connection: close\r\n" };
+        spawn_tls_double(cert, keep_alive, move |request| body_reply(&body, range_start(request), connection))
+    }
+
+    /// The TLS accept loop every double here shares: terminate TLS, read each whole request, record
+    /// it, and write back what `answer` makes of it. `keep_alive` is whether a connection serves
+    /// more than one request.
+    fn spawn_tls_double(cert: Arc<TestCert>, keep_alive: bool, answer: impl Fn(&[u8]) -> Vec<u8> + Send + Sync + 'static) -> Observed {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind observed listener");
         let port = listener.local_addr().unwrap().port();
         let tls_cfg = tls_config(&cert);
         let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (count, log) = (Arc::clone(&accepted), Arc::clone(&requests));
-        let connection = if keep_alive { "" } else { "Connection: close\r\n" };
+        let answer = Arc::new(answer);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut sock) = stream else { continue };
                 count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                let (tls_cfg, body, log, redirect) = (Arc::clone(&tls_cfg), body.clone(), Arc::clone(&log), redirect.clone());
+                let (tls_cfg, log, answer) = (Arc::clone(&tls_cfg), Arc::clone(&log), Arc::clone(&answer));
                 std::thread::spawn(move || {
                     let Ok(mut conn) = rustls::ServerConnection::new(tls_cfg) else { return };
                     let mut tls = rustls::Stream::new(&mut conn, &mut sock);
@@ -1161,41 +1300,8 @@ mod loopback_pms {
                         if request.is_empty() {
                             return;
                         }
-                        let head = String::from_utf8_lossy(&request).to_ascii_lowercase();
-                        let start = head
-                            .lines()
-                            .find_map(|l| l.strip_prefix("range: bytes="))
-                            .and_then(|v| v.split('-').next())
-                            .and_then(|v| v.trim().parse::<usize>().ok());
+                        let reply = answer(&request);
                         log.lock().unwrap_or_else(|e| e.into_inner()).push(request);
-                        let reply = match start {
-                            _ if redirect.is_some() => format!(
-                                "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\n{connection}\r\n",
-                                redirect.as_deref().unwrap_or_default()
-                            )
-                            .into_bytes(),
-                            Some(at) if at < body.len() => {
-                                let tail = &body[at..];
-                                let mut out = format!(
-                                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {at}-{}/{}\r\n{connection}\r\n",
-                                    tail.len(),
-                                    body.len() - 1,
-                                    body.len()
-                                )
-                                .into_bytes();
-                                out.extend_from_slice(tail);
-                                out
-                            }
-                            _ => {
-                                let mut out = format!(
-                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{connection}\r\n",
-                                    body.len()
-                                )
-                                .into_bytes();
-                                out.extend_from_slice(&body);
-                                out
-                            }
-                        };
                         if tls.write_all(&reply).is_err() || tls.flush().is_err() || !keep_alive {
                             return;
                         }
@@ -1292,7 +1398,7 @@ mod loopback_pms {
     }
 }
 #[cfg(any(test, feature = "test-support"))]
-pub use loopback_pms::{dead_port, mint_ca_issued_cert, mint_cert, spawn_dual_protocol, spawn_observed, spawn_observed_keepalive, spawn_plain_only, spawn_redirecting, ymd_from_now, TestCaGuard, TestCert};
+pub use loopback_pms::{dead_port, mint_ca_issued_cert, mint_cert, spawn_dual_protocol, spawn_observed, spawn_observed_keepalive, spawn_plain_only, spawn_redirecting, spawn_scripted, ymd_from_now, Observed, Reply, TestCaGuard, TestCert};
 #[cfg(any(test, feature = "test-support"))]
 pub use loopback_pms::{curl_ready, expired_leaf, identity_request, key_of_port, leaf_pin, remember};
 
