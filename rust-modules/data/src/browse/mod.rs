@@ -15,7 +15,8 @@
 //!
 //! The sort/filter MENUS are server-driven: the first page of a section is requested with
 //! `includeMeta=1` and the response's `Meta.Type[]` supplies the Sort entries; the genre
-//! value list is fetched lazily (`kick_genres`) when the filter menu first opens. Nothing
+//! value list is fetched lazily (`kick_genres`) when the filter menu first opens — or earlier, with
+//! the first page, when a saved genre has to be checked against it. Nothing
 //! menu-shaped is hardcoded, with one measured exception: PMS 1.43.4 never advertises a
 //! play-count sort in `Meta.Type[].Sort` on any section type, yet it DOES honour
 //! `sort=viewCount:desc`/`:asc` on movie and show sections (an unrecognised key 500s the whole
@@ -23,12 +24,19 @@
 //! [`with_plays_sort`] appends that one client-side entry where [`SecKind`] proves it works,
 //! and only once, in case a future server starts advertising the key itself (issue #146).
 //!
-//! The CHOSEN sort of a library's own listing is remembered across restarts, per profile, by
-//! (machine id, section key) and by the sort's KEY, never its menu position
-//! (`plex::session::Session::library_sorts`, issue #278). It is applied on the section's first
-//! page only after that page's menu has offered the key again — the discovery request never
-//! carries it, for the 500 above — and the unsorted discovery page is then never published
-//! ([`fetch_listing_page`]). A key the menu no longer offers falls back silently to the default.
+//! Everything a viewer chose in a library's view is remembered across restarts, per profile, by
+//! (machine id, section key), as ONE record (`plex::session::Session::library_views`, issues #278
+//! and #441; [`saved_view`] holds the merge rules): the sort and its direction, the Unwatched
+//! switch, the genre and the listing type. A sort is recorded by its KEY, never its menu
+//! position, and applied on the section's first page only after that page's menu has offered the
+//! key again — the discovery request never carries it, for the 500 above — and the unsorted
+//! discovery page is then never published ([`fetch_listing_page`]). A key the menu no longer
+//! offers falls back silently to the default. A genre is checked the same way, against the
+//! library's genre list fetched before the first page; one the library no longer has opens the
+//! library unfiltered. A sort or genre that could not be CHECKED (the sorted re-ask or the genre
+//! list failed) is not dropped either: the record keeps it until a restore settles it
+//! ([`SecState::sort_resolved`]). The listing type and Unwatched need no server check and are applied when
+//! the section is created ([`BrowseState::seed_saved_view`]).
 //!
 //! [`BrowseState`] is main-thread-only; worker threads touch only their owning store adapter's
 //! mailboxes + atomics and the `&'static` Plex client.
@@ -49,6 +57,7 @@
 //! that replaces it, and it holds for every source that lands later rather than only for the
 //! second call.
 use plx_plex::plex::{SectionQuery, ServerId};
+use saved_view::ViewField;
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
 #[cfg(test)]
@@ -377,9 +386,32 @@ impl LibraryType {
     /// Do the Unwatched and Genre filters apply? A collection has no watch state of its own and
     /// no genre, so both are hidden — and not sent — while collections are listed. The section's
     /// Unwatched switch is kept for when its own type is listed again (a genre never survives a
-    /// type change: it names one type's menu).
+    /// type change, in the session or in the saved view: it names one type's menu).
     pub fn filters(self) -> bool {
         self != Self::Collections
+    }
+
+    /// The word the saved view records this listing as ([`plx_plex::plex::session::LibraryView::listing`]):
+    /// empty for the library's own listing. A `&'static str` from this table rather than the
+    /// discriminant, so reordering the enum cannot repoint a record an older build wrote.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Primary => "",
+            Self::Seasons => "seasons",
+            Self::Episodes => "episodes",
+            Self::Collections => "collections",
+        }
+    }
+
+    /// The inverse of [`wire`](Self::wire); `None` for a word this build does not know.
+    pub fn from_wire(word: &str) -> Option<Self> {
+        match word {
+            "" => Some(Self::Primary),
+            "seasons" => Some(Self::Seasons),
+            "episodes" => Some(Self::Episodes),
+            "collections" => Some(Self::Collections),
+            _ => None,
+        }
     }
 
     /// A kind-independent code for canonical encodings and menu identities.
@@ -458,6 +490,7 @@ pub enum SecFetch {
 }
 
 pub mod record;
+mod saved_view;
 pub mod section_hubs;
 pub mod view;
 
@@ -494,6 +527,16 @@ struct SecState {
     sorts: Arc<Vec<SortEntry>>,
     genres: Arc<Vec<GenreEntry>>,
     genres_done: bool, // a genre fetch LANDED (even empty) — kick_genres won't re-spawn
+    /// Is the live sort the viewer's CHOICE rather than merely what a failed restore left? False
+    /// only after a first page that was asked to restore the saved sort and could not tell
+    /// whether it had (the re-ask failed, or no menu came back): the library then shows the
+    /// default order while its record still holds the saved one, and the record must keep it
+    /// ([`saved_view::ViewSnapshot`]). True otherwise — nothing was saved, it was applied, or the
+    /// menu proved the key gone.
+    sort_resolved: bool,
+    /// The same for the saved genre: false only while its existence check could not be read, so
+    /// the library opened unfiltered but the record still holds the genre.
+    genre_resolved: bool,
     /// per-letter (label, count) in titleSort order, from `/firstCharacter` — the letter rail.
     /// Counts describe the UNFILTERED title listing, so the rail only shows in that state.
     letters: Arc<Vec<(String, i64)>>,
@@ -631,6 +674,8 @@ impl Default for SecState {
             sorts: Arc::default(),
             genres: Arc::default(),
             genres_done: false,
+            sort_resolved: true,
+            genre_resolved: true,
             letters: Arc::default(),
             letters_done: false,
             hubs: Default::default(),
@@ -685,10 +730,11 @@ pub struct BrowseState {
     tab_shape: u32,
     retry_cd: u32,
     remembered: Vec<(SecKind, String, i64)>,
-    /// This profile's remembered library sorts ([`plx_plex::plex::session::Session::library_sorts`]),
-    /// loaded beside [`remembered`](Self::remembered) and cleared with it on a reset, so a
-    /// profile switch can never open one person's library in another's order.
-    sort_memory: plx_plex::plex::session::LibrarySorts,
+    /// This profile's remembered library views ([`plx_plex::plex::session::Session::library_views`]):
+    /// sort, Unwatched, genre and listing type. Loaded beside [`remembered`](Self::remembered) and
+    /// cleared with it on a reset, so a profile switch can never open one person's library in
+    /// another's view.
+    view_memory: plx_plex::plex::session::LibraryViews,
     recorded: Option<plx_plex::plex::session::HomePins>,
     pending_pins: Option<(String, std::sync::Arc<std::sync::Mutex<PinWrite>>)>,
 }
@@ -777,7 +823,7 @@ impl Default for BrowseState {
             tab_shape: u32::MAX,
             retry_cd: 0,
             remembered: Vec::new(),
-            sort_memory: Default::default(),
+            view_memory: Default::default(),
             recorded: None,
             pending_pins: None,
             session_generation: plx_plex::plex::session::visible_generation(),
@@ -1018,6 +1064,9 @@ impl BrowseState {
         state.genre = None;
         state.genres = Arc::default();
         state.genres_done = false;
+        // A new listing starts a new restore, and the viewer just chose it.
+        state.sort_resolved = true;
+        state.genre_resolved = true;
         state.letters = Arc::default();
         state.letters_done = false;
         self.requery();
@@ -1100,55 +1149,117 @@ impl BrowseState {
             Some(next)
         });
     }
-    /// Remember section `i`'s sort across restarts (GitHub #278) — the viewer just chose it.
+    /// Remember section `i`'s view across restarts (GitHub #278 the sort, #441 the rest) — the
+    /// viewer just changed `edit`: its sort, Unwatched, genre or listing type.
     ///
-    /// Only the library's own listing (`LibraryType::Primary`) is remembered: the Seasons /
-    /// Episodes / Collections views are not themselves restored on a launch, and their menus are
-    /// another metadata type's. The DEFAULT order (the menu's first entry, ascending — what a
-    /// section with no record lands on) forgets the entry instead of recording it.
-    fn note_sort_choice(&mut self, i: usize) {
+    /// ONE record per library holds all four ([`saved_view::merge`] decides what each edit leaves
+    /// in it, including how the library's own sort survives a visit to another listing). The
+    /// DEFAULT view — the own listing, its menu's first entry ascending, Unwatched off, no genre —
+    /// forgets the entry instead of recording it.
+    ///
+    /// Merged against the STORED record inside the worker's read, never against `view_memory`,
+    /// which a pin reconcile may have just reloaded from an older snapshot; the local copy is
+    /// updated too, so this run's own restores see the choice at once.
+    fn note_view_choice(&mut self, i: usize, edit: saved_view::ViewField) {
         let Some(state) = self.states.get(i) else { return };
-        if state.library_type != LibraryType::Primary {
-            return;
+        let main = state.library_type == LibraryType::Primary;
+        // A non-main listing's default direction is its menu's own (set at the landing).
+        let default_desc = !main && state.sorts.first().is_some_and(|sort| sort.default_desc);
+        let sort = state.sorts.get(state.sort_idx).and_then(|chosen| {
+            let is_default = state.sort_idx == 0 && state.sort_desc == default_desc;
+            (!is_default).then(|| (chosen.key.clone(), state.sort_desc))
+        });
+        // Until the menu has landed neither is the viewer's choice yet; after it, only a restore
+        // that failed leaves them unresolved (`SecState::sort_resolved`).
+        let menu_known = !state.sorts.is_empty();
+        let snapshot = saved_view::ViewSnapshot {
+            listing: state.library_type,
+            sort_resolved: menu_known && state.sort_resolved,
+            genre_resolved: menu_known && state.genre_resolved,
+            sort,
+            unwatched: state.unwatched,
+            genre: state.genre.as_ref().map(|genre| genre.id.clone()),
+        };
+        // The viewer's own edit of a field settles it, whatever the restore had left.
+        if let Some(state) = self.states.get_mut(i) {
+            match edit {
+                ViewField::Sort => state.sort_resolved = true,
+                ViewField::Genre => state.genre_resolved = true,
+                ViewField::Unwatched | ViewField::Listing => {}
+            }
         }
-        let Some(chosen) = state.sorts.get(state.sort_idx) else { return };
-        let is_default = state.sort_idx == 0 && !state.sort_desc;
-        let choice = (!is_default).then(|| (chosen.key.clone(), state.sort_desc));
         let Some(section) = self.sections.get(i) else { return };
         let Some(machine) = self.sources.get(section.src).map(|s| s.machine_id.clone()) else {
             return;
         };
         let key = section.key;
-        fn wanted(choice: &Option<(String, bool)>) -> Option<(&str, bool)> {
-            choice.as_ref().map(|(sort, desc)| (sort.as_str(), *desc))
-        }
-        self.sort_memory.set(&machine, key, wanted(&choice));
-        // Deduplicated against the STORED record, under the worker's read — never against
-        // `sort_memory`, which a pin reconcile may have just reloaded from an older snapshot.
+        let local = saved_view::merge(self.view_memory.get(&machine, key), &machine, key,
+            &snapshot, edit);
+        self.view_memory.set(local);
         let user = plx_plex::plex::session::current_profile_key();
         plx_plex::plex::session::queue_update(move |current| {
-            if current.sorts_for(&user).and_then(|sorts| sorts.get(&machine, key))
-                == wanted(&choice) {
+            let stored = current.views_for(&user).and_then(|views| views.get(&machine, key));
+            let next_view = saved_view::merge(stored, &machine, key, &snapshot, edit);
+            let unchanged = match stored {
+                Some(stored) => *stored == next_view,
+                None => next_view.is_default(),
+            };
+            if unchanged {
                 return None;
             }
             let mut next = current.clone();
-            next.set_sort_for(&user, &machine, key, wanted(&choice));
+            next.set_view_for(&user, next_view);
             Some(next)
         });
     }
-    /// The remembered sort to restore on section `i`'s FIRST page, if any: only while its menu
-    /// is still unknown (`sorts` empty — the page that asks `includeMeta=1`) and only for the
-    /// library's own listing. Whether the server still offers the key is decided in the worker,
-    /// against the menu that page brings back ([`fetch_listing_page`]).
+    /// Apply section `i`'s remembered listing type and Unwatched switch, once, as the section is
+    /// created. Neither needs the server to vouch for it — the type is checked against what the
+    /// section kind offers, and Unwatched is a plain flag — so the first page's query carries
+    /// them (`type=`, `unwatched=1`) and the library opens in them without a flash of the default.
+    /// The sort and the genre do need the server, and wait for the worker ([`Restore`]).
+    fn seed_saved_view(&mut self, i: usize) {
+        let Some(section) = self.sections.get(i) else { return };
+        let Some(machine) = self.sources.get(section.src).map(|s| s.machine_id.as_str()) else {
+            return;
+        };
+        let Some(view) = self.view_memory.get(machine, section.key) else { return };
+        let kind = section.kind;
+        let library_type = LibraryType::from_wire(&view.listing)
+            .filter(|library_type| LibraryType::offered(kind).contains(library_type))
+            .unwrap_or_default();
+        let unwatched = view.unwatched;
+        if let Some(state) = self.states.get_mut(i) {
+            state.library_type = library_type;
+            state.unwatched = unwatched;
+        }
+    }
+    /// The remembered sort and genre to restore on section `i`'s FIRST page, if any: only while
+    /// its menu is still unknown (`sorts` empty — the page that asks `includeMeta=1`). The sort is
+    /// the one of the listing being shown (the library's own, or the saved one's when that is the
+    /// listing shown); a genre is the own listing's alone. Whether the server still offers either
+    /// is decided in the worker ([`fetch_listing_page`]).
     fn restore_for(&self, i: usize) -> Option<Restore> {
         let state = self.states.get(i)?;
-        if !state.sorts.is_empty() || state.library_type != LibraryType::Primary {
+        if !state.sorts.is_empty() {
             return None;
         }
         let section = self.sections.get(i)?;
         let machine = &self.sources.get(section.src)?.machine_id;
-        let (sort, desc) = self.sort_memory.get(machine, section.key)?;
-        Some(Restore { kind: section.kind, sort: sort.to_string(), desc })
+        let view = self.view_memory.get(machine, section.key)?;
+        let primary = state.library_type == LibraryType::Primary;
+        let sort = if primary {
+            view.primary_sort()
+        } else if view.listing == state.library_type.wire() {
+            view.listing_sort()
+        } else {
+            None
+        }.map(|(sort, desc)| (sort.to_string(), desc));
+        let genre = (primary && state.genre.is_none() && !view.genre.is_empty())
+            .then(|| view.genre.clone());
+        if sort.is_none() && genre.is_none() {
+            return None;
+        }
+        Some(Restore { kind: section.kind, library_type: state.library_type, sort, genre })
     }
     fn cur_source_idx(&self) -> Option<usize> {
         self.sections
@@ -1264,12 +1375,7 @@ impl BrowseState {
             .cur_state()
             .map(|state| state.genres_done)
             .unwrap_or(true);
-        self.kick_directory(adapter, done, |a| &a.genre_fetching, |a| &a.genre_result, "genre", |directory| {
-            (!directory.key.is_empty() && !directory.title.is_empty()).then(|| GenreEntry {
-                id: directory.key.clone(),
-                title: directory.title.clone(),
-            })
-        });
+        self.kick_directory(adapter, done, |a| &a.genre_fetching, |a| &a.genre_result, "genre", genre_entry);
     }
     fn kick_letters(&self, adapter: &Arc<BrowseAdapter>) {
         let done = self
@@ -1326,13 +1432,32 @@ impl BrowseState {
                     Some(QueryEdit::Sort { key, desc }) => {
                         let landed = self.set_sort_by_key(&key, desc);
                         if landed {
-                            self.note_sort_choice(index);
+                            self.note_view_choice(index, ViewField::Sort);
                         }
                         landed
                     }
-                    Some(QueryEdit::Unwatched(on)) => self.set_unwatched(on),
-                    Some(QueryEdit::Genre(id)) => self.set_genre_by_id(id.as_deref()),
-                    Some(QueryEdit::LibraryType(library_type)) => self.set_library_type(library_type),
+                    Some(QueryEdit::Unwatched(on)) => {
+                        let landed = self.set_unwatched(on);
+                        if landed {
+                            self.note_view_choice(index, ViewField::Unwatched);
+                        }
+                        landed
+                    }
+                    Some(QueryEdit::Genre(id)) => {
+                        let landed = self.set_genre_by_id(id.as_deref());
+                        if landed {
+                            self.note_view_choice(index, ViewField::Genre);
+                        }
+                        landed
+                    }
+                    Some(QueryEdit::LibraryType(library_type)) => {
+                        let before = self.cur_state().map(|state| state.library_type);
+                        let landed = self.set_library_type(library_type);
+                        if landed && before != Some(library_type) {
+                            self.note_view_choice(index, ViewField::Listing);
+                        }
+                        landed
+                    }
                     None => true,
                 }
             }
@@ -1560,7 +1685,7 @@ impl BrowseState {
                 SecKind::from_wire(&target.kind)
                     .map(|kind| (kind, target.machine_id.clone(), target.key))
             }).collect()).unwrap_or_default();
-        self.sort_memory = session.sorts_for(user).cloned().unwrap_or_default();
+        self.view_memory = session.views_for(user).cloned().unwrap_or_default();
     }
     /// The pin rules' view of the section table.
     ///
@@ -1677,6 +1802,7 @@ impl BrowseState {
         if fresh.is_empty() {
             return;
         }
+        let first_fresh = self.sections.len();
         for (key, title, kind) in fresh {
             self.sections.push(BrowseSection {
                 src: source, key, title, kind, count: -1, pinned: false,
@@ -1687,6 +1813,10 @@ impl BrowseState {
             self.resolve_pins_from(session, "");
         } else {
             self.resolve_pins();
+        }
+        // After the resolve above, which is what (re)loads the profile's saved views.
+        for index in first_fresh..self.sections.len() {
+            self.seed_saved_view(index);
         }
         self.bump_sections_gen();
         plx_machine::idle::invalidate();
@@ -1908,7 +2038,7 @@ impl BrowseState {
         self.states = Vec::new();
         self.recorded = None;
         self.remembered = Vec::new();
-        self.sort_memory = Default::default();
+        self.view_memory = Default::default();
         self.tab_shape = u32::MAX;
         self.cur = 0;
         self.retry_cd = 0;
@@ -2257,6 +2387,7 @@ impl BrowseState {
                 Some(PageResult {
                     client, token_gen, gen, sec: current, start, items: page.items,
                     total: page.total, sorts: page.sorts, restored: page.restored,
+                    genres: page.genres, genre: page.genre, resolved: page.resolved,
                 });
         });
         if !spawned {
@@ -2341,6 +2472,18 @@ impl BrowseState {
                             let kind = self.section_kind(result.sec);
                             if let Some(state) = self.state_mut(result.sec) {
                                 state.fetch = SecFetch::Ready;
+                                // The saved genre was checked against the library's own genre
+                                // list before this page was asked for, and the page is in it:
+                                // the filter and the list the Filter menu reads land with it.
+                                if let Some(list) = result.genres {
+                                    if state.genres.is_empty() {
+                                        state.genres = Arc::new(list);
+                                    }
+                                    state.genres_done = true;
+                                }
+                                if let Some(genre) = result.genre {
+                                    state.genre = Some(Arc::new(genre));
+                                }
                                 if let Some(sorts) = result.sorts {
                                     if state.sorts.is_empty() {
                                         let sorts = if state.library_type == LibraryType::Primary {
@@ -2361,6 +2504,8 @@ impl BrowseState {
                                             }
                                         }
                                         state.sorts = Arc::new(sorts);
+                                        state.sort_resolved = result.resolved.sort;
+                                        state.genre_resolved = result.resolved.genre;
                                     }
                                 }
                                 if state.total != result.total {
@@ -2389,13 +2534,17 @@ impl BrowseState {
 
 // ---- fetch plumbing (generation + single-flight + mailboxes) --------------------------------
 
-/// A remembered sort to put the first page in, once its menu proves the server still offers it —
-/// see [`fetch_listing_page`]. Built by [`BrowseState::restore_for`] from
-/// [`plx_plex::plex::session::Session::library_sorts`].
+/// A remembered sort and genre to put the first page in, once the server proves it still offers
+/// them — see [`fetch_listing_page`]. Built by [`BrowseState::restore_for`] from
+/// [`plx_plex::plex::session::Session::library_views`].
 struct Restore {
     kind: SecKind,
-    sort: String,
-    desc: bool,
+    /// The listing the first page is for, which scopes the genre list the check reads.
+    library_type: LibraryType,
+    /// The remembered `(sort key, descending)` of the listing shown.
+    sort: Option<(String, bool)>,
+    /// The remembered genre's tag id (the library's own listing only).
+    genre: Option<String>,
 }
 
 /// One page's answer from [`fetch_listing_page`].
@@ -2407,20 +2556,55 @@ struct ListingPage {
     /// The remembered `(sort key, descending)` this page was fetched in, when a [`Restore`] was
     /// asked for and the menu offered its key — what the landing points the menu at.
     restored: Option<(String, bool)>,
+    /// The library's genre list, when the saved genre was checked against it.
+    genres: Option<Vec<GenreEntry>>,
+    /// The remembered genre this page was filtered by, once the list proved it still exists.
+    genre: Option<GenreEntry>,
+    /// Whether each saved choice this page was asked to restore was settled one way or the other.
+    resolved: Resolved,
+}
+
+/// Did a first page SETTLE the saved sort and genre it was asked to restore — applied it, or
+/// learned from the server that it is gone — or could it not tell (a re-ask or a genre list that
+/// failed)? An unsettled choice is not the viewer's to lose: the library shows the default while
+/// its record keeps the saved value ([`SecState::sort_resolved`]). A choice nothing asked to
+/// restore is settled, so the default is all-true.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Resolved {
+    sort: bool,
+    genre: bool,
+}
+
+impl Default for Resolved {
+    fn default() -> Self {
+        Self { sort: true, genre: true }
+    }
 }
 
 impl ListingPage {
     fn failed() -> Self {
-        Self { items: Vec::new(), total: -1, sorts: None, restored: None }
+        Self {
+            items: Vec::new(), total: -1, sorts: None, restored: None, genres: None, genre: None,
+            resolved: Resolved::default(),
+        }
     }
 }
 
-/// The advertised menu entry to restore `restore.sort` through, or the client-side Plays entry
-/// where [`with_plays_sort`] would have added it — the same gate, so a key the landing's menu
-/// will not show is never sent. `None` means the server no longer offers it.
-fn restorable(sorts: &[SortEntry], restore: &Restore) -> Option<SortEntry> {
-    sorts.iter().find(|sort| sort.key == restore.sort).cloned().or_else(|| {
-        (restore.sort == PLAYS_SORT_KEY && kind_offers_plays_sort(restore.kind))
+/// A genre-directory row as a menu entry; `None` for a row with no id or no name.
+fn genre_entry(directory: &plx_plex::plex::LibrarySection) -> Option<GenreEntry> {
+    (!directory.key.is_empty() && !directory.title.is_empty()).then(|| GenreEntry {
+        id: directory.key.clone(),
+        title: directory.title.clone(),
+    })
+}
+
+/// The advertised menu entry to restore sort `key` through, or — for the library's own listing
+/// (`primary`) — the client-side Plays entry where [`with_plays_sort`] would have added it: the
+/// same gate, so a key the landing's menu will not show is never sent. `None` means the server no
+/// longer offers it.
+fn restorable(sorts: &[SortEntry], key: &str, kind: SecKind, primary: bool) -> Option<SortEntry> {
+    sorts.iter().find(|sort| sort.key == key).cloned().or_else(|| {
+        (primary && key == PLAYS_SORT_KEY && kind_offers_plays_sort(kind))
             .then(|| plays_sort_entry(String::new()))
     })
 }
@@ -2432,7 +2616,38 @@ fn fetch_listing_page(
     confirm_sort: bool,
     restore: Option<&Restore>,
 ) -> ListingPage {
-    let Some(mut container) = client.section_items_query(query) else {
+    let discovery = query.include_meta && query.sort.is_empty();
+    // **A remembered genre (#441) is checked BEFORE the first page is asked for**, because it is
+    // a filter of that very page and the listing must open filtered, not flash unfiltered. The
+    // library's genre list is fetched first; a saved id still in it joins the discovery request's
+    // filters, one the library no longer has (a tag merged or removed) is dropped and the library
+    // opens unfiltered. A list that cannot be fetched also drops it — an id the server has not
+    // vouched for is never sent — and leaves the list unmarked, so the Filter menu fetches it
+    // itself later, and the saved genre UNRESOLVED: the library opens unfiltered but the record
+    // keeps the genre until a list that can be read settles it. The same list then feeds that
+    // menu without a second request.
+    let mut resolved = Resolved::default();
+    let mut genres = None;
+    let mut genre = None;
+    let mut filters = query.filters.to_vec();
+    if let (Some(restore), true) = (restore, discovery) {
+        if let Some(wanted) = &restore.genre {
+            let list = client
+                .section_directory(query.section_key, "genre", restore.library_type.plex_type(restore.kind))
+                .map(|container| container.directory.iter().filter_map(genre_entry).collect::<Vec<_>>());
+            if let Some(list) = list {
+                if let Some(found) = list.iter().find(|entry| &entry.id == wanted) {
+                    filters.push(("genre".into(), found.id.clone()));
+                    genre = Some(found.clone());
+                }
+                genres = Some(list);
+            } else {
+                resolved.genre = false;
+            }
+        }
+    }
+    let base = SectionQuery { filters: &filters, ..*query };
+    let Some(mut container) = client.section_items_query(&base) else {
         return ListingPage::failed();
     };
     let sorts: Option<Vec<SortEntry>> = container.meta.as_ref().and_then(|meta| {
@@ -2445,43 +2660,58 @@ fn fetch_listing_page(
                     default_desc: sort.default_direction == "desc",
                 }).collect())
     });
-    // Seasons and episodes advertise Show ordering first, while an unsorted /all answer
-    // arrives in title order. Publish only after ordering by the menu we just discovered;
-    // later pages use that same key, so no page boundary can duplicate or skip an episode.
-    if confirm_sort && query.include_meta && query.sort.is_empty() {
-        if let Some(first) = sorts.as_ref().and_then(|sorts| sorts.first()) {
-            let sort = first.query(first.default_desc);
-            let sorted = SectionQuery { sort: &sort, include_meta: false, ..*query };
-            let Some(sorted_container) = client.section_items_query(&sorted) else {
-                return ListingPage::failed();
-            };
-            container = sorted_container;
-        }
-    }
-    // **A remembered sort (#278) is applied the same way, and only the same way.** The saved key
-    // is never sent on the discovery request itself: an unrecognised sort key 500s the WHOLE
-    // listing, and a key the server offered last month (or the client-side Plays sort on a PMS
-    // that stopped honouring it) would then fail the section's first page on every launch, with
-    // no menu ever landing to choose anything else from. So the menu is discovered first and the
-    // page re-asked in the remembered order only when that menu still offers the key; the
-    // unsorted page is never published, so the grid shows no reorder. If the sorted re-ask
-    // FAILS, the unsorted page stands in the default order rather than failing the section —
-    // a remembered preference must never be the reason a library cannot open.
+    // **The order of the first page is ONE decision**, made against the menu it has just brought
+    // back, and the page is re-asked in that order before anything is published — the unsorted
+    // page never reaches the grid, so nothing reorders on screen:
+    //
+    // * the REMEMBERED sort (#278), when the menu still offers its key. The saved key is never
+    //   sent on the discovery request itself: an unrecognised sort key 500s the WHOLE listing,
+    //   and a key the server offered last month (or the client-side Plays sort on a PMS that
+    //   stopped honouring it) would then fail the section's first page on every launch, with no
+    //   menu ever landing to choose anything else from;
+    // * else, for every listing but the library's own (`confirm_sort`), the menu's first entry —
+    //   seasons and episodes advertise Show ordering first, while an unsorted /all answer arrives
+    //   in title order, and later pages use the same key so no page boundary can duplicate or
+    //   skip an episode.
+    //
+    // If the re-ask FAILS: the library's own listing keeps the unsorted page in the default order
+    // rather than failing the section — a remembered preference must never be the reason a
+    // library cannot open — while the other listings fail, as an unconfirmed order is wrong there.
+    //
+    // A saved sort is SETTLED when it was applied or the menu proved its key gone; no menu, or a
+    // failed re-ask, leaves it unresolved (`Resolved`) so the record keeps it.
     let mut restored = None;
-    if let (Some(restore), true) = (restore, query.include_meta && query.sort.is_empty()) {
-        if let Some(entry) = sorts.as_deref().and_then(|sorts| restorable(sorts, restore)) {
-            let sort = entry.query(restore.desc);
-            let sorted = SectionQuery { sort: &sort, include_meta: false, ..*query };
-            if let Some(sorted_container) = client.section_items_query(&sorted) {
-                container = sorted_container;
-                restored = Some((restore.sort.clone(), restore.desc));
+    if discovery {
+        if sorts.is_none() && restore.is_some_and(|restore| restore.sort.is_some()) {
+            resolved.sort = false;
+        }
+        let primary = restore.map_or(true, |restore| restore.library_type == LibraryType::Primary);
+        let remembered = restore.and_then(|restore| {
+            let (key, desc) = restore.sort.as_ref()?;
+            let entry = restorable(sorts.as_deref()?, key, restore.kind, primary)?;
+            Some((entry, *desc, Some(key.clone())))
+        });
+        let order = remembered.or_else(|| {
+            confirm_sort.then(|| sorts.as_ref()?.first().map(|first| (first.clone(), first.default_desc, None)))
+                .flatten()
+        });
+        if let Some((entry, desc, key)) = order {
+            let sort = entry.query(desc);
+            let sorted = SectionQuery { sort: &sort, include_meta: false, ..base };
+            match client.section_items_query(&sorted) {
+                Some(sorted_container) => {
+                    container = sorted_container;
+                    restored = key.map(|key| (key, desc));
+                }
+                None if confirm_sort => return ListingPage::failed(),
+                None => resolved.sort = false,
             }
         }
     }
     let total = if container.total_size > 0 { container.total_size }
         else { query.start + container.metadata.len() as i64 };
     let items = container.metadata.iter().map(|item| parse_item(item, sid)).collect();
-    ListingPage { items, total, sorts, restored }
+    ListingPage { items, total, sorts, restored, genres, genre, resolved }
 }
 
 /// Bumped whenever the section table's SHAPE changes — a source's sections appended, or the whole
@@ -2512,6 +2742,11 @@ struct PageResult {
     sorts: Option<Vec<SortEntry>>, // Some when the fetch carried includeMeta=1
     /// Some when the page was fetched in a remembered sort — see [`ListingPage::restored`].
     restored: Option<(String, bool)>,
+    /// See [`ListingPage::genres`] and [`ListingPage::genre`].
+    genres: Option<Vec<GenreEntry>>,
+    genre: Option<GenreEntry>,
+    /// See [`ListingPage::resolved`].
+    resolved: Resolved,
 }
 // menu-data landings carry the table EPOCH so a landing spawned before a [`reset`] (profile
 // switch) can never populate the NEW user's state at the same index
@@ -3372,7 +3607,8 @@ pub fn queue_page_failure_for_owner_test(
     adapter.fetching.store(true, Ordering::SeqCst);
     *adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
         client, token_gen: client.token_gen(), gen: state.query_gen(), sec, start: 0,
-        items: Vec::new(), total: -1, sorts: None, restored: None,
+        items: Vec::new(), total: -1, sorts: None, restored: None, genres: None, genre: None,
+        resolved: Default::default(),
     });
 }
 
@@ -3404,7 +3640,8 @@ pub fn spawn_owned_page_for_test(
             Some(PageResult {
                 client, token_gen, gen, sec, start: 0,
                 items: vec![PmsMovie { sid, title, ..Default::default() }],
-                total: 1, sorts: None, restored: None,
+                total: 1, sorts: None, restored: None, genres: None, genre: None,
+                resolved: Default::default(),
             });
         done_tx.send(()).expect("test receives worker completion");
     }));
@@ -3439,8 +3676,8 @@ mod reachability_tests;
 mod library_type_tests;
 
 #[cfg(test)]
-#[path = "browse_sort_memory_tests.rs"]
-mod sort_memory_tests;
+#[path = "browse_view_memory_tests.rs"]
+mod view_memory_tests;
 
 #[cfg(test)]
 mod localized_type_tests {

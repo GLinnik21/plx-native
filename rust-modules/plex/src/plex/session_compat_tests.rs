@@ -393,21 +393,29 @@ fn the_subtitle_tone_survives_the_canonical_split() {
     assert_eq!(public_session(&empty).subtitle_tone(), SubtitleTone::White);
 }
 
-/// Remembered library sorts (#278) live in the PUBLIC preferences half too, so the DB8 path —
-/// not only the plaintext file the host suite writes — must carry them through `split_public` →
-/// `join_canonical` and the locked-bundle snapshot; and a session that never re-sorted anything
-/// must not grow the key at all.
+/// Remembered library views (#278 the sort, #441 everything else the Library toolbar changes)
+/// live in the PUBLIC preferences half too, so the DB8 path — not only the plaintext file the
+/// host suite writes — must carry them through `split_public` → `join_canonical` and the
+/// locked-bundle snapshot; a session that never changed a view must not grow the key at all; and
+/// the key is still `library_sorts`, the name an older build reads back on a rollback.
 #[test]
 fn remembered_library_sorts_survive_the_canonical_split() {
     let mut session = Session::default();
     assert!(split_public(&session).unwrap().preferences.get("library_sorts").is_none());
-    session.set_sort_for("u-sorter", "machine", 3, Some(("viewCount", true)));
+    let view = LibraryView {
+        machine_id: "machine".into(), key: 3, sort: "viewCount".into(), desc: true,
+        unwatched: true, genre: "28".into(), listing: "episodes".into(),
+        listing_sort: "addedAt".into(), listing_desc: true, ..Default::default()
+    };
+    session.set_view_for("u-sorter", view.clone());
     let public = split_public(&session).unwrap();
+    assert!(public.preferences.get("library_views").is_none(),
+        "the on-disk key keeps the name an older build reads");
     let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
     for restored in [&joined, &public_session(&public)] {
-        assert_eq!(restored.sorts_for("u-sorter").and_then(|sorts| sorts.get("machine", 3)),
-            Some(("viewCount", true)));
-        assert!(restored.sorts_for("").is_none(), "another profile's record is its own");
+        assert_eq!(restored.views_for("u-sorter").and_then(|views| views.get("machine", 3)),
+            Some(&view));
+        assert!(restored.views_for("").is_none(), "another profile's record is its own");
     }
     // a malformed entry costs itself, never the preferences beside it
     let mut public = public;
@@ -415,8 +423,54 @@ fn remembered_library_sorts_survive_the_canonical_split() {
         .push(serde_json::json!({"machine_id": 7}));
     public.preferences["library_sorts"].as_array_mut().unwrap().push(serde_json::json!("bad"));
     let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
-    assert_eq!(joined.library_sorts.len(), 1);
-    assert_eq!(joined.sorts_for("u-sorter").map(|sorts| sorts.libs.len()), Some(1));
+    assert_eq!(joined.library_views.len(), 1);
+    assert_eq!(joined.views_for("u-sorter").map(|views| views.libs.len()), Some(1));
+}
+
+/// A `library_sorts` entry written before #441 (the sort and nothing else) loads as a view that
+/// is that sort and defaults for every field added since, and serializes back byte for byte —
+/// the compatibility gate for both an upgrade and a rollback. Written as a literal blob, because
+/// what is under test is that today's struct is not what wrote those bytes.
+#[test]
+fn a_pre_441_library_sorts_entry_loads_as_a_sort_only_view() {
+    let before = r#"[{"user":"u-sorter","libs":[{"machine_id":"machine","key":3,"sort":"viewCount","desc":true}]}]"#;
+    let expected = LibraryView {
+        machine_id: "machine".into(), key: 3, sort: "viewCount".into(), desc: true,
+        ..Default::default()
+    };
+    // as the canonical `preferences` blob …
+    let preferences = format!(r#"{{"library_sorts":{before}}}"#);
+    let public = plx_platform::storage::state::PublicPayload {
+        preferences: serde_json::from_str(&preferences).unwrap(),
+        ..Default::default()
+    };
+    let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+    assert_eq!(joined.views_for("u-sorter").and_then(|views| views.get("machine", 3)),
+        Some(&expected));
+    assert_eq!(serde_json::to_string(&joined.library_views).unwrap(), before);
+    // … and as the plaintext session file
+    let file = format!(r#"{{"client_id":"cid","library_sorts":{before}}}"#);
+    let session: Session = serde_json::from_str(&file).unwrap();
+    assert_eq!(session.views_for("u-sorter").and_then(|views| views.get("machine", 3)),
+        Some(&expected));
+    assert_eq!(serde_json::to_string(&session.library_views).unwrap(), before);
+}
+
+/// A malformed NEW field (`"unwatched":"yes"`) costs that one entry — the soft parse drops it —
+/// never the neighbouring entries, the profile's other libraries or the credentials.
+#[test]
+fn a_malformed_new_view_field_costs_only_its_entry() {
+    let file = r#"{"client_id":"cid","account_token":"acct","library_sorts":[{"user":"u","libs":[
+        {"machine_id":"machine","key":1,"sort":"addedAt","desc":true},
+        {"machine_id":"machine","key":2,"unwatched":"yes"},
+        {"machine_id":"machine","key":3,"unwatched":true,"genre":"28"}]}]}"#;
+    let session: Session = serde_json::from_str(file).unwrap();
+    assert_eq!(session.account_token, "acct");
+    let views = session.views_for("u").unwrap();
+    assert!(views.get("machine", 1).is_some());
+    assert!(views.get("machine", 2).is_none(), "the malformed entry is the one that is dropped");
+    assert_eq!(views.get("machine", 3).map(|view| (view.unwatched, view.genre.as_str())),
+        Some((true, "28")));
 }
 
 /// Remembered per-item subtitle offsets survive the canonical split the same way library sorts

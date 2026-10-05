@@ -360,7 +360,8 @@ fn a_stale_failure_landing_does_not_blame_the_current_query() {
         start: 0,
         items: Vec::new(),
         total: -1,
-        sorts: None, restored: None,
+        sorts: None, restored: None, genres: None, genre: None,
+        resolved: Default::default(),
     };
     *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
     let _outcome = browse.pump();

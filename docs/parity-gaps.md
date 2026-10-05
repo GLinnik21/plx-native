@@ -879,22 +879,26 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* `ui/library.rs` (a `Menu::Context` state reusing the existing `Popover` + `TableView` the sort/filter menus already use, and a long-press branch in `on_ok`/the press commit), `app.rs` (a new `Action` arm). PMS side is already there: `plex/library.rs:90-97` `scrobble`/`unscrobble`.
   *Verified:* CONFIRMED. ui/press.rs:144 `pub fn is_long(now: u32) -> bool` has ZERO call sites — `rg -n is_long` returns only the definition, the module doc at ui/press.rs:5, and the ui/CLAUDE.md mention. Activation map: ui/library.rs:442-473 `on_ok()` returns a bare `Action::Card` for `Area::Grid` (and `click()` at :718-720 does the same), app.rs:2284/1746 routes it to `open_library_card` (app.rs:641-649) which always opens Detail. ui/library.rs:75-81 `enum Action { None, GoHome, Card }` — no third verb. There is also no OPTIONS/context key to bind: ui/consts.rs:44-51 defines only CH▲/CH▼ (33/34) and PAUS
 
-- **Filter selections are not persisted across app restarts** — `minor` / `small`
-  The official client remembers each library's sort and filter between sessions. Ours now remembers
-  the SORT (key and direction, per profile, per library — `Session::library_sorts`, GitHub #278),
-  but keeps the filters only in the Bridge-owned BrowseStore's in-memory state: quit the app (or
-  switch profile and back) and every section is back to no genre, unwatched off.
-  *Where:* `rust-modules/src/browse/mod.rs` — extend `note_sort_choice` / `restore_for` (and the
-  `LibrarySorts` record in `plex/session.rs`) with the unwatched flag and genre id; a genre id
-  must be re-validated against the section's genre list before it is sent, exactly as a
-  remembered sort key is re-validated against the menu.
-  *Verified:* sort persistence is graded by `browse::sort_memory_tests` (a loopback PMS, a cold
-  session cache read back from disk, a fresh store). Nothing persists `unwatched` or `genre`.
+- ~~**Filter selections are not persisted across app restarts**~~ — **CLOSED 2026-10-05 (#441).**
+  The official client remembers each library's sort and filter between sessions, and so do we now:
+  the sort and its direction, the Unwatched switch, the genre and the listing type (Movies /
+  Collections, Shows / Seasons / Episodes / Collections) are remembered per profile per library in
+  ONE view record (`Session::library_views`, still stored on disk as `library_sorts` so a rollback
+  reads it). The sort (#278) and the genre are re-checked against the server before they are sent:
+  a sort the menu no longer offers, or a genre the library's genre list no longer has, falls back
+  silently to the default (a check that could not be read at all leaves the saved value in the
+  record until a later launch settles it).
+  *Where:* `rust-modules/data/src/browse/mod.rs` (`note_view_choice`, `seed_saved_view`,
+  `restore_for`, `fetch_listing_page`), `rust-modules/data/src/browse/saved_view.rs` (the merge
+  rules) and the `LibraryViews` record in `rust-modules/plex/src/plex/session.rs`.
+  *Verified:* graded by `browse::view_memory_tests` (a loopback PMS, a cold session cache read back
+  from disk, a fresh store) and `browse::saved_view::tests`, and for the on-disk shape by
+  `session_compat_tests`.
 
 - **No way to enter the grid with a preset query (a hub's "See All")** — `minor` / `medium`
   In the official client every hub row has a "See All" that opens the library grid pre-sorted/pre-filtered to that hub (Recently Added → the grid sorted by addedAt desc). Our grid can only ever be entered at whatever query the section last remembered — the owned Library uses a `SectionAddress` and `BrowseCmd::Addressed` for its own controls, but no external hub action supplies a preset query.
   *Where:* `rust-modules/src/stores/browse.rs` (`SectionAddress`/`LibraryWork::Commit`), `rust-modules/screens/src/library/`, and the missing hub-heading activation in the owned Home/app path.
-  *Verified:* CONFIRMED. The Browse command vocabulary can apply sort/filter edits emitted by the Library itself, but no `See All` effect or preset-query entry point exists from a hub. The retained per-Bridge state restores only what that BrowseStore already remembered during its lifetime; it does not provide a hub-specific preset. A tree-wide search finds no `See All` implementation.
+  *Verified:* CONFIRMED. The Browse command vocabulary can apply sort/filter edits emitted by the Library itself, but no `See All` effect or preset-query entry point exists from a hub. The grid opens in the per-profile saved view (`Session::library_views`, #441), which is the viewer's own last choice, never a hub's preset; no `See All` effect or preset-query entry point exists. A tree-wide search finds no `See All` implementation.
 
 - **Grid posters carry a title/year only while focused** — `polish` / `small`
   The reference grid labels every poster with an ellipsized title and the year underneath. Ours draws bare posters and puts the title + year only under the single focused card, so scanning an unfamiliar library means walking focus cell by cell — noticeably worse for shows whose posters don't carry the name.
