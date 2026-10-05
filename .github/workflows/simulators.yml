@@ -147,18 +147,6 @@ jobs:
             ${{ runner.temp }}/plxnative-replay/**/sim.out
           if-no-files-found: ignore
           retention-days: 7
-      - name: Install nightly Rust
-        # `make check-ffmpeg` runs the host suite's FFmpeg-backed tests on the toolchain `make
-        # check` uses; the simulator above builds on the runner's default one. `rust-src` is not
-        # optional: rust-modules/.cargo/config.toml sets `[unstable] build-std` for every nightly
-        # cargo run, host tests included — the same component ci.yml's host checks install.
-        run: rustup toolchain install nightly --profile minimal --component rust-src
-      - name: Tests against the bundled FFmpeg
-        # The one place the host FFmpeg (built above, same component list as the shipped one) is
-        # available to the test suite — `make check` has none, so these are #[ignore]d there.
-        run: make check-ffmpeg
-      - name: Tests against the bundled ASS renderer
-        run: make check-ass
       - name: Launch and capture 1080p frame
         run: |
           python3 tools/sim-smoke.py \
@@ -174,6 +162,46 @@ jobs:
           path: ${{ runner.temp }}/plxnative-macos.png
           if-no-files-found: ignore
           retention-days: 7
+
+  macos-host-tests:
+    name: macOS tests against bundled FFmpeg and ASS
+    runs-on: macos-latest
+    # These were the tail of the `macos` job, run after its replay step for no reason: they share
+    # nothing with the simulator build or the replays except the host FFmpeg and libass builds,
+    # and they use their own target dir and toolchain. As a job of their own they run beside the
+    # replay instead of behind it. Same commands, same runner image, nothing dropped. The limit
+    # allows a cold FFmpeg build (a ci/build-ffmpeg.sh change) like the `macos` job's does.
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install SDL
+        # Same step-level bound and package set as the `macos` job: the host test binary links SDL
+        # (build.rs links it for every host test binary) and libass's dependencies need cmake.
+        timeout-minutes: 15
+        run: brew install sdl2_ttf cmake pkg-config
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        # The SAME key as the `macos` job, so one entry serves both. On a miss both jobs build
+        # FFmpeg and the later save is refused as already existing; that happens only when
+        # ci/build-ffmpeg.sh changes.
+        with:
+          path: |
+            vendor/ffmpeg-prefix-host
+            vendor/ffmpeg-build
+          key: host-ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh') }}
+      - name: Install nightly Rust
+        # `make check-ffmpeg` runs the host suite's FFmpeg-backed tests on the toolchain `make
+        # check` uses; the simulator job builds on the runner's default one. `rust-src` is not
+        # optional: rust-modules/.cargo/config.toml sets `[unstable] build-std` for every nightly
+        # cargo run, host tests included — the same component ci.yml's host checks install.
+        run: rustup toolchain install nightly --profile minimal --component rust-src
+      - name: Tests against the bundled FFmpeg
+        # The one place the host FFmpeg (same component list as the shipped one) is available to
+        # the test suite — `make check` has none, so these are #[ignore]d there.
+        run: make check-ffmpeg
+      - name: Tests against the bundled ASS renderer
+        # Builds the pinned host libass first (the `macos` job builds its own copy for the
+        # simulator; neither is cached, so this is the one duplicated build, off the critical path).
+        run: make check-ass
 
   windows-launcher:
     name: Windows launcher syntax

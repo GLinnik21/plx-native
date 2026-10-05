@@ -3,8 +3,17 @@
 
 The simulator owns parsing, controlled bootstrap, recorded ingress, and every frame grade.
 macOS additionally denies outbound networking with sandbox-exec. Evidence roots are retained.
+
+The replays are independent processes and run side by side (`--jobs`, `PLX_REPLAY_JOBS`; 1 is
+serial). What makes that sound: each replay gets its own `PLXNATIVE_RUNTIME_DIR` (triggers, FIFO,
+event log, evidence) from `mkdtemp`, reads its recording and the assets read-only, is pointed at
+`127.0.0.1:9` with outbound networking denied (so it binds and dials nothing), and is graded on
+the recorded clock (`app::clock::set_replay`), never on wall time. Each replay's output is printed
+whole when it finishes, so concurrent logs never interleave, and a failing replay never stops the
+others.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 from pathlib import Path
@@ -12,6 +21,14 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+
+# Replays are CPU-bound and each one is a full renderer-backed simulator, so the default stops at
+# the core count and never past this: more workers than cores only stretch every replay, and the
+# per-replay timeout runs from the replay's own start.
+MAX_DEFAULT_JOBS = 4
+MODES = ('targets', 'resolve')
+JOBS_ENV = 'PLX_REPLAY_JOBS'
 
 DIFFS = ('diverged', 'present_diffs', 'input_diffs', 'result_diffs', 'land_diffs',
          'effect_diffs', 'focus_diffs', 'hit_diffs')
@@ -68,6 +85,23 @@ def verdict(log, returncode, counts):
     return summaries[0]
 
 
+def resolve_jobs(flag, environ, cpus):
+    """Worker count: `--jobs` wins, then `PLX_REPLAY_JOBS`, then min(cpus, MAX_DEFAULT_JOBS)."""
+    if flag is None and environ.get(JOBS_ENV, '') != '':
+        try:
+            flag = int(environ[JOBS_ENV])
+        except ValueError:
+            raise ValueError(f'{JOBS_ENV} must be a positive integer, got {environ[JOBS_ENV]!r}')
+        source = JOBS_ENV
+    else:
+        source = '--jobs'
+    if flag is None:
+        return max(1, min(cpus or 1, MAX_DEFAULT_JOBS))
+    if flag < 1:
+        raise ValueError(f'{source} must be a positive integer, got {flag}')
+    return flag
+
+
 def run_fixture(binary, assets, fixture, mode, output, timeout):
     runtime = Path(tempfile.mkdtemp(prefix=fixture.name + '-' + mode + '-', dir=output))
     (runtime / 'plxnative-recplay').write_text('v1\n' + mode + '\n' + str(fixture))
@@ -89,7 +123,7 @@ def run_fixture(binary, assets, fixture, mode, output, timeout):
                           expected_counts(fixture))
     except ValueError as error:
         raise ValueError(f'{fixture.name}/{mode}: {error}; evidence {runtime}') from error
-    print(f'{fixture.name}/{mode}: {summary}', flush=True)
+    return f'{fixture.name}/{mode}: {summary}'
 
 
 def main():
@@ -99,7 +133,11 @@ def main():
     parser.add_argument('--fixtures', type=Path, default=repo / 'tests/fixtures/replay')
     parser.add_argument('--assets', type=Path, default=repo / 'pkg')
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--timeout', type=float, default=300)
+    parser.add_argument('--timeout', type=float, default=300,
+                        help='seconds each replay may run, counted from its own start')
+    parser.add_argument('--jobs', type=int,
+                        help=f'replays to run at once (default: ${JOBS_ENV}, else the CPU count '
+                             f'capped at {MAX_DEFAULT_JOBS}; 1 runs them one after another)')
     args = parser.parse_args()
     try:
         fixtures = discover(args.fixtures.resolve())
@@ -107,20 +145,54 @@ def main():
         parser.error(str(error))
     if args.timeout <= 0:
         parser.error('--timeout must be positive')
+    try:
+        jobs = resolve_jobs(args.jobs, os.environ, os.cpu_count())
+    except ValueError as error:
+        parser.error(str(error))
     output = args.output or Path(tempfile.mkdtemp(prefix='plxnative-replay-gate-'))
     output.mkdir(parents=True, exist_ok=True)
-    failures = []
-    for fixture in fixtures:
-        for mode in ('targets', 'resolve'):
-            try:
-                run_fixture(args.sim.resolve(), args.assets.resolve(), fixture, mode,
-                            output.resolve(), args.timeout)
-            except (ValueError, OSError) as error:
-                print(f'FAIL: {error}', file=sys.stderr, flush=True)
-                failures.append(error)
-    print(f'{len(fixtures)} fixtures, {len(fixtures) * 2} replays, {len(failures)} failures; '
-          f'evidence {output}', flush=True)
+    failures = run_all(args.sim.resolve(), args.assets.resolve(), fixtures, output.resolve(),
+                       args.timeout, jobs)
+    print(f'{len(fixtures)} fixtures, {len(fixtures) * len(MODES)} replays, {len(failures)} failures; '
+          f'{jobs} parallel; evidence {output}', flush=True)
     return bool(failures)
+
+
+def replay_order(fixtures):
+    """Every (fixture, mode) replay, longest recording first so the last worker is not left
+    holding the biggest one. Ties keep discovery order (sorted() is stable)."""
+    cost = {fixture: expected_counts(fixture)[0] for fixture in fixtures}
+    return sorted(((fixture, mode) for fixture in fixtures for mode in MODES),
+                  key=lambda replay: -cost[replay[0]])
+
+
+def run_all(binary, assets, fixtures, output, timeout, jobs, run=run_fixture):
+    """Run every replay with at most `jobs` at once; return the failures.
+
+    A replay's report is printed in one call when it finishes (stdout for a pass, stderr for a
+    FAIL), so output stays readable at any width. Nothing short-circuits: all replays run."""
+    failures = []
+
+    def one(replay):
+        fixture, mode = replay
+        began = time.monotonic()
+        try:
+            report, error = run(binary, assets, fixture, mode, output, timeout), None
+        except (ValueError, OSError) as caught:
+            report, error = None, caught
+        except Exception as caught:  # a crash in one replay must not take the others down
+            report, error = None, ValueError(f'{fixture.name}/{mode}: {type(caught).__name__}: {caught}')
+        return report, error, time.monotonic() - began
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for done in as_completed([pool.submit(one, replay) for replay in replay_order(fixtures)]):
+            report, error, seconds = done.result()
+            if error is None:
+                print(f'{report} [{seconds:.0f} s]', flush=True)
+            else:
+                print(f'FAIL: {error} [{seconds:.0f} s]', file=sys.stderr, flush=True)
+                failures.append(error)
+    return failures
 
 
 if __name__ == '__main__':

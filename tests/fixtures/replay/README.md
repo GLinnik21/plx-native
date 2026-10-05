@@ -11,6 +11,10 @@ the macOS Simulator CI job, with outbound networking denied, and retains each ru
 It requires a successful process exit, exactly one clean summary, every difference counter zero,
 and frame/grade counts matching the complete committed ledger. Missing manifests or segments,
 refused fixtures, timeouts, and incomplete replay all fail; no fixture is quarantined or skipped.
+The replays are independent processes (own runtime dir, recorded clock, no network) and run side
+by side: `--jobs N` / `PLX_REPLAY_JOBS=N`, default the CPU count capped at 4, `1` for serial. Each
+replay's line is printed whole when it finishes, every replay runs even after one fails, and the
+exit status is nonzero if any did; the timeout counts from each replay's own start.
 The renderer-backed replay gate is separate from the pure host suite: `make check` tests its
 strict result parser, but does not launch the simulator.
 

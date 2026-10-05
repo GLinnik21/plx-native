@@ -1,0 +1,73 @@
+name: Cache cleanup
+
+# When a pull request closes (merged or not), delete the GitHub Actions caches that its runs saved.
+#
+# WHY. A cache saved by a pull request run is stored under `refs/pull/<N>/merge`, and only that
+# pull request can read it back: nothing on `main` and no other pull request ever restores it. Yet
+# it counts against the repository's 10 GB cache limit until it ages out, and once the limit is
+# reached GitHub evicts the least recently used caches first — which can include the
+# `refs/heads/main` caches every pull request restores from. 5.08 GB of the 10.63 GB measured on
+# 2026-10-05 sat under `refs/pull/*/merge` refs, so the repository was over its limit and evicting.
+# Deleting a closed pull request's caches costs nothing that could be reused.
+#
+# WHY `pull_request_target` AND NOT `pull_request`. GitHub gives a `pull_request` run from a FORK a
+# read-only `GITHUB_TOKEN` whatever the `permissions:` block asks for ("The GITHUB_TOKEN has
+# read-only permissions in pull requests from forked repositories"), and deleting a cache needs
+# `actions: write`. A fork's pull request also saves caches (scoped to its own merge ref), so
+# `pull_request: closed` would clean up same-repo pull requests and fail with HTTP 403 on every
+# fork's. `pull_request_target` runs the workflow file as it exists on the DEFAULT branch, with a
+# token that carries the permissions declared below.
+#
+# WHY THAT IS SAFE. The usual `pull_request_target` hazard is checking out or running the pull
+# request's code with a privileged token. This workflow does neither: it has no `actions/checkout`
+# step, runs no file from the repository, and installs nothing. The single value taken from the
+# pull request is its NUMBER (an integer GitHub assigns), passed through an environment variable
+# rather than interpolated into the script, and it is used only to build `refs/pull/<N>/merge`.
+# The token holds `actions: write` and nothing else, so even a mistake here could only delete
+# caches. Keep it that way: do not add a checkout, a `run:` that reads anything else from
+# `github.event.pull_request`, or a wider `permissions:` block.
+
+on:
+  pull_request_target:
+    types: [closed]
+
+# Everything not named here is `none`: no `contents`, no `pull-requests`, no `id-token`.
+permissions:
+  actions: write
+
+concurrency:
+  # One cleanup per pull request; a reopened and re-closed PR queues behind the first rather than
+  # racing it.
+  group: cache-cleanup-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  delete-pull-request-caches:
+    name: delete this pull request's caches
+    runs-on: ubuntu-latest
+    # Two API calls per cache; a pull request that ran CI a few dozen times holds under 100 caches.
+    timeout-minutes: 10
+    steps:
+      - name: Delete caches under refs/pull/N/merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*) echo "::error::refusing a non-numeric pull request number"; exit 1 ;;
+          esac
+          # `gh` is preinstalled on GitHub-hosted runners; there is no checkout, so `GH_REPO`
+          # names the repository. Both refs a pull request can save under are swept, merge first.
+          for ref in "refs/pull/${PR_NUMBER}/merge" "refs/pull/${PR_NUMBER}/head"; do
+            ids=$(gh cache list --ref "$ref" --limit 1000 --json id --jq '.[].id')
+            if [ -z "$ids" ]; then
+              echo "$ref: no caches"
+              continue
+            fi
+            echo "$ref: deleting $(echo "$ids" | wc -l | tr -d ' ') cache(s)"
+            for id in $ids; do
+              gh cache delete "$id"
+            done
+          done
