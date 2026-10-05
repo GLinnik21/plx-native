@@ -490,8 +490,7 @@ pub enum RollbackLanding {
 
 /// Drain the landing of a rollback no Engine waits on, once a frame while
 /// [`crate::route::engineless_flight_outstanding`]: reload onto the restored HLS route at the
-/// recovery position, or — the rebase was refused — fail the start, exactly as the synchronous
-/// rebase's `None` did. Reaps a stale flight's late landing first, since no pump will.
+/// recovery position, or — the rebase was refused — fail the start. Reaps a stale flight's late landing first, since no pump will.
 pub fn land_engineless_rollback(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> RollbackLanding {
     crate::route::discard_stale_flight_landing();
     if !crate::route::engineless_flight_outstanding() {
@@ -522,14 +521,11 @@ pub fn land_engineless_rollback(ps: &mut crate::route::PlaybackSession, pa: &mut
 
 /// The app loop's once-a-frame drain for a rollback NO foreground machine owns (the pump's
 /// `start_original_trial_reload` found its Load failing synchronously): a reload that does not
-/// start is the failure read-out, as it was when the reload ran inline.
+/// start is the failure read-out.
 pub fn drain_engineless_rollback(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
-    match land_engineless_rollback(ps, pa) {
-        RollbackLanding::Landed(ForegroundOriginalRecovery::RetryPrepared) => {
-            super::log("abr: HLS rollback could not start (StartFailed)");
-            set_state(super::shared::PlaybackState::Error);
-        }
-        _ => {}
+    if let RollbackLanding::Landed(ForegroundOriginalRecovery::RetryPrepared) = land_engineless_rollback(ps, pa) {
+        super::log("abr: HLS rollback could not start (StartFailed)");
+        set_state(super::shared::PlaybackState::Error);
     }
 }
 
@@ -658,7 +654,7 @@ fn hold_connecting_state(eng: &Engine) {
 }
 
 /// A recovery flight landed: reload onto the replacement route at the recovery position, or — it
-/// was refused — fail the Engine exactly as the synchronous attempt's `None` did.
+/// was refused — fail the Engine.
 fn land_recovery_flight(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -666,11 +662,10 @@ fn land_recovery_flight(
 ) {
     match landing.verdict {
         crate::route::RecoveryVerdict::Install => {
-            let started = settle_reload(
+            let _ = settle_reload(
                 super::engine::reload_transcode(ps, pa, landing.offset_ns),
                 "HLS recovery after failed source open",
             );
-            let _ = started;
         }
         crate::route::RecoveryVerdict::Refused => {
             crate::route::fail_current_engine();
@@ -2179,11 +2174,8 @@ mod flight_tests {
         }
     }
 
-    /// **Consumer 1, the plain seek.** The frame that picks up a seek tap on a transcode used to
-    /// run `/decision` and the encoder registration right here, under a labelled `allow_blocking` exception
-    /// (`main-thread block: PMS HTTP` in the event log). It must hand the PMS half to a worker:
-    /// when the frame returns the server has been asked NOTHING, a flight is outstanding, and the
-    /// seek lands on a later frame.
+    /// A seek tap on a transcode hands the PMS half to a worker: when the frame returns the server
+    /// has been asked NOTHING, a flight is outstanding, and the seek lands on a later frame.
     #[test]
     fn a_transcode_seek_frame_makes_no_pms_call_and_the_worker_lands_it_later() {
         let mut rig = Rig::new(150);
@@ -2228,12 +2220,9 @@ mod flight_tests {
         assert_eq!(crate::player::intended_pos_ns(&rig.ps), SEEK_TARGET_NS);
     }
 
-    /// **Consumer 2, and the latent bug.** `quality: Auto picked — retaining live HLS and
-    /// refreshing its adaptive contract` queues an `AdaptiveReload`. The pump arm that serves it
-    /// called `transcode_seek` from INSIDE the claim (`ControlPhase::Applying`), and `transcode_seek`
-    /// answers `None` whenever a claim is in flight — so on a transcode the arm rejected every time
-    /// ("adaptive transcode reload was rejected"), since #310 added that refusal. The server was
-    /// never even asked.
+    /// `quality: Auto picked — retaining live HLS and refreshing its adaptive contract` queues an
+    /// `AdaptiveReload`; on a transcode the arm serving it plans a rebase inside its own claim
+    /// (`ControlPhase::Applying`), so the claim's own flight must not be what refuses it.
     #[test]
     fn an_adaptive_reload_on_a_transcode_is_served_not_rejected_by_its_own_claim() {
         let mut rig = Rig::new(60);
@@ -2277,11 +2266,9 @@ mod flight_tests {
         rig.pa.engine().map(|e| e.native_epoch)
     }
 
-    /// **Consumer 3, the manual Original claim.** The viewer picks Original on a transcode: the
-    /// recovery's Part admission, selection PUT and replacement `/decision` used to run right on the
-    /// frame that claimed it, under a labelled `allow_blocking` exception. The frame must hand them to a worker and
-    /// return having asked the server NOTHING; the landing installs through the same drain as an
-    /// enhancement release and reloads onto the Original trial.
+    /// A manual Original pick on a transcode hands the recovery's Part admission, selection PUT and
+    /// replacement `/decision` to a worker and returns having asked the server NOTHING; the landing
+    /// installs through the same drain as an enhancement release and reloads onto the Original trial.
     #[test]
     fn a_manual_original_claim_frame_makes_no_pms_call_and_the_worker_lands_it_later() {
         let mut rig = Rig::new(150);
@@ -2362,9 +2349,7 @@ mod flight_tests {
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"));
     }
 
-    /// **Consumer 4, the automatic HLS-to-Original recovery.** The Auto worker handed the pump the
-    /// action and exited; the frame that claims it used to run the replacement remux's PUT and
-    /// `/decision` inline. Same flight, owned by the automatic claim.
+    /// The automatic HLS-to-Original recovery is the same flight, owned by the automatic claim.
     #[test]
     fn an_automatic_original_recovery_frame_makes_no_pms_call_and_the_worker_lands_it_later() {
         let mut rig = hls_rig(150);
@@ -2456,11 +2441,8 @@ mod flight_tests {
         Rig { ps, pa, flight, now: 1_000 }
     }
 
-    /// **Consumer 5, the automatic Original-to-HLS fallback.** The Auto worker saw the Original
-    /// starve and handed the pump the action; the frame that claims it used to run the replacement
-    /// encoder's selection PUT and `/decision` inline, under a labelled `allow_blocking` exception. Same flight,
-    /// owned by the automatic claim, and the stream is never paused for it: the Original is what
-    /// plays until the landing replaces it.
+    /// The automatic Original-to-HLS fallback is the same flight, owned by the automatic claim, and
+    /// the stream is never paused for it: the Original is what plays until the landing replaces it.
     #[test]
     fn an_automatic_hls_fallback_frame_makes_no_pms_call_and_the_worker_lands_it_later() {
         let mut rig = auto_original_rig(150);
@@ -2547,7 +2529,7 @@ mod flight_tests {
         assert_eq!(TX.seek_to_ns.load(Relaxed), -1);
     }
 
-    // ---- stage 6a: a CLAIM flight that an app-switch suspend crosses --------------------------
+    // ---- a CLAIM flight that an app-switch suspend crosses ------------------------------------
 
     /// The session ids the server has been asked to register (`/decision`), in order.
     fn registered_sessions(flight: &FlightRig) -> Vec<String> {
@@ -2681,7 +2663,7 @@ mod flight_tests {
         drop(rig);
     }
 
-    // ---- stage 4a: the two failure-path consumers ---------------------------------------------
+    // ---- the failure-path flights --------------------------------------------------------------
 
     /// A rig on the Original trial's failure edge: the viewer picked Original on a transcode, the
     /// recovery landed and reloaded onto the trial (the HLS `rig-1` is held as its way back), and
@@ -2702,12 +2684,10 @@ mod flight_tests {
         flight.stopped().iter().filter(|s| s.starts_with("rig-logical-abr-")).count()
     }
 
-    /// **Consumer 6, the Original trial's rollback.** After the source refused to open, the frame
-    /// that took the way back used to rebase the restored HLS route at the recovery position
-    /// (`/decision` and the encoder registration) right on the frame thread, under
-    /// a labelled `allow_blocking` exception. It must hand the PMS half to a worker: when the failure frame returns
-    /// the server has been asked NOTHING, the viewer still sees the connecting spinner, and the
-    /// rollback lands on a later frame.
+    /// After the Original trial's source refused to open, the rollback rebases the restored HLS
+    /// route at the recovery position on a worker: when the failure frame returns the server has
+    /// been asked NOTHING, the viewer still sees the connecting spinner, and the rollback lands on
+    /// a later frame.
     #[test]
     fn a_failed_original_trial_frame_makes_no_pms_call_and_the_worker_lands_the_rollback_later() {
         let mut rig = failed_original_trial_rig(150);
@@ -2735,7 +2715,7 @@ mod flight_tests {
         rig.flight.wait_for("the restored HLS's retirement", |f| f.stopped().iter().any(|s| s == "rig-1"));
     }
 
-    /// A refused rollback rebase ends exactly as the synchronous refusal did: the failure read-out,
+    /// A refused rollback rebase ends in the failure read-out,
     /// the reducer `Failed`, nothing reloaded, the refused replacement stopped and the encoder the
     /// route still names left alone.
     #[test]
@@ -2799,12 +2779,11 @@ mod flight_tests {
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
     }
 
-    // ---- stage 4c: the two rollbacks no Engine waits on ---------------------------------------
+    // ---- the rollbacks no Engine waits on ------------------------------------------------------
 
     /// **A synchronous Load failure inside the Original trial** (`start_original_trial_reload`: the
-    /// Engine could not even be constructed, so there is no Engine for a pump to recover) used to
-    /// rebase the restored HLS route inline on the frame thread. It is an Engine-less flight now:
-    /// when the frame returns the server has been asked NOTHING, the viewer keeps a spinner (not the
+    /// Engine could not even be constructed, so there is no Engine for a pump to recover) rebases
+    /// the restored HLS route as an Engine-less flight: when the frame returns the server has been asked NOTHING, the viewer keeps a spinner (not the
     /// failure read-out), and the app loop's drain reloads onto the restored route when it lands.
     #[test]
     fn a_synchronous_trial_load_failure_makes_no_pms_call_and_the_worker_lands_the_rollback_later() {
@@ -2842,8 +2821,7 @@ mod flight_tests {
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
     }
 
-    /// A refused rebase of that rollback ends exactly as the synchronous `None` did: the failure
-    /// read-out, nothing reloaded, the refused replacement stopped and the route's encoder alone.
+    /// A refused rebase of that rollback ends in the failure read-out, nothing reloaded, the refused replacement stopped and the route's encoder alone.
     #[test]
     fn a_refused_engineless_rollback_ends_in_the_error_state() {
         let mut rig = failed_original_trial_rig(40);
@@ -2904,9 +2882,8 @@ mod flight_tests {
         rig
     }
 
-    /// **Consumer 7, the unopened source's HLS fallback.** The Auto Original never opened, so the
-    /// frame that saw it fail used to plan, register the bootstrap rung's encoder (`/decision`) and
-    /// install it right on the frame thread. Same flight as the watchdog's fallback, with nothing
+    /// The unopened Auto Original's HLS fallback plans, registers the bootstrap rung's encoder
+    /// (`/decision`) and installs it as the same flight as the watchdog's fallback, with nothing
     /// playing: when the failure frame returns the server has been asked NOTHING, the viewer sees
     /// the connecting spinner, and the HLS route lands on a later frame.
     #[test]

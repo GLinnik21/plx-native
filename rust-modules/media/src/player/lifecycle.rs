@@ -381,7 +381,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         })
     }
 
-    /// The claimed `Prepare` is a flight now: park until its landing ([`Self::reclaim_prepare`]).
+    /// The claimed `Prepare` is a flight: park until its landing ([`Self::reclaim_prepare`]).
     pub fn finish_prepare_pending(&mut self, id: u64) -> bool {
         let ForegroundState::Claimed {
             id: owner,
@@ -403,7 +403,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         true
     }
 
-    /// The claimed `Load`'s Original rollback is a flight now: park until its landing
+    /// The claimed `Load`'s Original rollback is a flight: park until its landing
     /// ([`Self::reclaim_recovery`]).
     pub fn finish_load_pending(&mut self, id: u64) -> bool {
         let ForegroundState::Claimed {
@@ -828,10 +828,10 @@ fn settle_load_start<A: ForegroundActuator>(
 }
 
 /// Once a frame while the machine waits on a flight ([`ForegroundLifecycle::flight_pending`]):
-/// drain its landing and carry on from where the synchronous path would have been. A landed
+/// drain its landing and carry on. A landed
 /// resume continues into the Load; a landed rollback settles the Load with its reload's outcome;
-/// a refused rebuild ends exactly as the synchronous `None` did (the parked session waits for the
-/// next foreground), and a flight that ended without landing releases the machine. `Launched`
+/// a refused rebuild leaves the parked session waiting for the
+/// next foreground, and a flight that ended without landing releases the machine. `Launched`
 /// tells the caller to mount Player, as [`drive_foreground`]'s does.
 pub fn poll_foreground_flight<A: ForegroundActuator>(
     lifecycle: &mut ForegroundLifecycle<A::Attempt>,

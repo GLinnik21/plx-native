@@ -201,8 +201,8 @@ mod tests {
 
     /// **The lock is not released while a worker the test started is still running.** A test that
     /// returns right after its last assertion (a season fetch cancelled by `Clear`, a flight whose
-    /// landing nobody drains) leaves a `spawn_small` worker alive; it used to outlive the guard and
-    /// write the NEXT holder's globals, which read as a flake in whichever bystander it hit.
+    /// landing nobody drains) leaves a `spawn_small` worker alive, and that worker would write the NEXT
+    /// holder's globals, which reads as a flake in whichever bystander it hit; the guard's drop waits for it.
     #[test]
     fn releasing_the_guard_waits_for_a_worker_the_test_left_running() {
         use std::sync::atomic::{AtomicBool, Ordering};

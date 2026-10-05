@@ -1533,7 +1533,7 @@ pub fn begin_resume(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> R
         ResumePrelude::Settled(outcome) => ResumeStart::Settled(outcome),
         ResumePrelude::Rebuild => match crate::route::dispatch_resume_rebase(ps, resume_ns) {
             crate::route::RecoveryDispatch::Flying { .. } => ResumeStart::Pending,
-            // Nothing to rebuild or the worker could not start: the inline attempt's `None`.
+            // Nothing to rebuild or the worker could not start: a refusal.
             crate::route::RecoveryDispatch::Refused => ResumeStart::Settled(ResumeOutcome::RebuildRejected),
         },
     }

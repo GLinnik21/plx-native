@@ -2,19 +2,12 @@
 //! and lands back on it. A flight has three steps, and the type system and the control reducer
 //! keep each on its own thread:
 //!
-//! 1. **Plan, on the frame thread.** [`super::decision::execute_retranscode_claim`] (a claimed
-//!    track pick / enhancement toggle / quality change), [`super::decision::execute_recover_original_claim`]
-//!    (the viewer's Original pick, and the Auto watchdog's HLS-to-Original handoff),
-//!    [`super::decision::execute_auto_hls_claim`] (the Auto watchdog's Original-to-HLS fallback),
-//!    [`super::decision::execute_adaptive_reload_claim`] (an adaptive refresh) and
-//!    [`super::decision::dispatch_transcode_seek`] (a seek on a transcode),
-//!    [`super::decision::dispatch_rollback_rebase`] (the way back from a failed Original trial),
-//!    [`super::decision::dispatch_unopened_auto_hls`] (an Auto Original that never opened) and
-//!    [`super::decision::dispatch_resume_rebase`] (the cold resume of a freshly resolved transcode,
-//!    and the foreground restore's resume of a parked one),
-//!    read the
-//!    `PlaybackSession` and capture everything the server round trip needs as OWNED values ([`ClaimWork`], [`RetranscodeFallback`], the plan types behind them) — the worker
-//!    never sees a `PlaybackSession`.
+//! 1. **Plan, on the frame thread.** A `dispatch_*` / `execute_*_claim` function in
+//!    [`super::decision`] (claim, Original recovery, Auto HLS fallback, adaptive reload, transcode
+//!    seek, rollback rebase, unopened-source fallback, resume rebase) reads the `PlaybackSession`
+//!    and captures everything the server round trip needs as OWNED values ([`ClaimWork`],
+//!    [`RetranscodeFallback`], the plan types behind them) — the worker never sees a
+//!    `PlaybackSession`.
 //! 2. **PMS, on a worker.** [`spawn_flight`] runs [`run_retranscode_claim_worker`] (handing it the
 //!    [`OffFrame`](plx_base::task::OffFrame) token the frame thread cannot mint) under
 //!    `catch_unwind` and posts the verdict ([`RetranscodeClaimResult`]) to a one-slot mailbox,
@@ -255,30 +248,30 @@ pub(super) fn post_claim_landing(landing: RetranscodeClaimLanding) {
     }
 }
 
-/// Take whatever landing is posted, or `None` — without touching the lock when nothing is. The one
-/// way out of the slot: the drain, the teardown's discard and the tests' reset all come through
-/// here, so the flag cannot drift from the slot.
-pub(super) fn take_claim_landing() -> Option<RetranscodeClaimLanding> {
+/// Take the posted landing when `pick` accepts it, or `None` — without touching the lock when
+/// nothing is posted. The one way out of the slot: the drain, the teardown's discard, the stale
+/// reap and the tests' reset all come through here, so the flag cannot drift from the slot.
+fn take_claim_landing_if(pick: impl FnOnce(&RetranscodeClaimLanding) -> bool) -> Option<RetranscodeClaimLanding> {
     if !RETRANSCODE_CLAIM_LANDED.load(Ordering::Acquire) {
         return None;
     }
     let mut slot = RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+    if !slot.as_ref().is_some_and(pick) {
+        return None;
+    }
     RETRANSCODE_CLAIM_LANDED.store(false, Ordering::Release);
     slot.take()
+}
+
+/// Take whatever landing is posted, or `None`.
+pub(super) fn take_claim_landing() -> Option<RetranscodeClaimLanding> {
+    take_claim_landing_if(|_| true)
 }
 
 /// [`take_claim_landing`] for one family of owners: a recovery's landing is the pump's failure
 /// branches' to drain, every other kind the playing branch's, and neither takes the other's.
 fn take_claim_landing_for(recovery: bool) -> Option<RetranscodeClaimLanding> {
-    if !RETRANSCODE_CLAIM_LANDED.load(Ordering::Acquire) {
-        return None;
-    }
-    let mut slot = RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner());
-    if slot.as_ref().is_some_and(|l| matches!(l.owner, FlightOwner::Recovery(_)) != recovery) {
-        return None;
-    }
-    RETRANSCODE_CLAIM_LANDED.store(false, Ordering::Release);
-    slot.take()
+    take_claim_landing_if(|l| matches!(l.owner, FlightOwner::Recovery(_)) == recovery)
 }
 
 /// The worker body: try the primary attempt, and on refusal run whichever fallback the claim owes
@@ -382,7 +375,26 @@ pub(super) fn clear_injected_fault() {
     *NEXT_FAULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+/// Run the PMS half of `owner`'s flight on a worker. The caller has already recorded it
+/// ([`begin_flight`](super::decision::begin_flight) or a recovery variant); a refused thread
+/// forgets that record here and returns `false`, so a caller only settles its own state.
 pub(super) fn spawn_flight(
+    owner: FlightOwner,
+    pending_seek: i64,
+    user_target: i64,
+    inputs: Option<RetranscodeClaimInputs>,
+    work: ClaimWork,
+    fallback: RetranscodeFallback,
+) -> bool {
+    let serial = owner.serial();
+    let flying = spawn_flight_worker(owner, pending_seek, user_target, inputs, work, fallback);
+    if !flying {
+        end_flight(serial);
+    }
+    flying
+}
+
+fn spawn_flight_worker(
     owner: FlightOwner,
     pending_seek: i64,
     user_target: i64,
@@ -436,27 +448,10 @@ pub fn discard_stale_flight_landing() {
     if flight_is_current(serial) {
         return;
     }
-    let stale = {
-        let mut slot = RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.as_ref().is_some_and(|l| l.owner.serial() == serial) {
-            RETRANSCODE_CLAIM_LANDED.store(false, Ordering::Release);
-            slot.take()
-        } else {
-            None
-        }
-    };
+    let stale = take_claim_landing_if(|l| l.owner.serial() == serial);
     if let Some(landing) = stale {
         landing.result.discard();
     }
-}
-
-/// [`discard_retranscode_claim_slot`] under its other name, for an app-switch suspend that dropped
-/// the outstanding flight of ANY owner (`begin_engine_teardown(true)`): the landing in the mailbox,
-/// if the worker has posted it, is discarded now (stopping what its owner kind registered), and one
-/// it has not posted yet is reaped by [`discard_stale_flight_landing`] (or the pump's drain), the
-/// flight no longer being current.
-pub(super) fn discard_flight_landing() {
-    discard_retranscode_claim_slot();
 }
 
 /// Stop an encoder session without waiting on PMS: the frame thread reaches every caller of this
@@ -545,8 +540,7 @@ pub enum SeekVerdict {
 /// landing it outdates is discarded rather than installed (the viewer asked for somewhere else
 /// since).
 ///
-/// A claim's landing: applies the worker's session-projection fields, exactly where
-/// `retranscode_as` used to write them inline, then hands back what `run_claim_tail` needs. A
+/// A claim's landing: applies the worker's session-projection fields, then hands back what `run_claim_tail` needs. A
 /// seek's: installs the rebuild ([`install_rebase`]) and hands back the verdict.
 pub fn take_ready_flight(ps: &mut PlaybackSession, newer_seek_waiting: bool) -> Option<ReadyFlight> {
     let landing = take_claim_landing_for(false)?;
@@ -646,8 +640,7 @@ pub fn take_ready_recovery_flight(ps: &mut PlaybackSession) -> Option<RecoveryLa
 
 /// A recovery's landing, applied. Every way out leaves the reducer out of `Preparing(serial)`:
 /// `Prepared` when installed (the reload that follows claims the Load attempt), `Stable` when not
-/// (the pump fails the Engine from there, as it did from the transaction the synchronous attempt
-/// left).
+/// (the pump fails the Engine from there).
 fn install_recovery_landing(
     ps: &mut PlaybackSession,
     ticket: RouteStartTransaction,
@@ -655,7 +648,7 @@ fn install_recovery_landing(
     result: RetranscodeClaimResult,
 ) -> RecoveryVerdict {
     // The start transaction a landing that installs nothing gives back: a cold resume's was a
-    // landing's `Prepared` one, which a refusal leaves `Failed` (what the inline attempt left).
+    // landing's `Prepared` one, which a refusal leaves `Failed`.
     let owner = if resume { RebaseFor::Resume } else { RebaseFor::Rollback };
     match result {
         RetranscodeClaimResult::Rebase(landing) => {

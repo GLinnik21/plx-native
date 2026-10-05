@@ -2158,7 +2158,7 @@ pub fn begin_engine_teardown(for_reload: bool) {
     }
     drop(control);
     if dropped_start_flight || dropped_claim_flight {
-        discard_flight_landing();
+        discard_retranscode_claim_slot();
         crate::player::claim_hold::clear();
     }
 }
@@ -3637,7 +3637,7 @@ pub enum RecoveryDispatch {
     /// A worker owns the PMS half; the drain ([`take_ready_recovery_flight`]) delivers the verdict.
     Flying { serial: u64 },
     /// Nothing to rebuild, another transaction holds the reducer, or the worker could not start:
-    /// the failure stands, exactly as when the synchronous attempt answered `None`.
+    /// the failure stands.
     Refused,
 }
 
@@ -3670,9 +3670,9 @@ pub(super) const RESUME_REBASE_REFUSED: &str = "resume: transcode could not be r
 /// [`RebaseFor::Resume`]), PMS on a worker ([`run_rebase`]), install at the landing
 /// ([`install_rebase`]). The reducer holds `Preparing(serial)` — the start transaction the landing
 /// left `Prepared` — until [`take_ready_recovery_flight`] hands back [`RecoveryVerdict::Install`]
-/// (the Load starts at the offset) or [`RecoveryVerdict::Refused`] (the transaction is `Failed`, the
-/// `None` the inline rebuild answered). [`RecoveryDispatch::Refused`] is that same `None`, said at
-/// the dispatch: nothing to rebuild, or the worker could not start.
+/// (the Load starts at the offset) or [`RecoveryVerdict::Refused`] (the transaction is `Failed`).
+/// [`RecoveryDispatch::Refused`] is the refusal said at the dispatch: nothing to rebuild, or the
+/// worker could not start.
 pub fn dispatch_resume_rebase(ps: &mut PlaybackSession, offset_ns: i64) -> RecoveryDispatch {
     dispatch_rebase_recovery(ps, offset_ns, RebaseFor::Resume, RESUME_REBASE_REFUSED, true)
 }
@@ -3708,7 +3708,6 @@ fn dispatch_rebase_recovery(
         RecoveryDispatch::Flying { serial: ticket.serial }
     } else {
         // The OS refused the thread: nothing was registered, so there is nothing to stop.
-        end_flight(ticket.serial);
         release_rebase_start(owner, ticket);
         RecoveryDispatch::Refused
     }
@@ -3755,7 +3754,7 @@ fn plan_unopened_auto_hls(ps: &PlaybackSession, offset_secs: i64) -> Option<Auto
 /// thread ([`plan_unopened_auto_hls`]), PMS on a worker ([`run_auto_hls`]), install at the landing
 /// ([`install_auto_hls_outcome`]). Nothing is playing, so there is no Original to keep: the flight
 /// is the only way forward, and [`RecoveryDispatch::Refused`] / [`RecoveryVerdict::Refused`] are the
-/// `None` the synchronous attempt answered (the pump raises the failure).
+/// refusal (the pump raises the failure).
 pub fn dispatch_unopened_auto_hls(ps: &mut PlaybackSession, offset_secs: i64) -> RecoveryDispatch {
     let Some(plan) = plan_unopened_auto_hls(ps, offset_secs) else {
         return RecoveryDispatch::Refused;
@@ -3775,7 +3774,6 @@ pub fn dispatch_unopened_auto_hls(ps: &mut PlaybackSession, offset_secs: i64) ->
     ) {
         RecoveryDispatch::Flying { serial: ticket.serial }
     } else {
-        end_flight(ticket.serial);
         let _ = reject_route_start_preparation(ticket);
         RecoveryDispatch::Refused
     }
@@ -4184,7 +4182,7 @@ impl OriginalRecoveryPlan {
 
 /// The frame-thread half of an Original recovery: decide whether one is allowed and capture what
 /// its PMS half will need. `None` is a refusal that touched nothing but the session's own live-HLS
-/// mirror, exactly as the monolithic function it was cut from.
+/// mirror.
 fn plan_original_recovery(
     ps: &mut PlaybackSession,
     expected: &WorkerTicket,
@@ -5746,7 +5744,7 @@ pub fn transcode_seek(ps: &mut PlaybackSession, offset_secs: i64) -> Option<Stri
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RebaseFor {
     /// The host tests' inline composition ([`transcode_seek`]). Shares a start transaction another
-    /// owner may already hold, exactly as the monolithic function did.
+    /// owner may already hold.
     #[cfg(any(test, feature = "test-support"))]
     Inline,
     /// A pump seek flight: owns a FRESH start transaction (`Preparing`) from the plan until the
@@ -5764,7 +5762,7 @@ pub(super) enum RebaseFor {
     /// A cold resume: the plan a resolve just landed is a transcode at offset 0 and the viewer is
     /// owed the saved position, so it is rebased there before its first Load. Takes over the
     /// `Prepared` start transaction the landing left ([`begin_recovery_flight_start`]); a refusal
-    /// leaves that transaction `Failed`, as the inline attempt's did. The foreground restore of a
+    /// leaves that transaction `Failed`. The foreground restore of a
     /// session suspended mid-Original-trial resumes over the trial's own transaction (the trial
     /// keeps its rollback; a refusal leaves it `OriginalTrial(Failed)`).
     Resume,
@@ -5772,7 +5770,7 @@ pub(super) enum RebaseFor {
 
 /// Settle the start transaction a rebuild reserved but will not use. Every owner but a cold resume
 /// gives it back ([`reject_route_start_preparation`]); a cold resume's was a landing's `Prepared`
-/// transaction, which a refusal leaves `Failed`, exactly as the inline attempt did.
+/// transaction, which a refusal leaves `Failed`.
 pub(super) fn release_rebase_start(owner: RebaseFor, ticket: RouteStartTransaction) {
     let _ = match owner {
         RebaseFor::Resume => abort_route_start(ticket, RouteStartResult::StartFailed),
@@ -5926,7 +5924,7 @@ pub(super) fn plan_rebase(
     // A claim's worker owns `Applying` and has no vocabulary for a rebuild replacing the encoder
     // out from under it: only the claim that IS the flight may plan one, and nothing else may
     // while one is outstanding. A plain seek asks again on a later frame; an inline caller is
-    // refused as it always was.
+    // refused.
     match owner {
         #[cfg(any(test, feature = "test-support"))]
         RebaseFor::Inline if flight_phase_open() => return Err(Refused),
@@ -6154,7 +6152,6 @@ pub fn dispatch_transcode_seek(ps: &mut PlaybackSession, target_ns: i64) -> Seek
         SeekDispatch::Flying { serial: ticket.serial }
     } else {
         // The OS refused the thread: nothing was registered, so there is nothing to stop.
-        end_flight(ticket.serial);
         let _ = reject_route_start_preparation(ticket);
         SeekDispatch::Refused
     }
@@ -9176,9 +9173,8 @@ fn plan_claim_flight(
     let Some(inputs) = prepare_retranscode_inputs(ps, &expected, offset_secs) else {
         return RetranscodeClaimDispatch::Sync(claim_fallback(ps, dispatch.on_failure, primary_reject));
     };
-    let worker_action = snapshotted_claim(ps, action);
-    begin_flight(worker_action.serial());
-    if spawn_flight(FlightOwner::Claim(worker_action.clone()), pending_seek, user_target, Some(inputs), work, fallback) {
+    let owner = begin_claim_flight(ps, action);
+    if spawn_flight(owner, pending_seek, user_target, Some(inputs), work, fallback) {
         if holds_presentation {
             RetranscodeClaimDispatch::Pending
         } else {
@@ -9189,7 +9185,6 @@ fn plan_claim_flight(
         // `Rejected` arm calls `finish_route_action`, which returns `ControlPhase` to `Stable` —
         // there is no stuck `Applying` the way an unspawned resolve needed `settle_failed_resolve_spawn`
         // to unstick, because `claim_route_action` already reserved this exact serial for us.
-        end_flight(worker_action.serial());
         RetranscodeClaimDispatch::Sync(ClaimTail::Rejected(primary_reject))
     }
 }
@@ -9207,6 +9202,14 @@ fn snapshotted_claim(ps: &PlaybackSession, action: &ClaimedRouteAction) -> Claim
     let mut claim = action.clone();
     claim.claim_snapshot = Some(Box::new(ClaimSnapshot { revision, quality, projection: route_projection(ps) }));
     claim
+}
+
+/// Record the flight of `action` and return its owner: the claim with the reducer's restore point
+/// as it stands now ([`snapshotted_claim`]), begun before the worker can land.
+fn begin_claim_flight(ps: &PlaybackSession, action: &ClaimedRouteAction) -> FlightOwner {
+    let owner = FlightOwner::Claim(snapshotted_claim(ps, action));
+    begin_flight(owner.serial());
+    owner
 }
 
 /// PMS half of a claimed AUTOMATIC `OriginalToHls`, the Auto watchdog's fallback from an Original
@@ -9230,10 +9233,9 @@ pub fn execute_auto_hls_claim(
     let Some(plan) = plan_auto_hls(ps, &action.ticket, conservative_kbps, offset_secs) else {
         return RetranscodeClaimDispatch::Sync(ClaimTail::Rejected(AUTO_HLS_REJECTED));
     };
-    let worker_action = snapshotted_claim(ps, action);
-    begin_flight(worker_action.serial());
+    let owner = begin_claim_flight(ps, action);
     if spawn_flight(
-        FlightOwner::Claim(worker_action.clone()),
+        owner,
         pending_seek,
         user_target,
         None,
@@ -9242,7 +9244,6 @@ pub fn execute_auto_hls_claim(
     ) {
         RetranscodeClaimDispatch::PendingNoHold
     } else {
-        end_flight(worker_action.serial());
         RetranscodeClaimDispatch::Sync(ClaimTail::Rejected(AUTO_HLS_REJECTED))
     }
 }
@@ -9253,8 +9254,8 @@ pub fn execute_auto_hls_claim(
 /// the CLAIM: plan here ([`plan_rebase`] with [`RebaseFor::Claim`]), PMS on the claim worker
 /// ([`run_rebase`]), install at the drain ([`install_rebase`], landing as [`ClaimTail::Adaptive`]).
 ///
-/// This arm used to call the synchronous `transcode_seek` from inside its own claim, which refuses whenever a
-/// claim is in flight — the claim itself — so on a transcode it was rejected every time.
+/// [`RebaseFor::Claim`] is what lets the plan run inside the claim that is the flight: the
+/// synchronous seek path refuses while any claim is in flight.
 pub fn execute_adaptive_reload_claim(
     ps: &mut PlaybackSession,
     action: &ClaimedRouteAction,
@@ -9267,10 +9268,9 @@ pub fn execute_adaptive_reload_claim(
     };
     // Captured AFTER the plan, which mirrors a live HLS rung into the session: the snapshot is the
     // reducer's restore point and must describe the route the plan started from.
-    let worker_action = snapshotted_claim(ps, action);
-    begin_flight(worker_action.serial());
+    let owner = begin_claim_flight(ps, action);
     if spawn_flight(
-        FlightOwner::Claim(worker_action.clone()),
+        owner,
         pending_seek,
         user_target,
         None,
@@ -9279,7 +9279,6 @@ pub fn execute_adaptive_reload_claim(
     ) {
         RetranscodeClaimDispatch::Pending
     } else {
-        end_flight(worker_action.serial());
         RetranscodeClaimDispatch::Sync(ClaimTail::Rejected(ADAPTIVE_REJECTED))
     }
 }
