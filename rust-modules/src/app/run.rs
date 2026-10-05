@@ -3667,6 +3667,15 @@ mod lifecycle_regression_tests {
         fn drop(&mut self) {
             let _ = self.release.send(());
             plx_media::route::cancel_play(&mut self.app.player.session);
+            // `cancel_play` withdraws the landing but leaves the detached resolve worker running,
+            // and that worker finishes by sending a `stop?closeResourceSession=1` for its
+            // abandoned plan to the server its ServerId names. `ServerId`s repeat from test to
+            // test, so a worker that outlives this rig delivered that stop to the NEXT rig's
+            // fixture as its first request, which is what
+            // `did_background_cancels_accepted_resolve_before_player_mount` then read as a
+            // resolve that had cleaned up early. The fixture is still serving here (it is stopped
+            // below) and `release` is already sent, so the worker can finish.
+            let _ = plx_media::route::wait_resolve_workers_for_test(Duration::from_secs(10));
             plx_media::player::stop_bufferfeed(
                 &mut self.app.player.session,
                 &mut self.app.adapters.player,
@@ -3723,7 +3732,7 @@ mod lifecycle_regression_tests {
                 .unwrap()
                 .iter()
                 .any(|r| r.contains("closeResourceSession=1")),
-            "the blocked resolve cannot clean up before it is released"
+            "the blocked resolve cannot clean up before it is released: {:?}", rig.requests.lock().unwrap()
         );
         rig.release.send(()).unwrap();
         // Give the real worker its successful response after cancellation, then run the
