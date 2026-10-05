@@ -551,8 +551,8 @@ mod evidence_tests {
     /// an unreadable 200 is not. The log phrase carries the status and never a URL.
     #[test]
     fn a_refused_identity_is_told_apart_from_no_answer() {
-        let timed_out = RequestFailure { cause: RequestError::TimedOut, status: None, body_limit: None, curl_rc: Some(28) };
-        let cut_401 = RequestFailure { cause: RequestError::Transport, status: Some(401), body_limit: None, curl_rc: Some(56) };
+        let timed_out = RequestFailure { cause: RequestError::TimedOut, status: None, body_limit: None, curl_rc: Some(28), verify: None };
+        let cut_401 = RequestFailure { cause: RequestError::Transport, status: Some(401), body_limit: None, curl_rc: Some(56), verify: None };
         assert_eq!(refused_identity(&Ok(401)), Some(401));
         assert_eq!(refused_identity(&Ok(403)), Some(403));
         assert_eq!(refused_identity(&Err(cut_401)), Some(401));
@@ -564,14 +564,14 @@ mod evidence_tests {
         assert_eq!(describe_evidence(&Ok(503)), "HTTP 503");
         assert_eq!(describe_evidence(&Err(cut_401)), "HTTP 401, transfer incomplete");
         assert_eq!(describe_evidence(&Err(timed_out)), "no answer (timed out)");
-        let dns = RequestFailure { cause: RequestError::Transport, status: None, body_limit: None, curl_rc: Some(6) };
+        let dns = RequestFailure { cause: RequestError::Transport, status: None, body_limit: None, curl_rc: Some(6), verify: None };
         assert_eq!(describe_evidence(&Err(dns)), "no answer (curl rc=6)");
     }
 
     #[test]
     fn account_retryability_is_closed_over_status_and_curl_evidence() {
         let failure = |rc| Err(RequestFailure { cause: RequestError::Transport, status: None,
-            body_limit: None, curl_rc: rc });
+            body_limit: None, curl_rc: rc, verify: None });
         for evidence in [failure(Some(6)), failure(Some(7)), failure(Some(28)), failure(Some(35)),
             Ok(408), Ok(429), Ok(500), Ok(502), Ok(503), Ok(504)] {
             assert!(transient(&evidence), "{evidence:?}");
@@ -583,7 +583,7 @@ mod evidence_tests {
     }
 
     fn failure(status: Option<u16>, body_limit: Option<usize>) -> Result<Resp, RequestFailure> {
-        Err(RequestFailure { cause: RequestError::Transport, status, body_limit, curl_rc: Some(56) })
+        Err(RequestFailure { cause: RequestError::Transport, status, body_limit, curl_rc: Some(56), verify: None })
     }
 
     fn http2_reset_policy(status: u16) {

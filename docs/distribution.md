@@ -24,7 +24,7 @@ answers what a QA pass would find.
 | Ship via **webOS Homebrew Channel**? | **Yes** — it is a real, current, native-app-friendly path. ~1 day of packaging work plus the licence fixes below. |
 | Ship via **LG Content Store**? | **Submittable — this was a "no" here until 2026-08-23 and the "no" was wrong.** Seller Lounge parses this project's ipk as **File Type: Native** and asks for the native SDK version, chipset and resolution. The old verdict rested on a `develop/*` **web-runtime** page (*"Only `web` is allowed currently"*), which is not authority over a native app. What remains is a QA problem, not a permission problem — §2, and `docs/lg-self-checklist.md` for the four items that genuinely fail. |
 | Runs on **newer webOS**? | 32-bit armv7 is *not* the problem — it stays the native userland through webOS 26. **ACB is the problem**: `libAcbAPI` exists on webOS 4.x only. Today's binary does not reach `main()` on 5.0+. |
-| Is **private data** in the repo? | Git history is clean of credentials. Release CI has no `config.local.h`, remaps host paths, compiles out the trigger/FIFO/capture surfaces, and verifies the shipped bytes. Runtime logs are mode 0600 and scrub tokens, server addresses, household names and media text before writing; §4 records the remaining diagnostic surface. |
+| Is **private data** in the repo? | Git history is clean of credentials. Release CI has no `config.local.h`, remaps host paths, compiles out the trigger/FIFO/capture surfaces, and verifies the shipped bytes. The event log scrubs tokens, server addresses, household names and media text before writing, and the three runtime logs (events, crash, stderr) are mode 0640 — group read for a Dev Mode user's file tool, never world-readable; §4 records the remaining diagnostic surface and the residual risk. |
 | Needs a **rooted** TV? | **No** — the unprivileged Dev Mode jail is device-proven in §3.5. Homebrew and retail layouts now use probed writable paths; Key Manager permission is capability-tested and denial keeps the mode-0600 fallback. A real LG Content Store entitlement/install is still an acceptance test, not something the rooted development set can prove. |
 | **Licensing** clear? | Font blocker **CLEARED 2026-08-01** — Inter (OFL 1.1) replaced Monotype Arial. FFmpeg/LGPL is fine. The repo still has **no LICENSE file at all**. |
 | **Trademarks**? | Plex itself is fine (their guidelines have an explicit permitted formula). **Rotten Tomatoes marks have no licensing route that exists**, and the TMDB logo ships without its mandatory attribution. |
@@ -604,9 +604,10 @@ world-readable `/tmp` on the TV across many runs.
   plus dropping titles and profile names from the log, or logging ratingKeys instead of titles".
 
   **The MODE half was already fixed when this paragraph still claimed otherwise** — `src/main.c`'s
-  `open_log_0600` creates all three sinks 0600 with an explicit `fchmod` (an append target that
-  survived a previous run keeps its old mode). This entry went stale without anything failing,
-  which is the failure mode the whole `doc-claim-auditor` skill exists for.
+  `open_fd_0600` (renamed `open_fd_log` on 2026-10-04, see the update below) created all three sinks
+  0600 with an explicit `fchmod`, which also corrected an append target that survived a previous
+  run. This entry went stale without anything failing, which is the failure mode the whole
+  `doc-claim-auditor` skill exists for.
 
   **The CONTENT half is now done**, and not the way this entry proposed. "Log ratingKeys instead of
   titles" is right for the local file and wrong as a general rule: a ratingKey plus a server
@@ -614,11 +615,11 @@ world-readable `/tmp` on the TV across many runs.
   the device even though it is the right thing to keep on a 0600 local disk. So there are two
   exits, and they differ in exactly one respect:
 
-  * `crate::log` now applies **`diag::scrub::scrub_local`** to every line before the write —
+  * `crate::log` now applies **`eventlog::scrub::scrub_local`** to every line before the write —
     credentials, hosts, bare addresses, Plex GUIDs, `q='…'` search queries and the household names
     the session layer publishes. It **rewrites only and never drops**: a line vanishing from the
     primary debugging surface is worse than a leaky one.
-  * Anything crossing the network takes `diag::scrub::scrub`, which may refuse a line outright.
+  * Anything crossing the network takes `eventlog::scrub::scrub`, which may refuse a line outright.
 
   Three call sites were the actual leaks and were fixed at source, because **a scrubber cannot
   catch a title** — nothing distinguishes `'The One Where Ross Finds Out'` from
@@ -626,8 +627,62 @@ world-readable `/tmp` on the TV across many runs.
   `search.rs`'s seven sites log `q[Nch]` and not the query; and `player/mod.rs` logged **34
   characters of the viewer's actual subtitle dialogue** and now logs `len=`. That last one was the
   most sensitive line the log has ever carried and it was not in this entry's list at all.
-  `diag::scrub`'s `no_log_call_site_interpolates_viewing_content` greps the tree to keep it that
+  `eventlog::scrub`'s `no_log_call_site_interpolates_viewing_content` greps the tree to keep it that
   way, and is itself proven to fail on a reintroduced leak.
+
+  **UPDATE 2026-10-04 — the mode is now 0640, not 0600, for all three sinks (events, crash,
+  stderr).** `src/main.c`'s `open_fd_log` and `eventlog::open_log_append` create them owner
+  read/write, the app's own group (gid 5000 on the television) read, and nothing for "other";
+  the `fchmod` makes that independent of the umask and corrects a 0600 file left by an older
+  release. `plxnative-diag.log` has always shipped the same 0640. **Both openers refuse a sink
+  whose `fstat` shows more than one link** (and anything that is a symlink, not a regular file or
+  not ours), on the OPENED descriptor, and only create a missing name, with `O_EXCL`: a co-resident
+  app in gid 5000 that can link names in the sticky `/tmp` could otherwise `link(2)` one of our 0600
+  files (the `auth.json` session fallback shares the directory) onto a sink name when
+  `fs.protected_hardlinks` is off, and the next open would pass every other check and widen it. The
+  panic hook's crash-log write goes through the same open (`eventlog::append_record`), and
+  `paths::ensure_runtime_dir` `fchmod`s a `/tmp/<app id>` root it has opened `O_NOFOLLOW` and
+  confirmed is a directory it owns, never by path.
+
+  *Why.* A Developer Mode television that is not rooted gives its owner one tool, webOS Dev
+  Manager, and it reads files as an unprivileged user that shares the app's group but is not the
+  app's uid. At 0600 none of the logs could be fetched, so there was no way to support such a user
+  without root (§6.9).
+
+  *Why this does not reopen the 2026-08-12 finding.* That was 0644 — **world**-readable — in a
+  shared, mode-1777 `/tmp`. 0640 is group read only: no process outside gid 5000 can read the
+  files. And the content half above has been closed since 2026-08-29: every event-log line passes
+  `scrub_local` before the write, and the tree-grepping test keeps titles and dialogue out of
+  `log(...)` call sites.
+
+  *Residual risk, stated plainly.* Another native app on the same television that runs in
+  gid 5000 can now read all three files. What each holds: the event log is scrubbed, but it still
+  carries server-local ratingKeys (`rk=` — the playback-triage handle, deliberately kept locally),
+  which is a trace of what was played (the server's name and addresses are already rewritten) —
+  and the C-side
+  `fprintf(elogf, …)` lines in `src/starfish.c` bypass the scrubber (they carry
+  pointers, library paths, Starfish pipeline ids and Starfish JSON replies, no credential); the
+  crash log is a signal, a faulting PC, one `/proc/self/maps` line, the build id and panic text; the
+  stderr log is whatever aborts, panics, GL info logs and the television's own libraries print,
+  and **the stderr log does not go through `scrub_local`, nor do the C tracer's records in the
+  crash log** (the panic text the Rust hook appends to it does, since the follow-up of the same day).
+
+  *Audit of what can reach stderr and the crash log (2026-10-04, by reading the producers; no
+  television run).* No credential-bearing path found: the only production `eprintln!`s are
+  `gfx.rs`'s GL shader info log and a fixed "link failed"; libcurl is never put in verbose mode and
+  no `CURLOPT_STDERR` is set (neither `net.rs` nor `curlio.rs` names either option); every
+  `avformat_open_input` in a shipped build opens a custom AVIO with a NULL url, so libavformat has
+  no URL to print (the one call that does take a URL is the `plxnative-ffprobe` developer trigger,
+  compiled out of a release); Sentry's debug logger is off; and the production panic sites that
+  were read are static invariant messages, mutex/`Option` unwraps and `serde_json::to_*`
+  serialisations, none of which formats a credential. This is an audit of the code that exists,
+  **not a mechanism**: the panic hook (`app/boot.rs`) scrubs the panic line it writes to the
+  crash log, but the default hook prints the raw message to stderr, so a future `unwrap()` on an
+  `Err` that embeds a URL or token would still land there verbatim. Two things could not be settled without the
+  television: whether LG's SDL logs committed keyboard text at `SDL_LOG_CATEGORY_INPUT` /
+  `SDL_LOG_PRIORITY_DEBUG`, which `textinput::trace_driver` enables in every build (the five
+  message formats the driver is documented to print carry a state number, never text), and what
+  the closed TV libraries (libplayerAPIs, libAcbAPI, libpf) write to fd 2.
 
 **Verified clean, no action:** the only outbound hosts are the user's PMS, plex.tv and
 `discover.provider.plex.tv` — plus, since the telemetry work, Sentry and PostHog in the EU, and
@@ -919,8 +974,15 @@ Listed because each could change a decision above.
    unresolved part is an end-to-end run against a remote/shared server on real TV firmware.
 8. **What should the app do on unsupported firmware?** `requirements.webosRelease` does **not** hide
    the app from a webOS 6 user browsing the channel (§1.4). It needs a graceful failure.
-9. **Support model.** A Dev Mode user has no shell, so "send me `/tmp/plxnative-events.log`" doesn't
-   work as a bug-report path.
+9. **Support model.** A Dev Mode user has no shell, so "send me `/tmp/plxnative-events.log`" does
+   not work as a bug-report path **by shell**. Their one tool is webOS Dev Manager, which reads files
+   as an unprivileged user that is in the app's group (gid 5000) but is not the app's uid. As of
+   2026-10-04 the event, crash and stderr logs are mode 0640 in `/tmp` (§4 has why, and the
+   residual risk of a co-resident app in the same group), so those three files can be downloaded
+   with Dev Manager without root, exactly as `plxnative-diag.log` already could. **Not yet proven
+   on a real unrooted set**: the host tests prove the mode (under a restrictive umask, from a fresh
+   create and from a 0600 survivor), not that Dev Manager's reader is in the group the file lands
+   in on the television.
 10. ~~**`requiredMemory: 60`** vs a measured ~74 MB peak.~~ **RESOLVED 2026-08-22 — the “~74 MB” was never a measurement.** It was an uncited sentence written into this very section (“things nobody has verified”) and then copied verbatim into five other files, where it reads as established. The real figure, taken on the dev set (M16p3, webOS 4.10.2) from a `features=release` build via `VmHWM`: **35 MB** at boot, **119 MB** browsing Home/detail, **155,292 kB ≈ 152 MiB peak** with playback. Note `VmRSS` on this TV already INCLUDES Mali pages — proven arithmetically, `smaps_rollup` 38,540 kB + `/proc/gpu` 20,159×4 kB = 119,176 kB against `VmRSS` 119,044 kB — so roughly two thirds of the footprint is texture memory and adding `/proc/gpu` on top double-counts. `requiredMemory` is now **160**; it was raised because webOS substitutes a default of **120** when the field is absent or ≤ 0, which made 60 strictly worse than declaring nothing at all.
 
 ---
@@ -1366,7 +1428,9 @@ survives the rewrite (two consecutive `make RELEASE=1 ipk` runs agree byte for b
 
 **Cost of the miss, had it shipped:** the manifest's sha256 would have matched, the download would
 have succeeded, and every install would have failed at extraction — on a channel where the
-developer has no shell on the user's TV and `/tmp/plxnative-events.log` is unreachable (§6.9).
+developer has no shell on the user's TV and `/tmp/plxnative-events.log` was unreachable at 0600
+(§6.9; since 2026-10-04 the user can fetch it with Dev Manager — and a failed install never reaches
+the app to write one anyway).
 
 ---
 

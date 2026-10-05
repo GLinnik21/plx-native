@@ -336,10 +336,11 @@ fn scrub_identities(s: &str, ids: &[String]) -> String {
 ///   to stay disciplined forever.
 ///
 /// **`rk=` is deliberately NOT touched here, and that is the local/remote split doing its job.**
-/// A ratingKey is server-local, this file is 0600, and it is the primary handle for triaging a
-/// playback bug — `docs/distribution.md`'s own remediation for the title leak was *"logging
-/// ratingKeys instead of titles"*. It is stripped on the way OUT instead, by [`scrub_remote_ids`],
-/// because a ratingKey plus a server identity is viewing history.
+/// A ratingKey is server-local, this file is 0640 (the owner and the app's group, never world —
+/// so a co-resident app in that group CAN read these keys), and it is the primary handle for
+/// triaging a playback bug — `docs/distribution.md`'s own remediation for the title leak was
+/// *"logging ratingKeys instead of titles"*. It is stripped on the way OUT instead, by
+/// [`scrub_remote_ids`], because a ratingKey plus a server identity is viewing history.
 fn scrub_viewing(s: &str) -> String {
     let s = replace_guids(s);
     replace_quoted_value(&s, "q='", '\'', "<query>")
@@ -875,11 +876,12 @@ mod tests {
     /// and a Plex GUID is none of those. Every case passes an EMPTY identity list, the state the
     /// app is in for the whole of boot.
     ///
-    /// **`rk=` is deliberately not banned.** A ratingKey is server-local, this file is 0600, and it
-    /// is the primary handle for triaging a playback bug — `distribution.md`'s own remediation for
-    /// the title leak was *"logging ratingKeys instead of titles"*, which is what `app.rs` now
-    /// does. It is a remote-exit concern: a ratingKey plus a server identity is viewing history,
-    /// so it is stripped on the way out rather than on the way to disk.
+    /// **`rk=` is deliberately not banned.** A ratingKey is server-local, this file is 0640 (the
+    /// owner and the app's group, never world), and it is the primary handle for triaging a
+    /// playback bug — `distribution.md`'s own remediation for the title leak was *"logging
+    /// ratingKeys instead of titles"*, which is what `app.rs` now does. It is a remote-exit
+    /// concern: a ratingKey plus a server identity is viewing history, so it is stripped on the
+    /// way out rather than on the way to disk.
     #[test]
     fn the_generic_viewing_identity_shapes_are_neutralised() {
         let cases: &[(&str, &str)] = &[

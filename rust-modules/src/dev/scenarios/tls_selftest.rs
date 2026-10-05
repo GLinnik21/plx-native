@@ -6,7 +6,8 @@
 //! fallback's inputs exist there. This trigger supplies them from one JSON object and then
 //! exercises BOTH planes the fallback lives in, round after round, so a clock that is changed (or
 //! a certificate that is swapped) mid-run shows up as a line that flips from `mode=strict` to
-//! `mode=key`.
+//! `mode=key` (or to `mode=roots`, the bundled public roots of a host whose issuer the device
+//! store lacks).
 //!
 //! ```jsonc
 //! {"origin":"https://<dashed-ip>.<hash>.plex.direct:32400",
@@ -181,10 +182,19 @@ impl Selftest {
         [control, media]
     }
 
-    /// The mode the request that just ended was answered in. A strict success clears the host's
-    /// latch and a key-mode success sets it, so after an answer the latch IS the mode.
+    /// The mode the request that just ended was answered in. A strict success clears both of the
+    /// host's latches and a key-mode (or roots-mode) success sets its own, so after an answer the
+    /// latch IS the mode. `roots` is the bundled public roots (`keypin::Mode::Roots`): without
+    /// reading its latch a roots-verified answer would read `strict`, claiming the device store
+    /// passed a handshake it failed.
     fn mode(&self) -> &'static str {
-        if keypin::is_latched(&self.key) { "key" } else { "strict" }
+        if keypin::is_latched(&self.key) {
+            "key"
+        } else if keypin::is_roots_latched(&self.key) {
+            "roots"
+        } else {
+            "strict"
+        }
     }
 
     fn control(&mut self, r: u32) -> Plane {

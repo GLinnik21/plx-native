@@ -720,7 +720,11 @@
     "args": {
       "profile": "str"
     },
-    "description": "browse auth no_source_access"
+    "description": "Reason line on Who's watching when the profile was picked and every server that was reached refused it (HTTP 401): this profile genuinely has no grant on the server. Only for that case: a server that did not answer uses servers_unreachable and a certificate this TV does not trust uses tls_untrusted, so do not word this as a connection problem. {profile} is the profile's name. The picker draws it as one centred line."
+  },
+  "browse.auth.tls_untrusted": {
+    "value": "This TV doesn't trust your server's security certificate. Update PlxNative and try again.",
+    "description": "Reason line on Who's watching or the sign-in read-out when the server answered over HTTPS but its certificate chain could not be verified against this television's trusted certificate authorities (X509 verify result 2, 18, 19, 20 or 21); it is NOT the wrong-clock case, which has its own line. The sentence names the remedy that exists in the app: results 2, 20 and 21 on a plex.direct name mean an out-of-date certificate store, which an update answers with newer bundled public roots; 18 and 19 mean the server presented its own root, which only the server's owner can fix. No placeholders. Sits in a two-line reason slot on the sign-in read-out and one centred line on the picker; keep the whole sentence at 125 characters or fewer."
   },
   "browse.kind.episodes": {
     "value": "Episodes",
@@ -1487,7 +1491,7 @@
   },
   "browse.auth.servers_unreachable": {
     "value": "plex.tv listed your servers, but none of them answered. Make sure your Plex Media Server is on and online, then try again.",
-    "description": "browse auth servers_unreachable"
+    "description": "Reason line when plex.tv listed the account's servers and none of them answered: on the sign-in read-out (no server reachable after sign-in), and on Who's watching when a picked profile found no server answering (and none refused it or presented a certificate this TV does not trust: those have no_source_access and tls_untrusted). Two-line read-out slot, and one centred line on the picker, so keep the whole sentence at 125 characters or fewer."
   },
   "browse.auth.plex_tls": {
     "value": "This TV couldn't make a secure connection to plex.tv. Check the TV's date and time, then try again.",

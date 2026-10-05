@@ -186,6 +186,7 @@
   "browse.auth.insecure": "Se encontró tu servidor Plex, pero sin conexión segura (HTTPS). Comprueba que el servidor la admita e inténtalo de nuevo.",
   "browse.auth.no_access": "{profile} no tiene acceso a ningún servidor",
   "browse.auth.no_source_access": "{profile} no tiene acceso a este servidor",
+  "browse.auth.tls_untrusted": "Este televisor no confía en el certificado de seguridad de tu servidor. Actualiza PlxNative e inténtalo de nuevo.",
   "browse.kind.episodes": "Episodios",
   "browse.kind.collections": "Colecciones",
   "browse.kind.films": "Películas",

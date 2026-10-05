@@ -292,7 +292,7 @@ mod tests {
         for status in [401, 403] {
             for cause in [plx_net::net::RequestError::TimedOut, plx_net::net::RequestError::Transport] {
                 let failure = plx_net::net::RequestFailure { status: Some(status), cause,
-                    body_limit: None, curl_rc: Some(92) };
+                    body_limit: None, curl_rc: Some(92), verify: None };
                 assert_eq!(preference_failure(failure), PreferenceError::Refused);
             }
         }

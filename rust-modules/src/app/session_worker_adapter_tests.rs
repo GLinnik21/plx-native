@@ -194,7 +194,7 @@ fn a_grant_verified_only_over_plaintext_reports_the_shared_insecure_only_copy() 
         matches!(&**data, observation::Observation::ProfileSwitch(ProfileSwitchProgress {
             outcome: ProfileSwitchOutcomeProgress::Failed { error, pin_denied: false }, ..
         }) if error == discovery_insecure_only_message()),
-        "an InsecureOnly-only grant must report the shared discovery copy, not the generic \
+        "an InsecureOnly-only grant must report the shared discovery copy, not the 401 \
          'has no access' wording"
     );
 }
@@ -246,6 +246,6 @@ fn a_refused_profile_resources_request_does_not_blame_the_connection() {
     assert!(!refused.contains("connection"), "a 401 is an answer: {refused}");
     assert!(refused.contains("Kid"), "the refusal names the profile: {refused}");
     let silent = run(Err(RequestFailure { cause: RequestError::TimedOut, status: None,
-        body_limit: None, curl_rc: Some(28) }));
+        body_limit: None, curl_rc: Some(28), verify: None }));
     assert!(silent.contains("check the connection"), "no answer keeps the connection copy: {silent}");
 }

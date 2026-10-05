@@ -25,6 +25,7 @@ fn authorized_discovery_retries_a_dns_blip_before_settling() {
         status: None,
         body_limit: None,
         curl_rc: Some(6),
+        verify: None,
     };
     let account = AccountClient::new("client", Some("authorized-token"));
     let mut servers = Some(vec![resource(r#"{"name":"ours","clientIdentifier":"machine","provides":"server",
@@ -80,7 +81,7 @@ fn login_home_users_retries_then_falls_back_to_an_empty_roster() {
     }
     let account = AccountClient::new("client", Some("authorized-token"));
     let dns = Err(plx_net::net::RequestFailure { cause: plx_net::net::RequestError::Transport,
-        status: None, body_limit: None, curl_rc: Some(6) });
+        status: None, body_limit: None, curl_rc: Some(6), verify: None });
     let mut calls = 0;
     let users = sign_in_home_users_with_clock(&account, 7, &Live,
         &mut Clock(Duration::ZERO), |_, _| {
@@ -111,7 +112,7 @@ fn login_home_users_publishes_the_first_miss_before_the_second_request_returns()
     let output = Capture(Mutex::new(Vec::new()));
     let account = AccountClient::new("client", Some("authorized-token"));
     let dns = Err(plx_net::net::RequestFailure { cause: plx_net::net::RequestError::Transport,
-        status: None, body_limit: None, curl_rc: Some(6) });
+        status: None, body_limit: None, curl_rc: Some(6), verify: None });
     let mut calls = 0;
     let users = sign_in_home_users_with_clock(&account, 9, &output,
         &mut Clock(Duration::ZERO), |_, _| {
@@ -141,7 +142,7 @@ fn background_home_roster_refresh_retries_before_preserving_the_cache() {
     }
     let account = AccountClient::new("client", Some("token"));
     let dns = Err(plx_net::net::RequestFailure { cause: plx_net::net::RequestError::Transport,
-        status: None, body_limit: None, curl_rc: Some(6) });
+        status: None, body_limit: None, curl_rc: Some(6), verify: None });
     let mut calls = 0;
     let graded = home_roster_with_io_and_clock(&account, &mut Clock(Duration::ZERO), |_, _| {
         calls += 1;
@@ -364,7 +365,7 @@ fn relay_only_server_gets_a_fresh_probe_budget_after_direct_timeouts_and_is_admi
             admissions += 1;
             plx_plex::plex::EndpointAdmission::Usable
         },
-        &mut |_, _, _| {}, &mut || {}, &mut |_, _, _, _| {},
+        &mut |_, _, _| {}, &mut || {}, &mut |_, _| {},
     );
 
     assert!(matches!(resolved.outcome, Resolved::Reached(ref found)
@@ -432,7 +433,7 @@ fn discovery_retries_the_same_server_via_relay_after_direct_admission_times_out(
     let resolved = resolve_roster_using_admission(
         &[resource], &[], CredentialPolicy::HttpsOnly, &PlaintextAsk::undecided(), &mut probe_one,
         &mut |_| admissions.next().unwrap(), &mut |_, _, _| {},
-        &mut || {}, &mut |_, _, _, _| {},
+        &mut || {}, &mut |_, _| {},
     );
     assert_eq!(resolved.admitted_machine_id.as_deref(), Some("machine"));
     let Resolved::Reached(found) = resolved.outcome else { panic!("relay admission must retain the server") };
@@ -874,7 +875,7 @@ fn issue_95_resolve_roster_only_ever_records_an_https_origin() {
             CredentialPolicy::HttpsOnly,
             &mut probe_one,
             &mut || {},
-            &mut |_, _, _, _| {},
+            &mut |_, _| {},
         );
     let Resolved::Reached(roster) = resolved else {
         panic!("the relay verifies this machine and must be recorded as reached");
@@ -911,7 +912,7 @@ fn issue_95_without_a_relay_a_plaintext_only_answer_is_not_reached() {
             CredentialPolicy::HttpsOnly,
             &mut probe_one,
             &mut || {},
-            &mut |_, _, _, _| {},
+            &mut |_, _| {},
         );
     assert!(
         !matches!(resolved, Resolved::Reached(_)),
@@ -931,22 +932,22 @@ fn resolved_none_insecure_outranks_refused_and_every_other_shape_is_unchanged() 
         Err(Discovery::NoServers(_))
     ));
     assert!(matches!(
-        resolved_without_roster(Resolved::None { refused: true, insecure: false, evidence: None }, DiscoveryTrigger::Login),
+        resolved_without_roster(Resolved::None { refused: true, insecure: false, evidence: None, causes: Default::default() }, DiscoveryTrigger::Login),
         Err(Discovery::Refused)
     ));
     assert!(matches!(
-        resolved_without_roster(Resolved::None { refused: false, insecure: false, evidence: None }, DiscoveryTrigger::Login),
+        resolved_without_roster(Resolved::None { refused: false, insecure: false, evidence: None, causes: Default::default() }, DiscoveryTrigger::Login),
         Err(Discovery::ServersUnreachable { trigger: DiscoveryTrigger::Login })
     ));
     assert!(
         matches!(
-            resolved_without_roster(Resolved::None { refused: true, insecure: true, evidence: None }, DiscoveryTrigger::Login),
+            resolved_without_roster(Resolved::None { refused: true, insecure: true, evidence: None, causes: Default::default() }, DiscoveryTrigger::Login),
             Err(Discovery::InsecureOnly(_))
         ),
         "a verified plaintext answer outranks a parallel/proxy 401"
     );
     assert!(matches!(
-        resolved_without_roster(Resolved::None { refused: false, insecure: true, evidence: None }, DiscoveryTrigger::Login),
+        resolved_without_roster(Resolved::None { refused: false, insecure: true, evidence: None, causes: Default::default() }, DiscoveryTrigger::Login),
         Err(Discovery::InsecureOnly(_))
     ));
     assert!(matches!(resolved_without_roster(Resolved::Reached(vec![]), DiscoveryTrigger::Login), Ok(v) if v.is_empty()));
@@ -1060,7 +1061,7 @@ fn a_pinned_winner_is_recorded_as_the_plex_direct_origin_not_the_dialled_address
             CredentialPolicy::HttpsOnly,
             &mut probe_one,
             &mut || {},
-            &mut |_, _, _, _| {},
+            &mut |_, _| {},
         );
     let Resolved::Reached(roster) = resolved else {
         panic!("the pinned LAN candidate verifies and must be recorded as reached");
@@ -1251,7 +1252,7 @@ fn e2e_real_curl_resolve_roster_only_ever_records_the_pinned_https_origin() {
         CredentialPolicy::HttpsOnly,
         &mut probe_one,
         &mut || {},
-        &mut |_, _, _, _| {},
+        &mut |_, _| {},
     );
     let Resolved::Reached(roster) = resolved else {
         panic!("the pinned LAN candidate verifies over real TLS and must be reached");
@@ -1315,7 +1316,7 @@ fn e2e_real_curl_tls_failure_with_a_verified_plaintext_answer_yields_insecure_on
         CredentialPolicy::HttpsOnly,
         &mut probe_one,
         &mut || {},
-        &mut |_, _, _, _| {},
+        &mut |_, _| {},
     );
     match &resolved {
         Resolved::None { insecure, .. } => {
@@ -1403,7 +1404,7 @@ fn servers_are_serial_owned_then_public_match_with_one_gap_between_each() {
             Reach::No
         },
         &mut || gaps += 1,
-        &mut |_, _, _, _| {},
+        &mut |_, _| {},
     );
     assert!(matches!(resolved, Resolved::None { refused: false, .. }));
     assert_eq!(order, ["owned", "shared-m", "shared-u"]);
@@ -1445,7 +1446,7 @@ fn every_server_settlement_publishes_its_specific_state_and_winning_tier() {
             _ => Reach::No,
         },
         &mut || {},
-        &mut |plan, outcome, tier, address| observed.push((plan.machine_id.clone(), outcome, tier, address)),
+        &mut |plan, v| observed.push((plan.machine_id.clone(), v.outcome, v.tier, v.address)),
     );
 
     assert!(matches!(resolved, Resolved::Reached(ref roster) if roster.len() == 1));
@@ -1505,18 +1506,21 @@ fn a_changed_refresh_republishes_reached_unauthorized_and_offline_after_registry
             outcome: Outcome::Reachable,
             tier: Some(probe::Location::Remote),
             address: Some("203.0.113.9".into()),
+            cause: None,
         },
         SettledProbe {
             machine_id: "denied".into(),
             outcome: Outcome::Unauthorized,
             tier: None,
             address: None,
+            cause: None,
         },
         SettledProbe {
             machine_id: "off".into(),
             outcome: Outcome::Unreachable,
             tier: None,
             address: None,
+            cause: None,
         },
     ]);
 
@@ -2136,6 +2140,7 @@ fn a_refused_token_is_reported_as_authorization_not_as_silence() {
                 status: Some(status),
                 body_limit: None,
                 curl_rc: Some(18),
+                verify: None,
             }),
         ];
         for last in refused {
@@ -2161,7 +2166,7 @@ fn a_refused_token_is_reported_as_authorization_not_as_silence() {
 #[test]
 fn terminal_discovery_copy_names_the_target_cause_retry_and_action() {
     let failure = |rc, cause| Err(plx_net::net::RequestFailure { cause, status: None,
-        body_limit: None, curl_rc: rc });
+        body_limit: None, curl_rc: rc, verify: None });
     let message = |last| discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
         last, attempts: 3, elapsed: Duration::from_secs(6), trigger: DiscoveryTrigger::Login,
     })).unwrap().0.into_owned();
@@ -2185,7 +2190,7 @@ fn terminal_discovery_copy_names_the_target_cause_retry_and_action() {
 #[test]
 fn a_single_discovery_attempt_uses_grammatical_retry_copy() {
     let last = Err(plx_net::net::RequestFailure { cause: plx_net::net::RequestError::Transport,
-        status: None, body_limit: None, curl_rc: Some(6) });
+        status: None, body_limit: None, curl_rc: Some(6), verify: None });
     let (message, _) = discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
         last, attempts: 1, elapsed: Duration::ZERO, trigger: DiscoveryTrigger::Login,
     })).unwrap();
@@ -2211,7 +2216,7 @@ fn background_resource_call_sites_clamp_each_request_to_the_runner_budget() {
 #[test]
 fn dns_copy_never_claims_that_a_plex_server_was_contacted() {
     let last = Err(plx_net::net::RequestFailure { cause: plx_net::net::RequestError::Transport,
-        status: None, body_limit: None, curl_rc: Some(6) });
+        status: None, body_limit: None, curl_rc: Some(6), verify: None });
     let (caption, _) = discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
         last, attempts: 3, elapsed: Duration::from_secs(6), trigger: DiscoveryTrigger::Login,
     })).unwrap();
@@ -2259,7 +2264,7 @@ fn insecure_verdict(resource: Resource, dial: ProbeDial) -> Discovery {
             &mut |_, _, _| {})
     };
     let resolved = resolve_roster_using(&resources, &[], CredentialPolicy::HttpsOnly,
-        &mut probe_one, &mut || {}, &mut |_, _, _, _| {});
+        &mut probe_one, &mut || {}, &mut |_, _| {});
     resolved_without_roster(resolved, DiscoveryTrigger::Login)
         .err()
         .expect("nothing credential-eligible verified, so discovery must fail")
@@ -2277,12 +2282,14 @@ fn insecure_evidence_of(d: &Discovery) -> probe::InsecureEvidence {
 fn timed_out() -> plx_net::net::RequestFailure {
     plx_net::net::RequestFailure {
         cause: plx_net::net::RequestError::TimedOut, status: None, body_limit: None, curl_rc: Some(28),
+        verify: None,
     }
 }
 
 fn transport_rc(rc: i32) -> plx_net::net::RequestFailure {
     plx_net::net::RequestFailure {
         cause: plx_net::net::RequestError::Transport, status: None, body_limit: None, curl_rc: Some(rc),
+        verify: None,
     }
 }
 
@@ -2565,7 +2572,7 @@ fn plx10_discover_with(
             answer(source)
         },
         &mut |_, _, _| {}, &mut || {},
-        &mut |plan, outcome, tier, address| settled.push(settled_probe(plan, outcome, tier, address)),
+        &mut |plan, v| settled.push(settled_probe_of(plan, v)),
     );
     (resolved, admitted, settled)
 }

@@ -4,13 +4,10 @@
 //! layer may name `curlio`. Every test holds `testlock::serial()`: the CA override is
 //! process-global, and each keys the key table by its own loopback server's ephemeral port.
 
+use crate::curlio::test_fixtures::media_body;
 use std::sync::Arc;
 
-use plx_net::net::{curl_ready, expired_leaf, identity_request, key_of_port, leaf_pin, remember, TestCaGuard};
-
-fn media_body() -> Vec<u8> {
-    (0..5000u32).map(|i| (i % 253) as u8).collect()
-}
+use plx_net::net::{curl_ready, expired_leaf, identity_request, key_of_port, leaf_pin, mint_cert, remember, spawn_observed, spawn_redirecting, TestCaGuard};
 
 fn media_url(port: u16) -> String {
     format!("https://127.0.0.1:{port}/video.mkv")
@@ -80,6 +77,36 @@ fn a_media_open_on_an_expired_leaf_with_no_remembered_key_is_refused_as_before()
         Some(plx_net::net::keypin::Blocked::NoKey),
         "the media plane publishes a date failure with no key",
     );
+}
+
+/// **A redirect hop is a request to another host, and another host's key is not the server's key.**
+/// A server served in key mode (its date fails, its remembered key matches) answers with a redirect to
+/// a host whose certificate is a different one. The key pin belongs to the server's handshake: the hop
+/// is a request of its own, begun strict for its own host, so the key it presents says nothing about
+/// the server and must not be published as the SERVER's key having changed (`Blocked::KeyChanged`,
+/// which would tell the person to re-pair a server that is fine). The target here chains to nothing
+/// the device store trusts, so the open ends in the hop's own failure (60 on the television's OpenSSL;
+/// this host's libcurl says 35); what is graded is whose fact that failure is.
+#[test]
+fn a_redirect_from_a_key_mode_server_to_a_host_with_another_key_does_not_blame_the_server() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-media-redirect");
+    let target = spawn_observed(Arc::new(mint_cert(&["127.0.0.1"])), media_body());
+    let served = spawn_redirecting(Arc::clone(&cert), &media_url(target.port));
+    let key = key_of_port(served.port);
+    let target_key = key_of_port(target.port);
+    let _key = plx_net::net::keypin::Scoped::new(key.clone(), &leaf_pin(&cert));
+    let _target_watch = plx_net::net::keypin::Scoped::watch(&target_key);
+
+    let err = crate::curlio::CurlSource::open(&media_url(served.port), 0)
+        .err()
+        .expect("the hop's certificate is not one the device store trusts");
+    assert!(matches!(err, crate::curlio::OpenErr::Transport(60 | 35)), "the hop's own failure, not a pin mismatch: {err:?}");
+    assert_eq!(plx_net::net::keypin::fact_for(&key).blocked, None, "the server's key did not change: another host's did");
+    assert!(plx_net::net::keypin::is_latched(&key), "the server's own handshake was established in key mode");
+    assert_eq!(plx_net::net::keypin::fact_for(&target_key).blocked, None, "and the target's failure is not a date");
 }
 
 /// The media plane's half of `auth_discovery_tests`'s

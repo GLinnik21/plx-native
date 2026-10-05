@@ -43,7 +43,9 @@ pub enum DiscoveryClass {
     NoServers,
     /// A server answered and refused the credentials.
     Refused,
-    /// No server answered.
+    /// No server verified as itself: none answered, or one answered over HTTPS with a certificate
+    /// chain this television could not verify (`auth::Discovery::TlsUntrusted` reports as this
+    /// class so the schema stays closed; its X509 verify code stays on the device).
     Silent,
     /// Only insecure connections were offered, and none was allowed.
     InsecureOnly,
@@ -634,7 +636,8 @@ impl IncidentContext {
     /// * `Discovery(NoServers)` — the account has no server — `ServerBadgePlus`.
     /// * `Discovery(Refused)` — a server answered and refused — `ServerBadgeXmark`.
     /// * `Discovery(Silent)` targeting [`DiscoveryTarget::Servers`] — plex.tv named servers that
-    ///   never answered — `ServerBadgeMinus`; targeting [`DiscoveryTarget::PlexTv`] (or absent) —
+    ///   never verified (silent, or an HTTPS certificate this television could not verify, which
+    ///   the caption tells apart and this glyph does not) — `ServerBadgeMinus`; targeting [`DiscoveryTarget::PlexTv`] (or absent) —
     ///   plex.tv itself did not answer, so the badge follows `plextv_link_glyph`, falling back to
     ///   `GlobeBadgeMinus` (not `PinCreate`'s `WifiSlash`: discovery already ran, so SOME network
     ///   reached somewhere, unlike `PinCreate`'s failure to even start).
@@ -1034,6 +1037,7 @@ pub fn preview_event() -> Vec<u8> {
                 status: None,
                 body_limit: None,
                 curl_rc: Some(6),
+                verify: None,
             })),
         )
         .with_link_state(1, Some(std::time::Duration::from_secs(4)), 1)
@@ -1054,7 +1058,7 @@ mod tests {
     use std::time::Duration;
 
     fn failure(cause: RequestError, status: Option<u16>, curl_rc: Option<i32>) -> RequestFailure {
-        RequestFailure { cause, status, body_limit: None, curl_rc }
+        RequestFailure { cause, status, body_limit: None, curl_rc, verify: None }
     }
 
     #[test]
@@ -1364,7 +1368,7 @@ mod tests {
 
         let discovery = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent),
             Some(Err(RequestFailure { cause: RequestError::Transport, status: None,
-                body_limit: None, curl_rc: Some(6) })))
+                body_limit: None, curl_rc: Some(6), verify: None })))
             .with_discovery(DiscoveryEvidence { trigger: DiscoveryTrigger::Login,
                 target: Some(DiscoveryTarget::PlexTv) })
             .with_retry_run(3, Duration::from_secs(6));
@@ -1510,7 +1514,7 @@ mod tests {
         // The discovery evidence rides only on its own kinds, so walk it where it is carried.
         let silent = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent),
             Some(Err(RequestFailure { cause: RequestError::Transport, status: None,
-                body_limit: None, curl_rc: Some(6) })))
+                body_limit: None, curl_rc: Some(6), verify: None })))
             .with_discovery(DiscoveryEvidence { trigger: DiscoveryTrigger::Login,
                 target: Some(DiscoveryTarget::PlexTv) })
             .with_retry_run(3, Duration::from_secs(6));

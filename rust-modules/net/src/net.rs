@@ -19,10 +19,15 @@
 //! media plane. This module owns their shared process init, including the mutex callbacks required
 //! when the TV's libcurl uses OpenSSL 1.0. The option/info integer constants are curl's stable
 //! public ABI values (kept here so we do not need the header). TLS peer+host verification is ON
-//! (the lab receiver's [`Tls::Pinned`] swaps it for a key pin) with ONE bounded exception on the
-//! ordinary request path, [`keypin`] (issue #378): a request whose strict attempt failed with
-//! a date verify result (a television with no battery clock) is repeated once, recognising the
-//! server by the public key remembered for that exact host and port, with the name check still on.
+//! (the lab receiver's [`Tls::Pinned`] swaps it for a key pin) with TWO bounded fallbacks on the
+//! ordinary request path, both in [`keypin`] and both tried only after an attempt against the
+//! television's own trust store failed (roots mode may also START a request from its latch, and
+//! key mode also follows a roots attempt that failed on the date). **Key mode** (issue #378): a date verify result (a
+//! television with no battery clock) is repeated once, recognising the server by the public key
+//! remembered for that exact host and port, with the name check still on. **Roots mode**: a
+//! missing-issuer verify result (a 2020 firmware's store lacks Let's Encrypt's 2025 roots) on a
+//! `*.plex.direct` host is repeated once against the bundled public roots (`pkg/le-roots.pem`),
+//! with chain, dates and name all still checked.
 //! `NOSIGNAL` is set because we call from threads. Response bodies never carry into a log here.
 #![allow(non_camel_case_types)]
 use std::cell::UnsafeCell;
@@ -153,7 +158,9 @@ const CURLOPT_CUSTOMREQUEST: c_int = 10036;
 const CURLOPT_PINNEDPUBLICKEY: c_int = 10230;
 
 /// `CURLOPT_CAINFO` (OBJECTPOINT + 65) — a path to a PEM bundle to verify the peer against,
-/// INSTEAD of whatever trust store this firmware shipped with in 2019.
+/// INSTEAD of whatever trust store this firmware shipped with in 2019. Production sets it in two
+/// places only: [`Tls::CaBundle`] (the telemetry bundle) and [`keypin::apply_roots`] (the
+/// `*.plex.direct` fallback, after the device store has already said no).
 ///
 /// **It is not pinning and must not be read as pinning**, which is the confusion
 /// [`CURLOPT_PINNEDPUBLICKEY`]'s own doc exists to prevent from the other side: this selects which
@@ -588,10 +595,24 @@ pub struct RequestFailure {
     /// the device in `telemetry::incident`'s link class; a DNS failure and a TLS refusal are the
     /// two answers a failed sign-in most needs told apart.
     pub curl_rc: Option<i32>,
+    /// [`CURLINFO_SSL_VERIFYRESULT`] of the failed handshake, read only for the one code that
+    /// carries it (`curl_rc` 60) and `None` for every other failure and for a backend that did not
+    /// report one. The OpenSSL `X509_V_ERR_*` number only, never a host, name or certificate field,
+    /// so like [`Self::curl_rc`] it may be named in the event log. It is what tells a certificate
+    /// this television's trust store cannot verify (2, 18, 19, 20, 21: [`Self::untrusted_chain`])
+    /// from a wrong clock (9, 10) and from a name mismatch, which all arrive as the same `60`.
+    pub verify: Option<c_long>,
 }
 
 impl From<RequestError> for RequestFailure {
-    fn from(cause: RequestError) -> Self { Self { cause, status: None, body_limit: None, curl_rc: None } }
+    fn from(cause: RequestError) -> Self { Self { cause, status: None, body_limit: None, curl_rc: None, verify: None } }
+}
+
+impl RequestFailure {
+    /// The verify result when this failure is a certificate chain the television's trust store could
+    /// not verify — see [`keypin::untrusted_chain_verify`] for the closed set — and `None` for
+    /// everything else, the clock cases (9, 10) and a name mismatch included.
+    pub fn untrusted_chain(&self) -> Option<u8> { keypin::untrusted_chain_verify(self.curl_rc?, self.verify) }
 }
 
 /// CURLINFO_RESPONSE_CODE is the last response, not the CONNECT proxy response:
@@ -617,7 +638,7 @@ fn response_status(rc: c_int, info_rc: c_int, code: c_long, follow_redirects: bo
 
 fn finish_response(
     rc: c_int, info_rc: c_int, code: c_long, follow_redirects: bool,
-    max_body: Option<usize>, sink: BodySink,
+    max_body: Option<usize>, sink: BodySink, verify: Option<c_long>,
 ) -> Result<Resp, RequestFailure> {
     let status = response_status(rc, info_rc, code, follow_redirects);
     if sink.overflowed || rc != 0 || status.is_none() {
@@ -626,6 +647,7 @@ fn finish_response(
             status,
             body_limit: if sink.overflowed { max_body } else { None },
             curl_rc: (rc != 0).then_some(rc as i32),
+            verify,
         });
     }
     Ok(Resp { status: status.unwrap(), body: sink.body, peer_pin: None })
@@ -1111,19 +1133,165 @@ mod loopback_pms {
         spawn_observed_conn(cert, body, true)
     }
 
+    /// [`spawn_observed`] answering EVERY request with a `302` to `location` instead of the body: the
+    /// media server that sends a presigned CDN URL (`stream_redirect`'s case), for a test that
+    /// grades which trust store verifies the hop that follows. A `location` that is relative
+    /// resolves back to this same double and is answered with the same `302`, so it loops;
+    /// [`spawn_scripted`] is the double for a chain.
+    pub fn spawn_redirecting(cert: Arc<TestCert>, location: &str) -> Observed {
+        let reply = format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes();
+        spawn_tls_double(cert, false, move |_| reply.clone())
+    }
+
+    /// One answer of [`spawn_scripted`]: a status, an optional `Location` (absolute or relative, as
+    /// the server wrote it) and a body. A redirect may carry a body, and a redirect may have no
+    /// `Location` at all — both are things a real server sends and a client has to survive.
+    #[derive(Clone)]
+    pub struct Reply {
+        status: u16,
+        location: Option<String>,
+        body: Vec<u8>,
+    }
+
+    impl Reply {
+        /// `200` with `body`. Like [`spawn_observed`], a request carrying `Range: bytes=N-` is answered
+        /// with the tail of it from `N`, as `206` and a `Content-Range`.
+        pub fn ok(body: Vec<u8>) -> Reply {
+            Reply { status: 200, location: None, body }
+        }
+
+        /// A bare reply of `status` (`301`, `302`, `303`, `307`, `308`, `404` ...): no `Location`, no
+        /// body, until [`Reply::with_location`] or [`Reply::with_body`] say otherwise.
+        pub fn status(status: u16) -> Reply {
+            Reply { status, location: None, body: Vec::new() }
+        }
+
+        /// A redirect of `status` to `location`.
+        pub fn redirect(status: u16, location: &str) -> Reply {
+            Reply::status(status).with_location(location)
+        }
+
+        /// This reply with a `Location` header.
+        pub fn with_location(mut self, location: &str) -> Reply {
+            self.location = Some(location.to_owned());
+            self
+        }
+
+        /// This reply with a body: a `3xx` that explains itself, say.
+        pub fn with_body(mut self, body: Vec<u8>) -> Reply {
+            self.body = body;
+            self
+        }
+
+        fn reason(&self) -> &'static str {
+            match self.status {
+                200 => "OK",
+                206 => "Partial Content",
+                301 => "Moved Permanently",
+                302 => "Found",
+                303 => "See Other",
+                307 => "Temporary Redirect",
+                308 => "Permanent Redirect",
+                404 => "Not Found",
+                _ => "Test",
+            }
+        }
+
+        /// The bytes of this reply to a request that asked for the body from `start` (`Range`).
+        fn bytes(&self, start: Option<usize>, connection: &str) -> Vec<u8> {
+            if self.status == 200 {
+                return body_reply(&self.body, start, connection);
+            }
+            let mut out = format!("HTTP/1.1 {} {}\r\n", self.status, self.reason());
+            if let Some(location) = &self.location {
+                out.push_str(&format!("Location: {location}\r\n"));
+            }
+            out.push_str(&format!("Content-Length: {}\r\n{connection}\r\n", self.body.len()));
+            let mut out = out.into_bytes();
+            out.extend_from_slice(&self.body);
+            out
+        }
+    }
+
+    /// A TLS-only loopback double whose answer is chosen by the request's PATH (the query is
+    /// ignored for the match and recorded as sent): `routes` maps a path to a [`Reply`], and a path
+    /// that is not in it gets a `404`. The double for what [`spawn_redirecting`] cannot say — a
+    /// chain of hops, a relative `Location`, a `303` or a `308`, a `3xx` with a body or with none —
+    /// and, like [`spawn_observed`], it records every request (`Observed::requests`: the request
+    /// line with its query, then the headers, verbatim) and counts every accepted connection. One
+    /// request per connection (`Connection: close`).
+    pub fn spawn_scripted<S: Into<String>>(cert: Arc<TestCert>, routes: impl IntoIterator<Item = (S, Reply)>) -> Observed {
+        let routes: std::collections::HashMap<String, Reply> = routes.into_iter().map(|(path, reply)| (path.into(), reply)).collect();
+        spawn_tls_double(cert, false, move |request| {
+            let head = String::from_utf8_lossy(request);
+            let target = head.split_whitespace().nth(1).unwrap_or_default();
+            let path = target.split('?').next().unwrap_or_default();
+            match routes.get(path) {
+                Some(reply) => reply.bytes(range_start(request), "Connection: close\r\n"),
+                None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+            }
+        })
+    }
+
+    /// `N` of a request's `Range: bytes=N-`, when it carries one.
+    fn range_start(request: &[u8]) -> Option<usize> {
+        String::from_utf8_lossy(request)
+            .to_ascii_lowercase()
+            .lines()
+            .find_map(|l| l.strip_prefix("range: bytes="))
+            .and_then(|v| v.split('-').next())
+            .and_then(|v| v.trim().parse::<usize>().ok())
+    }
+
+    /// `body` as a media server answers a request for it: all of it with `200`, or the tail from
+    /// `start` with `206` and a `Content-Range` when the request asked for one.
+    fn body_reply(body: &[u8], start: Option<usize>, connection: &str) -> Vec<u8> {
+        match start {
+            Some(at) if at < body.len() => {
+                let tail = &body[at..];
+                let mut out = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {at}-{}/{}\r\n{connection}\r\n",
+                    tail.len(),
+                    body.len() - 1,
+                    body.len()
+                )
+                .into_bytes();
+                out.extend_from_slice(tail);
+                out
+            }
+            _ => {
+                let mut out = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{connection}\r\n",
+                    body.len()
+                )
+                .into_bytes();
+                out.extend_from_slice(body);
+                out
+            }
+        }
+    }
+
     fn spawn_observed_conn(cert: Arc<TestCert>, body: Vec<u8>, keep_alive: bool) -> Observed {
+        let connection = if keep_alive { "" } else { "Connection: close\r\n" };
+        spawn_tls_double(cert, keep_alive, move |request| body_reply(&body, range_start(request), connection))
+    }
+
+    /// The TLS accept loop every double here shares: terminate TLS, read each whole request, record
+    /// it, and write back what `answer` makes of it. `keep_alive` is whether a connection serves
+    /// more than one request.
+    fn spawn_tls_double(cert: Arc<TestCert>, keep_alive: bool, answer: impl Fn(&[u8]) -> Vec<u8> + Send + Sync + 'static) -> Observed {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind observed listener");
         let port = listener.local_addr().unwrap().port();
         let tls_cfg = tls_config(&cert);
         let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (count, log) = (Arc::clone(&accepted), Arc::clone(&requests));
-        let connection = if keep_alive { "" } else { "Connection: close\r\n" };
+        let answer = Arc::new(answer);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut sock) = stream else { continue };
                 count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                let (tls_cfg, body, log) = (Arc::clone(&tls_cfg), body.clone(), Arc::clone(&log));
+                let (tls_cfg, log, answer) = (Arc::clone(&tls_cfg), Arc::clone(&log), Arc::clone(&answer));
                 std::thread::spawn(move || {
                     let Ok(mut conn) = rustls::ServerConnection::new(tls_cfg) else { return };
                     let mut tls = rustls::Stream::new(&mut conn, &mut sock);
@@ -1132,36 +1300,8 @@ mod loopback_pms {
                         if request.is_empty() {
                             return;
                         }
-                        let head = String::from_utf8_lossy(&request).to_ascii_lowercase();
-                        let start = head
-                            .lines()
-                            .find_map(|l| l.strip_prefix("range: bytes="))
-                            .and_then(|v| v.split('-').next())
-                            .and_then(|v| v.trim().parse::<usize>().ok());
+                        let reply = answer(&request);
                         log.lock().unwrap_or_else(|e| e.into_inner()).push(request);
-                        let reply = match start {
-                            Some(at) if at < body.len() => {
-                                let tail = &body[at..];
-                                let mut out = format!(
-                                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {at}-{}/{}\r\n{connection}\r\n",
-                                    tail.len(),
-                                    body.len() - 1,
-                                    body.len()
-                                )
-                                .into_bytes();
-                                out.extend_from_slice(tail);
-                                out
-                            }
-                            _ => {
-                                let mut out = format!(
-                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{connection}\r\n",
-                                    body.len()
-                                )
-                                .into_bytes();
-                                out.extend_from_slice(&body);
-                                out
-                            }
-                        };
                         if tls.write_all(&reply).is_err() || tls.flush().is_err() || !keep_alive {
                             return;
                         }
@@ -1258,7 +1398,7 @@ mod loopback_pms {
     }
 }
 #[cfg(any(test, feature = "test-support"))]
-pub use loopback_pms::{dead_port, mint_ca_issued_cert, mint_cert, spawn_dual_protocol, spawn_observed, spawn_observed_keepalive, spawn_plain_only, ymd_from_now, TestCaGuard, TestCert};
+pub use loopback_pms::{dead_port, mint_ca_issued_cert, mint_cert, spawn_dual_protocol, spawn_observed, spawn_observed_keepalive, spawn_plain_only, spawn_redirecting, spawn_scripted, ymd_from_now, Observed, Reply, TestCaGuard, TestCert};
 #[cfg(any(test, feature = "test-support"))]
 pub use loopback_pms::{curl_ready, expired_leaf, identity_request, key_of_port, leaf_pin, remember};
 
@@ -1268,7 +1408,10 @@ pub use loopback_pms::{curl_ready, expired_leaf, identity_request, key_of_port, 
 /// Making them variants means the compiler enforces what a comment used to ask for.
 pub enum Tls<'a> {
     /// CA-verified against **the television's own trust store**. The default, and what every
-    /// plex.tv and PMS call has always used — `request` is exactly this.
+    /// plex.tv and PMS call has always used — `request` is exactly this. A `*.plex.direct` request
+    /// that this store fails for a missing issuer is repeated once against the shipped public
+    /// roots ([`keypin::Mode::Roots`]); the first attempt is this one, unless the host is latched
+    /// in roots mode (a recent success through the bundle), which starts there instead.
     Ca,
     /// CA-verified against **a PEM bundle we ship**, by absolute path. Same verification, different
     /// roots: it exists so a third-party endpoint's CA rotation is not at the mercy of a store
@@ -1397,27 +1540,36 @@ fn request_tls_evidence(
                 .unwrap_or_else(|e| e.into_inner()),
         )
     };
-    // **Key mode (issue #378) is only ever considered for a strictly verified, redirect-free https
-    // request** — never [`Tls::Pinned`] (which has already turned verification off for a reason of
-    // its own), never plaintext. `key` is that request's `host:port` in [`keypin`]'s tables, or
-    // `None` when the request can never use them.
+    // **Key mode (issue #378) and roots mode are only ever considered for a strictly verified,
+    // redirect-free https request** — never [`Tls::Pinned`] (which has already turned verification
+    // off for a reason of its own), never plaintext. `key` is that request's `host:port` in
+    // [`keypin`]'s tables, or `None` when the request can never use them. Which attempt follows a
+    // failed one is [`keypin::after_failure`]'s alone.
     let key = verified_https.then(|| keypin::key_of_url(url)).flatten();
     let mut mode = key.as_deref().map_or(keypin::Mode::Strict, keypin::begin);
-    // A strict attempt that failed with a date verify result, kept while key mode is tried: if libcurl
-    // cannot even be put in key mode, the request fails as it would have.
+    // The attempt that failed and led to the next rung ([`keypin::after_failure`]), kept while that
+    // rung is tried: if libcurl cannot even be put in that mode, the request fails as it would have.
     let mut held: Option<Attempt> = None;
+    // Whether an attempt of this request has already run against the bundled roots, so the bundle
+    // is never offered twice (a latched roots start the bundle refused, then strict, must not go
+    // back to it).
+    let mut roots_tried = false;
     // **One attempt = one fresh easy handle, one fresh response sink, the same inputs.** A retry
     // therefore cannot inherit per-attempt state (a partly filled body buffer, a read offset, a
     // header list the first handle owned): a failed TLS handshake sent nothing, and the second
     // attempt starts from nothing too. `body` is referenced, never consumed.
-    // `Ok(None)` is a libcurl that would not be put in key mode: nothing was sent.
+    // `Ok(None)` is a libcurl that would not be put in key or roots mode: nothing was sent.
     let attempt = |mode: &keypin::Mode, t: Timeouts| -> Result<Option<Attempt>, RequestFailure> {
-        let read_peer_pin = read_peer_pin && matches!(mode, keypin::Mode::Strict);
-        let pin_c = match mode {
-            keypin::Mode::Key { pin, .. } => {
-                Some(CString::new(pin.as_str()).map_err(|_| RequestError::Transport)?)
-            }
-            keypin::Mode::Strict => None,
+        // A key-mode handshake was not strictly verified, so it never teaches a key. A roots-mode
+        // one WAS (chain, dates and name, against public roots), so it may: the identity probe is
+        // the call that learns, and on a firmware that needs the roots it would otherwise never
+        // learn the key the wrong-clock fallback needs.
+        let read_peer_pin = read_peer_pin && !matches!(mode, keypin::Mode::Key { .. });
+        let cstr = |s: &str| CString::new(s).map_err(|_| RequestError::Transport);
+        let (pin_c, roots_c) = match mode {
+            keypin::Mode::Key { pin, .. } => (Some(cstr(pin)?), None),
+            keypin::Mode::Roots { path, .. } => (None, Some(cstr(path)?)),
+            keypin::Mode::Strict => (None, None),
         };
         unsafe {
             macro_rules! require_setopt {
@@ -1536,6 +1688,20 @@ fn request_tls_evidence(
                 if let Err(rc) = keypin::apply(easy.0, pin) {
                     plx_base::eventlog::log(&format!(
                         "net: this libcurl refuses the key-mode options (rc={rc}) — the request stays strict"
+                    ));
+                    return Ok(None);
+                }
+            }
+            // **Roots mode** ([`keypin`]): the bundled public roots in place of this firmware's CA
+            // store, verification still fully on. Written AFTER the `tls_c` match so it replaces a
+            // test bundle too. `apply_roots` checks `CURLOPT_CAINFO`'s result: a refusal means the
+            // roots we meant to select are not the ones in force, so nothing is sent — the request
+            // reports the strict failure it already had (or goes strict, if roots was the latched
+            // start), the same fail-closed posture as the `TlsCfg::CaBundle` arm.
+            if let Some(path) = &roots_c {
+                if let Err(rc) = keypin::apply_roots(easy.0, path) {
+                    plx_base::eventlog::log(&format!(
+                        "net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"
                     ));
                     return Ok(None);
                 }
@@ -1662,23 +1828,28 @@ fn request_tls_evidence(
     let started = std::time::Instant::now();
     let mut budget = t;
     let (done, final_mode) = loop {
+        roots_tried |= matches!(mode, keypin::Mode::Roots { .. });
         let Some(done) = attempt(&mode, budget)? else {
-            // libcurl would not be put in key mode. Never relax anything: the request fails as it
-            // would have (the strict failure held), or, when key mode was the latched START, goes
-            // strict after all.
+            // libcurl would not be put in key or roots mode. Never relax anything: the request
+            // fails as it would have (the failure that led here held), or, when the mode was the
+            // latched START, goes strict after all.
             if let Some(key) = &key {
                 keypin::unlatch(key);
             }
             match held.take() {
-                Some(strict) => break (strict, keypin::Mode::Strict),
+                Some(earlier) => break (earlier, keypin::Mode::Strict),
                 None => {
                     mode = keypin::Mode::Strict;
                     continue;
                 }
             }
         };
-        if let (keypin::Mode::Strict, Some(key)) = (&mode, &key) {
-            if let Some(next) = keypin::after_strict_failure(key, done.rc, done.verify) {
+        if let Some(key) = &key {
+            // The bundle did not answer for this host: end its latch, whatever follows.
+            if matches!(mode, keypin::Mode::Roots { .. }) && keypin::is_roots_refusal(done.rc) {
+                keypin::roots_failed(key, done.rc, done.verify);
+            }
+            if let Some(next) = keypin::after_failure(key, &mode, done.rc, done.verify, roots_tried) {
                 match remaining_budget(t, started.elapsed()) {
                     Some(left) => {
                         budget = left;
@@ -1686,19 +1857,23 @@ fn request_tls_evidence(
                         mode = next;
                         continue;
                     }
-                    // Nothing is left to spend on the retry: the request fails as the strict
-                    // attempt did, inside the time the caller allowed.
+                    // Nothing is left to spend on the retry: the request fails as the attempt
+                    // that led here did, inside the time the caller allowed.
                     None => break (done, mode),
                 }
             } else if done.rc != 0 {
-                // No key mode to retry in: what this failure says about the host is a fact the app
-                // can tell a viewer about (a date failure with no key), or ends one (anything else).
-                keypin::strict_failure(key, done.rc, done.verify);
+                // No rung to retry in: what this failure says about the host is a fact the app can
+                // tell a viewer about (a date failure with no key), or ends one (anything else).
+                match &mode {
+                    keypin::Mode::Strict => keypin::strict_failure(key, done.rc, done.verify),
+                    keypin::Mode::Roots { .. } => keypin::roots_unanswered(key, done.rc, done.verify),
+                    keypin::Mode::Key { .. } => {}
+                }
             }
         }
         break (done, mode);
     };
-    let Attempt { rc, info_rc, code, sink, why, peer_pin, .. } = done;
+    let Attempt { rc, info_rc, code, sink, why, peer_pin, verify: done_verify } = done;
     // What the attempt that decided the request says about the host's mode.
     let established = rc == 0 || (info_rc == 0 && code != 0);
     if let Some(key) = &key {
@@ -1706,6 +1881,7 @@ fn request_tls_evidence(
             keypin::Mode::Strict if established => keypin::strict_established(key),
             keypin::Mode::Key { .. } if rc == keypin::PIN_MISMATCH => keypin::key_refused(key),
             keypin::Mode::Key { pin, verify } if established => keypin::key_established(key, pin, *verify),
+            keypin::Mode::Roots { verify, .. } if established => keypin::roots_established(key, *verify),
             _ => {}
         }
     }
@@ -1716,7 +1892,10 @@ fn request_tls_evidence(
             plx_base::eventlog::log(&format!("net: curl rc={rc} — {why}"));
         }
     }
-    finish_response(rc, info_rc, code, follow_redirects, max_body, sink)
+    // `done_verify` is read only for the one code that carries it, from the attempt that DECIDED
+    // the request: a roots-mode retry that failed reports its own result, a strict failure no mode
+    // answered reports the strict one.
+    finish_response(rc, info_rc, code, follow_redirects, max_body, sink, done_verify)
         .map(|resp| Resp { peer_pin, ..resp })
 }
 
@@ -1898,7 +2077,7 @@ pub fn tls_failure_reason(easy: *mut CURL, rc: c_int) -> Option<String> {
 }
 
 /// [`CURLINFO_SSL_VERIFYRESULT`] off a handle whose transfer just ended, `None` when libcurl would
-/// not say. The raw number key mode's trigger reads ([`keypin::after_strict_failure`]).
+/// not say. The raw number key mode's trigger reads ([`keypin::after_failure`]).
 pub fn verify_result(easy: *mut CURL) -> Option<c_long> {
     let mut verify: c_long = 0;
     // SAFETY: `easy` is a live handle the caller owns and has not yet cleaned up; the out pointer
@@ -2139,6 +2318,7 @@ pub mod resolve {
 }
 
 /// **Key mode — recognising a server by its remembered key when the certificate fails its date check.**
+/// (This module also holds **roots mode**, below.)
 ///
 /// A television has no real-time clock. Cold-booted with no internet its clock is wrong, so the
 /// household server's perfectly valid `*.plex.direct` certificate fails libcurl's date check
@@ -2149,14 +2329,17 @@ pub mod resolve {
 /// key is used.
 ///
 /// **What is relaxed, when, and what still holds.** A request retries in key mode only when ALL of
-/// these hold ([`after_strict_failure`]): it ran in strict mode (a CA store, never [`Tls::Pinned`],
-/// never plaintext); libcurl said 60; the verify result was 9 or 10; and the table below holds a
-/// key for that `host:port`. Key mode sets `CURLOPT_PINNEDPUBLICKEY` to the remembered key and
+/// these hold ([`after_failure`]): the attempt that failed ran in strict mode (a CA store, never
+/// [`Tls::Pinned`], never plaintext) or in roots mode (below), where the bundle verified the chain
+/// and only the dates failed; libcurl said 60; the verify result was 9 or 10; and the table below
+/// holds a key for that `host:port`. Key mode sets `CURLOPT_PINNEDPUBLICKEY` to the remembered key and
 /// turns `CURLOPT_SSL_VERIFYPEER` off — which drops the chain and date check: `CURLOPT_SSL_VERIFYHOST`
 /// stays 2 (the certificate must still be issued for the name in the URL), the key must still match
 /// (rc 90 otherwise), and [`apply`] makes the relaxation impossible without an accepted pin. A
 /// failure whose verify result is anything else (an untrusted issuer reported first, 18-21; a name
-/// mismatch) is refused exactly as before even when a key is held.
+/// mismatch) never enters KEY mode, even when a key is held: a self-signed result (18, 19) and a
+/// name mismatch are refused exactly as before, and a missing issuer (2, 20, 21) on a
+/// `*.plex.direct` host is answered by roots mode instead (below), never by a key.
 ///
 /// **What the trigger does NOT prove, stated plainly.** The security of key mode rests on the key
 /// pin plus the name check, not on the date being the only defect. (1) Verify result 9/10 does not
@@ -2177,6 +2360,38 @@ pub mod resolve {
 /// A request that ran in key mode never reports a [`Resp::peer_pin`]: that handshake was not
 /// strictly verified, and a key learned from it would be a stranger's remembered as the server's.
 ///
+/// **Roots mode — the bundled public roots, for a CA store that predates the issuer.** The other
+/// way a household server's `*.plex.direct` handshake fails on an old television is the ISSUER:
+/// Let's Encrypt's 2025 roots (ISRG Root YR, YE) are not in a 2020 firmware's store, and libcurl
+/// says 60 with verify result 2, 20 or 21 ([`after_failure`]). When the host is a
+/// `*.plex.direct` NAME ([`is_plex_direct`], read from a URL by [`key_of_url`], which gives an
+/// authority that is not a plain `host[:port]` no key at all) and `le-roots.pem` is in the app
+/// directory (a non-empty file this process can read), the request is repeated once with
+/// `CURLOPT_CAINFO` set to it ([`apply_roots`]). **Nothing is relaxed**:
+/// `VERIFYPEER` 1 and `VERIFYHOST` 2 are restated, so chain, dates and name are checked against four
+/// public roots instead of the firmware's. A libcurl that refuses `CURLOPT_CAINFO` sends nothing
+/// and the request reports the strict failure; a missing, empty or unreadable bundle means the
+/// fallback never engages.
+/// **How the two modes meet: [`after_failure`] is the one ladder.** The triggers are disjoint by
+/// verify result (9/10 against 2/20/21), so a STRICT failure is answered by at most one of them;
+/// but a wrong clock behind an old trust store fails strict on the issuer, and the bundle then
+/// verifies the chain and refuses the dates, so a roots attempt that fails on the date is answered
+/// by key mode too (with no key held it publishes [`Blocked::NoKey`], [`roots_unanswered`]). A
+/// roots attempt that STARTED the request from the latch and is refused (60/51) goes strict once,
+/// since the certificate may have moved to an issuer the device store now trusts but the bundle
+/// lacks. The bundle is never offered twice in one request and a date failure never goes back to
+/// strict, so a request is at most three attempts. If both latches somehow stood, [`begin_at`] takes
+/// key mode first. A strict success clears both. A roots-mode handshake WAS strictly verified, so
+/// unlike key mode it may teach [`Resp::peer_pin`]. The latch is the same [`LATCH`], kept in
+/// `State::roots_latched` under the same lock: a success latches the host so later requests skip the
+/// doomed strict handshake, and a refusal by the bundle ([`roots_failed`]) ends it.
+///
+/// **Redirects.** No mode crosses a redirect. The control plane never enters either mode for a request
+/// that follows one (the public QR fetch is the only such request), and the media plane follows
+/// redirects itself, one easy handle per hop, so each hop enters this module under its own `host:port`
+/// and begins where `begin` puts that host. Nothing a hop's handshake says is recorded against the
+/// host that redirected to it.
+///
 /// **Facts, and one toast.** Where each decision is already made this module also publishes what it
 /// means, for the app to poll by [`keypin::revision`] (`plex::grant`'s shape): [`keypin::engaged`]
 /// (key mode has engaged this run, with the year the device believed at the first time) and
@@ -2188,8 +2403,9 @@ pub mod resolve {
 pub mod keypin {
     use super::{
         c_int, c_long, curl_easy_setopt_long, curl_easy_setopt_ptr, peer_leaf_pin, tls_verify_why,
-        wall_clock_year, CURL, CURLOPT_CERTINFO, CURLOPT_FORBID_REUSE, CURLOPT_FRESH_CONNECT,
-        CURLOPT_PINNEDPUBLICKEY, CURLOPT_SSL_VERIFYHOST, CURLOPT_SSL_VERIFYPEER,
+        wall_clock_year, CURL, CURLOPT_CAINFO, CURLOPT_CERTINFO, CURLOPT_FORBID_REUSE,
+        CURLOPT_FRESH_CONNECT, CURLOPT_PINNEDPUBLICKEY, CURLOPT_SSL_VERIFYHOST,
+        CURLOPT_SSL_VERIFYPEER,
     };
     use std::collections::HashMap;
     use std::ffi::{c_void, CStr};
@@ -2210,10 +2426,111 @@ pub mod keypin {
     /// results that are about the date. They do not prove the date was the only problem.
     const X509_NOT_YET_VALID: c_long = 9;
     const X509_EXPIRED: c_long = 10;
+    /// OpenSSL `X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT` (2), `…_GET_ISSUER_CERT_LOCALLY` (20) and
+    /// `…_VERIFY_LEAF_SIGNATURE` (21): the chain walk ended at an issuer this trust store does not
+    /// hold. 18 and 19 (a self-signed leaf, a self-signed certificate in the chain) are NOT here:
+    /// those say the server presented its own root, which no bundle of public roots answers.
+    const X509_NO_ISSUER: c_long = 2;
+    const X509_NO_LOCAL_ISSUER: c_long = 20;
+    const X509_NO_LEAF_SIGNATURE_KEY: c_long = 21;
+    /// The shipped bundle's file name, beside the binary (`pkg/le-roots.pem`). NOT `roots.pem`:
+    /// that name belongs to [`super::post_ca`]'s telemetry bundle, which is a different trust
+    /// decision for a different set of hosts.
+    pub const ROOTS_FILE: &str = "le-roots.pem";
+    /// The only host names the bundled roots are ever offered for.
+    const PLEX_DIRECT_SUFFIX: &str = ".plex.direct";
 
     /// libcurl 60 with a date verify result: the one failure a wrong clock explains.
     fn is_date_failure(rc: c_int, verify: Option<c_long>) -> bool {
         rc == TLS_VERIFY_FAILED && matches!(verify, Some(X509_NOT_YET_VALID | X509_EXPIRED))
+    }
+
+    /// libcurl 60 with an issuer-not-found verify result: the one failure an out-of-date CA store
+    /// explains. **Disjoint from [`is_date_failure`] by construction** (the verify results 9/10 and
+    /// 2/20/21 share nothing), which is what lets key mode and roots mode coexist without a
+    /// precedence rule: a failure is one or the other, and a failure that is neither (a name
+    /// mismatch, a self-signed leaf, a refused connection) gets neither.
+    fn is_untrusted_issuer(rc: c_int, verify: Option<c_long>) -> bool {
+        rc == TLS_VERIFY_FAILED
+            && matches!(verify, Some(X509_NO_ISSUER | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY))
+    }
+
+    /// OpenSSL `X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT` (18) and `…_SELF_SIGNED_CERT_IN_CHAIN` (19):
+    /// the chain ends at a certificate that is its own issuer and that this trust store does not
+    /// hold. Not a case [`is_untrusted_issuer`] (and so roots mode) answers — no bundle of public
+    /// roots holds a server's own root — but it is every bit as much "this device cannot vouch for
+    /// this server" as a missing issuer, which is all [`untrusted_chain_verify`] says.
+    const X509_SELF_SIGNED_LEAF: c_long = 18;
+    const X509_SELF_SIGNED_IN_CHAIN: c_long = 19;
+
+    /// **The closed answer to "did the television's trust store fail this server?"** — libcurl 60 with
+    /// an OpenSSL verify result of 2, 18, 19, 20 or 21 (a missing issuer, or a chain that ends at a
+    /// root nobody here holds), as that number, and `None` for everything else. Never 9 or 10: those
+    /// are the date, which a wrong television clock explains and which key mode, [`Blocked::NoKey`] and
+    /// `app::clock_notice` already own. Never a different `rc` (a refused connection, a timeout, a
+    /// handshake the firmware cannot speak, 51's name check), and never a `60` whose verify result
+    /// was not reported or names a signature, a name or a purpose. The set is a superset of
+    /// [`is_untrusted_issuer`]'s and disjoint from [`is_date_failure`]'s by construction.
+    ///
+    /// What the answer is evidence of is the server's certificate and this device's trust, not the
+    /// network: it is what a failed identity probe is graded by (`plex::probe::Cause`), so a failure
+    /// that is only this no longer reads as "unreachable" or, worse, "no access".
+    pub fn untrusted_chain_verify(rc: c_int, verify: Option<c_long>) -> Option<u8> {
+        if rc != TLS_VERIFY_FAILED {
+            return None;
+        }
+        match verify? {
+            v @ (X509_NO_ISSUER | X509_SELF_SIGNED_LEAF | X509_SELF_SIGNED_IN_CHAIN
+                | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY) => u8::try_from(v).ok(),
+            _ => None,
+        }
+    }
+
+    /// Is `host` a `*.plex.direct` name? A case-insensitive SUFFIX match on the host part with at
+    /// least one label in front of it, and nothing in `host` that is not a DNS-name character:
+    /// `plex.direct.evil.example`, `notplex.direct` and `plex.direct` itself are not, and neither
+    /// is `x.plex.direct:443@evil.example`, which a naive reading of a URL's authority would split
+    /// at the wrong place. A trailing root dot is the same name.
+    pub fn is_plex_direct(host: &str) -> bool {
+        let host = host.strip_suffix('.').unwrap_or(host).as_bytes();
+        let suffix = PLEX_DIRECT_SUFFIX.as_bytes();
+        host.len() > suffix.len()
+            && host[host.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+            && host.iter().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.'))
+    }
+
+    /// The host of a [`key_of`] key (`host:port`, the host unbracketed and lowercase).
+    fn host_of_key(key: &str) -> &str {
+        key.rsplit_once(':').map_or(key, |(host, _)| host)
+    }
+
+    /// The shipped roots bundle, when there is one to use: `ROOTS_FILE` in the app directory (a
+    /// root-owned, read-only location on the television, which is why it is a safer place for a
+    /// trust anchor than anything under `/tmp`), **as a non-empty file this process can read**. A
+    /// missing, empty or unreadable file is `None` and the fallback simply does not engage — the
+    /// request then fails as it always did, with the strict attempt's own verify result, instead of
+    /// handing libcurl a `CURLOPT_CAINFO` it cannot load (rc 77 on every `*.plex.direct` request
+    /// that lacked an issuer). Fail-closed either way; said once per process, since it does not
+    /// change between requests.
+    fn roots_bundle() -> Option<String> {
+        #[cfg(any(test, feature = "test-support"))]
+        let path = test_roots::get().map_or_else(|| plx_base::paths::in_app_dir(ROOTS_FILE), std::path::PathBuf::from);
+        #[cfg(not(any(test, feature = "test-support")))]
+        let path = plx_base::paths::in_app_dir(ROOTS_FILE);
+        // Opened, then asked of the descriptor: readable and a regular, non-empty file in one look.
+        let usable = std::fs::File::open(&path)
+            .and_then(|f| f.metadata())
+            .is_ok_and(|m| m.is_file() && m.len() > 0);
+        let found = usable.then(|| path.to_str().map(str::to_owned)).flatten();
+        if found.is_none() {
+            static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !SAID.swap(true, Ordering::Relaxed) {
+                plx_base::eventlog::log(&format!(
+                    "net: no usable {ROOTS_FILE} beside the binary (missing, empty or unreadable) — the bundled public roots are not available as a fallback"
+                ));
+            }
+        }
+        found
     }
 
     /// How one attempt of a request recognises the peer.
@@ -2224,6 +2541,13 @@ pub mod keypin {
         /// The remembered key, in place of the certificate's dates. `verify` is the strict
         /// failure that led here, kept only for the one log line.
         Key { pin: String, verify: Option<c_long> },
+        /// **The bundled public roots** (`pkg/le-roots.pem`) in place of the device's own CA store,
+        /// for a `*.plex.direct` host whose certificate chains to a root that firmware predates
+        /// (Let's Encrypt's 2025 roots on a 2020 television). Verification is NOT relaxed: the
+        /// chain, the dates and the name are all still checked, against a different root set.
+        /// `path` is the bundle; `verify` is the strict failure that led here (`None` for a latched
+        /// start), kept only for the log.
+        Roots { path: String, verify: Option<c_long> },
     }
 
     #[derive(Default)]
@@ -2237,6 +2561,10 @@ pub mod keypin {
         table: HashMap<String, String>,
         /// `host:port` to the pin it is being served under and when that began.
         latched: HashMap<String, (String, Instant)>,
+        /// `host:port` to when it began being served against the bundled roots ([`Mode::Roots`]).
+        /// Kept beside [`State::latched`] rather than in a second table behind a second lock: the
+        /// two are cleared together by a strict success, and read together by [`begin_at`].
+        roots_latched: HashMap<String, Instant>,
         /// `host:port` to why key mode cannot help it right now ([`Blocked`]).
         blocked: HashMap<String, Blocked>,
         /// `host:port` to the year the device believed when key mode FIRST engaged for it, with
@@ -2252,7 +2580,7 @@ pub mod keypin {
     /// and never decided a second time.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
     pub enum Blocked {
-        /// A strict attempt failed on the certificate's DATES (libcurl 60, verify 9 or 10 — the
+        /// A strict attempt (or a roots attempt that reached the dates) failed on the certificate's DATES (libcurl 60, verify 9 or 10 — the
         /// date check was the first failure the chain walk met, not necessarily the only defect,
         /// see the module's caveat) and the table holds no key for the host, so there was nothing
         /// to recognise it by.
@@ -2336,10 +2664,38 @@ pub mod keypin {
         format!("{}:{port}", host.to_ascii_lowercase())
     }
 
-    /// [`key_of`] a URL's origin, or `None` for anything but `https` (key mode is a TLS fallback).
-    /// The same reading of a URL the media plane's resolve lookup uses, so the two tables agree.
+    /// [`key_of`] a URL's origin, or `None` for anything but `https` (key mode is a TLS fallback)
+    /// **and for any authority that is not a plain `host[:port]`**: the authority (everything
+    /// between `https://` and the first `/`) must be made only of letters, digits, `.`, `-`, `:`
+    /// and the brackets of an IPv6 literal.
+    ///
+    /// **The second half is a security rule, not tidiness.** This is the one reading of a URL that
+    /// both planes use to decide whether a request may be offered a remembered key or the bundled
+    /// roots (`is_plex_direct` on the key's host), and [`crate::net::origin`]'s `split` is a
+    /// tolerant reading for a file that can be corrupt: it splits the authority at the first `:`.
+    /// libcurl's reading is the standard one, where everything before an `@` is a user name and a
+    /// password. So in `https://x.plex.direct:443@evil.example/` the two disagree about the host
+    /// (`x.plex.direct` here, `evil.example` on the wire), and the name rule would have been
+    /// satisfied by a string that never reaches the network. Userinfo (`@`), a query or fragment
+    /// before the first `/`, a backslash, a percent-escape, a space: none of them is a URL this app
+    /// builds for a media server, and none gets a key. The request still goes out, strictly
+    /// verified, as for any host with no key.
+    ///
+    /// The host and port are read by the same `origin::split` the resolve lookup uses, with the
+    /// plain-authority gate applied first, for the key and roots decisions only: the resolve table is
+    /// keyed by whatever `split` reads and is not gated, so the two tables agree only on the
+    /// authorities this app builds.
     pub fn key_of_url(url: &str) -> Option<String> {
-        url.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://")).then(|| {
+        if !url.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://")) {
+            return None;
+        }
+        let rest = &url[8..];
+        let authority = &rest[..rest.find('/').unwrap_or(rest.len())];
+        let plain = !authority.is_empty()
+            && authority
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'));
+        plain.then(|| {
             let (origin, _) = crate::net::origin::split(url);
             key_of(origin.host(), origin.port())
         })
@@ -2472,27 +2828,96 @@ pub mod keypin {
         begin_at(key, Instant::now())
     }
 
+    /// Is a latch that began at `since` still live at `now`?
+    fn latch_live(since: Instant, now: Instant) -> bool {
+        now.saturating_duration_since(since) < LATCH
+    }
+
     /// [`begin`] at `now`: the latch is live while less than [`LATCH`] has passed since it began.
     pub(super) fn begin_at(key: &str, now: Instant) -> Mode {
         let mut st = state();
         if let Some((pin, since)) = st.latched.get(key).cloned() {
-            if st.table.get(key) == Some(&pin) && now.saturating_duration_since(since) < LATCH {
+            if st.table.get(key) == Some(&pin) && latch_live(since, now) {
                 return Mode::Key { pin, verify: None };
             }
             st.latched.remove(key);
         }
+        // Key mode first when both are somehow latched: the two latches are set by disjoint
+        // failures, and a strict success clears both, so this order decides nothing in practice.
+        let roots_live = st.roots_latched.get(key).is_some_and(|&since| latch_live(since, now));
+        if !roots_live {
+            st.roots_latched.remove(key);
+        }
+        drop(st);
+        if roots_live {
+            // Looked up outside the lock (it stats a file). A bundle that has gone since the
+            // latch was set ends the latch: there is nothing to serve the host against.
+            match roots_bundle() {
+                Some(path) => return Mode::Roots { path, verify: None },
+                None => {
+                    state().roots_latched.remove(key);
+                }
+            }
+        }
         Mode::Strict
     }
 
-    /// **The trigger, and only the trigger.** A strict attempt failed with `rc` and `verify` (the
-    /// handle's `CURLINFO_SSL_VERIFYRESULT`): key mode when libcurl said 60 with a date verify
-    /// result and the table holds a key for `key`.
-    pub fn after_strict_failure(key: &str, rc: c_int, verify: Option<c_long>) -> Option<Mode> {
-        if !is_date_failure(rc, verify) {
-            return None;
+    /// **The whole ladder, one rung at a time.** An attempt that ran in `ran` failed with `rc` and
+    /// `verify`: which mode, if any, is the request's next attempt in? `roots_tried` is whether an
+    /// earlier attempt of THIS request already ran against the bundle. Both planes call this and
+    /// nothing else decides it, so they cannot disagree about a rung.
+    ///
+    /// * **After [`Mode::Strict`]**: a date failure goes to key mode when a key is held; a
+    ///   missing-issuer failure on a `*.plex.direct` name goes to roots mode when the bundle is on
+    ///   disk and this request has not already been refused by it.
+    ///   Anything else (a name mismatch, a self-signed leaf, 51, a refused connection) goes nowhere.
+    ///   Roots mode is for the NAMES a household's own server is reached by and nothing else: plex.tv,
+    ///   a telemetry sink or any other host that fails for this reason fails as before.
+    /// * **After [`Mode::Roots`]**: a DATE failure goes to key mode when a key is held. This is the
+    ///   rung a television with an old trust store AND a wrong clock needs: strict fails on the
+    ///   missing issuer, the bundle verifies the chain and then refuses the dates, and the key the
+    ///   identity probe learned on an earlier good boot is the one thing left that recognises the
+    ///   server. Otherwise a roots attempt that STARTED the request (a latch, `verify` of `None`: no
+    ///   strict failure led there) and was refused for its verification (60 or 51) goes to
+    ///   [`Mode::Strict`] — the host's certificate may have moved to an issuer the device store now
+    ///   trusts but the bundle lacks, and a stale latch must not cost the request. A roots attempt
+    ///   that a strict failure led to has nowhere to go: the device store and the bundle have both
+    ///   said no.
+    /// * **After [`Mode::Key`]**: nothing. The key either matched or did not; it is the last rung.
+    ///
+    /// **Bounded by construction.** The longest chain is three attempts (a latched roots start,
+    /// strict, key; or strict, roots, key): the bundle is never tried twice (`roots_tried`), a date
+    /// failure never goes back to strict, and only a LATCHED roots start ever goes to strict.
+    pub fn after_failure(
+        key: &str,
+        ran: &Mode,
+        rc: c_int,
+        verify: Option<c_long>,
+        roots_tried: bool,
+    ) -> Option<Mode> {
+        // A date failure is the one thing a wrong clock explains, and the one thing only the
+        // remembered key can answer: it never goes back to strict and never to the bundle.
+        if is_date_failure(rc, verify) {
+            return match ran {
+                Mode::Key { .. } => None,
+                Mode::Strict | Mode::Roots { .. } => {
+                    let pin = state().table.get(key)?.clone();
+                    Some(Mode::Key { pin, verify })
+                }
+            };
         }
-        let pin = state().table.get(key)?.clone();
-        Some(Mode::Key { pin, verify })
+        match ran {
+            Mode::Strict if !roots_tried && is_untrusted_issuer(rc, verify) && is_plex_direct(host_of_key(key)) => {
+                let path = roots_bundle()?;
+                plx_base::eventlog::log(&format!(
+                    "net: a plex.direct certificate failed the device trust store (X509 verify result {}) — retrying against the bundled public roots",
+                    verify.unwrap_or_default()
+                ));
+                Some(Mode::Roots { path, verify })
+            }
+            Mode::Roots { verify: None, .. } if is_roots_refusal(rc) => Some(Mode::Strict),
+            Mode::Strict | Mode::Roots { .. } | Mode::Key { .. } => None,
+        }
     }
 
     /// A strict handshake completed: whatever latch stood for `key` is over, and so is whatever
@@ -2500,21 +2925,80 @@ pub mod keypin {
     pub fn strict_established(key: &str) {
         let mut st = state();
         st.latched.remove(key);
+        st.roots_latched.remove(key);
         clear_blocked(&mut st, key);
     }
 
-    /// Key mode is not being used for `key` after all (libcurl would not be put in it): its latch is
-    /// over, and nothing else is claimed — this is not a strict success.
+    /// A fallback mode (key or roots) is not being used for `key` after all (libcurl would not be
+    /// put in it): its latch is over, and nothing else is claimed — this is not a strict success.
     pub fn unlatch(key: &str) {
-        state().latched.remove(key);
+        let mut st = state();
+        st.latched.remove(key);
+        st.roots_latched.remove(key);
     }
 
-    /// A strict attempt failed and [`after_strict_failure`] found no key mode to retry in: record
+    /// A roots-mode handshake completed: the chain, the dates and the name all verified against
+    /// the bundled roots. Latches the host if it was not already (the timer is NOT slid by later
+    /// successes, as key mode's is not), ends whatever was published as blocking it, and says so
+    /// once, on the latch transition. `verify` is the strict failure that led here.
+    pub fn roots_established(key: &str, verify: Option<c_long>) {
+        roots_established_at(key, verify, Instant::now());
+    }
+
+    /// [`roots_established`] at `now`, the clock seam [`begin_at`] shares.
+    pub(super) fn roots_established_at(key: &str, verify: Option<c_long>, now: Instant) {
+        let first = {
+            let mut st = state();
+            clear_blocked(&mut st, key);
+            let live = st.roots_latched.get(key).is_some_and(|&since| latch_live(since, now));
+            if !live {
+                st.roots_latched.insert(key.to_owned(), now);
+            }
+            !live
+        };
+        if first {
+            plx_base::eventlog::log(&match verify {
+                Some(v) => format!("net: a plex.direct certificate verified against the bundled public roots (the device trust store failed it with X509 verify result {v})"),
+                None => "net: a plex.direct certificate verified against the bundled public roots".to_owned(),
+            });
+        }
+    }
+
+    /// A roots-mode attempt failed TLS verification (`rc` 60, or 51 where libcurl reports the name
+    /// check that way): the bundle did not answer for this host either. Ends the latch, so the next
+    /// request starts strict again, and says so with the verify result only.
+    pub fn roots_failed(key: &str, rc: c_int, verify: Option<c_long>) {
+        state().roots_latched.remove(key);
+        plx_base::eventlog::log(&format!(
+            "net: the bundled public roots did not verify the plex.direct certificate either (curl rc={rc}, X509 verify result {})",
+            verify.map_or_else(|| "not reported".to_owned(), |v| v.to_string())
+        ));
+    }
+
+    /// A roots-mode attempt failed and [`after_failure`] found no rung to retry in: record what that
+    /// says about `key`. Only a DATE failure says anything (the bundle verified the chain and the
+    /// television's clock refused the dates, and no key is held to recognise the server by), and it
+    /// says what a strict date failure with no key says ([`strict_failure`]: [`Blocked::NoKey`]).
+    /// Any other roots failure leaves the published facts alone: the strict attempt that led here
+    /// already recorded its own.
+    pub fn roots_unanswered(key: &str, rc: c_int, verify: Option<c_long>) {
+        if is_date_failure(rc, verify) {
+            strict_failure(key, rc, verify);
+        }
+    }
+
+    /// Does `rc` mean a roots-mode attempt was refused for its TLS verification, as opposed to the
+    /// connection failing for a reason the roots have nothing to do with?
+    pub fn is_roots_refusal(rc: c_int) -> bool {
+        matches!(rc, TLS_VERIFY_FAILED | 51)
+    }
+
+    /// A strict attempt failed and [`after_failure`] found no mode to retry in: record
     /// what that says about `key`. **The fact is the host's LATEST strict outcome**, so this either
     /// publishes or ends [`Blocked::NoKey`]:
     ///
     /// * the failure was about the DATE (libcurl 60, verify 9 or 10), `key` is a bound media server
-    ///   and the table holds no key for it — exactly [`after_strict_failure`]'s trigger minus the
+    ///   and the table holds no key for it — exactly [`after_failure`]'s date trigger minus the
     ///   key — publishes it. A failure it would have answered with a key, a host that is no media
     ///   server (plex.tv) and a host that already has a fact publish nothing new;
     /// * any other failure (a refused connection, a timeout, an untrusted issuer, a name mismatch)
@@ -2587,7 +3071,7 @@ pub mod keypin {
             let live = st
                 .latched
                 .get(key)
-                .is_some_and(|(p, since)| p == pin && now.saturating_duration_since(*since) < LATCH);
+                .is_some_and(|(p, since)| p == pin && latch_live(*since, now));
             if !live && st.table.get(key).map(String::as_str) == Some(pin) {
                 st.latched.insert(key.to_owned(), (pin.to_owned(), now));
                 let year = year();
@@ -2669,6 +3153,33 @@ pub mod keypin {
         Ok(())
     }
 
+    /// Put `easy` in roots mode, **failing closed**: the bundle is selected FIRST and its result
+    /// checked, and `VERIFYPEER`/`VERIFYHOST` are then stated as 1 and 2 again so the verification
+    /// is on by this function's own text rather than by what a caller set earlier. Nothing here
+    /// relaxes anything. A libcurl that refuses `CURLOPT_CAINFO` leaves the handle on its own
+    /// store, which is exactly the handshake that already failed; the caller must not send, and
+    /// reports the strict failure (the `Tls::CaBundle` arm's refusal, for the same reason).
+    ///
+    /// What is trusted is the bundle's four public roots **plus** whatever CA *directory* this
+    /// firmware's libcurl was built to read by default (`CURLOPT_CAINFO` replaces the default
+    /// bundle FILE, not a compiled-in `CA_PATH`): the same union `Tls::CaBundle` has always had.
+    ///
+    /// # Safety
+    /// `easy` is a live curl easy handle; `path` outlives the transfer.
+    pub unsafe fn apply_roots(easy: *mut CURL, path: &CStr) -> Result<(), c_int> {
+        let rc = unsafe { curl_easy_setopt_ptr(easy, CURLOPT_CAINFO, path.as_ptr() as *const c_void) };
+        if rc != 0 {
+            return Err(rc);
+        }
+        for (option, value) in [(CURLOPT_SSL_VERIFYHOST, 2), (CURLOPT_SSL_VERIFYPEER, 1)] {
+            let rc = unsafe { curl_easy_setopt_long(easy, option, value) };
+            if rc != 0 {
+                return Err(rc);
+            }
+        }
+        Ok(())
+    }
+
     /// After a key-mode handshake completed: does the peer's leaf key really hash to `pin`? A
     /// second, independent check of what libcurl was asked to enforce.
     pub fn confirm(easy: *mut CURL, pin: &str) -> bool {
@@ -2704,6 +3215,7 @@ pub mod keypin {
         let mut st = state();
         st.table.remove(key);
         st.latched.remove(key);
+        st.roots_latched.remove(key);
         clear_blocked(&mut st, key);
         st.engaged.remove(key);
         st.bindings.retain(|(_, hp)| hp != key);
@@ -2718,6 +3230,54 @@ pub mod keypin {
     #[cfg(any(test, feature = "devtriggers", feature = "test-support"))]
     pub fn is_latched(key: &str) -> bool {
         state().latched.contains_key(key)
+    }
+
+    /// Is `key` currently being served against the bundled roots ([`Mode::Roots`])?
+    #[cfg(any(test, feature = "devtriggers", feature = "test-support"))]
+    pub fn is_roots_latched(key: &str) -> bool {
+        state().roots_latched.contains_key(key)
+    }
+
+    /// The test seam for [`ROOTS_FILE`]'s location: the host suite has no app directory with a
+    /// shipped bundle, and the fallback must also be provable ABSENT, so a test installs one for
+    /// as long as its guard lives. Process-global like `test_ca_bundle`; hold
+    /// `plx_base::testlock::serial()` while it is installed.
+    #[cfg(any(test, feature = "test-support"))]
+    pub mod test_roots {
+        use std::sync::Mutex;
+
+        static PATH: Mutex<Option<String>> = Mutex::new(None);
+
+        pub fn get() -> Option<String> {
+            PATH.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+
+        pub fn set(path: Option<&str>) {
+            *PATH.lock().unwrap_or_else(|e| e.into_inner()) = path.map(str::to_owned);
+        }
+
+        /// Writes `pem` to a scratch file and installs it as the roots bundle until dropped.
+        pub struct Guard(std::path::PathBuf);
+
+        impl Guard {
+            pub fn install(pem: &str, tag: &str) -> Guard {
+                let path = std::env::temp_dir().join(format!(
+                    "plxnative-test-roots-{tag}-{}-{:?}.pem",
+                    std::process::id(),
+                    std::thread::current().id()
+                ));
+                std::fs::write(&path, pem).expect("write scratch roots bundle");
+                set(Some(&path.to_string_lossy()));
+                Guard(path)
+            }
+        }
+
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                set(None);
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
     }
 
     /// Does the table hold a pin for `key` (`host:port`) right now? Read by the `tls-selftest` dev
@@ -2783,7 +3343,7 @@ pub fn test_response_failure(rc: c_int, info_rc: c_int, code: c_long, redirects:
     -> Result<Resp, RequestFailure> {
     let mut sink = BodySink::new(None);
     sink.push(b"synthetic partial body");
-    finish_response(rc, info_rc, code, redirects, None, sink)
+    finish_response(rc, info_rc, code, redirects, None, sink, None)
 }
 
 /// The wire fixtures behind [`with_test_response`] and [`with_h2_reset_failure`]. They live outside
@@ -2981,7 +3541,7 @@ mod request_tests {
         }
         let mut sink = BodySink::new(Some(4));
         assert!(!sink.push(b"synthetic-secret"));
-        let failure = finish_response(23, 1, 401, false, Some(4), sink).err().unwrap();
+        let failure = finish_response(23, 1, 401, false, Some(4), sink, None).err().unwrap();
         assert_eq!(failure.status, None);
         assert_eq!(failure.body_limit, Some(4));
         assert!(!format!("{failure:?}").contains("synthetic-secret"));
@@ -3170,6 +3730,11 @@ mod request_tests {
         assert_eq!(PUBLIC_MAX_REDIRECTS, 5);
     }
 }
+
+/// The bundled public roots fallback (`keypin::Mode::Roots`), control plane, and the shipped bundle.
+#[cfg(test)]
+#[path = "net_roots_tests.rs"]
+mod roots_tests;
 
 /// The latch's clock, through the `*_at` seam: it lapses after [`keypin::LATCH`] and a later key-mode
 /// success inside the interval does not slide it.
