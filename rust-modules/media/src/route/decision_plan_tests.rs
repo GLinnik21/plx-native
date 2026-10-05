@@ -547,7 +547,11 @@ fn unconfirmed_profile_5_forbids_copy_before_mde() {
     ] {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _g = fresh_registry(&mut ps);
-        let (port, rx, server) = plan_pms(4, MDE_TRANSCODE_COPY);
+        // Three requests, not four: the PlayQueue POST, the part-selection PUT and the
+        // `/decision` GET. The mock waits for `n` of them or an 8 s deadline, so a count that is
+        // one too high made this test sit out the whole deadline once per capability (16 s) while
+        // holding the serial lock every other `plx_media` test queues on.
+        let (port, rx, server) = plan_pms(3, MDE_TRANSCODE_COPY);
         let sid = plx_plex::plex::register_for_test(
             "mde-p5-no-copy",
             "127.0.0.1",

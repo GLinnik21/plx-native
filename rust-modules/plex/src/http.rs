@@ -853,9 +853,18 @@ mod tests {
 
     #[test]
     fn a_request_is_routed_by_the_origins_scheme() {
-        // TEST-NET-1 (RFC 5737): guaranteed unrouted, so nothing can answer either of these.
-        let http = Origin::parse("http://192.0.2.1:32400").expect("parses");
-        let https = Origin::parse("https://192-0-2-1.hash.plex.direct:32400").expect("parses");
+        // A loopback port that was bound a moment ago and is closed again: nothing can answer
+        // either of these, and each arm learns that from an immediate ECONNREFUSED. This used to
+        // dial TEST-NET-1 (RFC 5737), "guaranteed unrouted" -- which means two connect timeouts
+        // (10 s of the suite's wall clock, the longest test in `plx_plex`) and, on a network that
+        // does answer for that block, a different failure than the one graded.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind")
+            .local_addr()
+            .expect("address")
+            .port();
+        let http = Origin::http("127.0.0.1", port as i32);
+        let https = Origin::parse(&format!("https://127.0.0.1:{port}")).expect("parses");
         assert_eq!(http.scheme(), Scheme::Http);
         assert_eq!(https.scheme(), Scheme::Https);
 

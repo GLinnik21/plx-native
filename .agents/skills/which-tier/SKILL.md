@@ -91,7 +91,8 @@ whole of what that tool exposes to the public internet, and the only gate it has
 cargo can see a python file).
 
 **It is not sub-second, and the figure that circulates is one of its five parts.** The ~0.3 s
-everybody quotes is `cargo test --lib` alone, and that part is itself ~28 s now; end to end the
+everybody quotes is `cargo test --lib` alone, and that part is itself tens of seconds now (the 14 per-crate test binaries run side by side through
+`tools/cargo-test-parallel.py`; `make test-crate C=<crate>` runs just the one you touched); end to end the
 gate runs in MINUTES warm. The bulk of it is `python3 tests/test_harness.py`, which shells out to
 `ci/check-deps.sh` (11 s a run) once or more per self-test to prove each structure gate still
 catches a planted violation — 661 s of a 1100 s run, measured 2026-10-01 on a cold lane at load

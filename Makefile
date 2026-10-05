@@ -212,7 +212,7 @@ print-cargo-env: ; @env $(TELEMETRY_ENV) env | grep '^PLX_' | sort || true
 print-bench-config:
 	@printf '%s\n' 'RUST_NIGHTLY=$(RUST_NIGHTLY)' 'RUST_TDIR=$(RUST_TDIR)' 'RUST_TARGET=$(RUST_TARGET)' \
 	  'RUST_FEATFLAGS=$(RUST_FEATFLAGS)' 'RUST_LIB=$(RUST_LIB)' 'RUST_ENV=$(RUST_ENV)' \
-	  'TEST_FAST_TDIR=$(TEST_FAST_TDIR)' 'RELEASE=$(RELEASE)'
+	  'TEST_FAST_TDIR=$(TEST_FAST_TDIR)' 'UNIT_RUN=$(UNIT_RUN)' 'RELEASE=$(RELEASE)'
 
 # `make disk` — what every checkout of this repository is costing, in one table, plus how to get
 # it back. It is a report; `tools/build-gc.sh --incremental|--lanes|--all` is the reclaim, and
@@ -1368,6 +1368,18 @@ check-cargo-lint: lint
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
 	  cargo +$(RUST_NIGHTLY) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --features lab-diagnostics
 
+# The host unit suite is 14 test binaries (one per crate). `cargo test` runs them one after another,
+# so the suite's wall time was their SUM and one slow binary set it: measured 2026-10-05, `plx_media`
+# alone was 28.7 s of 78.8 s because one test held `testlock::serial()` for 16 s. UNIT_RUN builds
+# exactly what the `cargo ... test --lib -p ...` after it names, then runs the binaries side by
+# side (tools/cargo-test-parallel.py: bounded jobs, each in its own PLXNATIVE_RUNTIME_DIR, every
+# binary's `test result:` line printed, any failing binary fails the gate). It must run from
+# `rust-modules/` like the cargo line it wraps. UNIT_SUITE is the same package list as the literal
+# `-p` lists in the recipes below (those stay literal because ci/test_ci_split.py greps for them);
+# ci/test_test_crate.py pins the two equal.
+UNIT_RUN = python3 ../tools/cargo-test-parallel.py
+UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net plx_ui plx_plex plx_telemetry plx_data plx_session plx_media plx_appkit plx_screens
+
 # The default-feature unit suite and everything that drives cargo through ci/ self-tests.
 check-cargo-unit-default:
 	@# EVERY host test runs in a THROWAWAY runtime root, and that is a correctness fix rather than
@@ -1393,7 +1405,7 @@ check-cargo-unit-default:
 	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
-	  cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens
+	  $(UNIT_RUN) -- cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_service_package.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test -p plxnative-storage --bin plxnative-storage
 	@# The helper is its own package, so building it compiles no copy of the app library; this reads
@@ -1426,7 +1438,7 @@ check-cargo-unit-hostsim:
 	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
-	  cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --features hostsim
+	  $(UNIT_RUN) -- cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --features hostsim
 
 # OPT-IN incremental inner loop: the default-feature unit suite (the same `cargo test --lib` as
 # `check-cargo-unit-default`, same throwaway runtime root and telemetry env) with
@@ -1449,7 +1461,26 @@ test-fast:
 	cd rust-modules && CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=$(TEST_FAST_TDIR) \
 	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
-	  cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens $(if $(T),'$(T)')
+	  $(UNIT_RUN) $(if $(T),--filter '$(T)') -- cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens
+
+# `make test-crate C=plx_ui [T=filter] [DEPS=1]` -- build and run ONLY the named crate's lib tests, in
+# the same incremental `$(TEST_FAST_TDIR)` tree and with the same flags as `test-fast`, so the two
+# share one cache. An edit in a low crate makes `test-fast` rebuild and relink every dependent test
+# binary; this builds the crate alone (its dependents' rlibs and test binaries are not touched).
+# `C` is a crate name with or without `plx_` (`C=ui`, `C=plx_ui`; the application crate is
+# `C=app`), several allowed. `DEPS=1` adds the crates that DIRECTLY depend on it, read from
+# `cargo metadata` by tools/test-crate.py. The feature set is reconstructed from the full suite's
+# resolution (see that file) so a crate gets its `devtriggers` tests: a bare `cargo test -p
+# plx_plex` runs 458 tests where the suite runs 466. Refused under RELEASE=1 like `test-fast`.
+.PHONY: test-crate
+test-crate:
+	@$(if $(RELEASE),echo "make test-crate: refused under RELEASE=1 -- it runs the default-feature host unit tests incrementally; RELEASE=1 is the shipping feature set (use make check for gates)." >&2; exit 1,:)
+	@$(if $(C),:,echo "make test-crate: name the crate(s): make test-crate C=plx_ui [T=filter] [DEPS=1]  (crates: $(UNIT_SUITE))" >&2; exit 2)
+	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
+	cd rust-modules && CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=$(TEST_FAST_TDIR) \
+	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
+	  $(TELEMETRY_ENV) \
+	  python3 ../tools/test-crate.py --suite '$(UNIT_SUITE)' --cargo 'cargo +$(RUST_NIGHTLY)' $(if $(DEPS),--deps) $(if $(T),--filter '$(T)') $(C)
 
 # `make build-bench [ARGS='--runs 5 --json out.json']` -- the repeatable local build benchmark
 # (tools/build-bench.py; docs/agent-reference.md says what it measures and when a PR must paste its
@@ -1609,6 +1640,11 @@ check-python: check-localization
 	python3 tools/test_ci_history.py
 	@# `make test-fast` (the opt-in incremental loop) is fenced off from every other target.
 	python3 ci/test_test_fast.py
+	@# `make test-crate` (the crate-only loop: it must carry the full suite's feature set) and the parallel
+	@# test runner every unit recipe goes through (a failing binary fails the gate, a missing binary is not
+	@# a pass, every `test result:` line is printed), both against a fake cargo; nothing is compiled.
+	python3 ci/test_test_crate.py
+	python3 ci/test_cargo_test_parallel.py
 	@# `make build-bench`: table/JSON shape, edit-and-restore, refusals, skips and the Makefile wiring, against a fake cargo.
 	python3 ci/test_build_bench.py
 	python3 ci/test_source_bundle.py

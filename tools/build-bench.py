@@ -59,8 +59,9 @@ Scenarios (each a named row; `--only ID,ID` selects, `--quick` is `noop,leaf,siz
   leaf-inc  `leaf` with CARGO_INCREMENTAL=1 in rust-modules/target-fast (the `make test-fast` tree).
   hub-inc   `hub`, incremental. The two -inc rows are skipped with a note when target-fast is
             absent, unless `--cold` (which builds it, untimed, first).
-  tests     the default-feature unit suite (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens`) on
-            a warm tree; the `test result:` counts of every crate are summed.
+  tests     the default-feature unit suite (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens`, run through
+            tools/cargo-test-parallel.py exactly as the Makefile's recipes do) on a warm tree;
+            the `test result:` counts of every crate are summed.
   arm       the ARM staticlib line (`cargo rustc ... --crate-type staticlib`) after touching lib.rs,
             then the archive's size and sha256. Skipped when the ARM archive was never built here;
             the FFmpeg build is never triggered.
@@ -198,7 +199,7 @@ def read_make_config(repo: Path) -> dict[str, str]:
         raise Refused("`make -s print-bench-config` failed: " + proc.stderr.strip()[-400:])
     cfg = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
     missing = [k for k in ("RUST_NIGHTLY", "RUST_TDIR", "RUST_TARGET", "RUST_LIB", "RUST_ENV",
-                           "TEST_FAST_TDIR") if k not in cfg]
+                           "TEST_FAST_TDIR", "UNIT_RUN") if k not in cfg]
     if missing:
         raise Refused("print-bench-config did not report: " + ", ".join(missing))
     cfg.setdefault("RUST_FEATFLAGS", "")
@@ -280,6 +281,20 @@ class Cargo:
         if check and proc.returncode != 0:
             raise BenchError(f"{what}: cargo exited {proc.returncode}: {proc.stderr.strip()[-600:]}")
         return secs, proc
+
+    def run_unit_suite(self):
+        """The unit suite the way `make check` runs it: through the parallel test runner.
+
+        `UNIT_RUN` comes from the Makefile (`make -s print-bench-config`), so a change to how the
+        recipes run the binaries changes what this times. The runner is handed the same cargo
+        command as the recipes -- the mirrored HOST_TEST_ARGS -- and builds it first (a no-op on
+        the warm tree this scenario runs on), then runs the binaries side by side.
+        """
+        t0 = time.monotonic()
+        proc = subprocess.run([*shlex.split(self.cfg["UNIT_RUN"]), "--", "cargo", self.toolchain,
+                               *HOST_TEST_ARGS], cwd=self.cwd, env=self.env(False),
+                              capture_output=True, text=True)
+        return time.monotonic() - t0, proc
 
     def build(self, incremental: bool, what: str):
         """`cargo test --lib --no-run` with JSON on stdout -> (seconds, build summary)."""
@@ -436,7 +451,7 @@ class Bench:
             sample.update(seconds=secs, **b)
         elif sid == "tests":
             self.ensure_warm(False)
-            secs, proc = self.cargo.run(HOST_TEST_ARGS, self.cargo.env(False), "unit suite", check=False)
+            secs, proc = self.cargo.run_unit_suite()
             result = parse_test_result(proc.stdout + proc.stderr)
             if result is None:
                 raise BenchError(f"unit suite: no `test result:` line (cargo exited "
