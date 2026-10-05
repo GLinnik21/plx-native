@@ -339,8 +339,10 @@ while the app runs jailed under its own uid and creates its logs there. Whoever 
 sets the mode, so any owner-only mode locks the other out.
 
 `create_dir_all` (and `mkdir -p`) applies the process umask, which silently drops the group and
-other bits — hence `paths::ensure_runtime_dir` follows it with an explicit
-`set_permissions(0o1777)`, and the Makefile's `BOOT_SH` follows `mkdir -p` with an explicit
+other bits — hence `paths::ensure_runtime_dir` does a bare `mkdir` (`paths::share_runtime_dir`) and
+then `fchmod`s 1777 on a descriptor it opened `O_NOFOLLOW` and confirmed is a directory it owns
+(never a `create_dir_all` followed by a path chmod, which follows a symlink planted in the shared
+`/tmp` and makes its target 1777), and the Makefile's `BOOT_SH` follows `mkdir -p` with an explicit
 `chmod 1777`. `/tmp` on the television is 1777 for the same reason; a per-install root inside it
 must not be stricter.
 

@@ -3276,8 +3276,8 @@ fn hls_open_source(
     let origin = &resource.origin;
     if origin.is_tls() {
         let url = format!("{}{}", origin.base(), request_path);
-        // libcurl follows any redirect itself (`curlio`), and does not report where it landed;
-        // the requested resource is the only base this path knows.
+        // `curlio` follows any redirect itself and does not expose where it landed; the requested
+        // resource is the only base this path knows.
         let (src, size) = hls_open_curl(&url, aq, net, deadline, checkpoint)?;
         Ok((src, size, resource.clone()))
     } else {

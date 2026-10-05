@@ -41,7 +41,9 @@ pub(crate) enum DiscoveryClass {
     NoServers,
     /// A server answered and refused the credentials.
     Refused,
-    /// No server answered.
+    /// No server verified as itself: none answered, or one answered over HTTPS with a certificate
+    /// chain this television could not verify (`auth::Discovery::TlsUntrusted` reports as this
+    /// class so the schema stays closed; its X509 verify code stays on the device).
     Silent,
     /// Only insecure connections were offered, and none was allowed.
     InsecureOnly,
@@ -654,6 +656,7 @@ pub(crate) fn preview_event() -> Vec<u8> {
                 status: None,
                 body_limit: None,
                 curl_rc: Some(6),
+                verify: None,
             })),
         )
         .with_link_state(1, Some(std::time::Duration::from_secs(4)), 1)
@@ -674,7 +677,7 @@ mod tests {
     use std::time::Duration;
 
     fn failure(cause: RequestError, status: Option<u16>, curl_rc: Option<i32>) -> RequestFailure {
-        RequestFailure { cause, status, body_limit: None, curl_rc }
+        RequestFailure { cause, status, body_limit: None, curl_rc, verify: None }
     }
 
     #[test]

@@ -155,7 +155,7 @@ runtime="${PLX_RUNTIME:-$HOME/.local/state/plxnative-sim}"
 target="${PLX_TARGET:-$HOME/.cache/plxnative-sim/target}"
 assets="${PLX_ASSETS:-$HOME/.local/share/plxnative-sim/assets}"
 mkdir -p "$runtime" "$target" "$assets"
-for file in appfont.ttf appfont-bold.ttf appfont-cjk.ttf OFL.txt; do
+for file in appfont.ttf appfont-bold.ttf appfont-cjk.ttf OFL.txt le-roots.pem; do
     install -m 0644 "$repo/pkg/$file" "$assets/$file"
 done
 if [ "${PLX_STAGE_TOKEN:-}" = 1 ]; then

@@ -153,7 +153,10 @@ pub enum Outcome {
     /// parallel origins and the relay fallback settle; this becomes the final reason only if none
     /// of them verifies the requested machine.
     Unauthorized,
-    /// No answer: refused, timed out, or unresolvable. The only outcome the next candidate can fix.
+    /// No answer: refused, timed out, or unresolvable — or an HTTPS answer whose certificate chain
+    /// this television could not verify, which [`Cause::TlsUntrusted`] tells apart on the settled
+    /// verdict while the outcome keeps the one structural reading, "no address verified". The only
+    /// outcome the next candidate can fix.
     Unreachable,
     /// The whole-server aggregate for [`crate::auth::Reach::InsecureOnly`] (issue #95, plan §4):
     /// verified, provably the right server, but only over a transport this build can never put a
@@ -163,6 +166,57 @@ pub enum Outcome {
     /// [`Self::Unreachable`] because the remedy and the words are both different: the server
     /// answered, so telling the user it did not sends them to look at a router for nothing.
     InsecureOnly,
+}
+
+/// **Why a server that no route verified could not be used** — the closed cause behind
+/// [`Outcome::Unreachable`] and [`Outcome::Unauthorized`], kept beside the outcome rather than as
+/// more variants of it. [`Outcome`]'s collapse is structural (only `Unreachable` and `WrongServer`
+/// mean "try the next address", and the sources panel and the registry read it that way), so the
+/// finer reason travels separately and nothing that matches an `Outcome` changes.
+///
+/// Three causes, because they send a person to three different places:
+///
+/// * [`Self::Unreachable`] — nothing answered: a timeout, a refusal, DNS, a TLS failure that is
+///   not a trust failure (a handshake the firmware cannot speak, a wrong clock, a name mismatch),
+///   or a different machine at the address. Check the server and the network.
+/// * [`Self::TlsUntrusted`] — HTTPS reached something, but the certificate chain failed
+///   verification against this television's trust store (libcurl 60 with an OpenSSL verify result of
+///   2, 18, 19, 20 or 21: [`crate::net::keypin::untrusted_chain_verify`]), and the bundled roots
+///   did not answer for it either. The server is there and fine; this build cannot vouch for it.
+///   `verify` is that verify number and nothing else, so it may be logged. **A later stage attaches
+///   a user-approval alert to exactly this verdict**, which is why it is `Copy` and read per machine
+///   (`auth::SettledProbe::cause`).
+/// * [`Self::Unauthorized`] — a route answered 401: the profile or token has no access.
+///
+/// Never a name, host, address or token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Cause {
+    Unreachable,
+    TlsUntrusted { verify: u8 },
+    Unauthorized,
+}
+
+impl Cause {
+    /// The closed word a log line may carry for this cause.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Unreachable => "unreachable",
+            Self::TlsUntrusted { .. } => "tls_untrusted",
+            Self::Unauthorized => "unauthorized",
+        }
+    }
+
+    /// The cause a transport failure puts on ONE route: [`Self::TlsUntrusted`] when its chain failed
+    /// verification ([`crate::net::RequestFailure::untrusted_chain`]), [`Self::Unreachable`] otherwise — a failure
+    /// that carries no evidence at all (the plaintext transport) included. A 401 is never a transport
+    /// failure here: it is an answer, graded `Outcome::Unauthorized` by the probe.
+    pub fn of_failure(failure: Option<crate::net::RequestFailure>) -> Self {
+        match failure.and_then(|f| f.untrusted_chain()) {
+            Some(verify) => Self::TlsUntrusted { verify },
+            None => Self::Unreachable,
+        }
+    }
 }
 
 /// A port this client could actually dial, narrowed to the `i32` the transport takes — `None` for

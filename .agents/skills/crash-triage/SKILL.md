@@ -143,7 +143,8 @@ a path typed from memory reads the wrong app's log without erroring.
 | `<rundir>/plxnative-stderr.log` | where Rust panics print |
 | `<rundir>/plxnative-diag.log` | atomically replaced storage-stage snapshot, 0640, at most 16 KiB; no account data or paths |
 
-Events, crash and stderr remain 0600. The storage snapshot is group-readable for a shell sharing
+Events, crash and stderr are 0640 as well (they were 0600 until 2026-10-04), so a Dev Mode user can
+fetch them with webOS Dev Manager. The storage snapshot is group-readable for a shell sharing
 its gid and records build identity, directory write probes and helper/activation outcomes. A failed
 publication preserves the prior snapshot; it is not proof that the current process reached startup.
 

@@ -380,7 +380,7 @@ fn roster_grading_tells_a_refused_identity_from_no_answer() {
     assert!(grade_roster(Err(Ok(503))).is_none());
     assert!(grade_roster(Err(Ok(200))).is_none(), "an unreadable 200 is no verdict");
     assert!(grade_roster(Err(Err(RequestFailure { cause: RequestError::TimedOut, status: None,
-        body_limit: None, curl_rc: Some(28) }))).is_none());
+        body_limit: None, curl_rc: Some(28), verify: None }))).is_none());
 }
 
 /// #132: a switched profile whose token plex.tv then REFUSES is not a connection fault. The
@@ -434,6 +434,6 @@ fn a_refused_profile_resources_request_does_not_blame_the_connection() {
     assert!(!refused.contains("connection"), "a 401 is an answer: {refused}");
     assert!(refused.contains("Kid"), "the refusal names the profile: {refused}");
     let silent = run(Err(RequestFailure { cause: RequestError::TimedOut, status: None,
-        body_limit: None, curl_rc: Some(28) }));
+        body_limit: None, curl_rc: Some(28), verify: None }));
     assert!(silent.contains("check the connection"), "no answer keeps the connection copy: {silent}");
 }

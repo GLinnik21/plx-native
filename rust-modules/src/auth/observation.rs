@@ -226,6 +226,18 @@ fn write_probe(w: &mut crate::ui::machine::Canon, probe: &SettledProbe) {
     // The candidate address now affects application state (`publish_settled_probe` derives the
     // client's IP generation from it), so it must be part of what the Canon encodes too.
     w.option(probe.address.as_deref(), |w, address| { w.str(address); });
+    // The STORED cause, and only when there is one: a probe without it (every recording made before
+    // the field existed, and a cached-origin re-probe that did not fail on a certificate) hashes exactly as it did, so
+    // no pinned replay moves — a replay plays RECORDED observations, which carry no cause. A fresh
+    // race verdict that failed (`Unauthorized`, `Unreachable`, `TlsUntrusted`) stamps one, and it
+    // is what the failure read-out was worded by.
+    if let Some(cause) = probe.cause {
+        match cause {
+            crate::plex::probe::Cause::Unreachable => { w.u8(1); }
+            crate::plex::probe::Cause::TlsUntrusted { verify } => { w.u8(2).u8(verify); }
+            crate::plex::probe::Cause::Unauthorized => { w.u8(3); }
+        }
+    }
 }
 
 fn write_probes(w: &mut crate::ui::machine::Canon, probes: &[SettledProbe]) {
@@ -431,12 +443,37 @@ mod insecure_only_outcome_tests {
     #[test]
     fn write_probe_gives_insecure_only_its_own_canon_byte() {
         use crate::ui::machine::Canon;
-        let probe = |outcome| SettledProbe { machine_id: "m".into(), outcome, tier: None, address: None };
+        let probe = |outcome| SettledProbe { machine_id: "m".into(), outcome, tier: None, address: None, cause: None };
         let bytes = |outcome| { let mut w = Canon::new(); write_probe(&mut w, &probe(outcome)); w.finish() };
         let insecure = bytes(Outcome::InsecureOnly);
         for other in [Outcome::Reachable, Outcome::WrongServer, Outcome::Unauthorized, Outcome::Unreachable] {
             assert_ne!(insecure, bytes(other), "InsecureOnly must not collide with {other:?}'s Canon bytes");
         }
+    }
+
+    /// The cause is part of what a replay pins when there is one, and costs an existing recording
+    /// nothing when there is not: a probe with no cause hashes exactly as it did before the field.
+    #[test]
+    fn write_probe_encodes_a_cause_only_when_there_is_one() {
+        use crate::ui::machine::Canon;
+        use crate::plex::probe::Cause;
+        let probe = |cause| SettledProbe {
+            machine_id: "m".into(), outcome: Outcome::Unreachable, tier: None, address: None, cause,
+        };
+        let bytes = |cause| { let mut w = Canon::new(); write_probe(&mut w, &probe(cause)); w.finish() };
+        let legacy = {
+            let mut w = Canon::new();
+            w.str("m").u8(3);
+            owner::write_tier(&mut w, None);
+            w.option(None::<&str>, |w, address| { w.str(address); });
+            w.finish()
+        };
+        assert_eq!(bytes(None), legacy, "no cause, no new bytes: old recordings keep their hashes");
+        let tls = |verify| bytes(Some(Cause::TlsUntrusted { verify }));
+        assert_ne!(tls(20), legacy);
+        assert_ne!(tls(20), tls(21), "the verify code is part of the encoding");
+        assert_ne!(tls(20), bytes(Some(Cause::Unreachable)));
+        assert_ne!(bytes(Some(Cause::Unauthorized)), bytes(Some(Cause::Unreachable)));
     }
 
     /// PR #104 review: `SettledProbe::address` now affects application state
@@ -449,6 +486,7 @@ mod insecure_only_outcome_tests {
         let probe = |address: Option<&str>| SettledProbe {
             machine_id: "m".into(), outcome: Outcome::InsecureOnly,
             tier: Some(crate::plex::probe::Location::Local), address: address.map(str::to_owned),
+            cause: None,
         };
         let bytes = |address: Option<&str>| {
             let mut w = Canon::new();

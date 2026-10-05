@@ -1419,6 +1419,28 @@ check((ROOT / "pkg/OFL.txt").exists(),
 check("Noto Sans CJK" in (ROOT / "THIRD-PARTY-NOTICES.md").read_text(),
       "THIRD-PARTY-NOTICES.md attributes Noto Sans CJK (OFL 1.1 §2 wants the notice to travel)")
 
+print("== shipped roots bundle ==")
+# `pkg/le-roots.pem` is a TRUST ANCHOR set, so what it holds is graded by content, not by presence:
+# exactly the four public ISRG roots (SHA-256 of each DER, from letsencrypt.org/certificates), and
+# nothing else — a stray extra root here would widen what a `*.plex.direct` host may chain to.
+# `rust-modules/src/net_roots_tests.rs` pins the same four and verifies a real YR/YE chain.
+import base64 as _b64, hashlib as _hashlib, re as _re
+_LE_ROOTS = {
+    "96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bddf08c6": "ISRG Root X1",
+    "69729b8e15a86efc177a57afb7171dfc64add28c2fca8cf1507e34453ccb1470": "ISRG Root X2",
+    "e57b7e6f150c419102e8d5c055729ff967b9d1a829bf00cec89ca604ebf4a86f": "ISRG Root YR",
+    "e14ffcad5b0025731006caa43a121a22d8e9700f4fb9cf852f02a708aa5d5666": "ISRG Root YE",
+}
+_roots_pem = ROOT / "pkg/le-roots.pem"
+check(_roots_pem.exists(), "pkg/le-roots.pem present — the roots-mode fallback bundle (rust-modules/src/net.rs, keypin)")
+if _roots_pem.exists():
+    _got = [_hashlib.sha256(_b64.b64decode("".join(m.split())))
+            .hexdigest() for m in _re.findall(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----",
+                                              _roots_pem.read_text(), _re.S)]
+    check(sorted(_got) == sorted(_LE_ROOTS),
+          "pkg/le-roots.pem holds exactly ISRG Root X1, X2, YR and YE (by SHA-256 of each certificate)"
+          + ("" if sorted(_got) == sorted(_LE_ROOTS) else f" — saw {_got}"))
+
 print("== compliance artifacts ==")
 # LGPL-2.1 §6 requires the notice AND the licence text to travel with the BINARY, so these are
 # payload rather than repo decoration — a copy on GitHub does not discharge it for someone who
@@ -1477,6 +1499,10 @@ expected = {
     # appfont-cjk.ttf is the fallback face. Its absence is not a cosmetic loss: every Korean,
     # Japanese and Chinese title in the library becomes tofu, which is LG checklist #6 and #48.
     "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",
+    # le-roots.pem is the roots-mode fallback bundle (`net::keypin::Mode::Roots`): without it a
+    # `*.plex.direct` server whose certificate chains to a 2025 Let's Encrypt root is unreachable on
+    # a 2020 firmware, silently — the fallback just never engages.
+    "le-roots.pem",
     "THIRD-PARTY-NOTICES.md", "LICENSE", "LICENSING.md", "TRADEMARKS.md", *NEEDED_LICENCES,
 }
 data_blob = None
@@ -1499,7 +1525,20 @@ if data_blob is not None:
         modes = {Path(m.name).name: m.mode & 0o777 for m in members}
         paths = {m.name.lstrip("./") for m in members}
         owners = {(m.uname, m.gname) for m in members}
+        shipped_roots = [t.extractfile(m).read() for m in members if Path(m.name).name == "le-roots.pem"]
     check(expected <= names, f"payload carries all {len(expected)} app files")
+    # The roots bundle is graded in the REPO above, but what a television trusts is the member of
+    # the BUILT archive: a stale or hand-edited copy staged by the Makefile would pass every check of
+    # `pkg/le-roots.pem`. Same four roots, and byte-identical to the repo file.
+    check(len(shipped_roots) == 1 and _roots_pem.exists()
+          and _hashlib.sha256(shipped_roots[0]).hexdigest() == _hashlib.sha256(_roots_pem.read_bytes()).hexdigest(),
+          "the ipk's le-roots.pem is byte-identical to pkg/le-roots.pem (same SHA-256)")
+    if len(shipped_roots) == 1:
+        _member_got = [_hashlib.sha256(_b64.b64decode("".join(m.split()))).hexdigest()
+                       for m in _re.findall(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----",
+                                            shipped_roots[0].decode("ascii", "replace"), _re.S)]
+        check(sorted(_member_got) == sorted(_LE_ROOTS),
+              "the ipk's le-roots.pem holds exactly ISRG Root X1, X2, YR and YE (by SHA-256 of each certificate)")
     check(modes.get("plxnative") == 0o755,
           "native app is executable by its jailed runtime uid")
     check(modes.get("sentry-crash") == 0o755,

@@ -59,7 +59,7 @@ class DeployManifest(unittest.TestCase):
         # reached a deployed app directory.
         deploy_files = make_print("print-deploy-files")
         names = {pathlib.Path(f).name for f in deploy_files}
-        for must in ("splash.png", "icon.png", "OFL.txt", "THIRD-PARTY-NOTICES.md"):
+        for must in ("splash.png", "icon.png", "OFL.txt", "THIRD-PARTY-NOTICES.md", "le-roots.pem"):
             with self.subTest(must=must):
                 self.assertIn(must, names)
 

@@ -327,6 +327,7 @@ fn dns_miss() -> PinPoll {
         status: None,
         body_limit: None,
         curl_rc: Some(6),
+        verify: None,
     }))
 }
 

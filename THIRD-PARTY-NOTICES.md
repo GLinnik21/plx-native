@@ -285,6 +285,25 @@ APCS frame layout; the pinned source hash and complete patch are in `ci/build-se
 Licence: **MIT** (`licenses/MIT.txt`). It is statically linked into both the client and crash
 handler and is used to initialise the ARM unwind machinery outside signal context.
 
+### 2.7 Public CA root certificates
+
+**ISRG Root X1, ISRG Root X2, ISRG Root YR and ISRG Root YE** — `le-roots.pem`. Four self-signed
+root *certificates* (public keys and names, no private material) of the Internet Security Research
+Group, the operator of Let's Encrypt, copied unmodified from https://letsencrypt.org/certificates/.
+They carry no copyright licence of their own; they are published by their issuer for exactly this
+use, to be installed in trust stores. Each certificate's SHA-256 fingerprint is in the file's own
+header comments.
+
+*Why it ships:* a Plex Media Server's `*.plex.direct` certificate is issued by Let's Encrypt, and
+a television whose trust store predates the 2025 roots cannot verify a chain that ends in
+ISRG Root YR or YE. For a `*.plex.direct` host whose verification against the television's own
+store failed for that reason, the application retries once against this file, with the
+certificate chain, its dates and the host name all still checked. It is offered for no other host
+name, and only after the television's own store has said no (for ten minutes after it has verified a
+host, a request to that host starts there instead of repeating the handshake the store failed). A
+redirect is a request of its own, verified against the television's own store, and is offered this
+file only if its target is itself a `*.plex.direct` name that fails the same way.
+
 ---
 
 ## 3. Dynamically linked, not redistributed

@@ -11,7 +11,7 @@
 //! authority. Network/PIN derivation remain worker operations; offline policy is retained below.
 use crate::plex::account::{AccountClient, CallEvidence, HomeUser, PinPoll, Resource, SwitchOutcome};
 use crate::telemetry::incident::{DiscoveryClass, IncidentContext, IncidentKind};
-use crate::plex::probe::{self, Candidate, Outcome, ProbePlan};
+use crate::plex::probe::{self, Candidate, Cause, Outcome, ProbePlan};
 use crate::plex::session::{self, ProfileCreds, ServerRef, Session, SourceRef, UserRef};
 use crate::plex::{CredentialPolicy, Origin, ServerId};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 
 pub(crate) mod owner;
 pub(crate) mod observation;
+mod causes;
+pub(crate) use causes::FailureCauses;
 pub(crate) use owner::{SessionInit, SessionMachine, SessionRead};
 
 /// Resource executor entry. Every credential and network-policy input is captured by the
@@ -867,6 +869,11 @@ fn discovery_failure(d: &Discovery) -> Option<(&'static str, IncidentContext)> {
             DiscoveryClass::Silent,
             *last,
         ),
+        // **Reported as the class it most resembles, `Silent`, and with no evidence** — the incident
+        // schema is closed and privacy-reviewed (`PRIVACY.md`, `telemetry::incident`), and an
+        // untrusted certificate is a server that did not answer this build as itself: neither a new
+        // class nor the verify code leaves the device. The events log keeps the detail locally.
+        Discovery::TlsUntrusted => (TLS_UNTRUSTED_MESSAGE, DiscoveryClass::Silent, None),
         Discovery::InsecureOnly => (DISCOVERY_INSECURE_ONLY_MESSAGE, DiscoveryClass::InsecureOnly, None),
     };
     Some((message, IncidentContext::new(IncidentKind::Discovery(class), last)))
@@ -1352,9 +1359,10 @@ fn poll_for_token(w: &mut impl PinWatch, window: Duration) -> PollEnd {
 /// distinction `probe.rs`'s module doc refuses to let a caller collapse, because they send the
 /// user to different places.
 ///
-/// **Precedence, best first: `At` > `InsecureOnly` > `Refused` > `No`.** A verified identity —
-/// even one this build cannot put a credential on — beats a 401 from a different, parallel or
-/// proxied candidate; silence is the weakest signal of all.
+/// **Precedence, best first: `At` > `InsecureOnly` > `Refused` > `TlsUntrusted` > `No`.** A verified
+/// identity — even one this build cannot put a credential on — beats a 401 from a different,
+/// parallel or proxied candidate; a certificate this television cannot verify is a better-known
+/// fact than silence, and silence is the weakest signal of all.
 enum Reach {
     /// This address answered `/identity` **as the server we asked for**, over a transport that
     /// can carry a credential.
@@ -1379,7 +1387,15 @@ enum Reach {
     /// final reason when none of those proves reachability. Reporting that as generic silence would
     /// send the user to the router for an authorization/access-policy problem.
     Refused,
-    /// Nothing answered as this server.
+    /// No route verified the server and none answered 401, but at least one HTTPS route reached
+    /// something whose certificate chain this television's trust store could not verify (and the
+    /// bundled roots did not answer for it either): libcurl 60 with an X509 verify result of 2, 18,
+    /// 19, 20 or 21 ([`Cause::TlsUntrusted`]; the `u8` is that number). The server is there — it is
+    /// this build that cannot vouch for it — so it is not [`Reach::No`], whose copy sends the owner
+    /// to check the server and the network.
+    TlsUntrusted(u8),
+    /// Nothing answered as this server: a timeout, a refusal, DNS, a TLS failure that is not a trust
+    /// failure (the clock cases, a name mismatch), or only a different machine at the address.
     No,
 }
 
@@ -1415,7 +1431,26 @@ enum Discovery {
     /// parallel/proxy 401, and points at a fixable cause (HTTPS to the server) rather than a
     /// credential one.
     InsecureOnly,
+    /// No server verified, none answered 401 and none verified over plaintext, but at least one
+    /// answered over HTTPS with a certificate chain this television could not verify
+    /// ([`Reach::TlsUntrusted`]). Between [`Self::Refused`] and [`Self::Silent`] in plan §4's
+    /// precedence. The per-server evidence — which machine, which X509 verify result — is not
+    /// carried here: every server's race publishes it as it settles, as the [`SettledProbe::cause`]
+    /// of `RegistryProgress::Settled`.
+    TlsUntrusted,
 }
+
+/// Copy for [`Discovery::TlsUntrusted`] and the profile picker's failure for the same cause. Names
+/// the one remedy the app has: newer bundled public roots arrive with an update (a verify result of
+/// 18 or 19, the server's own root, is the owner's to fix — the sentence is still the one thing the
+/// person at the television can do).
+const TLS_UNTRUSTED_MESSAGE: &str =
+    "This TV doesn't trust your server's security certificate. Update PlxNative and try again.";
+
+/// The picker's failure when a profile was picked and no server answered (none refused it and none
+/// presented a certificate this TV does not trust): **not** "has no access", which is for a 401.
+const SERVERS_UNREACHABLE_MESSAGE: &str =
+    "plex.tv listed your servers, but none of them answered. Make sure your Plex Media Server is on and online, then try again.";
 
 /// Copy for [`Discovery::InsecureOnly`], shared by sign-in and rediscovery so the two paths
 /// cannot say two different things about the same verdict (plan §4).
@@ -1600,6 +1635,13 @@ pub(crate) struct ProbeReply {
 }
 
 impl ProbeReply {
+    /// The X509 verify result when this reply is a TLS handshake whose certificate chain the
+    /// television's trust store could not verify ([`crate::net::RequestFailure::untrusted_chain`]),
+    /// `None` for an answer, for every other failure and for the plaintext transport.
+    fn untrusted(&self) -> Option<u8> {
+        self.failure.and_then(|failure| failure.untrusted_chain())
+    }
+
     /// The acceptance verdict ([`classify`]) for this reply.
     fn grade(&self, want_machine_id: &str) -> Outcome {
         classify(self.status, &self.body, want_machine_id)
@@ -1694,6 +1736,8 @@ struct ProbeMessage {
     index: usize,
     on_time: bool,
     outcome: Outcome,
+    /// [`ProbeReply::untrusted`] of this candidate's reply.
+    untrusted: Option<u8>,
 }
 
 const PROBE_PENDING: u8 = 0;
@@ -1715,6 +1759,11 @@ struct BatchResult {
     /// evidence for [`Reach::InsecureOnly`] when nothing eligible verifies.
     insecure: Option<Winner>,
     refused: bool,
+    /// The X509 verify result of the best-ranked (lowest-indexed) candidate whose HTTPS handshake
+    /// failed on a certificate chain this television could not verify, with its index —
+    /// [`Reach::TlsUntrusted`]'s evidence when nothing else settles the server. A late answer, which
+    /// the race did not wait for, is not recorded.
+    untrusted: Option<(usize, u8)>,
 }
 
 fn probe_deadline(c: &Candidate, policy: ProbeDeadlines) -> Duration {
@@ -1831,7 +1880,15 @@ fn settle_probe_message(
             "auth: '{}' — {}:{} answered as a DIFFERENT machine",
             plan.name, c.address, c.port
         )),
-        Outcome::Unreachable => {}
+        Outcome::Unreachable => {
+            // Not logged here: the transport already wrote `net: curl rc=60 — …`, and the one closed
+            // `auth: no server verified — …` line is written where the failure is decided.
+            if let Some(verify) = message.untrusted {
+                if result.untrusted.is_none_or(|(index, _)| message.index < index) {
+                    result.untrusted = Some((message.index, verify));
+                }
+            }
+        }
         // `classify` never produces this — it is the whole-server AGGREGATE verdict this
         // function's own caller derives from `result.insecure`, not a per-candidate answer.
         Outcome::InsecureOnly => {}
@@ -1875,7 +1932,9 @@ fn race_batch(
         let pin = crate::plex::ResolvePin::for_origin(&origin, &c.address);
         let location = c.location;
         let job = Box::new(move || {
-            let outcome = dial(&origin, pin.as_ref(), budget).grade_learning(&machine_id, location);
+            let reply = dial(&origin, pin.as_ref(), budget);
+            let untrusted = reply.untrusted();
+            let outcome = reply.grade_learning(&machine_id, location);
             let on_time = Instant::now() <= deadline;
             // Claim completion before publishing the message. If the coordinator expires first,
             // this result is inert. If this claim wins and the worker is descheduled before send,
@@ -1894,6 +1953,7 @@ fn race_batch(
                     index,
                     on_time,
                     outcome,
+                    untrusted,
                 });
             }
         });
@@ -2028,8 +2088,11 @@ fn probe_server_racing(
     if batch.first.is_none() && !relay.is_empty() {
         let direct_refused = batch.refused;
         let direct_insecure = batch.insecure.take();
+        let direct_untrusted = batch.untrusted;
         batch = race_batch(plan, &relay, dial, spawn, policy, activate);
         batch.refused |= direct_refused;
+        // The direct routes rank ahead of the relay, so their evidence leads.
+        batch.untrusted = direct_untrusted.or(batch.untrusted);
         if batch.insecure.is_none() {
             batch.insecure = direct_insecure;
         }
@@ -2040,6 +2103,8 @@ fn probe_server_racing(
             Reach::InsecureOnly(insecure.candidate)
         } else if batch.refused {
             Reach::Refused
+        } else if let Some((_, verify)) = batch.untrusted {
+            Reach::TlsUntrusted(verify)
         } else {
             Reach::No
         };
@@ -2100,6 +2165,52 @@ pub(crate) struct SettledProbe {
     /// whenever `tier` is: nothing verified, so there is nothing to derive from.
     #[serde(default)]
     address: Option<String>,
+    /// Why no route verified this server, when that is what [`Self::outcome`] says — see
+    /// [`SettledProbe::cause`], which also answers for a probe written before this field existed.
+    /// `#[serde(default)]`, so every recorded session keeps loading with `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cause: Option<Cause>,
+}
+
+impl SettledProbe {
+    /// The server this verdict is about.
+    #[cfg(test)]
+    pub(crate) fn machine_id(&self) -> &str { &self.machine_id }
+
+    /// **Why this server could not be used**, `None` for one that verified (reachable, or only over
+    /// plaintext). A stored cause wins; a probe without one reads as what its [`Outcome`] already
+    /// says (`Unauthorized`, `Unreachable`), which is exactly what every probe recorded before the
+    /// cause existed meant.
+    pub(crate) fn cause(&self) -> Option<Cause> {
+        self.cause.or(match self.outcome {
+            Outcome::Unauthorized => Some(Cause::Unauthorized),
+            Outcome::Unreachable => Some(Cause::Unreachable),
+            Outcome::Reachable | Outcome::WrongServer | Outcome::InsecureOnly => None,
+        })
+    }
+
+    /// This cached-origin verdict, which replaces `fresh` in the profile worker when the fresh race
+    /// found nothing: when neither verified, the cause that is more useful to the person survives
+    /// (an untrusted certificate over a 401 over silence — [`FailureCauses::worst`]'s order), so a
+    /// cached re-probe that merely timed out cannot turn a fresh "untrusted" back into "unreachable".
+    #[must_use]
+    fn after_fresh(self, fresh: &SettledProbe) -> Self {
+        let rank = |cause: Option<Cause>| match cause {
+            Some(Cause::TlsUntrusted { .. }) => 3, Some(Cause::Unauthorized) => 2, Some(Cause::Unreachable) => 1, None => 0,
+        };
+        if self.cause().is_some() && rank(fresh.cause()) > rank(self.cause()) {
+            let cause = fresh.cause();
+            return self.with_cause(cause);
+        }
+        self
+    }
+
+    /// This verdict with `cause` as its reason (`None` leaves the outcome's own reading).
+    #[must_use]
+    fn with_cause(mut self, cause: Option<Cause>) -> Self {
+        self.cause = cause;
+        self
+    }
 }
 
 pub(crate) fn settled_probe(
@@ -2113,7 +2224,24 @@ pub(crate) fn settled_probe(
         outcome,
         tier,
         address,
+        cause: None,
     }
+}
+
+/// What one settled race came to — [`probe_verdict`]'s answer, the one value the registry write
+/// and the profile worker both take: the [`Outcome`], the winning candidate's tier and address, and
+/// the [`Cause`] when nothing verified. A struct rather than the tuple it was, because the cause
+/// is the fourth thing a caller must not drop on the way to [`settled_probe_of`].
+struct Verdict {
+    outcome: Outcome,
+    tier: Option<probe::Location>,
+    address: Option<String>,
+    cause: Option<Cause>,
+}
+
+/// [`settled_probe`] for a [`Verdict`], cause included.
+fn settled_probe_of(plan: &ProbePlan, verdict: Verdict) -> SettledProbe {
+    settled_probe(plan, verdict.outcome, verdict.tier, verdict.address).with_cause(verdict.cause)
 }
 
 /// Test-only convenience: build a [`SettledProbe`] directly by machine id, for fixtures that have
@@ -2126,20 +2254,23 @@ pub(crate) fn settled_probe_for_test(
     tier: Option<probe::Location>,
     address: Option<String>,
 ) -> SettledProbe {
-    SettledProbe { machine_id: machine_id.to_owned(), outcome, tier, address }
+    SettledProbe { machine_id: machine_id.to_owned(), outcome, tier, address, cause: None }
 }
 
 /// Turn one settled race into what gets published and, when something verified, recorded —
 /// `resolve_roster_using` and `probe_profile_resource_live` each needed this same mapping once per
 /// server (plan §4). [`Reach::InsecureOnly`] keeps its candidate's tier and address (S9): the
 /// state itself already carries the verdict, so a diagnostic tier is not a claim of usability.
-fn probe_verdict(reach: &Reach) -> (Outcome, Option<probe::Location>, Option<String>) {
-    match reach {
-        Reach::At(c, _) => (Outcome::Reachable, Some(c.location), Some(c.address.clone())),
-        Reach::InsecureOnly(c) => (Outcome::InsecureOnly, Some(c.location), Some(c.address.clone())),
-        Reach::Refused => (Outcome::Unauthorized, None, None),
-        Reach::No => (Outcome::Unreachable, None, None),
-    }
+fn probe_verdict(reach: &Reach) -> Verdict {
+    let (outcome, tier, address, cause) = match reach {
+        Reach::At(c, _) => (Outcome::Reachable, Some(c.location), Some(c.address.clone()), None),
+        Reach::InsecureOnly(c) => (Outcome::InsecureOnly, Some(c.location), Some(c.address.clone()), None),
+        Reach::Refused => (Outcome::Unauthorized, None, None, Some(Cause::Unauthorized)),
+        // `Outcome` keeps its structural collapse — no address verified — and the cause rides beside it.
+        Reach::TlsUntrusted(verify) => (Outcome::Unreachable, None, None, Some(Cause::TlsUntrusted { verify: *verify })),
+        Reach::No => (Outcome::Unreachable, None, None, Some(Cause::Unreachable)),
+    };
+    Verdict { outcome, tier, address, cause }
 }
 
 fn publish_settled_probe(probe: &SettledProbe) {
@@ -2241,10 +2372,17 @@ enum Resolved {
     /// account rather than about the network.
     NoServers,
     /// Servers were probed and none was accepted. `refused` distinguishes "at least one answered
-    /// 401" from "silence", and `insecure` marks that at least one server answered
+    /// 401" from silence, `causes` tells an untrusted certificate ([`Reach::TlsUntrusted`]) from
+    /// silence among the servers that did not, and `insecure` marks that at least one server answered
     /// [`Reach::InsecureOnly`] — verified alive, but over a transport this build can never put a
-    /// credential on. Three different things to tell the user.
-    None { refused: bool, insecure: bool },
+    /// credential on. Four different things to tell the user.
+    None {
+        refused: bool,
+        insecure: bool,
+        /// Why each server no route verified could not be used — the events line's counts, and the
+        /// per-machine verdict ([`Cause::TlsUntrusted`]) that [`Discovery::TlsUntrusted`] carries.
+        causes: FailureCauses,
+    },
     /// The roster, **ours first**, each entry carrying the address that actually answered.
     Reached(Vec<SourceRef>),
 }
@@ -2278,7 +2416,7 @@ fn resolve_roster_using_admission(
     admit: &mut dyn FnMut(&SourceRef) -> crate::plex::EndpointAdmission,
     activate: &mut dyn FnMut(&ProbePlan, &Candidate, &Origin),
     between_servers: &mut dyn FnMut(),
-    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>, Option<String>),
+    observe: &mut dyn FnMut(&ProbePlan, Verdict),
 ) -> Resolution {
     let mut servers: Vec<&Resource> = resources.iter().filter(|r| r.is_server()).collect();
     if servers.is_empty() {
@@ -2292,12 +2430,16 @@ fn resolve_roster_using_admission(
     let mut admitted_machine_id = None;
     let mut refused = false;
     let mut insecure = false;
+    let mut causes = FailureCauses::default();
     for (server_index, r) in servers.into_iter().enumerate() {
         if server_index != 0 {
             between_servers();
         }
         let plan = probe::plan(r, policy);
         let mut rejected_origins = Vec::new();
+        // The server answered and then refused its per-profile grant: whatever the re-probe that
+        // follows says, "unauthorized" is what it was.
+        let mut admission_refused = false;
         let reach = loop {
             let reach = probe_one(&plan, &rejected_origins);
             let Some(s) = source_from_reach(r, &plan, &reach, household) else { break reach };
@@ -2316,6 +2458,7 @@ fn resolve_roster_using_admission(
                 }
                 crate::plex::EndpointAdmission::Refused(status) => {
                     refused = true;
+                    admission_refused = true;
                     log(&format!("auth: {:?} refused its per-profile grant (HTTP {status})",
                         plan.name));
                 }
@@ -2327,11 +2470,19 @@ fn resolve_roster_using_admission(
             if rejected_origins.contains(&origin) { break Reach::No; }
             rejected_origins.push(origin);
         };
-        let (outcome, tier, address) = probe_verdict(&reach);
+        let verdict = probe_verdict(&reach);
+        // A server no route verified is tallied by why, once, for the events line and for
+        // [`Discovery::TlsUntrusted`]'s evidence; one that verified (at all) is not a failure.
+        if matches!(reach, Reach::Refused | Reach::TlsUntrusted(_) | Reach::No) {
+            let cause = if admission_refused { Some(Cause::Unauthorized) } else { verdict.cause };
+            if let Some(cause) = cause {
+                causes.push(&plan.machine_id, cause);
+            }
+        }
         // Publish one aggregate result per server, after all of its direct/relay candidates have
         // settled. In particular a 401 remains distinct from silence, while wrong-machine-only
         // races fold to Unreachable because no address verified this server.
-        observe(&plan, outcome, tier, address);
+        observe(&plan, verdict);
         match reach {
             Reach::At(c, origin) => {
                 let s = source_from_reach(r, &plan, &Reach::At(c, origin.clone()), household)
@@ -2365,11 +2516,11 @@ fn resolve_roster_using_admission(
                 insecure = true;
             }
             Reach::Refused => refused = true,
-            Reach::No => {}
+            Reach::TlsUntrusted(_) | Reach::No => {}
         }
     }
     let outcome = if found.is_empty() {
-        Resolved::None { refused, insecure }
+        Resolved::None { refused, insecure, causes }
     } else {
         Resolved::Reached(found)
     };
@@ -2383,7 +2534,7 @@ fn resolve_roster_using(
     policy: CredentialPolicy,
     probe_one: &mut dyn FnMut(&ProbePlan) -> Reach,
     between_servers: &mut dyn FnMut(),
-    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>, Option<String>),
+    observe: &mut dyn FnMut(&ProbePlan, Verdict),
 ) -> Resolved {
     resolve_roster_using_admission(resources, household, policy, &mut |plan, _| probe_one(plan),
         &mut |_| crate::plex::EndpointAdmission::Usable, &mut |_, _, _| {},
@@ -2474,7 +2625,7 @@ fn resolve_roster(
         policy,
         &mut probe_one,
         &mut || {},
-        &mut |_, _, _, _| {},
+        &mut |_, _| {},
     )
 }
 
@@ -2483,7 +2634,7 @@ fn resolve_roster_live_while(
     household: &[i64],
     client_id: &str,
     activate: &mut dyn FnMut(&ProbePlan, &Candidate, &Origin),
-    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>, Option<String>),
+    observe: &mut dyn FnMut(&ProbePlan, Verdict),
     live: &dyn Fn() -> bool,
 ) -> Resolution {
     let policy = CredentialPolicy::build();
@@ -2569,21 +2720,38 @@ fn probe_profile_resource_live_after(
     household: &[i64],
     rejected_origins: &[String],
 ) -> (Option<SourceRef>, SettledProbe) {
+    let dial: ProbeDial = Arc::new(get_identity);
+    let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
+    probe_profile_resource_with(resource, household, rejected_origins, dial, &spawn, PROBE_DEADLINES)
+}
+
+/// [`probe_profile_resource_live_after`] with its three edges — the dial, the worker spawner and the
+/// deadlines — passed in, so a host test drives the SAME race and verdict a television runs against a
+/// scripted answer instead of a socket.
+fn probe_profile_resource_with(
+    resource: &Resource,
+    household: &[i64],
+    rejected_origins: &[String],
+    dial: ProbeDial,
+    spawn: &dyn Fn(usize, ProbeJob) -> bool,
+    policy: ProbeDeadlines,
+) -> (Option<SourceRef>, SettledProbe) {
     let mut plan = probe::plan(resource, CredentialPolicy::build());
     plan.candidates.retain(|candidate| dial_target(candidate).is_some_and(|origin|
         !rejected_origins.iter().any(|rejected| rejected == &origin.base())));
-    let dial: ProbeDial = Arc::new(get_identity);
-    let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
-    let reach = probe_server_racing(&plan, dial, &spawn, PROBE_DEADLINES, &mut |_, _, _| {});
-    let (outcome, tier, address) = probe_verdict(&reach);
+    let reach = probe_server_racing(&plan, dial, spawn, policy, &mut |_, _, _| {});
+    let verdict = probe_verdict(&reach);
     let source = source_from_reach(resource, &plan, &reach, household);
-    (source, settled_probe(&plan, outcome, tier, address))
+    (source, settled_probe_of(&plan, verdict))
 }
 
 /// Fold [`Resolved`]'s three empty-roster shapes into the [`Discovery`] outcome they map to, and
 /// leave a real roster (`Resolved::Reached`) for the caller to keep processing. Pure and pulled out
 /// of [`discover_and_store`] so the precedence rule (plan §4: `At` > `InsecureOnly` > `Refused` >
-/// `No`) is itself gradeable on the dev Mac rather than only reachable through a live worker.
+/// `TlsUntrusted` > `No`) is itself gradeable on the dev Mac rather than only reachable through a
+/// live worker. A server whose certificate this television could not verify is a better-known fact
+/// than silence, which is why it is not folded into [`Discovery::Silent`], and a 401 outranks it
+/// because a refusal is the answer the server itself gave.
 fn resolved_without_roster(resolved: Resolved) -> Result<Vec<SourceRef>, Discovery> {
     match resolved {
         Resolved::NoServers => Err(Discovery::NoServers),
@@ -2593,8 +2761,17 @@ fn resolved_without_roster(resolved: Resolved) -> Result<Vec<SourceRef>, Discove
             log("auth: at least one server verified only over plaintext (insecure-only), unusable in this build");
             Err(Discovery::InsecureOnly)
         }
-        Resolved::None { refused: true, insecure: false } => Err(Discovery::Refused),
-        Resolved::None { refused: false, insecure: false } => Err(Discovery::Silent(None)),
+        // The remaining shapes verified nothing at all: say why, once, as counts and verify codes.
+        Resolved::None { refused, causes, .. } => {
+            log(&causes.log_line());
+            if refused {
+                Err(Discovery::Refused)
+            } else if causes.tls_untrusted() > 0 {
+                Err(Discovery::TlsUntrusted)
+            } else {
+                Err(Discovery::Silent(None))
+            }
+        }
         Resolved::Reached(found) => Ok(found),
     }
 }
@@ -2636,11 +2813,11 @@ fn discover_and_store(ac: &AccountClient, client_id: &str, epoch: u64,
             candidate: candidate_activation(plan, c, origin, &credit, evidence),
         }));
     };
-    let mut observe = |plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>, address: Option<String>| {
+    let mut observe = |plan: &ProbePlan, verdict: Verdict| {
         output.progress(AuthProgress::Registry(RegistryProgress::Settled {
             epoch,
             expected: None,
-            probe: settled_probe(plan, outcome, tier, address),
+            probe: settled_probe_of(plan, verdict),
         }));
     };
     // **No household ids here, and that is a fact about the ORDER rather than an omission**: the
@@ -2908,8 +3085,8 @@ fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: Session
         &household,
         &sess.client_id,
         &mut activate,
-        &mut |plan, outcome, tier, address| {
-            settled.push(settled_probe(plan, outcome, tier, address));
+        &mut |plan, verdict| {
+            settled.push(settled_probe_of(plan, verdict));
         },
         &|| output.live(),
     );
@@ -3412,20 +3589,8 @@ impl<S: FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome> ProfileWork
         } else {
             PROBE_DEADLINES.remote
         };
-        let outcome = get_identity(&origin, pin.as_ref(), budget)
-            .grade_learning(&plan.machine_id, cached.tier.unwrap_or(probe::Location::Relay));
-        let source = (outcome == Outcome::Reachable).then(|| {
-            let mut fresh = cached.clone();
-            fresh.token = resource.access_token.clone();
-            fresh.name = resource.name.clone();
-            fresh.owned = resource.owned;
-            fresh.shared_by = credit_of(resource, household);
-            fresh.home = resource.home;
-            fresh.owner_id = resource.owner_id;
-            fresh
-        });
-        Some((source, settled_probe(&plan, outcome, cached.tier,
-            (outcome == Outcome::Reachable).then(|| cached.address.clone()))))
+        let reply = get_identity(&origin, pin.as_ref(), budget);
+        Some(cached_probe_result(resource, cached, household, &plan, reply))
     }
     fn admit(&mut self, source: &SourceRef, client_id: &str) -> crate::plex::EndpointAdmission {
         crate::plex::admit_source(source, client_id)
@@ -3435,6 +3600,37 @@ impl<S: FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome> ProfileWork
         crate::plex::admit_source_until(source, client_id, deadline)
     }
     fn gap(&mut self) { std::thread::sleep(SERVER_GAP); }
+}
+
+/// What re-probing `cached` — the origin a profile was last seated on — came to, given the `reply`
+/// it answered with. A verified answer yields the source (re-credentialed for this profile); a
+/// failure keeps the same [`Cause`] a fresh probe would have given it, because this verdict
+/// REPLACES the fresh one in the profile worker when the fresh race found nothing.
+fn cached_probe_result(
+    resource: &Resource,
+    cached: &SourceRef,
+    household: &[i64],
+    plan: &ProbePlan,
+    reply: ProbeReply,
+) -> (Option<SourceRef>, SettledProbe) {
+    let untrusted = reply.untrusted();
+    let outcome = reply.grade_learning(&plan.machine_id, cached.tier.unwrap_or(probe::Location::Relay));
+    let source = (outcome == Outcome::Reachable).then(|| {
+        let mut fresh = cached.clone();
+        fresh.token = resource.access_token.clone();
+        fresh.name = resource.name.clone();
+        fresh.owned = resource.owned;
+        fresh.shared_by = credit_of(resource, household);
+        fresh.home = resource.home;
+        fresh.owner_id = resource.owner_id;
+        fresh
+    });
+    let cause = match (outcome, untrusted) {
+        (Outcome::Unreachable, Some(verify)) => Some(Cause::TlsUntrusted { verify }),
+        _ => None,
+    };
+    (source, settled_probe(plan, outcome, cached.tier,
+        (outcome == Outcome::Reachable).then(|| cached.address.clone())).with_cause(cause))
 }
 
 /// Both the live resource executor and preserved worker-policy tests enter this same body.
@@ -3564,7 +3760,7 @@ pub(crate) fn profile_switch_worker_with_io(
                     if let Some((cached_winner, cached_settled)) =
                         io.probe_cached(&resources[i], cached, &household, &rejected_origins) {
                         winner = cached_winner;
-                        settled = cached_settled;
+                        settled = cached_settled.after_fresh(&settled);
                     }
                 }
             }
@@ -3614,14 +3810,29 @@ pub(crate) fn profile_switch_worker_with_io(
         });
         let malformed = admission_failures.iter().any(|(_, evidence)|
             *evidence == crate::plex::EndpointAdmission::Malformed);
+        // Why each server that no route verified could not be used. A probe that verified (and was
+        // then refused at admission, or only over plaintext) is not in here: the arms above own it.
+        let mut causes = FailureCauses::default();
+        for probe in &probes {
+            if let Some(cause) = probe.cause() { causes.push(&probe.machine_id, cause); }
+        }
+        let probe_cause = causes.worst();
         log(&format!(
             "auth: switch '{}' -> {}",
             tile.title,
             if insecure_only { "verified only over plaintext" }
             else if refusal.is_some() { "server refused the profile credential" }
             else if malformed { "server returned a malformed authenticated response" }
-            else { "no server access" },
+            else if !admission_failures.is_empty() { "no server admitted the profile" }
+            else { match probe_cause {
+                Some(Cause::TlsUntrusted { .. }) => "a server's certificate is not trusted by this TV",
+                Some(Cause::Unauthorized) => "no server access",
+                Some(Cause::Unreachable) | None => "no server answered",
+            } },
         ));
+        if !(insecure_only || refusal.is_some() || malformed || !admission_failures.is_empty()) {
+            log(&causes.log_line());
+        }
         output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
             epoch,
             expected,
@@ -3635,7 +3846,15 @@ pub(crate) fn profile_switch_worker_with_io(
                 } else if !admission_failures.is_empty() {
                     "Couldn't switch profile — check the connection.".into()
                 } else {
-                    format!("{} has no access to this server", tile.title)
+                    // Closed precedence, strongest first: a certificate this TV does not trust (the
+                    // person can fix it by updating), a 401 (the profile has no grant — the ONLY
+                    // case "has no access" is true of), then silence. A probe that left no cause at
+                    // all cannot occur once a server was probed; it reads as silence, never as a refusal.
+                    match probe_cause {
+                        Some(Cause::TlsUntrusted { .. }) => TLS_UNTRUSTED_MESSAGE.to_owned(),
+                        Some(Cause::Unauthorized) => format!("{} has no access to this server", tile.title),
+                        Some(Cause::Unreachable) | None => SERVERS_UNREACHABLE_MESSAGE.to_owned(),
+                    }
                 },
                 pin_denied: false,
             },
@@ -3715,7 +3934,7 @@ pub(crate) fn profile_switch_worker_with_io(
                 if let Some((cached_winner, cached_settled)) =
                     io.probe_cached(&resources[i], cached, &household, &[]) {
                     winner = cached_winner;
-                    settled = cached_settled;
+                    settled = cached_settled.after_fresh(&settled);
                 }
             }
         }
@@ -3753,6 +3972,10 @@ mod test_support;
 #[cfg(test)]
 #[path = "auth_discovery_tests.rs"]
 mod discovery_tests;
+
+#[cfg(test)]
+#[path = "auth_cause_tests.rs"]
+mod cause_tests;
 
 #[cfg(test)]
 #[path = "auth_profile_seat_tests.rs"]

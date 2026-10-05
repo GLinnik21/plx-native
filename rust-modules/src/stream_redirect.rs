@@ -1,13 +1,16 @@
-//! **HTTP redirects on the plaintext MEDIA path** — the one place a `3xx` answer to a media
-//! open is turned into the next request.
+//! **HTTP redirects on the plaintext MEDIA path** — where a `3xx` answer to a plaintext media
+//! open is turned into the next request. An https open is followed by `curlio`'s `next_hop`,
+//! built on this module's `is_redirect`, `resolve_location` and `MAX_HOPS`; the credential rule
+//! below is this follower's alone.
 //!
 //! PMS answers some Part URLs (Plex-hosted trailers: `/services/iva/assets/…`) with a `302` to a
 //! presigned CDN URL on another origin — typically https, sometimes a relative `Location`. The
 //! socket client in [`super`] is one request per open and cannot speak TLS, so following is a
 //! loop ABOVE it: [`open_following`] re-opens the same [`HttpStream`] for each plaintext hop and
 //! stops at the first https hop, handing that target back for the caller to open through
-//! `curlio` (which follows any further hops itself, under its own `CURLOPT_MAXREDIRS` and
-//! no-downgrade `CURLOPT_REDIR_PROTOCOLS`).
+//! `curlio` (which follows any further hops itself, one request per hop with libcurl's own
+//! following off, applies this module's `MAX_HOPS`, and refuses any hop from TLS back to
+//! plaintext).
 //!
 //! Credentials: the ORIGINAL request's credential header block and its `X-Plex-Token` query pair
 //! ride a hop only when the hop's scheme+host+port equal the ORIGINAL origin's. A cross-origin
@@ -34,8 +37,9 @@ use crate::checkpoint::Checkpoint;
 use crate::plex::{Origin, Scheme};
 
 /// Hops followed after the first request. The first request plus this many redirects is the most
-/// a media open will send before failing with [`FollowError::TooManyHops`] — the same bound
-/// `curlio` gives libcurl (`CURLOPT_MAXREDIRS`).
+/// a media open will send before failing with [`FollowError::TooManyHops`]. `curlio` imports this
+/// constant and counts the hops it follows itself against it; a target handed over from here
+/// starts a fresh count there.
 pub(crate) const MAX_HOPS: u32 = 5;
 
 /// The statuses that carry a `Location` to re-request with the same method. 300 and 304 are not

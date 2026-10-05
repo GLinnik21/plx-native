@@ -272,11 +272,11 @@ def main():
     shutil.copy2(binary, macos / "PlxNative")
     (macos / "PlxNative").chmod(0o755)
 
-    # The payload the app reads at RUNTIME is fonts and nothing else — every icon is an SVG
+    # The payload the app reads at RUNTIME is the fonts and the bundled Let's Encrypt roots (`le-roots.pem`) and nothing else — every icon is an SVG
     # compiled into the binary (`ui/icons.rs`'s `include_str!`), and `paths::app_dir` resolves
     # `Contents/Resources` when it finds itself inside a bundle. The rest is provenance: the
     # licences a redistributed binary owes.
-    for f in ("appfont.ttf", "appfont-bold.ttf", "OFL.txt"):
+    for f in ("appfont.ttf", "appfont-bold.ttf", "OFL.txt", "le-roots.pem"):
         shutil.copy2(REPO / "pkg" / f, res / f)
     shutil.copy2(REPO / "LICENSE", res / "LICENSE.txt")
     shutil.copy2(REPO / "LICENSING.md", res / "LICENSING.md")

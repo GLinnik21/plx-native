@@ -167,7 +167,8 @@ unchanged — only the directory moved**, so read each `/tmp/plxnative-…` path
 
 `plxnative-diag.log` is the storage worker's allowlisted snapshot on every flavour (0640,
 at most 16 KiB). It records build/uid/gid, fixed-label write probes, activation and helper stages;
-it contains no session data or resolved paths. Events, crash and stderr remain 0600. The diagnostics
+it contains no session data or resolved paths. Events, crash and stderr are 0640 too (they were
+0600 until 2026-10-04; group read is what lets a Dev Mode user fetch them). The diagnostics
 file is exempt from trigger detection and is replaced only when diagnostic status changes.
 
 **Two payloads do not carry the prefix, and that rewrite rule silently misses them:**

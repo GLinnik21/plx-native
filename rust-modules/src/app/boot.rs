@@ -83,16 +83,104 @@ pub(crate) fn install_panic_logger() {
         let thread = cur.name().unwrap_or("?");
         let line = format!("*** RUST PANIC [{thread}] at {loc}: {msg}");
         log(&line);
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&crate::paths::in_runtime_dir(crate::paths::runtime_file::CRASH))
-        {
-            let _ = writeln!(f, "{line}");
-        }
+        let _ = record_panic_in_crash_log(
+            &crate::paths::in_runtime_dir(crate::paths::runtime_file::CRASH),
+            &line,
+        );
         default(info); // preserve default behaviour (stderr -> plxnative-stderr.log)
     }));
+}
+
+/// Append the panic's record to the crash log at `path` (`plxnative-crash.log`, which `src/main.c`
+/// opens and the signal tracer appends to).
+///
+/// **Two disciplines, both the event log's** (the crash log is group-readable for the same Dev Mode
+/// reason, `LOG_MODE` in lib.rs). The text passes [`crate::diag::scrub::scrub_local`]: a panic
+/// message is whatever the failing call was formatting, and the raw line used to go to this file
+/// while only the event-log copy ([`log`]) was redacted. And the open is
+/// [`crate::open_log_append`]'s (`O_NOFOLLOW`, a regular file this uid owns with ONE
+/// link, 0640, never truncated) rather than a bare `OpenOptions` at the umask's mode, so a name
+/// planted in the shared `/tmp` is refused instead of written through. `Err` is for the hook to
+/// ignore: a panic hook has nowhere to report a failure to.
+fn record_panic_in_crash_log(path: &std::path::Path, line: &str) -> std::io::Result<()> {
+    crate::append_record(path, &crate::diag::scrub::scrub_local(line))
+}
+
+#[cfg(test)]
+mod panic_log_tests {
+    use super::record_panic_in_crash_log;
+    use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+
+    const LINE: &str = "*** RUST PANIC [demux] at src/ff.rs:1204: bad url https://192-168-1-50.0123456789abcdef0123456789abcdef.plex.direct:32400/x?X-Plex-Token=SECRETTOKEN";
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("plx-panic-log-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    /// The crash log is group-readable (a Dev Mode user fetches it), so the panic text a hook writes
+    /// to it passes the same redaction every event-log line does: a panic message can embed whatever
+    /// the failing call was formatting, including a URL.
+    #[test]
+    fn the_panic_text_is_scrubbed_like_every_event_log_line() {
+        let dir = scratch("scrub");
+        let path = dir.join("crash.log");
+        record_panic_in_crash_log(&path, LINE).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("SECRETTOKEN"), "{written}");
+        assert!(!written.contains("192-168-1-50") && !written.contains("plex.direct"), "{written}");
+        assert!(written.starts_with("*** RUST PANIC [demux] at src/ff.rs:1204: "), "the record's shape survives: {written}");
+        assert!(written.ends_with('\n') && written.matches('\n').count() == 1, "one newline-terminated record");
+        // And the crash report parser still reads the scrubbed record.
+        let reports = crate::telemetry::crashreport::parse(&written);
+        assert_eq!(reports.len(), 1, "{written}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same open discipline as the event log's sink ([`crate::open_log_append`]):
+    /// 0640 even under a restrictive umask, appended to, never truncated.
+    #[test]
+    fn the_crash_log_is_0640_and_appended_to() {
+        let dir = scratch("mode");
+        let path = dir.join("crash.log");
+        std::fs::write(&path, b"*** SIGNAL 11 earlier\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        record_panic_in_crash_log(&path, "*** RUST PANIC [t] at src/a.rs:1: boom").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o7777, 0o640);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "*** SIGNAL 11 earlier\n*** RUST PANIC [t] at src/a.rs:1: boom\n"
+        );
+        let fresh = dir.join("fresh.log");
+        record_panic_in_crash_log(&fresh, "*** RUST PANIC [t] at src/a.rs:1: boom").unwrap();
+        assert_eq!(std::fs::metadata(&fresh).unwrap().mode() & 0o7777, 0o640);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A planted symlink or a second hard link at the crash log's name is somebody else's file:
+    /// refused, and it keeps its content and mode.
+    #[test]
+    fn a_symlinked_or_hard_linked_crash_log_is_refused_and_the_other_file_is_untouched() {
+        let dir = scratch("refuse");
+        let victim = dir.join("auth.json");
+        std::fs::write(&victim, b"session").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let linked = dir.join("symlinked.log");
+        symlink(&victim, &linked).unwrap();
+        assert!(record_panic_in_crash_log(&linked, LINE).is_err());
+
+        let hard = dir.join("hardlinked.log");
+        std::fs::hard_link(&victim, &hard).unwrap();
+        assert!(record_panic_in_crash_log(&hard, LINE).is_err());
+
+        let meta = std::fs::metadata(&victim).unwrap();
+        assert_eq!(meta.mode() & 0o7777, 0o600, "never widened");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"session", "never written to");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Hide the Magic Remote's on-screen pointer. A webOS-only concept: there is no such cursor to

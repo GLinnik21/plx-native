@@ -73,6 +73,7 @@ fn dns() -> crate::net::RequestFailure {
         status: None,
         body_limit: None,
         curl_rc: Some(6),
+        verify: None,
     }
 }
 

@@ -4,7 +4,7 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
-use crate::net::{ymd_from_now, TestCaGuard};
+use crate::net::{curl_ready, expired_leaf, identity_request, key_of_port, leaf_pin, remember, ymd_from_now, TestCaGuard};
 
 #[test]
 fn retry_reuses_an_authorized_account_only_for_discovery_errors() {
@@ -219,7 +219,7 @@ fn relay_only_server_gets_a_fresh_probe_budget_after_direct_timeouts_and_is_admi
             admissions += 1;
             crate::plex::EndpointAdmission::Usable
         },
-        &mut |_, _, _| {}, &mut || {}, &mut |_, _, _, _| {},
+        &mut |_, _, _| {}, &mut || {}, &mut |_, _| {},
     );
 
     assert!(matches!(resolved.outcome, Resolved::Reached(ref found)
@@ -287,7 +287,7 @@ fn discovery_retries_the_same_server_via_relay_after_direct_admission_times_out(
     let resolved = resolve_roster_using_admission(
         &[resource], &[], CredentialPolicy::HttpsOnly, &mut probe_one,
         &mut |_| admissions.next().unwrap(), &mut |_, _, _| {},
-        &mut || {}, &mut |_, _, _, _| {},
+        &mut || {}, &mut |_, _| {},
     );
     assert_eq!(resolved.admitted_machine_id.as_deref(), Some("machine"));
     let Resolved::Reached(found) = resolved.outcome else { panic!("relay admission must retain the server") };
@@ -729,7 +729,7 @@ fn issue_95_resolve_roster_only_ever_records_an_https_origin() {
             CredentialPolicy::HttpsOnly,
             &mut probe_one,
             &mut || {},
-            &mut |_, _, _, _| {},
+            &mut |_, _| {},
         );
     let Resolved::Reached(roster) = resolved else {
         panic!("the relay verifies this machine and must be recorded as reached");
@@ -766,7 +766,7 @@ fn issue_95_without_a_relay_a_plaintext_only_answer_is_not_reached() {
             CredentialPolicy::HttpsOnly,
             &mut probe_one,
             &mut || {},
-            &mut |_, _, _, _| {},
+            &mut |_, _| {},
         );
     assert!(
         !matches!(resolved, Resolved::Reached(_)),
@@ -786,22 +786,22 @@ fn resolved_none_insecure_outranks_refused_and_every_other_shape_is_unchanged() 
         Err(Discovery::NoServers)
     ));
     assert!(matches!(
-        resolved_without_roster(Resolved::None { refused: true, insecure: false }),
+        resolved_without_roster(Resolved::None { refused: true, insecure: false, causes: Default::default() }),
         Err(Discovery::Refused)
     ));
     assert!(matches!(
-        resolved_without_roster(Resolved::None { refused: false, insecure: false }),
+        resolved_without_roster(Resolved::None { refused: false, insecure: false, causes: Default::default() }),
         Err(Discovery::Silent(None))
     ));
     assert!(
         matches!(
-            resolved_without_roster(Resolved::None { refused: true, insecure: true }),
+            resolved_without_roster(Resolved::None { refused: true, insecure: true, causes: Default::default() }),
             Err(Discovery::InsecureOnly)
         ),
         "a verified plaintext answer outranks a parallel/proxy 401"
     );
     assert!(matches!(
-        resolved_without_roster(Resolved::None { refused: false, insecure: true }),
+        resolved_without_roster(Resolved::None { refused: false, insecure: true, causes: Default::default() }),
         Err(Discovery::InsecureOnly)
     ));
     assert!(matches!(resolved_without_roster(Resolved::Reached(vec![])), Ok(v) if v.is_empty()));
@@ -915,7 +915,7 @@ fn a_pinned_winner_is_recorded_as_the_plex_direct_origin_not_the_dialled_address
             CredentialPolicy::HttpsOnly,
             &mut probe_one,
             &mut || {},
-            &mut |_, _, _, _| {},
+            &mut |_, _| {},
         );
     let Resolved::Reached(roster) = resolved else {
         panic!("the pinned LAN candidate verifies and must be recorded as reached");
@@ -1106,7 +1106,7 @@ fn e2e_real_curl_resolve_roster_only_ever_records_the_pinned_https_origin() {
         CredentialPolicy::HttpsOnly,
         &mut probe_one,
         &mut || {},
-        &mut |_, _, _, _| {},
+        &mut |_, _| {},
     );
     let Resolved::Reached(roster) = resolved else {
         panic!("the pinned LAN candidate verifies over real TLS and must be reached");
@@ -1170,7 +1170,7 @@ fn e2e_real_curl_tls_failure_with_a_verified_plaintext_answer_yields_insecure_on
         CredentialPolicy::HttpsOnly,
         &mut probe_one,
         &mut || {},
-        &mut |_, _, _, _| {},
+        &mut |_, _| {},
     );
     match &resolved {
         Resolved::None { insecure, .. } => {
@@ -1258,7 +1258,7 @@ fn servers_are_serial_owned_then_public_match_with_one_gap_between_each() {
             Reach::No
         },
         &mut || gaps += 1,
-        &mut |_, _, _, _| {},
+        &mut |_, _| {},
     );
     assert!(matches!(resolved, Resolved::None { refused: false, .. }));
     assert_eq!(order, ["owned", "shared-m", "shared-u"]);
@@ -1300,7 +1300,7 @@ fn every_server_settlement_publishes_its_specific_state_and_winning_tier() {
             _ => Reach::No,
         },
         &mut || {},
-        &mut |plan, outcome, tier, address| observed.push((plan.machine_id.clone(), outcome, tier, address)),
+        &mut |plan, v| observed.push((plan.machine_id.clone(), v.outcome, v.tier, v.address)),
     );
 
     assert!(matches!(resolved, Resolved::Reached(ref roster) if roster.len() == 1));
@@ -1360,18 +1360,21 @@ fn a_changed_refresh_republishes_reached_unauthorized_and_offline_after_registry
             outcome: Outcome::Reachable,
             tier: Some(probe::Location::Remote),
             address: Some("203.0.113.9".into()),
+            cause: None,
         },
         SettledProbe {
             machine_id: "denied".into(),
             outcome: Outcome::Unauthorized,
             tier: None,
             address: None,
+            cause: None,
         },
         SettledProbe {
             machine_id: "off".into(),
             outcome: Outcome::Unreachable,
             tier: None,
             address: None,
+            cause: None,
         },
     ]);
 
@@ -1989,6 +1992,7 @@ fn a_refused_token_is_reported_as_authorization_not_as_silence() {
                 status: Some(status),
                 body_limit: None,
                 curl_rc: Some(18),
+                verify: None,
             }),
         ];
         for last in refused {
@@ -2033,29 +2037,6 @@ fn a_sign_in_roster_carries_plex_tvs_household_evidence_verbatim() {
         [("aaaa1111", true, false, 0), ("bbbb2222", false, false, 987_654)],
         "`ownerId:null` is 0 and never matches a household member; the share names its owner",
     );
-}
-
-/// `request_result_evidence` against one loopback TLS answer, the way the identity probe makes it.
-fn identity_request(port: u16, scheme: &str, learn_pin: bool) -> Result<crate::net::Resp, crate::net::RequestFailure> {
-    crate::net::request_result_evidence(
-        &format!("{scheme}://127.0.0.1:{port}/identity"),
-        &[],
-        "GET",
-        None,
-        crate::net::API,
-        false,
-        None,
-        None,
-        learn_pin,
-    )
-}
-
-fn curl_ready() -> bool {
-    let ready = crate::net::global_init() && crate::net::available();
-    if !ready {
-        eprintln!("curl unavailable on this host; skipping");
-    }
-    ready
 }
 
 /// **Issue #380: a strictly verified TLS answer carries the pin of the served leaf, and only when
@@ -2320,29 +2301,12 @@ fn a_custom_host_with_its_own_certificate_never_overwrites_the_plex_direct_key()
 // `testlock::serial()` because the CA override they all use is process-global.
 // ---------------------------------------------------------------------------------------------
 
-fn expired_leaf(names: &[&str]) -> Arc<crate::net::TestCert> {
-    Arc::new(crate::net::mint_ca_issued_cert(names, ymd_from_now(-90), ymd_from_now(-30)))
-}
-
 fn not_yet_valid_leaf(names: &[&str]) -> Arc<crate::net::TestCert> {
     Arc::new(crate::net::mint_ca_issued_cert(names, ymd_from_now(30), ymd_from_now(90)))
 }
 
 fn valid_leaf(names: &[&str]) -> Arc<crate::net::TestCert> {
     Arc::new(crate::net::mint_ca_issued_cert(names, ymd_from_now(-30), ymd_from_now(30)))
-}
-
-/// Remember `cert`'s key for the loopback server on `port`, until the returned guard drops.
-fn remember(port: u16, cert: &crate::net::TestCert) -> crate::net::keypin::Scoped {
-    crate::net::keypin::Scoped::new(key_of_port(port), &leaf_pin(cert))
-}
-
-fn key_of_port(port: u16) -> String {
-    crate::net::keypin::key_of("127.0.0.1", i32::from(port))
-}
-
-fn leaf_pin(cert: &crate::net::TestCert) -> String {
-    crate::spki::pin_from_spki_der(&cert.spki_der)
 }
 
 /// A loopback server serving `cert`, trusted through the test CA override.
@@ -2643,6 +2607,36 @@ fn a_media_open_on_an_expired_leaf_with_no_remembered_key_is_refused_as_before()
         Some(crate::net::keypin::Blocked::NoKey),
         "the media plane publishes a date failure with no key",
     );
+}
+
+/// **A redirect hop is a request to another host, and another host's key is not the server's key.**
+/// A server served in key mode (its date fails, its remembered key matches) answers with a redirect to
+/// a host whose certificate is a different one. The key pin belongs to the server's handshake: the hop
+/// is a request of its own, begun strict for its own host, so the key it presents says nothing about
+/// the server and must not be published as the SERVER's key having changed (`Blocked::KeyChanged`,
+/// which would tell the person to re-pair a server that is fine). The target here chains to nothing
+/// the device store trusts, so the open ends in the hop's own failure (60 on the television's OpenSSL;
+/// this host's libcurl says 35); what is graded is whose fact that failure is.
+#[test]
+fn a_redirect_from_a_key_mode_server_to_a_host_with_another_key_does_not_blame_the_server() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-media-redirect");
+    let target = crate::net::spawn_observed(Arc::new(crate::net::mint_cert(&["127.0.0.1"])), media_body());
+    let served = crate::net::spawn_redirecting(Arc::clone(&cert), &media_url(target.port));
+    let key = key_of_port(served.port);
+    let target_key = key_of_port(target.port);
+    let _key = crate::net::keypin::Scoped::new(key.clone(), &leaf_pin(&cert));
+    let _target_watch = crate::net::keypin::Scoped::watch(&target_key);
+
+    let err = crate::curlio::CurlSource::open(&media_url(served.port), 0)
+        .err()
+        .expect("the hop's certificate is not one the device store trusts");
+    assert!(matches!(err, crate::curlio::OpenErr::Transport(60 | 35)), "the hop's own failure, not a pin mismatch: {err:?}");
+    assert_eq!(crate::net::keypin::fact_for(&key).blocked, None, "the server's key did not change: another host's did");
+    assert!(crate::net::keypin::is_latched(&key), "the server's own handshake was established in key mode");
+    assert_eq!(crate::net::keypin::fact_for(&target_key).blocked, None, "and the target's failure is not a date");
 }
 
 /// **A fact is the host's LATEST strict outcome** (both planes, the real handshake): a date failure

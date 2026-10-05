@@ -121,8 +121,9 @@ local data", which runs it first — leaves the stored record with no learned ke
 has no battery clock, so a valid `*.plex.direct` certificate can read as expired (or not yet valid)
 before NTP has run, and the strict handshake then fails with rc 60 and `CURLINFO_SSL_VERIFYRESULT`
 10 (expired) or 9 (not yet valid). When that is the failure libcurl reported, and `net::keypin` holds
-a remembered key for that exact `host:port`, the request is repeated once with
-`CURLOPT_PINNEDPUBLICKEY` set to it, `CURLOPT_SSL_VERIFYPEER` 0 and `CURLOPT_SSL_VERIFYHOST` still 2.
+a remembered key for that exact `host:port` — after a strict attempt, or after a roots-mode attempt
+(below) that verified the chain and then failed on the date, the shape of an old trust store behind a
+wrong clock — the request is repeated once with `CURLOPT_PINNEDPUBLICKEY` set to it, `CURLOPT_SSL_VERIFYPEER` 0 and `CURLOPT_SSL_VERIFYHOST` still 2.
 What is relaxed is the chain-and-date check; what still holds is that the leaf's name matches the
 host dialled and that its public key hashes to the remembered one (a different key is rc 90, never
 served). **The security of key mode rests on the key pin plus the name check, and on nothing the date
@@ -159,6 +160,60 @@ per host and asked per machine; a host's fact is its latest strict outcome, clea
 a pin change or, for "no key", a later strict failure that is not about the date), and the first engagement of an app run raises ONE
 television toast (`app::clock_notice`; never retried, host-tested only until the set accepts it).
 
+**Roots mode: the bundled public roots stand in for a CA store that predates the issuer.** The other
+way a `*.plex.direct` handshake fails on an old television is not the clock but the issuer: Let's
+Encrypt moved to new roots in 2025 (ISRG Root YR, YE) and a 2020 firmware's store lacks them, so
+the strict handshake fails with rc 60 and verify result 20 (or 2, 21) at depth 1. When that is the
+failure, and the request's host is a `*.plex.direct` NAME (`keypin::is_plex_direct`: a suffix match
+on the URL's host with only DNS-name characters, so `plex.direct.evil.example`, `notplex.direct` and
+a `@`-smuggled authority do not count, and `keypin::key_of_url`, the one reading of a URL both planes
+use for this, gives an authority that is not a plain `host[:port]` no key at all) and the shipped bundle
+`le-roots.pem` is in the app directory
+(`paths::in_app_dir`; root-owned and read-only on the set; a non-empty readable file), the request is repeated once on a
+fresh handle with `CURLOPT_CAINFO` set to it. **Nothing is relaxed**: `VERIFYPEER` 1 and `VERIFYHOST`
+2 are stated again by `keypin::apply_roots`, so the chain, the dates and the name are all still checked,
+against four public roots (X1, X2, YR, YE) and nothing else beyond what the firmware's libcurl reads
+by default from a CA directory. A libcurl that refuses `CURLOPT_CAINFO` sends nothing and the
+request reports the strict failure. A missing, empty or unreadable bundle means the fallback never engages (one log line).
+**One decision, `keypin::after_failure`, both planes call it and nothing else decides a rung.** After a
+strict failure: a date result (9/10) goes to key mode when a key is held; a missing issuer (2/20/21) on a
+`*.plex.direct` name goes to roots mode, once. After a roots-mode failure: a DATE result goes to key mode
+when a key is held (strict failed on the issuer, the bundle then verified the chain and refused the
+dates, and the key learned on an earlier good boot is all that is left; with no key held the attempt
+publishes `Blocked::NoKey` exactly as a strict date failure does, `keypin::roots_unanswered`); and a
+roots attempt that STARTED the request from the latch, refused for its verification (60/51), goes
+strict once, because the certificate may have moved to an issuer the device store now trusts but the
+bundle lacks. A roots attempt a strict failure led to has nowhere else to go, the bundle is never
+offered twice in one request, and a date failure never goes back to strict, so a request is at most
+three attempts. A name mismatch, a self-signed leaf (18/19), plex.tv or any other host gets neither
+mode. After a success the host is latched in the same `keypin` state for 10 minutes on the monotonic
+clock (later requests skip the doomed strict handshake, the timer does not slide, a strict success or
+a refusal by the bundle clears it); both stacks share the decision, the control plane in
+`net::request_tls_evidence` and the media plane in `curlio::CurlSource::start_range_until`. Unlike key
+mode a roots-mode answer IS strictly verified, so it may teach `peer_pin`. The log carries one line when
+the fallback engages, one when it first succeeds and one when the bundle refuses too, naming only the
+verify result.
+**Redirects (media plane).** `curlio` follows redirects itself and libcurl does not
+(`CURLOPT_FOLLOWLOCATION` is 0 on every handle): `start_range_until` loops `run_hop`, one easy handle per
+hop, and `next_hop` decides each one. It counts against `stream::redirect::MAX_HOPS` (more is
+`Transport(47)`), refuses a redirect out of a TLS hop to plaintext, and uses the `Location` exactly as
+spelled, so the original URL's query, where the token is, is never copied to a hop. `Hop::of` takes the
+`keypin` key and the `net::resolve` entry from the hop's OWN host, so a hop starts where `keypin::begin`
+puts that host: strict against the device store, on the bundle only if the hop is itself a `*.plex.direct`
+name whose issuer the store lacks. A hop out of a roots-mode host is therefore verified against the
+television's store, and a hop whose issuer only the bundle holds is refused. A hop's failure is its own: its
+60 does not latch the redirecting server into roots mode, and its key is never published as that server's
+`Blocked::KeyChanged`. A seek or reopen replays the chain from the URL the source was opened on; the
+landing URL is the private `CurlSource::hop_url`, and no public method returns it. `stream_redirect`, the
+plaintext follower, never touches `keypin`, stops at the first https hop and hands that target to `curlio`,
+where the hop count starts fresh. It also differs on credentials: it re-appends the original token pair to a
+same-origin hop, and `curlio` never copies the query. Pinned by
+`curlio_roots_tests::a_redirect_from_a_roots_mode_host_is_verified_against_the_device_store`,
+`curlio_roots_tests::a_redirect_hop_is_not_verified_against_the_bundle_the_open_before_it_was_served_through`,
+`curlio_roots_tests::a_redirect_hop_that_fails_verification_does_not_send_its_server_into_roots_mode`,
+`auth_discovery_tests::a_redirect_from_a_key_mode_server_to_a_host_with_another_key_does_not_blame_the_server`
+and the contract tests in `curlio_redirect_tests.rs`.
+
 **The who's-watching pick is seated from `Session::profiles` when plex.tv does not answer.** The
 first real outage (2026-09-06, `docs/measurements/offline-picker-red-tv-2026-09-06.log`) got past
 the pinned origin and then could seat nobody: every pick is a `POST /api/v2/home/users/{uuid}/switch`,
@@ -185,10 +240,26 @@ landed, and whatever was in flight (a hub fetch, the picker's first avatar) fail
 plan was built with, and only an eligible answer can become `first`/`best`/get activated — a
 verified plaintext answer in a store build does **not** count as reached and does not hold back the
 relay leg. If nothing eligible verifies, the result is `Reach::InsecureOnly` (plan §4's precedence:
-`At` > `InsecureOnly` > `Refused` > `No`), which becomes `Outcome::InsecureOnly` /
+`At` > `InsecureOnly` > `Refused` > `TlsUntrusted` > `No`), which becomes `Outcome::InsecureOnly` /
 `Discovery::InsecureOnly` / `SourceState::InsecureOnly` ("Not secure") — a fifth sentence, told
 apart from `Unreachable`, that **outranks a 401**. Before this it counted as reached, which was
 issue #95 itself.
+
+**Why a server could not be used is `probe::Cause`, beside the `Outcome`, never more variants of
+it.** `Outcome::Unreachable` still means "no address verified" and the sources panel and registry
+read it so; underneath it the probe tells `Cause::Unreachable` (nothing answered) from
+`Cause::TlsUntrusted { verify }` (HTTPS reached something whose chain this television's trust store —
+and, for a `*.plex.direct` name, the bundled roots — could not verify: libcurl 60 with an X509 verify
+result of 2, 18, 19, 20 or 21, `RequestFailure::untrusted_chain`; **never 9 or 10, which are the wrong
+clock**) and `Cause::Unauthorized` (a 401). `Reach::TlsUntrusted` sits between `Refused` and `No`. The
+cause travels on `SettledProbe::cause()` per `machine_id` and is what the failure read-outs are worded
+by: "<profile> has no access to this server" is for a 401 and nothing else — a profile switch where no
+server verified says `TLS_UNTRUSTED_MESSAGE`, "has no access" or `SERVERS_UNREACHABLE_MESSAGE` by that order
+(`FailureCauses::worst`; inline English, this line has no message catalog). A switch or discovery in which NO server
+verified at all writes one closed `auth: no server verified — unreachable=N tls_untrusted=N
+unauthorized=N verify=[…]` line (counts and verify codes only); a plaintext-only verdict, an
+admission refusal, a malformed reply, a no-servers account and a plex.tv failure keep their own
+existing lines instead.
 
 **Online primary selection also proves the token after it proves the machine.** `/identity` is
 deliberately unauthenticated, so a fresh identity winner is only a known endpoint. Before sign-in,
