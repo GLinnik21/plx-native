@@ -1565,17 +1565,11 @@ fn request_tls_evidence(
         // the call that learns, and on a firmware that needs the roots it would otherwise never
         // learn the key the wrong-clock fallback needs.
         let read_peer_pin = read_peer_pin && !matches!(mode, keypin::Mode::Key { .. });
-        let pin_c = match mode {
-            keypin::Mode::Key { pin, .. } => {
-                Some(CString::new(pin.as_str()).map_err(|_| RequestError::Transport)?)
-            }
-            keypin::Mode::Strict | keypin::Mode::Roots { .. } => None,
-        };
-        let roots_c = match mode {
-            keypin::Mode::Roots { path, .. } => {
-                Some(CString::new(path.as_str()).map_err(|_| RequestError::Transport)?)
-            }
-            keypin::Mode::Strict | keypin::Mode::Key { .. } => None,
+        let cstr = |s: &str| CString::new(s).map_err(|_| RequestError::Transport);
+        let (pin_c, roots_c) = match mode {
+            keypin::Mode::Key { pin, .. } => (Some(cstr(pin)?), None),
+            keypin::Mode::Roots { path, .. } => (None, Some(cstr(path)?)),
+            keypin::Mode::Strict => (None, None),
         };
         unsafe {
             macro_rules! require_setopt {
@@ -2083,7 +2077,7 @@ pub fn tls_failure_reason(easy: *mut CURL, rc: c_int) -> Option<String> {
 }
 
 /// [`CURLINFO_SSL_VERIFYRESULT`] off a handle whose transfer just ended, `None` when libcurl would
-/// not say. The raw number key mode's trigger reads ([`keypin::after_strict_failure`]).
+/// not say. The raw number key mode's trigger reads ([`keypin::after_failure`]).
 pub fn verify_result(easy: *mut CURL) -> Option<c_long> {
     let mut verify: c_long = 0;
     // SAFETY: `easy` is a live handle the caller owns and has not yet cleaned up; the out pointer
@@ -2369,7 +2363,7 @@ pub mod resolve {
 /// **Roots mode — the bundled public roots, for a CA store that predates the issuer.** The other
 /// way a household server's `*.plex.direct` handshake fails on an old television is the ISSUER:
 /// Let's Encrypt's 2025 roots (ISRG Root YR, YE) are not in a 2020 firmware's store, and libcurl
-/// says 60 with verify result 2, 20 or 21 ([`after_strict_failure`]). When the host is a
+/// says 60 with verify result 2, 20 or 21 ([`after_failure`]). When the host is a
 /// `*.plex.direct` NAME ([`is_plex_direct`], read from a URL by [`key_of_url`], which gives an
 /// authority that is not a plain `host[:port]` no key at all) and `le-roots.pem` is in the app
 /// directory (a non-empty file this process can read), the request is repeated once with
@@ -2834,25 +2828,26 @@ pub mod keypin {
         begin_at(key, Instant::now())
     }
 
+    /// Is a latch that began at `since` still live at `now`?
+    fn latch_live(since: Instant, now: Instant) -> bool {
+        now.saturating_duration_since(since) < LATCH
+    }
+
     /// [`begin`] at `now`: the latch is live while less than [`LATCH`] has passed since it began.
     pub(super) fn begin_at(key: &str, now: Instant) -> Mode {
         let mut st = state();
         if let Some((pin, since)) = st.latched.get(key).cloned() {
-            if st.table.get(key) == Some(&pin) && now.saturating_duration_since(since) < LATCH {
+            if st.table.get(key) == Some(&pin) && latch_live(since, now) {
                 return Mode::Key { pin, verify: None };
             }
             st.latched.remove(key);
         }
         // Key mode first when both are somehow latched: the two latches are set by disjoint
         // failures, and a strict success clears both, so this order decides nothing in practice.
-        let roots_live = match st.roots_latched.get(key).copied() {
-            Some(since) if now.saturating_duration_since(since) < LATCH => true,
-            Some(_) => {
-                st.roots_latched.remove(key);
-                false
-            }
-            None => false,
-        };
+        let roots_live = st.roots_latched.get(key).is_some_and(|&since| latch_live(since, now));
+        if !roots_live {
+            st.roots_latched.remove(key);
+        }
         drop(st);
         if roots_live {
             // Looked up outside the lock (it stats a file). A bundle that has gone since the
@@ -2867,23 +2862,6 @@ pub mod keypin {
         Mode::Strict
     }
 
-    /// **The trigger, and only the trigger.** A strict attempt failed with `rc` and `verify` (the
-    /// handle's `CURLINFO_SSL_VERIFYRESULT`). Two disjoint answers:
-    ///
-    /// * libcurl said 60 with a DATE verify result (9, 10) and the table holds a key for `key`:
-    ///   key mode, as ever;
-    /// * libcurl said 60 with a missing-issuer verify result (2, 20, 21), `key` is a `*.plex.direct`
-    ///   name ([`is_plex_direct`]) and the roots bundle is on disk ([`ROOTS_FILE`]): roots mode.
-    ///
-    /// Anything else (a name mismatch, a self-signed leaf, 51, a refused connection) is neither.
-    /// Roots mode is for the NAMES a household's own server is reached by and nothing else: plex.tv,
-    /// a telemetry sink or any other host that fails for this reason fails as before.
-    ///
-    /// The first rung of [`after_failure`], which is what both planes call.
-    pub fn after_strict_failure(key: &str, rc: c_int, verify: Option<c_long>) -> Option<Mode> {
-        after_failure(key, &Mode::Strict, rc, verify, false)
-    }
-
     /// **The whole ladder, one rung at a time.** An attempt that ran in `ran` failed with `rc` and
     /// `verify`: which mode, if any, is the request's next attempt in? `roots_tried` is whether an
     /// earlier attempt of THIS request already ran against the bundle. Both planes call this and
@@ -2892,6 +2870,9 @@ pub mod keypin {
     /// * **After [`Mode::Strict`]**: a date failure goes to key mode when a key is held; a
     ///   missing-issuer failure on a `*.plex.direct` name goes to roots mode when the bundle is on
     ///   disk and this request has not already been refused by it.
+    ///   Anything else (a name mismatch, a self-signed leaf, 51, a refused connection) goes nowhere.
+    ///   Roots mode is for the NAMES a household's own server is reached by and nothing else: plex.tv,
+    ///   a telemetry sink or any other host that fails for this reason fails as before.
     /// * **After [`Mode::Roots`]**: a DATE failure goes to key mode when a key is held. This is the
     ///   rung a television with an old trust store AND a wrong clock needs: strict fails on the
     ///   missing issuer, the bundle verifies the chain and then refuses the dates, and the key the
@@ -2969,7 +2950,7 @@ pub mod keypin {
         let first = {
             let mut st = state();
             clear_blocked(&mut st, key);
-            let live = st.roots_latched.get(key).is_some_and(|since| now.saturating_duration_since(*since) < LATCH);
+            let live = st.roots_latched.get(key).is_some_and(|&since| latch_live(since, now));
             if !live {
                 st.roots_latched.insert(key.to_owned(), now);
             }
@@ -3090,7 +3071,7 @@ pub mod keypin {
             let live = st
                 .latched
                 .get(key)
-                .is_some_and(|(p, since)| p == pin && now.saturating_duration_since(*since) < LATCH);
+                .is_some_and(|(p, since)| p == pin && latch_live(*since, now));
             if !live && st.table.get(key).map(String::as_str) == Some(pin) {
                 st.latched.insert(key.to_owned(), (pin.to_owned(), now));
                 let year = year();

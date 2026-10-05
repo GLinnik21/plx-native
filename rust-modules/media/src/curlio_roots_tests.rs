@@ -5,14 +5,10 @@
 //! the `*.plex.direct` name reaches loopback through a resolve pin, as in production. Every test
 //! holds `testlock::serial()`: both overrides are process-global.
 
+use crate::curlio::test_fixtures::{media_body, pin_to_loopback, PLEX_DIRECT};
 use std::sync::Arc;
 
-use plx_net::net::origin::ResolvePin;
-use plx_net::net::{curl_ready, keypin, mint_ca_issued_cert, mint_cert, resolve, spawn_observed, spawn_redirecting, ymd_from_now, TestCaGuard};
-
-fn media_body() -> Vec<u8> {
-    (0..5000u32).map(|i| (i % 253) as u8).collect()
-}
+use plx_net::net::{curl_ready, keypin, mint_ca_issued_cert, mint_cert, spawn_observed, spawn_redirecting, ymd_from_now, TestCaGuard};
 
 /// A TLS double for `host` serving a fresh CA's leaf: the CA's PEM, the port, the accept counter.
 fn serve(host: &str) -> (String, u16, Arc<std::sync::atomic::AtomicUsize>) {
@@ -20,12 +16,6 @@ fn serve(host: &str) -> (String, u16, Arc<std::sync::atomic::AtomicUsize>) {
     let pem = cert.pem.clone();
     let served = spawn_observed(cert, media_body());
     (pem, served.port, served.accepted)
-}
-
-const PLEX_DIRECT: &str = "127-0-0-1.0123456789abcdef0123456789abcdef.plex.direct";
-
-fn pin_to_loopback(host: &str, port: u16) {
-    resolve::add(&ResolvePin::for_test(host, i32::from(port), std::net::IpAddr::from([127, 0, 0, 1])));
 }
 
 #[test]

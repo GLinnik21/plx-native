@@ -12,6 +12,11 @@ use std::sync::Arc;
 
 const PLEX_DIRECT: &str = "127-0-0-1.0123456789abcdef0123456789abcdef.plex.direct";
 
+/// The first rung of `keypin::after_failure`: a strict attempt failed with `rc` and `verify`.
+fn after_strict_failure(key: &str, rc: c_int, verify: Option<c_long>) -> Option<keypin::Mode> {
+    keypin::after_failure(key, &keypin::Mode::Strict, rc, verify, false)
+}
+
 struct Outcome {
     result: Result<Resp, RequestFailure>,
     latched: bool,
@@ -333,7 +338,7 @@ fn an_empty_or_unreadable_bundle_is_no_bundle() {
     let _serial = plx_base::testlock::serial();
     let key = keypin::key_of(PLEX_DIRECT, 41020);
     let _scoped = keypin::Scoped::watch(&key);
-    let decides = || keypin::after_strict_failure(&key, 60, Some(20));
+    let decides = || after_strict_failure(&key, 60, Some(20));
     {
         let _empty = keypin::test_roots::Guard::install("", "roots-empty");
         assert_eq!(decides(), None, "an empty file");
@@ -378,29 +383,29 @@ fn the_roots_trigger_is_a_missing_issuer_on_a_plex_direct_name_and_never_a_date_
     let bundle = keypin::test_roots::Guard::install(&mint_cert(&["decision.invalid"]).pem, "roots-decision");
     let key = keypin::key_of(PLEX_DIRECT, 41001);
     let _scoped = keypin::Scoped::watch(&key);
-    let is_roots = |rc, verify| matches!(keypin::after_strict_failure(&key, rc, verify), Some(keypin::Mode::Roots { .. }));
+    let is_roots = |rc, verify| matches!(after_strict_failure(&key, rc, verify), Some(keypin::Mode::Roots { .. }));
     for v in [2, 20, 21] {
         assert!(is_roots(60, Some(v)), "verify {v}");
     }
     for verify in [None, Some(0), Some(9), Some(10), Some(18), Some(19), Some(62), Some(7)] {
         assert!(!is_roots(60, verify), "verify {verify:?}");
-        assert_eq!(keypin::after_strict_failure(&key, 60, verify), None, "no key is held, so no mode at all for {verify:?}");
+        assert_eq!(after_strict_failure(&key, 60, verify), None, "no key is held, so no mode at all for {verify:?}");
     }
     for rc in [0, 6, 7, 28, 35, 51, 58, 77, 90] {
-        assert_eq!(keypin::after_strict_failure(&key, rc, Some(20)), None, "rc {rc}");
+        assert_eq!(after_strict_failure(&key, rc, Some(20)), None, "rc {rc}");
     }
     for other in ["plex.tv", "plex.direct.evil.example", "notplex.direct", "127.0.0.1"] {
-        assert_eq!(keypin::after_strict_failure(&keypin::key_of(other, 443), 60, Some(20)), None, "{other}");
+        assert_eq!(after_strict_failure(&keypin::key_of(other, 443), 60, Some(20)), None, "{other}");
     }
     // The two modes are disjoint: a held key answers a date failure, the bundle an issuer failure.
     let _pinned = keypin::Scoped::new(keypin::key_of(PLEX_DIRECT, 41002), &plx_base::spki::pin_from_spki_der(&[7; 8]));
     let both = keypin::key_of(PLEX_DIRECT, 41002);
-    assert!(matches!(keypin::after_strict_failure(&both, 60, Some(10)), Some(keypin::Mode::Key { .. })));
-    assert!(matches!(keypin::after_strict_failure(&both, 60, Some(20)), Some(keypin::Mode::Roots { .. })));
+    assert!(matches!(after_strict_failure(&both, 60, Some(10)), Some(keypin::Mode::Key { .. })));
+    assert!(matches!(after_strict_failure(&both, 60, Some(20)), Some(keypin::Mode::Roots { .. })));
     // And with no bundle on disk, the issuer failure has no mode.
     drop(bundle);
     keypin::test_roots::set(Some("/nonexistent/le-roots.pem"));
-    assert_eq!(keypin::after_strict_failure(&key, 60, Some(20)), None);
+    assert_eq!(after_strict_failure(&key, 60, Some(20)), None);
     keypin::test_roots::set(None);
 }
 

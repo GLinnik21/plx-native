@@ -13,29 +13,20 @@
 //! covers would need DNS, and no test here may. Every test holds `testlock::serial()`: the CA
 //! override and the roots bundle are process-global.
 
+use crate::curlio::test_fixtures::{media_body, pin_to_loopback, PLEX_DIRECT};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use plx_net::net::origin::ResolvePin;
-use plx_net::net::{curl_ready, keypin, mint_ca_issued_cert, mint_cert, resolve, spawn_scripted, ymd_from_now, Observed, Reply, TestCaGuard, TestCert};
+use plx_net::net::{curl_ready, keypin, mint_ca_issued_cert, mint_cert, spawn_scripted, ymd_from_now, Observed, Reply, TestCaGuard, TestCert};
 
 use crate::curlio::{CurlSource, OpenErr};
 
-const PLEX_DIRECT: &str = "127-0-0-1.0123456789abcdef0123456789abcdef.plex.direct";
 const SECOND_PLEX_DIRECT: &str = "127-0-0-1.fedcba9876543210fedcba9876543210.plex.direct";
 const TOKEN: &str = "test-token-0123456789";
-
-fn media_body() -> Vec<u8> {
-    (0..5000u32).map(|i| (i % 253) as u8).collect()
-}
 
 /// A leaf for `names` from a fresh CA; `pem` of the result is that CA.
 fn leaf(names: &[&str]) -> Arc<TestCert> {
     Arc::new(mint_ca_issued_cert(names, ymd_from_now(-1), ymd_from_now(30)))
-}
-
-fn pin_to_loopback(host: &str, port: u16) {
-    resolve::add(&ResolvePin::for_test(host, i32::from(port), std::net::IpAddr::from([127, 0, 0, 1])));
 }
 
 /// Clears what a test published about `host:port` in `net::keypin`'s tables when it ends.

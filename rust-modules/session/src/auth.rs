@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 pub mod owner;
 pub mod observation;
 mod causes;
-pub use causes::{FailureCauses, ServerCause};
+pub use causes::FailureCauses;
 mod scripted; // the dev triggers that script the sign-in worker's outcomes (`readout`, `signinfail`)
 pub use owner::{SessionInit, SessionMachine, SessionRead};
 

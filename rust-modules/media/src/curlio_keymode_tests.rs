@@ -4,13 +4,10 @@
 //! layer may name `curlio`. Every test holds `testlock::serial()`: the CA override is
 //! process-global, and each keys the key table by its own loopback server's ephemeral port.
 
+use crate::curlio::test_fixtures::media_body;
 use std::sync::Arc;
 
 use plx_net::net::{curl_ready, expired_leaf, identity_request, key_of_port, leaf_pin, mint_cert, remember, spawn_observed, spawn_redirecting, TestCaGuard};
-
-fn media_body() -> Vec<u8> {
-    (0..5000u32).map(|i| (i % 253) as u8).collect()
-}
 
 fn media_url(port: u16) -> String {
     format!("https://127.0.0.1:{port}/video.mkv")

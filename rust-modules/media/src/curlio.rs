@@ -2226,6 +2226,24 @@ enum Attempt {
     Redirect(Target),
 }
 
+/// What the `curlio_*_tests.rs` files share: one body, one fixture host name and the pin that
+/// sends it to loopback.
+#[cfg(test)]
+mod test_fixtures {
+    use plx_net::net::origin::ResolvePin;
+    use plx_net::net::resolve;
+
+    pub(super) fn media_body() -> Vec<u8> {
+        (0..5000u32).map(|i| (i % 253) as u8).collect()
+    }
+
+    pub(super) const PLEX_DIRECT: &str = "127-0-0-1.0123456789abcdef0123456789abcdef.plex.direct";
+
+    pub(super) fn pin_to_loopback(host: &str, port: u16) {
+        resolve::add(&ResolvePin::for_test(host, i32::from(port), std::net::IpAddr::from([127, 0, 0, 1])));
+    }
+}
+
 /// Issue #378's media-plane half: key mode through a real `CurlSource` handshake.
 #[cfg(test)]
 #[path = "curlio_keymode_tests.rs"]

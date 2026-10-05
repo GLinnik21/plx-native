@@ -10,9 +10,9 @@ use plx_plex::plex::probe::Cause;
 
 /// One server's cause.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServerCause {
-    pub machine_id: String,
-    pub cause: Cause,
+struct ServerCause {
+    machine_id: String,
+    cause: Cause,
 }
 
 /// The causes of every server a failed flow could not use, in the order they were probed.
@@ -32,9 +32,6 @@ impl FailureCauses {
     }
 
     pub fn is_empty(&self) -> bool { self.servers.is_empty() }
-
-    /// Every recorded server and its cause, in probe order.
-    pub fn servers(&self) -> &[ServerCause] { &self.servers }
 
     /// The servers whose certificate chain this television could not verify, with the X509 verify
     /// result each carried — what a user-approval alert is attached to.
