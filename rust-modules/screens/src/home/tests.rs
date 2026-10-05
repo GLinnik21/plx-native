@@ -3235,3 +3235,207 @@ fn stable_keys_are_bounded_oldest_first() {
     assert_eq!(elems.last().copied(), s.rows[0].elems.last().copied());
     assert_indexes_agree(&s);
 }
+
+// ---- The standing "Hold OK for options" hint (`plx_ui::hold_hint`) ---------------------------------
+//
+// The schedule itself is `hold_hint`'s own tests; these are Home's half: WHICH focus and WHICH
+// frames feed it. One 16 ms tick is `HINT_TICK_MS`.
+
+const HINT_TICK_MS: u32 = 16;
+
+/// A Home seated on the grid with `rows` shelves, nothing focused yet.
+fn hint_home(view: HubsView<'_>) -> HomeScreen {
+    plx_ui::hold_hint::reset_learned_for_test();
+    let mut s = screen(view);
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s
+}
+
+/// Tick `frames` times with `focus` and a card held `held_ms` (None = no press), from `ms0`;
+/// returns the next tick's clock.
+fn hint_ticks(
+    s: &mut HomeScreen,
+    view: HubsView<'_>,
+    focus: Option<FocusKey<u32>>,
+    held_ms: Option<u32>,
+    ms0: u32,
+    frames: u32,
+) -> u32 {
+    let mut context = cx(view, focus);
+    context.press.held_ms = held_ms;
+    let mut present = plx_machine::present::Present::new();
+    let mut out = Vec::new();
+    let mut ms = ms0;
+    for _ in 0..frames {
+        ms += HINT_TICK_MS;
+        let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
+        let tick = ScreenEvent::Tick(Tick { ms, dt_us: HINT_TICK_MS * 1000 });
+        Machine::<TestHost>::step(s, &tick, &context, &mut fx);
+    }
+    ms
+}
+
+fn hint_secs(secs: f32) -> u32 {
+    (secs * 1000.0 / HINT_TICK_MS as f32).round() as u32
+}
+
+fn second_card(s: &HomeScreen) -> FocusKey<u32> {
+    FocusKey { entry: s.entry, elem: s.rows[0].elems[1] }
+}
+
+/// Run `body` against a hint-ready Home over three ready shelves, holding the serial lock the
+/// shared stores and the idle gate need for the whole test.
+fn with_hint_home(body: impl FnOnce(HomeScreen, HubsView<'_>)) {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    body(hint_home(view), view);
+}
+
+#[test]
+fn the_hint_appears_only_after_focus_has_rested_on_a_shelf_tile() {
+    with_hint_home(|mut s, view| {
+        let card = Some(first_card(&s));
+        let ms = hint_ticks(&mut s, view, card, None, 0, hint_secs(1.2));
+        assert!(!s.hold_hint.visible(), "not before the dwell");
+        hint_ticks(&mut s, view, card, None, ms, hint_secs(4.0));
+        assert!(s.hold_hint.visible(), "once focus has rested, the hint stands");
+        assert!(s.hold_hint.opacity() > 0.9);
+    });
+}
+
+#[test]
+fn the_hint_leaves_on_its_own_and_a_focus_move_rearms_it() {
+    with_hint_home(|mut s, view| {
+        let card = Some(first_card(&s));
+        let mut ms = hint_ticks(&mut s, view, card, None, 0, hint_secs(5.0));
+        assert!(s.hold_hint.visible());
+        ms = hint_ticks(&mut s, view, card, None, ms, hint_secs(9.0));
+        assert!(!s.hold_hint.visible(), "its life is spent");
+        // moving to the next tile starts the dwell again, and the new tile gets its own life
+        let next = Some(second_card(&s));
+        ms = hint_ticks(&mut s, view, next, None, ms, hint_secs(1.0));
+        assert!(!s.hold_hint.visible(), "inside the new tile's dwell");
+        hint_ticks(&mut s, view, next, None, ms, hint_secs(5.0));
+        assert!(s.hold_hint.visible(), "back after the dwell on the new tile");
+    });
+}
+
+#[test]
+fn the_hint_never_shows_off_the_shelf_or_under_a_menu() {
+    with_hint_home(|mut s, view| {
+        let strip = Some(FocusKey { entry: s.entry, elem: STRIP_MOVIES_ELEM });
+        let hero = Some(FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM });
+        let mut ms = hint_ticks(&mut s, view, strip, None, 0, hint_secs(5.0));
+        assert!(!s.hold_hint.visible(), "tab strip focused");
+        ms = hint_ticks(&mut s, view, hero, None, ms, hint_secs(5.0));
+        assert!(!s.hold_hint.visible(), "hero action focused");
+        ms = hint_ticks(&mut s, view, None, None, ms, hint_secs(5.0));
+        assert!(!s.hold_hint.visible(), "no focus");
+        let card = Some(first_card(&s));
+        ms = hint_ticks(&mut s, view, card, None, ms, hint_secs(5.0));
+        assert!(s.hold_hint.visible(), "control: the same page does show it on a tile");
+        // a menu opens over the page: the container covers Home
+        step(&mut s, view, card, &ScreenEvent::Cover);
+        ms = hint_ticks(&mut s, view, card, None, ms, hint_secs(1.5));
+        assert!(!s.hold_hint.visible(), "never while a menu or modal is open");
+        step(&mut s, view, card, &ScreenEvent::Uncover);
+        hint_ticks(&mut s, view, card, None, ms, hint_secs(1.0));
+        assert!(!s.hold_hint.visible(), "and the dwell starts over once it closes");
+    });
+}
+
+#[test]
+fn the_hint_never_shows_while_the_page_is_still_gliding() {
+    with_hint_home(|mut s, view| {
+        let card = Some(first_card(&s));
+        hint_ticks(&mut s, view, card, None, 0, hint_secs(3.0));
+        assert!(s.hold_hint.visible());
+        // a shelf scroll still in flight under the same tile holds the dwell at zero
+        s.grid.scroll_target = s.grid.scroll_y.pos + 400.0;
+        let moving = s.hint_input(&cx(view, card), false);
+        assert!(!moving.settled, "a pending vertical reveal is not rest");
+        let at_rest_input = {
+            s.grid.scroll_target = s.grid.scroll_y.pos;
+            s.hint_input(&cx(view, card), false)
+        };
+        assert!(at_rest_input.settled);
+        assert!(!s.hint_input(&cx(view, card), true).settled, "a snap in flight is not rest");
+    });
+}
+
+#[test]
+fn a_held_ok_fills_the_cap_from_the_press_clock_and_shows_the_hint_early() {
+    with_hint_home(|mut s, view| {
+        let card = Some(first_card(&s));
+        let half = plx_ui::press::LONG_MS / 2;
+        hint_ticks(&mut s, view, card, Some(half), 0, 30);
+        assert!(s.hold_hint.visible(), "the hold shows it without waiting out the dwell");
+        assert!((s.hold_hint.fill() - 0.5).abs() < 1e-6, "half of LONG_MS held is a half-filled cap");
+        let input = s.hint_input(&{ let mut c = cx(view, card); c.press.held_ms = Some(plx_ui::press::LONG_MS * 2); c }, false);
+        assert_eq!(input.hold, Some(1.0), "the constructor clamps the fraction; no screen divides");
+        // released early: the fill drains
+        hint_ticks(&mut s, view, card, None, 0, hint_secs(0.4));
+        assert_eq!(s.hold_hint.fill(), 0.0);
+    });
+}
+
+#[test]
+fn the_hint_is_retired_for_good_once_a_menu_has_been_opened() {
+    with_hint_home(|mut s, view| {
+        let card = Some(first_card(&s));
+        let ms = hint_ticks(&mut s, view, card, None, 0, hint_secs(5.0));
+        assert!(s.hold_hint.visible());
+        plx_ui::hold_hint::mark_learned();
+        let ms = hint_ticks(&mut s, view, card, None, ms, hint_secs(1.5));
+        assert!(!s.hold_hint.visible(), "learned: a standing hint goes");
+        let other = Some(second_card(&s));
+        hint_ticks(&mut s, view, other, Some(100), ms, hint_secs(10.0));
+        assert!(!s.hold_hint.visible(), "and neither dwell nor a hold brings it back");
+        plx_ui::hold_hint::reset_learned_for_test();
+    });
+}
+
+#[test]
+fn a_settled_hint_lets_the_gate_close() {
+    with_hint_home(|mut s, view| {
+        let card = Some(first_card(&s));
+        let ms = hint_ticks(&mut s, view, card, None, 0, hint_secs(6.0));
+        assert!(s.hold_hint.visible());
+        // Home settled with the hint standing still: nothing in the tick may ask for a present.
+        let context = cx(view, card);
+        let mut present = plx_machine::present::Present::new();
+        present.take(0);
+        let mut out = Vec::new();
+        let mut asked = 0;
+        for i in 1..=60u32 {
+            {
+                let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
+                let tick = ScreenEvent::Tick(Tick { ms: ms + i * HINT_TICK_MS, dt_us: HINT_TICK_MS * 1000 });
+                Machine::<TestHost>::step(&mut s, &tick, &context, &mut fx);
+            }
+            asked += u32::from(present.take(0));
+        }
+        assert_eq!(asked, 0, "a hint at rest must not hold the loop at full rate");
+    });
+}
+
+/// The screenshot pipeline's `stillclock` pins every time-driven animation, and the standing hint
+/// is one: it must not appear on its own in a held-clock capture, while a real hold still shows it.
+#[cfg(feature = "devtriggers")]
+#[test]
+fn the_hint_does_not_stand_up_by_itself_while_the_screenshot_clocks_are_held() {
+    with_hint_home(|mut s, view| {
+        let card = Some(first_card(&s));
+        plx_machine::motion::hold_phase_clocks(Some(4000));
+        let ms = hint_ticks(&mut s, view, card, None, 0, hint_secs(8.0));
+        assert!(!s.hold_hint.visible(), "pinned clocks: no self-appearing hint in a documentation figure");
+        hint_ticks(&mut s, view, card, Some(100), ms, 30);
+        assert!(s.hold_hint.visible(), "a real hold is input and still shows it");
+        plx_machine::motion::hold_phase_clocks(None);
+    });
+}

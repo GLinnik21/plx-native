@@ -82,7 +82,7 @@ Home, add `--arm framedrop=25` to `up`: the event log then gets `FRAMEDROP` deta
 frames over 25 ms.
 
 Without a TV, `make check` and `make sim` need no account either. `./tests/run.py --fps --mock`
-runs the fps scenes that declare a `mock` block (`home-grid`, `home-grid-deep`) against the mock
+runs the fps scenes that declare a `mock` block (`grep '"mock"' tests/manifest.json` lists them) against the mock
 with no `PMS_TOKEN`, no `tests/manifest.local.json` and no plex.tv call: it starts and stops
 `tests/mock_pms.py` itself on `PMS_HOST`/`PMS_PORT` with each scene's arguments (stop a mock you
 started by hand first), boots the same synthetic guest as `up --guest --mock`, and keeps the panel

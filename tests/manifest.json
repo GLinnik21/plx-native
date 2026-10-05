@@ -161,12 +161,26 @@
       "route": "home",
       "loop_floor": 30,
       "fps_ceiling": 3,
-      "run_secs": 22,
-      "warmup_s": 8,
+      "run_secs": 30,
+      "warmup_s": 16,
       "triggers": {
         "plxnative-grid": true
       },
-      "comment": "The inverse of every other fps scene: it asserts the app STOPS presenting. A settled Home grid must fall to at most fps_ceiling swaps/sec (ui::idle's KEEPALIVE_MS backstop is 2s, i.e. 0.5/s, so 3 leaves room for a late poster landing without letting a regression through). `loop_floor` still applies to loop=, which counts LOOP iterations, not presents: the loop must stay alive and responsive at >=30Hz while presenting nothing. A regression that re-armed the 60Hz repaint would blow the ceiling; one that wedged the loop would blow the loop_floor. warmup_s is 8, longer than the others, because the grid keeps presenting until the last poster has landed and its reveal spring has settled."
+      "comment": "The inverse of every other fps scene: it asserts the app STOPS presenting. A settled Home grid must fall to at most fps_ceiling swaps/sec (ui::idle's KEEPALIVE_MS backstop is 2s, i.e. 0.5/s, so 3 leaves room for a late poster landing without letting a regression through). `loop_floor` still applies to loop=, which counts LOOP iterations, not presents: the loop must stay alive and responsive at >=30Hz while presenting nothing. A regression that re-armed the 60Hz repaint would blow the ceiling; one that wedged the loop would blow the loop_floor. warmup_s is 16, longer than the others, because the grid keeps presenting until the last poster has landed and its reveal spring has settled, and because Home's \"Hold OK for options\" hint (`ui::hold_hint`) is a legitimate animation on a resting tile: it dwells 1.5 s after the page settles, fades in, stands 6 s and fades out, so its whole life ends about 9-11 s after the page settles and the warmup must clear it (the hint has already retired itself by then; its fade beats above 3 fps would otherwise blow the ceiling). Do NOT pin the clock (`stillclock`) here: that would mask a perpetual-animator regression, which is what this scene exists to catch."
+    },
+    {
+      "name": "home-hint",
+      "tier": "ui",
+      "route": "home",
+      "loop_floor": 50,
+      "run_secs": 14,
+      "warmup_s": 1,
+      "triggers": {
+        "plxnative-grid": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {},
+      "comment": "The Home \"Hold OK for options\" hint (`ui::hold_hint`, a live-glass capsule) INSTRUMENT, against the SYNTHETIC mock only: `./tests/run.py --fps --mock --filter home-hint --save-logs <dir>` starts tests/mock_pms.py itself and needs no Plex account; no key is ever sent. plxnative-grid seats the first shelf tile and leaves it, so the hint's own schedule runs: focus rests (dwell 1.5 s), the capsule fades in (~0.4 s), stands (LIFE 6 s) and fades out on its own, which the 14 s window covers with the launch and the poster landings. A settled hint presents NO frames (idle gate), so a plain fps floor over a standing hint is blind to it; the frame cost is in the FADES and in anything that moves while it stands, which is why plxnative-framedrop is armed (25 ms: the heartbeat carries frame_n/frame_gt33/frame_max/frame_p99 only then) and the per-second numbers are read out of the saved log, NOT graded. Only liveness is graded (loop_floor 50). The screenshot pin (`stillclock`, `motion::phase_clocks_held`) must NOT be armed here: it pins the hint off (`HomeScreen::hint_input`). The hold fill (OK held ~0.5 s) is not exercised: the scene never sends ok. NOT yet graded on frame time; measure first."
     },
     {
       "name": "login-spinner",

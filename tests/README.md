@@ -440,7 +440,7 @@ cast+about / info-panel regressions.
 # No Plex account: no PMS_TOKEN, no manifest.local.json, no plex.tv call. Needs .tv-host and
 # src/config.local.h with PMS_HOST/PMS_PORT (the address the debug binary was built against).
 tools/tv-lock.sh with --why "fps mock" -- ./tests/run.py --fps --mock --filter home-grid-deep
-./tests/run.py --fps --mock    # every scene that declares a `mock` block: home-grid, home-grid-deep, library-shelves-deep
+./tests/run.py --fps --mock    # every scene that declares a `mock` block (grep "mock" in tests/manifest.json)
 ```
 
 `--mock` starts `tests/mock_pms.py` itself for each scene, on the `PMS_HOST`/`PMS_PORT` of
@@ -494,6 +494,12 @@ The landed count is the data layer's, so a library walk with `min_landed` also r
 (row 169 on a passing run): the screen must show the deep shelves the store published, or a screen
 that capped its rows again (store 170, page 12) would still walk into the grid and pass.
 The linked-shelf count is derived from the mock's own arguments, not read from the app.
+
+`home-hint` is the instrument for Home's "Hold OK for options" glass hint (`ui::hold_hint`): Home
+rests on a shelf tile for 14 s so the window contains the hint's 1.5 s dwell, fade-in, standing and
+fade-out. It sends no key. `frame_gt33`, `frame_max` and p99 are printed from the heartbeats (read
+them with `--save-logs`) and only `loop_floor` 50 is graded; a settled hint presents nothing, so
+`fps_floor` is blind there.
 
 The finite `poster-scroll-settle`, `poster-eviction-reversal` and `poster-hero-grid-dive`
 scenes additionally grade `poster-gate:` telemetry. Run them with `--fps --only poster-`.

@@ -438,3 +438,20 @@ fn a_failed_reason_drops_the_row_by_one_fixed_amount() {
     let working = StatusOverlay::new(Rect::FULL, c"x", StatusKind::Working).reason(c"why").action(c"Retry");
     assert_eq!(working.row_drop(), 0.0, "only a Failed read-out's slotted reason moves the row");
 }
+
+#[test]
+fn the_hint_cap_is_the_alert_cap_with_more_room_and_nothing_else() {
+    let measure = crate::fixture::FixtureMeasure;
+    let alert = key_cap_w(CapFace::Label(c"OK"), &measure);
+    let hint = key_cap_w_with(CapFace::Label(c"OK"), CapMetrics::HINT, &measure);
+    assert_eq!(alert, key_cap_w_with(CapFace::Label(c"OK"), CapMetrics::ALERT, &measure));
+    assert_eq!(hint, CapMetrics::HINT.min_w, "OK sets the hint cap's floor, as BACK sets the alert's");
+    assert!(hint > alert);
+    let wide = c"A MUCH LONGER LEGEND";
+    let inner = measure.width(wide, theme::size::MICRO, true);
+    assert_eq!(
+        key_cap_w_with(CapFace::Label(wide), CapMetrics::HINT, &measure) - key_cap_w(CapFace::Label(wide), &measure),
+        2.0 * (CapMetrics::HINT.pad_x - CapMetrics::ALERT.pad_x),
+        "past the floor only the padding differs ({inner}px of legend)"
+    );
+}

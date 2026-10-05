@@ -1069,6 +1069,20 @@ pub const TAB_GLASS_TOP: [f32; 4] = scrim_black(0.20);
 pub const TAB_GLASS_LIFT_FLOOR: f32 = 0.045;
 /// The glass track's bottom stop — see [`TAB_GLASS_TOP`].
 pub const TAB_GLASS_BOT: [f32; 4] = scrim_black(0.36);
+/// The standing **hold hint's** glass scrim, top stop — the tab track's own material at a FIXED weight.
+///
+/// The track solves its weight every frame from a readback of what is behind it ([`TAB_GLASS_TOP`],
+/// `widgets::track_alpha_for`); the hint stands over whatever shelf happens to be under it and takes no
+/// readback, so it cannot solve and has to carry the weight the solve would worst-case to. That is
+/// the track's measured ask over the brightest real hero in the rotation, **.603** (recorded with
+/// the track's density ceiling just below), at which its tertiary-or-brighter ink clears the
+/// room's contrast bar on any real poster. It is a limit, not a taste: lighter and the
+/// label swims over white artwork, heavier and there is nothing left to see through.
+pub const HINT_GLASS_TOP: [f32; 4] = scrim_black(0.60);
+/// The hold hint's glass scrim, bottom stop: [`TAB_TRACK_TOP`]'s weight, the flat track's own, so
+/// the glass never runs heavier than the flat capsule it replaces (the same bound the track's own
+/// spread taper enforces).
+pub const HINT_GLASS_BOT: [f32; 4] = TAB_TRACK_TOP;
 /// The track material's two weights, exposed as alphas because the focused **profile chip** wears
 /// the same material and FADES it in with its unfurl (`scrim_black(A * e)`) — one material and one
 /// pair of weights whether it is painted at full strength or on the way in, which is what keeps the

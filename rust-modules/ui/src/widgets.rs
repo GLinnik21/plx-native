@@ -100,7 +100,8 @@ impl Glass {
 /// field it is frosting.
 ///
 /// **Glass is chrome-only now**: the top bar's standing track and the profile chip's capsule still
-/// sample a live blur, because the page under them moves; nothing that is a popover does.
+/// sample a live blur, because the page under them moves — and the standing hold hint
+/// (`hold_hint`, a non-interactive note); nothing that is a popover does.
 pub fn panel_ground(
     p: Painter,
     r: Rect,
@@ -1360,14 +1361,58 @@ pub enum CapFace<'a> {
     Glyph(crate::icons::Icon),
 }
 
+/// A key cap's width rule: the narrowest it is drawn and the padding either side of its label.
+/// The alert footers' cap and the standing [`HoldHint`](crate::hold_hint::HoldHint)'s are the same
+/// object at two sizes of room, so the difference is a NAMED pair here rather than a forked drawer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CapMetrics {
+    pub min_w: f32,
+    pub pad_x: f32,
+}
+
+impl CapMetrics {
+    /// The read-only alert panels' cap and the trailer hint's: `Alert Views.dc.html`.
+    pub const ALERT: CapMetrics = CapMetrics { min_w: KEYCAP_MIN_W, pad_x: KEYCAP_PAD_X };
+    /// The standing hold hint's roomier cap (`Home Screen.dc.html`: min-width 82, padding 0 14).
+    pub const HINT: CapMetrics = CapMetrics { min_w: 82.0, pad_x: 14.0 };
+}
+
+/// How a [`key_cap_with`] is inked. `ring` and `label` are separate roles (the standing hint rings
+/// its cap in the secondary ink and sets the label in the primary one); [`key_cap`] passes one ink
+/// for both. `fill` is the **hold progress**: `(fraction, colour)` paints the cap's interior left to
+/// right from its leading edge — the same rounded shape, clipped by width — under the ring and label.
+#[derive(Clone, Copy, Debug)]
+pub struct CapLook {
+    pub ring: [f32; 4],
+    pub label: [f32; 4],
+    pub fill: Option<(f32, [f32; 4])>,
+    pub metrics: CapMetrics,
+}
+
+impl CapLook {
+    /// One ink for ring and label, no fill, the alert metrics — what [`key_cap`] draws.
+    pub const fn plain(ink: [f32; 4]) -> Self {
+        CapLook { ring: ink, label: ink, fill: None, metrics: CapMetrics::ALERT }
+    }
+}
+
 /// The width [`key_cap`] will occupy for `face` — the measure-first companion, so a caller can
 /// right-align or centre the whole line before drawing any of it.
 pub fn key_cap_w(face: CapFace<'_>, measure: &dyn plx_machine::machine::Measure) -> f32 {
+    key_cap_w_with(face, CapMetrics::ALERT, measure)
+}
+
+/// [`key_cap_w`] under named [`CapMetrics`].
+pub fn key_cap_w_with(
+    face: CapFace<'_>,
+    metrics: CapMetrics,
+    measure: &dyn plx_machine::machine::Measure,
+) -> f32 {
     let inner = match face {
         CapFace::Label(label) => measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0),
         CapFace::Glyph(_) => KEYCAP_GLYPH,
     };
-    (inner + 2.0 * KEYCAP_PAD_X).max(KEYCAP_MIN_W)
+    (inner + 2.0 * metrics.pad_x).max(metrics.min_w)
 }
 
 /// Draw one key cap with its LEFT edge at `x`, centred on `cy`; returns its width.
@@ -1379,13 +1424,33 @@ pub fn key_cap(
     ink: [f32; 4],
     measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
-    let w = key_cap_w(face, measure);
-    p.rring(
-        Rect::new(x, cy - KEYCAP_H * 0.5, w, KEYCAP_H),
-        KEYCAP_RAD,
-        KEYCAP_W,
-        ink,
-    );
+    key_cap_with(p, x, cy, face, CapLook::plain(ink), measure)
+}
+
+/// [`key_cap`] with its inks, metrics and optional hold-progress fill named. Fill, then ring, then
+/// label, so the ring and the legend stay crisp over the progress wash.
+pub fn key_cap_with(
+    p: Painter,
+    x: f32,
+    cy: f32,
+    face: CapFace<'_>,
+    look: CapLook,
+    measure: &dyn plx_machine::machine::Measure,
+) -> f32 {
+    let w = key_cap_w_with(face, look.metrics, measure);
+    let r = Rect::new(x, cy - KEYCAP_H * 0.5, w, KEYCAP_H);
+    if let Some((frac, col)) = look.fill {
+        let fw = w * frac.clamp(0.0, 1.0);
+        if fw > 0.5 {
+            // The shape of the cap clipped to its leading `fw`: the left corners always (they are
+            // the cap's own), the right ones only once the edge reaches them.
+            let left = KEYCAP_RAD.min(fw * 0.5);
+            let right = (fw - (w - KEYCAP_RAD)).clamp(0.0, KEYCAP_RAD);
+            p.rrect(Rect::new(x, r.y, fw, r.h), left, right, col);
+        }
+    }
+    p.rring(r, KEYCAP_RAD, KEYCAP_W, look.ring);
+    let ink = look.label;
     match face {
         CapFace::Label(label) => {
             let tw = measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0);
@@ -2302,7 +2367,7 @@ pub fn profile_chip_at(mx: f32, my: f32) -> bool {
 /// `max(u_tint.a * cov, rimw)`, so the rim is deliberately allowed to exceed its surface's own
 /// coverage and a tint faded to nothing leaves a full-strength hairline behind. At `e == 1` this is
 /// the track's face to the bit — the band is ONE material at rest, which is the whole claim.
-fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::GlassFace {
+pub(crate) fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::GlassFace {
     let fade = |c: [f32; 4]| [c[0], c[1], c[2], c[3] * e];
     plx_gfx::gfx::GlassFace {
         scrim_top: fade(face.scrim_top),

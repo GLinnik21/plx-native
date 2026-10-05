@@ -916,7 +916,7 @@ impl Bridge {
         let e = d.nav.entry(entry)?;
         let screen = e.inst.as_ref()?.screen.as_any()?;
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
-            press: plx_machine::machine::PressRead { scale: 1.0, is_long: false },
+            press: plx_machine::machine::PressRead { scale: 1.0, is_long: false, held_ms: None },
             focus: plx_machine::machine::FocusRead { current: None , ..Default::default() },
             owner: plx_machine::machine::InputOwner::Entry(entry) };
         parts.owner = plx_machine::machine::InputOwner::Entry(entry);
@@ -968,7 +968,7 @@ impl Bridge {
         // above that quad, like Popover::scrim_lifting's legacy callback scope.
         let _live = plx_ui::popover::host::live();
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
-            press: plx_machine::machine::PressRead { scale: 1.0, is_long: false },
+            press: plx_machine::machine::PressRead { scale: 1.0, is_long: false, held_ms: None },
             focus: plx_machine::machine::FocusRead { current: None , ..Default::default() },
             owner: plx_machine::machine::InputOwner::Entry(entry) };
         parts.owner = plx_machine::machine::InputOwner::Entry(entry);
@@ -2077,7 +2077,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     let Some(instance) = d.nav.entry(owner).and_then(|e| e.inst.as_ref()) else { return String::new() };
     let focus = d.focus();
     let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
-        press: plx_machine::machine::PressRead { scale: 1.0, is_long: false },
+        press: plx_machine::machine::PressRead { scale: 1.0, is_long: false, held_ms: None },
         focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(owner) };
     let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
     let mut groups = Vec::new();

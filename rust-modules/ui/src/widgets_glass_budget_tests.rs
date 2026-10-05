@@ -344,7 +344,10 @@ fn live_glass_carries_no_private_source_policy() {
 /// **Glass is chrome-only; no popover panel frosts a backdrop blur.** Every panel stands on the
 /// latched underlay field through `panel_ground` (directly, or through `Popover::panel`), and the
 /// blur chain's users are the top bar's standing track, the profile chip's capsule, the dev tile
-/// band — all in `widgets.rs` — plus the frame mechanism and the dev load dial.
+/// band — all in `widgets.rs` — the standing hold hint's capsule (`hold_hint.rs`: a non-interactive
+/// standing note, the track's own material, budgeted by
+/// `hold_hint::tests::the_capsules_own_blur_region_fits_the_budget_and_never_meets_the_top_band`),
+/// plus the frame mechanism and the dev load dial.
 ///
 /// A source grep, because the failure it guards is a call that COMPILES: `Glass` and
 /// `Painter::backdrop_blur` stay reachable for the chrome, so a panel that reached for them again
@@ -357,6 +360,8 @@ fn no_popover_panel_uses_the_blur_path_and_every_one_stands_on_the_field() {
     // a fixture that names it in a string.
     const CHROME: &[&str] = &[
         "ui/src/widgets.rs",
+        // the standing hold hint: one `Glass::DYNAMIC_BACKDROP.backdrop` call, region-budgeted
+        "ui/src/hold_hint.rs",
         "ui/src/frame/glass.rs",
         "ui/src/frame/backdrop_tests.rs",
         "ui/src/glassload.rs",

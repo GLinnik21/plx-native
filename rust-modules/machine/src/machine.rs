@@ -268,11 +268,16 @@ pub fn fit_line_by<M: Measure + ?Sized>(
         .unwrap_or_default().into_boxed_c_str().into()
 }
 
-/// What a machine may read about the press machine (§7.4): the renderer's two numbers.
+/// What a machine may read about the press machine (§7.4): the renderer's numbers.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct PressRead {
     pub scale: f32,
     pub is_long: bool,
+    /// Milliseconds a HOLDABLE (card) press has been held down right now, still undecided: `None`
+    /// for no press, a control face's press (no hold gesture), a released or cancelled one.
+    /// The reader divides by the hold threshold (`ui::press::LONG_MS`, which this layer cannot
+    /// name) — it is what the hold hint's cap fills from.
+    pub held_ms: Option<u32>,
 }
 
 /// What a machine may read about focus (§7.3 step 5): the engine owns the state, screens read it.

@@ -630,7 +630,12 @@ impl<H: AppLike + crate::registry::MetadataLike> Machine<H> for ItemMenuScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
-            ScreenEvent::Mount => self.build_rows(H::metadata(cx)),
+            ScreenEvent::Mount => {
+                self.build_rows(H::metadata(cx));
+                // The menu is the thing the Home hold hint teaches; once ANY card screen has
+                // opened one the lesson is learned and the hint retires (`ui::hold_hint::learned`).
+                plx_ui::hold_hint::mark_learned();
+            }
             ScreenEvent::Tick(tick) => {
                 self.form.table.sel = cx
                     .focus
@@ -1783,7 +1788,8 @@ mod tests {
         req.expect("a row that acts reports its action")
     }
 
-    fn feed(s: &mut ItemMenuScreen, key: Key, edge: Edge, ms: u32) -> Handled {
+    /// Step the screen with one event through a throwaway `Effects`.
+    fn step_ev(s: &mut ItemMenuScreen, ev: &ScreenEvent<HostFixture>) -> Handled {
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         let mut fx = Effects::new(
@@ -1791,6 +1797,10 @@ mod tests {
             plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)),
             &mut present,
         );
+        with_cx(|cx| <ItemMenuScreen as Machine<HostFixture>>::step(s, ev, cx, &mut fx))
+    }
+
+    fn feed(s: &mut ItemMenuScreen, key: Key, edge: Edge, ms: u32) -> Handled {
         let ev = ScreenEvent::<HostFixture>::Input(InputEvent {
             at: Tick { ms, dt_us: 0 },
             source: Source::Sdl,
@@ -1802,7 +1812,19 @@ mod tests {
                 at_edge: false,
             },
         });
-        with_cx(|cx| <ItemMenuScreen as Machine<HostFixture>>::step(s, &ev, cx, &mut fx))
+        step_ev(s, &ev)
+    }
+
+    /// **Opening the menu from ANY card screen retires Home's "Hold OK for options" hint**: the
+    /// mount is the one door every presenter goes through, so the lesson is marked there.
+    #[test]
+    fn mounting_the_menu_retires_the_hold_hint() {
+        plx_ui::hold_hint::reset_learned_for_test();
+        let mut screen = ItemMenuScreen::new(EntryId(7), card_arg(&item(0, PosterMark::None), false));
+        assert!(!plx_ui::hold_hint::learned());
+        step_ev(&mut screen, &ScreenEvent::Mount);
+        assert!(plx_ui::hold_hint::learned());
+        plx_ui::hold_hint::reset_learned_for_test();
     }
 
     fn extra() -> plx_data::metadata::Extra {
