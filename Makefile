@@ -212,6 +212,7 @@ print-cargo-env: ; @env $(TELEMETRY_ENV) env | grep '^PLX_' | sort || true
 print-bench-config:
 	@printf '%s\n' 'RUST_NIGHTLY=$(RUST_NIGHTLY)' 'RUST_TDIR=$(RUST_TDIR)' 'RUST_TARGET=$(RUST_TARGET)' \
 	  'RUST_FEATFLAGS=$(RUST_FEATFLAGS)' 'RUST_LIB=$(RUST_LIB)' 'RUST_ENV=$(RUST_ENV)' \
+	  'ARM_PROFILE=$(ARM_PROFILE)' 'ARM_PROFILE_FLAG=$(ARM_PROFILE_FLAG)' \
 	  'TEST_FAST_TDIR=$(TEST_FAST_TDIR)' 'UNIT_RUN=$(UNIT_RUN)' 'RELEASE=$(RELEASE)'
 
 # `make disk` — what every checkout of this repository is costing, in one table, plus how to get
@@ -481,6 +482,33 @@ endif
 # cargo hashes it into every unit, so a seeded helper tree recompiled in full (measured).
 CARGO_SEED = $(if $(filter yes,$(PLX_LINKED_WORKTREE)),python3 tools/cargo-seed.py,true)
 
+# WHICH CARGO PROFILE THE ARM BUILD USES: `release` (fat LTO, one codegen unit) or `tvdev` (no LTO,
+# 16 codegen units), both defined in rust-modules/Cargo.toml.
+#
+# `release` is what makes the binary fit ci/build-budgets.json, and it costs build time: a local
+# edit-rebuild of the ARM staticlib went from ~44 s to ~94 s when it was adopted (docs/module-layers.md,
+# "What the split cost the binary"). Every `make` / `make deploy` to the TV pays that, so the plain
+# developer build gets the cheaper `tvdev` instead. The two profiles differ only in LTO and codegen
+# units: same opt-level, same panic strategy (unwind), same debug info, same RUSTFLAGS, so the ELF
+# links and passes ci/check-elf.sh the same way, only larger (it is not graded against the size
+# budget, which is a statement about the shipped artifact).
+#
+# `tvdev` is selected ONLY for the ordinary local debug-flavour build. Everything that ships, is
+# graded or is measured for shipping keeps `release`:
+#   * RELEASE=1 (every release, nightly and submission-candidate build),
+#   * SYMBOLS=1 (a debuginfo build exists to be symbolicated against a SHIPPED binary),
+#   * FLAVOR=stable or nightly (the installs other people run),
+#   * any CI run (GitHub Actions sets CI=true and GITHUB_ACTIONS=true on every job, so the workflows
+#     need no edit and cannot drift from this rule; ci/test_arm_profile.py pins it).
+# `ARM_PROFILE=release` (or `=tvdev`) on the command line or in the environment overrides all of
+# that, e.g. an FPS measurement on the TV that must run the LTO build: `make ARM_PROFILE=release deploy`.
+# The profile is part of the build stamp below (as `+profile:tvdev`, absent for `release` so every
+# shipped stamp is byte-for-byte what it was), because it changes the staticlib path and, like
+# RELEASE, must not let one profile's archive be linked as if it were the other's.
+ARM_PROFILE ?= $(if $(or $(RELEASE),$(SYMBOLS),$(filter-out debug,$(FLAVOR)),$(CI),$(GITHUB_ACTIONS)),release,tvdev)
+$(if $(filter release tvdev,$(ARM_PROFILE)),,$(error unknown ARM_PROFILE "$(ARM_PROFILE)" — one of: release tvdev))
+ARM_PROFILE_FLAG = $(if $(filter release,$(ARM_PROFILE)),--release,--profile $(ARM_PROFILE))
+
 RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)
 RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
@@ -646,7 +674,7 @@ TELEMETRY_CFG  = $(shell printf '%s|%s|%s|%s' '$(PLX_SENTRY_DSN)' '$(PLX_POSTHOG
 # else about the configuration moved. `$(filter nightly,$(FLAVOR))` guards it exactly the way
 # PLX_CHANNEL and PLX_NIGHTLY_DATE above are themselves guarded, so a non-nightly stamp is
 # byte-for-byte what it always was.
-RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(SYMBOLS),+symbols,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)+tel:$(TELEMETRY_CFG)
+RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFILE)),+profile:$(ARM_PROFILE),)$(if $(SYMBOLS),+symbols,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)+tel:$(TELEMETRY_CFG)
 # Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
 # Both choices are load-bearing, and both were arrived at by measuring the failures:
 #   * A rule cannot do it. macOS ships GNU make 3.81, which decides whether a target is up to date
@@ -704,7 +732,7 @@ endif
 endif
 
 RUST_TARGET = arm-unknown-linux-gnueabi
-RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/release/libplxnative_modules.a
+RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/$(ARM_PROFILE)/libplxnative_modules.a
 
 # Every ordinary C translation unit ships; gpdebug remains an opt-in allocator guard.
 # ass.c belongs to the privately bundled renderer, never the application ELF.
@@ -823,7 +851,7 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 	mkdir -p rust-modules/$(RUST_TDIR)
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  $(TELEMETRY_ENV) \
-	  cargo +$(RUST_NIGHTLY) rustc --release --target $(RUST_TARGET) \
+	  cargo +$(RUST_NIGHTLY) rustc $(ARM_PROFILE_FLAG) --target $(RUST_TARGET) \
 	    --lib --crate-type staticlib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS) \
 	    --message-format=json-render-diagnostics > $(RUST_TDIR)/.lib-artifacts.json
 	@# The crate declares `crate-type = ["rlib"]`, so this `.a` exists only because the line above
@@ -856,11 +884,11 @@ STORAGE_TDIR = $(RUST_TDIR)-storage
 # generator in build_support/; that is all it names here, so an edit to the UI no longer relinks it. `ci/test_storage_package_isolated.py` holds the
 # "no app library" line.
 STORAGE_INPUTS := $(shell find rust-modules/storage rust-modules/build_support rust-modules/platform/src/storage_service -type f 2>/dev/null) rust-modules/platform/src/storage/state.rs rust-modules/.cargo/config.toml
-STORAGE_BIN = rust-modules/$(STORAGE_TDIR)/$(RUST_TARGET)/release/plxnative-storage
+STORAGE_BIN = rust-modules/$(STORAGE_TDIR)/$(RUST_TARGET)/$(ARM_PROFILE)/plxnative-storage
 pkg/plxnative-storage: LICENSE $(STORAGE_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock ci/install-identities.json Makefile ci/arm-cc.py ci/check-link-evidence.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER='$(CC)' \
-	  cargo +$(RUST_NIGHTLY) rustc --release --target $(RUST_TARGET) \
+	  cargo +$(RUST_NIGHTLY) rustc $(ARM_PROFILE_FLAG) --target $(RUST_TARGET) \
 	    -p plxnative-storage --bin plxnative-storage --target-dir $(STORAGE_TDIR) --no-default-features -- \
 	    -C link-arg=--sysroot=$(SYSROOT) -L native=$(SYSROOT)/usr/lib \
 	    -C link-arg=-Wl,-rpath-link,$(SYSROOT)/usr/lib -C link-arg=-Wl,--build-id=sha1
@@ -1647,6 +1675,9 @@ check-python: check-localization
 	python3 ci/test_cargo_test_parallel.py
 	@# `make build-bench`: table/JSON shape, edit-and-restore, refusals, skips and the Makefile wiring, against a fake cargo.
 	python3 ci/test_build_bench.py
+	@# `ARM_PROFILE`: a plain local build compiles the ARM staticlib with the fast `tvdev` profile and
+	@# everything that ships or runs in CI keeps fat-LTO `release`; resolved through print-bench-config.
+	python3 ci/test_arm_profile.py
 	python3 ci/test_source_bundle.py
 	python3 ci/test_restore_runtime.py
 	python3 ci/test-compat.py

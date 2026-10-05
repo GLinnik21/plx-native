@@ -258,7 +258,8 @@ serde_json = { version = "1", default-features = false, features = ["alloc", "st
 # derive(Deserialize) for the typed plex API response models (plex/src/plex/models.rs)
 serde = { version = "1", default-features = false, features = ["derive", "alloc", "rc"] }
 
-# The release profile (the ARM staticlib, the storage helper, `make sim-linux` and `make macapp`;
+# The release profile (the ARM staticlib and storage helper of CI, `RELEASE=1`, `SYMBOLS=1` and
+# `FLAVOR=stable|nightly` builds, `make sim-linux` and `make macapp`;
 # the host dev/test profile is untouched). `lto = "fat"` and `codegen-units = 1` are here because of
 # the crate split (docs/module-layers.md): with the default 16 codegen units and no LTO, a function
 # can no longer be inlined or dropped across a layer crate boundary, so every wave of the split grew
@@ -268,12 +269,27 @@ serde = { version = "1", default-features = false, features = ["derive", "alloc"
 # back the cross-crate inlining that the UI's per-frame code relied on.
 #
 # What it costs is build time, paid only by release-profile builds: CI's ARM library build went from
-# 2m40 to 4m15 and a local one from 44 s to 94 s. `make check` and the host tests run the dev profile
-# and do not pay it.
+# 2m40 to 4m15 and a local `ARM_PROFILE=release` one from 44 s to 94 s. `make check` and the host tests run the dev profile
+# and do not pay it, and neither does a plain local `make` / `make deploy`: the Makefile builds those
+# with `[profile.tvdev]` below. Release-profile builds are CI, `RELEASE=1`, `SYMBOLS=1`,
+# `FLAVOR=stable|nightly` and `make ARM_PROFILE=release`.
 [profile.release]
 opt-level = 2
 lto = "fat"
 codegen-units = 1
+
+# The LOCAL ARM development profile: what a plain `make` / `make deploy` builds, so the edit-rebuild
+# loop does not pay for the size work above. Same `opt-level`, same `panic` (unwind), same debug info
+# (none) and no symbol stripping, so it is the same program with the same codegen flags from
+# `rust-modules/.cargo/config.toml`; it differs only in giving up cross-crate inlining and dead-code
+# removal, which is exactly what costs bytes. The result is therefore LARGER than the release binary
+# and does not meet `ci/build-budgets.json`; that budget is graded on the `release` artifact only.
+# The Makefile never selects this for `RELEASE=1`, `FLAVOR=stable|nightly`, `SYMBOLS=1` or a CI run,
+# and `make ARM_PROFILE=release` forces the LTO build locally (Makefile, `ARM_PROFILE`).
+[profile.tvdev]
+inherits = "release"
+lto = "off"
+codegen-units = 16
 
 [dev-dependencies]
 # The `cfg(test)` fixtures of the base layer (`testlock`, `testnet`, ...): a dependency is never

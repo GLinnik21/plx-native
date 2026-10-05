@@ -87,7 +87,7 @@ with no `PMS_TOKEN`, no `tests/manifest.local.json` and no plex.tv call: it star
 `tests/mock_pms.py` itself on `PMS_HOST`/`PMS_PORT` with each scene's arguments (stop a mock you
 started by hand first), boots the same synthetic guest as `up --guest --mock`, and keeps the panel
 and sound off. `./tests/run.py --server` (and plain `--fps`) still call `read_token()` and read
-`tests/manifest.local.json`, so they cannot target the mock. `tests/run.py` does not deploy the binary, so deploy the build you mean to measure first (`make deploy` under the TV lock, or `tools/tv-session.sh up`, which deploys when stale) — a stress run once measured an older binary this way.
+`tests/manifest.local.json`, so they cannot target the mock. `tests/run.py` does not deploy the binary, so deploy the build you mean to measure first (`make deploy` under the TV lock, or `tools/tv-session.sh up`, which deploys when stale; for FPS or frame pacing build with `ARM_PROFILE=release`, e.g. `make ARM_PROFILE=release deploy`, because a bare `make deploy` ships the no-LTO `tvdev` build, see `docs/agent-reference.md` "ARM_PROFILE") — a stress run once measured an older binary this way.
 
 That's the whole setup. The sections below explain what each piece is, how to
 verify it, and how to fix it when it goes wrong — read them when the fast path

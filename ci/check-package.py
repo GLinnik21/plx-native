@@ -40,8 +40,11 @@ def build_configuration(stamp: str) -> "str | None":
     THE FEATURE FLAGS ARE ONE FIELD OF SEVERAL, and reading the stamp as a whole string is what
     silently switched every gate that depends on this off. `RUST_CFG` is `features:$(RUST_FEATFLAGS)`,
     then `+symbols` when SYMBOLS=1, then `+nightly:<date>` when FLAVOR=nightly, then always
-    `+tel:<hash>` — so the real stamp for an ordinary dev build is `features:+tel:98c4b7d3`, which
-    equals neither of the two literals this was once written against. It matched when it was
+    `+tel:<hash>` — and `+profile:tvdev` right after the flags when the local ARM profile is in
+    use (the Makefile's ARM_PROFILE; absent for `release`, so every shipped stamp is unchanged) —
+    so the real stamp for an ordinary dev build is `features:+tel:98c4b7d3` under CI and
+    `features:+profile:tvdev+tel:98c4b7d3` for a plain local build, which equals
+    neither of the two literals this was once written against. It matched when it was
     written; the telemetry field was added later, and from that day the answer was None for EVERY
     build this project makes. Nothing failed — the callers print "SKIP — neither shipped
     configuration" and move on — so the dev-trigger gate, the dev-only-library gate and the
@@ -59,7 +62,7 @@ def build_configuration(stamp: str) -> "str | None":
     not choke on its presence.
     """
     fields = re.fullmatch(
-        r"features:(?P<flags>.*?)(?:\+symbols)?(?:\+nightly:[0-9]{8})?(?:\+tel:[0-9a-f]+)?",
+        r"features:(?P<flags>.*?)(?:\+profile:[a-z]+)?(?:\+symbols)?(?:\+nightly:[0-9]{8})?(?:\+tel:[0-9a-f]+)?",
         stamp.strip())
     if not fields:
         return None
@@ -287,6 +290,9 @@ def _selftest() -> int:
         "features:--no-default-features+tel:98c4b7d37a4c": "release",
         "features:--no-default-features+symbols+tel:98c4b7d37a4c": "release",   # the release cut
         "features:+symbols+tel:98c4b7d37a4c": "dev",
+        # the local ARM profile (Makefile ARM_PROFILE=tvdev): only a plain dev build ever carries it
+        "features:+profile:tvdev+tel:98c4b7d37a4c": "dev",
+        "features:--no-default-features+profile:tvdev+tel:98c4b7d37a4c": "release",
         # the nightly cut: RELEASE=1 (so --no-default-features), SYMBOLS=1, and the dated field
         "features:--no-default-features+symbols+nightly:20260919+tel:98c4b7d37a4c": "release",
         # older stamps, from before the telemetry and symbols fields existed

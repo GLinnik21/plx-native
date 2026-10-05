@@ -20,12 +20,16 @@ p.add_argument('--evidence-base', type=Path)
 a = p.parse_args()
 
 
+# The cargo output directories a build can land in: the Makefile's ARM_PROFILE is `release` or `tvdev`.
+PROFILE_DIRS = ('release', 'tvdev', 'debug')
+
+
 def find_evidence_by_content(source):
     """Locate the linker's own evidence for `source`'s bytes.
 
     `cargo rustc --bin <name>` invokes the linker with `-o` pointed at a
     cargo-internal path, then copies (not symlinks or hardlinks) the binary
-    to the plain `release/<name>` path Make actually names — so arm-cc.py's
+    to the plain `<profile>/<name>` path Make actually names — so arm-cc.py's
     evidence lands beside the INTERNAL path, not beside the copy.
     `.resolve()` cannot find it: there is no symlink to follow. That internal
     path is usually `target/<triple>/release/deps/<crate>-<hash>`, but it is
@@ -39,13 +43,13 @@ def find_evidence_by_content(source):
     stale sibling with the right name but the wrong build can never be
     picked by accident.
     """
-    # Walk up from `.../release/<name>` (or `.../release/deps/<name>`) to the
+    # Walk up from `.../<profile>/<name>` (or `.../<profile>/deps/<name>`) to the
     # `<triple>` directory — the root cargo confines every internal output
     # for this build under, on every layout observed so far.
     root = source.parent
-    while root.name not in ('release', 'debug') and root.parent != root:
+    while root.name not in PROFILE_DIRS and root.parent != root:
         root = root.parent
-    if root.name in ('release', 'debug'):
+    if root.name in PROFILE_DIRS:
         root = root.parent
     else:
         root = source.parent  # fallback: search only beside the source

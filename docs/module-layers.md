@@ -1836,10 +1836,14 @@ The last no-LTO figure is over the 12,426,000 limit, which made Splits 9 and 10 
 `[profile.release]` keys in `rust-modules/Cargo.toml` take the result below the pre-split size,
 because whole-program optimisation with a single codegen unit sees the same code the single crate
 did. They also restore the cross-crate inlining the single crate had, which the per-frame UI code
-leans on. Only release-profile builds pay for it (the ARM staticlib and the storage helper, the
+leans on. Only release-profile builds pay for it (the ARM staticlib and the storage helper when built as `release`, the
 Linux simulator of `make sim-linux` and `make macapp`); the dev profile that `make check`, the host
 tests and the macOS simulator use is untouched. The price is build time: CI's ARM library build
-went from 2m40 to 4m15, and a local one from 44 s to 94 s.
+went from 2m40 to 4m15, and a local `ARM_PROFILE=release` one from 44 s to 94 s. A plain local `make` / `make deploy` no
+longer pays it: the Makefile builds the ARM staticlib with `[profile.tvdev]` (no LTO, 16 codegen
+units), which is faster and larger, and keeps `release` for CI, `RELEASE=1`, `SYMBOLS=1` and
+`FLAVOR=stable|nightly` (`ARM_PROFILE=release` forces it). The budget above is graded on the
+`release` artifact only.
 
 ## Limits of the analysis
 

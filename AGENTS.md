@@ -90,6 +90,11 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   body (`docs/agent-reference.md`, build section); the tool queues on the `make check` lock.
 - `make` performs the ARM cross-build. Do not assume a host-only green result proves the target
   still builds.
+- A plain local `make` / `make deploy` compiles the ARM library with the fast `tvdev` cargo profile
+  (no LTO); CI, `RELEASE=1`, `SYMBOLS=1` and `FLAVOR=stable|nightly` keep the fat-LTO `release`
+  profile. That binary is larger and slower in per-frame code, so any FPS or smoothness
+  measurement on the TV, and any size-budget check, must pass `ARM_PROFILE=release`
+  (`docs/agent-reference.md`, "ARM_PROFILE").
 - After editing `rust-modules/src/**/*.rs` or a layer crate's `rust-modules/*/src/**/*.rs`, also check the shipping feature set with
   `CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
   --no-default-features` when the Claude-only release hook did not run. Keep the
