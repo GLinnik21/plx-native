@@ -1608,6 +1608,7 @@ check-python: check-localization
 	python3 tests/test_harness.py
 	python3 tests/player_pointer.py --selftest
 	python3 tests/test_replay_fixtures.py
+	python3 tools/prune-gh-caches.py --selftest
 	python3 tests/test_mock_pms_library.py
 	@# The demo library and the screenshot scene manifest (make screenshots). Offline: the cases
 	@# that serve the catalog skip, and say so, where the derived artwork cache is absent.
@@ -1664,6 +1665,7 @@ check-python: check-localization
 	python3 ci/test_ci_split.py
 	@# No CI job may lack timeout-minutes, no `apt-get update` / `curl` may be unbounded (run 36904995113 hung 4 h 36 min).
 	python3 ci/test_ci_timeouts.py
+	python3 ci/test_ci_workflows.py
 	@# The build-health budgets (ci/build-budgets.json): the checker against canned metadata, and the json schema.
 	python3 ci/test_build_budgets.py
 	@# tools/ci-durations.py (CI duration trends) against canned `gh api` output; no network.

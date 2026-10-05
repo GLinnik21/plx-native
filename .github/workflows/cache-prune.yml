@@ -1,0 +1,50 @@
+name: Cache prune
+
+# Manual only. Lists — and, when asked, deletes — the Actions caches that can never be restored
+# again: those of pull requests that are no longer open, and older hash generations of a key whose
+# newer generation exists on the same ref (a superseded lockfile / config hash). The rules, and why
+# the newest generation of each family is always kept, are in tools/prune-gh-caches.py.
+#
+# `dry_run` defaults to true: the job prints what WOULD be deleted and changes nothing. Run it
+# with `dry_run: false` only after reading that list.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: >
+          List what would be deleted and delete nothing. Untick to delete the listed caches.
+        required: false
+        type: boolean
+        default: true
+
+# `actions: write` deletes caches; `pull-requests: read` lets `gh pr list` tell open pull requests
+# from closed ones; `contents: read` is for the checkout of the script. Nothing else.
+permissions:
+  actions: write
+  pull-requests: read
+  contents: read
+
+concurrency:
+  group: cache-prune
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: prune caches that can no longer be restored
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: List (and delete) unrestorable caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          python3 tools/prune-gh-caches.py --selftest
+          if [ "$DRY_RUN" = "true" ]; then
+            python3 tools/prune-gh-caches.py --repo "$GITHUB_REPOSITORY"
+          else
+            python3 tools/prune-gh-caches.py --repo "$GITHUB_REPOSITORY" --delete
+          fi

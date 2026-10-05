@@ -77,6 +77,16 @@ on:
           release both pass this true; a non-publishing caller can still opt out.
         type: boolean
         default: false
+      upload-debug-files:
+        description: >
+          Upload pkg/plxnative.debug and the binary to Sentry. Defaults true, the fail-closed
+          choice: a release or a real nightly whose native crashes could not be symbolicated is
+          not a working crash-reporting build. Only a nightly's dry run on a PULL REQUEST passes
+          false (nightly.yml): that run publishes nothing, so the upload would only fill Sentry
+          with debug files for a package no one can install, at 12-66 s per run. The build-id
+          pairing assertion and `sentry-cli debug-files check` still run either way.
+        type: boolean
+        default: true
     secrets:
       SENTRY_AUTH_TOKEN:
         required: true
@@ -297,23 +307,34 @@ jobs:
         # them is gitignored — in particular `src/config.local.h`, which holds a live Plex token, is
         # not referenced at all, and that token appears zero times in both the .debug and the
         # stripped binary. The source is GPL-3.0-or-later; publication also requires the corresponding-source gate.
+        #
+        # `upload-debug-files: false` (a nightly's dry run on a pull request only) skips the token
+        # guard and the upload and keeps `debug-files check`, which needs no token and is the part
+        # that proves the object is usable.
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ vars.SENTRY_ORG || 'gleb-linnik' }}
           SENTRY_PROJECT: ${{ inputs.telemetry == 'production' && (vars.SENTRY_PROJECT || 'plx-native') || (vars.SENTRY_PROJECT_DEV || 'plx-native-dev') }}
           TELEMETRY: ${{ inputs.telemetry }}
+          UPLOAD: ${{ inputs.upload-debug-files }}
         run: |
-          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
-            echo "::error::SENTRY_AUTH_TOKEN is not set — refusing to ship unsymbolicatable crash reports."
-            exit 1
-          fi
-          if [ "$TELEMETRY" = development ]; then
-            [ "$SENTRY_PROJECT" = plx-native-dev ] || { echo "::error::a development-telemetry build's DIFs must upload to plx-native-dev, not $SENTRY_PROJECT."; exit 1; }
+          if [ "$UPLOAD" = true ]; then
+            if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+              echo "::error::SENTRY_AUTH_TOKEN is not set — refusing to ship unsymbolicatable crash reports."
+              exit 1
+            fi
+            if [ "$TELEMETRY" = development ]; then
+              [ "$SENTRY_PROJECT" = plx-native-dev ] || { echo "::error::a development-telemetry build's DIFs must upload to plx-native-dev, not $SENTRY_PROJECT."; exit 1; }
+            fi
           fi
           # `debug-files check` first: it is the step that says whether Symbolicator can use this
           # object at all, and its answer (`Arch: arm`, `Usable: yes`) is the one thing no vendor
           # documentation states about armv7.
           npx --yes @sentry/cli@3.7.0 debug-files check pkg/plxnative.debug
+          if [ "$UPLOAD" != true ]; then
+            echo "Skipping the Sentry upload: upload-debug-files is '$UPLOAD' (a pull request's nightly dry run)."
+            exit 0
+          fi
           npx --yes @sentry/cli@3.7.0 debug-files upload \
               --include-sources pkg/plxnative.debug pkg/plxnative
 

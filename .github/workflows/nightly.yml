@@ -32,10 +32,12 @@ name: Nightly
 # `gh release create`, and the post-publish download/verify) are individually gated on `dry`.
 #
 # FORK PULL REQUESTS ARE SKIPPED ENTIRELY (see `plan`'s own `if:`). `build`, even in dry mode,
-# still runs through build-package.yml's "Upload debug files to Sentry" step, which needs
-# `secrets.SENTRY_AUTH_TOKEN` — and GitHub does not expose repository secrets to a workflow run
-# triggered by a fork's pull request. Running anyway would not "run drier", it would fail on a
-# missing secret and read as this pipeline being broken rather than as the sandboxing that it is.
+# runs the whole of build-package.yml, and `secrets.SENTRY_AUTH_TOKEN` is passed to it — GitHub
+# does not expose repository secrets to a workflow run triggered by a fork's pull request.
+# Running anyway would not "run drier", it would hit a missing secret and read as this pipeline
+# being broken rather than as the sandboxing that it is. (A same-repo pull request's dry run no
+# longer uploads debug files to Sentry — `upload-debug-files` below — but the fork skip is
+# unchanged: it is the owner's call, not part of that change.)
 
 on:
   schedule:
@@ -176,6 +178,12 @@ jobs:
       # obligation as a stable release.
       source-asset: true
       fwcompat: true
+      # A PULL REQUEST's dry run publishes nothing, so uploading its debug files to Sentry only
+      # costs 12-66 s and files symbols for a package nobody can install. Every other run keeps
+      # the upload: the schedule, and a `workflow_dispatch` even with `dry_run: true` (which
+      # exists to prove the whole pipeline, upload included). The event name, not `plan`'s `dry`
+      # output, is the discriminator: `dry` is also true for that dispatch.
+      upload-debug-files: ${{ github.event_name != 'pull_request' }}
       # Release deliberately builds uncached for reproducibility; nightly runs once a day rather
       # than on every push, so the cache's turnaround benefit is smaller and not worth the same
       # trade here either.
