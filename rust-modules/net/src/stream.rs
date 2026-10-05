@@ -81,8 +81,9 @@ pub struct HttpStream {
 }
 
 /// Longest `Location` kept. Presigned CDN URLs run to a couple of KiB; one that does not fit is
-/// treated as absent, which fails the open rather than requesting a truncated URL.
-const LOCATION_CAP: usize = 8192;
+/// treated as absent, which fails the open rather than requesting a truncated URL. Public because
+/// `curlio`, which follows the https hops itself, keeps the same bound.
+pub const LOCATION_CAP: usize = 8192;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -176,7 +177,7 @@ impl HttpStream {
 ///
 /// `plx_base::eventlog::redact_tokens` catches a line that gets this wrong on the way out; the policy is that
 /// nothing built here needs it.
-fn log_endpoint(path: &str) -> &str {
+pub fn log_endpoint(path: &str) -> &str {
     match path.find('?') {
         Some(q) => &path[..q],
         None => path,
