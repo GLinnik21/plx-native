@@ -86,7 +86,18 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   command line or in the environment) overrides it either way. **Anything that measures
   performance on the TV (FPS, frame pacing, scroll smoothness, CPU/GPU) must use
   `ARM_PROFILE=release`**: `tvdev` loses the cross-crate inlining the per-frame UI code relies on,
-  so its numbers are not the shipped ones. The staticlib lands in
+  so its numbers are not the shipped ones. This is enforced rather than remembered: `make deploy`
+  writes the profile into `<app dir>/arm-profile` on the set, and `tests/run.py --fps` /
+  `--fps-player` / `--graphics-profile`, `tools/profile-graphics` and `tools/tv-sched-trace.sh`
+  read it through `tools/arm_profile_guard.py` and stop with a one-line message naming
+  `make ARM_PROFILE=release deploy` when it says `tvdev` (a missing record is a binary deployed
+  before the record existed or installed from a package, both release, and is accepted as
+  `unrecorded`). `tests/run.py --build` builds both goals with `ARM_PROFILE=release` for those runs
+  only; the playback, pipeline and server cases keep the fast default. The profile is printed in
+  the FPS suite's header and summary and written to the graphics-profile bundle's `metadata.json`
+  and `summary.txt` and to `profile-graphics`'s; `tests/test_arm_profile_guard.py` pins the rule.
+  Graders that only read captured evidence (`tools/image-cache-stress.py`, `tools/analyze-*`) cannot
+  know which binary produced it: run that evidence on a `release` deploy. The staticlib lands in
   `rust-modules/<tdir>/arm-unknown-linux-gnueabi/<profile>/`, and a non-`release` profile adds
   `+profile:tvdev` to `pkg/.build-config` (nothing is added for `release`, so shipped stamps are
   unchanged), so switching profile relinks rather than reusing the other profile's archive.

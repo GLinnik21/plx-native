@@ -13,6 +13,7 @@ import shlex
 import subprocess
 import sys
 
+import arm_profile_guard
 from graphics_profile import (
     format_irq,
     parse_irq_snapshots,
@@ -83,6 +84,12 @@ def main() -> int:
         check=False,
     ).stdout.split()
     pacing_valid = not trigger_probe
+    # Frame pacing from a binary built without LTO (the fast `tvdev` profile) is not the shipped
+    # build's pacing: refuse, and record the profile in the bundle either way.
+    arm_profile, refusal = arm_profile_guard.check(lambda command: ssh(tv, command, check=False),
+                                                   appdir, appid)
+    if refusal:
+        raise SystemExit(refusal)
 
     subprocess.run(["make", "mali-irq-sample"], cwd=ROOT, check=True)
     remote = f"/tmp/plxnative-mali-irq-{os.getpid()}"
@@ -111,12 +118,12 @@ def main() -> int:
     pacing = summarize_pacing(log.splitlines())
     irq = summarize_irq(rows)
     metadata = {"version": 1, "mode": "observe", "flavor": args.flavor, "appid": appid,
-                "pid": int(pids[0]), "seconds": args.seconds, "pacing_valid": pacing_valid,
+                "arm_profile": arm_profile, "pid": int(pids[0]), "seconds": args.seconds, "pacing_valid": pacing_valid,
                 "active_profilers": trigger_probe, "pacing": pacing, "irq": irq}
     (bundle / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     lines = [
         "PlxNative graphics observation (attach; active signals only, no baseline)",
-        f"install: {appid} [{args.flavor}] pid={pids[0]}",
+        f"install: {appid} [{args.flavor}] pid={pids[0]} binary profile={arm_profile_guard.describe(arm_profile)}",
         f"pacing ({'valid: render profilers absent' if pacing_valid else 'INVALID: active ' + ','.join(trigger_probe)}): "
         f"fps p50={pacing['fps_p50']:.1f} p10={pacing['fps_p10']:.1f} "
         f"p95={pacing['fps_p95']:.1f} drift={pacing['fps_drift']:+.1f} n={pacing['n']}",

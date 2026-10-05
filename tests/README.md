@@ -430,7 +430,7 @@ cast+about / info-panel regressions.
 ./tests/run.py --fps-player
 
 # build first, or list the scenes:
-ARM_PROFILE=release ./tests/run.py --build --fps-player   # FPS floors are graded on the LTO build
+./tests/run.py --build --fps-player   # FPS runs build with ARM_PROFILE=release themselves
 ./tests/run.py --list          # scenes print as `fps:<name>`
 ```
 
@@ -449,7 +449,7 @@ tools/tv-lock.sh with --why "fps mock" -- ./tests/run.py --fps --mock --filter h
 that address. It boots the synthetic guest `tools/tv-session.sh up --guest --mock` boots
 (`tools/mock-guest.py`, which refuses any server that is not the synthetic mock), and every scene
 is then checked against the app's own log: no `pms: server N version=1.41.0.0000-synthetic` line,
-or any other server version, fails the scene before it is graded. Debug flavor only; `tests/run.py` does not deploy the binary, so deploy the build you mean to measure first (`make deploy` under the TV lock, or `tools/tv-session.sh up`, which deploys when stale; for FPS or frame pacing build with `ARM_PROFILE=release`, e.g. `make ARM_PROFILE=release deploy`, because a bare `make deploy` ships the no-LTO `tvdev` build, see `docs/agent-reference.md` "ARM_PROFILE") — a stress run once measured an older binary this way. `--server`,
+or any other server version, fails the scene before it is graded. Debug flavor only; `tests/run.py` does not deploy the binary, so deploy the build you mean to measure first (`make deploy` under the TV lock, or `tools/tv-session.sh up`, which deploys when stale; for FPS or frame pacing build with `ARM_PROFILE=release`, e.g. `make ARM_PROFILE=release deploy`, because a bare `make deploy` ships the no-LTO `tvdev` build, which `--fps*` and `tools/profile-graphics` refuse to grade; see `docs/agent-reference.md` "ARM_PROFILE") — a stress run once measured an older binary this way. `--server`,
 `--owner`, `--shared-server`, `--suite` and `--graphics-profile` are refused with it. The panel is
 turned off (`tv-session.sh screen off`, before every scene) and the sound muted (`sound off`) —
 the run stops if either cannot be done — and neither is ever turned back on.

@@ -1192,6 +1192,10 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	@# same-uid external reporter could not `execv` it to spool a crash envelope. The .ipk builder
 	@# already normalises this member to 0755; make the fast deploy path identical.
 	$(SSH) 'mv $(APPDIR)/plxnative.new $(APPDIR)/plxnative && chmod 755 $(APPDIR)/plxnative'
+	@# Which cargo profile this binary was built with, on the television next to it. Every path that
+	@# measures or grades frame timing (tools/arm_profile_guard.py) reads this and refuses a `tvdev`
+	@# binary, including one deployed earlier by a plain `make deploy`. See ARM_PROFILE above.
+	@$(SSH) 'printf "%s\n" "$(ARM_PROFILE)" > $(APPDIR)/arm-profile'
 	@$(MAKE) --no-print-directory verify-deploy FLAVOR=$(FLAVOR) RELEASE=$(RELEASE) LAB=$(LAB)
 
 # --- proving the payload actually landed ---------------------------------------------------------
@@ -1678,6 +1682,9 @@ check-python: check-localization
 	@# `ARM_PROFILE`: a plain local build compiles the ARM staticlib with the fast `tvdev` profile and
 	@# everything that ships or runs in CI keeps fat-LTO `release`; resolved through print-bench-config.
 	python3 ci/test_arm_profile.py
+	@# ...and the other half of that rule: a timing run (tests/run.py --fps*, profile-graphics, tv-sched-trace)
+	@# refuses a deployed `tvdev` binary and builds with ARM_PROFILE=release; functional runs do not. No TV.
+	python3 tests/test_arm_profile_guard.py
 	python3 ci/test_source_bundle.py
 	python3 ci/test_restore_runtime.py
 	python3 ci/test-compat.py

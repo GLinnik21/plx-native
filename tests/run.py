@@ -96,6 +96,7 @@ sys.path.insert(0, TESTS_DIR)
 from serve_fixtures import serve, default_root as serve_fixtures_default_root  # noqa: E402  (needs TESTS_DIR on the path first)
 import mock_fps  # noqa: E402  (the --mock tier; same path juggling as above)
 sys.path.insert(0, TOOLS_DIR)
+import arm_profile_guard  # noqa: E402  (timing runs refuse a binary built with the fast tvdev profile)
 from graphics_profile import (  # noqa: E402
     format_irq,
     parse_irq_snapshots,
@@ -5179,16 +5180,44 @@ def run_pipeline_suite(cases, cfg, srv, url_base, verbose, skipped=()):
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
-def do_build(tv):
+def do_build(tv, timing=False):
+    """`make all` then `make deploy`. `timing=True` for any run that grades frame timing.
+
+    A plain `make` builds the ARM library with the fast `tvdev` cargo profile (no LTO); a timing run
+    must measure the shipped build, so it asks for `ARM_PROFILE=release` on BOTH goals (deploy
+    rebuilds its own prerequisites, and a goal without the variable would rebuild `tvdev` over it).
+    Functional runs keep the fast default. The profile that actually landed is checked afterwards by
+    `require_release_binary`, which also covers a binary deployed without this flag.
+    """
     # The Makefile owns the whole build (it drives cargo +nightly with the load-bearing
     # cortex-a9 flags itself) — shelling out to it keeps run.py from drifting a second
     # copy of the toolchain invocation (the old hand-rolled zigbuild here did exactly that).
-    print("=== BUILD: make -> make deploy ===")
-    if make(["all"], timeout=1200, capture=False).returncode != 0:
+    profile_args = ["ARM_PROFILE=release"] if timing else []
+    print("=== BUILD: make -> make deploy" + (" (ARM_PROFILE=release: timing run)" if timing else "") + " ===")
+    if make(["all", *profile_args], timeout=1200, capture=False).returncode != 0:
         sys.exit("make failed")
-    if make(["deploy", f"TV={tv}"], timeout=180, capture=False).returncode != 0:
+    if make(["deploy", f"TV={tv}", *profile_args], timeout=180, capture=False).returncode != 0:
         sys.exit("make deploy failed")
     print("=== BUILD OK ===")
+
+
+def require_release_binary(tv, runner=None):
+    """**A timing run must not grade the fast-profile binary.** Exit if the deployed one is `tvdev`.
+
+    Reads the one-line `arm-profile` record `make deploy` wrote next to the installed binary (so it
+    describes what is actually on the set, not what this checkout last built) and returns the label
+    to put in the run's report: `release`, or `unrecorded` for a binary deployed before the record
+    existed or installed from a package (both release builds). `tvdev` stops the run with the fix,
+    before the first scene is launched: a frame rate measured without LTO reads as a regression
+    that is not one (or hides one that is) and nothing in the output would say why.
+    """
+    run = runner or (lambda command: ssh(tv, command, timeout=30))
+    appdir = make_query("print-appdir", FLAVOUR)
+    profile, message = arm_profile_guard.check(run, appdir, APPID)
+    if message:
+        sys.exit("\n" + message)
+    print(f"binary profile: {arm_profile_guard.describe(profile)}")
+    return profile
 
 
 # ---------------------------------------------------------------------------
@@ -6101,7 +6130,8 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
     # its bail has to happen there anyway, BEFORE arm_teardown commits to driving the television.
     # A second filter-and-bail here was dead code that someone would keep maintaining.
     tiers = {"ui"} | ({"player"} if include_player else set())
-    print(f"=== FPS regression suite: {len(scenes)} scene(s), tiers={sorted(tiers)} ===")
+    print(f"=== FPS regression suite: {len(scenes)} scene(s), tiers={sorted(tiers)}, "
+          f"binary profile={cfg.get('arm_profile', 'unknown')} ===")
     # The panel rule (docs/agent-reference.md, Tier 2), restated by the owner 2026-09-07: the panel
     # is OFF and the sound is OFF for EVERY device run, fps scenes included — rendering continues
     # with the LCD off. The 2026-09-06 "panel ON for fps" form is superseded.
@@ -6124,6 +6154,7 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
         results.append((s["name"], ok, detail))
 
     print("\n" + "=" * 72 + "\nFPS SUMMARY\n" + "=" * 72)
+    print(f"  binary profile: {cfg.get('arm_profile', 'unknown')}")
     nfail = sum(1 for _, ok, _ in results if not ok)
     for name, ok, detail in results:
         print(f"  [{'PASS' if ok else 'FAIL'}] fps:{name}   {detail}")
@@ -6236,6 +6267,7 @@ def run_graphics_profile(scene, cfg, token, phase, output=None):
         "phase": phase,
         "flavor": FLAVOUR,
         "appid": APPID,
+        "arm_profile": cfg.get("arm_profile", "unknown"),
         "production_gate": {"ok": prod_ok, "detail": prod_detail},
         "instrumented_gate": {"ok": hw_ok, "detail": hw_detail},
         "pacing": pacing,
@@ -6248,7 +6280,7 @@ def run_graphics_profile(scene, cfg, token, phase, output=None):
 
     summary = [
         f"PlxNative three-layer graphics profile: fps:{scene['name']}",
-        f"install: {APPID} [{FLAVOUR}]  HWCNT phase={phase}",
+        f"install: {APPID} [{FLAVOUR}]  HWCNT phase={phase}  binary profile={cfg.get('arm_profile', 'unknown')}",
         "",
         "Layer 1 — production present pacing (profilers OFF):",
         f"  fps p50={pacing['p50']:.1f} p10={pacing['p10']:.1f} "
@@ -6696,7 +6728,9 @@ def main():
         acquire_tv_lock(cfg["tv"], f"tests/run.py --fps ({len(scenes)} scenes) [{FLAVOUR}]")
         arm_teardown(cfg["tv"])
         if args.build:
-            do_build(cfg["tv"])
+            do_build(cfg["tv"], timing=True)
+        # Mock or real server alike: both grade the same frame timing. Recorded in the report.
+        cfg["arm_profile"] = require_release_binary(cfg["tv"])
         if args.graphics_profile:
             return run_graphics_profile(
                 scenes[0], cfg, token, args.profile_phase, args.graphics_output
