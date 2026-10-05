@@ -1,4 +1,4 @@
-{"updated":"2026-10-05T22:05:33Z",
+{"updated":"2026-10-05T22:07:34Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -492,5 +492,6 @@
 {"id":37344650050,"at":"2026-10-05T16:56:22Z","sha":"95f0a32b1","title":"ci: cut pull-request wall time without dropping a check","pr":448,"jobs":{"Linux simulator build + launch":302,"macOS tests against bundled FFmpeg and ASS":178,"macOS simulator build + launch":512,"Windows launcher syntax":19}},
 {"id":37346084981,"at":"2026-10-05T17:07:39Z","sha":"97afda332","title":"Feat/add subtitle search","pr":445,"jobs":{"macOS tests against bundled FFmpeg and ASS":277,"macOS simulator build + launch":282,"Linux simulator build + launch":243,"Windows launcher syntax":16}},
 {"id":37354441446,"at":"2026-10-05T18:14:24Z","sha":"875c1563f","title":"Tests: make check-python 408 s -> 170 s; the harness's gate self-tests ran the whole gate 73 times","pr":450,"jobs":{"Linux simulator build + launch":291,"macOS tests against bundled FFmpeg and ASS":341,"macOS simulator build + launch":484,"Windows launcher syntax":16}},
-{"id":37377140126,"at":"2026-10-05T21:38:05Z","sha":"b857d2bde","title":"Home: a \"Hold OK for options\" live-glass hint, retired after the first item menu","pr":null,"jobs":{"macOS simulator build + launch":512,"Linux simulator build + launch":366,"Windows launcher syntax":32,"macOS tests against bundled FFmpeg and ASS":316}}
+{"id":37377140126,"at":"2026-10-05T21:38:05Z","sha":"b857d2bde","title":"Home: a \"Hold OK for options\" live-glass hint, retired after the first item menu","pr":null,"jobs":{"macOS simulator build + launch":512,"Linux simulator build + launch":366,"Windows launcher syntax":32,"macOS tests against bundled FFmpeg and ASS":316}},
+{"id":37379466821,"at":"2026-10-05T21:58:54Z","sha":"7c19abc4e","title":"Home hold hint: Belarusian says \"\u043a\u0430\u0431 \u0430\u0434\u043a\u0440\u044b\u0446\u044c \u043c\u0435\u043d\u044e\", the catalog's own word for it","pr":null,"jobs":{"Linux simulator build + launch":200,"macOS tests against bundled FFmpeg and ASS":348,"Windows launcher syntax":15,"macOS simulator build + launch":475}}
 ]}
