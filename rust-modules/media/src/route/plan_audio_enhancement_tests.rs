@@ -61,7 +61,7 @@ fn resolve(
     env.audio_enhancements = PREF;
     env.cached_item = Some(item(sid));
     setup(&mut env, client);
-    let plan = build_stream("rk-enh", part, "hevc", acodec, &env);
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-enh", part, "hevc", acodec, &env);
     done.send(()).unwrap();
     let requests = server.join().unwrap();
     Resolve { plan, requests }

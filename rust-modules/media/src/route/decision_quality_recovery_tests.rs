@@ -423,7 +423,7 @@ fn a_candidate_is_never_named_after_the_encoder_it_would_replace() {
     };
 
     let primed = control
-        .prime(&first_encoder, proposal, 0, None)
+        .prime(&plx_base::task::OffFrame::for_test(), &first_encoder, proposal, 0, None)
         .expect("the fixture path primes");
     let candidate = primed.encoder_session.clone();
     assert_ne!(
@@ -494,7 +494,7 @@ fn a_candidate_is_never_named_after_the_encoder_it_would_replace() {
     );
 
     let after_seek = control
-        .prime(&live, proposal, 890_000_000, None)
+        .prime(&plx_base::task::OffFrame::for_test(), &live, proposal, 890_000_000, None)
         .expect("the fixture path primes")
         .encoder_session;
     assert_ne!(
@@ -760,7 +760,7 @@ fn failed_original_then_auto_keeps_the_live_adaptive_route() {
         direction: crate::abr::Direction::Up,
     };
     let primed = control
-        .prime(&bootstrap, proposal, 140_000_000, None)
+        .prime(&plx_base::task::OffFrame::for_test(), &bootstrap, proposal, 140_000_000, None)
         .expect("fixture candidate");
     let raster = proposal.rung.raster();
     let observed = crate::abr::ObservedHlsVariant::new(

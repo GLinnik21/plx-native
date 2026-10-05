@@ -8,7 +8,7 @@
 //! [`crate::player::adapter::PlayerAdapter`] that consumes a [`MainThread`] at construction, so a
 //! `&mut PlayerAdapter` borrow is what confines it now (see `player::adapter`). Which is also the
 //! rule for the rest of this file — a function here takes the token **iff** it reaches the slot
-//! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` and `resume_at`
+//! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` and `begin_resume`
 //! run on the main thread too and deliberately do not take one: they only publish to `SHARED`.
 use super::shared::{HlsPlayCompletion, HlsPrimeKind, Stage};
 use super::{log, sink, threads, ACB_OK, PTYPE, SHARED, TX};
@@ -1297,8 +1297,8 @@ fn start_bufferfeed_inner(
             let acodec = crate::route::stream_acodec(ps);
             let abr = crate::route::hls_abr_control(ps);
             let auto_original = crate::route::auto_original_watch(ps);
-            stream_th = plx_base::task::spawn("demux", move || {
-                crate::ff::demux(origin, path, acodec, abr, auto_original, aqp, aqap, hsp)
+            stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
+                crate::ff::demux(off, origin, path, acodec, abr, auto_original, aqp, aqap, hsp)
             });
             if stream_th.is_none() {
                 // Nothing will ever fill the AU queues, so there is no session to start. `hs` is
@@ -1461,9 +1461,13 @@ pub fn arm_seek(target_ns: i64) {
 
 /// Resume/seek AT the first Load. A direct-play item seeks the demuxer (av_seek via arm_seek).
 /// A TRANSCODE item's stream is 0-based and NOT seekable (no byte-index, Content-Length=-1), so
-/// av_seek fails — instead restart the encode at `&offset=secs` (transcode_seek) and display
-/// content time via disp_base. Call BEFORE start_bufferfeed, AFTER route::play_movie has run the
-/// decision (so the transcode session + flavor are set). Used for viewOffset resume.
+/// av_seek fails — instead restart the encode at `&offset=secs` and display content time via
+/// disp_base. Call BEFORE start_bufferfeed, AFTER route::play_movie has run the decision (so the
+/// transcode session + flavor are set). Used for viewOffset resume.
+///
+/// **There is one entry point, [`begin_resume`] / [`land_resume`], and it is a flight** (the cold
+/// resume of a freshly resolved play, and the foreground restore of a parked one): a transcode's
+/// rebuild at the saved position is planned on the frame thread and its PMS half runs on a worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use = "resume preparation is an external route effect and must be settled"]
 pub enum ResumeOutcome {
@@ -1472,28 +1476,89 @@ pub enum ResumeOutcome {
     RebuildRejected,
 }
 
-pub fn resume_at(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> ResumeOutcome {
+/// What [`begin_resume`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use = "a pending resume owes a start when it lands"]
+pub enum ResumeStart {
+    /// Decided on the spot (no rebuild is owed): the caller starts the Load (or fails the start)
+    /// now.
+    Settled(ResumeOutcome),
+    /// A flight owns the rebuild at the saved position (`route::dispatch_resume_rebase`): the start
+    /// stays owed, `player::state` answers `Resolving` (via `route::resume_flight_outstanding`), and [`land_resume`] delivers the
+    /// outcome the caller starts the Load on.
+    Pending,
+}
+
+/// The part of a resume that never reaches PMS.
+enum ResumePrelude {
+    Settled(ResumeOutcome),
+    /// A transcode with a saved position: its encode must restart at the offset.
+    Rebuild,
+}
+
+fn resume_prelude(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> ResumePrelude {
     if resume_ns <= 0 {
-        return ResumeOutcome::Prepared;
+        return ResumePrelude::Settled(ResumeOutcome::Prepared);
     }
     if crate::route::url(ps).is_empty() {
-        return ResumeOutcome::NoRoute;
+        return ResumePrelude::Settled(ResumeOutcome::NoRoute);
     }
     if !crate::route::is_transcoding(ps) {
         arm_seek(resume_ns); // direct-play: av_seek the file at the first open
-        ResumeOutcome::Prepared
-    } else if crate::route::transcode_seek(ps, resume_ns / 1_000_000_000).is_some() {
-        // transcode: the encode restarts at &offset (0-based); disp_base carries the offset
-        SHARED.disp_base.store(resume_ns, Ordering::Relaxed);
-        SHARED.playpos_ns.store(resume_ns, Ordering::Relaxed);
-        log(&format!(
-            "resume(transcode): restart at offset {}s",
-            resume_ns / 1_000_000_000
-        ));
-        ResumeOutcome::Prepared
-    } else {
-        ResumeOutcome::RebuildRejected
+        return ResumePrelude::Settled(ResumeOutcome::Prepared);
     }
+    ResumePrelude::Rebuild
+}
+
+/// The transcode half of a resume, once its encode restarts at the offset (0-based): `disp_base`
+/// carries the offset so the HUD reads content time.
+fn note_transcode_resumed(resume_ns: i64) {
+    SHARED.disp_base.store(resume_ns, Ordering::Relaxed);
+    SHARED.playpos_ns.store(resume_ns, Ordering::Relaxed);
+    log(&format!(
+        "resume(transcode): restart at offset {}s",
+        resume_ns / 1_000_000_000
+    ));
+}
+
+/// Prepare a resume at `resume_ns`: a cold start (a play whose plan just landed) or a foreground
+/// restore (the parked session's start transaction is `Stable`/`Prepared`/`Failed`, or an Original
+/// trial's own `Prepared` one for a session suspended mid-trial, which the flight flies over without
+/// touching the trial's rollback; an `Idle` one has no URL and answers `NoRoute` here, never
+/// reaching the rebuild). No Engine exists. Everything but a transcode settles on the spot; a transcode's
+/// rebuild at the saved position is a FLIGHT — planned here on the frame thread, the PMS half on a
+/// worker — and answers [`ResumeStart::Pending`]. The frame never reaches the server.
+pub fn begin_resume(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> ResumeStart {
+    match resume_prelude(ps, resume_ns) {
+        ResumePrelude::Settled(outcome) => ResumeStart::Settled(outcome),
+        ResumePrelude::Rebuild => match crate::route::dispatch_resume_rebase(ps, resume_ns) {
+            crate::route::RecoveryDispatch::Flying { .. } => ResumeStart::Pending,
+            // Nothing to rebuild or the worker could not start: the inline attempt's `None`.
+            crate::route::RecoveryDispatch::Refused => ResumeStart::Settled(ResumeOutcome::RebuildRejected),
+        },
+    }
+}
+
+/// Drain a pending resume's landing, once a frame while [`crate::route::resume_flight_outstanding`].
+/// `None` while the worker is still running, or when the flight went stale (a Back, a teardown, a
+/// newer play request: the landing is discarded and its replacement stopped — here, by the stale
+/// reap this runs first, since a flight with no Engine has no pump to do it — and whoever ended the
+/// flight owns what happens next). `Some` is the outcome of the rebuild: the
+/// route is installed and `Prepared` (the caller starts the Load), or the rebuild was refused and
+/// the transaction is `Failed`.
+pub fn land_resume(ps: &mut crate::route::PlaybackSession) -> Option<ResumeOutcome> {
+    crate::route::discard_stale_flight_landing();
+    if !crate::route::resume_flight_outstanding() {
+        return None;
+    }
+    let landing = crate::route::take_ready_recovery_flight(ps)?;
+    Some(match landing.verdict {
+        crate::route::RecoveryVerdict::Install => {
+            note_transcode_resumed(landing.offset_ns);
+            ResumeOutcome::Prepared
+        }
+        crate::route::RecoveryVerdict::Refused => ResumeOutcome::RebuildRejected,
+    })
 }
 
 /// Direct-play seek = tear down the pipeline and start a FRESH Load at `target_ns`. The old
@@ -1642,7 +1707,7 @@ pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
 /// Suspend for an app-switch: tear the pipeline down (webOS reclaims the video plane while we're
 /// backgrounded) but PRESERVE the playback session — keep the URL + transcode session, and
 /// don't scrobble "stopped". This makes the foreground restore a clean same-item reload
-/// (resume_at + start_bufferfeed), the known-good path, instead of resurrecting a stopped session.
+/// (begin_resume + start_bufferfeed), the known-good path, instead of resurrecting a stopped session.
 pub fn suspend_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     teardown(ps, pa, true);
 }
@@ -1672,6 +1737,13 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // resource and Session projection. A real stop must retire that ownership exactly once;
     // returning here used to leak the candidate forever while the reducer remained Failed.
     if !pa.is_live() {
+        // An Engine-less flight (a resume, or a rollback no Engine waits on) has no Engine to take down with it, and an app-switch suspend
+        // keeps the session for the foreground restore, which reserves its own start transaction:
+        // drop the flight as a live Engine's suspend would (`Stable`, landing discarded, only its
+        // replacement stopped). A full stop below clears it itself.
+        if for_reload && crate::route::engineless_flight_outstanding() {
+            crate::route::begin_engine_teardown(true);
+        }
         if !for_reload {
             crate::route::scrobble_stop(ps, None, None);
             crate::route::begin_engine_teardown(false);
@@ -4153,6 +4225,15 @@ mod replay_after_stop_tests {
 
         crate::route::reset_player_control_for_test(&ps);
     }
+}
+
+/// Test-only: an Engine parked at `Stage::Streaming` on the host sink, for the pump-level rigs
+/// that live outside this module (`pump::flight_tests`).
+#[cfg(all(test, feature = "hostsim"))]
+pub(super) fn streaming_engine_for_test(native_epoch: u32) -> Engine {
+    let mut eng = prime_livelock_tests::engine_after_reload();
+    eng.native_epoch = native_epoch;
+    eng
 }
 
 /// issue #74 D.1 regression tests. Real v0.6.0 dispatches every Starfish/ACB verb through

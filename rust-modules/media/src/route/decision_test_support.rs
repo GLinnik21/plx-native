@@ -40,6 +40,17 @@ pub(super) fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) {
     settle_plan_start_in_unit_test(ps, start);
 }
 
+/// The claim half of [`take_ready_flight`], for the tests that drive claims: a seek's landing is a
+/// different test's business and fails this one loudly.
+pub(super) fn take_ready_retranscode_claim(
+    ps: &mut PlaybackSession,
+) -> Option<(ClaimedRouteAction, ClaimTail, i64, i64)> {
+    match take_ready_flight(ps, false)? {
+        ReadyFlight::Claim { action, tail, pending_seek, user_target } => Some((action, tail, pending_seek, user_target)),
+        ReadyFlight::Seek { .. } => panic!("a seek landing where a claim's was expected"),
+    }
+}
+
 pub(super) fn settle_pending_native_start(ps: &mut PlaybackSession, result: RouteStartResult) -> RouteStartAttempt {
     let transaction = pending_route_start().expect("prepared native start transaction");
     let attempt = claim_route_start_attempt(transaction).expect("physical Load attempt");

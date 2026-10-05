@@ -36,7 +36,7 @@ fn force_registers_original_despite_saved_quality_relay_and_device_raster() {
     item.width = 7680;
     item.height = 4320;
     env.cached_item = Some(item);
-    let plan = build_stream("rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "eac3", &env);
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "eac3", &env);
     let requests = rx.recv_timeout(Duration::from_secs(15)).unwrap();
     server.join().unwrap();
     assert!(plan.url.contains("/library/parts/36013/"));
@@ -65,7 +65,7 @@ fn force_server_refusal_or_missing_mde_never_attempts_conversion() {
         let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
         env.direct_play_mode = DirectPlayMode::Forced;
         env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
-        let plan = build_stream("rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "eac3", &env);
+        let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "eac3", &env);
         let requests = rx.recv_timeout(Duration::from_secs(15)).unwrap();
         server.join().unwrap();
         assert!(plan.url.is_empty() && plan.tsession.is_empty());
@@ -87,7 +87,7 @@ fn disabling_direct_play_keeps_codec_preserving_remux() {
     let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.direct_play_mode = DirectPlayMode::Disabled;
     env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
-    let plan = build_stream("rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "eac3", &env);
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "eac3", &env);
     let requests = rx.recv_timeout(Duration::from_secs(15)).unwrap();
     server.join().unwrap();
     assert!(plan.contract.remux && plan.url.contains("start.mkv") && !plan.tsession.is_empty());
@@ -128,7 +128,7 @@ fn disabled_mode_refuses_an_original_only_url_without_a_pms_item() {
     let _g = fresh_registry(&mut ps);
     let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), unregistered_sid(), "");
     env.direct_play_mode = DirectPlayMode::Disabled;
-    let plan = build_stream("", "/movie.mkv", "h264", "aac", &env);
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "", "/movie.mkv", "h264", "aac", &env);
     assert!(plan.url.is_empty());
     assert_eq!(plan.verdict, Some(PlayVerdict::DirectPlayDisabled));
 }

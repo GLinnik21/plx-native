@@ -1260,7 +1260,7 @@ pub struct Plan {
 /// the answer is "whatever the user is looking at NOW", which for an item from a shared source is
 /// the wrong authority for every id in this function. The server arrives in `env.sid` and the only
 /// client here is `client_for` of it.
-pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveEnv) -> Plan {
+pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveEnv) -> Plan {
     // The part id is derived from THIS call's `part`, before anything else runs, and published
     // here rather than by the caller after we return. It used to be written by play_movie /
     // play_episode *after* build_stream finished, so `put_selection` — which runs inside this
@@ -1786,8 +1786,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                         // remux policy as playback, before either the decision or media GET.
                         // A client-rendered subtitle is not a burn; only env.sub_sid requests one.
                         let probe_audio = encode_audio_id(true, audio_id, env.audio_sid, tracks, audio_prefs);
-                        put_selection(env.sid, plan.part_id, probe_audio, env.sub_sid);
+                        put_selection(off, env.sid, plan.part_id, probe_audio, env.sub_sid);
                         let probe = measure_remote_remux(
+                            off,
                             client,
                             rk,
                             &session,
@@ -1994,7 +1995,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // `burn_sub_sid`: a positive id here is a burn, and Original client-renders instead. It is
     // `env.sub_sid` (an already-active burn) unless THIS route is the one that just started one
     // (M7's Burn, forced by an embedded subtitle plus the audio enhancement).
-    put_selection(env.sid, plan.part_id, encode_audio, burn_sub_sid);
+    put_selection(off, env.sid, plan.part_id, encode_audio, burn_sub_sid);
     if remux_probed && adaptive {
         // Probe registered start.mkv on this playback identity. HLS `/decision` reuses it;
         // closeResourceSession=1 would 503 the next start. A failed sample already stopped
@@ -2016,7 +2017,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // still answers 206 from a host, so re-registering the same id is not a hazard to either
     // route there. PR 4's device run nonetheless met a 503 on that Part after the release, which
     // is why a release asks before it trials the Part (`decision::admit_original_part`).
-    let mut decision = client.transcode_decision(&sp);
+    let mut decision = client.transcode_decision(off, &sp);
     if enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
         // Refused outright, or ignored (audio `copy` despite the params): rebuild once without
         // the enhancement, on the same session, and remember that this server said no.
@@ -2047,7 +2048,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             env.sub_sid,
             plan.contract,
         );
-        decision = client.transcode_decision(&sp);
+        decision = client.transcode_decision(off, &sp);
     } else if probe_refused_enhancement && pre_audio.any() {
         // The remote remux probe already asked and was refused; the play was built without it.
         // measure_remote_remux already logged and recorded the diag event at the refusal point.

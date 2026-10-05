@@ -1,0 +1,7 @@
+# count: 2
+# Frame-thread blocking exceptions, one line per production `allow_blocking(` CALL SITE, keyed `<path>::<enclosing fn>` (spec: ci/check-deps.sh `blocking`).
+# The gate compares this list to the tree as an exact multiset: a new site fails it, and so does an entry whose site is gone, so the list can only shrink. The way a line leaves is the work it
+# excuses moving onto a worker (`task::spawn_off_frame`; a PMS half takes `&OffFrame`) — never by editing the entry. Do not add a line to make a new call pass; move the work off the frame instead.
+# `task::spawn_small_or_inline` is ONE entry for every refused-worker-thread fallback that uses it (encoder cleanup check, encoder stops, abandoned plan stop); its callers are not listed.
+rust-modules/base/src/task.rs::spawn_or_inline	the shared OS-refused-worker fallback: runs the work inline under the caller's labelled exception rather than dropping a server-side stop
+rust-modules/media/src/route/decision.rs::scrobble_stop	spawn_small_keeping refused: the old reporter handle and stop fence must stay ordered, so the stop runs inline (not a plain spawn-or-inline: it owns a join generation)

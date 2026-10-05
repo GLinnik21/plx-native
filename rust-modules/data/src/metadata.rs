@@ -50,6 +50,13 @@ impl<'a> MetadataView<'a> {
     pub fn season_loading(&self) -> bool {
         season_loading(self.adapter)
     }
+    /// Generation of the most recent season request — what a caller that awaits ITS fetch pins
+    /// (read right after issuing `MetadataCmd::LoadSeason`) and compares on a later frame: a move
+    /// means another season press, a new item or a page change superseded the fetch, so a landing
+    /// is no longer the caller's to act on.
+    pub fn season_gen(&self) -> u32 {
+        self.adapter.season_gen.load(std::sync::atomic::Ordering::SeqCst)
+    }
     pub fn detail_request_status(&self, sid: plx_plex::plex::ServerId, rk: &str) -> Option<bool> {
         detail_request_status(self.adapter, sid, rk)
     }
@@ -254,7 +261,7 @@ pub struct Spot {
 /// Plex's resume rule, in ONE place (home Continue-Watching, the detail Play button, and the
 /// plxnative-play harness all apply it): resume only past 10s and before 95% watched, else start
 /// from the beginning. Both args are MILLISECONDS; the returned position is NANOSECONDS
-/// (what `player::resume_at` takes).
+/// (what `player::begin_resume` takes).
 pub fn resume_ns(resume_ms: i64, dur_ms: i64) -> i64 {
     if resume_ms > 10_000 && (dur_ms <= 0 || (resume_ms as f64) < 0.95 * dur_ms as f64) {
         resume_ms * 1_000_000
@@ -3467,10 +3474,6 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             load_season(state, adapter, i);
             true
         }
-        MetadataCmd::LoadSeasonNow(i) => {
-            load_season_now(state, adapter, i);
-            true
-        }
         MetadataCmd::SetNowPlaying(np) => {
             set_now_playing(state, np);
             true
@@ -4226,10 +4229,11 @@ fn land_season(
 /// Invalidate any in-flight/pending season fetch and mark the mailbox settled: bump the generation
 /// (so a late async landing is discarded), catch SEASON_DONE up to it (season_loading() → false),
 /// and clear the slot. Returns the fresh generation. The ONE place the three season atomics move
-/// together — used by the blocking `load_season_now`, and by both detail entry points (a new item
-/// supersedes the old show's pending fetch): `request_detail` (dropping the OLD item's fetch) and
-/// `pump_detail` (dropping one issued WHILE the load was in flight). A third caller,
-/// `load_detail_now`, was deleted in phase 12/D7 — see its old definition site's note.
+/// together — used by both detail entry points (a new item supersedes the old show's pending
+/// fetch): `request_detail` (dropping the OLD item's fetch) and `pump_detail` (dropping one issued
+/// WHILE the load was in flight). Two other callers, `load_detail_now` (phase 12/D7) and the
+/// blocking `load_season_now` (the menu-play wait now rides `load_season`), were deleted — see the
+/// former's definition-site note.
 fn supersede_season(adapter: &MetadataAdapter) -> u32 {
     use std::sync::atomic::Ordering;
     let gen = adapter.season_gen.fetch_add(1, Ordering::SeqCst) + 1;
@@ -4273,38 +4277,6 @@ fn load_season(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
         // tab highlight stays where the user put it and the old episodes stay listed.
         adapter.season_done.store(gen, Ordering::SeqCst);
     }
-}
-
-/// [`load_season`] but BLOCKING — for the page-open paths (`open_rk_season`, and any caller that
-/// plays `episodes[0]` right after) where the episode list must be right before the next line
-/// runs. Invalidates any in-flight async fetch so a stale landing can't overwrite this one.
-fn load_season_now(state: &mut MetadataState, adapter: &MetadataAdapter, idx: usize) {
-    let _ = catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let (sid, season_rk) =
-            match state.current.as_ref().and_then(|d| d.seasons.get(idx).map(|s| (d.sid, s.rk.clone()))) {
-                Some(t) => t,
-                None => return,
-            };
-        // `unwrap_or_default`, NOT propagation: this blocking twin still degrades to an empty
-        // list on failure. Making it preserve the previous season would silently change what
-        // `open_rk_season`'s chained play of `episodes[0]` launches — the WRONG season's first
-        // episode under the requested season's name — and that path has no host coverage and needs
-        // the full on-device suite. Deferred deliberately.
-        //
-        // This synchronous fetch is deliberate (see the doc above), and it runs on the frame
-        // thread from `menu_play_tick`; name it as the explicit user-action exception rather than
-        // tripping `assert_may_block` inside `http::request_with`. Only the fetch is wrapped.
-        let eps = {
-            let _block = plx_base::task::allow_blocking(const { &plx_base::task::BlockingLabel::new("menu-play season load") });
-            fetch_episodes(sid, &season_rk)
-        }
-        .unwrap_or_default();
-        supersede_season(adapter); // drop any async fetch in flight; this synchronous list wins
-        if let Some(d) = state.current.as_mut() {
-            d.episodes = eps;
-            d.cur_season = idx;
-        }
-    }));
 }
 
 /// True while a season fetch is in flight — drives the episode row's loading dim + spinner.

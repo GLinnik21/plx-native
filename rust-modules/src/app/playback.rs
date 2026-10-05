@@ -338,20 +338,26 @@ impl PlaybackResources for LivePlaybackResources {
     fn prepare_start(&mut self, ps: &mut plx_media::route::PlaybackSession,
         pa: &mut plx_media::player::adapter::PlayerAdapter, resume_ns: i64) -> bool {
         // A resolve in flight means the route statics are NOT installed yet. Applying the
-        // resume now would read a stale/empty TSESSION, so `resume_at` would take its
+        // resume now would read a stale/empty TSESSION, so `begin_resume` would take its
         // DIRECT-PLAY branch and arm_seek() a transcode — and pump.rs's feed gate requires
         // `seek_to_ns < 0`, so that stray armed seek blocks feeding forever: no frames, no
         // ACB bind, timeline frozen at the resume point. (Exactly what broke
         // transcode_av1_no_dp_audio. Direct-play never noticed because arm_seek is what the
         // correct branch does anyway.) Defer it to `pump_play`, after apply_plan.
         let pending = plx_media::route::play_pending();
-        let resume_prepared = pending
-            || resume_ns <= 0
-            || matches!(
-                plx_media::player::resume_at(ps, resume_ns),
-                plx_media::player::ResumeOutcome::Prepared
-            );
-        if !resume_prepared {
+        // A transcode's rebuild at the saved position is a flight (`begin_resume`): the Load is
+        // started by the run loop's drain when it lands, so a pending resume enters the player and
+        // starts nothing here.
+        let resume = if pending || resume_ns <= 0 {
+            plx_media::player::ResumeStart::Settled(plx_media::player::ResumeOutcome::Prepared)
+        } else {
+            plx_media::player::begin_resume(ps, resume_ns)
+        };
+        let resume_prepared = matches!(
+            resume,
+            plx_media::player::ResumeStart::Settled(plx_media::player::ResumeOutcome::Prepared)
+        );
+        if !resume_prepared && !matches!(resume, plx_media::player::ResumeStart::Pending) {
             if let Some(transaction) = plx_media::route::pending_route_start() {
                 let _ = plx_media::route::reject_route_start_preparation(transaction);
             }
@@ -361,6 +367,8 @@ impl PlaybackResources for LivePlaybackResources {
         // synchronous behaviour, byte for byte.
         if pending {
             plx_media::route::arm_play_resume(ps, resume_ns);
+            true
+        } else if matches!(resume, plx_media::player::ResumeStart::Pending) {
             true
         } else if resume_prepared {
             plx_media::player::start_bufferfeed(ps, pa)

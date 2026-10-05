@@ -84,6 +84,9 @@ pub struct Serial(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
 impl Drop for Serial {
     fn drop(&mut self) {
+        // Workers the test started (a flight, a season or detail fetch) finish before the lock is
+        // released: one that outlived it would write the next holder's globals.
+        crate::task::drain_workers_for_test();
         crate::storage_worker::drain_for_test();
         OWNER.store(NOBODY, Ordering::SeqCst);
     }
@@ -194,5 +197,29 @@ mod tests {
         })
         .join();
         assert!(attempt.is_err(), "the re-entrant take must panic");
+    }
+
+    /// **The lock is not released while a worker the test started is still running.** A test that
+    /// returns right after its last assertion (a season fetch cancelled by `Clear`, a flight whose
+    /// landing nobody drains) leaves a `spawn_small` worker alive; it used to outlive the guard and
+    /// write the NEXT holder's globals, which read as a flake in whichever bystander it hit.
+    #[test]
+    fn releasing_the_guard_waits_for_a_worker_the_test_left_running() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let finished = Arc::new(AtomicBool::new(false));
+        {
+            let _guard = super::serial();
+            let flag = Arc::clone(&finished);
+            assert!(crate::task::spawn_small("lingering test worker", move || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                flag.store(true, Ordering::SeqCst);
+            }));
+            assert!(!finished.load(Ordering::SeqCst), "sanity: the worker is still sleeping");
+        }
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "the guard released the lock while the test's worker was still running"
+        );
     }
 }

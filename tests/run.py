@@ -3496,7 +3496,7 @@ def op_seek_refused(lines, target_s):
     """A seek the app CANNOT serve must be refused cleanly, and playback must survive the refusal.
 
     Reaching this path is structural rather than incidental, and only this tier can. A transcode
-    seek restarts the encode at a new `&offset`, which `route::transcode_seek` builds from a PMS
+    seek restarts the encode at a new `&offset`, which `route::dispatch_transcode_seek` plans from a PMS
     ratingKey and client — and a `plxnative-playurl` playback has neither, so every seek during
     Auto on the pipeline tier is refused. That makes it the one place the REFUSAL path is
     observable at all; on the server tier the seek succeeds and this branch never runs.
@@ -3838,7 +3838,7 @@ def op_audio_enhancement_release(lines):
     ever runs) — then picks the SAME row `op_audio_enhancement` picks, which `on_ok` TOGGLES: from
     ON, that reconciles the preference back to NONE. `enhancement_step` releases a directly-
     playable candidate straight back to it (`route/decision.rs`'s `EnhancementStep::ReleaseToDirect`
-    -> `recover_auto_to_original_for(.. EnhancementReleased)`). Because the toggle goes through the
+    -> `plan_original_recovery(.. EnhancementReleased)` on the frame, `run_original_recovery` on a flight worker). Because the toggle goes through the
     ordinary commit path (not a second boot trigger), it also re-persists the preference as OFF for
     real — the case ends idempotent with no second op needed.
 

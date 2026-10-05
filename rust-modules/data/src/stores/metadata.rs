@@ -58,7 +58,6 @@
 //! - `Clear` → `metadata::clear` — drop the loaded item, supersede everything in flight.
 //! - `LoadSeason(usize)` → `metadata::load_season` — flip the season strip optimistically, fetch
 //!   the episodes off-thread (debounced landing through `pump_season`).
-//! - `LoadSeasonNow(usize)` → `metadata::load_season_now` — the BLOCKING season load.
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
 //! - `SetWatchedLocal{sid, rk, on}` → `metadata::set_watched_local` — the optimistic half of a
 //!   view-state write, answers whether it actually changed anything.
@@ -162,8 +161,6 @@ pub enum MetadataCmd {
     Reset,
     /// The season strip: flip optimistically, fetch the episodes off-thread.
     LoadSeason(usize),
-    /// The BLOCKING season load, for a caller that indexes the episodes in the same frame.
-    LoadSeasonNow(usize),
     SetNowPlaying(Option<crate::metadata::NowPlaying>),
     /// The optimistic half of a view-state write on the loaded item, its episodes and Related.
     SetWatchedLocal { sid: ServerId, rk: String, on: bool },
