@@ -68,7 +68,8 @@ jobs:
   # They used to be one job running `make check` (~13-15 min, the PR critical path by ten minutes).
   # `make check` is still exactly these gates, in the same recipes: the Makefile's `check-cargo` is
   # the serial union of `check-cargo-lint`, `check-cargo-unit-default` and `check-cargo-unit-hostsim`,
-  # and `check-python` is the fourth. Each job below runs ONE of them. `ci/test_ci_split.py` (part of
+  # and `check-python` (itself `check-python-rest` plus `check-python-harness`) is the fourth and
+  # fifth. Each job below runs ONE of them. `ci/test_ci_split.py` (part of
   # `make check-python`) fails if a cargo gate ends up in two of them or none, or if a job here stops
   # calling its target, which is how a gate would otherwise get dropped without anyone noticing.
   # What CI gives up against `make check` is only the machine-wide `check` queue lock (a CI runner
@@ -243,8 +244,25 @@ jobs:
 
       # Neither a Rust toolchain nor SDL: `check-python` never invokes cargo (its self-tests that
       # mention one use fakes) and links nothing.
-      - name: make check-python
-        run: make check-python
+      - name: make check-python-rest
+        run: make check-python-rest
+
+  # tests/test_harness.py alone: about 190 s of what used to be a 360 s `check-python` job. Most of
+  # it is its `DepGates` class running ci/check-deps.sh over private copies of the tree on every
+  # core of the runner, so it gains nothing from sharing a runner with the other gates.
+  # `make check-python` is still the two halves, run side by side locally.
+  host-python-harness:
+    name: host harness tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Full history, for the same reason as host-python.
+          fetch-depth: 0
+
+      - name: make check-python-harness
+        run: make check-python-harness
 
   # The one name anything outside this file may refer to: it is what the single job was called, and
   # it is RED unless every host job above is green. `if: always()` because a job that needs a failed
@@ -257,7 +275,7 @@ jobs:
     runs-on: ubuntu-latest
     # Measured max under 1 (the 31.6 in the raw data predates the job split, when this name was the whole suite) min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
-    needs: [host-lint, host-unit-default, host-unit-hostsim, host-python]
+    needs: [host-lint, host-unit-default, host-unit-hostsim, host-python, host-python-harness]
     if: always()
     steps:
       - name: Every host job must have succeeded
@@ -267,6 +285,7 @@ jobs:
             host-unit-default=${{ needs.host-unit-default.result }}
             host-unit-hostsim=${{ needs.host-unit-hostsim.result }}
             host-python=${{ needs.host-python.result }}
+            host-python-harness=${{ needs.host-python-harness.result }}
         run: |
           printf '%s\n' "$RESULTS"
           if printf '%s\n' "$RESULTS" | grep -v '=success$' | grep -q .; then

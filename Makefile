@@ -1363,7 +1363,7 @@ check-localization:
 # printed first and stops the other. At most two run at once: this Mac's swap is routinely full.
 # Run one half alone with `make check-cargo` / `make check-python` (each is the exact set of
 # lines that branch runs here, so a half that fails is reproduced without the other).
-.PHONY: check-cargo check-cargo-lint check-cargo-unit-default check-cargo-unit-hostsim check-python
+.PHONY: check-cargo check-cargo-lint check-cargo-unit-default check-cargo-unit-hostsim check-python check-python-harness check-python-rest
 check-unlocked:
 	@python3 tools/check-parallel.py \
 	  cargo='$(MAKE) --no-print-directory check-cargo' \
@@ -1530,7 +1530,34 @@ build-bench build-bench-quick:
 	@python3 tools/check-lock.py -- env PLX_BENCH_VIA_MAKE=1 $(TELEMETRY_ENV) \
 	  python3 tools/build-bench.py $(if $(filter build-bench-quick,$@),--quick) $(ARGS)
 
-check-python: check-localization
+# `check-python` is TWO branches run at once (tools/check-parallel.py, the same helper as
+# `check-unlocked`): `check-python-harness` is tests/test_harness.py alone, and `check-python-rest`
+# is every other Python/shell/C gate, in the order they always ran. They share nothing (the
+# harness edits private copies of the tree, never the checkout), and CI runs each as its own job
+# (ci/test_ci_split.py pins that the two are the whole of `check-python`). Measured 2026-10-05 on
+# a 10-core Mac: the serial chain was ~370 s, the harness ~190 s of it; the two halves overlap now.
+check-python:
+	@python3 tools/check-parallel.py \
+	  rest='$(MAKE) --no-print-directory check-python-rest' \
+	  harness='$(MAKE) --no-print-directory check-python-harness'
+
+check-python-harness:
+	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest). THE MOST
+	@# EXPENSIVE STEP IN `check` BY FAR — 661 s of a 1100 s run, measured 2026-10-01 on a cold lane
+	@# at load ~5, and 630 s of that is the `DepGates` class running the whole of
+	@# `ci/check-deps.sh` (11 s a run) once or more per test to prove each structure gate still
+	@# catches a planted violation. Those self-tests now edit a private copy of the gate's inputs
+	@# and run on a thread pool (`PLX_TEST_JOBS`, default min(8, cpus)): the module takes 175 s
+	@# instead of 661 s. (It was 980 s of 1217 s before `check-deps.sh` stopped forking a process
+	@# per candidate line.) Measure before budgeting, and if this number needs to come down
+	@# further, `check-deps.sh` itself is the place. run.py
+	@# decides WHAT gets driven on the one television and had no test of any kind until 2026-08-22.
+	@# What it pins is the code path a full manifest.local.json never enters: an `item` key this
+	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
+	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
+	python3 tests/test_harness.py
+
+check-python-rest: check-localization
 	python3 ci/test_ass_composite.py
 	python3 ci/test_ass_regions.py
 	@# The flavour transform, host-side and free. Its central assertion — that the STABLE transform
@@ -1592,20 +1619,6 @@ check-python: check-localization
 	@# handler, so `raise()` returned and the `_exit(128+sig)` beneath it ran every time.
 	cc -O1 -Wall -Wextra -Werror -Isrc -o $(CRASHTRACE_TEST_BIN) ci/crashtrace-test.c src/crashtrace.c && $(CRASHTRACE_TEST_BIN)
 	cc -O1 -Wall -Wextra -Werror -Isrc -o $(PRIVATE_LOG_TEST_BIN) ci/private-log-test.c && $(PRIVATE_LOG_TEST_BIN)
-	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest). THE MOST
-	@# EXPENSIVE STEP IN `check` BY FAR — 661 s of a 1100 s run, measured 2026-10-01 on a cold lane
-	@# at load ~5, and 630 s of that is the `DepGates` class running the whole of
-	@# `ci/check-deps.sh` (11 s a run) once or more per test to prove each structure gate still
-	@# catches a planted violation. Those self-tests now edit a private copy of the gate's inputs
-	@# and run on a thread pool (`PLX_TEST_JOBS`, default min(8, cpus)): the module takes 175 s
-	@# instead of 661 s. (It was 980 s of 1217 s before `check-deps.sh` stopped forking a process
-	@# per candidate line.) Measure before budgeting, and if this number needs to come down
-	@# further, `check-deps.sh` itself is the place. run.py
-	@# decides WHAT gets driven on the one television and had no test of any kind until 2026-08-22.
-	@# What it pins is the code path a full manifest.local.json never enters: an `item` key this
-	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
-	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
-	python3 tests/test_harness.py
 	python3 tests/player_pointer.py --selftest
 	python3 tests/test_replay_fixtures.py
 	python3 tools/prune-gh-caches.py --selftest

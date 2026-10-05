@@ -3,7 +3,7 @@
 
 `make check` is `check-cargo` (lint, default unit pass, hostsim unit pass, the ci/ self-tests that
 drive cargo) plus `check-python`. CI used to run it as one job and now runs the pieces as four
-jobs, so a gate can be dropped in exactly two new ways: it ends up in no cargo target, or CI stops
+jobs (five with the two halves of `check-python`), so a gate can be dropped in exactly two new ways: it ends up in no cargo target, or CI stops
 calling the target it is in. Both are silent (everything stays green), so both are pinned here:
 
 * the Makefile's `check-cargo` is the serial union of the three `check-cargo-*` targets and adds no
@@ -30,8 +30,10 @@ JOBS = {
     "host-lint": "check-cargo-lint",
     "host-unit-default": "check-cargo-unit-default",
     "host-unit-hostsim": "check-cargo-unit-hostsim",
-    "host-python": "check-python",
+    "host-python": "check-python-rest",
+    "host-python-harness": "check-python-harness",
 }
+PYTHON_TARGETS = ["check-python-rest", "check-python-harness"]
 AGGREGATOR_NAME = "host checks (NOT a device gate)"
 
 
@@ -98,6 +100,26 @@ class CheckCargoIsTheUnion(unittest.TestCase):
         self.assertIn("check-python", recipe)
 
 
+class CheckPythonIsTheUnion(unittest.TestCase):
+    """`check-python` (what `make check` runs) is the two halves CI runs as separate jobs."""
+
+    def test_check_python_runs_both_halves_and_nothing_else(self):
+        prereqs, recipe = rule("check-python")
+        self.assertEqual(prereqs, [])
+        self.assertEqual(re.findall(r"check-python-[a-z]+", recipe), PYTHON_TARGETS)
+        # exactly the two branches: a gate added HERE would run locally and in no CI job
+        self.assertEqual(len(re.findall(r"'\$\(MAKE\)", recipe)), len(PYTHON_TARGETS), recipe)
+
+    def test_the_harness_half_is_the_harness_alone(self):
+        prereqs, recipe = rule("check-python-harness")
+        self.assertEqual(prereqs, [])
+        self.assertEqual(recipe.strip(), "python3 tests/test_harness.py")
+
+    def test_the_harness_runs_in_no_other_target(self):
+        for target in ("check-python", "check-python-rest"):
+            self.assertNotIn("tests/test_harness.py", rule(target)[1], target)
+
+
 class CiRunsEveryTarget(unittest.TestCase):
     def test_each_job_runs_its_target(self):
         blocks = job_blocks()
@@ -108,7 +130,7 @@ class CiRunsEveryTarget(unittest.TestCase):
 
     def test_every_target_is_run_by_exactly_one_job(self):
         blocks = job_blocks()
-        for target in [*CARGO_TARGETS, "check-python"]:
+        for target in [*CARGO_TARGETS, *PYTHON_TARGETS]:
             runners = [job for job, block in blocks.items()
                        if re.search(rf"make {re.escape(target)}(?![\w-])", block)]
             self.assertEqual(len(runners), 1, f"{target} runs in {runners}")
@@ -128,7 +150,7 @@ class CiRunsEveryTarget(unittest.TestCase):
         blocks = job_blocks()
         for job in ("host-unit-default", "host-unit-hostsim"):
             self.assertRegex(blocks[job], r'sdl: "true"', f"{job} links a host test binary")
-        for job in ("host-lint", "host-python"):
+        for job in ("host-lint", "host-python", "host-python-harness"):
             self.assertNotIn("sdl:", blocks[job], f"{job} links nothing; the apt step is minutes on a noisy runner")
 
     def test_one_job_name_per_job(self):
