@@ -396,3 +396,31 @@ fn the_more_useful_failure_survives_when_a_cached_reprobe_replaces_a_fresh_one()
     let verified = settled_probe(&plan, Outcome::Reachable, None, None);
     assert_eq!(verified.after_fresh(&tls).cause(), None, "a verified cached origin has no failure to explain");
 }
+
+// ---- the picker draws these on ONE line --------------------------------------------------------
+
+/// **The server-failure reasons fit the picker's single line.** Who's watching draws a failed
+/// switch as one centred, unwrapped line at `BODY` (`screens/profiles.rs`), and `Painter::text`
+/// neither wraps nor clips, so a sentence wider than the safe area runs off the panel. Measured
+/// here with the shared fixture measure (half an em per byte, which is wider than the shipped
+/// face's real advances: the two new sentences measure 1125 and 1582 px against the 1728 px safe
+/// width with the device font's `hmtx` advances, and 1246 and 1708 px with this stand-in), so a
+/// longer sentence fails here before it would fail on a panel. English only on this line.
+#[test]
+fn the_server_failure_reasons_fit_the_pickers_one_line() {
+    use crate::ui::machine::Measure;
+    let column = crate::ui::consts::SAFE.w;
+    let no_access = msg::browse_auth_no_source_access("Alexandra Konstantinopolskaya");
+    let mut over = Vec::new();
+    for (key, text) in [
+        ("no_source_access", no_access.as_str()),
+        ("servers_unreachable", msg::browse_auth_servers_unreachable()),
+        ("tls_untrusted", msg::browse_auth_tls_untrusted()),
+    ] {
+        let width = crate::ui::fixture::FixtureMeasure.width_str(text, crate::ui::theme::size::BODY, false);
+        if width > column {
+            over.push(format!("{key}: {width}px of {column}px: {text:?}"));
+        }
+    }
+    assert!(over.is_empty(), "the picker draws these on one line and would run off the safe area:\n  {}", over.join("\n  "));
+}

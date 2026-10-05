@@ -206,17 +206,6 @@ impl Cause {
             Self::Unauthorized => "unauthorized",
         }
     }
-
-    /// The cause a transport failure puts on ONE route: [`Self::TlsUntrusted`] when its chain failed
-    /// verification ([`crate::net::RequestFailure::untrusted_chain`]), [`Self::Unreachable`] otherwise — a failure
-    /// that carries no evidence at all (the plaintext transport) included. A 401 is never a transport
-    /// failure here: it is an answer, graded `Outcome::Unauthorized` by the probe.
-    pub fn of_failure(failure: Option<crate::net::RequestFailure>) -> Self {
-        match failure.and_then(|f| f.untrusted_chain()) {
-            Some(verify) => Self::TlsUntrusted { verify },
-            None => Self::Unreachable,
-        }
-    }
 }
 
 /// A port this client could actually dial, narrowed to the `i32` the transport takes — `None` for
@@ -482,6 +471,16 @@ pub fn plan(res: &Resource, policy: CredentialPolicy) -> ProbePlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cause_has_a_closed_code_and_round_trips_through_serde() {
+        for (cause, code) in [(Cause::Unreachable, "unreachable"), (Cause::TlsUntrusted { verify: 20 }, "tls_untrusted"),
+            (Cause::Unauthorized, "unauthorized")] {
+            assert_eq!(cause.code(), code);
+            let json = serde_json::to_string(&cause).unwrap();
+            assert_eq!(serde_json::from_str::<Cause>(&json).unwrap(), cause, "{json}");
+        }
+    }
 
     /// The two fixtures are the shapes measured live on 2026-08-11 (`docs/shared-servers.md` §2):
     /// addresses and identifiers are stand-ins, the arrangement of flags is not.
