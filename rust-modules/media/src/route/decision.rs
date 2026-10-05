@@ -8350,8 +8350,9 @@ fn re_encode_contract(
 }
 
 /// Log the harness-readable pair every enhancement-graded decision produces, shared by
-/// `retranscode_as` (the live reconcile path) and `route::plan`'s cold-start branch — the two
-/// places that classify a fresh `/decision` body and must therefore agree on the exact wording.
+/// `install_retranscode_outcome` (a claim flight's install), `install_auto_hls_outcome` and
+/// `route::plan`'s cold-start branch — the callers that classify a fresh `/decision` body and must
+/// therefore agree on the exact wording.
 /// `output_codecs` is `None` when no decision body was available to read a codec pair from (the
 /// `decision output:` line is then skipped, matching the caller having nothing to report); the
 /// `enhancement: applied ..` line is printed only when `outcome` is [`EnhancementOutcome::Applied`]
@@ -8375,8 +8376,8 @@ pub(super) fn log_enhancement_outcome(
     }
 }
 
-/// Everything `retranscode_as`'s network half needs, owned so it can run on a worker instead of
-/// the frame thread (see [`execute_retranscode_claim`]'s doc for the crash this exists to fix).
+/// Everything the retranscode network half ([`request_retranscode`]) needs, owned so it runs on
+/// a flight worker instead of the frame thread (see [`execute_retranscode_claim`]'s doc for the crash this exists to fix).
 /// Captured once, on the main thread, from a `PlaybackSession` the worker never sees again.
 #[derive(Clone)]
 pub(super) struct RetranscodeClaimInputs {
@@ -8425,7 +8426,7 @@ pub(super) enum RetranscodeWorkerOutcome {
     Refused,
 }
 
-/// The fallback codecs `retranscode_as` used to compute inline, as a pure function of the owned
+/// The fallback codecs a retranscode attempt falls back to, as a pure function of the owned
 /// inputs plus whichever contract this attempt is building — needed twice now (a primary attempt
 /// and, on refusal, a Legacy fallback attempt may build a different contract), so it is a function
 /// rather than a one-shot local.
@@ -8482,9 +8483,10 @@ pub(super) struct PreparedEncode {
     enhancement: EnhancementOutcome,
 }
 
-/// One `/decision` attempt, gated on `inputs.expected` throughout — the network body
-/// `retranscode_as` used to run inline on the frame thread, less the selection PUT
-/// ([`select_streams_for_encode`]) and less the commit ([`commit_retranscode`]). Pure with respect
+/// One `/decision` attempt, gated on `inputs.expected` throughout — the network body of a
+/// retranscode, run on a flight worker (`route::flight`) rather than the frame thread, less the
+/// selection PUT ([`select_streams_for_encode`]) and less the commit ([`commit_retranscode`]).
+/// Pure with respect
 /// to `PlaybackSession` (never sees one) and to the route: everything it needs is in
 /// `inputs`/`contract`, and everything it decides is returned rather than written. A refusal has
 /// already stopped the session it registered.
@@ -8613,8 +8615,8 @@ pub(super) fn try_retranscode(
     }
 }
 
-/// Snapshot everything [`try_retranscode`] needs off `ps`, or `None` for exactly the reasons
-/// `retranscode_as` used to bail before touching PMS.
+/// Snapshot everything [`try_retranscode`] needs off `ps`, or `None` when the claim has no PMS
+/// work to do.
 fn prepare_retranscode_inputs(
     ps: &PlaybackSession,
     expected: &WorkerTicket,
@@ -8669,8 +8671,8 @@ pub(super) fn apply_retranscode_outcome_to_projection(p: &mut AppliedRouteProjec
 
 /// Install a successful attempt's session projection. Publishes `cur_contract` and
 /// `cur_enhancement` only after PMS accepted it — the applied enhancement is never written at the
-/// selection (I9) — same rule `retranscode_as` always followed, now shared by the sync and worker
-/// paths.
+/// selection (I9) — the rule both the sync and worker
+/// paths follow.
 pub(super) fn install_retranscode_outcome(ps: &mut PlaybackSession, applied: &AppliedRetranscode) {
     let mut projection = route_projection(ps);
     apply_retranscode_outcome_to_projection(&mut projection, applied);

@@ -2055,7 +2055,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         plan.enhancement = super::decision::EnhancementOutcome::Refused;
     } else {
         plan.enhancement = classify_outcome(decision.as_ref(), plan.audio.as_ref(), audio);
-        // The cold-start twin of `retranscode_as`'s live-reconcile logging (issue #266/M7): this
+        // The cold-start twin of `install_retranscode_outcome`'s live-reconcile logging (issue #266/M7): this
         // branch can ALSO land an enhanced remux (or, forced by an embedded subtitle, a Burn)
         // before the first frame, with no live pick in the picture, and the harness case had no
         // `enhancement: applied` line to key on until this call was added. Shared helper so the

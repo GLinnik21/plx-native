@@ -769,8 +769,8 @@ impl TrackMenuState {
     /// Audio tab's own `enh_state` poll just above it. Issue #309's field report: a subtitle pick
     /// that reroutes the play to (or away from) the enhancement's own Burn lands `active_sub`
     /// at once (`Self::on_ok`'s own optimistic write), but `sub_style_locked` can only become true
-    /// once the Burn's `/decision` round trip actually answers (`route::decision::retranscode_as`,
-    /// a real network call) — seconds later. A panel that stays open across that window (the
+    /// once the Burn's `/decision` round trip actually answers (`route::decision::request_retranscode`
+    /// on a `route::flight` worker, a real network call) — seconds later. A panel that stays open across that window (the
     /// diagnostic `screens::player::overlay::pick_track_row` trigger deliberately does, "so a
     /// capture can show the picked track") was built and never touched again, so its drawn
     /// checkmark and its Style/Timing dim state both kept whatever `Self::layout` baked at open,
@@ -3940,7 +3940,7 @@ mod enhancement_menu_tests {
     /// Subtitles menu still open — "Full" (the embedded track) focused, but the checkmark still on
     /// "Off" and Color not dimmed. The pick's own optimistic write (`Self::on_ok`) lands
     /// `active_sub` at once, but the Burn it triggers is a real `/decision` network round trip
-    /// (`route::decision::retranscode_as`) that only lands `live_is_own_burn` seconds later — the
+    /// (`route::decision::request_retranscode` on a flight worker) that only lands `live_is_own_burn` seconds later — the
     /// gap between the pick and the screenshot. A panel built before that round trip landed, and
     /// left open across it the way the diagnostic `screens::player::overlay::pick_track_row`
     /// trigger deliberately does ("the trigger exists to leave the chosen track's panel on screen

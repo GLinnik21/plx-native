@@ -281,11 +281,11 @@ fn embedded_default_subtitle_with_enhancement_is_burned() {
     plx_plex::plex::reset_servers_for_test();
 }
 
-/// The cold-start twin of item 3's fix: `retranscode_as` (the LIVE reconcile path) has always
-/// printed `enhancement: applied boost=.. loudness=..` to the event log the harness greps, but the
-/// COLD START branch above — `plan.enhancement = classify_outcome(..)` in `route::plan`, reached
-/// with no live pick at all when the item already carries a server-selected embedded subtitle —
-/// never did, so a case that boots straight into a Burn had no line to key on. Grade the same
+/// The cold-start twin of item 3's fix: the LIVE reconcile path (`install_retranscode_outcome`)
+/// prints `enhancement: applied boost=.. loudness=..` to the event log the harness greps, and so
+/// does the COLD START branch above — `plan.enhancement = classify_outcome(..)` in `route::plan`,
+/// reached with no live pick at all when the item already carries a server-selected embedded
+/// subtitle — so a case that boots straight into a Burn has a line to key on. Grade the same
 /// scenario as `embedded_default_subtitle_with_enhancement_is_burned` above, but on the event log
 /// rather than `r.plan`, the way `tests/run.py::op_audio_enhancement_burn` actually reads it.
 #[test]

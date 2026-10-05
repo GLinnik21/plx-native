@@ -318,9 +318,10 @@ fn request_with(
     // dev threadcheck watchdog SIGABRTs after 2s instead. `assert_may_block` panics (host tests) or
     // aborts (device, `feature="threadcheck"`) if this runs while `FrameScope` says we are on the
     // frame thread and nothing has explicitly called `allow_blocking` first. A call site that trips
-    // this in `cargo test` is doing PMS I/O on the main thread and needs to move to a worker (see
-    // `route::decision::try_retranscode` for the pattern) or, if it is a pre-existing, not-yet-split
-    // path, wrap the call with `allow_blocking` and say why.
+    // this in `cargo test` is doing PMS I/O on the frame thread and moves to a worker
+    // (`task::spawn_off_frame`; the PMS half takes `&OffFrame`; `route::flight` is the pattern).
+    // `allow_blocking` is not an option: `ci/check-deps.sh`'s `blocking` gate holds
+    // `ci/allow/blocking.txt` exact, so a new wrapped call fails the gate.
     //
     // `#[track_caller]` runs from every public request function (and `Client`'s transport choke
     // points above them) to this guard, so the report names the route/app caller rather than this

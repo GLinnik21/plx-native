@@ -348,11 +348,9 @@ fn always_refusing_live() -> Live {
     Live { sid, port, done, server }
 }
 
-/// The staleness protection the async split newly depends on: the old synchronous
-/// `retranscode_as` held the frame thread for its whole `/decision` round trip, so nothing else
-/// on that thread could run while it waited. Now a claim's PMS half runs on a worker, which opens
-/// a real window in which some OTHER main-thread route event (leaving this item to start a fresh
-/// Load, an ABR commit, a stop) can change the ticket the worker snapshotted. `try_retranscode`'s
+/// The staleness protection the async split depends on: a claim's PMS half runs on a worker, which
+/// opens a real window in which some OTHER main-thread route event (leaving this item to start a
+/// fresh Load, an ABR commit, a stop) can change the ticket the worker snapshotted. `try_retranscode`'s
 /// `is_worker_ticket_current` check and `replace_active_encoder_for`'s own commit-time check are
 /// exactly what must catch that: the stale worker's landing must discard cleanly (no session
 /// mutation), and the phase it releases must not block whatever happens next.
