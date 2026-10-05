@@ -96,7 +96,7 @@ marked. What a row does when its text does not fit is decided by its role:
 | role | app text that doesn't fit | server text |
 |---|---|---|
 | trailing value | a `*.short` readout key (`settings.playback.forced.short`, `forced_readout`); the picker keeps the long string. Never stacked into the grey sub-line: it would read as a description | elides |
-| label, detail, header | rewrite the translation shorter (all three languages say the same thing) | elides |
+| label, detail, header | rewrite the translation shorter (all three languages say the same thing) | elides; the FOCUSED row's label scrolls instead (`marquee::ROW`) |
 | prose (alerts, consent) | wraps | wraps |
 
 `ui::fit::two_runs` is THE declared priority for a line with two runs: the primary is guaranteed

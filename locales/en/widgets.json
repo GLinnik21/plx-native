@@ -853,6 +853,66 @@
     "value": "Other languages",
     "description": "Subtitles panel of the player's track selector. Row that opens the page of subtitle languages that are not the viewer's own, and that page's title."
   },
+  "widgets.tracks.search.open": {
+    "value": "Search for subtitles",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Row on the Subtitles tab that opens the page, and that page's title."
+  },
+  "widgets.tracks.search.language": {
+    "value": "Language",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Row that shows and changes the language being searched; also the language list's title."
+  },
+  "widgets.tracks.search.results": {
+    "value": "Results",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Section header above the subtitles the server found."
+  },
+  "widgets.tracks.search.searching": {
+    "value": "Searching…",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Shown while the server is still searching."
+  },
+  "widgets.tracks.search.none": {
+    "value": "No subtitles found.",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). The search finished and found nothing. An answer, not an error."
+  },
+  "widgets.tracks.search.failed": {
+    "value": "Couldn't search for subtitles. Your playback isn't affected.",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). The server did not answer the search. Never alarming: playback continues."
+  },
+  "widgets.tracks.search.denied": {
+    "value": "This server doesn't allow this account to add subtitles.",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). The server refused the request for this account. Blames nobody; no retry is offered."
+  },
+  "widgets.tracks.search.missing": {
+    "value": "Subtitles can't be searched for this item.",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). The server could not find the item to search for."
+  },
+  "widgets.tracks.search.bad_language": {
+    "value": "Subtitles can't be searched in this language.",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). The chosen language has no code the server accepts."
+  },
+  "widgets.tracks.search.retry": {
+    "value": "Try again",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Row that repeats a search that failed."
+  },
+  "widgets.tracks.search.adding": {
+    "value": "Adding…",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Read-out on a result row while the server downloads it."
+  },
+  "widgets.tracks.search.added": {
+    "value": "Added",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Read-out on a result row once the subtitle is in the item."
+  },
+  "widgets.tracks.search.requested": {
+    "value": "Requested",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Read-out when the server accepted the download but it has not appeared yet."
+  },
+  "widgets.tracks.search.add_failed": {
+    "value": "Couldn't add",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Read-out on a result row the server could not add."
+  },
+  "widgets.tracks.search.add_failed_note": {
+    "value": "The server couldn't add this subtitle. Try another one.",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). One-line note under the results after a download failed."
+  },
   "widgets.tracks.track_ordinal": {
     "value": "Track {number}",
     "description": "Subtitles panel of the player's track selector. Tells apart subtitle tracks that are otherwise identical; the number is the track's position among them.",

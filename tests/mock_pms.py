@@ -190,6 +190,12 @@ V1_RATING_KEY = 900003
 V2_RATING_KEY = 900004
 VERIFY_PARTS = {V1_RATING_KEY: 900101, V2_RATING_KEY: 900102}
 VERIFY_SIDECAR_ID = 901009
+# Subtitle search (`MockPms.subtitle_search`): candidate and installed stream ids live in their own
+# bands so neither can collide with a generated or verification stream.
+SUB_CANDIDATE_BASE, SUB_INSTALLED_BASE = 8_100_000, 8_200_000
+# The languages the mock agent "finds" subtitles in: 2-letter query -> (languageCode, language).
+# Any other well-formed code is an empty answer — the not-found case, which is not a failure.
+SUB_SEARCH_LANGS = {"en": ("eng", "English"), "nl": ("nld", "Nederlands"), "es": ("spa", "Español")}
 # --extra-media ids. Generated movies are 1001..(1000+movies<=1000) => max 2000; shows/seasons/
 # episodes nest as rk*10+n from 2001, so a default-sized run never reaches six digits; VERIFY_*
 # stops at 901009. 990001+ sits clear of all three, with a wide gap before the next round number
@@ -1502,6 +1508,8 @@ class MockPms:
         # Every request `handle()` routed, in arrival order: {"method","path","query","session"}.
         # Query keys naming a token are stripped, never just redacted — never send a real value.
         self.request_log = []
+        # subtitle search: rk -> {candidate key -> row} for the latest search; id sequences
+        self.sub_candidates, self.sub_candidate_seq, self.sub_install_seq = {}, 0, 0
 
     @staticmethod
     def safe_path(path):
@@ -1516,6 +1524,67 @@ class MockPms:
         with self.lock:
             self.writes.append((method, safe, body))
         print(f"mock_pms: WRITE {method} {safe}", file=sys.stderr, flush=True)
+
+    # --- subtitle search & download (`docs/pms-api.md` §8) -----------------------------------
+
+    def subtitle_search(self, lib, rk, method, q, j):
+        """The agent-backed subtitle search, modelled on the measured PMS shape.
+
+        GET answers `Stream[]` candidates for a 2-letter `language` (a 3-letter one is the 500
+        the real server gives; an item with no Media is the 404). Candidate keys are
+        `/library/streams/<id>` and only valid for the LATEST search of that item, as on PMS.
+        PUT `key=<candidate>` answers 200 with an empty body and appends an external SRT
+        stream with a NEW id to the item's first part, backed by a tiny sidecar body; a stale
+        or unknown key is accepted and does nothing. The install is immediate here — PMS's is
+        asynchronous, which the client's poll already covers. Nothing here reaches a real
+        server: this is the only place the download flow may be exercised end to end."""
+        it = lib.items.get(rk)
+        parts = (it or {}).get("Media", [{}])[0].get("Part") if it else None
+        if not parts:
+            return j(self.container(), 404)
+        if method == "GET":
+            lang = q.get("language", "")
+            if len(lang) != 2 or not lang.isalpha():
+                return (500, "text/plain", b"mock_pms: language must be 2 letters")
+            code = SUB_SEARCH_LANGS.get(lang.lower())
+            rows = []
+            with self.lock:
+                self.sub_candidates[rk] = {}
+                for n in range(2 if code else 0):
+                    self.sub_candidate_seq += 1
+                    cid = SUB_CANDIDATE_BASE + self.sub_candidate_seq
+                    row = {"id": cid, "key": f"/library/streams/{cid}", "streamType": 3,
+                           "codec": "srt", "format": "srt", "language": code[1],
+                           "languageCode": code[0], "providerTitle": "OpenSubtitles",
+                           "score": str(2000 - 500 * n), "title": f"mock.release.{lang}.{n + 1}",
+                           "hearingImpaired": n == 1}
+                    self.sub_candidates[rk][row["key"]] = row
+                    rows.append(row)
+            return j(self.container(Stream=rows))
+        if method == "PUT":
+            with self.lock:
+                row = self.sub_candidates.get(rk, {}).pop(q.get("key", ""), None)
+                if row:
+                    self.sub_install_seq += 1
+                    sid = SUB_INSTALLED_BASE + self.sub_install_seq
+                    streams = parts[0].setdefault("Stream", [])
+                    streams.append({
+                        "id": sid, "streamType": 3, "codec": "srt", "format": "srt",
+                        "language": row["language"], "languageCode": row["languageCode"],
+                        "key": f"/library/streams/{sid}", "title": row["title"],
+                        "displayTitle": row["language"],
+                        "extendedDisplayTitle": f"{row['title']} ({row['language']} SRT)",
+                        "index": max((s.get("index", 0) for s in streams), default=0) + 1,
+                        "selected": True})
+                    for other in streams:
+                        if other.get("streamType") == 3 and other["id"] != sid:
+                            other.pop("selected", None)
+                    if getattr(lib, "sidecars", None) is None:
+                        lib.sidecars = {}  # a generated library without --media has none yet
+                    lib.sidecars[sid] = (b"1\n00:00:01,000 --> 00:00:04,000\n"
+                                         + row["title"].encode() + b"\n")
+            return (200, "text/plain", b"")
+        return (405, "text/plain", b"")
 
     # --- containers ------------------------------------------------------------------------
 
@@ -1601,7 +1670,9 @@ class MockPms:
                             "/actions/removeFromContinueWatching", "/status/sessions/close",
                             "/video/:/transcode/universal/stop", "/playQueues")
                       or p.startswith("/library/parts/")
-                      or (segs[:1] == ["playQueues"] and len(segs) == 2))
+                      or (segs[:1] == ["playQueues"] and len(segs) == 2)
+                      or (method == "PUT" and len(segs) == 4 and segs[:2] == ["library", "metadata"]
+                          and segs[3] == "subtitles"))
         if write_path and not (method in ("GET", "HEAD") and p.startswith("/library/parts/")):
             self.note_write(method, path, body)
 
@@ -1725,6 +1796,8 @@ class MockPms:
                 return j(self.container(Metadata=lib.children(rk)))
             if sub == "allLeaves":
                 return j(self.container(Metadata=lib.leaves(rk)))
+            if sub == "subtitles":
+                return self.subtitle_search(lib, rk, method, q, j)
             if sub == "related":
                 it = lib.items.get(rk)
                 pool = [x for x in lib.items.values() if it and x["type"] == it["type"] and x is not it]
@@ -1905,7 +1978,8 @@ class MockPms:
             sid = int(segs[2]) if segs[2].isdigit() else -1
             sidecar = getattr(lib, "sidecars", {}).get(sid)
             if sidecar is not None:
-                return (200, "application/x-subrip", sidecar.read_bytes())
+                body = sidecar if isinstance(sidecar, bytes) else sidecar.read_bytes()
+                return (200, "application/x-subrip", body)
         if p.startswith("/video/:/transcode/universal/start"):
             # an HLS/transcode START: this server encodes nothing, so the honest answer is the one
             # a PMS gives for a session it cannot serve — the app's route planner then lands on
@@ -2268,6 +2342,29 @@ def selftest():
     assert jget(f"/library/metadata/{rk}")["Metadata"][0]["viewCount"] == 1
     jget(f"/:/unscrobble?key={rk}&identifier=com.plexapp.plugins.library")
     assert "viewCount" not in jget(f"/library/metadata/{rk}")["Metadata"][0]
+    # subtitle search & download: 3-letter -> 500, unknown language -> empty, a PUT installs a
+    # NEW selected external stream whose sidecar is fetchable, and a candidate key is single-use
+    def send(path, method="GET"):
+        req = urllib.request.Request(base + path, data=b"" if method == "PUT" else None, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+    assert send(f"/library/metadata/{rk}/subtitles?language=nld&hearingImpaired=0&forced=0")[0] == 500
+    assert jget(f"/library/metadata/{rk}/subtitles?language=fi&hearingImpaired=0&forced=0").get("Stream") == []
+    found = jget(f"/library/metadata/{rk}/subtitles?language=nl&hearingImpaired=0&forced=0")["Stream"]
+    assert len(found) == 2 and isinstance(found[0]["score"], str) and found[0]["languageCode"] == "nld"
+    before = {s["id"] for s in jget(f"/library/metadata/{rk}")["Metadata"][0]["Media"][0]["Part"][0]["Stream"]}
+    assert send(f"/library/metadata/{rk}/subtitles?key={found[0]['key']}", "PUT") == (200, b"")
+    assert send(f"/library/metadata/{rk}/subtitles?key={found[0]['key']}", "PUT") == (200, b"")
+    after = jget(f"/library/metadata/{rk}")["Metadata"][0]["Media"][0]["Part"][0]["Stream"]
+    added = [s for s in after if s["id"] not in before]
+    assert len(added) == 1 and added[0]["selected"] and added[0]["codec"] == "srt", added
+    assert added[0]["id"] != found[0]["id"], "an install is a NEW stream, not the candidate's id"
+    s, _, b = get(added[0]["key"])
+    assert s == 200 and found[0]["title"].encode() in b
+    assert any(m == "PUT" and "/subtitles?" in w for m, w, _ in pms.writes)
     # the closed alphabet: every title-shaped string obeys it
     tok = re.compile(f"^{ALPHABET_TOKEN}$")
     for it in pms.lib.items.values():

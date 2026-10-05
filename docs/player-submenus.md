@@ -20,7 +20,11 @@ because the overlay's state shape changed on purpose.
   chevron; it hands off to the timing capsule) and Style. **Other languages:** one row per
   language A-Z; a single-track language is a direct pick row, a multi-track one is a "French, 3
   tracks" drill-in. **Language page:** Full / SDH / Forced / Commentary ranked, identical ones
-  numbered. **Style:** Size, Position and Color drill into picker pages with checkmarks.
+  numbered. **Style:** Size, Position and Color drill into picker pages with checkmarks. When
+  the host can run a subtitle search, the root ends with a **Search subtitles** row: its page
+  has a Language row (defaulted to the viewer's subtitle preference; a picker of 2-letter
+  languages overrides it) and the agent's results; OK on a result downloads it, and once the
+  server lists the new stream the panel selects it and closes (`docs/pms-api.md` §8).
 - **Keys:** UP/DOWN move; OK or RIGHT on a Nav row pushes; on a sub-page LEFT/BACK pops and focus
   returns to the opener by semantic id; on the root LEFT/RIGHT switch tabs as before (RIGHT on a
   Nav row pushes instead); BACK on the root dismisses; clicking the "< TITLE" band pops. A track

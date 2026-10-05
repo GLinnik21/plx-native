@@ -844,9 +844,17 @@ fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
         "Hidden outranks Tracks' own still-fading Lifted, exactly this one frame",
     );
 
-    // Let the fade finish: Tracks disappears and Timing alone remains the input owner.
-    frame(&mut d, &mut rig, AppArg::Player, tick(3), vec![]);
-    frame(&mut d, &mut rig, AppArg::Player, tick(4), vec![]);
+    // Let the fade finish: Tracks disappears and Timing alone remains the input owner. A fade is
+    // HELD while its text rasterises on the per-frame prewarm budget, for at most
+    // `SURFACE_TEXT_HOLD_MAX_MS`, so the frame count depends on how many labels the panel had —
+    // drive frames to that bound instead of assuming two.
+    let bound = (plx_ui::containers::modal::SURFACE_TEXT_HOLD_MAX_MS / 16.0).ceil() as u32 + 2;
+    for i in 0..bound {
+        if d.nav.modals.surfaces.iter().filter(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_))).count() == 1 {
+            break;
+        }
+        frame(&mut d, &mut rig, AppArg::Player, tick(3 + i), vec![]);
+    }
     assert_eq!(player_overlay_kind(&d), Some(OverlayKind::Timing), "Timing alone owns input once Tracks is gone");
     let left: Vec<_> = d.nav.modals.surfaces.iter().filter(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_))).collect();
     assert_eq!(left.len(), 1, "exactly one player-overlay surface once the fade settles");

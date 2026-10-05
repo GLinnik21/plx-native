@@ -25,6 +25,12 @@ pub struct MediaContainer {
     pub metadata: Vec<Metadata>,
     #[serde(rename = "Hub", default)]
     pub hub: Vec<Hub>,
+    /// Subtitle search only (`docs/pms-api.md` §8): the agent's candidate rows arrive at the
+    /// CONTAINER level, not nested inside `Metadata[].Media[].Part[]` the way an item's own
+    /// streams do. `de_vec` rather than a bare `default` because an absent array and a present
+    /// `null` are different things to serde, and the second would fail the whole container.
+    #[serde(rename = "Stream", default, deserialize_with = "de_vec")]
+    pub stream: Vec<Stream>,
     #[serde(default, deserialize_with = "de_i64")]
     pub size: i64,
     #[serde(rename = "totalSize", default, deserialize_with = "de_i64")]
@@ -674,6 +680,36 @@ pub struct Stream {
     /// the failure mode I2/I5 exist to prevent.
     #[serde(rename = "canNormalizeLoudness", default, deserialize_with = "de_bool")]
     pub can_normalize_loudness: bool,
+    /// Subtitle search only (`docs/pms-api.md` §8): the agent that offered this candidate, e.g.
+    /// `"OpenSubtitles"`. Absent on every other endpoint, which is what `default` is for — a
+    /// library stream carries no provider and must not be read as one.
+    #[serde(rename = "providerTitle", default, deserialize_with = "de_str")]
+    pub provider_title: String,
+    /// Subtitle search only: the candidate's match score, best-first when the UI ranks by it.
+    ///
+    /// **`de_i64` is load-bearing here, not tidiness.** PMS sends this as a JSON *string*
+    /// (`"2301"`) on every row measured 2026-10-04 — never a number. A strict `i64` would fail
+    /// the untagged adapter, and serde fails the WHOLE `MediaContainer` on one bad field, so the
+    /// search would answer "no results" rather than a parse error. That is the blast radius this
+    /// module's lenient adapters exist for.
+    #[serde(default, deserialize_with = "de_i64")]
+    pub score: i64,
+    /// Subtitle search only: the provider's own stream reference, distinct from [`Stream::key`]
+    /// (the candidate handle the download is addressed by). Carried for diagnosis; nothing dials it.
+    #[serde(rename = "sourceKey", default, deserialize_with = "de_str")]
+    pub source_key: String,
+    /// Subtitle streams: the delivered container, e.g. `"srt"`. Usually mirrors `codec`; kept
+    /// separate because the search answers both and a renderer decision reads this one.
+    #[serde(default, deserialize_with = "de_str")]
+    pub format: String,
+    /// The provider's own one-line summary of a candidate, e.g. `"… (Nederlands SRT
+    /// OpenSubtitles)"`. A result row's detail line, never a track label.
+    #[serde(rename = "extendedDisplayTitle", default, deserialize_with = "de_str")]
+    pub extended_display_title: String,
+    /// Subtitle search only: the server offers to auto-sync this candidate's timings. Recorded
+    /// because the search answers it; no client path acts on it yet.
+    #[serde(rename = "canAutoSync", default, deserialize_with = "de_bool")]
+    pub can_auto_sync: bool,
 }
 
 /// A tag row — `Genre[]`, `Country[]`, `Role[]`, `Director[]`, `Writer[]`. The three PEOPLE

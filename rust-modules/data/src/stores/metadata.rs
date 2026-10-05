@@ -169,6 +169,11 @@ pub enum MetadataCmd {
     SetWatchedLocal { sid: ServerId, rk: String, on: bool },
     /// The playback plan's leaf (`route.rs`).
     InstallPlaying(Option<crate::metadata::PlayingItem>),
+    /// A subtitle the server just installed for the PLAYING item (the player's subtitle search),
+    /// appended to its subtitle list so the menu lists it and the pick can be committed. Touches
+    /// nothing else — not `InstallPlaying`, which clears the skipped markers and replaces the whole
+    /// leaf — and lands only on the same `(sid, rk)`.
+    AppendPlayingSub { sid: ServerId, rk: String, stream: crate::metadata::Stream },
     MarkSkipped(crate::metadata::Marker),
     RetirePlaying,
     RetirePlayingItem,

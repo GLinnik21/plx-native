@@ -131,6 +131,22 @@ pub enum TrackRow {
     OpenField(StyleField),
     /// A picker page's choice: the field and the rung's index on that field's ladder.
     Choice(StyleField, usize),
+    /// The Search for subtitles drill-in on the Subtitles root ([`TrackPage::Search`]). Present only
+    /// when the host offers a search ([`TrackMenuState::set_search`]).
+    OpenSearch,
+    /// The Search page's language row: reads out the language searched, opens
+    /// [`TrackPage::SearchLanguage`].
+    SearchLang,
+    /// The Search page's retry row, present only after a TRANSPORT failure (a refusal is not
+    /// retried — a 403 retried is a 403).
+    SearchRetry,
+    /// A result row: the index into the hits of the generation on screen. **The one place this
+    /// alphabet carries a position**: a hit has no identity of its own beyond its index — its key is
+    /// ephemeral server state, re-minted per search — and the whole list is replaced at once when the
+    /// generation moves, never reordered under the cursor.
+    SearchHit(usize),
+    /// A language on the search's language page: the index into [`search_languages`].
+    LangChoice(usize),
 }
 
 impl From<RowTarget> for TrackRow {
@@ -203,6 +219,10 @@ pub enum TrackPage {
     /// One multi-track language's tracks (ranked), a pick row each; the payload is the language's
     /// [`LangId::stream`].
     Language(i64),
+    /// Search for subtitles: the language searched, then what the server's agent found.
+    Search,
+    /// The language list the search can use ([`search_languages`]), the current one checked.
+    SearchLanguage,
 }
 
 impl TrackPage {
@@ -216,6 +236,8 @@ impl TrackPage {
             Self::Language(stream) => {
                 other.iter().find(|o| o.id.stream == stream).map(|o| o.name.clone()).unwrap_or_default()
             }
+            Self::Search => plx_platform::i18n::msg::widgets_tracks_search_open().to_string(),
+            Self::SearchLanguage => plx_platform::i18n::msg::widgets_tracks_search_language().to_string(),
         }
     }
 
@@ -226,6 +248,8 @@ impl TrackPage {
             Self::Picker(field) => 0x10 + field.ordinal(),
             Self::OtherLanguages => 0x20,
             Self::Language(stream) => 0x2000_0000 | (stream as u32 & 0x00FF_FFFF),
+            Self::Search => 0x30,
+            Self::SearchLanguage => 0x31,
         }
     }
 }
@@ -234,7 +258,8 @@ impl TrackPage {
 /// index, all far below the band. None of these is a position, so a menu whose rows reorder (a
 /// track list that sorts differently, the DSP pair appearing) moves no key. Free families for the
 /// language pages: `0x0008_0000` the Other languages drill-in, `0x0009_0000 +` the slot a language
-/// holds on that page.
+/// holds on that page. Search: `0x000A_0000` its drill-in, `0x000B_000x` the language and retry rows,
+/// `0x000C_0000 +` a result, `0x000D_0000 +` a language choice.
 impl FormId for TrackRow {
     fn key(&self) -> RowKey {
         // a picker's rungs: one 256-wide block per field (a ladder is a handful of rungs)
@@ -251,6 +276,11 @@ impl FormId for TrackRow {
             TrackRow::Choice(f, i) => rung(f, i),
             TrackRow::OpenOther => 0x0008_0000,
             TrackRow::OpenLang(lang) => 0x0009_0000 + (lang.slot as u32).min(0xFFFF),
+            TrackRow::OpenSearch => 0x000A_0000,
+            TrackRow::SearchLang => 0x000B_0000,
+            TrackRow::SearchRetry => 0x000B_0001,
+            TrackRow::SearchHit(i) => 0x000C_0000 + (i as u32).min(0xFFFF),
+            TrackRow::LangChoice(i) => 0x000D_0000 + (i as u32).min(0xFFFF),
         })
     }
 }
@@ -438,6 +468,17 @@ pub struct TrackMenuState {
     /// through its fade-out (`ModalStack`'s `Closing`), and a Tracks menu reopened inside that
     /// fade has parked its own queue by the time the old one drops.
     background_owner: Option<u64>,
+    /// The subtitle search for the playing item, as the host last published it
+    /// ([`Self::set_search`]); `None` when the host offers no search, which also hides the root's
+    /// Search row. The panel never performs the search: it reads this and answers
+    /// [`TrackOk::Search`] for the screen to send.
+    search: Option<plx_data::subsearch::SubSearchSnapshot>,
+    /// THIS panel watched a download in flight (Sending/Waiting), so an Installed landing is its
+    /// own to auto-select. Cleared when handed over ([`Self::take_search_commit`]), so a landing
+    /// republished every frame commits once. The store keeps Installed after the panel closes;
+    /// a panel opened onto it never saw the flight and must not commit it again — doing so
+    /// dismissed every later Subtitles/Audio menu on its first tick (device, 2026-10-04).
+    search_watching: bool,
 }
 
 /// **What the track menu DECIDED**, for the loop to perform (spec §2.2).
@@ -502,6 +543,9 @@ pub enum TrackOk {
     /// Off, a locked Timing / Style row, a disabled Size / Position row, and a re-pick of the
     /// rung that is already checked.
     Inert,
+    /// A subtitle-search command for the screen to send to the store. The panel stays open: a
+    /// search or a download is watched, not fired and forgotten.
+    Search(plx_data::subsearch::SubSearchCmd),
 }
 
 impl Drop for TrackMenuState {
@@ -523,6 +567,20 @@ impl TrackMenuState {
         meta: metadata::MetadataView<'_>,
         tab: c_int,
         yours: Vec<String>,
+    ) -> Self {
+        Self::new_with(ps, meta, tab, yours, false)
+    }
+
+    /// [`Self::new`], with the Subtitles root offering *Search subtitles* from its FIRST build when
+    /// `offer_search` — the host can run the search. Offering it later, from a tick, would rebuild
+    /// the root under a live panel; a closing panel's refresh is what kept a fading Tracks surface
+    /// alive past its hand-off (`tracks_to_timing_hands_off_without_stacking_a_second_surface`).
+    pub fn new_with(
+        ps: &plx_media::route::PlaybackSession,
+        meta: metadata::MetadataView<'_>,
+        tab: c_int,
+        yours: Vec<String>,
+        offer_search: bool,
     ) -> Self {
         let mut s = TrackMenuState {
             tab,
@@ -546,6 +604,8 @@ impl TrackMenuState {
             sticky_audio_target: None,
             motion: PanelMotion::new(),
             background_owner: None,
+            search: offer_search.then(|| plx_data::subsearch::SubSearchSnapshot::idle(0)),
+            search_watching: false,
         };
         s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         s.sync_item(ps, meta);
@@ -780,6 +840,9 @@ impl TrackMenuState {
             TrackPage::OtherLanguages => !self.other.is_empty(),
             TrackPage::Language(stream) => self.other_lang(stream).is_some(),
             TrackPage::Style | TrackPage::Picker(_) => true,
+            // its listing is the search's, not the item's: the download's own stream landing must
+            // not pop the page the viewer is watching it on
+            TrackPage::Search | TrackPage::SearchLanguage => self.search.is_some(),
         })
     }
 
@@ -990,6 +1053,9 @@ impl TrackMenuState {
             TrackRow::Timing => TrackOk::Inert, // dim and inert while subtitles are Off
             TrackRow::SubOff => self.commit_sub(-1, meta),
             TrackRow::Sub(i) => self.commit_sub(i as c_int, meta),
+            TrackRow::SearchHit(i) => self.search_download(i),
+            TrackRow::SearchRetry => TrackOk::Search(plx_data::subsearch::SubSearchCmd::Retry),
+            TrackRow::LangChoice(i) => self.pick_search_language(i),
             _ => TrackOk::Inert,
         }
     }
@@ -1088,6 +1154,8 @@ impl TrackMenuState {
             TrackPage::Picker(field) => self.picker_form(field),
             TrackPage::OtherLanguages => self.other_form(),
             TrackPage::Language(stream) => self.language_form(stream),
+            TrackPage::Search => self.search_form(),
+            TrackPage::SearchLanguage => self.search_language_form(),
         }
     }
 
@@ -1119,6 +1187,209 @@ impl TrackMenuState {
             sec.item(TrackRow::Sub(t.i), RowKind::Choice, (), in_lang_row(t, active))
         });
         Form::new().section(sec)
+    }
+
+    /// The hits of the search on screen, or none.
+    fn search_hits(&self) -> &[plx_data::subsearch::SubHit] {
+        self.search.as_ref().map_or(&[], |s| s.hits.as_slice())
+    }
+
+    /// The Search page: the language row (and a retry row after a transport failure), then the
+    /// results. With nothing to list the results section carries ONE line saying why — searching,
+    /// none found, or the failure — so the empty answer and the fault never read alike, and no
+    /// failure is ever drawn as an alarm (`ui/src/CLAUDE.md`: failure read-outs are never red).
+    fn search_form(&self) -> TrackForm {
+        use plx_data::subsearch::{DownloadPhase, SearchFailure, SearchStatus};
+        use plx_platform::i18n::msg;
+        let Some(s) = self.search.as_ref() else { return Form::new() };
+        let busy = s.download.busy();
+        let lang = if s.lang.is_empty() { String::new() } else { plx_plex::plex::languages::label(&s.lang).to_string() };
+        // a language change mid-download is refused by the store, so the row is inert meanwhile
+        let mut top = FormSection::new("")
+            .item(
+                TrackRow::SearchLang,
+                RowKind::Nav(TrackPage::SearchLanguage),
+                (),
+                Row::new(msg::widgets_tracks_search_language()).value(lang),
+            )
+            .disabled(busy);
+        if s.failure == Some(SearchFailure::Transport) {
+            top = top.item(TrackRow::SearchRetry, RowKind::Button, (), Row::new(msg::widgets_tracks_search_retry()));
+        }
+        let mut results = FormSection::new(msg::widgets_tracks_search_results());
+        for (i, h) in s.hits.iter().enumerate() {
+            let state = match &s.download {
+                DownloadPhase::Sending { hit } | DownloadPhase::Waiting { hit, .. } if *hit == i => {
+                    Some(msg::widgets_tracks_search_adding())
+                }
+                DownloadPhase::Installed { hit, .. } if *hit == i => Some(msg::widgets_tracks_search_added()),
+                DownloadPhase::Unconfirmed { hit } if *hit == i => Some(msg::widgets_tracks_search_requested()),
+                DownloadPhase::Failed { hit, .. } if *hit == i => Some(msg::widgets_tracks_search_add_failed()),
+                _ => None,
+            };
+            let title = if h.title.is_empty() { h.language.clone() } else { h.title.clone() };
+            let detail: Vec<&str> =
+                [h.provider.as_str(), h.language.as_str()].into_iter().filter(|p| !p.is_empty()).collect();
+            let mut row = Row::new(title).server_label();
+            if !detail.is_empty() {
+                row = row.detail(detail.join(" \u{b7} ")).server_detail();
+            }
+            if h.hearing_impaired {
+                row = row.badge(Badge::Sdh);
+            }
+            if h.forced {
+                row = row.badge(Badge::Forced);
+            }
+            if let Some(state) = state {
+                row = row.value(state);
+            }
+            results = results.item(TrackRow::SearchHit(i), RowKind::Button, (), row).disabled(busy);
+        }
+        let status = match (s.status, s.failure) {
+            (SearchStatus::Idle | SearchStatus::Searching, _) => Some(msg::widgets_tracks_search_searching()),
+            (SearchStatus::Ready, _) if s.hits.is_empty() => Some(msg::widgets_tracks_search_none()),
+            (SearchStatus::Failed, Some(SearchFailure::Denied)) => Some(msg::widgets_tracks_search_denied()),
+            (SearchStatus::Failed, Some(SearchFailure::Missing)) => Some(msg::widgets_tracks_search_missing()),
+            (SearchStatus::Failed, Some(SearchFailure::BadLanguage)) => {
+                Some(msg::widgets_tracks_search_bad_language())
+            }
+            (SearchStatus::Failed, _) => Some(msg::widgets_tracks_search_failed()),
+            _ => None,
+        };
+        if let Some(status) = status {
+            results = results.note(status);
+        }
+        if matches!(s.download, DownloadPhase::Failed { .. }) {
+            results = results.note(msg::widgets_tracks_search_add_failed_note());
+        }
+        Form::new().section(top).section(results)
+    }
+
+    /// The language page: every language the search can use, the one being searched checked.
+    fn search_language_form(&self) -> TrackForm {
+        let langs = search_languages();
+        let lang = self.search.as_ref().map_or("", |s| s.lang.as_str());
+        let current = langs.iter().position(|l| l.code == lang).map(TrackRow::LangChoice);
+        let sec = langs.iter().enumerate().fold(FormSection::new(""), |sec, (i, l)| {
+            sec.choice(TrackRow::LangChoice(i), (), Row::new(l.name), |id| Some(*id) == current)
+        });
+        Form::new().section(sec)
+    }
+
+    /// OK on a result: ask the store to install it, quoting the generation on screen so a press
+    /// against a replaced result set (whose keys are dead) is refused there rather than sent.
+    /// Inert while a download is busy, and on the row already installed or requested.
+    fn search_download(&self, i: usize) -> TrackOk {
+        use plx_data::subsearch::DownloadPhase;
+        let Some(s) = self.search.as_ref() else { return TrackOk::Inert };
+        if s.download.busy() || i >= s.hits.len() {
+            return TrackOk::Inert;
+        }
+        if let DownloadPhase::Installed { hit, .. } | DownloadPhase::Unconfirmed { hit } = &s.download {
+            if *hit == i {
+                return TrackOk::Inert;
+            }
+        }
+        TrackOk::Search(plx_data::subsearch::SubSearchCmd::Download { gen: s.gen, hit: i })
+    }
+
+    /// OK on a language: back to the Search page, searching in it. The panel's copy of the search
+    /// reads "searching" at once, so the old language's results never sit under the new one's name
+    /// while the store is still asking.
+    fn pick_search_language(&mut self, i: usize) -> TrackOk {
+        let Some(lang) = search_languages().get(i).map(|l| l.code) else { return TrackOk::Inert };
+        let Some(s) = self.search.as_mut() else { return TrackOk::Inert };
+        if s.lang == lang {
+            return TrackOk::Inert;
+        }
+        s.lang = lang.to_string();
+        s.hits.clear();
+        s.failure = None;
+        s.status = plx_data::subsearch::SearchStatus::Searching;
+        self.pop_to_page();
+        TrackOk::Search(plx_data::subsearch::SubSearchCmd::SetLanguage(lang.to_string()))
+    }
+
+    /// Pop the top page onto the PAGE beneath it (never onto the root, which needs the session to
+    /// rebuild). `false`, leaving the stack as it was, when the root is beneath.
+    fn pop_to_page(&mut self) -> bool {
+        let Some(saved) = self.pages.pop() else { return false };
+        let Some(page) = self.pages.top() else {
+            self.pages.push(saved.page, saved.return_id, saved.scroll);
+            return false;
+        };
+        let leaving = page_stack::leave_page(&mut self.form);
+        self.motion.begin_slide(leaving, -1.0);
+        let form = self.page_form(page);
+        self.form.restore(form, Some(&saved.return_id), saved.scroll);
+        self.form.table.set_title(Some(self.page_title(page)));
+        true
+    }
+
+    /// **Publish the subtitle search to the panel**, from the screen, once a frame. Whether the
+    /// search is OFFERED is fixed when the panel is built ([`Self::new_with`]); a panel built
+    /// without the offer ignores this, so the root is never rebuilt under a live — or closing —
+    /// panel. A change refreshes the Search or language page in place, focus kept by id, so a
+    /// landing never moves the row the viewer is on.
+    pub fn set_search(&mut self, search: plx_data::subsearch::SubSearchSnapshot) {
+        if self.search.is_none() || self.search.as_ref() == Some(&search) {
+            return;
+        }
+        if search.download.busy() {
+            self.search_watching = true;
+        }
+        self.search = Some(search);
+        if let Some(page @ (TrackPage::Search | TrackPage::SearchLanguage)) = self.pages.top() {
+            let form = self.page_form(page);
+            let fallback = self.page_initial(page);
+            self.form.refresh_with(form, None, fallback.as_ref());
+        }
+    }
+
+    /// Is the viewer on the Search pages? The screen opens the search only then, so merely opening
+    /// the menu never puts a query to the server's subtitle agent.
+    pub fn wants_search(&self) -> bool {
+        self.pages.iter().any(|saved| matches!(saved.page, TrackPage::Search | TrackPage::SearchLanguage))
+    }
+
+    /// **The auto-select**, once, by the panel that watched the download in flight: the subtitle as the playing item should list
+    /// it, and the commit that makes it the active one — the SAME `TrackCommit::Subtitle` a pick on
+    /// its row would produce, so it runs the existing chain (client-drawn sidecar on direct play, a
+    /// server burn while transcoding) rather than a parallel one. The server has already selected
+    /// it on its side (`docs/pms-api.md` §8); this is what makes OUR renderer draw it.
+    pub fn take_search_commit(&mut self) -> Option<(metadata::Stream, TrackCommit)> {
+        let s = self.search.as_ref()?;
+        let plx_data::subsearch::DownloadPhase::Installed { hit, stream } = &s.download else { return None };
+        if !std::mem::take(&mut self.search_watching) {
+            return None;
+        }
+        let picked = s.hits.get(*hit);
+        let sub = metadata::Stream {
+            id: stream.id,
+            key: stream.key.clone(),
+            codec: stream.codec.clone(),
+            lang: picked.map(|h| h.language.clone()).unwrap_or_default(),
+            lang_code: stream.language_code.clone(),
+            title: picked.map(|h| h.title.clone()).unwrap_or_default(),
+            // the hit's own badges, so the row reads the same here as on the Search page
+            sdh: picked.is_some_and(|h| h.hearing_impaired),
+            forced: picked.is_some_and(|h| h.forced),
+            external: true,
+            ..Default::default()
+        };
+        let sidecar = sub.sidecar_renderable();
+        let commit = TrackCommit::Subtitle {
+            render_ordinal: -1,
+            stream_id: stream.id,
+            sidecar_key: sidecar.then(|| stream.key.clone()),
+            sidecar_codec: if sidecar { stream.codec.clone() } else { String::new() },
+        };
+        Some((sub, commit))
+    }
+
+    /// The search snapshot the panel holds — for the screen's auto-select step.
+    pub fn search(&self) -> Option<&plx_data::subsearch::SubSearchSnapshot> {
+        self.search.as_ref()
     }
 
     /// The Style page: one drill-in per field, each reading out its current value. Under an image
@@ -1182,6 +1453,15 @@ impl TrackMenuState {
                 let tracks = &self.other_lang(stream)?.tracks;
                 let t = tracks.iter().find(|t| active == Some(t.i)).or(tracks.first())?;
                 Some(TrackRow::Sub(t.i))
+            }
+            TrackPage::Search => Some(if self.search_hits().is_empty() {
+                TrackRow::SearchLang
+            } else {
+                TrackRow::SearchHit(0)
+            }),
+            TrackPage::SearchLanguage => {
+                let lang = self.search.as_ref().map_or("", |s| s.lang.as_str());
+                Some(TrackRow::LangChoice(search_languages().iter().position(|l| l.code == lang).unwrap_or(0)))
             }
         }
     }
@@ -1416,7 +1696,18 @@ impl TrackMenuState {
         let locked = plx_media::route::live_is_own_burn(ps);
         let show_timing = !plx_media::route::is_transcoding(ps) || locked;
         let model = self.sub_model(ps, meta, show_timing);
-        (table_form(&model, self.active_sub, self.offset_ms, locked), model)
+        let mut form = table_form(&model, self.active_sub, self.offset_ms, locked);
+        if self.search.is_some() {
+            // offered on direct play AND during a transcode: a downloaded sidecar is drawn by the
+            // client on one and burned by the server on the other, so it reaches the picture either way
+            form = form.section(FormSection::new("").item(
+                TrackRow::OpenSearch,
+                RowKind::Nav(TrackPage::Search),
+                (),
+                Row::new(plx_platform::i18n::msg::widgets_tracks_search_open()),
+            ));
+        }
+        (form, model)
     }
 
     /// The Subtitles model for the current item and route — the one place the root and the pages
@@ -1845,6 +2136,13 @@ fn channel_short(layout: &str) -> String {
 // ---- Subtitles-tab sections (the model is `metadata::sub_layout`, plan §3) ------------------
 
 /// The drawn form of a row's one badge.
+/// The languages a subtitle search can be asked in: the account picker's list (`plex::languages`)
+/// narrowed to plain TWO-letter codes, the only form PMS accepts (`docs/pms-api.md` §8) — a region
+/// variant (`en-GB`) folds onto the same search and would only repeat a row.
+pub fn search_languages() -> Vec<&'static plx_plex::plex::languages::Language> {
+    plx_plex::plex::languages::picker().filter(|l| l.code.len() == 2).collect()
+}
+
 fn row_badge(b: &RowBadge) -> Badge {
     match b {
         RowBadge::Forced => Badge::Forced,
@@ -3802,6 +4100,8 @@ mod focus_tests {
             sticky_audio_target: None,
             motion: PanelMotion::new(),
             background_owner: None,
+            search: None,
+            search_watching: false,
         }
     }
 
@@ -5287,5 +5587,206 @@ mod motion_tests {
         push_style(&mut menu, &store);
         assert_ne!(menu.form.table.layout_rev(), rev, "a page change moves the revision");
         teardown(&ps);
+    }
+
+    // ---- the Search for subtitles pages ----------------------------------------------------------
+
+    use plx_data::subsearch::{DownloadPhase, SearchFailure, SearchStatus, SubHit, SubSearchCmd, SubSearchSnapshot};
+
+    fn hit(title: &str) -> SubHit {
+        SubHit { key: format!("/library/streams/{title}"), title: title.into(), provider: "OpenSubtitles".into(),
+            language: "Nederlands".into(), language_code: "nld".into(), codec: "srt".into(), score: 1,
+            hearing_impaired: false, forced: false }
+    }
+
+    fn snap(status: SearchStatus, failure: Option<SearchFailure>, hits: Vec<SubHit>, download: DownloadPhase) -> SubSearchSnapshot {
+        SubSearchSnapshot { status, failure, hits, lang: "nl".into(), download, gen: 7 }
+    }
+
+    /// A Subtitles-tab menu with one English track, offered a search in state `s`, on the Search page.
+    fn on_search_page(s: SubSearchSnapshot) -> (TrackMenuState, plx_data::stores::metadata::MetadataStore) {
+        plx_media::player::sidecar::reset();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = store_with(vec![metadata::Stream { id: 1, index: 0, lang: "English".into(),
+            lang_code: "eng".into(), codec: "srt".into(), ..Default::default() }]);
+        let mut menu = TrackMenuState::new_with(&ps, store.view(), 1, vec!["eng".into()], true);
+        menu.set_search(SubSearchSnapshot::idle(7));
+        menu.focus_key(TrackRow::OpenSearch.key().0);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        menu.set_search(s);
+        (menu, store)
+    }
+
+    /// The row exists only when the host offers a search, so a host without one — every test host
+    /// that predates this page — draws exactly the menu it always did.
+    #[test]
+    fn the_search_row_appears_only_when_the_host_offers_a_search() {
+        let _g = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = store_with(vec![metadata::Stream { id: 1, index: 0, lang: "English".into(),
+            lang_code: "eng".into(), codec: "srt".into(), ..Default::default() }]);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
+        assert!(!menu.ids().contains(&TrackRow::OpenSearch));
+        menu.set_search(SubSearchSnapshot::idle(3));
+        assert!(!menu.ids().contains(&TrackRow::OpenSearch), "a late publish never adds the offer");
+        let menu = TrackMenuState::new_with(&ps, store.view(), 1, vec!["eng".into()], true);
+        assert_eq!(menu.ids().last(), Some(&TrackRow::OpenSearch), "the offered root ends with the row");
+    }
+
+    /// Entering the page is what makes the screen open the search — never merely opening the menu.
+    #[test]
+    fn entering_the_search_page_asks_for_the_search_and_lands_on_the_language_row() {
+        let _g = plx_base::testlock::serial();
+        let (menu, _store) = on_search_page(snap(SearchStatus::Searching, None, vec![], DownloadPhase::None));
+        assert_eq!(menu.page_path(), [TrackPage::Search]);
+        assert!(menu.wants_search());
+        assert_eq!(menu.ids(), [TrackRow::SearchLang], "searching: nothing to list yet");
+        assert_eq!(menu.form.selected_id(), Some(&TrackRow::SearchLang));
+    }
+
+    /// Results land in place, and a press quotes the generation they were published under — the
+    /// keys are ephemeral, so the store refuses a press against a replaced set.
+    #[test]
+    fn a_result_press_asks_to_download_quoting_its_generation() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, store) =
+            on_search_page(snap(SearchStatus::Ready, None, vec![hit("a"), hit("b")], DownloadPhase::None));
+        assert_eq!(menu.ids(), [TrackRow::SearchLang, TrackRow::SearchHit(0), TrackRow::SearchHit(1)]);
+        assert_eq!(menu.page_path(), [TrackPage::Search], "a landing never pops the page");
+        menu.focus_key(TrackRow::SearchHit(1).key().0);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Search(SubSearchCmd::Download { gen: 7, hit: 1 }));
+    }
+
+    /// Only a transport failure is retryable; a refusal says why and offers nothing, because a 403
+    /// retried is a 403.
+    #[test]
+    fn a_transport_failure_offers_a_retry_and_a_denial_does_not() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, store) =
+            on_search_page(snap(SearchStatus::Failed, Some(SearchFailure::Transport), vec![], DownloadPhase::None));
+        assert!(menu.ids().contains(&TrackRow::SearchRetry));
+        menu.focus_key(TrackRow::SearchRetry.key().0);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Search(SubSearchCmd::Retry));
+
+        let (menu, _) =
+            on_search_page(snap(SearchStatus::Failed, Some(SearchFailure::Denied), vec![], DownloadPhase::None));
+        assert!(!menu.ids().contains(&TrackRow::SearchRetry));
+    }
+
+    /// One download at a time: while one is on the wire every result and the language row are inert.
+    #[test]
+    fn a_busy_download_makes_the_rows_inert() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, store) = on_search_page(snap(SearchStatus::Ready, None, vec![hit("a"), hit("b")],
+            DownloadPhase::Sending { hit: 0 }));
+        menu.focus_key(TrackRow::SearchHit(1).key().0);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
+        menu.focus_key(TrackRow::SearchLang.key().0);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert, "no language change mid-download");
+    }
+
+    /// Picking a language returns to the Search page and reads "searching" at once, so the old
+    /// language's results never sit under the new language's name.
+    #[test]
+    fn picking_a_language_returns_to_the_search_page_searching_in_it() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, store) =
+            on_search_page(snap(SearchStatus::Ready, None, vec![hit("a")], DownloadPhase::None));
+        menu.focus_key(TrackRow::SearchLang.key().0);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        assert_eq!(menu.page_path(), [TrackPage::Search, TrackPage::SearchLanguage]);
+        let langs = search_languages();
+        assert!(langs.iter().all(|l| l.code.len() == 2), "only codes the server accepts");
+        let fr = langs.iter().position(|l| l.code == "fr").expect("French is offered");
+        menu.focus_key(TrackRow::LangChoice(fr).key().0);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Search(SubSearchCmd::SetLanguage("fr".into())));
+        assert_eq!(menu.page_path(), [TrackPage::Search]);
+        assert_eq!(menu.search().map(|s| s.status), Some(SearchStatus::Searching));
+        assert_eq!(menu.ids(), [TrackRow::SearchLang], "the old results are gone");
+    }
+
+    /// The search rows join the one key alphabet without colliding with any other row.
+    #[test]
+    fn the_search_keys_are_distinct_from_every_other_row() {
+        let mut ids = vec![TrackRow::SubOff, TrackRow::Timing, TrackRow::Style, TrackRow::Boost,
+            TrackRow::Loudness, TrackRow::OpenOther, TrackRow::OpenSearch, TrackRow::SearchLang,
+            TrackRow::SearchRetry];
+        ids.extend((0..300).flat_map(|i| [TrackRow::Sub(i), TrackRow::Audio(i), TrackRow::SearchHit(i),
+            TrackRow::LangChoice(i)]));
+        let keys: Vec<u32> = ids.iter().map(|i| i.key().0).collect();
+        for (n, a) in keys.iter().enumerate() {
+            assert!(*a < BAND_BASE);
+            assert!(!keys[n + 1..].contains(a), "duplicate key {a:#x}");
+        }
+    }
+
+    /// The auto-select hands the installed stream over ONCE — the snapshot is republished every
+    /// frame — as the same sidecar commit a pick on its row makes.
+    #[test]
+    fn an_installed_download_commits_once_as_a_sidecar_pick() {
+        let _g = plx_base::testlock::serial();
+        let installed = DownloadPhase::Installed { hit: 0, stream: plx_data::subsearch::InstalledStream {
+            id: 1929519, key: "/library/streams/1929519".into(), codec: "srt".into(), language_code: "nld".into() } };
+        let waiting = DownloadPhase::Waiting { hit: 0, before: vec![1], attempts: 0 };
+        let (mut menu, _store) = on_search_page(snap(SearchStatus::Ready, None, vec![hit("rel")], waiting));
+        assert!(menu.take_search_commit().is_none(), "nothing installed yet");
+        menu.set_search(snap(SearchStatus::Ready, None, vec![hit("rel")], installed));
+        let (stream, commit) = menu.take_search_commit().expect("the install is handed over");
+        assert_eq!(commit, TrackCommit::Subtitle { render_ordinal: -1, stream_id: 1929519,
+            sidecar_key: Some("/library/streams/1929519".into()), sidecar_codec: "srt".into() });
+        assert!(stream.external && stream.sidecar_renderable(), "listed as a drawable sidecar");
+        assert_eq!((stream.lang.as_str(), stream.title.as_str()), ("Nederlands", "rel"));
+        assert!(menu.take_search_commit().is_none(), "never twice for one stream");
+    }
+
+    /// **Regression (device, 2026-10-04):** after a download, the Subtitles and Audio menus could
+    /// no longer be opened. The store keeps its Installed state for the playing item, and every
+    /// NEW panel saw it, re-committed and dismissed itself on its first tick. Only a panel that
+    /// watched the download in flight may auto-select it.
+    #[test]
+    fn a_panel_opened_after_the_install_never_auto_selects_it_again() {
+        let _g = plx_base::testlock::serial();
+        let installed = DownloadPhase::Installed { hit: 0, stream: plx_data::subsearch::InstalledStream {
+            id: 1929519, key: "/library/streams/1929519".into(), codec: "srt".into(), language_code: "nld".into() } };
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = store_with(vec![metadata::Stream { id: 1, index: 0, lang: "English".into(),
+            lang_code: "eng".into(), codec: "srt".into(), ..Default::default() }]);
+        for tab in [0, 1] {
+            let mut menu = TrackMenuState::new_with(&ps, store.view(), tab, vec!["eng".into()], true);
+            menu.set_search(snap(SearchStatus::Ready, None, vec![hit("rel")], installed.clone()));
+            assert!(menu.take_search_commit().is_none(), "tab {tab}: reopening must not re-commit");
+        }
+    }
+
+    /// **Regression (ultrareview, 2026-10-05):** a result badged SDH/Forced on the Search page lost
+    /// the badge once it landed in the Subtitles list — the listed stream was built with both flags
+    /// defaulted. It carries the hit's own flags, so the row reads the same in both places.
+    #[test]
+    fn an_installed_download_keeps_its_sdh_and_forced_flags() {
+        let _g = plx_base::testlock::serial();
+        let flagged = SubHit { hearing_impaired: true, forced: true, ..hit("rel") };
+        let waiting = DownloadPhase::Waiting { hit: 0, before: vec![1], attempts: 0 };
+        let installed = DownloadPhase::Installed { hit: 0, stream: plx_data::subsearch::InstalledStream {
+            id: 1929519, key: "/library/streams/1929519".into(), codec: "srt".into(), language_code: "nld".into() } };
+        let (mut menu, _store) = on_search_page(snap(SearchStatus::Ready, None, vec![flagged.clone()], waiting));
+        menu.set_search(snap(SearchStatus::Ready, None, vec![flagged], installed));
+        let (stream, _) = menu.take_search_commit().expect("the install is handed over");
+        assert!(stream.sdh && stream.forced, "sdh={} forced={}", stream.sdh, stream.forced);
+    }
+
+    /// The installed subtitle joins the PLAYING item's list, once, and only that item's.
+    #[test]
+    fn an_installed_subtitle_is_appended_to_the_playing_item_once_and_only_there() {
+        let _g = plx_base::testlock::serial();
+        let mut store = store_with(vec![metadata::Stream { id: 1, ..Default::default() }]);
+        let (sid, rk) = { let p = store.view().playing().expect("playing"); (p.sid, p.rk.clone()) };
+        let stream = || metadata::Stream { id: 9, external: true, key: "/library/streams/9".into(),
+            codec: "srt".into(), ..Default::default() };
+        let append = |rk: String| plx_data::stores::metadata::MetadataCmd::AppendPlayingSub { sid, rk, stream: stream() };
+        assert!(store.run(append(rk.clone())));
+        assert!(!store.run(append(rk.clone())), "a repeat is a no-op");
+        assert!(!store.run(append(format!("{rk}-other"))), "another item's landing is dropped");
+        let ids: Vec<i64> = store.view().playing().unwrap().subs.iter().map(|s| s.id).collect();
+        assert_eq!(ids, [1, 9]);
     }
 }

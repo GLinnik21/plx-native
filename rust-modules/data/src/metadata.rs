@@ -2471,6 +2471,19 @@ fn retire_playing_item(state: &mut MetadataState) {
     state.skipped.clear();
 }
 
+/// MAIN THREAD: add one subtitle the server just installed to the playing item. Only for the same
+/// `(sid, rk)` — a landing for an item the viewer has since left is dropped — and only once. The
+/// rest of the leaf (markers, chapters, the skipped set) is left exactly as it was.
+fn append_playing_sub(state: &mut MetadataState, sid: plx_plex::plex::ServerId, rk: &str, stream: Stream) -> bool {
+    let Some(pt) = state.playing.as_mut() else { return false };
+    if !plx_plex::plex::same_item((pt.sid, &pt.rk), (sid, rk)) || pt.subs.iter().any(|s| s.id == stream.id) {
+        return false;
+    }
+    plx_base::eventlog::log(&format!("playing item: rk={rk} gained subtitle stream {}", stream.id));
+    pt.subs.push(stream);
+    true
+}
+
 /// MAIN THREAD: install a fetched playing-item store.
 fn install_playing(state: &mut MetadataState, pt: Option<PlayingItem>) {
     state.skipped.clear(); // a different leaf's markers, so a fresh slate
@@ -2726,6 +2739,26 @@ const LANG_SPELLINGS: &[&[&str]] = &[
     &["zh", "zho", "chi"],
     &["zu", "zul"],
 ];
+
+/// The ISO 639-1 (TWO-letter) spelling of a tag's language, read from the same rows
+/// [`lang_key`] folds by, or `None` when the language has no two-letter code.
+///
+/// **Not [`lang_key`].** That key is the LEXICOGRAPHICALLY smallest spelling of a row — Dutch's
+/// `["nl", "nld", "dut"]` keys to `"dut"` — chosen so grouping is stable, never as a wire format.
+/// The subtitle search needs this one: PMS answers a 3-letter `language` with an HTTP 500
+/// (`docs/pms-api.md` §8), so the code it is sent must be the two-letter spelling.
+pub fn two_letter_code(tag: &str) -> Option<String> {
+    let primary = tag.trim().split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+    if primary.len() == 2 && primary.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return Some(primary);
+    }
+    LANG_SPELLINGS
+        .iter()
+        .filter(|spellings| spellings.contains(&primary.as_str()))
+        .flat_map(|spellings| spellings.iter().copied())
+        .find(|spelling| spelling.len() == 2)
+        .map(str::to_string)
+}
 
 /// **The one canonical spelling of a language tag's LANGUAGE**, the key [`lang_matches`] compares
 /// by: the primary subtag, lower-cased, folded onto the first spelling of its [`LANG_SPELLINGS`]
@@ -3447,6 +3480,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             install_playing(state, p);
             true
         }
+        MetadataCmd::AppendPlayingSub { sid, rk, stream } => append_playing_sub(state, sid, &rk, stream),
         MetadataCmd::MarkSkipped(m) => {
             mark_skipped(state, m);
             true

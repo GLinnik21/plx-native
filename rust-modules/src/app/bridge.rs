@@ -109,6 +109,8 @@ pub(crate) struct AppViews<'a> {
     /// borrowed read handle, shaped like [`plx_data::person::PersonView`]. It still reads the
     /// process-wide `metadata` statics underneath — see `plx_data::metadata::MetadataView`'s doc.
     pub(crate) metadata: plx_data::metadata::MetadataView<'a>,
+    /// The player's subtitle search (`plx_data::subsearch`).
+    pub(crate) subtitle_search: plx_data::subsearch::SubSearchView<'a>,
     /// **The playback session, as this frame's publication** (spec §2.3, phase 9). The Player
     /// machine (`App.player`) owns the value; `Split` can only lend what the RIG owns, so the loop
     /// copies the decisions in once per frame ([`plx_media::route::PlaybackSession::publication`]) and
@@ -130,7 +132,7 @@ impl Bridge {
         AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
-            person: self.stores.person_view(), collection: self.stores.collection_view(), session }
+            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session }
     }
 }
 
@@ -236,6 +238,9 @@ impl plx_screens::registry::PersonLike for AppHost {
 
 impl plx_screens::registry::MetadataLike for AppHost {
     fn metadata<'a>(cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> { cx.views.metadata }
+    fn subtitle_search<'a>(cx: &Cx<'a, Self>) -> Option<plx_data::subsearch::SubSearchView<'a>> {
+        Some(cx.views.subtitle_search)
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1313,7 +1318,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
             },
             measure: &self.measure,
         }
@@ -1344,7 +1349,7 @@ impl Rig<AppHost> for Bridge {
             let publication = self.session.publication();
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
             }, &self.measure);
             let handled = self.session.step(event, &cx, fx);
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
@@ -1415,6 +1420,10 @@ impl Rig<AppHost> for Bridge {
                 self.collection_run(command.clone());
                 return Handled::Yes;
             }
+            AppMsg::Store(StoreCmd::SubtitleSearch(command)) => {
+                self.stores.subtitle_search_run(command.clone());
+                return Handled::Yes;
+            }
             AppMsg::Store(StoreCmd::ViewState(command)) => {
                 self.viewstate_run(command.clone());
                 return Handled::Yes;
@@ -1463,6 +1472,10 @@ impl Rig<AppHost> for Bridge {
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Search { dt_us }) => {
                 self.stores.search_pump(*dt_us as f32 / 1_000_000.0, self.directory.view());
+                Handled::Yes
+            }
+            AppMsg::StoreWork(plx_data::stores::StoreWork::SubtitleSearch) => {
+                self.stores.subtitle_search_pump();
                 Handled::Yes
             }
             _ => Handled::No,
@@ -1669,6 +1682,7 @@ fn step_store(cmd: &StoreCmd, _cx: &Cx<'_, AppHost>, _fx: &mut Effects<'_, AppHo
         StoreCmd::Person(_) => unreachable!("Person is stepped by Bridge's owned store"),
         StoreCmd::Collection(_) => unreachable!("Collection is stepped by Bridge's owned store"),
         StoreCmd::ViewState(_) => unreachable!("ViewState is stepped by Bridge with its Browse owner"),
+        StoreCmd::SubtitleSearch(_) => unreachable!("SubtitleSearch is stepped by Bridge's owned store"),
     }
 }
 
