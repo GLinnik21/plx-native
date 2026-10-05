@@ -122,8 +122,8 @@ make TV=<ip> test     # deploy + run
 ```
 
 Skip the install and `deploy` stops with *"the debug flavour is not installed"* rather than
-half-working. Drop the address into a gitignored `.tv-host` (one line, an IP or hostname) and you
-can leave `TV=<ip>` off every command. Ask `make -s print-appid print-appdir print-rundir
+half-working. Drop the address into `~/.config/plxnative/tv-host` (one line, an IP or hostname; a per-checkout
+`.tv-host` also works and wins) and you can leave `TV=<ip>` off every command, in every worktree. Ask `make -s print-appid print-appdir print-rundir
 FLAVOR=<f>` when you need to know where a given flavour's binary, logs and dev triggers live.
 
 ## Tests

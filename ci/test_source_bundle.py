@@ -213,6 +213,17 @@ class BundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'private path'):
             self.check()
 
+    def test_per_user_tv_config_files_are_private_paths(self):
+        # `.tv-host`/`.tv-mac` and their per-user twins (`~/.config/plxnative/tv-host`, `tv-mac`,
+        # read by tools/tv-config.sh) hold the maintainer's home network: neither spelling may ship.
+        for name in ('.tv-host', '.tv-mac', 'tools/plxnative/tv-host', 'tools/plxnative/tv-mac'):
+            with self.subTest(name=name):
+                self.contents[name] = b'192.0.2.1\n', 0o644
+                self.refresh()
+                with self.assertRaisesRegex(ValueError, 'private path'):
+                    self.check()
+                del self.contents[name]
+
     def nested_archive(self, *, link=None, secret=False):
         out = io.BytesIO()
         with tarfile.open(fileobj=out, mode='w:gz') as archive:

@@ -79,7 +79,7 @@
 # not our SDL/wayland path — hence the in-app FIFO.
 #
 # Environment overrides (same as capture-screen.sh):
-#     TV_HOST (default: the gitignored .tv-host)  TV_USER (root)  TV_PASS (alpine)
+#     TV_HOST (default: tools/tv-config.sh -- .tv-host, else ~/.config/plxnative/tv-host)  TV_USER (root)  TV_PASS (alpine)
 #
 # Auth: tools/tv-ssh -- the SSH key first; `sshpass -p $TV_PASS` only if the set refuses the key.
 # Stop with Ctrl-C. Requires: python3 (stdlib only), ssh; sshpass only if no key.
@@ -87,14 +87,13 @@
 import argparse, base64, functools, hashlib, os, re, shlex, signal, socket, subprocess, sys, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import tv_config
+
 def _default_tv_host():
-    """The TV's address, from the gitignored .tv-host beside the Makefile — the same file
-    `make TV=` falls back to, so the repository carries no home-network address of its own."""
-    try:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".tv-host")) as f:
-            return f.read().strip()
-    except OSError:
-        return ""
+    """The TV's address from tools/tv-config.sh (this checkout's gitignored .tv-host, the main
+    checkout's, then the per-user ~/.config/plxnative/tv-host) — the same lookup `make TV=` falls
+    back to, so the repository carries no home-network address of its own."""
+    return tv_config.host()
 
 
 TV_HOST = os.environ.get("TV_HOST") or _default_tv_host()
@@ -122,7 +121,7 @@ def make_query(goals: tuple, flavour: str = "") -> tuple:
     fires), and one make start-up is cheaper than one per value.
 
     NEVER `make -p`/`make -pn` for this. That prints a recursive variable's UNEXPANDED
-    DEFINITION, so TV comes back as the literal `$(strip $(shell cat .tv-host …))` and
+    DEFINITION, so TV comes back as the literal `$(strip $(shell tools/tv-config.sh host …))` and
     every ssh built from it fails against a perfectly live television. These print-
     targets are real echo recipes and cannot do that.
     """

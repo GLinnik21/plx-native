@@ -85,18 +85,13 @@ fmt_dur() {  # seconds -> "1h 04m" / "7m 12s" / "9s"
 }
 
 # ------------------------------------------------------------------- the TV ---
-# Resolution order ends in a fallback the rest of the repo does not have, and it matters here more
-# than anywhere: `.tv-host` is gitignored, so a LINKED WORKTREE has none — and worktrees are where
-# the parallel agents live. Without this, the one lane most likely to collide is also the only one
-# that cannot ask who holds the set.
+# $TV, $TV_HOST, then tools/tv-config.sh: this checkout's `.tv-host`, the main checkout's, then the
+# per-user `tv-host`. The last two matter here more than anywhere: `.tv-host` is gitignored, so a
+# LINKED WORKTREE has none — and worktrees are where the parallel agents live. Without them, the one
+# lane most likely to collide is also the only one that cannot ask who holds the set.
 resolve_tv() {
   local h="${TV:-${TV_HOST:-}}"
-  [ -n "$h" ] || h="$(cat "$REPO/.tv-host" 2>/dev/null)"
-  if [ -z "$h" ]; then
-    local common; common="$(git -C "$REPO" rev-parse --git-common-dir 2>/dev/null)"
-    [ -n "$common" ] && h="$(cat "$common/../.tv-host" 2>/dev/null)"
-  fi
-  [ -n "$h" ] || h="$(make -s -C "$REPO" print-tv 2>/dev/null | head -1)"
+  [ -n "$h" ] || h="$("$REPO/tools/tv-config.sh" host 2>/dev/null)"
   printf '%s' "$(printf '%s' "$h" | tr -d ' \t\n\r')"
 }
 HOST="$(resolve_tv)"
@@ -275,7 +270,7 @@ new_token() {
 
 need_host() {
   [ -n "$HOST" ] && return 0
-  bad "no TV configured — put its IP in .tv-host, or pass TV=<ip>"
+  bad "no TV configured — put its IP in ~/.config/plxnative/tv-host (or .tv-host), or pass TV=<ip>"
   return 1
 }
 

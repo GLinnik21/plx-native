@@ -202,8 +202,9 @@ nothing — no television, no PMS, no plex.tv — but it **lists the tier you di
 `--list` prints the synthetic matrix, and the library cases with their SKIP reasons appear only
 under `--list --server`. `run.py` prints two different tables on purpose, because the two matrices
 share no key (a `fixture` and a `declare` on one side, an `item`/`rk` on the other). It also still
-needs a TV **address** — `.tv-host`, the overlay's `tv`, or `--tv` — which it never dials; with none
-of the three it exits saying so.
+needs a TV **address** — the overlay's `tv`, `--tv`, or the shared lookup (`tools/tv-config.sh host`:
+the `.tv-host` files, then `~/.config/plxnative/tv-host`) — which it never dials; it exits saying so
+only when none of those yields one.
 
 **And the guard hook refuses it.** `.claude/hooks/tv-lock-guard.py` classifies by COMMAND WORD, so
 `./tests/run.py --list` is blocked exactly like a real run (verified 2026-08-23 by feeding the hook

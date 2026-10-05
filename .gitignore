@@ -62,7 +62,9 @@ rust-poc/
 .abi-cache/
 .tv-mac
 # which television this working copy talks to (Makefile TV, tools/ TV_HOST) — one line, an IP or
-# hostname. Local because it is the maintainer's home network, not a project fact.
+# hostname. Local because it is the maintainer's home network, not a project fact. It is only the
+# per-checkout OVERRIDE: tools/tv-config.sh also reads ~/.config/plxnative/tv-host (and tv-mac), the
+# once-per-machine home for these that every worktree shares.
 .tv-host
 .tv-stream.pid
 .tv-stream.log

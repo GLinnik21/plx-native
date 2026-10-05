@@ -82,7 +82,9 @@ has no editor, so `git commit` with no `-m` hangs or fails rather than committin
 WHAT IT MATCHES. Two halves, and they fail in opposite directions on purpose.
 
 (a) LITERAL VALUES, read at the moment the hook runs out of the gitignored files that hold them —
-    `.tv-host` (the dev television's address), `.tv-mac` (its Wake-on-LAN MAC), `src/config.local.h`
+    `.tv-host` (the dev television's address), `.tv-mac` (its Wake-on-LAN MAC) — and their per-user
+    twins `tv-host`/`tv-mac` under `${PLX_TV_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/plxnative}`,
+    which tools/tv-config.sh reads so that every worktree shares one copy — `src/config.local.h`
     (`PMS_HOST`/`PMS_TOKEN`, the real Plex owner token), `tests/manifest.local.json` (PMS host, the
     test user's plex.tv id, this library's ratingKeys, and the shared_server block when there is
     one), `pkg/auth.json` (the persisted session: `account_token` and each source's per-server
@@ -226,6 +228,13 @@ PRIVATE_FILES = (
     ".tv-remote-url",
 )
 
+# The per-USER copies of `.tv-host` / `.tv-mac` (tools/tv-config.sh): one set of files per machine
+# instead of one per checkout, under ${PLX_TV_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/plxnative}.
+# They sit OUTSIDE every checkout, so they cannot be named relative to `root` like PRIVATE_FILES;
+# `private_paths` adds them. Same values, same rule: the address and MAC are the maintainer's home
+# network, and `cat ~/.config/plxnative/tv-host` must be as refused in a payload as `cat .tv-host`.
+USER_TV_FILES = ("tv-host", "tv-mac")
+
 # Gitignored DIRECTORIES whose every descendant is private (restructure spec §5.6 rule 1): a
 # recording taken against a real server carries the household's every keypress and every server
 # answer. Matched by path COMPONENT wherever the directory sits (the runtime root on the set, a
@@ -294,6 +303,31 @@ def _walk_json(out, node, path, origin):
         _add(out, "%s (%s)" % (path, origin), node)
 
 
+def user_config_dir():
+    """The per-user TV config directory; the same rule as `tools/tv-config.sh dir` (ci/test_tv_config.py
+    pins the two equal). "" when HOME is unset and nothing overrides it."""
+    d = os.environ.get("PLX_TV_CONFIG_DIR")
+    if d:
+        return d
+    x = os.environ.get("XDG_CONFIG_HOME")
+    if x:
+        return os.path.join(x, "plxnative")
+    h = os.environ.get("HOME")
+    return os.path.join(h, ".config", "plxnative") if h else ""
+
+
+def private_paths(root):
+    """[(label, absolute path)] of every file that holds a private value: the gitignored ones under
+    `root`, then the per-user TV files (labelled `plxnative/<name>`, which is how they read in a
+    refusal)."""
+    out = [(rel, os.path.join(root, rel)) for rel in PRIVATE_FILES]
+    d = user_config_dir()
+    if d:
+        out += [("plxnative/" + n + " (the per-user TV config)", os.path.join(d, n))
+                for n in USER_TV_FILES]
+    return out
+
+
 def load_secrets(root):
     """[(label, value)] read from the gitignored files under `root`. Missing files are skipped.
 
@@ -301,8 +335,7 @@ def load_secrets(root):
     directory of FAKE secrets — no real value belongs in a tracked test file.
     """
     out = []
-    for rel in PRIVATE_FILES:
-        path = os.path.join(root, rel)
+    for rel, path in private_paths(root):
         try:
             if not os.path.isfile(path) or os.path.getsize(path) > MAX_READ:
                 continue
@@ -945,7 +978,7 @@ def named_private_paths(seg, root, cwd):
     already graded outbound.
     """
     hits, seen = [], set()
-    targets = {os.path.realpath(os.path.join(root, rel)): rel for rel in PRIVATE_FILES}
+    targets = {os.path.realpath(path): rel for rel, path in private_paths(root)}
 
     def look(text, how, skip_after):
         prev = None
@@ -960,6 +993,8 @@ def named_private_paths(seg, root, cwd):
                 t = t.split("@", 1)[1]  # curl's `-F body=@file`
             if not t or t.startswith("-"):
                 continue
+            if t.startswith("~") or "$" in t:
+                t = os.path.expandvars(os.path.expanduser(t))   # ~/.config/... and $HOME/... name the user files
             rp = os.path.realpath(t if os.path.isabs(t) else os.path.join(cwd, t))
             rel = targets.get(rp)
             if rel and rel not in seen:
@@ -1055,7 +1090,7 @@ def verdict(cmd, root, cwd=None, secrets=None, published=None):
     for seg, reason, bodies in graded:
         hits = []
         for rel, how in named_private_paths(seg, root, cwd):
-            hits.append(("%s, which is gitignored because it holds private values" % rel,
+            hits.append(("%s, which holds private values (gitignored, or kept outside the repo)" % rel,
                          how, "the command line"))
         for where, text in payload_parts(seg, bodies, cwd):
             for what, how in findings(text, secrets, published):
@@ -1136,7 +1171,8 @@ def main():
         "and tests/manifest.local.json.example uses `<pms-host>`, `<tv-host>`, `<ratingKey>`.\n"
         "\n"
         "If the reader genuinely needs the real value, name the gitignored FILE it comes from\n"
-        "(.tv-host, src/config.local.h, tests/manifest.local.json) and let them read their own copy.\n"))
+        "(.tv-host, ~/.config/plxnative/tv-host, src/config.local.h, tests/manifest.local.json) and let\n"
+        "them read their own copy.\n"))
     return 2
 
 

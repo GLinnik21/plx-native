@@ -58,7 +58,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   make a task easier.
 - This repository is public. Never publish values from gitignored private files such as `.tv-host`,
   `.tv-mac`, `src/config.local.h`, `tests/manifest.local.json`, `pkg/auth.json`, `pkg/lab.json`, or
-  the other paths enumerated by `.claude/hooks/outbound-guard.py`. Use the documented placeholders.
+  the other paths enumerated by `.claude/hooks/outbound-guard.py` — including the per-user copies of
+  the TV address and MAC, `~/.config/plxnative/tv-host` and `tv-mac` (the files a worktree reads;
+  see `docs/agent-reference.md`). Use the documented placeholders.
 - webOS native behavior is under-documented. When an answer depends on platform behavior, verify it
   from primary documentation, vendored source, firmware inventories, or the device binaries; do not
   infer behavior from a symbol name or from a webOS web-app example.

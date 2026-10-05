@@ -8,9 +8,12 @@
 #   wake-tv.sh status     one reachability probe, prints UP/DOWN.  Exit 0 = up.
 #
 # Config resolution (nothing about your network is baked into this file):
-#   TV_HOST — $TV_HOST, else $TV, else the Makefile's TV default.
-#   TV_MAC  — $TV_MAC, else the gitignored .tv-mac cache, else looked up from the ARP
-#             table while the TV is reachable and cached there for next time.
+#   TV_HOST — $TV_HOST, else $TV, else tools/tv-config.sh (this checkout's .tv-host, the main
+#             checkout's, then the per-user ~/.config/plxnative/tv-host).
+#   TV_MAC  — $TV_MAC, else tools/tv-config.sh (.tv-mac of this checkout, of the main checkout, then
+#             the per-user ~/.config/plxnative/tv-mac), else looked up from the ARP table while
+#             the TV is reachable and written to the PER-USER tv-mac for next time -- never into
+#             the checkout, so every worktree benefits and a sleeping TV can still be woken.
 #   TV_USER (root)  WAKE_TIMEOUT (180 s)
 #
 # Notes from live use (see SKILL.md Gotchas):
@@ -23,35 +26,30 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-MAC_CACHE="$REPO/.tv-mac"
+TVCONFIG="$REPO/tools/tv-config.sh"
 
-# Host: explicit env wins, else the gitignored .tv-host — the same file the Makefile's TV and
-# tools/' TV_HOST fall back to, so there is one place to change and none of it is in the repo.
+# Host: explicit env wins, else tools/tv-config.sh — the one lookup the Makefile's TV and every tool
+# in tools/ share, so there is one place to change and none of it is in the repo.
 # NB this used to scrape `TV = …` out of `make -pn`, which broke the moment TV stopped being a
 # literal: `make -p` prints a recursive variable's UNEXPANDED DEFINITION, so the scrape returned
-# the `$(shell cat .tv-host)` text and the wake failed with a DNS error that read like the TV was
-# gone. The last-resort ask is now `make -s print-tv`, a real echo recipe that prints the expanded
-# value and cannot regress that way (and is exempt from the Makefile's parse-time configuration
-# stamp, so asking cannot delete a build).
+# the `$(shell …)` text and the wake failed with a DNS error that read like the TV was gone.
 TV_HOST="${TV_HOST:-${TV:-}}"
-[ -n "$TV_HOST" ] || TV_HOST="$(cat "$REPO/.tv-host" 2>/dev/null || true)"
-[ -n "$TV_HOST" ] || TV_HOST="$(make -s -C "$REPO" print-tv 2>/dev/null | head -1)"
-[ -n "$TV_HOST" ] || { echo "ERROR: no TV host — put its IP in .tv-host, or set TV_HOST=<ip>." >&2; exit 2; }
+[ -n "$TV_HOST" ] || TV_HOST="$("$TVCONFIG" host 2>/dev/null || true)"
+[ -n "$TV_HOST" ] || { echo "ERROR: no TV host — put its IP in ~/.config/plxnative/tv-host (or .tv-host), or set TV_HOST=<ip>." >&2; exit 2; }
 
 TV_USER="${TV_USER:-root}"
 WAKE_TIMEOUT="${WAKE_TIMEOUT:-180}"
 
-# MAC (needed only for the magic packet): env -> cache -> ARP while the TV is up.
+# MAC (needed only for the magic packet): env -> the files -> ARP while the TV is up.
 TV_MAC="${TV_MAC:-}"
-[ -n "$TV_MAC" ] && [ -f "$MAC_CACHE" ] || true
-[ -n "$TV_MAC" ] || TV_MAC="$(cat "$MAC_CACHE" 2>/dev/null || true)"
+[ -n "$TV_MAC" ] || TV_MAC="$("$TVCONFIG" mac 2>/dev/null || true)"
 learn_mac() {
   # normalize the ARP form (a:b:c:1:2:3) to zero-padded octets
   local m
   m="$(arp -n "$TV_HOST" 2>/dev/null | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' | head -1)" || true
   [ -n "$m" ] || return 1
   m="$(python3 -c "import sys;print(':'.join(f'{int(x,16):02x}' for x in sys.argv[1].split(':')))" "$m")"
-  printf '%s' "$m" > "$MAC_CACHE"
+  "$TVCONFIG" set-mac "$m" || true   # the per-user cache (mode 600), shared by every checkout
   TV_MAC="$m"
 }
 
@@ -106,7 +104,7 @@ case "${1:-wake}" in
     if [ -z "$TV_MAC" ]; then
       echo "ERROR: no MAC for the magic packet, and the TV is unreachable so it cannot be" >&2
       echo "       learned from ARP. Set TV_MAC=<aa:bb:cc:dd:ee:ff> once (it is then cached" >&2
-      echo "       in .tv-mac), or wake the TV by hand and re-run to cache it." >&2
+      echo "       in ~/.config/plxnative/tv-mac), or wake the TV by hand and re-run to cache it." >&2
       exit 2
     fi
     echo "Waking the TV..."
