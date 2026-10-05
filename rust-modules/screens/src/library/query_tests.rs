@@ -37,6 +37,17 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
         QueryEdit::Genre(Some("g1".into())),
     ] {
         for evict in [false, true] {
+            // Every edit is remembered per profile now (#441), and this session outlives the
+            // iteration: a section built after an Unwatched edit would open with Unwatched
+            // already on and the next one would change nothing. Each case starts from a library
+            // nobody has changed. The previous iteration's write is a queued storage-worker job,
+            // so let it land before the record is cleared under it.
+            plx_base::storage_worker::drain_for_test();
+            plx_plex::plex::session::update(|current| {
+                let mut next = current.clone();
+                next.library_views.clear();
+                Some(next)
+            });
             let mut fixture = Fixture::new();
             let stores = plx_data::stores::Stores::default();
             stores.browse.borrow_mut().seed_two_source_table_for_test();

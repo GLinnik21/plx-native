@@ -510,25 +510,33 @@ pub struct Session {
     /// entry, never the credentials.
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub last_library: Vec<LastLibrary>,
-    /// **The sort each library was last browsed in**, per profile — so a library the viewer
-    /// sorted by Plays (or Date Added, or anything else its server offers) opens that way again
-    /// after a restart instead of falling back to the server's title order (GitHub #278).
+    /// **How each library was last browsed**, per profile — the sort and its direction, the
+    /// Unwatched switch, the genre and the listing type (Movies / Collections, Shows / Seasons /
+    /// Episodes / Collections) — so a library the viewer sorted by Plays, narrowed to Unwatched
+    /// Action films and left there opens that way again after a restart instead of falling back
+    /// to the server's title order with every filter off (GitHub #278 for the sort, #441 for the
+    /// rest).
     ///
-    /// Keyed like [`Session::last_library`] and for its reasons: by profile, because a sort is a
+    /// **Stored on disk as `library_sorts`**, the name it had when it held only the sort: the key
+    /// is what an older build reads back on a rollback, so it stays ([`Session::home_pins`] set
+    /// the precedent) and each entry grows fields beside the old ones instead of replacing them.
+    ///
+    /// Keyed like [`Session::last_library`] and for its reasons: by profile, because a view is a
     /// person's habit rather than the television's, and by (machine id, section key), never a
     /// section INDEX. The sort is recorded by its KEY, never by its menu position: the menu is
     /// the server's (`Meta.Type[].Sort`) and a PMS update may reorder it. `browse` applies a
-    /// recorded key only once the section's own menu has offered it again, so a key a server
-    /// stopped advertising falls silently back to the default rather than being sent blind.
+    /// recorded sort or genre only once the server has offered it again, so one a server stopped
+    /// advertising falls silently back to the default rather than being sent blind.
     ///
-    /// Bounded per profile ([`LibrarySorts::CAP`], most recent kept), and choosing a library's
-    /// DEFAULT order removes its entry rather than recording it, so the list holds only the
-    /// libraries somebody actually re-sorted.
+    /// Bounded per profile ([`LibraryViews::CAP`], most recent kept), and choosing a library's
+    /// DEFAULT view back removes its entry rather than recording it, so the list holds only the
+    /// libraries somebody actually changed.
     ///
     /// Soft-parsed for the reason every list in this struct is; omitted while empty so a session
-    /// that never re-sorted anything serializes exactly as it did before the field existed.
-    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
-    pub library_sorts: Vec<LibrarySorts>,
+    /// that never changed a view serializes exactly as it did before the field existed.
+    #[serde(rename = "library_sorts", default, deserialize_with = "de_soft_vec",
+        skip_serializing_if = "Vec::is_empty")]
+    pub library_views: Vec<LibraryViews>,
     /// **The sync-timing correction a profile last tuned for an item**, per profile, keyed by
     /// (machine id, ratingKey) — never a track id: within one playback a track CHANGE still zeros
     /// the live offset (`route::commit_subtitle_selection`'s own doc), so by the time this is
@@ -537,7 +545,7 @@ pub struct Session {
     /// is about a single live playback (never persisted whole, on purpose — see
     /// `session_compat_tests::the_session_file_carries_no_subtitle_offset`), while this is a
     /// per-item memory a profile builds up across resumes of the SAME file, the same way
-    /// [`Session::library_sorts`] remembers a per-library habit.
+    /// [`Session::library_views`] remembers a per-library habit.
     ///
     /// Bounded per profile ([`SubtitleOffsets::CAP`], most recent kept), and setting the offset
     /// back to Original (0) forgets the entry rather than recording a no-op correction.
@@ -724,8 +732,9 @@ struct CanonicalSessionPreferences {
     auto_sign_in: bool,
     #[serde(default, deserialize_with = "de_soft_vec")]
     last_library: Vec<LastLibrary>,
-    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
-    library_sorts: Vec<LibrarySorts>,
+    #[serde(rename = "library_sorts", default, deserialize_with = "de_soft_vec",
+        skip_serializing_if = "Vec::is_empty")]
+    library_views: Vec<LibraryViews>,
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     subtitle_offsets: Vec<SubtitleOffsets>,
     #[serde(default, deserialize_with = "de_soft_hero_blur")]
@@ -772,7 +781,7 @@ impl Default for CanonicalSessionPreferences {
             direct_play_mode: DirectPlayMode::Auto,
             auto_sign_in: false,
             last_library: Vec::new(),
-            library_sorts: Vec::new(),
+            library_views: Vec::new(),
             subtitle_offsets: Vec::new(),
             last_hero_blur: None,
             trailer_autoplay: true,
@@ -824,7 +833,7 @@ fn split_public(session: &Session) -> Result<plx_platform::storage::state::Publi
         direct_play_mode: session.direct_play_mode,
         auto_sign_in: session.auto_sign_in,
         last_library: session.last_library.clone(),
-        library_sorts: session.library_sorts.clone(),
+        library_views: session.library_views.clone(),
         subtitle_offsets: session.subtitle_offsets.clone(),
         last_hero_blur: session.last_hero_blur,
         trailer_autoplay: session.trailer_autoplay,
@@ -898,7 +907,7 @@ pub fn join_canonical(
         direct_play_mode: preferences.direct_play_mode,
         auto_sign_in: preferences.auto_sign_in,
         last_library: preferences.last_library,
-        library_sorts: preferences.library_sorts,
+        library_views: preferences.library_views,
         subtitle_offsets: preferences.subtitle_offsets,
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
@@ -931,7 +940,7 @@ fn public_session(public: &plx_platform::storage::state::PublicPayload) -> Sessi
         direct_play_mode: preferences.direct_play_mode,
         auto_sign_in: preferences.auto_sign_in,
         last_library: preferences.last_library,
-        library_sorts: preferences.library_sorts,
+        library_views: preferences.library_views,
         subtitle_offsets: preferences.subtitle_offsets,
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
@@ -1926,69 +1935,143 @@ impl LastLibrary {
     }
 }
 
-/// One profile's remembered library sorts. See [`Session::library_sorts`].
+/// One profile's remembered library views. See [`Session::library_views`].
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
-pub struct LibrarySorts {
+pub struct LibraryViews {
     /// The Plex Home user's `uuid`, or **empty for the account owner** — [`LastLibrary`]'s
     /// convention, and for the same reason.
     pub user: String,
-    /// Oldest first: [`LibrarySorts::set`] moves a re-sorted library to the end, and the cap
+    /// Oldest first: [`LibraryViews::set`] moves a re-viewed library to the end, and the cap
     /// drops from the front.
     #[serde(deserialize_with = "de_soft_vec")]
-    pub libs: Vec<SectionSort>,
+    pub libs: Vec<LibraryView>,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub extensions: OpaqueExtensions,
 }
 
-/// One library's remembered sort: the section, the server's own sort KEY (`titleSort`,
-/// `addedAt`, the client-side `viewCount`) and its direction.
+/// Everything one person chose in one library's view: the section, and what the Library screen's
+/// toolbar changed about it.
+///
+/// `machine_id`, `key`, `sort` and `desc` are the entry's ORIGINAL fields, always written, so an
+/// older build reads the sort back from a file this one wrote; every field added since is omitted
+/// while it is at its default, which makes a sort-only entry serialize byte for byte as it did
+/// before this record held more than the sort.
+///
+/// The library has two sorts to keep because it has two listings: `sort`/`desc` belong to its OWN
+/// listing (Movies, or TV Shows) and `listing_sort`/`listing_desc` to the listing named by
+/// `listing` when that is not the library's own. They are separate so the library's own sort
+/// survives a visit to Collections — returning to the own listing within a session re-applies it.
+/// A genre is a filter of the library's own listing only (it names one metadata type's menu), so
+/// it is never recorded for another listing.
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
-pub struct SectionSort {
+pub struct LibraryView {
     pub machine_id: String,
     pub key: i64,
+    /// The own listing's sort KEY (`titleSort`, `addedAt`, the client-side `viewCount`); empty =
+    /// the menu's first entry. Always serialized: it is the legacy field.
     pub sort: String,
+    /// The own listing's direction. Always serialized, like `sort`.
     pub desc: bool,
+    /// The Unwatched switch.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unwatched: bool,
+    /// The genre filter's tag id (the server's `genre` directory key), own listing only; empty =
+    /// no genre.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub genre: String,
+    /// The listing type shown, by the wire word `browse` gives it: empty = the library's own
+    /// listing, else `seasons`, `episodes` or `collections` ([`LibraryView::LISTINGS`]).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub listing: String,
+    /// The sort key of the listing `listing` names; empty = that listing's default order.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub listing_sort: String,
+    /// The direction of `listing_sort`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub listing_desc: bool,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub extensions: OpaqueExtensions,
 }
 
-impl LibrarySorts {
-    /// Libraries remembered per profile. A household re-sorts a handful; the cap exists so a
+impl LibraryView {
+    /// The `listing` words a record may carry. Anything else is not a listing this build knows.
+    const LISTINGS: [&'static str; 3] = ["seasons", "episodes", "collections"];
+
+    /// The own listing's remembered sort as `(sort key, descending)`, `None` when it is the
+    /// default order.
+    pub fn primary_sort(&self) -> Option<(&str, bool)> {
+        (!self.sort.is_empty()).then_some((self.sort.as_str(), self.desc))
+    }
+    /// The named listing's remembered sort as `(sort key, descending)`, `None` when it is that
+    /// listing's default order.
+    pub fn listing_sort(&self) -> Option<(&str, bool)> {
+        (!self.listing_sort.is_empty()).then_some((self.listing_sort.as_str(), self.listing_desc))
+    }
+    /// Does this view say nothing a fresh library would not? Such a view is forgotten rather than
+    /// recorded. Judges the CONTENT: which library it is says nothing, and an entry carrying
+    /// fields only a newer build understands is never "nothing".
+    pub fn is_default(&self) -> bool {
+        self.sort.is_empty() && !self.desc && !self.unwatched && self.genre.is_empty()
+            && self.listing.is_empty() && self.listing_sort.is_empty() && !self.listing_desc
+            && self.extensions.is_empty()
+    }
+    /// This view with every field a record may not carry dropped back to its default: a sort
+    /// longer than [`LibraryViews::MAX_SORT`], a genre longer than [`LibraryViews::MAX_GENRE`], a
+    /// listing that is not one of [`LibraryView::LISTINGS`].
+    pub fn sanitized(mut self) -> Self {
+        if self.sort.len() > LibraryViews::MAX_SORT {
+            self.sort.clear();
+            self.desc = false;
+        }
+        if self.listing_sort.len() > LibraryViews::MAX_SORT {
+            self.listing_sort.clear();
+            self.listing_desc = false;
+        }
+        if self.genre.len() > LibraryViews::MAX_GENRE {
+            self.genre.clear();
+        }
+        if !self.listing.is_empty() && !Self::LISTINGS.contains(&self.listing.as_str()) {
+            self.listing.clear();
+            self.listing_sort.clear();
+            self.listing_desc = false;
+        }
+        self
+    }
+}
+
+impl LibraryViews {
+    /// Libraries remembered per profile. A household changes a handful; the cap exists so a
     /// television that has browsed many shares over the years cannot grow the public payload
-    /// (256 KiB for everything, `storage::state`) without bound — ~90 bytes an entry, so a full
-    /// list is ~2 KiB per profile.
+    /// (256 KiB for everything, `storage::state`) without bound — ~200 bytes an entry at its
+    /// fullest, so a full list is ~5 KiB per profile.
     pub const CAP: usize = 24;
     /// Longest sort key recorded. Real keys are a few words (`show.titleSort,episode.index` is
     /// the longest PMS advertises); anything longer is not a key worth carrying across restarts.
     const MAX_SORT: usize = 96;
+    /// Longest genre id recorded. A genre's `key` is a tag id — a number or a short slug.
+    const MAX_GENRE: usize = 64;
 
-    /// This profile's remembered sort for one library, as `(sort key, descending)`.
-    pub fn get(&self, machine_id: &str, key: i64) -> Option<(&str, bool)> {
+    /// This profile's remembered view of one library, if it ever changed it. `None` for a library
+    /// with no machine id, which is never recorded.
+    pub fn get(&self, machine_id: &str, key: i64) -> Option<&LibraryView> {
         if machine_id.is_empty() {
             return None;
         }
         self.libs.iter().find(|lib| lib.machine_id == machine_id && lib.key == key)
-            .map(|lib| (lib.sort.as_str(), lib.desc))
     }
-    /// Record a library's sort as the most recent, or FORGET it with `None` (the viewer went
-    /// back to the default order, which needs no record to be restored). Evicts the oldest
-    /// entries past [`CAP`](Self::CAP). A library with no machine id is never recorded — for
-    /// [`LastLibrary::set`]'s reason — and neither is an empty or oversized key.
-    pub fn set(&mut self, machine_id: &str, key: i64, sort: Option<(&str, bool)>) {
-        self.libs.retain(|lib| !(lib.machine_id == machine_id && lib.key == key));
-        let Some((sort, desc)) = sort else { return };
-        if machine_id.is_empty() || sort.is_empty() || sort.len() > Self::MAX_SORT {
+    /// Record a library's view as the most recent. The library's previous entry is replaced; a
+    /// view that is the DEFAULT once sanitized records nothing, which is how choosing everything
+    /// back FORGETS the entry. Evicts the oldest entries past [`CAP`](Self::CAP). A library with
+    /// no machine id is never recorded — for [`LastLibrary::set`]'s reason.
+    pub fn set(&mut self, view: LibraryView) {
+        self.libs.retain(|lib| !(lib.machine_id == view.machine_id && lib.key == view.key));
+        let view = view.sanitized();
+        if view.machine_id.is_empty() || view.is_default() {
             return;
         }
-        self.libs.push(SectionSort {
-            machine_id: machine_id.to_string(),
-            key,
-            sort: sort.to_string(),
-            desc,
-            extensions: Default::default(),
-        });
+        self.libs.push(view);
         let excess = self.libs.len().saturating_sub(Self::CAP);
         self.libs.drain(..excess);
     }
@@ -2023,7 +2106,7 @@ pub struct SubtitleOffsetEntry {
 
 impl SubtitleOffsets {
     /// A household corrects a handful of mistimed files; the cap keeps the public payload bounded
-    /// the same way [`LibrarySorts::CAP`] does, for the same reason.
+    /// the same way [`LibraryViews::CAP`] does, for the same reason.
     pub const CAP: usize = 24;
 
     /// This profile's remembered correction for one item, if it ever tuned one.
@@ -2787,25 +2870,25 @@ impl Session {
         }
     }
 
-    /// One profile's remembered library sorts — `None` for a profile that never re-sorted one.
-    pub fn sorts_for(&self, user: &str) -> Option<&LibrarySorts> {
-        self.library_sorts.iter().find(|sorts| sorts.user == user)
+    /// One profile's remembered library views — `None` for a profile that never changed one.
+    pub fn views_for(&self, user: &str) -> Option<&LibraryViews> {
+        self.library_views.iter().find(|views| views.user == user)
     }
 
-    /// Record (or, with `None`, forget) one library's sort for one profile, leaving every other
-    /// profile's alone — a method for [`Session::set_recents_for`]'s reason. A profile whose
-    /// last entry is forgotten loses its record entirely, so the list never carries empties.
-    pub fn set_sort_for(&mut self, user: &str, machine_id: &str, key: i64,
-        sort: Option<(&str, bool)>) {
-        match self.library_sorts.iter_mut().find(|sorts| sorts.user == user) {
-            Some(slot) => slot.set(machine_id, key, sort),
+    /// Record one library's view for one profile (a view that is the default forgets the entry —
+    /// [`LibraryViews::set`]), leaving every other profile's alone — a method for
+    /// [`Session::set_recents_for`]'s reason. A profile whose last entry is forgotten loses its
+    /// record entirely, so the list never carries empties.
+    pub fn set_view_for(&mut self, user: &str, view: LibraryView) {
+        match self.library_views.iter_mut().find(|views| views.user == user) {
+            Some(slot) => slot.set(view),
             None => {
-                let mut fresh = LibrarySorts { user: user.to_string(), ..Default::default() };
-                fresh.set(machine_id, key, sort);
-                self.library_sorts.push(fresh);
+                let mut fresh = LibraryViews { user: user.to_string(), ..Default::default() };
+                fresh.set(view);
+                self.library_views.push(fresh);
             }
         }
-        self.library_sorts.retain(|sorts| !sorts.libs.is_empty());
+        self.library_views.retain(|views| !views.libs.is_empty());
     }
 
     /// One profile's remembered subtitle sync-timing correction for one item, `None` for a
@@ -2816,7 +2899,7 @@ impl Session {
     }
 
     /// Record (or, with `None`, forget) one item's subtitle offset for one profile, leaving every
-    /// other profile's alone — [`Session::set_sort_for`]'s reason. A profile whose last entry is
+    /// other profile's alone — [`Session::set_view_for`]'s reason. A profile whose last entry is
     /// forgotten loses its record entirely, so the list never carries empties.
     pub fn set_subtitle_offset_for(&mut self, user: &str, machine_id: &str, rating_key: &str, offset_ms: Option<i64>) {
         match self.subtitle_offsets.iter_mut().find(|o| o.user == user) {
