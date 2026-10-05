@@ -23,7 +23,9 @@ ROOT_DIRS = {'src', 'include', 'rust-modules', 'assets', 'ci', 'tools', 'docs', 
 PKG_FILES = {'OFL.txt', 'appfont.ttf', 'appfont-bold.ttf', 'appfont-cjk.ttf', 'le-roots.pem',
              'appinfo.json', 'icon.png', 'icon160.png', 'icon320.png', 'icon400.png',
              'largeIcon.png', 'splash.png', 'telemetry.local.json.example'}
-PRIVATE_NAMES = {'.tv-host', '.tv-mac', '.tv-dpad-pass', '.tv-remote-url',
+# `tv-host`/`tv-mac` (no dot) are the per-user copies of the first two (tools/tv-config.sh,
+# ~/.config/plxnative/): outside every checkout, but a copy dropped into the tree must not ship.
+PRIVATE_NAMES = {'.tv-host', '.tv-mac', 'tv-host', 'tv-mac', '.tv-dpad-pass', '.tv-remote-url',
                  'config.local.h', 'manifest.local.json', 'auth.json', 'lab.json',
                  'telemetry.local.json', 'local.env', '.env', 'id_rsa', 'id_ed25519'}
 # flate2 1.1.9 crate checksum 843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c;

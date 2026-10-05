@@ -1766,15 +1766,15 @@ class PipelineTier(unittest.TestCase):
             self.assertEqual(m["tv"], "10.0.0.9")
             self.assertTrue(m["pipeline_cases"])
             # ...but a TV address is still required, and is the ONLY thing this path can die for.
-            # `.tv-host` is the maintainer's own fallback and exists on this machine, so point the
-            # lookup at a path that cannot.
-            saved_host = run.TV_HOST_FILE
-            run.TV_HOST_FILE = os.path.join(TESTS_DIR, "no-such-tv-host")
+            # `.tv-host` / the per-user tv-host are the maintainer's own fallback and exist on this
+            # machine, so point the resolver at a script that cannot be run.
+            saved_script = run.tv_config.SCRIPT
+            run.tv_config.SCRIPT = os.path.join(TESTS_DIR, "no-such-tv-config.sh")
             try:
                 with self.assertRaises(SystemExit):
                     run.load_manifest(pipeline_only=True, tv_override=None)
             finally:
-                run.TV_HOST_FILE = saved_host
+                run.tv_config.SCRIPT = saved_script
         finally:
             run.MANIFEST_LOCAL = saved
 

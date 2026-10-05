@@ -89,13 +89,13 @@ MANIFEST = os.path.join(TESTS_DIR, "manifest.json")
 MANIFEST_LOCAL = os.path.join(TESTS_DIR, "manifest.local.json")
 MANIFEST_LOCAL_EXAMPLE = MANIFEST_LOCAL + ".example"
 CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
-TV_HOST_FILE = os.path.join(REPO_ROOT, ".tv-host")
 TV_SSH = os.path.join(REPO_ROOT, "tools", "tv-ssh")  # key-first ssh/scp front door; see its header
 
 sys.path.insert(0, TESTS_DIR)
 from serve_fixtures import serve, default_root as serve_fixtures_default_root  # noqa: E402  (needs TESTS_DIR on the path first)
 import mock_fps  # noqa: E402  (the --mock tier; same path juggling as above)
 sys.path.insert(0, TOOLS_DIR)
+import tv_config  # noqa: E402  (the TV address: tools/tv-config.sh is the one lookup)
 import arm_profile_guard  # noqa: E402  (timing runs refuse a binary built with the fast tvdev profile)
 from graphics_profile import (  # noqa: E402
     format_irq,
@@ -231,9 +231,10 @@ def load_manifest(pipeline_only=False, tv_override=None, for_listing=False):
     `pipeline_only` is what makes requirement-1 true — that a stranger can run the pipeline tier
     with nothing configured. That tier talks to no PMS, holds no token and names no ratingKey, so
     every Plex-shaped key here stops being required: the overlay may be absent ENTIRELY, in which
-    case the TV address is read from the repo's own gitignored `.tv-host` (the same file the
-    Makefile and `tools/` fall back to). A TV address is the one thing that still cannot be
-    guessed, and is the only thing this path can die for.
+    case the TV address is read from the gitignored `.tv-host` files or the per-user
+    `~/.config/plxnative/tv-host` (`tools/tv-config.sh`, the same lookup the Makefile and `tools/`
+    use). A TV address is the one thing that still cannot be guessed, and is the only thing this
+    path can die for.
 
     `for_listing` drops **even that**, and it is the difference between `--list` being offline and
     only claiming to be. `--list` prints which cases a set of flags selects; it opens no socket,
@@ -261,14 +262,12 @@ def load_manifest(pipeline_only=False, tv_override=None, for_listing=False):
         sys.exit(f"{MANIFEST_LOCAL} is not valid JSON: {e}")
 
     if pipeline_only:
-        # `tv` from the overlay if it is there, else .tv-host, else nothing to drive.
-        tv = tv_override or local.get("tv")
-        if not tv and os.path.isfile(TV_HOST_FILE):
-            with open(TV_HOST_FILE) as f:
-                tv = f.read().strip() or None
+        # `tv` from the overlay if it is there, else the TV-address files, else nothing to drive.
+        tv = tv_override or local.get("tv") or tv_config.host() or None
         if not tv and not for_listing:
-            sys.exit(f"--pipeline needs a TV address: put one in {TV_HOST_FILE} (one line, an IP "
-                     f"or hostname), or a `tv` key in {MANIFEST_LOCAL}, or pass --tv")
+            sys.exit("--pipeline needs a TV address: put one in ~/.config/plxnative/tv-host (one "
+                     "line, an IP or hostname; or $PLX_TV_CONFIG_DIR/tv-host, or a per-checkout "
+                     f".tv-host), or a `tv` key in {MANIFEST_LOCAL}, or pass --tv")
         if tv:
             manifest["tv"] = tv
         if "flavour" in local:
@@ -815,7 +814,7 @@ def make_query(goals, flavour=None):
 
     NEVER `make -p` / `make -pn`, which is the obvious-looking alternative and is a trap: it prints
     a recursive variable's UNEXPANDED DEFINITION, so `TV` comes back as the literal
-    `$(strip $(shell cat .tv-host ...))`, every ssh built from it fails, and the tool reports an
+    `$(strip $(shell tools/tv-config.sh host ...))`, every ssh built from it fails, and the tool reports an
     unreachable television that is awake and answering (tools/tv-session.sh documents the same trap
     from the shell side). These goals are real echo recipes of real values, and the Makefile's
     PURE_QUERY guard keeps a query free of side effects.

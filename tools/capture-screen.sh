@@ -26,7 +26,7 @@
 #     method      : DISPLAY (default) | VIDEO | GRAPHIC   (see above)
 #
 # Environment overrides:
-#     TV_HOST (default: the gitignored .tv-host)  TV_USER (root)  TV_PASS (alpine)
+#     TV_HOST (default: tools/tv-config.sh -- .tv-host, else ~/.config/plxnative/tv-host)  TV_USER (root)  TV_PASS (alpine)
 #     CAP_W (1920)  CAP_H (1080)
 #
 # Requires: bash, ssh, scp, and (only if the TV refuses your SSH key) sshpass -- see tv-ssh.
@@ -34,13 +34,12 @@
 #
 set -euo pipefail
 
-# The TV's address comes from $TV_HOST, else the gitignored .tv-host next to the Makefile (the
-# same file `make TV=` falls back to) — the repo carries no home-network address of its own.
-TV_HOST="${TV_HOST:-$(cat "$(dirname "$0")/../.tv-host" 2>/dev/null || true)}"
-# A linked worktree has no `.tv-host` of its own (it is gitignored), and that is where the parallel
-# agents live — ask the Makefile, which knows the main checkout's copy.
-[ -n "$TV_HOST" ] || TV_HOST="$(make -s -C "$(dirname "$0")/.." print-tv 2>/dev/null | head -1)"
-[ -n "$TV_HOST" ] || { echo "no TV configured — put its IP in .tv-host, or set TV_HOST=<ip>" >&2; exit 1; }
+# The TV's address comes from $TV_HOST, else tools/tv-config.sh (the same lookup `make TV=` falls
+# back to): this checkout's gitignored .tv-host, the main checkout's — a linked worktree has none of
+# its own, and that is where the parallel agents live — then the per-user ~/.config/plxnative/tv-host.
+# The repo carries no home-network address of its own.
+TV_HOST="${TV_HOST:-$("$(dirname "$0")/tv-config.sh" host 2>/dev/null || true)}"
+[ -n "$TV_HOST" ] || { echo "no TV configured — put its IP in ~/.config/plxnative/tv-host (or .tv-host), or set TV_HOST=<ip>" >&2; exit 1; }
 
 # A capture is a MEASUREMENT of one moment on a set that only one lane may be steering: taken
 # during somebody else's session it is a picture of a screen THEY navigated to, and nothing in the

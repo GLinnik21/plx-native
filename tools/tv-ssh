@@ -19,10 +19,13 @@
 #      neither the address nor the password, and ssh's own diagnostics (which carry the address)
 #      are silenced. Set PLX_VERBOSE=1 to get them back when debugging a connection.
 #
-# The address comes from, in order: $PLX_TV_ADDR, $TV, $TV_HOST, the gitignored `.tv-host` of this
-# checkout, then of the main checkout (a linked worktree has none -- the same fallback the Makefile
-# and tools/tv-lock.sh use). Callers that already hold an address (tests/run.py --tv) may instead
-# pass an explicit `<user>@<address>`; it is honoured and used for the probe.
+# The address comes from, in order: $PLX_TV_ADDR, $TV, $TV_HOST, then tools/tv-config.sh (the one
+# resolver the Makefile and every other tool share): the gitignored `.tv-host` of this checkout, of
+# the main checkout (a linked worktree has none), and finally the per-user `tv-host` under
+# ${PLX_TV_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/plxnative}, which is the one to set up once
+# per machine. PLX_TV_NO_HOST_FILE=1 skips all the files. Callers that already hold an address
+# (tests/run.py --tv) may instead pass an explicit `<user>@<address>`; it is honoured and used for
+# the probe.
 #
 # Host-key options match what every caller used before (StrictHostKeyChecking=no,
 # UserKnownHostsFile=/dev/null), scp keeps `-O` (the legacy protocol the set's dropbear needs), and
@@ -48,14 +51,7 @@ esac
 # ---------------------------------------------------------------- which television ---
 configured_host() {
   local h="${PLX_TV_ADDR:-${TV:-${TV_HOST:-}}}"
-  if [ -z "$h" ] && [ -z "${PLX_TV_NO_HOST_FILE:-}" ]; then
-    h="$(cat "$REPO/.tv-host" 2>/dev/null)"
-    if [ -z "$h" ]; then
-      local common; common="$(git -C "$REPO" rev-parse --git-common-dir 2>/dev/null)"
-      case "$common" in /*) ;; ?*) common="$REPO/$common" ;; esac
-      [ -n "$common" ] && h="$(cat "$common/../.tv-host" 2>/dev/null)"
-    fi
-  fi
+  [ -n "$h" ] || h="$("$REPO/tools/tv-config.sh" host 2>/dev/null)"   # honours PLX_TV_NO_HOST_FILE
   printf '%s' "$h" | tr -d ' \t\n\r'
 }
 
@@ -85,7 +81,7 @@ for a in "$@"; do
   fi
 done
 [ -n "$host" ] || host="$(configured_host)"
-[ -n "$host" ] || die "no TV configured — put its IP in .tv-host, or pass TV=<ip>" 2
+[ -n "$host" ] || die "no TV configured — put its IP in ~/.config/plxnative/tv-host (or .tv-host), or pass TV=<ip>" 2
 
 # ------------------------------------------------------- expand the placeholders ---
 args=()

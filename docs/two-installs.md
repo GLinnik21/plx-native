@@ -69,7 +69,7 @@ make -s print-tv                        # the television's address, expanded
 ```
 
 **Not `make -p` / `make -pn`.** That prints a recursive variable's *unexpanded definition*, so `TV`
-comes back as the literal `$(strip $(shell cat .tv-host 2>/dev/null))` — every ssh built from it
+comes back as the literal `$(strip $(shell tools/tv-config.sh host 2>/dev/null))` — every ssh built from it
 then fails, and the tool reports "TV unreachable" against a television that is awake and answering.
 `tools/tv-session.sh`'s `tv_host()` documents that trap because it hit it.
 

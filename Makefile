@@ -42,28 +42,30 @@
 
 # Which television. `make TV=1.2.3.4 …` overrides for one invocation; otherwise it comes from the
 # gitignored `.tv-host` (one line, an IP or hostname), so this repository carries nobody's home
-# network. `tools/` reads the same file via $TV_HOST. Absent, the targets that need a TV say so.
-# The second `cat` is for a LINKED WORKTREE, and it is not a convenience: `.tv-host` is gitignored,
-# so a worktree cut from this repo has none — and worktrees are exactly where the parallel agents
-# live. Without it, the checkouts most likely to collide over the one television are also the only
-# ones that cannot ask `tools/tv-lock.sh` who is holding it, which is how a lane ends up dialling
-# `root@` out of somebody's memory instead. `--git-common-dir` is the MAIN checkout's `.git` from
-# anywhere in the worktree family (and plain `.git` in the main one, where the first cat already won).
-TV       ?= $(strip $(shell cat .tv-host 2>/dev/null || cat "$$(git rev-parse --git-common-dir 2>/dev/null)/../.tv-host" 2>/dev/null))
+# network. `tools/` reads the same files via $TV_HOST. Absent, the targets that need a TV say so.
+# The lookup itself is `tools/tv-config.sh host`, the ONE resolver every tool shares: this
+# checkout's `.tv-host`, then the MAIN checkout's, then the per-USER
+# `${PLX_TV_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/plxnative}/tv-host`. The last two are for a
+# LINKED WORKTREE, and they are not a convenience: `.tv-host` is gitignored, so a worktree cut from
+# this repo has none — and worktrees are exactly where the parallel agents live. Without them, the
+# checkouts most likely to collide over the one television are also the only ones that cannot ask
+# `tools/tv-lock.sh` who is holding it, which is how a lane ends up dialling `root@` out of
+# somebody's memory instead. (A script that cannot be run leaves TV empty: "no TV configured".)
+TV       ?= $(strip $(shell tools/tv-config.sh host 2>/dev/null))
 # Every ssh/scp this Makefile runs goes through `tools/tv-ssh`: the ssh KEY first, `sshpass -p alpine`
 # only when the set refuses the key (so `sshpass` is optional on a machine whose key is authorized),
 # and a fast "the TV is unreachable" for a set that is asleep. `tv` / `tv:` are placeholders the
 # wrapper expands to `root@<address>` itself, which is the point: make echoes recipe lines, and a
 # line that carried the address and the password put both into every terminal and agent transcript
 # a `make deploy` ever scrolled through. The address reaches the wrapper through the environment
-# (`make TV=...` is exported) or the same gitignored `.tv-host`; with neither, the wrapper fails
+# (`make TV=...` is exported) or the same `tools/tv-config.sh` files; with neither, the wrapper fails
 # with "no TV configured" instead of dialling `root@`. `alpine` is NOT a secret (webosbrew's
 # published dev-mode root password, the same on every rooted set); the ADDRESS is what identified
 # one household, and that stays local. See tools/tv-ssh for the contract.
 # TV_CHECK expands to nothing when a TV is configured and stops make otherwise, so a recipe never
 # dials an empty address (it used to be `root@$(TV_OR_DIE)`; without this a deploy with no TV
 # says "does not exist ... make install", which is the wrong advice).
-TV_CHECK  = $(if $(TV),,$(error no TV configured — put its IP in .tv-host, or pass TV=<ip>))
+TV_CHECK  = $(if $(TV),,$(error no TV configured — put its IP in ~/.config/plxnative/tv-host (or .tv-host), or pass TV=<ip>))
 SSH       = $(TV_CHECK)tools/tv-ssh ssh tv
 SCP       = $(TV_CHECK)tools/tv-ssh scp
 RUN_SECS ?= 18
@@ -86,7 +88,7 @@ RUN_SECS ?= 18
 # With no television configured this must stay silent and let the recipe's own ssh produce the
 # familiar error, not replace it with a complaint about a lock. The address is deliberately NOT
 # passed on the command line (`TV=$(TV)`): make echoes it, and it reaches tv-lock.sh through the
-# environment or `.tv-host` anyway.
+# environment or its own `tools/tv-config.sh host` lookup anyway.
 TVLOCK = tools/tv-lock.sh
 tv-lock-require:
 	@$(TVLOCK) require --quiet --why "make $(or $(MAKECMDGOALS),deploy) [$(FLAVOR)]"
@@ -160,8 +162,8 @@ EVENTLOG     = $(RUNDIR)/plxnative-events.log
 # then grades the wrong app's log).
 #
 # NOT `make -p`/`make -pn`, which is what these replace: that prints a RECURSIVE variable's
-# UNEXPANDED DEFINITION, so `TV` comes out as the literal `$(strip $(shell cat .tv-host …))` on any
-# checkout that uses `.tv-host` — the trap tools/tv-session.sh already documents. Real recipes
+# UNEXPANDED DEFINITION, so `TV` comes out as the literal `$(strip $(shell tools/tv-config.sh host …))`
+# on every checkout — the trap tools/tv-session.sh already documents. Real recipes
 # echoing real values cannot do that. See PURE_QUERY below for why they are also side-effect free.
 # The capture listener's TCP port for THIS install. Two installs cannot both bind one port, and
 # the failure is silent on both sides — the second bind fails with one line in a log nobody is
@@ -1717,6 +1719,11 @@ check-python-rest: check-localization
 	@# PATH: key accepted -> sshpass never run; key refused -> sshpass; unreachable -> no password
 	@# attempt; no address or password on any line; and the Makefile's echoed commands stay silent about both.
 	python3 ci/test_tv_ssh.py
+	@# `tools/tv-config.sh`, the ONE resolver for the TV address and Wake-on-LAN MAC (this checkout's
+	@# .tv-host/.tv-mac, the main checkout's, then ~/.config/plxnative/), and every reader of it
+	@# (tv-ssh, wake-tv, the Makefile's TV, tests/run.py, stream-screen.py), against a throwaway repo
+	@# with a linked worktree. No TV, no network; placeholder values only.
+	python3 ci/test_tv_config.py
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the

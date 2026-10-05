@@ -437,7 +437,7 @@ cast+about / info-panel regressions.
 ### Against the synthetic mock (`--fps --mock`)
 
 ```bash
-# No Plex account: no PMS_TOKEN, no manifest.local.json, no plex.tv call. Needs .tv-host and
+# No Plex account: no PMS_TOKEN, no manifest.local.json, no plex.tv call. Needs a TV address (see below) and
 # src/config.local.h with PMS_HOST/PMS_PORT (the address the debug binary was built against).
 tools/tv-lock.sh with --why "fps mock" -- ./tests/run.py --fps --mock --filter home-grid-deep
 ./tests/run.py --fps --mock    # every scene that declares a `mock` block: home-grid, home-grid-deep, library-shelves-deep
@@ -772,8 +772,10 @@ make fixtures-pipeline          # ~0.9 GB into $FIXTURES_OUT/pipeline; ~4 min, o
 ```
 
 Nothing else is required — no `manifest.local.json`, no PMS, no token, no ratingKey, no library, no
-sharing. The TV address comes from the overlay's `tv` if you have one, else from the gitignored
-`.tv-host`, else `--tv`. That is the whole configuration.
+sharing. The TV address comes from the overlay's `tv` if you have one, else from `tools/tv-config.sh`
+(this checkout's gitignored `.tv-host`, the main checkout's, then the per-user
+`~/.config/plxnative/tv-host` — set that one once and every worktree has it), else `--tv`. That is the
+whole configuration.
 
 **How it works.** `run.py` starts `serve_fixtures.py` on this machine, then arms
 `/tmp/plxnative-playurl` per case — one JSON object carrying the clip's URL **and the Load payload
