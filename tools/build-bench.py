@@ -217,6 +217,18 @@ def arm_argv(cfg: dict[str, str]) -> list[str]:
             *shlex.split(cfg.get("RUST_FEATFLAGS", "")), *ARM_ARGS_TAIL]
 
 
+def front_end_threads(env: dict[str, str]) -> int:
+    """`-Zthreads=N` in the host rustflags cargo will see (RUSTFLAGS beats CARGO_BUILD_RUSTFLAGS), else 0.
+
+    The Makefile's `HOST_THREADS` hands `make build-bench` the flag through CARGO_BUILD_RUSTFLAGS, so
+    the host rows time what a developer's `make check` / `make test-fast` build runs. This reads what
+    cargo is really given, so a bare run of the script (no flag) reports 0 and is labelled as such.
+    """
+    flags = env.get("RUSTFLAGS") or env.get("CARGO_BUILD_RUSTFLAGS") or ""
+    m = re.search(r"-Z\s*threads=(\d+)", flags)
+    return int(m.group(1)) if m and int(m.group(1)) > 1 else 0
+
+
 # ---------------------------------------------------------------- machine state
 
 def parse_load(uptime_out: str) -> float | None:
@@ -469,6 +481,7 @@ class Bench:
 
     def run_arm(self) -> dict:
         env = dict(self.cargo.env(False))
+        env.pop("CARGO_BUILD_RUSTFLAGS", None)  # the host-only front-end flag; the ARM line sets RUSTFLAGS itself
         for word in shlex.split(self.cfg["RUST_ENV"]):
             if "=" in word:
                 k, v = word.split("=", 1)
@@ -586,7 +599,8 @@ def render_markdown(doc: dict) -> str:
     lines = [
         f"**build-bench** `{doc['git_sha']}`{' (dirty tree)' if doc['tree_dirty'] else ''} · "
         f"{doc['toolchain']} · {h['machine']}, {h['cores']} cores, {h['os']} · "
-        f"{doc['runs']} run(s) per scenario, interleaved",
+        f"{doc['runs']} run(s) per scenario, interleaved · rustc front end: "
+        + (f"{doc['front_end_threads']} threads (-Zthreads)" if doc.get("front_end_threads") else "serial"),
         "",
         "| Scenario | Runs | Median | Min | Max | Notes |",
         "|---|---|---|---|---|---|",
@@ -703,6 +717,7 @@ def main(argv=None) -> int:
         "config": {k: cfg[k] for k in ("RUST_NIGHTLY", "RUST_TDIR", "RUST_TARGET", "RUST_FEATFLAGS",
                                        "TEST_FAST_TDIR")},
         "via_make": via_make,
+        "front_end_threads": front_end_threads(bench.cargo.base_env),
         "sizes": bench.sizes,
         "warnings": bench.warnings,
         "failure": bench.failure,

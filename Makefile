@@ -213,7 +213,8 @@ print-bench-config:
 	@printf '%s\n' 'RUST_NIGHTLY=$(RUST_NIGHTLY)' 'RUST_TDIR=$(RUST_TDIR)' 'RUST_TARGET=$(RUST_TARGET)' \
 	  'RUST_FEATFLAGS=$(RUST_FEATFLAGS)' 'RUST_LIB=$(RUST_LIB)' 'RUST_ENV=$(RUST_ENV)' \
 	  'ARM_PROFILE=$(ARM_PROFILE)' 'ARM_PROFILE_FLAG=$(ARM_PROFILE_FLAG)' \
-	  'TEST_FAST_TDIR=$(TEST_FAST_TDIR)' 'UNIT_RUN=$(UNIT_RUN)' 'RELEASE=$(RELEASE)'
+	  'TEST_FAST_TDIR=$(TEST_FAST_TDIR)' 'UNIT_RUN=$(UNIT_RUN)' 'RELEASE=$(RELEASE)' \
+	  'HOST_THREADS=$(HOST_THREADS)'
 
 # `make disk` — what every checkout of this repository is costing, in one table, plus how to get
 # it back. It is a report; `tools/build-gc.sh --incremental|--lanes|--all` is the reclaim, and
@@ -508,6 +509,35 @@ CARGO_SEED = $(if $(filter yes,$(PLX_LINKED_WORKTREE)),python3 tools/cargo-seed.
 ARM_PROFILE ?= $(if $(or $(RELEASE),$(SYMBOLS),$(filter-out debug,$(FLAVOR)),$(CI),$(GITHUB_ACTIONS)),release,tvdev)
 $(if $(filter release tvdev,$(ARM_PROFILE)),,$(error unknown ARM_PROFILE "$(ARM_PROFILE)" — one of: release tvdev))
 ARM_PROFILE_FLAG = $(if $(filter release,$(ARM_PROFILE)),--release,--profile $(ARM_PROFILE))
+
+# HOST_THREADS -- rustc's PARALLEL FRONT END for the LOCAL host test builds (`-Zthreads=N`).
+#
+# The crate stack is a chain (base -> platform -> ui/plex -> data/session -> media -> appkit ->
+# screens -> app), so cargo has little to run side by side, and the front end (parse, type-check,
+# borrow-check) is single-threaded per crate by default. Measured 2026-10-05, Apple M4 (10 cores),
+# `make build-bench` edit-rebuild rows, medians of 5, non-incremental: plx_base leaf 20.1 s ->
+# 17.8 s, plx_ui 10.7 -> 7.8, plx_screens 8.3 -> 5.7, app 4.8 -> 2.9 (-11% .. -40%). The
+# incremental `test-fast` loop was not slowed (it is already 2-11 s and the flag neither helps nor
+# hurts beyond noise). The price is CPU: the same rebuild uses ~20% more CPU-seconds (user time)
+# to finish sooner, so lanes sharing one Mac pay for it in each other's wall time.
+# N is the core count capped at 8: the measured gain from 8 to 10 threads was inside noise.
+#
+# Which recipes: ONLY the host `cargo test` / `check-cargo-unit-*` builds, `test-fast`, `test-crate`
+# and `build-bench` carry `$(HOST_ENV)`. It is NOT exported, so the ARM staticlib recipes (which set
+# RUSTFLAGS themselves), the simulators' builds, clippy and the package steps never see it.
+# It is off (0) for everything that ships or is graded -- the same set as ARM_PROFILE above:
+# RELEASE=1, SYMBOLS=1, FLAVOR=stable|nightly, and any CI run (CI / GITHUB_ACTIONS) -- and then
+# `$(HOST_ENV)` expands to nothing, so those recipes are the commands they always were
+# (ci/test_host_threads.py pins it). `make HOST_THREADS=0 ...` turns it off locally, `=N` picks N;
+# 0 and 1 mean the serial front end. A RUSTFLAGS the caller exported wins over it (cargo reads
+# CARGO_BUILD_RUSTFLAGS last), which is how a developer who already tunes RUSTFLAGS keeps their own.
+#
+# Artifacts built with and without the flag live side by side in one target dir (measured: flipping
+# it back and forth is a no-op the second time), so switching it does not cost a rebuild each way.
+# `-Zthreads` is nightly-only; `rustc -Zhelp` already calls it deprecated in favour of
+# `--jobs-frontend`, so ci/test_host_threads.py also checks that the pinned spelling is still accepted.
+HOST_THREADS ?= $(if $(or $(RELEASE),$(SYMBOLS),$(filter-out debug,$(FLAVOR)),$(CI),$(GITHUB_ACTIONS)),0,$(shell n=$$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1); echo $$((n > 8 ? 8 : n))))
+HOST_ENV = $(if $(filter-out 0 1,$(HOST_THREADS)),CARGO_BUILD_RUSTFLAGS='-Zthreads=$(HOST_THREADS)')
 
 RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)
 RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)
@@ -1437,6 +1467,7 @@ check-cargo-unit-default:
 	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
+	  $(HOST_ENV) \
 	  $(UNIT_RUN) -- cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_service_package.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test -p plxnative-storage --bin plxnative-storage
@@ -1470,6 +1501,7 @@ check-cargo-unit-hostsim:
 	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
+	  $(HOST_ENV) \
 	  $(UNIT_RUN) -- cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --features hostsim
 
 # OPT-IN incremental inner loop: the default-feature unit suite (the same `cargo test --lib` as
@@ -1493,6 +1525,7 @@ test-fast:
 	cd rust-modules && CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=$(TEST_FAST_TDIR) \
 	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
+	  $(HOST_ENV) \
 	  $(UNIT_RUN) $(if $(T),--filter '$(T)') -- cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens
 
 # `make test-crate C=plx_ui [T=filter] [DEPS=1]` -- build and run ONLY the named crate's lib tests, in
@@ -1512,6 +1545,7 @@ test-crate:
 	cd rust-modules && CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=$(TEST_FAST_TDIR) \
 	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
+	  $(HOST_ENV) \
 	  python3 ../tools/test-crate.py --suite '$(UNIT_SUITE)' --cargo 'cargo +$(RUST_NIGHTLY)' $(if $(DEPS),--deps) $(if $(T),--filter '$(T)') $(C)
 
 # `make build-bench [ARGS='--runs 5 --json out.json']` -- the repeatable local build benchmark
@@ -1527,7 +1561,7 @@ test-crate:
 .PHONY: build-bench build-bench-quick
 build-bench build-bench-quick:
 	@$(if $(RELEASE),echo "make $@: refused under RELEASE=1 -- it benchmarks the default-feature host build; RELEASE=1 is the shipping feature set." >&2; exit 1,:)
-	@python3 tools/check-lock.py -- env PLX_BENCH_VIA_MAKE=1 $(TELEMETRY_ENV) \
+	@python3 tools/check-lock.py -- env PLX_BENCH_VIA_MAKE=1 $(TELEMETRY_ENV) $(HOST_ENV) \
 	  python3 tools/build-bench.py $(if $(filter build-bench-quick,$@),--quick) $(ARGS)
 
 # `check-python` is TWO branches run at once (tools/check-parallel.py, the same helper as
@@ -1697,6 +1731,9 @@ check-python-rest: check-localization
 	@# `ARM_PROFILE`: a plain local build compiles the ARM staticlib with the fast `tvdev` profile and
 	@# everything that ships or runs in CI keeps fat-LTO `release`; resolved through print-bench-config.
 	python3 ci/test_arm_profile.py
+	@# `HOST_THREADS`: rustc's parallel front end for the local host test builds only; off for CI, RELEASE,
+	@# SYMBOLS and every non-debug flavour, and named by no ARM, simulator, clippy or workflow line.
+	python3 ci/test_host_threads.py
 	@# ...and the other half of that rule: a timing run (tests/run.py --fps*, profile-graphics, tv-sched-trace)
 	@# refuses a deployed `tvdev` binary and builds with ARM_PROFILE=release; functional runs do not. No TV.
 	python3 tests/test_arm_profile_guard.py

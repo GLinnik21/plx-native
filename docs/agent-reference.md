@@ -101,6 +101,22 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `rust-modules/<tdir>/arm-unknown-linux-gnueabi/<profile>/`, and a non-`release` profile adds
   `+profile:tvdev` to `pkg/.build-config` (nothing is added for `release`, so shipped stamps are
   unchanged), so switching profile relinks rather than reusing the other profile's archive.
+- **`HOST_THREADS` — rustc's parallel front end for the local host test builds.** The crate stack
+  is mostly a chain, so cargo has little to run side by side and the front end (parse, type-check,
+  borrow-check) is single-threaded per crate by default. A plain local build therefore passes
+  `-Zthreads=N` (N = the core count, capped at 8) to the host `cargo test` recipes
+  (`check-cargo-unit-default`, `check-cargo-unit-hostsim`, `test-fast`, `test-crate`, `build-bench`)
+  through `CARGO_BUILD_RUSTFLAGS`. Measured 2026-10-05 on an M4 (10 cores), `make build-bench`
+  non-incremental edit-rebuilds, medians of 5: `plx_base` leaf 20.1 s to 17.8 s, `plx_ui` 10.7 to
+  7.8, `plx_screens` 8.3 to 5.7, app 4.8 to 2.9; the incremental `test-fast` loop is unchanged
+  within noise. It costs about 20% more CPU-seconds to finish sooner. It is 0 (off) under
+  `RELEASE=1`, `SYMBOLS=1`, `FLAVOR=stable|nightly` and a CI environment, the same set as
+  `ARM_PROFILE`, and then no recipe names it; it is never exported, so the ARM staticlib, the
+  simulators, clippy and the packaging steps never see it. `make HOST_THREADS=0 ...` (command line or
+  environment) turns it off, `HOST_THREADS=N` picks N, and a `RUSTFLAGS` you exported yourself wins.
+  Artifacts built with and without it coexist in one target dir, so toggling it costs no rebuild the
+  second time. `ci/test_host_threads.py` pins the scoping and that the toolchain still accepts the
+  spelling (`rustc -Zhelp` already calls `-Zthreads` deprecated for `--jobs-frontend`).
 - `make deploy` — ships the binary and the native crash handler through a `.new` + `mv` dance (a
   running process holds their inodes), the bundled FFmpeg libraries with a retirement loop for any
   previous major, and — since 2026-09-02 — **everything else in ONE scp from `DEPLOY_FILES`**,
@@ -284,8 +300,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   FFmpeg build); and the **sizes** of `rust-modules/target*`. `build-bench-quick` is no-op + leaf
   edit + sizes at one run; `ARGS='--only noop,leaf --runs 5'` selects any subset. The toolchain,
   target dirs, feature flags and RUSTFLAGS come from `make -s print-bench-config` and the
-  environment is the one `make test-fast` gives cargo, so a bare invocation of the script (which
-  warns) is not comparable to a `make` one. It runs under the same machine-wide lock as `make check`
+  environment is the one `make test-fast` gives cargo (including `HOST_THREADS`'s `-Zthreads`; the table's
+  header line says `rustc front end: N threads` or `serial`, and `make build-bench HOST_THREADS=0`
+  is the serial baseline), so a bare invocation of the script (which warns) is not comparable to a
+  `make` one. It runs under the same machine-wide lock as `make check`
   (so it waits behind one, and a `make check` waits behind it), refuses `RELEASE=1`, never touches
   the TV and never cleans a target dir. It edits `cbuf.rs` and `plx_ui`'s `lib.rs` only while a row is being
   timed, refuses to start if either has uncommitted changes, restores the original bytes in a
