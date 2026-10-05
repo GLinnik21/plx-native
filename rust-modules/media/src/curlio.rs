@@ -2002,6 +2002,12 @@ mod keymode_tests;
 #[path = "curlio_roots_tests.rs"]
 mod roots_tests;
 
+/// What a media open does with a `3xx` (hop cap, no downgrade, `Range`, relative `Location`, the
+/// token, the trust store a roots-mode hop is verified against), pinned for whoever follows it.
+#[cfg(test)]
+#[path = "curlio_redirect_tests.rs"]
+mod redirect_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

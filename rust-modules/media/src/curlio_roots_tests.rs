@@ -269,3 +269,34 @@ fn a_redirect_under_roots_mode_is_verified_against_the_bundle_not_the_device_sto
         assert!(matches!(err, crate::curlio::OpenErr::Transport(60 | 35)), "{err:?}");
     }
 }
+
+/// **A redirect hop is verified by the store ITS host selects.** A household server that is in roots
+/// mode (its `*.plex.direct` name latched) answers with a redirect to a CDN: a different host, a
+/// different issuer, one the firmware's own store holds and the bundle does not. The CDN is no
+/// `*.plex.direct` name, so nothing about it asks for the bundle; the hop is a strict request for its
+/// own host and the device store verifies it. The server's own mode does not follow the request
+/// into the next host's handshake.
+#[test]
+fn a_redirect_from_a_roots_mode_host_is_verified_against_the_device_store() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    let household = Arc::new(mint_ca_issued_cert(&[PLEX_DIRECT], ymd_from_now(-1), ymd_from_now(30)));
+    let cdn = Arc::new(mint_ca_issued_cert(&["127.0.0.1"], ymd_from_now(-1), ymd_from_now(30)));
+    let target = spawn_observed(Arc::clone(&cdn), media_body());
+    let redirecting = spawn_redirecting(Arc::clone(&household), &format!("https://127.0.0.1:{}/video.mkv", target.port));
+    pin_to_loopback(PLEX_DIRECT, redirecting.port);
+    // The device store is the CDN's CA; the bundle is the household's.
+    let _device = TestCaGuard::install(&cdn.pem, "roots-media-redirect-store");
+    let _roots = keypin::test_roots::Guard::install(&household.pem, "roots-media-redirect-store");
+    let key = keypin::key_of(PLEX_DIRECT, i32::from(redirecting.port));
+    let _watch = keypin::Scoped::watch(&key);
+    let _target_watch = keypin::Scoped::watch(&keypin::key_of("127.0.0.1", i32::from(target.port)));
+    keypin::roots_established(&key, Some(20));
+
+    let mut src = crate::curlio::CurlSource::open(&format!("https://{PLEX_DIRECT}:{}/video.mkv", redirecting.port), 0)
+        .expect("the CDN's issuer is in the device store, which is what verifies its hop");
+    assert_eq!(src.status(), 200);
+    let mut head = [0u8; 64];
+    assert_eq!(src.read(&mut head), 64);
+    assert_eq!(head[..], media_body()[..64]);
+}
