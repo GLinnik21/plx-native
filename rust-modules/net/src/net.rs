@@ -2392,10 +2392,11 @@ pub mod resolve {
 /// `State::roots_latched` under the same lock: a success latches the host so later requests skip the
 /// doomed strict handshake, and a refusal by the bundle ([`roots_failed`]) ends it.
 ///
-/// **Redirects.** `CURLOPT_CAINFO` is per handle, not per hop, so on the media plane (the only one
-/// that follows redirects; the control plane never does under either mode) a hop a roots-mode open is
-/// redirected to is verified against the bundle too (plus any CA directory this firmware's libcurl
-/// reads by default, as [`keypin::apply_roots`] says), not the device's own CA file.
+/// **Redirects.** No mode crosses a redirect. The control plane never enters either mode for a request
+/// that follows one (the public QR fetch is the only such request), and the media plane follows
+/// redirects itself, one easy handle per hop, so each hop enters this module under its own `host:port`
+/// and begins where `begin` puts that host. Nothing a hop's handshake says is recorded against the
+/// host that redirected to it.
 ///
 /// **Facts, and one toast.** Where each decision is already made this module also publishes what it
 /// means, for the app to poll by [`keypin::revision`] (`plex::grant`'s shape): [`keypin::engaged`]

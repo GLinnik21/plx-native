@@ -195,12 +195,26 @@ a refusal by the bundle clears it); both stacks share the decision, the control 
 mode a roots-mode answer IS strictly verified, so it may teach `peer_pin`. The log carries one line when
 the fallback engages, one when it first succeeds and one when the bundle refuses too, naming only the
 verify result.
-**Redirects (media plane).** `curlio` follows redirects inside libcurl and `CURLOPT_CAINFO` is per
-handle, not per hop, so a hop a roots-mode open is redirected to is verified against the bundle (plus any CA
-directory the firmware's libcurl reads by default) rather than the firmware's own CA file (a target whose
-issuer only that file holds is refused); `stream_redirect` does not go back through `keypin` per hop, and
-turning redirects off in roots mode would make every redirecting open fail there, where today a hop whose
-issuer the bundle holds succeeds. Pinned by `curlio_roots_tests::a_redirect_under_roots_mode_is_verified_against_the_bundle_not_the_device_store`.
+**Redirects (media plane).** `curlio` follows redirects itself and libcurl does not
+(`CURLOPT_FOLLOWLOCATION` is 0 on every handle): `start_range_until` loops `run_hop`, one easy handle per
+hop, and `next_hop` decides each one. It counts against `stream::redirect::MAX_HOPS` (more is
+`Transport(47)`), refuses a redirect out of a TLS hop to plaintext, and uses the `Location` exactly as
+spelled, so the original URL's query, where the token is, is never copied to a hop. `Hop::of` takes the
+`keypin` key and the `net::resolve` entry from the hop's OWN host, so a hop starts where `keypin::begin`
+puts that host: strict against the device store, on the bundle only if the hop is itself a `*.plex.direct`
+name whose issuer the store lacks. A hop out of a roots-mode host is therefore verified against the
+television's store, and a hop whose issuer only the bundle holds is refused. A hop's failure is its own: its
+60 does not latch the redirecting server into roots mode, and its key is never published as that server's
+`Blocked::KeyChanged`. A seek or reopen replays the chain from the URL the source was opened on; the
+landing URL is the private `CurlSource::hop_url`, and no public method returns it. `stream_redirect`, the
+plaintext follower, never touches `keypin`, stops at the first https hop and hands that target to `curlio`,
+where the hop count starts fresh. It also differs on credentials: it re-appends the original token pair to a
+same-origin hop, and `curlio` never copies the query. Pinned by
+`curlio_roots_tests::a_redirect_from_a_roots_mode_host_is_verified_against_the_device_store`,
+`curlio_roots_tests::a_redirect_hop_is_not_verified_against_the_bundle_the_open_before_it_was_served_through`,
+`curlio_roots_tests::a_redirect_hop_that_fails_verification_does_not_send_its_server_into_roots_mode`,
+`curlio_keymode_tests::a_redirect_from_a_key_mode_server_to_a_host_with_another_key_does_not_blame_the_server`
+and the contract tests in `curlio_redirect_tests.rs`.
 
 **The who's-watching pick is seated from `Session::profiles` when plex.tv does not answer.** The
 first real outage (2026-09-06, `docs/measurements/offline-picker-red-tv-2026-09-06.log`) got past

@@ -1,10 +1,11 @@
 //! Redirects, media plane: what `curlio::CurlSource` does when the server answers an open, a reopen
-//! or a seek with a `3xx`. It follows the hops itself, one request at a time (`next_hop`), and these
+//! or a seek with a `3xx`. It follows the hops itself, one request at a time (`next_hop`). These
 //! tests grade what that promises whoever relies on it, and held before it did: the hop cap, the
 //! no-downgrade rule, the `Range` that rides every hop, a relative `Location`, which statuses are
-//! followed, what a `3xx` body and a missing `Location` do, what of the original URL a hop receives,
-//! and that a hop is a request of its own, to its own host, under its own TLS decision
-//! (`net::keypin`), whichever mode the host that sent it was in.
+//! followed, what a `3xx` body and a missing `Location` do, and what of the original URL a hop
+//! receives. They also grade what only a hop-by-hop follower can promise: a hop is a request of its
+//! own, to its own host, under its own TLS decision (`net::keypin`), whichever mode the host that
+//! sent it was in.
 //!
 //! The doubles are `net::spawn_scripted`'s: each records every request it reads, so a test can say
 //! what each hop received. Hosts are loopback ones and the synthetic `*.plex.direct` names of

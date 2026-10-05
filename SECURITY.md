@@ -53,9 +53,9 @@ looking at:
   repeated once with the CA file set to `le-roots.pem`, the four public ISRG roots shipped in the
   package. Chain, dates and name are all still verified, against a different root set. It is
   offered only for a host name that is a `*.plex.direct` name (a URL whose userinfo merely names
-  one does not count), never for plex.tv or telemetry; a redirect that such a request follows is
-  verified against the same bundle rather than the television's CA file, because libcurl takes the CA
-  file per request and not per hop.
+  one does not count), never for plex.tv or telemetry. A redirect is a request of its own: it is
+  verified against the television's own store like any other, and the bundle is offered for it only
+  if its target is itself a `*.plex.direct` name that fails the same way.
   When the bundle verifies the chain and only the dates fail (a wrong clock too), the remembered
   key above is still tried. Stable builds refuse
   any PMS control or media URL that would carry a Plex token over plaintext HTTP, with one

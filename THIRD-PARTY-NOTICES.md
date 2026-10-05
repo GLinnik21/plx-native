@@ -400,8 +400,8 @@ store failed for that reason, the application retries once against this file, wi
 certificate chain, its dates and the host name all still checked. It is offered for no other host
 name, and only after the television's own store has said no (for ten minutes after it has verified a
 host, a request to that host starts there instead of repeating the handshake the store failed). A
-redirect that such a request is sent on to is verified against this file too (rather than against
-the television's CA file), because libcurl takes the CA file per request and not per hop.
+redirect is a request of its own, verified against the television's own store, and is offered this
+file only if its target is itself a `*.plex.direct` name that fails the same way.
 
 ---
 

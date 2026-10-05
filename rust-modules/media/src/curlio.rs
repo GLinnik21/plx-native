@@ -612,7 +612,8 @@ pub struct CurlSource {
     /// seek is a fresh handle). The pinned name is a pure function of the host, so it cannot go stale
     /// mid-stream. A later hop's host has its own entry, looked up for that hop ([`Hop::of`]).
     resolve_entry: Option<CString>,
-    /// The `curl_slist` built from `resolve_entry` for the CURRENT easy handle. **Owned by that
+    /// The `curl_slist` built from the current hop's resolve entry (`Hop`'s field of that name; the
+    /// `resolve_entry` field above is the first hop's only) for the CURRENT easy handle. **Owned by that
     /// handle**: libcurl keeps the pointer for the transfer's life, so it is freed only after the
     /// handle has been removed and cleaned, and it is abandoned together with the handles on
     /// `stop`'s catastrophic path (freeing it under a handle libcurl may still reference would be
