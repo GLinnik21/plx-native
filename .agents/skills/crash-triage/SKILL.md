@@ -95,7 +95,7 @@ make -s print-eventlog FLAVOR=debug
 ```
 
 Not `make -p`/`make -pn`: that prints a recursive variable's UNEXPANDED DEFINITION, so `TV` comes
-back as the literal `$(strip $(shell cat .tv-host …))` and every ssh built from it fails — which
+back as the literal `$(strip $(shell tools/tv-config.sh host …))` and every ssh built from it fails — which
 reads as an unreachable television and sends you to `wake-tv` for a set that is already awake.
 
 ## Run this first

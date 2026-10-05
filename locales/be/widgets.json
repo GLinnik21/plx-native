@@ -68,6 +68,7 @@
   "widgets.reason.unknown": "Прайгравальнік спыніўся, не вызначыўшы прычыну",
   "widgets.hint.return": "Націсніце {key}, каб вярнуцца",
   "widgets.hint.scroll": "Пракрутка",
+  "widgets.hint.hold_options": "Утрымлівайце {key}, каб адкрыць меню",
   "widgets.failure.no_pass": "На гэтым серверы няма {subscription}",
   "widgets.tracks.playing": "прайграецца",
   "widgets.tracks.forced": "Прымусовыя",

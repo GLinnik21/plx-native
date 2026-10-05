@@ -34,6 +34,8 @@ spec.loader.exec_module(guard)
 FAKE_TV = "192.168.44.7"
 FAKE_PMS = "192.168.44.3"
 FAKE_MAC = "de:ad:be:ef:00:11"
+FAKE_USER_TV = "192.168.44.9"                # in the PER-USER ~/.config/plxnative/tv-host only
+FAKE_USER_MAC = "de:ad:be:ef:00:22"          # ...and in the per-user tv-mac only
 FAKE_TOKEN = "Kx7fQ2mZ9pLr4TvB1sNd"          # 20 alnum, mixed — a Plex token's shape
 FAKE_USERID = "987654321"
 FAKE_MACHINE = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"   # 40 hex
@@ -72,7 +74,27 @@ def build_root():
     return root
 
 
+def build_user_config(root):
+    """The per-user TV config (tools/tv-config.sh): FAKE `tv-host`/`tv-mac` in a directory OUTSIDE
+    the fake repo root, reached through PLX_TV_CONFIG_DIR, plus a fake HOME whose
+    `.config/plxnative` is a symlink to it so `~/.config/plxnative/tv-host` resolves to the same
+    file. Returns the directory."""
+    cfg = os.path.join(root, "user-config", "plxnative")
+    os.makedirs(cfg)
+    with open(os.path.join(cfg, "tv-host"), "w") as f:
+        f.write(FAKE_USER_TV + "\n")
+    with open(os.path.join(cfg, "tv-mac"), "w") as f:
+        f.write(FAKE_USER_MAC + "\n")
+    home = os.path.join(root, "home")
+    os.makedirs(os.path.join(home, ".config"))
+    os.symlink(cfg, os.path.join(home, ".config", "plxnative"))
+    os.environ["PLX_TV_CONFIG_DIR"] = cfg
+    os.environ["HOME"] = home
+    return cfg
+
+
 ROOT = build_root()
+USER_CFG = build_user_config(ROOT)
 SECRETS = guard.load_secrets(ROOT)
 
 BLOCK, ALLOW = True, False
@@ -108,6 +130,16 @@ CASES = [
     (BLOCK, 'gh pr create --body "the set is at $(cat .tv-host)"'),
     (BLOCK, 'gh pr create --body "the set is at `cat .tv-host`"'),
     (BLOCK, 'git commit -m "$(grep TOKEN src/config.local.h)"'),
+    # The per-USER copies of the TV address / MAC (tools/tv-config.sh) are as private as `.tv-host`:
+    # their values are loaded literally, and a payload that READS them is refused however the path
+    # is spelled -- absolute, `~`, or through an environment variable.
+    (BLOCK, 'gh pr create --body "the set is at %s"' % FAKE_USER_TV),
+    (BLOCK, 'git commit -m "wake %s first"' % FAKE_USER_MAC),
+    (BLOCK, 'gh pr create --body "the set is at $(cat %s/tv-host)"' % USER_CFG),
+    (BLOCK, 'gh pr create --body "the set is at $(cat ~/.config/plxnative/tv-host)"'),
+    (BLOCK, 'gh pr create --body "the set is at $(cat \"$PLX_TV_CONFIG_DIR/tv-host\")"'),
+    (BLOCK, 'gh pr create --body "mac `cat ~/.config/plxnative/tv-mac`"'),
+    (BLOCK, 'gh release upload v0.3.0 %s/tv-mac' % USER_CFG),             # the FILE, not its text
 
     # --- must be allowed: the false positives, which are the ones that matter ---------------
     (ALLOW, 'git commit -m "document the 203.0.113.5 placeholder"'),      # RFC 5737 TEST-NET-3
@@ -145,6 +177,9 @@ CASES = [
     (ALLOW, 'gh pr create --body ".tv-host"'),
     (ALLOW, 'gh pr create --body "src/config.local.h"'),
     (ALLOW, 'git commit -m ".tv-host"'),
+    (ALLOW, 'gh pr create --body "~/.config/plxnative/tv-host"'),         # naming the file is the advice
+    (ALLOW, 'cat ~/.config/plxnative/tv-host'),                           # reading it locally is fine
+    (ALLOW, 'tools/tv-config.sh host'),
     # The same letter, the other meaning: `-f` is a string field on gh and a boolean on `git add`
     # whose NEXT word is the path. A flat text-flag set gets one of these two wrong.
     (ALLOW, 'gh workflow run release.yml -f version=0.3.0'),
@@ -320,7 +355,8 @@ def refusal_case():
     except Exception:
         pass                            # falls back to abspath(cwd); the assertions do not change
     hook = os.path.join(HERE, "outbound-guard.py")
-    fakes = (FAKE_TV, FAKE_PMS, FAKE_TOKEN, FAKE_MAC, FAKE_USERID, FAKE_MACHINE)
+    fakes = (FAKE_TV, FAKE_PMS, FAKE_TOKEN, FAKE_MAC, FAKE_USERID, FAKE_MACHINE,
+             FAKE_USER_TV, FAKE_USER_MAC)
 
     def drive(cmd):
         p = subprocess.run(
@@ -334,6 +370,8 @@ def refusal_case():
         ('gh issue comment 22 --body "token %s"' % FAKE_TOKEN, 2),
         ('git commit -m "server at %s"' % FAKE_TV, 2),
         ('git commit -m "wake %s"' % FAKE_MAC, 2),
+        ('gh pr create --body "reproduced on %s"' % FAKE_USER_TV, 2),
+        ('git commit -m "wake %s"' % FAKE_USER_MAC, 2),
         ('gh pr create --body "uid %s"' % FAKE_USERID, 2),
         ('git commit -m "docs: explain the 203.0.113.5 placeholder"', 0),
         ('make check', 0),
@@ -373,6 +411,8 @@ def secrets_case():
         (True, FAKE_PMS, "PMS_HOST"),
         (True, FAKE_TOKEN, "PMS_TOKEN"),
         (True, FAKE_MAC, ".tv-mac"),
+        (True, FAKE_USER_TV, "the per-user tv-host"),
+        (True, FAKE_USER_MAC, "the per-user tv-mac"),
         (True, FAKE_USERID, "test_user.id"),
         (True, FAKE_MACHINE, "shared_server.machine_id"),
         (False, "32400", "the port, in every doc"),

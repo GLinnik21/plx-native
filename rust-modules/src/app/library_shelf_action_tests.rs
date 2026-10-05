@@ -134,6 +134,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                 press: plx_machine::machine::PressRead {
                     scale: d.input.press.scale(),
                     is_long: d.input.press.was_long(),
+                    held_ms: None,
                 },
                 focus: d.input.engine.read(InputOwner::Entry(key.entry)),
                 owner: InputOwner::Entry(key.entry),

@@ -267,12 +267,14 @@ cp "$MAIN/tests/manifest.local.json" "$WT/tests/"        # only for ./tests/run.
   the copies go with them.
 - **`tests/manifest.local.json`** only for `--server`. The default (synthetic) tier of
   `tests/run.py` runs with no overlay at all.
-- **Do NOT copy `.tv-host`.** The Makefile's `TV` (`Makefile:52`) and `tools/tv-lock.sh:96` both
-  fall back to the main checkout's copy via `git rev-parse --git-common-dir`, and `wake-tv.sh` /
-  `tools/tv-session.sh` ask `make -s print-tv`. The one gap is `tests/run.py`, which reads
-  `REPO_ROOT/.tv-host` with no such fallback (`tests/run.py:85`) — the device lane either copies it
-  or passes `--tv`.
-- **Do NOT copy `.tv-mac`.** It is a cache; `wake-tv.sh` re-derives it from the ARP table.
+- **Nothing to seed for the TV address or MAC — do NOT copy `.tv-host` / `.tv-mac`.** Every reader
+  (the Makefile's `TV`, `tools/tv-ssh`, `tools/tv-lock.sh`, `tests/run.py`, `stream-screen.py`,
+  `wake-tv.sh`) goes through `tools/tv-config.sh`: this checkout's file, the main checkout's, then the
+  per-USER `~/.config/plxnative/tv-host` / `tv-mac` (`$PLX_TV_CONFIG_DIR` / `$XDG_CONFIG_HOME`
+  respected). Set those once per machine and every lane has them; `wake-tv.sh` also caches a MAC it
+  learns there, so a lane waking a sleeping set no longer re-learns it. A copy in each worktree would
+  go stale the first time the address changed in one place, which is why there is no seeding step and
+  no worktree hook.
 - **Do NOT `cp -R "$MAIN/vendor" "$WT/vendor"`.** The destination exists, so that writes
   `vendor/vendor/` — and doing it while seeding a fleet once put **30,247 build-artefact files
   (280 MB, plus the builder's MAC addresses and home path in FFmpeg's configure logs) into a branch
@@ -337,7 +339,7 @@ cannot be reached once they are running — a hazard you meant to mention is a h
    `down` resolves ONE install's runtime root, so if the two lanes were on different flavours run it
    for each (`tools/tv-session.sh --flavor stable down`). Then check for stray ssh clients:
    `pgrep -fl "ssh .*$(make -s print-tv)"` — **`make -s print-tv`, not `cat .tv-host`**, because a
-   lane is a worktree and a worktree has no `.tv-host`. Read those pids' argv; do not just count
+   lane is a worktree and a worktree has no `.tv-host` (`print-tv` goes through `tools/tv-config.sh`). Read those pids' argv; do not just count
    them. A count explained away as "my own grep pipeline" is precisely how the 2026-08-22 collision
    happened.
 

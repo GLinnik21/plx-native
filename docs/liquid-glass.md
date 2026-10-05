@@ -6,7 +6,8 @@ The backdrop-blur material (`gfx.rs`'s blur chain + `shaders/fs_glass.frag`, dra
 taste, so a design can be drawn against them instead of into them.
 
 **Glass is CHROME-ONLY since 2026-09-19.** Its users are the top bar's standing track, the profile
-chip's capsule and the dev tile band. Popover panels — the menus, the alert panels, the person bio,
+chip's capsule, the dev tile band and the one non-interactive standing note, Home's "Hold OK for
+options" capsule (`ui::hold_hint`). Popover panels — the menus, the alert panels, the person bio,
 the decision alert — no longer frost a backdrop blur: they stand on `widgets::panel_ground`, the
 15×8 underlay field the modal dim already latches (`ui::underlay`), windowed to the panel's own
 screen rect, graded by `theme::underlay::PANEL_TINT` under a `PANEL_LUMA_MAX` ceiling, with the
@@ -314,7 +315,9 @@ popup menu is too pixelated" was, 2026-08-20 to 2026-08-21.
 
 ## 7. Where it can go today
 
-**Glass: the chrome.** The top bar's standing track and the profile chip's capsule, on
+**Glass: the chrome and one standing note.** The top bar's standing track and the profile chip's capsule, and the
+Home screen's "Hold OK for options" capsule (`ui::hold_hint` — the track's material at a fixed weight, its own
+source in the page layer rather than a member of the shared top band, flat fallback when glass is refused), on
 `Glass::DYNAMIC_BACKDROP` (the one preset left). **Popovers and sheets over a UI page are not glass**:
 Sort, Filter, Sources, the item menu, *Also available*, *Track information*, *About*, Account, the
 person biography and the decision alert all draw their ground through `widgets::panel_ground` over
@@ -330,14 +333,19 @@ all three or none; "glass on Home only" is not an option, however tempting the f
 It ships, and `/tmp/plxnative-flattabs` is the way back to the flat capsule for a comparison.
 Its density is not a constant — see §6.
 
-**No:** anything on the player route (§1), and a second far-away glass cluster whose union would
-grow the snapshot toward the whole frame (§2). Neighbouring elements may share one cluster.
+**No:** anything on the player route (§1), and a second far-away glass cluster that the frame walk merges
+into the top band's grab, whose union would grow the snapshot toward the whole frame (§2). Neighbouring
+elements may share one cluster. A far-away second cluster is affordable only when the walk gives it its OWN
+source entry — Home's hold hint (~180k px²) is drawn in the page layer, which is not a shared band, so
+it never joins the top band's grab — and the 300k px² moving-host ceiling then applies per region.
 
 ---
 
 ## 8. Quick reference for a design pass
 
 - One glass CLUSTER per screen state — neighbours can share a chain; opposite corners grow its region.
+  The exception is a far-away surface in a non-shared layer that gets its own source entry (Home's hold
+  hint): it is never merged into the top band's grab, and the 300k px² ceiling applies to each region.
 - Never over video.
 - Whole surfaces, not scattered ornaments — area alone does not predict the five-pass cost.
 - In steady state, adjacent glass samples the page rather than refracting adjacent glass.

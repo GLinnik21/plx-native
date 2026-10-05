@@ -23,9 +23,20 @@ safe **crash tracer**, lifted out of `main.c` into its own translation unit for 
 died. Doing that immediately found a seven-week-old bug no log could have shown (below).
 
 Target device: LG 49SM9000PLA, webOS 4.5, rooted, reached as `root` over ssh. **Its address is NOT
-in the repo** — it comes from the gitignored **`.tv-host`** (one line, an IP or hostname), which the
-Makefile's `TV` and `tools/`' `TV_HOST` both fall back to; `make TV=1.2.3.4 …` overrides for one
-invocation, and a target that needs a TV with neither set fails saying so. The ssh password
+in the repo** — it comes from one line (an IP or hostname) in a gitignored file, found by ONE shared
+resolver, **`tools/tv-config.sh`** (`host` / `mac` / `dir` / `set-mac`), which the Makefile's `TV`
+and every `tools/` script, `tests/run.py` and the wake-tv skill call instead of carrying their own
+lookup. Order, first non-empty wins: the caller's environment (each tool keeps the variables it
+always honoured: `make TV=1.2.3.4 …` for one invocation, `PLX_TV_ADDR`/`TV`/`TV_HOST`, `TV_MAC`),
+then this checkout's `.tv-host` (`.tv-mac`), then the MAIN checkout's, then the per-USER file
+`${PLX_TV_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/plxnative}/tv-host` (`tv-mac`). **Set the
+per-user pair once per machine** and every checkout and linked worktree sees it: no worktree setup
+hook and no copying, which would go stale the first time the address or MAC changed in one place.
+The per-checkout file stays as an override. An empty or whitespace-only file counts as absent;
+`PLX_TV_NO_HOST_FILE=1` switches all the files off. `wake-tv.sh` writes a MAC it learns from ARP to
+the per-user `tv-mac` (mode 600), so it is known the next time the set is asleep — exactly when
+Wake-on-LAN needs it. A target that needs a TV with none configured fails saying so
+(`ci/test_tv_config.py` grades the resolver and its readers; `ci/test_tv_ssh.py` the ssh wrapper). The ssh password
 `alpine` lives in `tools/tv-ssh`, not the Makefile, and is tried only after this machine's ssh key is
 refused. It is webosbrew's *published* dev-mode root password, identical on every rooted TV, so it
 identifies nobody and removing it would break the loop for key-less machines. App id `com.beb.plxnative` — and since 2026-08-21 a second
@@ -449,7 +460,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   bind one and both halves of that failure are silent — see the capture trigger below.
   **Never `make -p`/`make -pn`**, which prints a recursive variable's UNEXPANDED
   definition, so `TV` comes back as the literal
-  `$(strip $(shell cat .tv-host …))` and every ssh built from it fails against a live television.
+  `$(strip $(shell tools/tv-config.sh host …))` and every ssh built from it fails against a live television.
   Full account (predates nightly): **`docs/two-installs.md`**.
 - **`RELEASE=1`** drops **all three** default cargo features: `devtools` (the on-screen counter — the
   last completed `fps=` present window, held until an ordinary present repaints it; the feature is
@@ -1059,8 +1070,10 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - **This repository is PUBLIC, and some of the data in this working copy is not the maintainer's
   to publish.** Several paths are gitignored for that reason — `.tv-host`, `.tv-mac`,
   `src/config.local.h` (a live Plex token), `tests/manifest.local.json` and `pkg/auth.json` among
-  them; the LIST is `PRIVATE_FILES` in `.claude/hooks/outbound-guard.py`, not this sentence, which
-  is why no count is given here. The rule for anything leaving the machine is **placeholders,
+  them — and the per-user `~/.config/plxnative/tv-host` / `tv-mac` (outside every checkout, so not
+  gitignored, but the same values and guarded the same way: `USER_TV_FILES` in the hook,
+  `PRIVATE_NAMES` in `ci/source_bundle.py`); the LIST is `PRIVATE_FILES` in
+  `.claude/hooks/outbound-guard.py`, not this sentence, which is why no count is given here. The rule for anything leaving the machine is **placeholders,
   always** — a PR body, an issue comment, a release note, a commit message — and
   `docs/shared-servers.md` carries the stand-in table this repo actually uses. **It has already
   failed once as a convention, in these words.** A batch of subagents told to write device

@@ -31,11 +31,14 @@ every ~20 s and polls SSH every 3 s, default timeout 180 s (`WAKE_TIMEOUT=300` t
 extend). Exit 0 = SSH answers; exit 1 = gave up.
 
 Config resolves at runtime — no network details are stored in the skill. The host
-comes from `$TV_HOST`/`$TV`, else the `Makefile`'s `TV` value (the single source of
-truth). The MAC needed for the magic packet comes from `$TV_MAC`, else the gitignored
-`.tv-mac` cache, else it is read from the ARP table while the TV is reachable and
-cached for next time — so the first `wake-tv.sh status` against a live TV is enough to
-arm future wakes. `TV_USER` (root) and `WAKE_TIMEOUT` (180) are the other overrides.
+comes from `$TV_HOST`/`$TV`, else `tools/tv-config.sh host` (the single source of truth the
+`Makefile`'s `TV` shares): this checkout's gitignored `.tv-host`, the main checkout's, then the
+per-user `~/.config/plxnative/tv-host`. The MAC needed for the magic packet comes from `$TV_MAC`,
+else `tools/tv-config.sh mac` (`.tv-mac` of this checkout / the main checkout, then the per-user
+`~/.config/plxnative/tv-mac`), else it is read from the ARP table while the TV is reachable and
+written to the **per-user** `tv-mac` (never into the checkout, so every worktree benefits and the
+set can be woken from a lane that never saw it up) — the first `wake-tv.sh status` against a live
+TV is enough to arm future wakes. `TV_USER` (root) and `WAKE_TIMEOUT` (180) are the other overrides.
 
 No prerequisites beyond macOS built-ins (`python3` broadcasts the WoL packet — there is
 no `wakeonlan` binary on a stock Mac) and working SSH auth to the TV.
@@ -49,7 +52,7 @@ no `wakeonlan` binary on a stock Mac) and working SSH auth to the TV.
   television — `com.beb.plxnative` and `com.beb.plxnative.debug`, the latter being what an
   unflavoured `make deploy` targets — and a hand-typed path compares the wrong one without
   erroring. (`make -s print-*` is a real recipe and side-effect free; **never `make -p`**, which
-  prints unexpanded definitions and hands you the literal `$(strip $(shell cat .tv-host …))`.)
+  prints unexpanded definitions and hands you the literal `$(strip $(shell tools/tv-config.sh host …))`.)
 - **Standby kills reverse SSH tunnels** (`ssh -R`) and can leave the TV-side
   dropbear holding the stale listen port — the next `-R` fails with
   "remote port forwarding failed". Kill the stale per-connection dropbear on the

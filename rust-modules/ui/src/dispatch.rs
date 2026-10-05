@@ -680,6 +680,7 @@ where
             press: PressRead {
                 scale: self.input.press.scale(),
                 is_long: self.input.press.was_long(),
+                held_ms: self.input.press.held_ms(tick.ms),
             },
             focus: self.input.engine.read(owner),
             owner,

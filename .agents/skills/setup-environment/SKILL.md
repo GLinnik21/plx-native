@@ -62,15 +62,20 @@ The build needs no private data, and neither does driving the TV: the app can ru
 synthetic `tests/mock_pms.py`, which accepts any non-empty token.
 
 ```bash
-echo '<tv-host>' > .tv-host      # the TV's address, one line (gitignored)
-echo '<tv-mac>'  > .tv-mac       # optional: only Wake-on-LAN needs it (cached from ARP once the TV is up)
+mkdir -p ~/.config/plxnative     # ONCE per machine: every checkout and worktree reads these (tools/tv-config.sh)
+echo '<tv-host>' > ~/.config/plxnative/tv-host   # the TV's address, one line
+echo '<tv-mac>'  > ~/.config/plxnative/tv-mac    # optional: only Wake-on-LAN needs it (cached from ARP once the TV is up)
 printf '#define PMS_HOST  "<this-mac-lan-ip>"\n#define PMS_PORT  32499\n' > src/config.local.h   # gitignored; no PMS_TOKEN
 make                             # PMS_HOST/PMS_PORT are compiled in; nothing else is read from config.local.h
 python3 tests/mock_pms.py --host <this-mac-lan-ip> --port 32499   # same address as PMS_HOST; the default binds loopback only
 tools/tv-session.sh up --guest --mock --screen home       # debug flavor only; deploys and md5-verifies the binary, boots the synthetic identity
 ```
 
-All three gitignored files are per-checkout, so a fresh worktree has none of them. `up` deploys
+The TV address and MAC are per-USER, not per-checkout: `${PLX_TV_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/plxnative}`,
+so a fresh worktree needs nothing seeded for them and no setup hook (a copied file would go stale). A
+`.tv-host` / `.tv-mac` in a checkout (or in the main checkout) still works and takes precedence, as a
+per-checkout override. `src/config.local.h` is the one gitignored file that is still per-checkout, so a
+fresh worktree has none. `up` deploys
 the built binary itself; `make FLAVOR=debug install` is needed only on a TV that has never had
 the debug build. `--mock` makes `--guest` use `tools/mock-guest.py`, which refuses any server that
 is not the synthetic mock, instead of resolving a managed user through plex.tv. Take the TV lock
@@ -82,7 +87,7 @@ Home, add `--arm framedrop=25` to `up`: the event log then gets `FRAMEDROP` deta
 frames over 25 ms.
 
 Without a TV, `make check` and `make sim` need no account either. `./tests/run.py --fps --mock`
-runs the fps scenes that declare a `mock` block (`home-grid`, `home-grid-deep`) against the mock
+runs the fps scenes that declare a `mock` block (`grep '"mock"' tests/manifest.json` lists them) against the mock
 with no `PMS_TOKEN`, no `tests/manifest.local.json` and no plex.tv call: it starts and stops
 `tests/mock_pms.py` itself on `PMS_HOST`/`PMS_PORT` with each scene's arguments (stop a mock you
 started by hand first), boots the same synthetic guest as `up --guest --mock`, and keeps the panel

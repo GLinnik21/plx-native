@@ -155,7 +155,7 @@ make -s print-tv                        # the TV address, expanded
 ```
 
 **Never reach for `make -p`/`make -pn` to read one of these.** It prints a recursive variable's
-UNEXPANDED DEFINITION, so `TV` comes back as the literal `$(strip $(shell cat .tv-host …))` — every
+UNEXPANDED DEFINITION, so `TV` comes back as the literal `$(strip $(shell tools/tv-config.sh host …))` — every
 ssh built from it then fails, and the tool reports an unreachable television that is in fact awake
 and idle in front of you.
 

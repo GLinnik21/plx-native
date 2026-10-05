@@ -85,10 +85,10 @@ tv() { "$TVSSH" ssh tv "$@"; }
 
 if [ "$TEST" != 1 ]; then
   # The television's lock, taken the way capture-screen.sh takes it (it needs the address in $TV; a
-  # linked worktree has no .tv-host of its own, so the Makefile is asked for the main checkout's).
-  TV_HOST="${TV_HOST:-$(cat "$HERE/../.tv-host" 2>/dev/null || true)}"
-  [ -n "$TV_HOST" ] || TV_HOST="$(make -s -C "$HERE/.." print-tv 2>/dev/null | head -1)"
-  [ -n "$TV_HOST" ] || { echo "tv-sched-trace: no TV configured (.tv-host or TV_HOST)" >&2; exit 1; }
+  # linked worktree has no .tv-host of its own, so tools/tv-config.sh also reads the main checkout's
+  # and the per-user one).
+  TV_HOST="${TV_HOST:-$("$HERE/tv-config.sh" host 2>/dev/null || true)}"
+  [ -n "$TV_HOST" ] || { echo "tv-sched-trace: no TV configured (~/.config/plxnative/tv-host, .tv-host or TV_HOST)" >&2; exit 1; }
   TV="$TV_HOST" "$HERE/tv-lock.sh" require --quiet --why "tv-sched-trace.sh" || exit 1
   # A trace of the fast-profile (tvdev, no LTO) binary does not show the shipped build's waits: stop
   # (one line naming the fix) rather than record it. Read-only; names the profile on stderr.

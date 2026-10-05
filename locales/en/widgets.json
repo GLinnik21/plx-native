@@ -300,6 +300,13 @@
     "value": "Scroll",
     "description": "widgets hint scroll"
   },
+  "widgets.hint.hold_options": {
+    "value": "Hold {key} for options",
+    "description": "Complete sentence in the Home screen's standing hint capsule, teaching that holding the remote's OK button on a card opens its context menu. {key} is the OK button rendered as a keycap; keep exactly one occurrence. Must fit one line in the capsule at CAPTION size in every shipped language.",
+    "args": {
+      "key": "str"
+    }
+  },
   "widgets.failure.no_pass": {
     "value": "This server has no {subscription}",
     "description": "Player error caption or supporting subscription fact.",

@@ -209,12 +209,13 @@ stop_viewers() {
 
 # HOST came back from the batched query above, as `print-tv`. This used to be a local `tv_host()`
 # that read `$TV`, then `.tv-host`, then SCRAPED `^TV *=` out of the Makefile with sed — and that
-# last branch was already dead: the Makefile ships `TV ?= $(strip $(shell cat .tv-host …))`, which
+# last branch was already dead: the Makefile ships `TV ?= $(strip $(shell tools/tv-config.sh host …))`, which
 # the pattern cannot match. Asking make is also the only correct way; `make -pn` prints a recursive
 # variable's DEFINITION, so HOST became the literal `$(strip $(shell cat .tv-host ...))` text, every
 # ssh failed with "hostname contains invalid characters", and `up` reported "TV unreachable" for a
-# television that was awake and answering. `tools/crash-report.sh` and the wake-tv skill were both
-# moved onto `print-tv` already; this was the last copy.
+# television that was awake and answering. `tools/crash-report.sh` was moved onto `print-tv`, and the
+# wake-tv skill onto `tools/tv-config.sh` (the resolver `print-tv` itself shells out to); this was the
+# last copy.
 # Every ssh goes through tools/tv-ssh: the key first, `sshpass` only if the set refuses it, a fast
 # failure if it is unreachable, and neither the address nor the password on any line it prints.
 tv()  { PLX_TV_ADDR="$HOST" "$REPO/tools/tv-ssh" ssh tv "$@"; }

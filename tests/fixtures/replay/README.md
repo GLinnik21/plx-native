@@ -311,3 +311,13 @@ recorded against shape `10119451143357529556` were observed being refused (`repl
 invalid or incompatible recording`, all three, both modes), then all three were re-recorded on
 the simulator with `tools/plxnative-rec rerecord` against shape `3109788404986066319` and
 replayed SAME in Targets and Resolve (`make check-replay`) with every difference counter zero.
+
+Home's "Hold OK for options" hint (`ui::hold_hint`) changed recorded behaviour without moving the
+shape: a Home that rests on a shelf tile for 1.5 s now draws a capsule, so `1-boot-home-chip-grid`
+(which rests on Home that long) was observed being refused on the first measurement it had never
+taken (`replay: REFUSED — replay measurement table miss`, both modes), while `6-settings-family`
+and `12-filmography-detail-return` never rest on a Home card and stayed SAME. The anchor was
+recorded afresh on the unchanged shape (`tests/focusfp.sh --rec --only 1`, `tools/plxnative-rec
+import`, `anchor: true` restored by hand) and replayed SAME in Targets and Resolve on three
+consecutive runs. The closed alphabet gains the capsule's three runs (`Hold`, `for options`,
+`OK`), named in `_sources.hold_hint`.
