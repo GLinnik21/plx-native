@@ -189,6 +189,18 @@ pub fn fold_language(lang: &str) -> Option<String> {
     plx_plex::plex::subtitles::query_language(&code)
 }
 
+/// The language a search opens on: the viewer's subtitle preference, else the first of their other
+/// languages (`yours`, in preference order), else English — each candidate only if it
+/// [`fold_language`]s, so a preference with no two-letter code falls through to one that can be
+/// searched instead of opening on a refusal.
+pub fn default_language<S: AsRef<str>>(pref: Option<&str>, yours: impl IntoIterator<Item = S>) -> String {
+    pref.into_iter()
+        .map(str::to_string)
+        .chain(yours.into_iter().map(|l| l.as_ref().to_string()))
+        .find(|l| fold_language(l).is_some())
+        .unwrap_or_else(|| "en".to_string())
+}
+
 /// A read-only view of the model, borrowed per frame like `MetadataView`.
 #[derive(Clone, Copy)]
 pub struct SubSearchView<'a> {
@@ -568,6 +580,20 @@ impl SubSearchAdapter {
 mod tests {
     use super::*;
 
+    /// **Regression (ultrareview, 2026-10-05):** a subtitle preference with no two-letter code
+    /// (Filipino, `fil`) was taken as the Search page's default unchecked, so the page opened on
+    /// "can't be searched in this language" although the viewer's other languages would have
+    /// searched fine. Every candidate is held to the same fold; the first that folds wins.
+    #[test]
+    fn the_default_search_language_skips_a_preference_that_cannot_be_searched() {
+        assert!(fold_language("fil").is_none(), "the premise: Filipino has no 2-letter code");
+        assert_eq!(default_language(Some("fil"), ["nld".to_string()]), "nld");
+        assert_eq!(default_language(Some("fil"), ["fil".to_string()]), "en", "nothing folds: English");
+        assert_eq!(default_language(Some("es"), ["nld".to_string()]), "es", "a searchable preference wins");
+        assert_eq!(default_language(Some(""), Vec::<String>::new()), "en");
+        assert_eq!(default_language(None, ["eng".to_string()]), "eng");
+    }
+
     fn hit(key: &str, title: &str, score: i64) -> SubHit {
         SubHit { key: key.into(), title: title.into(), provider: "OpenSubtitles".into(),
             language: "Nederlands".into(), language_code: "nld".into(), codec: "srt".into(),
@@ -664,8 +690,14 @@ mod tests {
     }
 
     /// A slow answer for the old language must never repopulate the new one's results.
+    ///
+    /// Serial: the pump ends by spawning the search the NEW language owes whenever
+    /// `plex::client_for` answers for this server, and that registry is process-global — a
+    /// parallel test with a client installed for server 1 made the claim busy again here
+    /// (intermittent, 2026-10-04/05). Under the lock no other test's client is installed.
     #[test]
     fn a_landing_from_a_superseded_generation_is_discarded() {
+        let _serial = plx_base::testlock::serial();
         let (mut state, adapter) = opened("nl");
         let old = state.generation();
         assert!(state.run(&adapter, SubSearchCmd::SetLanguage("en".into())));

@@ -1371,6 +1371,9 @@ impl TrackMenuState {
             lang: picked.map(|h| h.language.clone()).unwrap_or_default(),
             lang_code: stream.language_code.clone(),
             title: picked.map(|h| h.title.clone()).unwrap_or_default(),
+            // the hit's own badges, so the row reads the same here as on the Search page
+            sdh: picked.is_some_and(|h| h.hearing_impaired),
+            forced: picked.is_some_and(|h| h.forced),
             external: true,
             ..Default::default()
         };
@@ -5753,6 +5756,22 @@ mod motion_tests {
             menu.set_search(snap(SearchStatus::Ready, None, vec![hit("rel")], installed.clone()));
             assert!(menu.take_search_commit().is_none(), "tab {tab}: reopening must not re-commit");
         }
+    }
+
+    /// **Regression (ultrareview, 2026-10-05):** a result badged SDH/Forced on the Search page lost
+    /// the badge once it landed in the Subtitles list — the listed stream was built with both flags
+    /// defaulted. It carries the hit's own flags, so the row reads the same in both places.
+    #[test]
+    fn an_installed_download_keeps_its_sdh_and_forced_flags() {
+        let _g = plx_base::testlock::serial();
+        let flagged = SubHit { hearing_impaired: true, forced: true, ..hit("rel") };
+        let waiting = DownloadPhase::Waiting { hit: 0, before: vec![1], attempts: 0 };
+        let installed = DownloadPhase::Installed { hit: 0, stream: plx_data::subsearch::InstalledStream {
+            id: 1929519, key: "/library/streams/1929519".into(), codec: "srt".into(), language_code: "nld".into() } };
+        let (mut menu, _store) = on_search_page(snap(SearchStatus::Ready, None, vec![flagged.clone()], waiting));
+        menu.set_search(snap(SearchStatus::Ready, None, vec![flagged], installed));
+        let (stream, _) = menu.take_search_commit().expect("the install is handed over");
+        assert!(stream.sdh && stream.forced, "sdh={} forced={}", stream.sdh, stream.forced);
     }
 
     /// The installed subtitle joins the PLAYING item's list, once, and only that item's.

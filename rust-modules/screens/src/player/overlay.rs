@@ -274,14 +274,10 @@ fn subtitle_yours_langs(ps: &plx_media::route::PlaybackSession, meta: plx_data::
 }
 
 /// The language the Search page opens on: the account's subtitle language, else the menu's own
-/// "your languages" (the playing audio's, the current subtitle's), else English. The store folds it
-/// onto the two-letter code the server accepts.
+/// "your languages" (the playing audio's, the current subtitle's), else English — the first that
+/// can be searched (`subsearch::default_language`). The store folds it onto the two-letter code.
 fn search_default_lang(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> String {
-    plx_media::route::cur_sub_pref_lang(ps)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .or_else(|| subtitle_yours_langs(ps, meta).into_iter().find(|l| plx_data::subsearch::fold_language(l).is_some()))
-        .unwrap_or_else(|| "en".to_string())
+    plx_data::subsearch::default_language(plx_media::route::cur_sub_pref_lang(ps), subtitle_yours_langs(ps, meta))
 }
 
 impl PlayerOverlayScreen {
