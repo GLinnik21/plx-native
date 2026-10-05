@@ -122,6 +122,27 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   (`player::engine::prime_livelock_tests`) sat outside the gate entirely while 1398 default-feature
   tests passed. Cargo keys fingerprints by feature set, so the two coexist in one `target/` and the
   second pass costs seconds warm. See the testing section for what it does and does not cover.
+  **The 14 test binaries run side by side, not one after another.** `cargo test` executes the
+  binaries it builds serially, so after the workspace split the suite's wall time was the SUM of
+  the per-crate times and one slow binary set it: measured 2026-10-05, 78.8 s sequential, of which
+  `plx_media` alone was 28.7 s because `route::decision::plan_tests::unconfirmed_profile_5_forbids_copy_before_mde`
+  held `testlock::serial()` for 16 s (its mock PMS waited out an 8 s deadline per loop pass for a
+  fourth request that never comes; every other test in that binary that takes `serial()` (190 call sites) queued
+  behind it). In the single pre-split binary that wait overlapped with everything else, which is why the
+  suite then ran in 60.5 s and the split alone cost 23 s. Every recipe that runs the suite
+  (`check-cargo-unit-default`, `check-cargo-unit-hostsim`, `test-fast`) therefore wraps the same
+  `cargo ... test --lib -p ...` line in `tools/cargo-test-parallel.py` (`$(UNIT_RUN)`): it builds
+  with `--no-run --message-format=json-render-diagnostics`, runs the reported test executables with
+  a bounded job count (`PLX_TEST_JOBS`, default `min(6, CPUs)`; each binary gets its share of
+  `RUST_TEST_THREADS`), each in its package directory with its own `PLXNATIVE_RUNTIME_DIR`
+  subdirectory, and prints every binary's whole output, including its literal `test result:` line.
+  It keeps the gate honest: every binary runs even after a failure (exit 101 if any failed), a
+  package that produced no test executable, or a build that reported none, is an error, and a
+  failed build returns cargo's status. `ci/test_cargo_test_parallel.py` pins those. CI is
+  unchanged: its unit jobs call the same make targets. Measured the same day on the 10-core Mac
+  (binaries already built): 78.8 s sequential -> 17.9 s with 4 jobs and 14 s with 6 or more, after
+  the fixes to the 16 s test and to `plx_plex`'s TEST-NET connect-timeout test. The remaining long
+  pole is `plx_media`'s chain of `serial()` tests (about 12 s end to end even alone).
 - `make lint` — three **named** clippy lints (`ifs_same_cond`, `same_functions_in_if_condition`,
   `if_same_then_else`) over the whole crate, `-A clippy::all` first so nothing else can *fail* the
   gate (rustc's own warnings still print). It exists for one bug class the unit suite cannot reach:
@@ -132,7 +153,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
 - `make test-fast [T=filter]` — **opt-in** incremental inner loop: the same default-feature
   `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
   with `CARGO_INCREMENTAL=1` in its own `rust-modules/target-fast` (gitignored). `T=route::`
-  forwards a test-name filter; the `test result:` line is cargo's own. Use it for a long series of
+  is the test-name filter, handed to every one of the 14 test binaries; each prints its own libtest
+  `test result:` line (the counts are per crate, never one total), followed by the wrapper's summary line. Use it for a long series of
   small edits in one lane: an edit-rebuild is ~10 s against 31-32 s non-incremental, flat across
   leaf/mid/hub edits (measured 2026-10-01, 5 interleaved rounds; cold is 51.7 s vs 46.2 s, so it
   loses on a one-off run). The price is disk: the dir grows to ~2.7 GB (`debug/incremental` 2.0 GB)
@@ -142,6 +164,31 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `CARGO_INCREMENTAL=0` only when `.git` is a file; the main checkout keeps its cache);
   `ci/test_test_fast.py` pins that the `check*` and `lint` recipes never name `CARGO_INCREMENTAL=1`
   or `target-fast`, and that `tools/cargo-seed.py` and `tools/build-gc.sh` treat the dir correctly.
+- `make test-crate C=plx_ui [T=filter] [DEPS=1]` — **test what you touched**: builds and runs only
+  the named crate's lib tests (several crates: `C='plx_ui plx_plex'`; the application crate is
+  `C=app`; `plx_` is optional) in the SAME `target-fast` tree and with the same environment as
+  `test-fast`. An edit in a low crate makes `test-fast` rebuild and relink every dependent's test
+  binary; this builds the one crate. `DEPS=1` adds the workspace crates that DIRECTLY depend on it,
+  read from `cargo metadata` (`tools/test-crate.py`; no list kept anywhere). **The features are the
+  point**: the application crate's defaults (`devtriggers`, `devtools`, `threadcheck`) are what turn
+  on the dev surface in every layer, and cargo unifies features only across the packages it is asked
+  to build, so a bare `cargo test -p plx_plex` runs 458 tests where the suite runs 466. The tool
+  reads the full suite's resolution (`--unit-graph`, nothing compiled) and passes each feature the
+  full build enables on the selected crate and on the crates it names in its `Cargo.toml` as
+  explicit `--features crate/feature` flags. Cargo only lets `--features` address those, so a
+  third-party crate that two workspace crates request different features of can still compile as a
+  second variant the first time you switch crates; each variant is cached after that.
+  Refused under `RELEASE=1`. `ci/test_test_crate.py` pins the command shape against a fake cargo.
+  Measured 2026-10-05, 10-core Mac, medians of 3, one appended comment per run (the incremental
+  tree warm; "build only" is `T=` naming no test): an edit in `plx_base` costs `make test-fast`
+  27.2 s (10.0 s build only) and `make test-crate C=plx_base` 1.7 s (1.2 s build only); an edit in
+  `plx_screens` costs 22.7 s (3.4 s) and 8.3 s (3.1 s); `DEPS=1` on `plx_base` pulls in the
+  application crate and costs 24.2 s. **`cargo-nextest` was measured and is not used**: 33-40 s for
+  the same suite against the wrapper's 14 s (it runs each of the 5758 tests in its own process), and
+  one of its three runs failed `account_to_settings_never_unfreezes_the_host`, a test that fails
+  about one run in three when started alone in a fresh process (300 runs, with a shared and with a
+  private runtime dir) and is hidden in the suite by the tests that run before it in the same
+  process. Adopting it would also need the tool on every machine and CI job.
 - **CI build health** — four tools keep the build from growing unnoticed, and none of them is a
   device gate.
   - *Timings artifact.* `host-unit-default` compiles the test binary in its own step with
@@ -197,7 +244,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `ci/test_build_not_always_dirty.py` hazard); an **edit-rebuild** after appending a comment to a
   leaf file of each crate (`plx_base`'s `cbuf.rs`, `plx_machine`'s `landgate.rs`, `plx_platform`'s `devcaps.rs`, `plx_gfx`'s `overdraw.rs`, `plx_net`'s `stream_redirect.rs`, `plx_ui`'s `dwell.rs`, `plx_plex`'s `retry.rs`, `plx_telemetry`'s `window.rs`, `plx_data`'s `tape.rs`, `plx_session`'s `scripted.rs`, `plx_media`'s `units.rs`, `plx_appkit`'s `skip_pill.rs`, `plx_screens`'s `clock_readout.rs`, the application's `coldstart.rs`) and to a hub (`plx_ui`'s `lib.rs`), non-incremental (`CARGO_INCREMENTAL=0`, the
   default `target`) and incremental (`CARGO_INCREMENTAL=1`, `target-fast`; skipped with a note when
-  that tree is absent unless `--cold`); the **unit suite** run on a warm tree with its `test
+  that tree is absent unless `--cold`); the **unit suite** run on a warm tree, through the same
+  `tools/cargo-test-parallel.py` wrapper the Makefile's recipes use (`UNIT_RUN` in `print-bench-config`), with its `test
   result:` counts; the **ARM staticlib** line after touching `lib.rs` plus the archive's size and
   sha256 (skipped with a note when no ARM archive exists in this checkout, and it never starts the
   FFmpeg build); and the **sizes** of `rust-modules/target*`. `build-bench-quick` is no-op + leaf

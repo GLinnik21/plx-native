@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -62,25 +63,34 @@ if "--no-run" in args:
     fresh = read(state) == sig and not os.environ.get("FAKE_ALWAYS_DIRTY")
     open(state, "w").write(sig)
     print("   Compiling noise on stdout that is not JSON")
+    # The unit suite goes through tools/cargo-test-parallel.py, which runs the test executables this
+    # build reports: one per package, each printing its own `test result:` line.
+    exes = {"plx_base": 5300, "plxnative-modules": 125}
+    def art(pkg_path, name, version):
+        exe = os.path.join(os.environ["FAKE_STATE"] + ".bins", name)
+        os.makedirs(os.path.dirname(exe), exist_ok=True)
+        with open(exe, "w") as f:
+            f.write("#!/bin/sh\necho 'test result: ok. %d passed; 0 failed; %d ignored; 0 measured; 0 filtered out; finished in 0.10s'\n"
+                    % (exes.get(name, 0), 7 if name == "plx_base" else 0))
+        os.chmod(exe, 0o755)
+        print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules%s#%s@%s" % (pkg_path, name, version),
+                          "fresh": fresh, "manifest_path": os.getcwd() + "/Cargo.toml", "target": {"name": name},
+                          "profile": {"test": True}, "executable": exe}))
     print(json.dumps({"reason": "compiler-artifact", "package_id": "registry+x#serde@1.0.0", "fresh": True}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/base#plx_base@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/machine#plx_machine@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/platform#plx_platform@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/gfx#plx_gfx@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/net#plx_net@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/ui#plx_ui@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/plex#plx_plex@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/telemetry#plx_telemetry@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/data#plx_data@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/session#plx_session@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/media#plx_media@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/appkit#plx_appkit@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/screens#plx_screens@0.0.0", "fresh": fresh}))
-    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules#plxnative-modules@0.7.0", "fresh": fresh}))
-elif args[:2] == ["test", "--lib"]:
-    print("running 5432 tests")
-    print("test result: ok. 5300 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 1.00s")
-    print("test result: ok. 125 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s")
+    art('/base', 'plx_base', '0.0.0')
+    art('/machine', 'plx_machine', '0.0.0')
+    art('/platform', 'plx_platform', '0.0.0')
+    art('/gfx', 'plx_gfx', '0.0.0')
+    art('/net', 'plx_net', '0.0.0')
+    art('/ui', 'plx_ui', '0.0.0')
+    art('/plex', 'plx_plex', '0.0.0')
+    art('/telemetry', 'plx_telemetry', '0.0.0')
+    art('/data', 'plx_data', '0.0.0')
+    art('/session', 'plx_session', '0.0.0')
+    art('/media', 'plx_media', '0.0.0')
+    art('/appkit', 'plx_appkit', '0.0.0')
+    art('/screens', 'plx_screens', '0.0.0')
+    art('', 'plxnative-modules', '0.7.0')
 elif args[0] == "rustc":
     tgt = args[args.index("--target") + 1]
     tdir = args[args.index("--target-dir") + 1]
@@ -97,7 +107,7 @@ FAKE_SYSCTL = ('#!/bin/sh\ncase "$2" in\n'
 SCRATCH_MAKEFILE = r'''print-bench-config:
 	@printf '%s\n' 'RUST_NIGHTLY=nightly' 'RUST_TDIR=target' 'RUST_TARGET=arm-unknown-linux-gnueabi' \
 	  'RUST_FEATFLAGS=' 'RUST_LIB=rust-modules/target/arm-unknown-linux-gnueabi/release/libplxnative_modules.a' \
-	  'RUST_ENV=RUSTFLAGS="-C target-cpu=fake -C x"' 'TEST_FAST_TDIR=target-fast' 'RELEASE=$(RELEASE)'
+	  'RUST_ENV=RUSTFLAGS="-C target-cpu=fake -C x"' 'TEST_FAST_TDIR=target-fast' 'UNIT_RUN=python3 ../tools/cargo-test-parallel.py' 'RELEASE=$(RELEASE)'
 '''
 LEAF = "rust-modules/base/src/cbuf.rs"
 MACHINE_LEAF = "rust-modules/machine/src/landgate.rs"
@@ -141,6 +151,8 @@ class Sandbox:
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
             (self.repo / rel).write_text(body)
         (self.repo / "Makefile").write_text(SCRATCH_MAKEFILE)
+        (self.repo / "tools").mkdir()
+        shutil.copy(ROOT / "tools" / "cargo-test-parallel.py", self.repo / "tools" / "cargo-test-parallel.py")
         git(self.repo, "init", "-q")
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "scratch")
@@ -273,7 +285,10 @@ class ShapeTests(unittest.TestCase):
             self.assertTrue(inc)
             self.assertTrue(all(c["tdir"] == "target-fast" and c["args"] == list(bb.HOST_TEST_BUILD_ARGS)
                                 for c in inc), inc)
-            self.assertIn(list(bb.HOST_TEST_ARGS), [c["args"] for c in plain])  # the suite itself
+            # The suite itself: the runner builds the very command `make check` names, then runs
+            # the binaries (no `test --lib` without --no-run is ever issued by it).
+            self.assertIn(list(bb.HOST_TEST_ARGS) + ["--no-run", "--message-format=json-render-diagnostics"],
+                          [c["args"] for c in plain])
             arm = [c for c in calls if c["args"][0] == "rustc"]
             self.assertEqual(len(arm), 1)
             self.assertEqual(arm[0]["args"], ["rustc", "--release", "--target", "arm-unknown-linux-gnueabi",

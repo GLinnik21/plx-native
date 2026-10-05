@@ -83,6 +83,8 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   queuing (measured 2026-09-28: a lone run ~10 min, seven at once made one take 60 min).
   `PLX_CHECK_LOCK=off` bypasses the lock. Never launch it in the foreground with a short tool
   timeout — a queued run can wait a long time before it even starts building.
+- While iterating on one crate, `make test-crate C=plx_ui [T=filter] [DEPS=1]` builds and runs only
+  that crate's lib tests in `make test-fast`'s incremental tree. It is a loop, not a gate.
 - A PR that touches `Makefile`, `Cargo.toml`, `Cargo.lock`, `build.rs`, `.cargo/` config,
   `.github/workflows/` or the module layout pastes a before/after `make build-bench` table in its
   body (`docs/agent-reference.md`, build section); the tool queues on the `make check` lock.

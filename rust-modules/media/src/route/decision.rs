@@ -6249,6 +6249,51 @@ pub fn playback_preview_with_capability_for_test(
 
 static PLAY_GEN: AtomicU32 = AtomicU32::new(0);
 static PLAY_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Resolve workers (the detached `resolve` thread of [`request_play_inner`]) that have not
+/// finished yet, retirement of an abandoned plan included.
+///
+/// [`cancel_play`] only withdraws the landing: the worker still runs its `build_stream` to the end
+/// and then sends the `stop?closeResourceSession=1` for a plan nobody will play, to the server
+/// named by the plan's `ServerId`. That is correct in production and a cross-test hazard in the
+/// host suite, because `ServerId`s are reused after `reset_servers_for_test`: a worker a finished
+/// test left behind resolved its stop against the NEXT test's fixture server, landing in that
+/// fixture's request log as its first request (the `lifecycle_regression_tests` flake: "the
+/// blocked resolve cannot clean up before it is released", 1 run in 300 alone, 1 in 15 under
+/// load). [`wait_resolve_workers_for_test`] is how a test waits its own workers out.
+static RESOLVE_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts one resolve worker from before it is spawned until its closure returns, panics, or is
+/// dropped unspawned.
+struct ResolveWorker;
+
+impl ResolveWorker {
+    fn enter() -> Self {
+        RESOLVE_WORKERS.fetch_add(1, Ordering::SeqCst);
+        ResolveWorker
+    }
+}
+
+impl Drop for ResolveWorker {
+    fn drop(&mut self) {
+        RESOLVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Wait up to `limit` for every resolve worker to finish; `false` if one is still running. A test
+/// calls this after [`cancel_play`], while its fixture server can still answer the worker.
+#[cfg(any(test, feature = "test-support"))]
+pub fn wait_resolve_workers_for_test(limit: std::time::Duration) -> bool {
+    let end = std::time::Instant::now() + limit;
+    while RESOLVE_WORKERS.load(Ordering::SeqCst) != 0 {
+        if std::time::Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    true
+}
+
 struct PlayLanding {
     gen: u32,
     trace_generation: u32,
@@ -6530,7 +6575,9 @@ fn request_play_inner(
     }
     PLAY_BUSY.store(true, Ordering::SeqCst);
     let (rk, part, vc, ac) = (request.rk, request.part, request.vcodec, request.acodec);
+    let worker = ResolveWorker::enter();
     let spawned = plx_base::task::spawn_small("resolve", move || {
+        let _worker = worker;
         if drain_previous {
             // The old attempt's `state=stopped` and transcode `/stop` were intentionally moved off
             // the SDL thread.  A user Retry must nevertheless preserve their ordering relative to
