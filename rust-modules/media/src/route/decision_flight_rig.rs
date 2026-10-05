@@ -5,7 +5,8 @@
 //!
 //! The server holds each live `/decision` for `delay` before answering, so a test has a window in
 //! which the flight's worker is known to be waiting on the network, and it logs every request line
-//! BEFORE it writes the answer, so a client that has been answered can rely on the log.
+//! BEFORE it writes the answer, so a client that has been answered can rely on the log. Any other
+//! request but a stop is held for `delay` BEFORE it is logged (see the server loop).
 
 use super::test_support::*;
 use super::test_support::apply_plan;
@@ -76,10 +77,20 @@ impl FlightRig {
             match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let line = drain_http(&mut socket);
+                    let probe = line.contains("/decision?") && line.contains("hasMDE=1");
+                    let decision = line.contains("/decision?") && !probe;
+                    // A selection PUT (or any other worker request but a stop) is logged only after
+                    // `delay`, so a frame that returns within it sees an empty log whatever the
+                    // machine's load. A `/decision` is logged at once and HELD instead, which is
+                    // the window a test waits in; a stop is instant housekeeping, never what a
+                    // frame is graded on.
+                    if !probe && !decision && !line.contains("/stop?") {
+                        std::thread::sleep(delay);
+                    }
                     shared.lock().unwrap_or_else(|e| e.into_inner()).push(line.clone());
-                    if line.contains("/decision?") && line.contains("hasMDE=1") {
+                    if probe {
                         write_json(&mut socket, MDE_DIRECTPLAY);
-                    } else if line.contains("/decision?") {
+                    } else if decision {
                         std::thread::sleep(delay);
                         let refuse = owed
                             .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
@@ -230,6 +241,12 @@ impl FlightRig {
     /// Every request line the server has seen, in order.
     pub(crate) fn requests(&self) -> Vec<String> {
         self.log.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// How many requests other than encoder stops the server has been asked: what a frame is
+    /// graded on, since a stop is queued by an earlier flight's housekeeping on its own worker.
+    pub(crate) fn asked(&self) -> usize {
+        self.requests().iter().filter(|r| !r.contains("/video/:/transcode/universal/stop")).count()
     }
 
     /// How many live `/decision` calls (not the `hasMDE=1` probe) the server has been asked.

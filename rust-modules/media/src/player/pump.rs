@@ -2274,13 +2274,13 @@ mod flight_tests {
         let mut rig = Rig::new(150);
         FlightRig::offer_original(&mut rig.ps, false);
         rig.frame();
-        let asked = rig.flight.requests().len();
+        let asked = rig.flight.asked();
         let epoch = engine_epoch(&mut rig);
 
         FlightRig::queue_manual_original(&rig.ps, false);
         rig.frame();
         assert_eq!(
-            rig.flight.requests().len(),
+            rig.flight.asked(),
             asked,
             "the claiming frame made a PMS round trip on the frame thread: {:?}",
             rig.flight.requests()
@@ -2309,11 +2309,11 @@ mod flight_tests {
         FlightRig::offer_original(&mut rig.ps, false);
         rig.flight.refuse_decisions(1);
         rig.frame();
-        let asked = rig.flight.requests().len();
+        let asked = rig.flight.asked();
 
         FlightRig::queue_manual_original(&rig.ps, true);
         rig.frame();
-        assert_eq!(rig.flight.requests().len(), asked, "{:?}", rig.flight.requests());
+        assert_eq!(rig.flight.asked(), asked, "{:?}", rig.flight.requests());
         assert!(crate::route::flight_outstanding());
 
         rig.frames_until("the owed reload's landing", |r| {
@@ -2355,13 +2355,13 @@ mod flight_tests {
         let mut rig = hls_rig(150);
         FlightRig::offer_original(&mut rig.ps, false);
         rig.frame();
-        let asked = rig.flight.requests().len();
+        let asked = rig.flight.asked();
         let epoch = engine_epoch(&mut rig);
 
         FlightRig::publish_hls_to_original(60_000_000_000);
         rig.frame();
         assert_eq!(
-            rig.flight.requests().len(),
+            rig.flight.asked(),
             asked,
             "the claiming frame made a PMS round trip on the frame thread: {:?}",
             rig.flight.requests()
@@ -2447,13 +2447,13 @@ mod flight_tests {
     fn an_automatic_hls_fallback_frame_makes_no_pms_call_and_the_worker_lands_it_later() {
         let mut rig = auto_original_rig(150);
         rig.frame();
-        let asked = rig.flight.requests().len();
+        let asked = rig.flight.asked();
         let epoch = engine_epoch(&mut rig);
 
         FlightRig::publish_original_to_hls(6_000, 60_000_000_000);
         rig.frame();
         assert_eq!(
-            rig.flight.requests().len(),
+            rig.flight.asked(),
             asked,
             "the claiming frame made a PMS round trip on the frame thread: {:?}",
             rig.flight.requests()
@@ -2691,14 +2691,14 @@ mod flight_tests {
     #[test]
     fn a_failed_original_trial_frame_makes_no_pms_call_and_the_worker_lands_the_rollback_later() {
         let mut rig = failed_original_trial_rig(150);
-        let asked = rig.flight.requests().len();
+        let asked = rig.flight.asked();
         let decisions = rig.flight.decisions();
         let epoch = engine_epoch(&mut rig);
 
         SHARED.load_failed.store(true, Release);
         rig.frame();
         assert_eq!(
-            rig.flight.requests().len(),
+            rig.flight.asked(),
             asked,
             "the failure frame made a PMS round trip on the frame thread: {:?}",
             rig.flight.requests()
@@ -2723,11 +2723,11 @@ mod flight_tests {
         let mut rig = failed_original_trial_rig(40);
         let epoch = engine_epoch(&mut rig);
         rig.flight.refuse_decisions(1);
-        let asked = rig.flight.requests().len();
+        let asked = rig.flight.asked();
 
         SHARED.load_failed.store(true, Release);
         rig.frame();
-        assert_eq!(rig.flight.requests().len(), asked, "{:?}", rig.flight.requests());
+        assert_eq!(rig.flight.asked(), asked, "{:?}", rig.flight.requests());
         assert!(crate::route::flight_outstanding());
 
         rig.frames_until("the refusal's landing", |r| {
@@ -2788,7 +2788,7 @@ mod flight_tests {
     #[test]
     fn a_synchronous_trial_load_failure_makes_no_pms_call_and_the_worker_lands_the_rollback_later() {
         let mut rig = failed_original_trial_rig(150);
-        let asked = rig.flight.requests().len();
+        let asked = rig.flight.asked();
         let decisions = rig.flight.decisions();
         let epoch = engine_epoch(&mut rig);
         // The candidate route is gone, so the trial's own reload cannot start.
@@ -2799,7 +2799,7 @@ mod flight_tests {
             start_original_trial_reload(&mut rig.ps, &mut rig.pa, crate::route::AutoOriginalReload::Remux, 60_000_000_000);
         }
         assert_eq!(
-            rig.flight.requests().len(),
+            rig.flight.asked(),
             asked,
             "the failure frame made a PMS round trip on the frame thread: {:?}",
             rig.flight.requests()
@@ -2848,13 +2848,13 @@ mod flight_tests {
     #[test]
     fn a_foreground_rollback_is_pending_without_a_pms_call_and_lands_a_tracked_reload() {
         let mut rig = failed_original_trial_rig(120);
-        let asked = rig.flight.requests().len();
+        let asked = rig.flight.asked();
         let recovery = {
             let _frame = plx_base::task::FrameScope::enter();
             recover_failed_foreground_original(&mut rig.ps)
         };
         assert!(matches!(recovery, ForegroundOriginalRecovery::Pending));
-        assert_eq!(rig.flight.requests().len(), asked, "{:?}", rig.flight.requests());
+        assert_eq!(rig.flight.asked(), asked, "{:?}", rig.flight.requests());
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let landed = loop {
             assert!(std::time::Instant::now() < deadline, "timed out waiting for the rollback's landing");
@@ -2890,13 +2890,13 @@ mod flight_tests {
     fn an_unopened_source_frame_makes_no_pms_call_and_the_worker_lands_the_hls_later() {
         let mut rig = unopened_auto_original_rig(150);
         rig.frame();
-        let asked = rig.flight.requests().len();
+        let asked = rig.flight.asked();
         let epoch = engine_epoch(&mut rig);
 
         SHARED.load_failed.store(true, Release);
         rig.frame();
         assert_eq!(
-            rig.flight.requests().len(),
+            rig.flight.asked(),
             asked,
             "the failure frame made a PMS round trip on the frame thread: {:?}",
             rig.flight.requests()
@@ -2922,11 +2922,11 @@ mod flight_tests {
         rig.flight.refuse_decisions(1);
         rig.frame();
         let epoch = engine_epoch(&mut rig);
-        let asked = rig.flight.requests().len();
+        let asked = rig.flight.asked();
 
         SHARED.load_failed.store(true, Release);
         rig.frame();
-        assert_eq!(rig.flight.requests().len(), asked, "{:?}", rig.flight.requests());
+        assert_eq!(rig.flight.asked(), asked, "{:?}", rig.flight.requests());
         assert!(crate::route::flight_outstanding());
 
         rig.frames_until("the refusal's landing", |r| {
