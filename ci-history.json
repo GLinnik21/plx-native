@@ -1,4 +1,4 @@
-{"updated":"2026-10-05T03:13:24Z",
+{"updated":"2026-10-05T03:24:45Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -476,5 +476,6 @@
 {"id":37198194536,"at":"2026-10-04T11:16:54Z","sha":"8137b1f6a","title":"Split: the media layer is its own crate (plx_media)","pr":432,"jobs":{"Windows launcher syntax":16,"macOS simulator build + launch":810,"Linux simulator build + launch":307}},
 {"id":37200932013,"at":"2026-10-04T12:05:42Z","sha":"5a2950915","title":"Split: the appkit layer is its own crate (plx_appkit)","pr":433,"jobs":{"macOS simulator build + launch":800,"Windows launcher syntax":16,"Linux simulator build + launch":310}},
 {"id":37202257637,"at":"2026-10-04T12:29:06Z","sha":"675fb4855","title":"Continue Watching: a setting decides what OK does on a card (default: open details)","pr":430,"jobs":{"Linux simulator build + launch":284,"Windows launcher syntax":25,"macOS simulator build + launch":850}},
-{"id":37206414182,"at":"2026-10-04T13:39:49Z","sha":"228a74825","title":"Split: the screens layer is its own crate (plx_screens)","pr":438,"jobs":{"Linux simulator build + launch":313,"macOS simulator build + launch":919,"Windows launcher syntax":14}}
+{"id":37206414182,"at":"2026-10-04T13:39:49Z","sha":"228a74825","title":"Split: the screens layer is its own crate (plx_screens)","pr":438,"jobs":{"Linux simulator build + launch":313,"macOS simulator build + launch":919,"Windows launcher syntax":14}},
+{"id":37258163457,"at":"2026-10-05T03:07:59Z","sha":"07acea442","title":"Library: remember the whole view (sort, Unwatched, genre, listing type) per profile","pr":441,"jobs":{"Linux simulator build + launch":262,"Windows launcher syntax":15,"macOS simulator build + launch":986}}
 ]}
