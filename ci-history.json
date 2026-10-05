@@ -1,4 +1,4 @@
-{"updated":"2026-10-05T16:20:30Z",
+{"updated":"2026-10-05T16:27:33Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -482,5 +482,6 @@
 {"id":37206414182,"at":"2026-10-04T13:39:49Z","sha":"228a74825","title":"Split: the screens layer is its own crate (plx_screens)","pr":438,"jobs":{"Linux simulator build + launch":313,"macOS simulator build + launch":919,"Windows launcher syntax":14}},
 {"id":37258163457,"at":"2026-10-05T03:07:59Z","sha":"07acea442","title":"Library: remember the whole view (sort, Unwatched, genre, listing type) per profile","pr":441,"jobs":{"Linux simulator build + launch":262,"Windows launcher syntax":15,"macOS simulator build + launch":986}},
 {"id":37287678042,"at":"2026-10-05T14:13:32Z","sha":"f8987bc46","title":"net: verify plex.direct against bundled Let's Encrypt roots; follow media redirects per hop","pr":443,"jobs":{"macOS simulator build + launch":699,"Windows launcher syntax":16,"Linux simulator build + launch":314}},
-{"id":37334876462,"at":"2026-10-05T15:41:37Z","sha":"9bf86e569","title":"Tests: run the per-crate test binaries side by side (83.6 s -> 15.9 s); add make test-crate","pr":446,"jobs":{"Windows launcher syntax":25,"Linux simulator build + launch":423,"macOS simulator build + launch":851}}
+{"id":37334876462,"at":"2026-10-05T15:41:37Z","sha":"9bf86e569","title":"Tests: run the per-crate test binaries side by side (83.6 s -> 15.9 s); add make test-crate","pr":446,"jobs":{"Windows launcher syntax":25,"Linux simulator build + launch":423,"macOS simulator build + launch":851}},
+{"id":37339139761,"at":"2026-10-05T16:13:22Z","sha":"8d01c2002","title":"build: a plain local ARM build uses a fast cargo profile (tvdev)","pr":447,"jobs":{"macOS simulator build + launch":832,"Linux simulator build + launch":298,"Windows launcher syntax":31}}
 ]}
