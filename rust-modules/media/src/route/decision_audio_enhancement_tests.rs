@@ -1342,6 +1342,37 @@ fn a_non_playable_pick_on_an_unusable_dv_base_layer_drops_the_candidate() {
 }
 
 #[test]
+fn a_direct_played_dv_profile_5_never_rebuilds_as_a_plain_remux() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(plain_rebuild_is_remux(&ps), "control: the same route without Dolby Vision stays the remux");
+    let mut cand = candidate(true, a1(), None);
+    cand.dovi = plx_data::metadata::Dovi { present: true, profile: 5, ..plx_data::metadata::Dovi::NONE };
+    ps.auto_original = Some(cand);
+    // a direct-played Profile 5 never set `no_video_copy` on the contract, yet a copy of it is the
+    // wrong picture one container down
+    assert!(!is_no_video_copy(&ps));
+    assert!(!plain_rebuild_is_remux(&ps));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn a_remux_that_cannot_be_asked_for_codecs_guesses_what_the_server_would_send() {
+    let a = |c: &str, ch| CarriedAudio { codec: c.into(), channels: ch, ..a1() };
+    assert_eq!(remux_output_acodec(false, Some(&a("ac3", 2)), "truehd"), "ac3");
+    assert_eq!(remux_output_acodec(false, Some(&a("eac3", 6)), "truehd"), "eac3");
+    // a carried track the profile cannot admit is converted to its first target
+    assert_eq!(remux_output_acodec(false, Some(&a("truehd", 8)), "truehd"), "ac3");
+    // an enhanced remux re-encodes whatever it carries
+    assert_eq!(remux_output_acodec(true, Some(&a("eac3", 6)), "truehd"), "ac3");
+    // no carried track: the file's own default
+    assert_eq!(remux_output_acodec(false, None, "eac3"), "eac3");
+}
+
+#[test]
 fn picking_a_playable_track_again_clears_audio_converted() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);

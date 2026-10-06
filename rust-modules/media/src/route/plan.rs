@@ -1515,7 +1515,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     //      commentary never stands in for the one the viewer asked for; `None` means the SERVER
     //      converts it. A blocked copy keeps today's ladder, `StandIn::Any`.
     //   2. after `sub_pick`: a cold start that must show a subtitle (the server cannot carry one
-    //      through a remux) may still direct-play a non-commentary stand-in, else burns.
+    //      through a remux) may still direct-play a non-commentary stand-in, provisionally — it is
+    //      kept only if a direct play results — or, with only a commentary to stand in, burn it
+    //      once the route is known to be the remux (see `burn_for_audio` below).
     let eligible = |codec: &str, channels: i64| audio_direct_plays(env.direct_play_mode, codec, channels);
     let copy_blocked = forced || no_video_copy;
     let pick_audio = |stand_in: StandIn| {
@@ -1523,8 +1525,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             tracks.iter().enumerate().find(|(_, t)| t.id == env.audio_sid && eligible(&t.codec, t.channels))
                 .map(|(i, t)| (i as i32, t.codec.to_lowercase(), t.id))
         }).flatten();
+        // A forced direct play has no server to convert an unplayable SESSION pick, and naming
+        // another track for it would silently play something the viewer did not choose: it is
+        // refused (`ForcedFailure::Audio`), as it was before the strict policy.
+        let session_pick_is_exact_only = forced && env.audio_sid > 0;
         exact.or_else(|| {
-            (!rk.is_empty())
+            (!rk.is_empty() && !session_pick_is_exact_only)
                 .then(|| pick_dp_audio_eligible(
                     tracks, acodec, audio_prefs, if forced { 0 } else { env.audio_sid }, stand_in, eligible,
                 ))
@@ -1557,19 +1563,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         crate::player::log(&account_audio_language_log(&account_audio, tracks, audio_sel.as_ref()));
     }
     // the language of the audio that will play — what "shown with foreign audio" is judged by.
-    // With no pick the server carries the intended track, so it is that track's language.
-    let audio_lang: String = audio_sel
-        .as_ref()
-        .map(|(_, _, id)| *id)
-        .map(|id| encode_audio_id(true, id, env.audio_sid, tracks, audio_prefs))
-        .and_then(|id| tracks.iter().find(|s| s.id == id))
-        .or_else(|| {
-            audio_sel.as_ref().and_then(|(i, _, _)| usize::try_from(*i).ok()).and_then(|i| tracks.get(i))
-        })
-        .or_else(|| tracks.iter().find(|s| s.default))
-        .or_else(|| tracks.first())
-        .map(|s| s.lang_code.clone())
-        .unwrap_or_default();
+    let audio_lang = playing_audio_language(tracks, audio_sel.as_ref(), env.audio_sid, audio_prefs);
     // The show's own pref wins over the account's — the same precedence `pick_dp_subtitle_account`
     // gives them below — so the Subtitles menu's "yours" grouping never disagrees with what was
     // actually picked.
@@ -1605,18 +1599,25 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     }
     // Step 2: the server carries the intended track (no direct-play pick), but a remux carries NO
     // subtitle (M4/M7) and the client's renderer is silent while transcoding. When a subtitle is to
-    // be shown, a non-commentary stand-in still direct-plays (the client draws the subtitle); with
-    // only a commentary, or nothing, to stand in, the only way to show it is the Burn shape — a
-    // re-encode with the subtitle burned in, the server carrying the intended track. A sidecar is
-    // never a `sub_pick` (it has no container ordinal), so it stays on the remux path.
-    let mut burn_for_audio = false;
+    // be shown, a non-commentary stand-in direct-plays (the client draws the subtitle). That is a
+    // PROVISIONAL pick: it holds only if a direct play results (`audio_sel` is cleared again where
+    // the route is known), else the encoder carries the intended track. With only a commentary to
+    // stand in, the subtitle is shown by the Burn shape instead — decided below, once the route is
+    // known to be the remux it replaces. A sidecar is never a `sub_pick` (it has no container
+    // ordinal), so it stays on the remux path.
+    let mut stand_in_provisional = false;
+    let mut commentary_only_stand_in = false;
     if audio_sel.is_none() && !copy_blocked && sub_pick.is_some() && !tracks.is_empty() && !rk.is_empty() {
         match pick_audio(StandIn::Any) {
-            Some(s) if usize::try_from(s.0).is_ok_and(|i| !audio_is_commentary(tracks, i)) => audio_sel = Some(s),
-            _ => burn_for_audio = true,
+            Some(s) if usize::try_from(s.0).is_ok_and(|i| !audio_is_commentary(tracks, i)) => {
+                audio_sel = Some(s);
+                stand_in_provisional = true;
+            }
+            Some(_) => commentary_only_stand_in = true,
+            None => {}
         }
     }
-    let audio_id = audio_sel.as_ref().map(|(_, _, id)| *id).unwrap_or(0);
+    let mut audio_id = audio_sel.as_ref().map(|(_, _, id)| *id).unwrap_or(0);
     // What a copy carries: the pick, else the intended track the server converts.
     let carry_audio_id = encode_audio_id(true, audio_id, env.audio_sid, tracks, audio_prefs);
     let subtitle_id = plan
@@ -1924,6 +1925,10 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // The codec-preserving remux, decided once for both readers below: the enhancement's family
     // and the transcode branch's flavour. See the long note at the transcode branch for each term.
     let remux = video_dp && allowed.remux && !no_video_copy && !mde_forbids_copy;
+    // Rule 3's burn, decided where the route is known: only a route that would otherwise have been
+    // the remux becomes the burning re-encode. A fixed rung, a relay, HLS or any other re-encode
+    // already was one and keeps what it always sent; so does a file with nothing to stand in.
+    let burn_for_audio = commentary_only_stand_in && remux;
     // Issue #266, decided HERE — after the adaptive override has had its say (HLS is `Other`) and
     // before either branch is taken. The enhancement turns the Original route it decorates into
     // a remux (M1: PMS answers either param with a Part transcode, video copy, audio re-encoded
@@ -1964,6 +1969,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     } else {
         env.sub_sid
     };
+    if burn_for_audio {
+        // The subtitle burned in IS the session's subtitle: the menu checkmark, the timeline and
+        // every later rebuild (a seek, a track pick) read it back from the plan.
+        plan.sub_sid = burn_sub_sid;
+    }
     if env.preview && !crate::player::preview::accepts_direct_play(directplay, !part.is_empty(), adaptive) {
         crate::player::log("preview: refused — not a direct play");
         plan.url.clear();
@@ -1978,6 +1988,13 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     if forced {
         plan.verdict = Some(PlayVerdict::Forced(ForcedFailure::OpenFailed));
         return plan;
+    }
+    if stand_in_provisional {
+        // No direct play resulted (a relay, a fixed rung, a remote Auto that chose HLS, an MDE that
+        // refused it), so nothing is left to draw the subtitle and the stand-in has no reason to
+        // be heard: the encoder carries the track the viewer asked for.
+        audio_sel = None;
+        audio_id = 0;
     }
     // Transcode OR container-remux, both served via start.mkv. If the SOURCE video is
     // direct-playable (h264/hevc) we only reached here because the container isn't streamable, so
@@ -2112,7 +2129,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             &session,
             plx_plex::plex::TranscodeOffset::Fresh,
             encode_audio,
-            env.sub_sid,
+            // the audio enhancement was refused, not the burn rule 3 chose: keep that subtitle
+            if burn_for_audio { burn_sub_sid } else { env.sub_sid },
             plan.contract,
         );
         decision = client.transcode_decision(off, &sp);
@@ -2630,6 +2648,23 @@ fn encode_audio_id(
         .unwrap_or(dp_audio_id)
 }
 
+/// The language of the audio the viewer will HEAR, which "shown with foreign audio" is judged by:
+/// the direct-play pick's own track, else (no pick: the server converts it) the intended track a
+/// copy would carry, [`encode_audio_id`] with no pick. Only when that names nothing does it fall
+/// to the flagged default, then the first track.
+fn playing_audio_language(
+    tracks: &[plx_data::metadata::Stream], pick: Option<&(i32, String, i64)>, env_audio_sid: i64,
+    prefs: AudioLangPrefs<'_>,
+) -> String {
+    let carried = encode_audio_id(true, pick.map_or(0, |(_, _, id)| *id), env_audio_sid, tracks, prefs);
+    tracks.iter().find(|s| s.id == carried)
+        .or_else(|| pick.and_then(|(i, _, _)| usize::try_from(*i).ok()).and_then(|i| tracks.get(i)))
+        .or_else(|| tracks.iter().find(|s| s.default))
+        .or_else(|| tracks.first())
+        .map(|s| s.lang_code.clone())
+        .unwrap_or_default()
+}
+
 /// The file's reference default track: the flagged default, a commentary one yielding to the first
 /// non-commentary track of its language; with no flag, the first track of `default_acodec`, else
 /// the first track. `None` for a file listing no tracks.
@@ -2690,6 +2725,10 @@ fn embedded_subtitle_renderable(codec: &str) -> bool {
 ///     read-back is therefore ONE-WAY on that path: an item that starts as a transcode still PUTs
 ///     `subtitleStreamID=0`, which not only suppresses the burn but CLEARS the server's selection
 ///     for everyone. That predates this change; honouring it instead is the same burn decision.
+///     The one cold start that DOES burn is the Burn shape's own: a subtitle to show, the intended
+///     audio one the TV cannot decode, a direct-playable commentary the only stand-in, and a route
+///     that would otherwise have been the plain remux (`burn_for_audio` in `build_stream`). A
+///     file with no stand-in at all, a fixed rung, a relay and HLS keep the unburned request.
 pub(super) fn pick_dp_subtitle(subs: &[plx_data::metadata::Stream]) -> Option<(i64, i32)> {
     let i = subs.iter().position(|s| s.selected && !s.external)?;
     let ord = plx_data::metadata::sub_render_ordinal(subs, i);

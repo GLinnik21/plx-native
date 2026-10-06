@@ -165,6 +165,20 @@ fn a_non_playable_pick_is_answered_by_a_sibling_in_its_language() {
 }
 
 
+/// With no direct-play pick the server converts the INTENDED track, and "shown with foreign audio"
+/// is judged by that track's language, not by the flagged default's.
+#[test]
+fn the_language_heard_with_no_pick_is_the_intended_tracks() {
+    let tracks = [trk(1, "ac3", "rus", true), trk(2, "truehd", "eng", false)];
+    let prefs = AudioLangPrefs { show: None, account: Some("en") };
+    assert_eq!(playing_audio_language(&tracks, None, 0, prefs), "eng");
+    // the viewer's own pick of the English track names it too
+    assert_eq!(playing_audio_language(&tracks, None, 2, AudioLangPrefs::default()), "eng");
+    // a pick is the track that plays
+    assert_eq!(playing_audio_language(&tracks, Some(&(0, "ac3".into(), 1)), 0, prefs), "rus");
+}
+
+
 #[test]
 fn the_flagged_default_wins_over_an_earlier_track() {
     let tracks = [trk(1, "ac3", "deu", false), trk(2, "ac3", "fra", true)];

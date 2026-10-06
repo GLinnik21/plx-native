@@ -4081,7 +4081,7 @@ pub(super) enum RecoveryFlavour {
 }
 
 /// The enhancement a recovery to `candidate` should carry: the offer is evaluated against the
-/// family of the route being BUILT (`candidate.direct ? Direct : Remux`), never the live one —
+/// family of the route being BUILT (`candidate.feeds_part() ? Direct : Remux`), never the live one —
 /// during an HLS recovery the live contract still says `FixedHls` (family `Other`, never offered)
 /// and is only overwritten once the replacement is published.
 fn recovery_route(ps: &PlaybackSession, candidate: &AutoOriginalCandidate) -> Option<EnhancementRoute> {
@@ -8206,14 +8206,7 @@ fn prepare_original_remux(
     let (vcodec, acodec) = decision.as_ref().and_then(decision_codecs).unwrap_or_else(|| {
         (
             candidate.vcodec.clone(),
-            if audio.any() {
-                // I4: an enhanced remux re-encodes the audio; the profile's first target is what
-                // arrives, and the source codec here would be silent audio.
-                "ac3".to_owned()
-            } else {
-                // Server-default candidate: the file's own default codec, as the direct-play twin.
-                candidate.audio.as_ref().map_or_else(|| plan.src_acodec.clone(), |a| a.codec.clone())
-            },
+            remux_output_acodec(audio.any(), candidate.audio.as_ref(), &plan.src_acodec),
         )
     });
     let enhancement = if enhancement_refused || known_refused {
@@ -8313,10 +8306,14 @@ fn plain_rebuild_precheck(ps: &mut PlaybackSession, expected: &WorkerTicket) -> 
 /// (a re-encode is family `Other`, so NONE) — a pick mid-play never keeps params the offer no
 /// longer covers.
 ///
-/// **One exception keeps an ENHANCED remux a remux.** A pick that leaves the offer standing
-/// (another capable track the candidate can carry) makes [`enhancement_step`] `NotInvolved`
-/// because the params already match, and its legacy reload lands here; rebuilding that as a
-/// re-encode would silently drop the enhancement the viewer still has switched on.
+/// **Two branches keep the route a remux instead of a re-encode.**
+///   1. An ENHANCED remux stays one. A pick that leaves the offer standing (another capable track
+///      the candidate can carry) makes [`enhancement_step`] `NotInvolved` because the params
+///      already match, and its legacy reload lands here; rebuilding that as a re-encode would
+///      silently drop the enhancement the viewer still has switched on.
+///   2. A PLAIN remux ([`plain_rebuild_is_remux`]): the standing Original candidate on Auto/Original
+///      whose carried audio the TV cannot decode. The server copies the video and converts only
+///      that audio, so the rebuild asks for exactly that, with no enhancement params.
 fn retranscode_contract(ps: &PlaybackSession) -> plx_plex::plex::EncodeContract {
     // A ceiling means a fixed rung was picked, and an enhanced remux is uncapped by definition:
     // keeping it would erase the cap the picker shows (I5).
@@ -8376,6 +8373,9 @@ fn plain_rebuild_is_remux(ps: &PlaybackSession) -> bool {
         && ps.cur_contract.ceiling.is_none()
         && cur_delivery(ps) == plx_plex::plex::TranscodeDelivery::ProgressiveMkv
         && !is_no_video_copy(ps)
+        // A direct-played Dolby Vision Profile 5 never set `no_video_copy` (the declaration made
+        // the direct play right); a copy of it, one container down, carries no declaration.
+        && ps.auto_original.as_ref().is_some_and(|c| !c.dovi.base_layer_unusable())
         && ps.cur_sub_sid == 0
 }
 
@@ -8456,6 +8456,23 @@ pub(super) enum RetranscodeWorkerOutcome {
     Refused,
 }
 
+/// The audio codec a codec-preserving remux is GUESSED to deliver when its `/decision` cannot be
+/// read (the answer, when there is one, replaces this). An enhanced remux re-encodes the audio
+/// (I4), and a carried track the profile cannot admit is converted by the server, both to the
+/// profile's first target (`ac3`) — the source codec would describe bytes that never arrive
+/// (silent audio). A plain remux of an admissible track copies it; with no carried track (the
+/// server default) it falls back to the file's own default codec.
+fn remux_output_acodec(
+    enhanced: bool, carried: Option<&CarriedAudio>, src_acodec: &str,
+) -> String {
+    let carried = carried.filter(|a| !a.codec.is_empty());
+    if enhanced || carried.is_some_and(|a| !plx_plex::plex::is_dp_audio_track(&a.codec, a.channels)) {
+        "ac3".to_owned()
+    } else {
+        carried.map_or_else(|| src_acodec.to_owned(), |a| a.codec.clone())
+    }
+}
+
 /// The fallback codecs a retranscode attempt falls back to, as a pure function of the owned
 /// inputs plus whichever contract this attempt is building — needed twice now (a primary attempt
 /// and, on refusal, a Legacy fallback attempt may build a different contract), so it is a function
@@ -8465,21 +8482,9 @@ fn retranscode_fallback_codecs(
     contract: &plx_plex::plex::EncodeContract,
 ) -> (String, String) {
     if contract.remux {
-        let carried = inputs.carried_audio.as_ref().filter(|a| !a.codec.is_empty());
         (
             inputs.src_vcodec.clone(),
-            // A carried track the profile cannot admit is converted by the server to the
-            // profile's first target (ac3), exactly as for an enhanced remux.
-            if contract.audio.any()
-                || carried.is_some_and(|a| !plx_plex::plex::is_dp_audio_track(&a.codec, a.channels))
-            {
-                // I4: the enhanced audio is re-encoded to the profile's first target; the source
-                // codec here would describe bytes that never arrive (silent audio).
-                "ac3".to_owned()
-            } else {
-                // A plain remux copies the carried track; server default falls back to the file's.
-                carried.map_or_else(|| inputs.src_acodec.clone(), |a| a.codec.clone())
-            },
+            remux_output_acodec(contract.audio.any(), inputs.carried_audio.as_ref(), &inputs.src_acodec),
         )
     } else if matches!(contract.delivery, plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
         ("h264".to_owned(), "aac".to_owned())

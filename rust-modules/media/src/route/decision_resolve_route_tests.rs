@@ -2421,6 +2421,86 @@ fn a_cold_start_with_a_subtitle_and_only_a_commentary_to_stand_in_burns_it() {
     assert_eq!(query_param(tc, "audioStreamID"), Some("1"), "{tc}");
     assert!(requests.iter().any(|l| l.contains("PUT") && l.contains("subtitleStreamID=50")), "{requests:?}");
     assert_eq!(plan.audio.as_ref().map(|a| a.sid), Some(1));
+    assert_eq!(plan.sub_sid, 50, "the burned subtitle is the session's subtitle (the menu, the next rebuild)");
+}
+
+/// Burning is for a file that HAS a commentary to stand in and would otherwise remux. A TrueHD-only
+/// file has nothing to stand in: on 2be25968 it was the plain remux (copied video, audio converted,
+/// `directStreamAudio=1`, no cap, `subtitleStreamID` unset), the picked subtitle simply not shown.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_file_with_no_stand_in_and_a_subtitle_is_not_newly_burned() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-sub-no-stand-in",
+        MDE_TRANSCODE_COPY,
+        vec![cold_track(1, "truehd", "eng", true, "")],
+        vec![selected_sub(50, "srt")],
+        "truehd",
+        |env, _| plx_plex::plex::client_for(env.sid).expect("registered").set_link(plx_plex::plex::probe::Location::Local),
+    );
+    let tc = requests.iter().find(|l| l.contains("/decision?") && !l.contains("hasMDE=1")).expect("transcode decision");
+    assert_eq!(query_param(tc, "directStreamAudio"), Some("1"), "{tc}");
+    assert!(!tc.contains("subtitles=burn") && !tc.contains("videoResolution") && !tc.contains("maxVideoBitrate"), "{tc}");
+    assert_eq!(query_param(tc, "audioStreamID"), Some("1"), "{tc}");
+    assert!(plan.contract.remux, "{}", plan.url);
+    assert_eq!(plan.sub_sid, 0);
+}
+
+/// A fixed rung was a re-encode already: it carried no subtitle before this branch and must not
+/// start burning one now.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_fixed_rung_is_not_newly_burned_for_audio() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-sub-fixed-rung",
+        MDE_TRANSCODE,
+        vec![cold_track(1, "truehd", "eng", true, ""), cold_track(2, "ac3", "eng", false, "Commentary")],
+        vec![selected_sub(50, "srt")],
+        "truehd",
+        |env, _| env.quality = Quality::P720,
+    );
+    let tc = requests.iter().find(|l| l.contains("/decision?") && !l.contains("hasMDE=1")).expect("transcode decision");
+    assert!(!tc.contains("subtitles=burn") && query_param(tc, "subtitleStreamID").is_none_or(|v| v == "0"), "{tc}");
+    assert!(!plan.contract.remux, "{}", plan.url);
+    assert_eq!(plan.sub_sid, 0);
+}
+
+/// A non-commentary stand-in is kept only if a direct play actually results; on a fixed rung the
+/// encoder carries the track the viewer asked for, not the French copy.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_stand_in_is_dropped_when_direct_play_does_not_result() {
+    let (_, requests) = cold_audio_resolve(
+        "cold-sub-stand-in-dropped",
+        MDE_TRANSCODE,
+        vec![cold_track(1, "truehd", "eng", true, ""), cold_track(3, "ac3", "fra", false, "")],
+        vec![selected_sub(50, "srt")],
+        "truehd",
+        |env, _| env.quality = Quality::P720,
+    );
+    let tc = requests.iter().find(|l| l.contains("/decision?") && !l.contains("hasMDE=1")).expect("transcode decision");
+    assert_eq!(query_param(tc, "audioStreamID"), Some("1"), "{tc}");
+    assert!(
+        requests.iter().any(|l| l.contains("PUT") && l.contains("audioStreamID=1")),
+        "the selection PUT names the intended track: {requests:?}"
+    );
+}
+
+/// The viewer's own pick of a track the TV cannot play is converted by the server, whatever else
+/// the file offers; and forced direct play, which has no server to convert, refuses it rather than
+/// playing another track.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_direct_play_refuses_an_unplayable_session_pick() {
+    let (plan, _) = cold_audio_resolve(
+        "cold-forced-session-pick",
+        MDE_DIRECTPLAY,
+        vec![cold_track(1, "ac3", "rus", true, ""), cold_track(2, "truehd", "eng", false, "")],
+        Vec::new(),
+        "ac3",
+        |env, _| { env.direct_play_mode = DirectPlayMode::Forced; env.audio_sid = 2; },
+    );
+    assert!(matches!(plan.verdict, Some(PlayVerdict::Forced(ForcedFailure::Audio))), "{:?}", plan.verdict);
 }
 
 /// Rule 2: with no copy to fall back on, today's ladder stays — a non-commentary stand-in first.
