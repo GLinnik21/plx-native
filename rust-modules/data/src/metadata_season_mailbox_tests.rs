@@ -81,7 +81,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
     assert_eq!(listed_eps(), ["s1e1"]);
     assert_eq!(selected_tab(), 0);
 
-    // SUPERSEDED: a blocking `load_season_now`, or a new item's `request_detail`, bumps the
+    // SUPERSEDED: a new item's `request_detail` (or `pump_detail`), bumps the
     // generation — the fetch that was in flight for the old tab is dropped, not applied.
     let (old, prev) = begin_switch(1);
     supersede_season(test_adapter());
@@ -212,19 +212,19 @@ fn a_season_landing_for_another_servers_show_with_the_same_key_is_refused() {
     clear(test_state(), test_adapter());
 }
 
-/// `app/run.rs::menu_play_tick` reaches `load_season_now` from inside the run loop's `FrameScope`,
-/// and the fetch is synchronous by design (the chained play of `episodes[0]` needs the list).
-/// `http::request_with` rejects any PMS call made inside a frame without `allow_blocking`, and
-/// `load_season_now` swallows a panic with `catch_unwind` -- so without the exception the season
-/// list silently never installs. The fixture serves one episode; the assertion is that it lands.
+/// `app/input.rs::menu_play_tick` issues the season load from inside the run loop's `FrameScope`
+/// and plays `episodes[0]` when it lands. The load is the season tabs' own async `load_season`, so
+/// it needs NO `allow_blocking` exception: `http::request_with` rejects any PMS call made inside a
+/// frame without one, and this test opens none. The frame must return with the old episode list
+/// still in place (nothing was fetched on it), and the list lands through `pump_season`.
 #[test]
-fn menu_play_season_load_inside_a_frame_still_installs_the_episode_list() {
+fn menu_play_season_load_inside_a_frame_needs_no_blocking_exception() {
     use std::io::{Read, Write};
     let _serial = plx_base::testlock::serial();
-    // The season fetch is one blocking `http::request_with` GET, i.e. `net`'s easy API and nothing
-    // of the media plane, so what this needs from the machine is `net`'s own "libcurl is bound and
-    // may be used from several threads" -- not `curlio::available()`, which adds the multi table
-    // only the media transport reads (and `curlio` is not the data layer's to name).
+    // The season fetch is one `http::request_with` GET, i.e. `net`'s easy API and nothing of the
+    // media plane, so what this needs from the machine is `net`'s own "libcurl is bound and may be
+    // used from several threads" -- not `curlio::available()`, which adds the multi table only the
+    // media transport reads (and `curlio` is not the data layer's to name).
     assert!(
         plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready()
     );
@@ -232,7 +232,7 @@ fn menu_play_season_load_inside_a_frame_still_installs_the_episode_list() {
     listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port() as i32;
     let server = std::thread::spawn(move || {
-        // Bounded wait: the red state (no exception) never dials, and must fail rather than hang.
+        // Bounded wait, so a path that never dials fails rather than hangs.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         let mut conn = loop {
             match listener.accept() {
@@ -254,14 +254,21 @@ fn menu_play_season_load_inside_a_frame_still_installs_the_episode_list() {
     plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_for_test("season-live", "127.0.0.1", port, "token", "season-client");
     plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
-    install_show_on(sid, "show-1", 1, &["stale"]);
+    install_show_on(sid, "show-1", 0, &["stale"]);
 
     let frame = plx_base::task::FrameScope::enter();
-    load_season_now(test_state(), test_adapter(), 0);
+    load_season(test_state(), test_adapter(), 1);
+    assert_eq!(listed_eps(), ["stale"], "the frame fetched nothing: the list is still the old season's");
+    assert!(season_loading(test_adapter()), "the fetch is in flight on a worker");
     drop(frame);
 
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !pump_season(test_state(), test_adapter()) && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
     server.join().unwrap();
     plx_plex::plex::reset_servers_for_test();
-    assert_eq!(listed_eps(), ["ep-menu"], "the blocking season fetch must run under its allow_blocking exception");
-    assert_eq!(selected_tab(), 0);
+    assert_eq!(listed_eps(), ["ep-menu"], "the season lands through the async mailbox");
+    assert_eq!(selected_tab(), 1);
+    assert!(!season_loading(test_adapter()));
 }

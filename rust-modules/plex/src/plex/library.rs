@@ -291,6 +291,7 @@ impl Client {
     /// on the stream URL does NOT change them, only this PUT does). `subtitleStreamID` is
     /// always sent — 0 keeps subs OFF (suppresses a default-selected burn); `audioStreamID`
     /// only when the user switched. Returns the HTTP status (route logs it).
+    #[track_caller]
     pub fn select_streams(&self, sel: &StreamSelection) -> i32 {
         let q = QueryBuilder::new(format!("/library/parts/{}", sel.part_id))
             .int("allParts", 1)

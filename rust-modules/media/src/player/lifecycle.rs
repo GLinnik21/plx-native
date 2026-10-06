@@ -141,7 +141,7 @@ pub enum ForegroundClaim {
     PlayClock,
 }
 
-/// Complete app-switch resume state. In particular, `Prepared` means `resume_at` and route
+/// Complete app-switch resume state. In particular, `Prepared` means `begin_resume` (and its landing) and route
 /// preparation have completed, including a transcode URL rebuild when required: retrying its
 /// failed native Load must not rebuild that route again.
 /// The attempt type is opaque to the reducer. Production uses `RouteStartAttempt`, while pure
@@ -166,6 +166,23 @@ pub enum ForegroundState<Attempt = crate::route::RouteStartAttempt> {
     LoadPending {
         id: u64,
         attempt: Attempt,
+        resume_ns: i64,
+        clock: ForegroundClock,
+    },
+    /// The resume's rebuild of a transcode at the saved position is a flight (`begin_resume`): the
+    /// machine waits on its landing the way it waits on a pending Load, and settles the claim's
+    /// `Prepare` when it lands.
+    PreparePending {
+        id: u64,
+        saved_ns: i64,
+        saved_clock: ForegroundClock,
+        resume_ns: i64,
+        clock: ForegroundClock,
+    },
+    /// The rollback of an Original trial whose Load failed before an Engine existed is a flight:
+    /// the machine waits on its landing, then settles the claim's `Load` with the reload's outcome.
+    RecoveryPending {
+        id: u64,
         resume_ns: i64,
         clock: ForegroundClock,
     },
@@ -210,7 +227,9 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
             // A Play-key resume can still have a physically Paused clock until its exact Load
             // settles. If the OS backgrounds again in that window, preserve the viewer's intent
             // from the reducer rather than resnapshotting the deliberately stale native clock.
-            ForegroundState::LoadPending { clock, .. } => clock,
+            ForegroundState::LoadPending { clock, .. }
+            | ForegroundState::PreparePending { saved_clock: clock, .. }
+            | ForegroundState::RecoveryPending { clock, .. } => clock,
             _ => ForegroundClock::from_paused(transport_paused),
         }
     }
@@ -223,6 +242,8 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
             self.state,
             ForegroundState::Suspended { .. }
                 | ForegroundState::Prepared { .. }
+                | ForegroundState::PreparePending { .. }
+                | ForegroundState::RecoveryPending { .. }
                 | ForegroundState::Claimed {
                     claim: ForegroundClaim::Prepare { .. } | ForegroundClaim::Load { .. },
                     ..
@@ -318,7 +339,9 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
             ForegroundState::Claimed { .. } | ForegroundState::ClockPending { .. } => {
                 ForegroundClaimResult::Suppressed
             }
-            ForegroundState::LoadPending { .. } => ForegroundClaimResult::Suppressed,
+            ForegroundState::LoadPending { .. }
+            | ForegroundState::PreparePending { .. }
+            | ForegroundState::RecoveryPending { .. } => ForegroundClaimResult::Suppressed,
         }
     }
 
@@ -356,6 +379,100 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
             resume_ns,
             clock,
         })
+    }
+
+    /// The claimed `Prepare` is a flight: park until its landing ([`Self::reclaim_prepare`]).
+    pub fn finish_prepare_pending(&mut self, id: u64) -> bool {
+        let ForegroundState::Claimed {
+            id: owner,
+            claim:
+                ForegroundClaim::Prepare {
+                    saved_ns,
+                    saved_clock,
+                    resume_ns,
+                    clock,
+                },
+        } = self.state
+        else {
+            return false;
+        };
+        if owner != id {
+            return false;
+        }
+        self.state = ForegroundState::PreparePending { id, saved_ns, saved_clock, resume_ns, clock };
+        true
+    }
+
+    /// The claimed `Load`'s Original rollback is a flight: park until its landing
+    /// ([`Self::reclaim_recovery`]).
+    pub fn finish_load_pending(&mut self, id: u64) -> bool {
+        let ForegroundState::Claimed {
+            id: owner,
+            claim: ForegroundClaim::Load { resume_ns, clock },
+        } = self.state
+        else {
+            return false;
+        };
+        if owner != id {
+            return false;
+        }
+        self.state = ForegroundState::RecoveryPending { id, resume_ns, clock };
+        true
+    }
+
+    /// The pending `Prepare`'s flight landed: take the claim back so [`Self::finish_prepare`]
+    /// settles it with the outcome.
+    pub fn reclaim_prepare(&mut self) -> Option<u64> {
+        let ForegroundState::PreparePending { id, saved_ns, saved_clock, resume_ns, clock } = self.state else {
+            return None;
+        };
+        self.state = ForegroundState::Claimed {
+            id,
+            claim: ForegroundClaim::Prepare { saved_ns, saved_clock, resume_ns, clock },
+        };
+        Some(id)
+    }
+
+    /// The pending rollback's flight landed: take the `Load` claim back to settle it with the
+    /// reload's outcome.
+    pub fn reclaim_recovery(&mut self) -> Option<(u64, ForegroundClock)> {
+        let ForegroundState::RecoveryPending { id, resume_ns, clock } = self.state else {
+            return None;
+        };
+        self.state = ForegroundState::Claimed { id, claim: ForegroundClaim::Load { resume_ns, clock } };
+        Some((id, clock))
+    }
+
+    /// Whether the machine is waiting on a flight's landing ([`poll_foreground_flight`]).
+    pub fn flight_pending(&self) -> bool {
+        matches!(
+            self.state,
+            ForegroundState::PreparePending { .. } | ForegroundState::RecoveryPending { .. }
+        )
+    }
+
+    /// The pending flight ended without landing here (a Back, a newer playback request, a suspend
+    /// that already dropped it): whoever ended it owns what happens next, so the machine lets go.
+    pub fn release_stale_flight(&mut self) {
+        if self.flight_pending() {
+            self.state = ForegroundState::Idle;
+        }
+    }
+
+    /// An app-switch suspend arrived while a flight was pending: its landing is discarded, and the
+    /// parked session goes back to waiting for the next foreground exactly where it was (a pending
+    /// rollback has no snapshot but its resume position, which the next restore rebuilds from).
+    pub fn park_pending_flight(&mut self) -> bool {
+        self.state = match self.state {
+            ForegroundState::PreparePending { id, saved_ns, saved_clock, .. } => {
+                ForegroundState::Suspended { id, saved_ns, clock: saved_clock }
+            }
+            ForegroundState::RecoveryPending { id, resume_ns, clock } => {
+                ForegroundState::Suspended { id, saved_ns: resume_ns, clock }
+            }
+            _ => return false,
+        };
+        true
     }
 
     pub fn finish_load_launch(&mut self, id: u64, attempt: Attempt) -> bool {
@@ -541,11 +658,20 @@ pub enum ForegroundActivation {
 pub trait ForegroundActuator {
     type Attempt: Copy + PartialEq;
 
+    /// Prepare the resume at `resume_ns`: settled on the spot, or a flight the machine waits on
+    /// ([`Self::land_prepare`]).
     fn prepare_resume(
         &mut self,
         ps: &mut crate::route::PlaybackSession,
         resume_ns: i64,
-    ) -> crate::player::ResumeOutcome;
+    ) -> crate::player::ResumeStart;
+    /// Drain the pending resume's landing, once a frame.
+    fn land_prepare(&mut self, ps: &mut crate::route::PlaybackSession) -> FlightLanding<crate::player::ResumeOutcome>;
+    /// Drain the pending Original rollback's landing, once a frame.
+    fn land_recovery(
+        &mut self,
+        ps: &mut crate::route::PlaybackSession,
+    ) -> FlightLanding<ForegroundLoadStart<Self::Attempt>>;
     fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock);
     fn start_load(
         &mut self,
@@ -564,10 +690,22 @@ pub trait ForegroundActuator {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForegroundLoadStart<Attempt> {
+    /// A rollback flight owns the way forward ([`ForegroundActuator::land_recovery`]).
+    Pending,
     AlreadyRunning,
     Launched(Attempt),
     Failed,
     Terminal,
+}
+
+/// What draining a pending flight's landing found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlightLanding<T> {
+    /// The worker has not landed.
+    Waiting,
+    /// The flight ended without landing here (a Back, a newer request): the machine lets go.
+    Stale,
+    Landed(T),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -600,50 +738,49 @@ pub enum ForegroundPollOutcome {
 
 /// Claim first, then execute the claimed synchronous effects in order. Launching the native Load
 /// tells the caller to mount Player but deliberately does not issue Play: only the later exact
-/// attempt result observed by `poll_foreground_load` may advance the clock.
+/// attempt result observed by `poll_foreground_load` may advance the clock. A resume (or an
+/// Original rollback) whose rebuild is a flight parks the machine instead; the landing is
+/// [`poll_foreground_flight`]'s.
 pub fn drive_foreground<A: ForegroundActuator>(
     lifecycle: &mut ForegroundLifecycle<A::Attempt>,
     ps: &mut crate::route::PlaybackSession,
     input: ForegroundInput,
     actuator: &mut A,
 ) -> ForegroundActivation {
-    let mut effect = match lifecycle.claim(input) {
+    let effect = match lifecycle.claim(input) {
         ForegroundClaimResult::Ordinary => return ForegroundActivation::Ordinary,
         ForegroundClaimResult::Suppressed => return ForegroundActivation::Handled,
         ForegroundClaimResult::Effect(effect) => Some(effect),
     };
+    run_foreground_effects(lifecycle, ps, actuator, effect)
+}
+
+fn run_foreground_effects<A: ForegroundActuator>(
+    lifecycle: &mut ForegroundLifecycle<A::Attempt>,
+    ps: &mut crate::route::PlaybackSession,
+    actuator: &mut A,
+    mut effect: Option<ForegroundEffect>,
+) -> ForegroundActivation {
     let mut launched = false;
     while let Some(next) = effect.take() {
         effect = match next {
-            ForegroundEffect::Prepare { id, resume_ns } => {
-                let prepared = matches!(
-                    actuator.prepare_resume(ps, resume_ns),
-                    crate::player::ResumeOutcome::Prepared
-                );
-                lifecycle.finish_prepare(id, prepared)
-            }
+            ForegroundEffect::Prepare { id, resume_ns } => match actuator.prepare_resume(ps, resume_ns) {
+                crate::player::ResumeStart::Settled(outcome) => {
+                    lifecycle.finish_prepare(id, matches!(outcome, crate::player::ResumeOutcome::Prepared))
+                }
+                crate::player::ResumeStart::Pending => {
+                    let _ = lifecycle.finish_prepare_pending(id);
+                    None
+                }
+            },
             ForegroundEffect::Load {
                 id,
                 resume_ns,
                 clock,
             } => {
                 actuator.before_load(resume_ns, clock);
-                match actuator.start_load(ps) {
-                    ForegroundLoadStart::Launched(attempt) => {
-                        launched |= lifecycle.finish_load_launch(id, attempt);
-                    }
-                    ForegroundLoadStart::Failed => {
-                        actuator.after_load(ps, None, clock, false);
-                        let _ = lifecycle.finish_load_refusal(id);
-                    }
-                    // No exact candidate can be followed. `AlreadyRunning` is a stable Engine
-                    // outside this suspended lifecycle; `Terminal` means Original rollback could
-                    // not construct a truthful route. Neither is a retryable Prepared edge.
-                    ForegroundLoadStart::AlreadyRunning | ForegroundLoadStart::Terminal => {
-                        actuator.after_load(ps, None, clock, false);
-                        let _ = lifecycle.finish_load_terminal(id);
-                    }
-                }
+                let start = actuator.start_load(ps);
+                launched |= settle_load_start(lifecycle, ps, actuator, id, clock, start);
                 None
             }
             ForegroundEffect::PlayClock { id } => {
@@ -659,9 +796,104 @@ pub fn drive_foreground<A: ForegroundActuator>(
     }
 }
 
+/// Settle the claimed `Load` with what starting it answered. True when an exact attempt launched.
+fn settle_load_start<A: ForegroundActuator>(
+    lifecycle: &mut ForegroundLifecycle<A::Attempt>,
+    ps: &mut crate::route::PlaybackSession,
+    actuator: &mut A,
+    id: u64,
+    clock: ForegroundClock,
+    start: ForegroundLoadStart<A::Attempt>,
+) -> bool {
+    match start {
+        ForegroundLoadStart::Launched(attempt) => lifecycle.finish_load_launch(id, attempt),
+        ForegroundLoadStart::Pending => {
+            let _ = lifecycle.finish_load_pending(id);
+            false
+        }
+        ForegroundLoadStart::Failed => {
+            actuator.after_load(ps, None, clock, false);
+            let _ = lifecycle.finish_load_refusal(id);
+            false
+        }
+        // No exact candidate can be followed. `AlreadyRunning` is a stable Engine outside this
+        // suspended lifecycle; `Terminal` means Original rollback could not construct a truthful
+        // route. Neither is a retryable Prepared edge.
+        ForegroundLoadStart::AlreadyRunning | ForegroundLoadStart::Terminal => {
+            actuator.after_load(ps, None, clock, false);
+            let _ = lifecycle.finish_load_terminal(id);
+            false
+        }
+    }
+}
+
+/// Once a frame while the machine waits on a flight ([`ForegroundLifecycle::flight_pending`]):
+/// drain its landing and carry on. A landed
+/// resume continues into the Load; a landed rollback settles the Load with its reload's outcome;
+/// a refused rebuild leaves the parked session waiting for the
+/// next foreground, and a flight that ended without landing releases the machine. `Launched`
+/// tells the caller to mount Player, as [`drive_foreground`]'s does.
+pub fn poll_foreground_flight<A: ForegroundActuator>(
+    lifecycle: &mut ForegroundLifecycle<A::Attempt>,
+    ps: &mut crate::route::PlaybackSession,
+    actuator: &mut A,
+) -> ForegroundActivation {
+    match lifecycle.state {
+        ForegroundState::PreparePending { .. } => match actuator.land_prepare(ps) {
+            FlightLanding::Waiting => ForegroundActivation::Handled,
+            FlightLanding::Stale => {
+                lifecycle.release_stale_flight();
+                ForegroundActivation::Handled
+            }
+            FlightLanding::Landed(outcome) => {
+                let Some(id) = lifecycle.reclaim_prepare() else {
+                    return ForegroundActivation::Handled;
+                };
+                let effect = lifecycle
+                    .finish_prepare(id, matches!(outcome, crate::player::ResumeOutcome::Prepared));
+                run_foreground_effects(lifecycle, ps, actuator, effect)
+            }
+        },
+        ForegroundState::RecoveryPending { .. } => match actuator.land_recovery(ps) {
+            FlightLanding::Waiting => ForegroundActivation::Handled,
+            FlightLanding::Stale => {
+                lifecycle.release_stale_flight();
+                ForegroundActivation::Handled
+            }
+            FlightLanding::Landed(start) => {
+                let Some((id, clock)) = lifecycle.reclaim_recovery() else {
+                    return ForegroundActivation::Handled;
+                };
+                if settle_load_start(lifecycle, ps, actuator, id, clock, start) {
+                    ForegroundActivation::Launched
+                } else {
+                    ForegroundActivation::Handled
+                }
+            }
+        },
+        _ => ForegroundActivation::Handled,
+    }
+}
+
+/// The OS backgrounded the app again while the machine waits on a flight: drop the flight (its
+/// landing is discarded and only the replacement it registered is stopped — the same
+/// `suspend_bufferfeed` teardown an Engine's suspend takes) and park the session back where it was
+/// suspended, so the next foreground restores it from the start. False when no flight was pending.
+pub fn park_pending_foreground_flight<Attempt: Copy + PartialEq>(
+    lifecycle: &mut ForegroundLifecycle<Attempt>,
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
+) -> bool {
+    if !lifecycle.flight_pending() {
+        return false;
+    }
+    crate::player::suspend_bufferfeed(ps, pa);
+    lifecycle.park_pending_flight()
+}
+
 /// Poll the exact native Load attempt after `player::pump` has drained its media-thread result.
 /// Only a confirmed `Started` result may advance the viewer clock; failure retains the already
-/// prepared route so a Play retry never repeats PMS preparation or `resume_at`.
+/// prepared route so a Play retry never repeats PMS preparation or `begin_resume`.
 pub fn poll_foreground_load<A: ForegroundActuator>(
     lifecycle: &mut ForegroundLifecycle<A::Attempt>,
     ps: &mut crate::route::PlaybackSession,
@@ -726,6 +958,10 @@ mod foreground_resume_tests {
     #[derive(Default)]
     struct FakeActuator {
         prepare: Vec<crate::player::ResumeOutcome>,
+        /// How many `prepare_resume` calls answer `Pending` (a flight) before `prepare` answers.
+        pending_prepares: usize,
+        land_prepares: Vec<FlightLanding<crate::player::ResumeOutcome>>,
+        land_recoveries: Vec<FlightLanding<ForegroundLoadStart<u64>>>,
         loads: Vec<ForegroundLoadStart<u64>>,
         statuses: Vec<ForegroundLoadStatus<u64>>,
         clocks: Vec<bool>,
@@ -751,9 +987,27 @@ mod foreground_resume_tests {
             &mut self,
             _ps: &mut crate::route::PlaybackSession,
             resume_ns: i64,
-        ) -> crate::player::ResumeOutcome {
+        ) -> crate::player::ResumeStart {
             self.prepare_calls.push(resume_ns);
-            Self::answer(&mut self.prepare)
+            if self.pending_prepares > 0 {
+                self.pending_prepares -= 1;
+                return crate::player::ResumeStart::Pending;
+            }
+            crate::player::ResumeStart::Settled(Self::answer(&mut self.prepare))
+        }
+
+        fn land_prepare(
+            &mut self,
+            _ps: &mut crate::route::PlaybackSession,
+        ) -> FlightLanding<crate::player::ResumeOutcome> {
+            Self::answer(&mut self.land_prepares)
+        }
+
+        fn land_recovery(
+            &mut self,
+            _ps: &mut crate::route::PlaybackSession,
+        ) -> FlightLanding<ForegroundLoadStart<Self::Attempt>> {
+            Self::answer(&mut self.land_recoveries)
         }
 
         fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock) {
@@ -893,6 +1147,150 @@ mod foreground_resume_tests {
         assert_eq!(lifecycle.state, ForegroundState::Idle);
     }
 
+    /// **A resume whose rebuild is a flight parks the machine, and every landing settles it exactly
+    /// as the synchronous answer would have.** `Waiting` changes nothing and consumes every claim;
+    /// `Landed(Prepared)` carries on into the Load; a refused rebuild re-arms the suspended
+    /// snapshot; a flight that ended without landing releases the machine instead of hanging it.
+    #[test]
+    fn a_pending_resume_parks_the_machine_until_its_landing_and_settles_like_the_synchronous_answer() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut lifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.suspend(63_000_000_000, ForegroundClock::Playing);
+        let suspended = lifecycle.state;
+        let mut actuator = FakeActuator {
+            pending_prepares: 1,
+            land_prepares: vec![
+                FlightLanding::Waiting,
+                FlightLanding::Landed(crate::player::ResumeOutcome::Prepared),
+            ],
+            loads: vec![ForegroundLoadStart::Launched(3)],
+            ..FakeActuator::default()
+        };
+        assert_eq!(
+            drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::DidForeground, &mut actuator),
+            ForegroundActivation::Handled
+        );
+        assert!(lifecycle.flight_pending() && lifecycle.awaiting_load());
+        for input in [ForegroundInput::DidForeground, ForegroundInput::PlayKey] {
+            assert_eq!(
+                drive_foreground(&mut lifecycle, &mut ps, input, &mut actuator),
+                ForegroundActivation::Handled,
+                "a claim during the flight is consumed"
+            );
+        }
+        assert_eq!(actuator.prepare_calls.len(), 1, "no second preparation");
+        assert_eq!(actuator.load_calls, 0);
+        assert_eq!(poll_foreground_flight(&mut lifecycle, &mut ps, &mut actuator), ForegroundActivation::Handled);
+        assert!(lifecycle.flight_pending(), "Waiting changes nothing");
+        assert_eq!(actuator.load_calls, 0);
+        assert_eq!(poll_foreground_flight(&mut lifecycle, &mut ps, &mut actuator), ForegroundActivation::Launched);
+        assert!(matches!(lifecycle.state, ForegroundState::LoadPending { attempt: 3, resume_ns: 58_000_000_000, .. }));
+        assert_eq!(actuator.before_loads, vec![(58_000_000_000, ForegroundClock::Playing)]);
+
+        // A refused rebuild: the exact suspended snapshot, nothing launched.
+        let mut lifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.suspend(63_000_000_000, ForegroundClock::Playing);
+        let mut refused = FakeActuator {
+            pending_prepares: 1,
+            land_prepares: vec![FlightLanding::Landed(crate::player::ResumeOutcome::RebuildRejected)],
+            ..FakeActuator::default()
+        };
+        let _ = drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::DidForeground, &mut refused);
+        let _ = poll_foreground_flight(&mut lifecycle, &mut ps, &mut refused);
+        assert_eq!(lifecycle.state, suspended);
+        assert_eq!(refused.load_calls, 0);
+
+        // A flight that ended without landing (Back, a newer request) releases the machine.
+        let mut lifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.suspend(63_000_000_000, ForegroundClock::Playing);
+        let mut ended = FakeActuator {
+            pending_prepares: 1,
+            land_prepares: vec![FlightLanding::Stale],
+            ..FakeActuator::default()
+        };
+        let _ = drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::DidForeground, &mut ended);
+        let _ = poll_foreground_flight(&mut lifecycle, &mut ps, &mut ended);
+        assert_eq!(lifecycle.state, ForegroundState::Idle);
+        assert!(!lifecycle.awaiting_load());
+    }
+
+    /// An Original rollback that is a flight: the `Load` claim parks as `RecoveryPending`, and the
+    /// landing settles it with the reload's exact attempt, a refusal (`Terminal`) or a reload that
+    /// did not start (`Failed`: the prepared route stays retryable).
+    #[test]
+    fn a_pending_original_rollback_settles_the_load_with_the_reload_it_landed() {
+        for (landing, expected) in [
+            (
+                FlightLanding::Landed(ForegroundLoadStart::Launched(9)),
+                ForegroundActivation::Launched,
+            ),
+            (FlightLanding::Landed(ForegroundLoadStart::Terminal), ForegroundActivation::Handled),
+            (FlightLanding::Landed(ForegroundLoadStart::Failed), ForegroundActivation::Handled),
+            (FlightLanding::Stale, ForegroundActivation::Handled),
+        ] {
+            let mut ps = crate::route::PlaybackSession::IDLE;
+            let mut lifecycle = ForegroundLifecycle::IDLE;
+            lifecycle.suspend(63_000_000_000, ForegroundClock::Playing);
+            let mut actuator = FakeActuator {
+                prepare: vec![crate::player::ResumeOutcome::Prepared],
+                loads: vec![ForegroundLoadStart::Pending],
+                land_recoveries: vec![FlightLanding::Waiting, landing],
+                ..FakeActuator::default()
+            };
+            assert_eq!(
+                drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::DidForeground, &mut actuator),
+                ForegroundActivation::Handled
+            );
+            assert!(matches!(lifecycle.state, ForegroundState::RecoveryPending { id: 1, .. }), "{:?}", lifecycle.state);
+            assert!(lifecycle.awaiting_load(), "the parked rollback holds playback");
+            assert_eq!(poll_foreground_flight(&mut lifecycle, &mut ps, &mut actuator), ForegroundActivation::Handled);
+            assert!(lifecycle.flight_pending(), "Waiting changes nothing");
+            assert_eq!(poll_foreground_flight(&mut lifecycle, &mut ps, &mut actuator), expected);
+            assert!(!lifecycle.flight_pending(), "a landing always settles the machine");
+            match landing {
+                FlightLanding::Landed(ForegroundLoadStart::Launched(_)) => {
+                    assert!(matches!(lifecycle.state, ForegroundState::LoadPending { attempt: 9, .. }));
+                }
+                FlightLanding::Landed(ForegroundLoadStart::Failed) => {
+                    assert!(matches!(lifecycle.state, ForegroundState::Prepared { .. }), "{:?}", lifecycle.state);
+                }
+                FlightLanding::Landed(_) | FlightLanding::Stale => {
+                    assert_eq!(lifecycle.state, ForegroundState::Idle);
+                }
+                FlightLanding::Waiting => unreachable!(),
+            }
+        }
+    }
+
+    /// A second OS background while a flight is pending parks the session back as it was suspended
+    /// (a pending rollback has only its resume position), and the flight no longer awaits a landing.
+    #[test]
+    fn parking_a_pending_flight_restores_the_suspended_snapshot() {
+        let mut lifecycle = ForegroundLifecycle::<u64>::IDLE;
+        lifecycle.suspend(63_000_000_000, ForegroundClock::Playing);
+        let suspended = lifecycle.state;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut actuator = FakeActuator { pending_prepares: 1, ..FakeActuator::default() };
+        let _ = drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::DidForeground, &mut actuator);
+        assert!(lifecycle.flight_pending());
+        assert!(lifecycle.park_pending_flight());
+        assert_eq!(lifecycle.state, suspended);
+        assert!(!lifecycle.park_pending_flight(), "nothing pending any more");
+
+        let mut actuator = FakeActuator {
+            prepare: vec![crate::player::ResumeOutcome::Prepared],
+            loads: vec![ForegroundLoadStart::Pending],
+            ..FakeActuator::default()
+        };
+        let _ = drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::DidForeground, &mut actuator);
+        assert!(matches!(lifecycle.state, ForegroundState::RecoveryPending { .. }));
+        assert!(lifecycle.park_pending_flight());
+        assert!(matches!(
+            lifecycle.state,
+            ForegroundState::Suspended { saved_ns: 58_000_000_000, clock: ForegroundClock::Playing, .. }
+        ));
+    }
+
     #[test]
     fn pending_load_failure_retains_prepared_route_and_retry_skips_resume_preparation() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1020,9 +1418,23 @@ mod foreground_resume_tests {
                 &mut self,
                 _ps: &mut crate::route::PlaybackSession,
                 _resume_ns: i64,
-            ) -> crate::player::ResumeOutcome {
+            ) -> crate::player::ResumeStart {
                 self.prepares += 1;
-                crate::player::ResumeOutcome::Prepared
+                crate::player::ResumeStart::Settled(crate::player::ResumeOutcome::Prepared)
+            }
+
+            fn land_prepare(
+                &mut self,
+                _ps: &mut crate::route::PlaybackSession,
+            ) -> FlightLanding<crate::player::ResumeOutcome> {
+                unreachable!("this actuator never goes pending")
+            }
+
+            fn land_recovery(
+                &mut self,
+                _ps: &mut crate::route::PlaybackSession,
+            ) -> FlightLanding<ForegroundLoadStart<Self::Attempt>> {
+                unreachable!("this actuator never goes pending")
             }
 
             fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}
@@ -1292,8 +1704,8 @@ mod foreground_resume_tests {
 #[cfg(all(test, feature = "hostsim"))]
 mod transport_pause_contract_tests {
     use super::{
-        drive_foreground, paused, poll_foreground_load, set_transport_paused, ForegroundActivation,
-        ForegroundActuator, ForegroundClock, ForegroundInput, ForegroundLifecycle,
+        drive_foreground, paused, poll_foreground_load, set_transport_paused, FlightLanding,
+        ForegroundActivation, ForegroundActuator, ForegroundClock, ForegroundInput, ForegroundLifecycle,
         ForegroundLoadStart, ForegroundLoadStatus, ForegroundPollOutcome, ForegroundState,
     };
     use std::sync::atomic::Ordering;
@@ -1386,9 +1798,23 @@ mod transport_pause_contract_tests {
                 &mut self,
                 _ps: &mut crate::route::PlaybackSession,
                 _resume_ns: i64,
-            ) -> crate::player::ResumeOutcome {
+            ) -> crate::player::ResumeStart {
                 self.prepares += 1;
-                crate::player::ResumeOutcome::Prepared
+                crate::player::ResumeStart::Settled(crate::player::ResumeOutcome::Prepared)
+            }
+
+            fn land_prepare(
+                &mut self,
+                _ps: &mut crate::route::PlaybackSession,
+            ) -> FlightLanding<crate::player::ResumeOutcome> {
+                unreachable!("this actuator never goes pending")
+            }
+
+            fn land_recovery(
+                &mut self,
+                _ps: &mut crate::route::PlaybackSession,
+            ) -> FlightLanding<ForegroundLoadStart<Self::Attempt>> {
+                unreachable!("this actuator never goes pending")
             }
 
             fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}

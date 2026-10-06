@@ -417,55 +417,31 @@ fn publish_diag(eng: &Engine, now: u32) {
 /// the same thing: `demux_io_failed` is the transfer dying, `demux_failed` with no frames is the
 /// open being rejected, and `load_failed` is the pipeline refusing the payload the source implied.
 /// The device case was the first; a 404 or a codec the set will not take are the other two.
-enum OriginalRollbackPreparation {
-    NotPending,
-    RebaseFailed,
-    Prepared(crate::route::OriginalRollback),
-}
-
-fn prepare_failed_original_rollback(ps: &mut crate::route::PlaybackSession, status: i32) -> OriginalRollbackPreparation {
-    let Some(rollback) = crate::route::rollback_original_recovery(ps) else {
-        return OriginalRollbackPreparation::NotPending;
-    };
-    let secs = rollback.offset_ns / 1_000_000_000;
+///
+/// The first half of the way back from a failed Original open: take the rollback and say why the
+/// Original was refused. `None` means no recovery was pending. What is left is the rebase of the
+/// restored route — a flight either way: on the pump's frames ([`recover_failed_source_route`]), or
+/// Engine-less for the two callers that have no Engine for a pump to drive
+/// ([`begin_engineless_rollback`]).
+fn take_failed_original_rollback(ps: &mut crate::route::PlaybackSession, status: i32) -> Option<crate::route::OriginalRollback> {
+    let rollback = crate::route::rollback_original_recovery(ps)?;
     if status >= 400 {
         super::note_original_failure(super::ABR_FAILURE_ORIGINAL_HTTP, status);
     } else {
         // HTTP 200 followed by demux/Load failure is meaningfully different from no response.
         super::note_original_failure(super::ABR_FAILURE_ORIGINAL_OPEN, status);
     }
-    // The held rollback resource is still alive, but its old start URL begins at the boundary
-    // where that worker was created. Register a fresh physical HLS session at the recovery
-    // position before reloading it; reopening the saved URL pairs a new display base with old media
-    // and makes the picture jump backwards while the clock claims it did not.
-    if crate::route::transcode_seek(ps, secs).is_none() {
-        super::log("abr: restored HLS encoder but could not rebase it to the recovery position");
-        return OriginalRollbackPreparation::RebaseFailed;
-    }
-    super::report::note_delivery_requested_for(
-        crate::route::playback_trace_generation(),
-        super::report::DeliveryClass::Hls,
-        super::report::QualityClass::Unknown,
-        super::report::DeliveryReason::OriginalOpenRollback,
-    );
-    OriginalRollbackPreparation::Prepared(rollback)
+    Some(rollback)
 }
 
-fn recover_from_failed_original(ps: &mut crate::route::PlaybackSession) -> Option<crate::route::OriginalRollback> {
-    // Capture before `reload_transcode` clears the engine-scoped HTTP mirror. This sticky pair is
-    // the reason a successful HLS rollback can still explain on screen why Original was refused.
-    let status = SHARED.dg_http_status.load(Relaxed);
-    match prepare_failed_original_rollback(ps, status) {
-        OriginalRollbackPreparation::Prepared(rollback) => Some(rollback),
-        OriginalRollbackPreparation::NotPending | OriginalRollbackPreparation::RebaseFailed => None,
-    }
-}
-
-/// Foreground can observe a synchronous construction failure before an Engine exists for
-/// [`pump`] to inspect. Take the same typed Original -> restored-HLS edge used by asynchronous
-/// open failures and return the exact replacement Load token to the foreground lifecycle.
+/// What [`recover_failed_foreground_original`] / [`land_engineless_rollback`] settled for the
+/// foreground restore: the way back from an Original trial whose Load failed before an Engine
+/// existed, so there is no Engine for the pump to recover.
 pub enum ForegroundOriginalRecovery {
     NotOriginal,
+    /// The rollback's rebase of the restored HLS route is a flight no Engine waits on
+    /// ([`land_engineless_rollback`] delivers it).
+    Pending,
     Tracking(crate::route::RouteStartAttempt),
     /// PMS preparation succeeded and the HLS candidate remains retryable, but native Engine
     /// construction failed before an asynchronous Load could be observed.
@@ -474,27 +450,82 @@ pub enum ForegroundOriginalRecovery {
     Terminal,
 }
 
-pub fn recover_failed_foreground_original(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> ForegroundOriginalRecovery {
-    // No HTTP request necessarily happened: do not inherit the previous Engine's sticky status.
-    let rollback = match prepare_failed_original_rollback(ps, 0) {
-        OriginalRollbackPreparation::NotPending => {
-            return ForegroundOriginalRecovery::NotOriginal;
-        }
-        OriginalRollbackPreparation::RebaseFailed => {
-            set_state(super::shared::PlaybackState::Error);
-            return ForegroundOriginalRecovery::Terminal;
-        }
-        OriginalRollbackPreparation::Prepared(rollback) => rollback,
+/// Start the rollback of an Original trial whose Load failed while its Engine was being built (no
+/// Engine exists for [`pump`] to inspect): take the typed Original -> restored-HLS edge and
+/// dispatch its rebase as a flight no Engine waits on. The landing is
+/// [`land_engineless_rollback`]'s.
+fn begin_engineless_rollback(ps: &mut crate::route::PlaybackSession, status: i32) -> ForegroundOriginalRecovery {
+    let Some(rollback) = take_failed_original_rollback(ps, status) else {
+        return ForegroundOriginalRecovery::NotOriginal;
     };
-    match super::engine::reload_transcode_tracked(ps, pa, rollback.offset_ns) {
-        super::engine::BufferfeedStartOutcome::Launched(attempt) => {
-            ForegroundOriginalRecovery::Tracking(attempt)
-        }
-        super::engine::BufferfeedStartOutcome::Failed => ForegroundOriginalRecovery::RetryPrepared,
-        super::engine::BufferfeedStartOutcome::AlreadyRunning => {
+    // The held rollback resource is still alive, but its old start URL begins at the boundary
+    // where that worker was created. Register a fresh physical HLS session at the recovery
+    // position before reloading it; reopening the saved URL pairs a new display base with old media
+    // and makes the picture jump backwards while the clock claims it did not.
+    match crate::route::dispatch_engineless_rollback_rebase(ps, rollback.offset_ns) {
+        crate::route::RecoveryDispatch::Flying { .. } => ForegroundOriginalRecovery::Pending,
+        crate::route::RecoveryDispatch::Refused => {
+            super::log(crate::route::ROLLBACK_REBASE_REFUSED);
             set_state(super::shared::PlaybackState::Error);
             ForegroundOriginalRecovery::Terminal
         }
+    }
+}
+
+/// The foreground restore's synchronous Load failure inside an Original trial. No HTTP request
+/// necessarily happened: do not inherit the previous Engine's sticky status.
+pub fn recover_failed_foreground_original(ps: &mut crate::route::PlaybackSession) -> ForegroundOriginalRecovery {
+    begin_engineless_rollback(ps, 0)
+}
+
+/// What draining an Engine-less rollback's landing found.
+pub enum RollbackLanding {
+    /// The worker has not landed, or the outstanding flight is not a rollback's.
+    Waiting,
+    /// No Engine-less flight is outstanding: it ended (a Back, a suspend, a newer request) and
+    /// whoever ended it owns what happens next. A late landing has been reaped.
+    Stale,
+    Landed(ForegroundOriginalRecovery),
+}
+
+/// Drain the landing of a rollback no Engine waits on, once a frame while
+/// [`crate::route::engineless_flight_outstanding`]: reload onto the restored HLS route at the
+/// recovery position, or — the rebase was refused — fail the start. Reaps a stale flight's late landing first, since no pump will.
+pub fn land_engineless_rollback(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> RollbackLanding {
+    crate::route::discard_stale_flight_landing();
+    if !crate::route::engineless_flight_outstanding() {
+        return RollbackLanding::Stale;
+    }
+    if crate::route::resume_flight_outstanding() {
+        return RollbackLanding::Waiting; // a resume's flight: `land_resume` drains it
+    }
+    let Some(landing) = crate::route::take_ready_recovery_flight(ps) else {
+        return RollbackLanding::Waiting;
+    };
+    RollbackLanding::Landed(match landing.verdict {
+        crate::route::RecoveryVerdict::Install => match super::engine::reload_transcode_tracked(ps, pa, landing.offset_ns) {
+            super::engine::BufferfeedStartOutcome::Launched(attempt) => ForegroundOriginalRecovery::Tracking(attempt),
+            super::engine::BufferfeedStartOutcome::Failed => ForegroundOriginalRecovery::RetryPrepared,
+            super::engine::BufferfeedStartOutcome::AlreadyRunning => {
+                set_state(super::shared::PlaybackState::Error);
+                ForegroundOriginalRecovery::Terminal
+            }
+        },
+        // `install_recovery_landing` already said `ROLLBACK_REBASE_REFUSED`.
+        crate::route::RecoveryVerdict::Refused => {
+            set_state(super::shared::PlaybackState::Error);
+            ForegroundOriginalRecovery::Terminal
+        }
+    })
+}
+
+/// The app loop's once-a-frame drain for a rollback NO foreground machine owns (the pump's
+/// `start_original_trial_reload` found its Load failing synchronously): a reload that does not
+/// start is the failure read-out.
+pub fn drain_engineless_rollback(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
+    if let RollbackLanding::Landed(ForegroundOriginalRecovery::RetryPrepared) = land_engineless_rollback(ps, pa) {
+        super::log("abr: HLS rollback could not start (StartFailed)");
+        set_state(super::shared::PlaybackState::Error);
     }
 }
 
@@ -546,17 +577,40 @@ fn finish_preview_open_failure(
     crate::player::preview::retire(ps, pa, "open failed");
 }
 
-/// Recover either kind of failed Original open and return the reload position in nanoseconds.
-/// Pending HLS rollback has priority; a failed rollback is terminal rather than silently starting
-/// a third transaction on route state whose encoder restore already failed.
-fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession) -> Option<crate::route::OriginalRollback> {
+/// What the pump's failure branches got from [`recover_failed_source_route`].
+enum SourceRecovery {
+    /// A flight owns the replacement route; [`land_recovery_flight`] reloads onto it, or fails the
+    /// Engine, when it lands. The frames in between wait ([`recovery_flight_outstanding`]).
+    Flying,
+    /// Nothing to recover with: the failure means what it always did.
+    Failed,
+}
+
+/// Recover either kind of failed Original open. Pending HLS rollback has priority; a failed
+/// rollback is terminal rather than silently starting a third transaction on route state whose
+/// encoder restore already failed. Both recoveries are flights: the replacement route's PMS half
+/// runs on a worker while the viewer keeps the connecting spinner they had.
+fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession) -> SourceRecovery {
     let action = open_failure_action(
         crate::route::original_recovery_pending(),
         crate::route::auto_original_watch(ps).is_some(),
         SHARED.frames.load(Relaxed) == 0,
     );
-    match action {
-        OpenFailureAction::RollbackPendingOriginal => recover_from_failed_original(ps),
+    let dispatch = match action {
+        OpenFailureAction::RollbackPendingOriginal => {
+            // Capture before the reload clears the engine-scoped HTTP mirror. This sticky pair is
+            // the reason a successful HLS rollback can still explain on screen why Original was
+            // refused.
+            let status = SHARED.dg_http_status.load(Relaxed);
+            let Some(rollback) = take_failed_original_rollback(ps, status) else {
+                return SourceRecovery::Failed;
+            };
+            let dispatched = crate::route::dispatch_rollback_rebase(ps, rollback.offset_ns);
+            if dispatched == crate::route::RecoveryDispatch::Refused {
+                super::log(crate::route::ROLLBACK_REBASE_REFUSED);
+            }
+            dispatched
+        }
         OpenFailureAction::StartAutoHls => {
             let status = SHARED.dg_http_status.load(Relaxed);
             if status >= 400 {
@@ -565,12 +619,58 @@ fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession) -> Option
                 super::note_original_failure(super::ABR_FAILURE_ORIGINAL_OPEN, status);
             }
             let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
-            crate::route::fallback_unopened_auto_to_hls(ps, secs)?;
-            Some(crate::route::OriginalRollback::without_deferred(
-                secs * 1_000_000_000,
-            ))
+            crate::route::dispatch_unopened_auto_hls(ps, secs)
         }
-        OpenFailureAction::Error => None,
+        OpenFailureAction::Error => return SourceRecovery::Failed,
+    };
+    match dispatch {
+        crate::route::RecoveryDispatch::Flying { .. } => SourceRecovery::Flying,
+        crate::route::RecoveryDispatch::Refused => SourceRecovery::Failed,
+    }
+}
+
+/// The three source-failure branches' shared answer: either a recovery is flying (the frame is
+/// done, the spinner stays up) or the Engine fails and the viewer gets the read-out. Always the
+/// frame's last act.
+fn fail_or_wait_for_recovery(ps: &mut crate::route::PlaybackSession, eng: &Engine) {
+    match recover_failed_source_route(ps) {
+        SourceRecovery::Flying => hold_connecting_state(eng),
+        SourceRecovery::Failed => {
+            crate::route::fail_current_engine();
+            set_state(super::shared::PlaybackState::Error);
+        }
+    }
+}
+
+/// What the viewer sees while a recovery flies: the connecting spinner the failed open left, not a
+/// frozen frame and not the failure read-out. Mirrors the ladder at the foot of [`pump`] for a
+/// stream that has decoded nothing.
+fn hold_connecting_state(eng: &Engine) {
+    set_state(if eng.stage == Stage::Loading {
+        super::shared::PlaybackState::Connecting
+    } else {
+        super::shared::PlaybackState::Buffering
+    });
+}
+
+/// A recovery flight landed: reload onto the replacement route at the recovery position, or — it
+/// was refused — fail the Engine.
+fn land_recovery_flight(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    landing: crate::route::RecoveryLanding,
+) {
+    match landing.verdict {
+        crate::route::RecoveryVerdict::Install => {
+            let _ = settle_reload(
+                super::engine::reload_transcode(ps, pa, landing.offset_ns),
+                "HLS recovery after failed source open",
+            );
+        }
+        crate::route::RecoveryVerdict::Refused => {
+            crate::route::fail_current_engine();
+            set_state(super::shared::PlaybackState::Error);
+        }
     }
 }
 
@@ -590,34 +690,34 @@ fn settle_reload(outcome: super::engine::ReloadOutcome, operation: &str) -> bool
 
 /// Start the native half of an HLS→Original transaction.  The reducer already owns a complete HLS
 /// rollback snapshot; a synchronous Load construction failure is the same typed rejection as an
-/// HTTP/demux/Load callback failure and must cross that rollback edge immediately.
+/// HTTP/demux/Load callback failure and must cross that rollback edge immediately. There is no
+/// Engine for a pump to drive the way back, so the rebase is an Engine-less flight
+/// ([`begin_engineless_rollback`]): the viewer keeps the spinner, and the app loop's
+/// [`drain_engineless_rollback`] reloads onto the restored route when it lands.
 fn start_original_trial_reload(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
     reload: crate::route::AutoOriginalReload,
     position_ns: i64,
-) -> bool {
+) {
     let outcome = match reload {
         crate::route::AutoOriginalReload::Direct => super::engine::reload_at(ps, pa, position_ns),
         crate::route::AutoOriginalReload::Remux => super::engine::reload_transcode(ps, pa, position_ns),
     };
     if outcome == super::engine::ReloadOutcome::Started {
-        return true;
+        return;
     }
     super::log(&format!(
         "abr: Original trial could not start ({outcome:?}); taking explicit rollback edge",
     ));
-    let Some(rollback) = recover_from_failed_original(ps) else {
+    // Capture before the reload clears the engine-scoped HTTP mirror. This sticky pair is the
+    // reason a successful HLS rollback can still explain on screen why Original was refused.
+    let status = SHARED.dg_http_status.load(Relaxed);
+    if matches!(
+        begin_engineless_rollback(ps, status),
+        ForegroundOriginalRecovery::NotOriginal | ForegroundOriginalRecovery::Terminal
+    ) {
         set_state(super::shared::PlaybackState::Error);
-        return false;
-    };
-    let restored = super::engine::reload_transcode(ps, pa, rollback.offset_ns);
-    if restored == super::engine::ReloadOutcome::Started {
-        true
-    } else {
-        super::log(&format!("abr: HLS rollback could not start ({restored:?})",));
-        set_state(super::shared::PlaybackState::Error);
-        false
     }
 }
 
@@ -653,12 +753,16 @@ fn run_claim_tail(
             retranscode_tail(ps, pa, action, pending_seek, user_target);
             true
         }
+        crate::route::ClaimTail::Adaptive => {
+            adaptive_tail(ps, pa, action, pending_seek, user_target);
+            true
+        }
         crate::route::ClaimTail::NativeAudio => {
             native_audio_tail(ps, pa, action, pending_seek, user_target);
             true
         }
         crate::route::ClaimTail::Original(reload) => {
-            original_tail(ps, pa, reload, user_target);
+            original_tail(ps, pa, reload, pending_seek, user_target);
             true
         }
         crate::route::ClaimTail::Rejected(msg) => {
@@ -670,7 +774,7 @@ fn run_claim_tail(
 
 /// At claim-landing time, decide whether the seek target this claim was built with (`pending_seek`,
 /// captured when the claim was made) is still the newest one requested. The pump's own pending-seek
-/// branch skips entirely while `claim_in_flight()` holds (see its own doc), so a fresher tap that
+/// branch skips entirely while `flight_outstanding()` holds (see its own doc), so a fresher tap that
 /// landed during this claim's flight sits untouched in `TX.seek_to_ns` rather than being folded in —
 /// committing THIS claim's stale target with `commit_user_seek` would silently discard it. Returns
 /// the fresher value to re-arm into `TX.seek_to_ns` after the reload resets it
@@ -742,6 +846,87 @@ fn retranscode_tail(
     land_prepared_route(ps, pa, action, pending_seek, user_target, ("user retranscode", ""), super::engine::reload_transcode);
 }
 
+/// A rebuilt transcode of the same stream (an `AdaptiveReload` landing): settle the action, cross
+/// the seek, reload onto it at the claim offset.
+fn adaptive_tail(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    action: &crate::route::ClaimedRouteAction,
+    pending_seek: i64,
+    user_target: i64,
+) {
+    land_prepared_route(ps, pa, action, pending_seek, user_target, ("adaptive worker reload", ""), super::engine::reload_transcode);
+}
+
+/// A transcode seek's landing, run on the frame that drained it. The pump held presentation for
+/// the flight ([`super::claim_hold`]); `hold` is what it owes the viewer back.
+fn seek_landing_tail(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    serial: u64,
+    target_ns: i64,
+    verdict: crate::route::SeekVerdict,
+) {
+    let hold = super::claim_hold::take(serial);
+    match verdict {
+        crate::route::SeekVerdict::Install(_) => {
+            // The route names the replacement and its start transaction is `Prepared`: this is the
+            // applied media boundary, exactly where the synchronous rebuild crossed it.
+            crate::route::commit_user_seek();
+            super::log(&format!("route transition: transcode seek at {}s", target_ns / 1_000_000_000));
+            settle_reload(super::engine::reload_transcode(ps, pa, target_ns), "transcode seek reload");
+            // The reload kept the hold's pause; only now does the new stream get its Play.
+            super::claim_hold::release(pa, hold);
+        }
+        crate::route::SeekVerdict::Superseded => {
+            // A newer tap is waiting in the seek target: fly at THAT, carrying the hold over.
+            let newest = TX.seek_to_ns.swap(-1, Relaxed);
+            if newest >= 0 {
+                take_coalesced();
+                start_transcode_seek_flight(ps, pa, newest, hold);
+            } else {
+                super::claim_hold::release(pa, hold);
+            }
+        }
+        crate::route::SeekVerdict::Refused => {
+            super::claim_hold::release(pa, hold);
+            // Give up on THIS seek and say so, or the spinner and the frozen playhead outlive the
+            // playback — see `player::abandon_seek`. The engine is untouched (no flush happened),
+            // so the stream itself carries on from where it was.
+            super::abandon_seek();
+            super::log("seek(transcode): rebuild failed");
+        }
+    }
+}
+
+/// Start the flight for a seek on a live transcode at `target_ns` (already taken off
+/// `TX.seek_to_ns`): plan on this frame, PMS on a worker, presentation held until it lands.
+/// `inherited_hold` is the restore a superseded flight's hold still owes.
+fn start_transcode_seek_flight(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    target_ns: i64,
+    inherited_hold: bool,
+) {
+    match crate::route::dispatch_transcode_seek(ps, target_ns) {
+        crate::route::SeekDispatch::Flying { serial } => {
+            super::claim_hold::engage_inheriting(pa, serial, inherited_hold);
+            super::log(&format!("seek(transcode): rebuild in flight at {}s", target_ns / 1_000_000_000));
+        }
+        crate::route::SeekDispatch::Busy => {
+            // Another transaction holds the reducer for a frame or two: the tap stays a tap.
+            TX.seek_to_ns.store(target_ns, Release);
+            TX.seek_reqs.store(1, Release);
+            super::claim_hold::release(pa, inherited_hold);
+        }
+        crate::route::SeekDispatch::Refused => {
+            super::claim_hold::release(pa, inherited_hold);
+            super::abandon_seek();
+            super::log("seek(transcode): rebuild failed");
+        }
+    }
+}
+
 /// A staged native audio switch (`desired_audio_idx` + payload codec): settle, reload direct.
 fn native_audio_tail(
     ps: &mut crate::route::PlaybackSession,
@@ -763,15 +948,89 @@ fn native_audio_tail(
 }
 
 /// A staged Original trial: its PendingOriginal already owns the phase, so there is no
-/// `finish_route_action` here; the reload lands on the requested position unconditionally.
+/// `finish_route_action` here; the reload lands on the requested position. A seek pressed during
+/// the recovery's flight is carried past the reload ([`commit_or_carry_seek`]), not dropped by it.
 fn original_tail(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
     reload: crate::route::AutoOriginalReload,
+    pending_seek: i64,
     user_target: i64,
 ) {
-    crate::route::commit_user_seek();
+    let carried_seek = commit_or_carry_seek(pending_seek);
     start_original_trial_reload(ps, pa, reload, user_target);
+    rearm_carried_seek(carried_seek);
+}
+
+/// An AUTOMATIC HLS-to-Original claim's tail. An accepted recovery is [`original_tail`]. A refused
+/// one is not an ordinary rejection: the Auto worker exited to hand the action over, so the stream
+/// has no producer, and a refused/lost Original decision leaves the HLS route fully intact —
+/// rebuild that exact HLS Engine at the action's position rather than turning a recoverable probe
+/// failure into the terminal playback screen. Returns whether the Engine was replaced.
+fn land_automatic_original(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    action: &crate::route::ClaimedRouteAction,
+    tail: crate::route::ClaimTail,
+    pending_seek: i64,
+    position_ns: i64,
+) -> bool {
+    let crate::route::ClaimTail::Rejected(msg) = tail else {
+        return run_claim_tail(ps, pa, action, tail, pending_seek, position_ns);
+    };
+    if !crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Rejected) {
+        // A teardown or a fresh playback request superseded the action: `ps` may belong to
+        // another item, and there is no retained HLS of ours to reopen.
+        return false;
+    }
+    super::log(msg);
+    let carried_seek = commit_or_carry_seek(pending_seek);
+    settle_reload(
+        super::engine::reload_transcode(ps, pa, position_ns),
+        "retained HLS reopen after rejected Original",
+    );
+    rearm_carried_seek(carried_seek);
+    true
+}
+
+/// An AUTOMATIC Original-to-HLS claim's tail. An accepted fallback is an ordinary prepared
+/// transcode: settle the action, reload onto the HLS route at the action's position. A refused one
+/// is not an ordinary rejection: the Auto worker exited to hand the action over, so the Original
+/// has no producer left to carry on and the failure is raised for the pump's own recovery
+/// (`demux_io_failed`). Returns whether the Engine was replaced.
+fn land_automatic_hls(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    action: &crate::route::ClaimedRouteAction,
+    tail: crate::route::ClaimTail,
+    pending_seek: i64,
+    position_ns: i64,
+) -> bool {
+    match tail {
+        crate::route::ClaimTail::Retranscode => {
+            land_prepared_route(
+                ps,
+                pa,
+                action,
+                pending_seek,
+                position_ns,
+                ("automatic Original-to-HLS", ""),
+                super::engine::reload_transcode,
+            );
+            true
+        }
+        crate::route::ClaimTail::Rejected(msg) => {
+            if !crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Rejected) {
+                // A teardown or a fresh playback request superseded the action: the failure
+                // belongs to a playback that is gone, so it must not be raised on the next one.
+                return false;
+            }
+            super::log(msg);
+            SHARED.demux_io_failed.store(true, Relaxed);
+            false
+        }
+        other => run_claim_tail(ps, pa, action, other, pending_seek, position_ns),
+    }
 }
 
 /// Refused: restore the previous projection and keep playing what plays.
@@ -809,6 +1068,17 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // the route Stable before this Engine exists in the main-thread slot. Drain its exact-token
     // result here, after installation and before any worker publication can be accepted.
     crate::route::drain_route_start_results(ps);
+    // A failed open's recovery flight (the Original rollback's rebase, the unopened source's HLS
+    // fallback): land it, or wait for it. Ahead of every failure branch below, whose flags stay up
+    // for the whole flight and which would otherwise fail the Engine the landing replaces.
+    if let Some(landing) = crate::route::take_ready_recovery_flight(ps) {
+        land_recovery_flight(ps, pa, landing);
+        return;
+    }
+    if crate::route::recovery_flight_outstanding() {
+        hold_connecting_state(eng);
+        return;
+    }
     // `sf_load == 0` may leave no callable object, so this must precede the sf_ready wait below;
     // otherwise the pump returns Connecting forever and never consumes the explicit failure.
     if SHARED.load_failed.load(Acquire) {
@@ -816,16 +1086,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             finish_preview_open_failure(ps, pa);
             return;
         }
-        if let Some(rollback) = recover_failed_source_route(ps) {
-            let started = settle_reload(
-                super::engine::reload_transcode(ps, pa, rollback.offset_ns),
-                "HLS rollback after native Load failure",
-            );
-            let _ = started;
-            return;
-        }
-        crate::route::fail_current_engine();
-        set_state(PlaybackState::Error);
+        fail_or_wait_for_recovery(ps, eng);
         return;
     }
     // wait for the media-thread ctor
@@ -874,16 +1135,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             finish_preview_open_failure(ps, pa);
             return;
         }
-        if let Some(rollback) = recover_failed_source_route(ps) {
-            let started = settle_reload(
-                super::engine::reload_transcode(ps, pa, rollback.offset_ns),
-                "HLS rollback after source I/O failure",
-            );
-            let _ = started;
-            return;
-        }
-        crate::route::fail_current_engine();
-        set_state(PlaybackState::Error);
+        fail_or_wait_for_recovery(ps, eng);
         return;
     }
     if SHARED.demux_failed.load(Acquire) && SHARED.frames.load(Relaxed) == 0 {
@@ -891,16 +1143,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             finish_preview_open_failure(ps, pa);
             return;
         }
-        if let Some(rollback) = recover_failed_source_route(ps) {
-            let started = settle_reload(
-                super::engine::reload_transcode(ps, pa, rollback.offset_ns),
-                "HLS rollback after demux failure",
-            );
-            let _ = started;
-            return;
-        }
-        crate::route::fail_current_engine();
-        set_state(PlaybackState::Error);
+        fail_or_wait_for_recovery(ps, eng);
         return;
     }
     let stream = matches!(eng.source, Source::Stream);
@@ -917,18 +1160,38 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // `Applying` the whole time, so `claim_route_action` below never fires for the SAME action
         // while this is pending; it only starts returning `Some` again once `run_claim_tail`
         // settles the drained landing.
-        if let Some((action, tail, pending_seek, user_target)) = crate::route::take_ready_retranscode_claim(ps) {
+        let ready = crate::route::take_ready_flight(ps, TX.seek_to_ns.load(Relaxed) >= 0);
+        if let Some(crate::route::ReadyFlight::Claim { action, tail, pending_seek, user_target }) = ready {
             // The claim held presentation at its offset for the flight (`claim_hold`). Give play
             // back only once the tail has run: a rejection left the same Engine playing, and an
             // accepted claim's reload has kept the pause, so the Play lands on the NEW stream.
             let hold = super::claim_hold::take(action.serial());
-            let replaced = run_claim_tail(ps, pa, &action, tail, pending_seek, user_target);
+            let replaced = if matches!(
+                action.intent,
+                crate::route::RouteIntent::Automatic(crate::route::AutomaticRouteIntent::HlsToOriginal { .. })
+            ) {
+                land_automatic_original(ps, pa, &action, tail, pending_seek, user_target)
+            } else if matches!(
+                action.intent,
+                crate::route::RouteIntent::Automatic(crate::route::AutomaticRouteIntent::OriginalToHls { .. })
+            ) {
+                land_automatic_hls(ps, pa, &action, tail, pending_seek, user_target)
+            } else {
+                run_claim_tail(ps, pa, &action, tail, pending_seek, user_target)
+            };
             // The reload (if any) has moved the Engine onto the new stream; only now is the
             // encoder it replaced safe to stop.
             crate::route::retire_superseded_encoder();
             super::claim_hold::release(pa, hold);
             if replaced {
                 return;
+            }
+            (eng, mt) = reacquire_engine(pa);
+        } else if let Some(crate::route::ReadyFlight::Seek { serial, target_ns, verdict }) = ready {
+            let reloads = matches!(verdict, crate::route::SeekVerdict::Install(_));
+            seek_landing_tail(ps, pa, serial, target_ns, verdict);
+            if reloads {
+                return; // REPLACED the engine — `eng` dangles.
             }
             (eng, mt) = reacquire_engine(pa);
         } else if let Some(action) = crate::route::claim_route_action() {
@@ -952,7 +1215,8 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
                                 }
                                 (eng, mt) = reacquire_engine(pa);
                             }
-                            crate::route::RetranscodeClaimDispatch::Pending => {
+                            crate::route::RetranscodeClaimDispatch::Pending
+                            | crate::route::RetranscodeClaimDispatch::PendingNoHold => {
                                 // A worker now owns the PMS half. The drain at the top of this
                                 // block picks up the landing later — never a join, never a
                                 // blocked frame. Meanwhile presentation holds at the claim offset:
@@ -970,33 +1234,25 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
                     }
                     crate::route::UserRouteIntent::AdaptiveReload => {
                         if crate::route::is_transcoding(ps) {
-                            let secs = user_target / 1_000_000_000;
-                            if crate::route::transcode_seek(ps, secs).is_some() {
-                                crate::route::honour_displaced_pick(ps, action.displaced_pick, "AdaptiveReload");
-                                crate::route::finish_route_action(
-                                    ps,
-                                    &action,
-                                    crate::route::RouteApplyResult::Prepared,
-                                );
-                                if pending_seek >= 0 {
-                                    crate::route::commit_user_seek();
-                                }
-                                super::log(&format!(
-                                    "route transition: adaptive worker reload at {secs}s{}",
-                                    if pending_seek >= 0 { " + seek" } else { "" },
-                                ));
-                                settle_reload(
-                                    super::engine::reload_transcode(ps, pa, user_target),
-                                    "adaptive HLS reload",
-                                );
-                                return;
-                            }
-                            // `is_transcoding(ps)` still holds here (this whole arm is inside that
-                            // branch), so `honour_displaced_pick` logs the same sentence and returns
-                            // right after without staging native audio — byte-identical to the
-                            // hand-written `if action.displaced_pick { log(...) }` this replaces.
+                            // The same flight as a seek, owned by this claim: PMS on a worker,
+                            // the claim stays `Applying`, and the drain at the top of this block
+                            // lands it (`adaptive_tail`). The claim offset is where the reload
+                            // goes, so presentation holds there for the flight.
                             crate::route::honour_displaced_pick(ps, action.displaced_pick, "AdaptiveReload");
-                            rejected_tail(ps, &action, "route transition: adaptive transcode reload was rejected");
+                            let secs = user_target / 1_000_000_000;
+                            match crate::route::execute_adaptive_reload_claim(ps, &action, secs, pending_seek, user_target) {
+                                crate::route::RetranscodeClaimDispatch::Sync(tail) => {
+                                    if run_claim_tail(ps, pa, &action, tail, pending_seek, user_target) {
+                                        return;
+                                    }
+                                    (eng, mt) = reacquire_engine(pa);
+                                }
+                                crate::route::RetranscodeClaimDispatch::Pending
+                                | crate::route::RetranscodeClaimDispatch::PendingNoHold => {
+                                    super::claim_hold::engage(pa, action.serial());
+                                    (eng, mt) = reacquire_engine(pa);
+                                }
+                            }
                         } else {
                             crate::route::honour_displaced_pick(ps, action.displaced_pick, "AdaptiveReload");
                             crate::route::finish_route_action(
@@ -1020,12 +1276,25 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
                         }
                     }
                     crate::route::UserRouteIntent::RecoverOriginal(cause) => {
+                        // The viewer's Original pick: the same flight as an enhancement release.
+                        // PMS (the Part admission, the replacement remux) runs on a worker while
+                        // presentation holds at the claim offset; the drain lands it.
                         let secs = user_target / 1_000_000_000;
-                        let tail = crate::route::execute_recover_original_claim(ps, &action, secs, cause);
-                        if run_claim_tail(ps, pa, &action, tail, pending_seek, user_target) {
-                            return;
+                        match crate::route::execute_recover_original_claim(
+                            ps, &action, secs, cause, pending_seek, user_target,
+                        ) {
+                            crate::route::RetranscodeClaimDispatch::Sync(tail) => {
+                                if run_claim_tail(ps, pa, &action, tail, pending_seek, user_target) {
+                                    return;
+                                }
+                                (eng, mt) = reacquire_engine(pa);
+                            }
+                            crate::route::RetranscodeClaimDispatch::Pending
+                            | crate::route::RetranscodeClaimDispatch::PendingNoHold => {
+                                super::claim_hold::engage(pa, action.serial());
+                                (eng, mt) = reacquire_engine(pa);
+                            }
                         }
-                        (eng, mt) = reacquire_engine(pa);
                     }
                 },
                 crate::route::RouteIntent::Automatic(intent) => {
@@ -1046,33 +1315,30 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
                                 super::log("auto: discarded fallback action whose ticket changed before claim");
                                 return;
                             }
-                            if crate::route::fallback_auto_to_hls_for(
-                                ps,
-                                &action.ticket,
-                                conservative_kbps,
-                                secs,
-                            )
-                            .is_some()
-                            {
-                                crate::route::finish_route_action(
-                                    ps,
-                                    &action,
-                                    crate::route::RouteApplyResult::Prepared,
-                                );
-                                crate::route::commit_user_seek();
-                                settle_reload(
-                                    super::engine::reload_transcode(ps, pa, position_ns),
-                                    "automatic Original-to-HLS reload",
-                                );
-                                return;
-                            }
-                            crate::route::finish_route_action(
+                            // The Auto worker exited to hand this action over; the Original is
+                            // what plays until the landing replaces it. The replacement's PUT +
+                            // `/decision` run on a worker (nothing is held or paused for them: a
+                            // refusal or a success is the only thing that changes the stream), and
+                            // the drain at the top of this block lands them.
+                            match crate::route::execute_auto_hls_claim(
                                 ps,
                                 &action,
-                                crate::route::RouteApplyResult::Rejected,
-                            );
-                            super::log("auto: synchronized Original fallback could not build HLS");
-                            SHARED.demux_io_failed.store(true, Relaxed);
+                                secs,
+                                conservative_kbps,
+                                pending_seek,
+                                position_ns,
+                            ) {
+                                crate::route::RetranscodeClaimDispatch::Sync(tail) => {
+                                    if land_automatic_hls(ps, pa, &action, tail, pending_seek, position_ns) {
+                                        return;
+                                    }
+                                    (eng, mt) = reacquire_engine(pa);
+                                }
+                                crate::route::RetranscodeClaimDispatch::Pending
+                                | crate::route::RetranscodeClaimDispatch::PendingNoHold => {
+                                    (eng, mt) = reacquire_engine(pa);
+                                }
+                            }
                         }
                         crate::route::AutomaticRouteIntent::HlsToOriginal {
                             ticket,
@@ -1090,36 +1356,31 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
                                 super::log("auto: discarded Original action whose ticket changed before claim");
                                 return;
                             }
-                            match crate::route::recover_auto_to_original_for(
+                            // The Auto worker exited to hand this action over, and it published
+                            // `position_ns`: the same flight as the viewer's own Original pick. A
+                            // direct Original never reaches PMS, so its flight is a frame or two
+                            // and the stream keeps playing; a remux's PUT + `/decision` holds the
+                            // picture at `position_ns`, because the landing reloads THERE.
+                            match crate::route::execute_recover_original_claim(
                                 ps,
-                                &action.ticket,
+                                &action,
                                 secs,
                                 crate::route::RecoveryCause::Automatic,
+                                pending_seek,
+                                position_ns,
                             ) {
-                                Some(reload) => {
-                                    crate::route::commit_user_seek();
-                                    start_original_trial_reload(ps, pa, reload, position_ns);
-                                    return;
+                                crate::route::RetranscodeClaimDispatch::Sync(tail) => {
+                                    if land_automatic_original(ps, pa, &action, tail, pending_seek, position_ns) {
+                                        return;
+                                    }
+                                    (eng, mt) = reacquire_engine(pa);
                                 }
-                                None => {
-                                    crate::route::finish_route_action(
-                                        ps,
-                                        &action,
-                                        crate::route::RouteApplyResult::Rejected,
-                                    );
-                                    // The HLS worker stopped only to hand this action to the main
-                                    // thread. A refused/lost Original decision leaves its route fully
-                                    // intact, so rebuild that exact HLS Engine instead of converting a
-                                    // recoverable probe failure into the terminal playback screen.
-                                    super::log(
-                                        "auto: Original recovery was rejected; reopening retained HLS",
-                                    );
-                                    crate::route::commit_user_seek();
-                                    settle_reload(
-                                        super::engine::reload_transcode(ps, pa, position_ns),
-                                        "retained HLS reopen after rejected Original",
-                                    );
-                                    return;
+                                crate::route::RetranscodeClaimDispatch::Pending => {
+                                    super::claim_hold::engage(pa, action.serial());
+                                    (eng, mt) = reacquire_engine(pa);
+                                }
+                                crate::route::RetranscodeClaimDispatch::PendingNoHold => {
+                                    (eng, mt) = reacquire_engine(pa);
                                 }
                             }
                         }
@@ -1140,14 +1401,14 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // was about to succeed and restarts it — at 500ms a rapid tap-burst self-DoS'd into the
     // reload fallback every time (caught by the seek_rapid harness cases).
     // A claim's worker owns `ControlPhase::Applying` and has no vocabulary for a seek reload
-    // reaching in and replacing the encoder/engine out from under it (see `claim_in_flight`'s own
+    // reaching in and replacing the encoder/engine out from under it (see `route::flight_outstanding`'s own
     // doc). Skip both this branch and the plain pending-seek branch below while one is in flight —
     // `TX.seek_to_ns` stays exactly where it is and the retranscode/native-audio tail re-checks it
     // once the claim lands (`commit_or_carry_seek`).
     const SEEK_STUCK_MS: u32 = 1200;
     if eng.flushed && eng.rebase_pending
         && now.wrapping_sub(eng.seek_armed_at) > SEEK_STUCK_MS
-        && !crate::route::claim_in_flight()
+        && !crate::route::flight_outstanding()
     {
         // Adopt the NEWEST coalesced target if later taps landed while this seek was resolving
         // (TX.seek_to_ns holds the latest request): retrying/reloading at the original armed
@@ -1197,7 +1458,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     if stream
         && t >= 0
         && !crate::route::original_recovery_pending()
-        && !crate::route::claim_in_flight() // see the SEEK_STUCK_MS branch's doc above
+        && !crate::route::flight_outstanding() // see the SEEK_STUCK_MS branch's doc above
         && !(eng.flushed && eng.rebase_pending) // coalesce: don't stack in-place seeks
         && eng.stage >= Stage::Playing
         && SHARED.duration_ns.load(Relaxed) > 0
@@ -1213,20 +1474,10 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // rebuilds the segment by construction. reload_transcode REPLACES the ENGINE, so `eng`
         // dangles after it — return immediately and let the next pump() tick drive the fresh engine.
         if is_transcode {
-            let secs = t / 1_000_000_000;
-            if crate::route::transcode_seek(ps, secs).is_some() {
-                crate::route::commit_user_seek();
-                settle_reload(
-                    super::engine::reload_transcode(ps, pa, t),
-                    "transcode seek reload",
-                );
-            } else {
-                // Give up on THIS seek and say so, or the spinner and the frozen playhead outlive
-                // the playback — see `player::abandon_seek`. The engine is untouched here (no
-                // flush has happened), so the stream itself carries on from where it was.
-                super::abandon_seek();
-                super::log("seek(transcode): rebuild failed");
-            }
+            // The rebuild is a FLIGHT: planned here, PMS on a worker, installed by the drain at
+            // the top of the route block on a later frame. Presentation holds under the Seeking
+            // spinner meanwhile; a refused rebuild abandons the seek there.
+            start_transcode_seek_flight(ps, pa, t, false);
             return;
         }
         // DIRECT-PLAY seek: Kodi IN-PLACE seek — flush + av_seek the demuxer, and
@@ -1849,5 +2100,864 @@ mod tests {
         let (carried, _, still_owed) = run_carry(-1, None);
         assert_eq!(carried, None);
         assert!(!still_owed);
+    }
+}
+
+/// **The pump, driving the flight.** A transcode seek and an `AdaptiveReload` claim both rebuild
+/// the physical encoder through PMS. These tests run the REAL `pump` inside a `FrameScope` against
+/// the hostsim Engine and the loopback server of `route::flight_rig`, and grade what the frame
+/// thread did: a frame that makes a PMS round trip is a frame the viewer waits on.
+#[cfg(all(test, feature = "hostsim"))]
+mod flight_tests {
+    use super::*;
+    use crate::player::{begin_resume, land_resume, suspend_bufferfeed, ResumeOutcome, ResumeStart};
+    use crate::route::flight_rig::FlightRig;
+
+    const SEEK_TARGET_NS: i64 = 120_000_000_000;
+
+    struct Rig {
+        ps: crate::route::PlaybackSession,
+        pa: super::super::adapter::PlayerAdapter,
+        flight: FlightRig,
+        now: u32,
+    }
+
+    impl Rig {
+        /// A playing transcode `rig-1` on a loopback server whose `/decision` takes `delay`, and
+        /// an Engine streaming it.
+        fn new(delay_ms: u64) -> Rig {
+            let mut ps = crate::route::PlaybackSession::IDLE;
+            let flight = FlightRig::start(&mut ps, Duration::from_millis(delay_ms));
+            SHARED.reset_session();
+            TX.reset();
+            super::super::claim_hold::clear();
+            super::super::ffi_host::reset_native_lifecycle_for_test();
+            super::super::ffi_host::force_clocksink_for_test(true);
+            super::super::ffi_host::force_object_ready_for_test(true);
+            let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+            let epoch = SHARED.begin_native_session().expect("native session");
+            pa.install(super::super::engine::streaming_engine_for_test(epoch));
+            SHARED.duration_ns.store(7_200_000_000_000, Relaxed);
+            SHARED.playpos_ns.store(60_000_000_000, Relaxed);
+            Rig { ps, pa, flight, now: 1_000 }
+        }
+
+        /// One frame, exactly as the run loop drives it: inside a `FrameScope`, so a PMS call
+        /// without an `allow_blocking` panics.
+        fn frame(&mut self) {
+            let _frame = plx_base::task::FrameScope::enter();
+            self.now += 16;
+            pump(&mut self.ps, &mut self.pa, self.now);
+        }
+
+        /// Frames until `done`, bounded: the worker lands on its own thread.
+        fn frames_until(&mut self, what: &str, done: impl Fn(&Rig) -> bool) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !done(self) {
+                assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(2));
+                self.frame();
+            }
+        }
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            super::super::claim_hold::clear();
+            super::super::ffi_host::reset_native_lifecycle_for_test();
+            super::super::ffi_host::force_clocksink_for_test(false);
+            super::super::ffi_host::force_object_ready_for_test(false);
+            SHARED.test_force_native_idle();
+            SHARED.reset_session();
+            TX.reset();
+            crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
+        }
+    }
+
+    /// A seek tap on a transcode hands the PMS half to a worker: when the frame returns the server
+    /// has been asked NOTHING, a flight is outstanding, and the seek lands on a later frame.
+    #[test]
+    fn a_transcode_seek_frame_makes_no_pms_call_and_the_worker_lands_it_later() {
+        let mut rig = Rig::new(150);
+        rig.frame();
+        assert_eq!(rig.flight.decisions(), 0, "sanity: an idle frame asks PMS nothing");
+        let before = crate::route::transcode_session(&rig.ps);
+
+        crate::player::request_seek(SEEK_TARGET_NS);
+        rig.frame();
+        assert_eq!(
+            rig.flight.decisions(),
+            0,
+            "the seek frame made a PMS round trip on the frame thread: {:?}",
+            rig.flight.requests()
+        );
+        assert!(crate::route::flight_outstanding(), "the rebuild must be a flight the pump waits on");
+        assert_eq!(
+            crate::player::state(&rig.ps),
+            crate::player::PlaybackState::Seeking,
+            "the HUD shows the Seeking spinner for the whole flight"
+        );
+        assert!(super::super::claim_hold::active(), "the old picture is held under the spinner");
+        assert!(TX.paused.load(Acquire), "the hold paused the stream, as a direct-play seek does");
+
+        rig.frames_until("the seek's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1, "exactly one /decision for the seek");
+        assert_ne!(crate::route::transcode_session(&rig.ps), before, "the landing installed the replacement encoder");
+        assert_eq!(TX.seek_to_ns.load(Relaxed), -1, "the seek was consumed, not re-armed");
+        rig.flight.wait_for("the replaced encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// A Home press while a seek flight is out saves the SEEK TARGET (what `app::intended_pos`
+    /// snapshots for `lifecycle.suspend`), not the playhead the viewer just left: the published
+    /// `playpos_ns` still reads the pre-seek 60 s for the whole flight.
+    #[test]
+    fn a_suspend_snapshot_during_a_seek_flight_is_the_seek_target() {
+        let mut rig = Rig::new(150);
+        crate::player::request_seek(SEEK_TARGET_NS);
+        rig.frame();
+        assert!(crate::route::flight_outstanding(), "the seek must be flying");
+        assert_eq!(SHARED.playpos_ns.load(Relaxed), 60_000_000_000, "sanity: the published position is the old one");
+        assert_eq!(crate::player::intended_pos_ns(&rig.ps), SEEK_TARGET_NS);
+    }
+
+    /// `quality: Auto picked — retaining live HLS and refreshing its adaptive contract` queues an
+    /// `AdaptiveReload`; on a transcode the arm serving it plans a rebase inside its own claim
+    /// (`ControlPhase::Applying`), so the claim's own flight must not be what refuses it.
+    #[test]
+    fn an_adaptive_reload_on_a_transcode_is_served_not_rejected_by_its_own_claim() {
+        let mut rig = Rig::new(60);
+        let before = crate::route::transcode_session(&rig.ps);
+        crate::player::request_adaptive_reload(&rig.ps);
+
+        rig.frame();
+        assert!(
+            crate::route::flight_outstanding(),
+            "the claim was settled on the spot — it refused itself without asking PMS: {:?}",
+            rig.flight.requests()
+        );
+        assert!(super::super::claim_hold::active(), "the reload lands at the claim offset, so the stream holds there");
+
+        rig.frames_until("the adaptive reload to settle", |r| {
+            !crate::route::flight_outstanding() && r.flight.decisions() > 0
+        });
+        assert_eq!(rig.flight.decisions(), 1, "the arm never asked PMS to rebuild: the claim refused itself");
+        assert_ne!(crate::route::transcode_session(&rig.ps), before, "the rebuilt encoder is the route's now");
+    }
+    /// A rig whose route is a live fixed-rung HLS transcode under an applied Auto contract.
+    fn hls_rig(delay_ms: u64) -> Rig {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let flight = FlightRig::start_hls(&mut ps, Duration::from_millis(delay_ms));
+        SHARED.reset_session();
+        TX.reset();
+        super::super::claim_hold::clear();
+        super::super::ffi_host::reset_native_lifecycle_for_test();
+        super::super::ffi_host::force_clocksink_for_test(true);
+        super::super::ffi_host::force_object_ready_for_test(true);
+        let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+        let epoch = SHARED.begin_native_session().expect("native session");
+        pa.install(super::super::engine::streaming_engine_for_test(epoch));
+        SHARED.duration_ns.store(7_200_000_000_000, Relaxed);
+        SHARED.playpos_ns.store(60_000_000_000, Relaxed);
+        Rig { ps, pa, flight, now: 1_000 }
+    }
+
+    /// The native session the Engine in the pump's slot is running (a reload replaces it).
+    fn engine_epoch(rig: &mut Rig) -> Option<u32> {
+        rig.pa.engine().map(|e| e.native_epoch)
+    }
+
+    /// A manual Original pick on a transcode hands the recovery's Part admission, selection PUT and
+    /// replacement `/decision` to a worker and returns having asked the server NOTHING; the landing
+    /// installs through the same drain as an enhancement release and reloads onto the Original trial.
+    #[test]
+    fn a_manual_original_claim_frame_makes_no_pms_call_and_the_worker_lands_it_later() {
+        let mut rig = Rig::new(150);
+        FlightRig::offer_original(&mut rig.ps, false);
+        rig.frame();
+        let asked = rig.flight.asked();
+        let epoch = engine_epoch(&mut rig);
+
+        FlightRig::queue_manual_original(&rig.ps, false);
+        rig.frame();
+        assert_eq!(
+            rig.flight.asked(),
+            asked,
+            "the claiming frame made a PMS round trip on the frame thread: {:?}",
+            rig.flight.requests()
+        );
+        assert!(crate::route::flight_outstanding(), "the recovery's PMS half must be a flight");
+        assert!(super::super::claim_hold::active(), "a user's claim holds the picture at its offset");
+        assert_eq!(engine_epoch(&mut rig), epoch, "nothing reloads before the landing");
+
+        rig.frames_until("the recovery's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
+        assert!(crate::route::original_recovery_pending(), "the drain installed the Original trial and its way back");
+        assert_ne!(crate::route::transcode_session(&rig.ps), "rig-1", "the trial names the replacement encoder");
+        assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the trial");
+        assert!(
+            !rig.flight.stopped().iter().any(|s| s == "rig-1"),
+            "the encoder being left is the trial's way back until frames commit it: {:?}",
+            rig.flight.stopped()
+        );
+    }
+
+    /// A refused Original keeps the stream on screen — and a track pick merged under the claim
+    /// (`displaced_pick`) is still owed its own reload, which also runs on the worker.
+    #[test]
+    fn a_refused_manual_original_pays_the_displaced_picks_reload_off_the_frame() {
+        let mut rig = Rig::new(40);
+        FlightRig::offer_original(&mut rig.ps, false);
+        rig.flight.refuse_decisions(1);
+        rig.frame();
+        let asked = rig.flight.asked();
+
+        FlightRig::queue_manual_original(&rig.ps, true);
+        rig.frame();
+        assert_eq!(rig.flight.asked(), asked, "{:?}", rig.flight.requests());
+        assert!(crate::route::flight_outstanding());
+
+        rig.frames_until("the owed reload's landing", |r| {
+            !crate::route::flight_outstanding() && r.flight.decisions() == 2
+        });
+        assert!(!crate::route::original_recovery_pending(), "Original was refused: no trial");
+        assert_ne!(crate::route::transcode_session(&rig.ps), "rig-1", "the displaced pick's rebuild is the route now");
+        rig.flight.wait_for("the replaced encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// A refused Original with nothing owed: the stream the viewer is watching is untouched, the
+    /// reducer is Stable, the hold gave play back and the refused replacement was stopped.
+    #[test]
+    fn a_refused_manual_original_keeps_the_live_stream_and_gives_play_back() {
+        let mut rig = Rig::new(40);
+        FlightRig::offer_original(&mut rig.ps, false);
+        rig.flight.refuse_decisions(1);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+
+        FlightRig::queue_manual_original(&rig.ps, false);
+        rig.frame();
+        assert!(super::super::claim_hold::active());
+        rig.frames_until("the refusal's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1, "a refusal with nothing owed asks once");
+        assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1");
+        assert_eq!(engine_epoch(&mut rig), epoch, "a rejection reloads nothing");
+        assert!(!crate::route::original_recovery_pending());
+        assert!(!super::super::claim_hold::active() && !TX.paused.load(Acquire), "the hold gave play back");
+        rig.flight.wait_for("the refused replacement's stop", |f| {
+            f.stopped().iter().any(|s| s.starts_with("rig-logical-abr-"))
+        });
+        assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// The automatic HLS-to-Original recovery is the same flight, owned by the automatic claim.
+    #[test]
+    fn an_automatic_original_recovery_frame_makes_no_pms_call_and_the_worker_lands_it_later() {
+        let mut rig = hls_rig(150);
+        FlightRig::offer_original(&mut rig.ps, false);
+        rig.frame();
+        let asked = rig.flight.asked();
+        let epoch = engine_epoch(&mut rig);
+
+        FlightRig::publish_hls_to_original(60_000_000_000);
+        rig.frame();
+        assert_eq!(
+            rig.flight.asked(),
+            asked,
+            "the claiming frame made a PMS round trip on the frame thread: {:?}",
+            rig.flight.requests()
+        );
+        assert!(crate::route::flight_outstanding());
+        assert_eq!(engine_epoch(&mut rig), epoch);
+
+        rig.frames_until("the recovery's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1);
+        assert!(crate::route::original_recovery_pending(), "the drain installed the trial");
+        assert_ne!(engine_epoch(&mut rig), epoch, "and reloaded onto it at the action's position");
+        assert!(
+            !rig.flight.stopped().iter().any(|s| s == "rig-1"),
+            "the HLS encoder is the trial's way back: {:?}",
+            rig.flight.stopped()
+        );
+    }
+
+    /// A direct Original needs no PMS at all, so its flight lands within a frame or two and the
+    /// stream is never paused for it: an automatic upgrade does not interrupt playback.
+    #[test]
+    fn an_automatic_direct_original_recovery_flies_without_pausing_the_stream() {
+        let mut rig = hls_rig(0);
+        FlightRig::offer_original(&mut rig.ps, true);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+
+        FlightRig::publish_hls_to_original(60_000_000_000);
+        rig.frame();
+        assert!(!super::super::claim_hold::active(), "no PMS half, no presentation hold");
+        assert!(!TX.paused.load(Acquire), "the stream was not paused for the flight");
+        rig.frames_until("the recovery's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 0, "a direct Original asks the server for no replacement");
+        assert!(crate::route::original_recovery_pending());
+        assert_ne!(engine_epoch(&mut rig), epoch);
+        assert!(!TX.paused.load(Acquire));
+    }
+
+    /// A refused automatic recovery leaves the retained HLS route exactly as it was: the producer
+    /// stopped to hand the action over, so the pump reopens THAT route (same encoder, a fresh
+    /// Engine) rather than arming a trial; nothing else is reloaded, nothing is left held.
+    #[test]
+    fn a_refused_automatic_original_recovery_reopens_the_retained_hls() {
+        let mut rig = hls_rig(40);
+        FlightRig::offer_original(&mut rig.ps, false);
+        rig.flight.refuse_decisions(1);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+
+        FlightRig::publish_hls_to_original(60_000_000_000);
+        rig.frame();
+        rig.frames_until("the refusal's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1);
+        assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1", "the retained HLS is still the route");
+        assert!(!crate::route::original_recovery_pending());
+        assert_ne!(engine_epoch(&mut rig), epoch, "the producer had stopped, so the HLS Engine was reopened");
+        assert!(!super::super::claim_hold::active() && !TX.paused.load(Acquire));
+        assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// A rig whose route is an Original the Auto watchdog watches (a progressive remux `rig-1`
+    /// under an applied Auto contract).
+    fn auto_original_rig(delay_ms: u64) -> Rig {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let flight = FlightRig::start_auto_original(&mut ps, Duration::from_millis(delay_ms));
+        SHARED.reset_session();
+        TX.reset();
+        super::super::claim_hold::clear();
+        super::super::ffi_host::reset_native_lifecycle_for_test();
+        super::super::ffi_host::force_clocksink_for_test(true);
+        super::super::ffi_host::force_object_ready_for_test(true);
+        let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+        let epoch = SHARED.begin_native_session().expect("native session");
+        pa.install(super::super::engine::streaming_engine_for_test(epoch));
+        SHARED.duration_ns.store(7_200_000_000_000, Relaxed);
+        SHARED.playpos_ns.store(60_000_000_000, Relaxed);
+        Rig { ps, pa, flight, now: 1_000 }
+    }
+
+    /// The automatic Original-to-HLS fallback is the same flight, owned by the automatic claim, and
+    /// the stream is never paused for it: the Original is what plays until the landing replaces it.
+    #[test]
+    fn an_automatic_hls_fallback_frame_makes_no_pms_call_and_the_worker_lands_it_later() {
+        let mut rig = auto_original_rig(150);
+        rig.frame();
+        let asked = rig.flight.asked();
+        let epoch = engine_epoch(&mut rig);
+
+        FlightRig::publish_original_to_hls(6_000, 60_000_000_000);
+        rig.frame();
+        assert_eq!(
+            rig.flight.asked(),
+            asked,
+            "the claiming frame made a PMS round trip on the frame thread: {:?}",
+            rig.flight.requests()
+        );
+        assert!(crate::route::flight_outstanding(), "the fallback's PMS half must be a flight");
+        assert!(!super::super::claim_hold::active(), "the live Original is not held for the flight");
+        assert!(!TX.paused.load(Acquire), "the stream was not paused for the flight");
+        assert_eq!(engine_epoch(&mut rig), epoch, "nothing reloads before the landing");
+        assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1", "the Original is still the route");
+
+        rig.frames_until("the fallback's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
+        assert_ne!(crate::route::transcode_session(&rig.ps), "rig-1", "the landing named the HLS encoder");
+        assert!(crate::route::is_segmented_hls(&rig.ps), "and the route is HLS now");
+        assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto it at the action's position");
+        rig.flight.wait_for("the replaced Original's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// A refused fallback leaves the route as it was and leaks nothing: the replacement the server
+    /// registered is stopped, the Original's encoder is not, and nothing is reloaded. The Auto
+    /// worker exited to hand the action over, so — exactly as before the flight — the producer's
+    /// failure flag is raised for the pump's ordinary recovery.
+    #[test]
+    fn a_refused_automatic_hls_fallback_keeps_the_original_route_and_leaks_no_encoder() {
+        let mut rig = auto_original_rig(40);
+        rig.flight.refuse_decisions(1);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+
+        FlightRig::publish_original_to_hls(6_000, 60_000_000_000);
+        rig.frame();
+        assert!(crate::route::flight_outstanding());
+        rig.frames_until("the refusal's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1);
+        assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1", "the Original is still the route");
+        assert!(!crate::route::is_segmented_hls(&rig.ps));
+        assert_eq!(engine_epoch(&mut rig), epoch, "a rejection reloads nothing");
+        assert!(SHARED.demux_io_failed.load(Acquire), "the handoff's producer is gone: the pump's recovery owns it");
+        assert!(!super::super::claim_hold::active() && !TX.paused.load(Acquire));
+        rig.flight.wait_for("the refused replacement's stop", |f| {
+            f.stopped().iter().any(|s| s.starts_with("rig-logical-abr-"))
+        });
+        assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
+    }
+
+    /// Taps that arrive during a seek's flight coalesce to the LAST one: the first landing is
+    /// outdated and discarded (its replacement stopped), and exactly one more flight runs, at the
+    /// newest target.
+    #[test]
+    fn seek_taps_during_a_flight_coalesce_to_the_last() {
+        let mut rig = Rig::new(120);
+        crate::player::request_seek(SEEK_TARGET_NS);
+        rig.frame();
+        assert!(crate::route::flight_outstanding());
+        // The worker is up and its answer is being held: the taps below arrive mid-flight.
+        rig.flight.wait_for("the first rebuild's request", |f| f.decisions() == 1);
+        crate::player::request_seek(SEEK_TARGET_NS + 30_000_000_000);
+        crate::player::request_seek(SEEK_TARGET_NS + 60_000_000_000);
+        rig.frame();
+        assert_eq!(rig.flight.decisions(), 1, "the taps must not start a second rebuild while one flies");
+
+        rig.frames_until("the newest target's landing", |r| {
+            r.flight.decisions() == 2 && !crate::route::flight_outstanding()
+        });
+        let requests = rig.flight.requests();
+        let decisions: Vec<&String> =
+            requests.iter().filter(|r| r.contains("/decision?") && !r.contains("hasMDE=1")).collect();
+        assert!(decisions[0].contains("offset=120.0"), "{}", decisions[0]);
+        assert!(decisions[1].contains("offset=180.0"), "the last tap wins: {}", decisions[1]);
+        rig.flight.wait_for("the outdated replacement's stop", |f| {
+            f.stopped().iter().any(|s| s.starts_with("rig-logical-abr-"))
+        });
+        assert_eq!(TX.seek_to_ns.load(Relaxed), -1);
+    }
+
+    // ---- a CLAIM flight that an app-switch suspend crosses ------------------------------------
+
+    /// The session ids the server has been asked to register (`/decision`), in order.
+    fn registered_sessions(flight: &FlightRig) -> Vec<String> {
+        flight
+            .requests()
+            .iter()
+            .filter(|r| r.contains("/decision?") && !r.contains("hasMDE=1"))
+            .filter_map(|r| {
+                let at = r.find("session=")? + "session=".len();
+                Some(r[at..].split(['&', ' ']).next()?.to_owned())
+            })
+            .collect()
+    }
+
+    /// Dispatch whatever claim `queue` queues, let its worker reach the server, then do what the run
+    /// loop does for Home and for the DID-foreground that follows: snapshot the intended position,
+    /// `suspend_bufferfeed`, drain frames until the late landing is reaped, and drive the
+    /// restore's own resume (`begin_resume` / `land_resume`). Grades the four things a claim that
+    /// crosses a suspend must leave true: the flight and its hold are over, the restore is
+    /// accepted and lands, and no encoder the worker registered runs on unowned.
+    fn suspend_across_a_claim(mut rig: Rig, queue: impl FnOnce(&mut Rig), wait_for_request: bool) -> Rig {
+        rig.frame();
+        queue(&mut rig);
+        rig.frame();
+        assert!(crate::route::flight_outstanding(), "sanity: the claim must be flying");
+        if wait_for_request {
+            rig.flight.wait_for("the claim's request", |f| f.decisions() >= 1);
+        }
+        let saved_ns = crate::player::intended_pos_ns(&rig.ps);
+        suspend_bufferfeed(&mut rig.ps, &mut rig.pa);
+
+        assert!(!crate::route::flight_outstanding(), "the suspend left the claim's flight outstanding");
+        assert!(!super::super::claim_hold::active(), "the suspend left the claim's hold up");
+        assert!(crate::route::control_phase_label().contains("Stable"), "{}", crate::route::control_phase_label());
+
+        // No Engine, no pump: the run loop's own per-frame reap (`land_resume` runs it first) is what
+        // stops the late landing's replacement, and it must, with nothing outstanding to land.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while replacement_stops(&rig.flight) == 0 {
+            {
+                let _frame = plx_base::task::FrameScope::enter();
+                assert!(land_resume(&mut rig.ps).is_none(), "a dropped flight landed");
+            }
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for the late landing's reap");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let started = {
+            let _frame = plx_base::task::FrameScope::enter();
+            begin_resume(&mut rig.ps, saved_ns)
+        };
+        assert_eq!(started, ResumeStart::Pending, "the foreground restore's resume was refused");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let _frame = plx_base::task::FrameScope::enter();
+            if let Some(outcome) = land_resume(&mut rig.ps) {
+                assert_eq!(outcome, ResumeOutcome::Prepared);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for the restore's landing");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!crate::route::flight_outstanding());
+        assert!(!super::super::claim_hold::active());
+
+        // Every encoder a worker registered is either the route the restore installed or stopped.
+        let route = crate::route::transcode_session(&rig.ps);
+        rig.flight.wait_for("every unowned replacement's stop", |f| {
+            let stopped = f.stopped();
+            registered_sessions(f).iter().all(|id| *id == route || stopped.contains(id))
+        });
+        rig
+    }
+
+    /// A manual Original pick whose flight a suspend crosses: the restore is accepted, the hold is
+    /// released, nothing leaks, and the viewer's pick is owed to the restored Engine.
+    #[test]
+    fn a_suspend_across_a_manual_original_claim_does_not_strand_the_restore() {
+        let rig = Rig::new(120);
+        let rig = suspend_across_a_claim(
+            rig,
+            |rig| {
+                FlightRig::offer_original(&mut rig.ps, false);
+                FlightRig::queue_manual_original(&rig.ps, true);
+            },
+            true,
+        );
+        assert!(
+            crate::route::pending_user_route_intent(crate::route::UserRouteIntent::RecoverOriginal(
+                crate::route::RecoveryCause::ManualOriginal
+            )),
+            "the pick the dropped claim owed is queued for the restored Engine"
+        );
+        drop(rig);
+    }
+
+    /// The Auto watchdog's HLS-to-Original handoff crossing a suspend: automatic, so nothing is owed
+    /// (its ticket died with the Engine), but the restore must not be stranded.
+    #[test]
+    fn a_suspend_across_an_automatic_original_claim_does_not_strand_the_restore() {
+        let rig = hls_rig(120);
+        let rig = suspend_across_a_claim(
+            rig,
+            |rig| {
+                FlightRig::offer_original(&mut rig.ps, false);
+                FlightRig::publish_hls_to_original(60_000_000_000);
+            },
+            true,
+        );
+        assert!(!crate::route::pending_user_route_intent(crate::route::UserRouteIntent::Retranscode));
+        drop(rig);
+    }
+
+    /// The Auto watchdog's Original-to-HLS fallback crossing a suspend.
+    #[test]
+    fn a_suspend_across_an_automatic_hls_fallback_does_not_strand_the_restore() {
+        let rig = auto_original_rig(120);
+        let rig = suspend_across_a_claim(
+            rig,
+            |_| FlightRig::publish_original_to_hls(6_000, 60_000_000_000),
+            true,
+        );
+        drop(rig);
+    }
+
+    /// An adaptive refresh crossing a suspend.
+    #[test]
+    fn a_suspend_across_an_adaptive_reload_claim_does_not_strand_the_restore() {
+        let rig = Rig::new(120);
+        let rig = suspend_across_a_claim(rig, |rig| crate::player::request_adaptive_reload(&rig.ps), true);
+        drop(rig);
+    }
+
+    // ---- the failure-path flights --------------------------------------------------------------
+
+    /// A rig on the Original trial's failure edge: the viewer picked Original on a transcode, the
+    /// recovery landed and reloaded onto the trial (the HLS `rig-1` is held as its way back), and
+    /// the caller is about to let the source refuse to open.
+    fn failed_original_trial_rig(delay_ms: u64) -> Rig {
+        let mut rig = Rig::new(delay_ms);
+        FlightRig::offer_original(&mut rig.ps, false);
+        rig.frame();
+        FlightRig::queue_manual_original(&rig.ps, false);
+        rig.frame();
+        rig.frames_until("the Original trial's landing", |_| !crate::route::flight_outstanding());
+        assert!(crate::route::original_recovery_pending(), "sanity: the trial is armed");
+        rig
+    }
+
+    /// The stops the server has been asked for the encoders this rig's rebuilds register.
+    fn replacement_stops(flight: &FlightRig) -> usize {
+        flight.stopped().iter().filter(|s| s.starts_with("rig-logical-abr-")).count()
+    }
+
+    /// After the Original trial's source refused to open, the rollback rebases the restored HLS
+    /// route at the recovery position on a worker: when the failure frame returns the server has
+    /// been asked NOTHING, the viewer still sees the connecting spinner, and the rollback lands on
+    /// a later frame.
+    #[test]
+    fn a_failed_original_trial_frame_makes_no_pms_call_and_the_worker_lands_the_rollback_later() {
+        let mut rig = failed_original_trial_rig(150);
+        let asked = rig.flight.asked();
+        let decisions = rig.flight.decisions();
+        let epoch = engine_epoch(&mut rig);
+
+        SHARED.load_failed.store(true, Release);
+        rig.frame();
+        assert_eq!(
+            rig.flight.asked(),
+            asked,
+            "the failure frame made a PMS round trip on the frame thread: {:?}",
+            rig.flight.requests()
+        );
+        assert!(crate::route::flight_outstanding(), "the rollback's rebase must be a flight");
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "the viewer sees a spinner, not the failure");
+        assert_eq!(engine_epoch(&mut rig), epoch, "nothing reloads before the landing");
+
+        rig.frames_until("the rollback's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), decisions + 1, "exactly one rebuild /decision for the rollback");
+        assert!(!crate::route::original_recovery_pending(), "the way back was taken");
+        assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the restored HLS");
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        rig.flight.wait_for("the restored HLS's retirement", |f| f.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// A refused rollback rebase ends in the failure read-out,
+    /// the reducer `Failed`, nothing reloaded, the refused replacement stopped and the encoder the
+    /// route still names left alone.
+    #[test]
+    fn a_refused_rollback_rebase_ends_in_the_error_state_and_stops_only_the_replacement() {
+        let mut rig = failed_original_trial_rig(40);
+        let epoch = engine_epoch(&mut rig);
+        rig.flight.refuse_decisions(1);
+        let asked = rig.flight.asked();
+
+        SHARED.load_failed.store(true, Release);
+        rig.frame();
+        assert_eq!(rig.flight.asked(), asked, "{:?}", rig.flight.requests());
+        assert!(crate::route::flight_outstanding());
+
+        rig.frames_until("the refusal's landing", |r| {
+            crate::player::state(&r.ps) == crate::player::PlaybackState::Error
+        });
+        assert!(!crate::route::flight_outstanding());
+        assert!(crate::route::control_phase_label().contains("Failed"), "{}", crate::route::control_phase_label());
+        assert_eq!(engine_epoch(&mut rig), epoch, "a refused rollback reloads nothing");
+        assert!(!crate::route::original_recovery_pending());
+        assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
+    }
+
+    /// The failure flag stays up for every frame of the flight, and the failure branches re-enter
+    /// each one: they must wait on the flight, not dispatch (or fail the Engine) again.
+    #[test]
+    fn a_rollback_in_flight_is_not_redispatched_or_failed_by_the_frames_that_wait_on_it() {
+        let mut rig = failed_original_trial_rig(200);
+        let decisions = rig.flight.decisions();
+        SHARED.load_failed.store(true, Release);
+        rig.frame();
+        rig.flight.wait_for("the rollback's request", |f| f.decisions() == decisions + 1);
+        for _ in 0..5 {
+            rig.frame();
+            assert!(crate::route::flight_outstanding(), "a waiting frame ended the flight");
+            assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        }
+        assert_eq!(rig.flight.decisions(), decisions + 1, "a frame that waits must not dispatch again");
+        rig.frames_until("the rollback's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), decisions + 1);
+    }
+
+    /// A teardown while the rollback flies discards its landing and stops only what the worker
+    /// registered: nothing reloads and nothing is installed over the next playback.
+    #[test]
+    fn a_teardown_during_the_rollback_discards_the_landing_and_stops_only_its_replacement() {
+        let mut rig = failed_original_trial_rig(150);
+        let decisions = rig.flight.decisions();
+        let epoch = engine_epoch(&mut rig);
+        SHARED.load_failed.store(true, Release);
+        rig.frame();
+        rig.flight.wait_for("the rollback's request", |f| f.decisions() == decisions + 1);
+        let stops = replacement_stops(&rig.flight);
+
+        crate::route::begin_engine_teardown(false);
+        // The worker is still waiting on the server: its landing arrives after the teardown, and
+        // the next frame's drain finds it stale.
+        rig.frames_until("the discarded replacement's stop", |r| replacement_stops(&r.flight) > stops);
+        assert_eq!(engine_epoch(&mut rig), epoch, "a discarded landing reloads nothing");
+        assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
+    }
+
+    // ---- the rollbacks no Engine waits on ------------------------------------------------------
+
+    /// **A synchronous Load failure inside the Original trial** (`start_original_trial_reload`: the
+    /// Engine could not even be constructed, so there is no Engine for a pump to recover) rebases
+    /// the restored HLS route as an Engine-less flight: when the frame returns the server has been asked NOTHING, the viewer keeps a spinner (not the
+    /// failure read-out), and the app loop's drain reloads onto the restored route when it lands.
+    #[test]
+    fn a_synchronous_trial_load_failure_makes_no_pms_call_and_the_worker_lands_the_rollback_later() {
+        let mut rig = failed_original_trial_rig(150);
+        let asked = rig.flight.asked();
+        let decisions = rig.flight.decisions();
+        let epoch = engine_epoch(&mut rig);
+        // The candidate route is gone, so the trial's own reload cannot start.
+        crate::route::clear_url(&mut rig.ps);
+
+        {
+            let _frame = plx_base::task::FrameScope::enter();
+            start_original_trial_reload(&mut rig.ps, &mut rig.pa, crate::route::AutoOriginalReload::Remux, 60_000_000_000);
+        }
+        assert_eq!(
+            rig.flight.asked(),
+            asked,
+            "the failure frame made a PMS round trip on the frame thread: {:?}",
+            rig.flight.requests()
+        );
+        assert!(crate::route::engineless_flight_outstanding(), "the rollback's rebase must be an Engine-less flight");
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Resolving, "a spinner, not the failure");
+        assert_eq!(engine_epoch(&mut rig), epoch, "nothing reloads before the landing");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while crate::route::engineless_flight_outstanding() {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for the rollback's landing");
+            std::thread::sleep(Duration::from_millis(2));
+            let _frame = plx_base::task::FrameScope::enter();
+            drain_engineless_rollback(&mut rig.ps, &mut rig.pa);
+        }
+        assert_eq!(rig.flight.decisions(), decisions + 1, "exactly one rebuild /decision for the rollback");
+        assert!(!crate::route::original_recovery_pending(), "the way back was taken");
+        assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the restored HLS");
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+    }
+
+    /// A refused rebase of that rollback ends in the failure read-out, nothing reloaded, the refused replacement stopped and the route's encoder alone.
+    #[test]
+    fn a_refused_engineless_rollback_ends_in_the_error_state() {
+        let mut rig = failed_original_trial_rig(40);
+        let epoch = engine_epoch(&mut rig);
+        rig.flight.refuse_decisions(1);
+        crate::route::clear_url(&mut rig.ps);
+        start_original_trial_reload(&mut rig.ps, &mut rig.pa, crate::route::AutoOriginalReload::Remux, 60_000_000_000);
+        assert!(crate::route::engineless_flight_outstanding());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while crate::route::engineless_flight_outstanding() {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for the refusal's landing");
+            std::thread::sleep(Duration::from_millis(2));
+            drain_engineless_rollback(&mut rig.ps, &mut rig.pa);
+        }
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        assert_eq!(engine_epoch(&mut rig), epoch, "a refused rollback reloads nothing");
+        assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
+    }
+
+    /// **The foreground restore's rollback** (`recover_failed_foreground_original`): the same
+    /// Engine-less flight. The frame answers `Pending` having asked the server nothing, and
+    /// [`land_engineless_rollback`] answers `Waiting` until the worker lands, then reloads with a
+    /// tracked attempt for the foreground machine to follow.
+    #[test]
+    fn a_foreground_rollback_is_pending_without_a_pms_call_and_lands_a_tracked_reload() {
+        let mut rig = failed_original_trial_rig(120);
+        let asked = rig.flight.asked();
+        let recovery = {
+            let _frame = plx_base::task::FrameScope::enter();
+            recover_failed_foreground_original(&mut rig.ps)
+        };
+        assert!(matches!(recovery, ForegroundOriginalRecovery::Pending));
+        assert_eq!(rig.flight.asked(), asked, "{:?}", rig.flight.requests());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let landed = loop {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for the rollback's landing");
+            match land_engineless_rollback(&mut rig.ps, &mut rig.pa) {
+                RollbackLanding::Waiting => std::thread::sleep(Duration::from_millis(2)),
+                RollbackLanding::Stale => panic!("the flight went stale"),
+                RollbackLanding::Landed(landed) => break landed,
+            }
+        };
+        assert!(
+            matches!(landed, ForegroundOriginalRecovery::Tracking(_)),
+            "the landing reloads onto the restored HLS with an exact attempt for the foreground machine"
+        );
+        assert!(!crate::route::engineless_flight_outstanding());
+    }
+
+    /// A rig whose Original is an Auto watched source that never opened: nothing has been decoded.
+    fn unopened_auto_original_rig(delay_ms: u64) -> Rig {
+        let rig = {
+            let mut rig = auto_original_rig(delay_ms);
+            FlightRig::set_bootstrap_rung(&mut rig.ps, crate::abr::Rung::P720Low);
+            rig
+        };
+        assert_eq!(SHARED.frames.load(Relaxed), 0, "sanity: no picture was ever decoded");
+        rig
+    }
+
+    /// The unopened Auto Original's HLS fallback plans, registers the bootstrap rung's encoder
+    /// (`/decision`) and installs it as the same flight as the watchdog's fallback, with nothing
+    /// playing: when the failure frame returns the server has been asked NOTHING, the viewer sees
+    /// the connecting spinner, and the HLS route lands on a later frame.
+    #[test]
+    fn an_unopened_source_frame_makes_no_pms_call_and_the_worker_lands_the_hls_later() {
+        let mut rig = unopened_auto_original_rig(150);
+        rig.frame();
+        let asked = rig.flight.asked();
+        let epoch = engine_epoch(&mut rig);
+
+        SHARED.load_failed.store(true, Release);
+        rig.frame();
+        assert_eq!(
+            rig.flight.asked(),
+            asked,
+            "the failure frame made a PMS round trip on the frame thread: {:?}",
+            rig.flight.requests()
+        );
+        assert!(crate::route::flight_outstanding(), "the unopened fallback's PMS half must be a flight");
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "a spinner, not the failure");
+        assert_eq!(engine_epoch(&mut rig), epoch, "nothing reloads before the landing");
+
+        rig.frames_until("the fallback's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
+        assert!(crate::route::is_segmented_hls(&rig.ps), "the route is HLS now");
+        assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto it at the failed position");
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        rig.flight.wait_for("the replaced Original's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// A refused unopened fallback surfaces the failure the synchronous path did: the read-out,
+    /// the reducer `Failed`, the route still the Original, nothing reloaded, the refused
+    /// replacement stopped and the Original's encoder left to the teardown that owns it.
+    #[test]
+    fn a_refused_unopened_fallback_ends_in_the_error_state_and_leaves_the_route_alone() {
+        let mut rig = unopened_auto_original_rig(40);
+        rig.flight.refuse_decisions(1);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+        let asked = rig.flight.asked();
+
+        SHARED.load_failed.store(true, Release);
+        rig.frame();
+        assert_eq!(rig.flight.asked(), asked, "{:?}", rig.flight.requests());
+        assert!(crate::route::flight_outstanding());
+
+        rig.frames_until("the refusal's landing", |r| {
+            crate::player::state(&r.ps) == crate::player::PlaybackState::Error
+        });
+        assert!(!crate::route::flight_outstanding());
+        assert!(crate::route::control_phase_label().contains("Failed"), "{}", crate::route::control_phase_label());
+        assert_eq!(rig.flight.decisions(), 1);
+        assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1", "the Original is still the route");
+        assert!(!crate::route::is_segmented_hls(&rig.ps));
+        assert_eq!(engine_epoch(&mut rig), epoch, "a refusal reloads nothing");
+        rig.flight.wait_for("the refused replacement's stop", |f| replacement_stops(f) == 1);
+        assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
+    }
+
+    /// The same wait for the unopened fallback: the failure flag is up on every frame of the
+    /// flight, and none of them may dispatch it again or fail the Engine out from under it.
+    #[test]
+    fn an_unopened_fallback_in_flight_is_not_redispatched_or_failed_by_the_frames_that_wait_on_it() {
+        let mut rig = unopened_auto_original_rig(200);
+        rig.frame();
+        SHARED.load_failed.store(true, Release);
+        rig.frame();
+        rig.flight.wait_for("the fallback's request", |f| f.decisions() == 1);
+        for _ in 0..5 {
+            rig.frame();
+            assert!(crate::route::flight_outstanding(), "a waiting frame ended the flight");
+            assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        }
+        assert_eq!(rig.flight.decisions(), 1, "a frame that waits must not dispatch again");
+        rig.frames_until("the fallback's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1);
     }
 }

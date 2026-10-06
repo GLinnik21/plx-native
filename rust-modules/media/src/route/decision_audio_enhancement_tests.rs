@@ -164,16 +164,23 @@ fn claim(ps: &mut PlaybackSession) -> (ClaimedRouteAction, ClaimTail) {
                 RetranscodeClaimDispatch::Sync(tail) => tail,
                 // The PMS half now runs on a worker (the freeze fix): wait for its landing the
                 // same way the pump does on a later frame, against the SAME loopback fixture this
-                // test already drives, then apply it exactly as `take_ready_retranscode_claim`
+                // test already drives, then apply it exactly as `take_ready_flight`
                 // would.
-                RetranscodeClaimDispatch::Pending => {
+                RetranscodeClaimDispatch::Pending | RetranscodeClaimDispatch::PendingNoHold => {
                     let (_, tail, ..) = await_landing(ps, "retranscode claim worker never landed");
                     tail
                 }
             }
         }
         RouteIntent::User(UserRouteIntent::RecoverOriginal(cause)) => {
-            execute_recover_original_claim(ps, &action, 60, cause)
+            match execute_recover_original_claim(ps, &action, 60, cause, -1, 0) {
+                RetranscodeClaimDispatch::Sync(tail) => tail,
+                // The Original recovery is a flight too: its PMS half lands through the same drain.
+                RetranscodeClaimDispatch::Pending | RetranscodeClaimDispatch::PendingNoHold => {
+                    let (_, tail, ..) = await_landing(ps, "Original recovery worker never landed");
+                    tail
+                }
+            }
         }
         ref other => panic!("unexpected claim {other:?}"),
     };
@@ -187,7 +194,7 @@ fn claim(ps: &mut PlaybackSession) -> (ClaimedRouteAction, ClaimTail) {
 /// discard it as before.
 fn settle(ps: &mut PlaybackSession, action: &ClaimedRouteAction, tail: ClaimTail) -> bool {
     match tail {
-        ClaimTail::Retranscode | ClaimTail::NativeAudio => {
+        ClaimTail::Retranscode | ClaimTail::NativeAudio | ClaimTail::Adaptive => {
             finish_route_action(ps, action, RouteApplyResult::Prepared)
         }
         ClaimTail::Original(_) => true,
@@ -341,11 +348,9 @@ fn always_refusing_live() -> Live {
     Live { sid, port, done, server }
 }
 
-/// The staleness protection the async split newly depends on: the old synchronous
-/// `retranscode_as` held the frame thread for its whole `/decision` round trip, so nothing else
-/// on that thread could run while it waited. Now a claim's PMS half runs on a worker, which opens
-/// a real window in which some OTHER main-thread route event (leaving this item to start a fresh
-/// Load, an ABR commit, a stop) can change the ticket the worker snapshotted. `try_retranscode`'s
+/// The staleness protection the async split depends on: a claim's PMS half runs on a worker, which
+/// opens a real window in which some OTHER main-thread route event (leaving this item to start a
+/// fresh Load, an ABR commit, a stop) can change the ticket the worker snapshotted. `try_retranscode`'s
 /// `is_worker_ticket_current` check and `replace_active_encoder_for`'s own commit-time check are
 /// exactly what must catch that: the stale worker's landing must discard cleanly (no session
 /// mutation), and the phase it releases must not block whatever happens next.
@@ -363,22 +368,24 @@ fn claim_ticket_invalidated_while_worker_in_flight_is_discarded_then_a_fresh_pic
         "expected the PMS half to move to a worker, got {dispatch:?}",
     );
 
-    // A concurrent, newer route event bumps the engine/media epoch while the worker above is
-    // still waiting on the (deliberately slow) `/decision` response.
+    // A concurrent, newer route event (an app-switch suspend, `begin_engine_teardown(true)`) bumps
+    // the engine/media epoch while the worker above is still waiting on the (deliberately slow)
+    // `/decision` response. The claim's flight ENDS there (it used to be left in `Applying` with
+    // nothing to drain it once the Engine is gone): the reducer is `Stable`, nothing is outstanding,
+    // the worker's late landing is reaped stale and the pick it carried is queued again.
     begin_engine_teardown(true);
-
-    let (action, tail, ..) = await_landing(&mut ps, "retranscode claim worker never landed");
-    assert!(
-        matches!(tail, ClaimTail::Rejected(_)),
-        "a ticket invalidated mid-flight must discard the claim, got {tail:?}",
-    );
-    settle(&mut ps, &action, tail);
+    assert!(!flight_outstanding(), "the teardown must end the claim's flight");
+    assert_eq!(phase(), ControlPhase::Stable, "the teardown must release the reducer");
+    assert!(pending_user_route_intent(UserRouteIntent::Retranscode), "the pick the claim carried is owed again");
+    plx_base::task::drain_workers_for_test();
+    discard_stale_flight_landing();
+    assert!(take_claim_landing().is_none(), "the stale landing must have been reaped, not left for a drain");
     assert_eq!(
         ps.cur_enhancement,
         EnhancementOutcome::Off,
         "the discarded worker must not have touched the session projection",
     );
-    assert_eq!(phase(), ControlPhase::Stable, "the discard must release the reducer");
+    let _ = action;
 
     // The second, current pick is unaffected by the first's discard: a fresh claim against the
     // now-current ticket applies normally.
@@ -387,7 +394,7 @@ fn claim_ticket_invalidated_while_worker_in_flight_is_discarded_then_a_fresh_pic
     let dispatch2 = execute_retranscode_claim(&mut ps, &action2, 60, -1, 0);
     let tail2 = match dispatch2 {
         RetranscodeClaimDispatch::Sync(tail) => tail,
-        RetranscodeClaimDispatch::Pending => {
+        RetranscodeClaimDispatch::Pending | RetranscodeClaimDispatch::PendingNoHold => {
             let (_, tail, ..) = await_landing(&mut ps, "second worker never landed");
             tail
         }
@@ -627,11 +634,175 @@ fn claim_frees_the_frame_thread_pms_call_runs_on_a_worker() {
     cleanup(&mut ps);
 }
 
+/// The same freeze, on the arm the first fix left behind: switching the LAST enhancement OFF
+/// while the live route is an enhanced remux is `ClaimPrimary::ReleaseToDirect`, which used to run
+/// `recover_auto_to_original_for` right on the frame thread — a Part GET admission probe
+/// (`admit_original_part`) of up to `PART_ADMISSION_BUDGET` per header and body, under a
+/// labelled `allow_blocking` exception that logged "main-thread block" on every Boost Dialog / Normalize
+/// Loudness toggle. The probe now runs on the claim worker: the frame-thread call returns
+/// `Pending`, never `Sync`, and holds no `allow_blocking` (the `FrameScope` below makes a PMS call
+/// outside one panic, and the `Sync` arm is what the assertion refuses).
+#[test]
+fn a_release_claim_frees_the_frame_thread_the_admission_probe_runs_on_a_worker() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start_with_parts(EnhMode::Honor("ac3"), 4096, PartAnswer::Serve);
+    restore_quality(Quality::Original);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(server_part_candidate(a1())), 0);
+    assert!(toggle(&mut ps, NONE));
+    let action = claim_route_action().expect("a queued user action");
+
+    let _frame = plx_base::task::FrameScope::enter();
+    let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
+    assert!(
+        matches!(dispatch, RetranscodeClaimDispatch::Pending),
+        "the release's Part admission probe must run on a worker, got {dispatch:?}",
+    );
+    drop(_frame);
+    assert_eq!(
+        phase(),
+        ControlPhase::Applying(action.serial),
+        "a claim whose worker is flying stays Applying, so nothing else can race it",
+    );
+    assert!(ps.cur_contract.audio == PREF, "nothing is installed before the landing");
+
+    let (landed, tail, ..) = await_landing(&mut ps, "release claim worker never landed");
+    assert_eq!(landed.serial, action.serial);
+    assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));
+    assert!(original_recovery_pending(), "the landing installs the way back");
+    assert!(ps.url.contains("/library/parts/960001/1/file.mkv"), "{}", ps.url);
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Off);
+    let requests = live.finish();
+    assert_eq!(part_gets(&requests).len(), 1, "{requests:?}");
+    assert!(decisions(&requests).is_empty(), "no remux was registered: {requests:?}");
+    cleanup(&mut ps);
+}
+
+/// The other half of the release: a Part the server refuses lands on the candidate's PLAIN remux,
+/// whose `put_selection` + `/decision` are the PMS calls `admit_or_plain_remux`'s caller used to make
+/// on the frame thread right after the probe. Both now belong to the worker.
+#[test]
+fn a_release_claim_with_a_refused_part_registers_its_plain_remux_on_a_worker() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start_with_parts(EnhMode::Honor("ac3"), 4096, PartAnswer::Refuse);
+    restore_quality(Quality::Original);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(server_part_candidate(a1())), 0);
+    assert!(toggle(&mut ps, NONE));
+    let action = claim_route_action().expect("a queued user action");
+
+    let _frame = plx_base::task::FrameScope::enter();
+    let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
+    assert!(
+        matches!(dispatch, RetranscodeClaimDispatch::Pending),
+        "the release's plain-remux registration must run on a worker, got {dispatch:?}",
+    );
+    drop(_frame);
+
+    let (_, tail, ..) = await_landing(&mut ps, "release claim worker never landed");
+    assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Remux), "a refused Part is not a direct trial");
+    assert!(original_recovery_pending());
+    assert!(ps.url.contains("start.mkv"), "{}", ps.url);
+    assert_eq!(ps.cur_contract.audio, NONE);
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Off);
+    let requests = live.finish();
+    assert_eq!(decisions(&requests).len(), 1, "{requests:?}");
+    cleanup(&mut ps);
+}
+
+/// A release whose own remux the server refuses settles as a rejection that keeps the enhanced
+/// route playing — and it does so through the worker, with nothing left registered: the
+/// replacement the PMS half asked for is stopped by that half itself.
+#[test]
+fn a_release_claim_whose_remux_is_refused_is_rejected_after_a_worker_flight() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = always_refusing_live();
+    restore_quality(Quality::Original);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    // A remux candidate (`direct == false`): the release is the plain codec-copy remux, so its
+    // `/decision` is the PMS call that refuses.
+    install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(false, a1(), None)), 0);
+    assert!(toggle(&mut ps, NONE));
+    let action = claim_route_action().expect("a queued user action");
+
+    let _frame = plx_base::task::FrameScope::enter();
+    let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
+    assert!(matches!(dispatch, RetranscodeClaimDispatch::Pending), "got {dispatch:?}");
+    drop(_frame);
+
+    let (action, tail, ..) = await_landing(&mut ps, "release claim worker never landed");
+    assert_eq!(tail, ClaimTail::Rejected(ENHANCEMENT_REJECTED));
+    settle(&mut ps, &action, tail);
+    assert!(!original_recovery_pending(), "a refused release arms no way back");
+    assert_eq!(ps.cur_contract.audio, PREF, "the enhanced route the viewer is hearing is untouched");
+    assert_eq!(phase(), ControlPhase::Stable);
+    let requests = live.finish();
+    assert!(
+        requests.iter().any(|r| r.contains("/video/:/transcode/universal/stop")),
+        "the refused replacement must be stopped: {requests:?}",
+    );
+    cleanup(&mut ps);
+}
+
+/// The install's own staleness check: the PMS half committed the replacement as the route's encoder,
+/// and the route moved again before the drain. Nothing may be written over the live session, and
+/// BOTH encoders — the replacement and the one it replaced, which no `PendingOriginal` is going to
+/// own — are stopped.
+#[test]
+fn a_stale_release_landing_installs_nothing_and_stops_both_encoders() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::ZERO);
+    restore_quality(Quality::Original);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(false, a1(), None)), 0);
+    assert!(toggle(&mut ps, NONE));
+    let action = claim_route_action().expect("a queued user action");
+
+    // The two halves the claim worker would run, driven by hand so the race is deterministic.
+    let plan = plan_original_recovery(&mut ps, &action.ticket, 60, RecoveryCause::EnhancementReleased)
+        .expect("a release the session allows");
+    let OriginalRecoveryNet::Remux(prepared) = run_original_recovery(&plx_base::task::OffFrame::for_test(), &plan).expect("the server answers") else {
+        panic!("a remux candidate releases to a remux");
+    };
+    let replacement = prepared.replacement.clone();
+    // The concurrent route event in the gap before the drain.
+    replace_active_encoder_for(&prepared.ticket, "concurrent-abr-session")
+        .expect("the concurrent commit itself must succeed against the ticket the worker left");
+    post_claim_landing(RetranscodeClaimLanding {
+        owner: FlightOwner::Claim(action.clone()),
+        pending_seek: -1,
+        user_target: 0,
+        result: RetranscodeClaimResult::OriginalRecovery(Box::new(OriginalRecoveryLanding {
+            plan,
+            net: OriginalRecoveryNet::Remux(prepared),
+        })),
+    });
+
+    let before_url = ps.url.clone();
+    let (action, tail, ..) = take_ready_retranscode_claim(&mut ps).expect("the landing posted above");
+    assert_eq!(tail, ClaimTail::Rejected(ENHANCEMENT_REJECTED));
+    assert_eq!(ps.url, before_url, "a stale landing must never write over the live route");
+    assert!(!original_recovery_pending(), "and arms no PendingOriginal");
+    settle(&mut ps, &action, tail);
+
+    wait_until("both encoders' stops", || stop_seen(&log, &replacement) && stop_seen(&log, "enh-remux-1"));
+    live.finish();
+    cleanup(&mut ps);
+}
+
 /// A refused spawn (the OS could not create the worker thread) must settle exactly like a
 /// refused decision: `ControlPhase` returns to `Stable` and the session is untouched, never left
 /// stuck in `Applying` forever. `Fault::SpawnRefusal` is a test-only seam
 /// (`spawn_small`'s stack size is fixed, so the `unsatisfiable stack` trick `task::tests` uses is
-/// not reachable here) that makes `spawn_retranscode_claim` report refusal without actually
+/// not reachable here) that makes `spawn_flight` report refusal without actually
 /// spawning — see its doc comment in `route::decision` for why this mirrors
 /// `storage_worker::Writer::start_refused`.
 #[test]
@@ -647,7 +818,7 @@ fn a_refused_spawn_settles_like_a_refused_decision_not_a_stuck_applying() {
     let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
     let tail = match dispatch {
         RetranscodeClaimDispatch::Sync(tail) => tail,
-        RetranscodeClaimDispatch::Pending => panic!("a forced spawn refusal must resolve synchronously"),
+        RetranscodeClaimDispatch::Pending | RetranscodeClaimDispatch::PendingNoHold => panic!("a forced spawn refusal must resolve synchronously"),
     };
     assert!(
         matches!(tail, ClaimTail::Rejected(_)),
@@ -1691,7 +1862,7 @@ fn subtitle_repick_while_cold_start_burn_keeps_the_burn() {
     env.pass = Subscription::Yes;
     env.audio_enhancements = PREF;
     env.cached_item = Some(fourk_item_with_subs(sid, vec![audio], vec![sub]));
-    let plan = build_stream("1804", "/library/parts/3058/1/file.mkv", "hevc", "ac3", &env);
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "1804", "/library/parts/3058/1/file.mkv", "hevc", "ac3", &env);
     assert!(!plan.contract.remux, "cold start must be a real burn re-encode, not a plain remux");
     assert_eq!(query_param(&plan.url, "subtitleStreamID"), Some("10980"), "{}", plan.url);
     assert_eq!(query_param(&plan.url, "subtitles"), Some("burn"), "{}", plan.url);
@@ -1769,7 +1940,7 @@ fn subtitle_first_pick_while_plain_enhanced_remux_burns_it() {
     env.pass = Subscription::Yes;
     env.audio_enhancements = PREF;
     env.cached_item = Some(fourk_item_with_subs(sid, vec![audio], vec![sub]));
-    let plan = build_stream("1804", "/library/parts/3058/1/file.mkv", "hevc", "ac3", &env);
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "1804", "/library/parts/3058/1/file.mkv", "hevc", "ac3", &env);
     assert!(plan.contract.remux, "cold start must be the ORDINARY enhanced remux, no subtitle yet");
     assert_eq!(query_param(&plan.url, "subtitleStreamID"), None, "{}", plan.url);
     assert_eq!(query_param(&plan.url, "normalizeLoudness"), Some("1"), "{}", plan.url);
@@ -1840,7 +2011,7 @@ fn legacy_primary_rejection_keeps_the_legacy_rejected_label() {
     let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
     let tail = match dispatch {
         RetranscodeClaimDispatch::Sync(tail) => tail,
-        RetranscodeClaimDispatch::Pending => {
+        RetranscodeClaimDispatch::Pending | RetranscodeClaimDispatch::PendingNoHold => {
             let (_, tail, ..) = await_landing(&mut ps, "worker never landed");
             tail
         }
@@ -1885,7 +2056,7 @@ fn commit_track_inside_a_frame_does_not_trip_the_blocking_guard() {
 
 /// Finding: a worker panicking mid-`/decision` used to leave `ControlPhase::Applying` stuck
 /// forever — nothing else could ever post to `RETRANSCODE_CLAIM_SLOT` for that serial, and
-/// `claim_route_action` refuses a new claim while any `Applying` holds. `spawn_retranscode_claim`'s
+/// `claim_route_action` refuses a new claim while any `Applying` holds. `spawn_flight`'s
 /// `PostRejectedOnPanic` guard is what makes this test terminate at all: without it, the poll loop
 /// below spins until its own deadline assertion fails, which is the "stuck forever" this proves is
 /// fixed.
@@ -2166,7 +2337,7 @@ fn a_landing_from_a_torn_down_item_never_reaches_the_next_playback() {
     crate::player::reset_subtitle();
 }
 
-/// The two stale arms of `take_ready_retranscode_claim` (the claim's own phase moved on; the
+/// The two stale arms of `take_ready_flight` (the claim's own phase moved on; the
 /// ticket went stale in the drain gap) both stop the encoder session the worker started. They run
 /// on the frame thread, where a synchronous `transcode_stop` is a blocking PMS call.
 #[test]
@@ -2177,13 +2348,13 @@ fn the_stale_arms_of_the_drain_stop_their_encoder_off_the_frame_thread() {
     install(&mut ps, &live, Delivery::Direct, a1(), None, 0);
     let client = cur_client(&ps).expect("install() registered this session's server");
     let landing = |qsess: &str, ticket: WorkerTicket, serial: u64| RetranscodeClaimLanding {
-        action: ClaimedRouteAction {
+        owner: FlightOwner::Claim(ClaimedRouteAction {
             serial,
             ticket: ticket.clone(),
             intent: RouteIntent::User(UserRouteIntent::Retranscode),
             displaced_pick: false,
             claim_snapshot: None,
-        },
+        }),
         pending_seek: -1,
         user_target: 0,
         result: RetranscodeClaimResult::Retranscode(AppliedRetranscode {
@@ -2229,7 +2400,7 @@ fn the_stale_arms_of_the_drain_stop_their_encoder_off_the_frame_thread() {
 /// branches while `ControlPhase::Applying` was held by a DIFFERENT in-flight claim — replacing the
 /// encoder or bumping `media_epoch` out from under the worker's own ticket, so the worker's
 /// landing silently discarded even though nothing actually superseded it. The pump now skips its
-/// seek branches entirely while `claim_in_flight()` holds; `transcode_seek` also refuses directly.
+/// seek branches entirely while `flight_outstanding()` holds; `transcode_seek` also refuses directly.
 /// This test exercises `transcode_seek` itself: called during another claim's flight it must
 /// return `None` rather than proceeding, which on `4bf2bef27` it did not.
 #[test]
@@ -2238,13 +2409,13 @@ fn transcode_seek_refuses_while_an_unrelated_claim_is_in_flight() {
     let _g = fresh_registry(&mut ps);
     let live = slow_live(std::time::Duration::from_millis(150));
     // A LIVE transcode (an enhanced remux): `transcode_seek` returns `None` early for a Direct route, which would
-    // make the assertion below pass without the `claim_in_flight()` refusal ever being consulted.
+    // make the assertion below pass without the `flight_outstanding()` refusal ever being consulted.
     install(&mut ps, &live, Delivery::Remux(NONE), a1(), Some(candidate(true, a1(), None)), 0);
     assert!(toggle(&mut ps, PREF)); // enhance: a claim whose worker will hold `Applying`
     let action = claim_route_action().expect("a queued user action");
     let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
     assert!(matches!(dispatch, RetranscodeClaimDispatch::Pending));
-    assert!(claim_in_flight(), "the claim above is still Applying");
+    assert!(flight_outstanding(), "the claim above is still Applying");
 
     assert_eq!(
         transcode_seek(&mut ps, 90),
@@ -2265,11 +2436,11 @@ fn transcode_seek_refuses_while_an_unrelated_claim_is_in_flight() {
 /// (and commits) entirely inside the worker, before the landing ever reaches
 /// `RETRANSCODE_CLAIM_SLOT` — but a same-item route change (a concurrent ABR commit, modelled
 /// directly here with a second `replace_active_encoder_for` call) can still land in the window
-/// between that worker-side commit and `take_ready_retranscode_claim`'s later drain on the main
+/// between that worker-side commit and `take_ready_flight`'s later drain on the main
 /// thread. Unlike `claim_ticket_invalidated_while_worker_in_flight_is_discarded_then_a_fresh_pick_applies`
 /// (which invalidates the ticket BEFORE the worker's own commit, so `try_retranscode` itself
 /// refuses), this constructs a landing that already reflects a successful `Applied` outcome and
-/// checks the drain-time re-check at `take_ready_retranscode_claim`'s own `is_worker_ticket_current`
+/// checks the drain-time re-check at `take_ready_flight`'s own `is_worker_ticket_current`
 /// arm: the stale landing must not install its session projection, and the encoder session it
 /// already started on the server (`qsess`) must be stopped rather than left running unowned.
 #[test]
@@ -2303,7 +2474,7 @@ fn a_stale_landing_at_drain_time_stops_the_leaked_encoder_instead_of_installing_
     };
     PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Applying(action.serial);
     post_claim_landing(RetranscodeClaimLanding {
-        action: action.clone(),
+        owner: FlightOwner::Claim(action.clone()),
         pending_seek: -1,
         user_target: 0,
         result: RetranscodeClaimResult::Retranscode(AppliedRetranscode {
@@ -2381,5 +2552,598 @@ fn a_deferred_audio_pick_replayed_from_settle_route_start_does_not_trip_the_bloc
         requests.iter().any(|r| r.starts_with("PUT") && query_param(r, "audioStreamID") == Some("13")),
         "the deferred pick's PUT must still reach PMS, off the frame thread: {requests:?}",
     );
+    cleanup(&mut ps);
+}
+
+// ---- the rebuild flight: a seek on a transcode, and a claimed AdaptiveReload ------------------
+//
+// `plan_rebase` / `run_rebase` / `install_rebase` (decision.rs) are the three steps of the ONE
+// rebuild; these grade the flight around them (flight.rs). The dispatches run inside a
+// `FrameScope`, so a PMS call on the frame thread panics instead of passing.
+
+/// The transcode session ids the fixture has been asked to stop, in order.
+fn stops(log: &RequestLog) -> Vec<String> {
+    log.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|r| r.contains("/video/:/transcode/universal/stop"))
+        .filter_map(|r| query_param(r, "session").map(str::to_owned))
+        .collect()
+}
+
+/// The replacement encoders a rebuild minted (`<logical>-abr-<n>`), among the stops.
+fn replacement_stops(log: &RequestLog) -> Vec<String> {
+    stops(log).into_iter().filter(|s| s.starts_with("enh-logical-abr-")).collect()
+}
+
+/// A playing remux (`enh-remux-1`) on a slow server, and a seek flight dispatched at 90 s.
+fn seek_flight(delay_ms: u64) -> (PlaybackSession, plx_base::testlock::Serial, Live, RequestLog, u64) {
+    let mut ps = PlaybackSession::IDLE;
+    let g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::from_millis(delay_ms));
+    install(&mut ps, &live, Delivery::Remux(NONE), a1(), Some(candidate(true, a1(), None)), 0);
+    let _frame = plx_base::task::FrameScope::enter();
+    let dispatched = dispatch_transcode_seek(&mut ps, 90_000_000_000);
+    drop(_frame);
+    let SeekDispatch::Flying { serial } = dispatched else { panic!("expected a flight, got {dispatched:?}") };
+    (ps, g, live, log, serial)
+}
+
+/// The drain, waited for: the seek landing the pump collects on a later frame.
+fn await_seek_landing(ps: &mut PlaybackSession, newer_seek_waiting: bool) -> (u64, i64, SeekVerdict) {
+    wait_until("the seek flight to land", landing_posted);
+    match take_ready_flight(ps, newer_seek_waiting) {
+        Some(ReadyFlight::Seek { serial, target_ns, verdict }) => (serial, target_ns, verdict),
+        Some(ReadyFlight::Claim { .. }) => panic!("a claim's landing where a seek's was expected"),
+        None => panic!("the seek's landing was dropped as stale"),
+    }
+}
+
+/// Plan on the frame, PMS on a worker, install on the drain — and the reducer is the seek's the
+/// whole way: `Preparing(serial)` while it flies, `Prepared(serial)` once installed.
+#[test]
+fn a_seek_flight_plans_on_the_frame_and_installs_on_the_drain() {
+    let (mut ps, _g, live, log, serial) = seek_flight(100);
+    assert!(flight_outstanding() && flight_is_current(serial), "the seek is the outstanding flight");
+    assert_eq!(control_phase_label(), format!("Preparing({serial})"), "it owns a start transaction");
+    assert_eq!(transcode_session(&ps), "enh-remux-1", "nothing is installed while the worker runs");
+
+    let (landed, target, verdict) = await_seek_landing(&mut ps, false);
+    assert_eq!((landed, target), (serial, 90_000_000_000));
+    let SeekVerdict::Install(url) = verdict else { panic!("expected an install, got {verdict:?}") };
+    assert_eq!(ps.url, url, "the session now names the rebuilt stream");
+    assert!(url.contains("offset=90"), "{url}");
+    assert_ne!(transcode_session(&ps), "enh-remux-1");
+    assert_eq!(control_phase_label(), format!("Prepared({serial})"), "ready for the reload's start attempt");
+    assert!(!flight_outstanding(), "the landing settled the flight");
+    wait_until("the replaced encoder's stop", || stop_seen(&log, "enh-remux-1"));
+
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// A tap that arrives during the flight outdates its landing: the replacement is stopped (and ONLY
+/// the replacement — the encoder on screen was never touched), the reducer is `Stable`, and the
+/// next flight can start at the newest target.
+#[test]
+fn a_seek_landing_outdated_by_a_newer_tap_stops_only_its_replacement() {
+    let (mut ps, _g, live, log, _serial) = seek_flight(20);
+    let (_, _, verdict) = await_seek_landing(&mut ps, true);
+    assert_eq!(verdict, SeekVerdict::Superseded);
+    assert_eq!(control_phase_label(), "Stable");
+    assert_eq!(transcode_session(&ps), "enh-remux-1", "the stream on screen is still the route's");
+    wait_until("the discarded replacement's stop", || !replacement_stops(&log).is_empty());
+    assert!(!stop_seen(&log, "enh-remux-1"), "the discard stopped the encoder that is still playing: {:?}", stops(&log));
+
+    // The next frame's flight, at the newest target, goes through.
+    let _frame = plx_base::task::FrameScope::enter();
+    assert!(matches!(dispatch_transcode_seek(&mut ps, 120_000_000_000), SeekDispatch::Flying { .. }));
+    drop(_frame);
+    let (_, target, verdict) = await_seek_landing(&mut ps, false);
+    assert_eq!(target, 120_000_000_000);
+    assert!(matches!(verdict, SeekVerdict::Install(_)));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// A stop during the flight: the landing is stale. Its replacement is stopped and the old stream's
+/// session is not.
+#[test]
+fn a_teardown_during_a_seek_flight_discards_the_landing_and_stops_only_the_replacement() {
+    let (mut ps, _g, live, log, _serial) = seek_flight(20);
+    begin_engine_teardown(false);
+    assert!(!flight_outstanding(), "a full stop ends the flight");
+    wait_until("the late landing to post", landing_posted);
+    assert!(take_ready_flight(&mut ps, false).is_none(), "a stale seek landing was applied");
+    wait_until("the stale replacement's stop", || !replacement_stops(&log).is_empty());
+    assert!(!stop_seen(&log, "enh-remux-1"), "{:?}", stops(&log));
+    assert_eq!(transcode_session(&ps), "enh-remux-1");
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// An app-switch suspend tears the Engine down FOR RELOAD and keeps the playback. A seek's flight
+/// does not survive it: the transaction returns to `Stable` at once (the foreground restore
+/// reserves its own, and a `Preparing` left behind would refuse it), and the late landing is
+/// discarded.
+#[test]
+fn a_suspend_during_a_seek_flight_returns_the_reducer_and_discards_the_landing() {
+    let (mut ps, _g, live, log, serial) = seek_flight(20);
+    begin_engine_teardown(true);
+    assert!(!flight_outstanding() && !flight_is_current(serial));
+    assert_eq!(control_phase_label(), "Stable");
+    let foreground = begin_route_start().expect("the foreground restore must be able to reserve its transaction");
+    assert_ne!(foreground.serial, serial);
+
+    wait_until("the late landing to post", landing_posted);
+    assert!(take_ready_flight(&mut ps, false).is_none(), "a landing for a dropped flight was applied");
+    wait_until("the dropped flight's replacement stop", || !replacement_stops(&log).is_empty());
+    assert!(!stop_seen(&log, "enh-remux-1"), "{:?}", stops(&log));
+    assert_eq!(
+        control_phase_label(),
+        format!("Preparing({})", foreground.serial),
+        "the stale landing must not touch the foreground restore's transaction"
+    );
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// A user claim queued while a seek flies waits for the landing, then runs.
+#[test]
+fn a_user_claim_queued_mid_seek_flight_runs_after_the_landing() {
+    let (mut ps, _g, live, _log, _serial) = seek_flight(50);
+    request_user_route_intent(&ps, UserRouteIntent::Retranscode);
+    assert!(claim_route_action().is_none(), "a claim reached into the seek's flight");
+
+    let (_, _, verdict) = await_seek_landing(&mut ps, false);
+    assert!(matches!(verdict, SeekVerdict::Install(_)));
+    assert!(claim_route_action().is_none(), "still the seek's transaction until its Load settles");
+    settle_pending_native_start(&mut ps, RouteStartResult::Started);
+    assert!(claim_route_action().is_some(), "the queued claim must run once the seek has settled");
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// PMS refuses the rebuild: the verdict is `Refused`, the reducer is `Stable`, the route and the
+/// session are untouched, and the replacement the refused `/decision` may have created is stopped.
+#[test]
+fn a_refused_seek_rebuild_returns_the_reducer_and_keeps_the_route() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = always_refusing_live();
+    install(&mut ps, &live, Delivery::Remux(NONE), a1(), Some(candidate(true, a1(), None)), 0);
+    let _frame = plx_base::task::FrameScope::enter();
+    let dispatched = dispatch_transcode_seek(&mut ps, 90_000_000_000);
+    drop(_frame);
+    assert!(matches!(dispatched, SeekDispatch::Flying { .. }));
+    let (_, _, verdict) = await_seek_landing(&mut ps, false);
+    assert_eq!(verdict, SeekVerdict::Refused);
+    assert_eq!(control_phase_label(), "Stable");
+    assert_eq!(transcode_session(&ps), "enh-remux-1");
+    let requests = live.finish();
+    assert!(
+        requests.iter().any(|r| r.contains("/transcode/universal/stop") && r.contains("enh-logical-abr-")),
+        "the refused attempt's replacement must be stopped: {requests:?}",
+    );
+    cleanup(&mut ps);
+}
+
+/// A claimed `AdaptiveReload`: PMS on the claim worker, the claim `Applying` until the drain, the
+/// landing a `ClaimTail::Adaptive` whose session already names the rebuilt stream.
+#[test]
+fn an_adaptive_reload_claim_flies_and_lands_as_an_adaptive_tail() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::from_millis(50));
+    install(&mut ps, &live, Delivery::Remux(NONE), a1(), Some(candidate(true, a1(), None)), 0);
+    request_user_route_intent(&ps, UserRouteIntent::AdaptiveReload);
+    let action = claim_route_action().expect("the queued adaptive reload");
+
+    let _frame = plx_base::task::FrameScope::enter();
+    let dispatch = execute_adaptive_reload_claim(&mut ps, &action, 60, -1, 60_000_000_000);
+    drop(_frame);
+    assert!(matches!(dispatch, RetranscodeClaimDispatch::Pending), "got {dispatch:?}");
+    assert!(flight_outstanding() && flight_is_current(action.serial()));
+
+    let (landed, tail, ..) = await_landing(&mut ps, "the adaptive worker never landed");
+    assert_eq!(tail, ClaimTail::Adaptive);
+    assert_ne!(transcode_session(&ps), "enh-remux-1", "the session names the rebuilt encoder");
+    assert!(settle(&mut ps, &landed, tail), "the claim was still owned at its landing");
+    assert_eq!(control_phase_label(), format!("Prepared({})", action.serial()));
+    wait_until("the replaced encoder's stop", || stop_seen(&log, "enh-remux-1"));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// The claim owner's discard arm: a stale adaptive landing stops its replacement and leaves the
+/// encoder on screen alone.
+#[test]
+fn a_stale_adaptive_landing_stops_only_its_replacement() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::from_millis(20));
+    install(&mut ps, &live, Delivery::Remux(NONE), a1(), Some(candidate(true, a1(), None)), 0);
+    request_user_route_intent(&ps, UserRouteIntent::AdaptiveReload);
+    let action = claim_route_action().expect("the queued adaptive reload");
+    assert!(matches!(
+        execute_adaptive_reload_claim(&mut ps, &action, 60, -1, 60_000_000_000),
+        RetranscodeClaimDispatch::Pending
+    ));
+    begin_engine_teardown(false);
+    wait_until("the late landing to post", landing_posted);
+    assert!(take_ready_retranscode_claim(&mut ps).is_none());
+    wait_until("the stale replacement's stop", || !replacement_stops(&log).is_empty());
+    assert!(!stop_seen(&log, "enh-remux-1"), "{:?}", stops(&log));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// A landing nobody drained is replaced by the next flight's, and what the first registered is
+/// stopped rather than left running on the server unowned.
+#[test]
+fn posting_over_an_undrained_landing_discards_it() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::from_millis(10));
+    install(&mut ps, &live, Delivery::Remux(NONE), a1(), Some(candidate(true, a1(), None)), 0);
+    let _frame = plx_base::task::FrameScope::enter();
+    assert!(matches!(dispatch_transcode_seek(&mut ps, 30_000_000_000), SeekDispatch::Flying { .. }));
+    drop(_frame);
+    wait_until("the first landing to post", landing_posted);
+    // The suspend drops the flight but the posted landing stays until a drain or a newer post.
+    begin_engine_teardown(true);
+    let _frame = plx_base::task::FrameScope::enter();
+    assert!(matches!(dispatch_transcode_seek(&mut ps, 60_000_000_000), SeekDispatch::Flying { .. }));
+    drop(_frame);
+    wait_until("the first replacement's stop", || !replacement_stops(&log).is_empty());
+    let (_, target, verdict) = await_seek_landing(&mut ps, false);
+    assert_eq!(target, 60_000_000_000);
+    assert!(matches!(verdict, SeekVerdict::Install(_)));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+// ---- the Original-recovery flights: the viewer's Original pick, and the Auto watchdog's handoff ----
+//
+// `execute_recover_original_claim` plans on the frame, the claim worker runs `run_original_recovery`,
+// and the drain installs it — the same flight as an enhancement release (tests above). The
+// pump-level grades (no PMS round trip on the claiming frame, the reload, the hold) are
+// `player::pump::flight_tests`; these grade the reducer and the stale-landing rules.
+
+/// A stop during the viewer's Original flight: the landing is stale. The teardown moved the route
+/// under the worker, so its commit is refused and it stops the replacement it registered itself
+/// (a worker that committed first is stopped, with the encoder it replaced, by the landing's
+/// discard — `a_stale_release_landing_installs_nothing_and_stops_both_encoders`); nothing is
+/// installed over the session, which may belong to another item by now.
+#[test]
+fn a_teardown_during_a_manual_original_flight_discards_the_landing_and_stops_what_it_created() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::from_millis(30));
+    restore_quality(Quality::Original);
+    reset_player_control_for_test(&ps);
+    install(&mut ps, &live, Delivery::Remux(NONE), a1(), Some(candidate(false, a1(), None)), 0);
+    crate::player::request_original_recovery(&ps);
+    let action = claim_route_action().expect("a queued Original pick");
+    let before_url = ps.url.clone();
+
+    let _frame = plx_base::task::FrameScope::enter();
+    let dispatch = execute_recover_original_claim(&mut ps, &action, 60, RecoveryCause::ManualOriginal, -1, 0);
+    drop(_frame);
+    assert!(matches!(dispatch, RetranscodeClaimDispatch::Pending), "got {dispatch:?}");
+    assert!(flight_is_current(action.serial));
+
+    begin_engine_teardown(false);
+    assert!(!flight_outstanding(), "a full stop ends the flight");
+    wait_until("the late landing to post", landing_posted);
+    assert!(take_ready_flight(&mut ps, false).is_none(), "a stale Original landing was applied");
+    wait_until("the stale replacement's stop", || !replacement_stops(&log).is_empty());
+    assert_eq!(ps.url, before_url, "a stale landing must never write over the session");
+    assert!(!original_recovery_pending(), "and arms no PendingOriginal");
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// A user's pick made while an AUTOMATIC flight runs WAITS: no preemption. The claim is taken once
+/// the automatic landing has settled the reducer, and what the automatic flight was refused (here:
+/// the server declined the replacement remux) leaves the retained route's contract untouched.
+#[test]
+fn a_user_claim_queued_mid_automatic_flight_waits_for_the_landing_and_runs_after_it() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = always_refusing_live();
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    install(&mut ps, &live, Delivery::Hls, a1(), Some(candidate(false, a1(), None)), 0);
+    assert_eq!(
+        publish_automatic_route_intent(AutomaticRouteIntent::HlsToOriginal {
+            ticket: worker_ticket(),
+            evidence_kbps: 80_000,
+            position_ns: 60_000_000_000,
+        }),
+        AutomaticIntentResult::Accepted,
+    );
+    let action = claim_route_action().expect("the Auto worker's handoff");
+    assert!(matches!(action.intent, RouteIntent::Automatic(_)));
+
+    let _frame = plx_base::task::FrameScope::enter();
+    let dispatch =
+        execute_recover_original_claim(&mut ps, &action, 60, RecoveryCause::Automatic, -1, 60_000_000_000);
+    drop(_frame);
+    assert!(matches!(dispatch, RetranscodeClaimDispatch::Pending), "a remux reaches PMS: {dispatch:?}");
+    assert_eq!(phase(), ControlPhase::Applying(action.serial), "the automatic claim owns the flight");
+
+    request_user_route_intent(&ps, UserRouteIntent::Retranscode);
+    assert!(claim_route_action().is_none(), "a user claim preempted the automatic flight");
+    assert!(flight_outstanding());
+
+    let (landed, tail, ..) = await_landing(&mut ps, "automatic Original worker never landed");
+    assert_eq!(landed.serial, action.serial);
+    assert_eq!(tail, ClaimTail::Rejected(AUTO_ORIGINAL_REJECTED), "a refused automatic Original is a plain rejection");
+    assert!(settle(&mut ps, &action, tail));
+    assert_eq!(phase(), ControlPhase::Stable);
+    assert!(!original_recovery_pending());
+    let user = claim_route_action().expect("the queued user claim runs once the automatic flight has landed");
+    assert_eq!(user.intent, RouteIntent::User(UserRouteIntent::Retranscode));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// A direct Original needs no server round trip for an automatic recovery: the plan says so, and
+/// the pump leaves the stream playing instead of holding it for a flight that is over in a frame.
+#[test]
+fn an_automatic_direct_original_recovery_is_a_flight_that_holds_nothing() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    install(&mut ps, &live, Delivery::Hls, a1(), Some(candidate(true, a1(), None)), 0);
+    publish_automatic_route_intent(AutomaticRouteIntent::HlsToOriginal {
+        ticket: worker_ticket(),
+        evidence_kbps: 80_000,
+        position_ns: 60_000_000_000,
+    });
+    let action = claim_route_action().expect("the Auto worker's handoff");
+    let _frame = plx_base::task::FrameScope::enter();
+    let dispatch =
+        execute_recover_original_claim(&mut ps, &action, 60, RecoveryCause::Automatic, -1, 60_000_000_000);
+    drop(_frame);
+    assert!(matches!(dispatch, RetranscodeClaimDispatch::PendingNoHold), "got {dispatch:?}");
+    let (_, tail, ..) = await_landing(&mut ps, "automatic Original worker never landed");
+    assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));
+    assert!(original_recovery_pending());
+    let requests = live.finish();
+    assert!(decisions(&requests).is_empty(), "a direct Original registers no replacement: {requests:?}");
+    cleanup(&mut ps);
+}
+
+// ---- the automatic Original-to-HLS flight: the Auto watchdog's fallback ----------------------
+//
+// `execute_auto_hls_claim` plans on the frame, the claim worker runs `run_auto_hls`, and the drain
+// installs it — the same flight as every other claim, but the worker COMMITS NOTHING (the install
+// does), so a landing that never installs stops only the replacement and the Original on screen is
+// untouched. The pump-level grades (no PMS round trip on the claiming frame, the reload, no hold)
+// are `player::pump::flight_tests`.
+
+/// A playing Original remux (`enh-remux-1`) the Auto watchdog watches, under an applied Auto
+/// contract, on `live`.
+fn watched_original(ps: &mut PlaybackSession, live: &Live) {
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(ps);
+    install(ps, live, Delivery::Remux(NONE), a1(), Some(candidate(false, a1(), None)), 0);
+    ps.cur_auto_original_watched = true;
+    ps.cur_src = (28_000, 1_920, 1_080);
+}
+
+/// The Auto worker's handoff, published and claimed.
+fn claim_original_to_hls(position_ns: i64) -> ClaimedRouteAction {
+    assert_eq!(
+        publish_automatic_route_intent(AutomaticRouteIntent::OriginalToHls {
+            ticket: worker_ticket(),
+            conservative_kbps: 6_000,
+            position_ns,
+        }),
+        AutomaticIntentResult::Accepted,
+    );
+    claim_route_action().expect("the Auto worker's handoff")
+}
+
+fn dispatch_auto_hls(ps: &mut PlaybackSession, action: &ClaimedRouteAction) -> RetranscodeClaimDispatch {
+    let _frame = plx_base::task::FrameScope::enter();
+    execute_auto_hls_claim(ps, action, 60, 6_000, -1, 60_000_000_000)
+}
+
+/// The fields an attempt writes, for "nothing was written".
+fn route_fields(ps: &PlaybackSession) -> (String, String, bool, plx_plex::plex::EncodeContract, String, String) {
+    (
+        ps.url.clone(),
+        ps.tsession.clone(),
+        ps.cur_auto_original_watched,
+        ps.cur_contract,
+        ps.stream_vcodec.clone(),
+        ps.stream_acodec.clone(),
+    )
+}
+
+/// **The ABR bookkeeping is the same sequence it was inline.** The anti-flap seed is written at the
+/// plan (the controller reads it whether or not the rebuild succeeds); the session carries NOTHING of
+/// the attempt while the worker runs; the switch is charged only when the replacement lands.
+#[test]
+fn an_automatic_hls_flight_writes_the_session_only_at_the_landing_and_charges_the_switch_there() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::from_millis(40));
+    watched_original(&mut ps, &live);
+    let before = route_fields(&ps);
+    let action = claim_original_to_hls(60_000_000_000);
+    assert_eq!(ps.auto_switches, 0);
+
+    let dispatch = dispatch_auto_hls(&mut ps, &action);
+    assert!(matches!(dispatch, RetranscodeClaimDispatch::PendingNoHold), "nothing is held for it: {dispatch:?}");
+    assert_eq!(phase(), ControlPhase::Applying(action.serial()), "the automatic claim owns the flight");
+    assert_eq!(ps.auto_prior_kbps, 6_000, "the seed is the plan's");
+    assert_eq!(route_fields(&ps), before, "the session still describes the live Original");
+    assert_eq!(ps.auto_switches, 0, "a switch nobody has seen is not charged");
+
+    let (landed, tail, ..) = await_landing(&mut ps, "the automatic fallback never landed");
+    assert_eq!(landed.serial, action.serial());
+    assert_eq!(tail, ClaimTail::Retranscode);
+    assert_ne!(transcode_session(&ps), "enh-remux-1", "the session names the HLS encoder");
+    assert!(!ps.cur_auto_original_watched, "an HLS route has no Original under it to watch");
+    assert!(matches!(
+        ps.cur_contract.delivery,
+        plx_plex::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 }
+    ));
+    assert!(!ps.cur_contract.remux && ps.cur_contract.ceiling.is_some());
+    assert_eq!((ps.stream_fps, ps.stream_immersive), (0.0, false));
+    assert_eq!(ps.auto_switches, 1, "the viewer saw this switch: one charge");
+    assert_eq!(ps.auto_last_switch, Some(ps.now_ms));
+    assert!(settle(&mut ps, &landed, tail));
+    assert_eq!(phase(), ControlPhase::Prepared(action.serial()));
+    // The Original it replaced keeps feeding the Engine until the pump's reload, then is retired.
+    assert!(!stop_seen(&log, "enh-remux-1"), "stopped before the reload: {:?}", stops(&log));
+    retire_superseded_encoder();
+    wait_until("the replaced Original's stop", || stop_seen(&log, "enh-remux-1"));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// A refused fallback writes nothing and charges nothing, and leaves no encoder running: the
+/// replacement the server registered is stopped by the worker that saw the refusal.
+#[test]
+fn a_refused_automatic_hls_flight_leaves_the_session_and_the_history_untouched() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = always_refusing_live();
+    watched_original(&mut ps, &live);
+    let before = route_fields(&ps);
+    let action = claim_original_to_hls(60_000_000_000);
+
+    assert!(matches!(dispatch_auto_hls(&mut ps, &action), RetranscodeClaimDispatch::PendingNoHold));
+    let (_, tail, ..) = await_landing(&mut ps, "the refusal never landed");
+    assert_eq!(tail, ClaimTail::Rejected(AUTO_HLS_REJECTED));
+    assert_eq!(route_fields(&ps), before, "a refusal restores nothing because it wrote nothing");
+    assert_eq!(ps.auto_switches, 0, "the anti-flap history prices what the viewer saw");
+    assert!(settle(&mut ps, &action, tail));
+    assert_eq!(phase(), ControlPhase::Stable);
+    let requests = live.finish();
+    assert_eq!(decisions(&requests).len(), 1);
+    let stopped: Vec<_> = requests
+        .iter()
+        .filter(|r| r.contains("/video/:/transcode/universal/stop"))
+        .filter_map(|r| query_param(r, "session").map(str::to_owned))
+        .collect();
+    assert!(stopped.iter().all(|s| s.starts_with("enh-logical-abr-")), "only the replacement: {stopped:?}");
+    assert!(!stopped.is_empty(), "the refused replacement leaked: {requests:?}");
+    cleanup(&mut ps);
+}
+
+/// A stop after the worker answered but before the drain: the landing is stale and nothing is
+/// installed over a session that may belong to another item. The worker committed nothing, so it
+/// is the REPLACEMENT the discard stops — never the encoder the route plays. (A stop BEFORE the
+/// worker's answer needs no discard at all: its own ticket check refuses to register anything.)
+#[test]
+fn a_teardown_during_an_automatic_hls_flight_stops_only_the_replacement() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::from_millis(30));
+    watched_original(&mut ps, &live);
+    let before = route_fields(&ps);
+    let action = claim_original_to_hls(60_000_000_000);
+    assert!(matches!(dispatch_auto_hls(&mut ps, &action), RetranscodeClaimDispatch::PendingNoHold));
+    assert!(flight_is_current(action.serial()));
+    wait_until("the landing to post", landing_posted);
+
+    begin_engine_teardown(false);
+    assert!(!flight_outstanding(), "a full stop ends the flight");
+    assert!(take_ready_flight(&mut ps, false).is_none(), "a stale automatic landing was applied");
+    wait_until("the stale replacement's stop", || !replacement_stops(&log).is_empty());
+    assert_eq!(route_fields(&ps), before, "a stale landing must never write over the session");
+    assert!(!stop_seen(&log, "enh-remux-1"), "the encoder on screen is not the discard's: {:?}", stops(&log));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// The route moved between the worker's answer and the drain (a concurrent commit): the install's
+/// own gated commit refuses it, stops only the replacement, and the claim settles as rejected with
+/// the session untouched.
+#[test]
+fn an_automatic_hls_landing_the_route_moved_past_stops_only_its_replacement() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::from_millis(20));
+    watched_original(&mut ps, &live);
+    let before = route_fields(&ps);
+    let expected = worker_ticket();
+    let action = claim_original_to_hls(60_000_000_000);
+    assert!(matches!(dispatch_auto_hls(&mut ps, &action), RetranscodeClaimDispatch::PendingNoHold));
+    wait_until("the landing to post", landing_posted);
+    assert!(replace_active_encoder_for(&expected, "someone-else-1").is_some(), "the route moves");
+
+    let ready = take_ready_flight(&mut ps, false).expect("the flight is still the current one");
+    let ReadyFlight::Claim { tail, .. } = ready else { panic!("a claim's landing") };
+    assert_eq!(tail, ClaimTail::Rejected(AUTO_HLS_REJECTED));
+    assert_eq!(route_fields(&ps), before, "a refused install writes nothing");
+    assert_eq!(ps.auto_switches, 0);
+    wait_until("the replacement's stop", || !replacement_stops(&log).is_empty());
+    assert!(!stop_seen(&log, "enh-remux-1") && !stop_seen(&log, "someone-else-1"), "{:?}", stops(&log));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// A user's pick made while the automatic fallback flies WAITS: no preemption. The claim is taken
+/// once the landing has settled the reducer (here the server declined the replacement).
+#[test]
+fn a_user_claim_queued_mid_automatic_hls_flight_waits_for_the_landing_and_runs_after_it() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = always_refusing_live();
+    watched_original(&mut ps, &live);
+    let action = claim_original_to_hls(60_000_000_000);
+    assert!(matches!(dispatch_auto_hls(&mut ps, &action), RetranscodeClaimDispatch::PendingNoHold));
+
+    request_user_route_intent(&ps, UserRouteIntent::Retranscode);
+    assert!(claim_route_action().is_none(), "a user claim preempted the automatic flight");
+    assert!(flight_outstanding());
+
+    let (landed, tail, ..) = await_landing(&mut ps, "the automatic fallback never landed");
+    assert_eq!(landed.serial, action.serial());
+    assert_eq!(tail, ClaimTail::Rejected(AUTO_HLS_REJECTED));
+    assert!(settle(&mut ps, &landed, tail));
+    assert_eq!(phase(), ControlPhase::Stable);
+    let user = claim_route_action().expect("the queued user claim runs once the automatic flight has landed");
+    assert_eq!(user.intent, RouteIntent::User(UserRouteIntent::Retranscode));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// The unopened-source fallback run inline ([`fallback_unopened_auto_to_hls`], the test-only
+/// composition of the flight's three steps): the same plan, the same PMS half, the same install,
+/// the replaced encoder stopped at once. A refusal writes
+/// nothing — there is no longer a mutate-then-restore around the attempt.
+#[test]
+fn the_inline_unopened_fallback_is_the_same_three_steps_and_restores_nothing_on_refusal() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::from_millis(0));
+    watched_original(&mut ps, &live);
+    ps.auto_bootstrap_rung = Some(crate::abr::Rung::P720Low);
+    let url = fallback_unopened_auto_to_hls(&mut ps, 0).expect("the unopened source falls back to HLS");
+    assert!(url.contains("start.m3u8") || url.contains("session="), "{url}");
+    assert_ne!(transcode_session(&ps), "enh-remux-1");
+    assert!(is_segmented_hls(&ps));
+    assert_eq!(ps.auto_switches, 0, "a source that never opened showed no picture to charge a switch for");
+    wait_until("the replaced Original's stop", || stop_seen(&log, "enh-remux-1"));
+    live.finish();
+    cleanup(&mut ps);
+
+    let live = always_refusing_live();
+    watched_original(&mut ps, &live);
+    ps.auto_bootstrap_rung = Some(crate::abr::Rung::P720Low);
+    let before = route_fields(&ps);
+    assert_eq!(fallback_unopened_auto_to_hls(&mut ps, 0), None);
+    assert_eq!(route_fields(&ps), before);
+    live.finish();
     cleanup(&mut ps);
 }

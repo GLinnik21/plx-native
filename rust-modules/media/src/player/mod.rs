@@ -35,6 +35,10 @@ pub mod ffi;
 pub mod ffi_host;
 mod pump;
 pub mod report;
+#[cfg(all(test, feature = "hostsim"))]
+mod foreground_flight_tests;
+#[cfg(all(test, feature = "hostsim"))]
+mod resume_tests;
 mod shared;
 pub mod sidecar;
 #[cfg(feature = "hostsim")]
@@ -261,11 +265,14 @@ static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 // refusal on leaving the player, called from `app.rs`'s `exit_player`) retires it precisely the
 // same way. See `engine.rs`'s `start_bufferfeed`/`start_bufferfeed_tracked` for the gate itself.
 pub use engine::{
-    acb_init, resume_at, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
-    suspend_bufferfeed, suspend_bufferfeed_if_attempt, BufferfeedStartOutcome, ResumeOutcome,
+    acb_init, begin_resume, land_resume, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
+    suspend_bufferfeed, suspend_bufferfeed_if_attempt, BufferfeedStartOutcome, ResumeOutcome, ResumeStart,
 };
 
-pub use pump::{pump, recover_failed_foreground_original, ForegroundOriginalRecovery};
+pub use pump::{
+    drain_engineless_rollback, land_engineless_rollback, pump, recover_failed_foreground_original, ForegroundOriginalRecovery,
+    RollbackLanding,
+};
 pub use shared::PlaybackState;
 pub fn pause(pa: &mut adapter::PlayerAdapter) -> bool {
     match SHARED.prepare_hls_user_pause() {
@@ -542,7 +549,7 @@ pub fn loading(ps: &crate::route::PlaybackSession) -> bool {
 }
 /// true only while the pipeline is actually presenting frames — not resolving, connecting,
 /// buffering or seeking. app.rs gates the heartbeat's `pos=` field on this: on a **direct-play**
-/// resume `resume_at` only arms the seek (it does not seed `playpos_ns`, unlike the transcode
+/// resume `begin_resume` only arms the seek (it does not seed `playpos_ns`, unlike the transcode
 /// branch), so the position reads 0 until the first decoded frame lands at the resume offset.
 /// Logging that pre-roll 0 would show the harness a 0→600 step and read as 600s of "climb"
 /// inside one second — a false PASS on `min_timeline_climb_s`.
@@ -554,7 +561,13 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
     // Resolving is DERIVED here rather than stored: the pump owns `pb_state` but only runs once
     // an engine exists, which is false for the whole resolve window. Deriving in the one reader
     // keeps a single writer instead of poking the state in from the frame loop.
-    if crate::route::play_pending() {
+    //
+    // A COLD RESUME's flight is the tail of that same resolve: the plan has landed, but the saved
+    // position's rebuild is still on a worker and the Load has not started, so the viewer keeps
+    // the Resolving spinner until it lands. So does every recovery no Engine waits on (the
+    // foreground restore's resume, a rollback after a Load that failed before its Engine
+    // existed): `route::engineless_flight_outstanding`.
+    if crate::route::play_pending() || crate::route::engineless_flight_outstanding() {
         return shared::PlaybackState::Resolving;
     }
     // …and so is the PRE-FLIGHT refusal, for exactly the same reason: `/decision` answers before a
@@ -1456,7 +1469,8 @@ pub fn seek_display_ns() -> i64 {
 /// The playhead the user INTENDS, which is not always the one being published: while a seek is
 /// still resolving (request → reopen → prime → Play) `playpos_ns` keeps reporting the PRE-seek
 /// spot, so anything snapshotting "where are we?" inside that window snapshots the position the
-/// user just left. The rule — an in-flight seek target wins, else the published position — used to
+/// user just left. The rule — an in-flight seek target wins, then an outstanding recovery flight's
+/// own offset (a resume that has not landed has published nothing), else the published position — used to
 /// be open-coded at each reader that remembered it and was simply MISSING at the one that did not
 /// (the OS-background save; see `app::intended_pos`). This is that rule, once.
 ///
@@ -1471,6 +1485,12 @@ pub fn intended_pos_ns(ps: &crate::route::PlaybackSession) -> i64 {
     let t = seek_display_ns();
     if loading(ps) && t >= 0 {
         t
+    } else if let Some(offset_ns) = crate::route::recovery_flight_offset_ns() {
+        // A resume/recovery flight is out and has not landed: `playpos_ns` is still the zero
+        // `reset_session` left (it is seeded at the landing), so the flight's own offset is where
+        // the viewer is. Without it a Home press mid-resume saves 0 and the restore plays from the
+        // start, after which the timeline reports overwrite the server's viewOffset.
+        offset_ns
     } else {
         playpos_ns()
     }

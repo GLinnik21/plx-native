@@ -25,7 +25,7 @@ fn a_plan_round_trips_the_server_the_request_captured() {
         "the snapshot carries the id the request was made with"
     );
 
-    let plan = build_stream("rk-7", "/library/parts/5/1/f.mkv", "h264", "ac3", &env);
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-7", "/library/parts/5/1/f.mkv", "h264", "ac3", &env);
     assert_eq!(
         plan.sid, sid,
         "a plan that could not resolve still names its server"
@@ -61,7 +61,7 @@ fn a_plan_that_never_resolved_makes_no_claim_about_the_source() {
     let sid = unregistered_sid();
     let env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-7");
 
-    let plan = build_stream("rk-7", "/library/parts/5/1/f.mkv", "h264", "ac3", &env);
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-7", "/library/parts/5/1/f.mkv", "h264", "ac3", &env);
     assert!(
         plan.url.is_empty(),
         "the test needs the exit that precedes the codec gate"
@@ -149,7 +149,7 @@ fn remux_review_probe_installs_effective_selection_before_decision_and_start() {
         ], vec![selected_sub(9, "srt")]);
         item.bitrate = 320;
         env.cached_item = Some(item);
-        let plan = build_stream("rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "truehd", &env);
+        let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "truehd", &env);
         done.send(()).unwrap();
         let requests = server.join().unwrap();
         let decision = requests.iter().position(|(r, _)| r.contains("/decision?") && !r.contains("hasMDE=1")).expect("probe decision");
@@ -179,7 +179,7 @@ fn remux_review_http_200_refusal_never_gets_media() {
     assert!(plx_net::net::global_init() && crate::curlio::available());
     let (port, done, server) = selection_probe_pms(true, 0);
     let sid = plx_plex::plex::register_for_test("refused-probe", "127.0.0.1", port, "token", "refused-probe-client");
-    let sample = measure_remote_remux(plx_plex::plex::client_for(sid).unwrap(), "rk", "refused-session", 2, 0, 320, plx_plex::plex::AudioEnhancements::NONE).sample;
+    let sample = measure_remote_remux(&plx_base::task::OffFrame::for_test(), plx_plex::plex::client_for(sid).unwrap(), "rk", "refused-session", 2, 0, 320, plx_plex::plex::AudioEnhancements::NONE).sample;
     done.send(()).unwrap();
     let requests = server.join().unwrap();
     assert!(sample.is_none());
@@ -209,6 +209,7 @@ fn original_hevc_eac3_registers_mde_before_returning_the_part() {
     let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -292,6 +293,7 @@ fn smart_dp_names_the_ac3_sibling_on_mde() {
         ],
     ));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -340,6 +342,7 @@ fn mde_transcode_does_not_return_the_part_url() {
     let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -407,6 +410,7 @@ fn mde_transcode_for_truehd_only_still_remuxes() {
         }],
     ));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -456,6 +460,7 @@ fn mde_video_stream_transcode_forbids_remux() {
     let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -507,6 +512,7 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
     item.dovi = p5();
     env.cached_item = Some(item);
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -570,6 +576,7 @@ fn unconfirmed_profile_5_forbids_copy_before_mde() {
         item.dovi = p5();
         env.cached_item = Some(item);
         let plan = build_stream(
+            &plx_base::task::OffFrame::for_test(),
             "rk-4k",
             "/library/parts/36013/1/file.mkv",
             "hevc",
@@ -641,6 +648,7 @@ fn remote_auto_truehd_remux_probes_start_mkv_not_the_part() {
     item.bitrate = 320;
     env.cached_item = Some(item);
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -741,6 +749,7 @@ fn remote_auto_truehd_remux_probe_names_the_ac3_sibling_not_env_audio_sid() {
     item.bitrate = 320;
     env.cached_item = Some(item);
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -844,6 +853,7 @@ fn a_720p_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
         ],
     ));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -931,6 +941,7 @@ fn a_720p_reencode_keeps_the_files_default_language_over_english() {
         ],
     ));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -1018,6 +1029,7 @@ fn a_720p_reencode_keeps_the_default_ac3_over_an_unselected_english_dts() {
         ],
     ));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -1107,6 +1119,7 @@ fn a_auto_hls_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
         ],
     ));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -1189,6 +1202,7 @@ fn remote_auto_failed_remux_sample_physical_stops_before_hls() {
     item.bitrate = 320;
     env.cached_item = Some(item);
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -1248,6 +1262,7 @@ fn unreachable_mde_does_not_return_the_part_url() {
     let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -1308,6 +1323,7 @@ fn selected_embedded_srt_names_id_and_client_rendered_mode_on_mde() {
         vec![selected_sub(55001, "srt")],
     ));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -1359,6 +1375,7 @@ fn selected_pgs_names_subtitle_stream_id_on_mde() {
         vec![selected_sub(99001, "pgs")],
     ));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -1419,6 +1436,7 @@ fn external_selected_sub_sends_subtitle_stream_id_zero_on_mde() {
         }],
     ));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -1475,6 +1493,7 @@ fn selected_mov_text_names_subtitle_stream_id_on_mde() {
         vec![selected_sub(77001, "mov_text")],
     ));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",
@@ -1526,6 +1545,7 @@ fn selected_dvd_subtitle_names_subtitle_stream_id_on_mde() {
         vec![selected_sub(66001, "dvd_subtitle")],
     ));
     let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(),
         "rk-4k",
         "/library/parts/36013/1/file.mkv",
         "hevc",

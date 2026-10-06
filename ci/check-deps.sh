@@ -49,6 +49,9 @@
 #              wrapped by a same-file door that leaks it back out — which the call-site half would
 #              catch on ITS spelling, not the original's.
 #
+#   blocking — every production `allow_blocking(` call site is a line of
+#              ci/allow/blocking.txt, held as an exact multiset: a new site or a stale line fails.
+#
 # Phase 8 rule (§14, §6.2):
 #   nav      — a screen under rust-modules/screens/src/ never calls `plx_ui::nav::` (`crate::ui::nav::` before the ui split; any
 #              function) live; it reads `DrawFrame::{page_alpha,chrome_alpha,view_tab,
@@ -620,7 +623,7 @@ if [ -n "$(grep_code '\bEffect::' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFO
 # outright — and added every real mutator the census found missing entirely: `alt_install`,
 # `alt_restamp_owners`, `alt_prune_inactive`, `alt_stand_in`, `record_pins`, `retry_source`,
 # `apply_landing`, `take_detail_refresh`.
-MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_cursor|set_sort_by_key|set_sort|set_unwatched|set_genre_by_id|set_genre|retry_cur_source|retry_source|recheck_shares|apply_pins|toggle_pin|record_pins|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|clear|load_season|load_season_now|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|alt_install|alt_restamp_owners|alt_prune_inactive|alt_stand_in|request_refetch_hubs|request_retry|edit_item|apply_landing|take_detail_refresh)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
+MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_cursor|set_sort_by_key|set_sort|set_unwatched|set_genre_by_id|set_genre|retry_cur_source|retry_source|recheck_shares|apply_pins|toggle_pin|record_pins|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|clear|load_season|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|alt_install|alt_restamp_owners|alt_prune_inactive|alt_stand_in|request_refetch_hubs|request_retry|edit_item|apply_landing|take_detail_refresh)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
 # The spelling is matched WITHOUT a `crate::` prefix (a `use crate::metadata;` makes it
 # `metadata::load_season(`), and every `#[cfg(test)] mod … { … }` block is skipped by brace depth
 # wherever it sits in the file — the first version cut at the FIRST such block and let ~700
@@ -669,7 +672,7 @@ if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(
 MUT_FNS_TABLE=(
   "browse/mod.rs|set_cur note_library_choice kick_letters kick_genres want save_cursor set_sort_by_key set_sort set_unwatched set_genre_by_id set_genre retry_cur_source retry_source recheck_shares apply_pins toggle_pin record_pins retry_discovery reset set_watched_local"
   "browse/section_hubs.rs|kick commit_staged invalidate_all invalidate set_watched_local left_the_deck"
-  "metadata.rs|request_detail clear load_season load_season_now set_now_playing set_watched_local install_playing mark_skipped retire_playing retire_playing_item alt_install alt_restamp_owners alt_prune_inactive"
+  "metadata.rs|request_detail clear load_season set_now_playing set_watched_local install_playing mark_skipped retire_playing retire_playing_item alt_install alt_restamp_owners alt_prune_inactive"
   "pms.rs|request_refetch_hubs request_retry edit_item apply_landing reset"
   "search.rs|set_query reset set_watched_local"
   "person.rs|open close reset set_watched_local"
@@ -967,6 +970,66 @@ done < <(grep -rlE --include='*.rs' '\bspawn\(' "$SRC" "$SRC_BASE" "$SRC_MACHINE
 threads_declared=$(sed -n 's/^# count: *//p' ci/allow/threads.txt | head -1)
 if [ "$threads_bad" -eq "${threads_declared:-0}" ]; then ok "threads"
 else fail "threads: $threads_bad line(s) outside ci/allow/threads.txt (declared count is exactly ${threads_declared:-0}, not a ceiling)"; fi
+
+# blocking: the frame thread's blocking exceptions, as a ledger that only shrinks. Every
+# production `allow_blocking(` CALL SITE is listed in
+# ci/allow/blocking.txt as `<path>::<enclosing fn>` (one line per site, so a second site inside an
+# already-listed fn is a new line, not free), and the gate compares the two as multisets:
+#   - a site NOT in the list fails — a new frame-thread exception must move its work onto a worker
+#     (`task::spawn_off_frame`, whose token a PMS half takes) instead of being excused;
+#   - an entry whose site no longer exists fails — so the list can only shrink, and a migration
+#     lands by deleting its line. The declared `# count:` must also equal the entry count.
+# Test code is skipped exactly as in `threads` (a wholly-test file, a `#[cfg(test)] mod` block).
+# The definition itself (`task/blocking.rs`), `fn` declarations and comment-only lines are not
+# call sites. Any OTHER non-test mention of the bare identifier — `use ...::allow_blocking as x`,
+# `let f = allow_blocking;` — is an alias the call-site grep cannot see, so it fails outright
+# (`blocking_refs`); the one tolerated mention is the exact re-export line in `base/src/task.rs`.
+# The enclosing fn is the innermost `fn <name>` whose body holds the call, tracked by
+# brace depth; a call in a closure belongs to the fn around the closure.
+blocking_sites=$(
+  while IFS= read -r f; do
+    if is_wholly_test "$f"; then continue; fi
+    awk -v file="$f" -v reexport_file="$SRC_BASE/task.rs" '
+      function pop_to(d) { while (top > 0 && sdepth[top] > d) top-- }
+      skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
+      prev ~ /^[[:space:]]*#\[cfg\((test|any\(test, feature = "test-support"\))\)\][[:space:]]*$/ && /^[[:space:]]*mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
+      {
+        line=$0; prev=$0
+        code=line; sub(/\/\/.*/, "", code)
+        # a mention that is neither a call, the `fn` definition nor the listed re-export: an alias
+        if (code ~ /(^|[^A-Za-z0-9_])allow_blocking([^A-Za-z0-9_(]|$)/ && code !~ /fn[[:space:]]+allow_blocking\(/ \
+            && !(file == reexport_file && code ~ /^[[:space:]]*pub use blocking::\{allow_blocking, AllowBlocking\};[[:space:]]*$/))
+          print "REF\t" file ":" NR
+        if (match(code, /(^|[^A-Za-z0-9_])fn[[:space:]]+[A-Za-z0-9_]+/)) {
+          name=substr(code, RSTART, RLENGTH); sub(/.*fn[[:space:]]+/, "", name); pending=name
+        }
+        if (code ~ /(^|[^A-Za-z0-9_])allow_blocking\(/ && code !~ /fn[[:space:]]+allow_blocking\(/) {
+          hit=(top>0 ? stack[top] : (pending != "" ? pending : "?"))
+          # a call on the same line as the `fn` it sits in, before that fn pushes its body
+          if (pending != "" && code ~ /fn[[:space:]]/ && code ~ /\{/) hit=pending
+          print file "::" hit
+        }
+        n=gsub(/\{/,"{",code); m=gsub(/\}/,"}",code)
+        for (i=0; i<n; i++) { depth++; if (pending != "") { top++; stack[top]=pending; sdepth[top]=depth; pending="" } }
+        for (i=0; i<m; i++) { depth--; pop_to(depth) }
+        if (pending != "" && code ~ /;[[:space:]]*$/) pending=""
+      }' "$f"
+  done < <(grep -rlE --include='*.rs' 'allow_blocking' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_APPKIT" "$SRC_SCREENS" 2>/dev/null | grep -v "^$SRC_BASE/task/blocking.rs\$" | sort) | sort
+)
+blocking_refs=$(printf '%s\n' "$blocking_sites" | awk -F'\t' '$1 == "REF" {print $2}')
+blocking_sites=$(printf '%s\n' "$blocking_sites" | awk -F'\t' '$1 != "REF"')
+blocking_declared=$(awk -F'\t' '/^[[:space:]]*(#|$)/ {next} {print $1}' ci/allow/blocking.txt | sort)
+blocking_new=$(comm -23 <(printf '%s\n' "$blocking_sites" | sed '/^$/d') <(printf '%s\n' "$blocking_declared" | sed '/^$/d'))
+blocking_stale=$(comm -13 <(printf '%s\n' "$blocking_sites" | sed '/^$/d') <(printf '%s\n' "$blocking_declared" | sed '/^$/d'))
+blocking_count=$(printf '%s\n' "$blocking_declared" | sed '/^$/d' | wc -l | tr -d ' ')
+blocking_count_declared=$(sed -n 's/^# count: *//p' ci/allow/blocking.txt | head -1)
+if [ -z "$blocking_new" ] && [ -z "$blocking_stale" ] && [ -z "$blocking_refs" ] && [ "$blocking_count" -eq "${blocking_count_declared:-0}" ]; then ok "blocking ($blocking_count sites)"
+else
+  [ -n "$blocking_new" ] && printf '%s\n' "$blocking_new" | sed 's/^/    new frame-thread blocking exception: /'
+  [ -n "$blocking_refs" ] && printf '%s\n' "$blocking_refs" | sed 's/^/    allow_blocking named without a call (an alias the ledger cannot count): /'
+  [ -n "$blocking_stale" ] && printf '%s\n' "$blocking_stale" | sed 's/^/    stale ci\/allow\/blocking.txt entry (site is gone — delete the line): /'
+  fail "blocking: the frame-thread exception ledger is not exact (new: $(printf '%s\n' "$blocking_new" | sed '/^$/d' | wc -l | tr -d ' '), stale: $(printf '%s\n' "$blocking_stale" | sed '/^$/d' | wc -l | tr -d ' '), aliased: $(printf '%s\n' "$blocking_refs" | sed '/^$/d' | wc -l | tr -d ' '), declared count ${blocking_count_declared:-0} vs $blocking_count entries) — a new allow_blocking site moves its work to a worker instead; the list only shrinks"
+fi
 
 # tmppath: a literal `/tmp/plxnative-` string outside dev.rs and the log sinks, = 0 (D4). The
 # earlier version matched only a literal and a filesystem-open VERB co-occurring on the SAME

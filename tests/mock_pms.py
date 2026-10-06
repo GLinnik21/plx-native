@@ -1505,6 +1505,9 @@ class MockPms:
         # `--transcode-fixture PATH`: serve this file (Range/206 supported) for every
         # /video/:/transcode/universal/start* request instead of the plain 404.
         self.transcode_fixture = None
+        # `--decision-delay-ms N`: hold every transcode decision/start request this long before
+        # answering, so a flight's PMS half is observably in flight. 0 answers at once.
+        self.decision_delay_ms = 0
         # Every request `handle()` routed, in arrival order: {"method","path","query","session"}.
         # Query keys naming a token are stripped, never just redacted — never send a real value.
         self.request_log = []
@@ -2136,6 +2139,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.server.verbose:
             print(f"mock_pms: REQUEST {method} {self.server.pms.safe_path(self.path)}",
                   file=sys.stderr, flush=True)
+        delay_ms = self.server.pms.decision_delay_ms
+        if delay_ms and urllib.parse.urlsplit(self.path).path.startswith(
+                ("/video/:/transcode/universal/decision", "/video/:/transcode/universal/start")):
+            time.sleep(delay_ms / 1000)
         if method in ("GET", "HEAD") and (self._media(method) or self._transcode_fixture(method)):
             return
         n = int(self.headers.get("Content-Length") or 0)
@@ -2184,7 +2191,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           plaintext_only_lan=False, advertise_ip=None, insecure_fail_mode="handshake",
           authorize_after=None, plex_pass=True, loudness_analysis=True,
           refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
-          home_hubs=0, section_hubs=0, section_hubs_linked=0):
+          home_hubs=0, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -2205,7 +2212,8 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     the starting state of the same-named `pms.*` flags — all four are still flippable afterwards,
     live, through `POST /_mock/config`. `transcode_fixture` is the file every
     `/video/:/transcode/universal/start*` request serves instead of the plain 404, Range/206
-    included; `None` (default) leaves that endpoint unchanged."""
+    included; `None` (default) leaves that endpoint unchanged. `decision_delay_ms` sleeps that long
+    before answering a transcode decision or start request (`0`, the default, answers at once)."""
     if transcode_fixture is not None and not pathlib.Path(transcode_fixture).is_file():
         raise ValueError(f"--transcode-fixture file is missing: {transcode_fixture}")
     if catalog is not None:
@@ -2222,6 +2230,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     pms.refuse_enhancements = refuse_enhancements
     pms.ignore_enhancements = ignore_enhancements
     pms.transcode_fixture = pathlib.Path(transcode_fixture) if transcode_fixture else None
+    pms.decision_delay_ms = decision_delay_ms
     if authorize_after is None and plaintext_only_lan:
         authorize_after = 2
     pms.authorize_after = authorize_after
@@ -2636,6 +2645,9 @@ def main():
     ap.add_argument("--transcode-fixture", type=pathlib.Path,
                     help="#266: serve this file (Range/206 supported) for every "
                          "/video/:/transcode/universal/start* request instead of the plain 404")
+    ap.add_argument("--decision-delay-ms", type=int, default=0, metavar="N",
+                    help="sleep N ms before answering a /video/:/transcode/universal/decision or "
+                         "start.* request, so a route flight is observably in flight (default 0)")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
@@ -2647,6 +2659,8 @@ def main():
         ap.error("--section-hubs and --section-hubs-linked must not be negative")
     if a.section_hubs_linked > a.section_hubs:
         ap.error("--section-hubs-linked must not exceed --section-hubs")
+    if a.decision_delay_ms < 0:
+        ap.error("--decision-delay-ms must not be negative")
     if not 0 <= a.movies <= 1000:
         ap.error("--movies must be between 0 and 1000")
     if (a.advertise_ip or a.insecure_fail_mode != "handshake") and not a.plaintext_only_lan:
@@ -2668,7 +2682,8 @@ def main():
                          ignore_enhancements=a.ignore_enhancements,
                          transcode_fixture=a.transcode_fixture, home_hubs=a.home_hubs,
                          section_hubs=a.section_hubs,
-                         section_hubs_linked=a.section_hubs_linked)
+                         section_hubs_linked=a.section_hubs_linked,
+                         decision_delay_ms=a.decision_delay_ms)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"

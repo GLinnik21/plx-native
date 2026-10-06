@@ -1227,7 +1227,7 @@ impl Controller {
         // oscillating link produced ten committed rung changes, each of them a picture the person
         // watching saw change. `AbrPolicy::visible_switch_penalty` is the price of that, and until
         // now nothing on the rung axis read it: `mode::transition_cost` returns 0 for `Hls -> Hls`
-        // and `route::note_visible_switch` is only reached from `install_auto_hls`, so the whole
+        // and `route::note_visible_switch` is only reached from `install_auto_hls_outcome`, so the whole
         // anti-flap mechanism was scoped to Original/HLS handoffs.
         if !self.upshift_earns_its_visible_switch(target) {
             self.last_reason = Some(DecisionReason::Hls(HlsReason::SwitchCost));

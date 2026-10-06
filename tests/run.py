@@ -3496,7 +3496,7 @@ def op_seek_refused(lines, target_s):
     """A seek the app CANNOT serve must be refused cleanly, and playback must survive the refusal.
 
     Reaching this path is structural rather than incidental, and only this tier can. A transcode
-    seek restarts the encode at a new `&offset`, which `route::transcode_seek` builds from a PMS
+    seek restarts the encode at a new `&offset`, which `route::dispatch_transcode_seek` plans from a PMS
     ratingKey and client — and a `plxnative-playurl` playback has neither, so every seek during
     Auto on the pipeline tier is refused. That makes it the one place the REFUSAL path is
     observable at all; on the server tier the seek succeeds and this branch never runs.
@@ -3660,8 +3660,8 @@ def a_no_demux_failure(lines):
 # still grades.
 AUDIO_NATIVE_SWITCH_LINES = ("route transition: native audio idx=", "audio switch (native)")
 AUDIO_RETRANSCODE_LINES = ("route transition: user retranscode", "re-transcode:")
-# issue #266: `route/decision.rs`'s `retranscode_as` logs this ONLY when `EnhancementOutcome`
-# becomes `Applied` — the server demonstrably ran the DSP params, not merely accepted a request a
+# issue #266: `route/decision.rs`'s `log_enhancement_outcome` logs this ONLY when
+# `EnhancementOutcome` becomes `Applied` — the server demonstrably ran the DSP params, not merely accepted a request a
 # source-copy would have produced anyway (`EnhancementOutcome`'s own doc). `decision output: v=..
 # a=..` is the SAME call's statement of what the negotiated codecs actually are.
 RE_ENHANCEMENT_APPLIED = re.compile(r"enhancement: applied boost=(\d) loudness=(\d)")
@@ -3766,12 +3766,13 @@ def op_audio_enhancement(lines):
     Graded in order:
     1. The ask reached the server and TOOK EFFECT: the app's own `enhancement: applied boost=..
        loudness=1` line, printed only on `EnhancementOutcome::Applied` (`route/decision.rs`'s
-       `retranscode_as`), so a request the server merely accepted (or silently ignored) fails.
+       `log_enhancement_outcome`), so a request the server merely accepted (or silently ignored)
+       fails.
     2. The Load was declared with the audio the server actually negotiated: the `decision output:`
-       audio codec at/before the applied line (`retranscode_as` logs its own codecs first) equals
-       the post-toggle `load: .. a=".."` codec. Invariant I4: the payload follows /decision's
-       OUTPUT, never the source or a literal — PMS 1.43.4 answers a DSP param over an AAC source
-       with `a=aac`, over AC-3 with `ac3`.
+       audio codec at/before the applied line (`log_enhancement_outcome` logs its own codecs
+       first) equals the post-toggle `load: .. a=".."` codec. Invariant I4: the payload follows
+       /decision's OUTPUT, never the source or a literal — PMS 1.43.4 answers a DSP param over an
+       AAC source with `a=aac`, over AC-3 with `ac3`.
     3. The route is a REMUX, not a re-encode: the video codec after the toggle (`ff: v=`, else the
        post-toggle `load: v=`) equals the codec before it (the last `ff: v=`/`load: v=` before the
        applied line — a direct-play start may be torn down before it ever logged `ff: v=`).
@@ -3838,7 +3839,7 @@ def op_audio_enhancement_release(lines):
     ever runs) — then picks the SAME row `op_audio_enhancement` picks, which `on_ok` TOGGLES: from
     ON, that reconciles the preference back to NONE. `enhancement_step` releases a directly-
     playable candidate straight back to it (`route/decision.rs`'s `EnhancementStep::ReleaseToDirect`
-    -> `recover_auto_to_original_for(.. EnhancementReleased)`). Because the toggle goes through the
+    -> `plan_original_recovery(.. EnhancementReleased)` on the frame, `run_original_recovery` on a flight worker). Because the toggle goes through the
     ordinary commit path (not a second boot trigger), it also re-persists the preference as OFF for
     real — the case ends idempotent with no second op needed.
 
@@ -3890,9 +3891,8 @@ def op_audio_enhancement_burn(lines):
     * A COLD START (`{"op": "audio_enhancement_burn"}`, no live pick): the item already carries a
       server-selected embedded subtitle, so `route/plan.rs`'s cold-start branch computes
       `Offered(Burn)` before the first frame and logs exactly ONE `enhancement: applied` line
-      (`route::decision::log_enhancement_outcome`, the same helper `retranscode_as` below calls —
-      before that helper existed, the cold-start branch classified the outcome but never logged it,
-      so this manifest shape had no line to grade at all).
+      (`route::decision::log_enhancement_outcome`, the same helper the live reconcile's
+      `install_retranscode_outcome` calls).
     * A LIVE RECONCILE (`{"op": "subtitle", "burn": true}`): the boot-time preference decorates an
       otherwise-bare candidate as an ordinary enhanced remux first (one `enhancement: applied` line
       with no subtitle in the picture), then the pick reroutes it to a burn

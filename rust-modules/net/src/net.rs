@@ -412,9 +412,20 @@ fn user_agent_c() -> Result<Option<CString>, std::ffi::NulError> {
 }
 
 /// One-time process init (call on the main thread at boot before any request; curl's implicit
-/// init isn't thread-safe). Idempotent on the curl side. Returns false if libcurl could not be
-/// bound at all, in which case nothing else in this module may be called.
+/// init isn't thread-safe). Returns false if libcurl could not be bound at all, in which case
+/// nothing else in this module may be called.
+///
+/// **Idempotent in this process, not only on the curl side:** the body runs once behind a
+/// `OnceLock` and later calls (and callers racing the first) get its answer. `curl_version()`
+/// returns a pointer into a buffer libcurl REWRITES on every call, and the body reads it through
+/// `CStr::from_ptr`; two host-test rigs each calling this concurrently read a half-written string
+/// (`c_str.rs` UB panic). Production calls it once at boot, so nothing there changes.
 pub fn global_init() -> bool {
+    static INIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *INIT.get_or_init(global_init_once)
+}
+
+fn global_init_once() -> bool {
     match curl::load(None) {
         plx_base::dynlib::Loaded::Ok(soname) => {
             unsafe { curl_global_init(CURL_GLOBAL_ALL) };
@@ -734,6 +745,7 @@ fn allowed_redirect_protocols(url: &[u8]) -> c_long {
 /// authorised it. A reusable handle (or a share/multi) would buy connection reuse and cost a
 /// design: this app makes tens of control-plane requests per session, not thousands.
 #[allow(clippy::too_many_arguments)]
+#[track_caller]
 pub fn request(
     url: &str,
     headers: &[String],
@@ -750,6 +762,7 @@ pub fn request(
 /// Typed twin used by a caller which must keep curl's timeout distinct from every other transport
 /// failure. Ordinary clients retain [`request`]'s compatibility `Option`.
 #[allow(clippy::too_many_arguments)]
+#[track_caller]
 pub fn request_result(
     url: &str,
     headers: &[String],
@@ -771,6 +784,7 @@ pub fn request_result(
 /// teaches the app the server's public key, and nothing else does (it makes libcurl decode the
 /// whole chain).
 #[allow(clippy::too_many_arguments)]
+#[track_caller]
 pub fn request_result_evidence(
     url: &str,
     headers: &[String],
@@ -1440,6 +1454,7 @@ enum TlsCfg {
 /// list, the verb shapes, the bounded sink, the `CURLcode` naming, the fallback serialisation — is
 /// identical, and a copy of this function would be a second place for all of it to drift.
 #[allow(clippy::too_many_arguments)]
+#[track_caller]
 pub fn request_tls(
     url: &str,
     headers: &[String],
@@ -1458,6 +1473,7 @@ pub fn request_tls(
 /// answer. Every request whose origin carries a [`origin::ResolvePin`] passes one; plex.tv
 /// calls pass `None`, and that is the difference the `nowan` trigger grades (see [`refuse_name`]).
 #[allow(clippy::too_many_arguments)]
+#[track_caller]
 fn request_tls_result(
     url: &str,
     headers: &[String],
@@ -1475,6 +1491,7 @@ fn request_tls_result(
 
 /// Opt-in detailed twin; compatibility callers project only the original cause above.
 #[allow(clippy::too_many_arguments)]
+#[track_caller]
 pub fn request_evidence(
     url: &str, headers: &[String], verb: &str, body: Option<&[u8]>, t: Timeouts,
     follow_redirects: bool, max_body: Option<usize>, resolve: Option<&str>,
@@ -1483,6 +1500,7 @@ pub fn request_evidence(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[track_caller]
 fn request_tls_evidence(
     url: &str, headers: &[String], verb: &str, body: Option<&[u8]>, t: Timeouts,
     follow_redirects: bool, max_body: Option<usize>, tls: Tls<'_>, resolve: Option<&str>,
@@ -4263,6 +4281,30 @@ mod blocking_guard_tests {
     fn a_plex_tv_call_inside_a_frame_is_rejected() {
         let _frame = plx_base::task::FrameScope::enter();
         let _ = request_evidence("https://plex.tv.invalid/api/v2/ping", &[], "GET", None, API, false, None, None);
+    }
+
+    /// The guard reports the caller's own site (`#[track_caller]` from every public request
+    /// function to the funnel), so the per-(label, site) dedupe separates callers instead of
+    /// keeping only the first block in the process.
+    #[test]
+    fn the_curl_guard_reports_each_callers_own_site() {
+        fn refused(call: impl FnOnce() + std::panic::UnwindSafe) -> String {
+            let _frame = plx_base::task::FrameScope::enter();
+            let payload = std::panic::catch_unwind(call).expect_err("a frame-thread request is refused");
+            payload.downcast_ref::<String>().cloned().expect("a formatted panic")
+        }
+        let first_line = line!() + 2;
+        let first = refused(|| {
+            let _ = request_evidence("https://plex.tv.invalid/a", &[], "GET", None, API, false, None, None);
+        });
+        let second_line = line!() + 2;
+        let second = refused(|| {
+            let _ = request_result("https://plex.tv.invalid/b", &[], "GET", None, API, false, None, None);
+        });
+        assert!(first.starts_with("main-thread block: curl request at "), "{first}");
+        assert!(first.ends_with(&format!("net.rs:{first_line}")), "{first}");
+        assert!(second.ends_with(&format!("net.rs:{second_line}")), "{second}");
+        assert_ne!(first, second);
     }
 }
 

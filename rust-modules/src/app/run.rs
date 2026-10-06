@@ -801,6 +801,18 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // left Abandoning, and a preview session is never parked for the foreground reload —
         // that reload would bring the trailer back as ordinary playback.
         super::content::halt_preview_now(&mut app.player.session, &mut app.adapters.player);
+        // A second background while the foreground restore waits on its flight (the resume's rebuild,
+        // an Original rollback): drop the flight — its landing is discarded and only the replacement
+        // it registered is stopped — and park the session back where the first suspend left it.
+        // The suspend below would otherwise be refused (`awaiting_load`) and the flight would run
+        // on, landing a Load on a backgrounded window.
+        if super::lifecycle::park_pending_foreground_flight(
+            &mut app.player.lifecycle,
+            &mut app.player.session,
+            &mut app.adapters.player,
+        ) {
+            plx_machine::idle::invalidate();
+        }
         // Playback owns its resolve and Engine before the queued Player page mounts. Page
         // presence only governs the screen-local cleanup below, never resource suspension.
         if !plx_media::route::preview_request(&app.player.session)
@@ -873,18 +885,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
                 },
             );
             if matches!(activation, ForegroundActivation::Launched) {
-                // The park kept the page, so this is ordinarily a no-op; it is written out
-                // because a foreground that finds the player gone has to put it back rather
-                // than resume a session with nothing on screen.
-                super::bridge::show_page(&mut app.pages, AppArg::Player);
-                // A live page pins its own transport from the instant it mounts
-                // (`AppMounter::player_hud_ms`); a live one is re-pinned here, which is the
-                // foreground half of `start_playback`'s two paths.
-                app.bridge.seed_player_hud(HUD_LINGER_MS);
-                if let Some(player) = super::bridge::player_mut(&mut app.pages) {
-                    player.hud.extend(clock::now(), HUD_LINGER_MS);
-                    player.publish();
-                }
+                finish_foreground_launch(app);
             }
         }
     } else if et == SDL_KEYDOWN || et == SDL_KEYUP {
@@ -1414,6 +1415,23 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     }
 }
 
+/// A foreground Load launched — straight from the DID edge, or from the frame that landed a flight
+/// the restore was waiting on (`poll_foreground_flight`): mount the player and pin its transport.
+fn finish_foreground_launch(app: &mut App) {
+    // The park kept the page, so this is ordinarily a no-op; it is written out
+    // because a foreground that finds the player gone has to put it back rather
+    // than resume a session with nothing on screen.
+    super::bridge::show_page(&mut app.pages, AppArg::Player);
+    // A live page pins its own transport from the instant it mounts
+    // (`AppMounter::player_hud_ms`); a live one is re-pinned here, which is the
+    // foreground half of `start_playback`'s two paths.
+    app.bridge.seed_player_hud(HUD_LINGER_MS);
+    if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+        player.hud.extend(clock::now(), HUD_LINGER_MS);
+        player.publish();
+    }
+}
+
 /// Permission to advance playback is independent of the retained page stack. WILL foreground
 /// does not reopen WindowActivity; a parked session must first claim its foreground Load.
 fn playback_may_run(app: &App) -> bool {
@@ -1452,6 +1470,31 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             app.present.note(plx_machine::present::PresentEvent::VideoPlane(bound));
             app.pages.present.note(plx_machine::present::PresentEvent::VideoPlane(bound));
             app.bridge.publish_video_plane(bound);
+        }
+        // A late landing of a flight nobody waits on any more (a Back, a suspend, a newer request
+        // ended it while its worker ran) is reaped here, every frame: a flight with no Engine has no
+        // pump to do it, and the landing's replacement encoder runs on the server until it is.
+        plx_media::route::discard_stale_flight_landing();
+        if app.window_activity.allow_present(true) && app.player.lifecycle.flight_pending() {
+            // The foreground restore waits on a flight (its resume's rebuild or an Original
+            // rollback): the lifecycle machine drains it, not the pump (there is no Engine) and not
+            // the cold-resume drain (`playback_may_run` is false while the restore is parked).
+            let activation = poll_foreground_flight(
+                &mut app.player.lifecycle,
+                &mut app.player.session,
+                &mut PlayerForegroundActuator {
+                    pa: &mut app.adapters.player,
+                    repause_at: &mut app.repause_at,
+                },
+            );
+            plx_machine::idle::invalidate();
+            if matches!(activation, ForegroundActivation::Launched) {
+                finish_foreground_launch(app);
+            }
+        } else if playback_may_run(app) {
+            // An Original rollback no foreground machine owns (`start_original_trial_reload`'s
+            // Load failed before an Engine existed): its landing reloads onto the restored HLS.
+            plx_media::player::drain_engineless_rollback(&mut app.player.session, &mut app.adapters.player);
         }
         if playback_may_run(app) {
             let _ = poll_foreground_load(
@@ -2113,6 +2156,12 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                 if !playback_may_run(app) {
                     return;
                 }
+                // A cold resume's rebuild landed (`player::land_resume`): the Load the pending play
+                // was holding for starts now.
+                if let Some(outcome) = plx_media::player::land_resume(&mut app.player.session) {
+                    plx_machine::idle::invalidate();
+                    finish_landed_play(app, matches!(outcome, plx_media::player::ResumeOutcome::Prepared));
+                }
                 if let Some(r) = plx_media::route::pump_play(&mut app.player.session, app.bridge.metadata_mut()) {
                     plx_machine::idle::invalidate();
                     // A preview landing nobody is waiting for any more (the page halted it while
@@ -2128,54 +2177,19 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                         plx_media::route::clear_preview(&mut app.player.session);
                         return;
                     }
-                    let resume_prepared = r <= 0
-                        || matches!(
-                            plx_media::player::resume_at(&mut app.player.session, r),
-                            plx_media::player::ResumeOutcome::Prepared
-                        );
-                    if !resume_prepared {
-                        if let Some(transaction) = plx_media::route::pending_route_start() {
-                            let _ = plx_media::route::reject_route_start_preparation(transaction);
-                        }
-                    }
-                    // A live engine with the route anywhere but Player is unrecoverable BY THE USER —
-                    // every transport key and the EOS teardown are route-gated — so repair the
-                    // invariant here rather than trust that no path can violate it. The one that
-                    // could is cancelled above; this is the backstop, and it is the cheaper half.
-                    // A preview is the exception: the detail page stays mounted, and an off-route
-                    // engine is the feature, not a violation.
-                    if resume_prepared {
-                        let started = plx_media::player::start_bufferfeed(
-                            &mut app.player.session,
-                            &mut app.adapters.player,
-                        );
-                        let preview = plx_media::route::is_preview(&app.player.session);
-                        if started && !matches!(app.route(), AppArg::Player) && !preview {
-                            log("pump_play: engine started off-route → restoring AppArg::Player");
-                            // The page is being taken off screen by a LANDING, not by a navigation. It
-                            // carried a `forward_leave(app.route())` teardown here until phase 12; every
-                            // arm of that table was `None` and the pages it named are owned screens that
-                            // drop what they loaded on the container's own `Unmount` — including
-                            // Search's keyboard (`SearchScreen::step`), which is the case this line was
-                            // written for.
-                            super::bridge::show_page(&mut app.pages, AppArg::Player);
-                        }
-                        if preview {
-                            // A host Load of 0 with the clock sink off is "no video path", not an
-                            // admitted slot. Counting it spends the cycle and the later failure
-                            // opens the breaker, so every later title is skipped.
-                            let seam_absent = cfg!(feature = "hostsim") && !plx_base::devtrig::flag("clocksink");
-                            if started && !seam_absent {
-                                plx_media::player::preview::note_admitted();
-                            } else if plx_media::route::url(&app.player.session).is_empty() {
-                                plx_media::player::preview::note_refused_direct(
-                                    plx_media::route::cur_sid(&app.player.session),
-                                    &plx_media::route::cur_rk(&app.player.session),
-                                );
-                            } else {
-                                plx_media::player::preview::note_admission_refused();
-                            }
-                        }
+                    // A transcode with a saved position rebuilds at that offset on a worker (`begin_resume`):
+                    // the play stays pending, the spinner stays up, and the drain at the top of this landing
+                    // starts the Load when the flight lands.
+                    match if r <= 0 {
+                        plx_media::player::ResumeStart::Settled(plx_media::player::ResumeOutcome::Prepared)
+                    } else {
+                        plx_media::player::begin_resume(&mut app.player.session, r)
+                    } {
+                        plx_media::player::ResumeStart::Pending => {}
+                        plx_media::player::ResumeStart::Settled(outcome) => finish_landed_play(
+                            app,
+                            matches!(outcome, plx_media::player::ResumeOutcome::Prepared),
+                        ),
                     }
                 }
             },
@@ -2232,6 +2246,56 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // mounts. It raises the Metadata store's notice, since a landing that grows
         // the actions row must be drawn without waiting for a keypress.
         app.bridge.metadata_pump_alt_sources();
+}
+
+/// What a landed play does once its resume is settled: the Load, and the off-route backstop. Reached
+/// from the frame that lands a plan whose resume settled on the spot, and from the frame that lands
+/// a cold resume's flight (`player::land_resume`) — the same step, taken after the rebuild landed.
+fn finish_landed_play(app: &mut App, resume_prepared: bool) {
+    if !resume_prepared {
+        if let Some(transaction) = plx_media::route::pending_route_start() {
+            let _ = plx_media::route::reject_route_start_preparation(transaction);
+        }
+    }
+    // A live engine with the route anywhere but Player is unrecoverable BY THE USER —
+    // every transport key and the EOS teardown are route-gated — so repair the
+    // invariant here rather than trust that no path can violate it. The one that
+    // could is cancelled above; this is the backstop, and it is the cheaper half.
+    // A preview is the exception: the detail page stays mounted, and an off-route
+    // engine is the feature, not a violation.
+    if resume_prepared {
+        let started = plx_media::player::start_bufferfeed(
+            &mut app.player.session,
+            &mut app.adapters.player,
+        );
+        let preview = plx_media::route::is_preview(&app.player.session);
+        if started && !matches!(app.route(), AppArg::Player) && !preview {
+            log("pump_play: engine started off-route → restoring AppArg::Player");
+            // The page is being taken off screen by a LANDING, not by a navigation. It
+            // carried a `forward_leave(app.route())` teardown here until phase 12; every
+            // arm of that table was `None` and the pages it named are owned screens that
+            // drop what they loaded on the container's own `Unmount` — including
+            // Search's keyboard (`SearchScreen::step`), which is the case this line was
+            // written for.
+            super::bridge::show_page(&mut app.pages, AppArg::Player);
+        }
+        if preview {
+            // A host Load of 0 with the clock sink off is "no video path", not an
+            // admitted slot. Counting it spends the cycle and the later failure
+            // opens the breaker, so every later title is skipped.
+            let seam_absent = cfg!(feature = "hostsim") && !plx_base::devtrig::flag("clocksink");
+            if started && !seam_absent {
+                plx_media::player::preview::note_admitted();
+            } else if plx_media::route::url(&app.player.session).is_empty() {
+                plx_media::player::preview::note_refused_direct(
+                    plx_media::route::cur_sid(&app.player.session),
+                    &plx_media::route::cur_rk(&app.player.session),
+                );
+            } else {
+                plx_media::player::preview::note_admission_refused();
+            }
+        }
+    }
 }
 
 /// The draw phase, entered only on a presenting frame: `clear_opaque_region` at entry, the

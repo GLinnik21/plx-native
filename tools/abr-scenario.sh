@@ -104,10 +104,13 @@ printf '%s' "$TOKEN" > "$DIR/plxnative-token"
 : > "$DIR/plxnative-detailplay"  # press Play once the detail page has landed
 printf '%s' "$RK" > "$DIR/plxnative-detail"
 # A seek is not a link condition, but it is the other half of the state space this tool exists to
-# reach: `transcode_seek` REUSES the encoder session id, so the transactions either side of a seek
-# are the only ones whose names can collide. `AUTOSEEK` takes the trigger's own grammar verbatim
-# (`gap=<ms>` then comma-separated absolute/relative steps) and the first step fires ~12 s after
-# the player route is entered, so `gap=` is how you put a seek AFTER a commit rather than before.
+# reach: a seek on a transcode is a Rebase flight (`dispatch_transcode_seek`) that registers a FRESH
+# encoder session (`<session>-abr-<N>`, a process-wide counter, so a name never repeats) and makes
+# it the active encoder, so an ABR transaction in flight across the seek is refused as stale
+# (`PrimeRefusal::Session`) rather than landing on the encoder it left. `AUTOSEEK` takes the
+# trigger's own grammar verbatim (`gap=<ms>` then comma-separated absolute/relative steps) and the
+# first step fires ~12 s after the player route is entered, so `gap=` is how you put a seek AFTER a
+# commit rather than before.
 [ -n "${AUTOSEEK:-}" ] && printf '%s' "$AUTOSEEK" > "$DIR/plxnative-autoseek"
 
 # **A bare `wait` here HANGS the whole matrix**, and it did: the simulator is an SDL application
