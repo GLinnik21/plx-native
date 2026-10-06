@@ -3006,7 +3006,8 @@ pub(super) fn video_direct_plays(
 
 /// The detail page's "how this plays" answer, BEFORE anything is played — the same FOUR gates
 /// `build_stream` will apply (codec+resolution via [`video_direct_plays`], container via
-/// [`part_is_streamable`], one direct-playable audio track, and the user's quality ceiling via
+/// [`part_is_streamable`], whether the planner's intended audio track needs converting
+/// ([`audio_intent_needs_conversion`]), and the user's quality ceiling via
 /// [`quality_policy`] — applied last and able only to downgrade), asked of the loaded `Detail`.
 /// The ceiling is the one a reader debugging "why does this ordinary h264/AC-3 MKV say Converts"
 /// will not think of, which is why it is named in the list rather than left to the code.
@@ -3015,7 +3016,7 @@ pub(super) fn video_direct_plays(
 /// It exists for `Details Screen.dc.html`'s facts row and must stay a READ-ONLY preview —
 /// nothing in the playback path may branch on it (the path re-derives for itself).
 ///
-/// **THREE answers, not two, and the third is the one a two-valued preview got wrong.** "The
+/// **Four answers, and the split between a remux and a re-encode is the one a two-valued preview got wrong.** "The
 /// server has to do something" and "the server has to re-encode the picture" are different facts
 /// (`is_remux`'s doc says so for the LIVE session; this is the same distinction before Play), and
 /// the UI hangs a Plex Pass claim on the difference: hardware conversion and HDR tone mapping are
@@ -3027,7 +3028,7 @@ pub enum Preview {
     DirectPlay,
     /// Container-only REMUX — Plex's own "Direct Stream". The video (and usually the audio) is
     /// COPIED into progressive MKV because the container is not one the demuxer streams, or
-    /// because no audio track direct-plays; the pixels arrive untouched, 4K and HDR10 intact.
+    /// because the item lists no audio track at all; the pixels arrive untouched, 4K and HDR10 intact.
     /// `build_stream` spells this exact case `plan.contract.remux = video_dp` on the transcode
     /// branch.
     Remux,
@@ -3061,7 +3062,7 @@ pub(super) fn audio_intent_needs_conversion(tracks: &[plx_data::metadata::Stream
         .is_none()
 }
 
-/// [`playback_preview`]'s pure core — the three-way answer from the fields it actually needs, so
+/// [`playback_preview`]'s pure core — the four-way answer from the fields it actually needs, so
 /// a caller holding an EPISODE's file and a show's stream list can ask the same question.
 pub fn playback_preview_of(
     part: &str,
