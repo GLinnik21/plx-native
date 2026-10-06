@@ -40,8 +40,10 @@ because the overlay's state shape changed on purpose.
 
 ## Availability and locks
 
-- Style follows Timing's availability: omitted during an ordinary server-side burn (there is no
-  client caption to style), dim with the existing locked note only for the app's OWN burn.
+- Style follows Timing's availability: omitted while a transcode has no subtitle on (nothing to
+  style); once the server draws the selected subtitle (`route::subtitle_presenter` = `ServerBurn`) both
+  stay, dim and inert, with a reason under Style: "Drawn by your server while it converts the audio."
+  (a remux or the app's own burn) or "Drawn by your server at this quality." (any other burn).
 - Per active renderer: image -> Size and Position dim and inert ("Image subtitles keep their own
   size and position."); native ASS/SSA -> the same ("Styled subtitles keep ..."); Color stays live in
   both, since the subtitle ink tints bitmaps and ASS.
@@ -140,8 +142,8 @@ re-recorded.
 
 A live poll rebuilds the current page when any of these change: the subs fingerprint (count, stream
 ids, offered sidecars), the active index, the renderer kind (text / image / ASS), transcoding, or the
-own-burn / enhancement route and subtitle effect (what the Style rows' lock and Timing's omission read).
-On the root the change refreshes in place. On a sub-page the page is refreshed in place too (focus kept by id) and pops to the root by id only when its availability no longer holds: the renderer kind changed, or Style's availability did (the own burn, or a server burn that omits it), or a page's own listing is gone (`TrackMenuState::pages_hold`: an Other languages page with no language left, a language page whose language, by stream id, is no longer in `other`).
+presenter (`route::subtitle_presenter`) / enhancement route and subtitle effect (what the Style rows' lock and Timing's omission read).
+On the root the change refreshes in place. On a sub-page the page is refreshed in place too (focus kept by id) and pops to the root by id only when its availability no longer holds: the renderer kind changed, or Style's availability did (the server drawing the subtitle, or a transcode with no subtitle that omits it), or a page's own listing is gone (`TrackMenuState::pages_hold`: an Other languages page with no language left, a language page whose language, by stream id, is no longer in `other`).
 
 ## PR sequence
 

@@ -659,9 +659,13 @@
     "value": "Your Plex server couldn't turn this on for this video.",
     "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows after this playback's server already refused or ignored the params once."
   },
-  "widgets.tracks.style_locked_note": {
-    "value": "Can't be changed while Boost dialog or Normalize loudness is on.",
-    "description": "Issue #266/M7 follow-up. One-line note under the DIMMED Timing and Style rows on the Subtitles tab while the live route is actually burning the subtitle into the picture (an embedded subtitle plus the audio enhancement): the text is already in the video, so neither control can reach it. No jargon: never say burn/remux/transcode."
+  "widgets.tracks.sub_burn_audio": {
+    "value": "Drawn by your server while it converts the audio.",
+    "description": "Subtitles tab of the player's track selector. One-line reason under the DIMMED Timing and Style rows while the subtitle on screen is drawn into the picture by the server because it is converting the audio (a remux, or the audio enhancement's own burn): the text is already in the video, so neither control can reach it. No jargon: never say burn/remux/transcode."
+  },
+  "widgets.tracks.sub_burn_quality": {
+    "value": "Drawn by your server at this quality.",
+    "description": "Subtitles tab of the player's track selector. One-line reason under the DIMMED Timing and Style rows while the subtitle on screen is drawn into the picture by the server for any reason other than converting the audio (a quality-limited re-encode, a picture subtitle that must be burned): the text is already in the video, so neither control can reach it. No jargon: never say burn/remux/transcode."
   },
   "widgets.tracks.style": {
     "value": "Style",

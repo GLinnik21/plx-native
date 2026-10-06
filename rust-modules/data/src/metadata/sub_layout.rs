@@ -279,9 +279,10 @@ fn sub_tracks(
 ///
 /// `subs` is the playing item's FULL subtitle list; `offered` is the subset this route offers
 /// (sidecars only where they can be drawn or burned); `names` is the demuxer's own tag list;
-/// `yours` is "your languages" in PREFERENCE order; `show_timing` is `!is_transcoding` (a
-/// transcode burns captions server-side, so no client offset or style can reach them: Timing and
-/// Style are both omitted).
+/// `yours` is "your languages" in PREFERENCE order; `show_timing` is `!is_transcoding` unless
+/// the server draws the selected subtitle (a transcode with no subtitle on has nothing to offset
+/// or style, so Timing and Style are omitted; once the server burns one they stay, and the menu
+/// draws them dim with the reason).
 pub fn sub_sections(
     subs: &[Stream],
     offered: &[usize],

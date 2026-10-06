@@ -8779,6 +8779,46 @@ pub fn live_subtitle_effect(ps: &PlaybackSession) -> SubtitleEffect {
     subtitle_effect_of(ps)
 }
 
+/// **Who draws the subtitle on screen right now** — the one route fact the Subtitles menu reads
+/// (Style and Timing apply only to a subtitle the app draws) and the one the player draws by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubtitlePresenter {
+    /// No subtitle is selected.
+    None,
+    /// The app draws it (direct play): the viewer's Style and Timing reach it.
+    Client,
+    /// The server burns it into the picture: nothing the app has can reach it.
+    ServerBurn(BurnReason),
+}
+
+/// Why the server is the one drawing the subtitle — worded for the viewer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BurnReason {
+    /// The server is converting the audio (a remux, or the Original-quality burn), and a remux
+    /// stream cannot carry a subtitle.
+    AudioConversion,
+    /// Any other burn: a quality-limited re-encode, a picture subtitle that must be burned.
+    Quality,
+}
+
+/// **The live [`SubtitlePresenter`]**, from the committed selection (`cur_sub_sid`, written for
+/// every route by `commit_subtitle_selection`) and the live route. A transcode burns whatever is
+/// selected and the client then draws nothing (`player_hud::draw_subtitles` is silenced by
+/// [`is_transcoding`] the same way); direct play draws it in the app. The reason is the
+/// audio conversion when the live family is a remux or the burn is the enhancement's own or the
+/// Original-quality one ([`enhancement_family`] reads exactly those as `Remux`), else quality.
+pub fn subtitle_presenter(ps: &PlaybackSession) -> SubtitlePresenter {
+    if ps.cur_sub_sid == 0 {
+        SubtitlePresenter::None
+    } else if !is_transcoding(ps) {
+        SubtitlePresenter::Client
+    } else if enhancement_family(ps) == RouteFamily::Remux {
+        SubtitlePresenter::ServerBurn(BurnReason::AudioConversion)
+    } else {
+        SubtitlePresenter::ServerBurn(BurnReason::Quality)
+    }
+}
+
 /// **Is the live route itself an applied Burn (M7)?** A Burn forces `remux: false` to get PMS to
 /// actually re-encode the video (burning text into pixels is not a codec copy), which is exactly
 /// the same contract shape as an ordinary `Other`-family re-encode picked for some unrelated

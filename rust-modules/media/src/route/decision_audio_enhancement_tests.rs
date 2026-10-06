@@ -3548,3 +3548,80 @@ fn a_cold_start_burn_records_the_burned_subtitle_in_the_plan() {
     cleanup(&mut ps);
     plx_plex::plex::reset_servers_for_test();
 }
+
+// ---- the subtitle presenter: who draws the subtitle on screen NOW ---------------------------
+
+/// The presenter and burn reason of a fixture route, read the way the menu reads them.
+fn presenter_of(route: EnhTestFixture) -> SubtitlePresenter {
+    let (ps, _sid) = enhancement_test_session(route);
+    let presenter = subtitle_presenter(&ps);
+    plx_plex::plex::reset_servers_for_test();
+    presenter
+}
+
+/// Direct play: whatever is on screen is drawn by the app (text, image or sidecar alike).
+#[test]
+fn presenter_on_direct_play_is_the_client() {
+    let _g = plx_base::testlock::serial();
+    for effect in [SubtitleEffect::Embedded, SubtitleEffect::Sidecar] {
+        let route = EnhTestFixture { remux: None, subtitle_effect: effect, ..Default::default() };
+        assert_eq!(presenter_of(route), SubtitlePresenter::Client, "{effect:?}");
+    }
+}
+
+/// No subtitle selected: nothing to present, on every route family.
+#[test]
+fn presenter_with_no_subtitle_is_none() {
+    let _g = plx_base::testlock::serial();
+    for remux in [None, Some(true), Some(false)] {
+        let route = EnhTestFixture { remux, subtitle_effect: SubtitleEffect::None, ..Default::default() };
+        assert_eq!(presenter_of(route), SubtitlePresenter::None, "{remux:?}");
+    }
+}
+
+/// A remux (video copied, audio converted) cannot carry a subtitle, so the server burns it, and
+/// the reason is the audio conversion. A sidecar is silenced under any transcode too.
+#[test]
+fn presenter_on_a_remux_is_the_server_converting_audio() {
+    let _g = plx_base::testlock::serial();
+    for effect in [SubtitleEffect::Embedded, SubtitleEffect::Sidecar] {
+        let route = EnhTestFixture { remux: Some(true), subtitle_effect: effect, ..Default::default() };
+        assert_eq!(presenter_of(route), SubtitlePresenter::ServerBurn(BurnReason::AudioConversion), "{effect:?}");
+    }
+}
+
+/// The enhancement's own Burn converts the audio as well.
+#[test]
+fn presenter_on_the_enhancements_own_burn_is_the_server_converting_audio() {
+    let _g = plx_base::testlock::serial();
+    let route = EnhTestFixture {
+        subtitle_effect: SubtitleEffect::Embedded,
+        applied: PREF,
+        applied_burn: true,
+        ..Default::default()
+    };
+    assert_eq!(presenter_of(route), SubtitlePresenter::ServerBurn(BurnReason::AudioConversion));
+}
+
+/// An Original-quality burn with no enhancement (the standing Original candidate, uncapped,
+/// video copyable) is the same conversion; a capped re-encode (no Original candidate) is quality.
+#[test]
+fn presenter_on_other_burns_names_quality_unless_it_is_the_original_burn() {
+    let _g = plx_base::testlock::serial();
+    restore_quality(Quality::Auto);
+    let original = EnhTestFixture {
+        remux: Some(false),
+        base_present: true,
+        subtitle_effect: SubtitleEffect::Embedded,
+        ..Default::default()
+    };
+    assert_eq!(presenter_of(original), SubtitlePresenter::ServerBurn(BurnReason::AudioConversion));
+    let capped = EnhTestFixture {
+        remux: Some(false),
+        base_present: false,
+        subtitle_effect: SubtitleEffect::Embedded,
+        ..Default::default()
+    };
+    assert_eq!(presenter_of(capped), SubtitlePresenter::ServerBurn(BurnReason::Quality));
+    restore_quality(Quality::Auto);
+}

@@ -34,10 +34,11 @@
 //! `appkit::timing_capsule`) in its place. The row is dim and inert while subtitles are Off (OK there
 //! neither opens the capsule nor closes the panel), and Timing together with Style is omitted
 //! during an ordinary transcode, which burns captions into the picture where no client-side offset
-//! or style can reach. When the live route is instead this app's OWN Plex Pass audio-enhancement
-//! Burn (M7), both stay visible — dim, with a one-line reason (`Row::note`) — so the viewer who
-//! turned Boost dialog / Normalize loudness on sees why the control is locked rather than finding
-//! it simply gone.
+//! or style can reach. That omission now holds only while no subtitle is on: once the server draws
+//! the selected subtitle ([`plx_media::route::subtitle_presenter`] says `ServerBurn`: a remux that
+//! cannot carry it, this app's own audio-enhancement burn, a quality-limited re-encode), both rows
+//! stay visible — dim, inert, with a one-line reason (`Row::note`) saying why the server is
+//! drawing it — rather than being found simply gone.
 //!
 //! **Style is a drill-in, and the Subtitles tab is a page stack** (`docs/player-submenus.md`). The
 //! Style row is a [`RowKind::Nav`] onto [`TrackPage::Style`], whose Size, Position and Color rows
@@ -58,7 +59,7 @@
 //! persist-only write second); Color by `player::set_subtitle_tone`.
 //!
 //! **A sub-page never outlives the root it was built on.** The root's [`SubSig`] — subs
-//! fingerprint, active index, renderer kind, transcoding, own-burn and enhancement route — is
+//! fingerprint, active index, renderer kind, transcoding, presenter and enhancement route — is
 //! stored when the root is built and compared on every live poll; a mismatch refreshes the root in
 //! place, and a sub-page in place too — it pops straight to the root only when its availability no
 //! longer holds (the renderer, or whether Style is shown / locked). The replay canon
@@ -365,18 +366,27 @@ struct SubSig {
     active: c_int,
     renderer: SubRenderer,
     transcoding: bool,
-    own_burn: bool,
+    /// who draws the subtitle: what Timing and Style are gated and explained by
+    presenter: plx_media::route::SubtitlePresenter,
     enhancement: Option<plx_media::route::EnhancementRoute>,
     effect: plx_media::route::SubtitleEffect,
 }
 
 impl SubSig {
     /// What a pushed Style page's availability was built from: the renderer (Size / Position reach
-    /// only text), whether the app's own burn locks Style, and whether an ordinary server burn
-    /// omits it (`transcoding && !own_burn`, the gate [`TrackMenuState::layout`] shows Style by).
-    /// A page is popped when this changes and refreshed in place otherwise.
+    /// only text), whether the server draws the subtitle (Style is shown but locked), and whether
+    /// a transcode with no subtitle on omits it (the gate [`TrackMenuState::layout`] shows Style
+    /// by). A page is popped when this changes and refreshed in place otherwise.
     fn page_availability(&self) -> (SubRenderer, bool, bool) {
-        (self.renderer, self.own_burn, self.transcoding && !self.own_burn)
+        (self.renderer, self.server_burn().is_some(), self.transcoding && self.server_burn().is_none())
+    }
+
+    /// Why the server draws the subtitle, when it does.
+    fn server_burn(&self) -> Option<plx_media::route::BurnReason> {
+        match self.presenter {
+            plx_media::route::SubtitlePresenter::ServerBurn(why) => Some(why),
+            _ => None,
+        }
     }
 }
 
@@ -644,10 +654,10 @@ impl TrackMenuState {
         self.pages.iter().map(|s| s.page).collect()
     }
 
-    /// Was the Subtitles root last built under the app's own live burn (what locks Timing and Style)?
+    /// Was the Subtitles root last built with the server drawing the subtitle (what locks Timing and Style)?
     #[cfg(any(test, feature = "test-support"))]
-    pub fn own_burn_built(&self) -> bool {
-        self.sub_sig.as_ref().is_some_and(|sig| sig.own_burn)
+    pub fn server_burn_built(&self) -> bool {
+        self.sub_sig.as_ref().is_some_and(|sig| sig.server_burn().is_some())
     }
 
     /// The highlighted row's id (`None` on a note or an empty list).
@@ -863,7 +873,7 @@ impl TrackMenuState {
             active,
             renderer,
             transcoding: plx_media::route::is_transcoding(ps),
-            own_burn: plx_media::route::live_is_own_burn(ps),
+            presenter: plx_media::route::subtitle_presenter(ps),
             enhancement,
             effect,
         }
@@ -1693,10 +1703,13 @@ impl TrackMenuState {
     /// The Subtitles root's form and the model it was built from, storing nothing: [`Self::layout`]
     /// keeps what it needs from the model, [`Self::warm_other_tab`] only draws the form.
     fn sub_root_form(&self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (TrackForm, SubModel) {
-        let locked = plx_media::route::live_is_own_burn(ps);
-        let show_timing = !plx_media::route::is_transcoding(ps) || locked;
+        let burn = match plx_media::route::subtitle_presenter(ps) {
+            plx_media::route::SubtitlePresenter::ServerBurn(why) => Some(why),
+            _ => None,
+        };
+        let show_timing = !plx_media::route::is_transcoding(ps) || burn.is_some();
         let model = self.sub_model(ps, meta, show_timing);
-        let mut form = table_form(&model, self.active_sub, self.offset_ms, locked);
+        let mut form = table_form(&model, self.active_sub, self.offset_ms, burn);
         if self.search.is_some() {
             // offered on direct play AND during a transcode: a downloaded sidecar is drawn by the
             // client on one and burned by the server on the other, so it reaches the picture either way
@@ -2217,13 +2230,18 @@ fn in_lang_label(t: &SubTrack) -> String {
 /// [`TrackPage::OtherLanguages`] (the latter reads out the language count, or — when the active
 /// track lives behind it — a check and that track's language).
 ///
-/// `locked` (M7 follow-up): while the live route is actually burning a subtitle into the picture,
-/// Timing and Style do nothing — the text is already in the pixels — so they are DISABLED (dim,
+/// `burn` (M7 follow-up, widened): while the server draws the subtitle into the picture
+/// ([`plx_media::route::subtitle_presenter`] is `ServerBurn`, with that reason), Timing and Style do nothing — the text is already in the pixels — so they are DISABLED (dim,
 /// focusable so the viewer can read why, inert under OK and RIGHT at the form layer) and one
-/// non-selectable [`FormSection::note`] naming why follows Style, the same "visible, dim, plain
+/// non-selectable [`FormSection::note`] naming why (by the burn's reason) follows Style, the same "visible, dim, plain
 /// reason" idiom the Audio tab's own Boost dialog / Normalize loudness rows use when THEY are
 /// disabled.
-fn table_form(model: &SubModel, active_sub: c_int, offset_ms: i64, locked: bool) -> TrackForm {
+fn table_form(
+    model: &SubModel,
+    active_sub: c_int,
+    offset_ms: i64,
+    burn: Option<plx_media::route::BurnReason>,
+) -> TrackForm {
     use plx_platform::i18n::msg;
     let active_other =
         model.other.iter().find(|o| o.tracks.iter().any(|t| active_sub >= 0 && t.i == active_sub as usize));
@@ -2266,15 +2284,17 @@ fn table_form(model: &SubModel, active_sub: c_int, offset_ms: i64, locked: bool)
                         (),
                         Row::new(msg::widgets_tracks_timing()).value(format_offset(offset_ms)).dim(active_sub < 0),
                     )
-                    .disabled(locked),
+                    .disabled(burn.is_some()),
                 SubRow::Style => {
                     let out = out
                         .item(id, RowKind::Nav(TrackPage::Style), (), Row::new(msg::widgets_tracks_style()))
-                        .disabled(locked);
-                    if locked {
-                        out.note(msg::widgets_tracks_style_locked_note())
-                    } else {
-                        out
+                        .disabled(burn.is_some());
+                    match burn {
+                        Some(plx_media::route::BurnReason::AudioConversion) => {
+                            out.note(msg::widgets_tracks_sub_burn_audio())
+                        }
+                        Some(plx_media::route::BurnReason::Quality) => out.note(msg::widgets_tracks_sub_burn_quality()),
+                        None => out,
                     }
                 }
             }
@@ -2323,7 +2343,7 @@ mod tests {
         let yours: Vec<String> = yours.iter().map(|y| y.to_string()).collect();
         let model = sub_layout::sub_sections(subs, offered, names, &yours, show_timing);
         let mut built = FormTable::new(plx_ui::table_screen::BAND_BASE);
-        built.set(table_form(&model, active_sub, offset_ms, false), None);
+        built.set(table_form(&model, active_sub, offset_ms, None), None);
         let ids = (0..built.table.n_rows() as usize).map(|i| built.id_at(i).copied()).collect();
         (std::mem::take(&mut built.table.sections), ids)
     }
@@ -3771,7 +3791,8 @@ mod enhancement_menu_tests {
                 ("enh_reason_dv_subtitle", plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_subtitle()),
                 ("enh_reason_quality", plx_platform::i18n::msg::widgets_tracks_enh_reason_quality()),
                 ("enh_reason_refused", plx_platform::i18n::msg::widgets_tracks_enh_reason_refused()),
-                ("style_locked_note", plx_platform::i18n::msg::widgets_tracks_style_locked_note()),
+                ("sub_burn_audio", plx_platform::i18n::msg::widgets_tracks_sub_burn_audio()),
+                ("sub_burn_quality", plx_platform::i18n::msg::widgets_tracks_sub_burn_quality()),
             ] {
                 let lower = value.to_lowercase();
                 for word in BANNED {
@@ -3843,7 +3864,7 @@ mod enhancement_menu_tests {
             applied_burn: true,
             ..Default::default()
         });
-        assert!(menu.own_burn_built(), "the live route is burning this subtitle in");
+        assert!(menu.server_burn_built(), "the live route is burning this subtitle in");
 
         let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
         let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
@@ -3853,7 +3874,7 @@ mod enhancement_menu_tests {
 
         let note_i = style_i + 1;
         assert_eq!(menu.form.id_at(note_i), None, "a note is an inert slot with no id");
-        assert_eq!(rows[note_i].label, plx_platform::i18n::msg::widgets_tracks_style_locked_note());
+        assert_eq!(rows[note_i].label, plx_platform::i18n::msg::widgets_tracks_sub_burn_audio());
         assert!(rows[note_i].sep, "a note row is non-selectable");
 
         // The track rows themselves stay live: Off, and the embedded subtitle, neither dim.
@@ -3878,10 +3899,65 @@ mod enhancement_menu_tests {
             subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
             ..Default::default()
         });
-        assert!(!menu.own_burn_built());
+        assert!(!menu.server_burn_built());
         let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
         assert!(!flat_rows(&menu)[timing_i].dim);
         assert!(!menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).any(|r| r.is_note()));
+        teardown(&ps);
+    }
+
+    /// **The owner's report**: a remux (the server converts the audio) cannot carry a subtitle, so
+    /// picking one makes the server burn it — and Style and Timing used to VANISH. They stay, dim
+    /// and inert, with the reason under them; a quality-limited re-encode says its own reason.
+    #[test]
+    fn subtitles_tab_keeps_style_and_timing_dim_with_the_reason_when_the_server_burns() {
+        let _g = plx_base::testlock::serial();
+        for (route, reason) in [
+            (
+                EnhTestFixture { remux: Some(true), subtitle_effect: plx_media::route::SubtitleEffect::Embedded, ..Default::default() },
+                plx_platform::i18n::msg::widgets_tracks_sub_burn_audio(),
+            ),
+            (
+                EnhTestFixture {
+                    remux: Some(false),
+                    base_present: false,
+                    subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+                    ..Default::default()
+                },
+                plx_platform::i18n::msg::widgets_tracks_sub_burn_quality(),
+            ),
+        ] {
+            let (mut menu, ps) = subtitles_tab(route);
+            let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing stays in the menu");
+            let style_i = menu.form.index_of(&TrackRow::Style).expect("Style stays in the menu");
+            let rows = flat_rows(&menu);
+            assert!(rows[timing_i].dim && rows[style_i].dim, "both dim");
+            assert_eq!(menu.form.id_at(style_i + 1), None, "the reason is an inert slot");
+            assert_eq!(rows[style_i + 1].label, reason);
+            let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
+            menu.focus_row(timing_i as c_int);
+            assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
+            menu.focus_row(style_i as c_int);
+            assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
+            assert!(menu.page_path().is_empty());
+            teardown(&ps);
+        }
+    }
+
+    /// A client-drawn subtitle (direct play) keeps both rows live with no reason.
+    #[test]
+    fn subtitles_tab_client_drawn_subtitle_has_live_style_and_timing_and_no_reason() {
+        let _g = plx_base::testlock::serial();
+        let (menu, ps) = subtitles_tab(EnhTestFixture {
+            remux: None,
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+            ..Default::default()
+        });
+        let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing");
+        let style_i = menu.form.index_of(&TrackRow::Style).expect("Style");
+        let rows = flat_rows(&menu);
+        assert!(!rows[timing_i].dim && !rows[style_i].dim);
+        assert!(!rows.iter().any(|r| r.is_note()));
         teardown(&ps);
     }
 
@@ -3959,7 +4035,7 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         assert_eq!(menu.active_sub, -1, "off is checked before the pick");
-        assert!(!menu.own_burn_built(), "not a burn yet");
+        assert!(!menu.server_burn_built(), "not a burn yet");
 
         // Seconds later: the SAME session's route has actually landed the Burn (a fresh
         // `PlaybackSession` standing in for the live one having moved on while this menu instance
@@ -3974,7 +4050,7 @@ mod enhancement_menu_tests {
         menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps_after, store.view());
 
         assert_eq!(menu.active_sub, 0, "the embedded track must read checked once the route shows it");
-        assert!(menu.own_burn_built(), "Color/Timing must lock once the live route is really a Burn");
+        assert!(menu.server_burn_built(), "Color/Timing must lock once the live route is really a Burn");
         let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
         assert!(flat_rows(&menu)[style_i].dim, "Style must actually redraw dim, not just flag it internally");
         let off_i = menu.form.index_of(&TrackRow::SubOff).expect("Off row present");
@@ -3994,12 +4070,23 @@ mod enhancement_menu_tests {
         for language in [Preference::En, Preference::Es, Preference::Be] {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
+            // the audio-conversion reason (a remux) and the quality reason, as well as the own burn
             let (menu, ps) = subtitles_tab(EnhTestFixture {
                 subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
                 applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
                 applied_burn: true,
                 ..Default::default()
             });
+            let (menu_q, ps_q) = subtitles_tab(EnhTestFixture {
+                remux: Some(false),
+                base_present: false,
+                subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+                ..Default::default()
+            });
+            out.extend(menu_q.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
+            out.extend(menu_q.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
+            out.extend(menu_q.form.table.app_fit_failures_hugged(language.tag()));
+            teardown(&ps_q);
             out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
             out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
             out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
@@ -4024,7 +4111,7 @@ mod enhancement_menu_tests {
             applied_burn: true,
             ..Default::default()
         });
-        let note = plx_platform::i18n::msg::widgets_tracks_style_locked_note();
+        let note = plx_platform::i18n::msg::widgets_tracks_sub_burn_audio();
         let line = ShippedMeasure.width_str(&note, plx_ui::theme::size::CAPTION, false);
         let before = menu.form.table.measured_height();
         let pw = menu.form.table.menu_panel_width(&ShippedMeasure);
