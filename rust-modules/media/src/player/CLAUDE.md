@@ -235,7 +235,9 @@ something.
   **An EXTERNAL text subtitle (the `.srt` beside the film) is a third producer, `sidecar.rs`:** the
   demuxer never sees it, so it is fetched whole from PMS, parsed, and looked up by time from its OWN
   store — not `SHARED.sub_cues`, which is a window the demuxer refills and a backward seek would
-  empty. It is silent while transcoding (the server burns the selection instead).
+  empty. It is silent where the server burns the selection (a re-encode, or a remux whose embedded
+  track the app may not read itself); over a plain remux the app draws it, and draws an embedded
+  track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps.
 - **A seek NEVER interrupts the demuxer.** The pump publishes the target in `seek_to_ns` and the
   demux thread — the only thread that touches the `AVFormatContext` — `av_seek_frame`s on it
   between two reads. Do not reintroduce an interrupt: the pump used to `shutdown(2)` the socket to

@@ -1,8 +1,9 @@
 # Native ASS and SSA subtitles
 
 Direct playback preserves the authored script: styles, positioned signs, overlapping dialogue,
-drawings, font attachments, movement and karaoke. Transcoded playback continues to burn the
-selected subtitle on the server. The simple caption size/wrapping rules apply to plain text;
+drawings, font attachments, movement and karaoke. A re-encode still burns the
+selected subtitle on the server; over a remux the app draws a sidecar, and an embedded track when
+the link is local and the Part is 1..=30000 kbps, and otherwise the server burns it. The simple caption size/wrapping rules apply to plain text;
 ASS/SSA retains its authored layout. The viewer's existing tone and timing controls still apply.
 
 `ci/build-libass.py` builds a pinned libass with private FreeType, FriBidi and HarfBuzz. The

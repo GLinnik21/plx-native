@@ -179,7 +179,7 @@ fn remux_review_http_200_refusal_never_gets_media() {
     assert!(plx_net::net::global_init() && crate::curlio::available());
     let (port, done, server) = selection_probe_pms(true, 0);
     let sid = plx_plex::plex::register_for_test("refused-probe", "127.0.0.1", port, "token", "refused-probe-client");
-    let sample = measure_remote_remux(&plx_base::task::OffFrame::for_test(), plx_plex::plex::client_for(sid).unwrap(), "rk", "refused-session", 2, 0, 320, plx_plex::plex::AudioEnhancements::NONE).sample;
+    let sample = measure_remote_remux(&plx_base::task::OffFrame::for_test(), plx_plex::plex::client_for(sid).unwrap(), "rk", "refused-session", 2, 0, false, 320, plx_plex::plex::AudioEnhancements::NONE).sample;
     done.send(()).unwrap();
     let requests = server.join().unwrap();
     assert!(sample.is_none());

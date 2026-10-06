@@ -1515,6 +1515,7 @@ class MockPms:
         self.request_log = []
         # subtitle search: rk -> {candidate key -> row} for the latest search; id sequences
         self.sub_candidates, self.sub_candidate_seq, self.sub_install_seq = {}, 0, 0
+        self.sub_downloaded = set()  # stream ids the search flow installed and PMS has not yet discarded
 
     @staticmethod
     def safe_path(path):
@@ -1572,6 +1573,7 @@ class MockPms:
                 if row:
                     self.sub_install_seq += 1
                     sid = SUB_INSTALLED_BASE + self.sub_install_seq
+                    self.sub_downloaded.add(sid)
                     streams = parts[0].setdefault("Stream", [])
                     streams.append({
                         "id": sid, "streamType": 3, "codec": "srt", "format": "srt",
@@ -1590,6 +1592,21 @@ class MockPms:
                                          + row["title"].encode() + b"\n")
             return (200, "text/plain", b"")
         return (405, "text/plain", b"")
+
+    def discard_deselected_downloads(self, lib, part, selected):
+        """PMS drops a subtitle the search flow downloaded as soon as the part's subtitle selection
+        moves to another stream or to 0 (measured 2026-10-06, `docs/pms-api.md`): the stream leaves
+        the part, its `/library/streams/<id>` answers 404 and selecting it again is a 400."""
+        with self.lock:
+            for stream in list(part.get("Stream", [])):
+                sid = stream["id"]
+                if stream["streamType"] == 3 and sid in self.sub_downloaded and sid != selected:
+                    part["Stream"].remove(stream)
+                    self.sub_downloaded.discard(sid)
+                    if not hasattr(lib, "sub_discarded"):
+                        lib.sub_discarded = set()
+                    lib.sub_discarded.add(sid)
+                    getattr(lib, "sidecars", {}).pop(sid, None)
 
     # --- containers ------------------------------------------------------------------------
 
@@ -1963,6 +1980,12 @@ class MockPms:
             part_id = int(segs[2]) if len(segs) > 2 and segs[2].isdigit() else -1
             if method == "PUT":
                 streams = getattr(lib, "verification_streams", {}).get(part_id, [])
+                if q.get("subtitleStreamID", "").isdigit():
+                    # Selecting a downloaded stream PMS already discarded is the 400 it answers.
+                    wanted = int(q["subtitleStreamID"])
+                    with self.lock:
+                        if wanted in getattr(lib, "sub_discarded", set()):
+                            return j(self.container(), 400)
                 for kind, key in ((2, "audioStreamID"), (3, "subtitleStreamID")):
                     if key not in q:
                         continue
@@ -1978,12 +2001,16 @@ class MockPms:
                                     for stream in part.get("Stream", []):
                                         if stream["streamType"] == kind:
                                             stream["selected"] = stream["id"] == selected
+                                    if kind == 3:
+                                        self.discard_deselected_downloads(lib, part, selected)
                 return j(self.container())
             # the media bytes: nothing here decodes, but the app's part probe must get a 200 with a
             # length so the route planner reaches its own (host-side) failure instead of a socket one
             return (200, "video/x-matroska", b"\x1a\x45\xdf\xa3" + b"\x00" * 60)
         if len(segs) == 3 and segs[:2] == ["library", "streams"]:
             sid = int(segs[2]) if segs[2].isdigit() else -1
+            if sid in getattr(lib, "sub_discarded", set()):
+                return (404, "text/plain", b"")
             sidecar = getattr(lib, "sidecars", {}).get(sid)
             if sidecar is not None:
                 body = sidecar if isinstance(sidecar, bytes) else sidecar.read_bytes()
@@ -2400,6 +2427,27 @@ def selftest():
     s, _, b = get(added[0]["key"])
     assert s == 200 and found[0]["title"].encode() in b
     assert any(m == "PUT" and "/subtitles?" in w for m, w, _ in pms.writes)
+    # PMS discards a DOWNLOADED subtitle the moment the part's selection moves off it (measured
+    # 2026-10-06, docs/pms-api.md): its stream then 404s and selecting it again is a 400.
+    part_id = jget(f"/library/metadata/{rk}")["Metadata"][0]["Media"][0]["Part"][0]["id"]
+    assert send(f"/library/parts/{part_id}?allParts=1&subtitleStreamID={added[0]['id']}", "PUT")[0] == 200
+    assert send(added[0]["key"])[0] == 200, "re-selecting the same stream keeps it"
+    assert send(f"/library/parts/{part_id}?allParts=1&subtitleStreamID=0", "PUT")[0] == 200
+    assert send(added[0]["key"])[0] == 404, "deselected -> the downloaded stream is gone"
+    assert send(f"/library/parts/{part_id}?allParts=1&subtitleStreamID={added[0]['id']}", "PUT")[0] == 400
+    gone = {s["id"] for s in jget(f"/library/metadata/{rk}")["Metadata"][0]["Media"][0]["Part"][0]["Stream"]}
+    assert added[0]["id"] not in gone and before <= gone
+    # ... and so is moving it onto an EMBEDDED stream (the second measured sequence, 2026-10-06: a
+    # playback start that re-picked the embedded language match instead of keeping the download)
+    again = jget(f"/library/metadata/{rk}/subtitles?language=nl&hearingImpaired=0&forced=0")["Stream"]
+    assert send(f"/library/metadata/{rk}/subtitles?key={again[1]['key']}", "PUT") == (200, b"")
+    streams = jget(f"/library/metadata/{rk}")["Metadata"][0]["Media"][0]["Part"][0]["Stream"]
+    second = [x for x in streams if x["id"] not in gone and x["streamType"] == 3]
+    embedded = [x for x in streams if x["streamType"] == 3 and not x.get("key") and x["id"] in gone]
+    assert len(second) == 1 and second[0]["selected"], streams
+    if embedded:
+        assert send(f"/library/parts/{part_id}?allParts=1&subtitleStreamID={embedded[0]['id']}", "PUT")[0] == 200
+        assert send(second[0]["key"])[0] == 404, "moved onto an embedded track -> the download is gone"
     # the closed alphabet: every title-shaped string obeys it
     tok = re.compile(f"^{ALPHABET_TOKEN}$")
     for it in pms.lib.items.values():

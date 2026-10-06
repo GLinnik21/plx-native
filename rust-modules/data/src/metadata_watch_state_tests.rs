@@ -335,6 +335,44 @@ fn the_playing_item_cache_hits_only_for_the_same_item_on_the_same_server() {
     clear(test_state(), test_adapter());
 }
 
+/// **Regression (2026-10-06):** the loaded page's copy of an item describes the server as the page
+/// read it. Once the item has PLAYED, the server's streams may have moved under it (a subtitle
+/// downloaded mid-playback is installed and selected; a track picked in the HUD changes the part's
+/// selection), so the next start must not plan from that copy: it picked the embedded track the page
+/// remembered and PUT it, which made PMS discard the downloaded subtitle. A page that LANDS after the
+/// playback is a fresh read and is a cache again.
+#[test]
+fn the_playing_item_cache_is_not_trusted_once_the_item_has_played() {
+    let _serial = plx_base::testlock::serial();
+    let page = |subs: Vec<Stream>| Detail {
+        sid: SRV_A,
+        rk: "42".into(),
+        audio: vec![Stream { id: 7, ..Default::default() }],
+        subs,
+        ..Default::default()
+    };
+    let embedded = Stream { id: 5, selected: true, ..Default::default() };
+    set_current_for_test(test_state(), Some(page(vec![embedded.clone()])));
+    assert!(cached_playing(test_state(), SRV_A, "42").is_some(), "precondition: a page nobody played from is a cache");
+
+    install_playing(test_state(), cached_playing(test_state(), SRV_A, "42"));
+    assert!(
+        cached_playing(test_state(), SRV_A, "42").is_none(),
+        "the item played since this page was read: its stream list may be stale — fetch it"
+    );
+
+    // another item's playback does not spoil this page
+    set_current_for_test(test_state(), Some(Detail { rk: "43".into(), ..page(vec![embedded.clone()]) }));
+    assert!(cached_playing(test_state(), SRV_A, "43").is_some());
+
+    // a fresh landing of the played item is a fresh read
+    set_current_for_test(test_state(), Some(page(vec![embedded.clone()])));
+    install_playing(test_state(), cached_playing(test_state(), SRV_A, "42"));
+    assert!(install_landed_detail(test_state(), test_adapter(), Some(page(vec![embedded]))));
+    assert!(cached_playing(test_state(), SRV_A, "42").is_some(), "read after the playback: trusted again");
+    clear(test_state(), test_adapter());
+}
+
 /// The season-scope watched rule. Pure (no crate global, so no `testlock` here) and worth its
 /// own test because two very different call sites depend on it — the season tab draws a tick
 /// off it, and "Mark Season Watched" will decide which way to scrobble off it. The counts are

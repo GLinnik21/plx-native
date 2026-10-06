@@ -1957,7 +1957,12 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   neither moves the boot screen; both armed at once is
   refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
   logs `softfloat: … MATCH|DIVERGE` against the host's pinned hash and writes the table beside
-  it; `make softfloat-probe` fetches it), `/tmp/plxnative-url` (override the streamed part
+  it; `make softfloat-probe` fetches it), `/tmp/plxnative-subside` (content = the 0-based position of an embedded subtitle stream; read
+  at each playback start, no relaunch: while a plain remux plays with no subtitle selected, a side
+  reader demuxes the Part's subtitle packets over a fresh-session range read and the client
+  renderer draws that track; logs `subside: open|anchor|reopen|failed|stop …`, never a URL, token
+  or session; `media::player::subside`, `ff_subside.rs`),
+  `/tmp/plxnative-url` (override the streamed part
   URL) and **`/tmp/plxnative-playurl`** (the same, plus the LOAD DECLARATION — one JSON object,
   `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test
   tier drives and the only way to declare HEVC / `"AC3 PLUS"` / Dolby for a stream no PMS chose;

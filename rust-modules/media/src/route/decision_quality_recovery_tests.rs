@@ -745,6 +745,7 @@ fn failed_original_then_auto_keeps_the_live_adaptive_route() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -840,6 +841,7 @@ fn hls_recovery_restores_the_exact_direct_source_and_rearms_its_watchdog() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
+                audio_converted: false,
                 subtitle_ordinal: Some(2),
             }),
             ..Default::default()
@@ -916,6 +918,7 @@ fn a_recovery_that_never_opens_can_still_go_back_to_the_encoder_it_replaced() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
+                audio_converted: false,
                 subtitle_ordinal: Some(2),
             }),
             ..Default::default()
@@ -1092,6 +1095,7 @@ fn a_remux_recovery_keeps_hls_until_frames_and_rolls_back_the_replacement() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1198,6 +1202,7 @@ fn a_missing_whole_file_bitrate_must_not_silently_delete_original_recovery() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1253,6 +1258,7 @@ fn a_recovery_that_opens_spends_the_way_back_rather_than_leaving_it_armed() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1399,6 +1405,7 @@ fn a_quality_change_waits_for_an_original_handoff_to_commit() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1481,6 +1488,7 @@ fn a_quality_change_survives_an_original_handoff_rollback() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1613,6 +1621,7 @@ fn audio_selected_during_original_trial_uses_the_route_that_actually_lands() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1823,6 +1832,7 @@ fn automatic_recovery_issues_no_part_admission_before_the_trial() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1942,6 +1952,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2122,6 +2133,7 @@ fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2185,6 +2197,7 @@ fn direct_recovery_without_its_server_keeps_hls_instead_of_using_a_logical_alias
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2236,6 +2249,7 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
                     ),
                 },
                 audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2324,6 +2338,7 @@ fn local_auto_preserves_the_candidate_needed_to_leave_a_fixed_rung() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 14_778, ordinal: 0, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2431,6 +2446,7 @@ fn manual_original_after_a_fixed_rung_returns_to_the_native_source() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 14_778, ordinal: 0, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2538,6 +2554,7 @@ fn original_to_auto_restarts_the_worker_to_arm_the_watchdog() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 0, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2616,6 +2633,7 @@ fn auto_to_an_admitting_fixed_rung_restarts_the_worker_to_remove_the_watchdog() 
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 42, ordinal: 0, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
+                audio_converted: false,
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2674,6 +2692,7 @@ fn manual_original_after_a_fixed_rung_with_a_subtitle_returns_to_direct_play() {
                 dovi: plx_data::metadata::Dovi::NONE,
                 dv_decision: plx_data::metadata::DvDecision::NONE,
                 audio: Some(CarriedAudio { sid: 14_778, ordinal: 0, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
+                audio_converted: false,
                 subtitle_ordinal: Some(3),
             }),
             ..Default::default()

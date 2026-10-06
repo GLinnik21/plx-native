@@ -1,6 +1,6 @@
 {
   "core.system_default": "Мова сістэмы",
-  "core.converts_on_server": "Пераўтвараецца на серверы",
+  "core.converts_on_server": "Канвертуецца на серверы",
   "core.duration_short_hours": "{hours}г {minutes}хв",
   "core.duration_short_minutes": "{minutes}хв",
   "core.duration_long_hours": "{hours} г {minutes} хв",
@@ -18,7 +18,7 @@
   "core.preview_domain_line": "{label}: {values}",
   "core.preview_domain_failure_kind": "тып збою (уключна з захаванымі гістарычнымі кодамі)",
   "core.preview_domain_delivery": "спосаб дастаўкі",
-  "core.preview_domain_refusal_codes": "коды рашэння сервера, агульны і транскадавання (толькі ў справаздачах пра адмову)",
+  "core.preview_domain_refusal_codes": "коды рашэння сервера, агульны і канвертавання (толькі ў справаздачах пра адмову)",
   "core.preview_domain_attempted_delivery": "запытаная дастаўка (толькі ў справаздачах пра адмову)",
   "core.preview_domain_source_video": "відэакодэк крыніцы (толькі ў справаздачах пра адмову)",
   "core.preview_domain_source_audio": "аўдыёкодэк крыніцы (толькі ў справаздачах пра адмову)",

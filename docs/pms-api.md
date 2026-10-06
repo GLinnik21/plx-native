@@ -954,10 +954,11 @@ for the raw captures behind this table.
 | M4 | Enhanced remux plus `subtitleStreamID` for an embedded SRT | `subtitles=embedded` or `=sidecar`: video copy, subtitle decision `unavailable` — PMS refuses to carry a text subtitle into the progressive MKV the enhancement produces. `subtitles=auto`: the server instead re-encodes the video and burns it. Either way a subtitle and the enhancement cannot share a route, which is I6. |
 | M5 | Part GET (`Range: bytes=0-1023`) on a transcode session, after MDE, after MDE followed by an enhanced-remux decision on the same session, and after only an enhanced decision | 206 Partial Content in every case from a host, including with the remux encoder still live, stopped physically, stopped with `closeResourceSession=1`, or abandoned. PR 4's device run nonetheless met a **503** on the Part right after releasing an enhanced remux; what PMS keyed it on did not reproduce off the television, so a release asks for the Part before it trials it and falls to the plain remux on a refusal (`route::decision::admit_original_part`). |
 | M6 | MDE `/decision` on a session whose transcoder is live | The MDE ENDS that transcoder: an HLS session's later segments answer 404 (200 without the MDE) and its stop 404; a progressive session's `start.mkv` at an offset on the same id answers 400 until it is re-decided. Re-issuing MDE is harmless only when nothing is live — never before a Part GET whose rollback needs the encoder still running. |
-| M7 | Enhanced remux plus an explicit `subtitleStreamID=<id>&subtitles=burn` for an embedded subtitle, instead of the `=embedded`/`=sidecar`/`=auto` shapes M4 measured | **Verified live (PMS 1.43.4, host, Guest identity, 2026-09-29)**, against our own transcode query shape plus `normalizeLoudness=1`. Enhanced remux + `subtitles=embedded`: video copy, the text subtitle is absent from the decision entirely, and a PGS one decides `unavailable` — confirming M4's refusal generalizes past SRT. Enhanced + `subtitles=burn` at a re-encode flavour (`videoResolution=3840x2160&maxVideoBitrate=60000`) on HDR10 4K sources, both SRT and PGS: video transcodes to HEVC 10-bit with `colorTrc` kept at `smpte2084` (confirmed by `ffprobe` on the output: `yuv420p10le`/`smpte2084`), the hardware encoder runs it, throughput measured 2.0–2.6× realtime, source resolution is kept (no downscale), and the PGS case's own decision reads `burn`. The SRT case lists no subtitle Stream in the decision at all even though the video is re-encoded — the burn happens, but the decision body gives no wire signal of it for a text track; a visual (on-screen) confirmation that the burned text actually appears is still pending the device run. The SAME sources with the enhancement OFF cost the identical video transcode — the burn itself is the cost, not the DSP params riding along with it. A Dolby Vision Profile 8 source asked to burn: PMS copies the video (`DOVIPresent=1` in the decision, matching `EnhancementRoute::RemuxDropsDolbyVision`'s "video copy" half) and silently drops the subtitle — confirming `DisabledReason::DolbyVisionSubtitle`'s refusal is not just this app being conservative; the server itself cannot do both. Official Plex clients ask for `subtitles=burn` explicitly rather than relying on `=auto`'s refuse-then-decide path M4 found; this app now does the same: an embedded subtitle forces `remux: false` (a real re-encode, `EnhancementRoute::Burn`) carrying both the DSP params and the burn request in the one decision, so the subtitle is never silently dropped (superseding I6's "cannot share a route" for the embedded case). An external sidecar stays on the ordinary enhanced remux — it is never sent as `subtitleStreamID` for the enhancement's OWN sake, though the pre-existing while-transcoding refresh (`app::playback::commit_track`) still burns any subtitle picked mid-transcode regardless of type, unrelated to this table. |
+| M7 | Enhanced remux plus an explicit `subtitleStreamID=<id>&subtitles=burn` for an embedded subtitle, instead of the `=embedded`/`=sidecar`/`=auto` shapes M4 measured | **Verified live (PMS 1.43.4, host, Guest identity, 2026-09-29)**, against our own transcode query shape plus `normalizeLoudness=1`. Enhanced remux + `subtitles=embedded`: video copy, the text subtitle is absent from the decision entirely, and a PGS one decides `unavailable` — confirming M4's refusal generalizes past SRT. Enhanced + `subtitles=burn` at a re-encode flavour (`videoResolution=3840x2160&maxVideoBitrate=60000`) on HDR10 4K sources, both SRT and PGS: video transcodes to HEVC 10-bit with `colorTrc` kept at `smpte2084` (confirmed by `ffprobe` on the output: `yuv420p10le`/`smpte2084`), the hardware encoder runs it, throughput measured 2.0–2.6× realtime, source resolution is kept (no downscale), and the PGS case's own decision reads `burn`. The SRT case lists no subtitle Stream in the decision at all even though the video is re-encoded — the burn happens, but the decision body gives no wire signal of it for a text track; a visual (on-screen) confirmation that the burned text actually appears is still pending the device run. The SAME sources with the enhancement OFF cost the identical video transcode — the burn itself is the cost, not the DSP params riding along with it. A Dolby Vision Profile 8 source asked to burn: PMS copies the video (`DOVIPresent=1` in the decision, matching `EnhancementRoute::RemuxDropsDolbyVision`'s "video copy" half) and silently drops the subtitle — confirming `DisabledReason::DolbyVisionSubtitle`'s refusal is not just this app being conservative; the server itself cannot do both. Official Plex clients ask for `subtitles=burn` explicitly rather than relying on `=auto`'s refuse-then-decide path M4 found; this app now does the same: an embedded subtitle forces `remux: false` (a real re-encode, `EnhancementRoute::Burn`) carrying both the DSP params and the burn request in the one decision, so the subtitle is never silently dropped (superseding I6's "cannot share a route" for the embedded case). An external sidecar stays on the ordinary enhanced remux and is drawn by the app over it: a remux contract never names a subtitle (see M8), and picking or clearing a sidecar on a live remux rebuilds nothing. |
+| M8 | **UNMEASURED** — a remux (plain or enhanced) whose subtitle the app draws sends `subtitleStreamID=0&subtitles=none` on the transcode leg (`route::plan::transcode_spec`, `TranscodeSpec::client_subtitles`) | The spelling is the MDE handshake's client-rendered mode (`Client::mde_decision`), which PMS has accepted before; it has not been sent on a `/video/:/transcode/universal/decision` or `start.mkv` request. Expected: video copy, subtitle absent from the decision, no re-encode. A TV or host run must confirm PMS does not answer `auto`'s refuse-then-decide path or burn the part's own selected subtitle instead. **A TV run on 2026-10-06** showed PMS serving the Part to a fresh session id (`<live>-subs`) during a live remux, which is what the side reader (`player::subside`, `route::side_reader_target`) reads for an embedded subtitle. **Measured on the same TV (2026-10-06):** a Part `Range` read during a live remux answers 503 when it carries that remux session id and 206 with a fresh or absent session id; so a release from a remux (or burn) back to Direct Play (`route::decision::OriginalRecoveryPlan::direct_session`) probes and opens the Part on a freshly minted session id and stops the old remux once decoded frames confirm, while a release from a live hls encoder keeps that encoder's id (the Part shares its Streaming Resource). Whether `subtitles=none` on the start leg keeps the video a copy is still UNMEASURED: that run sent the dev trigger's remux with no subtitle selected. |
 
 **Known device-only gap on M5 (`audio_enhancement_normalize_reset`, `tests/manifest.json`, 2026-09-29).**
-Admitting the Part before the trial (`admit_original_part`) does not close the 503 in every case:
+Admitting the Part before the trial (`admit_original_part`) does not close the 503 in every case (the admission and the trial now read the Part on a fresh session id rather than the remux's, per M8, which this entry predates; whether that closes the case below is unmeasured):
 with the enhanced `start.mkv` actually **playing** first — timelines posted on that same session id,
 not just decided — the admission's own Part GET still meets HTTP 503 on the television, and the
 release honestly lands on the plain codec-copy Original remux (`enhancement: server refused the
@@ -1165,10 +1166,43 @@ server needs telling.
 The delivered file is reachable at the created stream's `key` through the ordinary sidecar route
 (§`/library/streams/{id}`), so an OpenSubtitles `.srt` renders through the existing sidecar path.
 
+**A downloaded subtitle is discarded the moment the part's selection moves off it (measured
+2026-10-06, from the server's own log).** The stream a download installs is selected by PMS and
+lives only while it stays selected. Sequence, ids as placeholders (`<S>` the downloaded stream,
+`<A>` the audio stream, `<part>` the part id):
+
+```
+T+0     200 PUT /library/parts/<part>?allParts=1&subtitleStreamID=<S>&audioStreamID=<A>   "Selecting subtitle stream <S>"
+T+0     200 GET /library/streams/<S>?encoding=utf-8&format=srt                            (the subtitle draws fine)
+        ... playback stops; GET /library/metadata/<item> still reports "Subtitle Stream: <S>" ...
+T+40s   200 PUT /library/parts/<part>?allParts=1&subtitleStreamID=0&audioStreamID=<A>     "Selecting subtitle stream 0"
+T+40s   404 GET /library/streams/<S>?encoding=utf-8&format=srt
+T+60s   400 PUT /library/parts/<part>?allParts=1&subtitleStreamID=<S>&audioStreamID=<A>
+        (404 / 400 for every later request naming <S>)
+```
+
+So moving the selection to `0` (the viewer's Off) or to ANY other stream deletes the downloaded
+subtitle for good: it 404s and cannot be re-selected (400), and the viewer has to search again.
+That is server behaviour, not the client's. The consequence for a client is a rule: **send
+`subtitleStreamID=0` in a selection PUT only when the viewer chose Off** (or nothing is selected).
+When the app draws the subtitle itself (a sidecar, or an embedded track beside a remux) the PUT
+names the real selected id and "do not burn" is carried only by the transcode decision / start URL
+(`subtitleStreamID=0&subtitles=none`), which leaves the server-side selection untouched. The app
+sent `0` at every transcode start until 2026-10-06, which is how a freshly searched subtitle was
+lost at the next playback.
+
+The same loss, second sequence (2026-10-06): a download installed and selected mid-playback, playback
+stopped and restarted two seconds later, and the start's `PUT .../parts/<part>?allParts=1&subtitleStreamID=<E>&audioStreamID=<A>`
+named the part's EMBEDDED English track `<E>` (re-picked from the page's pre-playback copy of the
+item) while the server's own metadata said `Subtitle Stream: <S>` — moving the selection to a real
+stream discards the download exactly as `0` does, so a start must plan from the server's current selection.
+
 `tests/mock_pms.py` (`MockPms.subtitle_search`) models this section — the 3-letter 500, the empty
 answer, single-use candidate keys, and an install that creates a NEW selected external stream with
 a fetchable sidecar — and is the only place the download may be exercised end to end. Its install
-is immediate; the real one is asynchronous, as above.
+is immediate; the real one is asynchronous, as above. It also models the discard above
+(`discard_deselected_downloads`: the stream leaves the part, its `/library/streams/<id>` is a 404, selecting
+it is a 400).
 
 ---
 

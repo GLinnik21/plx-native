@@ -119,6 +119,11 @@ pub struct MetadataState {
     /// Segments the user has already skipped in THIS playback — see the retired `SKIPPED` static's
     /// doc.
     skipped: Vec<(MarkerKind, i64)>,
+    /// The item a playback was installed for since the loaded page was read. The page's stream list
+    /// (and the selection flags on it) describes the server BEFORE that playback, which can move
+    /// both — a subtitle downloaded mid-playback is installed and selected on the part — so
+    /// [`cached_playing`] refuses it for this item until a page read after the playback lands.
+    played_since_load: Option<(plx_plex::plex::ServerId, String)>,
     alt: AltStore,
 }
 
@@ -1805,6 +1810,7 @@ fn reset(state: &mut MetadataState, adapter: &MetadataAdapter) {
     state.current = None;
     state.now = None;
     state.playing = None;
+    state.played_since_load = None;
     state.skipped.clear();
     alt_clear(state);
 }
@@ -2392,6 +2398,11 @@ impl PlayingItem {
 /// the filter was the rk alone and the parameter was deliberately unused. `Detail.sid` is what
 /// made the pair test possible.
 fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str) -> Option<PlayingItem> {
+    // Once the item has played, the server's selection may have moved under the page's copy; the
+    // start planned from it would PUT a stale subtitle pick over the server's (see the field).
+    if state.played_since_load.as_ref().is_some_and(|(s, r)| plx_plex::plex::same_item((*s, r), (sid, rk))) {
+        return None;
+    }
     current(state)
         .filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk)) && !d.audio.is_empty())
         .map(|d| PlayingItem {
@@ -2524,6 +2535,7 @@ fn append_playing_sub(state: &mut MetadataState, sid: plx_plex::plex::ServerId, 
 fn install_playing(state: &mut MetadataState, pt: Option<PlayingItem>) {
     state.skipped.clear(); // a different leaf's markers, so a fresh slate
     if let Some(pt) = &pt {
+        state.played_since_load = Some((pt.sid, pt.rk.clone()));
         plx_base::eventlog::log(&format!(
             "playing item: rk={} audio={} subs={} markers={} chapters={}",
             pt.rk,
@@ -3638,6 +3650,10 @@ fn install_landed_detail(state: &mut MetadataState, adapter: &std::sync::Arc<Met
     // server and its portable guid, and this is the one place both are known on the main thread.
     // A page with no guid, or a one-server install, spawns nothing.
     request_alt_sources(state, adapter, d.sid, &d.rk, &d.guid);
+    // a page read now is read after any playback that has landed: its streams are the server's
+    if state.played_since_load.as_ref().is_some_and(|(s, r)| plx_plex::plex::same_item((*s, r), (d.sid, &d.rk))) {
+        state.played_since_load = None;
+    }
     state.current = Some(d);
     // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
     sync_now_playing(state);
