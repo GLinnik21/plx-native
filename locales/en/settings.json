@@ -176,11 +176,11 @@
     "description": "Settings, account, onboarding or privacy UI: settings.language.system"
   },
   "settings.language.copy": {
-    "value": "Choose the app language for everyone on this television. Changes apply after restarting PlxNative.",
+    "value": "Choose the app language for everyone on this television. Changes apply after restarting PlxNative. To close the app, press EXIT or hold Back on the remote, then open PlxNative again.",
     "description": "Settings, account, onboarding or privacy UI: settings.language.copy"
   },
   "settings.language.pending": {
-    "value": "Restart PlxNative to apply this change.",
+    "value": "Restart PlxNative to apply this change. To close the app, press EXIT or hold Back on the remote, then open PlxNative again.",
     "description": "Settings, account, onboarding or privacy UI: settings.language.pending"
   },
   "settings.language.save_failed": {
