@@ -4201,6 +4201,12 @@ pub(super) struct OriginalRecoveryPlan {
     subtitle_sid: i64,
     /// The namespace the replacement encoder's session id is minted under.
     namespace: String,
+    /// The session id a DIRECT trial's Part reads (the admission probe and the trial URL) and the
+    /// direct play then reports its timeline under. A live hls session keeps its own id, so the
+    /// Part is the same Streaming Resource its segments already use; any other converted route
+    /// (a remux or a burn, one progressive `start.mkv`) gets a fresh id, because PMS answers a Part
+    /// read that carries the id of a remux that is still running with 503 (`docs/pms-api.md` M8).
+    direct_session: String,
     src_acodec: String,
 }
 
@@ -4282,6 +4288,13 @@ fn plan_original_recovery(
     } else {
         logical_session
     };
+    // A fresh id (never the live remux's) for the direct trial, unless the route being left is an
+    // hls encoder, whose resource the raw Part deliberately shares (see `recover_original_direct`).
+    let direct_session = if live_hls.is_some() {
+        expected.encoder().to_owned()
+    } else {
+        next_encoder_session(&namespace)
+    };
     Some(OriginalRecoveryPlan {
         flavour,
         burn: matches!(route, Some(EnhancementRoute::Burn)),
@@ -4291,6 +4304,7 @@ fn plan_original_recovery(
         part_id: cur_part_id(ps),
             subtitle_sid: cur_sub_sid(ps),
         namespace,
+        direct_session,
         src_acodec: ps.src_acodec.clone(),
         candidate,
         expected: expected.clone(),
@@ -4390,6 +4404,7 @@ pub(super) fn install_original_recovery(
                 ps,
                 &plan.candidate,
                 &plan.expected,
+                &plan.direct_session,
                 rollback,
                 plan.watched,
                 plan.cause,
@@ -4474,7 +4489,7 @@ fn admit_original_part(plan: &OriginalRecoveryPlan) -> PartAdmission {
         return PartAdmission::Refused("no client for this server".into());
     };
     let url = client
-        .direct_play_url(&plan.candidate.probe_part, plan.expected.encoder())
+        .direct_play_url(&plan.candidate.probe_part, &plan.direct_session)
         .to_url();
     use crate::curlio::{OpenErr, ThroughputFailure};
     match crate::curlio::sample_throughput_result(
@@ -4533,20 +4548,25 @@ fn recover_original_direct(
     ps: &mut PlaybackSession,
     candidate: &AutoOriginalCandidate,
     expected: &WorkerTicket,
-    rollback: PendingOriginal,
+    direct_session: &str,
+    mut rollback: PendingOriginal,
     watched: bool,
     cause: RecoveryCause,
     outcome: EnhancementOutcome,
 ) -> Option<AutoOriginalReload> {
     let automatic = cause == RecoveryCause::Automatic;
     let expected_encoder = expected.encoder();
+    // A direct play that leaves a remux is its own session, never the live remux's (see
+    // [`OriginalRecoveryPlan::direct_session`]). The old id then belongs to the rollback as the
+    // encoder to retire once frames confirm, and the fresh one is what the trial owns.
+    let fresh_session = direct_session != expected_encoder;
     // The probe and the actual Part body must name the same exact Streaming Resource. A URL
     // left on the logical playback id can token-alias this HLS resource today, then fail a
     // later seek after cleanup because the alias choice is not durable.
     let source_url = if candidate.probe_part.starts_with('/') {
         let client = cur_client(ps)?;
         client
-            .direct_play_url(&candidate.probe_part, expected_encoder)
+            .direct_play_url(&candidate.probe_part, direct_session)
             .to_url()
     } else {
         candidate.url.clone()
@@ -4554,7 +4574,12 @@ fn recover_original_direct(
     // Keep the exact id as a source-resource owner, but remove its HLS route projection. On
     // decoded frames confirmation stops only the physical encoder; final teardown takes this
     // id and performs the full resource close.
-    replace_active_encoder_for(expected, expected_encoder)?;
+    replace_active_encoder_for(expected, direct_session)?;
+    if fresh_session {
+        // Confirm stops the remux it replaced through the same single stop a remux-to-remux
+        // handoff uses; a failed open stops this (never started) id and restores the remux.
+        rollback.replacement_encoder = direct_session.to_owned();
+    }
     // **Taken before anything is overwritten.** A raw Part request has no replacement
     // encoder; the empty marker tells rollback there is nothing new to retire.
     { let s = &mut *ps; {
@@ -4822,7 +4847,7 @@ pub fn confirm_original_recovery(ps: &mut PlaybackSession) {
         retire_hls_encoder_keep_source(ps, pending.encoder);
     } else {
         crate::player::log(
-            "abr: remux Original confirmed by decoded frames; retiring old HLS resource",
+            "abr: Original confirmed by decoded frames on a fresh session; retiring old encoder resource",
         );
         retire_replaced_encoder(ps, pending.encoder);
     }

@@ -274,6 +274,12 @@ fn stop_seen(log: &RequestLog, session: &str) -> bool {
         .any(|r| r.contains("/video/:/transcode/universal/stop") && r.contains(&format!("session={session}")))
 }
 
+fn stop_seen_in(requests: &[String], session: &str) -> bool {
+    requests
+        .iter()
+        .any(|r| r.contains("/video/:/transcode/universal/stop") && r.contains(&format!("session={session}")))
+}
+
 /// Any encoder stop at all (for a session whose id the worker minted).
 fn any_stop_seen(log: &RequestLog) -> bool {
     log.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|r| r.contains("/video/:/transcode/universal/stop"))
@@ -933,8 +939,9 @@ fn release_with_refused_part_lands_on_the_plain_remux_not_the_enhanced_route() {
     let requests = live.finish();
     assert_eq!(part_gets(&requests).len(), 1, "one admission request: {requests:?}");
     assert!(
-        part_gets(&requests)[0].contains("X-Plex-Session-Identifier=enh-remux-1"),
-        "the admission asks on the exact identity the Part body would use: {requests:?}"
+        part_gets(&requests)[0].contains("X-Plex-Session-Identifier=enh-logical-abr-")
+            && !part_gets(&requests)[0].contains("enh-remux-1"),
+        "the admission asks on a fresh session, never the live remux's (M8): {requests:?}"
     );
     let d = decisions(&requests);
     assert_eq!(d.len(), 1, "{requests:?}");
@@ -962,6 +969,45 @@ fn release_with_admitted_part_is_still_direct_play() {
     let requests = live.finish();
     assert_eq!(part_gets(&requests).len(), 1, "{requests:?}");
     assert!(decisions(&requests).is_empty(), "no remux was registered: {requests:?}");
+    cleanup(&mut ps);
+}
+
+/// M8 (`docs/pms-api.md`, measured 2026-10-06): while a remux is live, a Part read that carries the
+/// remux's own session id answers 503, and a fresh or absent id answers 206. A release back to
+/// Direct Play must therefore open the Part on a FRESH session id — for the admission probe, for
+/// the trial's URL and for the timeline/stop identity the direct play then owns — and stop the
+/// old remux exactly once when decoded frames confirm it.
+#[test]
+fn release_to_direct_opens_the_part_on_a_fresh_session_not_the_live_remuxs() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start_with_parts(EnhMode::Honor("ac3"), 4096, PartAnswer::RefuseSession("enh-remux-1"));
+    restore_quality(Quality::Original);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(server_part_candidate(a1())), 0);
+    assert!(toggle(&mut ps, NONE));
+    let (_, tail) = claim(&mut ps);
+    assert_eq!(
+        tail,
+        ClaimTail::Original(AutoOriginalReload::Direct),
+        "a Part the server only refuses on the live remux's id must be asked on another id"
+    );
+    assert!(!is_transcoding(&ps));
+    let fresh = active_encoder();
+    assert!(!fresh.is_empty() && fresh != "enh-remux-1", "the direct play owns a fresh id");
+    assert!(
+        ps.url.contains(&format!("X-Plex-Session-Identifier={fresh}")),
+        "the trial URL names the id the timeline will report under"
+    );
+    assert!(!ps.url.contains("enh-remux-1"));
+    let requests = live.finish();
+    assert!(
+        part_gets(&requests).iter().all(|r| !r.contains("enh-remux-1")),
+        "no Part read reuses the live remux's id: {}",
+        part_gets(&requests).len()
+    );
+    assert!(!stop_seen_in(&requests, "enh-remux-1"), "the old remux is held until frames confirm");
     cleanup(&mut ps);
 }
 
