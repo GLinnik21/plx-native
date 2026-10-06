@@ -18,6 +18,10 @@ name: build + verify
 # version machinery this job already exercised for stable and debug covers nightly the same way.
 # The boolean inputs below (`homebrew-manifest`, `source-asset`, `caches`, `fwcompat`) are what let
 # three callers each select the right subset without a third copy of this job.
+#
+# A fourth, `rc.yml`, builds a release CANDIDATE: `flavor: stable` with the `rc` input, passed
+# through as the Makefile's `RC`, so the binary reports `X.Y.Z-rc.N` and everything else is the
+# release build.
 
 on:
   workflow_call:
@@ -38,6 +42,13 @@ on:
           fails the build on `PLX_CHANNEL=nightly` with no date or a malformed one, by design —
           only a bare local `make FLAVOR=nightly RELEASE=1 ipk`, with the variable truly absent
           from the shell rather than set empty here, gets the Makefile's own today's-date default.
+        type: string
+        default: ''
+      rc:
+        description: >
+          Release-candidate number (a positive integer). Builds the stable package with the binary
+          reporting `X.Y.Z-rc.<n>` (the Makefile's `RC`, `build.rs`'s PLX_CHANNEL=rc arm). Empty
+          for every other build; only `flavor: stable` accepts it.
         type: string
         default: ''
       telemetry:
@@ -109,6 +120,7 @@ jobs:
           FLAVOR: ${{ inputs.flavor }}
           TELEMETRY: ${{ inputs.telemetry }}
           HOMEBREW_MANIFEST: ${{ inputs.homebrew-manifest }}
+          RC: ${{ inputs.rc }}
         run: |
           set -euo pipefail
           case "$FLAVOR" in
@@ -125,6 +137,14 @@ jobs:
           if [ "$HOMEBREW_MANIFEST" = true ] && [ "$FLAVOR" != stable ]; then
             echo "::error::homebrew-manifest is only meaningful for flavor: stable, got '$FLAVOR'"
             exit 1
+          fi
+          # A candidate is never listed in the Homebrew Channel: the Channel resolves the manifest
+          # through `releases/latest`, which a prerelease never is, and a candidate's manifest
+          # would carry the final version's number for a binary that is not the final.
+          if [ -n "$RC" ]; then
+            [ "$FLAVOR" = stable ] || { echo "::error::rc is a candidate of the stable id; flavor is '$FLAVOR'"; exit 1; }
+            [ "$HOMEBREW_MANIFEST" != true ] || { echo "::error::a release candidate never gets a Homebrew Channel manifest"; exit 1; }
+            [[ "$RC" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "::error::rc must be a positive integer, got '$RC'"; exit 1; }
           fi
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -180,6 +200,8 @@ jobs:
           # Only meaningful for `flavor: nightly` — `build.rs` never reads it for stable/debug.
           # See the `nightly-date` input's own comment for what an empty value here means.
           PLX_NIGHTLY_DATE: ${{ inputs.nightly-date }}
+          # Only set by rc.yml. Empty is "not a candidate" (the Makefile strips it).
+          RC: ${{ inputs.rc }}
           # DWARF, so the release can be symbolicated later. It must be set on EVERY invocation in
           # this step and it must be the SAME invocation that cuts the .ipk: a debuginfo build and a
           # plain one produce DIFFERENT BUILD IDs from identical sources (measured — see the
@@ -508,8 +530,9 @@ jobs:
           # — see that flag's own comment for why a `sed` twin of it is the thing to avoid.
           version=${ipk##*/"${appid}"_}; version=${version%_arm.ipk}
           nightly_date=$(python3 ci/check-package.py --print-nightly-date pkg/.build-config)
-          label="$version${nightly_date:+-nightly-$nightly_date}"
-          [[ "$label" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-nightly-[0-9]{8})?$ ]] \
+          rc=$(python3 ci/check-package.py --print-rc pkg/.build-config)
+          label="$version${nightly_date:+-nightly-$nightly_date}${rc:+-rc.$rc}"
+          [[ "$label" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-nightly-[0-9]{8}|-rc\.[1-9][0-9]*)?$ ]] \
             || { echo "::error::cannot name the source bundle: got version label '$label' from $ipk"; exit 1; }
           source="pkg/plxnative-source-$label.tar.gz"
           python3 ci/prepare-source-release.py --inputs "$RUNNER_TEMP/gpl-source-inputs" \

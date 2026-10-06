@@ -56,13 +56,13 @@ def build_configuration(stamp: str) -> "str | None":
     Only the FEATURE half is decoded, and matched WHOLE rather than by substring: the "shots"
     recipe in the Makefile's header is `--no-default-features --features devtriggers`, which a
     substring test would grade as a release build and then fail for carrying exactly the surface it
-    asked for. `+tel:`, `+symbols` and `+nightly:` are all optional so a stamp written by an older
+    asked for. `+tel:`, `+symbols`, `+nightly:` and `+rc:` are all optional so a stamp written by an older
     Makefile still decodes, and the feature flags are lazy so they cannot swallow a trailing field.
-    `nightly_stamp_date` reads the `+nightly:` field's VALUE separately — this function only has to
-    not choke on its presence.
+    `nightly_stamp_date` and `rc_stamp_number` read the `+nightly:` and `+rc:` fields' VALUES
+    separately — this function only has to not choke on their presence.
     """
     fields = re.fullmatch(
-        r"features:(?P<flags>.*?)(?:\+profile:[a-z]+)?(?:\+symbols)?(?:\+nightly:[0-9]{8})?(?:\+tel:[0-9a-f]+)?",
+        r"features:(?P<flags>.*?)(?:\+profile:[a-z]+)?(?:\+symbols)?(?:\+nightly:[0-9]{8})?(?:\+rc:[0-9]+)?(?:\+tel:[0-9a-f]+)?",
         stamp.strip())
     if not fields:
         return None
@@ -139,6 +139,19 @@ def nightly_stamp_date(stamp: str) -> "str | None":
     substring, no boundary assumed either side, because the substring itself is now precise.
     """
     m = re.search(r"\+nightly:([0-9]{8})(?=\+|$)", stamp.strip())
+    return m.group(1) if m else None
+
+
+def rc_stamp_number(stamp: str) -> "str | None":
+    """The candidate number the Makefile wrote into `pkg/.build-config`'s `+rc:<n>` field when it
+    built with `RC=<n>` — `None` when the field is absent or is not a positive integer without a
+    leading zero (`build.rs::is_rc_number`'s rule, which refuses to build anything else).
+
+    Read from the stamp rather than from the binary for exactly the reason `nightly_stamp_date`
+    gives: `concat!`'s output is packed against whatever literal the linker put next, so
+    `plxnative@0.8.0-rc.1` followed by a digit is indistinguishable from `-rc.12` by shape alone.
+    """
+    m = re.search(r"\+rc:([1-9][0-9]{0,3})(?=\+|$)", stamp.strip())
     return m.group(1) if m else None
 
 
@@ -295,6 +308,8 @@ def _selftest() -> int:
         "features:--no-default-features+profile:tvdev+tel:98c4b7d37a4c": "release",
         # the nightly cut: RELEASE=1 (so --no-default-features), SYMBOLS=1, and the dated field
         "features:--no-default-features+symbols+nightly:20260919+tel:98c4b7d37a4c": "release",
+        # a release candidate: the release cut plus the candidate number
+        "features:--no-default-features+symbols+rc:2+tel:98c4b7d37a4c": "release",
         # older stamps, from before the telemetry and symbols fields existed
         "features:": "dev",
         "features:--no-default-features": "release",
@@ -507,7 +522,25 @@ const DIAG: [&str; 6] = [
     print(f"check-package: _catalog_name_in_binary boundary handling "
           f"{len(boundary_cases) - boundary_bad}/{len(boundary_cases)} cases correct")
 
-    bad += (maintainer_bad + dev_bad + nightly_date_bad + cli_bad + nightly_blob_bad
+    # `rc_stamp_number` against a real candidate stamp, a stable one without the field, and the
+    # shapes `build.rs::is_rc_number` refuses (zero, a leading zero), which must read as absent.
+    rc_cases = {
+        "features:--no-default-features+symbols+rc:2+tel:98c4b7d37a4c": "2",
+        "features:--no-default-features+symbols+rc:12+tel:98c4b7d37a4c": "12",
+        "features:--no-default-features+symbols+tel:98c4b7d37a4c": None,
+        "features:--no-default-features+symbols+rc:0+tel:98c4b7d37a4c": None,
+        "features:--no-default-features+symbols+rc:01+tel:98c4b7d37a4c": None,
+        "features:--no-default-features+symbols+rc:2": "2",
+    }
+    rc_bad = 0
+    for stamp, want in rc_cases.items():
+        got = rc_stamp_number(stamp)
+        if got != want:
+            rc_bad += 1
+            print(f"  FAIL — rc_stamp_number({stamp!r}) = {got!r}, want {want!r}")
+    print(f"check-package: rc_stamp_number {len(rc_cases) - rc_bad}/{len(rc_cases)} cases correct")
+
+    bad += (maintainer_bad + dev_bad + nightly_date_bad + cli_bad + nightly_blob_bad + rc_bad
             + catalog_bad + sinks_bad + int(catalog_vacuous) + boundary_bad)
     return 1 if bad else 0
 
@@ -532,6 +565,15 @@ if len(sys.argv) > 2 and sys.argv[1] == "--print-nightly-date":
     date = nightly_stamp_date(stamp_path.read_text())
     if date is not None:
         print(date)
+    sys.exit(0)
+
+# The same entry point onto `rc_stamp_number`, for the same caller and the same reason: the source
+# bundle of a release candidate is named `plxnative-source-X.Y.Z-rc.N`, and the number comes from
+# the stamp. Empty output (exit 0) when the build was not a candidate.
+if len(sys.argv) > 2 and sys.argv[1] == "--print-rc":
+    rc = rc_stamp_number(Path(sys.argv[2]).read_text())
+    if rc is not None:
+        print(rc)
     sys.exit(0)
 
 # ---- the two release documents -----------------------------------------------------------------
@@ -1291,6 +1333,26 @@ if binary.exists():
         # inside it: whatever configuration produced it, the package users install may not claim a
         # version no release will ever carry.
         says_dev = DEV_VERSION in blob
+        # A RELEASE CANDIDATE is the stable package with one string changed: the binary reports
+        # `X.Y.Z-rc.N`, numbered by the stamp's `+rc:` field (`build.rs`'s PLX_CHANNEL=rc arm).
+        # Graded from both sides, like the dev suffix: a candidate must say it is one, and a build
+        # that is not a candidate must not — that second half is what keeps an `RC=` left in a
+        # shell from quietly shipping as the release itself.
+        rc_number = rc_stamp_number(STAMP_TEXT)
+        rc_prefix = f'plxnative@{appinfo["version"]}-rc.'.encode()
+        if rc_number is not None:
+            check(IS_STABLE,
+                  f"a release candidate (+rc:{rc_number}) is a build of the stable id, not {PACKAGED_ID}")
+            check(BUILD == "release",
+                  f"the release candidate is a RELEASE build stamp (pkg/.build-config decoded as {BUILD!r})")
+            rc_expect = rc_prefix + rc_number.encode()
+            check(rc_expect in blob,
+                  f"the {PACKAGED_ID} binary reports {rc_expect.decode()} (build.rs's PLX_CHANNEL=rc "
+                  "arm, numbered by the pkg/.build-config +rc: stamp)")
+        else:
+            check(rc_prefix not in blob,
+                  f"the {PACKAGED_ID} binary does not report a release candidate "
+                  f"({rc_prefix.decode()}…) without a +rc: stamp")
         if IS_STABLE:
             check(not says_dev,
                   f"the {PACKAGED_ID} binary reports a released version, not {DEV_VERSION.decode()}"

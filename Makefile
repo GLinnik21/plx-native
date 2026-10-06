@@ -607,7 +607,19 @@ endif
 # `PLX_CHANNEL=nightly FLAVOR=debug` must not reach cargo, and a blank value must not either (it is
 # a different cargo fingerprint from unset; see PLX_RELEASE). `build.rs` reads blank and unset as
 # the same "not nightly", exactly as it does PLX_RELEASE.
-override PLX_CHANNEL := $(if $(filter nightly,$(FLAVOR)),nightly,)
+#
+# `RC=<n>` selects the fourth arm, `PLX_CHANNEL=rc`: a release CANDIDATE of the version the tree
+# already names, reporting `X.Y.Z-rc.<n>` (`.github/workflows/rc.yml` is the only caller that should
+# need it). Refused at parse time for anything but `FLAVOR=stable RELEASE=1`, because a candidate is
+# by definition the release build of the released id with one string changed — a candidate of the
+# debug or nightly install is not a candidate of anything users will get. The number's own shape
+# (positive, no leading zero) is `build.rs::is_rc_number`'s to grade; the Makefile does not keep a
+# second copy of that rule.
+ifneq ($(strip $(RC)),)
+$(if $(filter stable,$(FLAVOR)),,$(error RC=$(RC) builds a release candidate of $(APPID_STABLE) — it needs FLAVOR=stable, not "$(FLAVOR)"))
+$(if $(RELEASE),,$(error RC=$(RC) needs RELEASE=1 — a release candidate is the release build, not a dev one))
+endif
+override PLX_CHANNEL := $(if $(filter nightly,$(FLAVOR)),nightly,$(if $(strip $(RC)),rc,))
 ifneq ($(PLX_CHANNEL),)
 export PLX_CHANNEL
 else
@@ -622,6 +634,14 @@ endif
 ifeq ($(FLAVOR),nightly)
 PLX_NIGHTLY_DATE ?= $(shell date -u +%Y%m%d)
 export PLX_NIGHTLY_DATE
+endif
+# The candidate number, exported only for `PLX_CHANNEL=rc` for the same fingerprint reason as
+# PLX_CHANNEL itself: unset everywhere else, so no other build's cargo inputs move.
+override PLX_RC := $(if $(filter rc,$(PLX_CHANNEL)),$(strip $(RC)),)
+ifneq ($(PLX_RC),)
+export PLX_RC
+else
+unexport PLX_RC
 endif
 # ...and the LINK needs its own witness, because pkg/plxnative is a path BOTH configurations
 # write. Per-dir targets keep cargo honest, but after a RELEASE=1 build the dev .a is older
@@ -705,8 +725,10 @@ TELEMETRY_CFG  = $(shell printf '%s|%s|%s|%s' '$(PLX_SENTRY_DSN)' '$(PLX_POSTHOG
 # the same tracked version a day apart must not silently share pkg/plxnative just because nothing
 # else about the configuration moved. `$(filter nightly,$(FLAVOR))` guards it exactly the way
 # PLX_CHANNEL and PLX_NIGHTLY_DATE above are themselves guarded, so a non-nightly stamp is
-# byte-for-byte what it always was.
-RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFILE)),+profile:$(ARM_PROFILE),)$(if $(SYMBOLS),+symbols,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)+tel:$(TELEMETRY_CFG)
+# byte-for-byte what it always was. `+rc:<n>` is the same argument for a release candidate: the
+# number is what `ci/check-package.py` grades the binary's `X.Y.Z-rc.<n>` against, and an rc.1 and
+# an rc.2 of one tree must not share a link.
+RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFILE)),+profile:$(ARM_PROFILE),)$(if $(SYMBOLS),+symbols,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)$(if $(PLX_RC),+rc:$(PLX_RC),)+tel:$(TELEMETRY_CFG)
 # Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
 # Both choices are load-bearing, and both were arrived at by measuring the failures:
 #   * A rule cannot do it. macOS ships GNU make 3.81, which decides whether a target is up to date
@@ -1637,6 +1659,9 @@ check-python-rest: check-localization check-c-unit
 	@# network, so a broken `ci/nightly.py` is caught here rather than at 03:00 UTC in the
 	@# scheduled run nobody is watching.
 	python3 ci/nightly.py --selftest
+	@# The release-candidate workflow's pure logic (numbering, the version/line rule it shares
+	@# with release.yml, the prerelease body) — same reason: a candidate is cut by hand, rarely.
+	python3 ci/rc.py --selftest
 	@# The two host-side readers of the back-buffer-wait captures, against synthetic traces/JSONL.
 	python3 tools/analyze-sched-trace.py --self-test
 	python3 tools/analyze-hwcnt-wait.py --self-test

@@ -246,6 +246,22 @@ local build embeds the local NDK path.
 
 ### 4. Publish through the workflow
 
+**Optionally, cut a release candidate first.** `rc.yml` takes the same inputs and builds the same
+stable package, published as a prerelease whose binary reports `X.Y.Z-rc.N` (tag
+`rc/vX.Y.Z-rc.N`, never `latest`, never in the Homebrew Channel; `docs/distribution.md` §7c):
+
+```sh
+gh workflow run rc.yml -f version=X.Y.Z            # rc.1; run it again after a fix for rc.2
+```
+
+Both documents must already be on the line, as for the release. Once a candidate has been tried,
+promote it — the release then refuses unless its bump produces the candidate's exact tree, so a
+commit that landed on the line since means cutting another candidate, not shipping untested code:
+
+```sh
+gh workflow run release.yml -f version=X.Y.Z -f candidate=rc/vX.Y.Z-rc.N
+```
+
 ```sh
 gh workflow run release.yml -f version=X.Y.Z     # or -f bump=minor (trunk cuts minors)
 gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
