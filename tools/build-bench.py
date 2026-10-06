@@ -78,7 +78,8 @@ toolchain, target dir, feature flags and RUSTFLAGS the real recipes use; only th
 skeleton below is mirrored, and ci/test_build_bench.py fails when it drifts from the Makefile's
 recipes. Run it through `make build-bench`, which also exports the same environment `make
 test-fast` gives cargo (a bare cargo and a make-driven one fingerprint differently) and queues on
-the machine-wide `make check` lock (tools/check-lock.py) so two builds never skew each other.
+the machine-wide `make check` lock (tools/check-lock.py) EXCLUSIVELY: it waits for every running check
+and no new one starts meanwhile, so nothing else builds while it measures.
 
 Safety: refuses under RELEASE=1; never touches the TV; never cleans a target dir; edits only
 EDIT-TARGET files, refuses to start if one has uncommitted changes, restores the original bytes in

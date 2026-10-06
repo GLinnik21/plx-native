@@ -212,7 +212,7 @@ def raise_interrupted(signum, _frame):
 if __name__ == "__main__":
     # Every branch is its own session, so none of these reaches the compiler on its own: SIGHUP (a
     # closed terminal, ssh, tmux) and SIGQUIT must stop the branches exactly as SIGTERM does, or they
-    # outlive the runner while check-lock releases the machine-wide lock under them.
+    # outlive the runner while check-lock releases its machine-wide slot under them.
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
         signal.signal(sig, raise_interrupted)
     try:

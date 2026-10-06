@@ -499,7 +499,7 @@ class MakefileWiringTests(unittest.TestCase):
     def test_dry_run_goes_through_the_lock_with_the_make_environment(self):
         proc = self.make("-n", "build-bench-quick", "ARGS=--runs 2")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertRegex(proc.stdout, r"tools/check-lock\.py -- env PLX_BENCH_VIA_MAKE=1[\s\S]*tools/build-bench\.py --quick --runs 2")
+        self.assertRegex(proc.stdout, r"tools/check-lock\.py --exclusive -- env PLX_BENCH_VIA_MAKE=1[\s\S]*tools/build-bench\.py --quick --runs 2")
         full = self.make("-n", "build-bench").stdout
         self.assertNotIn("--quick", full)
 

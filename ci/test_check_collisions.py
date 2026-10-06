@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Two `make check` runs on one machine (two worktrees) must not collide on a scratch path.
 
-`make check` is serialized machine-wide by tools/check-lock.py, but `PLX_CHECK_LOCK=off`, a lone
-`make check-python-rest`, and CI-style single steps are not, and the steps below were measured to
-corrupt each other when two checkouts ran them at once:
+`make check` is bounded to two concurrent runs machine-wide by tools/check-lock.py, so two checkouts
+DO run it at once (and `PLX_CHECK_LOCK=off`, a lone `make check-python-rest` and CI-style single
+steps are not queued at all). The steps below were measured to corrupt each other when two checkouts
+ran them at once:
 
   * ci/test-compat.py defaulted `--output` to the fixed `/tmp/plx-compat-tests`
     ("ld: open() failed, errno=17 (File exists) for '.../auxv-tsan'");
