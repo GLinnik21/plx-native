@@ -754,7 +754,126 @@ fn known_audio_channels_cannot_fall_back_to_an_unknown_codec_default() {
     let mut track = trk(1, "aac", "eng", false);
     track.channels = 8;
     assert!(caps.audio_supports("aac", 0), "legacy unknown remains compatible");
-    assert_eq!(pick_dp_audio_eligible(&[track.clone()], "aac", AudioLangPrefs::default(), |c, n| caps.audio_supports(c, n)), None);
+    assert_eq!(pick_dp_audio_eligible(&[track.clone()], "aac", AudioLangPrefs::default(), 0, StandIn::Any, |c, n| caps.audio_supports(c, n)), None);
     track.channels = 6;
-    assert_eq!(pick_dp_audio_eligible(&[track], "aac", AudioLangPrefs::default(), |c, n| caps.audio_supports(c, n)), Some((0, "aac".into(), 1)));
+    assert_eq!(pick_dp_audio_eligible(&[track], "aac", AudioLangPrefs::default(), 0, StandIn::Any, |c, n| caps.audio_supports(c, n)), Some((0, "aac".into(), 1)));
+}
+
+// ---- StandIn::SameKind: never stand in a different KIND of track ---------------------------
+
+fn titled(mut s: plx_data::metadata::Stream, title: &str) -> plx_data::metadata::Stream {
+    s.title = title.into();
+    s
+}
+
+fn aac_caps() -> plx_platform::devcaps::Caps {
+    plx_platform::devcaps::Caps { audio_channels: [("aac".into(), 6)].into(), ..plx_platform::devcaps::Caps::assumed() }
+}
+
+/// Direct-play pick under `stand_in` with the stock capability set (AAC capped at 6 channels).
+fn pick_kind(tracks: &[plx_data::metadata::Stream], acodec: &str, prefs: AudioLangPrefs<'_>, session: i64, stand_in: StandIn)
+    -> Option<i64>
+{
+    let caps = aac_caps();
+    pick_dp_audio_eligible(tracks, acodec, prefs, session, stand_in, |c, n| caps.audio_supports(c, n))
+        .map(|(_, _, id)| id)
+}
+
+fn dts(id: i64, lang: &str, default: bool) -> plx_data::metadata::Stream {
+    trk(id, "dca", lang, default)
+}
+
+fn wide_default_and_commentary() -> [plx_data::metadata::Stream; 2] {
+    let mut main = titled(server_selected(trk(16046, "aac", "eng", true)), "Original");
+    main.channels = 8;
+    [main, titled(trk(16047, "aac", "eng", false), "Commentary")]
+}
+
+#[test]
+fn a_commentary_is_never_played_for_a_default_that_cannot_direct_play() {
+    let tracks = wide_default_and_commentary();
+    let none = AudioLangPrefs::default();
+    assert_eq!(pick_kind(&tracks, "aac", none, 0, StandIn::SameKind), None);
+    // today's behaviour, pinned: the commentary is the only direct-playable track
+    assert_eq!(pick_kind(&tracks, "aac", none, 0, StandIn::Any), Some(16047));
+}
+
+#[test]
+fn a_commentary_is_not_the_sibling_of_a_pick_or_a_preferred_language() {
+    // a PMS selection that cannot play: its only same-language sibling is the commentary
+    let mut picked = server_selected(dts(1, "eng", false));
+    picked.title = "Original".into();
+    let tracks = [trk(9, "ac3", "eng", true), picked, titled(trk(3, "ac3", "eng", false), "Commentary")];
+    let mut tracks = tracks;
+    tracks[0].codec = "truehd".into();
+    assert_eq!(pick_kind(&tracks, "truehd", AudioLangPrefs::default(), 0, StandIn::SameKind), None);
+    // the account language names English; English holds a commentary the TV could play
+    let wide = wide_default_and_commentary();
+    let prefs = AudioLangPrefs { show: None, account: Some("en") };
+    assert_eq!(pick_kind(&wide, "aac", prefs, 0, StandIn::SameKind), None);
+}
+
+#[test]
+fn an_explicitly_selected_commentary_direct_plays() {
+    let mut tracks = wide_default_and_commentary();
+    tracks[0].selected = false;
+    tracks[1].selected = true;
+    assert_eq!(pick_kind(&tracks, "aac", AudioLangPrefs::default(), 0, StandIn::SameKind), Some(16047));
+}
+
+#[test]
+fn a_default_with_only_a_foreign_playable_track_goes_to_the_server() {
+    let tracks = [trk(1, "truehd", "eng", true), trk(2, "ac3", "fra", false)];
+    assert_eq!(pick_kind(&tracks, "truehd", AudioLangPrefs::default(), 0, StandIn::SameKind), None);
+}
+
+#[test]
+fn a_same_language_copy_still_stands_in() {
+    let tracks = [trk(1, "truehd", "eng", true), trk(2, "ac3", "eng", false)];
+    assert_eq!(pick_kind(&tracks, "truehd", AudioLangPrefs::default(), 0, StandIn::SameKind), Some(2));
+}
+
+#[test]
+fn an_untagged_copy_counts_as_the_same_language() {
+    for lang in ["eng", ""] {
+        let tracks = [trk(1, "truehd", lang, true), trk(2, "ac3", "", false)];
+        assert_eq!(pick_kind(&tracks, "truehd", AudioLangPrefs::default(), 0, StandIn::SameKind), Some(2), "{lang:?}");
+    }
+}
+
+#[test]
+fn a_default_flag_on_a_commentary_does_not_make_it_the_reference() {
+    let tracks = [titled(trk(1, "ac3", "eng", true), "Commentary"), trk(2, "ac3", "eng", false)];
+    assert_eq!(pick_kind(&tracks, "ac3", AudioLangPrefs::default(), 0, StandIn::SameKind), Some(2));
+}
+
+#[test]
+fn a_lone_commentary_titled_track_is_just_a_track() {
+    let tracks = [titled(trk(1, "ac3", "eng", true), "Director's Commentary")];
+    assert_eq!(pick_kind(&tracks, "ac3", AudioLangPrefs::default(), 0, StandIn::SameKind), Some(1));
+}
+
+#[test]
+fn a_session_pick_that_cannot_direct_play_is_not_replaced() {
+    let tracks = [trk(1, "ac3", "fra", true), dts(2, "eng", false)];
+    assert_eq!(pick_kind(&tracks, "ac3", AudioLangPrefs::default(), 2, StandIn::SameKind), None);
+    let tracks = [trk(1, "ac3", "fra", true), dts(2, "eng", false), trk(3, "ac3", "eng", false)];
+    assert_eq!(pick_kind(&tracks, "ac3", AudioLangPrefs::default(), 2, StandIn::SameKind), Some(3));
+    // a playable session pick is simply honoured
+    assert_eq!(pick_kind(&tracks, "ac3", AudioLangPrefs::default(), 3, StandIn::SameKind), Some(3));
+}
+
+#[test]
+fn any_stand_in_prefers_a_non_commentary_track() {
+    // `Any` keeps today's ladder (the truehd default is not playable, so it reaches the final rung)
+    // and the final rung now skips the commentary: the French AC3, not the English commentary.
+    let tracks = [trk(1, "truehd", "eng", true), titled(trk(2, "ac3", "eng", false), "Commentary"), trk(3, "ac3", "fra", false)];
+    assert_eq!(pick_kind(&tracks, "truehd", AudioLangPrefs::default(), 0, StandIn::Any), Some(3));
+}
+
+#[test]
+fn the_language_arm_of_the_encoder_pick_skips_a_commentary() {
+    let tracks = [titled(trk(1, "ac3", "eng", false), "Commentary"), trk(2, "dca", "eng", true)];
+    let prefs = AudioLangPrefs { show: Some("en-US"), account: None };
+    assert_eq!(encode_audio_id(false, 99, 0, &tracks, prefs), 2);
 }

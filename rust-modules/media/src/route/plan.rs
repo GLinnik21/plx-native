@@ -2298,6 +2298,17 @@ enum AudioIntent<'a> {
     FileDefault,
 }
 
+/// How far a direct-play pick may reach for a track other than the one an intent names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // `SameKind` is exercised by tests only until the callers switch to it
+enum StandIn {
+    /// Today's ladder: any direct-playable track ends it (a non-commentary one first).
+    Any,
+    /// Never answer an intent with a track of another language or a commentary: the intent's own
+    /// track, else a direct-playable copy of the same kind, else `None` (the server converts it).
+    SameKind,
+}
+
 /// Order: a PMS per-part selection > the Plex language preferences in [`AudioLangPrefs`] order (a
 /// preference with no track in it is left out) > the file's default. A path that cannot carry an
 /// entry moves on to the NEXT one — a French DTS pick with no direct-playable French sibling
@@ -2313,14 +2324,20 @@ enum AudioIntent<'a> {
 /// A PMS selection ranks first whatever its codec: the paths differ only in how they CARRY it (direct play
 /// takes a direct-playable sibling in its language, a re-encode encodes the track itself). A
 /// preference below it therefore never wins just because the pick is a DTS.
-fn audio_intents<'a>(tracks: &[plx_data::metadata::Stream], prefs: AudioLangPrefs<'a>) -> Vec<AudioIntent<'a>> {
+fn audio_intents<'a>(
+    tracks: &[plx_data::metadata::Stream], prefs: AudioLangPrefs<'a>, session_pick: i64,
+) -> Vec<AudioIntent<'a>> {
+    let session = (session_pick > 0)
+        .then(|| tracks.iter().position(|s| s.id == session_pick))
+        .flatten()
+        .map(AudioIntent::Selection);
     let selection = tracks.iter().position(|s| s.selected && !s.default)
         .map(AudioIntent::Selection);
     let langs = prefs
         .in_order()
         .filter(|l| tracks.iter().any(|s| lang_matches(l, &s.lang_code)))
         .map(AudioIntent::Language);
-    selection.into_iter().chain(langs).chain(std::iter::once(AudioIntent::FileDefault)).collect()
+    session.into_iter().chain(selection).chain(langs).chain(std::iter::once(AudioIntent::FileDefault)).collect()
 }
 
 
@@ -2383,12 +2400,13 @@ fn pick_dp_audio_mode(
     tracks: &[plx_data::metadata::Stream], default_acodec: &str,
     prefs: AudioLangPrefs<'_>, mode: DirectPlayMode,
 ) -> Option<(i32, String, i64)> {
-    pick_dp_audio_eligible(tracks, default_acodec, prefs,
+    pick_dp_audio_eligible(tracks, default_acodec, prefs, 0, StandIn::Any,
         |codec, channels| audio_direct_plays(mode, codec, channels))
 }
 
 fn pick_dp_audio_eligible(
     tracks: &[plx_data::metadata::Stream], default_acodec: &str, prefs: AudioLangPrefs<'_>,
+    session_pick: i64, stand_in: StandIn,
     eligible: impl Fn(&str, i64) -> bool,
 ) -> Option<(i32, String, i64)> {
     let dp = |codec: &str| eligible(codec, 0);
@@ -2402,7 +2420,10 @@ fn pick_dp_audio_eligible(
     }
     let pick = |i: usize| (i as i32, tracks[i].codec.to_lowercase(), tracks[i].id);
     let dp_at = |s: &plx_data::metadata::Stream| eligible(&s.codec, s.channels);
-    let honoured = audio_intents(tracks, prefs).into_iter().find_map(|intent| match intent {
+    if stand_in == StandIn::SameKind {
+        return same_kind_pick(tracks, default_acodec, audio_intents(tracks, prefs, session_pick), dp_at).map(pick);
+    }
+    let honoured = audio_intents(tracks, prefs, session_pick).into_iter().find_map(|intent| match intent {
         AudioIntent::Selection(i) if dp_at(&tracks[i]) => Some(i),
         AudioIntent::Selection(i) => tracks
             .iter()
@@ -2423,14 +2444,90 @@ fn pick_dp_audio_eligible(
             return Some(pick(i));
         }
     }
-    // any direct-playable track (smart direct-play over a non-DP default)
-    tracks.iter().position(dp_at).map(pick)
+    // any direct-playable track (smart direct-play over a non-DP default), a commentary last
+    (0..tracks.len())
+        .find(|&i| dp_at(&tracks[i]) && !audio_is_commentary(tracks, i))
+        .or_else(|| tracks.iter().position(dp_at))
+        .map(pick)
+}
+
+/// Whether two audio tracks' languages are the same for a stand-in: the preference match either
+/// way, or an untagged / `und` side (an unlabelled copy is assumed to be a copy of the same
+/// audio — [`lang_matches`] alone matches nothing on an empty tag).
+fn same_audio_language(a: &str, b: &str) -> bool {
+    let blank = |l: &str| l.trim().is_empty() || l.trim().eq_ignore_ascii_case("und");
+    blank(a) || blank(b) || lang_matches(a, b) || lang_matches(b, a)
+}
+
+/// Whether track `i` is a commentary: titled one AND not the only track of its language (a film
+/// whose single English track is titled "Director's Commentary" is just its audio).
+fn audio_is_commentary(tracks: &[plx_data::metadata::Stream], i: usize) -> bool {
+    plx_data::metadata::track_label::is_commentary(&tracks[i].title)
+        && tracks.iter().enumerate().any(|(j, s)| {
+            j != i
+                && same_audio_language(&tracks[i].lang_code, &s.lang_code)
+                && !plx_data::metadata::track_label::is_commentary(&s.title)
+        })
+}
+
+/// The first direct-playable track of the same language and the same commentary-ness as `target`.
+fn dp_sibling(
+    tracks: &[plx_data::metadata::Stream], target: usize, dp_at: impl Fn(&plx_data::metadata::Stream) -> bool,
+) -> Option<usize> {
+    let commentary = audio_is_commentary(tracks, target);
+    (0..tracks.len()).find(|&j| {
+        dp_at(&tracks[j])
+            && same_audio_language(&tracks[target].lang_code, &tracks[j].lang_code)
+            && audio_is_commentary(tracks, j) == commentary
+    })
+}
+
+/// [`StandIn::SameKind`]: the first intent that names a track decides, and what it cannot carry
+/// is `None` — never another language, never a commentary.
+fn same_kind_pick(
+    tracks: &[plx_data::metadata::Stream], default_acodec: &str, intents: Vec<AudioIntent<'_>>,
+    dp_at: impl Fn(&plx_data::metadata::Stream) -> bool,
+) -> Option<usize> {
+    let carry = |i: usize| if dp_at(&tracks[i]) { Some(i) } else { dp_sibling(tracks, i, &dp_at) };
+    for intent in intents {
+        match intent {
+            AudioIntent::Selection(i) => return carry(i),
+            AudioIntent::Language(l) => {
+                let mains: Vec<usize> = (0..tracks.len())
+                    .filter(|&i| lang_matches(l, &tracks[i].lang_code) && !audio_is_commentary(tracks, i))
+                    .collect();
+                // a language holding only commentary names no track to play: next intent
+                if !mains.is_empty() {
+                    return mains.into_iter().find(|&i| dp_at(&tracks[i]));
+                }
+            }
+            AudioIntent::FileDefault => {
+                let flagged = tracks.iter().position(|s| s.default);
+                let reference = match flagged {
+                    Some(d) if audio_is_commentary(tracks, d) => (0..tracks.len())
+                        .find(|&j| {
+                            same_audio_language(&tracks[d].lang_code, &tracks[j].lang_code)
+                                && !audio_is_commentary(tracks, j)
+                        })
+                        .unwrap_or(d),
+                    Some(d) => d,
+                    None => tracks
+                        .iter()
+                        .position(|s| s.codec.eq_ignore_ascii_case(default_acodec))
+                        .unwrap_or(0),
+                };
+                return carry(reference);
+            }
+        }
+    }
+    None
 }
 
 /// Stream id named on the remux/re-encode PUT and start.mkv — [`audio_intents`]' ranking, carried
 /// by an encoder instead of a direct play (the first entry with a usable id wins).
 ///
-/// A remux COPIES, so this is the smart-DP sibling (`dp_audio_id`) — putting a selected
+/// A remux COPIES what the profile admits and the server converts the rest, so this is the
+/// smart-DP sibling (`dp_audio_id`) — putting a selected
 /// TrueHD or unsupported DTS track would ship audio the TV cannot decode. `env_audio_sid` is the session/retry
 /// pick and wins on re-encode when set, including a remux leftover sibling (mid-play quality drop
 /// keeps what is already playing); a cold play zeros it (`request_play`). Otherwise:
@@ -2455,7 +2552,7 @@ fn encode_audio_id(
     if env_audio_sid > 0 {
         return env_audio_sid;
     }
-    audio_intents(tracks, prefs)
+    audio_intents(tracks, prefs, 0)
         .into_iter()
         .find_map(|intent| match intent {
             AudioIntent::Selection(i) => Some(tracks[i].id).filter(|&id| id > 0),
@@ -2464,9 +2561,10 @@ fn encode_audio_id(
             {
                 Some(dp_audio_id)
             }
-            AudioIntent::Language(l) => {
-                tracks.iter().find(|s| s.id > 0 && lang_matches(l, &s.lang_code)).map(|s| s.id)
-            }
+            AudioIntent::Language(l) => (0..tracks.len())
+                .filter(|&i| tracks[i].id > 0 && lang_matches(l, &tracks[i].lang_code))
+                .min_by_key(|&i| audio_is_commentary(tracks, i))
+                .map(|i| tracks[i].id),
             AudioIntent::FileDefault => Some(dp_audio_id),
         })
         .unwrap_or(dp_audio_id)
