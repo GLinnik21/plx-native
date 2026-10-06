@@ -2177,28 +2177,27 @@ mod flight_tests {
     /// A seek tap on a transcode hands the PMS half to a worker: the frame returns without waiting
     /// for the server, a flight is outstanding, and the seek lands on a later frame.
     ///
-    /// "Without waiting" is graded by the frame's duration against the server's hold, NOT by the
-    /// request log being empty when the frame returns: the rig logs a `/decision` the moment it
-    /// arrives and holds the answer, and the worker may legitimately have sent it by then. The log
-    /// check failed in 2 of 4 gate runs of two `make check`s side by side (the worker was scheduled
-    /// before the frame thread got back); the frame cannot return inside the hold if it waited for
-    /// the answer.
+    /// "Without waiting" is graded CAUSALLY: the rig is told to hold every `/decision` answer, so
+    /// when the frame returns no answer has been delivered, and a frame that had made the round trip
+    /// itself could not have returned at all until the server's safety release. Nothing here depends
+    /// on how long the frame took. The request LOG is not graded: the rig logs a `/decision` the
+    /// moment it arrives and the worker may legitimately have sent it by then (the earlier
+    /// `decisions() == 0` check failed in 2 of 4 gate runs of two `make check`s side by side).
     #[test]
     fn a_transcode_seek_frame_makes_no_pms_call_and_the_worker_lands_it_later() {
-        const HOLD_MS: u64 = 600;
-        let mut rig = Rig::new(HOLD_MS);
+        let mut rig = Rig::new(150);
         rig.frame();
         assert_eq!(rig.flight.decisions(), 0, "sanity: an idle frame asks PMS nothing");
         let before = crate::route::transcode_session(&rig.ps);
 
+        rig.flight.hold_decisions();
         crate::player::request_seek(SEEK_TARGET_NS);
-        let started = std::time::Instant::now();
         rig.frame();
-        let took = started.elapsed();
-        assert!(
-            took < Duration::from_millis(HOLD_MS),
-            "the seek frame took {took:?}, a PMS round trip on the frame thread (the server holds a /decision for \
-             {HOLD_MS} ms): {:?}",
+        assert_eq!(
+            rig.flight.answered_decisions(),
+            0,
+            "the seek frame returned only after the server answered: a PMS round trip on the frame \
+             thread: {:?}",
             rig.flight.requests()
         );
         assert!(crate::route::flight_outstanding(), "the rebuild must be a flight the pump waits on");
@@ -2210,6 +2209,7 @@ mod flight_tests {
         assert!(super::super::claim_hold::active(), "the old picture is held under the spinner");
         assert!(TX.paused.load(Acquire), "the hold paused the stream, as a direct-play seek does");
 
+        rig.flight.release_decisions();
         rig.frames_until("the seek's landing", |_| !crate::route::flight_outstanding());
         assert_eq!(rig.flight.decisions(), 1, "exactly one /decision for the seek");
         assert_ne!(crate::route::transcode_session(&rig.ps), before, "the landing installed the replacement encoder");

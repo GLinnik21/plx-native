@@ -49,6 +49,21 @@ it fair and deadlock-free:
     queue), and shared waiters can in theory keep losing to a continuous stream of
     benchmarks; benchmarks are rare and a person starts them.
 
+ONE PER CHECKOUT. Whatever the slot count, a second run from the SAME checkout never starts while
+one is running there: it waits (same polling, same 60 s message, which says "another `make check` is
+already running in this worktree" and names the holder) and then proceeds. Two runs in one worktree
+share one cargo target directory and one set of scratch files, which the single lock used to rule
+out. The key is the checkout's resolved root (`git rev-parse --show-toplevel`, then realpath; the
+resolved cwd outside a repository), so a subdirectory, a symlink and a linked worktree resolve as
+they should. It is a flock on `<lock>.wt-<hash of the root>`, released by the kernel if the holder
+dies, and it holds for shared and exclusive requests alike. ACQUISITION ORDER, the same for every
+run: (1) the checkout's lock, held until the command exits; (2) shared: the gate LOCK_SH for the
+instant of claiming, then the first free slot; exclusive: the gate LOCK_EX, then every slot in index
+order. A run waiting for (1) holds nothing else, so it takes no slot from another checkout and an
+exclusive request queued behind its own worktree's check does not yet hold the gate. Nothing is
+taken out of that order, so there is no cycle. One consequence for the benchmark guarantee below: an
+exclusive request starts collecting slots only once its own checkout is free.
+
 While waiting, EVERY current holder's identity (pid, worktree, start time) is printed
 once immediately and then every 60 s, read out of the lock files' own contents: a holder
 writes its identity into its lock file(s) (and fsyncs) right after acquiring and empties
@@ -68,6 +83,7 @@ exercise the waiting paths in a second or two, not for use.
 """
 import fcntl
 import glob
+import hashlib
 import json
 import os
 import signal
@@ -217,7 +233,7 @@ def read_identity(path):
         return None
 
 
-def current_holders(paths):
+def current_holders(paths, exclude_self=False):
     """The identities of whoever holds each lock file in `paths` right now. A file is held
     when a shared flock on it is refused (an exclusive flock is outstanding); the probe is
     dropped at once. Returns (identified holders deduplicated by pid, count of holders whose
@@ -237,14 +253,14 @@ def current_holders(paths):
             os.close(fd)
         info = read_identity(path)
         if info and "pid" in info:
-            if info["pid"] != os.getpid():  # an exclusive request holds some of these itself
+            if not (exclude_self and info["pid"] == os.getpid()):  # an exclusive request holds some itself
                 seen[info["pid"]] = info
         else:
             unknown += 1
     return list(seen.values()), unknown
 
 
-def format_waiting(holders, unknown):
+def format_holders(holders, unknown):
     parts = []
     for info in holders:
         text = "pid %s in %s (started %s)" % (
@@ -255,18 +271,19 @@ def format_waiting(holders, unknown):
     if unknown:
         parts.append("%d holder(s) whose identity is not available yet" % unknown)
     if not parts:
-        return "check-lock: waiting on another `make check` (holder identity not available yet)"
-    return "check-lock: waiting on " + "; ".join(parts)
+        return "another `make check` (holder identity not available yet)"
+    return "; ".join(parts)
 
 
 class Lease:
     """The fds a run holds. Closing them releases the flocks; the identity is emptied first
     so a waiter probing a just-released file does not name a run that has finished."""
 
-    def __init__(self, slot_fds, gate_fd, gate_exclusive):
+    def __init__(self, slot_fds, gate_fd, gate_exclusive, worktree_fd):
         self.slot_fds = slot_fds
         self.gate_fd = gate_fd
         self.gate_exclusive = gate_exclusive
+        self.worktree_fd = worktree_fd
 
     def close(self):
         for fd in self.slot_fds:
@@ -275,23 +292,106 @@ class Lease:
         if self.gate_exclusive:
             os.ftruncate(self.gate_fd, 0)
         os.close(self.gate_fd)
+        os.ftruncate(self.worktree_fd, 0)
+        os.close(self.worktree_fd)
+
+
+def worktree_root():
+    """The checkout this run belongs to: `git rev-parse --show-toplevel` (so a run started in a
+    subdirectory is the same checkout, and a linked worktree is its own), resolved through symlinks.
+    Falls back to the resolved cwd outside a repository, which keeps the key stable for a tree
+    that is not a checkout (the tests' temp directories)."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=10
+        )
+        top = out.stdout.strip()
+        if out.returncode == 0 and top:
+            return os.path.realpath(top)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return os.path.realpath(os.getcwd())
+
+
+def worktree_lock_path(lock_path, root):
+    return "%s.wt-%s" % (lock_path, hashlib.sha1(root.encode("utf-8")).hexdigest()[:12])
+
+
+class Reporter:
+    """The waiting message: printed at once, then every REPORT_INTERVAL s, and a last time with
+    the timeout wording when the deadline passes."""
+
+    def __init__(self, timeout):
+        self.timeout = timeout
+        self.deadline = None if timeout is None else time.monotonic() + timeout
+        self.printed_first = False
+        self.last_report = 0.0
+
+    def timed_out(self):
+        return self.deadline is not None and time.monotonic() >= self.deadline
+
+    def report(self, describe):
+        """`describe()` builds the message; it is only called when something is to be printed."""
+        now = time.monotonic()
+        timed_out = self.timed_out()
+        if not self.printed_first or now - self.last_report >= REPORT_INTERVAL or timed_out:
+            text = describe()
+            if timed_out:
+                text = "check-lock: timed out after %gs waiting for the lock (%s)" % (self.timeout, text)
+            print(text, file=sys.stderr)
+            self.printed_first = True
+            self.last_report = now
+        return timed_out
+
+
+def take_worktree_lock(lock_path, root, exclusive, reporter, interval):
+    """Phase 1 of every acquisition: at most one `make check` per checkout, shared or exclusive.
+    Two runs in one worktree share one cargo target directory and one set of scratch files, which
+    is what the single lock used to rule out. A waiter holds NOTHING else while it waits here (no
+    slot, no gate), so it neither takes a slot from a run in another checkout nor blocks a
+    benchmark. Returns the held fd, or exits 75 on the timeout."""
+    path = worktree_lock_path(lock_path, root)
+    fd = open_lock(path)
+    while True:
+        if try_flock(fd, fcntl.LOCK_EX):
+            write_identity(fd, exclusive, time.time())
+            return fd
+
+        def describe():
+            holders, unknown = current_holders([path], exclude_self=True)
+            who = format_holders(holders, unknown)
+            return (
+                "check-lock: another `make check` is already running in this worktree (%s): waiting on %s"
+                % (root, who)
+            )
+
+        if reporter.report(describe):
+            os.close(fd)
+            sys.exit(EX_TEMPFAIL)
+        time.sleep(interval)
 
 
 def acquire(lock_path, timeout, exclusive, slots):
     lock_dir = os.path.dirname(lock_path)
     if lock_dir:
         os.makedirs(lock_dir, exist_ok=True)
+    reporter = Reporter(timeout)
+    interval = poll_interval()
+    wait_start = time.monotonic()
+    # ACQUISITION ORDER, the same for every run, which is what rules out a deadlock: (1) this
+    # checkout's lock, held for the whole command; (2) exclusive runs only: the gate, then every
+    # slot in index order; shared runs only: the gate SHARED for the instant of claiming, then
+    # the first free slot. Nothing is ever acquired out of that order, and nothing earlier is
+    # held while waiting for something later except an exclusive run's own gate and slots, which
+    # only one run at a time can be collecting.
+    root = worktree_root()
+    wt_fd = take_worktree_lock(lock_path, root, exclusive, reporter, interval)
     if exclusive:
         slots = max(slots, existing_slot_count(lock_path))
     paths = [slot_path(lock_path, i) for i in range(slots)]
     gate_path = lock_path + ".gate"
     fds = [open_lock(p) for p in paths]
     gate_fd = open_lock(gate_path)
-    interval = poll_interval()
-    deadline = None if timeout is None else time.monotonic() + timeout
-    printed_first = False
-    last_report = 0.0
-    wait_start = time.monotonic()
     held = []  # exclusive: indices of the slots collected so far
     gate_held = False
 
@@ -300,9 +400,15 @@ def acquire(lock_path, timeout, exclusive, slots):
             os.ftruncate(fds[i], 0)
         if gate_held:
             os.ftruncate(gate_fd, 0)
+        os.ftruncate(wt_fd, 0)
         for fd in fds:
             os.close(fd)
         os.close(gate_fd)
+        os.close(wt_fd)
+
+    def describe():
+        holders, unknown = current_holders([gate_path] + paths, exclude_self=True)
+        return "check-lock: waiting on " + format_holders(holders, unknown)
 
     while True:
         if exclusive:
@@ -332,17 +438,7 @@ def acquire(lock_path, timeout, exclusive, slots):
                 write_identity(fds[claimed], False, claimed_at)
                 held = [claimed]
                 break
-        now = time.monotonic()
-        timed_out = deadline is not None and now >= deadline
-        if not printed_first or now - last_report >= REPORT_INTERVAL or timed_out:
-            holders, unknown = current_holders([gate_path] + paths)
-            text = format_waiting(holders, unknown)
-            if timed_out:
-                text = "check-lock: timed out after %gs waiting for the lock (%s)" % (timeout, text)
-            print(text, file=sys.stderr)
-            printed_first = True
-            last_report = now
-        if timed_out:
+        if reporter.report(describe):
             give_up()
             sys.exit(EX_TEMPFAIL)
         time.sleep(interval)
@@ -352,7 +448,7 @@ def acquire(lock_path, timeout, exclusive, slots):
             "check-lock: acquired after %.0fs (exclusive: all %d slots)" % (elapsed, len(fds)),
             file=sys.stderr,
         )
-        return Lease(fds, gate_fd, True)
+        return Lease(fds, gate_fd, True, wt_fd)
     print(
         "check-lock: acquired after %.0fs (slot %d of %d)" % (elapsed, held[0] + 1, len(fds)),
         file=sys.stderr,
@@ -360,7 +456,7 @@ def acquire(lock_path, timeout, exclusive, slots):
     for i, fd in enumerate(fds):
         if i != held[0]:
             os.close(fd)
-    return Lease([fds[held[0]]], gate_fd, False)
+    return Lease([fds[held[0]]], gate_fd, False, wt_fd)
 
 
 def run_locked(cmd):

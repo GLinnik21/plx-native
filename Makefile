@@ -1339,7 +1339,8 @@ test: deploy run
 # holder dies, so there is nothing to clean up by hand. Two at once is the measured
 # optimum (2026-10-06: a pair finishes in 0.67-0.76 of the back-to-back time, 5-6 GB
 # peak, no swap growth); a third waits. `PLX_CHECK_SLOTS=1` restores one at a time,
-# `PLX_CHECK_LOCK=off` bypasses the lock. See `check-unlocked` below for the actual
+# `PLX_CHECK_LOCK=off` bypasses the lock. A second run from the SAME checkout always
+# waits for the first. See `check-unlocked` below for the actual
 # suite; CI runs `make check` uncontended, so the wrapper acquires immediately there.
 check:
 	@python3 tools/check-lock.py -- $(MAKE) --no-print-directory check-unlocked

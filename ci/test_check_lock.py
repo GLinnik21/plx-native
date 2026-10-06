@@ -3,11 +3,14 @@
 once, a third waits and names both holders, a killed holder frees its slot, PLX_CHECK_SLOTS=1 is
 the old one-at-a-time lock), exclusive mode for the benchmarks (blocks and is blocked by shared
 runs, cannot be starved by a stream of shared requests, two exclusive requests do not deadlock),
-the default slot count, --timeout, and the PLX_CHECK_LOCK=off escape hatch.
+one `make check` per checkout (a second run in the same worktree waits, keyed on the resolved
+root, with its own message, its place in the acquisition order and exclusive requests), the default
+slot count, --timeout, and the PLX_CHECK_LOCK=off escape hatch.
 
 Hermetic: every test uses a temp lock directory, polls at 50 ms instead of 2 s, and runs no cargo
 and no network. The children's environment is built here, never inherited (see `Run`)."""
 import importlib.util
+import itertools
 import json
 import os
 from pathlib import Path
@@ -22,6 +25,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tools/check-lock.py"
+GIT = "git"  # the version-control binary, only to make a checkout for the root-resolution test
 POLL = "0.05"
 
 # One-line child programs.
@@ -37,6 +41,7 @@ LOGGED = (
     "    open(sys.argv[1],'a').write('%s %s %.6f\\n' % (sys.argv[2], w, t))\n"
     "def admitted():\n"
     "    for p in glob.glob(sys.argv[4] + '*'):\n"
+    "        if '.wt-' in p: continue\n"
     "        try: d = json.load(open(p))\n"
     "        except ValueError: continue\n"
     "        if d.get('pid') == os.getppid() and 'epoch' in d: return d['epoch']\n"
@@ -72,7 +77,15 @@ class Run:
     """One `check-lock.py` invocation. Its stderr goes to a file so a test can poll it without
     blocking on a pipe."""
 
-    def __init__(self, root, lock_path, cmd, slots="2", exclusive=False, timeout=None, env=None):
+    _next_cwd = itertools.count()
+
+    def __init__(self, root, lock_path, cmd, slots="2", exclusive=False, timeout=None, env=None, cwd=None):
+        # Every run is its own "worktree" (its own working directory) unless a test says otherwise: one
+        # `make check` per checkout is part of the lock now, and these tests are about the slots.
+        if cwd is None:
+            cwd = root / ("wt-%d" % next(Run._next_cwd))
+        cwd.mkdir(exist_ok=True)
+        self.cwd = cwd
         self.err_path = root / ("err-%d-%d" % (os.getpid(), id(self)))
         self.err_file = open(self.err_path, "w")
         args = [sys.executable, str(SCRIPT), "--lock", str(lock_path)]
@@ -86,7 +99,7 @@ class Run:
             del extra["PLX_CHECK_SLOTS"]
         self.proc = subprocess.Popen(
             args + ["--", *cmd], stdout=subprocess.DEVNULL, stderr=self.err_file,
-            text=True, env=child_env(extra))
+            text=True, env=child_env(extra), cwd=cwd)
         self.pid = self.proc.pid
 
     def err(self):
@@ -193,8 +206,9 @@ class SharedSlotTests(LockTestCase):
         a, b = self.hold(), self.hold()
         err = self.assert_blocked({}, a, b)
         self.assertEqual(err.count("pid "), 2, err)
-        for needle in ("started", str(Path.cwd())):
-            self.assertIn(needle, err)
+        for run in (a, b):
+            self.assertIn(str(run.cwd.resolve()), err)
+        self.assertIn("started", err)
 
     def test_waiter_prints_the_holders_immediately_not_only_at_timeout(self):
         a, b = self.hold(), self.hold()
@@ -412,6 +426,139 @@ class ExclusiveTests(LockTestCase):
                 self.assertTrue(span["start"] >= shared["end"] or span["end"] <= shared["start"],
                                 "an exclusive run overlapped a shared one")
         self.assertEqual(len(spans), 9)
+
+
+class SameWorktreeTests(LockTestCase):
+    """One `make check` per checkout: two runs in one worktree share one cargo target directory and
+    one set of scratch files, which the single lock used to rule out. A checkout is keyed on its
+    resolved root, not on the cwd string."""
+
+    WAITING = "already running in this worktree"
+
+    def tree(self, name):
+        path = self.root / name
+        path.mkdir()
+        return path
+
+    def quick(self, **kwargs):
+        return self.start(["python3", "-c", "import sys; sys.exit(0)"], **kwargs)
+
+    def test_a_second_run_in_the_same_worktree_waits_while_another_worktree_gets_the_other_slot(self):
+        one, two = self.tree("one"), self.tree("two")
+        first = self.hold(cwd=one)
+        second = self.quick(cwd=one)
+        second.wait_for(self.WAITING)
+        text = second.err()
+        self.assertIn("pid %d " % first.pid, text)
+        self.assertIn(str(one.resolve()), text)
+        # The waiter holds no slot and no gate: a run in another worktree takes the second slot.
+        other = self.hold(cwd=two)
+        self.assertIn("slot 2 of 2", other.err())
+        time.sleep(0.3)
+        self.assertIsNone(second.proc.poll(), "the same-worktree run must still be waiting")
+
+    def test_a_killed_holder_lets_the_same_worktree_waiter_proceed(self):
+        tree = self.tree("one")
+        holder = self.hold(cwd=tree)
+        waiter = self.quick(cwd=tree)
+        waiter.wait_for(self.WAITING)
+        holder.proc.kill()
+        holder.proc.wait()
+        rc, err = waiter.finish()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("acquired", err)
+
+    def test_the_wait_has_a_timeout_and_names_the_holder_and_the_reason(self):
+        tree = self.tree("one")
+        holder = self.hold(cwd=tree)
+        rc, err = self.quick(cwd=tree, timeout=0.5).finish()
+        self.assertEqual(rc, 75, err)
+        self.assertIn("timed out", err)
+        self.assertIn(self.WAITING, err)
+        self.assertIn("pid %d " % holder.pid, err)
+
+    def test_it_holds_for_exclusive_requests_in_both_directions(self):
+        tree = self.tree("one")
+        shared = self.hold(cwd=tree)
+        rc, err = self.quick(cwd=tree, exclusive=True, timeout=0.5).finish()
+        self.assertEqual((rc, self.WAITING in err), (75, True), err)
+        shared.proc.kill()
+        shared.proc.wait()
+        boss = self.hold(cwd=tree, exclusive=True)
+        rc, err = self.quick(cwd=tree, timeout=0.5).finish()
+        self.assertEqual((rc, self.WAITING in err), (75, True), err)
+        self.assertIsNone(boss.proc.poll())
+
+    def test_an_exclusive_request_waiting_for_its_own_worktree_does_not_hold_the_gate(self):
+        # Order: the checkout's lock first, the gate and the slots after. An exclusive run still
+        # queued behind a check in its own worktree has taken neither, so a check in another
+        # worktree is not held up by it.
+        one, two = self.tree("one"), self.tree("two")
+        first = self.hold(cwd=one)
+        boss = self.quick(cwd=one, exclusive=True)
+        boss.wait_for(self.WAITING)
+        elsewhere = self.hold(cwd=two)
+        self.assertIn("slot 2 of 2", elsewhere.err())
+        # Once its own worktree is free it takes the gate and waits for the other check, then runs.
+        first.proc.kill()
+        first.proc.wait()
+        time.sleep(0.5)
+        self.assertIsNone(boss.proc.poll(), "an exclusive run must wait for the check in the other worktree")
+        elsewhere.proc.kill()
+        rc, err = boss.finish()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("exclusive: all 2 slots", err)
+
+    def test_same_worktree_requests_queue_behind_a_running_exclusive_one_and_everyone_gets_in(self):
+        one, two = self.tree("one"), self.tree("two")
+        boss = self.hold(cwd=one, exclusive=True)
+        same = self.quick(cwd=one)
+        elsewhere = self.quick(cwd=two)
+        same.wait_for(self.WAITING)
+        elsewhere.wait_for("waiting on")
+        boss.proc.kill()
+        for run in (same, elsewhere):
+            rc, err = run.finish()
+            self.assertEqual(rc, 0, err)
+
+    def test_two_exclusive_requests_in_one_worktree_beside_a_check_elsewhere_do_not_deadlock(self):
+        log = self.root / "log"
+        one, two = self.tree("one"), self.tree("two")
+        elsewhere = self.logged(log, "shared", 0.5, cwd=two)
+        elsewhere.wait_for("acquired")
+        runs = [self.logged(log, "boss%d" % i, 0.2, cwd=one, exclusive=True, timeout=30) for i in range(2)]
+        for run in [elsewhere, *runs]:
+            rc, err = run.finish(timeout=25)
+            self.assertEqual(rc, 0, err)
+        times = read_log(log)
+        first, second = sorted((times["boss0"], times["boss1"]), key=lambda span: span["start"])
+        self.assertLessEqual(first["end"], second["start"])
+
+    def test_the_key_is_the_resolved_checkout_root_not_the_cwd_string(self):
+        if subprocess.run([GIT, "--version"], capture_output=True).returncode != 0:
+            self.skipTest("the version control tool is not available")
+        repo = self.tree("repo")
+        subprocess.run([GIT, "init", "-q", str(repo)], check=True, capture_output=True)
+        (repo / "sub").mkdir()
+        link = self.root / "link"
+        link.symlink_to(repo)
+        holder = self.hold(cwd=repo)
+        for same in (repo / "sub", link, link / "sub"):
+            rc, err = self.quick(cwd=same, timeout=0.5).finish()
+            self.assertEqual((rc, self.WAITING in err), (75, True), "%s: %s" % (same, err))
+        rc, err = self.quick(cwd=self.tree("elsewhere"), timeout=0.5).finish()
+        self.assertEqual(rc, 0, "a different worktree must not wait: " + err)
+        self.assertIsNone(holder.proc.poll())
+
+    def test_plx_check_lock_off_bypasses_the_worktree_lock_too(self):
+        tree = self.tree("one")
+        holder = self.start(["python3", "-c", SLEEP, "1.5"], slots="1", env={"PLX_CHECK_LOCK": "off"}, cwd=tree)
+        time.sleep(0.3)
+        start = time.monotonic()
+        rc, err = self.quick(slots="1", env={"PLX_CHECK_LOCK": "off"}, cwd=tree).finish(timeout=5)
+        self.assertEqual(rc, 0, err)
+        self.assertLess(time.monotonic() - start, 1.2, err)
+        holder.finish(timeout=5)
 
 
 class DefaultSlotTests(unittest.TestCase):

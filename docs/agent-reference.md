@@ -166,7 +166,9 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   printed every 60 s rather than silently sharing the CPU/RAM. The slot files are
   `~/.cache/plxnative/check.lock` (slot 0, the historical path) and `check.lock.1`; the default is two
   slots on a host with at least 8 cores and 14 GiB of RAM and one otherwise, `PLX_CHECK_SLOTS=N`
-  overrides it (`1` is the old one-at-a-time lock), `PLX_CHECK_LOCK=off` bypasses the lock, and
+  overrides it (`1` is the old one-at-a-time lock), `PLX_CHECK_LOCK=off` bypasses the lock, a second run from the SAME checkout waits for the first
+  whatever the slot count (`check.lock.wt-<hash of the resolved checkout root>`, taken before the gate and
+  the slots; its message reads "another `make check` is already running in this worktree"), and
   `--timeout` (passed to the wrapper directly, not through `make`) exits 75 instead of waiting
   forever. `make build-bench` / `build-bench-quick` pass `--exclusive`: the wrapper takes the intent
   gate `check.lock.gate` and then EVERY slot, and a check that arrives while the gate is held waits, so a

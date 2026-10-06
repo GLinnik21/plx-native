@@ -89,7 +89,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   swap growth, each run of a pair 1.35-1.55x slower than alone. Three at once was not measured and
   is expected to swap on 16 GB, so two is the ceiling. The default is two only on a host with at
   least 8 cores and 14 GiB of RAM (else one); `PLX_CHECK_SLOTS=1` restores one at a time and
-  `PLX_CHECK_LOCK=off` bypasses the lock. `make build-bench*` takes ALL the slots (`--exclusive`)
+  `PLX_CHECK_LOCK=off` bypasses the lock. Whatever the slot count, a second run from the SAME checkout
+  waits for the first (two share one cargo target directory and scratch files). `make build-bench*`
+  takes ALL the slots (`--exclusive`)
   and no new check starts once it has asked. Never launch `make check` in the foreground with a
   short tool timeout — a queued run can wait a long time before it even starts building.
 - While iterating on one crate, `make test-crate C=plx_ui [T=filter] [DEPS=1]` builds and runs only
