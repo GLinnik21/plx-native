@@ -962,6 +962,9 @@ impl RouteLayout {
     /// doc for which routes those are and how to census them.  Passing it here rather than letting
     /// screens draw their own line is what makes that a contract instead of a convention: a new
     /// route cannot forget to answer without deleting an argument.
+    ///
+    /// Returns the y the copy's last line ends at, so a caller can stack one more block (the
+    /// Language page's restart [`KeyHint`](crate::widgets::KeyHint)) after its measured height.
     pub fn draw_narrative(
         self,
         p: Painter,
@@ -970,7 +973,7 @@ impl RouteLayout {
         copy: &str,
         copy_size: std::os::raw::c_int,
         measure: &dyn Measure,
-    ) {
+    ) -> f32 {
         let top = self.narrative_top(back_to.is_some());
         if let Some(back_to) = back_to {
             self.draw_crumb(p, self.narrative.y, back_to, measure);
@@ -982,7 +985,7 @@ impl RouteLayout {
 
         let copy_top = top + title_h + theme::space::MD;
         let copy_bottom = self.action.y - theme::space::XL;
-        TextView::new(copy, copy_size, theme::TEXT_READING)
+        let copy_h = TextView::new(copy, copy_size, theme::TEXT_READING)
             .leading(copy_size as f32 + theme::space::XS)
             .max_lines(12)
             .draw(
@@ -994,6 +997,7 @@ impl RouteLayout {
                     (copy_bottom - copy_top).max(0.0),
                 ),
             );
+        copy_top + copy_h
     }
 }
 

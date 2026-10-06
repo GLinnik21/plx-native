@@ -183,6 +183,13 @@
     "value": "Restart PlxNative to apply this change.",
     "description": "Settings, account, onboarding or privacy UI: settings.language.pending"
   },
+  "settings.language.restart_hint": {
+    "value": "Hold {key} to close PlxNative, then open it again.",
+    "description": "Complete sentence under the Language page's explanation, telling people how to restart the app: holding the remote's BACK button closes it (many LG remotes have no EXIT button). {key} is the BACK button rendered as a keycap; keep exactly one occurrence. Must fit one line of the Settings narrative column at CAPTION size.",
+    "args": {
+      "key": "str"
+    }
+  },
   "settings.language.save_failed": {
     "value": "Could not save the language. Try again.",
     "description": "Settings, account, onboarding or privacy UI: settings.language.save_failed"

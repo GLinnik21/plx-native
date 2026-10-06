@@ -48,6 +48,7 @@
   "settings.language.system": "Idioma del sistema",
   "settings.language.copy": "Elige el idioma de la app para todos en este televisor. Los cambios se aplican al reiniciar PlxNative.",
   "settings.language.pending": "Reinicia PlxNative para aplicar este cambio.",
+  "settings.language.restart_hint": "Mantén {key} para cerrar PlxNative y vuelve a abrirla.",
   "settings.language.save_failed": "No se pudo guardar el idioma. Inténtalo de nuevo.",
   "settings.language.help": "Ayuda a traducir la app.",
   "settings.language.contribute": "Colabora en GitHub",

@@ -107,3 +107,46 @@ fn the_shipped_measure_sums_whole_pixel_advances_like_the_device() {
     assert!(m.width_str("Settings", theme::size::HEADLINE, true) > m.width_str("Settings", theme::size::HEADLINE, false),
         "the bold face is its own metrics");
 }
+
+/// **The Language page's restart hint fits under its copy, on one line, in every language.**
+/// A [`KeyHint`](plx_ui::widgets::KeyHint) never elides and `Header::paint` drops one that would
+/// reach the action band, so a translation that is too wide or a copy that grew too tall would
+/// lose the only sentence saying how to restart. Measured under every copy the page can show.
+#[test]
+fn the_restart_hint_fits_the_language_narrative_in_every_language() {
+    use plx_ui::text_view::TextView;
+    use plx_ui::widgets::KeyHint;
+    let layout = RouteLayout::screen();
+    let mut out = Vec::new();
+    for language in SHIPPED {
+        let _guard = language_on_this_thread_for_test(language);
+        let tag = language.tag();
+        let message = plx_platform::i18n::msg::settings_language_restart_hint("\u{fffc}");
+        if message.matches('\u{fffc}').count() != 1 {
+            out.push(format!("{tag}: needs exactly one key placeholder: {message:?}"));
+        }
+        let w = restart_hint().width(&ShippedMeasure);
+        if w > layout.narrative.w {
+            out.push(format!("{tag}: {w:.0}px wider than the {:.0}px narrative column", layout.narrative.w));
+        }
+        let title = plx_platform::i18n::msg::settings_language_title();
+        let frame = layout.narrative_copy_frame(true, title, layout.action.y, &ShippedMeasure);
+        for copy in [
+            plx_platform::i18n::msg::settings_language_copy(),
+            plx_platform::i18n::msg::settings_language_pending(),
+            plx_platform::i18n::msg::settings_language_saving(),
+            plx_platform::i18n::msg::settings_language_save_failed(),
+        ] {
+            let copy_h = TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
+                .leading(theme::size::LABEL as f32 + theme::space::XS)
+                .max_lines(12)
+                .with_measure(&ShippedMeasure)
+                .measure_h(layout.narrative.w);
+            let bottom = frame.y + copy_h + theme::space::MD + KeyHint::height();
+            if bottom > layout.action.y - theme::space::XL {
+                out.push(format!("{tag}: hint under {copy:?} ends at {bottom:.0}, past the action band"));
+            }
+        }
+    }
+    assert!(out.is_empty(), "{}", out.join("\n"));
+}
