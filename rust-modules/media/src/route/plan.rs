@@ -1639,17 +1639,16 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // it: the intended track is kept, the route is the plain (or enhanced) remux and the wire says
     // `subtitles=none`. The cold-start twin of `decision::side_reader_admitted`. A declared Dolby
     // Vision source stays on the stand-in/burn path: the stand-in direct play keeps its DV.
-    let side_draws = sub_pick.is_some_and(|(_, ord)| ord >= 0)
-        && video_dp
-        && !copy_blocked
-        && !part.is_empty()
-        && matches!(playback_quality, Quality::Auto | Quality::Original)
-        && !dv_decision.presentation.declared().is_some()
-        && super::decision::side_reader_inputs_admit(
-            client.link() == Some(plx_plex::plex::probe::Location::Local),
-            part,
-            source_transport_kbps,
-        );
+    let side_draws = side_reader_draws(
+        sub_pick.is_some_and(|(_, ord)| ord >= 0),
+        video_dp,
+        copy_blocked,
+        part,
+        playback_quality,
+        dv_decision.presentation.declared().is_some(),
+        client.link() == Some(plx_plex::plex::probe::Location::Local),
+        source_transport_kbps,
+    );
     // **A sidecar the server has selected and the app will draw itself** over a remux (the landing's
     // `restore_server_selection`). PMS discards a DOWNLOADED subtitle the moment the part's selection
     // moves off it (docs/pms-api.md, 2026-10-06), so the selection PUT must keep naming it; "do not
@@ -1669,7 +1668,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // ordinal), so it stays on the remux path.
     let mut stand_in_provisional = false;
     let mut commentary_only_stand_in = false;
-    if audio_sel.is_none() && !copy_blocked && sub_pick.is_some() && !side_draws && !tracks.is_empty() && !rk.is_empty() {
+    if audio_sel.is_none() && stand_in_retry(copy_blocked, sub_pick.is_some(), side_draws, !tracks.is_empty(), !rk.is_empty()) {
         match pick_audio(StandIn::Any) {
             Some(s) if usize::try_from(s.0).is_ok_and(|i| !audio_is_commentary(tracks, i)) => {
                 audio_sel = Some(s);
@@ -2768,6 +2767,32 @@ fn playing_audio_language(
         .unwrap_or_default()
 }
 
+/// **Does the app draw the picked embedded subtitle itself beside a remux?** (`build_stream`'s
+/// `side_draws`, and the detail page's preview of it.) A subtitle that renders from the container,
+/// a copyable video, a Part to read, a ceiling that keeps the Original flavor, no declared Dolby
+/// Vision, and an admitted side reader ([`super::decision::side_reader_inputs_admit`]).
+#[allow(clippy::too_many_arguments)]
+fn side_reader_draws(
+    embedded_sub: bool, video_dp: bool, copy_blocked: bool, part: &str, quality: Quality,
+    dv_declared: bool, local_link: bool, part_kbps: i64,
+) -> bool {
+    embedded_sub
+        && video_dp
+        && !copy_blocked
+        && !part.is_empty()
+        && matches!(quality, Quality::Auto | Quality::Original)
+        && !dv_declared
+        && super::decision::side_reader_inputs_admit(local_link, part, part_kbps)
+}
+
+/// **Is the cold-start stand-in pick (`StandIn::Any`) tried when the intended track has no
+/// direct-playable carrier?** A subtitle is to be shown, the app does not draw it itself
+/// (`side_draws`), the copy is not blocked, and the item lists tracks. `build_stream` and the
+/// detail page's [`audio_intent_needs_conversion`] both ask this.
+fn stand_in_retry(copy_blocked: bool, sub_due: bool, side_draws: bool, has_tracks: bool, has_rk: bool) -> bool {
+    !copy_blocked && sub_due && !side_draws && has_tracks && has_rk
+}
+
 /// The file's reference default track: the flagged default, a commentary one yielding to the first
 /// non-commentary track of its language; with no flag, the first track of `default_acodec`, else
 /// the first track. `None` for a file listing no tracks.
@@ -3042,24 +3067,64 @@ pub enum Preview {
     Converts,
 }
 
+/// What the detail page knows that the planner's audio pick also reads.
+#[derive(Clone, Copy)]
+pub struct AudioPreviewInputs<'a> {
+    /// `Media[0].audioCodec` — what `build_stream` passes as `acodec`, so the no-default-flag
+    /// reference track agrees.
+    pub default_acodec: &'a str,
+    /// The item's selected embedded subtitle (`pick_dp_subtitle`), the one subtitle the page can
+    /// see is due on screen.
+    pub sub_selected: bool,
+    pub quality: Quality,
+    pub dv_declared: bool,
+    pub local_link: bool,
+    /// `Media[0].bitrate`, kbps.
+    pub part_kbps: i64,
+}
+
+impl AudioPreviewInputs<'_> {
+    /// No subtitle, no default codec: the pick over the tracks alone.
+    pub const NONE: AudioPreviewInputs<'static> = AudioPreviewInputs {
+        default_acodec: "", sub_selected: false, quality: Quality::Original,
+        dv_declared: false, local_link: false, part_kbps: 0,
+    };
+}
+
 /// **Will the track the planner means to play need the server to convert its audio?** The very
 /// pick `build_stream` makes ([`pick_dp_audio_eligible`] under [`StandIn::SameKind`], the
 /// production policy) over the item's audio tracks: `None` means no direct-playable track carries
 /// the intended one (the file's default, or the PMS selection) and the server converts it on a
-/// video-copy remux. Not a second rule — the planner's own, asked of the detail page's data.
+/// video-copy remux. Then, as `build_stream` does, a due subtitle the app will not draw itself
+/// ([`stand_in_retry`], with [`side_reader_draws`] fed the page's own link, bitrate and ceiling)
+/// re-picks under [`StandIn::Any`]: a non-commentary stand-in direct-plays, so nothing is converted.
 ///
-/// What the page does NOT have, and so does not model: the Plex language preferences (they need
-/// the account call `build_stream` makes) and the cold-start stand-in that keeps a direct-playable
-/// track when a subtitle must be shown. Both can only move a pick between tracks of one item; a
-/// file whose every track is unplayable answers `true` regardless. Unknown tracks answer `false`
-/// (nothing is claimed about audio the page has not seen).
-pub(super) fn audio_intent_needs_conversion(tracks: &[plx_data::metadata::Stream]) -> bool {
-    !tracks.is_empty()
-        && pick_dp_audio_eligible(
-            tracks, "", AudioLangPrefs::default(), 0, StandIn::SameKind,
-            |codec, channels| plx_plex::plex::is_dp_audio_track(codec, channels),
-        )
-        .is_none()
+/// What the page does NOT have, and so does not model: the Plex language preferences — the
+/// show's audio-language pref and the account's need the account call `build_stream` makes — and
+/// a subtitle that only a show or account preference would turn on (only a subtitle already
+/// selected on the item counts as due). Unknown tracks answer `false`.
+pub(super) fn audio_intent_needs_conversion(
+    tracks: &[plx_data::metadata::Stream], part: &str, video_dp: bool, inputs: AudioPreviewInputs<'_>,
+) -> bool {
+    if tracks.is_empty() {
+        return false;
+    }
+    let eligible = |codec: &str, channels: i64| plx_plex::plex::is_dp_audio_track(codec, channels);
+    let pick = |stand_in| pick_dp_audio_eligible(
+        tracks, inputs.default_acodec, AudioLangPrefs::default(), 0, stand_in, eligible,
+    );
+    if pick(StandIn::SameKind).is_some() {
+        return false;
+    }
+    let side_draws = side_reader_draws(
+        inputs.sub_selected, video_dp, false, part, inputs.quality, inputs.dv_declared,
+        inputs.local_link, inputs.part_kbps,
+    );
+    if !stand_in_retry(false, inputs.sub_selected, side_draws, true, true) {
+        return true;
+    }
+    !pick(StandIn::Any)
+        .is_some_and(|(i, _, _)| usize::try_from(i).is_ok_and(|i| !audio_is_commentary(tracks, i)))
 }
 
 /// [`playback_preview`]'s pure core — the four-way answer from the fields it actually needs, so
@@ -3072,11 +3137,25 @@ pub fn playback_preview_of(
     dv: plx_data::metadata::DvPresentation,
     audio_streams: &[plx_data::metadata::Stream],
 ) -> Option<Preview> {
+    playback_preview_with_audio(part, vcodec, width, height, dv, audio_streams, AudioPreviewInputs::NONE)
+}
+
+/// [`playback_preview_of`] with what the page knows about the audio pick ([`AudioPreviewInputs`]).
+pub fn playback_preview_with_audio(
+    part: &str,
+    vcodec: &str,
+    width: i64,
+    height: i64,
+    dv: plx_data::metadata::DvPresentation,
+    audio_streams: &[plx_data::metadata::Stream],
+    mut inputs: AudioPreviewInputs<'_>,
+) -> Option<Preview> {
     if part.is_empty() {
         return None; // nothing playable loaded (a show still resolving its episode)
     }
     let video = video_direct_plays(vcodec, width, height, dv, plx_platform::devcaps::caps());
-    let converted = audio_intent_needs_conversion(audio_streams);
+    inputs.dv_declared = dv.declared().is_some();
+    let converted = video && audio_intent_needs_conversion(audio_streams, part, video, inputs);
     // Mirrors `build_stream`'s own ladder: the video gate decides whether an ENCODER runs at all,
     // and only once it has passed do the container and the audio decide between pulling the file
     // ourselves and asking the server to repackage it.

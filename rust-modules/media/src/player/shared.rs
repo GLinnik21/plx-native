@@ -533,7 +533,8 @@ pub struct Shared {
     /// read-out beside the load spinner says "Switching audio…" instead of "Buffering…". A
     /// [`AudioSwitch`] value. `Picked` (set by `route::commit_audio_selection` once its rebuild is
     /// queued) becomes `Reloading` when the engine reloads (`reset_session_for_reload`) and
-    /// `None` at that session's first presented frame, a full `reset_session`, or a failure. A
+    /// `None` at that session's first presented frame or at a full `reset_session` (a failure
+    /// clears nothing by itself). A
     /// pick whose rebuild never lands (the server refused it) is not left standing: `Picked`
     /// expires after [`AUDIO_PICK_WINDOW_MS`], so a later seek's reload is not named a switch.
     pub audio_switch: AtomicU8,

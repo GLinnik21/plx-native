@@ -4953,9 +4953,12 @@ pub fn rollback_original_recovery(ps: &mut PlaybackSession) -> Option<OriginalRo
 pub fn drop_original_recovery(ps: &PlaybackSession) {
     if let Some(pending) = take_pending_original() {
         // The only caller is real teardown, immediately after `scrobble_stop` took the active
-        // identity. During a direct handoff that identity IS `pending.encoder`, so scrobble owns
-        // its one full stop/resource close. During a remux handoff the active identity is the new
-        // replacement; scrobble closes that one and this branch still owes the held old HLS.
+        // identity. During a direct handoff that identity is the trial's own session: a live
+        // hls encoder's id (== `pending.encoder`, so scrobble owns its one full stop/resource
+        // close) or, from a remux or burn, a fresh id recorded as `replacement_encoder`. During a
+        // remux handoff it is the new replacement. Either way, when `replacement_encoder` is set,
+        // scrobble closes that one and this branch still owes the held old encoder
+        // (`pending.encoder`).
         if !pending.replacement_encoder.is_empty() {
             retire_replaced_encoder(ps, pending.encoder);
         }
@@ -6508,7 +6511,9 @@ pub fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64
 /// answer the planner and the profile use) plays through the server's remux or re-encode with its
 /// audio converted. Not under Forced Direct Play, where an unplayable track is refused instead of
 /// converted, so nothing is converted there. Reads the process-wide mode, like
-/// [`playback_preview`], because the menu holds tracks, not a session.
+/// [`playback_preview`]: the menu's track form is built from the metadata view alone (it keeps no
+/// session), so it cannot read the `direct_play_mode` the session captured and
+/// `commit_audio_selection` uses; the two agree unless the setting changes mid-playback.
 pub fn audio_converted_by_server(codec: &str, channels: i64) -> bool {
     let mode = direct_play_mode();
     mode != DirectPlayMode::Forced && !audio_direct_plays(mode, codec, channels)
@@ -7279,13 +7284,22 @@ fn playback_preview_with_capability(
             && d.audio.iter().any(|a| audio_direct_plays(mode, &a.codec, a.channels)))
             .then_some(Preview::DirectPlay);
     }
-    let p = playback_preview_of(
+    let p = playback_preview_with_audio(
         part,
         vcodec,
         d.width,
         d.height,
         presentation,
         &d.audio,
+        AudioPreviewInputs {
+            default_acodec: &d.acodec,
+            sub_selected: pick_dp_subtitle(&d.subs).is_some(),
+            quality: quality(),
+            dv_declared: false, // filled from `presentation` by the preview itself
+            local_link: plx_plex::plex::client_for(d.sid)
+                .is_some_and(|c| c.link() == Some(plx_plex::plex::probe::Location::Local)),
+            part_kbps: d.bitrate,
+        },
     )?;
     // The user's quality ceiling is the LAST gate `build_stream` applies, so it is the last one
     // here too — and it can only ever downgrade, never promote. Without this the facts row would

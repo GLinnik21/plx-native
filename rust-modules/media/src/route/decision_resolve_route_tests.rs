@@ -2133,6 +2133,71 @@ fn the_preview_names_a_converted_audio_only_when_the_track_that_plays_needs_it()
     assert_eq!(playback_preview(&item("h264", vec![])), Some(Preview::Remux));
 }
 
+/// **The label follows the planner's subtitle stand-in and its reference track.** A due subtitle
+/// the app will not draw itself (`stand_in_retry`) lets a direct-playable track of another
+/// language play (`StandIn::Any`), so nothing is converted; once the side reader is admitted (a
+/// local link, a moderate bitrate) the intended track is kept and the server converts it. With no
+/// default flag the reference track is the Media's audio codec (`reference_default`), not track 0.
+#[test]
+fn the_preview_follows_the_subtitle_stand_in_and_the_media_audio_codec() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Original);
+    let sid = plx_plex::plex::register_for_test("preview-stand-in", "127.0.0.1", 1, "token", "preview-stand-in");
+    fn track(id: i64, codec: &str, channels: i64, lang: &str, default: bool) -> plx_data::metadata::Stream {
+        plx_data::metadata::Stream {
+            id, codec: codec.into(), channels, lang_code: lang.into(), default, ..Default::default()
+        }
+    }
+    let sub = plx_data::metadata::Stream {
+        id: 9, index: 3, codec: "srt".into(), selected: true, ..Default::default()
+    };
+    let item = |audio: Vec<plx_data::metadata::Stream>, acodec: &str, subs: Vec<plx_data::metadata::Stream>, kbps: i64| {
+        plx_data::metadata::Detail {
+            sid,
+            vcodec: "h264".into(),
+            acodec: acodec.into(),
+            part: "/library/parts/1/2/file.mkv".into(),
+            width: 1920,
+            height: 1080,
+            bitrate: kbps,
+            audio,
+            subs,
+            ..Default::default()
+        }
+    };
+    let eng_fra = || vec![track(1, "truehd", 8, "eng", true), track(2, "ac3", 6, "fra", false)];
+    // no subtitle: the strict policy converts the English default (unchanged)
+    assert_eq!(
+        playback_preview(&item(eng_fra(), "truehd", vec![], 10_000)),
+        Some(Preview::OriginalAudioConverted)
+    );
+    // a subtitle is selected and the link is not known local: the French track stands in
+    assert_eq!(
+        playback_preview(&item(eng_fra(), "truehd", vec![sub.clone()], 10_000)),
+        Some(Preview::DirectPlay)
+    );
+    // local link + moderate bitrate: the side reader draws it, the English track is converted
+    plx_plex::plex::client_for(sid).expect("registered").set_link(plx_plex::plex::probe::Location::Local);
+    assert_eq!(
+        playback_preview(&item(eng_fra(), "truehd", vec![sub.clone()], 10_000)),
+        Some(Preview::OriginalAudioConverted)
+    );
+    // …but a Part too heavy for the side reader burns, so the stand-in plays again
+    assert_eq!(
+        playback_preview(&item(eng_fra(), "truehd", vec![sub], 40_000)),
+        Some(Preview::DirectPlay)
+    );
+    // no default flag: the reference track is the Media's audio codec (ac3, track 1), which plays
+    let unflagged = vec![track(1, "truehd", 8, "eng", false), track(2, "ac3", 6, "eng", false)];
+    assert_eq!(playback_preview(&item(unflagged.clone(), "ac3", vec![], 10_000)), Some(Preview::DirectPlay));
+    let unflagged = vec![track(1, "ac3", 6, "eng", false), track(2, "truehd", 8, "fra", false)];
+    assert_eq!(
+        playback_preview(&item(unflagged, "truehd", vec![], 10_000)),
+        Some(Preview::OriginalAudioConverted)
+    );
+}
+
 #[test]
 fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
     // `playback_preview_with_capability_for_test` reads the process-global quality ceiling
