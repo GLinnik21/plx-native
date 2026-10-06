@@ -2620,38 +2620,31 @@ mod repair_confirmation_tests {
     #[cfg(feature = "devtriggers")]
     fn jail_fixture_keeps_repair_open_through_the_screen_tick() {
         let _g = plx_base::testlock::serial();
-        struct Trigger(std::path::PathBuf, Option<Vec<u8>>);
-        impl Drop for Trigger {
-            fn drop(&mut self) {
-                if let Some(bytes) = &self.1 { std::fs::write(&self.0, bytes).unwrap(); }
-                else { std::fs::remove_file(&self.0).unwrap(); }
-            }
-        }
-        let path = plx_base::paths::in_runtime_dir("plxnative-failtest");
-        let previous = match std::fs::read(&path) {
-            Ok(bytes) => Some(bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => panic!("cannot read the prior fixture: {e}"),
-        };
-        let _trigger = Trigger(path.clone(), previous);
-        std::fs::write(&path, "jail").unwrap();
-        let mut ps = plx_media::route::PlaybackSession::IDLE;
-        plx_media::route::reset_player_control_for_test(&ps);
-        let hardware_verdict = plx_platform::tv::sandbox::blocks_native_video();
-        plx_media::player::failure_fixture(&mut ps);
-        let mut page = PlayerScreen::new(EntryId(1));
-        assert!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)).is_empty());
-        assert!(page.repair_alert.is_open(), "fixture must offer the real confirmation");
-        assert!(deliver(&mut page, &ps, Some(REPAIR_CANCEL), ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_000 })).is_empty());
-        assert!(page.repair_alert.is_open(), "Tick must not retire the jail fixture confirmation");
-        assert!(ps.jail_load_blocked);
-        assert_eq!(plx_platform::tv::sandbox::blocks_native_video(), hardware_verdict, "the fixture must not alter the cached hardware verdict");
-        ps.jail_load_blocked = false;
-        deliver(&mut page, &ps, None, ScreenEvent::Tick(Tick { ms: 32, dt_us: 16_000 }));
-        assert!(!page.repair_alert.is_open(), "retiring the session still closes its confirmation");
-        std::fs::write(&path, "tv").unwrap();
-        plx_media::player::failure_fixture(&mut ps);
-        assert!(!ps.jail_load_blocked, "other failure fixtures must not claim a jail refusal");
+        // The `failtest` trigger is armed in a PRIVATE trigger root, never in the shared runtime
+        // root: that is the bare `/tmp` on a host test run, and another process's player tests
+        // read `plxnative-failtest` there (`player_hud::busy`), so arming it for the length of this
+        // test turned their click on the picture into a click on a failed playback.
+        plx_base::devtrig::with_private_triggers(|| {
+            let path = plx_base::devtrig::path("failtest");
+            std::fs::write(&path, "jail").unwrap();
+            let mut ps = plx_media::route::PlaybackSession::IDLE;
+            plx_media::route::reset_player_control_for_test(&ps);
+            let hardware_verdict = plx_platform::tv::sandbox::blocks_native_video();
+            plx_media::player::failure_fixture(&mut ps);
+            let mut page = PlayerScreen::new(EntryId(1));
+            assert!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)).is_empty());
+            assert!(page.repair_alert.is_open(), "fixture must offer the real confirmation");
+            assert!(deliver(&mut page, &ps, Some(REPAIR_CANCEL), ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_000 })).is_empty());
+            assert!(page.repair_alert.is_open(), "Tick must not retire the jail fixture confirmation");
+            assert!(ps.jail_load_blocked);
+            assert_eq!(plx_platform::tv::sandbox::blocks_native_video(), hardware_verdict, "the fixture must not alter the cached hardware verdict");
+            ps.jail_load_blocked = false;
+            deliver(&mut page, &ps, None, ScreenEvent::Tick(Tick { ms: 32, dt_us: 16_000 }));
+            assert!(!page.repair_alert.is_open(), "retiring the session still closes its confirmation");
+            std::fs::write(&path, "tv").unwrap();
+            plx_media::player::failure_fixture(&mut ps);
+            assert!(!ps.jail_load_blocked, "other failure fixtures must not claim a jail refusal");
+        });
     }
 
     #[test]

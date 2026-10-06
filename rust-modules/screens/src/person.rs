@@ -1882,12 +1882,16 @@ mod tests {
     #[cfg(feature = "devtriggers")]
     fn populated_person_geometry_uses_recorded_metrics() {
         let _serial = plx_base::testlock::serial();
-        let path = plx_base::paths::in_runtime_dir("plxnative-personbio");
-        assert!(!path.exists(), "this test needs an isolated runtime root");
-        std::fs::write(&path, "A populated biography whose words must pass through the recorded measurement capability. ".repeat(60)).unwrap();
-        let (mut store, mut s) = seed(3, 2);
-        store.install_credits_for_test(&[("Actor", 9)]);
-        std::fs::remove_file(path).unwrap();
+        // Armed in a private trigger root: the shared runtime root is the bare `/tmp` on a host test
+        // run, so the old `assert!(!path.exists(), "needs an isolated runtime root")` was only as
+        // true as the other processes on the machine were quiet.
+        let (mut store, mut s) = plx_base::devtrig::with_private_triggers(|| {
+            let path = plx_base::devtrig::path("personbio");
+            std::fs::write(&path, "A populated biography whose words must pass through the recorded measurement capability. ".repeat(60)).unwrap();
+            let (mut store, s) = seed(3, 2);
+            store.install_credits_for_test(&[("Actor", 9)]);
+            (store, s)
+        });
         assert!(!store.view().current().unwrap().bio.is_empty());
         plx_ui::rec::assert_measured_geometry(|measure| {
             s.remeasure_header(store.view().current().unwrap(), measure);

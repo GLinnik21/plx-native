@@ -1364,14 +1364,6 @@ check:
 # variable — the suite is the only place that guarantee is ever checked. Host-side cosmetics are not
 # worth a device guarantee. The television is unaffected either way (`make run` and `tests/run.py`
 # both clear the log on the TV), so this is only about not confusing yourself locally.
-# Built into the shell's temp dir rather than the tree: it is a host binary in a repository whose
-# every other artifact is ARM, and one that landed in `src/` or `pkg/` would be a genuinely
-# confusing thing to find. `$(TMPDIR)` is set on macOS and empty on a Linux runner, hence the
-# fallback.
-CRASHFMT_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashfmt-test
-CRASHTRACE_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashtrace-test
-PRIVATE_LOG_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-private-log-test
-
 # Catalog completeness is checked by the Rust build; this checks UI text entry points too.
 .PHONY: check-localization
 check-localization:
@@ -1593,7 +1585,37 @@ check-python-harness:
 	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
 	python3 tests/test_harness.py
 
-check-python-rest: check-localization
+# The C unit tests, each COMPILED INTO A PRIVATE DIRECTORY (`mktemp -d`, removed on the way out), never to
+# a fixed `$(TMPDIR)plx-...-test`: two checkouts running `make check` at once share `$TMPDIR`, so one
+# `cc -o` replaced the binary the other was linking or running ("ld: open() failed, errno=17 (File
+# exists)", "No such file or directory"; 8 of 12 concurrent pairs failed). It is its own target so
+# ci/test_check_collisions.py can run it twice side by side. The binaries stay out of the tree on
+# purpose: they are host binaries in a repository whose every other artifact is ARM. `$$TMPDIR` is set
+# on macOS and empty on a Linux runner, hence the `/tmp` fallback.
+#
+# 1. The crash tracer's PURE half (src/crashfmt.h), compiled and RUN with the host compiler.
+#    The tracer runs in signal context on ARM and can only be graded on a television, but the part
+#    of it that has ever been wrong is the parsing, and a `bin:` line naming the wrong mapping is
+#    silent: tools/crash-report.sh subtracts that base and answers with a confident wrong
+#    function. Splitting the pure half out is what makes that decidable here, and writing the test
+#    by watching it fail is what disproved the justification main.c had carried since the tracer
+#    was written. Milliseconds, no NDK, no device.
+# 2. ...and then ACTUALLY CRASH a process, once per signal the tracer arms, through the real handler (src/crashtrace.c,
+#    linked alone, no SDL, no Rust). It asks the one question no log can answer, which is HOW the
+#    process died: a handler that quietly exits looks identical in the crash log and silently costs
+#    SAM its WIFSIGNALED status. (Not a crashd backtrace: this firmware writes no core, so there is
+#    never one to lose; an empty /var/log/reports/librdx/ is expected.) Not hypothetical, it is what
+#    this app did for seven weeks, because the signal is MASKED inside its own handler, so
+#    `raise()` returned and the `_exit(128+sig)` beneath it ran every time.
+# 3. The shim's private log files (ci/private-log-test.c).
+.PHONY: check-c-unit
+check-c-unit:
+	@set -e; d=$$(mktemp -d "$${TMPDIR:-/tmp}/plx-c-unit.XXXXXX"); trap 'rm -rf "'"$$d"'"' EXIT; \
+	cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/crashfmt" ci/crashfmt-test.c && "$$d/crashfmt"; \
+	cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/crashtrace" ci/crashtrace-test.c src/crashtrace.c && "$$d/crashtrace"; \
+	cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/private-log" ci/private-log-test.c && "$$d/private-log"
+
+check-python-rest: check-localization check-c-unit
 	python3 ci/test_ass_composite.py
 	python3 ci/test_ass_regions.py
 	@# The libass source fetch: canonical URL first, `mirrors` as a transport fallback, the pinned
@@ -1641,23 +1663,6 @@ check-python-rest: check-localization
 	@# real tree against ci/module-cycle-baseline.json (~1.5 s); its self-test uses a synthetic crate.
 	python3 ci/test_module_cycle.py
 	python3 ci/check-module-cycle.py
-	@# The crash tracer's PURE half (src/crashfmt.h), compiled and RUN with the host compiler.
-	@# The tracer runs in signal context on ARM and can only be graded on a television — but the
-	@# part of it that has ever been wrong is the parsing, and a `bin:` line naming the wrong
-	@# mapping is silent: tools/crash-report.sh subtracts that base and answers with a confident
-	@# wrong function. Splitting the pure half out is what makes that decidable here, and writing
-	@# the test by watching it fail is what disproved the justification main.c had carried since
-	@# the tracer was written. Milliseconds, no NDK, no device.
-	cc -O1 -Wall -Wextra -Werror -Isrc -o $(CRASHFMT_TEST_BIN) ci/crashfmt-test.c && $(CRASHFMT_TEST_BIN)
-	@# …and then ACTUALLY CRASH a process, five times, through the real handler (src/crashtrace.c,
-	@# linked alone — no SDL, no Rust). It asks the one question no log can answer, which is HOW the
-	@# process died: a handler that quietly exits looks identical in the crash log and silently
-	@# costs SAM its WIFSIGNALED status. (Not a crashd backtrace — this firmware writes no core, so
-	@# there is never one to lose; an empty /var/log/reports/librdx/ is expected.) Not hypothetical
-	@# — it is what this app did for seven weeks, because the signal is MASKED inside its own
-	@# handler, so `raise()` returned and the `_exit(128+sig)` beneath it ran every time.
-	cc -O1 -Wall -Wextra -Werror -Isrc -o $(CRASHTRACE_TEST_BIN) ci/crashtrace-test.c src/crashtrace.c && $(CRASHTRACE_TEST_BIN)
-	cc -O1 -Wall -Wextra -Werror -Isrc -o $(PRIVATE_LOG_TEST_BIN) ci/private-log-test.c && $(PRIVATE_LOG_TEST_BIN)
 	python3 tests/player_pointer.py --selftest
 	python3 tests/test_replay_fixtures.py
 	python3 tools/prune-gh-caches.py --selftest
@@ -1745,6 +1750,9 @@ check-python-rest: check-localization
 	python3 ci/test_source_bundle.py
 	python3 ci/test_restore_runtime.py
 	python3 ci/test-compat.py
+	@# Two checkouts running the scratch-writing steps at once (test-compat.py, the C unit tests) must not
+	@# corrupt each other: each pair is run side by side against one shared TMPDIR.
+	python3 ci/test_check_collisions.py
 	@# The `check` lock wrapper's own suite: two invocations serialize, a SIGKILLed holder
 	@# unblocks the waiter promptly, --timeout exits 75, and PLX_CHECK_LOCK=off really
 	@# bypasses it. Runs against a throwaway lock path — never the real

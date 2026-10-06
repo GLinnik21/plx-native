@@ -574,19 +574,41 @@ fn stale_reserve_wakes_cannot_renew_transport_liveness() {
         std::time::Duration::from_millis(2),
         false,
     );
-    let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_millis(18));
+    // The liveness boundary is placed by hand instead of being measured against wall sleeps. The
+    // first version of this test armed an 18 ms watchdog and slept 3 + 3 + 15 ms, so it only held
+    // while the scheduler met each millisecond deadline: a 40 ms freeze of the test thread at a
+    // random moment failed 30 of 300 runs at the first assertion below. Nothing here reads the wall
+    // clock for its verdict. `far` is a boundary that cannot be reached during the test, so a
+    // stale wake can only be retryable; the boundary is then pulled to "now" to model the wall
+    // time having reached it, which `expired()` (monotonic `now >= deadline`) sees at once.
+    let far = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+    let mut watchdog = TransportWatchdog {
+        inactivity: std::time::Duration::from_millis(18),
+        deadline: far,
+    };
     for _ in 0..2 {
         let snapshot = reserve.active(false).expect("running projection");
         let attempted = watchdog.effective(Some(snapshot));
-        std::thread::sleep(std::time::Duration::from_millis(3));
+        assert_eq!(
+            attempted.owner,
+            BlockingDeadlineOwner::Reserve,
+            "the reserve projection is the earlier boundary, so it owns the wake"
+        );
+        // The wall projection has fired but the playhead has not moved: the wake is stale.
         let wake = observe_hls_deadline(Some(&mut reserve), attempted, &watchdog, false);
         assert!(
             classify_hls_deadline(wake).is_none(),
             "a stale reserve wake is retryable before independent liveness expires",
         );
+        assert_eq!(
+            watchdog.deadline, far,
+            "a stale reserve wake does not renew (move) the transport liveness boundary",
+        );
     }
-    std::thread::sleep(std::time::Duration::from_millis(15));
+    // Liveness reaches its boundary, which the stale wakes above did not move.
+    watchdog.deadline = std::time::Instant::now();
     let attempted = watchdog.effective(reserve.active(false));
+    assert_eq!(attempted.owner, BlockingDeadlineOwner::Transport);
     let wake = observe_hls_deadline(Some(&mut reserve), attempted, &watchdog, false);
     let outcome = classify_hls_deadline(wake);
     assert!(matches!(outcome, Some(HlsExit::Failed(_))));

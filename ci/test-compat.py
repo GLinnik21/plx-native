@@ -4,7 +4,9 @@ import argparse
 import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
+import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES = ('valid short eintr empty partial unterminated open-error read-error '
@@ -12,10 +14,24 @@ CASES = ('valid short eintr empty partial unterminated open-error read-error '
 
 def main():
     parser = argparse.ArgumentParser(__doc__)
-    parser.add_argument('--output', type=Path, default=Path('/tmp/plx-compat-tests'))
+    parser.add_argument('--output', type=Path, default=None,
+                        help='keep the binaries and results.log here (default: a private '
+                             'temporary directory, removed after a passing run)')
     args = parser.parse_args()
-    out = args.output.resolve()
-    out.mkdir(parents=True, exist_ok=True)
+    if args.output is not None:
+        out = args.output.resolve()
+        out.mkdir(parents=True, exist_ok=True)
+        return run_all(out)
+    # A fixed default (it was /tmp/plx-compat-tests) is shared by every checkout on the machine, so
+    # two `make check` runs overwrote each other's auxv-* binaries mid-link ("ld: open() failed,
+    # errno=17"). Each run gets its own directory. It is removed when the run passes; a failing run
+    # keeps it, because results.log inside is the only record of which command failed and why.
+    out = Path(tempfile.mkdtemp(prefix='plx-compat-tests.')).resolve()
+    run_all(out)
+    shutil.rmtree(out, ignore_errors=True)
+
+
+def run_all(out):
     cc = os.environ.get('CC', 'cc')
     flags = ['-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread', '-g', '-O1']
     source = ROOT / 'ci/test-compat-auxv.c'

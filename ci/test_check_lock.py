@@ -16,7 +16,13 @@ SCRIPT = ROOT / "tools/check-lock.py"
 
 
 def run(lock_path, cmd, extra_args=(), env=None):
+    # The wrapper treats PLX_CHECK_LOCK=off as "do not lock", and the documented way to bypass
+    # `make check`'s own lock is to run `PLX_CHECK_LOCK=off make check`, which hands that variable to
+    # this file too. A child that inherits it never locks, so three of the five tests failed under the
+    # bypass. The children's environment is therefore built here, not inherited: the variable is
+    # dropped, and only the test that wants it (`env=`) sets it back.
     full_env = os.environ.copy()
+    full_env.pop("PLX_CHECK_LOCK", None)
     if env:
         full_env.update(env)
     return subprocess.Popen(
