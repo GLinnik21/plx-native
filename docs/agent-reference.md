@@ -1952,7 +1952,10 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   neither moves the boot screen; both armed at once is
   refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
   logs `softfloat: … MATCH|DIVERGE` against the host's pinned hash and writes the table beside
-  it; `make softfloat-probe` fetches it), `/tmp/plxnative-url` (override the streamed part
+  it; `make softfloat-probe` fetches it), `/tmp/plxnative-partprobe` (once per server-transcode playback
+  start, five `Range` GETs of the film's original Part with the live / a fresh / no session id; logs
+  `partprobe: variant=… http=… bytes=… ms=…`, never a URL or token; `media::route::partprobe`),
+  `/tmp/plxnative-url` (override the streamed part
   URL) and **`/tmp/plxnative-playurl`** (the same, plus the LOAD DECLARATION — one JSON object,
   `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test
   tier drives and the only way to declare HEVC / `"AC3 PLUS"` / Dolby for a stream no PMS chose;

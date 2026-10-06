@@ -308,7 +308,18 @@ impl Client {
     /// (`/services/iva/assets?…`). [`QueryBuilder`] joins onto that query instead of
     /// writing a second `?`.
     pub fn direct_play_url(&self, part_key: &str, session: &str) -> StreamUrl {
-        let q = QueryBuilder::new(part_key).str("X-Plex-Session-Identifier", session);
+        self.part_url(part_key, Some(session))
+    }
+
+    /// [`Self::direct_play_url`] with the session id optional: `None` builds the same URL without
+    /// the `X-Plex-Session-Identifier` parameter at all (the dev `partprobe` asks what PMS does
+    /// with a part GET that names no session). `Some` is byte-identical to the old body.
+    pub(super) fn part_url(&self, part_key: &str, session: Option<&str>) -> StreamUrl {
+        let q = QueryBuilder::new(part_key);
+        let q = match session {
+            Some(session) => q.str("X-Plex-Session-Identifier", session),
+            None => q,
+        };
         let path = self.playback_identity(q).build();
         StreamUrl {
             origin: self.origin.clone(),
