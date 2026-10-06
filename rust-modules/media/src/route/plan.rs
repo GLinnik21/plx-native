@@ -1492,16 +1492,30 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // every audio pick below (direct play, remux, re-encode) ranks against these same prefs
     let audio_prefs = AudioLangPrefs { show: show_prefs.audio.as_deref(),
         account: account_audio.language() };
-    let audio_sel = if env.audio_sid > 0 {
-        tracks.iter().enumerate().find(|(_, t)| t.id == env.audio_sid
-            && audio_direct_plays(env.direct_play_mode, &t.codec, t.channels))
-            .map(|(i, t)| (i as i32, t.codec.to_lowercase(), t.id))
-            .or_else(|| (!forced).then(|| pick_dp_audio_pref(tracks, acodec, audio_prefs)).flatten())
-    } else if rk.is_empty() {
-        None
-    } else {
-        pick_dp_audio_mode(tracks, acodec, audio_prefs, env.direct_play_mode)
+    // The audio the TV will DECODE, decided in two steps so the subtitle pick (which reads the
+    // audio's language) sits between them:
+    //   1. here: the intended track. Unless the copy is blocked (forced direct play, or a video
+    //      that cannot be copied) the strict policy applies — a track of another language or a
+    //      commentary never stands in for the one the viewer asked for; `None` means the SERVER
+    //      converts it. A blocked copy keeps today's ladder, `StandIn::Any`.
+    //   2. after `sub_pick`: a cold start that must show a subtitle (the server cannot carry one
+    //      through a remux) may still direct-play a non-commentary stand-in, else burns.
+    let eligible = |codec: &str, channels: i64| audio_direct_plays(env.direct_play_mode, codec, channels);
+    let copy_blocked = forced || no_video_copy;
+    let pick_audio = |stand_in: StandIn| {
+        let exact = (env.audio_sid > 0).then(|| {
+            tracks.iter().enumerate().find(|(_, t)| t.id == env.audio_sid && eligible(&t.codec, t.channels))
+                .map(|(i, t)| (i as i32, t.codec.to_lowercase(), t.id))
+        }).flatten();
+        exact.or_else(|| {
+            (!rk.is_empty())
+                .then(|| pick_dp_audio_eligible(
+                    tracks, acodec, audio_prefs, if forced { 0 } else { env.audio_sid }, stand_in, eligible,
+                ))
+                .flatten()
+        })
     };
+    let mut audio_sel = pick_audio(if copy_blocked { StandIn::Any } else { StandIn::SameKind });
     if let Some(lang) = show_prefs.audio.as_deref() {
         let hit = audio_sel
             .as_ref()
@@ -1513,7 +1527,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             if hit {
                 "playing that track"
             } else if tracks.iter().any(|s| lang_matches(lang, &s.lang_code)) {
-                "a track in it exists but is not direct-playable; using the usual order"
+                if copy_blocked {
+                    "a track in it exists but is not direct-playable; using the usual order"
+                } else {
+                    "a track in it exists but is not direct-playable; asking the server to convert it"
+                }
             } else {
                 "no track in it; using the usual order"
             }
@@ -1522,11 +1540,16 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     if !rk.is_empty() {
         crate::player::log(&account_audio_language_log(&account_audio, tracks, audio_sel.as_ref()));
     }
-    // the language of the audio that will play — what "shown with foreign audio" is judged by
+    // the language of the audio that will play — what "shown with foreign audio" is judged by.
+    // With no pick the server carries the intended track, so it is that track's language.
     let audio_lang: String = audio_sel
         .as_ref()
-        .and_then(|(i, _, _)| usize::try_from(*i).ok())
-        .and_then(|i| tracks.get(i))
+        .map(|(_, _, id)| *id)
+        .map(|id| encode_audio_id(true, id, env.audio_sid, tracks, audio_prefs))
+        .and_then(|id| tracks.iter().find(|s| s.id == id))
+        .or_else(|| {
+            audio_sel.as_ref().and_then(|(i, _, _)| usize::try_from(*i).ok()).and_then(|i| tracks.get(i))
+        })
         .or_else(|| tracks.iter().find(|s| s.default))
         .or_else(|| tracks.first())
         .map(|s| s.lang_code.clone())
@@ -1564,7 +1587,22 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             show_prefs.subtitle_mode
         ));
     }
+    // Step 2: the server carries the intended track (no direct-play pick), but a remux carries NO
+    // subtitle (M4/M7) and the client's renderer is silent while transcoding. When a subtitle is to
+    // be shown, a non-commentary stand-in still direct-plays (the client draws the subtitle); with
+    // only a commentary, or nothing, to stand in, the only way to show it is the Burn shape — a
+    // re-encode with the subtitle burned in, the server carrying the intended track. A sidecar is
+    // never a `sub_pick` (it has no container ordinal), so it stays on the remux path.
+    let mut burn_for_audio = false;
+    if audio_sel.is_none() && !copy_blocked && sub_pick.is_some() && !tracks.is_empty() && !rk.is_empty() {
+        match pick_audio(StandIn::Any) {
+            Some(s) if usize::try_from(s.0).is_ok_and(|i| !audio_is_commentary(tracks, i)) => audio_sel = Some(s),
+            _ => burn_for_audio = true,
+        }
+    }
     let audio_id = audio_sel.as_ref().map(|(_, _, id)| *id).unwrap_or(0);
+    // What a copy carries: the pick, else the intended track the server converts.
+    let carry_audio_id = encode_audio_id(true, audio_id, env.audio_sid, tracks, audio_prefs);
     let subtitle_id = plan
         .playing
         .as_ref()
@@ -1605,14 +1643,18 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         // evaluate a TrueHD/DTS default and veto; naming the chosen AAC/AC3/EAC3 sibling on the
         // query is what keeps that class on Original. subtitleStreamID is an advertised embedded
         // track Original will client-render, or 0 so a sidecar / unadvertised codec does not
-        // force a burn. MDE and the remux probe always name that sibling (a copy cannot carry
-        // TrueHD/DTS). The play-path PUT and start.mkv use `encode_audio_id`: remux still names
-        // the sibling; a re-encode walks the same `audio_intents` ranking (the PMS selection, then
+        // force a burn. MDE and the remux probe always name `carry_audio_id`: the direct-play
+        // sibling when there is one (a copy cannot carry TrueHD/DTS), else the intended track,
+        // which the server converts. The play-path PUT and start.mkv use `encode_audio_id`: remux
+        // names the same; a re-encode walks the `audio_intents` ranking (the PMS selection, then
         // show/account language, then the direct-play pick), so 720p does not copy a foreign AC3.
-        if forced { forced_server_decision(client, rk, &session, audio_id, subtitle_id) }
-        else { server_decision(client, rk, &session, audio_id, subtitle_id) }
+        if forced { forced_server_decision(client, rk, &session, carry_audio_id, subtitle_id) }
+        else { server_decision(client, rk, &session, carry_audio_id, subtitle_id) }
     };
-    let mut directplay = mde.as_ref().is_some_and(|v| v.original && (!forced || !v.video_forbids_copy));
+    // A direct play needs a track to play: with none the server converts the intended one, which
+    // is not Original whatever MDE said about the (omitted) audio.
+    let mut directplay = (audio_sel.is_some() || tracks.is_empty())
+        && mde.as_ref().is_some_and(|v| v.original && (!forced || !v.video_forbids_copy));
     if forced {
         let failure = if part.is_empty() { Some(ForcedFailure::NoOriginal) }
             else if !streamable { Some(ForcedFailure::Container) }
@@ -1687,7 +1729,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             },
             // The explicit pick's own fetched stream; a server-default candidate (no pick) is
             // `None` and recovery falls back to the source codec (`Session::src_acodec`).
-            audio: carried_track(tracks, audio_id, audio_ordinal, direct),
+            audio: carried_track(tracks, carry_audio_id, audio_ordinal, direct),
             subtitle_ordinal,
         });
     }
@@ -1785,7 +1827,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         // GET parameters do not install PMS's part selection. Use the same
                         // remux policy as playback, before either the decision or media GET.
                         // A client-rendered subtitle is not a burn; only env.sub_sid requests one.
-                        let probe_audio = encode_audio_id(true, audio_id, env.audio_sid, tracks, audio_prefs);
+                        let probe_audio = carry_audio_id;
                         put_selection(off, env.sid, plan.part_id, probe_audio, env.sub_sid);
                         let probe = measure_remote_remux(
                             off,
@@ -1897,8 +1939,14 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     plan.contract.audio = audio;
     // A forced burn is never a copy: the flavour that would otherwise have been the plain remux
     // above becomes the real re-encode below, carrying the picked subtitle's id.
-    let remux = remux && !force_burn;
-    let burn_sub_sid = if force_burn { subtitle_id } else { env.sub_sid };
+    let remux = remux && !force_burn && !burn_for_audio;
+    let burn_sub_sid = if force_burn {
+        subtitle_id
+    } else if burn_for_audio && env.sub_sid == 0 {
+        sub_pick.map_or(0, |(id, _)| id)
+    } else {
+        env.sub_sid
+    };
     if env.preview && !crate::player::preview::accepts_direct_play(directplay, !part.is_empty(), adaptive) {
         crate::player::log("preview: refused — not a direct play");
         plan.url.clear();
@@ -1940,7 +1988,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // `transcode` must not be answered with a local codec-copy remux. Part.decision=transcode
     // alone is not that veto.
     // (`remux` is computed above, beside the enhancement's family.)
-    // Remux copies, so this PUT names the smart-DP sibling. A re-encode transcodes a real
+    // A remux copies what the profile admits (the smart-DP sibling) and the server converts the
+    // rest, so with no pick this PUT names the intended track. A re-encode transcodes a real
     // selected source track (English DTS → AC3) and must not PUT that sibling or a 720p start
     // replaces the pick with a foreign AC3 copy. A selected flag that only echoes default is
     // not a pick; `encode_audio_id` then keeps a sibling in the show language, or the first
@@ -1953,10 +2002,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         plan.vcodec = vcodec.to_string();
         plan.acodec = "ac3".into();
     } else if remux {
+        // No pick: the server converts the intended track to the profile's first audio target.
         let achosen = audio_sel
             .as_ref()
             .map(|(_, c, _)| c.clone())
-            .unwrap_or_else(|| acodec.to_string());
+            .unwrap_or_else(|| if tracks.is_empty() { acodec.to_string() } else { "ac3".to_string() });
         plan.vcodec = vcodec.to_string();
         plan.acodec = achosen;
     } else if matches!(
@@ -1988,7 +2038,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // the same reasoning `remux` and `no_video_copy` carry: a seek and an audio switch rebuild
     // this query from `Session`, and one that dropped the ceiling would hand the encoder back the
     // full 4K/60 Mbps bound the moment the user touched the scrubber.
-    // Remux: the smart-DP sibling MDE and the remux probe already named — `env.audio_sid` is
+    // Remux: `carry_audio_id`, which MDE and the remux probe already named — `env.audio_sid` is
     // the part default (TrueHD) at resolve start; putting that undoes smart-DP. Re-encode:
     // `encode_audio_id` (the PMS selection, else show/account language, else that sibling).
     // Subtitle stays
@@ -2028,7 +2078,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             // Back to the direct play the enhancement decorated. The MDE is re-asked first so the
             // Part GET follows a decision that is the direct play's own — M5 found PMS serving the
             // Part regardless, so this is belt-and-braces, not a 503 workaround.
-            let _ = server_decision(client, rk, &session, audio_id, subtitle_id);
+            let _ = server_decision(client, rk, &session, carry_audio_id, subtitle_id);
             plan.contract.remux = false;
             plan.contract.no_video_copy = false;
             fill_direct_plan(&mut plan, client, part, &session, vcodec, acodec, audio_sel.as_ref(), dovi, dv_decision, sub_pick);
@@ -2262,7 +2312,7 @@ fn account_audio_language_log(
             } else if direct_playable_match {
                 "outranked by the PMS selection or show preference"
             } else if tracks.iter().any(matching_track) {
-                "a track in it exists but is not direct-playable; using the usual order"
+                "a track in it exists but is not direct-playable; asking the server to convert it"
             } else {
                 "no track in it; using the usual order"
             };
@@ -2294,13 +2344,13 @@ enum AudioIntent<'a> {
     Selection(usize),
     /// A Plex language preference the item has a track in.
     Language(&'a str),
-    /// Nothing to honour: the file's own default track, then any direct-playable one.
+    /// Nothing to honour: the file's own default track, then (under [`StandIn::Any`] only) any
+    /// direct-playable one; under [`StandIn::SameKind`] a copy of it, else the server converts it.
     FileDefault,
 }
 
 /// How far a direct-play pick may reach for a track other than the one an intent names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // `SameKind` is exercised by tests only until the callers switch to it
 enum StandIn {
     /// Today's ladder: any direct-playable track ends it (a non-commentary one first).
     Any,
@@ -2380,6 +2430,7 @@ pub(super) fn pick_dp_audio(
 /// first: it lives on the SHOW, an episode's part carries nothing of it, and when the preferred
 /// dub is the file's default flag the server's selection cannot tell it from no choice — so a
 /// series set to Hungarian opened in English (#160).
+#[cfg(test)]
 pub(super) fn pick_dp_audio_pref(
     tracks: &[plx_data::metadata::Stream],
     default_acodec: &str,
@@ -2396,6 +2447,7 @@ pub(super) fn audio_direct_plays(mode: DirectPlayMode, codec: &str, channels: i6
     }
 }
 
+#[cfg(test)]
 fn pick_dp_audio_mode(
     tracks: &[plx_data::metadata::Stream], default_acodec: &str,
     prefs: AudioLangPrefs<'_>, mode: DirectPlayMode,
@@ -2502,20 +2554,7 @@ fn same_kind_pick(
                 }
             }
             AudioIntent::FileDefault => {
-                let flagged = tracks.iter().position(|s| s.default);
-                let reference = match flagged {
-                    Some(d) if audio_is_commentary(tracks, d) => (0..tracks.len())
-                        .find(|&j| {
-                            same_audio_language(&tracks[d].lang_code, &tracks[j].lang_code)
-                                && !audio_is_commentary(tracks, j)
-                        })
-                        .unwrap_or(d),
-                    Some(d) => d,
-                    None => tracks
-                        .iter()
-                        .position(|s| s.codec.eq_ignore_ascii_case(default_acodec))
-                        .unwrap_or(0),
-                };
+                let reference = reference_default(tracks, default_acodec).unwrap_or(0);
                 return carry(reference);
             }
         }
@@ -2526,9 +2565,10 @@ fn same_kind_pick(
 /// Stream id named on the remux/re-encode PUT and start.mkv — [`audio_intents`]' ranking, carried
 /// by an encoder instead of a direct play (the first entry with a usable id wins).
 ///
-/// A remux COPIES what the profile admits and the server converts the rest, so this is the
-/// smart-DP sibling (`dp_audio_id`) — putting a selected
-/// TrueHD or unsupported DTS track would ship audio the TV cannot decode. `env_audio_sid` is the session/retry
+/// A remux COPIES what the profile admits and the server converts the rest: with a direct-play
+/// pick (`dp_audio_id` > 0, the smart-DP sibling) it names that copy — putting a selected TrueHD
+/// or unsupported DTS track would ship audio the TV cannot decode — and with none it falls to the
+/// walk below, which names the intended track for PMS to convert. `env_audio_sid` is the session/retry
 /// pick and wins on re-encode when set, including a remux leftover sibling (mid-play quality drop
 /// keeps what is already playing); a cold play zeros it (`request_play`). Otherwise:
 ///   - [`AudioIntent::Selection`]: that track itself — a re-encode can transcode a selected DTS to
@@ -2538,7 +2578,9 @@ fn same_kind_pick(
 ///     sibling), else the first track in it, whatever its codec;
 ///   - [`AudioIntent::FileDefault`], or an unusable id: the direct-play pick itself, so a
 ///     transcode speaks the language direct play would have — the file's default when it is
-///     direct-playable; `0` when nothing is, and an omitted PUT encodes the part default.
+///     direct-playable; with no pick, the file's own default (a commentary default yielding to the
+///     first non-commentary track of its language), named explicitly so the server converts THAT
+///     track rather than whatever stood in; `0` only when the file lists no tracks.
 fn encode_audio_id(
     remux: bool,
     dp_audio_id: i64,
@@ -2546,7 +2588,7 @@ fn encode_audio_id(
     tracks: &[plx_data::metadata::Stream],
     prefs: AudioLangPrefs<'_>,
 ) -> i64 {
-    if remux {
+    if remux && dp_audio_id > 0 {
         return dp_audio_id;
     }
     if env_audio_sid > 0 {
@@ -2565,9 +2607,28 @@ fn encode_audio_id(
                 .filter(|&i| tracks[i].id > 0 && lang_matches(l, &tracks[i].lang_code))
                 .min_by_key(|&i| audio_is_commentary(tracks, i))
                 .map(|i| tracks[i].id),
-            AudioIntent::FileDefault => Some(dp_audio_id),
+            AudioIntent::FileDefault if dp_audio_id > 0 => Some(dp_audio_id),
+            AudioIntent::FileDefault => reference_default(tracks, "").map(|i| tracks[i].id).filter(|&id| id > 0),
         })
         .unwrap_or(dp_audio_id)
+}
+
+/// The file's reference default track: the flagged default, a commentary one yielding to the first
+/// non-commentary track of its language; with no flag, the first track of `default_acodec`, else
+/// the first track. `None` for a file listing no tracks.
+fn reference_default(tracks: &[plx_data::metadata::Stream], default_acodec: &str) -> Option<usize> {
+    if tracks.is_empty() {
+        return None;
+    }
+    Some(match tracks.iter().position(|s| s.default) {
+        Some(d) if audio_is_commentary(tracks, d) => (0..tracks.len())
+            .find(|&j| {
+                same_audio_language(&tracks[d].lang_code, &tracks[j].lang_code) && !audio_is_commentary(tracks, j)
+            })
+            .unwrap_or(d),
+        Some(d) => d,
+        None => tracks.iter().position(|s| s.codec.eq_ignore_ascii_case(default_acodec)).unwrap_or(0),
+    })
 }
 
 

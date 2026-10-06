@@ -102,7 +102,7 @@ fn account_audio_language_diagnostic_covers_every_outcome() {
     let tracks = [trk(1, "ac3", "eng", true), trk(2, "dca", "fra", false)];
     assert_eq!(
         account_audio_language_log(&account, &tracks, Some(&(0, "ac3".into(), 1))),
-        "route: account prefers audio fr — a track in it exists but is not direct-playable; using the usual order",
+        "route: account prefers audio fr — a track in it exists but is not direct-playable; asking the server to convert it",
     );
     let tracks = [trk(1, "ac3", "eng", true)];
     assert_eq!(
@@ -383,8 +383,8 @@ fn a_reencode_names_selected_dts_when_there_is_no_ac3_sibling() {
     assert_eq!(dp, 0, "no direct-playable track");
     assert_eq!(
         encode_audio_id(true, dp, 0, &tracks, AudioLangPrefs::default()),
-        0,
-        "remux has no sibling to name"
+        2,
+        "remux has no sibling to copy: it names the selected DTS and the server converts it"
     );
     assert_eq!(
         encode_audio_id(false, dp, 0, &tracks, AudioLangPrefs::default()),
@@ -876,4 +876,21 @@ fn the_language_arm_of_the_encoder_pick_skips_a_commentary() {
     let tracks = [titled(trk(1, "ac3", "eng", false), "Commentary"), trk(2, "dca", "eng", true)];
     let prefs = AudioLangPrefs { show: Some("en-US"), account: None };
     assert_eq!(encode_audio_id(false, 99, 0, &tracks, prefs), 2);
+}
+
+#[test]
+fn the_encoder_names_the_default_when_nothing_stands_in() {
+    // 8-channel AAC default (not direct-playable) beside a playable commentary: no pick, so the
+    // remux and the re-encode both name the DEFAULT for the server to convert, never the commentary.
+    let tracks = wide_default_and_commentary();
+    let none = AudioLangPrefs::default();
+    assert_eq!(encode_audio_id(true, 0, 0, &tracks, none), 16046);
+    assert_eq!(encode_audio_id(false, 0, 0, &tracks, none), 16046);
+    // a pick is still what a copy names; a session pick still wins
+    assert_eq!(encode_audio_id(true, 16047, 0, &tracks, none), 16047);
+    assert_eq!(encode_audio_id(true, 0, 16047, &tracks, none), 16047);
+    // a commentary default yields to the first non-commentary track of its language
+    let tracks = [titled(trk(1, "truehd", "eng", true), "Commentary"), trk(2, "truehd", "eng", false)];
+    assert_eq!(encode_audio_id(true, 0, 0, &tracks, none), 2);
+    assert_eq!(encode_audio_id(true, 0, 0, &[], none), 0);
 }

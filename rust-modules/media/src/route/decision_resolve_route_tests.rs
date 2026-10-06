@@ -2310,3 +2310,158 @@ fn retry_after_start_failure_suppresses_enhancement() {
 
     crate::player::restore_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
 }
+
+/// One cold `build_stream` against a loopback PMS that answers every `/decision` with `mde`.
+/// Returns the plan and the request lines PMS saw.
+#[cfg(feature = "devtriggers")]
+fn cold_audio_resolve(
+    name: &'static str,
+    mde: &'static [u8],
+    audio: Vec<plx_data::metadata::Stream>,
+    subs: Vec<plx_data::metadata::Stream>,
+    acodec: &str,
+    tweak: impl FnOnce(&mut ResolveEnv, &mut plx_data::metadata::PlayingItem),
+) -> (Plan, Vec<String>) {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (port, rx, server) = plan_pms(4, mde);
+    let sid = plx_plex::plex::register_for_test(name, "127.0.0.1", port, "token", name);
+    let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
+    let mut item = fourk_item_with_subs(sid, audio, subs);
+    tweak(&mut env, &mut item);
+    env.cached_item = Some(item);
+    let plan = build_stream("rk-4k", "/library/parts/36013/1/file.mkv", "hevc", acodec, &env);
+    let requests = rx.recv_timeout(std::time::Duration::from_secs(15)).expect("PMS never saw the resolve");
+    server.join().unwrap();
+    plx_plex::plex::reset_servers_for_test();
+    (plan, requests)
+}
+
+#[cfg(feature = "devtriggers")]
+fn cold_track(id: i64, codec: &str, lang: &str, default: bool, title: &str) -> plx_data::metadata::Stream {
+    plx_data::metadata::Stream {
+        id,
+        index: id,
+        lang_code: lang.into(),
+        codec: codec.into(),
+        channels: 6,
+        default,
+        selected: default,
+        title: title.into(),
+        ..Default::default()
+    }
+}
+
+#[cfg(feature = "devtriggers")]
+fn request_with<'a>(requests: &'a [String], needle: &str) -> Vec<&'a String> {
+    requests.iter().filter(|l| l.contains(needle)).collect()
+}
+
+/// A TrueHD default whose only direct-playable neighbour is an English commentary: the viewer
+/// asked for the film, so the server converts the default and nothing direct-plays the commentary.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_cold_start_whose_default_cannot_direct_play_remuxes_and_names_the_default() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-remux-default",
+        MDE_TRANSCODE_COPY,
+        vec![cold_track(1, "truehd", "eng", true, ""), cold_track(2, "ac3", "eng", false, "Commentary")],
+        Vec::new(),
+        "truehd",
+        // a recorded LAN link is what makes Auto capture its Original candidate
+        |env, _| plx_plex::plex::client_for(env.sid).expect("registered").set_link(plx_plex::plex::probe::Location::Local),
+    );
+    let mde = request_with(&requests, "hasMDE=1");
+    assert!(!mde.is_empty() && mde.iter().all(|l| query_param(l, "audioStreamID") == Some("1")), "{requests:?}");
+    assert!(
+        requests.iter().any(|l| l.contains("PUT") && l.contains("audioStreamID=1")),
+        "the selection PUT names the default: {requests:?}"
+    );
+    let tc = requests.iter().find(|l| l.contains("/decision?") && !l.contains("hasMDE=1")).expect("transcode decision");
+    assert_eq!(query_param(tc, "directStreamAudio"), Some("1"), "{tc}");
+    assert!(!tc.contains("videoResolution") && !tc.contains("maxVideoBitrate"), "a remux carries no cap: {tc}");
+    assert!(plan.contract.remux, "{}", plan.url);
+    assert_eq!(plan.audio.as_ref().map(|a| a.sid), Some(1));
+    assert_eq!(plan.auto_original.as_ref().and_then(|c| c.audio.as_ref()).map(|a| a.sid), Some(1));
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_cold_start_with_a_subtitle_keeps_a_same_language_or_foreign_non_commentary_stand_in() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-sub-stand-in",
+        MDE_DIRECTPLAY,
+        vec![cold_track(1, "truehd", "eng", true, ""), cold_track(3, "ac3", "fra", false, "")],
+        vec![selected_sub(50, "srt")],
+        "truehd",
+        |_, _| {},
+    );
+    assert!(plan.url.contains("/library/parts/36013/"), "direct play on the stand-in: {}", plan.url);
+    assert!(!plan.contract.remux);
+    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("3")), "{requests:?}");
+    assert!(request_with(&requests, "subtitles=burn").is_empty(), "{requests:?}");
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_cold_start_with_a_subtitle_and_only_a_commentary_to_stand_in_burns_it() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-sub-burn",
+        MDE_TRANSCODE,
+        vec![cold_track(1, "truehd", "eng", true, ""), cold_track(2, "ac3", "eng", false, "Commentary")],
+        vec![selected_sub(50, "srt")],
+        "truehd",
+        |_, _| {},
+    );
+    let tc = requests.iter().find(|l| l.contains("/decision?") && !l.contains("hasMDE=1")).expect("transcode decision");
+    assert_eq!(query_param(tc, "subtitleStreamID"), Some("50"), "{tc}");
+    assert_eq!(query_param(tc, "subtitles"), Some("burn"), "{tc}");
+    assert!(tc.contains("maxVideoBitrate") || tc.contains("videoResolution"), "a burn is a capped re-encode: {tc}");
+    assert!(!plan.contract.remux, "{}", plan.url);
+    assert_eq!(query_param(tc, "audioStreamID"), Some("1"), "{tc}");
+    assert!(requests.iter().any(|l| l.contains("PUT") && l.contains("subtitleStreamID=50")), "{requests:?}");
+    assert_eq!(plan.audio.as_ref().map(|a| a.sid), Some(1));
+}
+
+/// Rule 2: with no copy to fall back on, today's ladder stays — a non-commentary stand-in first.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_direct_play_keeps_its_stand_in() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-forced-stand-in",
+        MDE_DIRECTPLAY,
+        vec![
+            cold_track(1, "truehd", "eng", true, ""),
+            cold_track(2, "ac3", "eng", false, "Commentary"),
+            cold_track(3, "ac3", "fra", false, ""),
+        ],
+        Vec::new(),
+        "truehd",
+        |env, _| env.direct_play_mode = DirectPlayMode::Forced,
+    );
+    assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
+    assert!(plan.url.contains("/library/parts/36013/"), "{}", plan.url);
+    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("3")), "{requests:?}");
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn uncopyable_video_keeps_its_stand_in() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-p5-stand-in",
+        MDE_DIRECTPLAY,
+        vec![
+            cold_track(1, "truehd", "eng", true, ""),
+            cold_track(2, "ac3", "eng", false, "Commentary"),
+            cold_track(3, "ac3", "fra", false, ""),
+        ],
+        Vec::new(),
+        "truehd",
+        |env, item| {
+            env.dv_capability = Some(plx_platform::devcaps::dv::DvCapability::Supported);
+            item.dovi = p5();
+        },
+    );
+    assert!(plan.url.contains("/library/parts/36013/"), "{}", plan.url);
+    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("3")), "{requests:?}");
+}
