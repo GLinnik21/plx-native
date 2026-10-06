@@ -8819,15 +8819,16 @@ pub fn subtitle_presenter(ps: &PlaybackSession) -> SubtitlePresenter {
     }
 }
 
-/// **Is the live route itself an applied Burn (M7)?** A Burn forces `remux: false` to get PMS to
-/// actually re-encode the video (burning text into pixels is not a codec copy), which is exactly
-/// the same contract shape as an ordinary `Other`-family re-encode picked for some unrelated
-/// reason (a fixed rung, HLS, a relay). The two are told apart by `cur_enhancement`: only the
-/// enhancement's own claim sets it to `Applied` while asking for a video-copying,
-/// no-ceiling, progressive-MKV re-encode with a non-empty `audio`.
+/// **Is the live route the enhancement's own Burn (M7)?** A Burn forces `remux: false` to get PMS
+/// to actually re-encode the video (burning text into pixels is not a codec copy), which is
+/// exactly the contract shape of an ordinary `Other`-family re-encode picked for some unrelated
+/// reason (a fixed rung, HLS, a relay). The two are told apart by the contract itself: only the
+/// enhancement asks for a video-copying, no-ceiling, progressive-MKV re-encode carrying non-empty
+/// `audio` params, whatever the server graded it (`Applied` or `Unverified`) and whether or not a
+/// subtitle is still selected — a subtitle turned Off mid-play leaves this contract standing until
+/// the rebuild lands, and that rebuild must keep the params.
 pub fn live_is_own_burn(ps: &PlaybackSession) -> bool {
-    ps.cur_enhancement == EnhancementOutcome::Applied
-        && ps.cur_contract.audio.any()
+    ps.cur_contract.audio.any()
         && ps.cur_contract == enhanced_remux_contract(ps.cur_contract.audio, true)
 }
 
@@ -8941,8 +8942,7 @@ pub fn enhancement_step(ps: &PlaybackSession) -> EnhancementStep {
     let want = desired_audio(crate::player::audio_enhancements(), want_route.is_some());
     let applied = ps.cur_contract.audio;
     let want_burn = matches!(want_route, Some(EnhancementRoute::Burn));
-    // An `Unverified` Burn is not `Applied`, but it is still the Burn shape carrying params.
-    let applied_burn = live_is_own_burn(ps) || (applied.any() && live_is_original_burn(ps));
+    let applied_burn = live_is_own_burn(ps);
     // A subtitle change while enhanced can leave the boost/loudness preference untouched and still
     // need a rebuild: turning off a burned subtitle must drop the route from Burn back to a plain
     // enhanced remux (M7), which `want == applied` alone would miss.
@@ -9669,7 +9669,9 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) {
     // direct. Fence the old worker before publishing the selected stream or invalidating its
     // Original candidate; the queued reload below crosses its own action boundary afterwards.
     let _edit = begin_user_contract_boundary();
-    let family = live_family(ps);
+    // A standing Burn is wire-shaped `Other`, but it is an Original-family route: the pick must
+    // retarget the candidate the release returns to, exactly as on a remux.
+    let family = enhancement_family(ps);
     let direct_plays = audio_track_direct_plays(ps, &audio.codec, audio.channels);
     match family {
         // The recovery declaration captures one exact source/audio pairing. Once the user changes
@@ -9753,7 +9755,9 @@ pub fn commit_subtitle_selection(
     // before changing them. A direct-play subtitle is client-rendered and needs no reload; fencing
     // there would kill the valid Original watchdog while leaving the physical route untouched.
     let _edit = transcoding.then(begin_user_contract_boundary);
-    match live_family(ps) {
+    // `enhancement_family`, read before `set_subtitle` below: a standing Burn is an Original-family
+    // route whose candidate follows the pick, though it is wire-shaped `Other`.
+    match enhancement_family(ps) {
         // As with audio, a non-Off subtitle may require server burn-in and is not interchangeable
         // with the direct declaration captured at playback start. Off is always safe to carry back.
         RouteFamily::Other => {

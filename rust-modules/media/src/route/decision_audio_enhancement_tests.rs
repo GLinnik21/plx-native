@@ -3625,3 +3625,181 @@ fn presenter_on_other_burns_names_quality_unless_it_is_the_original_burn() {
     assert_eq!(presenter_of(capped), SubtitlePresenter::ServerBurn(BurnReason::Quality));
     restore_quality(Quality::Auto);
 }
+
+// ---- the Original burn through the real commits: TrueHD, subtitle Off, picks while burning ----
+//
+// The tests above install the plain burn directly and use the AC3 track, which grades `Applied`.
+// The server converting a TrueHD track is the real remux case: `classify_outcome` can only grade
+// it `Unverified`, and the subtitle reaches the burn through `commit_subtitle_selection`.
+
+/// A TrueHD remux (the server converts the audio) with no subtitle, Auto quality, enhancement off.
+fn install_truehd_remux(ps: &mut PlaybackSession, live: &Live) {
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(ps);
+    crate::player::restore_audio_enhancements(NONE);
+    install(ps, live, Delivery::Remux(NONE), a4(), Some(candidate(false, a4(), None)), 0);
+}
+
+/// Settle a claim and let the engine confirm it, so the next edit may be claimed.
+fn land(ps: &mut PlaybackSession, action: &ClaimedRouteAction, tail: ClaimTail) {
+    settle(ps, action, tail);
+    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Stable;
+}
+
+/// Pick the embedded subtitle 77 through the real commit and land the rebuild it queues.
+fn pick_embedded_subtitle_and_land(ps: &mut PlaybackSession) {
+    commit_subtitle_selection(ps, 2, 77, true);
+    let (action, tail) = claim(ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    land(ps, &action, tail);
+}
+
+#[test]
+fn a_truehd_remux_picking_a_subtitle_becomes_the_original_burn_and_offers_the_enhancement() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    pick_embedded_subtitle_and_land(&mut ps);
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE, true), "a plain Original-shape burn");
+    assert_eq!(
+        menu_enhancement_availability(&ps),
+        EnhancementAvailability::Offered(EnhancementRoute::Burn)
+    );
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn subtitle_off_on_a_truehd_enhanced_burn_keeps_the_enhancement_as_a_remux() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    pick_embedded_subtitle_and_land(&mut ps);
+    assert!(toggle(&mut ps, PREF));
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    land(&mut ps, &action, tail);
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, true), "the enhanced burn");
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Unverified, "TrueHD is converted, never verified");
+    assert_eq!(ps.cur_sub_sid, 77);
+
+    commit_subtitle_selection(&mut ps, -1, 0, false);
+    assert_eq!(
+        enhancement_step(&ps),
+        EnhancementStep::Remux(enhanced_remux_contract(PREF, false)),
+        "Off drops the burn but keeps the params"
+    );
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    land(&mut ps, &action, tail);
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, false));
+    assert_eq!(
+        menu_enhancement_availability(&ps),
+        EnhancementAvailability::Offered(EnhancementRoute::Remux)
+    );
+    assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved, "settled: no rebuild loop");
+    let requests = live.finish();
+    let last = decisions(&requests).last().copied().expect("a decision was made").clone();
+    assert_eq!(query_param(&last, "normalizeLoudness"), Some("1"), "{last}");
+    assert_eq!(query_param(&last, "subtitles"), None, "{last}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn subtitle_off_on_a_truehd_plain_burn_returns_to_the_plain_remux_with_the_original_track() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    pick_embedded_subtitle_and_land(&mut ps);
+    commit_subtitle_selection(&mut ps, -1, 0, false);
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    land(&mut ps, &action, tail);
+    assert!(ps.cur_contract.remux, "a plain remux again: nothing needs the burn");
+    assert_eq!(ps.cur_contract.audio, NONE);
+    assert_eq!(ps.cur_audio, Some(a4()), "the original audio track is kept");
+    let requests = live.finish();
+    let last = decisions(&requests).last().copied().expect("a decision was made").clone();
+    assert_eq!(query_param(&last, "audioStreamID"), Some("14"), "{last}");
+    assert_eq!(query_param(&last, "subtitles"), None, "{last}");
+    cleanup(&mut ps);
+}
+
+/// An audio pick made while the enhancement's burn is standing is the Original candidate's new
+/// audio, so releasing the enhancement lands on it and not on the capture-time track.
+#[test]
+fn an_audio_pick_while_burning_is_what_releasing_the_enhancement_lands_on() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Burn(PREF), a1(), Some(candidate(true, a1(), Some(2))), 77);
+    commit_audio_selection(&mut ps, a3());
+    assert_eq!(ps.auto_original.as_ref().and_then(|c| c.audio.clone()), Some(a3()));
+    assert!(ps.auto_original.as_ref().is_some_and(|c| c.feeds_part()), "AC3 5.1 decodes on the TV");
+    let (action, tail) = claim(&mut ps);
+    land(&mut ps, &action, tail);
+    assert!(toggle(&mut ps, NONE));
+    let (_, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));
+    assert_eq!(ps.cur_audio, Some(a3()), "the picked track, not the candidate's old one");
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn an_audio_pick_while_burning_keeps_audio_converted_true_to_the_picked_track() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(NONE);
+    install(&mut ps, &live, Delivery::Burn(NONE), a1(), Some(candidate(true, a1(), Some(2))), 77);
+    commit_audio_selection(&mut ps, a4());
+    assert!(
+        ps.auto_original.as_ref().is_some_and(|c| c.audio_converted && !c.feeds_part()),
+        "the TV cannot decode TrueHD: returning to Original means a remux naming it"
+    );
+    assert_eq!(ps.auto_original.as_ref().and_then(|c| c.audio.clone()), Some(a4()));
+    let (action, tail) = claim(&mut ps);
+    land(&mut ps, &action, tail);
+    commit_audio_selection(&mut ps, a1());
+    assert!(
+        ps.auto_original.as_ref().is_some_and(|c| !c.audio_converted && c.feeds_part()),
+        "a decodable pick clears the conversion again"
+    );
+    assert_eq!(ps.auto_original.as_ref().and_then(|c| c.audio.clone()), Some(a1()));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn a_subtitle_pick_while_burning_is_what_releasing_the_enhancement_shows() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Burn(PREF), a1(), Some(candidate(true, a1(), Some(2))), 77);
+    commit_subtitle_selection(&mut ps, 5, 88, true);
+    assert_eq!(ps.auto_original.as_ref().and_then(|c| c.subtitle_ordinal), Some(5));
+    let (action, tail) = claim(&mut ps);
+    land(&mut ps, &action, tail);
+    assert!(toggle(&mut ps, NONE));
+    let (_, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));
+    assert_eq!(
+        ps.auto_original.as_ref().and_then(|c| c.subtitle_ordinal),
+        Some(5),
+        "the subtitle the viewer last chose, not the capture-time one"
+    );
+    live.finish();
+    cleanup(&mut ps);
+}
