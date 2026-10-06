@@ -10,11 +10,13 @@ id, its own tile, its own sign-in, always a `RELEASE=1` build, reporting a dated
 half of that story — which day gets a build, what the release says, where the site finds the latest
 one, and when an old one is deleted — none of which the Rust or Makefile side needs to know about.
 
-Four subcommands, each independently testable as a pure function plus a thin CLI/subprocess shell:
+Five subcommands, each independently testable as a pure function plus a thin CLI/subprocess shell:
 
   plan        — today's version/label/tag, the previous nightly tag, and whether to skip.
   notes       — render the release body (markdown, no hard wrapping, absolute links only).
   latest-json — what `plxnative.com/nightly/latest.json` serves; `{"available": false}` if none.
+  repo-json   — the Homebrew Channel repository at `plxnative.com/nightly/repo.json`: the index,
+                the newest nightly's manifest and a description page; an empty index if none.
   prune       — delete nightly releases (and their tags) older than N days, keeping the newest.
 
 `--selftest` runs the pure-logic tests below `make check` also runs (see `ci/flavor.py` for the
@@ -41,6 +43,22 @@ ROOT = Path(__file__).resolve().parent.parent
 #: stable release (`v...`) must never be mistaken for a nightly by either of them.
 TAG_PREFIX = "nightly/v"
 
+#: The Homebrew Channel repository this file generates. A nightly is NOT in the webosbrew
+#: catalogue (that listing is keyed to the stable app id), so Homebrew Channel users add this URL
+#: under Settings > Add repository instead — `docs/nightly-builds.md` is the guide. The files live
+#: on the project's own site because a release asset's URL carries the nightly's tag, which
+#: changes every day, while the URL a user typed on a television must not.
+SITE_ORIGIN = "https://plxnative.com"
+REPO_JSON_URL = f"{SITE_ORIGIN}/nightly/repo.json"
+GUIDE_URL = f"{SITE_ORIGIN}/nightly/"
+PACKAGE_ID = "com.beb.plxnative.nightly"
+#: The manifest `build-package.yml` generates for the nightly package and `publish` attaches to the
+#: release under this name; also what is served beside `repo.json`.
+MANIFEST_NAME = f"{PACKAGE_ID}.manifest.json"
+#: Homebrew Channel shows this where there is no room for the long description (and falls back to
+#: it when a package has no `fullDescriptionUrl`); the listing's limit is 80 characters.
+SHORT_DESCRIPTION = "Daily build of PlxNative from main. Untested on a TV; installs beside stable."
+
 
 def _release_line_content() -> "str | None":
     """The tracked `RELEASE_LINE` marker's text, or `None` on trunk — same read as
@@ -54,9 +72,11 @@ def _release_line_content() -> "str | None":
 
 
 def next_nightly_version() -> str:
-    """The bare `X.Y.Z` a nightly cut today is built from — the exact number
-    `ci/flavor.py::appinfo_for('nightly')` gives the PACKAGE, before the `-nightly-<date>` suffix
-    that only the REPORTED version carries (see `rust-modules/build.rs::emit_version`)."""
+    """The bare `X.Y.Z` a nightly cut today is built from — the number the REPORTED version
+    `X.Y.Z-nightly-YYYYMMDD` is made of (see `rust-modules/build.rs::emit_version`). The PACKAGE's
+    own version is different on purpose: the same `X.Y` with the cut date as its patch
+    (`ci/flavor.py::appinfo_for('nightly')`), so that two nightlies are two versions to Homebrew
+    Channel."""
     appinfo_version = json.loads((ROOT / "pkg/appinfo.json").read_text())["version"]
     triplet, err = version_rule.next_version_triplet(appinfo_version, _release_line_content())
     if err:
@@ -212,10 +232,13 @@ def render_notes(*, label: str, sha: str, prev_tag: "str | None", ipk: str, sha2
         "development tracker, kept apart from reports the stable app sends.",
 
         "## Installing\n\n"
-        f"Download `{ipk}` below and install it with "
+        "**With Homebrew Channel:** under Settings, choose Add repository and enter "
+        f"`{REPO_JSON_URL}`, then install \"PlxNative Nightly\" from the list. Later nightlies "
+        f"appear there as updates. The [guide]({GUIDE_URL}) has the details.\n\n"
+        f"**By hand:** download `{ipk}` below and install it with "
         "[dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop) — no rooted "
-        "television is needed. Nightly builds are not distributed through the Homebrew Channel and "
-        "do not update automatically; the newest one is always linked from "
+        "television is needed. A package installed this way does not update itself; the newest "
+        "nightly is always linked from "
         "[plxnative.com/nightly/latest.json](https://plxnative.com/nightly/latest.json).\n\n"
         f"```\n{sha256}  {ipk}\n```\n\n"
         "This package bundles FFmpeg under LGPL-2.1-or-later; the complete corresponding source is "

@@ -35,6 +35,7 @@ the manifest.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -70,7 +71,21 @@ def app_id(flavor: str) -> str:
                 if identity["name"] == flavor)
 
 
-def appinfo_for(flavor: str) -> dict:
+def _nightly_date(nightly_date: "str | None") -> str:
+    """The `YYYYMMDD` a nightly package is cut for: the argument, else the `PLX_NIGHTLY_DATE` the
+    Makefile exports for `FLAVOR=nightly` (the SAME variable `rust-modules/build.rs` dates the
+    reported version by, so the package and the binary inside it cannot disagree about the day).
+    No fallback to "today": a nightly package with a guessed date would be a different package
+    from the binary it carries, so absence is an error."""
+    date = nightly_date if nightly_date is not None else os.environ.get("PLX_NIGHTLY_DATE", "")
+    if not re.fullmatch(r"[0-9]{8}", date):
+        raise SystemExit(
+            "a nightly package's version carries its cut date: pass nightly_date or set "
+            f"PLX_NIGHTLY_DATE=YYYYMMDD (got {date!r})")
+    return date
+
+
+def appinfo_for(flavor: str, nightly_date: "str | None" = None) -> dict:
     """The tracked `pkg/appinfo.json`, re-pointed at `flavor`. Identity when flavor == stable.
 
     Only `id`, `title` and — for `nightly` ONLY — `version` move. The icon FIELDS deliberately do
@@ -90,22 +105,26 @@ def appinfo_for(flavor: str) -> dict:
     # suffix debug uses, so it is spelled out rather than titlecased generically.
     suffix = "Nightly" if flavor == "nightly" else flavor
     a["title"] = f"{a['title']} {suffix}"
-    # NIGHTLY ONLY: the package version itself moves to the next minor (or next patch, on a
-    # maintenance line) — the SAME arithmetic `rust-modules/build.rs::emit_version` uses for a
-    # `-dev` build's REPORTED version, reused here via `ci/version_rule.py` rather than
-    # re-derived. A nightly install has to carry a package version LG's installer treats as newer
-    # than whatever stable is at, or it could never upgrade itself between nightly builds cut on
-    # the same tracked version. `ci/check-package.py`'s `--selftest` is what keeps this the ONLY
-    # flavour allowed to move `version` — see its `moved` assertion.
+    # NIGHTLY ONLY: the package version itself moves — to the next minor (or next patch, on a
+    # maintenance line) with the CUT DATE as its patch (`version_rule.nightly_package_triplet`),
+    # e.g. `0.7.20260919`. Two properties are wanted and both come from that. It is ahead of
+    # whatever stable is at, or LG's installer could never move a nightly install forward from the
+    # stable it was cut after. And it differs every day, because Homebrew Channel offers an
+    # update only when the manifest's version STRING differs from the installed one — a version
+    # that stayed `0.7.0` for the whole cycle would never be offered between two nightlies. It is
+    # still three integers (LG's installer takes nothing else), which is why the date is the patch
+    # and not a suffix. `ci/check-package.py`'s `--selftest` is what keeps this the ONLY flavour
+    # allowed to move `version` — see its `moved` assertion.
     if flavor == "nightly":
-        triplet, err = version_rule.next_version_triplet(a["version"], _release_line_content())
+        triplet, err = version_rule.nightly_package_triplet(
+            a["version"], _release_line_content(), _nightly_date(nightly_date))
         if err:
             raise SystemExit(err)
         a["version"] = "{}.{}.{}".format(*triplet)
     return a
 
 
-def control_for(text: str, flavor: str) -> str:
+def control_for(text: str, flavor: str, nightly_date: "str | None" = None) -> str:
     """The tracked control file's text with `Package:` re-pointed at `flavor`.
 
     Assembled in memory and never written back to `ipkroot/ctl/control`, for the same reason
@@ -122,7 +141,7 @@ def control_for(text: str, flavor: str) -> str:
         # The one flavour whose PACKAGE version itself moves (see `appinfo_for`) — the control
         # file's `Version:` field has to move with it, or the archive's own two version witnesses
         # (control vs appinfo) would disagree, which `ci/check-package.py` already grades.
-        version = appinfo_for(flavor)["version"]
+        version = appinfo_for(flavor, nightly_date)["version"]
         out, n = re.subn(r"(?m)^Version: .*$", f"Version: {version}", out, count=1)
         if n != 1:
             raise SystemExit("control file has no Version: line to re-point")
@@ -165,19 +184,55 @@ def _selftest() -> int:
     # Nightly is a different app too, AND its package version moves ahead of the tracked one —
     # the one flavour allowed to widen the `moved` set, asserted explicitly rather than by relaxing
     # the debug check above.
-    nightly = appinfo_for("nightly")
+    nightly = appinfo_for("nightly", "20260919")
     check(nightly["id"] == f"{STABLE_ID}.nightly",
           f'nightly appinfo id == {STABLE_ID}.nightly (got {nightly["id"]})')
     check(nightly["title"] == f'{tracked_appinfo["title"]} Nightly',
           f'nightly appinfo title is "{tracked_appinfo["title"]} Nightly" (got {nightly["title"]!r})')
     _tracked_major, _tracked_minor, _ = (int(x) for x in tracked_appinfo["version"].split("."))
-    check(nightly["version"] == f"{_tracked_major}.{_tracked_minor + 1}.0",
-          f'nightly appinfo version is the next minor on trunk (got {nightly["version"]!r})')
+    _release_line = _release_line_content()
+    _want_major_minor = (f"{_tracked_major}.{_tracked_minor + 1}" if _release_line is None
+                         else f"{_tracked_major}.{_tracked_minor}")
+    check(nightly["version"] == f"{_want_major_minor}.20260919",
+          "nightly appinfo version is the next minor (next patch's line on a maintenance branch) "
+          f'with the cut date as its patch (got {nightly["version"]!r})')
+    check(re.fullmatch(r"\d+\.\d+\.\d+", nightly["version"]) is not None,
+          "nightly appinfo version is still exactly three integers — all LG's installer accepts")
+    nightly_next = appinfo_for("nightly", "20260920")
+    check(nightly_next["version"] != nightly["version"]
+          and int(nightly_next["version"].rsplit(".", 1)[1]) > int(nightly["version"].rsplit(".", 1)[1]),
+          "two nightlies cut on different days carry different, increasing package versions "
+          "(Homebrew Channel only offers an update when the version string differs)")
+    for bad in ("2026091", "202609190", "2026-09-1", "", "abcdefgh", "２０２６０９１９"):
+        try:
+            appinfo_for("nightly", bad)
+        except SystemExit:
+            check(True, f"nightly package refuses a malformed date {bad!r}")
+        else:
+            check(False, f"nightly package refuses a malformed date {bad!r}")
+    _saved_env = os.environ.pop("PLX_NIGHTLY_DATE", None)
+    try:
+        try:
+            appinfo_for("nightly")
+        except SystemExit:
+            check(True, "nightly package with no date argument and no PLX_NIGHTLY_DATE is an error")
+        else:
+            check(False, "nightly package with no date argument and no PLX_NIGHTLY_DATE is an error")
+        os.environ["PLX_NIGHTLY_DATE"] = "20260919"
+        check(appinfo_for("nightly") == nightly,
+              "PLX_NIGHTLY_DATE (what the Makefile exports) supplies the date when none is passed")
+    finally:
+        os.environ.pop("PLX_NIGHTLY_DATE", None)
+        if _saved_env is not None:
+            os.environ["PLX_NIGHTLY_DATE"] = _saved_env
+    check(appinfo_for("stable", "20260919") == tracked_appinfo and
+          appinfo_for("debug", "20260919") == dbg,
+          "a date argument changes nothing for stable and debug")
     nightly_moved = {k for k in tracked_appinfo if nightly.get(k) != tracked_appinfo[k]}
     check(nightly_moved == {"id", "title", "version"},
           "only id, title and version differ between nightly and stable (also saw "
           f"{sorted(nightly_moved - {'id', 'title', 'version'})})")
-    nightly_control = control_for(tracked_control, "nightly")
+    nightly_control = control_for(tracked_control, "nightly", "20260919")
     check(f"Package: {STABLE_ID}.nightly" in nightly_control,
           "nightly control Package is the nightly id")
     check(f"Version: {nightly['version']}" in nightly_control,

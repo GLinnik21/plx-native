@@ -1123,7 +1123,20 @@ LICENSE_FILES = LICENSE LICENSING.md TRADEMARKS.md $(wildcard licenses/*.txt)
 # cannot drift — one code path, asked twice. Gitignored: it derives from pkg/appinfo.json, which
 # stays the single source of the version and of every field that must NOT differ between flavours
 # (only `id` and `title` may, and ci/flavor.py's selftest asserts exactly that set).
-pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/install-identities.json ci/mkipk.py
+#
+# A nightly's descriptor depends on the DATE as well as on its source files, because the date is
+# the package version's patch (`ci/flavor.py::appinfo_for`). The stamp below is named for the date,
+# so a new day is a new prerequisite that did not exist yesterday and the descriptor is rebuilt;
+# without it a tree built on Monday would package Tuesday's binary under Monday's version. Every
+# older stamp is removed when a new one is made, so the directory never accumulates them.
+ifeq ($(FLAVOR),nightly)
+APPINFO_DATE_STAMP = pkg/.flavor/nightly/date-$(PLX_NIGHTLY_DATE)
+$(APPINFO_DATE_STAMP):
+	@mkdir -p $(dir $@)
+	@rm -f pkg/.flavor/nightly/date-*
+	@touch $@
+endif
+pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/install-identities.json ci/mkipk.py $(APPINFO_DATE_STAMP)
 	@mkdir -p $(dir $@)
 	python3 ci/mkipk.py --emit-appinfo $(FLAVOR) $@
 
@@ -1817,7 +1830,14 @@ lint:
 # does). Asking the same transform for the version it WILL write is what lets IPK_VERSION — and
 # therefore $(IPK), used by `ipk`'s own recipe below — agree with what `ci/mkipk.py` actually
 # names the archive, without depending on a file that is not there yet.
-IPK_VERSION := $(shell python3 -c "import sys; sys.path.insert(0, 'ci'); import flavor; print(flavor.appinfo_for('$(FLAVOR)')['version'])")
+#
+# A nightly's version also carries its CUT DATE as the patch (`X.Y.YYYYMMDD`), so Homebrew Channel —
+# which offers an update only when the manifest's version string differs from the installed one —
+# sees two nightlies as two versions. The date is handed over explicitly rather than left to the
+# `export` above: whether an exported make variable reaches `$(shell)` at parse time depends on the
+# GNU make version (macOS still ships 3.81), and a nightly version computed from a missing date
+# fails the build (`flavor._nightly_date`) rather than guessing one. Ignored for stable and debug.
+IPK_VERSION := $(shell PLX_NIGHTLY_DATE='$(PLX_NIGHTLY_DATE)' python3 -c "import sys; sys.path.insert(0, 'ci'); import flavor; print(flavor.appinfo_for('$(FLAVOR)')['version'])")
 IPK         := pkg/$(APPID)_$(IPK_VERSION)_arm.ipk
 # Where the payload is assembled. The DIRECTORY NAME is part of the package's identity — it is
 # what `paths::app_id` reads at runtime — so ci/mkipk.py and ci/check-package.py both assert it
