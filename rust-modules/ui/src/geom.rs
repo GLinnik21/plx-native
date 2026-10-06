@@ -62,9 +62,36 @@ fn step_index<K: IndexElem>(entry: EntryId, k: FocusKey<K>, dir: Dir, n: usize, 
     }
 }
 
+/// **Where a plain index ends and a key namespace begins.** A widget's items are keyed by their own
+/// index (`0..n`); everything else that shares the `u32` key space — the container's strip
+/// (`dispatch::STRIP_BASE`), a screen's footer / keypad / read-out controls, a settings band —
+/// carves its range at or above this, "far above any realistic roster length". The one rule it
+/// buys: a key at or above it is NOT an index into any widget and must never be treated as one.
+pub const NAMESPACE_FLOOR: u32 = 0x1000_0000;
+
+/// **The one reconcile rule for an index-keyed widget** that is asked about a key it may not own.
+///
+/// - an index inside `0..n` is kept;
+/// - a stale index past the end (the list shrank under the cursor) clamps to the LAST item, the
+///   nearest survivor;
+/// - a key from another namespace (see [`NAMESPACE_FLOOR`]) was never an index, so "clamp it to
+///   the end" is meaningless and lands focus on the last item by accident — it re-seats on the
+///   FIRST, the widget's own default.
+///
+/// Every `reconcile` that used to write `i.min(n - 1)` on a key it had not checked is this
+/// function. The failure it retires: the tab strip's pill (`STRIP_BASE + 4`) was focused for a
+/// frame, the strip left, and the who's-watching picker clamped the pill to its last avatar.
+pub fn clamp_plain_index(i: u32, n: usize) -> usize {
+    if i >= NAMESPACE_FLOOR {
+        0
+    } else {
+        (i as usize).min(n.saturating_sub(1))
+    }
+}
+
 fn clamp_index<K: IndexElem>(entry: EntryId, want: FocusKey<K>, n: usize) -> FocusKey<K> {
-    let i = want.elem.index().unwrap_or(0) as usize;
-    key(entry, i.min(n.saturating_sub(1)))
+    let i = want.elem.index().unwrap_or(0);
+    key(entry, clamp_plain_index(i, n))
 }
 
 /// One shelf (`CardRow`) as the draw sees it this frame: the same arguments `card_row::strip`
@@ -192,7 +219,7 @@ where
         })
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        let i = want.elem.index().unwrap_or(0) as i32;
+        let i = want.elem.index().filter(|&i| i < NAMESPACE_FLOOR).unwrap_or(0) as i32;
         key(self.entry, self.table.settle(i).max(0) as usize)
     }
     fn seat(&self, _g: GroupId, from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
@@ -329,7 +356,8 @@ where
         Focusable::<H>::place(s, &H::Elem::of_index(c as u32), cx, at)
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        let (r, c) = self.split(want.elem.index().unwrap_or(0));
+        let k = want.elem.index().filter(|&k| k < NAMESPACE_FLOOR).unwrap_or(0);
+        let (r, c) = self.split(k);
         let r = r.min(self.shelves.len().saturating_sub(1));
         let n = self.shelves.get(r).map_or(0, |s| s.n);
         key(self.entry, self.join(r, c.min(n.saturating_sub(1))) as usize)
@@ -558,5 +586,26 @@ mod tests {
         reader.move_by(1000);
         assert!(matches!(Focusable::<FixtureHost>::neighbour(&doc(&reader, frame), k, Dir::Down, &cx), Step::Edge), "at the end, DOWN leaves");
         assert!(matches!(Focusable::<FixtureHost>::neighbour(&doc(&reader, frame), k, Dir::Up, &cx), Step::Move(_)));
+    }
+
+    /// The one reconcile rule: a stale index clamps to the last item, a key from another namespace
+    /// (the strip's pill, a screen's control) re-seats on the first — never on the last by accident.
+    #[test]
+    fn a_foreign_key_reseats_on_the_first_item_and_a_stale_index_on_the_last() {
+        assert_eq!(clamp_plain_index(2, 4), 2, "inside the range is kept");
+        assert_eq!(clamp_plain_index(9, 4), 3, "a shrunk list clamps to the last survivor");
+        assert_eq!(clamp_plain_index(0, 0), 0, "an empty list has only a zeroth");
+        for foreign in [NAMESPACE_FLOOR, 0x2000_0004, 0x4000_0100, crate::dispatch::STRIP_BASE + 4, u32::MAX] {
+            assert_eq!(clamp_plain_index(foreign, 4), 0, "{foreign:#x} is not an index");
+        }
+        let cx_m = FixtureMeasure;
+        let v = FixtureView::default();
+        let cx = cx(&cx_m, &v);
+        let rects = [Rect::new(0.0, 0.0, 10.0, 10.0), Rect::new(20.0, 0.0, 10.0, 10.0), Rect::new(40.0, 0.0, 10.0, 10.0)];
+        let row = TabRow { rects: &rects, group: GroupId(1), entry: E };
+        let strip_pill = FocusKey { entry: E, elem: crate::dispatch::STRIP_BASE + 4 };
+        assert_eq!(Focusable::<FixtureHost>::reconcile(&row, strip_pill, &cx).elem, 0);
+        let stale = FocusKey { entry: E, elem: 7u32 };
+        assert_eq!(Focusable::<FixtureHost>::reconcile(&row, stale, &cx).elem, 2);
     }
 }

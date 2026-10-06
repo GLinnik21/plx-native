@@ -803,7 +803,12 @@ impl Bridge {
     }
 
     fn capture_chrome(&mut self, d: &mut Dispatcher<AppHost>) {
-        let route = d.top_arg().cloned().unwrap_or(AppArg::Home);
+        // **The route being mounted, not Home by default.** This runs before the frame's nav
+        // commit, so on a boot's first frame there is no top page yet — only a parked `Root`.
+        // Reading that gap as Home published the tab strip under whatever mounted next: a
+        // cold-start picker's mount `Enter` was composed with it and seated focus on a pill, and
+        // the next frame's reconcile clamped that foreign key to the picker's LAST avatar.
+        let route = d.top_or_mounting_arg().cloned().unwrap_or(AppArg::Home);
         let route = &route;
         let search = *route == AppArg::Search;
         if matches!(route, AppArg::Home | AppArg::Library) || search {
