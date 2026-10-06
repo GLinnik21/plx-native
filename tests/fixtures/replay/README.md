@@ -321,3 +321,17 @@ recorded afresh on the unchanged shape (`tests/focusfp.sh --rec --only 1`, `tool
 import`, `anchor: true` restored by hand) and replayed SAME in Targets and Resolve on three
 consecutive runs. The closed alphabet gains the capsule's three runs (`Hold`, `for options`,
 `OK`), named in `_sources.hold_hint`.
+
+Laying Home's grid out when the catalog lands (`HomeScreen::sync_catalog` now runs `layout_grid`,
+where it used to wait for the next `Tick`'s `update_grid`) changed recorded behaviour without
+moving the shape: a freshly built shelf rests at `base_y = 0`, which is hashed state, so the one
+frame a catalog landed on and no `Tick` had yet laid out hashed differently. All three anchors
+mount Home with its hubs landing, and each replayed against the new build diverged on exactly one
+early frame (frame 5 of 579, 6 of 1319 and 5 of 921) with every other counter zero. The divergence
+was attributed by replaying the committed anchors against a build with only that one call removed
+(all three SAME, every counter zero), and replaying a recording taken from that build against
+itself (SAME), so the replay is deterministic and the cause is the call. The anchors were recorded
+afresh on the unchanged shape (`tests/focusfp.sh --rec --only 1,6,12`, old fixtures removed,
+`tools/plxnative-rec import`, manifests restored byte for byte, `anchor: true` kept) and replayed
+SAME in Targets and Resolve (`tests/replay_fixtures.py`, three consecutive runs) with every
+difference counter zero.

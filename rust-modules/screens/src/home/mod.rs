@@ -701,6 +701,10 @@ impl HomeScreen {
             }
         }
         debug_assert_eq!(self.grid.shelves.len(), rows.len());
+        // A fresh `CardRow` rests at `base_y = 0`, and this runs on events (`Mount`, `StoreChanged`,
+        // `Uncover`) as well as on the `Tick` whose `update_grid` lays the grid out. A frame drawn
+        // between the two showed the new rows at the top of the screen, over the billboard.
+        self.layout_grid();
         let was = std::mem::take(&mut self.elem_at);
         for (row, hub) in rows.iter().enumerate() {
             for (col, &elem) in hub.elems.iter().enumerate() {
