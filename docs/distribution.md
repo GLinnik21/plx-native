@@ -1359,6 +1359,18 @@ most drift-sensitive thing this build does.
 re-fetches every manifest, so expect **~1.5–3 h** plus a ~10 min CDN TTL. The Homebrew Channel
 compares versions by **plain string equality** — its `versionHigher()` helper is dead code.
 
+**The nightly channel is a custom repository, not a listing.** The webosbrew catalogue's entry is
+keyed to the stable id, so nightlies are served from `https://plxnative.com/nightly/repo.json`
+(users add it under Homebrew Channel > Settings > Add repository). `ci/nightly.py repo-json`
+builds it from the newest nightly release: the index, that nightly's manifest with an absolute
+`ipkUrl`, and a description page; `pages.yml` stages it after every published nightly. Because the
+Channel compares version strings, each nightly's PACKAGE version carries its cut date as the patch
+(`X.Y.YYYYMMDD`, `ci/version_rule.py::nightly_package_triplet`) — the reported version
+(`X.Y.Z-nightly-YYYYMMDD`) is the human one. `repo-json` refuses a manifest whose id, sha256 or
+dated version disagrees with its release. Not yet proven on a television: that the installer
+accepts the date patch and upgrades over the previous nightly (the on-device matrix is the
+pre-merge check).
+
 **Not built: on-device CI.** It is the only real gate, but `tests/run.py` has **no mutual-exclusion
 lock** (no `flock`, no pidfile), and there is one television — a scheduled run overlapping with the
 developer at their desk produces failures that look like player regressions and are not. It would

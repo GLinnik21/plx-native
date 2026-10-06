@@ -463,9 +463,13 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `FLAVOR=nightly` does trigger cargo's `rerun-if-env-changed` and relinks. `PLX_NIGHTLY_DATE`
   (`YYYYMMDD`, defaulted to today's UTC date by the Makefile) rides the same mechanism and is what
   turns the reported version into `X.Y.Z-nightly-YYYYMMDD` rather than plain `X.Y.Z-dev`; a nightly
-  package's OWN `appinfo.json`/control `version` also moves ahead to that same next `X.Y.Z` (see
-  `ci/flavor.py::appinfo_for`'s nightly arm and `ci/version_rule.py`), which is why nightly is the
-  one flavour `ci/flavor.py --selftest` allows to move `version` at all. Ask the seven query targets
+  package's OWN `appinfo.json`/control `version` also moves ahead — to the same next `X.Y` with the
+  cut date as its patch, `X.Y.YYYYMMDD` (see `ci/flavor.py::appinfo_for`'s nightly arm and
+  `ci/version_rule.py::nightly_package_triplet`; the Makefile hands `PLX_NIGHTLY_DATE` to the
+  `IPK_VERSION` shell call explicitly and keys the generated descriptor on a per-date stamp). The
+  date patch is what makes Homebrew Channel, which offers an update only when the version STRING
+  differs, offer one nightly after another; it is why nightly is the one flavour
+  `ci/flavor.py --selftest` allows to move `version` at all. Ask the seven query targets
   for any of it (they compose — several goals on one command line print several lines): `make -s
   print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv
   FLAVOR=<f>`. `print-appport` is the newest and the least obvious: the capture listener's TCP port
@@ -495,8 +499,9 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   surface reports (X-Plex-Version, the Sentry release, PostHog's `app_version`, the lab snapshot, the
   photographed diagnostics panel); before it, a release commit left the whole tree claiming to BE the
   release it had just cut, and nothing downstream could separate a working tree from the shipped
-  artifact. The suffix never reaches `pkg/appinfo.json` or the control file — LG takes three integers
-  and nothing else — so a developer flavour's package is labelled `0.6.0` while its binary says
+  artifact. The suffix never reaches `pkg/appinfo.json` or the control file — `ares-package`
+  accepts three integers and nothing else, and `ci/check-package.py` holds every package to that
+  (whether the television's own installer is stricter is not proven) — so a developer flavour's package is labelled `0.6.0` while its binary says
   `0.7.0-dev`, deliberately; `ci/check-package.py` grades both directions on the packaged bytes. It
   must be on
   EVERY invocation that produces or ships the binary (`make RELEASE=1 deploy`, **not**
