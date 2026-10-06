@@ -79,6 +79,13 @@ const FULL_WORDS: &[&str] = &["full", "полные", "полный", "повн�
 /// `/commentary|комментари/i`.
 const COMMENTARY_MARKS: &[&str] = &["commentary", "комментари"];
 
+/// Whether a track title names a commentary track (Latin or Cyrillic): [`parse`]'s test, shared
+/// with the audio pickers so "a commentary" means one thing everywhere.
+pub fn is_commentary(title: &str) -> bool {
+    let lower = title.to_lowercase();
+    COMMENTARY_MARKS.iter().any(|m| lower.contains(m))
+}
+
 fn normalize_word(w: &str) -> String {
     // Unicode-aware: `to_ascii_lowercase` leaves Cyrillic untouched (it only folds A-Z), so
     // "Форс." would never match the table's lower-case "форс" — the bug `sub_sets_wicked` pins.
@@ -267,10 +274,7 @@ fn fold_kind(prev: Option<Kind>, next: Kind) -> Kind {
 /// gone — the row already says its language, the same rule [`track_name`] applies to a whole
 /// title, but compared with a full Unicode case fold, since the source is often Cyrillic.
 pub fn parse(name: &str, lang: &str, forced_flag: bool, sdh_flag: bool) -> SubLabel {
-    let commentary = {
-        let lower = name.to_lowercase();
-        COMMENTARY_MARKS.iter().any(|m| lower.contains(m))
-    };
+    let commentary = is_commentary(name);
     let mut words = split_words(name);
     let front = strip_leading(&mut words);
     let back = if words.is_empty() { None } else { strip_trailing(&mut words) };
@@ -394,6 +398,15 @@ pub fn region_detail(tag: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_commentary_reads_latin_and_cyrillic_titles() {
+        assert!(is_commentary("Director's Commentary"));
+        assert!(is_commentary("English (AC3 2.0) COMMENTARY"));
+        assert!(is_commentary("Комментарии режиссёра"));
+        assert!(!is_commentary("Original"));
+        assert!(!is_commentary(""));
+    }
 
     // ---- the moved `track_name` cases (were `appkit::track_menu::tests`) ------------------------
 

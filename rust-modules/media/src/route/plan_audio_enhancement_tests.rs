@@ -328,11 +328,300 @@ fn server_selected_external_srt_is_enhanced_remux_sidecar_unaffected() {
         move |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![external]),
         |_, _| {});
     assert_enhanced(&r);
-    assert!(
-        !r.requests.iter().any(|l| l.starts_with("PUT ") && query_param(l, "subtitleStreamID").is_some_and(|v| v != "0")),
-        "no burn PUT for a sidecar: {:?}", r.requests,
-    );
+    // PMS discards a DOWNLOADED subtitle the moment the part's selection moves off it, so the app
+    // that draws the sidecar itself must leave the selection on it: a PUT of 0 here is the bug that
+    // made a freshly searched subtitle 404 at the next playback start (docs/pms-api.md, 2026-10-06).
+    assert_eq!(selection_subtitles(&r.requests), vec!["77"], "{:?}", r.requests);
+    assert_eq!(query_param(&r.plan.url, "subtitles"), Some("none"), "the wire says the app draws it: {}", r.plan.url);
+    assert_eq!(query_param(&r.plan.url, "subtitleStreamID"), Some("0"), "{}", r.plan.url);
+    assert_eq!(r.plan.sub_sid, 77, "the sidecar stays the session's subtitle");
     plx_plex::plex::reset_servers_for_test();
+}
+
+/// The `subtitleStreamID` of every selection PUT, in order.
+fn selection_subtitles(requests: &[String]) -> Vec<&str> {
+    requests
+        .iter()
+        .filter(|l| l.starts_with("PUT /library/parts/"))
+        .filter_map(|l| query_param(l, "subtitleStreamID"))
+        .collect()
+}
+
+/// The viewer's own Off is the one case that still sends 0 (and nothing is drawn).
+#[test]
+#[cfg(feature = "devtriggers")]
+fn viewer_off_over_an_enhanced_remux_still_puts_zero() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let external = plx_data::metadata::Stream {
+        id: 77,
+        codec: "srt".into(),
+        key: "/library/streams/77".into(),
+        external: true,
+        selected: true,
+        ..Default::default()
+    };
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        move |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![external]),
+        |env, _| env.subtitle_override = Some(0));
+    assert_enhanced(&r);
+    assert_eq!(selection_subtitles(&r.requests), vec!["0"], "{:?}", r.requests);
+}
+
+/// A film with one embedded English subtitle (id 5, unselected) and the subtitle the viewer
+/// downloaded mid-playback (id 77, an external SRT the server has SELECTED). The language pick
+/// would choose the embedded track, so any selection PUT naming it is the app overriding the server.
+fn embedded_english_and_selected_download(sid: ServerId) -> plx_data::metadata::PlayingItem {
+    let embedded = plx_data::metadata::Stream { selected: false, ..selected_sub(5, "srt") };
+    let download = plx_data::metadata::Stream {
+        id: 77,
+        index: 0,
+        lang_code: "eng".into(),
+        codec: "srt".into(),
+        key: "/library/streams/77".into(),
+        external: true,
+        selected: true,
+        ..Default::default()
+    };
+    fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![embedded, download])
+}
+
+/// **Regression (2026-10-06, second sequence):** a start whose server selection is a downloaded
+/// sidecar must keep it on the remux — never PUT the embedded track the language pick would take.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn remux_start_keeps_the_servers_selected_download_over_an_embedded_language_match() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        embedded_english_and_selected_download, |_, _| {});
+    assert_enhanced(&r);
+    assert_eq!(selection_subtitles(&r.requests), vec!["77"], "{:?}", r.requests);
+    assert_eq!(r.plan.sub_sid, 77);
+    assert_eq!(r.plan.sub_render_ordinal, None, "a sidecar has no side-reader target");
+    assert_eq!(query_param(&r.plan.url, "subtitles"), Some("none"), "{}", r.plan.url);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// Direct play never PUTs a subtitle selection at all, and the landing restores the sidecar.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn direct_play_start_leaves_the_servers_selected_download_alone() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        embedded_english_and_selected_download, |env, _| env.audio_enhancements = plx_plex::plex::AudioEnhancements::NONE);
+    assert!(r.plan.url.contains("/library/parts/"), "direct play expected: {}", r.plan.url);
+    assert!(selection_subtitles(&r.requests).is_empty(), "{:?}", r.requests);
+    assert_eq!(r.plan.sub_render_ordinal, None, "the embedded track is not drawn");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// The viewer's own pick for this play (the detail page's track row) still wins over the server.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_viewer_pick_made_before_play_still_wins_over_the_servers_selection() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        embedded_english_and_selected_download, |env, _| env.subtitle_override = Some(5));
+    // (over this 48 Mbit/s Part the embedded track is burned, M7; only the selection is graded)
+    assert_eq!(selection_subtitles(&r.requests), vec!["5"], "{:?}", r.requests);
+}
+
+/// A capped re-encode cannot leave the app to draw the sidecar, and a selection moved to 0 would
+/// make PMS discard the download: it stays selected and the encoder burns it.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn capped_reencode_start_keeps_the_servers_selected_download_selected() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_TRANSCODE, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        embedded_english_and_selected_download,
+        |env, _| { env.quality = Quality::P720; env.audio_enhancements = plx_plex::plex::AudioEnhancements::NONE; });
+    assert!(!r.plan.contract.remux, "a re-encode: {}", r.plan.url);
+    assert_eq!(selection_subtitles(&r.requests), vec!["77"], "{:?}", r.requests);
+    assert_eq!(query_param(&r.plan.url, "subtitleStreamID"), Some("77"), "{}", r.plan.url);
+    assert_eq!(r.plan.sub_sid, 77);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// A film whose own audio the TV cannot decode (TrueHD), with a second, decodable track beside
+/// it (what the stand-in rule used to reach for) and an embedded subtitle that is selected.
+fn truehd_with_ac3_sibling_and_embedded_sub(sid: ServerId, kbps: i64) -> plx_data::metadata::PlayingItem {
+    let truehd = track(1, "truehd", 8, true);
+    let mut sibling = track(2, "ac3", 2, true);
+    sibling.default = false;
+    sibling.selected = false;
+    sibling.lang_code = "fra".into();
+    let mut item = fourk_item_with_subs(sid, vec![truehd, sibling], vec![selected_sub(9, "srt")]);
+    item.bitrate = kbps;
+    item
+}
+
+/// **Cold start, a subtitle the app draws beside the remux.** On a local link with a known, moderate
+/// Part bitrate the viewer keeps the audio track they asked for (no direct-playing stand-in chosen
+/// for the subtitle's sake), the route is the remux, nothing is burned, and the wire tells the
+/// server so: `subtitleStreamID=0&subtitles=none`. The enhancement is offered on that remux.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn cold_start_keeps_intended_audio_and_draws_the_subtitle() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "truehd",
+        |sid| truehd_with_ac3_sibling_and_embedded_sub(sid, 7_400),
+        |_, _| {});
+    assert!(r.plan.url.contains("start.mkv"), "the intended TrueHD is converted by the server: {}", r.plan.url);
+    assert!(r.plan.contract.remux, "a copy of the video, not a burn");
+    assert_eq!(r.plan.audio.as_ref().map(|a| a.sid), Some(1), "the track asked for, not the stand-in");
+    assert_eq!(r.plan.sub_sid, 9, "the subtitle stays the selection");
+    assert_eq!(r.plan.sub_render_ordinal, Some(0), "and the app is told which track to draw");
+    assert_eq!(query_param(&r.plan.url, "subtitles"), Some("none"), "{}", r.plan.url);
+    assert_eq!(query_param(&r.plan.url, "subtitleStreamID"), Some("0"), "{}", r.plan.url);
+    assert_eq!(query_param(&r.plan.url, "normalizeLoudness"), Some("1"), "the enhancement is offered: {}", r.plan.url);
+    for d in transcode_decisions(&r.requests) {
+        assert!(!d.contains("subtitles=burn"), "{d}");
+    }
+    assert_eq!(selection_subtitles(&r.requests), vec!["9"], "an admitted embedded track stays the selection: {:?}", r.requests);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// The same film over the bound (or unmeasured) is today's behaviour: the stand-in direct-plays and
+/// the app draws the subtitle on it.
+/// The cold re-resolve re-asks the admission the live route asked: an embedded track the app was
+/// drawing (`sub_drawn >= 0`) stays drawn only where THIS plan's link and Part still admit the
+/// reader, so the wire and the landed presenter cannot disagree. A sidecar needs none of it.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn cold_reresolve_of_a_drawn_embedded_track_burns_where_the_reader_is_not_admitted() {
+    for (drawn, kbps, link, burns) in [
+        (Some(0), 40_000, plx_plex::plex::probe::Location::Local, true),
+        (Some(0), 0, plx_plex::plex::probe::Location::Local, true),
+        (Some(0), 7_400, plx_plex::plex::probe::Location::Remote, true),
+        (Some(-1), 40_000, plx_plex::plex::probe::Location::Local, false),
+    ] {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "truehd",
+            |sid| {
+                let mut item = fourk_item(sid, vec![track(1, "truehd", 8, true)]);
+                item.bitrate = kbps;
+                item
+            },
+            |env, client| {
+                client.set_link(link);
+                env.sub_sid = 77;
+                env.sub_drawn = drawn;
+            });
+        let wire = query_param(&r.plan.url, "subtitles");
+        if burns {
+            assert_ne!(wire, Some("none"), "{drawn:?} {kbps} {link:?}: the server burns: {}", r.plan.url);
+            assert_eq!(r.plan.sub_render_ordinal, None, "{drawn:?} {kbps} {link:?}");
+        } else {
+            assert_eq!(wire, Some("none"), "{drawn:?} {kbps} {link:?}: {}", r.plan.url);
+        }
+        plx_plex::plex::reset_servers_for_test();
+    }
+}
+
+/// **Cold start, a selected subtitle the app draws but the profile does not advertise** (MicroDVD,
+/// SAMI, …): `mde_subtitle_id_of` is 0 for it, yet the side reader's decoder set covers it, so the
+/// plan must still carry the selection and the track to draw. Without them the route is a
+/// `subtitles=none` remux with nobody drawing and the menu reading Off.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn cold_start_draws_a_subtitle_codec_the_profile_does_not_advertise() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "truehd",
+        |sid| {
+            let truehd = track(1, "truehd", 8, true);
+            let mut item = fourk_item_with_subs(sid, vec![truehd], vec![selected_sub(9, "microdvd")]);
+            item.bitrate = 7_400;
+            item
+        },
+        |_, _| {});
+    assert!(r.plan.contract.remux, "{}", r.plan.url);
+    assert_eq!(r.plan.sub_sid, 9, "the selection is the plan's, not 0");
+    assert_eq!(r.plan.sub_render_ordinal, Some(0), "and the app is told which track to draw");
+    assert_eq!(query_param(&r.plan.url, "subtitles"), Some("none"), "{}", r.plan.url);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// The cold-start plan, LANDED: the session reads it back as an app-drawn embedded track over the
+/// remux with a reader target naming the plan's ordinal — what the wire promised.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn cold_start_plan_lands_as_client_over_remux_with_a_reader_target() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "truehd",
+        |sid| truehd_with_ac3_sibling_and_embedded_sub(sid, 7_400),
+        |_, _| {});
+    assert_eq!(r.plan.sub_render_ordinal, Some(0));
+    apply_plan(&mut ps, r.plan, "rk-enh");
+    // The play request (`request_play`) is what names the Part the reader reads; a plan landing
+    // alone does not carry it.
+    ps.request = Some(PlaybackRequest {
+        sid: ps.cur_sid,
+        rk: "rk-enh".into(),
+        part: MKV.into(),
+        vcodec: "hevc".into(),
+        acodec: "truehd".into(),
+        title: String::new(),
+        ctx: String::new(),
+        preview: false,
+    });
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux);
+    assert!(!subtitles_burned(&ps));
+    let target = side_reader_target(&ps).expect("the landed route starts the reader");
+    assert_eq!(target.ordinal, 0);
+    assert_eq!(ps.cur_sub_sid, 9);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn cold_start_over_the_bound_keeps_the_stand_in() {
+    for kbps in [30_001, 48_000] {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "truehd",
+            |sid| truehd_with_ac3_sibling_and_embedded_sub(sid, kbps),
+            |env, _| env.audio_enhancements = plx_plex::plex::AudioEnhancements::NONE);
+        assert!(!r.plan.url.contains("start.mkv"), "{kbps}: the stand-in direct-plays: {}", r.plan.url);
+        assert_eq!(r.plan.audio.as_ref().map(|a| a.sid), Some(2), "{kbps}");
+        plx_plex::plex::reset_servers_for_test();
+    }
+}
+
+/// A cold re-resolve (a retry, a restart) that carries a subtitle the app is already drawing into a
+/// remux-shaped plan: no burn rides the wire, the id stays the selection.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn cold_reresolve_with_a_client_drawn_subtitle_sends_no_burn() {
+    for drawn in [Some(-1), Some(0)] {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "truehd",
+            |sid| {
+                let mut item = fourk_item(sid, vec![track(1, "truehd", 8, true)]);
+                item.bitrate = 7_400; // an embedded track is only drawn beside a measured, moderate Part
+                item
+            },
+            |env, _| {
+                env.sub_sid = 77;
+                env.sub_drawn = drawn;
+            });
+        assert!(r.plan.contract.remux, "{drawn:?}: {}", r.plan.url);
+        assert_eq!(query_param(&r.plan.url, "subtitles"), Some("none"), "{drawn:?}: {}", r.plan.url);
+        assert_eq!(query_param(&r.plan.url, "subtitleStreamID"), Some("0"), "{drawn:?}: {}", r.plan.url);
+        for d in transcode_decisions(&r.requests) {
+            assert!(!d.contains("subtitles=burn"), "{drawn:?}: {d}");
+        }
+        assert_eq!(r.plan.sub_sid, 77, "{drawn:?}");
+        plx_plex::plex::reset_servers_for_test();
+    }
 }
 
 #[test]

@@ -62,7 +62,7 @@ pub(crate) mod scenarios;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 35] = [
+const DIAG: [&str; 36] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -147,6 +147,9 @@ const DIAG: [&str; 35] = [
     // route policy, so an experiment must not independently replace Home with the profile picker.
     "plxnative-dvcaps0",
     "plxnative-dvcaps1",
+    // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
+    // embedded subtitle stream to draw over a plain remux, read at each playback start.
+    "plxnative-subside",
 ];
 
 /// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.

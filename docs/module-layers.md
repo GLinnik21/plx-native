@@ -1516,8 +1516,8 @@ rebuilds the application only. The no-op build is 0.1 s in both.
 `ff` (the bundled-FFmpeg demuxer), `aq`, `abr`, `hls`, `curlio`, `player` (the buffer-feed engine,
 `player/CLAUDE.md` with it) and `route`: 70 files, 84,579 lines. It is the layer with the FFI, and
 the one that held the last import cycle of the application, `abr curlio ff hls player route`, which
-is now inside one crate where a cycle is legal. The 11 root-level files the modules include by
-`#[path]` (`ff_acquisition.rs`, `ff_test_support.rs`, eight `ff_*_tests.rs`,
+is now inside one crate where a cycle is legal. The 12 root-level files the modules include by
+`#[path]` (`ff_acquisition.rs`, `ff_subs.rs`, `ff_test_support.rs`, eight `ff_*_tests.rs`,
 `curlio_keymode_tests.rs`) moved with them. Mechanically (`split-media-rewrite.py`): `git mv`, 49
 application files from `crate::<member>` to `plx_media::<member>`, `pub(crate)` to `pub` in 37 moved
 files (`pub(super)` only where it was written at the top level of a file whose parent was the crate

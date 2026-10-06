@@ -616,6 +616,9 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
             match preview {
                 plx_media::route::Preview::DirectPlay => plx_platform::i18n::msg::browse_detail_direct_play_c(),
                 plx_media::route::Preview::Remux => plx_platform::i18n::msg::browse_detail_direct_stream_c(),
+                plx_media::route::Preview::OriginalAudioConverted => {
+                    plx_platform::i18n::msg::browse_detail_original_audio_converted_c()
+                }
                 plx_media::route::Preview::Converts => converts_on_server_c(),
             },
             plx_ui::detail_layout::FACTS_INK,
@@ -1087,8 +1090,8 @@ mod tests {
     #[test]
     fn how_it_plays_resolves_the_full_docs_truth_table() {
         use plx_plex::plex::serverinfo::Subscription::{No, Unknown, Yes};
-        use plx_media::route::Preview::{Converts, DirectPlay, Remux};
-        for preview in [DirectPlay, Remux, Converts] {
+        use plx_media::route::Preview::{Converts, DirectPlay, OriginalAudioConverted, Remux};
+        for preview in [DirectPlay, Remux, OriginalAudioConverted, Converts] {
             for hdr in [false, true] {
                 for subscription in [Unknown, No, Yes] {
                     let expected = match (preview, hdr, subscription) {

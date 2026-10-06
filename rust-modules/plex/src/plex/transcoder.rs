@@ -296,8 +296,9 @@ impl Client {
             .str("protocol", protocol)
             .int("directPlay", 0)
             .int("directStream", copy_ok as i64);
-        // the one block the two flavors differ in: container-only REMUX copies the codecs
-        // (a resolution/bitrate cap would force a re-encode), RE-ENCODE caps at the ceiling this
+        // the one block the two flavors differ in: container-only REMUX copies the codecs the
+        // profile admits and the server converts the rest, e.g. an audio track the TV cannot
+        // decode (a resolution/bitrate cap would force a re-encode), RE-ENCODE caps at the ceiling this
         // playback is bound by, so an undecodable source goes to the profile's HEVC target
         // instead of downscaled H264.
         //
@@ -358,6 +359,10 @@ impl Client {
                 .int("subtitleStreamID", s.subtitle_stream_id)
                 .int("subtitleSize", 100)
                 .str("subtitles", "burn");
+        } else if s.client_subtitles {
+            // UNMEASURED on a transcode leg (docs/pms-api.md M8): the spelling is the MDE
+            // handshake's client-rendered mode (`mde_decision`), not a value first sent here.
+            q = q.int("subtitleStreamID", 0).str("subtitles", "none");
         }
         q = q
             .str("session", s.encoder_session)
@@ -377,9 +382,11 @@ impl Client {
     /// the session as a side effect. The caller reads `Part.decision` ("directplay" vs
     /// "transcode") and the verdict codes off the returned container.
     ///
-    /// `audio_stream_id` is the track the demuxer will actually feed (0 = omit, PMS uses the
-    /// part default). Smart direct-play names the AAC/AC3/EAC3 sibling here so MDE does not
-    /// veto a TrueHD/DTS default we never intended to play.
+    /// `audio_stream_id` is the track the route will carry (0 = omit, PMS uses the part
+    /// default): the direct-play pick or same-kind sibling when one exists (smart direct-play
+    /// names the AAC/AC3/EAC3 sibling so MDE does not veto a TrueHD/DTS default we never
+    /// intended to play), otherwise the intended track the TV cannot decode, which the server
+    /// converts.
     ///
     /// `subtitle_stream_id` is always sent: a positive id is an advertised embedded track Original
     /// will client-render; **0** tells MDE to evaluate with subs off so a selected sidecar or
@@ -388,7 +395,8 @@ impl Client {
     /// `subtitles=none` is the client-rendered mode. Omitting it leaves PMS on `auto`, and
     /// 1.43.4 HTTP 400s `hasMDE`+`directPlay` when the part already has a selected subtitle
     /// (`invalid subtitle setting 'auto'`). That `None` fail-closes Original into remux and a
-    /// PUT `subtitleStreamID=0`, which clears the selection. `burn` would force a transcode.
+    /// PUT `subtitleStreamID=0` (unless the selected subtitle is a sidecar the app draws, whose
+    /// id the start keeps). `burn` would force a transcode.
     pub fn mde_decision(
         &self,
         rating_key: &str,
@@ -623,6 +631,7 @@ mod tests {
             },
             audio_stream_id: 0,
             subtitle_stream_id: 0,
+            client_subtitles: false,
             offset: crate::plex::TranscodeOffset::Fresh,
         }
     }
@@ -818,6 +827,24 @@ mod tests {
         assert!(q.contains("directPlay=0"), "{q}");
         assert!(q.contains("videoResolution=3840x2160"), "{q}");
         assert!(!q.contains("directStream=0"), "{q}");
+    }
+
+    /// A remux whose subtitle the app draws names none: `subtitleStreamID=0&subtitles=none` (the
+    /// MDE handshake's client-rendered spelling) and never `burn`. A burn keeps its id.
+    #[test]
+    fn a_client_drawn_subtitle_over_a_remux_says_none_and_a_burn_still_burns() {
+        let mut s = spec(true, false);
+        s.client_subtitles = true;
+        let q = a_client().transcode_query(&s);
+        assert!(q.contains("subtitleStreamID=0"), "{q}");
+        assert!(q.contains("subtitles=none"), "{q}");
+        assert!(!q.contains("subtitles=burn"), "{q}");
+        let mut b = spec(false, false);
+        b.subtitle_stream_id = 77;
+        let q = a_client().transcode_query(&b);
+        assert!(q.contains("subtitleStreamID=77") && q.contains("subtitles=burn"), "{q}");
+        let q = a_client().transcode_query(&spec(true, false));
+        assert!(!q.contains("subtitleStreamID") && !q.contains("subtitles="), "no subtitle, no params: {q}");
     }
 
     /// **The Dolby Vision refusal, and the reason this flag exists.** `route::video_direct_plays`

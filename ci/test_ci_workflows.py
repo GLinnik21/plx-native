@@ -6,7 +6,10 @@
 * the nightly's and the release candidate's Sentry debug-file upload is skipped on a pull
   request's dry run and nowhere else (a release, the schedule and a dispatched dry run keep it);
 * the tests against the bundled FFmpeg and libass run in a job of their own, beside the replays,
-  and still run.
+  and still run;
+* the nightly Homebrew Channel repository: the nightly build generates its manifest (and debug never
+  does), a real nightly can only be cut from main, the manifest reaches the release, and the site
+  stages the repository and the guide.
 
 Text-level on purpose, like ci/test_ci_timeouts.py (no YAML library on a stock runner).
 """
@@ -80,6 +83,65 @@ class SentryUpload(unittest.TestCase):
         self.assertIn("debug-files check", step)
         self.assertLess(step.index("debug-files check"), step.index('"$UPLOAD" != true'))
         self.assertLess(step.index('"$UPLOAD" != true'), step.index("debug-files upload"))
+
+
+class NightlyHomebrewRepository(unittest.TestCase):
+    def test_the_nightly_build_generates_its_manifest_and_release_does_too(self):
+        self.assertEqual(re.findall(r"homebrew-manifest: (.*)", code("nightly.yml")), ["true"])
+        self.assertEqual(re.findall(r"homebrew-manifest: (.*)", code("release.yml")), ["true"])
+
+    def test_only_debug_is_refused_a_manifest(self):
+        build = code("build-package.yml")
+        self.assertIn('[ "$HOMEBREW_MANIFEST" = true ] && [ "$FLAVOR" = debug ]', build)
+        self.assertNotIn('[ "$FLAVOR" != stable ]', build)
+
+    def test_the_manifest_is_named_for_the_app_id_it_describes(self):
+        build = code("build-package.yml")
+        start = build.index("Generate the Homebrew Channel manifest")
+        step = build[start:build.index("LGPL corresponding source", start)]
+        self.assertIn("app_id=com.beb.plxnative.nightly", step)
+        self.assertIn("app_id=com.beb.plxnative\n", step)
+        self.assertIn('-o "pkg/${app_id}.manifest.json"', step)
+        # the hash gate also pins the id and the version, not just the bytes
+        self.assertIn("manifest['id']}_{manifest['version']}_arm.ipk", step)
+
+    def test_a_real_nightly_is_refused_off_main_and_a_dry_run_is_not(self):
+        plan = job_body("nightly.yml", "plan")
+        guard = plan[plan.index("Refuse a real nightly from any branch but main"):plan.index("- id: date")]
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.dry_run != true", guard)
+        self.assertIn('"$REF" = "refs/heads/main"', guard)
+
+    def test_the_manifest_is_published_with_the_release_and_checked_after(self):
+        publish = job_body("nightly.yml", "publish")
+        self.assertIn("dist/com.beb.plxnative.nightly.manifest.json", publish.split("gh release create")[1].split("--target")[0])
+        self.assertLess(publish.index("gh release create"),
+                        publish.index("--pattern com.beb.plxnative.nightly.manifest.json"))
+
+    def test_check_package_grades_a_nightly_without_the_build_environment(self):
+        # In CI, check-package.py runs as its OWN step, without the PLX_NIGHTLY_DATE the build step
+        # had. It must take the date from the build stamp, or flavor.control_for dies at import and
+        # every nightly fails the packaging gate (a Makefile run passes only because its recipe
+        # environment carries the exported date).
+        checker = (WORKFLOWS.parent.parent / "ci/check-package.py").read_text()
+        self.assertIn('flavor.control_for((ROOT / "ipkroot/ctl/control").read_text(), FLAVOR or "stable", _NIGHTLY_DATE)',
+                      checker)
+
+    def test_the_source_bundle_is_named_for_the_reported_version_not_the_package_filename(self):
+        # The package version carries the cut date as its patch, so `<filename version>-nightly-<date>`
+        # names a version nothing reports; the label comes from check-package's own derivation.
+        build = code("build-package.yml")
+        self.assertIn("--print-nightly-label pkg/.build-config", build)
+        self.assertIn('label="${nightly_label:-$version${rc:+-rc.$rc}}"', build)
+        self.assertNotIn('label="$version${nightly_date:+-nightly-$nightly_date}', build)
+
+    def test_the_site_stages_the_repository_and_the_guide(self):
+        pages = code("pages.yml")
+        self.assertIn('ci/nightly.py repo-json --repo "${{ github.repository }}" --out-dir _site/nightly', pages)
+        self.assertIn("render-doc-page.py docs/nightly-builds.md > _site/nightly/index.html", pages)
+        self.assertIn('"docs/nightly-builds.md"', pages)
+        # the repository files must land AFTER the guide page, in the same directory
+        self.assertLess(pages.index("docs/nightly-builds.md > _site/nightly/index.html"),
+                        pages.index("ci/nightly.py repo-json"))
 
 
 class HostToolTests(unittest.TestCase):

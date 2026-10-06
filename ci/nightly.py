@@ -10,11 +10,13 @@ id, its own tile, its own sign-in, always a `RELEASE=1` build, reporting a dated
 half of that story — which day gets a build, what the release says, where the site finds the latest
 one, and when an old one is deleted — none of which the Rust or Makefile side needs to know about.
 
-Four subcommands, each independently testable as a pure function plus a thin CLI/subprocess shell:
+Five subcommands, each independently testable as a pure function plus a thin CLI/subprocess shell:
 
   plan        — today's version/label/tag, the previous nightly tag, and whether to skip.
   notes       — render the release body (markdown, no hard wrapping, absolute links only).
   latest-json — what `plxnative.com/nightly/latest.json` serves; `{"available": false}` if none.
+  repo-json   — the Homebrew Channel repository at `plxnative.com/nightly/repo.json`: the index,
+                the newest nightly's manifest and a description page; an empty index if none.
   prune       — delete nightly releases (and their tags) older than N days, keeping the newest.
 
 `--selftest` runs the pure-logic tests below `make check` also runs (see `ci/flavor.py` for the
@@ -23,6 +25,7 @@ established shape of a same-file selftest); it needs no git repository and no ne
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import subprocess
@@ -41,6 +44,22 @@ ROOT = Path(__file__).resolve().parent.parent
 #: stable release (`v...`) must never be mistaken for a nightly by either of them.
 TAG_PREFIX = "nightly/v"
 
+#: The Homebrew Channel repository this file generates. A nightly is NOT in the webosbrew
+#: catalogue (that listing is keyed to the stable app id), so Homebrew Channel users add this URL
+#: under Settings > Add repository instead — `docs/nightly-builds.md` is the guide. The files live
+#: on the project's own site because a release asset's URL carries the nightly's tag, which
+#: changes every day, while the URL a user typed on a television must not.
+SITE_ORIGIN = "https://plxnative.com"
+REPO_JSON_URL = f"{SITE_ORIGIN}/nightly/repo.json"
+GUIDE_URL = f"{SITE_ORIGIN}/nightly/"
+PACKAGE_ID = "com.beb.plxnative.nightly"
+#: The manifest `build-package.yml` generates for the nightly package and `publish` attaches to the
+#: release under this name; also what is served beside `repo.json`.
+MANIFEST_NAME = f"{PACKAGE_ID}.manifest.json"
+#: Homebrew Channel shows this where there is no room for the long description (and falls back to
+#: it when a package has no `fullDescriptionUrl`); the listing's limit is 80 characters.
+SHORT_DESCRIPTION = "Daily build of PlxNative from main. Untested on a TV; installs beside stable."
+
 
 def _release_line_content() -> "str | None":
     """The tracked `RELEASE_LINE` marker's text, or `None` on trunk — same read as
@@ -54,9 +73,11 @@ def _release_line_content() -> "str | None":
 
 
 def next_nightly_version() -> str:
-    """The bare `X.Y.Z` a nightly cut today is built from — the exact number
-    `ci/flavor.py::appinfo_for('nightly')` gives the PACKAGE, before the `-nightly-<date>` suffix
-    that only the REPORTED version carries (see `rust-modules/build.rs::emit_version`)."""
+    """The bare `X.Y.Z` a nightly cut today is built from — the number the REPORTED version
+    `X.Y.Z-nightly-YYYYMMDD` is made of (see `rust-modules/build.rs::emit_version`). The PACKAGE's
+    own version is different on purpose: the same `X.Y` with the cut date as its patch
+    (`ci/flavor.py::appinfo_for('nightly')`), so that two nightlies are two versions to Homebrew
+    Channel."""
     appinfo_version = json.loads((ROOT / "pkg/appinfo.json").read_text())["version"]
     triplet, err = version_rule.next_version_triplet(appinfo_version, _release_line_content())
     if err:
@@ -212,10 +233,13 @@ def render_notes(*, label: str, sha: str, prev_tag: "str | None", ipk: str, sha2
         "development tracker, kept apart from reports the stable app sends.",
 
         "## Installing\n\n"
-        f"Download `{ipk}` below and install it with "
+        "**With Homebrew Channel:** under Settings, choose Add repository and enter "
+        f"`{REPO_JSON_URL}`, then install \"PlxNative Nightly\" from the list. Later nightlies "
+        f"appear there as updates. The [guide]({GUIDE_URL}) has the details.\n\n"
+        f"**By hand:** download `{ipk}` below and install it with "
         "[dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop) — no rooted "
-        "television is needed. Nightly builds are not distributed through the Homebrew Channel and "
-        "do not update automatically; the newest one is always linked from "
+        "television is needed. A package installed this way does not update itself; the newest "
+        "nightly is always linked from "
         "[plxnative.com/nightly/latest.json](https://plxnative.com/nightly/latest.json).\n\n"
         f"```\n{sha256}  {ipk}\n```\n\n"
         "This package bundles FFmpeg under LGPL-2.1-or-later; the complete corresponding source is "
@@ -296,6 +320,161 @@ def cmd_latest_json(repo: str) -> int:
     with urllib.request.urlopen(sha_asset["browser_download_url"]) as resp:  # noqa: S310 — public asset
         sha256_text = resp.read().decode()
     print(json.dumps(latest_json_payload(release, sha256_text)))
+    return 0
+
+
+def _fail(msg: str) -> "SystemExit":
+    return SystemExit(f"::error::{msg}")
+
+
+def repo_manifest(manifest: dict, *, ipk_url: str, ipk_name: str, sha256: str, label: str) -> dict:
+    """The manifest Homebrew Channel is pointed at: the one `build-package.yml` generated for the
+    package, with `ipkUrl` made absolute. Its bare filename resolves against the manifest's own
+    URL, and that is now `plxnative.com`, while the package is a release asset on GitHub.
+
+    Everything Homebrew Channel enforces on the television is re-checked here against facts that
+    do not come from the manifest, because a mismatch is invisible until it breaks a user's
+    install (the hash is checked on the device and by nothing else):
+
+      * `id` is the nightly app id — a manifest for another id would install over the wrong app.
+      * `ipkHash.sha256` equals the `nightly.sha256` published beside the package.
+      * `version` is `X.Y.<date>` with the label's own `X.Y` and date. The package version differs
+        day to day by design (`ci/flavor.py::appinfo_for`), and a manifest that did not carry
+        today's would offer no update, or offer one that installs yesterday's build.
+      * `ipkUrl` names the release's own `.ipk` asset (`publish` rewrites it to that name), so the
+        manifest and the download it hands the television describe the same file.
+
+    Raises `SystemExit("::error::…")` on a mismatch: serving a manifest that cannot be installed
+    is worse than failing the site build, which is visible the same day.
+    """
+    m = re.fullmatch(r"(\d+)\.(\d+)\.\d+-nightly-(\d{8})", label)
+    if not m:
+        raise _fail(f"label {label!r} is not X.Y.Z-nightly-YYYYMMDD")
+    major, minor, date = m.groups()
+    if manifest.get("id") != PACKAGE_ID:
+        raise _fail(f"manifest id is {manifest.get('id')!r}, want {PACKAGE_ID!r}")
+    want = sha256.split()[0] if sha256.split() else ""
+    ipk_hash = manifest.get("ipkHash")
+    have = ipk_hash.get("sha256", "") if isinstance(ipk_hash, dict) else ""
+    if not want or have != want:
+        raise _fail(f"manifest sha256 {have!r} != published nightly.sha256 {want!r}")
+    version = str(manifest.get("version", ""))
+    if version != f"{major}.{minor}.{date}":
+        raise _fail(f"manifest version {version!r} is not {major}.{minor}.{date} "
+                    f"(the label's X.Y and cut date)")
+    if str(manifest.get("ipkUrl", "")).rsplit("/", 1)[-1] != ipk_name:
+        raise _fail(f"manifest ipkUrl {manifest.get('ipkUrl')!r} does not name the release's "
+                    f"package {ipk_name!r}")
+    return {**manifest, "ipkUrl": ipk_url}
+
+
+def repo_index(repo: str) -> dict:
+    """`repo.json`: the index Homebrew Channel fetches once the user adds the repository. One
+    package, pointing at the manifest and the description page staged beside it."""
+    return {"packages": [{
+        "id": PACKAGE_ID,
+        "title": "PlxNative Nightly",
+        "shortDescription": SHORT_DESCRIPTION,
+        "fullDescriptionUrl": f"{SITE_ORIGIN}/nightly/description.html",
+        # The nightly tile's own badged artwork, the one the manifest names too.
+        "iconUri": f"https://raw.githubusercontent.com/{repo}/main/pkg/nightly/largeIcon.png",
+        "manifestUrl": f"{SITE_ORIGIN}/nightly/{MANIFEST_NAME}",
+    }]}
+
+
+def description_html(*, label: str, sha: str, release_url: str, repo: str) -> str:
+    """The long description Homebrew Channel fetches and renders as sanitised HTML — kept to
+    `<p>`, `<strong>` and `<a>`, which is all it needs to show the build line and where the
+    changes and the guide are. Every interpolated value is escaped."""
+    esc = html.escape
+    m = re.search(r"-nightly-(\d{8})$", label)
+    date = m.group(1) if m else ""
+    short = sha[:7]
+    return "\n".join([
+        "<p><strong>This build has not been tested on a television.</strong> It passed the same "
+        "automated build and packaging checks a release does, but nobody has watched it play. "
+        "Keep the regular PlxNative installed — this one installs beside it with its own tile "
+        "and its own sign-in.</p>",
+        f"<p>Build {esc(date)} &middot; version {esc(label)} &middot; commit "
+        f'<a href="https://github.com/{esc(repo)}/commit/{esc(sha)}">{esc(short)}</a></p>',
+        f'<p><a href="{esc(release_url, quote=True)}">What changed in this build</a> &middot; '
+        f'<a href="{GUIDE_URL}">How nightlies work</a> &middot; '
+        f'<a href="https://github.com/{esc(repo)}/issues/new">Report a problem</a> (include the '
+        "version above).</p>",
+        "<p>A new build is published most days that <code>main</code> changes, and appears here as "
+        "an update. Builds are deleted after 30 days.</p>",
+    ]) + "\n"
+
+
+def pick_servable_release(releases: "list[dict]") -> "tuple[dict, dict, dict] | None":
+    """`(release, sha256 asset, manifest asset)` for the NEWEST nightly that has both, or `None`.
+
+    Newest-first, skipping any release without them rather than stopping at the newest: a Pages
+    run that lands while `gh release create` is still uploading, or a nightly published before
+    manifests existed, must not blank the repository on every installed television — the previous
+    good nightly keeps being served until a newer one is complete. Pure, so `--selftest` covers
+    the ordering without `gh`.
+    """
+    for release in sorted(releases, key=lambda r: r["created_at"], reverse=True):
+        sha_asset = next((a for a in release["assets"] if a["name"] == "nightly.sha256"), None)
+        manifest_asset = next((a for a in release["assets"] if a["name"] == MANIFEST_NAME), None)
+        if sha_asset is not None and manifest_asset is not None:
+            return release, sha_asset, manifest_asset
+        print(f"::warning::release {release['tag_name']} lacks "
+              f"{'nightly.sha256' if sha_asset is None else MANIFEST_NAME} — not served", file=sys.stderr)
+    return None
+
+
+def build_repo_files(release: "dict | None", sha256_text: str, manifest_text: "str | None",
+                     repo: str) -> "dict[str, str]":
+    """Every file `plxnative.com/nightly/` serves for the Homebrew Channel repository, as
+    `{filename: text}`. Pure — takes what `gh api` and the asset downloads already returned, so
+    `--selftest` covers it without a network.
+
+    No servable nightly at all: an index with no packages and nothing else, rather than an error.
+    The site has to build before the first nightly with a manifest exists, and an empty repository
+    is the honest thing to show until then.
+    """
+    empty = {"repo.json": json.dumps({"packages": []}, indent=2) + "\n"}
+    if release is None or manifest_text is None:
+        return empty
+    tag = release["tag_name"]
+    label = tag[len(TAG_PREFIX):]
+    ipk_asset = next((a for a in release["assets"] if a["name"].endswith(".ipk")), None)
+    if ipk_asset is None:
+        raise _fail(f"release {tag} has no .ipk asset")
+    manifest = repo_manifest(
+        json.loads(manifest_text), ipk_url=ipk_asset["browser_download_url"],
+        ipk_name=ipk_asset["name"], sha256=sha256_text, label=label)
+    return {
+        "repo.json": json.dumps(repo_index(repo), indent=2) + "\n",
+        MANIFEST_NAME: json.dumps(manifest, indent=2) + "\n",
+        "description.html": description_html(
+            label=label, sha=release["target_commitish"], release_url=release["html_url"],
+            repo=repo),
+    }
+
+
+def _download(asset: dict) -> str:
+    with urllib.request.urlopen(asset["browser_download_url"]) as resp:  # noqa: S310 — public asset
+        return resp.read().decode()
+
+
+def cmd_repo_json(repo: str, out_dir: str) -> int:
+    """Write the Homebrew Channel repository for the newest SERVABLE nightly into `out_dir`. Like
+    `latest-json`, no nightly (or none with a manifest yet) is exit 0 and an empty index; a
+    manifest that DISAGREES with its own release is a failure (see `repo_manifest`)."""
+    picked = pick_servable_release(_nightly_releases(repo))
+    release = sha_text = manifest_text = None
+    if picked is not None:
+        release, sha_asset, manifest_asset = picked
+        sha_text, manifest_text = _download(sha_asset), _download(manifest_asset)
+    files = build_repo_files(release, sha_text or "", manifest_text, repo)
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (out / name).write_text(text)
+        print(f"wrote {out / name}")
     return 0
 
 
@@ -446,6 +625,109 @@ def _selftest() -> int:
           "prune never deletes the last remaining nightly, however old")
     check(select_prune_victims([], 30, now) == [], "prune of an empty list deletes nothing")
 
+    # Homebrew Channel repository
+    label = "0.8.0-nightly-20261006"
+    good_manifest = {
+        "id": PACKAGE_ID, "version": "0.8.20261006", "type": "native", "title": "PlxNative Nightly",
+        "ipkUrl": "plxnative-v0.8.0-nightly-20261006.ipk",
+        "ipkHash": {"sha256": "ab" * 32}, "iconUri": "https://example.invalid/i.png",
+    }
+    ipk_name = "plxnative-v0.8.0-nightly-20261006.ipk"
+    ipk_url = "https://github.com/GLinnik21/plx-native/releases/download/x/plxnative-v0.8.0.ipk"
+    out = repo_manifest(good_manifest, ipk_url=ipk_url, ipk_name=ipk_name,
+                        sha256=("ab" * 32) + "  file.ipk\n", label=label)
+    check(out["ipkUrl"] == ipk_url and out["version"] == "0.8.20261006",
+          "repo manifest keeps the package's own fields and gets an ABSOLUTE ipkUrl")
+
+    def refuses(manifest: dict, sha: str = "ab" * 32, lbl: str = label) -> bool:
+        try:
+            repo_manifest(manifest, ipk_url=ipk_url, ipk_name=ipk_name, sha256=sha, label=lbl)
+        except SystemExit:
+            return True
+        return False
+    check(refuses({**good_manifest, "id": "com.beb.plxnative"}),
+          "a manifest for the STABLE id is refused (it would install over the wrong app)")
+    check(refuses(good_manifest, sha="cd" * 32), "a manifest whose sha256 differs from nightly.sha256 is refused")
+    check(refuses(good_manifest, sha=""), "an empty published checksum is refused, not matched against")
+    check(refuses({**good_manifest, "version": "0.8.0"}),
+          "a manifest whose version carries no date (the old per-cycle scheme) is refused")
+    check(refuses({**good_manifest, "version": "0.8.20261005"}),
+          "a manifest dated for a different day than the release is refused")
+    check(refuses(good_manifest, lbl="0.8.0"), "a label without -nightly-YYYYMMDD is refused")
+    check(refuses({**good_manifest, "version": "9.9.20261006"}),
+          "a manifest with the right date but another major.minor is refused")
+    check(refuses({**good_manifest, "ipkUrl": "something-else.ipk"}),
+          "a manifest naming a different package file than the release's is refused")
+    check(refuses({**good_manifest, "ipkHash": "not-a-dict"}) and refuses({k: v for k, v in good_manifest.items() if k != "ipkHash"}),
+          "a missing or malformed ipkHash is refused with an error, not an AttributeError")
+    # A maintenance-line label (0.6.2-nightly-D) heads for 0.6.2 but its package is 0.6.<D>:
+    # the manifest must carry the label's own X.Y, not trunk's.
+    maint = {**good_manifest, "version": "0.6.20261006"}
+    check(not refuses(maint, lbl="0.6.2-nightly-20261006"),
+          "a maintenance-line nightly's manifest (package 0.6.<date>) matches its 0.6.2 label")
+    check(refuses(good_manifest, lbl="0.6.2-nightly-20261006"),
+          "a trunk manifest (0.8.<date>) does not match a 0.6.2 maintenance-line label")
+
+    index = repo_index("GLinnik21/plx-native")
+    pkg = index["packages"][0]
+    check(pkg["id"] == PACKAGE_ID and pkg["manifestUrl"] == f"{SITE_ORIGIN}/nightly/{MANIFEST_NAME}",
+          "repo.json names the nightly id and the manifest staged beside it")
+    check(len(pkg["shortDescription"]) <= 80, "shortDescription fits the listing's 80-character limit")
+    check(pkg["fullDescriptionUrl"].startswith("https://") and pkg["iconUri"].startswith("https://"),
+          "repo.json's description and icon URLs are absolute https")
+
+    rel = {**fake_release, "html_url": "https://github.com/GLinnik21/plx-native/releases/tag/x",
+           "assets": fake_release["assets"] + [{"name": MANIFEST_NAME,
+                                                "browser_download_url": "https://example.invalid/m"}]}
+    rel["assets"][0] = {"name": "plxnative-v0.8.0-nightly-20261006.ipk", "browser_download_url": ipk_url}
+    rel["tag_name"] = "nightly/v" + label
+    files = build_repo_files(rel, ("ab" * 32) + "  x\n", json.dumps(good_manifest), "GLinnik21/plx-native")
+    check(set(files) == {"repo.json", MANIFEST_NAME, "description.html"},
+          "a nightly with a manifest yields the index, the manifest and the description page")
+    check(json.loads(files[MANIFEST_NAME])["ipkUrl"] == ipk_url, "the served manifest points at the release's .ipk")
+    check("Build 20261006" in files["description.html"] and "version 0.8.0-nightly-20261006" in files["description.html"]
+          and "abc1234" in files["description.html"] and "has not been tested on a television" in files["description.html"],
+          "the description page carries the build line, the commit and the untested warning")
+    check("<script" not in files["description.html"].lower(), "the description page has no scripts")
+    hostile = description_html(label=label, sha="a" * 40, release_url='https://x/"><script>', repo="o/r")
+    check("<script>" not in hostile, "description values are HTML-escaped")
+    check(build_repo_files(None, "", None, "o/r") == {"repo.json": '{\n  "packages": []\n}\n'},
+          "no nightly -> an empty index and nothing else")
+    check(set(build_repo_files(rel, "", None, "o/r")) == {"repo.json"},
+          "a newest nightly with no manifest asset -> an empty index, not an error")
+    rel_no_ipk = {**rel, "assets": [a for a in rel["assets"] if not a["name"].endswith(".ipk")]}
+    try:
+        build_repo_files(rel_no_ipk, ("ab" * 32), json.dumps(good_manifest), "o/r")
+        check(False, "a release with a manifest but no .ipk asset is an error")
+    except SystemExit:
+        check(True, "a release with a manifest but no .ipk asset is an error")
+
+    # the newest SERVABLE nightly: an incomplete newest release must not blank the repository
+    def mk(day: str, with_manifest: bool, with_sha: bool = True) -> dict:
+        assets = [{"name": f"plxnative-v0.8.0-nightly-{day}.ipk", "browser_download_url": "https://x/ipk"}]
+        if with_sha:
+            assets.append({"name": "nightly.sha256", "browser_download_url": "https://x/sha"})
+        if with_manifest:
+            assets.append({"name": MANIFEST_NAME, "browser_download_url": "https://x/m"})
+        return {"tag_name": f"nightly/v0.8.0-nightly-{day}", "created_at": f"2026-10-{day[-2:]}T03:00:00Z",
+                "assets": assets}
+    complete_old, partial_new = mk("20261005", True), mk("20261006", False)
+    picked = pick_servable_release([complete_old, partial_new])
+    check(picked is not None and picked[0] is complete_old,
+          "a newest release still mid-upload (no manifest) is skipped for the previous complete one")
+    picked = pick_servable_release([mk("20261005", True), mk("20261006", True)])
+    check(picked is not None and picked[0]["tag_name"].endswith("20261006"),
+          "when the newest release is complete it is the one served")
+    check(pick_servable_release([mk("20261006", False), mk("20261005", True, with_sha=False)]) is None
+          and pick_servable_release([]) is None,
+          "no complete nightly at all -> nothing servable (an empty index)")
+
+    # the install text in the notes
+    check(REPO_JSON_URL in body and "Add repository" in body and "dev-manager-desktop" in body,
+          "notes lead with the Homebrew Channel repository and keep the by-hand route")
+    check("not distributed through the Homebrew Channel" not in body,
+          "notes no longer claim nightlies are outside the Homebrew Channel")
+
     print()
     for f in fails:
         print(f"::error::{f}")
@@ -473,6 +755,10 @@ def main() -> int:
     p_latest = sub.add_parser("latest-json")
     p_latest.add_argument("--repo", required=True)
 
+    p_repo = sub.add_parser("repo-json")
+    p_repo.add_argument("--repo", required=True)
+    p_repo.add_argument("--out-dir", required=True)
+
     p_prune = sub.add_parser("prune")
     p_prune.add_argument("--repo", required=True)
     p_prune.add_argument("--days", type=int, default=30)
@@ -492,6 +778,8 @@ def main() -> int:
         return cmd_notes(args)
     if args.cmd == "latest-json":
         return cmd_latest_json(args.repo)
+    if args.cmd == "repo-json":
+        return cmd_repo_json(args.repo, args.out_dir)
     if args.cmd == "prune":
         return cmd_prune(args.repo, args.days, args.dry_run)
 

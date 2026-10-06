@@ -2064,10 +2064,11 @@ fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
         playback_preview(&item("h264", MOV, "aac")),
         Some(Preview::Remux)
     );
-    // …and so it does for a streamable container whose only audio track has to be converted
+    // …but a streamable container whose only audio track has to be converted is the Original
+    // remux with converted audio: the picture is copied, only the sound changes
     assert_eq!(
         playback_preview(&item("h264", MKV, "truehd")),
-        Some(Preview::Remux)
+        Some(Preview::OriginalAudioConverted)
     );
     // a codec the pipeline cannot decode at all is the only real re-encode
     assert_eq!(
@@ -2081,6 +2082,120 @@ fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
     );
     // nothing playable loaded (a show still resolving its episode) answers nothing at all
     assert_eq!(playback_preview(&item("h264", "", "aac")), None);
+}
+
+/// **The detail page says "audio converted" exactly when the planner would convert the audio of
+/// the track it means to play** — the planner's own pick (`audio_intent_needs_conversion`), not
+/// "is any track playable". An undecodable default with a same-language playable sibling plays the
+/// sibling (direct play); one with no such sibling is converted by the server on a video-copy
+/// remux; a re-encode keeps its existing label.
+#[test]
+fn the_preview_names_a_converted_audio_only_when_the_track_that_plays_needs_it() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Original);
+    fn track(id: i64, codec: &str, channels: i64, lang: &str, default: bool) -> plx_data::metadata::Stream {
+        plx_data::metadata::Stream {
+            id, codec: codec.into(), channels, lang_code: lang.into(), default, ..Default::default()
+        }
+    }
+    fn item(vcodec: &str, audio: Vec<plx_data::metadata::Stream>) -> plx_data::metadata::Detail {
+        plx_data::metadata::Detail {
+            vcodec: vcodec.into(),
+            part: "/library/parts/1/2/file.mkv".into(),
+            width: 1920,
+            height: 1080,
+            audio,
+            ..Default::default()
+        }
+    }
+    // the TV decodes the default: direct play, label unchanged
+    assert_eq!(
+        playback_preview(&item("h264", vec![track(1, "ac3", 6, "eng", true)])),
+        Some(Preview::DirectPlay)
+    );
+    // the default needs conversion and nothing in its language carries it: audio converted
+    assert_eq!(
+        playback_preview(&item("h264", vec![track(1, "truehd", 8, "eng", true), track(2, "ac3", 6, "fra", false)])),
+        Some(Preview::OriginalAudioConverted)
+    );
+    // …a same-language playable sibling plays instead (smart direct play): unchanged
+    assert_eq!(
+        playback_preview(&item("h264", vec![track(1, "truehd", 8, "eng", true), track(2, "ac3", 6, "eng", false)])),
+        Some(Preview::DirectPlay)
+    );
+    // a real re-encode keeps its label whatever the audio is
+    assert_eq!(
+        playback_preview(&item("vp9", vec![track(1, "truehd", 8, "eng", true)])),
+        Some(Preview::Converts)
+    );
+    // no track list at all: nothing is claimed about the audio
+    assert_eq!(playback_preview(&item("h264", vec![])), Some(Preview::Remux));
+}
+
+/// **The label follows the planner's subtitle stand-in and its reference track.** A due subtitle
+/// the app will not draw itself (`stand_in_retry`) lets a direct-playable track of another
+/// language play (`StandIn::Any`), so nothing is converted; once the side reader is admitted (a
+/// local link, a moderate bitrate) the intended track is kept and the server converts it. With no
+/// default flag the reference track is the Media's audio codec (`reference_default`), not track 0.
+#[test]
+fn the_preview_follows_the_subtitle_stand_in_and_the_media_audio_codec() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Original);
+    let sid = plx_plex::plex::register_for_test("preview-stand-in", "127.0.0.1", 1, "token", "preview-stand-in");
+    fn track(id: i64, codec: &str, channels: i64, lang: &str, default: bool) -> plx_data::metadata::Stream {
+        plx_data::metadata::Stream {
+            id, codec: codec.into(), channels, lang_code: lang.into(), default, ..Default::default()
+        }
+    }
+    let sub = plx_data::metadata::Stream {
+        id: 9, index: 3, codec: "srt".into(), selected: true, ..Default::default()
+    };
+    let item = |audio: Vec<plx_data::metadata::Stream>, acodec: &str, subs: Vec<plx_data::metadata::Stream>, kbps: i64| {
+        plx_data::metadata::Detail {
+            sid,
+            vcodec: "h264".into(),
+            acodec: acodec.into(),
+            part: "/library/parts/1/2/file.mkv".into(),
+            width: 1920,
+            height: 1080,
+            bitrate: kbps,
+            audio,
+            subs,
+            ..Default::default()
+        }
+    };
+    let eng_fra = || vec![track(1, "truehd", 8, "eng", true), track(2, "ac3", 6, "fra", false)];
+    // no subtitle: the strict policy converts the English default (unchanged)
+    assert_eq!(
+        playback_preview(&item(eng_fra(), "truehd", vec![], 10_000)),
+        Some(Preview::OriginalAudioConverted)
+    );
+    // a subtitle is selected and the link is not known local: the French track stands in
+    assert_eq!(
+        playback_preview(&item(eng_fra(), "truehd", vec![sub.clone()], 10_000)),
+        Some(Preview::DirectPlay)
+    );
+    // local link + moderate bitrate: the side reader draws it, the English track is converted
+    plx_plex::plex::client_for(sid).expect("registered").set_link(plx_plex::plex::probe::Location::Local);
+    assert_eq!(
+        playback_preview(&item(eng_fra(), "truehd", vec![sub.clone()], 10_000)),
+        Some(Preview::OriginalAudioConverted)
+    );
+    // …but a Part too heavy for the side reader burns, so the stand-in plays again
+    assert_eq!(
+        playback_preview(&item(eng_fra(), "truehd", vec![sub], 40_000)),
+        Some(Preview::DirectPlay)
+    );
+    // no default flag: the reference track is the Media's audio codec (ac3, track 1), which plays
+    let unflagged = vec![track(1, "truehd", 8, "eng", false), track(2, "ac3", 6, "eng", false)];
+    assert_eq!(playback_preview(&item(unflagged.clone(), "ac3", vec![], 10_000)), Some(Preview::DirectPlay));
+    let unflagged = vec![track(1, "ac3", 6, "eng", false), track(2, "truehd", 8, "fra", false)];
+    assert_eq!(
+        playback_preview(&item(unflagged, "truehd", vec![], 10_000)),
+        Some(Preview::OriginalAudioConverted)
+    );
 }
 
 #[test]
@@ -2309,4 +2424,239 @@ fn retry_after_start_failure_suppresses_enhancement() {
     assert_eq!(crate::player::audio_enhancements(), enh, "suppression is per-resolve, not persisted");
 
     crate::player::restore_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
+}
+
+/// One cold `build_stream` against a loopback PMS that answers every `/decision` with `mde`.
+/// Returns the plan and the request lines PMS saw.
+#[cfg(feature = "devtriggers")]
+fn cold_audio_resolve(
+    name: &'static str,
+    mde: &'static [u8],
+    audio: Vec<plx_data::metadata::Stream>,
+    subs: Vec<plx_data::metadata::Stream>,
+    acodec: &str,
+    tweak: impl FnOnce(&mut ResolveEnv, &mut plx_data::metadata::PlayingItem),
+) -> (Plan, Vec<String>) {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (port, rx, server) = plan_pms(4, mde);
+    let sid = plx_plex::plex::register_for_test(name, "127.0.0.1", port, "token", name);
+    let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
+    let mut item = fourk_item_with_subs(sid, audio, subs);
+    tweak(&mut env, &mut item);
+    env.cached_item = Some(item);
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-4k", "/library/parts/36013/1/file.mkv", "hevc", acodec, &env);
+    let requests = rx.recv_timeout(std::time::Duration::from_secs(15)).expect("PMS never saw the resolve");
+    server.join().unwrap();
+    plx_plex::plex::reset_servers_for_test();
+    (plan, requests)
+}
+
+#[cfg(feature = "devtriggers")]
+fn cold_track(id: i64, codec: &str, lang: &str, default: bool, title: &str) -> plx_data::metadata::Stream {
+    plx_data::metadata::Stream {
+        id,
+        index: id,
+        lang_code: lang.into(),
+        codec: codec.into(),
+        channels: 6,
+        default,
+        selected: default,
+        title: title.into(),
+        ..Default::default()
+    }
+}
+
+#[cfg(feature = "devtriggers")]
+fn request_with<'a>(requests: &'a [String], needle: &str) -> Vec<&'a String> {
+    requests.iter().filter(|l| l.contains(needle)).collect()
+}
+
+/// A TrueHD default whose only direct-playable neighbour is an English commentary: the viewer
+/// asked for the film, so the server converts the default and nothing direct-plays the commentary.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_cold_start_whose_default_cannot_direct_play_remuxes_and_names_the_default() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-remux-default",
+        MDE_TRANSCODE_COPY,
+        vec![cold_track(1, "truehd", "eng", true, ""), cold_track(2, "ac3", "eng", false, "Commentary")],
+        Vec::new(),
+        "truehd",
+        // a recorded LAN link is what makes Auto capture its Original candidate
+        |env, _| plx_plex::plex::client_for(env.sid).expect("registered").set_link(plx_plex::plex::probe::Location::Local),
+    );
+    let mde = request_with(&requests, "hasMDE=1");
+    assert!(!mde.is_empty() && mde.iter().all(|l| query_param(l, "audioStreamID") == Some("1")), "{requests:?}");
+    assert!(
+        requests.iter().any(|l| l.contains("PUT") && l.contains("audioStreamID=1")),
+        "the selection PUT names the default: {requests:?}"
+    );
+    let tc = requests.iter().find(|l| l.contains("/decision?") && !l.contains("hasMDE=1")).expect("transcode decision");
+    assert_eq!(query_param(tc, "directStreamAudio"), Some("1"), "{tc}");
+    assert!(!tc.contains("videoResolution") && !tc.contains("maxVideoBitrate"), "a remux carries no cap: {tc}");
+    assert!(plan.contract.remux, "{}", plan.url);
+    assert_eq!(plan.audio.as_ref().map(|a| a.sid), Some(1));
+    assert_eq!(plan.auto_original.as_ref().and_then(|c| c.audio.as_ref()).map(|a| a.sid), Some(1));
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_cold_start_with_a_subtitle_keeps_a_same_language_or_foreign_non_commentary_stand_in() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-sub-stand-in",
+        MDE_DIRECTPLAY,
+        vec![cold_track(1, "truehd", "eng", true, ""), cold_track(3, "ac3", "fra", false, "")],
+        vec![selected_sub(50, "srt")],
+        "truehd",
+        |_, _| {},
+    );
+    assert!(plan.url.contains("/library/parts/36013/"), "direct play on the stand-in: {}", plan.url);
+    assert!(!plan.contract.remux);
+    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("3")), "{requests:?}");
+    assert!(request_with(&requests, "subtitles=burn").is_empty(), "{requests:?}");
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_cold_start_with_a_subtitle_and_only_a_commentary_to_stand_in_burns_it() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-sub-burn",
+        MDE_TRANSCODE,
+        vec![cold_track(1, "truehd", "eng", true, ""), cold_track(2, "ac3", "eng", false, "Commentary")],
+        vec![selected_sub(50, "srt")],
+        "truehd",
+        |_, _| {},
+    );
+    let tc = requests.iter().find(|l| l.contains("/decision?") && !l.contains("hasMDE=1")).expect("transcode decision");
+    assert_eq!(query_param(tc, "subtitleStreamID"), Some("50"), "{tc}");
+    assert_eq!(query_param(tc, "subtitles"), Some("burn"), "{tc}");
+    assert!(tc.contains("maxVideoBitrate") || tc.contains("videoResolution"), "a burn is a capped re-encode: {tc}");
+    assert!(!plan.contract.remux, "{}", plan.url);
+    assert_eq!(query_param(tc, "audioStreamID"), Some("1"), "{tc}");
+    assert!(requests.iter().any(|l| l.contains("PUT") && l.contains("subtitleStreamID=50")), "{requests:?}");
+    assert_eq!(plan.audio.as_ref().map(|a| a.sid), Some(1));
+    assert_eq!(plan.sub_sid, 50, "the burned subtitle is the session's subtitle (the menu, the next rebuild)");
+}
+
+/// Burning is for a file that HAS a commentary to stand in and would otherwise remux. A TrueHD-only
+/// file has nothing to stand in: on 2be25968 it was the plain remux (copied video, audio converted,
+/// `directStreamAudio=1`, no cap, `subtitleStreamID` unset), the picked subtitle simply not shown.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_file_with_no_stand_in_and_a_subtitle_is_not_newly_burned() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-sub-no-stand-in",
+        MDE_TRANSCODE_COPY,
+        vec![cold_track(1, "truehd", "eng", true, "")],
+        vec![selected_sub(50, "srt")],
+        "truehd",
+        |env, _| plx_plex::plex::client_for(env.sid).expect("registered").set_link(plx_plex::plex::probe::Location::Local),
+    );
+    let tc = requests.iter().find(|l| l.contains("/decision?") && !l.contains("hasMDE=1")).expect("transcode decision");
+    assert_eq!(query_param(tc, "directStreamAudio"), Some("1"), "{tc}");
+    assert!(!tc.contains("subtitles=burn") && !tc.contains("videoResolution") && !tc.contains("maxVideoBitrate"), "{tc}");
+    assert_eq!(query_param(tc, "audioStreamID"), Some("1"), "{tc}");
+    assert!(plan.contract.remux, "{}", plan.url);
+    assert_eq!(plan.sub_sid, 0);
+}
+
+/// A fixed rung was a re-encode already: it carried no subtitle before this branch and must not
+/// start burning one now.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_fixed_rung_is_not_newly_burned_for_audio() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-sub-fixed-rung",
+        MDE_TRANSCODE,
+        vec![cold_track(1, "truehd", "eng", true, ""), cold_track(2, "ac3", "eng", false, "Commentary")],
+        vec![selected_sub(50, "srt")],
+        "truehd",
+        |env, _| env.quality = Quality::P720,
+    );
+    let tc = requests.iter().find(|l| l.contains("/decision?") && !l.contains("hasMDE=1")).expect("transcode decision");
+    assert!(!tc.contains("subtitles=burn") && query_param(tc, "subtitleStreamID").is_none_or(|v| v == "0"), "{tc}");
+    assert!(!plan.contract.remux, "{}", plan.url);
+    assert_eq!(plan.sub_sid, 0);
+}
+
+/// A non-commentary stand-in is kept only if a direct play actually results; on a fixed rung the
+/// encoder carries the track the viewer asked for, not the French copy.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_stand_in_is_dropped_when_direct_play_does_not_result() {
+    let (_, requests) = cold_audio_resolve(
+        "cold-sub-stand-in-dropped",
+        MDE_TRANSCODE,
+        vec![cold_track(1, "truehd", "eng", true, ""), cold_track(3, "ac3", "fra", false, "")],
+        vec![selected_sub(50, "srt")],
+        "truehd",
+        |env, _| env.quality = Quality::P720,
+    );
+    let tc = requests.iter().find(|l| l.contains("/decision?") && !l.contains("hasMDE=1")).expect("transcode decision");
+    assert_eq!(query_param(tc, "audioStreamID"), Some("1"), "{tc}");
+    assert!(
+        requests.iter().any(|l| l.contains("PUT") && l.contains("audioStreamID=1")),
+        "the selection PUT names the intended track: {requests:?}"
+    );
+}
+
+/// The viewer's own pick of a track the TV cannot play is converted by the server, whatever else
+/// the file offers; and forced direct play, which has no server to convert, refuses it rather than
+/// playing another track.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_direct_play_refuses_an_unplayable_session_pick() {
+    let (plan, _) = cold_audio_resolve(
+        "cold-forced-session-pick",
+        MDE_DIRECTPLAY,
+        vec![cold_track(1, "ac3", "rus", true, ""), cold_track(2, "truehd", "eng", false, "")],
+        Vec::new(),
+        "ac3",
+        |env, _| { env.direct_play_mode = DirectPlayMode::Forced; env.audio_sid = 2; },
+    );
+    assert!(matches!(plan.verdict, Some(PlayVerdict::Forced(ForcedFailure::Audio))), "{:?}", plan.verdict);
+}
+
+/// Rule 2: with no copy to fall back on, today's ladder stays — a non-commentary stand-in first.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_direct_play_keeps_its_stand_in() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-forced-stand-in",
+        MDE_DIRECTPLAY,
+        vec![
+            cold_track(1, "truehd", "eng", true, ""),
+            cold_track(2, "ac3", "eng", false, "Commentary"),
+            cold_track(3, "ac3", "fra", false, ""),
+        ],
+        Vec::new(),
+        "truehd",
+        |env, _| env.direct_play_mode = DirectPlayMode::Forced,
+    );
+    assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
+    assert!(plan.url.contains("/library/parts/36013/"), "{}", plan.url);
+    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("3")), "{requests:?}");
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn uncopyable_video_keeps_its_stand_in() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-p5-stand-in",
+        MDE_DIRECTPLAY,
+        vec![
+            cold_track(1, "truehd", "eng", true, ""),
+            cold_track(2, "ac3", "eng", false, "Commentary"),
+            cold_track(3, "ac3", "fra", false, ""),
+        ],
+        Vec::new(),
+        "truehd",
+        |env, item| {
+            env.dv_capability = Some(plx_platform::devcaps::dv::DvCapability::Supported);
+            item.dovi = p5();
+        },
+    );
+    assert!(plan.url.contains("/library/parts/36013/"), "{}", plan.url);
+    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("3")), "{requests:?}");
 }
