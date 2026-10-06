@@ -5,7 +5,10 @@
     "license": "FTL AND MIT AND Zlib",
     "archive": "freetype-2.14.3.tar.xz",
     "sha256": "36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f",
-    "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz"
+    "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz",
+    "mirrors": [
+      "https://downloads.sourceforge.net/project/freetype/freetype2/2.14.3/freetype-2.14.3.tar.xz"
+    ]
   },
   {
     "id": "fribidi",
