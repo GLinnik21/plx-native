@@ -10,7 +10,7 @@ use super::*;
 
 /// Where the host FFmpeg was staged: `PLX_FFMPEG_DIR` (what `make check-ffmpeg` passes), else the
 /// checkout's own `pkg/`.
-fn host_ffmpeg_dir() -> std::path::PathBuf {
+pub(super) fn host_ffmpeg_dir() -> std::path::PathBuf {
     std::env::var_os("PLX_FFMPEG_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pkg"))
@@ -18,7 +18,7 @@ fn host_ffmpeg_dir() -> std::path::PathBuf {
 
 /// Bind the three libraries exactly as `load_libraries` does — dependency order, one directory —
 /// and hold the build to the ABI table this file's offsets were checked against.
-fn bind_host_ffmpeg() {
+pub(super) fn bind_host_ffmpeg() {
     let dir = host_ffmpeg_dir();
     for (what, verdict) in [
         ("avutil", avutil::load(Some(&dir))),

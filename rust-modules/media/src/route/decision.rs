@@ -8908,7 +8908,41 @@ pub fn subtitle_presenter(ps: &PlaybackSession) -> SubtitlePresenter {
 /// draw is silenced by: a transcode burns whatever is selected, except a remux the app draws the
 /// subtitle over ([`SubtitlePresenter::ClientOverRemux`]).
 pub fn subtitles_burned(ps: &PlaybackSession) -> bool {
-    is_transcoding(ps) && subtitle_presenter(ps) != SubtitlePresenter::ClientOverRemux
+    is_transcoding(ps)
+        && subtitle_presenter(ps) != SubtitlePresenter::ClientOverRemux
+        // Dev trigger `plxnative-subside`: the side reader is drawing an embedded track over a plain
+        // remux with nothing selected in the route. Stage 3's real presenter replaces this term.
+        && !crate::player::subside::active()
+}
+
+/// What the side subtitle reader needs to read the film's original Part beside a plain remux.
+pub struct SideReaderTarget {
+    pub sid: plx_plex::plex::ServerId,
+    /// The Part's key (path), never logged.
+    pub part: String,
+    /// The LIVE transcode session's identifier, never logged. The reader's request carries a fresh
+    /// identifier derived from it; the live one itself is refused by PMS while the remux runs.
+    pub session: String,
+    /// The Part's whole-file bitrate, for the log line.
+    pub part_kbps: u32,
+}
+
+/// The side reader's inputs for this playback, or `None` unless the live route is a plain remux of
+/// a real (non-preview) playback with no subtitle selected in the route.
+pub fn side_reader_target(ps: &PlaybackSession) -> Option<SideReaderTarget> {
+    if ps.preview || ps.cur_sub_sid != 0 || live_family(ps) != RouteFamily::Remux {
+        return None;
+    }
+    let request = ps.request.as_ref()?;
+    if request.part.is_empty() || ps.tsession.is_empty() {
+        return None;
+    }
+    Some(SideReaderTarget {
+        sid: ps.cur_sid,
+        part: request.part.clone(),
+        session: ps.tsession.clone(),
+        part_kbps: u32::try_from(ps.cur_transport_kbps).unwrap_or(0),
+    })
 }
 
 /// **Is the live route the enhancement's own Burn (M7)?** A Burn forces `remux: false` to get PMS

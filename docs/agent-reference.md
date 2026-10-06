@@ -1955,6 +1955,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   it; `make softfloat-probe` fetches it), `/tmp/plxnative-partprobe` (once per server-transcode playback
   start, five `Range` GETs of the film's original Part with the live / a fresh / no session id; logs
   `partprobe: variant=… http=… bytes=… ms=…`, never a URL or token; `media::route::partprobe`),
+  `/tmp/plxnative-subside` (content = the 0-based position of an embedded subtitle stream; read
+  at each playback start, no relaunch: while a plain remux plays with no subtitle selected, a side
+  reader demuxes the Part's subtitle packets over a fresh-session range read and the client
+  renderer draws that track; logs `subside: open|anchor|reopen|failed|stop …`, never a URL, token
+  or session; `media::player::subside`, `ff_subside.rs`),
   `/tmp/plxnative-url` (override the streamed part
   URL) and **`/tmp/plxnative-playurl`** (the same, plus the LOAD DECLARATION — one JSON object,
   `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test

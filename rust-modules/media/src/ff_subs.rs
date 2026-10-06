@@ -315,6 +315,11 @@ impl SubTracks {
         SubTracks { streams: out }
     }
 
+    /// No tracks: what the main demuxer holds while a side reader owns the subtitles.
+    pub(super) fn empty() -> Self {
+        SubTracks { streams: Vec::new() }
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.streams.is_empty()
     }

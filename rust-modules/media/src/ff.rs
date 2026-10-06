@@ -1663,7 +1663,7 @@ mod acquisition;
 #[path = "ff_subs.rs"]
 mod subs;
 #[path = "ff_subside.rs"]
-mod subside;
+pub(crate) mod subside;
 use subs::{SubKind, SubTracks};
 #[cfg(test)]
 use subs::{decode_bitmap_cue, open_sub_decoder, sub_kind};
@@ -7497,6 +7497,7 @@ pub fn demux(
     hs: SendPtr<HttpStream>,
 ) {
     PUSHED_ANY.store(false, Ordering::Relaxed);
+    *SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
     // Refuse rather than read a struct whose shape we do not know (see `boot`). EOF must still be
     // set on both lanes or `pump` waits forever on a queue nothing will ever fill — the same
     // contract the panic barrier below exists to keep.
@@ -7921,8 +7922,16 @@ pub fn demux(
                 // indexes metadata d.subs, i.e. every streamType==3 stream in document order). The
                 // selected track is read LIVE in the loop below, so switching subtitles mid-play takes
                 // effect with no reopen (parity with mkv.rs's active_sub_track).
-                let mut sub_tracks = SubTracks::open(fmt, streams);
-                let ass_generation = begin_ass_sources(&url, fmt, streams, sub_tracks.entries());
+                // A side reader that owns this playback's subtitles (`ff_subside.rs`) demuxes them
+                // from the original Part; this stream's own enumeration and ASS source would be
+                // replaced by it.
+                let side_owner = SHARED.side_subs_owner.load(Ordering::Acquire);
+                let mut sub_tracks = if side_owner { SubTracks::empty() } else { SubTracks::open(fmt, streams) };
+                let ass_generation = if side_owner {
+                    0
+                } else {
+                    begin_ass_sources(&url, fmt, streams, sub_tracks.entries())
+                };
                 sub_tracks.log_tracks();
 
                 // Hand-roll length-prefix -> Annex-B + prepend VPS/SPS/PPS at every keyframe (the
@@ -7951,6 +7960,7 @@ pub fn demux(
                     break;
                 }
 
+                let mut anchor_taken = false;
                 // INNER read loop
                 loop {
                     // Direct-play seek (and the armed resume, which is just a seek published before
@@ -8015,6 +8025,14 @@ pub fn demux(
                     }
                     let si = (*pkt).stream_index;
                     if si == vi {
+                        // The side subtitle reader's clock anchor: the first keyframe this run reads,
+                        // fingerprinted BEFORE the Annex-B conversion rewrites it.
+                        if !anchor_taken && (*pkt).flags & AV_PKT_FLAG_KEY != 0 && !(*pkt).data.is_null() {
+                            anchor_taken = true;
+                            let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
+                            *SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) =
+                                Some(subside::Anchor::of(pts_ns(pkt, vst), raw));
+                        }
                         let is_key = packet_to_annexb(
                             (*pkt).data,
                             (*pkt).size.max(0) as usize,

@@ -1333,6 +1333,7 @@ fn start_bufferfeed_inner(
         if !p.is_null() {
             plx_net::stream::http_shutdown(p);
         }
+        super::subside::stop("start-failed"); // before the demux join, like teardown
         crate::curlio::abort_active(); // the https demuxer's equivalent — see teardown
         if let Some(t) = stream_th.take() {
             plx_base::task::join("demux", t);
@@ -1341,6 +1342,15 @@ fn start_bufferfeed_inner(
             plx_net::stream::http_close(p); // sole owner now: the reader is joined
         }
         return Err(crate::route::RouteStartResult::StartFailed);
+    }
+    // The side subtitle reader (dev trigger `plxnative-subside`), started once the demuxer is
+    // spawned and the media thread exists: it waits for the demuxer's first keyframe before it
+    // reads anything. Stage 3 swaps this one condition for
+    // `subtitle_presenter(ps) == ClientOverRemux && !cur_sub_sidecar`.
+    if stream && !crate::route::is_preview(ps) {
+        if let Some(ordinal) = super::subside::dev_armed_ordinal() {
+            start_side_reader(ps, ordinal);
+        }
     }
 
     // progress reporter: post the play position to /:/timeline (updates resume + watched).
@@ -1617,6 +1627,25 @@ fn reload_start_outcome(
     }
 }
 
+/// Start the side subtitle reader for the live plain remux of `ps`, drawing the Part's subtitle
+/// stream number `ordinal`. The URL is the fresh-session shape PMS serves a second reader of the
+/// Part (the live session's own identifier is refused while the remux runs); it carries the token
+/// and is handed to the reader, never logged.
+fn start_side_reader(ps: &crate::route::PlaybackSession, ordinal: i32) {
+    let Some(target) = crate::route::side_reader_target(ps) else { return };
+    let Some(client) = plx_plex::plex::client_for(target.sid) else { return };
+    let su = client.direct_play_url(&target.part, &format!("{}-subs", target.session));
+    let started = super::subside::start(super::subside::Spec {
+        url: format!("{}{}", su.origin.base(), su.path),
+        offset_ns: SHARED.disp_base.load(Ordering::Relaxed),
+        part_kbps: target.part_kbps,
+        ordinal,
+    });
+    if !started {
+        log("subside: could not start the reader thread");
+    }
+}
+
 fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, offset_ns: i64) -> Option<BufferfeedStartOutcome> {
     let ticket = prepare_reload_transaction()?;
     log(&format!(
@@ -1810,6 +1839,9 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         }
     };
 
+    // The side subtitle reader first: it reads the original Part over its own transport and must
+    // be gone (its socket shut, its cues cleared) before the demux it was paired with is joined.
+    super::subside::stop(if for_reload { "reload" } else { "stop" });
     // 1. unblock every thread (abort queues, close the demux socket)
     if let Some(st) = eng.report_stop.take() {
         st.stop(); // this reporter's own signal — unaffected by the reset_session below
