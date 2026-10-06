@@ -12,6 +12,8 @@ on:
       - "docs/screenshots/**"
       - "docs/install-and-verify.md"
       - "docs/troubleshooting.md"
+      - "docs/nightly-builds.md"
+      - "ci/nightly.py"
       - "tools/render-doc-page.py"
       - "tools/requirements-docs.txt"
       - "pkg/appfont.ttf"
@@ -114,6 +116,9 @@ jobs:
 
           python3 tools/render-doc-page.py docs/install-and-verify.md > _site/install/index.html
           python3 tools/render-doc-page.py docs/troubleshooting.md > _site/troubleshooting/index.html
+          # The nightly guide lives at /nightly/ beside the files the Homebrew Channel repository
+          # serves from the same directory (staged below).
+          python3 tools/render-doc-page.py docs/nightly-builds.md > _site/nightly/index.html
 
           # Pages serves everything with a 10-minute browser cache, so a visitor right after a
           # deploy could get the new HTML with the old stylesheet/script, or the other way round.
@@ -121,8 +126,8 @@ jobs:
           # styles.css and site.js. (The asset check below ignores the query string.)
           v="${GITHUB_SHA::8}"
           sed -i -E "s#(styles\.css|site\.js)\"#\1?v=${v}\"#g" \
-            _site/index.html _site/credits.html _site/install/index.html _site/troubleshooting/index.html _site/404.html
-          grep -c "?v=${v}" _site/index.html _site/credits.html _site/install/index.html _site/troubleshooting/index.html _site/404.html
+            _site/index.html _site/credits.html _site/install/index.html _site/troubleshooting/index.html _site/nightly/index.html _site/404.html
+          grep -c "?v=${v}" _site/index.html _site/credits.html _site/install/index.html _site/troubleshooting/index.html _site/nightly/index.html _site/404.html
 
       - name: Stage nightly/latest.json
         # `{"available": false}` when no nightly has ever published — the site has to build before
@@ -133,6 +138,20 @@ jobs:
           set -euo pipefail
           python3 ci/nightly.py latest-json --repo "${{ github.repository }}" > _site/nightly/latest.json
           cat _site/nightly/latest.json
+
+      - name: Stage the nightly Homebrew Channel repository
+        # `repo.json`, the newest nightly's manifest and its description page — what a user's
+        # Homebrew Channel fetches after adding `https://plxnative.com/nightly/repo.json`. An empty
+        # index when there is no nightly with a manifest yet, so the site still builds. A manifest
+        # that disagrees with its own release (id, hash, dated version) FAILS this step on purpose:
+        # serving it would break installs on televisions, where the hash is checked and nothing
+        # else is.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 ci/nightly.py repo-json --repo "${{ github.repository }}" --out-dir _site/nightly
+          python3 -c "import json;json.load(open('_site/nightly/repo.json'))"
 
       - name: Check PlxAppFont subset covers the staged site
         # _site/nightly/latest.json is JSON data, not rendered text (site.js pulls only ASCII
@@ -175,6 +194,7 @@ jobs:
               site / "credits.html",
               site / "install" / "index.html",
               site / "troubleshooting" / "index.html",
+              site / "nightly" / "index.html",
               site / "404.html",
               site / "ci" / "index.html",
               site / "styles.css",

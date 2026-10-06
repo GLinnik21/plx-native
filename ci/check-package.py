@@ -106,18 +106,44 @@ def expected_dev_version(appinfo_version: str, release_line_content: "str | None
     return "{}.{}.{}-dev".format(*triplet), None
 
 
-def expected_nightly_package_version(cargo_version: str, release_line_content: "str | None") -> str:
+def expected_nightly_package_version(cargo_version: str, release_line_content: "str | None",
+                                     date: "str | None") -> str:
     """The nightly package's OWN `appinfo.json`/control `version` (three integers, no suffix),
-    computed from `rust-modules/Cargo.toml`'s TRACKED version — the same next-minor-or-next-patch
-    arithmetic `ci/flavor.py::appinfo_for` applies when it moves `version` for the nightly flavour
-    ONLY (`ci/version_rule.py::next_version_triplet`). A build failure (`SystemExit`) on a mis-cut
-    `RELEASE_LINE`, same as `expected_dev_version` — there is no plausible fallback number to grade
-    a nightly package against once the marker disagrees with the tracked version.
+    computed from `rust-modules/Cargo.toml`'s TRACKED version and the build's cut date: the
+    next-minor-or-next-patch `major.minor` with the date as the patch
+    (`ci/version_rule.py::nightly_package_triplet`, the arithmetic `ci/flavor.py::appinfo_for`
+    applies when it moves `version` for the nightly flavour ONLY). A build failure (`SystemExit`)
+    on a mis-cut `RELEASE_LINE`, same as `expected_dev_version`, and on a missing or malformed
+    date — there is no plausible fallback number to grade a nightly package against.
+
+    `date` is `nightly_stamp_date`'s read of `pkg/.build-config`, deliberately NOT read back out of
+    the appinfo under test: the package must agree with the date the build recorded, and a version
+    graded against itself would pass whatever it said.
     """
-    triplet, err = version_rule.next_version_triplet(cargo_version, release_line_content)
+    if date is None:
+        raise SystemExit("pkg/.build-config carries no +nightly:<8 digit date> field, so the "
+                         "nightly package version has nothing to be graded against")
+    triplet, err = version_rule.nightly_package_triplet(cargo_version, release_line_content, date)
     if err:
         raise SystemExit(err)
     return "{}.{}.{}".format(*triplet)
+
+
+def expected_nightly_reported_version(cargo_version: str, release_line_content: "str | None",
+                                      date: "str | None") -> str:
+    """The version a nightly BINARY reports — `X.Y.Z-nightly-YYYYMMDD`, no `plxnative@` prefix —
+    where `X.Y.Z` is the release the build is heading to (`version_rule.next_version_triplet`, the
+    number `rust-modules/build.rs::emit_version` reads). It is NOT the package version plus a
+    suffix any more: the package version carries the cut date as its patch
+    (`expected_nightly_package_version`, `X.Y.<date>`), so the two share only `X.Y`. Same failure
+    modes as the package version: a mis-cut `RELEASE_LINE` or a missing/malformed date is a
+    `SystemExit`, not a guess."""
+    if date is None or len(date) != 8 or not date.isascii() or not date.isdigit():
+        raise SystemExit(f"nightly date must be exactly 8 digits (YYYYMMDD), got {date!r}")
+    triplet, err = version_rule.next_version_triplet(cargo_version, release_line_content)
+    if err:
+        raise SystemExit(err)
+    return "{}.{}.{}-nightly-{}".format(*triplet, date)
 
 
 def nightly_stamp_date(stamp: str) -> "str | None":
@@ -522,6 +548,57 @@ const DIAG: [&str; 6] = [
     print(f"check-package: _catalog_name_in_binary boundary handling "
           f"{len(boundary_cases) - boundary_bad}/{len(boundary_cases)} cases correct")
 
+    # The nightly PACKAGE version: next minor (or next patch's line) + the cut date as the patch.
+    pkgver_cases = [
+        (("0.7.0", None, "20260919"), "0.8.20260919"),
+        (("0.7.0", None, "20260920"), "0.8.20260920"),
+        (("0.6.1", "0.6\n", "20260919"), "0.6.20260919"),
+    ]
+    pkgver_bad = 0
+    for args, want in pkgver_cases:
+        got = expected_nightly_package_version(*args)
+        if got != want:
+            pkgver_bad += 1
+            print(f"  FAIL — expected_nightly_package_version{args!r} = {got!r}, want {want!r}")
+    for args in (("0.7.0", None, None), ("0.7.0", None, "2026091"), ("0.7.0", "0.6\n", "20260919")):
+        try:
+            got = expected_nightly_package_version(*args)
+        except SystemExit:
+            continue
+        pkgver_bad += 1
+        print(f"  FAIL — expected_nightly_package_version{args!r} = {got!r}, want SystemExit")
+    print(f"check-package: expected_nightly_package_version "
+          f"{len(pkgver_cases) + 3 - pkgver_bad}/{len(pkgver_cases) + 3} cases correct")
+
+    # The REPORTED version: heading-to X.Y.Z with the full date as its suffix — never the package
+    # version plus a suffix (that was true only while the package patch was 0).
+    rep_cases = [
+        (("0.7.0", None, "20260919"), "0.8.0-nightly-20260919"),
+        (("0.6.1", "0.6\n", "20260919"), "0.6.2-nightly-20260919"),
+    ]
+    rep_bad = 0
+    for args, want in rep_cases:
+        got = expected_nightly_reported_version(*args)
+        if got != want:
+            rep_bad += 1
+            print(f"  FAIL — expected_nightly_reported_version{args!r} = {got!r}, want {want!r}")
+    pkg, rep = (expected_nightly_package_version("0.7.0", None, "20260919"),
+                expected_nightly_reported_version("0.7.0", None, "20260919"))
+    if rep.startswith(pkg):
+        rep_bad += 1
+        print(f"  FAIL — the reported version {rep!r} must not be the package version {pkg!r} plus a suffix")
+    if pkg.rsplit(".", 1)[0] != rep.split("-nightly-")[0].rsplit(".", 1)[0]:
+        rep_bad += 1
+        print(f"  FAIL — package {pkg!r} and reported {rep!r} must share X.Y")
+    for args in (("0.7.0", None, None), ("0.7.0", None, "2026"), ("0.7.0", "0.6\n", "20260919")):
+        try:
+            got = expected_nightly_reported_version(*args)
+        except SystemExit:
+            continue
+        rep_bad += 1
+        print(f"  FAIL — expected_nightly_reported_version{args!r} = {got!r}, want SystemExit")
+    print(f"check-package: expected_nightly_reported_version {len(rep_cases) + 5 - rep_bad}/{len(rep_cases) + 5} cases correct")
+
     # `rc_stamp_number` against a real candidate stamp, a stable one without the field, and the
     # shapes `build.rs::is_rc_number` refuses (zero, a leading zero), which must read as absent.
     rc_cases = {
@@ -541,7 +618,7 @@ const DIAG: [&str; 6] = [
     print(f"check-package: rc_stamp_number {len(rc_cases) - rc_bad}/{len(rc_cases)} cases correct")
 
     bad += (maintainer_bad + dev_bad + nightly_date_bad + cli_bad + nightly_blob_bad + rc_bad
-            + catalog_bad + sinks_bad + int(catalog_vacuous) + boundary_bad)
+            + catalog_bad + sinks_bad + int(catalog_vacuous) + boundary_bad + pkgver_bad + rep_bad)
     return 1 if bad else 0
 
 
@@ -565,6 +642,21 @@ if len(sys.argv) > 2 and sys.argv[1] == "--print-nightly-date":
     date = nightly_stamp_date(stamp_path.read_text())
     if date is not None:
         print(date)
+    sys.exit(0)
+
+# `--print-nightly-label <stamp>`: the REPORTED version a nightly build carries,
+# `X.Y.Z-nightly-YYYYMMDD` — the label `ci/nightly.py plan` names the release and the `.ipk` by and
+# the one the LGPL source bundle must be named for. Empty (exit 0) for a stamp with no
+# `+nightly:` field, i.e. every non-nightly build, so a caller falls back to its own label. It
+# exists because the package version is no longer a prefix of this: the ipk's filename says
+# `X.Y.<date>`, and appending `-nightly-<date>` to that names a version nothing reports.
+if len(sys.argv) > 2 and sys.argv[1] == "--print-nightly-label":
+    date = nightly_stamp_date(Path(sys.argv[2]).read_text())
+    if date is not None:
+        _cargo = re.search(r'^version = "([^"]+)"', (ROOT / "rust-modules/Cargo.toml").read_text(), re.M)
+        _rl = ROOT / "RELEASE_LINE"
+        print(expected_nightly_reported_version(
+            _cargo.group(1), _rl.read_text() if _rl.exists() else None, date))
     sys.exit(0)
 
 # The same entry point onto `rc_stamp_number`, for the same caller and the same reason: the source
@@ -985,6 +1077,10 @@ IS_NIGHTLY = FLAVOR == "nightly"
 # down — reads the same content rather than re-opening the file per check.
 _RELEASE_LINE_PATH = ROOT / "RELEASE_LINE"
 RELEASE_LINE_CONTENT = _RELEASE_LINE_PATH.read_text() if _RELEASE_LINE_PATH.exists() else None
+# The cut date a nightly package's version is graded against: the Makefile's own record of the
+# `PLX_NIGHTLY_DATE` the build ran with (see `nightly_stamp_date`). `None` for any other flavour.
+_NIGHTLY_DATE = (nightly_stamp_date((ROOT / "pkg/.build-config").read_text())
+                 if IS_NIGHTLY and (ROOT / "pkg/.build-config").exists() else None)
 # The staged payload directory — written down ONCE, here, because everything below reads through
 # it: the descriptor, the build-machine-path scan, the binary and the icons.
 PAYLOAD = APPS / PACKAGED_ID
@@ -997,7 +1093,7 @@ appinfo = json.loads((PAYLOAD / "appinfo.json").read_text())
 # rather than widening the equality into something that cannot fail.
 control = dict(
     line.split(": ", 1)
-    for line in flavor.control_for((ROOT / "ipkroot/ctl/control").read_text(), FLAVOR or "stable").splitlines()
+    for line in flavor.control_for((ROOT / "ipkroot/ctl/control").read_text(), FLAVOR or "stable", _NIGHTLY_DATE).splitlines()
     if ": " in line
 )
 check(appinfo["id"] == PACKAGED_ID,
@@ -1022,17 +1118,20 @@ check(appinfo["version"] == control["Version"],
 # anything but a RELEASE build, which the binary check further down grades on the bytes.)
 #
 # NIGHTLY IS THE EXCEPTION, and the only one: its PACKAGE version is already the next minor ahead
-# of Cargo.toml's tracked one (`ci/flavor.py::appinfo_for`'s whole reason for moving `version`), so
-# equality here would fail by construction. Graded against the SAME arithmetic instead, via
-# `expected_nightly_package_version` — which is `ci/version_rule.py`'s next-triplet, the one thing
-# both `ci/flavor.py` and this file must agree on.
+# of Cargo.toml's tracked one with the cut date as its patch (`ci/flavor.py::appinfo_for`'s whole
+# reason for moving `version`), so equality here would fail by construction. Graded against the
+# SAME arithmetic instead, via `expected_nightly_package_version` — which is
+# `ci/version_rule.py`'s `nightly_package_triplet`, the one thing both `ci/flavor.py` and this
+# file must agree on.
 cargo = (ROOT / "rust-modules/Cargo.toml").read_text()
 m = re.search(r'^version = "([^"]+)"', cargo, re.M)
 if IS_NIGHTLY:
-    expected_pkg_version = m and expected_nightly_package_version(m.group(1), RELEASE_LINE_CONTENT)
+    expected_pkg_version = m and expected_nightly_package_version(
+        m.group(1), RELEASE_LINE_CONTENT, _NIGHTLY_DATE)
     check(m is not None and expected_pkg_version == appinfo["version"],
           f'nightly appinfo version ({appinfo["version"]}) is the next minor/patch after '
-          f'Cargo.toml ({m and m.group(1)}) — expected {expected_pkg_version}')
+          f'Cargo.toml ({m and m.group(1)}) with the build stamp\'s date ({_NIGHTLY_DATE}) as its '
+          f'patch — expected {expected_pkg_version}')
 else:
     check(m is not None and m.group(1) == appinfo["version"],
           f'Cargo.toml version == appinfo version ({appinfo["version"]})')
@@ -1275,11 +1374,13 @@ if binary.exists():
     # telemetry is ungated on purpose — so this witnesses the emitted value itself. (The telemetry
     # crate cannot compose it: a `cargo:rustc-env` reaches the application crate only.)
     #
-    # NIGHTLY IS GRADED SEPARATELY. Its package version (`appinfo["version"]`, already checked
-    # against Cargo.toml above) IS the next-minor-or-patch number — recomputing "next" a second
-    # time from it would double-bump and grade against a version nobody built. Its REPORTED
-    # version instead adds `build.rs`'s `-nightly-<date>` suffix on top of that SAME number, dated
-    # by whatever `PLX_NIGHTLY_DATE` the build actually ran with.
+    # NIGHTLY IS GRADED SEPARATELY. Its package version is `X.Y.<cut date>` (checked against
+    # Cargo.toml and the stamp above), while its REPORTED version is `X.Y.Z-nightly-<date>` with
+    # `X.Y.Z` the release it is heading to — the same `X.Y` as the package, a small patch instead
+    # of the date. So the two are no longer "package version, plus a suffix": the reported version
+    # is recomputed from Cargo.toml by `expected_nightly_reported_version` (the arithmetic
+    # `build.rs` uses), dated by whatever `PLX_NIGHTLY_DATE` the build actually ran with, and the
+    # two are cross-checked on `X.Y`.
     #
     # THE DATE IS GRADED BY VALUE, READ FROM THE STAMP — not guessed from the binary's own bytes by
     # shape. Two earlier versions of this gate tried exactly that: first a trailing `\b`, then
@@ -1300,7 +1401,16 @@ if binary.exists():
               "pkg/.build-config carries a +nightly:<8 digit date> field "
               f"(stamp was {STAMP_TEXT.strip()!r})")
         if nightly_date is not None:
-            nightly_expect = f"plxnative@{appinfo['version']}-nightly-{nightly_date}".encode()
+            _cargo_text = (ROOT / "rust-modules/Cargo.toml").read_text()
+            _cargo_m = re.search(r'^version = "([^"]+)"', _cargo_text, re.M)
+            nightly_expect = (
+                f"plxnative@{expected_nightly_reported_version(_cargo_m.group(1), RELEASE_LINE_CONTENT, nightly_date)}"
+            ).encode()
+            check(_cargo_m is not None
+                  and nightly_expect.decode().split("-nightly-")[0].split("@")[1].rsplit(".", 1)[0]
+                  == appinfo["version"].rsplit(".", 1)[0],
+                  "the nightly binary's reported X.Y matches the package version's X.Y "
+                  f"(reported {nightly_expect.decode()}, package {appinfo['version']})")
             nightly_found = nightly_expect in blob
             nightly_msg = (f"the {PACKAGED_ID} binary reports {nightly_expect.decode()} "
                             "(build.rs's PLX_CHANNEL=nightly arm, dated by the pkg/.build-config "
@@ -1403,10 +1513,11 @@ check(not appinfo["id"].startswith(("com.palm", "com.webos", "com.lge", "com.pal
 # Nightly again the exception, and graded the same way as the first Cargo.toml witness above.
 cargo_ver = re.search(r'^version\s*=\s*"([^"]+)"', (ROOT / "rust-modules/Cargo.toml").read_text(), re.M)
 if IS_NIGHTLY:
-    expected_pkg_version = cargo_ver and expected_nightly_package_version(cargo_ver.group(1), RELEASE_LINE_CONTENT)
+    expected_pkg_version = cargo_ver and expected_nightly_package_version(
+        cargo_ver.group(1), RELEASE_LINE_CONTENT, _NIGHTLY_DATE)
     check(cargo_ver is not None and expected_pkg_version == appinfo["version"],
-          f'rust-modules/Cargo.toml next-minor/patch ({expected_pkg_version}) == nightly appinfo '
-          f'version ({appinfo["version"]})')
+          f'rust-modules/Cargo.toml next-minor/patch + stamp date ({expected_pkg_version}) == '
+          f'nightly appinfo version ({appinfo["version"]})')
 else:
     check(cargo_ver is not None and cargo_ver.group(1) == appinfo["version"],
           f'rust-modules/Cargo.toml version == appinfo version ({appinfo["version"]})')

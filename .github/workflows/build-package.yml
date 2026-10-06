@@ -60,7 +60,10 @@ on:
         type: string
         required: true
       homebrew-manifest:
-        description: 'Generate and verify the webosbrew Homebrew Channel manifest. Release only.'
+        description: >
+          Generate and verify the Homebrew Channel manifest — for flavor: stable (the webosbrew
+          catalogue's listing, release.yml) or flavor: nightly (the project's own repository,
+          nightly.yml). Never for debug.
         type: boolean
         default: false
       source-asset:
@@ -131,11 +134,13 @@ jobs:
             production|development) ;;
             *) echo "::error::telemetry must be production or development, got '$TELEMETRY'"; exit 1 ;;
           esac
-          # The manifest filename and the Homebrew Channel listing are both keyed to the STABLE
-          # app id — a manifest generated for a flavoured id would name a package the Channel does
-          # not track. Caught here rather than left to fail later on a stray file mismatch.
-          if [ "$HOMEBREW_MANIFEST" = true ] && [ "$FLAVOR" != stable ]; then
-            echo "::error::homebrew-manifest is only meaningful for flavor: stable, got '$FLAVOR'"
+          # A manifest is keyed to the app id it was generated for, and only two installs have a
+          # Homebrew Channel listing: stable (the webosbrew catalogue's) and nightly (the
+          # project's own repository, `ci/nightly.py repo-json`). Debug is a developer build with
+          # no listing anywhere, so a manifest for it would name a package nothing tracks. Caught
+          # here rather than left to fail later on a stray file mismatch.
+          if [ "$HOMEBREW_MANIFEST" = true ] && [ "$FLAVOR" = debug ]; then
+            echo "::error::homebrew-manifest is only meaningful for flavor: stable or nightly, got '$FLAVOR'"
             exit 1
           fi
           # A candidate is never listed in the Homebrew Channel: the Channel resolves the manifest
@@ -442,31 +447,64 @@ jobs:
         # -r false: the app needs no root. Device-proven — it runs jailed as uid 6910 under LG's
         # stock jail_native_devmode profile. See docs/distribution.md §3.5.
         if: inputs.homebrew-manifest
+        env:
+          FLAVOR: ${{ inputs.flavor }}
         run: |
-          # icon160.png, NOT largeIcon.png: 130x130 is LG's launcher size, while the channel
-          # listing wants 160 (and 320 for the detail icon) — `tools/mkicons.py` cuts all four from
-          # one master for exactly this reason. The URL must return 200 or webosbrew's own
-          # `repogen.lintpkg` rejects the submission, which means the REPO MUST BE PUBLIC and the
-          # icon must be committed on the default branch before the first release.
+          set -euo pipefail
+          # The manifest is named for the app id it describes — `com.beb.plxnative` for stable,
+          # which release.yml and the webosbrew listing resolve by that exact name, and
+          # `com.beb.plxnative.nightly` for nightly, which `ci/nightly.py repo-json` reads.
+          if [ "$FLAVOR" = nightly ]; then
+            app_id=com.beb.plxnative.nightly
+            # The nightly tile's own artwork (130 px, badged), so the listing shows the badge
+            # that tells the two installs apart — not the stable icon.
+            icon="https://raw.githubusercontent.com/${{ github.repository }}/main/pkg/nightly/largeIcon.png"
+          else
+            app_id=com.beb.plxnative
+            # icon160.png, NOT largeIcon.png: 130x130 is LG's launcher size, while the channel
+            # listing wants 160 (and 320 for the detail icon) — `tools/mkicons.py` cuts all four
+            # from one master for exactly this reason. The URL must return 200 or webosbrew's own
+            # `repogen.lintpkg` rejects the submission, which means the REPO MUST BE PUBLIC and
+            # the icon must be committed on the default branch before the first release.
+            icon="https://raw.githubusercontent.com/${{ github.repository }}/main/pkg/icon160.png"
+          fi
           webosbrew-gen-manifest \
             -p "${{ steps.name.outputs.ipk }}" \
-            -i "https://raw.githubusercontent.com/${{ github.repository }}/main/pkg/icon160.png" \
+            -i "$icon" \
             -l "https://github.com/${{ github.repository }}" \
             -r false \
-            -o pkg/com.beb.plxnative.manifest.json
-          cat pkg/com.beb.plxnative.manifest.json
+            -o "pkg/${app_id}.manifest.json"
+          cat "pkg/${app_id}.manifest.json"
+          echo "manifest=pkg/${app_id}.manifest.json" >> "$GITHUB_ENV"
 
       - name: The manifest hash must match the artifact
         # The sha256 is enforced ON THE DEVICE at install time and by nothing in CI, so a mismatch
         # here is invisible until it breaks every user's install. Assert it while we still can.
+        # The id and the version are asserted too: Homebrew Channel keys the install on the id and
+        # decides an update exists by comparing the version STRING, so a manifest whose version is
+        # not the one inside the package would offer an update that can never be satisfied.
         if: inputs.homebrew-manifest
         run: |
           set -euo pipefail
-          want=$(python3 -c "import json;print(json.load(open('pkg/com.beb.plxnative.manifest.json'))['ipkHash']['sha256'])")
+          python3 - "$manifest" "${{ steps.name.outputs.ipk }}" <<'PYEOF'
+          import hashlib, json, sys
+          manifest = json.load(open(sys.argv[1]))
+          ipk = sys.argv[2]
+          have = hashlib.sha256(open(ipk, "rb").read()).hexdigest()
+          want = manifest["ipkHash"]["sha256"]
+          if want != have:
+              sys.exit(f"::error::manifest sha256 {want} != artifact {have}")
+          # `<id>_<version>_arm.ipk` — the Makefile's own filename, derived from the package's
+          # appinfo, so it is a second witness of what the manifest says.
+          stem = ipk.rsplit("/", 1)[-1]
+          expect = f"{manifest['id']}_{manifest['version']}_arm.ipk"
+          if stem != expect:
+              sys.exit(f"::error::manifest says {expect} but the artifact is {stem}")
+          print(f"ipk sha256 {have}")
+          PYEOF
           have=$(sha256sum "${{ steps.name.outputs.ipk }}" | cut -d' ' -f1)
-          [ "$want" = "$have" ] || { echo "::error::manifest sha256 $want != artifact $have"; exit 1; }
           echo "ipk sha256 $have" >> "$GITHUB_STEP_SUMMARY"
-          echo "| the Homebrew Channel manifest's sha256 matches the artifact | pass |" >> pkg/gates.md
+          echo "| the Homebrew Channel manifest's sha256, id and version match the artifact | pass |" >> pkg/gates.md
 
       - name: LGPL corresponding source for the bundled FFmpeg
         # NOT optional and not paperwork. The package ships four FFmpeg shared libraries, so
@@ -519,19 +557,23 @@ jobs:
           # vendoring died with exit 101. Fetch the whole lock here, pinned by its checksums; the
           # collection script itself stays download-free.
           cargo +nightly-2026-07-02 fetch --locked --manifest-path rust-modules/Cargo.toml
-          # Named after the version the PACKAGE reports, read off what this build produced — never
-          # the tracked pkg/appinfo.json template, which a nightly does not ship (a nightly named
-          # its bundle 0.6.0 that way). The package version is the one in the ipk's own filename
-          # (the Makefile's IPK_VERSION); a nightly's reported version adds `-nightly-<date>` on
-          # top, dated by the `+nightly:<date>` field of pkg/.build-config — the Makefile's record
-          # of the date it built with, the same stamp ci/check-package.py grades the binary
-          # against. Stable has no such field and keeps plxnative-source-X.Y.Z. Read through
-          # `ci/check-package.py --print-nightly-date` rather than a second copy of its regex here
-          # — see that flag's own comment for why a `sed` twin of it is the thing to avoid.
+          # Named after the version the build REPORTS, read off what it produced — never the
+          # tracked pkg/appinfo.json template, which a nightly does not ship (a nightly named its
+          # bundle 0.6.0 that way). A stable build's is the one in the ipk's own filename (the
+          # Makefile's IPK_VERSION). A nightly's is NOT: its package version carries the cut date as
+          # its patch (`X.Y.<date>`), so `<filename version>-nightly-<date>` would name a version
+          # nothing reports and sit beside an ipk called plxnative-v<X.Y.Z>-nightly-<date>.ipk.
+          # `ci/check-package.py --print-nightly-label` derives the reported `X.Y.Z-nightly-<date>`
+          # from Cargo.toml and the `+nightly:<date>` field of pkg/.build-config — the Makefile's
+          # record of the date it built with, the same stamp the binary is graded against. It
+          # prints nothing for a build with no such field, which keeps plxnative-source-X.Y.Z.
           version=${ipk##*/"${appid}"_}; version=${version%_arm.ipk}
-          nightly_date=$(python3 ci/check-package.py --print-nightly-date pkg/.build-config)
+          nightly_label=$(python3 ci/check-package.py --print-nightly-label pkg/.build-config)
           rc=$(python3 ci/check-package.py --print-rc pkg/.build-config)
-          label="$version${nightly_date:+-nightly-$nightly_date}${rc:+-rc.$rc}"
+          # A nightly's label is its REPORTED version; a release candidate's is the stable version
+          # plus `-rc.N`; a stable build's is the version in the ipk's filename. The three are
+          # mutually exclusive build kinds, so at most one suffix applies.
+          label="${nightly_label:-$version${rc:+-rc.$rc}}"
           [[ "$label" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-nightly-[0-9]{8}|-rc\.[1-9][0-9]*)?$ ]] \
             || { echo "::error::cannot name the source bundle: got version label '$label' from $ipk"; exit 1; }
           source="pkg/plxnative-source-$label.tar.gz"
