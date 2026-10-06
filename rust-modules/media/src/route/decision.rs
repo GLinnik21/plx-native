@@ -6796,6 +6796,8 @@ pub(super) fn measure_remote_remux(
     session: &str,
     audio_stream_id: i64,
     subtitle_stream_id: i64,
+    // The app draws the subtitle itself (the wire says `subtitles=none`, no burn).
+    client_subtitles: bool,
     source_kbps: i64,
     // Issue #266: the DSP the play-path decision will carry on this same session, so the sample
     // is the remux that plays (`build_stream`'s `pre_audio`); `NONE` without Plex Pass.
@@ -6812,7 +6814,7 @@ pub(super) fn measure_remote_remux(
             plx_plex::plex::TranscodeOffset::Fresh,
             audio_stream_id,
             subtitle_stream_id,
-            false,
+            client_subtitles,
             enhanced_remux_contract(audio, false),
         )
     };
@@ -6944,6 +6946,10 @@ pub(super) fn forced_server_decision(
 /// client-rendered bitmap codecs; burn is still the remux/re-encode path when we PUT a
 /// positive subtitle id. We PUT subtitleStreamID=0 to keep subs OFF (no burn), or the chosen
 /// id to burn it; audioStreamID only when the user switched (else keep default).
+///
+/// Never `0` for a subtitle the app draws itself: PMS discards a DOWNLOADED subtitle the moment the
+/// selection moves off it (docs/pms-api.md, 2026-10-06), so `0` means the viewer chose Off or nothing
+/// is selected; "do not burn" is the transcode wire's `subtitles=none` alone.
 ///
 /// `sid` names the server that owns `part` — the resolve worker passes the id it was given, and the
 /// in-playback callers pass [`cur_sid`]. A `Part.id` is server-local, so a PUT sent to the wrong

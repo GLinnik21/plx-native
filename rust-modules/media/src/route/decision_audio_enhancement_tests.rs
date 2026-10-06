@@ -4038,6 +4038,46 @@ fn side_reader_target_names_the_selected_tracks_ordinal() {
     });
 }
 
+/// PMS discards a DOWNLOADED subtitle when the part's selection moves off it, so while the app
+/// draws a subtitle beside the remux (an admitted embedded track, then a sidecar) no PUT the route
+/// sends — the pick itself, an enhancement toggle, an audio change, a seek rebuild — may name
+/// subtitle 0. "Do not burn" rides the `/decision` and start URL alone.
+#[test]
+fn a_client_drawn_subtitle_is_never_deselected_by_a_later_selection_put() {
+    for sidecar in [false, true] {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let live = Live::start(EnhMode::Honor("ac3"));
+        install_truehd_remux(&mut ps, &live);
+        admit_side_reader(&mut ps);
+        if sidecar {
+            commit_subtitle_selection(&mut ps, -1, 77, true);
+        } else {
+            pick_embedded(&mut ps);
+        }
+        assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux, "sidecar={sidecar}");
+        // The enhancement toggle, an audio change and a seek: each rebuilds the encode.
+        assert!(toggle(&mut ps, PREF), "sidecar={sidecar}");
+        let (action, tail) = claim(&mut ps);
+        land(&mut ps, &action, tail);
+        commit_audio_selection(&mut ps, a1());
+        if pending_user_route_intent(UserRouteIntent::Retranscode) {
+            let (action, tail) = claim(&mut ps);
+            land(&mut ps, &action, tail);
+        }
+        let _ = transcode_seek(&mut ps, 90);
+        assert_eq!(ps.cur_sub_sid, 77, "sidecar={sidecar}: the selection never moved");
+        wait_until("the selection worker to drain", selection_queue_idle);
+        let requests = live.finish();
+        let puts: Vec<_> = requests.iter().filter(|r| r.starts_with("PUT /library/parts/")).collect();
+        assert!(!puts.is_empty(), "sidecar={sidecar}: the premise: selections were sent");
+        for put in puts {
+            assert_eq!(query_param(put, "subtitleStreamID"), Some("77"), "sidecar={sidecar}: {put}");
+        }
+        cleanup(&mut ps);
+    }
+}
+
 #[test]
 fn embedded_pick_on_a_live_remux_queues_no_retranscode() {
     let mut ps = PlaybackSession::IDLE;

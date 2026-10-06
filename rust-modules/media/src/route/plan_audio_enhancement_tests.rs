@@ -328,11 +328,44 @@ fn server_selected_external_srt_is_enhanced_remux_sidecar_unaffected() {
         move |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![external]),
         |_, _| {});
     assert_enhanced(&r);
-    assert!(
-        !r.requests.iter().any(|l| l.starts_with("PUT ") && query_param(l, "subtitleStreamID").is_some_and(|v| v != "0")),
-        "no burn PUT for a sidecar: {:?}", r.requests,
-    );
+    // PMS discards a DOWNLOADED subtitle the moment the part's selection moves off it, so the app
+    // that draws the sidecar itself must leave the selection on it: a PUT of 0 here is the bug that
+    // made a freshly searched subtitle 404 at the next playback start (docs/pms-api.md, 2026-10-06).
+    assert_eq!(selection_subtitles(&r.requests), vec!["77"], "{:?}", r.requests);
+    assert_eq!(query_param(&r.plan.url, "subtitles"), Some("none"), "the wire says the app draws it: {}", r.plan.url);
+    assert_eq!(query_param(&r.plan.url, "subtitleStreamID"), Some("0"), "{}", r.plan.url);
+    assert_eq!(r.plan.sub_sid, 77, "the sidecar stays the session's subtitle");
     plx_plex::plex::reset_servers_for_test();
+}
+
+/// The `subtitleStreamID` of every selection PUT, in order.
+fn selection_subtitles(requests: &[String]) -> Vec<&str> {
+    requests
+        .iter()
+        .filter(|l| l.starts_with("PUT /library/parts/"))
+        .filter_map(|l| query_param(l, "subtitleStreamID"))
+        .collect()
+}
+
+/// The viewer's own Off is the one case that still sends 0 (and nothing is drawn).
+#[test]
+#[cfg(feature = "devtriggers")]
+fn viewer_off_over_an_enhanced_remux_still_puts_zero() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let external = plx_data::metadata::Stream {
+        id: 77,
+        codec: "srt".into(),
+        key: "/library/streams/77".into(),
+        external: true,
+        selected: true,
+        ..Default::default()
+    };
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        move |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![external]),
+        |env, _| env.subtitle_override = Some(0));
+    assert_enhanced(&r);
+    assert_eq!(selection_subtitles(&r.requests), vec!["0"], "{:?}", r.requests);
 }
 
 /// A film whose own audio the TV cannot decode (TrueHD), with a second, decodable track beside
@@ -371,6 +404,7 @@ fn cold_start_keeps_intended_audio_and_draws_the_subtitle() {
     for d in transcode_decisions(&r.requests) {
         assert!(!d.contains("subtitles=burn"), "{d}");
     }
+    assert_eq!(selection_subtitles(&r.requests), vec!["9"], "an admitted embedded track stays the selection: {:?}", r.requests);
     plx_plex::plex::reset_servers_for_test();
 }
 

@@ -1650,6 +1650,15 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             part,
             source_transport_kbps,
         );
+    // **A sidecar the server has selected and the app will draw itself** over a remux (the landing's
+    // `restore_server_selection`). PMS discards a DOWNLOADED subtitle the moment the part's selection
+    // moves off it (docs/pms-api.md, 2026-10-06), so the selection PUT must keep naming it; "do not
+    // burn" is the wire's `subtitles=none` alone. Not when the viewer's own Off rides this resolve
+    // (`subtitle_override`), a burn is already carried, or an embedded pick took the slot.
+    let server_sidecar_id = (env.sub_sid == 0 && env.subtitle_override.is_none() && sub_pick.is_none())
+        .then(|| plan.playing.as_ref().and_then(plx_data::metadata::server_selected_sidecar).map(|s| s.id))
+        .flatten();
+    let probe_drawn_sub_sid = if side_draws { sub_pick.map_or(0, |(id, _)| id) } else { server_sidecar_id.unwrap_or(0) };
     // Step 2: the server carries the intended track (no direct-play pick), but a remux carries NO
     // subtitle (M4/M7) and the client's renderer is silent while transcoding. When a subtitle is to
     // be shown, a non-commentary stand-in direct-plays (the client draws the subtitle). That is a
@@ -1895,14 +1904,19 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         // remux policy as playback, before either the decision or media GET.
                         // A client-rendered subtitle is not a burn; only env.sub_sid requests one.
                         let probe_audio = carry_audio_id;
-                        put_selection(off, env.sid, plan.part_id, probe_audio, env.sub_sid);
+                        // A subtitle the app will draw keeps the selection (PMS drops a downloaded one
+                        // when it moves) and is told apart from a burn by the wire's `subtitles=none`.
+                        let drawn = env.sub_sid == 0 && probe_drawn_sub_sid != 0;
+                        let probe_sub = if drawn { probe_drawn_sub_sid } else { env.sub_sid };
+                        put_selection(off, env.sid, plan.part_id, probe_audio, probe_sub);
                         let probe = measure_remote_remux(
                             off,
                             client,
                             rk,
                             &session,
                             probe_audio,
-                            env.sub_sid,
+                            if drawn { 0 } else { env.sub_sid },
+                            drawn,
                             source_transport_kbps,
                             pre_audio,
                         );
@@ -2026,11 +2040,13 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     source_transport_kbps,
                 )
         });
-    let client_draws = remux && (side_draws || carried_draw);
+    let client_draws = remux && (side_draws || carried_draw || server_sidecar_id.is_some());
     let burn_sub_sid = if force_burn {
         subtitle_id
     } else if burn_for_audio && env.sub_sid == 0 {
         sub_pick.map_or(0, |(id, _)| id)
+    } else if let Some(id) = server_sidecar_id.filter(|_| client_draws) {
+        id
     } else if client_draws && env.sub_sid == 0 {
         // The pick itself, not `subtitle_id`: that is the profile-advertised id the MDE handshake
         // names, 0 for a codec the app draws but PMS is not told about (MicroDVD, SAMI, …).

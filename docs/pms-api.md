@@ -1162,10 +1162,37 @@ server needs telling.
 The delivered file is reachable at the created stream's `key` through the ordinary sidecar route
 (§`/library/streams/{id}`), so an OpenSubtitles `.srt` renders through the existing sidecar path.
 
+**A downloaded subtitle is discarded the moment the part's selection moves off it (measured
+2026-10-06, from the server's own log).** The stream a download installs is selected by PMS and
+lives only while it stays selected. Sequence, ids as placeholders (`<S>` the downloaded stream,
+`<A>` the audio stream, `<part>` the part id):
+
+```
+T+0     200 PUT /library/parts/<part>?allParts=1&subtitleStreamID=<S>&audioStreamID=<A>   "Selecting subtitle stream <S>"
+T+0     200 GET /library/streams/<S>?encoding=utf-8&format=srt                            (the subtitle draws fine)
+        ... playback stops; GET /library/metadata/<item> still reports "Subtitle Stream: <S>" ...
+T+40s   200 PUT /library/parts/<part>?allParts=1&subtitleStreamID=0&audioStreamID=<A>     "Selecting subtitle stream 0"
+T+40s   404 GET /library/streams/<S>?encoding=utf-8&format=srt
+T+60s   400 PUT /library/parts/<part>?allParts=1&subtitleStreamID=<S>&audioStreamID=<A>
+        (404 / 400 for every later request naming <S>)
+```
+
+So moving the selection to `0` (the viewer's Off) or to ANY other stream deletes the downloaded
+subtitle for good: it 404s and cannot be re-selected (400), and the viewer has to search again.
+That is server behaviour, not the client's. The consequence for a client is a rule: **send
+`subtitleStreamID=0` in a selection PUT only when the viewer chose Off** (or nothing is selected).
+When the app draws the subtitle itself (a sidecar, or an embedded track beside a remux) the PUT
+names the real selected id and "do not burn" is carried only by the transcode decision / start URL
+(`subtitleStreamID=0&subtitles=none`), which leaves the server-side selection untouched. The app
+sent `0` at every transcode start until 2026-10-06, which is how a freshly searched subtitle was
+lost at the next playback.
+
 `tests/mock_pms.py` (`MockPms.subtitle_search`) models this section — the 3-letter 500, the empty
 answer, single-use candidate keys, and an install that creates a NEW selected external stream with
 a fetchable sidecar — and is the only place the download may be exercised end to end. Its install
-is immediate; the real one is asynchronous, as above.
+is immediate; the real one is asynchronous, as above. It also models the discard above
+(`discard_deselected_downloads`: the stream leaves the part, its `/library/streams/<id>` is a 404, selecting
+it is a 400).
 
 ---
 
