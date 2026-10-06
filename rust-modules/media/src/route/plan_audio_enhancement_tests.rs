@@ -335,6 +335,87 @@ fn server_selected_external_srt_is_enhanced_remux_sidecar_unaffected() {
     plx_plex::plex::reset_servers_for_test();
 }
 
+/// A film whose own audio the TV cannot decode (TrueHD), with a second, decodable track beside
+/// it (what the stand-in rule used to reach for) and an embedded subtitle that is selected.
+fn truehd_with_ac3_sibling_and_embedded_sub(sid: ServerId, kbps: i64) -> plx_data::metadata::PlayingItem {
+    let truehd = track(1, "truehd", 8, true);
+    let mut sibling = track(2, "ac3", 2, true);
+    sibling.default = false;
+    sibling.selected = false;
+    sibling.lang_code = "fra".into();
+    let mut item = fourk_item_with_subs(sid, vec![truehd, sibling], vec![selected_sub(9, "srt")]);
+    item.bitrate = kbps;
+    item
+}
+
+/// **Cold start, a subtitle the app draws beside the remux.** On a local link with a known, moderate
+/// Part bitrate the viewer keeps the audio track they asked for (no direct-playing stand-in chosen
+/// for the subtitle's sake), the route is the remux, nothing is burned, and the wire tells the
+/// server so: `subtitleStreamID=0&subtitles=none`. The enhancement is offered on that remux.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn cold_start_keeps_intended_audio_and_draws_the_subtitle() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "truehd",
+        |sid| truehd_with_ac3_sibling_and_embedded_sub(sid, 7_400),
+        |_, _| {});
+    assert!(r.plan.url.contains("start.mkv"), "the intended TrueHD is converted by the server: {}", r.plan.url);
+    assert!(r.plan.contract.remux, "a copy of the video, not a burn");
+    assert_eq!(r.plan.audio.as_ref().map(|a| a.sid), Some(1), "the track asked for, not the stand-in");
+    assert_eq!(r.plan.sub_sid, 9, "the subtitle stays the selection");
+    assert_eq!(r.plan.sub_render_ordinal, Some(0), "and the app is told which track to draw");
+    assert_eq!(query_param(&r.plan.url, "subtitles"), Some("none"), "{}", r.plan.url);
+    assert_eq!(query_param(&r.plan.url, "subtitleStreamID"), Some("0"), "{}", r.plan.url);
+    assert_eq!(query_param(&r.plan.url, "normalizeLoudness"), Some("1"), "the enhancement is offered: {}", r.plan.url);
+    for d in transcode_decisions(&r.requests) {
+        assert!(!d.contains("subtitles=burn"), "{d}");
+    }
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// The same film over the bound (or unmeasured) is today's behaviour: the stand-in direct-plays and
+/// the app draws the subtitle on it.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn cold_start_over_the_bound_keeps_the_stand_in() {
+    for kbps in [30_001, 48_000] {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "truehd",
+            |sid| truehd_with_ac3_sibling_and_embedded_sub(sid, kbps),
+            |env, _| env.audio_enhancements = plx_plex::plex::AudioEnhancements::NONE);
+        assert!(!r.plan.url.contains("start.mkv"), "{kbps}: the stand-in direct-plays: {}", r.plan.url);
+        assert_eq!(r.plan.audio.as_ref().map(|a| a.sid), Some(2), "{kbps}");
+        plx_plex::plex::reset_servers_for_test();
+    }
+}
+
+/// A cold re-resolve (a retry, a restart) that carries a subtitle the app is already drawing into a
+/// remux-shaped plan: no burn rides the wire, the id stays the selection.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn cold_reresolve_with_a_client_drawn_subtitle_sends_no_burn() {
+    for drawn in [Some(-1), Some(0)] {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "truehd",
+            |sid| fourk_item(sid, vec![track(1, "truehd", 8, true)]),
+            |env, _| {
+                env.sub_sid = 77;
+                env.sub_drawn = drawn;
+            });
+        assert!(r.plan.contract.remux, "{drawn:?}: {}", r.plan.url);
+        assert_eq!(query_param(&r.plan.url, "subtitles"), Some("none"), "{drawn:?}: {}", r.plan.url);
+        assert_eq!(query_param(&r.plan.url, "subtitleStreamID"), Some("0"), "{drawn:?}: {}", r.plan.url);
+        for d in transcode_decisions(&r.requests) {
+            assert!(!d.contains("subtitles=burn"), "{drawn:?}: {d}");
+        }
+        assert_eq!(r.plan.sub_sid, 77, "{drawn:?}");
+        plx_plex::plex::reset_servers_for_test();
+    }
+}
+
 #[test]
 #[cfg(feature = "devtriggers")]
 fn fixed_720p_rung_no_params() {

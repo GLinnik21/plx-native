@@ -15,7 +15,7 @@
 //! token or session identifier.
 
 use crate::ff::subside::{read_once, Anchor, ReadCfg, RunEnd, SideStop};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -28,6 +28,7 @@ const BACKOFF: Duration = Duration::from_millis(500);
 const REOPEN_LEAD_NS: i64 = 15_000_000_000;
 
 /// Everything one run of the reader is started with. `url` carries the token: held, never logged.
+#[derive(Clone)]
 pub struct Spec {
     /// The fresh-session URL of the original Part (`direct_play_url(part, "<live>-subs")`).
     pub url: String,
@@ -37,6 +38,12 @@ pub struct Spec {
     pub part_kbps: u32,
     /// The 0-based position of the drawn track among the Part's subtitle streams.
     pub ordinal: i32,
+    /// Start reading at the playhead instead of the run's start offset: the reader begins mid-play
+    /// (a pick on a live remux), not with the engine run.
+    pub from_playhead: bool,
+    /// The Part-to-playhead clock delta a reader of this same run already measured, so a reader
+    /// that replaces it (a track switch) does not scan for the anchor again.
+    pub delta: Option<i64>,
 }
 
 struct Running {
@@ -51,6 +58,19 @@ struct Running {
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static FAILED: AtomicBool = AtomicBool::new(false);
+/// Serialises every start and stop (the engine's, and the worker `sync` hands its change to).
+static LIFECYCLE: Mutex<()> = Mutex::new(());
+/// Bumped by every engine-level `start`/`stop`: a `sync` queued before one is stale after it.
+static EPOCH: AtomicU64 = AtomicU64::new(0);
+/// The clock delta the last reader measured (or was given), read by the reader that replaces it.
+static LAST_DELTA: Mutex<Option<i64>> = Mutex::new(None);
+/// The newest change `sync` was asked for, with the epoch it was asked in. Latest wins.
+static WANT: Mutex<Option<(u64, Option<Spec>)>> = Mutex::new(None);
+static SYNC_WORKER: AtomicBool = AtomicBool::new(false);
+
+fn lifecycle() -> std::sync::MutexGuard<'static, ()> {
+    LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn running() -> std::sync::MutexGuard<'static, Option<Running>> {
     RUNNING.lock().unwrap_or_else(|e| e.into_inner())
@@ -68,6 +88,11 @@ pub fn take_failure() -> bool {
     FAILED.swap(false, Ordering::AcqRel)
 }
 
+/// Raise the failure flag from outside the reader thread: the reader could not even be started.
+pub fn raise_failure() {
+    FAILED.store(true, Ordering::Release);
+}
+
 /// The subtitle ordinal `plxnative-subside` asks to draw, or `None` when the trigger is absent or
 /// holds no non-negative number. Read at each playback start (a live trigger: no relaunch needed).
 /// Always `None` in a build without the dev triggers.
@@ -75,11 +100,35 @@ pub fn dev_armed_ordinal() -> Option<i32> {
     plx_base::devtrig::read("subside")?.trim().parse::<i32>().ok().filter(|n| *n >= 0)
 }
 
+/// The reader's [`Spec`] for a route's [`crate::route::SideReaderTarget`]: the fresh-session URL
+/// shape PMS serves a second reader of the Part (the live session's own identifier is refused while
+/// the remux runs). It carries the token and is handed to the reader, never logged. `None` when the
+/// target's server is gone.
+pub fn spec_for(target: &crate::route::SideReaderTarget) -> Option<Spec> {
+    let client = plx_plex::plex::client_for(target.sid)?;
+    let su = client.direct_play_url(&target.part, &format!("{}-subs", target.session));
+    Some(Spec {
+        url: format!("{}{}", su.origin.base(), su.path),
+        offset_ns: crate::player::SHARED.disp_base.load(Ordering::Relaxed),
+        part_kbps: target.part_kbps,
+        ordinal: target.ordinal,
+        from_playhead: false,
+        delta: None,
+    })
+}
+
 /// Start the reader for this engine run. Replaces a reader still running (it is stopped first).
 /// Selects `spec.ordinal` as the drawn track and marks the main demuxer's subtitle handling off.
 /// Returns `false` when the thread could not be spawned.
 pub fn start(spec: Spec) -> bool {
-    stop("restart");
+    let _l = lifecycle();
+    EPOCH.fetch_add(1, Ordering::AcqRel);
+    *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = spec.delta;
+    stop_locked("restart", false);
+    start_locked(spec)
+}
+
+fn start_locked(spec: Spec) -> bool {
     FAILED.store(false, Ordering::Release);
     let stop_handle = SideStop::new();
     let prev_selection = super::desired_sub_idx();
@@ -100,16 +149,31 @@ pub fn start(spec: Spec) -> bool {
 
 /// Stop the reader and join it, then clear the cue and bitmap stores it filled and give the
 /// subtitle selection back. Call it BEFORE the demux join in teardown. Idempotent; a no-op when no
-/// reader runs. `reason` is a label for the log line.
+/// reader runs. `reason` is a label for the log line. Also retires any `sync` still queued.
 pub fn stop(reason: &str) {
-    let Some(r) = running().take() else { return };
+    let _l = lifecycle();
+    EPOCH.fetch_add(1, Ordering::AcqRel);
+    *WANT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    stop_locked(reason, false);
+    // The engine run is over: its anchor names a stream that no reader will match again, whether
+    // or not a reader was running (the sync worker may have stopped it already, keeping the anchor).
+    *crate::player::SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// `stop`'s body, under the lifecycle lock. `keep_anchor`: leave the main demuxer's published
+/// anchor in place for a reader that replaces this one mid-play. Returns the clock delta the
+/// stopped reader had, when one ran.
+fn stop_locked(reason: &str, keep_anchor: bool) -> Option<i64> {
+    let r = running().take()?;
     let started = Instant::now();
     r.stop.trigger(); // flag, then the socket / curl wake
     r.thread.unpark(); // a reader parked on pacing or the anchor wait
     plx_base::task::join("subside", r.handle);
     ACTIVE.store(false, Ordering::Release);
     crate::player::SHARED.side_subs_owner.store(false, Ordering::Release);
-    *crate::player::SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    if !keep_anchor {
+        *crate::player::SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
     if super::desired_sub_idx() == r.ordinal {
         super::request_subtitle(r.prev_selection);
     }
@@ -119,6 +183,88 @@ pub fn stop(reason: &str) {
         "subside: stop reason={reason} join_ms={}",
         started.elapsed().as_millis()
     ));
+    *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// **Make the running reader match `desired`** while the stream plays on: start one for a track
+/// picked on a live remux, stop it when the pick is Off or a sidecar, or switch it to another
+/// track (the old track's cues and bitmaps are cleared with it). Never blocks the caller: stopping
+/// a reader joins its thread, which a stalled server can hold up, so the change runs on a worker.
+/// The newest request wins; a request older than an engine `start`/`stop` is dropped.
+pub fn sync(desired: Option<Spec>) {
+    // A host test of the route asks what the route wanted; it must not start a real reader.
+    #[cfg(test)]
+    TEST_SYNCS.with(|l| l.borrow_mut().push(desired.map(|d| d.ordinal)));
+    #[cfg(not(test))]
+    {
+        if desired.is_none() && !ACTIVE.load(Ordering::Acquire) && !SYNC_WORKER.load(Ordering::Acquire) {
+            return;
+        }
+        *WANT.lock().unwrap_or_else(|e| e.into_inner()) = Some((EPOCH.load(Ordering::Acquire), desired));
+        kick_worker();
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_SYNCS: std::cell::RefCell<Vec<Option<i32>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The changes `sync` was asked for on this thread since the last call (host tests of the route):
+/// `Some(ordinal)` = draw this track, `None` = draw nothing.
+#[cfg(test)]
+pub(crate) fn take_test_syncs() -> Vec<Option<i32>> {
+    TEST_SYNCS.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn kick_worker() {
+    if SYNC_WORKER.swap(true, Ordering::AcqRel) {
+        return; // the running worker takes the newer request on its next turn
+    }
+    let spawned = plx_base::task::spawn("subside-sync", || loop {
+        let want = WANT.lock().unwrap_or_else(|e| e.into_inner()).take();
+        match want {
+            Some((epoch, desired)) => apply(epoch, desired),
+            None => {
+                SYNC_WORKER.store(false, Ordering::Release);
+                // A request that landed between the take and the store would otherwise wait for
+                // the next `sync`.
+                if WANT.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+                    kick_worker();
+                }
+                return;
+            }
+        }
+    });
+    if spawned.is_none() {
+        SYNC_WORKER.store(false, Ordering::Release);
+        plx_base::eventlog::log("subside: could not start the sync worker");
+    }
+}
+
+fn apply(epoch: u64, desired: Option<Spec>) {
+    let _l = lifecycle();
+    if EPOCH.load(Ordering::Acquire) != epoch {
+        return; // the engine restarted or stopped since: this change names a stream that is gone
+    }
+    let current = running().as_ref().map(|r| r.ordinal);
+    match (current, desired) {
+        (None, None) => {}
+        (Some(a), Some(d)) if a == d.ordinal => {}
+        (_, desired) => {
+            let delta = stop_locked("pick", true);
+            if let Some(mut spec) = desired {
+                spec.from_playhead = true;
+                spec.delta = delta;
+                *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = delta;
+                if !start_locked(spec) {
+                    plx_base::eventlog::log("subside: could not start the reader thread");
+                    FAILED.store(true, Ordering::Release);
+                }
+            }
+        }
+    }
 }
 
 /// Park for `d`, waking early when `stop` is triggered (its `unpark` reaches this thread).
@@ -149,11 +295,14 @@ fn run(spec: Spec, stop: Arc<SideStop>) {
     // The anchor first: the heavy reads (the Part's own bytes) wait for the remux to have started.
     let Some(anchor) = wait_for_anchor(&stop) else { return };
     let cfg = ReadCfg { url: &spec.url, offset_ns: spec.offset_ns, ordinal: spec.ordinal.max(0) as usize, kbps: spec.part_kbps };
-    let mut delta: Option<i64> = None;
+    let mut delta: Option<i64> = spec.delta;
+    let from_playhead = spec.from_playhead;
+    let save = |d: Option<i64>| *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = d;
     let mut reopens = 0;
     loop {
-        // First pass reads from the start offset; a reopen from the playhead, mapped to Part time.
-        let first = delta.is_none();
+        // First pass reads from the start offset (unless this reader began mid-play); a reopen
+        // from the playhead, mapped to Part time.
+        let first = delta.is_none() && !from_playhead;
         let resume = |d: i64| {
             if first {
                 cfg.offset_ns - crate::ff::subside::SCAN_NS
@@ -165,7 +314,9 @@ fn run(spec: Spec, stop: Arc<SideStop>) {
             let s = &crate::player::SHARED;
             (s.pts_shift.load(Ordering::Relaxed), s.disp_base.load(Ordering::Relaxed))
         };
-        match read_once(&cfg, &stop, &anchor, &mut delta, &resume, &playpos, &clock) {
+        let end = read_once(&cfg, &stop, &anchor, &mut delta, &resume, &playpos, &clock);
+        save(delta);
+        match end {
             RunEnd::Stopped => return,
             RunEnd::Unusable => {
                 plx_base::eventlog::log("subside: failed");
@@ -199,7 +350,7 @@ mod tests {
     }
 
     fn spec(port: u16) -> Spec {
-        Spec { url: format!("http://127.0.0.1:{port}/library/parts/1/file.mkv"), offset_ns: 0, part_kbps: 0, ordinal: 0 }
+        Spec { url: format!("http://127.0.0.1:{port}/library/parts/1/file.mkv"), offset_ns: 0, part_kbps: 0, ordinal: 0, from_playhead: false, delta: None }
     }
 
     /// `stop` returns and the reader is gone even when the server never answers a single byte,
@@ -239,6 +390,39 @@ mod tests {
                 assert!(!log.contains(banned), "the log names {banned:?}: {log}");
             }
             *crate::player::SHARED.side_anchor.lock().unwrap() = None;
+        });
+    }
+
+    /// What `sync`'s worker does: a pick switches the reader to another track (keeping the main
+    /// demuxer's anchor, which a replacement mid-play needs), Off stops it, and a request queued
+    /// before an engine start/stop is dropped as stale.
+    #[test]
+    fn a_synced_pick_switches_then_stops_the_reader_and_a_stale_one_is_dropped() {
+        let _g = plx_base::testlock::serial();
+        plx_base::eventlog::with_private_log(|| {
+            let (_srv, port) = stalled_server();
+            let anchor = || *crate::player::SHARED.side_anchor.lock().unwrap();
+            *crate::player::SHARED.side_anchor.lock().unwrap() = Some(Anchor::of(0, &[1, 2, 3]));
+            assert!(start(spec(port)));
+            let epoch = EPOCH.load(Ordering::Acquire);
+            crate::player::SHARED.sub_cues.lock().unwrap().clear();
+            // another track: replaced, still active, anchor kept
+            apply(epoch, Some(Spec { ordinal: 3, ..spec(port) }));
+            assert!(active());
+            assert_eq!(running().as_ref().map(|r| r.ordinal), Some(3));
+            assert!(anchor().is_some(), "a replacement reader needs the anchor again");
+            // the same track again: nothing to do
+            apply(epoch, Some(Spec { ordinal: 3, ..spec(port) }));
+            assert_eq!(running().as_ref().map(|r| r.ordinal), Some(3));
+            // Off / a sidecar: stopped, anchor still kept for a later pick
+            apply(epoch, None);
+            assert!(!active());
+            assert!(anchor().is_some());
+            // an engine stop retires everything queued before it
+            stop("engine");
+            assert!(anchor().is_none(), "the engine's stop clears the anchor");
+            apply(epoch, Some(spec(port)));
+            assert!(!active(), "a request from before the stop names a stream that is gone");
         });
     }
 

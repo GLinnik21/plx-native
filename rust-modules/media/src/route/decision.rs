@@ -7173,6 +7173,11 @@ impl ResolveEnv {
             },
             audio_sid: cur_audio_sid(ps),
             sub_sid: cur_sub_sid(ps),
+            // The app draws the carried subtitle (a sidecar, or an embedded track over a remux):
+            // a re-resolve that keeps it in a remux must not send it as a burn.
+            sub_drawn: (cur_sub_sid(ps) != 0 && ps.cur_sub_client_drawable && !ps.side_subs_refused
+                && (ps.cur_sub_sidecar || side_reader_admitted(ps)))
+                .then_some(ps.cur_sub_ordinal),
             subtitle_override: None,
             cached_item: meta.cached_playing(sid, rk),
             quality: quality(),
@@ -8447,9 +8452,17 @@ const SIDE_MAX_PART_KBPS: i64 = 30_000;
 /// a fixture or a pinned URL), and a known, moderate Part bitrate: `0` means nobody measured it
 /// and burns by design. A sidecar needs none of this (the app fetches it on its own).
 fn side_reader_admitted(ps: &PlaybackSession) -> bool {
-    cur_client(ps).is_some_and(|c| c.link() == Some(plx_plex::plex::probe::Location::Local))
-        && ps.auto_original.as_ref().is_some_and(|c| c.probe_part.starts_with('/'))
-        && (1..=SIDE_MAX_PART_KBPS).contains(&ps.cur_transport_kbps)
+    side_reader_inputs_admit(
+        cur_client(ps).is_some_and(|c| c.link() == Some(plx_plex::plex::probe::Location::Local)),
+        ps.auto_original.as_ref().map_or("", |c| c.probe_part.as_str()),
+        ps.cur_transport_kbps,
+    )
+}
+
+/// The facts [`side_reader_admitted`] reads, as plain values, so the cold start (which has no
+/// session yet) asks the same question.
+pub(super) fn side_reader_inputs_admit(local_link: bool, part: &str, part_kbps: i64) -> bool {
+    local_link && part.starts_with('/') && (1..=SIDE_MAX_PART_KBPS).contains(&part_kbps)
 }
 
 /// [`side_subs_allowed`] for a prospective pick: a subtitle is chosen, the app can draw it, no
@@ -8903,7 +8916,7 @@ pub enum BurnReason {
 /// **The live [`SubtitlePresenter`]**, from the committed selection (`cur_sub_sid`, written for
 /// every route by `commit_subtitle_selection`) and the live route. A transcode burns whatever is
 /// selected and the client then draws nothing (`player_hud::draw_subtitles` is silenced by
-/// [`subtitles_burned`] the same way) — except a sidecar over a remux, which the app draws
+/// [`subtitles_burned`] the same way) — except a sidecar, or an admitted embedded track, over a remux, which the app draws
 /// ([`SubtitlePresenter::ClientOverRemux`]); direct play draws it in the app. The reason is the
 /// audio conversion when the live family is a remux or the burn is the enhancement's own or the
 /// Original-quality one ([`enhancement_family`] reads exactly those as `Remux`), else quality.
@@ -8935,6 +8948,32 @@ pub fn subtitles_burned(ps: &PlaybackSession) -> bool {
         // `ClientOverRemux`). A selected subtitle is the presenter's alone to answer, so a refused
         // or failed reader (`ServerBurn`) is never silenced by a reader that is still shutting down.
         && !(ps.cur_sub_sid == 0 && crate::player::subside::active())
+}
+
+/// Make the side reader match the live route: start it for an admitted embedded pick, switch its
+/// track, or stop it for Off and a sidecar. Never blocks (see `player::subside::sync`).
+fn sync_side_reader(ps: &PlaybackSession) {
+    crate::player::subside::sync(
+        side_reader_target(ps).and_then(|t| crate::player::subside::spec_for(&t)),
+    );
+}
+
+/// **The side reader gave up** (every reopen failed, the Part has no such track, or it could not
+/// start): the app's own drawing of this playback's subtitle is refused for the rest of the item
+/// and the server's burn is all that is left, so the stream is rebuilt as the burn. The presenter
+/// then reads `ServerBurn(AudioConversion)` and the menu's dimmed Style/Timing rows say why. Does
+/// nothing when the reader was not drawing the selected subtitle (the dev trigger's run).
+pub fn side_subtitles_failed(ps: &mut PlaybackSession) {
+    if ps.side_subs_refused || subtitle_presenter(ps) != SubtitlePresenter::ClientOverRemux {
+        return;
+    }
+    crate::player::log("subtitles: the side reader failed; the server burns the subtitle");
+    let _edit = begin_user_contract_boundary();
+    ps.side_subs_refused = true;
+    if reconcile_enhancement(ps, true) {
+        return;
+    }
+    crate::player::request_transcode_refresh(ps);
 }
 
 /// What the side subtitle reader needs to read the film's original Part beside a plain remux.
@@ -9691,6 +9730,10 @@ pub struct EnhTestFixture {
     /// Force `displayed_audio_enhancements`'s in-flight branch (a user edit queued, not yet
     /// settled), so it reads `want_live` instead of `cur_contract.audio`.
     pub in_flight: bool,
+    /// An EMBEDDED subtitle the side reader may draw: a local link, a real Part path and a known
+    /// Part bitrate, with the client able to draw it. Only meaningful with
+    /// `subtitle_effect: Embedded` on a remux.
+    pub side_reader: bool,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -9709,6 +9752,7 @@ impl Default for EnhTestFixture {
             applied: plx_plex::plex::AudioEnhancements::NONE,
             applied_burn: false,
             in_flight: false,
+            side_reader: false,
         }
     }
 }
@@ -9793,6 +9837,18 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
         audio: ps.cur_audio.clone(),
         ..test_original_candidate(None)
     });
+
+    if route.side_reader {
+        ps.cur_sub_client_drawable = true;
+        ps.cur_sub_ordinal = 0;
+        ps.cur_transport_kbps = 7_400;
+        if let Some(candidate) = ps.auto_original.as_mut() {
+            candidate.probe_part = "/library/parts/1/1/file.mkv".into();
+        }
+        if let Some(client) = plx_plex::plex::client_for(sid) {
+            client.set_link(plx_plex::plex::probe::Location::Local);
+        }
+    }
 
     if route.in_flight {
         let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
@@ -9915,9 +9971,11 @@ pub fn commit_subtitle_selection(
     client_renderable: bool,
 ) {
     let transcoding = is_transcoding(ps);
-    // A live plain remux whose new pick is Off or a subtitle the app draws over it keeps its
-    // stream: the server never carried the subtitle, so nothing about the encode changes. An
-    // embedded pick (a burn), or leaving a burned one, changes the route's shape and rebuilds.
+    // A live plain remux whose new pick is Off or a subtitle the app draws over it (a sidecar, or
+    // an embedded track the side reader is admitted for) keeps its stream: the server never carried
+    // the subtitle, so nothing about the encode changes; only the side reader follows the pick
+    // (`sync_side_reader`). An embedded pick the reader is not admitted for (a burn), or leaving a
+    // burned one, changes the route's shape and rebuilds.
     // Decided before the selection is written, from the pick itself.
     let in_place = transcoding
         && live_family(ps) == RouteFamily::Remux
@@ -9983,6 +10041,11 @@ pub fn commit_subtitle_selection(
         // from `app/playback.rs::commit_track` inside the run-loop's `FrameScope`, so this PUT runs
         // on the serial selection worker instead of blocking the frame thread.
         queue_put_selection(cur_sid(ps), cur_part_id(ps), cur_audio_sid(ps), cur_sub_sid(ps));
+    }
+    if in_place {
+        // The stream stays; what the app reads beside it follows the pick (start, switch or stop
+        // the side reader). Handed to a worker inside `sync`: stopping a reader joins its thread.
+        sync_side_reader(ps);
     }
     // A subtitle turns the enhancement's offer off (I6) and Off may turn it back on. On direct
     // play a subtitle never reloads, so there is no pick of its own to displace.

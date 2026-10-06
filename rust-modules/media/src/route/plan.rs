@@ -1064,6 +1064,11 @@ pub struct ResolveEnv {
     pub machine_id: String,
     pub audio_sid: i64,
     pub sub_sid: i64,
+    /// Set when the app itself draws [`Self::sub_sid`] (a sidecar, or an embedded track the side
+    /// reader draws over a remux): the render ordinal, negative for a sidecar. A re-resolve that
+    /// keeps this subtitle in a remux-shaped plan must then say `subtitles=none` on the wire — the
+    /// server has nothing to burn — instead of carrying the id as a burn.
+    pub sub_drawn: Option<i32>,
     /// A retry carries the viewer's explicit Off as well as a positive subtitle id.
     pub subtitle_override: Option<i64>,
     /// the loaded detail's streams when it IS this item — saves the worker a GET
@@ -1621,6 +1626,30 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             show_prefs.subtitle_mode
         ));
     }
+    // The SOURCE's whole-stream bitrate in kbps: the playing item's own, else the caller's.
+    let source_transport_kbps = plan
+        .playing
+        .as_ref()
+        .map(|p| p.bitrate)
+        .filter(|&v| v > 0)
+        .unwrap_or(env.src_kbps);
+    // **Does the app draw the picked EMBEDDED subtitle itself, beside a remux?** On a local link
+    // with a known, moderate Part bitrate the side reader (`player::subside`) reads the track from
+    // the film's own Part, so the server neither burns it nor needs a different audio track for
+    // it: the intended track is kept, the route is the plain (or enhanced) remux and the wire says
+    // `subtitles=none`. The cold-start twin of `decision::side_reader_admitted`. A declared Dolby
+    // Vision source stays on the stand-in/burn path: the stand-in direct play keeps its DV.
+    let side_draws = sub_pick.is_some_and(|(_, ord)| ord >= 0)
+        && video_dp
+        && !copy_blocked
+        && !part.is_empty()
+        && matches!(playback_quality, Quality::Auto | Quality::Original)
+        && !dv_decision.presentation.declared().is_some()
+        && super::decision::side_reader_inputs_admit(
+            client.link() == Some(plx_plex::plex::probe::Location::Local),
+            part,
+            source_transport_kbps,
+        );
     // Step 2: the server carries the intended track (no direct-play pick), but a remux carries NO
     // subtitle (M4/M7) and the client's renderer is silent while transcoding. When a subtitle is to
     // be shown, a non-commentary stand-in direct-plays (the client draws the subtitle). That is a
@@ -1631,7 +1660,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // ordinal), so it stays on the remux path.
     let mut stand_in_provisional = false;
     let mut commentary_only_stand_in = false;
-    if audio_sel.is_none() && !copy_blocked && sub_pick.is_some() && !tracks.is_empty() && !rk.is_empty() {
+    if audio_sel.is_none() && !copy_blocked && sub_pick.is_some() && !side_draws && !tracks.is_empty() && !rk.is_empty() {
         match pick_audio(StandIn::Any) {
             Some(s) if usize::try_from(s.0).is_ok_and(|i| !audio_is_commentary(tracks, i)) => {
                 audio_sel = Some(s);
@@ -1716,12 +1745,6 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // A container-only remux also preserves the original video and avoids the GPU, so it belongs
     // to Auto's Original state and must pass the same remote bandwidth gate as direct play.
     let remux_candidate = video_dp && allowed.remux && !no_video_copy && !mde_forbids_copy;
-    let source_transport_kbps = plan
-        .playing
-        .as_ref()
-        .map(|p| p.bitrate)
-        .filter(|&v| v > 0)
-        .unwrap_or(env.src_kbps);
     // Keep the exact zero-video-encode flavour before a fixed rung or Auto's immediate HLS decision
     // overwrites `directplay`. Recovery must restore the source declaration which WOULD have been
     // installed, not derive one later from the transcode currently on screen. Manual Original needs
@@ -1779,7 +1802,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // against the candidate captured above — its DV facts (I7), its carried track, and the family
     // it would play as. `env.sub_sid` is an already-active burn, which reads as Embedded too.
     let subtitle_effect = if env.sub_sid > 0 {
-        SubtitleEffect::Embedded
+        if env.sub_drawn.is_some() { SubtitleEffect::Sidecar } else { SubtitleEffect::Embedded }
+    } else if side_draws {
+        SubtitleEffect::Sidecar
     } else {
         subtitle_effect_of(plan.playing.as_ref(), sub_pick)
     };
@@ -1986,14 +2011,25 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // A forced burn is never a copy: the flavour that would otherwise have been the plain remux
     // above becomes the real re-encode below, carrying the picked subtitle's id.
     let remux = remux && !force_burn && !burn_for_audio;
+    // The subtitle the app draws over the remux: no burn rides the wire (`client_draws`), but the
+    // selection is still the real id (persisted, reported, kept by every rebuild).
+    let client_draws = remux && (side_draws || (env.sub_sid > 0 && env.sub_drawn.is_some()));
     let burn_sub_sid = if force_burn {
         subtitle_id
     } else if burn_for_audio && env.sub_sid == 0 {
         sub_pick.map_or(0, |(id, _)| id)
+    } else if client_draws && env.sub_sid == 0 {
+        subtitle_id
     } else {
         env.sub_sid
     };
-    if burn_for_audio || force_burn {
+    if client_draws {
+        // An embedded track: the landing tells the renderer which ordinal the reader decodes. (A
+        // sidecar is restored from the server selection by the landing itself.)
+        let ordinal = if env.sub_sid == 0 { sub_pick.map(|(_, ord)| ord) } else { env.sub_drawn };
+        plan.sub_render_ordinal = ordinal.filter(|ord| *ord >= 0);
+    }
+    if burn_for_audio || force_burn || client_draws {
         // The subtitle burned in IS the session's subtitle: the menu checkmark, the timeline and
         // every later rebuild (a seek, a track pick) read it back from the plan.
         plan.sub_sid = burn_sub_sid;
@@ -2117,8 +2153,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         &session,
         plx_plex::plex::TranscodeOffset::Fresh,
         encode_audio,
-        burn_sub_sid,
-        false,
+        if client_draws { 0 } else { burn_sub_sid },
+        client_draws,
         plan.contract,
     );
     // The enhanced decision rides the MDE's own `session`, as every remux here always has: M5
@@ -2155,8 +2191,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plx_plex::plex::TranscodeOffset::Fresh,
             encode_audio,
             // the audio enhancement was refused, not the burn rule 3 chose: keep that subtitle
-            if burn_for_audio { burn_sub_sid } else { env.sub_sid },
-            false,
+            if client_draws { 0 } else if burn_for_audio { burn_sub_sid } else { env.sub_sid },
+            client_draws,
             plan.contract,
         );
         decision = client.transcode_decision(off, &sp);

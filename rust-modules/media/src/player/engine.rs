@@ -1630,22 +1630,13 @@ fn reload_start_outcome(
     }
 }
 
-/// Start the side subtitle reader for the live plain remux of `ps`, drawing the Part's subtitle
-/// stream number `ordinal`. The URL is the fresh-session shape PMS serves a second reader of the
-/// Part (the live session's own identifier is refused while the remux runs); it carries the token
-/// and is handed to the reader, never logged.
+/// Start the side subtitle reader for the live remux this engine run plays, drawing the track
+/// the route's target names.
 fn start_side_reader(target: &crate::route::SideReaderTarget) {
-    let ordinal = target.ordinal;
-    let Some(client) = plx_plex::plex::client_for(target.sid) else { return };
-    let su = client.direct_play_url(&target.part, &format!("{}-subs", target.session));
-    let started = super::subside::start(super::subside::Spec {
-        url: format!("{}{}", su.origin.base(), su.path),
-        offset_ns: SHARED.disp_base.load(Ordering::Relaxed),
-        part_kbps: target.part_kbps,
-        ordinal,
-    });
+    let started = super::subside::spec_for(target).is_some_and(super::subside::start);
     if !started {
         log("subside: could not start the reader thread");
+        super::subside::raise_failure(); // the route falls back to the server's burn
     }
 }
 

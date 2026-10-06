@@ -43,10 +43,14 @@ because the overlay's state shape changed on purpose.
 - Style follows Timing's availability: omitted while a transcode has no subtitle on (nothing to
   style); once the server draws the selected subtitle (`route::subtitle_presenter` = `ServerBurn`) both
   stay, dim and inert, with a reason under Style: "Drawn by your server while it converts the audio."
-  (`BurnReason::AudioConversion`: an embedded track on a remux, the app's own enhanced burn, or the plain
-  Original-quality burn) or "Drawn by your server at this quality." (a burn outside that family, e.g. a
+  (`BurnReason::AudioConversion`: an embedded track on a remux the app cannot read beside the stream —
+  a relay or remote link, an unmeasured or over-30 Mbit/s Part, a failed reader — the app's own enhanced
+  burn, or the plain Original-quality burn) or "Drawn by your server at this quality." (a burn outside that family, e.g. a
   quality-limited re-encode). An external sidecar over a remux is drawn by the app
   (`SubtitlePresenter::ClientOverRemux`): the video stays a copy, and Timing and Style are live with no reason.
+  So is an embedded track on a local-link remux of a Part of at most 30 Mbit/s: the side reader
+  (`player::subside`) reads the track from the film's own Part beside the stream, and a pick, a switch
+  or Off changes nothing about the stream itself.
 - Per active renderer: image -> Size and Position dim and inert ("Image subtitles keep their own
   size and position."); native ASS/SSA -> the same ("Styled subtitles keep ..."); Color stays live in
   both, since the subtitle ink tints bitmaps and ASS.

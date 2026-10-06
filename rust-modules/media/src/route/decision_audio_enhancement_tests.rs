@@ -4039,6 +4039,127 @@ fn side_reader_target_names_the_selected_tracks_ordinal() {
 }
 
 #[test]
+fn embedded_pick_on_a_live_remux_queues_no_retranscode() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    admit_side_reader(&mut ps);
+    let _ = crate::player::subside::take_test_syncs();
+    pick_embedded(&mut ps);
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode), "the stream is not touched");
+    assert!(claim_route_action().is_none());
+    assert!(ps.cur_contract.remux, "still the copy");
+    assert_eq!((ps.cur_sub_sid, ps.cur_sub_sidecar, ps.cur_sub_ordinal), (77, false, 2));
+    assert_eq!(crate::player::subside::take_test_syncs(), vec![Some(2)], "the reader starts on the pick");
+    commit_subtitle_selection(&mut ps, -1, 0, false);
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode), "Off needs no rebuild either");
+    assert_eq!(crate::player::subside::take_test_syncs(), vec![None], "and the reader stops");
+    assert!(decisions(&live.finish()).is_empty());
+    cleanup(&mut ps);
+}
+
+#[test]
+fn switching_embedded_tracks_on_a_live_remux_queues_no_retranscode() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    admit_side_reader(&mut ps);
+    let _ = crate::player::subside::take_test_syncs();
+    pick_embedded(&mut ps);
+    commit_subtitle_selection(&mut ps, 5, 78, true);
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode));
+    assert_eq!(ps.cur_sub_sid, 78);
+    // embedded -> sidecar -> embedded: the reader follows each pick, the stream none.
+    commit_subtitle_selection(&mut ps, -1, 79, true);
+    commit_subtitle_selection(&mut ps, 3, 80, true);
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode));
+    assert!(claim_route_action().is_none());
+    assert_eq!(
+        crate::player::subside::take_test_syncs(),
+        vec![Some(2), Some(5), None, Some(3)],
+        "track 2, switch to 5, a sidecar needs no reader, back to 3"
+    );
+    assert!(ps.cur_contract.remux);
+    assert!(decisions(&live.finish()).is_empty());
+    cleanup(&mut ps);
+}
+
+#[test]
+fn embedded_pick_from_a_live_burn_rebuilds_into_the_remux() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    // Not admitted yet (the fixture's Part is no server path): the pick burns.
+    pick_embedded_subtitle_and_land(&mut ps);
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE, true));
+    admit_side_reader(&mut ps);
+    reset_player_control_for_test(&ps);
+    let _ = crate::player::subside::take_test_syncs();
+    commit_subtitle_selection(&mut ps, 5, 78, true);
+    assert!(pending_user_route_intent(UserRouteIntent::Retranscode), "leaving a burn rebuilds once");
+    assert!(crate::player::subside::take_test_syncs().is_empty(), "the new engine starts the reader");
+    let (action, tail) = claim(&mut ps);
+    land(&mut ps, &action, tail);
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE, false), "back into the copy");
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux);
+    assert_eq!(side_reader_target(&ps).map(|t| t.ordinal), Some(5));
+    let requests = live.finish();
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert_eq!(query_param(last, "subtitles"), Some("none"), "{last}");
+    assert_eq!(query_param(last, "subtitleStreamID"), Some("0"), "{last}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn reader_failure_rebuilds_as_burn_with_audio_conversion_reason() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    admit_side_reader(&mut ps);
+    pick_embedded(&mut ps);
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux);
+    side_subtitles_failed(&mut ps);
+    assert!(ps.side_subs_refused);
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ServerBurn(BurnReason::AudioConversion));
+    assert!(pending_user_route_intent(UserRouteIntent::Retranscode), "the burn is a rebuild");
+    let (action, tail) = claim(&mut ps);
+    land(&mut ps, &action, tail);
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE, true), "today's burn");
+    assert!(subtitles_burned(&ps));
+    assert!(side_reader_target(&ps).is_none(), "no reader for a burn");
+    // A second failure report (the flag is polled) does nothing more.
+    reset_player_control_for_test(&ps);
+    side_subtitles_failed(&mut ps);
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode));
+    let requests = live.finish();
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert_eq!(query_param(last, "subtitles"), Some("burn"), "{last}");
+    assert_eq!(query_param(last, "subtitleStreamID"), Some("77"), "{last}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn a_failure_with_no_subtitle_drawn_by_the_reader_changes_nothing() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    admit_side_reader(&mut ps);
+    // The dev trigger's run: nothing selected in the route.
+    side_subtitles_failed(&mut ps);
+    assert!(!ps.side_subs_refused);
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
 fn embedded_pick_on_a_remux_still_burns() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);

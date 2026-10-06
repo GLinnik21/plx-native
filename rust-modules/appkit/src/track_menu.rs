@@ -3974,6 +3974,30 @@ mod enhancement_menu_tests {
         teardown(&ps);
     }
 
+    /// An EMBEDDED track the side reader draws over a remux is drawn by the app too: Timing and
+    /// Style are live, no reason line; the same fixture without the reader burns and dims.
+    #[test]
+    fn timing_and_style_rows_are_live_over_a_remux_with_an_embedded_track() {
+        let _g = plx_base::testlock::serial();
+        let (menu, ps) = subtitles_tab(EnhTestFixture {
+            remux: Some(true),
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+            side_reader: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            plx_media::route::subtitle_presenter(&ps),
+            plx_media::route::SubtitlePresenter::ClientOverRemux
+        );
+        assert!(!menu.server_burn_built(), "nothing is burned");
+        let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
+        let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
+        let rows = flat_rows(&menu);
+        assert!(!rows[timing_i].dim && !rows[style_i].dim, "both live");
+        assert!(!rows.iter().any(|r| r.is_note()), "no reason line");
+        teardown(&ps);
+    }
+
     /// A client-drawn subtitle (direct play) keeps both rows live with no reason.
     #[test]
     fn subtitles_tab_client_drawn_subtitle_has_live_style_and_timing_and_no_reason() {
