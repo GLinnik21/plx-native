@@ -8159,13 +8159,6 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         }
     }
     let start = prepare_playback_landing(ps, !ps.url.is_empty());
-    // Dev probe `plxnative-partprobe`: a settled server conversion of a real (non-preview) playback.
-    #[cfg(feature = "devtriggers")]
-    if !ps.url.is_empty() && is_transcoding(ps) && !ps.preview {
-        if let Some(request) = ps.request.as_ref() {
-            super::partprobe::arm(live_family(ps), ps.cur_sid, ps.cur_rk.clone(), request.part.clone(), ps.tsession.clone());
-        }
-    }
     // SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
     if let Some(ord) = plan.feed_audio_ordinal {
         crate::player::set_audio_track(ord);

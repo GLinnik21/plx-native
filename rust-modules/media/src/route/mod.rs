@@ -12,8 +12,6 @@
 mod decision;
 mod flight;
 mod plan;
-#[cfg(feature = "devtriggers")]
-mod partprobe;
 
 pub use decision::*;
 pub use flight::{

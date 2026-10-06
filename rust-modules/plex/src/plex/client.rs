@@ -696,32 +696,6 @@ impl Client {
         if r.ok() { Ok(r.body) } else { Err(format!("HTTP {} ({} bytes)", r.status, r.body.len())) }
     }
 
-    /// **Dev probe (`media::route::partprobe`)**: one `Range` GET of the item's Part file, over the
-    /// app's own transport (token, plex.direct resolve pin, TLS), reading at most `last - first + 1`
-    /// body bytes. `session` `None` names no `X-Plex-Session-Identifier`. Returns the HTTP status and
-    /// the body length, or `Err` with the `CURLcode` when libcurl reported one. The URL, token and
-    /// session never leave this function. A read only; nothing is written to the server.
-    #[cfg(feature = "devtriggers")]
-    pub fn part_range_probe(
-        &self,
-        part_key: &str,
-        session: Option<&str>,
-        first: i64,
-        last: i64,
-    ) -> Result<(i32, usize), Option<i32>> {
-        if !self.may_send() {
-            return Err(None);
-        }
-        let url = self.part_url(part_key, session);
-        let range = format!("Range: bytes={first}-{last}");
-        let owned = pms_headers(&[range.as_str()]);
-        let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
-        let cap = usize::try_from(last - first + 1).unwrap_or(0);
-        http::request_probe(&self.origin, &url.path, Method::Get, &headers, cap, 8, self.resolve_pin.as_ref())
-            .map(|reply| (reply.status, reply.body.len()))
-            .map_err(|failure| failure.and_then(|f| f.curl_rc))
-    }
-
     /// GET raw bytes for a path this server ALREADY BUILT — the one entry point that does **not**
     /// append `X-Plex-Token`, because the path handed in already ends in one.
     ///

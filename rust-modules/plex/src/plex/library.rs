@@ -328,8 +328,7 @@ impl Client {
     }
 
     /// [`Self::direct_play_url`] with the session id optional: `None` builds the same URL without
-    /// the `X-Plex-Session-Identifier` parameter at all (the dev `partprobe` asks what PMS does
-    /// with a part GET that names no session). `Some` is byte-identical to the old body.
+    /// the `X-Plex-Session-Identifier` parameter at all (a part GET that names no session). `Some` is byte-identical to the old body.
     pub(super) fn part_url(&self, part_key: &str, session: Option<&str>) -> StreamUrl {
         let q = QueryBuilder::new(part_key);
         let q = match session {
