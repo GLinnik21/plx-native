@@ -18,10 +18,11 @@
 //! # The clock
 //!
 //! A sidecar's timestamps are file time, and on DIRECT PLAY `playpos_ns` is file time too (the
-//! rebase keeps it so across seeks). On a TRANSCODE the server burns the selection into the
-//! picture instead, so [`active`] answers nothing while its caller says the session is
-//! transcoding — otherwise a direct play that becomes a transcode mid-film (a DTS audio pick)
-//! would show the line twice. The fact is PASSED IN rather than read: the playback session is
+//! rebase keeps it so across seeks). Where the server BURNS the selection into the picture (a
+//! re-encode, or a remux the app may not draw over) [`active`] answers nothing while its caller
+//! says the selection is burned (`route::subtitles_burned`) — otherwise a direct play that becomes
+//! a burn mid-film (a DTS audio pick) would show the line twice. Over a plain remux nothing is
+//! burned and a sidecar is drawn from here. The fact is PASSED IN rather than read: the playback session is
 //! the frame's publication, and the draw that calls this already holds it.
 //!
 //! The draw asks on the SUBTITLE clock (`player::subtitle_clock_ns`, the playhead less the
@@ -223,7 +224,7 @@ pub fn reset() {
 /// **Honour a sidecar the SERVER already has selected for this part** — picked here in an earlier
 /// session, or on another Plex client. The embedded twin is `route::pick_dp_subtitle`, which
 /// leaves an external selection off because nothing could render it; now something can.
-/// Direct play only (the caller's gate): a transcode start keeps subtitles off, as before.
+/// Direct play, or a plain remux start (the caller's gate): a start that burns keeps subtitles off, as before.
 pub fn restore_server_selection(server: plx_plex::plex::ServerId, meta: plx_data::metadata::MetadataView<'_>) -> Option<i64> {
     let item = meta.playing()?;
     if let Some(s) = plx_data::metadata::server_selected_sidecar(item) {
@@ -234,11 +235,11 @@ pub fn restore_server_selection(server: plx_plex::plex::ServerId, meta: plx_data
     None
 }
 
-/// The line to draw at `now_ns`, if a sidecar is selected and this is a direct play.
-pub fn active(now_ns: i64, transcoding: bool) -> Option<String> {
+/// The line to draw at `now_ns`, if a sidecar is selected and the server is not burning it.
+pub fn active(now_ns: i64, burned: bool) -> Option<String> {
     let st = state();
-    if transcoding {
-        return None; // a transcode BURNS the selection; drawing it too would double the line
+    if burned {
+        return None; // the server BURNS the selection; drawing it too would double the line
     }
     let want = st.want.as_ref()?;
     if let Some((source, why, at)) = &st.failed {
@@ -252,10 +253,10 @@ pub fn active(now_ns: i64, transcoding: bool) -> Option<String> {
     }
 }
 
-/// The selected styled script on a direct play. It is the same immutable source through seeks
+/// The selected styled script, unless the server burns it. It is the same immutable source through seeks
 /// and Off→On; render requests carry the current clock, so no cue is lost on a backward seek.
-pub fn ass_source(transcoding: bool) -> Option<Arc<super::ass::Source>> {
-    if transcoding { return None; }
+pub fn ass_source(burned: bool) -> Option<Arc<super::ass::Source>> {
+    if burned { return None; }
     let mut st = state();
     let State { want, loaded, .. } = &mut *st;
     let want = want.as_ref()?;

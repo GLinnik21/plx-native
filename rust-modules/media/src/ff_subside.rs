@@ -420,9 +420,11 @@ unsafe fn open_side(cfg: &ReadCfg, stop: &Arc<SideStop>) -> Result<(SideDemux, c
         Err(SideOpenErr::Failed) => return Err(RunEnd::Failed),
     };
     // The same gate as the main demuxer's (`ff::demux`): a device whose FFmpeg is not the one the
-    // struct offsets were built for is never read through. `Unusable` raises the failure at once
-    // (a rebuild as the server burn) instead of leaving it to the anchor wait. (FFmpeg is already
-    // registered: the reader only runs once the main demuxer has published its anchor.)
+    // struct offsets were built for is never read through. Only a backstop here: the reader waits
+    // for the main demuxer's anchor, which that demuxer publishes after it has passed this same
+    // gate, so on such a device the reader never gets this far. (Checking it before the anchor
+    // wait would be wrong: the flag is not set until the demuxer has registered FFmpeg.)
+    // `Unusable` raises the failure (a rebuild as the server burn).
     if !ABI_OK.load(std::sync::atomic::Ordering::Relaxed) {
         return Err(RunEnd::Unusable);
     }

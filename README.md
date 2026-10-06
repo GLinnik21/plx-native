@@ -136,7 +136,7 @@ report. [`PRIVACY.md`](PRIVACY.md) is the whole statement, including the schemas
 
 ASS/SSA subtitles render natively during direct play, including styles, positioning, overlapping
 signs and dialogue, karaoke, and embedded fonts. External ASS files retain their original scripts.
-Transcoded playback continues to use the server's subtitle burn-in.
+A re-encode still burns the selected subtitle on the server; over a remux the app draws a sidecar, and an embedded track when the link is local and the Part is 1..=30000 kbps, and otherwise the server burns it.
 
 ## The honest scope
 

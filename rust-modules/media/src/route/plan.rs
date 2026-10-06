@@ -2013,13 +2013,28 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     let remux = remux && !force_burn && !burn_for_audio;
     // The subtitle the app draws over the remux: no burn rides the wire (`client_draws`), but the
     // selection is still the real id (persisted, reported, kept by every rebuild).
-    let client_draws = remux && (side_draws || (env.sub_sid > 0 && env.sub_drawn.is_some()));
+    // A re-resolve carrying a track the app was drawing re-asks the admission the live route asks
+    // (`decision::side_subs_allowed_for`) with THIS plan's link, Part and bitrate: an embedded track
+    // only stays drawn where the reader is admitted, a sidecar (negative ordinal) anywhere. The
+    // wire and the presenter the landing reads back then cannot disagree.
+    let carried_draw = env.sub_sid > 0
+        && env.sub_drawn.is_some_and(|ord| {
+            ord < 0
+                || super::decision::side_reader_inputs_admit(
+                    client.link() == Some(plx_plex::plex::probe::Location::Local),
+                    part,
+                    source_transport_kbps,
+                )
+        });
+    let client_draws = remux && (side_draws || carried_draw);
     let burn_sub_sid = if force_burn {
         subtitle_id
     } else if burn_for_audio && env.sub_sid == 0 {
         sub_pick.map_or(0, |(id, _)| id)
     } else if client_draws && env.sub_sid == 0 {
-        subtitle_id
+        // The pick itself, not `subtitle_id`: that is the profile-advertised id the MDE handshake
+        // names, 0 for a codec the app draws but PMS is not told about (MicroDVD, SAMI, …).
+        sub_pick.map_or(0, |(id, _)| id)
     } else {
         env.sub_sid
     };

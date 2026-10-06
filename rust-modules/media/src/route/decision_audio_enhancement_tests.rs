@@ -4144,6 +4144,126 @@ fn reader_failure_rebuilds_as_burn_with_audio_conversion_reason() {
     cleanup(&mut ps);
 }
 
+/// (A) The ordinal rides the applied-route projection: a burn rebuild the server rejects restores
+/// the route's subtitle id, and must restore the ordinal that goes with it.
+#[test]
+fn a_rejected_burn_pick_restores_the_drawn_tracks_ordinal() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = always_refusing_live();
+    install_truehd_remux(&mut ps, &live);
+    admit_side_reader(&mut ps);
+    pick_embedded(&mut ps);
+    assert_eq!(side_reader_target(&ps).map(|t| t.ordinal), Some(2));
+    // A track the app cannot draw must burn: a rebuild, which the server refuses.
+    commit_subtitle_selection(&mut ps, 5, 78, false);
+    assert_eq!(ps.cur_sub_ordinal, 5);
+    let (action, tail) = claim(&mut ps);
+    assert!(matches!(tail, ClaimTail::Rejected(_)), "{tail:?}");
+    settle(&mut ps, &action, tail);
+    assert_eq!(ps.cur_sub_sid, 77, "the rejected pick is rolled back");
+    assert_eq!(ps.cur_sub_ordinal, 2, "and so is the ordinal that names the track the reader reads");
+    assert_eq!(side_reader_target(&ps).map(|t| t.ordinal), Some(2));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// (B) A play request resets the subtitle projection before it resolves; one that is cancelled
+/// puts the retained remux back, and the app's drawing of its embedded track with it.
+#[test]
+fn a_cancelled_resolve_restores_the_retained_remuxs_reader_target() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    admit_side_reader(&mut ps);
+    pick_embedded(&mut ps);
+    assert!(begin_playback_request());
+    // What `request_play_inner` resets for the incoming item.
+    ps.cur_sub_sid = 0;
+    ps.cur_sub_sidecar = false;
+    ps.cur_sub_client_drawable = false;
+    ps.cur_sub_ordinal = -1;
+    ps.side_subs_refused = false;
+    cancel_playback_request(&mut ps, true);
+    assert_eq!(ps.cur_sub_sid, 77);
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux);
+    assert_eq!(side_reader_target(&ps).map(|t| t.ordinal), Some(2), "the retained remux still reads its track");
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// A reader failure whose burn rebuild the server refuses leaves the route the copy it was: the
+/// refusal is part of the applied route, so it is lifted with the rollback, the presenter reads
+/// `ClientOverRemux` again, and the one failure that was raised is not raised twice.
+#[test]
+fn a_rejected_burn_after_a_reader_failure_leaves_the_app_drawing() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = always_refusing_live();
+    install_truehd_remux(&mut ps, &live);
+    admit_side_reader(&mut ps);
+    pick_embedded(&mut ps);
+    side_subtitles_failed(&mut ps);
+    assert!(ps.side_subs_refused);
+    let (action, tail) = claim(&mut ps);
+    assert!(matches!(tail, ClaimTail::Rejected(_)), "{tail:?}");
+    settle(&mut ps, &action, tail);
+    assert!(!ps.side_subs_refused, "the refusal belonged to the rejected rebuild");
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux, "no selected subtitle nobody draws");
+    assert!(!subtitles_burned(&ps));
+    // Nothing queues another rebuild by itself: the failure was consumed, a new one needs a reader.
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode));
+    assert!(claim_route_action().is_none());
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// A failure raised for a reader the viewer has since replaced with a sidecar (which the app draws
+/// itself) must not burn that healthy sidecar.
+#[test]
+fn a_stale_reader_failure_does_not_refuse_a_sidecar() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    admit_side_reader(&mut ps);
+    commit_subtitle_selection(&mut ps, -1, 79, true);
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux);
+    side_subtitles_failed(&mut ps);
+    assert!(!ps.side_subs_refused);
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// `ResolveEnv::sub_drawn` as a session derives it (`snapshot`), not as a test sets it: the track
+/// the app is drawing over the remux, `None` for a burn or Off, a negative ordinal for a sidecar.
+#[test]
+fn snapshot_derives_sub_drawn_from_what_the_app_draws() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    admit_side_reader(&mut ps);
+    let drawn = |ps: &PlaybackSession| {
+        ResolveEnv::snapshot(ps, plx_data::stores::metadata::MetadataStore::default().view(), live.sid, "rk").sub_drawn
+    };
+    assert_eq!(drawn(&ps), None, "no subtitle");
+    pick_embedded(&mut ps);
+    assert_eq!(drawn(&ps), Some(2), "an admitted embedded track");
+    commit_subtitle_selection(&mut ps, -1, 79, true);
+    assert_eq!(drawn(&ps), Some(-1), "a sidecar");
+    commit_subtitle_selection(&mut ps, 2, 77, true);
+    ps.cur_transport_kbps = 40_000;
+    assert_eq!(drawn(&ps), None, "a Part the reader is not admitted for is burned, not drawn");
+    ps.cur_transport_kbps = 7_400;
+    ps.side_subs_refused = true;
+    assert_eq!(drawn(&ps), None, "a retired reader draws nothing");
+    live.finish();
+    cleanup(&mut ps);
+}
+
 #[test]
 fn a_failure_with_no_subtitle_drawn_by_the_reader_changes_nothing() {
     let mut ps = PlaybackSession::IDLE;

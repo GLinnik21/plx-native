@@ -864,6 +864,14 @@ pub(super) struct AppliedRouteProjection {
     subtitle_sid: i64,
     subtitle_sidecar: bool,
     subtitle_client_drawable: bool,
+    /// Which of the Part's subtitle streams the app reads and draws (`cur_sub_ordinal`). It names
+    /// the track `subtitle_sid` selects, so it is restored with it: a rejected pick must not leave
+    /// the rolled-back route reading the rejected track.
+    subtitle_ordinal: i32,
+    /// The app's own drawing is retired for this playback (`side_subs_refused`). Part of the route
+    /// because it decides the stream's shape (a burn): a rebuild the server rejects restores the
+    /// route it was raised against, and with it the drawing the rejected rebuild was to replace.
+    side_subs_refused: bool,
     stream_vcodec: String,
     pub(super) stream_acodec: String,
     stream_fps: f64,
@@ -885,6 +893,8 @@ fn route_projection(ps: &PlaybackSession) -> AppliedRouteProjection {
         subtitle_sid: s.cur_sub_sid,
         subtitle_sidecar: s.cur_sub_sidecar,
         subtitle_client_drawable: s.cur_sub_client_drawable,
+        subtitle_ordinal: s.cur_sub_ordinal,
+        side_subs_refused: s.side_subs_refused,
         stream_vcodec: s.stream_vcodec.clone(),
         stream_acodec: s.stream_acodec.clone(),
         stream_fps: s.stream_fps,
@@ -906,6 +916,8 @@ fn install_route_projection(ps: &mut PlaybackSession, projection: &AppliedRouteP
         s.cur_sub_sid = projection.subtitle_sid;
         s.cur_sub_sidecar = projection.subtitle_sidecar;
         s.cur_sub_client_drawable = projection.subtitle_client_drawable;
+        s.cur_sub_ordinal = projection.subtitle_ordinal;
+        s.side_subs_refused = projection.side_subs_refused;
         s.stream_vcodec = projection.stream_vcodec.clone();
         s.stream_acodec = projection.stream_acodec.clone();
         s.stream_fps = projection.stream_fps;
@@ -4860,12 +4872,14 @@ pub fn rollback_original_recovery(ps: &mut PlaybackSession) -> Option<OriginalRo
     let kept_subtitle_sidecar = ps.cur_sub_sidecar;
     let kept_subtitle_drawable = ps.cur_sub_client_drawable;
     let kept_subtitle_ordinal = ps.cur_sub_ordinal;
+    let kept_side_refused = ps.side_subs_refused;
     let kept_auto_original = ps.auto_original.clone();
     install_route_projection(ps, &pending.previous);
     ps.cur_sub_sid = kept_subtitle_sid;
     ps.cur_sub_sidecar = kept_subtitle_sidecar;
     ps.cur_sub_client_drawable = kept_subtitle_drawable;
     ps.cur_sub_ordinal = kept_subtitle_ordinal;
+    ps.side_subs_refused = kept_side_refused;
     ps.auto_original = kept_auto_original;
     if let Some(rung) = restored_hls {
         install_active_hls(&pending.encoder, &pending.previous.url, rung);
@@ -8964,7 +8978,12 @@ fn sync_side_reader(ps: &PlaybackSession) {
 /// then reads `ServerBurn(AudioConversion)` and the menu's dimmed Style/Timing rows say why. Does
 /// nothing when the reader was not drawing the selected subtitle (the dev trigger's run).
 pub fn side_subtitles_failed(ps: &mut PlaybackSession) {
-    if ps.side_subs_refused || subtitle_presenter(ps) != SubtitlePresenter::ClientOverRemux {
+    // Only the reader's own track: a sidecar the app fetches itself is not what failed, so a
+    // failure raised for the reader the viewer has since left says nothing about it.
+    if ps.side_subs_refused
+        || ps.cur_sub_sidecar
+        || subtitle_presenter(ps) != SubtitlePresenter::ClientOverRemux
+    {
         return;
     }
     crate::player::log("subtitles: the side reader failed; the server burns the subtitle");

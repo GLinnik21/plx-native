@@ -137,13 +137,14 @@ fn wrap(s: &str, max: usize) -> Vec<String> {
 ///
 /// TWO producers, one renderer: an external (sidecar) selection is asked first — it is no
 /// demuxer track, so `desired_sub_idx` is -1 while one is up and the embedded store answers
-/// nothing — then the embedded cue store. `transcoding` silences the sidecar, because a
-/// transcode BURNS the selection into the picture and drawing it too would double the line.
-pub fn draw_subtitles(hud_up: bool, transcoding: bool) {
+/// nothing — then the embedded cue store. `burned` (`route::subtitles_burned`) silences the sidecar, because
+/// a server that BURNS the selection into the picture (a re-encode, or a remux the app may not
+/// draw over) would otherwise show the line twice.
+pub fn draw_subtitles(hud_up: bool, burned: bool) {
     let now_ns = plx_media::player::playpos_ns();
     // the sidecar is looked up on the SUBTITLE clock (the playhead less the viewer's timing
     // offset); the embedded store applies the same subtraction inside `active_subtitle`
-    let cue = plx_media::player::sidecar::active(plx_media::player::subtitle_clock_ns(now_ns), transcoding)
+    let cue = plx_media::player::sidecar::active(plx_media::player::subtitle_clock_ns(now_ns), burned)
         .or_else(|| plx_media::player::active_subtitle(now_ns));
     let text = match cue {
         Some(t) if !t.trim().is_empty() => t,

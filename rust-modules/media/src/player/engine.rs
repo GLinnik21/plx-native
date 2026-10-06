@@ -1636,6 +1636,9 @@ fn start_side_reader(target: &crate::route::SideReaderTarget) {
     let started = super::subside::spec_for(target).is_some_and(super::subside::start);
     if !started {
         log("subside: could not start the reader thread");
+        // Nothing reads beside the stream: the demuxer must not leave the subtitle to a reader
+        // that is not there.
+        SHARED.side_subs_owner.store(false, Ordering::Release);
         super::subside::raise_failure(); // the route falls back to the server's burn
     }
 }

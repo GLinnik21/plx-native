@@ -155,6 +155,9 @@ pub fn stop(reason: &str) {
     EPOCH.fetch_add(1, Ordering::AcqRel);
     *WANT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     stop_locked(reason, false);
+    // A failure raised but never polled named a reader that is gone; it must not be consumed
+    // against whatever the next engine run, or the next selection, draws.
+    FAILED.store(false, Ordering::Release);
     // The engine run is over: its anchor names a stream that no reader will match again, whether
     // or not a reader was running (the sync worker may have stopped it already, keeping the anchor).
     *crate::player::SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -170,6 +173,9 @@ fn stop_locked(reason: &str, keep_anchor: bool) -> Option<i64> {
     r.thread.unpark(); // a reader parked on pacing or the anchor wait
     plx_base::task::join("subside", r.handle);
     ACTIVE.store(false, Ordering::Release);
+    // A failure the stopped reader raised and nobody has polled yet belongs to it, not to the
+    // reader (or the sidecar) that replaces it.
+    FAILED.store(false, Ordering::Release);
     crate::player::SHARED.side_subs_owner.store(false, Ordering::Release);
     if !keep_anchor {
         *crate::player::SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -423,6 +429,34 @@ mod tests {
             assert!(anchor().is_none(), "the engine's stop clears the anchor");
             apply(epoch, Some(spec(port)));
             assert!(!active(), "a request from before the stop names a stream that is gone");
+        });
+    }
+
+    /// A failure nobody has polled yet belongs to the reader that raised it: tearing the engine
+    /// down, or a sync that replaces or stops that reader, retires it, so it is never consumed
+    /// against whatever the viewer selects next.
+    #[test]
+    fn a_pending_failure_is_retired_with_its_reader() {
+        let _g = plx_base::testlock::serial();
+        plx_base::eventlog::with_private_log(|| {
+            let (_srv, port) = stalled_server();
+            *crate::player::SHARED.side_anchor.lock().unwrap() = None;
+            // engine stop, with and without a reader still registered
+            assert!(start(spec(port)));
+            raise_failure();
+            stop("test-engine");
+            assert!(!take_failure(), "stop clears a pending failure");
+            raise_failure();
+            stop("test-nothing-running");
+            assert!(!take_failure(), "even with no reader left to stop");
+            // a sync that stops the reader (the viewer picked a sidecar or Off)
+            assert!(start(spec(port)));
+            let epoch = EPOCH.load(Ordering::Acquire);
+            raise_failure();
+            apply(epoch, None);
+            assert!(!active());
+            assert!(!take_failure(), "a sync that stops the reader clears its failure");
+            stop("test-cleanup");
         });
     }
 
