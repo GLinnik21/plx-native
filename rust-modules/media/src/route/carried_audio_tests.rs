@@ -161,3 +161,32 @@ fn candidate_audio_none_matches_legacy_payload() {
     crate::player::reset_audio_track();
     crate::player::reset_subtitle();
 }
+
+/// A direct candidate handed a track the TV cannot decode is kept, not destroyed: the server
+/// converts that audio, so only `audio_converted` changes; the video-side facts and the subtitle
+/// ordinal stay, immersive is cleared on the carried track, and a playable pick clears the flag.
+#[test]
+fn retarget_audio_marks_conversion_without_destroying_the_direct_facts() {
+    let track = |sid, codec: &str, immersive| CarriedAudio {
+        sid,
+        ordinal: 1,
+        codec: codec.into(),
+        channels: 8,
+        can_normalize_loudness: true,
+        immersive,
+    };
+    let mut c = test_original_candidate(Some(3));
+    c.fps = 23.976;
+    assert!(c.feeds_part());
+    assert!(c.retarget_audio(&track(9, "truehd", true), false));
+    assert!(c.direct && c.audio_converted && !c.feeds_part());
+    assert_eq!(c.fps, 23.976);
+    assert_eq!(c.subtitle_ordinal, Some(3));
+    assert!(!c.audio.as_ref().unwrap().immersive, "the server output is not this track");
+    assert!(c.retarget_audio(&track(10, "eac3", true), true));
+    assert!(!c.audio_converted && c.feeds_part());
+    assert!(c.audio.as_ref().unwrap().immersive);
+    // No copy is legal over an unusable Dolby Vision base layer.
+    c.dovi = plx_data::metadata::Dovi { present: true, profile: 5, ..plx_data::metadata::Dovi::NONE };
+    assert!(!c.retarget_audio(&track(9, "truehd", false), false));
+}

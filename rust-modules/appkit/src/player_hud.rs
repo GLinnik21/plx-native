@@ -137,13 +137,14 @@ fn wrap(s: &str, max: usize) -> Vec<String> {
 ///
 /// TWO producers, one renderer: an external (sidecar) selection is asked first — it is no
 /// demuxer track, so `desired_sub_idx` is -1 while one is up and the embedded store answers
-/// nothing — then the embedded cue store. `transcoding` silences the sidecar, because a
-/// transcode BURNS the selection into the picture and drawing it too would double the line.
-pub fn draw_subtitles(hud_up: bool, transcoding: bool) {
+/// nothing — then the embedded cue store. `burned` (`route::subtitles_burned`) silences the sidecar, because
+/// a server that BURNS the selection into the picture (a re-encode, or a remux the app may not
+/// draw over) would otherwise show the line twice.
+pub fn draw_subtitles(hud_up: bool, burned: bool) {
     let now_ns = plx_media::player::playpos_ns();
     // the sidecar is looked up on the SUBTITLE clock (the playhead less the viewer's timing
     // offset); the embedded store applies the same subtraction inside `active_subtitle`
-    let cue = plx_media::player::sidecar::active(plx_media::player::subtitle_clock_ns(now_ns), transcoding)
+    let cue = plx_media::player::sidecar::active(plx_media::player::subtitle_clock_ns(now_ns), burned)
         .or_else(|| plx_media::player::active_subtitle(now_ns));
     let text = match cue {
         Some(t) if !t.trim().is_empty() => t,
@@ -836,12 +837,24 @@ pub enum Busy {
 /// `engine` clears `seeking`, and the first presented frame). Keyed on the state alone, one of
 /// those two flashes the wrong surface every time.
 pub fn busy_surface(ps: &plx_media::route::PlaybackSession, st: plx_media::player::PlaybackState, seen_frame: bool) -> Busy {
+    busy_surface_with(ps, st, seen_frame, plx_media::player::audio_switching())
+}
+
+/// [`busy_surface`] with the audio-switch fact given: while the rebuild loading is the one the
+/// viewer's audio-track pick asked for, the read-out says "Switching audio…" instead of
+/// "Buffering…" (`player::busy_caption_with`). Any other rebuild keeps the plain caption.
+pub fn busy_surface_with(
+    ps: &plx_media::route::PlaybackSession,
+    st: plx_media::player::PlaybackState,
+    seen_frame: bool,
+    audio_switch: bool,
+) -> Busy {
     use plx_media::player::PlaybackState;
     match st {
         // not `st.caption()`: the Error caption is shaped by WHY (an audio-only stream names the
         // server; see `player::error_shape`), which a method on the bare state cannot know.
         PlaybackState::Error => Busy::Readout(StatusKind::Failed, plx_media::player::error_caption(ps)),
-        s if s.is_busy() && !seen_frame => Busy::Readout(StatusKind::Working, st.caption()),
+        s if s.is_busy() && !seen_frame => Busy::Readout(StatusKind::Working, plx_media::player::busy_caption_with(st, audio_switch)),
         s if s.is_busy() => Busy::Transport,
         _ => Busy::None,
     }
@@ -2496,6 +2509,27 @@ mod tests {
         assert_eq!(busy_surface(&ps, S::Connecting, true), Busy::Transport);
     }
 
+    /// **An audio-track pick's reload says "Switching audio…"; every other wait keeps its caption.**
+    /// Only `Buffering` is renamed (the state a rebuild's load tail reads); a cold start's
+    /// Preparing/Connecting and a seek stay as they were.
+    #[test]
+    fn an_audio_pick_rebuild_reads_switching_audio_and_nothing_else_does() {
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        assert_eq!(
+            busy_surface_with(&ps, S::Buffering, false, true),
+            Busy::Readout(StatusKind::Working, c"Switching audio\u{2026}")
+        );
+        assert_eq!(
+            busy_surface_with(&ps, S::Buffering, false, false),
+            Busy::Readout(StatusKind::Working, c"Buffering\u{2026}")
+        );
+        assert_eq!(
+            busy_surface_with(&ps, S::Connecting, false, true),
+            Busy::Readout(StatusKind::Working, c"Connecting\u{2026}")
+        );
+        assert_eq!(busy_surface_with(&ps, S::Buffering, true, true), Busy::Transport);
+    }
+
     /// No picture yet → the wait is about the whole panel. With the captions, which locks the
     /// kind↔caption pairing the enum carries (both are chosen once, by this function).
     #[test]
@@ -2510,7 +2544,7 @@ mod tests {
             Busy::Readout(StatusKind::Working, c"Connecting\u{2026}")
         );
         assert_eq!(
-            busy_surface(&ps, S::Buffering, false),
+            busy_surface_with(&ps, S::Buffering, false, false),
             Busy::Readout(StatusKind::Working, c"Buffering\u{2026}")
         );
         // tapping RIGHT during pre-roll (or `/tmp/plxnative-autoseek`): no picture to mark up

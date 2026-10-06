@@ -505,6 +505,10 @@ pub(super) enum PartAnswer {
     /// (curl reports `CURLE_PARTIAL_FILE`) mid-body, not a status the server chose. This is the
     /// shape `ThroughputFailure::BodyRead` classifies, distinct from `Refuse`'s definite status.
     Reset,
+    /// `503` for a Part GET that carries exactly this `X-Plex-Session-Identifier` (the id of a
+    /// remux that is still live), `206`/`200` for any other session id or none. This is what a
+    /// real PMS measured on 2026-10-06 (`docs/pms-api.md` M8).
+    RefuseSession(&'static str),
 }
 
 /// [`enhancement_pms`] with the raw Part's answer chosen separately from `start.mkv`'s.
@@ -527,7 +531,12 @@ pub(super) fn enhancement_pms_parts(
                     let line = drain_http(&mut socket);
                     let enhanced = query_param(&line, "boostDialog") == Some("1")
                         || query_param(&line, "normalizeLoudness") == Some("1");
-                    if line.starts_with("GET /library/parts/") && matches!(parts, PartAnswer::Refuse) {
+                    let live_session_part = line.starts_with("GET /library/parts/")
+                        && matches!(parts, PartAnswer::RefuseSession(id)
+                            if query_param(&line, "X-Plex-Session-Identifier") == Some(id));
+                    if live_session_part
+                        || (line.starts_with("GET /library/parts/") && matches!(parts, PartAnswer::Refuse))
+                    {
                         write_status(&mut socket, 503);
                     } else if line.starts_with("GET /library/parts/") && matches!(parts, PartAnswer::Reset) {
                         // A valid 206 answer to the exact Range the admission asked for, then the

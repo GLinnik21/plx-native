@@ -24,7 +24,7 @@ class StorageServicePackage(unittest.TestCase):
         for flav in mkipk.flavor.FLAVORS:
             with self.subTest(flavor=flav), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
-                app = mkipk.flavor.appinfo_for(flav)
+                app = mkipk.flavor.appinfo_for(flav, "20260919")
                 self.assertEqual(app["requiredPermissions"], ["database.operation", "securitykey.operation"])
                 data = root / "data"
                 self.stage_app(data, app)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render one of docs/{install-and-verify,troubleshooting}.md into a standalone HTML page
+"""Render one of docs/{install-and-verify,troubleshooting,nightly-builds}.md into a standalone HTML page
 for plxnative.com, wrapped in the site's own header/footer and styled with site/styles.css.
 
 Used by `.github/workflows/pages.yml` ("Stage _site") and locally:
@@ -22,8 +22,8 @@ Mode expires" is linked from README.md as "#important-developer-mode-expires", a
 "### Option A — install PlxNative directly" is linked internally as
 "#option-a--install-plxnative-directly", double hyphen and all, where the em dash used to be).
 
-Link rewriting: install-and-verify.md and troubleshooting.md are the only two docs rendered as
-site pages (see PAGES below), so a relative link from one to the other becomes a site path,
+Link rewriting: install-and-verify.md, troubleshooting.md and nightly-builds.md are the only docs
+rendered as site pages (see PAGES below), so a relative link from one to another becomes a site path,
 fragment kept. Every other repo-relative link — a link to README.md, to a sibling doc that isn't
 rendered (native-video-sandbox.md), to an image — becomes an absolute GitHub blob URL, since
 nothing else under docs/ is staged into _site/. Absolute http(s) links and bare `#fragment`
@@ -60,7 +60,7 @@ OG_IMAGE_ALT = "PlxNative home screen on an LG TV, next to the headline: Plex th
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 
-# The only two docs rendered as site pages. Adding a third page means adding it here.
+# The only docs rendered as site pages. Adding another page means adding it here.
 PAGES = {
     "install-and-verify.md": {
         "route": "/install/",
@@ -80,6 +80,15 @@ PAGES = {
         "description": (
             "Fixes for common problems with PlxNative, an unofficial Plex client for LG webOS TVs: the app tile doing nothing, "
             "an expired Developer Mode session, sign-in, and playback failures."
+        ),
+    },
+    "nightly-builds.md": {
+        "route": "/nightly/",
+        "title": "PlxNative Nightly Builds: Install and Update with Homebrew Channel",
+        "name": "Nightly builds",
+        "description": (
+            "Try the newest PlxNative build from main on an LG webOS TV: add the nightly repository to Homebrew Channel, "
+            "install PlxNative Nightly beside the regular app, and get each new build as an update."
         ),
     },
 }

@@ -1064,6 +1064,11 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // the `sf_ready` and producer-died bail-outs — which is precisely when a stalled user is
     // looking at the panel. See `Shared`'s diagnostics-mirror block for the one-way rule.
     publish_diag(eng, now);
+    // The side subtitle reader gave up: the route burns the subtitle instead (a rebuild, queued
+    // here and run by the route's own worker machinery, not on this thread).
+    if super::subside::take_failure() {
+        crate::route::side_subtitles_failed(ps);
+    }
     // The media thread may have returned from sf_load immediately, but it is not allowed to make
     // the route Stable before this Engine exists in the main-thread slot. Drain its exact-token
     // result here, after installation and before any worker publication can be accepted.

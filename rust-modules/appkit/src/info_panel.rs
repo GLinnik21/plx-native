@@ -701,9 +701,10 @@ pub fn video_codec_name(codec: &str) -> String {
 /// quietly re-encoded.
 ///
 /// Three answers, because the server has three behaviours and only one of them touches the pixels:
-/// a direct play (we pull the file), a container-only REMUX (the codecs are copied — Plex's own
-/// "Direct Stream"; the mock has no case for it because its model has only "direct play" and
-/// "converts", but calling a copy a conversion would state that the server re-encoded when it did
+/// a direct play (we pull the file), a container-only REMUX (the video is always copied and the
+/// audio is copied when the profile admits it, converted otherwise — Plex's own "Direct Stream";
+/// the mock has no case for it because its model has only "direct play" and "converts", but
+/// calling a remux a conversion would state that the server re-encoded the pixels when it did
 /// not), and a real re-encode, which names the codec it is producing. Hardware vs software is
 /// deliberately NOT stated: that is the server's runtime choice and it reaches the client only in
 /// the live transcode session, so naming it would be a guess.
@@ -949,8 +950,9 @@ mod tests {
     /// The meta line's live fact, arm by arm. It is the one thing on that row the app could get
     /// wrong by GUESSING, so each arm pins a different way of guessing:
     ///   * a direct play says so and names no codec — there is no conversion to describe;
-    ///   * a container remux is NOT a conversion (the codecs are copied), and calling it one would
-    ///     state that the server touched the pixels when it did not — `route::is_remux`'s own doc
+    ///   * a container remux is NOT a conversion (the video is copied, and the audio too when the
+    ///     profile admits it), and calling it one would state that the server touched the pixels
+    ///     when it did not — `route::is_remux`'s own doc
     ///     is that these are different facts;
     ///   * a re-encode names the codec the server is actually PRODUCING (`route::stream_vcodec` is
     ///     the `/decision` OUTPUT), spelled the way a viewer reads it, and HEVC output is reachable

@@ -663,6 +663,37 @@ impl CurlSource {
         OpenReservation::publish().ok_or(OpenErr::Local)
     }
 
+    /// **A second, independent transfer** — a side reader's demux of the same Part while the
+    /// player's own [`ACTIVE`] transfer streams. It takes the same open as every other source
+    /// (`media_url_allowed`, the `net::resolve` pin for the host, the key-pin / roots policy and the
+    /// token already in `url`, all applied inside `open_with_reservation_range_until`), but its abort
+    /// handle is private: it never lands in [`ACTIVE`], so `abort_active` cannot wake it and its
+    /// own `signal` cannot wake the movie. The caller signals the returned handle to tear it down.
+    pub fn open_private(url: &str, at: i64) -> Result<(Box<CurlSource>, Arc<Abort>), OpenErr> {
+        let published: std::cell::RefCell<Option<Arc<Abort>>> = std::cell::RefCell::new(None);
+        let src = Self::open_private_with(url, at, &|a| *published.borrow_mut() = Some(Arc::clone(a)))?;
+        let abort = published.into_inner().ok_or(OpenErr::Local)?;
+        Ok((src, abort))
+    }
+
+    /// [`open_private`](Self::open_private) that hands the abort handle to `publish` BEFORE the
+    /// first byte is requested, so a caller tearing down during a slow connect or TLS handshake
+    /// already has something to signal.
+    pub fn open_private_with(
+        url: &str,
+        at: i64,
+        publish: &dyn Fn(&Arc<Abort>),
+    ) -> Result<Box<CurlSource>, OpenErr> {
+        if !available() {
+            crate::player::log("curlio: refusing — libcurl multi is not available on this device");
+            return Err(OpenErr::Unavailable);
+        }
+        let reservation = OpenReservation::private().ok_or(OpenErr::Local)?;
+        let abort = reservation.abort.as_ref().map(Arc::clone).ok_or(OpenErr::Local)?;
+        publish(&abort);
+        Self::open_with_reservation(url, at, reservation)
+    }
+
     /// Finish an open whose abort handle was already published by [`reserve_open`](Self::reserve_open).
     pub fn open_reserved(
         url: &str,
@@ -3380,6 +3411,23 @@ mod tests {
                 1,
                 "and it opened no new connection either"
             );
+        });
+    }
+
+    /// A private transfer never lands in the [`ACTIVE`] registry: `abort_active` (the movie's
+    /// teardown) must not wake it, and its own handle must.
+    #[test]
+    fn open_private_keeps_out_of_the_active_registry() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Honour, |port, _, _| {
+            *lock_active() = None;
+            let (mut src, abort) = CurlSource::open_private(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            assert!(lock_active().is_none(), "a private open registered itself as the movie's transfer");
+            abort_active();
+            let mut b = [0u8; 4];
+            assert_eq!(src.read(&mut b), 4, "the movie's abort woke the side transfer");
+            abort.signal();
+            assert_eq!(src.read(&mut b), -1, "its own handle must stop it");
         });
     }
 

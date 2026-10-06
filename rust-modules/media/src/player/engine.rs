@@ -1256,6 +1256,10 @@ fn start_bufferfeed_inner(
     let mut aqa_box: Option<Box<AuQueue>> = None;
     let mut stream_th = None;
     let source;
+    // Whether the side subtitle reader will run for this engine run, decided BEFORE the demuxer is
+    // spawned: the demuxer reads `side_subs_owner` once, as it opens the stream, and must never
+    // also open subtitle decoders or ASS sources the reader replaces.
+    let side_target = if stream { crate::route::side_reader_target(ps) } else { None };
 
     if stream {
         let su = plx_plex::plex::StreamUrl::parse(&url); // the typed layer's URL splitter
@@ -1297,10 +1301,12 @@ fn start_bufferfeed_inner(
             let acodec = crate::route::stream_acodec(ps);
             let abr = crate::route::hls_abr_control(ps);
             let auto_original = crate::route::auto_original_watch(ps);
+            SHARED.side_subs_owner.store(side_target.is_some(), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
                 crate::ff::demux(off, origin, path, acodec, abr, auto_original, aqp, aqap, hsp)
             });
             if stream_th.is_none() {
+                SHARED.side_subs_owner.store(false, Ordering::Release);
                 // Nothing will ever fill the AU queues, so there is no session to start. `hs` is
                 // about to drop with this early return, so retract the pointer first — the pump
                 // and teardown both read it straight off SHARED.
@@ -1333,6 +1339,7 @@ fn start_bufferfeed_inner(
         if !p.is_null() {
             plx_net::stream::http_shutdown(p);
         }
+        super::subside::stop("start-failed"); // before the demux join, like teardown
         crate::curlio::abort_active(); // the https demuxer's equivalent — see teardown
         if let Some(t) = stream_th.take() {
             plx_base::task::join("demux", t);
@@ -1341,6 +1348,12 @@ fn start_bufferfeed_inner(
             plx_net::stream::http_close(p); // sole owner now: the reader is joined
         }
         return Err(crate::route::RouteStartResult::StartFailed);
+    }
+    // The side subtitle reader (dev trigger `plxnative-subside`), started once the demuxer is
+    // spawned and the media thread exists: it waits for the demuxer's first keyframe before it
+    // reads anything. (Its ownership flag was set before the demux spawn, below.)
+    if let Some(target) = side_target {
+        start_side_reader(&target);
     }
 
     // progress reporter: post the play position to /:/timeline (updates resume + watched).
@@ -1617,6 +1630,19 @@ fn reload_start_outcome(
     }
 }
 
+/// Start the side subtitle reader for the live remux this engine run plays, drawing the track
+/// the route's target names.
+fn start_side_reader(target: &crate::route::SideReaderTarget) {
+    let started = super::subside::spec_for(target).is_some_and(super::subside::start);
+    if !started {
+        log("subside: could not start the reader thread");
+        // Nothing reads beside the stream: the demuxer must not leave the subtitle to a reader
+        // that is not there.
+        SHARED.side_subs_owner.store(false, Ordering::Release);
+        super::subside::raise_failure(); // the route falls back to the server's burn
+    }
+}
+
 fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, offset_ns: i64) -> Option<BufferfeedStartOutcome> {
     let ticket = prepare_reload_transaction()?;
     log(&format!(
@@ -1810,6 +1836,9 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         }
     };
 
+    // The side subtitle reader first: it reads the original Part over its own transport and must
+    // be gone (its socket shut, its cues cleared) before the demux it was paired with is joined.
+    super::subside::stop(if for_reload { "reload" } else { "stop" });
     // 1. unblock every thread (abort queues, close the demux socket)
     if let Some(st) = eng.report_stop.take() {
         st.stop(); // this reporter's own signal — unaffected by the reset_session below

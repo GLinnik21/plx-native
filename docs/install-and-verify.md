@@ -92,6 +92,8 @@ For future updates, repeat this with the newer `.ipk`. Install over the existing
 
 For future updates, open PlxNative's entry in Homebrew Channel and select **Update** when offered. Updates are installed when you select them, not automatically.
 
+Want to try the newest build before it is released? Add the project's nightly repository to Homebrew Channel. See the [nightly builds guide](nightly-builds.md).
+
 ## 4. Open PlxNative and sign in
 
 Open **PlxNative** from the TV's app launcher. Scan the on-screen QR code and sign in to the Plex account that has access to your server or shared libraries. Choose your Plex Home profile if prompted.

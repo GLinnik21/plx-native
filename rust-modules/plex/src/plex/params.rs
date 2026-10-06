@@ -98,7 +98,9 @@ impl AudioEnhancements {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct EncodeContract {
     /// true = container-only remux (the source codecs are direct-playable, the container
-    /// isn't): copy video+audio into progressive MKV, no re-encode, keeps 4K/HDR.
+    /// isn't): copy what the profile admits of video+audio into progressive MKV, and let the
+    /// server convert the rest (an audio track the TV cannot decode becomes the profile's own
+    /// codec; the video is never re-encoded), keeps 4K/HDR.
     /// false = full re-encode to the profile's HEVC/AC3 target at up to 4K.
     pub remux: bool,
     /// The coupled profile/query/endpoint/demux contract for this encoder session.
@@ -206,6 +208,10 @@ pub struct TranscodeSpec<'a> {
     /// Subtitle stream id to BURN (0 = none). Burn is Plex's decision for our profile —
     /// it advertises no soft-sub support (direct-play subs are client-rendered instead).
     pub subtitle_stream_id: i64,
+    /// The app draws the selected subtitle itself over this REMUX, so the query says
+    /// `subtitles=none` (the client-rendered mode the MDE handshake already uses) instead of
+    /// leaving PMS on `auto`. Only ever set with `subtitle_stream_id == 0`.
+    pub client_subtitles: bool,
     /// Restart at this exact content boundary, or omit `offset` for a fresh start.
     pub offset: TranscodeOffset,
 }
