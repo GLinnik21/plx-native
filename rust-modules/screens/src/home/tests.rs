@@ -2932,6 +2932,41 @@ fn republish(s: &mut HomeScreen, state: &mut plx_data::pms::PmsState, adapter: &
     s.sync_catalog(&cx(snapshot.view(), None));
 }
 
+/// Every shelf rests where `layout_grid` puts it for the current dive and scroll.
+fn assert_shelves_laid_out(s: &HomeScreen) {
+    let top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * s.snap.pos;
+    let mut flow = 0.0;
+    for (row, shelf) in s.grid.shelves.iter().enumerate() {
+        let want = top + flow - s.grid.scroll_y.pos * s.snap.pos;
+        assert_eq!(shelf.base_y, want, "row {row} is not where the layout puts it");
+        flow += card_row::ROW_PITCH_FIXED + shelf.under_band();
+    }
+}
+
+/// A catalog that lands on an event (`Mount`, `StoreChanged`) is drawn before the next `Tick`'s
+/// `update_grid` has laid it out; a fresh `CardRow` rests at `base_y = 0`, which is the strip of
+/// tiles drawn over the hero for one frame. The shelves must be placed by the landing itself.
+#[test]
+fn a_catalog_landing_on_an_event_is_laid_out_before_any_tick() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 3, 4);
+    let first = plx_data::pms::hubs_snapshot(&state);
+    step(&mut s, first.view(), None, &ScreenEvent::Mount);
+    assert_eq!(s.grid.shelves.len(), 3);
+    assert_shelves_laid_out(&s);
+    assert_eq!(s.grid.shelves[0].base_y, PEEK_Y, "the billboard shows the first row as a peek");
+
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 5, 4);
+    let wider = plx_data::pms::hubs_snapshot(&state);
+    let ord = StoreId::Hubs.ord();
+    step(&mut s, wider.view(), None, &ScreenEvent::StoreChanged(ord, wider.view().generation));
+    assert_eq!(s.grid.shelves.len(), 5);
+    assert_shelves_laid_out(&s);
+}
+
 #[test]
 fn item_keys_are_stable_across_republication() {
     let _guard = plx_base::testlock::serial();
