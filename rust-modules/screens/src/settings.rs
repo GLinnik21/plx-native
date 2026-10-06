@@ -1665,6 +1665,13 @@ impl LogicalState for LanguageState {
     }
 }
 
+/// How to restart, under the Language page's copy: hold BACK. Many LG remotes have no EXIT key,
+/// and BACK at a root only hands the screen to the television (`Key::Exit`'s doc). Holding BACK
+/// closes the app on the owner's set (reported 2026-10-06), which every remote can do.
+fn restart_hint() -> plx_ui::widgets::KeyHint<'static> {
+    plx_ui::widgets::KeyHint::translated(plx_platform::i18n::msg::settings_language_restart_hint("\u{fffc}"), c"BACK")
+}
+
 impl LanguagePage {
     fn new(entry: EntryId) -> Self {
         let selected = plx_platform::i18n::saved_preference();
@@ -1698,7 +1705,8 @@ impl LanguagePage {
             plx_platform::i18n::msg::settings_language_copy()
         };
         TableScreen::new(Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::settings_title()),
-            plx_platform::i18n::msg::settings_language_title(), copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
+            plx_platform::i18n::msg::settings_language_title(), copy).with_hint(restart_hint()),
+            &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
 
     fn activate(&mut self, key: u32, fx: &mut Effects<'_, InnerHost>) {

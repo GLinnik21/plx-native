@@ -45,7 +45,7 @@ use super::screen::{
     DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Hover, Part, Placed, Seat,
     Step, Stop,
 };
-use super::widgets::ControlPalette;
+use super::widgets::{ControlPalette, KeyHint};
 use super::table::TableView;
 use super::{theme, Painter, Rect};
 
@@ -57,6 +57,10 @@ pub struct Header<'a> {
     pub title: &'a str,
     pub copy: &'a str,
     pub copy_size: std::os::raw::c_int,
+    /// One key-cap line stacked under the copy's measured height (the Language page's "Hold
+    /// [BACK] to close PlxNative"). Never elided: a screen that sets one owns a fit test for it
+    /// against [`RouteLayout`]'s narrative width.
+    pub hint: Option<KeyHint<'a>>,
 }
 
 impl<'a> Header<'a> {
@@ -67,7 +71,13 @@ impl<'a> Header<'a> {
             title,
             copy,
             copy_size: theme::size::LABEL,
+            hint: None,
         }
+    }
+
+    pub fn with_hint(mut self, hint: KeyHint<'a>) -> Self {
+        self.hint = Some(hint);
+        self
     }
 
     pub fn with_copy_size(mut self, sz: std::os::raw::c_int) -> Self {
@@ -77,7 +87,14 @@ impl<'a> Header<'a> {
 
     /// The one drawing routine, for both loops.
     pub fn paint(&self, p: Painter, measure: &dyn Measure) {
-        self.layout.draw_narrative(p, self.crumb, self.title, self.copy, self.copy_size, measure);
+        let copy_end = self.layout.draw_narrative(p, self.crumb, self.title, self.copy, self.copy_size, measure);
+        if let Some(hint) = &self.hint {
+            let top = copy_end + theme::space::MD;
+            // The copy already stops short of the action band; the hint keeps the same margin.
+            if top + KeyHint::height() <= self.layout.action.y - theme::space::XL {
+                hint.draw(p, self.layout.narrative.x, top + KeyHint::height() * 0.5, measure);
+            }
+        }
     }
 }
 
