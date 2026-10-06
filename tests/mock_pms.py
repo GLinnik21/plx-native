@@ -1490,6 +1490,8 @@ class MockPms:
         self.plaintext_only_lan = None
         # `--authorize-after N`: the pin poll links the demo code on the Nth poll; `None` never.
         self.authorize_after = None
+        # `--home-users N`: how many profiles the Home roster lists (the first is the Demo owner).
+        self.home_users = 1
         self.pin_polls = 0
         self.user_profile = {"autoSelectAudio": True, "defaultAudioLanguage": "en",
                              "defaultSubtitleLanguage": "en", "autoSelectSubtitle": 1,
@@ -1725,10 +1727,13 @@ class MockPms:
             with self.lock:
                 return j(dict(self.user_profile))
         if p == "/api/v2/home/users":
-            return j({"users": [{"id": 1, "uuid": "demo-user", "title": "Demo", "thumb": "",
-                                  "admin": True, "restricted": False, "protected": False}]})
-        if p == "/api/v2/home/users/demo-user/switch" and method == "POST":
-            return j({"id": 1, "uuid": "demo-user", "title": "Demo", "authToken": DEMO_ACCOUNT_TOKEN})
+            return j({"users": home_roster(self.home_users)})
+        if method == "POST" and p.startswith("/api/v2/home/users/") and p.endswith("/switch"):
+            who = next((u for u in home_roster(self.home_users)
+                        if p == f"/api/v2/home/users/{u['uuid']}/switch"), None)
+            if who is not None:
+                return j({"id": who["id"], "uuid": who["uuid"], "title": who["title"],
+                          "authToken": DEMO_ACCOUNT_TOKEN})
         if p == "/api/v2/resources":
             if self.plaintext_only_lan is not None:
                 cfg = self.plaintext_only_lan
@@ -2186,12 +2191,25 @@ class Server(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+HOME_USER_NAMES = ("Demo", "Alex", "Sam", "Kid", "Guest", "Family", "Pat", "Robin")
+
+
+def home_roster(n):
+    """The synthetic Home roster plex.tv's `/api/v2/home/users` answers: the Demo owner first
+    (uuid `demo-user`, what the sign-in and `/api/v2/user` name), then `n - 1` more profiles."""
+    return [{"id": i + 1, "uuid": "demo-user" if i == 0 else f"demo-user-{i + 1}",
+             "title": HOME_USER_NAMES[i % len(HOME_USER_NAMES)] + ("" if i < len(HOME_USER_NAMES) else str(i)),
+             "thumb": "", "admin": i == 0, "restricted": i > 0, "protected": False}
+            for i in range(n)]
+
+
 def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture=False,
           media=None, extra_media=None, catalog=None, catalog_cache=None, hero=None,
           plaintext_only_lan=False, advertise_ip=None, insecure_fail_mode="handshake",
           authorize_after=None, plex_pass=True, loudness_analysis=True,
           refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
-          home_hubs=0, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0):
+          home_hubs=0, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0,
+          home_users=1):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -2234,6 +2252,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     if authorize_after is None and plaintext_only_lan:
         authorize_after = 2
     pms.authorize_after = authorize_after
+    pms.home_users = home_users
     srv = Server((host, port), Handler)
     srv.pms = pms
     srv.verbose = verbose
@@ -2305,6 +2324,13 @@ def selftest():
         switched = json.load(reply)
     assert switched["id"] == user["id"] and switched["uuid"] == user["uuid"]
     assert switched["authToken"] == DEMO_ACCOUNT_TOKEN
+    pms.home_users = 4
+    roster = json.loads(get("/api/v2/home/users")[2])["users"]
+    assert [u["uuid"] for u in roster] == ["demo-user", "demo-user-2", "demo-user-3", "demo-user-4"]
+    other = urllib.request.Request(base + "/api/v2/home/users/demo-user-3/switch", data=b"", method="POST")
+    with urllib.request.urlopen(other, timeout=5) as reply:
+        assert json.load(reply)["uuid"] == "demo-user-3"
+    pms.home_users = 1
 
     # Account preferences live only in this mock. Empty-body PUT changes just named keys,
     # including an empty language, and /user serves the same state to the playback cache.
@@ -2627,6 +2653,9 @@ def main():
     ap.add_argument("--authorize-after", type=int, metavar="N",
                     help="link the QR sign-in's demo code on the Nth pin poll with a synthetic "
                          "account token (default: never; --plaintext-only-lan implies 2)")
+    ap.add_argument("--home-users", type=int, default=1, metavar="N",
+                    help="how many profiles the plex.tv Home roster lists, 1-16 (default 1: the "
+                         "Demo owner only; more make a stored-session boot open the picker)")
     ap.add_argument("--no-plex-pass", action="store_true",
                     help="#266: / and /identity answer myPlexSubscription=false (the version "
                          "string is untouched — tools/mock-guest.py depends on it)")
@@ -2665,6 +2694,8 @@ def main():
         ap.error("--movies must be between 0 and 1000")
     if (a.advertise_ip or a.insecure_fail_mode != "handshake") and not a.plaintext_only_lan:
         ap.error("--advertise-ip/--insecure-fail-mode need --plaintext-only-lan")
+    if not 1 <= a.home_users <= 16:
+        ap.error("--home-users must be between 1 and 16")
     if a.authorize_after is not None and a.authorize_after < 1:
         ap.error("--authorize-after must be at least 1")
     if a.selftest:
@@ -2683,7 +2714,7 @@ def main():
                          transcode_fixture=a.transcode_fixture, home_hubs=a.home_hubs,
                          section_hubs=a.section_hubs,
                          section_hubs_linked=a.section_hubs_linked,
-                         decision_delay_ms=a.decision_delay_ms)
+                         decision_delay_ms=a.decision_delay_ms, home_users=a.home_users)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"
