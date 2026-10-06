@@ -1638,7 +1638,7 @@ pub fn subtitle_offset_ms() -> i64 {
 }
 
 /// The offset in nanoseconds (the unit every cue store speaks).
-fn subtitle_offset_ns() -> i64 {
+pub(crate) fn subtitle_offset_ns() -> i64 {
     subtitle_offset_ms() * 1_000_000
 }
 

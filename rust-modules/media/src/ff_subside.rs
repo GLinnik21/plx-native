@@ -17,6 +17,7 @@
 //!
 //! No URL, host, token or session identifier is ever logged from here.
 
+use super::subs::SubCue;
 use super::*;
 use std::sync::{Arc, Mutex};
 
@@ -568,6 +569,93 @@ pub(super) fn anchor_line(
     )
 }
 
+/// How far past the playhead the reader must have read before an image set that started at or
+/// before it, and whose end it has not seen, is taken to be still on screen. A muxer interleaves
+/// the subtitle stream with the video by a second or so, so the CLEAR of a set can sit slightly
+/// behind a video packet already read.
+const OPEN_SET_SLACK_NS: i64 = 2_000_000_000;
+
+/// The playhead the side reader judges a cue against, on the remux's display clock: the player's
+/// own `playpos` once it has advanced, but never behind where the first keyframe of this run is
+/// shown (`anchor_playhead`) — before the first frame (a start, or a seek's reload) `playpos` is
+/// still 0 or the position the viewer just left, and a cue read then must not be placed against it.
+/// Taken on the SUBTITLE clock too (the viewer's timing offset), keeping the earlier of the two so
+/// that a delay never lets a still-due cue be judged past.
+pub(super) fn judged_clock(playpos_ns: i64, anchor_playhead_ns: i64, offset_ns: i64) -> i64 {
+    let now = playpos_ns.max(anchor_playhead_ns);
+    now.min(now.saturating_sub(offset_ns))
+}
+
+/// Hands the side reader's cues to the render stores.
+///
+/// The reader starts reading BEHIND the playhead (a keyframe scan, a reopen's lead, the start of a
+/// pick on a live remux), so it delivers cues the viewer has already passed. Text and ASS cues
+/// carry their end, so the stores' time lookup never selects one that ended; an image set carries
+/// none — it stays open until the next set or CLEAR is read — and so, delivered at once, a stale set
+/// is the active cue (and drawn) for as long as it takes the reader to reach its CLEAR, one flash per
+/// set in the order they were read. So an image set that started at or before the judged clock is
+/// held until its end is known: a later set or CLEAR at or before the clock retires it unseen, one
+/// after the clock lets it through (it is the cue on screen now), and so does the reader's own read
+/// position passing the clock by [`OPEN_SET_SLACK_NS`] with no end seen.
+pub(super) struct Delivery {
+    /// The held set, already shifted onto the remux clock.
+    held: Option<SubCue<'static>>,
+}
+
+impl Delivery {
+    pub(super) fn new() -> Self {
+        Delivery { held: None }
+    }
+
+    /// Deliver one cue stamped in Part time. `clock_ns` is [`judged_clock`].
+    pub(super) fn deliver(&mut self, cue: SubCue<'_>, delta_ns: i64, clock_ns: i64, generation: u64) {
+        match cue.shifted(-delta_ns) {
+            SubCue::BitmapSet { track, pts, cw, ch, rects, total_rects } => {
+                self.settle(pts, clock_ns, generation);
+                let set = SubCue::BitmapSet { track, pts, cw, ch, rects, total_rects };
+                if pts > clock_ns {
+                    set.push(generation);
+                } else {
+                    self.held = Some(set);
+                }
+            }
+            SubCue::BitmapClear { track, pts } => {
+                self.settle(pts, clock_ns, generation);
+                SubCue::BitmapClear { track, pts }.push(generation);
+            }
+            other => other.push(generation),
+        }
+    }
+
+    /// The reader has read a packet whose remux-clock time is `read_ns`.
+    pub(super) fn advance(&mut self, read_ns: i64, clock_ns: i64, generation: u64) {
+        if self.held.is_some() && read_ns >= clock_ns.saturating_add(OPEN_SET_SLACK_NS) {
+            self.release(generation);
+        }
+    }
+
+    /// The Part ended: no later cue will say otherwise, so a held set is the one on screen.
+    pub(super) fn flush(&mut self, generation: u64) {
+        self.release(generation);
+    }
+
+    fn release(&mut self, generation: u64) {
+        if let Some(set) = self.held.take() {
+            set.push(generation);
+        }
+    }
+
+    /// The held set's end is now known to be `end_ns`: it goes to the store only if that is after
+    /// the clock (the store then closes it at the next push), else it is dropped unseen.
+    fn settle(&mut self, end_ns: i64, clock_ns: i64, generation: u64) {
+        if end_ns > clock_ns {
+            self.release(generation);
+        } else {
+            self.held = None;
+        }
+    }
+}
+
 /// One pass of the side reader: open the Part, map its clock onto the remux's (the first pass only:
 /// `delta` is kept across a reopen), then decode the drawn track's cues from `resume_part_ns()` on,
 /// staying [`WINDOW_NS`] ahead of the playhead. Returns when stopped or on failure; a Part that
@@ -622,6 +710,14 @@ pub(crate) fn read_once(
             return end;
         }
         let subs = d.subs.as_ref().expect("opened with its tracks");
+        let mut delivery = Delivery::new();
+        // The judged clock, read once per packet: the player's playhead (never behind where this
+        // run's first keyframe is shown), on the subtitle clock.
+        let judged = || {
+            let (pts_shift, disp_base) = clock();
+            let anchor_playhead = playhead_of(anchor.pts_ns, pts_shift, disp_base);
+            judged_clock(playpos(), anchor_playhead, crate::player::subtitle_offset_ns())
+        };
         loop {
             if stop.is_set() {
                 return RunEnd::Stopped;
@@ -635,6 +731,7 @@ pub(crate) fn read_once(
                     return RunEnd::Failed;
                 }
                 // The Part ended: nothing more to draw. Idle until told to stop.
+                delivery.flush(generation);
                 while !stop.is_set() {
                     std::thread::park_timeout(std::time::Duration::from_millis(PARK_MS));
                 }
@@ -651,10 +748,13 @@ pub(crate) fn read_once(
             let t = pts_ns_opt(d.pkt, st);
             if let Some(pos) = subs.position(si).filter(|p| *p == cfg.ordinal) {
                 if let Some(cue) = subs.decode(pos, d.pkt, st) {
-                    cue.shifted(-delta_ns).push(generation);
+                    delivery.deliver(cue, delta_ns, judged(), generation);
                 }
             }
             av_packet_unref(d.pkt);
+            if let Some(t) = t {
+                delivery.advance(t.saturating_sub(delta_ns), judged(), generation);
+            }
             if let Some(t) = t {
                 while pacing_parks(t, delta_ns, playpos()) {
                     if stop.is_set() {
@@ -672,6 +772,126 @@ mod tests {
     use super::*;
     #[allow(unused_imports)]
     use super::super::test_support::*;
+
+    /// A one-pixel image set on `track` stamped `pts` (Part time).
+    fn set(track: i32, pts: i64) -> SubCue<'static> {
+        let rect = crate::player::SubRect { x: 0, y: 0, w: 1, h: 1, index: vec![1], palette: Box::new([[255; 4]; 256]) };
+        SubCue::BitmapSet { track, pts, cw: 1920, ch: 1080, rects: vec![rect], total_rects: 1 }
+    }
+
+    fn clear(track: i32, pts: i64) -> SubCue<'static> {
+        SubCue::BitmapClear { track, pts }
+    }
+
+    const S: i64 = 1_000_000_000;
+    /// Part time minus remux playhead.
+    const DELTA: i64 = 5 * S;
+
+    /// The key (display-clock start) of the set the renderer would draw at `playhead`.
+    fn shown_at(playhead: i64) -> Option<i64> {
+        SHARED.playpos_ns.store(playhead, Ordering::Relaxed);
+        crate::player::active_bitmap_key(playhead)
+    }
+
+    /// Feed what a scan from an earlier keyframe delivers, in file order: image sets that ended
+    /// before the playhead (`PLAYHEAD`), then the one still current at it. `clock_at_start` is
+    /// the clock the reader is given while the player's own has not advanced. At every step,
+    /// whatever the renderer would draw at the playhead must not be a set that ended before it.
+    fn replay_earlier_scan(playpos_at_start: i64, clock_at_start: i64) {
+        const PLAYHEAD: i64 = 111 * S;
+        let _g = plx_base::testlock::serial();
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        crate::player::request_subtitle(0);
+        let mut d = Delivery::new();
+        // Part-time cues: A 100..103 s and B 106..108 s end before the playhead (Part 116 s);
+        // C starts at 110 s remux time, is current at 111 s, and is cleared at 113 s.
+        let file: [(SubCue<'static>, i64); 6] = [
+            (set(0, 100 * S), 100 * S),
+            (clear(0, 103 * S), 103 * S),
+            (set(0, 106 * S), 106 * S),
+            (clear(0, 108 * S), 108 * S),
+            (set(0, 115 * S), 115 * S),
+            (clear(0, 118 * S), 118 * S),
+        ];
+        for (n, (cue, part_t)) in file.into_iter().enumerate() {
+            let before = shown_at(playpos_at_start);
+            assert_eq!(before, None, "step {n}: shown before the playhead moved");
+            d.deliver(cue, DELTA, clock_at_start, 0);
+            d.advance(part_t - DELTA, clock_at_start, 0);
+            // the playhead lands; whatever is shown must be set C (key 110 s) or nothing
+            let at = shown_at(PLAYHEAD);
+            assert!(
+                at.is_none() || at == Some(110 * S),
+                "step {n}: a set that ended before the playhead is drawn: key {at:?}"
+            );
+            SHARED.playpos_ns.store(playpos_at_start, Ordering::Relaxed);
+        }
+        crate::player::request_subtitle(-1);
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn a_scan_from_an_earlier_keyframe_never_presents_a_set_that_ended_before_the_playhead() {
+        // the player's clock has not advanced (start / seek reload): playpos 0, the anchor's
+        // playhead is 111 s
+        replay_earlier_scan(0, 111 * S);
+    }
+
+    #[test]
+    fn a_pick_on_a_live_remux_and_a_seek_reload_judge_against_the_real_playhead() {
+        // the player's clock is already at the playhead (a pick), or the anchor says where it
+        // will be (a reload): the same scan, the same answer
+        replay_earlier_scan(111 * S, 111 * S);
+        assert_eq!(judged_clock(0, 111 * S, 0), 111 * S, "before the first frame: the anchor's playhead");
+        assert_eq!(judged_clock(40 * S, 111 * S, 0), 111 * S, "a stale pre-seek position is behind it");
+        assert_eq!(judged_clock(130 * S, 111 * S, 0), 130 * S, "the live playhead once it has advanced");
+        assert_eq!(judged_clock(130 * S, 111 * S, 3 * S), 127 * S, "a delay keeps cues due that long");
+    }
+
+    #[test]
+    fn the_set_on_screen_at_the_playhead_still_appears_once_its_end_is_known_or_unseen() {
+        const PLAYHEAD: i64 = 111 * S;
+        let _g = plx_base::testlock::serial();
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        crate::player::request_subtitle(0);
+        let mut d = Delivery::new();
+        // C: 110 s, started before the playhead and not over (cleared at 113 s)
+        d.deliver(set(0, 110 * S + DELTA), DELTA, PLAYHEAD, 0);
+        assert_eq!(shown_at(PLAYHEAD), None, "held while the reader is still behind the playhead");
+        d.advance(110 * S, PLAYHEAD, 0);
+        assert_eq!(shown_at(PLAYHEAD), None, "reading at 110 s says nothing of 111 s");
+        d.advance(113 * S + 1, PLAYHEAD, 0);
+        assert_eq!(shown_at(PLAYHEAD), Some(110 * S), "the reader is past the playhead and saw no end");
+        d.deliver(clear(0, 113 * S + DELTA), DELTA, PLAYHEAD, 0);
+        assert_eq!(shown_at(PLAYHEAD), Some(110 * S));
+        assert_eq!(shown_at(113 * S), None, "closed at its clear");
+
+        // a clear read after the playhead lets the held set through
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        let mut d = Delivery::new();
+        d.deliver(set(0, 110 * S + DELTA), DELTA, PLAYHEAD, 0);
+        d.deliver(clear(0, 112 * S + DELTA), DELTA, PLAYHEAD, 0);
+        assert_eq!(shown_at(PLAYHEAD), Some(110 * S));
+        assert_eq!(shown_at(112 * S), None);
+
+        // the Part ending with a set held: it is the one on screen
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        let mut d = Delivery::new();
+        d.deliver(set(0, 110 * S + DELTA), DELTA, PLAYHEAD, 0);
+        d.flush(0);
+        assert_eq!(shown_at(PLAYHEAD), Some(110 * S));
+
+        // a set superseded by another that starts at or before the playhead is never stored
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        let mut d = Delivery::new();
+        d.deliver(set(0, 108 * S + DELTA), DELTA, PLAYHEAD, 0);
+        d.deliver(set(0, 110 * S + DELTA), DELTA, PLAYHEAD, 0);
+        d.flush(0);
+        assert_eq!(shown_at(PLAYHEAD), Some(110 * S));
+        assert_eq!(shown_at(109 * S), None, "the superseded set never reached the store");
+        crate::player::request_subtitle(-1);
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+    }
 
     fn pkt(len: usize, salt: u8) -> Vec<u8> {
         (0..len).map(|i| (i as u8).wrapping_mul(7).wrapping_add(salt)).collect()
