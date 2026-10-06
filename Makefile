@@ -1329,16 +1329,19 @@ clean:
 
 test: deploy run
 
-# `make check` is now a machine-wide QUEUE, not a direct alias for the suite below. On
+# `make check` is a machine-wide QUEUE with TWO slots, not a direct alias for the suite below. On
 # 2026-09-28, ~7 agent worktrees ran `make check` at once on one 10-core/16 GB Mac: each
 # is a cold 412k-line rustc build (~1 GB RSS), swap hit 9-15 GB, and one run took 60
 # minutes (`cargo test --lib` build 26m33 vs. a normal ~1-2 min, hostsim build 17m37) —
 # where a lone run is ~10 min. Queuing through `tools/check-lock.py`'s machine-wide
-# flock (`~/.cache/plxnative/check.lock` by default, shared by every worktree) is
-# strictly faster for everyone: the kernel releases the lock the moment a holder dies,
-# so there is nothing to clean up by hand. `PLX_CHECK_LOCK=off` bypasses it. See
-# `check-unlocked` below for the actual suite; CI runs `make check` uncontended, so the
-# wrapper acquires immediately there.
+# flocks (`~/.cache/plxnative/check.lock` and `check.lock.1` by default, shared by every
+# worktree) is strictly faster for everyone: the kernel releases a lock the moment a
+# holder dies, so there is nothing to clean up by hand. Two at once is the measured
+# optimum (2026-10-06: a pair finishes in 0.67-0.76 of the back-to-back time, 5-6 GB
+# peak, no swap growth); a third waits. `PLX_CHECK_SLOTS=1` restores one at a time,
+# `PLX_CHECK_LOCK=off` bypasses the lock. A second run from the SAME checkout always
+# waits for the first. See `check-unlocked` below for the actual
+# suite; CI runs `make check` uncontended, so the wrapper acquires immediately there.
 check:
 	@python3 tools/check-lock.py -- $(MAKE) --no-print-directory check-unlocked
 
@@ -1547,15 +1550,16 @@ test-crate:
 # table). `build-bench-quick` is no-op + leaf edit + sizes at one run. It runs the SAME cargo
 # invocations as the recipes above (toolchain, dirs, feature flags and RUSTFLAGS come from
 # `print-bench-config`; ci/test_build_bench.py pins the rest), under the same machine-wide lock as
-# `make check` so two builds never skew each other, and with the environment `test-fast` gives
-# cargo (telemetry words included -- they are compile-time inputs). It only edits-and-restores two
+# `make check`, but EXCLUSIVELY (`--exclusive`: every slot, and no new check starts once it asks),
+# so nothing else builds while it measures, and with the environment `test-fast` gives cargo
+# (telemetry words included -- they are compile-time inputs). It only edits-and-restores two
 # source files (restored in a finally) and never cleans a target dir.
 # Listed in SIDE_EFFECT_FREE: it builds none of the TV artifacts, so it must not reset the stamp.
 # RELEASE=1 is refused: the host test build is not the shipping feature set.
 .PHONY: build-bench build-bench-quick
 build-bench build-bench-quick:
 	@$(if $(RELEASE),echo "make $@: refused under RELEASE=1 -- it benchmarks the default-feature host build; RELEASE=1 is the shipping feature set." >&2; exit 1,:)
-	@python3 tools/check-lock.py -- env PLX_BENCH_VIA_MAKE=1 $(TELEMETRY_ENV) $(HOST_ENV) \
+	@python3 tools/check-lock.py --exclusive -- env PLX_BENCH_VIA_MAKE=1 $(TELEMETRY_ENV) $(HOST_ENV) \
 	  python3 tools/build-bench.py $(if $(filter build-bench-quick,$@),--quick) $(ARGS)
 
 # `check-python` is TWO branches run at once (tools/check-parallel.py, the same helper as
@@ -1753,11 +1757,12 @@ check-python-rest: check-localization check-c-unit
 	@# Two checkouts running the scratch-writing steps at once (test-compat.py, the C unit tests) must not
 	@# corrupt each other: each pair is run side by side against one shared TMPDIR.
 	python3 ci/test_check_collisions.py
-	@# The `check` lock wrapper's own suite: two invocations serialize, a SIGKILLed holder
-	@# unblocks the waiter promptly, --timeout exits 75, and PLX_CHECK_LOCK=off really
-	@# bypasses it. Runs against a throwaway lock path — never the real
-	@# ~/.cache/plxnative/check.lock — so it cannot contend with the `check` that is
-	@# running it.
+	@# The `check` lock wrapper's own suite: two shared runs at once and a third waiting (naming both
+	@# holders), a SIGKILLed holder freeing its slot, PLX_CHECK_SLOTS=1 serializing, exclusive mode for
+	@# the benchmarks (blocks and is blocked by shared runs, not starved by a stream of them, two
+	@# exclusive requests do not deadlock), the default slot count, --timeout exiting 75 and
+	@# PLX_CHECK_LOCK=off bypassing it. Runs against a throwaway lock path -- never the real
+	@# ~/.cache/plxnative/check.lock* -- so it cannot contend with the `check` that is running it.
 	python3 ci/test_check_lock.py
 	python3 tools/test_check_parallel.py
 	@# The cargo seed's own suite (restore only into an absent dir, the app crate never in the seed,

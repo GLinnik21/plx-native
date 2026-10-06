@@ -117,7 +117,8 @@ class OtherTargetsAreUnaffected(unittest.TestCase):
     def test_check_and_cargo_recipes_never_see_the_fast_loop(self):
         # `make -n` on these only: `check` and `check-unlocked` re-enter make through the machine-wide
         # check lock (a $(MAKE) line runs even under -n), so a dry run of them from INSIDE
-        # `make check` waits forever on the lock its own parent holds. They are read as text instead.
+        # `make check` takes a second slot, or waits behind another run with its own parent holding one.
+        # They are read as text instead.
         for target in ("check-cargo", "check-cargo-lint", "check-cargo-unit-default",
                        "check-cargo-unit-hostsim", "lint"):
             out = make("-n", target, env={"PLX_CHECK_LOCK": "off"})

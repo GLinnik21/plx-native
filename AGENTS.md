@@ -79,17 +79,27 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   seconds. Report the `test result:` line itself rather than a summary — `| tail -n 25` eats it
   when several stages run.
 - `make check` runs the fast host unit suite and lint gate. Use it for ordinary Rust changes.
-  `make check` is serialized machine-wide (a `flock` in `tools/check-lock.py`, shared by every
-  worktree): a second invocation waits and prints the holder's pid/worktree/start time every 60 s
-  rather than compiling alongside it, because concurrent cold builds thrash one Mac far worse than
-  queuing (measured 2026-09-28: a lone run ~10 min, seven at once made one take 60 min).
-  `PLX_CHECK_LOCK=off` bypasses the lock. Never launch it in the foreground with a short tool
-  timeout — a queued run can wait a long time before it even starts building.
+  `make check` is bounded machine-wide to TWO concurrent runs (two `flock` slots in
+  `tools/check-lock.py`, shared by every worktree): a third invocation waits and prints EVERY
+  holder's pid/worktree/start time every 60 s rather than compiling alongside them, because
+  concurrent cold builds thrash one Mac far worse than queuing (measured 2026-09-28: a lone run
+  ~10 min, seven at once made one take 60 min). It was one at a time until 2026-10-06, when two at
+  once was measured on an Apple M4 (10 cores, 16 GB): a lone warm run ~185-205 s, a pair finishes
+  in 0.67-0.76 of the back-to-back time (warm, cold, cold without the seed cache), 5-6 GB peak, no
+  swap growth, each run of a pair 1.35-1.55x slower than alone. Three at once was not measured and
+  is expected to swap on 16 GB, so two is the ceiling. The default is two only on a host with at
+  least 8 cores and 14 GiB of RAM (else one); `PLX_CHECK_SLOTS=1` restores one at a time and
+  `PLX_CHECK_LOCK=off` bypasses the lock. Whatever the slot count, a second run from the SAME checkout
+  waits for the first (two share one cargo target directory and scratch files). `make build-bench*`
+  takes ALL the slots (`--exclusive`)
+  and no new check starts once it has asked. Never launch `make check` in the foreground with a
+  short tool timeout — a queued run can wait a long time before it even starts building.
 - While iterating on one crate, `make test-crate C=plx_ui [T=filter] [DEPS=1]` builds and runs only
   that crate's lib tests in `make test-fast`'s incremental tree. It is a loop, not a gate.
 - A PR that touches `Makefile`, `Cargo.toml`, `Cargo.lock`, `build.rs`, `.cargo/` config,
   `.github/workflows/` or the module layout pastes a before/after `make build-bench` table in its
-  body (`docs/agent-reference.md`, build section); the tool queues on the `make check` lock.
+  body (`docs/agent-reference.md`, build section); the tool takes the `make check` lock exclusively
+  (every slot), so it waits for running checks and nothing else builds while it measures.
 - `make` performs the ARM cross-build. Do not assume a host-only green result proves the target
   still builds.
 - A plain local `make` / `make deploy` compiles the ARM library with the fast `tvdev` cargo profile

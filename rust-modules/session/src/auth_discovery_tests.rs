@@ -1183,24 +1183,25 @@ fn an_expired_leaf_is_logged_as_expired_not_as_a_stale_ca_store() {
     let _ca = TestCaGuard::install(&cert.pem, "expired-leaf");
     let port = plx_net::net::spawn_dual_protocol(std::sync::Arc::clone(&cert), identity_json("expired"));
 
-    let log = plx_base::eventlog::events_log();
-    let before = std::fs::metadata(&log).map_or(0, |m| m.len());
-    let out = plx_net::net::request_result_evidence(
-        &format!("https://127.0.0.1:{port}/identity"),
-        &[],
-        "GET",
-        None,
-        plx_net::net::API,
-        false,
-        None,
-        None,
-        false,
-    );
+    // A private log: the shared `/tmp` one is appended to by every other `make check` on the machine,
+    // and a second run's own "CA store too old?" line was found here instead of this request's.
+    let (out, tail) = plx_base::eventlog::with_private_log(|| {
+        let out = plx_net::net::request_result_evidence(
+            &format!("https://127.0.0.1:{port}/identity"),
+            &[],
+            "GET",
+            None,
+            plx_net::net::API,
+            false,
+            None,
+            None,
+            false,
+        );
+        (out, std::fs::read_to_string(plx_base::eventlog::events_log()).expect("event log readable"))
+    });
     let Err(failure) = out else { panic!("an expired leaf must not verify") };
     assert_eq!(failure.curl_rc, Some(60), "peer verification failure");
 
-    let tail = std::fs::read(&log).map(|b| String::from_utf8_lossy(&b[before as usize..]).into_owned());
-    let tail = tail.expect("event log readable");
     let line = tail
         .lines()
         .find(|l| l.contains("net: curl rc=60"))

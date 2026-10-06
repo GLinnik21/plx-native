@@ -2174,8 +2174,15 @@ mod flight_tests {
         }
     }
 
-    /// A seek tap on a transcode hands the PMS half to a worker: when the frame returns the server
-    /// has been asked NOTHING, a flight is outstanding, and the seek lands on a later frame.
+    /// A seek tap on a transcode hands the PMS half to a worker: the frame returns without waiting
+    /// for the server, a flight is outstanding, and the seek lands on a later frame.
+    ///
+    /// "Without waiting" is graded CAUSALLY: the rig is told to hold every `/decision` answer, so
+    /// when the frame returns no answer has been delivered, and a frame that had made the round trip
+    /// itself could not have returned at all until the server's safety release. Nothing here depends
+    /// on how long the frame took. The request LOG is not graded: the rig logs a `/decision` the
+    /// moment it arrives and the worker may legitimately have sent it by then (the earlier
+    /// `decisions() == 0` check failed in 2 of 4 gate runs of two `make check`s side by side).
     #[test]
     fn a_transcode_seek_frame_makes_no_pms_call_and_the_worker_lands_it_later() {
         let mut rig = Rig::new(150);
@@ -2183,12 +2190,14 @@ mod flight_tests {
         assert_eq!(rig.flight.decisions(), 0, "sanity: an idle frame asks PMS nothing");
         let before = crate::route::transcode_session(&rig.ps);
 
+        rig.flight.hold_decisions();
         crate::player::request_seek(SEEK_TARGET_NS);
         rig.frame();
         assert_eq!(
-            rig.flight.decisions(),
+            rig.flight.answered_decisions(),
             0,
-            "the seek frame made a PMS round trip on the frame thread: {:?}",
+            "the seek frame returned only after the server answered: a PMS round trip on the frame \
+             thread: {:?}",
             rig.flight.requests()
         );
         assert!(crate::route::flight_outstanding(), "the rebuild must be a flight the pump waits on");
@@ -2200,6 +2209,7 @@ mod flight_tests {
         assert!(super::super::claim_hold::active(), "the old picture is held under the spinner");
         assert!(TX.paused.load(Acquire), "the hold paused the stream, as a direct-play seek does");
 
+        rig.flight.release_decisions();
         rig.frames_until("the seek's landing", |_| !crate::route::flight_outstanding());
         assert_eq!(rig.flight.decisions(), 1, "exactly one /decision for the seek");
         assert_ne!(crate::route::transcode_session(&rig.ps), before, "the landing installed the replacement encoder");

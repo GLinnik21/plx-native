@@ -327,11 +327,12 @@ fn one_untrusted_server_among_silent_or_refusing_ones_names_the_certificate() {
 /// The lines the events log gained while `run` ran.
 fn log_lines_during(run: impl FnOnce()) -> Vec<String> {
     let _serial = plx_base::testlock::serial();
-    let log = plx_base::eventlog::events_log();
-    let before = std::fs::metadata(&log).map_or(0, |m| m.len() as usize);
-    run();
-    let all = std::fs::read(&log).unwrap_or_default();
-    String::from_utf8_lossy(&all[before.min(all.len())..]).lines().map(str::to_owned).collect()
+    // A private log: the shared `/tmp` one is appended to by every other `make check` on the machine.
+    plx_base::eventlog::with_private_log(|| {
+        run();
+        let all = std::fs::read(plx_base::eventlog::events_log()).unwrap_or_default();
+        String::from_utf8_lossy(&all).lines().map(str::to_owned).collect()
+    })
 }
 
 #[test]

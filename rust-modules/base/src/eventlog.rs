@@ -57,7 +57,97 @@ pub fn redact_tokens(m: &str) -> std::borrow::Cow<'_, str> {
 /// the simulator binary (which truncates it at startup), and `src/main.c` on the television — and
 /// the last of those cannot see this module, which is what [`crate::paths::ENV_STEERABLE`] guarantees.
 pub fn events_log() -> std::path::PathBuf {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(path) = private::path() {
+        return path;
+    }
     crate::paths::in_runtime_dir(crate::paths::runtime_file::EVENTS)
+}
+
+/// Run `f` with THIS thread's event log redirected to a fresh private file, removed afterwards (also
+/// when `f` panics).
+///
+/// **A host test that reads the log back must not read the shared one.** A host test run resolves the
+/// log to the bare `/tmp/plxnative-events.log` (only the `hostsim` feature lets
+/// `PLXNATIVE_RUNTIME_DIR` steer it, [`crate::paths::ENV_STEERABLE`]), and that file is one for the
+/// whole machine: every test binary of this `make check`, and of any other checkout's, appends to
+/// it. `serial()` is one process's lock. With two `make check` runs side by side,
+/// `an_expired_leaf_is_logged_as_expired_not_as_a_stale_ca_store` found the OTHER run's
+/// `net: curl rc=60 ... (CA store too old?)` line in its own tail and failed. The same read-back
+/// is in `auth_cause_tests`.
+///
+/// Only the calling thread is redirected, so a line another thread logs during `f` goes to the
+/// shared log; a test that needs a worker's line must have the worker log on the test thread.
+/// Not nestable: the inner call replaces the outer file for its own extent.
+#[cfg(any(test, feature = "test-support"))]
+pub fn with_private_log<R>(f: impl FnOnce() -> R) -> R {
+    private::with(f)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+mod private {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    thread_local! {
+        static LOG: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn path() -> Option<PathBuf> {
+        LOG.with(|l| l.borrow().clone())
+    }
+
+    pub(super) fn with<R>(f: impl FnOnce() -> R) -> R {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "plx-private-log-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("a private event-log directory");
+        struct Restore(Option<PathBuf>, PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                LOG.with(|l| *l.borrow_mut() = self.0.take());
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let file = dir.join(crate::paths::runtime_file::EVENTS);
+        let _restore = Restore(LOG.with(|l| l.borrow_mut().replace(file)), dir);
+        f()
+    }
+}
+
+/// A private log is private: the line lands outside the shared log, is visible through
+/// `events_log()` on this thread, not on another, and the file is gone afterwards.
+#[cfg(test)]
+mod private_log_tests {
+    use super::{events_log, log, with_private_log};
+
+    #[test]
+    fn a_private_log_stays_out_of_the_shared_one() {
+        let shared = events_log();
+        let (private, line, other_thread) = with_private_log(|| {
+            let path = events_log();
+            log("private-log-test: line one");
+            let other = std::thread::spawn(events_log).join().unwrap();
+            (path.clone(), std::fs::read_to_string(&path).unwrap_or_default(), other)
+        });
+        assert_ne!(private, shared);
+        assert!(line.contains("private-log-test: line one"), "{line:?}");
+        assert_eq!(other_thread, shared, "another thread keeps the shared log");
+        assert!(!private.exists(), "the private log is removed afterwards");
+        assert_eq!(events_log(), shared, "the redirect ends with the closure");
+    }
+
+    #[test]
+    fn a_panicking_body_still_restores_the_log() {
+        let shared = events_log();
+        let result = std::panic::catch_unwind(|| with_private_log(|| panic!("body")));
+        assert!(result.is_err());
+        assert_eq!(events_log(), shared);
+    }
 }
 
 /// The mode of the event log and its two siblings (`plxnative-crash.log`, `plxnative-stderr.log`,

@@ -40,7 +40,15 @@ pub(crate) struct FlightRig {
     log: RequestLog,
     /// How many of the next live `/decision` calls the server refuses.
     refusals: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// While set, the server logs a `/decision` but does not answer it ([`FlightRig::hold_decisions`]).
+    held: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// How many live `/decision` answers the server has written.
+    answered: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
+
+/// The longest the server keeps a held answer if nobody releases it, so a test that fails
+/// while holding cannot park a worker for ever. Far longer than any frame, far shorter than a hang.
+const HOLD_SAFETY: std::time::Duration = std::time::Duration::from_secs(8);
 
 impl FlightRig {
     /// A playing progressive-MKV transcode (`rig-1`) on a fresh loopback server, installed into
@@ -73,6 +81,10 @@ impl FlightRig {
         let shared = log.clone();
         let refusals: std::sync::Arc<std::sync::atomic::AtomicUsize> = Default::default();
         let owed = refusals.clone();
+        let held: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
+        let hold = held.clone();
+        let answered: std::sync::Arc<std::sync::atomic::AtomicUsize> = Default::default();
+        let count_answers = answered.clone();
         let server = std::thread::spawn(move || loop {
             match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
@@ -91,11 +103,16 @@ impl FlightRig {
                     if probe {
                         write_json(&mut socket, MDE_DIRECTPLAY);
                     } else if decision {
+                        let since = std::time::Instant::now();
+                        while hold.load(Ordering::SeqCst) && since.elapsed() < HOLD_SAFETY {
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                        }
                         std::thread::sleep(delay);
                         let refuse = owed
                             .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                             .is_ok();
                         write_json(&mut socket, if refuse { DECISION_REFUSED } else { MDE_TRANSCODE_COPY });
+                        count_answers.fetch_add(1, Ordering::SeqCst);
                     } else {
                         write_json(&mut socket, EMPTY_MC);
                     }
@@ -159,7 +176,7 @@ impl FlightRig {
             ps.cur_auto_original_watched = true;
             ps.cur_src = (28_000, 1_920, 1_080);
         }
-        FlightRig { _serial: serial, done, server: Some(server), log, refusals }
+        FlightRig { _serial: serial, done, server: Some(server), log, refusals, held, answered }
     }
 
     /// The rung the Auto bootstrap chose for a source that never opens (what the unopened-source
@@ -238,6 +255,23 @@ impl FlightRig {
         self.refusals.store(n, Ordering::SeqCst);
     }
 
+    /// From now until [`FlightRig::release_decisions`] the server LOGS each live `/decision` but does
+    /// not answer it. A frame that returns while an answer is held cannot have waited for it: that
+    /// is a causal fact, where "returned within N ms" is a statement about the machine's load.
+    pub(crate) fn hold_decisions(&self) {
+        self.held.store(true, Ordering::SeqCst);
+    }
+
+    /// Let the held `/decision` answers go (they are written after `delay` as usual).
+    pub(crate) fn release_decisions(&self) {
+        self.held.store(false, Ordering::SeqCst);
+    }
+
+    /// How many live `/decision` answers the server has written.
+    pub(crate) fn answered_decisions(&self) -> usize {
+        self.answered.load(Ordering::SeqCst)
+    }
+
     /// Every request line the server has seen, in order.
     pub(crate) fn requests(&self) -> Vec<String> {
         self.log.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -275,6 +309,7 @@ impl FlightRig {
 
 impl Drop for FlightRig {
     fn drop(&mut self) {
+        self.held.store(false, Ordering::SeqCst);
         // The flight's worker (and any encoder stop it queued) finishes against THIS rig's server
         // before the server goes away and the lock is released.
         plx_base::task::drain_workers_for_test();

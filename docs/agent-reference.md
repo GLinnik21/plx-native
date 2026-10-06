@@ -155,13 +155,25 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   terminal.
 - `make check` — the **host** unit suite, no TV, preceded by `make lint`. Not a prerequisite of
   `all` — the cross-build must never depend on a host toolchain run. `check` itself is now a thin
-  wrapper (`tools/check-lock.py`) around the real recipe, `check-unlocked`: a machine-wide `flock`
-  serializes every `make check` across every worktree on the machine, because concurrent cold
-  builds (~1 GB RSS each) thrash far worse than queuing (measured 2026-09-28: a lone run ~10 min,
-  seven concurrent ones stretched one run to 60 min). A second caller waits and gets the holder's
-  pid/worktree/start time printed every 60 s rather than silently sharing the CPU/RAM; `PLX_CHECK_LOCK=off`
-  bypasses the lock, and `--timeout` (passed to the wrapper directly, not through `make`) exits 75
-  instead of waiting forever. `check-unlocked` runs two independent branches at once
+  wrapper (`tools/check-lock.py`) around the real recipe, `check-unlocked`: two machine-wide `flock`
+  slots bound every `make check` across every worktree on the machine to TWO at a time, because
+  concurrent cold builds (~1 GB RSS each) thrash far worse than queuing (measured 2026-09-28: a lone
+  run ~10 min, seven concurrent ones stretched one run to 60 min). It was a single lock until
+  2026-10-06; on an Apple M4 (10 cores, 16 GB) a lone warm run is ~185-205 s and two at once finish in
+  0.67-0.76 of the back-to-back time (warm, cold, and cold without the seed cache; 5-6 GB peak, no
+  swap growth, each run of a pair 1.35-1.55x slower than alone). Three at once was not measured and
+  is expected to swap on 16 GB. A third caller waits and gets EVERY holder's pid/worktree/start time
+  printed every 60 s rather than silently sharing the CPU/RAM. The slot files are
+  `~/.cache/plxnative/check.lock` (slot 0, the historical path) and `check.lock.1`; the default is two
+  slots on a host with at least 8 cores and 14 GiB of RAM and one otherwise, `PLX_CHECK_SLOTS=N`
+  overrides it (`1` is the old one-at-a-time lock), `PLX_CHECK_LOCK=off` bypasses the lock, a second run from the SAME checkout waits for the first
+  whatever the slot count (`check.lock.wt-<hash of the resolved checkout root>`, taken before the gate and
+  the slots; its message reads "another `make check` is already running in this worktree"), and
+  `--timeout` (passed to the wrapper directly, not through `make`) exits 75 instead of waiting
+  forever. `make build-bench` / `build-bench-quick` pass `--exclusive`: the wrapper takes the intent
+  gate `check.lock.gate` and then EVERY slot, and a check that arrives while the gate is held waits, so a
+  benchmark waits only for the runs already going and then has the machine to itself (two benchmarks
+  cannot deadlock; they are not ordered between themselves). `check-unlocked` runs two independent branches at once
   (`tools/check-parallel.py`, never more than two): `check-cargo` (clippy, both unit-test passes,
   the lab-diagnostics type-check and the ci/ self-tests that drive cargo) and `check-python` (every
   Python/shell/C gate, including `tests/test_harness.py`; it never invokes cargo and modifies no
@@ -314,8 +326,9 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   environment is the one `make test-fast` gives cargo (including `HOST_THREADS`'s `-Zthreads`; the table's
   header line says `rustc front end: N threads` or `serial`, and `make build-bench HOST_THREADS=0`
   is the serial baseline), so a bare invocation of the script (which warns) is not comparable to a
-  `make` one. It runs under the same machine-wide lock as `make check`
-  (so it waits behind one, and a `make check` waits behind it), refuses `RELEASE=1`, never touches
+  `make` one. It runs under the same machine-wide lock as `make check`,
+  EXCLUSIVELY (it waits for every running check, and no new `make check` starts while it waits or
+  runs, so its numbers never share the machine), refuses `RELEASE=1`, never touches
   the TV and never cleans a target dir. It edits `cbuf.rs` and `plx_ui`'s `lib.rs` only while a row is being
   timed, refuses to start if either has uncommitted changes, restores the original bytes in a
   `finally` and verifies with `git diff --quiet` at the end (exit 3 if not); a cargo failure stops

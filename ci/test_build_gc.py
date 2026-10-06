@@ -662,9 +662,9 @@ class InstallDiskWatchTests(unittest.TestCase):
 
 class MakeCheckContractTests(unittest.TestCase):
     def test_host_check_runs_gc_regressions(self):
-        # `make check` is `tools/check-lock.py`'s machine-wide queue wrapper around
+        # `make check` is `tools/check-lock.py`'s machine-wide queue wrapper (two slots) around
         # `check-unlocked`, which fans out to the `check-python` recipe this asserts on;
-        # `make check` still runs it, just serialized.
+        # `make check` still runs it, just queued.
         lines = (ROOT / "Makefile").read_text().splitlines()
 
         def recipe_of(target):
