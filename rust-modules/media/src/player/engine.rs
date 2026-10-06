@@ -1256,6 +1256,10 @@ fn start_bufferfeed_inner(
     let mut aqa_box: Option<Box<AuQueue>> = None;
     let mut stream_th = None;
     let source;
+    // Whether the side subtitle reader will run for this engine run, decided BEFORE the demuxer is
+    // spawned: the demuxer reads `side_subs_owner` once, as it opens the stream, and must never
+    // also open subtitle decoders or ASS sources the reader replaces.
+    let side_target = if stream { crate::route::side_reader_target(ps) } else { None };
 
     if stream {
         let su = plx_plex::plex::StreamUrl::parse(&url); // the typed layer's URL splitter
@@ -1297,10 +1301,12 @@ fn start_bufferfeed_inner(
             let acodec = crate::route::stream_acodec(ps);
             let abr = crate::route::hls_abr_control(ps);
             let auto_original = crate::route::auto_original_watch(ps);
+            SHARED.side_subs_owner.store(side_target.is_some(), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
                 crate::ff::demux(off, origin, path, acodec, abr, auto_original, aqp, aqap, hsp)
             });
             if stream_th.is_none() {
+                SHARED.side_subs_owner.store(false, Ordering::Release);
                 // Nothing will ever fill the AU queues, so there is no session to start. `hs` is
                 // about to drop with this early return, so retract the pointer first — the pump
                 // and teardown both read it straight off SHARED.
@@ -1345,12 +1351,9 @@ fn start_bufferfeed_inner(
     }
     // The side subtitle reader (dev trigger `plxnative-subside`), started once the demuxer is
     // spawned and the media thread exists: it waits for the demuxer's first keyframe before it
-    // reads anything. Stage 3 swaps this one condition for
-    // `subtitle_presenter(ps) == ClientOverRemux && !cur_sub_sidecar`.
-    if stream && !crate::route::is_preview(ps) {
-        if let Some(ordinal) = super::subside::dev_armed_ordinal() {
-            start_side_reader(ps, ordinal);
-        }
+    // reads anything. (Its ownership flag was set before the demux spawn, below.)
+    if let Some(target) = side_target {
+        start_side_reader(&target);
     }
 
     // progress reporter: post the play position to /:/timeline (updates resume + watched).
@@ -1631,8 +1634,8 @@ fn reload_start_outcome(
 /// stream number `ordinal`. The URL is the fresh-session shape PMS serves a second reader of the
 /// Part (the live session's own identifier is refused while the remux runs); it carries the token
 /// and is handed to the reader, never logged.
-fn start_side_reader(ps: &crate::route::PlaybackSession, ordinal: i32) {
-    let Some(target) = crate::route::side_reader_target(ps) else { return };
+fn start_side_reader(target: &crate::route::SideReaderTarget) {
+    let ordinal = target.ordinal;
     let Some(client) = plx_plex::plex::client_for(target.sid) else { return };
     let su = client.direct_play_url(&target.part, &format!("{}-subs", target.session));
     let started = super::subside::start(super::subside::Spec {

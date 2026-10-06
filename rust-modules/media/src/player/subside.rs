@@ -5,8 +5,9 @@
 //! the client renderer. `start` is called once per engine run (a remux seek is always a reload, so a
 //! new start at the new offset), `stop` once per teardown; there is no in-place seek.
 //!
-//! Armed, for now, ONLY by the dev trigger `plxnative-subside` ([`dev_armed_ordinal`]); the reader
-//! itself is not dev-gated. Everything is main-thread driven except the one reader thread, whose
+//! Started by the engine for a route whose presenter is `ClientOverRemux` for an embedded track
+//! (`route::side_reader_target`), or, for diagnostics, by the dev trigger `plxnative-subside`
+//! ([`dev_armed_ordinal`]) with no subtitle selected; the reader itself is not dev-gated. Everything is main-thread driven except the one reader thread, whose
 //! only inputs are the [`Spec`], `SHARED`'s playhead and clock atomics, and the main demuxer's
 //! published keyframe anchor.
 //!
@@ -55,8 +56,8 @@ fn running() -> std::sync::MutexGuard<'static, Option<Running>> {
     RUNNING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Is a reader running? The draw gate (`route::subtitles_burned`) reads this: while it is, the
-/// client renderer draws the track, whatever the route's own presenter says.
+/// Is a reader running? The draw gate (`route::subtitles_burned`) reads this only for the dev
+/// trigger's run, where no subtitle is selected in the route to give the presenter anything to say.
 pub fn active() -> bool {
     ACTIVE.load(Ordering::Acquire)
 }

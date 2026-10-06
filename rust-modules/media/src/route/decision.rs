@@ -257,6 +257,10 @@ pub struct PlaybackSession {
     /// leave the subtitle to the app instead of having the server burn it ([`side_subs_allowed`]).
     /// Meaningless when `cur_sub_sid == 0`.
     cur_sub_client_drawable: bool,
+    /// The 0-based position of [`Self::cur_sub_sid`] among the Part's embedded subtitle streams
+    /// (`metadata::sub_render_ordinal`'s own value, the one direct play renders by); negative for a
+    /// sidecar and while nothing is selected. What the side reader is told to decode.
+    cur_sub_ordinal: i32,
     /// The app's own drawing of a subtitle over a remux was refused or failed on this playback,
     /// so the server burn is the only route left for it. Session-scoped: cleared with the item.
     side_subs_refused: bool,
@@ -423,6 +427,7 @@ impl PlaybackSession {
         cur_sub_sid: 0,
         cur_sub_sidecar: false,
         cur_sub_client_drawable: false,
+        cur_sub_ordinal: -1,
         side_subs_refused: false,
         cur_sub_pref_lang: None,
         cur_part_id: 0,
@@ -494,6 +499,7 @@ impl PlaybackSession {
             cur_sub_sid,
             cur_sub_sidecar,
             cur_sub_client_drawable,
+            cur_sub_ordinal,
             side_subs_refused,
             cur_sub_pref_lang,
             cur_part_id,
@@ -546,6 +552,7 @@ impl PlaybackSession {
             cur_sub_sid: *cur_sub_sid,
             cur_sub_sidecar: *cur_sub_sidecar,
             cur_sub_client_drawable: *cur_sub_client_drawable,
+            cur_sub_ordinal: *cur_sub_ordinal,
             side_subs_refused: *side_subs_refused,
             cur_sub_pref_lang: cur_sub_pref_lang.clone(),
             cur_part_id: *cur_part_id,
@@ -4852,11 +4859,13 @@ pub fn rollback_original_recovery(ps: &mut PlaybackSession) -> Option<OriginalRo
     let kept_subtitle_sid = ps.cur_sub_sid;
     let kept_subtitle_sidecar = ps.cur_sub_sidecar;
     let kept_subtitle_drawable = ps.cur_sub_client_drawable;
+    let kept_subtitle_ordinal = ps.cur_sub_ordinal;
     let kept_auto_original = ps.auto_original.clone();
     install_route_projection(ps, &pending.previous);
     ps.cur_sub_sid = kept_subtitle_sid;
     ps.cur_sub_sidecar = kept_subtitle_sidecar;
     ps.cur_sub_client_drawable = kept_subtitle_drawable;
+    ps.cur_sub_ordinal = kept_subtitle_ordinal;
     ps.auto_original = kept_auto_original;
     if let Some(rung) = restored_hls {
         install_active_hls(&pending.encoder, &pending.previous.url, rung);
@@ -7527,6 +7536,7 @@ fn request_play_inner(
         s.cur_sub_sid = 0;
         s.cur_sub_sidecar = false;
         s.cur_sub_client_drawable = false;
+        s.cur_sub_ordinal = -1;
         s.side_subs_refused = false;
         // The outgoing item's enhancement outcome is not this one's; the landing installs its own.
         s.cur_enhancement = EnhancementOutcome::Off;
@@ -8071,6 +8081,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             cur_sub_sidecar: plan.sub_render_ordinal.is_some_and(|ord| ord < 0),
             // Any ordinal the plan carries is something the app's renderer draws.
             cur_sub_client_drawable: plan.sub_render_ordinal.is_some(),
+            cur_sub_ordinal: plan.sub_render_ordinal.unwrap_or(-1),
             side_subs_refused: false,
             cur_sub_pref_lang: plan.sub_pref_lang,
             cur_part_id: plan.part_id,
@@ -8425,11 +8436,20 @@ fn original_remux_shape(ps: &PlaybackSession) -> bool {
         && ps.auto_original.as_ref().is_some_and(|c| !c.dovi.base_layer_unusable())
 }
 
-/// Can the app read an EMBEDDED track from the remux's own stream (or a second demux of the
-/// source) to draw it? Nothing can yet — only external sidecars, which the app fetches on its
-/// own, are drawn over a remux — so an embedded subtitle on a remux is still the server's burn.
-fn side_reader_admitted(_ps: &PlaybackSession) -> bool {
-    false
+/// The largest Part (whole-file bitrate, kbps) the app reads a second time beside a remux. The
+/// reader's scan reads the Part's own bytes at about this rate, so a heavy Part would compete with
+/// the remux for the same link; Part sizes above it keep the server's burn.
+const SIDE_MAX_PART_KBPS: i64 = 30_000;
+
+/// **May the app read an EMBEDDED track itself** — from a second, subtitle-only demux of the film's
+/// original Part (`player::subside`) — so the server need not burn it? Only on a LOCAL link (a
+/// relay or remote link would carry two reads of the film), with a real server Part to read (not
+/// a fixture or a pinned URL), and a known, moderate Part bitrate: `0` means nobody measured it
+/// and burns by design. A sidecar needs none of this (the app fetches it on its own).
+fn side_reader_admitted(ps: &PlaybackSession) -> bool {
+    cur_client(ps).is_some_and(|c| c.link() == Some(plx_plex::plex::probe::Location::Local))
+        && ps.auto_original.as_ref().is_some_and(|c| c.probe_part.starts_with('/'))
+        && (1..=SIDE_MAX_PART_KBPS).contains(&ps.cur_transport_kbps)
 }
 
 /// [`side_subs_allowed`] for a prospective pick: a subtitle is chosen, the app can draw it, no
@@ -8910,9 +8930,11 @@ pub fn subtitle_presenter(ps: &PlaybackSession) -> SubtitlePresenter {
 pub fn subtitles_burned(ps: &PlaybackSession) -> bool {
     is_transcoding(ps)
         && subtitle_presenter(ps) != SubtitlePresenter::ClientOverRemux
-        // Dev trigger `plxnative-subside`: the side reader is drawing an embedded track over a plain
-        // remux with nothing selected in the route. Stage 3's real presenter replaces this term.
-        && !crate::player::subside::active()
+        // Dev trigger `plxnative-subside` only: the reader draws an embedded track over a plain
+        // remux while the route has NO subtitle selected (so the presenter says `None`, not
+        // `ClientOverRemux`). A selected subtitle is the presenter's alone to answer, so a refused
+        // or failed reader (`ServerBurn`) is never silenced by a reader that is still shutting down.
+        && !(ps.cur_sub_sid == 0 && crate::player::subside::active())
 }
 
 /// What the side subtitle reader needs to read the film's original Part beside a plain remux.
@@ -8925,14 +8947,28 @@ pub struct SideReaderTarget {
     pub session: String,
     /// The Part's whole-file bitrate, for the log line.
     pub part_kbps: u32,
+    /// The 0-based position of the track to draw among the Part's subtitle streams.
+    pub ordinal: i32,
 }
 
 /// The side reader's inputs for this playback, or `None` unless the live route is a plain remux of
-/// a real (non-preview) playback with no subtitle selected in the route.
+/// a real (non-preview) playback on which the app draws an embedded track
+/// ([`SubtitlePresenter::ClientOverRemux`], not a sidecar — the app fetches that itself), or the
+/// dev trigger is armed with no subtitle selected in the route.
 pub fn side_reader_target(ps: &PlaybackSession) -> Option<SideReaderTarget> {
-    if ps.preview || ps.cur_sub_sid != 0 || live_family(ps) != RouteFamily::Remux {
+    if ps.preview || live_family(ps) != RouteFamily::Remux {
         return None;
     }
+    let ordinal = if ps.cur_sub_sid == 0 {
+        crate::player::subside::dev_armed_ordinal()?
+    } else if !ps.cur_sub_sidecar
+        && ps.cur_sub_ordinal >= 0
+        && subtitle_presenter(ps) == SubtitlePresenter::ClientOverRemux
+    {
+        ps.cur_sub_ordinal
+    } else {
+        return None;
+    };
     let request = ps.request.as_ref()?;
     if request.part.is_empty() || ps.tsession.is_empty() {
         return None;
@@ -8942,6 +8978,7 @@ pub fn side_reader_target(ps: &PlaybackSession) -> Option<SideReaderTarget> {
         part: request.part.clone(),
         session: ps.tsession.clone(),
         part_kbps: u32::try_from(ps.cur_transport_kbps).unwrap_or(0),
+        ordinal,
     })
 }
 
@@ -9935,6 +9972,7 @@ pub fn commit_subtitle_selection(
     // audio enhancement) apart from an embedded pick (needs a forced burn, M7).
     ps.cur_sub_sidecar = stream_id != 0 && sub_idx < 0;
     ps.cur_sub_client_drawable = stream_id != 0 && client_renderable;
+    ps.cur_sub_ordinal = if stream_id != 0 { sub_idx } else { -1 };
     if !transcoding || in_place {
         // This is an immediate client-rendered change: unlike a burn/audio rebuild it is already
         // part of the applied stream contract. Publish projection + reporter tracks as one reducer

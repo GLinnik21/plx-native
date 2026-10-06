@@ -415,10 +415,18 @@ impl Drop for SideDemux {
 /// Open the Part through [`SideIo`] and its subtitle tracks. `Err` carries how to react.
 unsafe fn open_side(cfg: &ReadCfg, stop: &Arc<SideStop>) -> Result<(SideDemux, c_int, u64), RunEnd> {
     let io = match SideIo::open(cfg.url, stop) {
-        Ok(io) => Box::into_raw(io),
+        Ok(io) => io,
         Err(SideOpenErr::Stopped) => return Err(RunEnd::Stopped),
         Err(SideOpenErr::Failed) => return Err(RunEnd::Failed),
     };
+    // The same gate as the main demuxer's (`ff::demux`): a device whose FFmpeg is not the one the
+    // struct offsets were built for is never read through. `Unusable` raises the failure at once
+    // (a rebuild as the server burn) instead of leaving it to the anchor wait. (FFmpeg is already
+    // registered: the reader only runs once the main demuxer has published its anchor.)
+    if !ABI_OK.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(RunEnd::Unusable);
+    }
+    let io = Box::into_raw(io);
     let mut d = SideDemux { fmt: std::ptr::null_mut(), avio: std::ptr::null_mut(), io, pkt: std::ptr::null_mut(), subs: None };
     let buf = av_malloc(65536) as *mut u8;
     if buf.is_null() {
@@ -581,7 +589,6 @@ pub(crate) fn read_once(
             Ok(v) => v,
             Err(end) => return end,
         };
-        let streams = (*d.fmt).streams;
         if delta.is_none() {
             let started = std::time::Instant::now();
             let scan = match scan_keyframes(&d, vi, cfg.offset_ns, anchor, stop) {
@@ -632,7 +639,13 @@ pub(crate) fn read_once(
                 return RunEnd::Stopped;
             }
             let si = (*d.pkt).stream_index;
-            let st = *streams.add(si.max(0) as usize);
+            // The stream table is re-read per packet and the index bounded: a packet that names a
+            // stream the header never declared is dropped, never indexed past the array.
+            if si < 0 || si as u32 >= (*d.fmt).nb_streams {
+                av_packet_unref(d.pkt);
+                continue;
+            }
+            let st = *(*d.fmt).streams.add(si as usize);
             let t = pts_ns_opt(d.pkt, st);
             if let Some(pos) = subs.position(si).filter(|p| *p == cfg.ordinal) {
                 if let Some(cue) = subs.decode(pos, d.pkt, st) {

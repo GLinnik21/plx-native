@@ -3923,6 +3923,121 @@ fn subtitles_burned_false_only_for_client_over_remux() {
     cleanup(&mut ps);
 }
 
+// ---- Subtitles: an embedded subtitle on a local remux is read beside the stream --------------------
+
+/// Make the installed remux one the side reader may read beside: a real server Part path on the
+/// candidate and a moderate, known whole-file bitrate. (The fixture's own Part is not a path.)
+fn admit_side_reader(ps: &mut PlaybackSession) {
+    ps.auto_original.as_mut().expect("a candidate").probe_part = "/library/parts/960001/1/file.mkv".into();
+    ps.cur_transport_kbps = 7_400;
+    ps.request = Some(PlaybackRequest {
+        sid: ps.cur_sid,
+        rk: "5".into(),
+        part: "/library/parts/960001/1/file.mkv".into(),
+        vcodec: "hevc".into(),
+        acodec: "truehd".into(),
+        title: String::new(),
+        ctx: String::new(),
+        preview: false,
+    });
+}
+
+fn pick_embedded(ps: &mut PlaybackSession) {
+    commit_subtitle_selection(ps, 2, 77, true);
+}
+
+#[test]
+fn embedded_pick_on_local_remux_is_client_over_remux() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    admit_side_reader(&mut ps);
+    pick_embedded(&mut ps);
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux);
+    assert!(plain_rebuild_is_remux(&ps), "a seek keeps the copy");
+    assert!(!subtitles_burned(&ps));
+    assert_eq!(live_subtitle_effect(&ps), SubtitleEffect::Sidecar, "no burn to offer the enhancement around");
+    assert_eq!(retranscode_contract(&ps), enhanced_remux_contract(NONE, false));
+    assert_eq!(ps.cur_sub_sid, 77, "the real id stays the selection");
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn relay_or_remote_link_burns() {
+    for link in [plx_plex::plex::probe::Location::Relay, plx_plex::plex::probe::Location::Remote] {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let live = Live::start(EnhMode::Honor("ac3"));
+        install_truehd_remux(&mut ps, &live);
+        admit_side_reader(&mut ps);
+        plx_plex::plex::client_for(live.sid).unwrap().set_link(link);
+        pick_embedded(&mut ps);
+        assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ServerBurn(BurnReason::AudioConversion), "{link:?}");
+        assert!(subtitles_burned(&ps));
+        live.finish();
+        cleanup(&mut ps);
+    }
+}
+
+#[test]
+fn part_over_30mbps_burns() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    admit_side_reader(&mut ps);
+    ps.cur_transport_kbps = 30_001;
+    pick_embedded(&mut ps);
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ServerBurn(BurnReason::AudioConversion));
+    ps.cur_transport_kbps = 30_000;
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux, "the bound is inclusive");
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn unknown_bitrate_burns() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    admit_side_reader(&mut ps);
+    ps.cur_transport_kbps = 0;
+    pick_embedded(&mut ps);
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ServerBurn(BurnReason::AudioConversion));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn side_reader_target_names_the_selected_tracks_ordinal() {
+    plx_base::devtrig::with_private_triggers(|| {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let live = Live::start(EnhMode::Honor("ac3"));
+        install_truehd_remux(&mut ps, &live);
+        admit_side_reader(&mut ps);
+        assert!(side_reader_target(&ps).is_none(), "no subtitle, no trigger: nothing to read");
+        commit_subtitle_selection(&mut ps, 4, 77, true);
+        let t = side_reader_target(&ps).expect("an admitted embedded pick starts the reader");
+        assert_eq!(t.ordinal, 4, "the render ordinal direct play would draw by");
+        assert_eq!((t.sid, t.part_kbps), (live.sid, 7_400));
+        commit_subtitle_selection(&mut ps, 1, 78, true);
+        assert_eq!(side_reader_target(&ps).map(|t| t.ordinal), Some(1));
+        // A sidecar is fetched by the app itself: no reader.
+        commit_subtitle_selection(&mut ps, -1, 79, true);
+        assert!(side_reader_target(&ps).is_none());
+        // Refused (failed) reader: the burn is the route, no reader.
+        commit_subtitle_selection(&mut ps, 4, 77, true);
+        ps.side_subs_refused = true;
+        assert!(side_reader_target(&ps).is_none());
+        live.finish();
+        cleanup(&mut ps);
+    });
+}
+
 #[test]
 fn embedded_pick_on_a_remux_still_burns() {
     let mut ps = PlaybackSession::IDLE;
