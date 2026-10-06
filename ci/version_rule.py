@@ -11,9 +11,10 @@ Three places now need exactly that arithmetic:
     `X.Y.Z-nightly-YYYYMMDD` is built from.
   * `ci/check-package.py::expected_dev_version` — recomputes the same thing to grade the `-dev`
     string a dev package's binary reports.
-  * `ci/flavor.py::appinfo_for` — uses the SAME numbers as a **nightly package's own** `version`
-    field (never `-dev`: LG's installer takes three integers and nothing else). A nightly ipk is
-    the only flavour whose *package* version moves, and it moves by exactly this rule.
+  * `ci/flavor.py::appinfo_for` — uses the SAME major.minor as a **nightly package's own**
+    `version` field, with the cut date as the patch (`nightly_package_triplet`; never `-dev`: LG's
+    installer takes three integers and nothing else). A nightly ipk is the only flavour whose
+    *package* version moves.
 
 One Python implementation, imported by the two Python consumers, is what keeps that from
 drifting into a fourth copy the way the id and the port already had to be guarded against.
@@ -72,3 +73,31 @@ def next_version_triplet(
             "version's major.minor)"
         )
     return (line_major, line_minor, patch + 1), None
+
+
+def nightly_package_triplet(
+    tracked_version: str, release_line_content: "str | None", date: str
+) -> "tuple[tuple[int, int, int] | None, str | None]":
+    """The `(major, minor, date)` a nightly PACKAGE carries as its own `version`.
+
+    The `major.minor` is `next_version_triplet`'s, so a nightly still sits ahead of the stable it
+    was cut after. The PATCH is the cut date read as an integer (`20260919`), which is what makes
+    two nightlies different packages: Homebrew Channel decides an update exists by comparing the
+    installed `appinfo.json` version with the manifest's as plain strings, so a package version
+    that only moved with the tracked release (`0.7.0` for every day of the cycle) would never offer
+    an update between two nightlies. It stays three integers because that is all LG's installer
+    accepts (`ci/check-package.py` grades exactly that), which is also why the date is not a
+    `+suffix` the way the REPORTED `X.Y.Z-nightly-YYYYMMDD` carries it.
+
+    Strictly increasing day over day, and same-day rebuilds are refused by `ci/nightly.py plan`,
+    so no two published nightlies share a package version.
+
+    Returns `(triplet_or_None, error_or_None)`: the errors are `next_version_triplet`'s mis-cut
+    line, or a `date` that is not exactly 8 ASCII digits.
+    """
+    if len(date) != 8 or not date.isascii() or not date.isdigit():
+        return None, f"nightly date must be exactly 8 digits (YYYYMMDD), got {date!r}"
+    triplet, err = next_version_triplet(tracked_version, release_line_content)
+    if triplet is None:
+        return None, err
+    return (triplet[0], triplet[1], int(date)), None

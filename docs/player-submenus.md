@@ -24,7 +24,9 @@ because the overlay's state shape changed on purpose.
   the host can run a subtitle search, the root ends with a **Search subtitles** row: its page
   has a Language row (defaulted to the viewer's subtitle preference; a picker of 2-letter
   languages overrides it) and the agent's results; OK on a result downloads it, and once the
-  server lists the new stream the panel selects it and closes (`docs/pms-api.md` §8).
+  server lists the new stream the panel selects it and closes (`docs/pms-api.md` §8). A result
+  the playing item already carries as a sidecar (same release name and language) reads "Added"
+  and OK is inert, since adding it again would list one subtitle twice.
 - **Keys:** UP/DOWN move; OK or RIGHT on a Nav row pushes; on a sub-page LEFT/BACK pops and focus
   returns to the opener by semantic id; on the root LEFT/RIGHT switch tabs as before (RIGHT on a
   Nav row pushes instead); BACK on the root dismisses; clicking the "< TITLE" band pops. A track

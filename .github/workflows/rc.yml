@@ -1,0 +1,239 @@
+name: Release candidate
+
+# A release CANDIDATE: the stable package (`com.beb.plxnative`) of a version that has not shipped,
+# built by the same pipeline as a release (`build-package.yml`, production telemetry, every gate)
+# and published as a GitHub prerelease for people to install and try before the release is cut.
+# `ci/rc.py`'s module doc is the full account; the short one:
+#
+#   * The binary reports `X.Y.Z-rc.N`; the package stays `X.Y.Z` (webOS installs nothing else).
+#   * The tag is `rc/vX.Y.Z-rc.N` and points at the version-bump commit the release will make,
+#     pushed as a TAG ONLY — no branch moves, main included. Under `rc/`, not `v`, so release.yml's
+#     `push: tags: ['v*']` never fires on one.
+#   * Prerelease, `--latest=false`, and no Homebrew Channel manifest: the Channel resolves
+#     `releases/latest`, so it never offers a candidate.
+#   * Promotion is release.yml's `candidate` input, which refuses unless its own bump yields the
+#     candidate's exact tree — the release ships the source that was tested, or nothing.
+#
+# HOW TO CUT ONE: Actions -> Release candidate -> Run workflow, with the same bump / version / line
+# inputs release.yml takes. The release note and audit for the version must already be on the line
+# (check-package.py grades the stable package against them, exactly as it does for a release).
+#
+# A failed run after `prepare` has pushed its tag burns that candidate number; the next run takes
+# the next one. Delete the tag (and any release) first to reuse it.
+#
+# DRY RUNS — `dry_run: true`, and any same-repo pull request that touches this file or ci/rc.py —
+# build the line as it stands under the next candidate number, bump nothing, push nothing and
+# publish nothing. Fork pull requests are skipped: the build needs SENTRY_AUTH_TOKEN.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump the candidate is for (ignored if "version" is set) — trunk cuts minors'
+        type: choice
+        options: [minor, major, patch]
+        default: minor
+      version:
+        description: 'Explicit X.Y.Z instead of a bump level'
+        required: false
+      line:
+        description: 'Maintenance line to cut from, e.g. release/v0.6 (empty = main)'
+        type: string
+        required: false
+        default: ''
+      dry_run:
+        description: 'Build and gate everything, but bump, tag and publish nothing'
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - .github/workflows/rc.yml
+      - ci/rc.py
+
+permissions:
+  contents: read
+
+concurrency:
+  # A real candidate shares release.yml's group: both bump the same version files and push tags off
+  # the same line, so a candidate and a release must queue behind each other, never interleave. A
+  # pull request's dry run gets its own group and cancels its own stale runs.
+  group: ${{ github.event_name == 'pull_request' && format('rc-pr-{0}', github.event.pull_request.number) || 'release' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  prepare:
+    name: bump + tag the candidate
+    runs-on: ubuntu-latest
+    # Same work as release.yml's `prepare` (measured max 0.2 min there); limit matches it.
+    timeout-minutes: 10
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: write
+    outputs:
+      dry: ${{ steps.dry.outputs.dry }}
+      ref: ${{ steps.tag.outputs.ref }}
+      version: ${{ steps.plan.outputs.version }}
+      rc: ${{ steps.plan.outputs.rc }}
+      label: ${{ steps.plan.outputs.label }}
+      tag: ${{ steps.plan.outputs.tag }}
+      prev_tag: ${{ steps.plan.outputs.prev_tag }}
+      base_tag: ${{ steps.plan.outputs.base_tag }}
+    steps:
+      - name: Validate dispatch inputs
+        env:
+          LINE: ${{ inputs.line }}
+        run: |
+          set -euo pipefail
+          if [ -n "$LINE" ] && ! [[ "$LINE" =~ ^release/v[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::line '$LINE' is not a maintenance branch — expected release/vX.Y (e.g. release/v0.6) or empty for main."
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.line || 'main' }}
+          # The tag list (`ci/rc.py plan` numbers candidates from it) and a pushable clone.
+          fetch-depth: 0
+      - id: dry
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ] || [ "${{ inputs.dry_run }}" = true ]; then
+            echo "dry=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Bump the version and plan the candidate
+        id: plan
+        env:
+          DRY: ${{ steps.dry.outputs.dry }}
+          LINE: ${{ inputs.line || 'main' }}
+          SPEC: ${{ inputs.version || inputs.bump || 'minor' }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY" = true ]; then
+            # The line as it stands, under its own version: proves the pipeline, cuts nothing.
+            python3 ci/rc.py plan --version "$(python3 ci/bump-version.py --current)" --line "$LINE" --dry >> "$GITHUB_OUTPUT"
+          else
+            python3 ci/bump-version.py "$SPEC"
+            python3 ci/rc.py plan --version "$(python3 ci/bump-version.py --current)" --line "$LINE" >> "$GITHUB_OUTPUT"
+          fi
+          # The four version files agree, and the release note and audit for this version exist —
+          # the same tracked-file assertions release.yml asks before it tags.
+          python3 ci/check-package.py
+      - name: Commit the bump and push the candidate tag
+        id: tag
+        env:
+          DRY: ${{ steps.dry.outputs.dry }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          LABEL: ${{ steps.plan.outputs.label }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY" = true ]; then
+            echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "dry run: building $(git rev-parse --short HEAD) as $LABEL, nothing pushed" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add pkg/appinfo.json ipkroot/ctl/control rust-modules/Cargo.toml rust-modules/Cargo.lock
+          # The same message release.yml's bump commit carries — this IS that commit, tested early.
+          # No commit when the version did not move (a candidate for the version already written).
+          git diff --cached --quiet || git commit -m "release: $VERSION"
+          git tag -a "$TAG" -m "$LABEL"
+          # The tag only. No branch moves until the release itself is cut.
+          git push origin "$TAG"
+          echo "ref=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tagged **$TAG** at $(git rev-parse --short HEAD) (parent $(git rev-parse --short HEAD^))" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ARM build + gates
+    needs: prepare
+    uses: ./.github/workflows/build-package.yml
+    with:
+      ref: ${{ needs.prepare.outputs.ref }}
+      # The released id: a candidate is the release build of the app users install.
+      flavor: stable
+      rc: ${{ needs.prepare.outputs.rc }}
+      # PRODUCTION, like the release: a candidate is what will ship, and its reports are filed
+      # under their own Sentry release (`plxnative@X.Y.Z-rc.N`), apart from the final's.
+      telemetry: production
+      artifact: rc-assets
+      homebrew-manifest: false
+      source-asset: true
+      fwcompat: true
+      # A pull request's dry run publishes nothing (see nightly.yml for the same choice).
+      upload-debug-files: ${{ github.event_name != 'pull_request' }}
+      caches: false
+    secrets:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+  publish:
+    name: publish the candidate prerelease
+    runs-on: ubuntu-latest
+    # Same work as nightly.yml's `publish` (measured max 1.4 min there); limit matches it.
+    timeout-minutes: 10
+    needs: [prepare, build]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: rc-assets
+          path: raw
+      - name: Stage candidate assets
+        id: stage
+        env:
+          LABEL: ${{ needs.prepare.outputs.label }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Named for the candidate: every candidate of one version would otherwise download as the
+          # same com.beb.plxnative_X.Y.Z_arm.ipk.
+          ipk="plxnative-v${LABEL}.ipk"
+          cp raw/com.beb.plxnative_*_arm.ipk "dist/$ipk"
+          ( cd dist && sha256sum "$ipk" > rc.sha256 )
+          cp raw/ffmpeg-*.tar.xz raw/build-ffmpeg.sh dist/
+          cp raw/plxnative-source-*.tar.gz* dist/
+          echo "ipk=$ipk" >> "$GITHUB_OUTPUT"
+      - name: Render the prerelease body
+        env:
+          LABEL: ${{ needs.prepare.outputs.label }}
+          BASE_TAG: ${{ needs.prepare.outputs.base_tag }}
+          PREV_TAG: ${{ needs.prepare.outputs.prev_tag }}
+          IPK: ${{ steps.stage.outputs.ipk }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 ci/rc.py notes --label "$LABEL" --sha "$(git rev-parse HEAD)" \
+            --base-tag "$BASE_TAG" --prev-tag "$PREV_TAG" --ipk "$IPK" \
+            --sha256 "$(cut -d' ' -f1 dist/rc.sha256)" --repo "$REPO" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify the staged checksum
+        run: ( cd dist && sha256sum -c rc.sha256 )
+      - name: Create and verify the prerelease
+        if: needs.prepare.outputs.dry != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          LABEL: ${{ needs.prepare.outputs.label }}
+          IPK: ${{ steps.stage.outputs.ipk }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          # --verify-tag: the tag `prepare` pushed, never one gh would create at another commit.
+          gh release create "$TAG" \
+            "dist/$IPK" dist/rc.sha256 dist/ffmpeg-*.tar.xz dist/build-ffmpeg.sh dist/plxnative-source-*.tar.gz* \
+            --verify-tag \
+            --title "PlxNative $LABEL" \
+            --prerelease \
+            --latest=false \
+            --notes-file "$RUNNER_TEMP/notes.md"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .prerelease)" = true
+          test "$(git rev-list -n1 "$TAG")" = "$sha"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[0].uploader.login')" = 'github-actions[bot]'
+          mkdir -p verify
+          gh release download "$TAG" --pattern "$IPK" --dir verify
+          test "$(sha256sum "verify/$IPK" | cut -d' ' -f1)" = "$(cut -d' ' -f1 dist/rc.sha256)"

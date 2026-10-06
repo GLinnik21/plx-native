@@ -98,7 +98,16 @@ fn main() {
 /// `PLX_BUILD_SHA` cannot (trunk moves several times a day; the reported version is what a bug
 /// report actually names).
 ///
-/// The input is `PLX_RELEASE` and (new) `PLX_CHANNEL`/`PLX_NIGHTLY_DATE`, exported by the Makefile
+/// **`PLX_CHANNEL=rc` is the fourth arm**: a release CANDIDATE, built by `.github/workflows/rc.yml`
+/// for the STABLE id from a commit whose `Cargo.toml` already names the release it is a candidate
+/// for. Its package carries that exact `X.Y.Z` (LG takes nothing else), and only the reported
+/// string says what it is — `0.8.0-rc.1`, numbered by `PLX_RC` (a positive integer, validated by
+/// [`is_rc_number`]). Like nightly it requires `PLX_RELEASE`: a candidate is the release build,
+/// byte for byte, apart from this one string. Unlike nightly it does not move the number, because
+/// the candidate IS the version it names — `0.8.0-rc.1` precedes `0.8.0` in semver order, which is
+/// what Sentry's release list and a bug report need to read.
+///
+/// The input is `PLX_RELEASE` and (new) `PLX_CHANNEL`/`PLX_NIGHTLY_DATE`/`PLX_RC`, exported by the Makefile
 /// for `RELEASE=1` and `FLAVOR=nightly` respectively and by nothing else, so the developer answer
 /// is what an ordinary `make`, `make check`, `make sim` or a bare `cargo build` produces —
 /// `PLX_CHANNEL` unset (or empty) leaves every existing build byte-for-byte as it always reported.
@@ -108,6 +117,7 @@ fn emit_version() {
     println!("cargo:rerun-if-env-changed=PLX_RELEASE");
     println!("cargo:rerun-if-env-changed=PLX_CHANNEL");
     println!("cargo:rerun-if-env-changed=PLX_NIGHTLY_DATE");
+    println!("cargo:rerun-if-env-changed=PLX_RC");
     let pkg = std::env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION");
     // PARSED BEFORE THE BRANCH, deliberately. Validating only inside the developer arm would make
     // the shape rule conditional on the build that is least likely to be looked at: cargo accepts
@@ -123,17 +133,26 @@ fn emit_version() {
     // `PLX_RELEASE`), so "nightly" is checked the same way rather than a second one.
     let release = std::env::var("PLX_RELEASE").is_ok_and(|v| !v.is_empty());
     let channel = std::env::var("PLX_CHANNEL").unwrap_or_default();
-    if !channel.is_empty() && channel != "nightly" {
-        panic!("PLX_CHANNEL={channel:?} is not a recognized channel — only \"nightly\" (or unset/empty) is");
-    }
-    let nightly = channel == "nightly";
-    if nightly && !release {
+    if !matches!(channel.as_str(), "" | "nightly" | "rc") {
         panic!(
-            "PLX_CHANNEL=nightly requires PLX_RELEASE=1 — nightly never ships a dev build (see \
-             the Makefile's release-guard)"
+            "PLX_CHANNEL={channel:?} is not a recognized channel — only \"nightly\", \"rc\" (or \
+             unset/empty) are"
         );
     }
-    let version = if nightly {
+    let nightly = channel == "nightly";
+    if !channel.is_empty() && !release {
+        panic!(
+            "PLX_CHANNEL={channel} requires PLX_RELEASE=1 — neither a nightly nor a release \
+             candidate ever ships a dev build (see the Makefile's release-guard)"
+        );
+    }
+    let version = if channel == "rc" {
+        let rc = std::env::var("PLX_RC").unwrap_or_default();
+        if !is_rc_number(&rc) {
+            panic!("PLX_CHANNEL=rc requires PLX_RC as a positive integer without leading zeros; got {rc:?}");
+        }
+        format!("{pkg}-rc.{rc}")
+    } else if nightly {
         let date = std::env::var("PLX_NIGHTLY_DATE").unwrap_or_default();
         if !is_nightly_date(&date) {
             panic!(

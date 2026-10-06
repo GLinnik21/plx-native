@@ -607,7 +607,19 @@ endif
 # `PLX_CHANNEL=nightly FLAVOR=debug` must not reach cargo, and a blank value must not either (it is
 # a different cargo fingerprint from unset; see PLX_RELEASE). `build.rs` reads blank and unset as
 # the same "not nightly", exactly as it does PLX_RELEASE.
-override PLX_CHANNEL := $(if $(filter nightly,$(FLAVOR)),nightly,)
+#
+# `RC=<n>` selects the fourth arm, `PLX_CHANNEL=rc`: a release CANDIDATE of the version the tree
+# already names, reporting `X.Y.Z-rc.<n>` (`.github/workflows/rc.yml` is the only caller that should
+# need it). Refused at parse time for anything but `FLAVOR=stable RELEASE=1`, because a candidate is
+# by definition the release build of the released id with one string changed — a candidate of the
+# debug or nightly install is not a candidate of anything users will get. The number's own shape
+# (positive, no leading zero) is `build.rs::is_rc_number`'s to grade; the Makefile does not keep a
+# second copy of that rule.
+ifneq ($(strip $(RC)),)
+$(if $(filter stable,$(FLAVOR)),,$(error RC=$(RC) builds a release candidate of $(APPID_STABLE) — it needs FLAVOR=stable, not "$(FLAVOR)"))
+$(if $(RELEASE),,$(error RC=$(RC) needs RELEASE=1 — a release candidate is the release build, not a dev one))
+endif
+override PLX_CHANNEL := $(if $(filter nightly,$(FLAVOR)),nightly,$(if $(strip $(RC)),rc,))
 ifneq ($(PLX_CHANNEL),)
 export PLX_CHANNEL
 else
@@ -619,9 +631,23 @@ endif
 # debug, for a variable those flavours never read. `?=` (not `override`) so it passes through an
 # already-set environment variable — CI's coming nightly caller supplies the date it actually cut;
 # a bare local `make FLAVOR=nightly RELEASE=1 ipk` gets today's UTC date for free.
+# `:=` inside an origin test, NOT `?=`: `?=` defines a RECURSIVE variable, so the `date` would be
+# re-run every time it is expanded, and a local run crossing 00:00 UTC could name the ipk for one
+# day while the descriptor it packages says the next. An already-set value (environment or command
+# line, which is what CI passes) is left alone.
 ifeq ($(FLAVOR),nightly)
-PLX_NIGHTLY_DATE ?= $(shell date -u +%Y%m%d)
+ifeq ($(origin PLX_NIGHTLY_DATE),undefined)
+PLX_NIGHTLY_DATE := $(shell date -u +%Y%m%d)
+endif
 export PLX_NIGHTLY_DATE
+endif
+# The candidate number, exported only for `PLX_CHANNEL=rc` for the same fingerprint reason as
+# PLX_CHANNEL itself: unset everywhere else, so no other build's cargo inputs move.
+override PLX_RC := $(if $(filter rc,$(PLX_CHANNEL)),$(strip $(RC)),)
+ifneq ($(PLX_RC),)
+export PLX_RC
+else
+unexport PLX_RC
 endif
 # ...and the LINK needs its own witness, because pkg/plxnative is a path BOTH configurations
 # write. Per-dir targets keep cargo honest, but after a RELEASE=1 build the dev .a is older
@@ -705,8 +731,10 @@ TELEMETRY_CFG  = $(shell printf '%s|%s|%s|%s' '$(PLX_SENTRY_DSN)' '$(PLX_POSTHOG
 # the same tracked version a day apart must not silently share pkg/plxnative just because nothing
 # else about the configuration moved. `$(filter nightly,$(FLAVOR))` guards it exactly the way
 # PLX_CHANNEL and PLX_NIGHTLY_DATE above are themselves guarded, so a non-nightly stamp is
-# byte-for-byte what it always was.
-RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFILE)),+profile:$(ARM_PROFILE),)$(if $(SYMBOLS),+symbols,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)+tel:$(TELEMETRY_CFG)
+# byte-for-byte what it always was. `+rc:<n>` is the same argument for a release candidate: the
+# number is what `ci/check-package.py` grades the binary's `X.Y.Z-rc.<n>` against, and an rc.1 and
+# an rc.2 of one tree must not share a link.
+RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFILE)),+profile:$(ARM_PROFILE),)$(if $(SYMBOLS),+symbols,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)$(if $(PLX_RC),+rc:$(PLX_RC),)+tel:$(TELEMETRY_CFG)
 # Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
 # Both choices are load-bearing, and both were arrived at by measuring the failures:
 #   * A rule cannot do it. macOS ships GNU make 3.81, which decides whether a target is up to date
@@ -1122,8 +1150,21 @@ LICENSE_FILES = LICENSE LICENSING.md TRADEMARKS.md $(wildcard licenses/*.txt)
 # (ci/flavor.py, through ci/mkipk.py) so `make deploy`'s scp'd appinfo and the .ipk's staged one
 # cannot drift — one code path, asked twice. Gitignored: it derives from pkg/appinfo.json, which
 # stays the single source of the version and of every field that must NOT differ between flavours
-# (only `id` and `title` may, and ci/flavor.py's selftest asserts exactly that set).
-pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/install-identities.json ci/mkipk.py
+# (only `id` and `title` may — plus `version` for nightly alone — and ci/flavor.py's selftest asserts exactly those sets).
+#
+# A nightly's descriptor depends on the DATE as well as on its source files, because the date is
+# the package version's patch (`ci/flavor.py::appinfo_for`). The stamp below is named for the date,
+# so a new day is a new prerequisite that did not exist yesterday and the descriptor is rebuilt;
+# without it a tree built on Monday would package Tuesday's binary under Monday's version. Every
+# older stamp is removed when a new one is made, so the directory never accumulates them.
+ifeq ($(FLAVOR),nightly)
+APPINFO_DATE_STAMP = pkg/.flavor/nightly/date-$(PLX_NIGHTLY_DATE)
+$(APPINFO_DATE_STAMP):
+	@mkdir -p $(dir $@)
+	@rm -f pkg/.flavor/nightly/date-*
+	@touch $@
+endif
+pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/install-identities.json ci/mkipk.py $(APPINFO_DATE_STAMP)
 	@mkdir -p $(dir $@)
 	python3 ci/mkipk.py --emit-appinfo $(FLAVOR) $@
 
@@ -1637,6 +1678,9 @@ check-python-rest: check-localization check-c-unit
 	@# network, so a broken `ci/nightly.py` is caught here rather than at 03:00 UTC in the
 	@# scheduled run nobody is watching.
 	python3 ci/nightly.py --selftest
+	@# The release-candidate workflow's pure logic (numbering, the version/line rule it shares
+	@# with release.yml, the prerelease body) — same reason: a candidate is cut by hand, rarely.
+	python3 ci/rc.py --selftest
 	@# The two host-side readers of the back-buffer-wait captures, against synthetic traces/JSONL.
 	python3 tools/analyze-sched-trace.py --self-test
 	python3 tools/analyze-hwcnt-wait.py --self-test
@@ -1811,13 +1855,20 @@ lint:
 #
 # THROUGH `ci/flavor.py`, not a raw read of the tracked file — for stable and debug this is a
 # no-op re-derivation of the exact same number, but nightly's OWN package version is a computed
-# next-minor (`appinfo_for`'s nightly arm; see ci/flavor.py and ci/version_rule.py), and that
+# `<next X.Y>.<cut date>` (`appinfo_for`'s nightly arm; see ci/flavor.py and ci/version_rule.py), and that
 # number does not exist as a file yet at Makefile-parse time (`pkg/.flavor/nightly/appinfo.json`
 # is a BUILT artifact, generated by the rule below, and `$(shell …)` here runs before any recipe
 # does). Asking the same transform for the version it WILL write is what lets IPK_VERSION — and
 # therefore $(IPK), used by `ipk`'s own recipe below — agree with what `ci/mkipk.py` actually
 # names the archive, without depending on a file that is not there yet.
-IPK_VERSION := $(shell python3 -c "import sys; sys.path.insert(0, 'ci'); import flavor; print(flavor.appinfo_for('$(FLAVOR)')['version'])")
+#
+# A nightly's version also carries its CUT DATE as the patch (`X.Y.YYYYMMDD`), so Homebrew Channel —
+# which offers an update only when the manifest's version string differs from the installed one —
+# sees two nightlies as two versions. The date is handed over explicitly rather than left to the
+# `export` above: whether an exported make variable reaches `$(shell)` at parse time depends on the
+# GNU make version (macOS still ships 3.81), and a nightly version computed from a missing date
+# fails the build (`flavor._nightly_date`) rather than guessing one. Ignored for stable and debug.
+IPK_VERSION := $(shell PLX_NIGHTLY_DATE='$(PLX_NIGHTLY_DATE)' python3 -c "import sys; sys.path.insert(0, 'ci'); import flavor; print(flavor.appinfo_for('$(FLAVOR)')['version'])")
 IPK         := pkg/$(APPID)_$(IPK_VERSION)_arm.ipk
 # Where the payload is assembled. The DIRECTORY NAME is part of the package's identity — it is
 # what `paths::app_id` reads at runtime — so ci/mkipk.py and ci/check-package.py both assert it

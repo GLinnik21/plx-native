@@ -1151,7 +1151,11 @@ stream appears (or give up), never assume one round trip suffices.
 ```
 
 `title` carries the provider's release name, which is what lets a diff confirm *which* candidate
-landed. Note `external` is absent (`null`) on this endpoint — the app derives external from
+landed. It is also the only stable identity a subtitle has across downloads: the SAME subtitle
+fetched again takes yet another id, so the client compares release name and language
+(`Stream::same_subtitle`) — a Search hit the item already lists reads "Added" and is not offered
+again, and a landing that matches a listed entry replaces it instead of adding a second row. Note
+`external` is absent (`null`) on this endpoint — the app derives external from
 `streamType == 3 && !key.is_empty()`, which holds here.
 
 **PMS SELECTS the downloaded subtitle itself.** `1929519` came back `selected: true` while the

@@ -23,6 +23,12 @@ name: Release
 # already here. Nothing is edited or tagged by hand, which removes the two ways this used to go
 # wrong — a tag that did not exist yet, and four version files drifting apart.
 #
+# PROMOTING A RELEASE CANDIDATE (`rc.yml`): the same run, with `candidate` set to the candidate's
+# tag (e.g. rc/v0.8.0-rc.2). `prepare` then refuses unless the bump it is about to tag produces the
+# candidate's tree exactly — so what ships is the source that was tested, and anything that landed
+# on the line since the candidate was cut is a reason to cut another candidate, not a surprise in
+# the release. The release is still built fresh: only the reported version string differs.
+#
 # NO DOUBLE BUILD: the tag `prepare` pushes uses GITHUB_TOKEN, and GitHub deliberately does not
 # start a workflow run from a GITHUB_TOKEN push. So the `push: tags` trigger below stays for a
 # hand-pushed tag without re-firing on our own.
@@ -58,6 +64,13 @@ on:
         type: string
         required: false
         default: ''
+      candidate:
+        # Empty means an ordinary release. A value names the rc.yml candidate this release
+        # promotes; see "PROMOTING A RELEASE CANDIDATE" above.
+        description: 'Release candidate tag this release promotes, e.g. rc/v0.8.0-rc.2 (empty = none)'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -87,11 +100,16 @@ jobs:
       - name: Validate dispatch inputs
         env:
           LINE: ${{ inputs.line }}
+          CANDIDATE: ${{ inputs.candidate }}
         run: |
           set -euo pipefail
           line="$LINE"
           if [ -n "$line" ] && ! [[ "$line" =~ ^release/v[0-9]+\.[0-9]+$ ]]; then
             echo "::error::line '$line' is not a maintenance branch — expected release/vX.Y (e.g. release/v0.6) or empty for main."
+            exit 1
+          fi
+          if [ -n "$CANDIDATE" ] && ! [[ "$CANDIDATE" =~ ^rc/v[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]]; then
+            echo "::error::candidate '$CANDIDATE' is not a release-candidate tag — expected rc/vX.Y.Z-rc.N."
             exit 1
           fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -103,6 +121,7 @@ jobs:
         id: bump
         env:
           LINE: ${{ inputs.line || 'main' }}
+          CANDIDATE: ${{ inputs.candidate }}
         run: |
           set -euo pipefail
           line="$LINE"
@@ -173,6 +192,24 @@ jobs:
             echo "version already $new — tagging $line as it stands"
           else
             git commit -m "release: $new"
+          fi
+
+          # PROMOTING A CANDIDATE: the tree this release is about to tag must be the candidate's,
+          # byte for byte. Asked after the bump commit and before anything is pushed, so a refusal
+          # leaves no trace on the line.
+          if [ -n "$CANDIDATE" ]; then
+            git rev-parse -q --verify "refs/tags/$CANDIDATE" >/dev/null \
+              || { echo "::error::candidate tag $CANDIDATE does not exist."; exit 1; }
+            cand_version="${CANDIDATE#rc/v}"; cand_version="${cand_version%-rc.*}"
+            [ "$cand_version" = "$new" ] \
+              || { echo "::error::candidate $CANDIDATE is for $cand_version, but this release is $new."; exit 1; }
+            if [ "$(git rev-parse 'HEAD^{tree}')" != "$(git rev-parse "$CANDIDATE^{tree}")" ]; then
+              echo "::error::$line has moved since $CANDIDATE was cut — this release would not ship the tested source."
+              echo "::error::cut a new candidate from $line, or release without the candidate input. What differs:"
+              git diff --stat "$CANDIDATE" HEAD
+              exit 1
+            fi
+            echo "promotes **$CANDIDATE** (identical tree)" >> "$GITHUB_STEP_SUMMARY"
           fi
           git tag -a "$tag" -m "$new"
           git push origin "$line" "$tag"

@@ -1258,6 +1258,46 @@ luna-send -i -a com.webos.appInstallService luna://com.webos.appInstallService/d
 wholesale, so stopping at the install leaves the packaged binary behind and you are looking at a
 build you did not make.
 
+## 7c. Release candidates (2026-10-06)
+
+**Actions → Release candidate → Run workflow, with the inputs the release takes.** `rc.yml` builds
+the stable package exactly as `release.yml` does (`build-package.yml`, `flavor: stable`, production
+telemetry, every gate, the LGPL source) and publishes it as a GitHub **prerelease** for people to
+install before the release is cut. `ci/rc.py`'s module doc is the full account; what differs from a
+release is deliberately small:
+
+| | release `vX.Y.Z` | candidate `rc/vX.Y.Z-rc.N` |
+|---|---|---|
+| package id and version | `com.beb.plxnative`, `X.Y.Z` | the same — webOS installs only three integers |
+| version the app reports | `X.Y.Z` | `X.Y.Z-rc.N` (Makefile `RC=N`, `build.rs`'s `PLX_CHANNEL=rc` arm) |
+| tag | `vX.Y.Z`, on the line | `rc/vX.Y.Z-rc.N`, on the bump commit, **no branch moves** |
+| GitHub release | latest | prerelease, `--latest=false` |
+| Homebrew Channel manifest | attached | none (`build-package.yml` refuses one) |
+| release audit | completed and pushed | none |
+
+**It replaces the stable install.** A candidate is the stable id, so on a television it installs
+over PlxNative the way an update does; the debug and nightly installs are separate ids
+(`docs/two-installs.md`) and are not the package being installed. That is the point — a candidate
+under its own id would not prove what playback does under the shipped one (item 1 of that document's §6).
+Two consequences the prerelease body states for testers: the Homebrew Channel never offers a
+candidate (it resolves `releases/latest`), and because a candidate carries the final's package
+version — and the Channel compares versions by string equality — the Channel will not offer the
+final release over a candidate either. Testers reinstall the final by hand.
+
+**Promotion ships the tested source, or nothing.** `release.yml`'s `candidate` input names the tag;
+`prepare` makes its usual bump commit and then refuses unless that commit's tree is the candidate's,
+before anything is pushed. Anything that landed on the line after the candidate was cut is a reason
+to cut `rc.N+1`. The release binary is still a fresh build: only the reported version string differs
+from the candidate's.
+
+**Numbering burns.** `ci/rc.py plan` numbers per version from the `rc/vX.Y.Z-rc.*` tags, and the tag
+is pushed before the build runs, so a failed run consumes its number. Delete the tag (and any
+release) first to reuse it. A candidate for a version that already has a `vX.Y.Z` tag is refused.
+
+**Dry runs** (`dry_run: true`, or a same-repo pull request touching `rc.yml` or `ci/rc.py`) build the
+line as it stands under the next candidate number and bump, tag and publish nothing. `rc.yml` shares
+`release.yml`'s concurrency group, so a candidate and a release never interleave.
+
 ---
 
 ## 8. Release CI (built 2026-08-01)
@@ -1358,6 +1398,27 @@ most drift-sensitive thing this build does.
 **Propagation:** webosbrew has no webhook. The registry rebuilds on `cron: 41 */3 * * *` and
 re-fetches every manifest, so expect **~1.5–3 h** plus a ~10 min CDN TTL. The Homebrew Channel
 compares versions by **plain string equality** — its `versionHigher()` helper is dead code.
+
+**The nightly channel is a custom repository, not a listing.** The webosbrew catalogue's entry is
+keyed to the stable id, so nightlies are served from `https://plxnative.com/nightly/repo.json`
+(users add it under Homebrew Channel > Settings > Add repository). `ci/nightly.py repo-json`
+builds it from the newest nightly release: the index, that nightly's manifest with an absolute
+`ipkUrl`, and a description page; `pages.yml` stages it after every published nightly. Because the
+Channel compares version strings, each nightly's PACKAGE version carries its cut date as the patch
+(`X.Y.YYYYMMDD`, `ci/version_rule.py::nightly_package_triplet`) — the reported version
+(`X.Y.Z-nightly-YYYYMMDD`) is the human one. `repo-json` refuses a manifest whose id, sha256 or
+dated version disagrees with its release.
+
+**Measured on the dev television (webOS 4.5, 2026-10-06), through `dev/install` and a throwaway app
+id so no real install was touched:** the installer accepted every version form tried and moved the
+installed version each time — fresh install and upgrade for `0.8.261006` to `0.8.261007`, for the
+8-digit `0.8.20261006` to `0.8.20261007`, and for the `0.8.0+nightly.20261006` suffix form; the
+old per-cycle `0.8.0` upgraded to `0.8.20261006` (the path an existing nightly install takes); a
+same-version reinstall and a LOWER version both installed (every status event carries
+`downgrade: true`). So this firmware's installer neither restricts the syntax or size nor refuses
+a downgrade; the `main`-only guard exists because Homebrew Channel would offer an older build as an
+update, not because the installer would refuse it. Not covered: Homebrew Channel's own download,
+hash check and Update button, other firmware, and a package with a storage service.
 
 **Not built: on-device CI.** It is the only real gate, but `tests/run.py` has **no mutual-exclusion
 lock** (no `flock`, no pidfile), and there is one television — a scheduled run overlapping with the
