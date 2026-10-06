@@ -2819,15 +2819,19 @@ fn embedded_subtitle_renderable(codec: &str) -> bool {
 ///   - an EXTERNAL (sidecar) selection returns None because it has no container ordinal.
 ///     Renderable text sidecars are restored separately by `apply_plan`; image sidecars
 ///     still require a server burn.
-///   - this is the direct-play path only. The transcode path keeps PUTting `subtitleStreamID=0`
-///     (subs off) as before: honouring a selection there means a server-side BURN, i.e. a
-///     re-encode carrying a picture-quality cost, which is a trade to put behind the settings
-///     surface explicitly rather than to make silently at every play. Once a
-///     direct-played item DOES go to the transcoder mid-session (an unsupported DTS/TrueHD audio pick), the
-///     seeded `cur_sub_sid` rides along, so the subtitle already on screen keeps burning. Note the
-///     read-back is therefore ONE-WAY on that path: an item that starts as a transcode still PUTs
-///     `subtitleStreamID=0`, which not only suppresses the burn but CLEARS the server's selection
-///     for everyone. That predates this change; honouring it instead is the same burn decision.
+///   - this is the direct-play path only. A transcode start PUTs `subtitleStreamID=0` only when
+///     the viewer chose Off or nothing is selected; a sidecar the server has selected keeps its
+///     real id (`server_sidecar_id`): the app draws it over a remux (only the decision/start wire
+///     says `subtitles=none`) and the server burns it on a re-encode (`reencode_burns_sidecar`),
+///     because PMS discards a downloaded subtitle once the selection moves off it
+///     (`docs/pms-api.md` §8). Honouring an EMBEDDED selection on a transcode means a server-side
+///     BURN, i.e. a re-encode carrying a picture-quality cost, which is a trade to put behind the
+///     settings surface explicitly rather than to make silently at every play. Once a
+///     direct-played item DOES go to the transcoder mid-session (an unsupported DTS/TrueHD audio
+///     pick), the seeded `cur_sub_sid` rides along, so the subtitle already on screen keeps
+///     burning. The read-back is therefore ONE-WAY on that path: an item that starts as a
+///     transcode with an embedded pick still PUTs `subtitleStreamID=0`, which suppresses the burn
+///     and moves the server's selection off that track for everyone.
 ///     The one cold start that DOES burn is the Burn shape's own: a subtitle to show, the intended
 ///     audio one the TV cannot decode, a direct-playable commentary the only stand-in, and a route
 ///     that would otherwise have been the plain remux (`burn_for_audio` in `build_stream`). A

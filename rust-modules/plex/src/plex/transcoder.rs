@@ -395,7 +395,8 @@ impl Client {
     /// `subtitles=none` is the client-rendered mode. Omitting it leaves PMS on `auto`, and
     /// 1.43.4 HTTP 400s `hasMDE`+`directPlay` when the part already has a selected subtitle
     /// (`invalid subtitle setting 'auto'`). That `None` fail-closes Original into remux and a
-    /// PUT `subtitleStreamID=0`, which clears the selection. `burn` would force a transcode.
+    /// PUT `subtitleStreamID=0` (unless the selected subtitle is a sidecar the app draws, whose
+    /// id the start keeps). `burn` would force a transcode.
     pub fn mde_decision(
         &self,
         rating_key: &str,
