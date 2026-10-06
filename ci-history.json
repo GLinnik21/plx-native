@@ -1,4 +1,4 @@
-{"updated":"2026-10-06T10:10:52Z",
+{"updated":"2026-10-06T10:15:06Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -498,5 +498,6 @@
 {"id":37377140126,"at":"2026-10-05T21:38:05Z","sha":"b857d2bde","title":"Home: a \"Hold OK for options\" live-glass hint, retired after the first item menu","pr":null,"jobs":{"macOS simulator build + launch":512,"Linux simulator build + launch":366,"Windows launcher syntax":32,"macOS tests against bundled FFmpeg and ASS":316}},
 {"id":37379466821,"at":"2026-10-05T21:58:54Z","sha":"7c19abc4e","title":"Home hold hint: Belarusian says \"\u043a\u0430\u0431 \u0430\u0434\u043a\u0440\u044b\u0446\u044c \u043c\u0435\u043d\u044e\", the catalog's own word for it","pr":null,"jobs":{"Linux simulator build + launch":200,"macOS tests against bundled FFmpeg and ASS":348,"Windows launcher syntax":15,"macOS simulator build + launch":475}},
 {"id":37385169729,"at":"2026-10-05T22:52:20Z","sha":"2be259682","title":"Build: rustc's parallel front end (-Zthreads) for the local host test builds (HOST_THREADS)","pr":454,"jobs":{"macOS simulator build + launch":473,"Linux simulator build + launch":308,"macOS tests against bundled FFmpeg and ASS":415,"Windows launcher syntax":21}},
-{"id":37444320255,"at":"2026-10-06T09:38:09Z","sha":"aea64e724","title":"libass: fall back to a mirror when the FreeType host is down","pr":459,"jobs":{"Linux simulator build + launch":277,"Windows launcher syntax":21,"macOS simulator build + launch":502,"macOS tests against bundled FFmpeg and ASS":349}}
+{"id":37444320255,"at":"2026-10-06T09:38:09Z","sha":"aea64e724","title":"libass: fall back to a mirror when the FreeType host is down","pr":459,"jobs":{"Linux simulator build + launch":277,"Windows launcher syntax":21,"macOS simulator build + launch":502,"macOS tests against bundled FFmpeg and ASS":349}},
+{"id":37447426046,"at":"2026-10-06T10:05:21Z","sha":"975fcc4fb","title":"Tests: four defects two concurrent `make check` runs exposed (shared scratch paths, lock-bypass env, two timing/global r","pr":458,"jobs":{"Windows launcher syntax":14,"Linux simulator build + launch":353,"macOS tests against bundled FFmpeg and ASS":301,"macOS simulator build + launch":506}}
 ]}
