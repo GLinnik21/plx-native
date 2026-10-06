@@ -2174,21 +2174,31 @@ mod flight_tests {
         }
     }
 
-    /// A seek tap on a transcode hands the PMS half to a worker: when the frame returns the server
-    /// has been asked NOTHING, a flight is outstanding, and the seek lands on a later frame.
+    /// A seek tap on a transcode hands the PMS half to a worker: the frame returns without waiting
+    /// for the server, a flight is outstanding, and the seek lands on a later frame.
+    ///
+    /// "Without waiting" is graded by the frame's duration against the server's hold, NOT by the
+    /// request log being empty when the frame returns: the rig logs a `/decision` the moment it
+    /// arrives and holds the answer, and the worker may legitimately have sent it by then. The log
+    /// check failed in 2 of 4 gate runs of two `make check`s side by side (the worker was scheduled
+    /// before the frame thread got back); the frame cannot return inside the hold if it waited for
+    /// the answer.
     #[test]
     fn a_transcode_seek_frame_makes_no_pms_call_and_the_worker_lands_it_later() {
-        let mut rig = Rig::new(150);
+        const HOLD_MS: u64 = 600;
+        let mut rig = Rig::new(HOLD_MS);
         rig.frame();
         assert_eq!(rig.flight.decisions(), 0, "sanity: an idle frame asks PMS nothing");
         let before = crate::route::transcode_session(&rig.ps);
 
         crate::player::request_seek(SEEK_TARGET_NS);
+        let started = std::time::Instant::now();
         rig.frame();
-        assert_eq!(
-            rig.flight.decisions(),
-            0,
-            "the seek frame made a PMS round trip on the frame thread: {:?}",
+        let took = started.elapsed();
+        assert!(
+            took < Duration::from_millis(HOLD_MS),
+            "the seek frame took {took:?}, a PMS round trip on the frame thread (the server holds a /decision for \
+             {HOLD_MS} ms): {:?}",
             rig.flight.requests()
         );
         assert!(crate::route::flight_outstanding(), "the rebuild must be a flight the pump waits on");
