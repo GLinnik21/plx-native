@@ -113,6 +113,14 @@ class NightlyHomebrewRepository(unittest.TestCase):
         self.assertLess(publish.index("gh release create"),
                         publish.index("--pattern com.beb.plxnative.nightly.manifest.json"))
 
+    def test_the_source_bundle_is_named_for_the_reported_version_not_the_package_filename(self):
+        # The package version carries the cut date as its patch, so `<filename version>-nightly-<date>`
+        # names a version nothing reports; the label comes from check-package's own derivation.
+        build = code("build-package.yml")
+        self.assertIn("--print-nightly-label pkg/.build-config", build)
+        self.assertIn('label="${nightly_label:-$version}"', build)
+        self.assertNotIn('label="$version${nightly_date:+-nightly-$nightly_date}"', build)
+
     def test_the_site_stages_the_repository_and_the_guide(self):
         pages = code("pages.yml")
         self.assertIn('ci/nightly.py repo-json --repo "${{ github.repository }}" --out-dir _site/nightly', pages)

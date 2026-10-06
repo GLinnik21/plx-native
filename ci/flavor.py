@@ -13,13 +13,16 @@ block is the account of why; this file is the part that has to be identical in t
 once.
 
 **PATCH, DO NOT DUPLICATE.** `pkg/appinfo.json` has 15 fields and exactly TWO of them may differ
-between flavours: `id` and `title`. The other thirteen — `type`, `main`, `transparent`,
-`requiredMemory`, `nativeLifeCycleInterfaceVersion`, `handlesRelaunch`, `splashBackground`,
-`iconColor`, `vendor`, `version`, `appDescription` and the two icon FILENAMES — are
-behaviour-critical and must never drift. A second checked-in descriptor would drift on them the
-first time one was edited, and would put the version in a fifth file that `ci/bump-version.py`, `ci/check-package.py` and
-`release.yml`'s tag guard all already read. The selftest asserts the set of moved keys is exactly
-`{id, title}`, so widening it is a decision somebody has to make on purpose.
+between flavours — `id` and `title` — except for `nightly`, which also moves `version` (to
+`<next X.Y>.<cut date>`, see `appinfo_for`). The other thirteen (twelve for nightly) — `type`,
+`main`, `transparent`, `requiredMemory`, `nativeLifeCycleInterfaceVersion`, `handlesRelaunch`,
+`splashBackground`, `iconColor`, `vendor`, `appDescription` and the two icon FILENAMES, plus
+`version` for every flavour but nightly — are behaviour-critical and must never drift. A second
+checked-in descriptor would drift on them the first time one was edited, and would put the version
+in a fifth file that `ci/bump-version.py`, `ci/check-package.py` and `release.yml`'s tag guard all
+already read. The selftest asserts the set of moved keys is exactly `{id, title}` for debug and
+`{id, title, version}` for nightly, so widening either is a decision somebody has to make on
+purpose.
 
 **THE STABLE TRANSFORM IS THE IDENTITY, and that is asserted rather than intended** (`--selftest`,
 run by `make check`). It is the whole mechanical guarantee that adding a second identity cannot
