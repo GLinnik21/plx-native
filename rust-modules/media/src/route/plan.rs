@@ -2041,11 +2041,15 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 )
         });
     let client_draws = remux && (side_draws || carried_draw || server_sidecar_id.is_some());
+    // A server transcode that is not a copy (a capped or HLS re-encode) cannot leave the app to draw
+    // the sidecar, and moving the selection to 0 would make PMS discard a downloaded one: it stays
+    // selected and the encoder burns it (the same request a carried sidecar pick makes).
+    let reencode_burns_sidecar = server_sidecar_id.is_some() && !remux && !directplay && !rk.is_empty();
     let burn_sub_sid = if force_burn {
         subtitle_id
     } else if burn_for_audio && env.sub_sid == 0 {
         sub_pick.map_or(0, |(id, _)| id)
-    } else if let Some(id) = server_sidecar_id.filter(|_| client_draws) {
+    } else if let Some(id) = server_sidecar_id.filter(|_| client_draws || reencode_burns_sidecar) {
         id
     } else if client_draws && env.sub_sid == 0 {
         // The pick itself, not `subtitle_id`: that is the profile-advertised id the MDE handshake
@@ -2060,7 +2064,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         let ordinal = if env.sub_sid == 0 { sub_pick.map(|(_, ord)| ord) } else { env.sub_drawn };
         plan.sub_render_ordinal = ordinal.filter(|ord| *ord >= 0);
     }
-    if burn_for_audio || force_burn || client_draws {
+    if burn_for_audio || force_burn || client_draws || reencode_burns_sidecar {
         // The subtitle burned in IS the session's subtitle: the menu checkmark, the timeline and
         // every later rebuild (a seek, a track pick) read it back from the plan.
         plan.sub_sid = burn_sub_sid;

@@ -1187,6 +1187,12 @@ names the real selected id and "do not burn" is carried only by the transcode de
 sent `0` at every transcode start until 2026-10-06, which is how a freshly searched subtitle was
 lost at the next playback.
 
+The same loss, second sequence (2026-10-06): a download installed and selected mid-playback, playback
+stopped and restarted two seconds later, and the start's `PUT .../parts/<part>?allParts=1&subtitleStreamID=<E>&audioStreamID=<A>`
+named the part's EMBEDDED English track `<E>` (re-picked from the page's pre-playback copy of the
+item) while the server's own metadata said `Subtitle Stream: <S>` — moving the selection to a real
+stream discards the download exactly as `0` does, so a start must plan from the server's current selection.
+
 `tests/mock_pms.py` (`MockPms.subtitle_search`) models this section — the 3-letter 500, the empty
 answer, single-use candidate keys, and an install that creates a NEW selected external stream with
 a fetchable sidecar — and is the only place the download may be exercised end to end. Its install

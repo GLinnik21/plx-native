@@ -368,6 +368,84 @@ fn viewer_off_over_an_enhanced_remux_still_puts_zero() {
     assert_eq!(selection_subtitles(&r.requests), vec!["0"], "{:?}", r.requests);
 }
 
+/// A film with one embedded English subtitle (id 5, unselected) and the subtitle the viewer
+/// downloaded mid-playback (id 77, an external SRT the server has SELECTED). The language pick
+/// would choose the embedded track, so any selection PUT naming it is the app overriding the server.
+fn embedded_english_and_selected_download(sid: ServerId) -> plx_data::metadata::PlayingItem {
+    let embedded = plx_data::metadata::Stream { selected: false, ..selected_sub(5, "srt") };
+    let download = plx_data::metadata::Stream {
+        id: 77,
+        index: 0,
+        lang_code: "eng".into(),
+        codec: "srt".into(),
+        key: "/library/streams/77".into(),
+        external: true,
+        selected: true,
+        ..Default::default()
+    };
+    fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![embedded, download])
+}
+
+/// **Regression (2026-10-06, second sequence):** a start whose server selection is a downloaded
+/// sidecar must keep it on the remux — never PUT the embedded track the language pick would take.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn remux_start_keeps_the_servers_selected_download_over_an_embedded_language_match() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        embedded_english_and_selected_download, |_, _| {});
+    assert_enhanced(&r);
+    assert_eq!(selection_subtitles(&r.requests), vec!["77"], "{:?}", r.requests);
+    assert_eq!(r.plan.sub_sid, 77);
+    assert_eq!(r.plan.sub_render_ordinal, None, "a sidecar has no side-reader target");
+    assert_eq!(query_param(&r.plan.url, "subtitles"), Some("none"), "{}", r.plan.url);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// Direct play never PUTs a subtitle selection at all, and the landing restores the sidecar.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn direct_play_start_leaves_the_servers_selected_download_alone() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        embedded_english_and_selected_download, |env, _| env.audio_enhancements = plx_plex::plex::AudioEnhancements::NONE);
+    assert!(r.plan.url.contains("/library/parts/"), "direct play expected: {}", r.plan.url);
+    assert!(selection_subtitles(&r.requests).is_empty(), "{:?}", r.requests);
+    assert_eq!(r.plan.sub_render_ordinal, None, "the embedded track is not drawn");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// The viewer's own pick for this play (the detail page's track row) still wins over the server.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_viewer_pick_made_before_play_still_wins_over_the_servers_selection() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        embedded_english_and_selected_download, |env, _| env.subtitle_override = Some(5));
+    // (over this 48 Mbit/s Part the embedded track is burned, M7; only the selection is graded)
+    assert_eq!(selection_subtitles(&r.requests), vec!["5"], "{:?}", r.requests);
+}
+
+/// A capped re-encode cannot leave the app to draw the sidecar, and a selection moved to 0 would
+/// make PMS discard the download: it stays selected and the encoder burns it.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn capped_reencode_start_keeps_the_servers_selected_download_selected() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_TRANSCODE, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        embedded_english_and_selected_download,
+        |env, _| { env.quality = Quality::P720; env.audio_enhancements = plx_plex::plex::AudioEnhancements::NONE; });
+    assert!(!r.plan.contract.remux, "a re-encode: {}", r.plan.url);
+    assert_eq!(selection_subtitles(&r.requests), vec!["77"], "{:?}", r.requests);
+    assert_eq!(query_param(&r.plan.url, "subtitleStreamID"), Some("77"), "{}", r.plan.url);
+    assert_eq!(r.plan.sub_sid, 77);
+    plx_plex::plex::reset_servers_for_test();
+}
+
 /// A film whose own audio the TV cannot decode (TrueHD), with a second, decodable track beside
 /// it (what the stand-in rule used to reach for) and an embedded subtitle that is selected.
 fn truehd_with_ac3_sibling_and_embedded_sub(sid: ServerId, kbps: i64) -> plx_data::metadata::PlayingItem {

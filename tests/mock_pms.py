@@ -2437,6 +2437,17 @@ def selftest():
     assert send(f"/library/parts/{part_id}?allParts=1&subtitleStreamID={added[0]['id']}", "PUT")[0] == 400
     gone = {s["id"] for s in jget(f"/library/metadata/{rk}")["Metadata"][0]["Media"][0]["Part"][0]["Stream"]}
     assert added[0]["id"] not in gone and before <= gone
+    # ... and so is moving it onto an EMBEDDED stream (the second measured sequence, 2026-10-06: a
+    # playback start that re-picked the embedded language match instead of keeping the download)
+    again = jget(f"/library/metadata/{rk}/subtitles?language=nl&hearingImpaired=0&forced=0")["Stream"]
+    assert send(f"/library/metadata/{rk}/subtitles?key={again[1]['key']}", "PUT") == (200, b"")
+    streams = jget(f"/library/metadata/{rk}")["Metadata"][0]["Media"][0]["Part"][0]["Stream"]
+    second = [x for x in streams if x["id"] not in gone and x["streamType"] == 3]
+    embedded = [x for x in streams if x["streamType"] == 3 and not x.get("key") and x["id"] in gone]
+    assert len(second) == 1 and second[0]["selected"], streams
+    if embedded:
+        assert send(f"/library/parts/{part_id}?allParts=1&subtitleStreamID={embedded[0]['id']}", "PUT")[0] == 200
+        assert send(second[0]["key"])[0] == 404, "moved onto an embedded track -> the download is gone"
     # the closed alphabet: every title-shaped string obeys it
     tok = re.compile(f"^{ALPHABET_TOKEN}$")
     for it in pms.lib.items.values():
