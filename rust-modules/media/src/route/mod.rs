@@ -10,7 +10,12 @@
 //! network/adapter effect is allowed to read wall time) but as of this split carries none either.
 
 mod decision;
+mod flight;
 mod plan;
 
 pub use decision::*;
+pub use flight::{
+    discard_stale_flight_landing, engineless_flight_outstanding, flight_is_current, flight_outstanding, recovery_flight_offset_ns, recovery_flight_outstanding, resume_flight_outstanding, retire_superseded_encoder, take_ready_flight,
+    take_ready_recovery_flight, ReadyFlight, RecoveryLanding, RecoveryVerdict, SeekVerdict,
+};
 pub use plan::*;

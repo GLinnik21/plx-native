@@ -450,7 +450,10 @@ impl Client {
     /// return the decision body. Callers building a fresh Load payload MUST feed the body
     /// through route::apply_decision_codecs — the payload has to describe what the server
     /// will actually send.
-    pub fn transcode_decision(&self, spec: &TranscodeSpec) -> Option<MediaContainer> {
+    ///
+    /// `_off` is the proof the round trip is on a worker: the frame thread cannot mint one.
+    #[track_caller]
+    pub fn transcode_decision(&self, _off: &plx_base::task::OffFrame, spec: &TranscodeSpec) -> Option<MediaContainer> {
         let path = format!(
             "/video/:/transcode/universal/decision?{}",
             self.transcode_query(spec)
@@ -461,9 +464,11 @@ impl Client {
 
     /// Register the same candidate, but as one leg of a caller-owned absolute transaction
     /// deadline. Ordinary playback decisions keep their API timeout; only Auto exploration uses
-    /// this path.
+    /// this path. `_off` is [`Client::transcode_decision`]'s proof of a worker.
+    #[track_caller]
     pub fn transcode_decision_until(
         &self,
+        _off: &plx_base::task::OffFrame,
         spec: &TranscodeSpec,
         deadline: std::time::Instant,
     ) -> JsonDeadlineOutcome {
@@ -502,6 +507,7 @@ impl Client {
     /// server-side encoder `docs/parity-gaps.md` names on the retranscode path. Like
     /// [`super::library::Client::scrobble`], it does not tell a 200 from a 404: `get_ok` is
     /// `http_get`'s own success, which is the honest limit of a GET whose body carries nothing.
+    #[track_caller]
     pub fn transcode_stop(&self, session: &str) -> bool {
         if session.is_empty() {
             return false;
@@ -512,6 +518,7 @@ impl Client {
     /// Stop the physical encoder while deliberately preserving its Streaming Resource. Runtime
     /// HLS→direct recovery uses this after decoded source frames: that raw Part is exact-borrowing
     /// the same resource, and terminating it here would make the next Range/seek return 503.
+    #[track_caller]
     pub fn transcode_stop_physical(&self, session: &str) -> bool {
         if session.is_empty() {
             return false;
@@ -540,6 +547,7 @@ impl Client {
     /// the normalized resource identity and terminates its WAN/slot accounting synchronously.
     /// For the same authenticated owner, 404 is the idempotent already-closed answer; every other
     /// non-2xx status and transport failure remains inconclusive.
+    #[track_caller]
     pub fn transcode_resource_reconciled(&self, session: &str) -> Option<bool> {
         if session.is_empty() {
             return None;
@@ -559,6 +567,7 @@ impl Client {
     /// The separately-owned Streaming Resource can outlive it, so `Some(false)` certifies only the
     /// physical half; callers must follow it with [`Client::transcode_resource_reconciled`]. Every
     /// other response remains unknown.
+    #[track_caller]
     pub fn transcode_session_present(&self, session: &str) -> Option<bool> {
         if session.is_empty() {
             return None;

@@ -433,7 +433,8 @@ impl SubBitmap {
 pub enum PlaybackState {
     /// no engine
     Idle = 0,
-    /// the route/plan resolve is in flight — DERIVED in `player::state()` from `route::play_pending()`
+    /// the route/plan resolve is in flight — DERIVED in `player::state()` from `route::play_pending()`,
+    /// and held through a cold resume's rebuild (`route::resume_flight_outstanding()`) after the plan landed
     Resolving = 1,
     /// engine started, pipeline not yet loaded — the HTTP GET + Starfish `Load` window
     Connecting = 2,

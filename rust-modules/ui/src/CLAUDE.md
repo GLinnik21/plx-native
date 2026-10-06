@@ -189,10 +189,16 @@ CARRIED to the next frame and rides the heartbeat as `carried=`.
 **Frames must not wait on storage or synchronous LS2 calls.** The app loop, bridge and dispatcher
 enter `task::FrameScope`; `task::assert_may_block` guards session I/O, helper transactions,
 Keymanager and LS2 calls. Tests panic (catchably). In developer builds (`threadcheck`), an unallowed call logs
-`main-thread block: <label> (fatal; aborting)`, then aborts on the frame thread before the call runs.
-Release builds retain elapsed-time logging once per label. Use cached reads and the bounded `storage_worker` queue, then observe the landing
+`main-thread block: <label> at <file:line> (fatal; aborting)`, then aborts on the frame thread before the call runs.
+Release builds retain elapsed-time logging once per (label, call site):
+`main-thread block: <label> <ms>ms at <file:line> [under <exception label> at <file:line>]`. Use cached reads and the bounded `storage_worker` queue, then observe the landing
 on the frame thread and call `idle::invalidate()` only when visible content changed. Boot's synchronous loads run before the frame scope; a new blocking exception
-must be explicit and justified through `task::allow_blocking`, never added to a tick.
+must be explicit and justified through `task::allow_blocking`, never added to a tick — and every production
+`allow_blocking(` site is a line in `ci/allow/blocking.txt`, which the `blocking` gate holds exact (a
+new site or a stale line fails; the list only shrinks). Move the work to a worker (`task::spawn_off_frame`; a PMS half takes
+`&OffFrame`) instead of adding a line. The ledger holds two sites, both a refused worker thread's fallback rather than a user
+action: `task::spawn_or_inline` (OS refused a thread; a server-side stop that must not be dropped runs inline) and
+`route::decision::scrobble_stop` (refused `spawn_small_keeping`; its reporter handle and stop fence must stay ordered).
 To see it fire on the TV, hold the TV lock and, after the first present in a `threadcheck` + `devtriggers` build, run `tools/tv-session.sh key hang:1000` for the guard abort, or `key hang-raw:1000` for the watchdog's unlabeled warning path (both capped at 5000 ms).
 
 The release-enabled `task::watchdog` independently checks loop progress every 100 ms. It reports

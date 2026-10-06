@@ -620,7 +620,8 @@ Tests use `plxnative-play=<ratingKey>` instead of the fragile `plxnative-detail`
 only *plays* if the rk is in the home catalog (Continue Watching / hubs); off-catalog it loads
 data-only and never plays. `plxnative-play` fetches the item's metadata fresh (`metadata::load_detail`,
 works for **any** rk) and drives the same field-based play path the detail Play button uses
-(`route::play_episode` — generic over movie/episode — + `player::resume_at` + `start_bufferfeed`),
+(`route::play_episode` — generic over movie/episode — + `player::begin_resume`, whose transcode rebuild is a
+flight landed by `player::land_resume`, + `start_bufferfeed`),
 bypassing the catalog lookup entirely. It honors the server `viewOffset` for resume and logs
 `plxnative-play: rk=<rk> server=<slot> start` so the harness can confirm both halves of the item
 identity that fired. A bare `plxnative-play` keeps the historical current-server behaviour;

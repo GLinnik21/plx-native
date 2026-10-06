@@ -1618,6 +1618,9 @@ check-c-unit:
 check-python-rest: check-localization check-c-unit
 	python3 ci/test_ass_composite.py
 	python3 ci/test_ass_regions.py
+	@# The libass source fetch: canonical URL first, `mirrors` as a transport fallback, the pinned
+	@# sha256 checked against whichever source answered. Local sockets only, no real network.
+	python3 ci/test_libass_fetch.py
 	@# The flavour transform, host-side and free. Its central assertion — that the STABLE transform
 	@# is the identity — is the mechanical guarantee that having a second app id cannot perturb the
 	@# released .ipk, whose sha256 every user's television verifies at install. That property is

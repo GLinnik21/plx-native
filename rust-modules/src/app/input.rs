@@ -95,6 +95,29 @@ pub(crate) struct MenuPlayAwait {
     /// shape and the same 12s ceiling `dev::scenarios::play_arm`'s own `play_await` uses for
     /// "this never got where it was going".
     deadline: u32,
+    phase: MenuPlayPhase,
+}
+
+/// Which asynchronous load a [`MenuPlayAwait`] is waiting on. Both phases are polled by the one
+/// [`menu_play_tick`] and bounded by the one `deadline`.
+#[derive(Clone, Copy)]
+enum MenuPlayPhase {
+    /// The parent detail request `activate_card` issued.
+    Detail,
+    /// A SEASON press whose requested season's episodes were not the listed ones: the parent has
+    /// landed and `MetadataCmd::LoadSeason(idx)` is in flight. `gen` is `season_gen` read right
+    /// after issuing it — a later read that differs means another season press, a new item or a
+    /// page change replaced the fetch, and the wait is no longer the landing's owner (the season
+    /// mailbox's own staleness rule, `metadata::pump_season`, applied to the continuation).
+    Season { gen: u32, idx: usize },
+}
+
+impl MenuPlayAwait {
+    /// The wait armed by a press at frame `now`: it starts on the detail request `activate_card`
+    /// has just issued, and carries the same 12s ceiling for its whole life.
+    fn new(sid: plx_plex::plex::ServerId, expect: String, season_index: Option<i64>, hud_ms: u32, now: u32) -> Self {
+        Self { sid, expect, season_index, hud_ms, deadline: now.wrapping_add(12_000), phase: MenuPlayPhase::Detail }
+    }
 }
 
 /// **What a card ACTIVATION does, once its screen has decided whether the press means PLAY.**
@@ -155,13 +178,8 @@ pub(crate) unsafe fn activate_card(
                 // a show/season row's parent lives on the SAME server as the row itself
                 let sid = mm.sid;
                 bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
-                *menu_play_await = Some(MenuPlayAwait {
-                    sid,
-                    expect,
-                    season_index: (mm.kind == 2).then_some(mm.season_index as i64),
-                    hud_ms,
-                    deadline: now.wrapping_add(12_000),
-                });
+                *menu_play_await = Some(MenuPlayAwait::new(
+                    sid, expect, (mm.kind == 2).then_some(mm.season_index as i64), hud_ms, now));
             }
         }
     } else if mm.kind == 2 {
@@ -202,17 +220,48 @@ pub(crate) unsafe fn menu_play_tick(
     menu_play_await: &mut Option<MenuPlayAwait>,
     now: u32,
 ) {
-    let Some(MenuPlayAwait { sid, expect, season_index, hud_ms, deadline }) = menu_play_await.clone() else {
+    let Some(wait) = menu_play_await.clone() else {
         return;
     };
+    let MenuPlayAwait { sid, ref expect, season_index, hud_ms, deadline, phase } = wait;
     // Something else already moved the app onto the player this frame (a different press, an
     // auto-advance) — the wait is moot and must not fire a second Play on top of it.
     if super::bridge::player(pages).is_some() {
         *menu_play_await = None;
         return;
     }
+    let expired = now.wrapping_sub(deadline) < u32::MAX / 2;
+    if let MenuPlayPhase::Season { gen, idx } = phase {
+        // The season fetch is still ours only while its generation stands and the item it hangs
+        // off is still the loaded one: another season press, a new detail request or a page's
+        // `Clear` (BACK) each move one of the two, and a landing after that must play nothing.
+        let (ours, loading, landed) = {
+            let view = bridge.metadata_view();
+            let cur = view.current();
+            let ours = view.season_gen() == gen
+                && cur.is_some_and(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, expect)));
+            // A FAILED fetch releases the tab back to the season whose episodes are listed
+            // (`pump_season`), so "the requested season is the selected one" is the success test.
+            (ours, view.season_loading(), cur.is_some_and(|d| d.cur_season == idx))
+        };
+        if !ours {
+            *menu_play_await = None;
+            return;
+        }
+        if loading && !expired {
+            return; // still waiting — try again next frame
+        }
+        *menu_play_await = None;
+        if loading || !landed {
+            // ceiling, or the fetch settled as a failure — land on the page, as the detail phase does
+            super::bridge::open_detail(pages, bridge, sid, expect, None, None);
+        } else {
+            play_loaded_hero(ps, pa, pages, bridge, sid, expect, hud_ms);
+        }
+        return;
+    }
     let landed = bridge.metadata_view().current()
-        .map(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, &expect)))
+        .map(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, expect)))
         .unwrap_or(false);
     if !landed {
         // Give up once the addressed request has SETTLED without landing this item (a failed or
@@ -220,8 +269,7 @@ pub(crate) unsafe fn menu_play_tick(
         // `Some(false)`), or past the ceiling — the same two ways `dev::scenarios::play_arm`'s own
         // wait ends without a play, both logged rather than silent there for the same reason: a
         // wait that neither played nor said why would read as a hang.
-        let settled = bridge.metadata_view().detail_request_status(sid, &expect) == Some(false);
-        let expired = now.wrapping_sub(deadline) < u32::MAX / 2;
+        let settled = bridge.metadata_view().detail_request_status(sid, expect) == Some(false);
         if !settled && !expired {
             return; // still waiting — try again next frame
         }
@@ -229,24 +277,48 @@ pub(crate) unsafe fn menu_play_tick(
         // nothing playable / load failed — land on the page, through the transition. `season:
         // None`: the container's own reuse rule is what keeps a re-open from stacking a second
         // copy of a page the user is already standing on (`bridge::open_detail`).
-        super::bridge::open_detail(pages, bridge, sid, &expect, None, None);
+        super::bridge::open_detail(pages, bridge, sid, expect, None, None);
         return;
     }
-    *menu_play_await = None;
     // The season resolution reads whatever `current()` holds — which, now that `landed` is
-    // known true, is genuinely `expect`'s own detail. The old blocking arm ran this same lookup
-    // BEFORE checking `loaded` at all, so on a failed fetch it could resolve a season index
-    // against a stale, unrelated show that happened to still be loaded; gating it on `landed`
-    // here is strictly narrower, not a new capability.
+    // known true, is genuinely `expect`'s own detail (on a failed fetch the old blocking arm could
+    // resolve a season index against a stale, unrelated show that happened to still be loaded).
+    // A season row whose episodes are not the listed ones is fetched like a season tab press —
+    // ASYNC, `LoadSeason` — and the wait continues in the `Season` phase; the list it would
+    // otherwise play from is the PREVIOUS season's.
     if let Some(i) = season_index {
-        if let Some(idx) = bridge.metadata_view().current().and_then(|d| d.seasons.iter().position(|s| s.index == i)) {
-            bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::LoadSeasonNow(idx));
+        let view = bridge.metadata_view();
+        let pick = view.current().and_then(|d| {
+            d.seasons.iter().position(|s| s.index == i).map(|idx| (idx, d.cur_season))
+        });
+        if let Some((idx, cur_season)) = pick {
+            if idx != cur_season {
+                bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::LoadSeason(idx));
+                let gen = bridge.metadata_view().season_gen();
+                *menu_play_await = Some(MenuPlayAwait { phase: MenuPlayPhase::Season { gen, idx }, ..wait });
+                return;
+            }
         }
     }
+    *menu_play_await = None;
+    play_loaded_hero(ps, pa, pages, bridge, sid, expect, hud_ms);
+}
+
+/// The end of a settled [`MenuPlayAwait`]: play the loaded item's hero (a show's next episode, or
+/// `episodes[0]` of the selected season), or open its page when nothing is playable.
+unsafe fn play_loaded_hero(
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
+    sid: plx_plex::plex::ServerId,
+    expect: &str,
+    hud_ms: u32,
+) {
     if let Some(resume_ns) = super::playback::request_loaded_hero(ps, bridge.metadata_mut()) {
         start_playback(ps, pa, resume_ns, Origin::Here, hud_ms, None, pages, bridge);
     } else {
-        super::bridge::open_detail(pages, bridge, sid, &expect, None, None);
+        super::bridge::open_detail(pages, bridge, sid, expect, None, None);
     }
 }
 
@@ -659,6 +731,10 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "menu_play_season_tests.rs"]
+mod menu_play_season_tests;
 
 #[cfg(all(test, feature = "hostsim"))]
 #[path = "item_menu_player_return_tests.rs"]

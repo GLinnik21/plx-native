@@ -6053,6 +6053,7 @@ unsafe fn hls_prefetch_same_encoder(
 }
 
 fn hls_demux(
+    off: &plx_base::task::OffFrame,
     origin: &plx_plex::plex::Origin,
     path: &str,
     acodec: &str,
@@ -6911,7 +6912,7 @@ fn hls_demux(
             .ok_or(HlsExit::Failed("HLS candidate content offset overflow"))?;
         let offset_micros = offset_ns / 1_000;
         let prime_deadline = exploration_snapshot(&mut exploration_reserve);
-        let primed = match control.prime(active_encoder, proposal, offset_micros, prime_deadline) {
+        let primed = match control.prime(off, active_encoder, proposal, offset_micros, prime_deadline) {
             Ok(primed) => primed,
             Err(refusal) => {
                 if unsafe { crate::aq::aq_is_aborted(aq) } {
@@ -7681,6 +7682,7 @@ fn open_input_failure_note(r: c_int, lane_aborted: bool) -> String {
 /// (`net/origin.rs`). `hs` is still passed on both paths — it is the Engine's, and it stays
 /// unused (fd = -1, published as `SHARED.hs_ptr`) when the origin turns out to be https.
 pub fn demux(
+    off: &plx_base::task::OffFrame,
     origin: plx_plex::plex::Origin,
     path: String,
     acodec: String,
@@ -7713,7 +7715,7 @@ pub fn demux(
     {
         crate::player::log("hls: segmented demux start");
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            hls_demux(&origin, &path, &acodec, abr, aq_p, aqa_p, hs_p)
+            hls_demux(off, &origin, &path, &acodec, abr, aq_p, aqa_p, hs_p)
         }));
         match outcome {
             Ok(Ok(())) | Ok(Err(HlsExit::Aborted)) => {}

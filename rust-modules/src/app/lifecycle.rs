@@ -11,8 +11,9 @@
 use super::*;
 
 pub(crate) use plx_media::player::lifecycle::{
-    clock_for_suspend_now, drive_foreground, paused, poll_foreground_load, resume_if_paused,
-    set_paused, set_transport_paused, transport_target, viewer_paused, ForegroundActivation,
+    clock_for_suspend_now, drive_foreground, park_pending_foreground_flight, paused,
+    poll_foreground_flight, poll_foreground_load, resume_if_paused, set_paused,
+    set_transport_paused, transport_target, viewer_paused, FlightLanding, ForegroundActivation,
     ForegroundActuator, ForegroundClock, ForegroundInput, ForegroundLifecycle, ForegroundLoadStart,
     ForegroundLoadStatus,
 };
@@ -28,11 +29,44 @@ pub(crate) struct PlayerForegroundActuator<'a> {
     pub(crate) repause_at: &'a mut i64,
 }
 
+/// What the foreground's `Load` does with the Original rollback's answer: the rebase is a flight
+/// (`Pending`), or — once it landed and reloaded — the exact attempt to follow.
+fn foreground_load_start(
+    recovery: plx_media::player::ForegroundOriginalRecovery,
+) -> ForegroundLoadStart<plx_media::route::RouteStartAttempt> {
+    use plx_media::player::ForegroundOriginalRecovery as Recovery;
+    match recovery {
+        Recovery::NotOriginal | Recovery::RetryPrepared => ForegroundLoadStart::Failed,
+        Recovery::Pending => ForegroundLoadStart::Pending,
+        Recovery::Tracking(attempt) => ForegroundLoadStart::Launched(attempt),
+        Recovery::Terminal => ForegroundLoadStart::Terminal,
+    }
+}
+
 impl ForegroundActuator for PlayerForegroundActuator<'_> {
     type Attempt = plx_media::route::RouteStartAttempt;
 
-    fn prepare_resume(&mut self, ps: &mut plx_media::route::PlaybackSession, resume_ns: i64) -> plx_media::player::ResumeOutcome {
-        plx_media::player::resume_at(ps, resume_ns)
+    fn prepare_resume(&mut self, ps: &mut plx_media::route::PlaybackSession, resume_ns: i64) -> plx_media::player::ResumeStart {
+        plx_media::player::begin_resume(ps, resume_ns)
+    }
+
+    fn land_prepare(&mut self, ps: &mut plx_media::route::PlaybackSession) -> FlightLanding<plx_media::player::ResumeOutcome> {
+        match plx_media::player::land_resume(ps) {
+            Some(outcome) => FlightLanding::Landed(outcome),
+            // `land_resume` reaped a stale landing first: nothing outstanding means the flight
+            // ended (a Back, a newer request) and its ender owns what comes next.
+            None if plx_media::route::resume_flight_outstanding() => FlightLanding::Waiting,
+            None => FlightLanding::Stale,
+        }
+    }
+
+    fn land_recovery(&mut self, ps: &mut plx_media::route::PlaybackSession) -> FlightLanding<ForegroundLoadStart<Self::Attempt>> {
+        use plx_media::player::RollbackLanding;
+        match plx_media::player::land_engineless_rollback(ps, self.pa) {
+            RollbackLanding::Waiting => FlightLanding::Waiting,
+            RollbackLanding::Stale => FlightLanding::Stale,
+            RollbackLanding::Landed(recovery) => FlightLanding::Landed(foreground_load_start(recovery)),
+        }
     }
 
     fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock) {
@@ -48,18 +82,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         if matches!(first, plx_media::player::BufferfeedStartOutcome::Failed) {
             // A synchronous failure inside an Original trial has no Engine for player::pump to
             // recover. Take the same explicit rollback edge here and follow its exact HLS Load.
-            return match plx_media::player::recover_failed_foreground_original(ps, self.pa) {
-                plx_media::player::ForegroundOriginalRecovery::NotOriginal
-                | plx_media::player::ForegroundOriginalRecovery::RetryPrepared => {
-                    ForegroundLoadStart::Failed
-                }
-                plx_media::player::ForegroundOriginalRecovery::Tracking(attempt) => {
-                    ForegroundLoadStart::Launched(attempt)
-                }
-                plx_media::player::ForegroundOriginalRecovery::Terminal => {
-                    ForegroundLoadStart::Terminal
-                }
-            };
+            return foreground_load_start(plx_media::player::recover_failed_foreground_original(ps));
         }
         match first {
             plx_media::player::BufferfeedStartOutcome::AlreadyRunning => {

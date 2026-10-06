@@ -5699,6 +5699,63 @@ impl PersonOwnerGateFixture {
         self.assertIn("threads:", out)
         self.assertIn("_check_deps_selftest_threads.rs", out)
 
+    def test_blocking_gate_catches_a_new_allow_blocking_site(self):
+        """A frame-thread blocking exception is a ledger entry in ci/allow/blocking.txt. RED: a new
+        production `allow_blocking(` that the list does not name must fail `blocking`, naming the
+        file and the enclosing fn."""
+        body = ("pub fn sneaky() {\n    let _b = plx_base::task::allow_blocking("
+                "const { &plx_base::task::BlockingLabel::new(\"x\") });\n}\n")
+        r = self._plant("_check_deps_selftest_blocking.rs", body)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("blocking:", out)
+        self.assertIn("_check_deps_selftest_blocking.rs::sneaky", out)
+
+    def test_blocking_gate_ignores_tests_comments_and_declarations(self):
+        """GREEN: the same call inside a `#[cfg(test)] mod`, in a comment, or as an `fn` declaration
+        is not a call site."""
+        r = self._plant(
+            "_check_deps_selftest_blocking_ok.rs",
+            "// allow_blocking(label) is documented here\n"
+            "pub fn allow_blocking(label: &str) {}\n"
+            "#[cfg(test)]\nmod tests {\n    fn t() { let _b = plx_base::task::allow_blocking(L); }\n}\n",
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok — blocking", r.stdout)
+
+    def test_blocking_gate_catches_an_aliased_allow_blocking(self):
+        """The call-site grep cannot see `use ...::allow_blocking as x; x(..)` or `let f =
+        allow_blocking;`. RED: a production mention of the bare identifier that is not a call, the
+        `fn` definition or the listed re-export must fail `blocking`."""
+        body = ("use plx_base::task::allow_blocking as sneak;\n\npub fn sneaky() {\n"
+                "    let _f = sneak;\n}\n")
+        r = self._plant("_check_deps_selftest_blocking_alias.rs", body)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("blocking:", out)
+        self.assertIn("_check_deps_selftest_blocking_alias.rs:1", out)
+
+    def test_blocking_gate_catches_a_stale_entry(self):
+        """The ledger only shrinks: an entry whose site is gone must fail `blocking`, so a migration
+        has to delete its line (and a line cannot be left behind to excuse a later regrowth)."""
+        allow = os.path.join(self.tree, "ci", "allow", "blocking.txt")
+        with open(allow, encoding="utf-8") as f:
+            original = f.read()
+        try:
+            declared = int(original.splitlines()[0].split(":")[1])
+            stale = original.replace(f"# count: {declared}", f"# count: {declared + 1}", 1)
+            stale += "rust-modules/media/src/route/decision.rs::no_such_fn\tgone\n"
+            with open(allow, "w", encoding="utf-8") as f:
+                f.write(stale)
+            r = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")], capture_output=True, text=True)
+        finally:
+            with open(allow, "w", encoding="utf-8") as f:
+                f.write(original)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("blocking:", out)
+        self.assertIn("decision.rs::no_such_fn", out)
+
     def test_tmppath_gate_catches_a_path_built_on_one_line_and_opened_on_the_next(self):
         """The gate used to require the literal and a filesystem-open verb on the SAME line, so a
         value built on one line and opened on the next passed silently. RED: planting that split
@@ -5830,7 +5887,8 @@ impl PersonOwnerGateFixture {
             entries = [l for l in lines if l.strip() and not l.startswith("#")]
             self.assertEqual(declared, len(entries), fn)
             for e in entries:
-                self.assertTrue(os.path.exists(os.path.join(self.ROOT, e.split("\t")[0])), e)
+                # `<path>::<fn>` keys (blocking.txt, store-seams.txt) name a file and a symbol in it
+                self.assertTrue(os.path.exists(os.path.join(self.ROOT, e.split("\t")[0].split("::")[0])), e)
             seen += 1
         self.assertGreaterEqual(seen, 3)
 
@@ -5871,6 +5929,7 @@ impl PersonOwnerGateFixture {
         # that step's entries: 0 + 42 = 42. Merging main brought main's system toast (#392) and its
         # two callers: 42 + 2 = 44. Step L15 moved all 44 behind the `tv` interfaces and the port:
         # 44 - 44 = 0.
+        "blocking.txt": 2,  # frame-thread allow_blocking sites, 2026-10-06; only shrinks
         "layers.txt": 0,
         "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs
         "mutators.txt": 0,

@@ -489,6 +489,7 @@ impl Client {
     /// the fold it actually wants. That is the difference this file cares about: the one-shot
     /// wrapper this used to call folded every non-2xx into `None` for everybody, which is why a
     /// probe could not tell a 401 from a dead router.
+    #[track_caller]
     fn send(&self, path_no_token: &str, method: Method, headers: &[&str]) -> Option<http::Reply> {
         if !self.may_send() { return None; }
         let owned = pms_headers(headers);
@@ -506,6 +507,7 @@ impl Client {
     /// control requests which are only one phase of a reserve-funded media transaction; letting
     /// each phase start the ordinary API timeout would make the sum unbounded even though the
     /// controller had admitted a finite spend.
+    #[track_caller]
     fn send_until(
         &self,
         path_no_token: &str,
@@ -530,6 +532,7 @@ impl Client {
     /// written once here now that the transport no longer does it. Every read below wants exactly
     /// this: a non-2xx PMS answer is not a container, and `http_open` has already logged the
     /// status line (`stream: GET /path status=…`) on the plaintext arm.
+    #[track_caller]
     fn body_2xx(&self, path_no_token: &str, method: Method, headers: &[&str]) -> Option<Vec<u8>> {
         let r = self.send(path_no_token, method, headers)?;
         r.ok().then_some(r.body)
@@ -538,6 +541,7 @@ impl Client {
     /// The status-preserving read twin of [`Client::send`] for a content-dependent PMS body. On
     /// HTTPS it keeps the connect deadline but has no 25 s whole-transfer cutoff; on plaintext it
     /// is the same socket policy `stream.rs` has always used.
+    #[track_caller]
     fn send_bulk(&self, path_no_token: &str, headers: &[&str]) -> Option<http::Reply> {
         if !self.may_send() { return None; }
         let owned = pms_headers(headers);
@@ -552,12 +556,14 @@ impl Client {
     }
 
     /// The 2xx-folding twin of [`Client::send_bulk`] used by ordinary content-dependent reads.
+    #[track_caller]
     fn body_2xx_bulk(&self, path_no_token: &str, headers: &[&str]) -> Option<Vec<u8>> {
         let r = self.send_bulk(path_no_token, headers)?;
         r.ok().then_some(r.body)
     }
 
     /// GET → parse the `{ "MediaContainer": … }` envelope into the flat container.
+    #[track_caller]
     pub(super) fn get_json(&self, path_no_token: &str) -> Option<MediaContainer> {
         self.get_json_with_headers(path_no_token, &[])
     }
@@ -566,6 +572,7 @@ impl Client {
     /// `X-Plex-Session-Identifier` header as its logical playback identity while its legacy
     /// `session=` query value owns a replaceable encoder; the real PMS probe establishes that the
     /// two fields are independent. All ordinary callers stay on [`get_json`](Self::get_json).
+    #[track_caller]
     pub(super) fn get_json_with_headers(
         &self,
         path_no_token: &str,
@@ -601,6 +608,7 @@ impl Client {
     /// Status-preserving GET for operations whose UI gives authorization and absence different
     /// meanings. This deliberately sits beside, rather than changes, the long-standing `get_json`
     /// collapse used by all other PMS reads.
+    #[track_caller]
     pub(super) fn get_json_status(&self, path_no_token: &str) -> JsonStatusOutcome {
         let Some(reply) = self.send_bulk(path_no_token, &[ACCEPT_JSON]) else {
             return JsonStatusOutcome::Transport;
@@ -629,6 +637,7 @@ impl Client {
     /// The deadline-bearing twin for ABR registration and optional show preferences. Parsing
     /// and endpoint-safe diagnostics are identical to the ordinary path; only transport policy
     /// differs.
+    #[track_caller]
     pub(super) fn get_json_with_headers_until(
         &self,
         path_no_token: &str,
@@ -663,11 +672,13 @@ impl Client {
     }
 
     /// GET raw bytes (image transcode / sidecar sub) — caller decodes.
+    #[track_caller]
     pub(super) fn get_bytes(&self, path_no_token: &str) -> Option<Vec<u8>> {
         self.body_2xx_bulk(path_no_token, &[])
     }
 
     /// A size-bounded body on either transport, with a finite stalled-transfer timeout.
+    #[track_caller]
     pub(super) fn get_sidecar_bytes(&self, path_no_token: &str) -> Option<Vec<u8>> {
         if !self.may_send() { return None; }
         let owned = pms_headers(&[]);
@@ -692,6 +703,7 @@ impl Client {
     ///
     /// The token is therefore in the CALLER's string. It must not be logged — the poster store
     /// logs no keys, and neither may anything else that holds one.
+    #[track_caller]
     pub fn fetch_built(&self, path_with_token: &str) -> Option<Vec<u8>> {
         match self.fetch_built_outcome(path_with_token) {
             ArtFetch::Bytes(b) => Some(b),
@@ -704,6 +716,7 @@ impl Client {
     /// or timed-out connect, a link this client may not send on yet — the shapes a boot's
     /// address race and an endpoint refresh take). The poster store retries the second kind and
     /// not the first.
+    #[track_caller]
     pub fn fetch_built_outcome(&self, path_with_token: &str) -> ArtFetch {
         if !self.may_send() {
             return ArtFetch::NoResponse;
@@ -726,6 +739,7 @@ impl Client {
     }
 
     /// GET whose body is discarded (transcode decision / stop registration side effects).
+    #[track_caller]
     pub(super) fn get_void(&self, path_no_token: &str) {
         let _ = self.send(path_no_token, Method::Get, &[]);
     }
@@ -735,6 +749,7 @@ impl Client {
     /// other way to know — see [`super::library::Client::scrobble`]. `false` covers a refused or
     /// timed-out connect as much as a rejected status, which is the distinction that matters here:
     /// a share that is asleep answers nothing at all.
+    #[track_caller]
     pub(super) fn get_ok(&self, path_no_token: &str) -> bool {
         self.body_2xx(path_no_token, Method::Get, &[]).is_some()
     }
@@ -744,6 +759,7 @@ impl Client {
     /// distinction as its physical-session lookup: 200 means present, 404 means absent, while a
     /// timeout/401/5xx proves neither state. The built path is still private to the Plex layer and
     /// the token remains behind [`Self::with_token`].
+    #[track_caller]
     pub(super) fn get_status(&self, path_no_token: &str) -> Option<i32> {
         self.send(path_no_token, Method::Get, &[])
             .map(|reply| reply.status)
@@ -753,12 +769,14 @@ impl Client {
     /// close uses 200 for "terminated now" and 404 for the idempotent "already absent" case, so
     /// folding both through [`Self::post_ok`] would lose the exact cleanup certificate its caller
     /// needs while still confusing transport failure with a server answer.
+    #[track_caller]
     pub(super) fn post_status(&self, path_no_token: &str) -> Option<i32> {
         self.send(path_no_token, Method::Post, &[])
             .map(|reply| reply.status)
     }
 
     /// Deadline-bearing GET status for one phase of a larger media transaction.
+    #[track_caller]
     pub(super) fn get_status_until(
         &self,
         path_no_token: &str,
@@ -771,6 +789,7 @@ impl Client {
     }
 
     /// Deadline-bearing POST status for one phase of a larger media transaction.
+    #[track_caller]
     pub(super) fn post_status_until(
         &self,
         path_no_token: &str,
@@ -786,6 +805,7 @@ impl Client {
     /// request never completed. `-1` is the value the `stream.rs` wrapper this replaced always
     /// returned for a transport failure, and it is kept because a caller reading a status must not
     /// mistake "the server refused" for "nothing was sent".
+    #[track_caller]
     pub(super) fn put(&self, path_no_token: &str) -> i32 {
         self.send(path_no_token, Method::Put, &[])
             .map_or(-1, |r| r.status)

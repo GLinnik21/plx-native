@@ -1,8 +1,10 @@
-//! **Presentation hold while a claimed retranscode's PMS half is in flight.**
+//! **Presentation hold while a flight's PMS half is running.**
 //!
-//! A track pick, an enhancement toggle or a quality change is reconciled on a worker
-//! (`route::execute_retranscode_claim`), which takes 1-15 s for its `/decision` round trip while
-//! the current stream keeps PLAYING. The landing then reloads at the offset the claim captured, and
+//! A track pick, an enhancement toggle, a quality change, an Original recovery, an adaptive refresh
+//! or a seek on a transcode is reconciled on a worker (`route::execute_retranscode_claim`,
+//! `route::execute_recover_original_claim`, `route::execute_adaptive_reload_claim` and
+//! `route::dispatch_transcode_seek`, whose worker/landing machinery is `route/flight.rs`), which takes 1-15 s for its `/decision` round
+//! trip while the current stream keeps PLAYING. The landing then reloads at the offset the claim captured, and
 //! PMS encoded from that offset, so the viewer watched the seconds of the flight a second time.
 //!
 //! The fix is to stop presentation at claim time, through the ONE pause the viewer's own Pause key
@@ -45,16 +47,25 @@ fn store(guard: &mut Option<Hold>, hold: Option<Hold>) {
     SERIAL.store(hold.map_or(0, |h| h.serial), Relaxed);
 }
 
-/// A retranscode claim was dispatched to its worker: hold presentation at the claim offset.
+/// A flight (a retranscode claim, an adaptive refresh or a transcode seek) was dispatched to its
+/// worker: hold presentation at the offset it captured.
 /// Already-paused streams stay as they are (nothing to give back); a refused native Pause is
 /// logged by [`super::pause`] and leaves the stream playing, with no restore owed.
 pub fn engage(pa: &mut super::adapter::PlayerAdapter, serial: u64) {
+    engage_inheriting(pa, serial, false);
+}
+
+/// [`engage`] for a flight that takes over from one that was just superseded (a seek's landing
+/// outdated by a newer tap): the previous hold's pause is still standing, so this one's own
+/// `was_paused` read would mistake it for the viewer's and owe nothing back. `inherited_restore` is
+/// what [`take`] answered for the hold being replaced.
+pub fn engage_inheriting(pa: &mut super::adapter::PlayerAdapter, serial: u64, inherited_restore: bool) {
     let was_paused = super::TX.paused.load(std::sync::atomic::Ordering::Acquire);
     let held = !was_paused && super::pause(pa);
     if held {
         super::log("claim hold: paused at the claim offset while the server prepares the new stream");
     }
-    store(&mut slot(), Some(Hold { serial, restore_play: held }));
+    store(&mut slot(), Some(Hold { serial, restore_play: held || inherited_restore }));
 }
 
 /// A viewer transport press (Play, Pause or the toggle): the viewer's choice outranks the hold, so
@@ -66,10 +77,10 @@ pub fn note_user_transport() {
 }
 
 /// Whether a hold for a claim that is still in flight is up (the spinner's condition). A hold left
-/// behind by a torn-down or superseded claim answers false through `route::claim_is_applying`.
+/// behind by a torn-down or superseded claim answers false through `route::flight_is_current`.
 pub fn active() -> bool {
     let serial = SERIAL.load(Relaxed);
-    serial != 0 && crate::route::claim_is_applying(serial)
+    serial != 0 && crate::route::flight_is_current(serial)
 }
 
 /// Whether the transport is paused BY the hold (a live hold that owes the viewer a Play back),
@@ -81,7 +92,7 @@ pub fn owns_pause() -> bool {
         return false;
     }
     let hold = *slot();
-    hold.is_some_and(|h| h.restore_play && crate::route::claim_is_applying(h.serial))
+    hold.is_some_and(|h| h.restore_play && crate::route::flight_is_current(h.serial))
 }
 
 /// Take the hold belonging to `serial` at its landing, answering whether it owes the viewer a Play

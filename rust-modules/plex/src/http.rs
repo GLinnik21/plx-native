@@ -176,6 +176,7 @@ fn effective_deadline(
 ///
 /// `None` is a transport failure. Anything the server actually answered — including a `401` and a
 /// `500` — comes back as `Some`.
+#[track_caller]
 pub fn request(
     origin: &Origin,
     path: &str,
@@ -188,6 +189,7 @@ pub fn request(
 
 /// A PMS request whose response size is content-dependent. Only the TLS arm differs from
 /// [`request`]: it keeps the connect timeout and disables the 25 s whole-transfer deadline.
+#[track_caller]
 pub fn request_bulk(
     origin: &Origin,
     path: &str,
@@ -204,6 +206,7 @@ pub fn request_bulk(
 /// ordinary 25-second whole-request API cap, which progress does not renew. Neither transport can
 /// renew the caller's reserve. The typed result distinguishes an issued HTTP/transport result from
 /// the absolute timer which actually fired.
+#[track_caller]
 pub fn request_until_outcome(
     origin: &Origin,
     path: &str,
@@ -237,6 +240,7 @@ pub fn request_until_outcome(
 /// `Err` is a transport failure, carrying libcurl's [`plx_net::net::RequestFailure`] when the TLS
 /// arm produced one — the evidence a discovery verdict names per route
 /// (`plex::probe::RouteOutcome::of_failure`). `None` from the plaintext arm, which has no code.
+#[track_caller]
 pub fn request_probe(
     origin: &Origin,
     path: &str,
@@ -255,6 +259,7 @@ pub fn request_probe(
 /// reading the chain makes libcurl decode all of it, which no ordinary request should pay, and the
 /// key is only worth remembering when the same probe also learns WHICH machine answered. The rules for when a pin is present live on [`plx_net::net::Resp::peer_pin`]; over
 /// plaintext it is always `None`.
+#[track_caller]
 pub fn request_probe_learning_key(
     origin: &Origin,
     path: &str,
@@ -268,6 +273,7 @@ pub fn request_probe_learning_key(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[track_caller]
 fn probe(
     origin: &Origin,
     path: &str,
@@ -298,6 +304,7 @@ fn probe(
     }
 }
 
+#[track_caller]
 fn request_with(
     origin: &Origin,
     path: &str,
@@ -311,9 +318,14 @@ fn request_with(
     // dev threadcheck watchdog SIGABRTs after 2s instead. `assert_may_block` panics (host tests) or
     // aborts (device, `feature="threadcheck"`) if this runs while `FrameScope` says we are on the
     // frame thread and nothing has explicitly called `allow_blocking` first. A call site that trips
-    // this in `cargo test` is doing PMS I/O on the main thread and needs to move to a worker (see
-    // `route::decision::try_retranscode` for the pattern) or, if it is a pre-existing, not-yet-split
-    // path, wrap the call with `allow_blocking` and say why.
+    // this in `cargo test` is doing PMS I/O on the frame thread and moves to a worker
+    // (`task::spawn_off_frame`; the PMS half takes `&OffFrame`; `route::flight` is the pattern).
+    // `allow_blocking` is not an option: `ci/check-deps.sh`'s `blocking` gate holds
+    // `ci/allow/blocking.txt` exact, so a new wrapped call fails the gate.
+    //
+    // `#[track_caller]` runs from every public request function (and `Client`'s transport choke
+    // points above them) to this guard, so the report names the route/app caller rather than this
+    // line, and the per-(label, site) dedupe keeps one report per caller.
     let _guard =
         plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("PMS HTTP") });
     if !credential_transport_allowed(origin, path, headers) {
@@ -631,6 +643,7 @@ fn plaintext(
 /// consulted — the whole of offline mode, from this layer's point of view. A pin for a DIFFERENT
 /// host than this origin's is ignored: the entry is keyed on the URL's own host, and curl would
 /// simply never match it, but refusing to send it keeps the log honest.
+#[track_caller]
 fn tls(
     origin: &Origin,
     path: &str,
@@ -738,6 +751,39 @@ mod tests {
             std::time::Instant::now() >= deadline,
             "the fixture did not cross its deadline"
         );
+    }
+
+    /// What a frame-thread PMS request panics with (host tests), run inside a `FrameScope`.
+    fn refused_message(call: impl FnOnce() + std::panic::UnwindSafe) -> String {
+        let _frame = plx_base::task::FrameScope::enter();
+        let payload = std::panic::catch_unwind(call).expect_err("a frame-thread PMS request is refused");
+        payload.downcast_ref::<String>().cloned().expect("a formatted panic")
+    }
+
+    /// `main-thread block: PMS HTTP` is deduped per (label, call site), so it only separates the
+    /// callers if the site it records is the CALLER's, not `request_with`'s own guard line.
+    /// `#[track_caller]` runs from every public request function down to the guard; a request
+    /// function that dropped it would report one shared site and hide every caller after the first.
+    #[test]
+    fn a_frame_thread_pms_request_reports_each_callers_own_site() {
+        let origin = Origin::parse("http://192.0.2.1:32400").expect("parses");
+        let first_line = line!() + 2;
+        let first = refused_message(|| {
+            let _ = request(&origin, "/identity", Method::Get, &[], None);
+        });
+        let second_line = line!() + 2;
+        let second = refused_message(|| {
+            let _ = request_bulk(&origin, "/identity", Method::Get, &[], None);
+        });
+        let probe_line = line!() + 2;
+        let probed = refused_message(|| {
+            let _ = request_probe(&origin, "/identity", Method::Get, &[], 4096, 5, None);
+        });
+        assert!(first.starts_with("main-thread block: PMS HTTP at "), "{first}");
+        assert!(first.ends_with(&format!("http.rs:{first_line}")), "{first}");
+        assert!(second.ends_with(&format!("http.rs:{second_line}")), "{second}");
+        assert!(probed.ends_with(&format!("http.rs:{probe_line}")), "{probed}");
+        assert_ne!(first, second, "two callers of the PMS request path are two recorded sites");
     }
 
     /// The dispatch is on the SCHEME and on nothing else — not on whether the host looks numeric,

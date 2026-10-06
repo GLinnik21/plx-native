@@ -126,22 +126,73 @@ something.
   timed out is still joined. The host concurrent tests model this boundary, not
   the firmware's native initialization. ACB dispatch is additionally constrained by stage/bind
   ordering; the C Starfish gate does not wrap ACB calls.
-- **A claimed retranscode HOLDS presentation for its worker's flight (`claim_hold.rs`).** The PMS
-  half of a track pick / enhancement toggle / quality change runs on a worker for 1-15 s and the
-  landing reloads at the offset captured at claim time, so a stream left playing showed the
-  flight's seconds twice. `pump` calls `claim_hold::engage` when the claim dispatches `Pending`
-  (the viewer's own `player::pause`, then `player::state()` answers `Buffering` so the HUD's
-  existing transport spinner draws) and `take` + `release` AFTER `run_claim_tail`, so an accepted
+- **A flight HOLDS presentation for its worker's run (`claim_hold.rs`; the flight itself is
+  `route/flight.rs`, whose `//!` states the owners, the discard rules and the suspend and
+  trial invariants; the gates ask `route::flight_outstanding`/`flight_is_current`).** The PMS half
+  of a claim (track pick, enhancement toggle, quality change, Original pick, adaptive refresh, the
+  Auto watchdog's handoffs) and of a seek on a transcode runs on a worker for 1-15 s, and the
+  landing reloads at the offset captured at dispatch, so a stream left playing would show those
+  seconds twice. A seek's flight owns `Preparing(serial)`, a claim's owns `Applying(serial)`; the
+  HUD reads Seeking through a seek flight (`player::state` ranks it above the hold) and Buffering
+  through a claim's. `pump` calls `claim_hold::engage` when a claim dispatches `Pending` (the
+  viewer's own `player::pause`, so `player::state()` answers `Buffering` and the existing
+  transport spinner draws; a seek flight engages the same hold from
+  `start_transcode_seek_flight`) and `take` + `release` AFTER `run_claim_tail`, so an accepted
   claim's Play lands on the new stream and a rejected one's on the kept Engine. A viewer press
   (`player::lifecycle::set_transport_paused` -> `note_user_transport`) forgets the restore: the
   viewer's last transport press always stands. A stream already paused at claim time stays paused.
-  While the hold's pause stands the viewer's transport reads see PLAYING (`player::lifecycle::viewer_paused`,
-  `claim_hold::owns_pause`): the OK toggle means Pause and a seek's `resume_if_paused` leaves the
-  hold alone (its seek is carried past the reload by `pump::commit_or_carry_seek`, including a
-  seek pressed mid-flight when none was pending at claim time). An engine failure during the
-  flight publishes `Failed` at once (`fail_current_engine`) and clears the hold, so the error
-  read-out shows instead of a spinner. The encoder a claim replaces is NOT stopped by the worker:
-  the pump retires it (`route::retire_superseded_encoder`) after the reload.
+  While the hold's pause stands the viewer's transport reads see PLAYING
+  (`player::lifecycle::viewer_paused`, `claim_hold::owns_pause`): the OK toggle means Pause and a
+  seek's `resume_if_paused` leaves the hold alone (its seek is carried past the reload by
+  `pump::commit_or_carry_seek`, including a seek pressed mid-flight when none was pending at
+  claim time). An engine failure during the flight publishes `Failed` at once
+  (`fail_current_engine`) and clears the hold, so the error read-out shows instead of a spinner.
+  The encoder a claim replaces is NOT stopped by the worker: the pump retires it
+  (`route::retire_superseded_encoder`) after the reload.
+  - **An AUTOMATIC claim holds only when its worker reaches PMS.** The HLS-to-Original handoff
+    dispatches `Pending` for a replacement remux (PUT + `/decision`, landing at the offset the Auto
+    worker published) and `PendingNoHold` for a direct Original the worker already sampled, which
+    needs no round trip and keeps playing. A refused one reopens the retained HLS
+    (`pump::land_automatic_original`) because the Auto worker exited to hand the action over. The
+    Original-to-HLS fallback (`route::execute_auto_hls_claim`) never holds, though its worker reaches
+    PMS: the Original plays until the landing replaces it, and a refusal (`pump::land_automatic_hls`)
+    raises `demux_io_failed`. A user pick made during an automatic flight WAITS in `pending_user` and
+    is claimed after the landing.
+  - **FAILURE-path recoveries are `FlightOwner::Recovery` flights** owned by the failed start
+    (`Preparing(serial)`): the rollback's rebase after a failed Original trial
+    (`route::dispatch_rollback_rebase`) and the HLS fallback of an Auto Original that never opened
+    (`route::dispatch_unopened_auto_hls`). They hold nothing (the Engine that failed is not
+    playing) and the viewer keeps the connecting spinner (`pump::hold_connecting_state`). The
+    landing is drained AHEAD of the failure branches (`route::take_ready_recovery_flight`, then
+    `pump::land_recovery_flight`: reload onto the route, or fail the Engine), because the
+    branches' failure flags stay up for the whole flight and `fail_current_engine` would end it;
+    `route::recovery_flight_outstanding` is how the pump waits.
+  - **Two rollbacks have no Engine for a pump to drive** (`route::dispatch_engineless_rollback_rebase`,
+    marked `flight_engineless` beside the recovery marker): the foreground restore's
+    (`recover_failed_foreground_original`) and a synchronous Load construction failure's
+    (`start_original_trial_reload`). The HUD reads `Resolving` through
+    `route::engineless_flight_outstanding` (the same answer a cold resume gives); the landing is
+    drained by `pump::land_engineless_rollback` (the foreground machine's `land_recovery`, or the
+    app loop's `pump::drain_engineless_rollback` when no foreground machine owns it) and reloads
+    onto the restored route.
+  - **An app-switch suspend drops the outstanding flight of every owner**
+    (`route::begin_engine_teardown(true)`): a seek's or a recovery's start transaction goes back to
+    `Stable` (a trial's own `Prepared` inside an Original trial), and a CLAIM's `Applying` settles
+    to `Stable`, releases its hold and hands the viewer's pick back to `pending_user` for the
+    restored Engine to claim (an automatic claim owes nothing). The landing is discarded either
+    way, stopping only what its owner kind registered; a worker that has not posted yet is reaped
+    by `route::discard_stale_flight_landing`. The suspend's position snapshot
+    (`player::intended_pos_ns`) reads an outstanding seek's target, else a recovery flight's own
+    offset (`route::recovery_flight_offset_ns`, since a resume that has not landed has seeded no
+    clock), else `playpos_ns`.
+  - **A recovery flight flies over an Original TRIAL's transaction without erasing its
+    rollback**: an OS suspend mid-trial leaves `OriginalTrial(Prepared)` and the foreground
+    restore's resume (`begin_resume` -> `route::dispatch_resume_rebase`) takes that transaction as
+    `OriginalTrial(Preparing(serial))`, the trial's own flight phase (the fence is the same; the
+    snapshot is `pending_original`, which no flight writes). A landing returns it to the trial as
+    `Prepared` (the candidate's projection and remux follow the rebuilt stream), a refusal as
+    `OriginalTrial(Failed)`, a second suspend as `Prepared`; a failed open of the rebuilt Original
+    still rolls back to the retained HLS. A trial that is `Starting` or `AwaitingFrame` is refused.
 - **The k5lp/k3lp sandbox preflight refuses native playback when `/dev/rtkmem` is unreadable.**
   The device fact is cached at boot, while the refusal belongs to `PlaybackSession` and clears
   on exit. Explicit Repair confirmation spends `Player.repair` once for the whole app lifetime;
@@ -199,7 +250,27 @@ something.
 - **Seeks are in-place** (Kodi-style): flush + `av_seek_frame` to the target,
   then on the first post-seek keyframe `feed_stream` re-anchors the GStreamer segment
   (`setTimeToDecode` + `sendSegmentEvent`) — no reload/decoder re-init. A transcode seek instead
-  restarts the encode at `&offset` with a full fresh `Load`. The rebase machinery
+  restarts the encode at `&offset` with a full fresh `Load`, and the PMS half of that restart is a
+  FLIGHT, never frame-thread I/O: `route::dispatch_transcode_seek` plans on the frame, a worker
+  registers the replacement encoder, and the drain installs it and reloads (`seek_landing_tail`).
+  Taps that arrive during the flight coalesce to the last: the outdated landing is discarded
+  (its replacement stopped, the encoder on screen untouched) and the next flight flies at the
+  newest target. The COLD RESUME of a freshly resolved transcode (a saved `viewOffset`) is a flight
+  too, `begin_resume` / `land_resume`: it owns the start transaction the landing left `Prepared` (a
+  `FlightOwner::Recovery` — a start's route being rebuilt, with no Engine), the start stays owed
+  (`player::state` answers `Resolving` through `route::engineless_flight_outstanding`;
+  `play_pending()` is already false by then), and the app loop's drain starts the Load when it lands
+  (`finish_landed_play`). So is the FOREGROUND restore's resume of a parked transcode: the
+  foreground machine (`player/lifecycle.rs`) parks in `PreparePending` / `RecoveryPending` (both
+  `awaiting_load`, so playback and the cold drain stay off), and `poll_foreground_flight` — once a
+  frame from `playback_tick`, outside `playback_may_run` — drains the landing with the same
+  `land_resume` and carries on into the Load; a refused rebuild re-arms the suspended snapshot, a
+  flight that ended without landing releases the machine, and a SECOND OS background while it flies
+  drops the flight (`park_pending_foreground_flight`) and parks the session as it was. Back, a
+  suspend or a newer play request ends any of these; the late landing is reaped by
+  `route::discard_stale_flight_landing`, which `playback_tick` runs every frame since there is no
+  pump. `route::transcode_seek` is a test-only composition. The
+  rebase machinery
   (`pts_shift`/`rebase_pending` in `shared.rs`) keeps Starfish from ever seeing a PTS jump.
 - **`frames` is SEEK-scoped, `seen_frame` is SESSION-scoped.** `pump` zeroes `SHARED.frames` as
   *part of applying* an in-place seek (it counts only post-seek frames, for the rebind + resume
