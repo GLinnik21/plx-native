@@ -823,6 +823,23 @@ impl Stream {
             )
     }
 
+    /// **Is this sidecar the subtitle a search candidate named `title` / `lang_code` would install?**
+    /// The release name is the identity: PMS copies the candidate's name into the created stream's
+    /// `title` (`docs/pms-api.md` §8), and the stream's id is NOT — a re-download of the same
+    /// subtitle takes a fresh one. Language is compared by [`lang_matches`] (the candidate's code
+    /// and the stream's may be spelled differently). Only an EXTERNAL stream can be one, and an
+    /// empty title or language names nothing, so it never matches. The one rule behind both "this
+    /// search hit is already added" and [`Stream::same_subtitle`].
+    pub fn is_sidecar_release(&self, title: &str, lang_code: &str) -> bool {
+        self.external && !title.is_empty() && self.title == title && lang_matches(&self.lang_code, lang_code)
+    }
+
+    /// Is `other` the same subtitle as this one — a sidecar of the same release and language,
+    /// whatever its id? See [`Stream::is_sidecar_release`].
+    pub fn same_subtitle(&self, other: &Stream) -> bool {
+        other.external && self.is_sidecar_release(&other.title, &other.lang_code)
+    }
+
     /// Does this audio track carry **Dolby Atmos**?
     ///
     /// **The answer is in `profile`, and only there** — probed live against the dev server
@@ -2481,10 +2498,22 @@ fn retire_playing_item(state: &mut MetadataState) {
 /// MAIN THREAD: add one subtitle the server just installed to the playing item. Only for the same
 /// `(sid, rk)` — a landing for an item the viewer has since left is dropped — and only once. The
 /// rest of the leaf (markers, chapters, the skipped set) is left exactly as it was.
+///
+/// **One entry per subtitle, not per id:** PMS gives a re-downloaded subtitle a NEW stream id, so a
+/// landing that is [`Stream::same_subtitle`] as an entry already listed REPLACES it in place (its
+/// position, hence the active index, stays) instead of listing the subtitle twice until a reload.
 fn append_playing_sub(state: &mut MetadataState, sid: plx_plex::plex::ServerId, rk: &str, stream: Stream) -> bool {
     let Some(pt) = state.playing.as_mut() else { return false };
     if !plx_plex::plex::same_item((pt.sid, &pt.rk), (sid, rk)) || pt.subs.iter().any(|s| s.id == stream.id) {
         return false;
+    }
+    if let Some(stale) = pt.subs.iter_mut().find(|s| s.same_subtitle(&stream)) {
+        plx_base::eventlog::log(&format!(
+            "playing item: rk={rk} subtitle stream {} replaced by {}",
+            stale.id, stream.id
+        ));
+        *stale = stream;
+        return true;
     }
     plx_base::eventlog::log(&format!("playing item: rk={rk} gained subtitle stream {}", stream.id));
     pt.subs.push(stream);
@@ -2799,6 +2828,46 @@ pub fn lang_key(tag: &str) -> Option<std::borrow::Cow<'static, str>> {
 /// language.
 pub fn lang_matches(a: &str, b: &str) -> bool {
     matches!((lang_key(a), lang_key(b)), (Some(a), Some(b)) if a == b)
+}
+
+#[cfg(test)]
+mod same_subtitle_tests {
+    use super::Stream;
+
+    fn sidecar(id: i64, title: &str, lang_code: &str) -> Stream {
+        Stream { id, title: title.into(), lang_code: lang_code.into(), external: true, ..Default::default() }
+    }
+
+    #[test]
+    fn the_same_release_in_the_same_language_is_the_same_subtitle_under_any_id() {
+        assert!(sidecar(5, "rel", "nld").same_subtitle(&sidecar(9, "rel", "nld")));
+    }
+
+    /// PMS spells a language with its 3-letter code (and a candidate's may differ from a created
+    /// stream's), the way `lang_matches` already folds them.
+    #[test]
+    fn the_language_is_compared_by_lang_matches_not_by_spelling() {
+        assert!(sidecar(5, "rel", "nld").same_subtitle(&sidecar(9, "rel", "dut")));
+        assert!(sidecar(5, "rel", "fre").same_subtitle(&sidecar(9, "rel", "fra")));
+        assert!(sidecar(5, "rel", "nld").is_sidecar_release("rel", "nl"));
+        assert!(!sidecar(5, "rel", "nld").same_subtitle(&sidecar(9, "rel", "fra")));
+    }
+
+    #[test]
+    fn a_different_release_is_a_different_subtitle() {
+        assert!(!sidecar(5, "rel", "nld").same_subtitle(&sidecar(9, "other", "nld")));
+    }
+
+    /// A nameless stream or candidate names no release, so it must not match every other nameless
+    /// one; likewise a language-less one. An embedded track is never "already added".
+    #[test]
+    fn an_empty_title_or_language_or_an_embedded_track_matches_nothing() {
+        assert!(!sidecar(5, "", "nld").same_subtitle(&sidecar(9, "", "nld")));
+        assert!(!sidecar(5, "rel", "").same_subtitle(&sidecar(9, "rel", "")));
+        let embedded = Stream { external: false, ..sidecar(5, "rel", "nld") };
+        assert!(!embedded.same_subtitle(&sidecar(9, "rel", "nld")));
+        assert!(!sidecar(5, "rel", "nld").same_subtitle(&Stream { external: false, ..sidecar(9, "rel", "nld") }));
+    }
 }
 
 #[cfg(test)]
