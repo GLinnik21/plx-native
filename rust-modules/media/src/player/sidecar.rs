@@ -111,7 +111,13 @@ fn state() -> std::sync::MutexGuard<'static, State> {
 /// loaded. MAIN THREAD.
 pub fn select(server: plx_plex::plex::ServerId, stream_id: i64, key: String, codec: String) {
     select_with_fetch(server, stream_id, key, codec, |server, key, codec| {
-        plx_plex::plex::client_for(server).and_then(|c| c.sidecar_subtitle(key, codec))
+        let Some(client) = plx_plex::plex::client_for(server) else {
+            super::log("sidecar: no client for the playing server");
+            return None;
+        };
+        client.sidecar_subtitle_detailed(key, codec)
+            .map_err(|why| super::log(&format!("sidecar: fetch failed: {why}")))
+            .ok()
     });
 }
 

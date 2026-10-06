@@ -677,17 +677,23 @@ impl Client {
         self.body_2xx_bulk(path_no_token, &[])
     }
 
-    /// A size-bounded body on either transport, with a finite stalled-transfer timeout.
+    /// A size-bounded body on either transport, with a finite stalled-transfer timeout. `Err`
+    /// names what ended the request without a body: `HTTP <status>`, `curl rc=<code>`, `no
+    /// response` (a transport with no code, or a link this client may not send on) -- never the
+    /// URL, host or token.
     #[track_caller]
-    pub(super) fn get_sidecar_bytes(&self, path_no_token: &str) -> Option<Vec<u8>> {
-        if !self.may_send() { return None; }
+    pub(super) fn get_sidecar_bytes(&self, path_no_token: &str) -> Result<Vec<u8>, String> {
+        if !self.may_send() { return Err("not sendable".into()); }
         let owned = pms_headers(&[]);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         let r = http::request_probe(
             &self.origin, &self.with_token(path_no_token), Method::Get, &headers,
             super::SIDECAR_MAX_BYTES, 25, self.resolve_pin.as_ref(),
-        ).ok()?;
-        r.ok().then_some(r.body)
+        ).map_err(|failure| match failure.and_then(|f| f.curl_rc) {
+            Some(rc) => format!("curl rc={rc}"),
+            None => "no response".to_string(),
+        })?;
+        if r.ok() { Ok(r.body) } else { Err(format!("HTTP {} ({} bytes)", r.status, r.body.len())) }
     }
 
     /// **Dev probe (`media::route::partprobe`)**: one `Range` GET of the item's Part file, over the

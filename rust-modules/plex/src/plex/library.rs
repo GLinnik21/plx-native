@@ -273,17 +273,33 @@ impl Client {
     /// without `format` PMS re-encodes only, and the bare key is the file as it lies on disk.
     /// `player::sidecar` retains styled scripts and parses plain captions from the response.
     pub fn sidecar_subtitle(&self, key: &str, codec: &str) -> Option<Vec<u8>> {
+        self.sidecar_subtitle_detailed(key, codec).ok()
+    }
+
+    /// [`Self::sidecar_subtitle`] keeping WHY there is no file: one `label: reason` per attempt
+    /// (`HTTP 404 (0 bytes)`, `curl rc=28`, `empty body`, ...), joined with `; `. No URL, host or
+    /// token appears in it, so a caller may log it.
+    pub fn sidecar_subtitle_detailed(&self, key: &str, codec: &str) -> Result<Vec<u8>, String> {
         if !sidecar_key_allowed(key) {
-            return None; // a key is server data: only ever the path this method is for
+            // a key is server data: only ever the path this method is for
+            return Err("key refused (not /library/streams/<id>[.ext])".into());
         }
         let sep = if key.contains('?') { '&' } else { '?' };
         let mut paths = Vec::with_capacity(3);
         if !codec.eq_ignore_ascii_case("ass") && !codec.eq_ignore_ascii_case("ssa") {
-            paths.push(format!("{key}{sep}encoding=utf-8&format=srt"));
+            paths.push(("srt", format!("{key}{sep}encoding=utf-8&format=srt")));
         }
-        paths.push(format!("{key}{sep}encoding=utf-8"));
-        paths.push(key.to_string());
-        paths.iter().find_map(|path| self.get_sidecar_bytes(path).filter(|b| !b.is_empty()))
+        paths.push(("utf8", format!("{key}{sep}encoding=utf-8")));
+        paths.push(("bare", key.to_string()));
+        let mut why = Vec::with_capacity(paths.len());
+        for (label, path) in &paths {
+            match self.get_sidecar_bytes(path) {
+                Ok(body) if !body.is_empty() => return Ok(body),
+                Ok(_) => why.push(format!("{label}: empty body")),
+                Err(e) => why.push(format!("{label}: {e}")),
+            }
+        }
+        Err(why.join("; "))
     }
 
     /// PUT /library/parts/{id} — select the part's audio/subtitle streams SERVER-side (the
@@ -401,6 +417,48 @@ mod tests {
                 assert!(!requests.last().unwrap().contains("encoding="), "retry the original file");
             }
         }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn sidecar_failure_names_status_per_attempt_and_no_url() {
+        use std::io::{Read, Write};
+        use std::time::{Duration, Instant};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut served, deadline) = (0, Instant::now() + Duration::from_secs(3));
+            while served < 3 && Instant::now() < deadline {
+                let Ok((mut socket, _)) = plx_base::testnet::accept(&listener) else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut request = [0; 8192];
+                let _ = socket.read(&mut request).unwrap();
+                let (status, body) = match served {
+                    0 => ("404 Not Found", &b"gone"[..]),
+                    1 => ("200 OK", &b""[..]),
+                    _ => ("400 Bad Request", &b""[..]),
+                };
+                write!(socket, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                socket.write_all(body).unwrap();
+                served += 1;
+            }
+        });
+        let client = Client::new(
+            crate::plex::ServerId::UNSET, "fixture",
+            crate::plex::Origin::http("127.0.0.1", port as i32), "tok3n", "cid",
+        );
+        let why = client.sidecar_subtitle_detailed("/library/streams/16368", "srt").unwrap_err();
+        server.join().unwrap();
+        assert_eq!(why, "srt: HTTP 404 (0 bytes); utf8: empty body; bare: HTTP 400 (0 bytes)");
+        assert!(!why.contains("127.0.0.1") && !why.contains("tok3n"));
+        assert_eq!(
+            client.sidecar_subtitle_detailed("/library/streams/1?x=1", "srt").unwrap_err(),
+            "key refused (not /library/streams/<id>[.ext])"
+        );
     }
 
     #[test]
