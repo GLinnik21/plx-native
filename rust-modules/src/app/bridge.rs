@@ -808,7 +808,7 @@ impl Bridge {
         // Reading that gap as Home published the tab strip under whatever mounted next: a
         // cold-start picker's mount `Enter` was composed with it and seated focus on a pill, and
         // the next frame's reconcile clamped that foreign key to the picker's LAST avatar.
-        let route = d.next_top_arg().cloned().unwrap_or(AppArg::Home);
+        let route = d.top_or_mounting_arg().cloned().unwrap_or(AppArg::Home);
         let route = &route;
         let search = *route == AppArg::Search;
         if matches!(route, AppArg::Home | AppArg::Library) || search {

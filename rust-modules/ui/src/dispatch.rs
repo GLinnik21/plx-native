@@ -591,16 +591,17 @@ where
         self.nav.top_page().map(|e| &e.arg)
     }
 
-    /// The page the NEXT nav commit puts on top: the argument of the last parked op that mounts
-    /// one (`Root`/`Push`/`Replace`/`SelectTab`), else the page already there. A caller that
-    /// runs BEFORE the frame's commit (the bridge's chrome capture) asks this rather than
+    /// The top page's argument, or — while there is NO top page yet — the page the first nav
+    /// commit is about to mount (the last parked `Root`/`Push`/`Replace`/`SelectTab`). A caller
+    /// that runs BEFORE the frame's commit (the bridge's chrome capture) asks this rather than
     /// [`Self::top_arg`], which is `None` on a boot's first frame — the route is parked, not
-    /// mounted — and would make that frame look like no page at all.
-    pub fn next_top_arg(&self) -> Option<&H::Arg> {
-        self.parked.iter().rev().find_map(|(s, _)| match &s.fx {
+    /// mounted — and would make that frame look like no page at all. Once a page is up this IS
+    /// `top_arg`: a push parked behind it changes the chrome at its own commit, not a frame early.
+    pub fn top_or_mounting_arg(&self) -> Option<&H::Arg> {
+        self.top_arg().or_else(|| self.parked.iter().rev().find_map(|(s, _)| match &s.fx {
             Fx::Nav(NavOp::Root(a) | NavOp::Push(a) | NavOp::Replace(a) | NavOp::SelectTab(a)) => Some(a),
             _ => None,
-        }).or_else(|| self.top_arg())
+        }))
     }
 
     /// …and its `ScreenId`, the identity every argument of one screen shares.
