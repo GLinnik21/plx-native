@@ -8791,6 +8791,26 @@ pub fn live_is_own_burn(ps: &PlaybackSession) -> bool {
         && ps.cur_contract == enhanced_remux_contract(ps.cur_contract.audio, true)
 }
 
+/// **Is the live route Original quality with an embedded subtitle burned in?** The shape the
+/// enhancement's own Burn asks for ([`enhanced_remux_contract`] with `force_burn`), standing with
+/// or without the DSP params: a standing Original candidate on Auto/Original, a progressive MKV
+/// re-encode with no ceiling and the video still copyable, and an embedded subtitle on screen —
+/// the subtitle is the ONLY reason the video is re-encoded, nothing is downscaled. A fixed rung
+/// (ceiling), HLS (`FixedHls`), a relay, a source that forbids a video copy (declared Dolby
+/// Vision) or a sidecar the client draws itself all fail one of these terms and stay an
+/// unrelated `Other`-family re-encode.
+fn live_is_original_burn(ps: &PlaybackSession) -> bool {
+    enhancement_quality()
+        && ps.auto_original.is_some()
+        && is_transcoding(ps)
+        && !ps.cur_contract.remux
+        && ps.cur_contract.delivery == plx_plex::plex::TranscodeDelivery::ProgressiveMkv
+        && ps.cur_contract.ceiling.is_none()
+        && !ps.cur_contract.no_video_copy
+        && ps.cur_sub_sid != 0
+        && !ps.cur_sub_sidecar
+}
+
 /// **The family the enhancement's own bookkeeping should read the live route as.** Identical to
 /// [`live_family`] except a live Burn — which is wire-shaped `Other` (`remux: false`) — reads as
 /// `Remux`, because it IS the enhancement's own route. Every predicate that asks "is the
@@ -8800,7 +8820,7 @@ pub fn live_is_own_burn(ps: &PlaybackSession) -> bool {
 /// transcode split, an unrelated legacy reload) keep using `live_family`: a Burn genuinely needs
 /// re-encode-shaped handling there.
 fn enhancement_family(ps: &PlaybackSession) -> RouteFamily {
-    if live_is_own_burn(ps) {
+    if live_is_own_burn(ps) || live_is_original_burn(ps) {
         RouteFamily::Remux
     } else {
         live_family(ps)
@@ -8881,7 +8901,8 @@ pub fn enhancement_step(ps: &PlaybackSession) -> EnhancementStep {
     let want = desired_audio(crate::player::audio_enhancements(), want_route.is_some());
     let applied = ps.cur_contract.audio;
     let want_burn = matches!(want_route, Some(EnhancementRoute::Burn));
-    let applied_burn = live_is_own_burn(ps);
+    // An `Unverified` Burn is not `Applied`, but it is still the Burn shape carrying params.
+    let applied_burn = live_is_own_burn(ps) || (applied.any() && live_is_original_burn(ps));
     // A subtitle change while enhanced can leave the boost/loudness preference untouched and still
     // need a rebuild: turning off a burned subtitle must drop the route from Burn back to a plain
     // enhanced remux (M7), which `want == applied` alone would miss.
@@ -8891,9 +8912,11 @@ pub fn enhancement_step(ps: &PlaybackSession) -> EnhancementStep {
     if applied.any() && !want.any() {
         return match ps.auto_original.as_ref() {
             Some(candidate) if candidate.feeds_part() => EnhancementStep::ReleaseToDirect,
+            // An embedded subtitle still on screen is kept by the plain burn, never dropped by a
+            // plain remux (which cannot carry it, M4/M7).
             Some(_) => EnhancementStep::Remux(enhanced_remux_contract(
                 plx_plex::plex::AudioEnhancements::NONE,
-                false,
+                subtitle_effect_of(ps) == SubtitleEffect::Embedded,
             )),
             None => EnhancementStep::NotInvolved,
         };

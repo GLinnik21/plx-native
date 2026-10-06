@@ -3335,3 +3335,216 @@ fn the_inline_unopened_fallback_is_the_same_three_steps_and_restores_nothing_on_
     live.finish();
     cleanup(&mut ps);
 }
+
+
+// ---- an embedded subtitle burned at ORIGINAL quality still offers the enhancement ------------
+//
+// Bug seen on the TV: Auto/Original, the server converting the audio on a video-copy remux, the
+// enhancement OFF, and a subtitle picked mid-play. The rebuild is a plain burn re-encode (family
+// `Other`), so the Audio tab dimmed Boost dialog / Normalize loudness with "Available only at
+// Original quality" while nothing was downscaled and the Burn route (M7) can carry both.
+
+/// A plain burn: the enhancement's Burn shape with no params, an embedded subtitle on screen, and
+/// a REMUX candidate (the server converts the audio) standing behind it.
+fn install_plain_burn(ps: &mut PlaybackSession, live: &Live) {
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(ps);
+    crate::player::restore_audio_enhancements(NONE);
+    install(ps, live, Delivery::Burn(NONE), a1(), Some(candidate(false, a1(), Some(2))), 77);
+}
+
+#[test]
+fn a_subtitle_burned_at_original_quality_still_offers_the_enhancement() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_plain_burn(&mut ps, &live);
+    assert_eq!(live_family(&ps), RouteFamily::Other, "wire-shaped as an ordinary re-encode");
+    assert_eq!(
+        menu_enhancement_availability(&ps),
+        EnhancementAvailability::Offered(EnhancementRoute::Burn),
+        "no ceiling, a candidate standing: the subtitle is the only reason for the re-encode"
+    );
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn enabling_normalize_on_a_burned_subtitle_rebuilds_as_the_enhanced_burn() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_plain_burn(&mut ps, &live);
+    assert!(toggle(&mut ps, PREF));
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(PREF, true)));
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, true));
+    assert_eq!(ps.cur_sub_sid, 77, "the subtitle survives the rebuild");
+    let requests = live.finish();
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert_eq!(query_param(last, "normalizeLoudness"), Some("1"), "{last}");
+    assert_eq!(query_param(last, "subtitleStreamID"), Some("77"), "{last}");
+    assert_eq!(query_param(last, "subtitles"), Some("burn"), "{last}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn disabling_the_enhancement_on_a_burned_subtitle_returns_to_the_plain_burn() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_plain_burn(&mut ps, &live);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Burn(PREF), a1(), Some(candidate(false, a1(), Some(2))), 77);
+    assert!(toggle(&mut ps, NONE));
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(NONE, true)));
+    let (action, tail) = claim(&mut ps);
+    settle(&mut ps, &action, tail);
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE, true));
+    assert_eq!(ps.cur_sub_sid, 77);
+    let requests = live.finish();
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert_eq!(query_param(last, "subtitles"), Some("burn"), "{last}");
+    assert_eq!(query_param(last, "normalizeLoudness"), None, "{last}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn picking_a_subtitle_with_the_enhancement_on_keeps_it_through_the_burn() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Original);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(false, a1(), None)), 0);
+    commit_subtitle_selection(&mut ps, 2, 77, true);
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(PREF, true)));
+    let (action, tail) = claim(&mut ps);
+    settle(&mut ps, &action, tail);
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, true));
+    let requests = live.finish();
+    let last = decisions(&requests).last().copied().expect("a decision was made").clone();
+    assert_eq!(query_param(&last, "normalizeLoudness"), Some("1"), "{last}");
+    assert_eq!(query_param(&last, "subtitles"), Some("burn"), "{last}");
+    assert_eq!(query_param(&last, "subtitleStreamID"), Some("77"), "{last}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn a_burn_under_a_fixed_rung_still_refuses_the_enhancement() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_plain_burn(&mut ps, &live);
+    ps.cur_contract.ceiling = Some(crate::abr::Rung::P1080High.ceiling());
+    assert_eq!(
+        menu_enhancement_availability(&ps),
+        EnhancementAvailability::Disabled(DisabledReason::NotOriginalQuality),
+        "a ceiling on the contract"
+    );
+    ps.cur_contract.ceiling = None;
+    restore_quality(Quality::P720);
+    assert_eq!(
+        menu_enhancement_availability(&ps),
+        EnhancementAvailability::Disabled(DisabledReason::NotOriginalQuality),
+        "a fixed rung picked"
+    );
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn a_burn_on_hls_still_refuses_the_enhancement() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    install(&mut ps, &live, Delivery::Hls, a1(), Some(candidate(false, a1(), Some(2))), 77);
+    assert_eq!(
+        menu_enhancement_availability(&ps),
+        EnhancementAvailability::Disabled(DisabledReason::NotOriginalQuality)
+    );
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn a_dolby_vision_burn_still_refuses_with_its_own_reason() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_plain_burn(&mut ps, &live);
+    let c = ps.auto_original.as_mut().unwrap();
+    c.dovi = p8();
+    c.dv_decision.presentation = plx_data::metadata::DvPresentation::Declare(plx_data::metadata::DolbyHdrInfo {
+        profile_id: 8,
+        track_type: "single",
+        encryption_type: "clear",
+    });
+    assert_eq!(
+        menu_enhancement_availability(&ps),
+        EnhancementAvailability::Disabled(DisabledReason::DolbyVisionSubtitle)
+    );
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn an_untracked_track_on_a_burned_subtitle_says_not_analyzed() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    install(&mut ps, &live, Delivery::Burn(NONE), a5(), Some(candidate(false, a5(), Some(2))), 77);
+    assert_eq!(
+        menu_enhancement_availability(&ps),
+        EnhancementAvailability::Disabled(DisabledReason::NotAnalyzed)
+    );
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn a_cold_start_burn_records_the_burned_subtitle_in_the_plan() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    let (port, done, server) = enhancement_pms(MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0);
+    let sid = plx_plex::plex::register_for_test("enh-cold-sub", "127.0.0.1", port, "token", "enh-client");
+    plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+    plx_plex::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
+    let audio = plx_data::metadata::Stream {
+        id: 10976,
+        index: 1,
+        lang_code: "eng".into(),
+        codec: "ac3".into(),
+        channels: 2,
+        default: true,
+        selected: true,
+        can_normalize_loudness: true,
+        ..Default::default()
+    };
+    let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "1804");
+    env.quality = Quality::Auto;
+    env.pass = Subscription::Yes;
+    env.audio_enhancements = PREF;
+    env.cached_item = Some(fourk_item_with_subs(sid, vec![audio], vec![selected_sub(10980, "srt")]));
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "1804", "/library/parts/3058/1/file.mkv", "hevc", "ac3", &env);
+    assert_eq!(query_param(&plan.url, "subtitles"), Some("burn"), "{}", plan.url);
+    assert_eq!(plan.sub_sid, 10980, "the burned subtitle is the session's subtitle");
+    apply_plan(&mut ps, plan, "1804");
+    assert_eq!(ps.cur_sub_sid, 10980, "the menu checkmark and the next rebuild read it back");
+    done.send(()).unwrap();
+    let _ = server.join().unwrap();
+    cleanup(&mut ps);
+    plx_plex::plex::reset_servers_for_test();
+}

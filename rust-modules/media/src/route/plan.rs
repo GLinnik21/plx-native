@@ -1969,7 +1969,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     } else {
         env.sub_sid
     };
-    if burn_for_audio {
+    if burn_for_audio || force_burn {
         // The subtitle burned in IS the session's subtitle: the menu checkmark, the timeline and
         // every later rebuild (a seek, a track pick) read it back from the plan.
         plan.sub_sid = burn_sub_sid;

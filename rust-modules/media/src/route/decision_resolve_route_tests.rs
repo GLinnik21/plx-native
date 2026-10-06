@@ -2330,7 +2330,7 @@ fn cold_audio_resolve(
     let mut item = fourk_item_with_subs(sid, audio, subs);
     tweak(&mut env, &mut item);
     env.cached_item = Some(item);
-    let plan = build_stream("rk-4k", "/library/parts/36013/1/file.mkv", "hevc", acodec, &env);
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-4k", "/library/parts/36013/1/file.mkv", "hevc", acodec, &env);
     let requests = rx.recv_timeout(std::time::Duration::from_secs(15)).expect("PMS never saw the resolve");
     server.join().unwrap();
     plx_plex::plex::reset_servers_for_test();
