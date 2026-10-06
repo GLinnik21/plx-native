@@ -2222,8 +2222,9 @@ fn fill_direct_plan(
     //
     // **Set on this branch only, and the omission on the others is deliberate.** A transcode's
     // audio is re-encoded and its Atmos is gone, so declaring it would be false. A REMUX copies
-    // the audio and would in fact still carry JOC — but `plan.dovi` already draws the line at
-    // this branch on the same reasoning (a copy's payload describes what the server sends, and
+    // the audio only when the profile admits it (then JOC survives; a converted track arrives in
+    // the profile's target codec without it) — so it can in fact still carry JOC, but `plan.dovi`
+    // already draws the line at this branch on the same reasoning (a copy's payload describes what the server sends, and
     // the declaration rides the direct play), and one rule that is occasionally conservative
     // beats two rules that can disagree. Nothing is lost visibly: an undeclared Atmos plays as
     // ordinary E-AC3, which is what it does today.
@@ -2440,12 +2441,17 @@ fn audio_intents<'a>(
 ///     is direct-playable — by EXPLICIT index (matching by codec alone fed the first same-codec
 ///     stream, not the flagged default, when another track of that codec preceded it);
 ///   - then any other direct-playable track (TrueHD/DTS-default item with an AC3 sibling —
-///     smart-DP).
-/// None when NO audio track is direct-playable (→ transcode).
+///     smart-DP), under `StandIn::Any` only (this `#[cfg(test)]` wrapper; production uses it only
+///     when forced direct play has no session pick or the video cannot be copied).
+/// Under `StandIn::SameKind`, the production default, an intent this path cannot carry is
+/// answered only by a same-language, non-commentary direct-playable track, else None. None
+/// means no direct-playable track serves the intent: the server carries the intended track on a
+/// video-copy remux, not a transcode of the video.
 ///
-/// An intent this path cannot carry falls through to the default rather than forcing a transcode
-/// to obey it, which would drop the whole smart-direct-play class (a TrueHD/DTS pick with an AC3
-/// sibling) onto the server's video-downscaling encoder for one audio track.
+/// Under `StandIn::Any` an intent this path cannot carry falls through to the default rather than
+/// forcing a transcode to obey it, which would drop the whole smart-direct-play class (a
+/// TrueHD/DTS pick with an AC3 sibling) onto the server's video-downscaling encoder for one
+/// audio track.
 ///
 /// PURE: takes the playing item's audio tracks explicitly instead of reaching into
 /// `metadata::playing()`. That matters twice over. (a) `playing()` (via `MetadataView`) hands out

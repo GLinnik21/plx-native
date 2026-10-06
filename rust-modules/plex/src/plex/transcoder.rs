@@ -378,9 +378,11 @@ impl Client {
     /// the session as a side effect. The caller reads `Part.decision` ("directplay" vs
     /// "transcode") and the verdict codes off the returned container.
     ///
-    /// `audio_stream_id` is the track the demuxer will actually feed (0 = omit, PMS uses the
-    /// part default). Smart direct-play names the AAC/AC3/EAC3 sibling here so MDE does not
-    /// veto a TrueHD/DTS default we never intended to play.
+    /// `audio_stream_id` is the track the route will carry (0 = omit, PMS uses the part
+    /// default): the direct-play pick or same-kind sibling when one exists (smart direct-play
+    /// names the AAC/AC3/EAC3 sibling so MDE does not veto a TrueHD/DTS default we never
+    /// intended to play), otherwise the intended track the TV cannot decode, which the server
+    /// converts.
     ///
     /// `subtitle_stream_id` is always sent: a positive id is an advertised embedded track Original
     /// will client-render; **0** tells MDE to evaluate with subs off so a selected sidecar or
