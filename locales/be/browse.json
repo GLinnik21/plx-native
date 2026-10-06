@@ -227,7 +227,7 @@
   "browse.diagnostics.progressive": "паступовае",
   "browse.diagnostics.direct_play": "прамое прайграванне",
   "browse.diagnostics.remux": "рэмуксаванне (капіяванне патоку)",
-  "browse.diagnostics.transcode": "транскадаванне (перакадаванне)",
+  "browse.diagnostics.transcode": "пераўтварэнне (перакадзіраванне)",
   "browse.diagnostics.exported_window": "экспартаванае акно",
   "browse.diagnostics.no_window": "НЯМА АКНА",
   "browse.diagnostics.window_ready": "акно гатовае",
