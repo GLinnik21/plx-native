@@ -113,6 +113,15 @@ class NightlyHomebrewRepository(unittest.TestCase):
         self.assertLess(publish.index("gh release create"),
                         publish.index("--pattern com.beb.plxnative.nightly.manifest.json"))
 
+    def test_check_package_grades_a_nightly_without_the_build_environment(self):
+        # In CI, check-package.py runs as its OWN step, without the PLX_NIGHTLY_DATE the build step
+        # had. It must take the date from the build stamp, or flavor.control_for dies at import and
+        # every nightly fails the packaging gate (a Makefile run passes only because its recipe
+        # environment carries the exported date).
+        checker = (WORKFLOWS.parent.parent / "ci/check-package.py").read_text()
+        self.assertIn('flavor.control_for((ROOT / "ipkroot/ctl/control").read_text(), FLAVOR or "stable", _NIGHTLY_DATE)',
+                      checker)
+
     def test_the_source_bundle_is_named_for_the_reported_version_not_the_package_filename(self):
         # The package version carries the cut date as its patch, so `<filename version>-nightly-<date>`
         # names a version nothing reports; the label comes from check-package's own derivation.

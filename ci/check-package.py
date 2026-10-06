@@ -1051,7 +1051,7 @@ appinfo = json.loads((PAYLOAD / "appinfo.json").read_text())
 # rather than widening the equality into something that cannot fail.
 control = dict(
     line.split(": ", 1)
-    for line in flavor.control_for((ROOT / "ipkroot/ctl/control").read_text(), FLAVOR or "stable").splitlines()
+    for line in flavor.control_for((ROOT / "ipkroot/ctl/control").read_text(), FLAVOR or "stable", _NIGHTLY_DATE).splitlines()
     if ": " in line
 )
 check(appinfo["id"] == PACKAGED_ID,

@@ -619,8 +619,14 @@ endif
 # debug, for a variable those flavours never read. `?=` (not `override`) so it passes through an
 # already-set environment variable — CI's coming nightly caller supplies the date it actually cut;
 # a bare local `make FLAVOR=nightly RELEASE=1 ipk` gets today's UTC date for free.
+# `:=` inside an origin test, NOT `?=`: `?=` defines a RECURSIVE variable, so the `date` would be
+# re-run every time it is expanded, and a local run crossing 00:00 UTC could name the ipk for one
+# day while the descriptor it packages says the next. An already-set value (environment or command
+# line, which is what CI passes) is left alone.
 ifeq ($(FLAVOR),nightly)
-PLX_NIGHTLY_DATE ?= $(shell date -u +%Y%m%d)
+ifeq ($(origin PLX_NIGHTLY_DATE),undefined)
+PLX_NIGHTLY_DATE := $(shell date -u +%Y%m%d)
+endif
 export PLX_NIGHTLY_DATE
 endif
 # ...and the LINK needs its own witness, because pkg/plxnative is a path BOTH configurations
