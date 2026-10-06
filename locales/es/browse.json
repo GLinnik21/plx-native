@@ -46,6 +46,7 @@
   "browse.detail.converts": "Se convierte en el servidor",
   "browse.detail.direct_play": "Reproducción directa",
   "browse.detail.direct_stream": "Transmisión directa",
+  "browse.detail.original_audio_converted": "Original · audio convertido",
   "browse.detail.hardware_needs": "la conversión por hardware requiere",
   "browse.detail.tonemap_needs": "el mapeo de tonos requiere",
   "browse.home.continue": "Continuar",

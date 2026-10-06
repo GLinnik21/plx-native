@@ -275,6 +275,49 @@ pub use pump::{
     RollbackLanding,
 };
 pub use shared::PlaybackState;
+
+/// The viewer picked an audio track and the stream is being rebuilt for it: `route::
+/// commit_audio_selection` calls this once its rebuild is queued. See [`shared::Shared::audio_switch`].
+pub fn note_audio_pick() {
+    SHARED.audio_pick_ms.store(i64::from(vclock_ms()), Relaxed);
+    SHARED.audio_switch.store(shared::AudioSwitch::Picked as u8, Relaxed);
+}
+
+/// Is the rebuild now loading the one an audio-track pick asked for? A pick that is still waiting
+/// for its reload counts only inside [`shared::AUDIO_PICK_WINDOW_MS`]; once the reload has begun
+/// it counts until the session's first frame.
+pub fn audio_switching() -> bool {
+    match shared::AudioSwitch::from_u8(SHARED.audio_switch.load(Relaxed)) {
+        shared::AudioSwitch::Reloading => true,
+        shared::AudioSwitch::Picked => {
+            i64::from(vclock_ms()) - SHARED.audio_pick_ms.load(Relaxed) <= shared::AUDIO_PICK_WINDOW_MS
+        }
+        shared::AudioSwitch::None => false,
+    }
+}
+
+/// The read-out beside the spinner for `st`: [`PlaybackState::caption`], except that a load which
+/// is an audio-track switch says so ("Switching audio…") instead of "Buffering…". Any other
+/// rebuild (a seek's reload, a quality or subtitle change) keeps the plain caption.
+pub fn busy_caption(st: PlaybackState) -> &'static std::ffi::CStr {
+    busy_caption_with(st, audio_switching())
+}
+
+/// [`busy_caption`] with the audio-switch fact given — the pure choice, host-testable.
+pub fn busy_caption_with(st: PlaybackState, audio_switch: bool) -> &'static std::ffi::CStr {
+    if audio_switch && st == PlaybackState::Buffering {
+        plx_platform::i18n::msg::widgets_status_switching_audio_c()
+    } else {
+        st.caption()
+    }
+}
+
+/// Test-only: stand the audio-switch state up (`0` none, `1` picked, `2` reloading).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_audio_switch_for_test(state: u8) {
+    SHARED.audio_pick_ms.store(i64::from(vclock_ms()), Relaxed);
+    SHARED.audio_switch.store(state, Relaxed);
+}
 pub fn pause(pa: &mut adapter::PlayerAdapter) -> bool {
     match SHARED.prepare_hls_user_pause() {
         Some(HlsUserPause::AlreadyHeld) => {
@@ -2282,6 +2325,13 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
         }
         SHARED.frames.fetch_add(1, Relaxed);
         SHARED.seen_frame.store(true, Relaxed); // session-scoped: unlike `frames`, a seek won't clear it
+        // the rebuild an audio pick asked for has put its picture up: the switch is over
+        let _ = SHARED.audio_switch.compare_exchange(
+            shared::AudioSwitch::Reloading as u8,
+            shared::AudioSwitch::None as u8,
+            Relaxed,
+            Relaxed,
+        );
         SHARED.pres_fed.store(num, Relaxed); // raw fed pts, for the feed-ahead throttle
         SHARED.playpos_ns.store(
             num - SHARED.pts_shift.load(Relaxed) + SHARED.disp_base.load(Relaxed),
@@ -3762,5 +3812,63 @@ mod seek_hud_regressions {
         SHARED.reset_session();
         TX.reset();
         crate::route::reset_player_control_for_test(&ps);
+    }
+}
+
+/// **Which rebuild is "Switching audio…"?** Only the one an audio-track pick asked for: it begins
+/// at the pick, survives the reload, and ends at that session's first presented frame; a pick the
+/// server never rebuilt for expires; anything else (a seek's reload, no pick at all) is Buffering.
+#[cfg(test)]
+mod audio_switch_tests {
+    use super::*;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    fn reset() {
+        SHARED.reset_session();
+        SHARED.audio_switch.store(shared::AudioSwitch::None as u8, Relaxed);
+    }
+
+    #[test]
+    fn the_caption_is_chosen_by_the_pick_and_only_for_buffering() {
+        use PlaybackState as S;
+        assert_eq!(busy_caption_with(S::Buffering, true), plx_platform::i18n::msg::widgets_status_switching_audio_c());
+        assert_eq!(busy_caption_with(S::Buffering, false), S::Buffering.caption());
+        // a switch never renames the other waits
+        assert_eq!(busy_caption_with(S::Seeking, true), S::Seeking.caption());
+        assert_eq!(busy_caption_with(S::Connecting, true), S::Connecting.caption());
+        assert_eq!(busy_caption_with(S::Resolving, true), S::Resolving.caption());
+    }
+
+    #[test]
+    fn a_pick_names_the_rebuild_through_the_reload_until_the_first_frame() {
+        let _g = plx_base::testlock::serial();
+        reset();
+        assert!(!audio_switching(), "no pick, no switch: a seek's reload is Buffering");
+        note_audio_pick();
+        assert!(audio_switching(), "the pick's rebuild is flying");
+        SHARED.reset_session_for_reload();
+        assert!(audio_switching(), "the reload keeps the pick's meaning");
+        let epoch = SHARED.begin_native_session().expect("session");
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
+        assert!(!audio_switching(), "the first picture ends the switch");
+        // a later seek-style reload is no longer a switch
+        SHARED.reset_session_for_reload();
+        assert!(!audio_switching());
+        SHARED.retire_native_session(epoch);
+        reset();
+    }
+
+    #[test]
+    fn a_pick_whose_rebuild_never_came_expires_and_a_new_item_forgets_it() {
+        let _g = plx_base::testlock::serial();
+        reset();
+        note_audio_pick();
+        SHARED.audio_pick_ms.store(i64::from(vclock_ms()) - shared::AUDIO_PICK_WINDOW_MS - 1, Relaxed);
+        assert!(!audio_switching(), "a refused rebuild must not name a later one");
+        note_audio_pick();
+        assert!(audio_switching());
+        SHARED.reset_session();
+        assert!(!audio_switching(), "a full reset (new item, teardown) ends it");
+        reset();
     }
 }

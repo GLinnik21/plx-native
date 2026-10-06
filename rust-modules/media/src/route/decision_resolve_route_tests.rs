@@ -2064,10 +2064,11 @@ fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
         playback_preview(&item("h264", MOV, "aac")),
         Some(Preview::Remux)
     );
-    // …and so it does for a streamable container whose only audio track has to be converted
+    // …but a streamable container whose only audio track has to be converted is the Original
+    // remux with converted audio: the picture is copied, only the sound changes
     assert_eq!(
         playback_preview(&item("h264", MKV, "truehd")),
-        Some(Preview::Remux)
+        Some(Preview::OriginalAudioConverted)
     );
     // a codec the pipeline cannot decode at all is the only real re-encode
     assert_eq!(
@@ -2081,6 +2082,55 @@ fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
     );
     // nothing playable loaded (a show still resolving its episode) answers nothing at all
     assert_eq!(playback_preview(&item("h264", "", "aac")), None);
+}
+
+/// **The detail page says "audio converted" exactly when the planner would convert the audio of
+/// the track it means to play** — the planner's own pick (`audio_intent_needs_conversion`), not
+/// "is any track playable". An undecodable default with a same-language playable sibling plays the
+/// sibling (direct play); one with no such sibling is converted by the server on a video-copy
+/// remux; a re-encode keeps its existing label.
+#[test]
+fn the_preview_names_a_converted_audio_only_when_the_track_that_plays_needs_it() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Original);
+    fn track(id: i64, codec: &str, channels: i64, lang: &str, default: bool) -> plx_data::metadata::Stream {
+        plx_data::metadata::Stream {
+            id, codec: codec.into(), channels, lang_code: lang.into(), default, ..Default::default()
+        }
+    }
+    fn item(vcodec: &str, audio: Vec<plx_data::metadata::Stream>) -> plx_data::metadata::Detail {
+        plx_data::metadata::Detail {
+            vcodec: vcodec.into(),
+            part: "/library/parts/1/2/file.mkv".into(),
+            width: 1920,
+            height: 1080,
+            audio,
+            ..Default::default()
+        }
+    }
+    // the TV decodes the default: direct play, label unchanged
+    assert_eq!(
+        playback_preview(&item("h264", vec![track(1, "ac3", 6, "eng", true)])),
+        Some(Preview::DirectPlay)
+    );
+    // the default needs conversion and nothing in its language carries it: audio converted
+    assert_eq!(
+        playback_preview(&item("h264", vec![track(1, "truehd", 8, "eng", true), track(2, "ac3", 6, "fra", false)])),
+        Some(Preview::OriginalAudioConverted)
+    );
+    // …a same-language playable sibling plays instead (smart direct play): unchanged
+    assert_eq!(
+        playback_preview(&item("h264", vec![track(1, "truehd", 8, "eng", true), track(2, "ac3", 6, "eng", false)])),
+        Some(Preview::DirectPlay)
+    );
+    // a real re-encode keeps its label whatever the audio is
+    assert_eq!(
+        playback_preview(&item("vp9", vec![track(1, "truehd", 8, "eng", true)])),
+        Some(Preview::Converts)
+    );
+    // no track list at all: nothing is claimed about the audio
+    assert_eq!(playback_preview(&item("h264", vec![])), Some(Preview::Remux));
 }
 
 #[test]

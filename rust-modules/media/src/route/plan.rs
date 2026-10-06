@@ -3031,8 +3031,34 @@ pub enum Preview {
     /// `build_stream` spells this exact case `plan.contract.remux = video_dp` on the transcode
     /// branch.
     Remux,
+    /// The Original remux with a CONVERTED audio: the video is copied untouched, and the track
+    /// that will play is one the TV cannot decode (AAC 7.1, TrueHD, DTS-HD…), so the server
+    /// converts only that audio. The planner's own "no direct-playable carrier for the intended
+    /// track" answer ([`audio_intent_needs_conversion`]); it is `AutoOriginalCandidate::
+    /// audio_converted` before Play. Never a re-encode, so it carries no Plex Pass claim.
+    OriginalAudioConverted,
     /// A real re-encode: the server decodes and re-encodes the video.
     Converts,
+}
+
+/// **Will the track the planner means to play need the server to convert its audio?** The very
+/// pick `build_stream` makes ([`pick_dp_audio_eligible`] under [`StandIn::SameKind`], the
+/// production policy) over the item's audio tracks: `None` means no direct-playable track carries
+/// the intended one (the file's default, or the PMS selection) and the server converts it on a
+/// video-copy remux. Not a second rule — the planner's own, asked of the detail page's data.
+///
+/// What the page does NOT have, and so does not model: the Plex language preferences (they need
+/// the account call `build_stream` makes) and the cold-start stand-in that keeps a direct-playable
+/// track when a subtitle must be shown. Both can only move a pick between tracks of one item; a
+/// file whose every track is unplayable answers `true` regardless. Unknown tracks answer `false`
+/// (nothing is claimed about audio the page has not seen).
+pub(super) fn audio_intent_needs_conversion(tracks: &[plx_data::metadata::Stream]) -> bool {
+    !tracks.is_empty()
+        && pick_dp_audio_eligible(
+            tracks, "", AudioLangPrefs::default(), 0, StandIn::SameKind,
+            |codec, channels| plx_plex::plex::is_dp_audio_track(codec, channels),
+        )
+        .is_none()
 }
 
 /// [`playback_preview`]'s pure core — the three-way answer from the fields it actually needs, so
@@ -3049,15 +3075,15 @@ pub fn playback_preview_of(
         return None; // nothing playable loaded (a show still resolving its episode)
     }
     let video = video_direct_plays(vcodec, width, height, dv, plx_platform::devcaps::caps());
-    let audio = audio_streams
-        .iter()
-        .any(|a| plx_plex::plex::is_dp_audio_track(&a.codec, a.channels));
+    let converted = audio_intent_needs_conversion(audio_streams);
     // Mirrors `build_stream`'s own ladder: the video gate decides whether an ENCODER runs at all,
     // and only once it has passed do the container and the audio decide between pulling the file
     // ourselves and asking the server to repackage it.
     Some(if !video {
         Preview::Converts
-    } else if part_is_streamable(part) && audio {
+    } else if converted {
+        Preview::OriginalAudioConverted
+    } else if part_is_streamable(part) && !audio_streams.is_empty() {
         Preview::DirectPlay
     } else {
         Preview::Remux

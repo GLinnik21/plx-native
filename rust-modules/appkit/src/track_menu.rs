@@ -1623,6 +1623,7 @@ impl TrackMenuState {
             } else {
                 name
             };
+            let sub = audio_sub_line(sub, s);
             if !sub.is_empty() {
                 row = row.detail(sub);
             }
@@ -2119,6 +2120,25 @@ fn format_offset(ms: i64) -> String {
 // ---- section building ----
 use plx_data::metadata::friendly_codec; // the ONE codec→display-name map (shared with the Info card)
 use plx_data::metadata::track_label::Kind;
+
+/// The sub-line under an audio track, saying so when the server would convert it: a track the TV
+/// cannot decode ("AAC 7.1" here) plays through the server's remux with only its audio converted,
+/// and the menu names that on the track it concerns rather than leaving the viewer to learn it
+/// from a log. Whether a track is converted is the planner's capability answer
+/// (`route::audio_converted_by_server`). Always ONE line: the longest label is graded against the
+/// panel by `converted_audio_sub_lines_fit_the_panel_in_every_language`.
+fn audio_sub_line(sub: String, s: &metadata::Stream) -> String {
+    audio_sub_line_for(sub, plx_media::route::audio_converted_by_server(&s.codec, s.channels))
+}
+
+/// [`audio_sub_line`] with the conversion fact given — the pure choice, host-testable.
+fn audio_sub_line_for(sub: String, converted: bool) -> String {
+    if converted && !sub.is_empty() {
+        plx_platform::i18n::msg::widgets_tracks_converted_by_server(&sub)
+    } else {
+        sub
+    }
+}
 
 /// "AC-3 5.1", "Dolby TrueHD 7.1", "DTS 5.1" — a compact codec + channel-layout descriptor.
 fn audio_descriptor(s: &metadata::Stream) -> String {
@@ -3835,6 +3855,46 @@ mod enhancement_menu_tests {
             out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
             out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
             out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
+            teardown(&ps);
+        }
+        plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    // ---- the converted-audio sub-line --------------------------------------------------------
+
+    /// **A track the server would convert says so on its own sub-line**; a track the TV decodes
+    /// keeps today's sub-line. One line, the value stays out of it (it is the descriptor).
+    #[test]
+    fn a_converted_track_names_the_server_on_its_sub_line_and_a_playable_one_does_not() {
+        let _g = plx_base::testlock::serial();
+        assert_eq!(audio_sub_line_for("AAC 7.1".into(), true), "AAC 7.1 \u{b7} converted by your server");
+        assert_eq!(audio_sub_line_for("Dolby Digital 5.1".into(), false), "Dolby Digital 5.1");
+        assert_eq!(audio_sub_line_for(String::new(), true), "", "no descriptor, nothing to extend");
+        // the capability answer it is fed: TrueHD is outside the profile's audio list, AC-3 is not
+        let truehd = metadata::Stream { codec: "truehd".into(), channels: 8, ..Default::default() };
+        let ac3 = metadata::Stream { codec: "ac3".into(), channels: 6, ..Default::default() };
+        assert!(plx_media::route::audio_converted_by_server(&truehd.codec, truehd.channels));
+        assert!(!plx_media::route::audio_converted_by_server(&ac3.codec, ac3.channels));
+    }
+
+    /// **The longest converted sub-line fits the Audio panel in every shipped language** — graded
+    /// against the shared menu cap with the row's real measure, on the longest codec label
+    /// (`Dolby Digital Plus 7.1`, `Dolby TrueHD 7.1`).
+    #[test]
+    fn converted_audio_sub_lines_fit_the_panel_in_every_language() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        let mut out = Vec::new();
+        for language in SHIPPED {
+            let _g = plx_base::testlock::serial();
+            let _guard = language_on_this_thread_for_test(language);
+            let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
+            let mk = |id: i64, codec: &str| metadata::Stream {
+                id, index: id, lang: "English".into(), lang_code: "eng".into(),
+                codec: codec.into(), channels: 8, layout: "7.1".into(), default: id == 1, ..Default::default()
+            };
+            let store = super::tests::store_with_audio(vec![mk(1, "truehd"), mk(2, "eac3"), mk(3, "dts")]);
+            let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
+            out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
             teardown(&ps);
         }
         plx_ui::table::assert_no_fit_failures(&out);

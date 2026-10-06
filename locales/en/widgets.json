@@ -70,6 +70,13 @@
       "language": "str"
     }
   },
+  "widgets.tracks.converted_by_server": {
+    "value": "{track} · converted by your server",
+    "description": "Sub-line under an audio track in the player's audio menu when the TV cannot decode that track and the server converts its audio. {track} is the codec and channel layout, e.g. AAC 7.1.",
+    "args": {
+      "track": "str"
+    }
+  },
   "widgets.action.mark_watched": {
     "value": "Mark as Watched",
     "description": "Action verb shared by the media context menu and detail-page controls."
@@ -186,6 +193,10 @@
   "widgets.status.buffering": {
     "value": "Buffering…",
     "description": "Short player status beside a spinner or terminal playback error."
+  },
+  "widgets.status.switching_audio": {
+    "value": "Switching audio…",
+    "description": "Short player status beside a spinner while the stream is rebuilt for an audio track the viewer picked."
   },
   "widgets.status.seeking": {
     "value": "Seeking…",

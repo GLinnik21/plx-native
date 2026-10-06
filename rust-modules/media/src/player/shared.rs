@@ -448,6 +448,32 @@ pub enum PlaybackState {
     Error = 6,
 }
 
+/// How long a viewer's audio pick may stand as "the reason for the next rebuild" before the
+/// rebuild is assumed to have been refused. A retranscode claim's flight takes 1-15 s
+/// (`player::claim_hold`).
+pub const AUDIO_PICK_WINDOW_MS: i64 = 30_000;
+
+/// See [`Shared::audio_switch`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AudioSwitch {
+    None = 0,
+    /// the pick queued a rebuild that has not reloaded yet
+    Picked = 1,
+    /// the reload for the pick is under way; ends at the first presented frame
+    Reloading = 2,
+}
+
+impl AudioSwitch {
+    pub fn from_u8(v: u8) -> AudioSwitch {
+        match v {
+            1 => AudioSwitch::Picked,
+            2 => AudioSwitch::Reloading,
+            _ => AudioSwitch::None,
+        }
+    }
+}
+
 impl PlaybackState {
     pub fn from_u8(v: u8) -> PlaybackState {
         match v {
@@ -503,6 +529,16 @@ pub struct Shared {
     /// see `appkit::player_hud::busy_surface`. Monotone within a session (false→true only), which is
     /// what lets two readers in one frame sample it independently without disagreeing.
     pub seen_frame: AtomicBool,
+    /// **Why the NEXT rebuild is happening, when the viewer's audio-track pick is the cause**: the
+    /// read-out beside the load spinner says "Switching audio…" instead of "Buffering…". A
+    /// [`AudioSwitch`] value. `Picked` (set by `route::commit_audio_selection` once its rebuild is
+    /// queued) becomes `Reloading` when the engine reloads (`reset_session_for_reload`) and
+    /// `None` at that session's first presented frame, a full `reset_session`, or a failure. A
+    /// pick whose rebuild never lands (the server refused it) is not left standing: `Picked`
+    /// expires after [`AUDIO_PICK_WINDOW_MS`], so a later seek's reload is not named a switch.
+    pub audio_switch: AtomicU8,
+    /// `vclock_ms` of the pick that set [`Self::audio_switch`] to `Picked`.
+    pub audio_pick_ms: AtomicI64,
     pub load_completed: AtomicBool,          // bf_loaded signal
     pub media_id: Mutex<Option<CString>>,    // bf_mediaId (captured once)
     pub source_info: Mutex<Option<Vec<u8>>>, // sourceInfoRaw, VERBATIM incl NUL
@@ -903,6 +939,8 @@ impl Shared {
             pres_fed: AtomicI64::new(0),
             frames: AtomicI32::new(0),
             seen_frame: AtomicBool::new(false),
+            audio_switch: AtomicU8::new(AudioSwitch::None as u8),
+            audio_pick_ms: AtomicI64::new(0),
             load_completed: AtomicBool::new(false),
             media_id: Mutex::new(None),
             source_info: Mutex::new(None),
@@ -1489,6 +1527,13 @@ impl Shared {
         // places (declaration, `new`, here): a reload that forgot the bit would silently suppress
         // the centred read-out for the rest of the app's life.
         self.seen_frame.store(false, Ordering::Relaxed);
+        // an audio pick's rebuild has begun (a reload keeps the pick's meaning for this session);
+        // any other reset ends it
+        let next = match AudioSwitch::from_u8(self.audio_switch.load(Ordering::Relaxed)) {
+            AudioSwitch::Picked | AudioSwitch::Reloading if for_reload => AudioSwitch::Reloading,
+            _ => AudioSwitch::None,
+        };
+        self.audio_switch.store(next as u8, Ordering::Relaxed);
         self.load_completed.store(false, Ordering::Relaxed);
         // issue #74 D.1: both are only ever cleared by the loadCompleted arm that consumes them
         // (pump.rs), so a session torn down after logging the deferral but before that arm runs

@@ -6478,6 +6478,17 @@ pub fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64
     audio_direct_plays(ps.direct_play_mode, codec, channels)
 }
 
+/// **Would the server convert this track's audio if it played?** The track menu's "converted by
+/// your server" mark: a track the TV cannot decode (`audio_direct_plays`, the same capability
+/// answer the planner and the profile use) plays through the server's remux or re-encode with its
+/// audio converted. Not under Forced Direct Play, where an unplayable track is refused instead of
+/// converted, so nothing is converted there. Reads the process-wide mode, like
+/// [`playback_preview`], because the menu holds tracks, not a session.
+pub fn audio_converted_by_server(codec: &str, channels: i64) -> bool {
+    let mode = direct_play_mode();
+    mode != DirectPlayMode::Forced && !audio_direct_plays(mode, codec, channels)
+}
+
 /// The user's current pick. An atomic rather than a field on [`Session`] because it OUTLIVES a
 /// playback — it is a preference, not session state — and because `appkit::more_menu` reads it to draw
 /// the checkmark while [`ResolveEnv::snapshot`] reads it to hand the worker a copy.
@@ -7267,7 +7278,7 @@ fn playback_preview_with_capability(
     Some(match p {
         Preview::DirectPlay if !policy.direct_play && policy.remux && mode == DirectPlayMode::Disabled => Preview::Remux,
         Preview::DirectPlay if !policy.direct_play => Preview::Converts,
-        Preview::Remux if !policy.remux => Preview::Converts,
+        Preview::Remux | Preview::OriginalAudioConverted if !policy.remux => Preview::Converts,
         _ => p,
     })
 }
@@ -9951,6 +9962,8 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) {
     // route must change for that, the reconcile's Retranscode REPLACES this pick's own reload and
     // is marked as owing it, so a refused enhancement still switches the track.
     if reconcile_enhancement(ps, true) {
+        // the reconcile's Retranscode owes this pick its reload
+        crate::player::note_audio_pick();
         return;
     }
     if native {
@@ -9958,6 +9971,8 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) {
     } else {
         crate::player::request_audio_switch(ps, stream_id);
     }
+    // the rebuild now loading is this pick's: the read-out says "Switching audio…"
+    crate::player::note_audio_pick();
 }
 
 /// Apply commands which were attached to one exact Original trial, after either the candidate or
