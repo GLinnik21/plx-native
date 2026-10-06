@@ -1501,15 +1501,12 @@ fn subtitle_pick_while_enhanced_sidecar_keeps_the_enhancement() {
         EnhancementStep::NotInvolved,
         "a sidecar is never something the ENHANCEMENT'S OWN route reacts to"
     );
-    let (_, tail) = claim(&mut ps);
-    assert_eq!(tail, ClaimTail::Retranscode, "the pre-existing while-transcoding refresh, not a release");
+    // The app draws the sidecar over the enhanced remux, so the stream is not rebuilt at all
+    // (it used to be refreshed as a burn the enhanced remux then dropped).
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, false), "the enhancement stands");
     let requests = live.finish();
-    let d = decisions(&requests);
-    assert!(!d.is_empty(), "{requests:?}");
-    assert!(
-        d.iter().all(|r| query_param(r, "normalizeLoudness") == Some("1")),
-        "the enhancement is never dropped for a sidecar pick: {requests:?}",
-    );
+    assert!(decisions(&requests).is_empty(), "{requests:?}");
     cleanup(&mut ps);
 }
 
@@ -3579,15 +3576,15 @@ fn presenter_with_no_subtitle_is_none() {
     }
 }
 
-/// A remux (video copied, audio converted) cannot carry a subtitle, so the server burns it, and
-/// the reason is the audio conversion. A sidecar is silenced under any transcode too.
+/// A remux (video copied, audio converted) cannot carry a subtitle, so the server burns an
+/// embedded one, and the reason is the audio conversion. A sidecar is the app's to draw over it.
 #[test]
 fn presenter_on_a_remux_is_the_server_converting_audio() {
     let _g = plx_base::testlock::serial();
-    for effect in [SubtitleEffect::Embedded, SubtitleEffect::Sidecar] {
-        let route = EnhTestFixture { remux: Some(true), subtitle_effect: effect, ..Default::default() };
-        assert_eq!(presenter_of(route), SubtitlePresenter::ServerBurn(BurnReason::AudioConversion), "{effect:?}");
-    }
+    let embedded = EnhTestFixture { remux: Some(true), subtitle_effect: SubtitleEffect::Embedded, ..Default::default() };
+    assert_eq!(presenter_of(embedded), SubtitlePresenter::ServerBurn(BurnReason::AudioConversion));
+    let sidecar = EnhTestFixture { remux: Some(true), subtitle_effect: SubtitleEffect::Sidecar, ..Default::default() };
+    assert_eq!(presenter_of(sidecar), SubtitlePresenter::ClientOverRemux);
 }
 
 /// The enhancement's own Burn converts the audio as well.
@@ -3801,5 +3798,177 @@ fn a_subtitle_pick_while_burning_is_what_releasing_the_enhancement_shows() {
         "the subtitle the viewer last chose, not the capture-time one"
     );
     live.finish();
+    cleanup(&mut ps);
+}
+
+
+// ---- Subtitles: an external subtitle over a remux is drawn by the app ---------------------------
+//
+// PMS cannot carry a subtitle in a remux (M4/M7), so a sidecar the app already fetches itself is
+// drawn over it: the video stays a copy, no burn is asked for, and Style/Timing reach the text.
+
+/// Pick the sidecar 78 through the real commit, as the Subtitles menu does (`sub_idx` -1).
+fn pick_sidecar(ps: &mut PlaybackSession) {
+    commit_subtitle_selection(ps, -1, 78, true);
+}
+
+#[test]
+fn subtitle_presenter_is_client_over_remux_for_a_sidecar_on_a_plain_remux() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::None);
+    pick_sidecar(&mut ps);
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux);
+    assert!(subtitle_presenter(&ps).client_draws());
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn plain_rebuild_stays_remux_with_a_drawable_sidecar() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    pick_sidecar(&mut ps);
+    assert!(plain_rebuild_is_remux(&ps), "a seek must rebuild the copy, not a capped re-encode");
+    assert_eq!(retranscode_contract(&ps), enhanced_remux_contract(NONE, false));
+    // The app's drawing was refused for this playback: only the server burn is left.
+    ps.side_subs_refused = true;
+    assert!(!plain_rebuild_is_remux(&ps));
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ServerBurn(BurnReason::AudioConversion));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn transcode_spec_never_names_a_subtitle_on_a_remux() {
+    let remux = enhanced_remux_contract(NONE, false);
+    let spec = crate::route::plan::transcode_spec(
+        "5", "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 78, remux,
+    );
+    assert_eq!(spec.subtitle_stream_id, 0, "no subtitle id rides a remux");
+    assert!(spec.client_subtitles, "the app draws it, and the query says so");
+    let none = crate::route::plan::transcode_spec(
+        "5", "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 0, remux,
+    );
+    assert!(!none.client_subtitles, "no subtitle, nothing to say");
+    // Every burn is a `remux: false` contract and keeps its id.
+    let burn = crate::route::plan::transcode_spec(
+        "5", "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 77, enhanced_remux_contract(NONE, true),
+    );
+    assert_eq!((burn.subtitle_stream_id, burn.client_subtitles), (77, false));
+}
+
+#[test]
+fn sidecar_pick_on_a_live_remux_queues_no_retranscode() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    pick_sidecar(&mut ps);
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode));
+    assert!(claim_route_action().is_none(), "the stream was not touched");
+    assert_eq!((ps.cur_sub_sid, ps.cur_sub_sidecar, ps.cur_sub_client_drawable), (78, true, true));
+    assert!(ps.cur_contract.remux, "still the copy");
+    commit_subtitle_selection(&mut ps, -1, 0, false);
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode), "Off needs no rebuild either");
+    assert!(decisions(&live.finish()).is_empty());
+    cleanup(&mut ps);
+}
+
+#[test]
+fn enhanced_remux_with_sidecar_sends_no_burn() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(true, a1(), None)), 0);
+    pick_sidecar(&mut ps);
+    assert_eq!(live_subtitle_effect(&ps), SubtitleEffect::Sidecar);
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode), "the pick itself rebuilds nothing");
+    // A track switch rebuilds the enhanced remux from the live selection; the sidecar must not be
+    // burned into it (this used to send `subtitleStreamID=78&subtitles=burn`).
+    pick_and_settle(&mut ps, a3());
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, false));
+    let requests = live.finish();
+    let d = decisions(&requests);
+    assert!(!d.is_empty(), "{requests:?}");
+    for r in &d {
+        assert_eq!(query_param(r, "normalizeLoudness"), Some("1"), "{r}");
+        assert!(!r.contains("subtitles=burn"), "{r}");
+        assert_ne!(query_param(r, "subtitleStreamID"), Some("78"), "{r}");
+    }
+    cleanup(&mut ps);
+}
+
+#[test]
+fn subtitles_burned_false_only_for_client_over_remux() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    assert!(subtitles_burned(&ps), "a transcode with nothing selected still reads as burned");
+    pick_sidecar(&mut ps);
+    assert!(!subtitles_burned(&ps));
+    ps.side_subs_refused = true;
+    assert!(subtitles_burned(&ps));
+    ps.side_subs_refused = false;
+    // Direct play: nothing is transcoding, so nothing is burned.
+    ps.tsession.clear();
+    assert!(!subtitles_burned(&ps));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn embedded_pick_on_a_remux_still_burns() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    commit_subtitle_selection(&mut ps, 2, 77, true);
+    assert!(pending_user_route_intent(UserRouteIntent::Retranscode), "an embedded pick rebuilds");
+    assert!(!ps.cur_sub_sidecar);
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ServerBurn(BurnReason::AudioConversion));
+    assert!(subtitles_burned(&ps));
+    let (action, tail) = claim(&mut ps);
+    land(&mut ps, &action, tail);
+    assert!(!ps.cur_contract.remux, "a burn is a re-encode");
+    let requests = live.finish();
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert_eq!(query_param(last, "subtitleStreamID"), Some("77"), "{last}");
+    assert_eq!(query_param(last, "subtitles"), Some("burn"), "{last}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn sidecar_to_embedded_and_back_rebuilds_then_returns_to_remux() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(&mut ps, &live);
+    pick_sidecar(&mut ps);
+    assert!(claim_route_action().is_none());
+    // sidecar -> embedded: the route changes shape, so the stream is rebuilt as the burn.
+    pick_embedded_subtitle_and_land(&mut ps);
+    assert!(!ps.cur_contract.remux);
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ServerBurn(BurnReason::AudioConversion));
+    // embedded -> sidecar: the burn is still live, so this rebuilds back to the copy.
+    reset_player_control_for_test(&ps);
+    pick_sidecar(&mut ps);
+    assert!(pending_user_route_intent(UserRouteIntent::Retranscode));
+    let (action, tail) = claim(&mut ps);
+    land(&mut ps, &action, tail);
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE, false));
+    assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux);
+    let requests = live.finish();
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert!(!last.contains("subtitles=burn"), "{last}");
+    assert_eq!(query_param(last, "directStreamAudio"), Some("1"), "{last}");
     cleanup(&mut ps);
 }

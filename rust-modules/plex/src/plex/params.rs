@@ -208,6 +208,10 @@ pub struct TranscodeSpec<'a> {
     /// Subtitle stream id to BURN (0 = none). Burn is Plex's decision for our profile —
     /// it advertises no soft-sub support (direct-play subs are client-rendered instead).
     pub subtitle_stream_id: i64,
+    /// The app draws the selected subtitle itself over this REMUX, so the query says
+    /// `subtitles=none` (the client-rendered mode the MDE handshake already uses) instead of
+    /// leaving PMS on `auto`. Only ever set with `subtitle_stream_id == 0`.
+    pub client_subtitles: bool,
     /// Restart at this exact content boundary, or omit `offset` for a fresh start.
     pub offset: TranscodeOffset,
 }

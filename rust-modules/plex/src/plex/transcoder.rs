@@ -359,6 +359,10 @@ impl Client {
                 .int("subtitleStreamID", s.subtitle_stream_id)
                 .int("subtitleSize", 100)
                 .str("subtitles", "burn");
+        } else if s.client_subtitles {
+            // UNMEASURED on a transcode leg (docs/pms-api.md M8): the spelling is the MDE
+            // handshake's client-rendered mode (`mde_decision`), not a value first sent here.
+            q = q.int("subtitleStreamID", 0).str("subtitles", "none");
         }
         q = q
             .str("session", s.encoder_session)
@@ -626,6 +630,7 @@ mod tests {
             },
             audio_stream_id: 0,
             subtitle_stream_id: 0,
+            client_subtitles: false,
             offset: crate::plex::TranscodeOffset::Fresh,
         }
     }
@@ -821,6 +826,24 @@ mod tests {
         assert!(q.contains("directPlay=0"), "{q}");
         assert!(q.contains("videoResolution=3840x2160"), "{q}");
         assert!(!q.contains("directStream=0"), "{q}");
+    }
+
+    /// A remux whose subtitle the app draws names none: `subtitleStreamID=0&subtitles=none` (the
+    /// MDE handshake's client-rendered spelling) and never `burn`. A burn keeps its id.
+    #[test]
+    fn a_client_drawn_subtitle_over_a_remux_says_none_and_a_burn_still_burns() {
+        let mut s = spec(true, false);
+        s.client_subtitles = true;
+        let q = a_client().transcode_query(&s);
+        assert!(q.contains("subtitleStreamID=0"), "{q}");
+        assert!(q.contains("subtitles=none"), "{q}");
+        assert!(!q.contains("subtitles=burn"), "{q}");
+        let mut b = spec(false, false);
+        b.subtitle_stream_id = 77;
+        let q = a_client().transcode_query(&b);
+        assert!(q.contains("subtitleStreamID=77") && q.contains("subtitles=burn"), "{q}");
+        let q = a_client().transcode_query(&spec(true, false));
+        assert!(!q.contains("subtitleStreamID") && !q.contains("subtitles="), "no subtitle, no params: {q}");
     }
 
     /// **The Dolby Vision refusal, and the reason this flag exists.** `route::video_direct_plays`

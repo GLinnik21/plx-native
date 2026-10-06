@@ -1334,7 +1334,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
             plx_appkit::player_hud::draw_subtitle_message(message, subs_lift);
         }
         self.draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
-        plx_appkit::player_hud::draw_subtitles(subs_lift, plx_media::route::is_transcoding(ps));
+        plx_appkit::player_hud::draw_subtitles(subs_lift, plx_media::route::subtitles_burned(ps));
         // What a pointer can hit is registered AFTER the paint, by `record_stops`, from this
         // screen's own `Focusable` — the rects D-pad focus uses, in the z-order `groups` states.
         // `Hover::Ignore` on the transport's stops: the old pointer path never followed the mouse

@@ -36,9 +36,10 @@
 //! during an ordinary transcode, which burns captions into the picture where no client-side offset
 //! or style can reach. That omission now holds only while no subtitle is on: once the server draws
 //! the selected subtitle ([`plx_media::route::subtitle_presenter`] says `ServerBurn`: a remux that
-//! cannot carry it, this app's own audio-enhancement burn, a quality-limited re-encode), both rows
-//! stay visible — dim, inert, with a one-line reason (`Row::note`) saying why the server is
-//! drawing it — rather than being found simply gone.
+//! cannot carry an embedded track, this app's own audio-enhancement burn, a quality-limited
+//! re-encode), both rows stay visible — dim, inert, with a one-line reason (`Row::note`) saying
+//! why the server is drawing it — rather than being found simply gone. An external sidecar over a
+//! remux is drawn by the app (`ClientOverRemux`), so there both rows are live with no reason.
 //!
 //! **Style is a drill-in, and the Subtitles tab is a page stack** (`docs/player-submenus.md`). The
 //! Style row is a [`RowKind::Nav`] onto [`TrackPage::Style`], whose Size, Position and Color rows
@@ -1703,11 +1704,16 @@ impl TrackMenuState {
     /// The Subtitles root's form and the model it was built from, storing nothing: [`Self::layout`]
     /// keeps what it needs from the model, [`Self::warm_other_tab`] only draws the form.
     fn sub_root_form(&self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (TrackForm, SubModel) {
-        let burn = match plx_media::route::subtitle_presenter(ps) {
+        let presenter = plx_media::route::subtitle_presenter(ps);
+        let burn = match presenter {
             plx_media::route::SubtitlePresenter::ServerBurn(why) => Some(why),
             _ => None,
         };
-        let show_timing = !plx_media::route::is_transcoding(ps) || burn.is_some();
+        // Timing/Style apply to a subtitle the app draws (direct play, or over a remux) and are
+        // shown dimmed with the reason when the server burns it; a transcode with none selected
+        // omits them.
+        let show_timing = !plx_media::route::is_transcoding(ps)
+            || presenter != plx_media::route::SubtitlePresenter::None;
         let model = self.sub_model(ps, meta, show_timing);
         let mut form = table_form(&model, self.active_sub, self.offset_ms, burn);
         if self.search.is_some() {
@@ -3943,6 +3949,29 @@ mod enhancement_menu_tests {
             assert!(menu.page_path().is_empty());
             teardown(&ps);
         }
+    }
+
+    /// A sidecar on a remux is drawn by the app over the copied video, so Timing and Style are
+    /// live and no reason line is drawn; the embedded twin (burned) keeps its dim rows above.
+    #[test]
+    fn timing_and_style_rows_are_live_over_a_remux_with_a_sidecar() {
+        let _g = plx_base::testlock::serial();
+        let (menu, ps) = subtitles_tab(EnhTestFixture {
+            remux: Some(true),
+            subtitle_effect: plx_media::route::SubtitleEffect::Sidecar,
+            ..Default::default()
+        });
+        assert_eq!(
+            plx_media::route::subtitle_presenter(&ps),
+            plx_media::route::SubtitlePresenter::ClientOverRemux
+        );
+        assert!(!menu.server_burn_built(), "nothing is burned");
+        let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
+        let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
+        let rows = flat_rows(&menu);
+        assert!(!rows[timing_i].dim && !rows[style_i].dim, "both live");
+        assert!(!menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).any(|r| r.is_note()), "no reason line");
+        teardown(&ps);
     }
 
     /// A client-drawn subtitle (direct play) keeps both rows live with no reason.

@@ -377,6 +377,29 @@ pub(super) fn transcode_spec<'a>(
     sub: i64,
     contract: plx_plex::plex::EncodeContract,
 ) -> plx_plex::plex::TranscodeSpec<'a> {
+    // **The one wire rule for a remux's subtitle.** PMS cannot carry a subtitle in a remux (M4/M7):
+    // any `subtitleStreamID=<id>&subtitles=burn` turns the copy into a re-encode. A remux contract
+    // therefore never names one — whatever subtitle is on screen over it, the app draws it — and
+    // says so (`client_subtitles`) so the server does not fall back to burning the part's own
+    // selection. Every burn is a `remux: false` contract and keeps its id. (A cold start that
+    // CARRIES a burn into a remux-shaped plan asks for it explicitly: [`transcode_spec_carrying_burn`].)
+    let (sub, client_subtitles) = if contract.remux { (0, sub != 0) } else { (sub, false) };
+    transcode_spec_carrying_burn(rk, session, encoder_session, offset, aud, sub, client_subtitles, contract)
+}
+
+/// [`transcode_spec`] without the remux rule: the subtitle id is sent as given. The cold start's
+/// `ResolveEnv::sub_sid` is a burn the session was already carrying (`build_stream` keeps its
+/// remux-shaped contract and the server re-encodes for the burn), which the rule must not erase.
+pub(super) fn transcode_spec_carrying_burn<'a>(
+    rk: &'a str,
+    session: &'a str,
+    encoder_session: &'a str,
+    offset: plx_plex::plex::TranscodeOffset,
+    aud: i64,
+    sub: i64,
+    client_subtitles: bool,
+    contract: plx_plex::plex::EncodeContract,
+) -> plx_plex::plex::TranscodeSpec<'a> {
     plx_plex::plex::TranscodeSpec {
         rating_key: rk,
         session,
@@ -384,6 +407,7 @@ pub(super) fn transcode_spec<'a>(
         contract,
         audio_stream_id: aud,
         subtitle_stream_id: sub,
+        client_subtitles,
         offset,
     }
 }
@@ -2087,13 +2111,14 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         // Stay-remux Original does not stop: the play-path decision owns that session.
         let _ = client.transcode_stop_physical(&session);
     }
-    let mut sp = transcode_spec(
+    let mut sp = transcode_spec_carrying_burn(
         rk,
         &session,
         &session,
         plx_plex::plex::TranscodeOffset::Fresh,
         encode_audio,
         burn_sub_sid,
+        false,
         plan.contract,
     );
     // The enhanced decision rides the MDE's own `session`, as every remux here always has: M5
@@ -2123,7 +2148,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         } else {
             plan.acodec = acodec.to_string();
         }
-        sp = transcode_spec(
+        sp = transcode_spec_carrying_burn(
             rk,
             &session,
             &session,
@@ -2131,6 +2156,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             encode_audio,
             // the audio enhancement was refused, not the burn rule 3 chose: keep that subtitle
             if burn_for_audio { burn_sub_sid } else { env.sub_sid },
+            false,
             plan.contract,
         );
         decision = client.transcode_decision(off, &sp);
