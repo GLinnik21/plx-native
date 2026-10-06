@@ -1161,30 +1161,6 @@ impl Drop for Venc {
     }
 }
 
-/// How a subtitle stream's payload turns into displayable text — classified by the codec's
-/// name (avcodec_get_name is already linked, so we avoid hardcoding the n3.3 subtitle codec-id
-/// block, which the ABI probe never verified). Bitmap subs (PGS/VobSub/DVB/teletext) carry no
-/// text and can't be client-rendered, but still occupy their file-order slot so the track
-/// menu's desired_sub_idx stays aligned with the metadata subs list.
-#[derive(Clone, Copy, PartialEq)]
-enum SubKind {
-    Plain,   // SRT / subrip / text / webvtt: packet payload is UTF-8 text
-    Ass,     // ASS / SSA: dialogue line; text is the field after the 8th comma
-    MovText, // mp4 tx3g: 2-byte big-endian text-length prefix, then UTF-8 text
-    Bitmap,  // PGS / VobSub / DVB / teletext: image subtitle, not renderable here
-}
-
-unsafe fn sub_kind(codec_id: c_int) -> SubKind {
-    let name = std::ffi::CStr::from_ptr(avcodec_get_name(codec_id)).to_string_lossy();
-    match name.as_ref() {
-        "ass" | "ssa" => SubKind::Ass,
-        "mov_text" => SubKind::MovText,
-        "subrip" | "srt" | "text" | "webvtt" | "vplayer" | "pjs" | "jacosub" | "microdvd"
-        | "sami" | "realtext" | "subviewer" | "subviewer1" | "stl" | "mpl2" => SubKind::Plain,
-        _ => SubKind::Bitmap,
-    }
-}
-
 /// Copy the embedded ASS sources before FFmpeg can release them. The codec parameter and
 /// dictionary layouts are already compile-asserted against our bundled FFmpeg headers; the
 /// attachment media-type constant is asserted beside them. No firmware layout is inferred.
@@ -1238,185 +1214,6 @@ unsafe fn begin_ass_sources(
         }
     }
     ass_source::begin(media_key, headers, fonts)
-}
-
-/// Open a software decoder for an image-subtitle stream (PGS/VobSub/DVB). Returns a
-/// lib-allocated AVCodecContext (free with avcodec_free_context) or null if the build
-/// lacks the decoder / open fails. parameters_to_context carries extradata — dvdsub needs
-/// the palette from it, so this must run before open2.
-unsafe fn open_sub_decoder(cp: *const AVCodecParameters) -> *mut AVCodecContext {
-    let codec = avcodec_find_decoder((*cp).codec_id);
-    if codec.is_null() {
-        crate::player::log(&format!(
-            "ff: no image-sub decoder for codec_id={}",
-            (*cp).codec_id
-        ));
-        return std::ptr::null_mut();
-    }
-    let ctx = avcodec_alloc_context3(codec);
-    if ctx.is_null() {
-        return std::ptr::null_mut();
-    }
-    if avcodec_parameters_to_context(ctx, cp) < 0
-        || avcodec_open2(ctx, codec, std::ptr::null_mut()) < 0
-    {
-        let mut c = ctx;
-        avcodec_free_context(&mut c);
-        return std::ptr::null_mut();
-    }
-    ctx
-}
-
-/// The subtitle stream's AUTHORING CANVAS (the coordinate space the decoded rects' x/y/w/h are
-/// expressed in), or (0,0) if this decoder never declared one. 1920×1080 for Blu-ray PGS,
-/// 720×480/576 for a DVD VobSub rip, 3840×2160 for some 4K PGS — assuming 1080p unconditionally
-/// is what made VobSub land as a postage stamp in the corner.
-///
-/// Read WITHOUT a raw struct poke: `avcodec_parameters_from_context` copies the decoder's
-/// width/height into the AVCodecParameters this crate already models (and whose width/height at
-/// +48/+52 the video path has used on-device since the demuxer landed), so the whole read runs
-/// inside the library's own code and needs no new ABI offset.
-///
-/// ABI proof (device's own `libavcodec.so.57.89.100`, disassembled 2026-07-29 — the build ships
-/// stripped, so this is the primary evidence, not a header):
-/// `avcodec_parameters_from_context+0x88` is `cmp r3,#3 / beq +0x13c` (AVMEDIA_TYPE_SUBTITLE ==
-/// 3) and `+0x13c` is exactly `ldr r2,[r5,#124] / ldr r3,[r5,#128] / str r2,[r4,#48] /
-/// str r3,[r4,#52]` — so THIS build does carry the subtitle case, and it corroborates
-/// `OFF_CTX_WIDTH`/`OFF_CTX_HEIGHT` (124/128) and AVCodecParameters.width/height (48/52) at the
-/// same time. The prologue's `memset(par, 0, 136)` likewise confirms the modeled sizeof = 136.
-///
-/// Must be called AFTER a decode: PGS carries the canvas in the presentation composition segment,
-/// so pgssubdec only sets it while decoding (dvdsub sets it at open, from the .idx `size:` line).
-unsafe fn sub_canvas(dec: *mut AVCodecContext) -> (i32, i32) {
-    let par = avcodec_parameters_alloc();
-    if par.is_null() {
-        return (0, 0);
-    }
-    let wh = if avcodec_parameters_from_context(par, dec) >= 0 {
-        ((*par).width, (*par).height)
-    } else {
-        (0, 0)
-    };
-    let mut p = par;
-    avcodec_parameters_free(&mut p);
-    // A canvas we cannot make sense of is worse than none: report unknown and let the renderer
-    // fall back to 1:1 rather than scale the cue by a garbage ratio. The window spans every real
-    // authoring canvas with room to spare (the smallest in the wild is DVD's 720×480) and rejects
-    // a decoder that reports a rect size, a zero, or an uninitialised field.
-    const MIN: c_int = 160;
-    const MAX: c_int = 8192;
-    if wh.0 < MIN || wh.1 < MIN || wh.0 > MAX || wh.1 > MAX {
-        (0, 0)
-    } else {
-        wh
-    }
-}
-
-/// Copy one decoded PAL8 subtitle rect into the store's indexed form — its `w*h` palette indices
-/// (the decoder's rows, stride dropped) and its 256-entry palette as straight-alpha RGBA (palette
-/// entries are 0xAARRGGBB) — or None if the decoder left it unusable. Indexed rather than
-/// expanded: a quarter of the bytes, which is what `player::SUB_BITMAP_BUDGET` is sized on; the
-/// renderer expands a set once, when it uploads it (`SubRect::to_rgba`). Coords are passed
-/// through in the stream's own authoring canvas — the renderer scales, not us.
-///
-/// Every field here is unvalidated data from a decoder fed by the network, and `usize` is 32
-/// bits on this target, so the size is bounded BEFORE it is multiplied: `w*h` for a rect the
-/// decoder claimed was 40000×40000 is refused before any allocation, and the copy loop can never
-/// run off the end of what was allocated (a panic on the demux thread, which is outside
-/// `ui::guard`). The palette is the decoders' fixed `AVPALETTE_SIZE` (256 entries, which pgssub
-/// and dvdsub allocate whole), so any index byte stays inside it.
-unsafe fn rect_to_indexed(r: *const AVSubtitleRect) -> Option<crate::player::SubRect> {
-    if r.is_null() {
-        return None;
-    }
-    let (x, y, w, h, stride) = ((*r).x, (*r).y, (*r).w, (*r).h, (*r).linesize[0]);
-    let idx = (*r).data[0];
-    let pal = (*r).data[1] as *const u32;
-    // no real subtitle bitmap approaches 8192 on a side — the largest authoring canvas in the
-    // wild is 4K, and a rect cannot usefully exceed its own canvas
-    const MAX_SIDE: c_int = 8192;
-    if idx.is_null()
-        || pal.is_null()
-        || w <= 0
-        || h <= 0
-        || stride < w
-        || w > MAX_SIDE
-        || h > MAX_SIDE
-    {
-        return None;
-    }
-    let (wu, hu, su) = (w as usize, h as usize, stride as usize);
-    // the 4x headroom keeps `to_rgba`'s expansion of this rect inside `usize` too
-    let pixels = wu.checked_mul(hu).filter(|n| n.checked_mul(4).is_some())?;
-    let mut index = Vec::with_capacity(pixels);
-    for row in 0..hu {
-        index.extend_from_slice(std::slice::from_raw_parts(idx.add(row * su), wu));
-    }
-    let mut palette = Box::new([[0u8; 4]; 256]);
-    for (i, entry) in palette.iter_mut().enumerate() {
-        let p = *pal.add(i); // 0xAARRGGBB (native u32)
-        *entry = [(p >> 16) as u8, (p >> 8) as u8, p as u8, (p >> 24) as u8];
-    }
-    Some(crate::player::SubRect { x, y, w, h, index, palette })
-}
-
-/// Decode one image-subtitle packet (the demux loop calls this for EVERY image track while
-/// subtitles are on) and push it to the render store.
-/// A CLEAR (num_rects==0) closes the open cue; otherwise EVERY rect of the display set is
-/// copied in indexed form (`rect_to_indexed`) and pushed as one cue with start = packet pts (the end is
-/// set later by the next CLEAR or superseding set). Two-line dialogue and sign-plus-dialogue are
-/// authored as separate rects of the SAME display set, so dropping all but rect 0 (what this did
-/// before) silently lost half the line. The set's canvas comes from `sub_canvas`.
-unsafe fn decode_bitmap_cue(
-    dec: *mut AVCodecContext,
-    pkt: *mut AVPacket,
-    track: c_int,
-    st: *mut AVStream,
-) {
-    let mut sub: AVSubtitle = std::mem::zeroed();
-    let mut got: c_int = 0;
-    if avcodec_decode_subtitle2(dec, &mut sub, &mut got, pkt) < 0 || got == 0 {
-        return;
-    }
-    let pts = pts_ns(pkt, st);
-    if sub.num_rects == 0 {
-        crate::player::close_subtitle_bitmap(track, pts);
-        avsubtitle_free(&mut sub);
-        return;
-    }
-    // A pathological display set cannot be allowed to bloat the 24 MiB store or the renderer's
-    // texture set; DVB regions are the realistic source of many rects, PGS allows at most 2.
-    const MAX_RECTS: usize = 8;
-    let n = (sub.num_rects as usize).min(MAX_RECTS);
-    let mut rects = Vec::with_capacity(n);
-    for i in 0..n {
-        if let Some(r) = rect_to_indexed(*sub.rects.add(i)) {
-            rects.push(r);
-        }
-    }
-    if !rects.is_empty() {
-        let (cw, ch) = sub_canvas(dec);
-        if track == crate::player::desired_sub_idx() {
-            let r0 = &rects[0];
-            crate::player::log(&format!(
-                "image cue [{}ms] {}x{} at {},{} rects={} canvas={cw}x{ch}",
-                pts / 1_000_000,
-                r0.w,
-                r0.h,
-                r0.x,
-                r0.y,
-                rects.len()
-            ));
-        }
-        crate::player::push_subtitle_bitmap(track, pts, cw, ch, rects);
-        if sub.num_rects as usize > MAX_RECTS {
-            crate::player::log(&format!(
-                "ff: image-sub track#{track} {} rects (capped at {MAX_RECTS})",
-                sub.num_rects
-            ));
-        }
-    }
-    avsubtitle_free(&mut sub);
 }
 
 static REGISTER: Once = Once::new();
@@ -1863,6 +1660,11 @@ fn arm_active_stall_guard(
 // `Active { stall: None, .. }` by hand even with the role-typed enum in place).
 #[path = "ff_acquisition.rs"]
 mod acquisition;
+#[path = "ff_subs.rs"]
+mod subs;
+use subs::{SubKind, SubTracks};
+#[cfg(test)]
+use subs::{decode_bitmap_cue, open_sub_decoder, sub_kind};
 use acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition};
 
 /// A rollback-reserve deadline is monotone in one direction: a floor downshift that reaches an
@@ -8117,42 +7919,9 @@ pub fn demux(
                 // indexes metadata d.subs, i.e. every streamType==3 stream in document order). The
                 // selected track is read LIVE in the loop below, so switching subtitles mid-play takes
                 // effect with no reopen (parity with mkv.rs's active_sub_track).
-                // Each entry: (ffmpeg stream index, kind, decoder ctx). The decoder is non-null
-                // only for Bitmap tracks (PGS/VobSub/DVB), which we software-decode to pixels;
-                // text tracks carry a null ctx and take the payload path below.
-                let mut sub_streams: Vec<(c_int, SubKind, *mut AVCodecContext)> = Vec::new();
-                for i in 0..(*fmt).nb_streams {
-                    let cp = stream_codecpar(*streams.add(i as usize));
-                    if (*cp).codec_type == AVMEDIA_TYPE_SUBTITLE {
-                        let k = sub_kind((*cp).codec_id);
-                        let dec = if k == SubKind::Bitmap {
-                            open_sub_decoder(cp)
-                        } else {
-                            std::ptr::null_mut()
-                        };
-                        sub_streams.push((i as c_int, k, dec));
-                    }
-                }
-                let ass_generation = begin_ass_sources(&url, fmt, streams, &sub_streams);
-                if !sub_streams.is_empty() {
-                    let desc: Vec<String> = sub_streams
-                        .iter()
-                        .map(|(si, k, _)| {
-                            let kn = match k {
-                                SubKind::Ass => "ass",
-                                SubKind::MovText => "mov_text",
-                                SubKind::Plain => "text",
-                                SubKind::Bitmap => "image",
-                            };
-                            format!("#{si}:{kn}")
-                        })
-                        .collect();
-                    crate::player::log(&format!(
-                        "ff: sub tracks=[{}] selected={}",
-                        desc.join(","),
-                        crate::player::desired_sub_idx()
-                    ));
-                }
+                let mut sub_tracks = SubTracks::open(fmt, streams);
+                let ass_generation = begin_ass_sources(&url, fmt, streams, sub_tracks.entries());
+                sub_tracks.log_tracks();
 
                 // Hand-roll length-prefix -> Annex-B + prepend VPS/SPS/PPS at every keyframe (the
                 // format Starfish decodes). FFmpeg's hevc_mp4toannexb does NOT reliably prepend the
@@ -8330,70 +8099,12 @@ pub fn demux(
                             break;
                         }
                         SHARED.hls_audio_tail_ns.store(pts, Ordering::Release);
-                    } else if let Some(sub_pos) =
-                        sub_streams.iter().position(|(sidx, _, _)| *sidx == si)
-                    {
-                        // Subtitle packet. Push a cue for EVERY text track (tagged with its file-order
-                        // index), NOT just the selected one, so a mid-play track switch is instant —
-                        // the render filters by desired_sub_idx (active_subtitle). Pushing only the
-                        // selected track leaves the buffered ~10-20s (the demuxer reads well ahead of
-                        // the playhead) cue-less after a switch. Subtitles carry no ES → never fed to
-                        // the pipeline. end_ns is pkt.duration; text subs without one fall back to +4s.
-                        let kind = sub_streams[sub_pos].1;
-                        if kind == SubKind::Bitmap {
-                            // Decode EVERY image-sub track as it's read (like text cues), NOT just the
-                            // selected one — the demuxer runs ~10-20s ahead of the playhead, so if we
-                            // only started decoding at selection time the on-screen moment was already
-                            // read past and subs wouldn't appear until the playhead caught up (the
-                            // 10-20s lag). Decoding all tracks means the current cue is already in the
-                            // store on enable/switch. Keyed by sub_pos (== desired_sub_idx domain); the
-                            // renderer filters by selection. RAM is bounded by the store's byte budget.
-                            //
-                            // GATED on subs being ON at all: with subtitles Off (the common case) the
-                            // continuous per-display-set RLE decode + the up-to-24MB indexed store were
-                            // pure waste on the demux core during 4K playback. Turning subs on starts
-                            // decoding from the current read position — a switch between two IMAGE
-                            // tracks stays instant; only the off→on moment can wait for the next cue.
-                            if crate::player::desired_sub_idx() >= 0 {
-                                let dec = sub_streams[sub_pos].2;
-                                if !dec.is_null() {
-                                    decode_bitmap_cue(
-                                        dec,
-                                        pkt,
-                                        sub_pos as c_int,
-                                        *streams.add(si as usize),
-                                    );
-                                }
-                            }
-                        } else {
-                            let sst = *streams.add(si as usize);
-                            let start = pts_ns(pkt, sst);
-                            let dur = (*pkt).duration;
-                            let end = if dur > 0 {
-                                start + av_rescale_q(dur, stream_time_base(sst), NS_TB)
-                            } else {
-                                start + 4_000_000_000
-                            };
-                            let sz = (*pkt).size.max(0) as usize;
-                            if !(*pkt).data.is_null() && sz > 0 {
-                                let raw = std::slice::from_raw_parts((*pkt).data, sz);
-                                // mp4 tx3g: drop the 2-byte big-endian text-length prefix.
-                                let payload: &[u8] = if kind == SubKind::MovText && sz >= 2 {
-                                    let tl = ((raw[0] as usize) << 8) | raw[1] as usize;
-                                    &raw[2..2 + tl.min(sz - 2)]
-                                } else {
-                                    raw
-                                };
-                                if kind == SubKind::Ass {
-                                    crate::player::ass_source::push(
-                                        ass_generation, sub_pos as i32, start, end, payload,
-                                    );
-                                } else {
-                                    crate::player::push_subtitle_cue(
-                                        sub_pos as i32, start, end, payload,
-                                    );
-                                }
-                            }
+                    } else if let Some(sub_pos) = sub_tracks.position(si) {
+                        // Subtitle packet: `SubTracks::decode` yields a cue for EVERY text track
+                        // (not just the selected one) and decodes every image track while subtitles
+                        // are on; see ff_subs.rs. Subtitles carry no ES -> never fed to the pipeline.
+                        if let Some(cue) = sub_tracks.decode(sub_pos, pkt, *streams.add(si as usize)) {
+                            cue.push(ass_generation);
                         }
                         av_packet_unref(pkt);
                     } else {
@@ -8511,11 +8222,7 @@ pub fn demux(
                 }
 
                 // cleanup this stream (we own pb, so close_input won't free the AVIO)
-                for (_, _, dec) in sub_streams.iter_mut() {
-                    if !dec.is_null() {
-                        avcodec_free_context(dec); // frees + nulls; reopened fresh on the next outer pass
-                    }
-                }
+                sub_tracks.close(); // reopened fresh on the next outer pass
                 let mut pkt_m = pkt;
                 av_packet_free(&mut pkt_m);
                 avformat_close_input(&mut fmt);
