@@ -1,4 +1,4 @@
-{"updated":"2026-10-06T15:10:18Z",
+{"updated":"2026-10-06T17:17:27Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -507,5 +507,6 @@
 {"id":37464519585,"at":"2026-10-06T12:36:51Z","sha":"8fea82912","title":"Profiles: a cold start opens the picker on the first profile","pr":464,"jobs":{"Windows launcher syntax":16,"macOS simulator build + launch":442,"macOS tests against bundled FFmpeg and ASS":362,"Linux simulator build + launch":300}},
 {"id":37466696472,"at":"2026-10-06T12:54:23Z","sha":"b16939158","title":"Home: lay the grid out when the catalog lands, not only on the next Tick","pr":467,"jobs":{"Windows launcher syntax":17,"macOS tests against bundled FFmpeg and ASS":334,"Linux simulator build + launch":334,"macOS simulator build + launch":651}},
 {"id":37473824437,"at":"2026-10-06T13:49:09Z","sha":"3cfaf5d41","title":"Subtitle search: a subtitle the item already has is \"Added\", and a re-download never lists it twice","pr":469,"jobs":{"macOS simulator build + launch":621,"Linux simulator build + launch":331,"macOS tests against bundled FFmpeg and ASS":367,"Windows launcher syntax":12}},
-{"id":37484131665,"at":"2026-10-06T15:03:18Z","sha":"3ba9b0210","title":"Home pill seats the hero; tab arrival pops the head tile once visible","pr":470,"jobs":{"macOS simulator build + launch":330,"Windows launcher syntax":19,"Linux simulator build + launch":287,"macOS tests against bundled FFmpeg and ASS":397}}
+{"id":37484131665,"at":"2026-10-06T15:03:18Z","sha":"3ba9b0210","title":"Home pill seats the hero; tab arrival pops the head tile once visible","pr":470,"jobs":{"macOS simulator build + launch":330,"Windows launcher syntax":19,"Linux simulator build + launch":287,"macOS tests against bundled FFmpeg and ASS":397}},
+{"id":37501203026,"at":"2026-10-06T17:08:21Z","sha":"5af01d358","title":"Release candidates: rc.yml builds the stable package as X.Y.Z-rc.N prereleases","pr":471,"jobs":{"Windows launcher syntax":14,"macOS tests against bundled FFmpeg and ASS":392,"macOS simulator build + launch":529,"Linux simulator build + launch":285}}
 ]}
