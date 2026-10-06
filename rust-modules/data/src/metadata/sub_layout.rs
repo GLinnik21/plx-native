@@ -13,7 +13,7 @@
 //! "yours" language with several tracks gets its own section, ranked full < SDH < forced <
 //! commentary; everything else is "Other languages", ONE row on the root (a drill-in; the page behind it is
 //! [`SubModel::other`], one [`OtherLang`] per language, sorted by name); and a headerless section holds Timing and Style (both omitted
-//! under transcode). "Yours" is the pref language (if the play resolved under
+//! under a transcode while no subtitle is on; once the server burns one they stay, dimmed). "Yours" is the pref language (if the play resolved under
 //! one), the playing audio's language, and the current subtitle's own language, in that order
 //! (`route::cur_sub_pref_lang`, gathered by `screens::player::overlay`).
 use std::borrow::Cow;

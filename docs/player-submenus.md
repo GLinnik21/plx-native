@@ -43,7 +43,8 @@ because the overlay's state shape changed on purpose.
 - Style follows Timing's availability: omitted while a transcode has no subtitle on (nothing to
   style); once the server draws the selected subtitle (`route::subtitle_presenter` = `ServerBurn`) both
   stay, dim and inert, with a reason under Style: "Drawn by your server while it converts the audio."
-  (a remux or the app's own burn) or "Drawn by your server at this quality." (any other burn).
+  (`BurnReason::AudioConversion`: a remux, the app's own enhanced burn, or the plain Original-quality
+  burn) or "Drawn by your server at this quality." (a burn outside that family, e.g. a quality-limited re-encode).
 - Per active renderer: image -> Size and Position dim and inert ("Image subtitles keep their own
   size and position."); native ASS/SSA -> the same ("Styled subtitles keep ..."); Color stays live in
   both, since the subtitle ink tints bitmaps and ASS.

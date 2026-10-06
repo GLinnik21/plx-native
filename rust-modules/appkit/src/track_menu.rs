@@ -778,7 +778,7 @@ impl TrackMenuState {
     /// The Subtitles tab's half of the live poll `Self::update` runs every tick, mirroring the
     /// Audio tab's own `enh_state` poll just above it. Issue #309's field report: a subtitle pick
     /// that reroutes the play to (or away from) the enhancement's own Burn lands `active_sub`
-    /// at once (`Self::on_ok`'s own optimistic write), but `sub_style_locked` can only become true
+    /// at once (`Self::on_ok`'s own optimistic write), but the server-burn lock (`server_burn_built`) can only become true
     /// once the Burn's `/decision` round trip actually answers (`route::decision::request_retranscode`
     /// on a `route::flight` worker, a real network call) — seconds later. A panel that stays open across that window (the
     /// diagnostic `screens::player::overlay::pick_track_row` trigger deliberately does, "so a
@@ -3887,7 +3887,8 @@ mod enhancement_menu_tests {
     }
 
     /// Offered-but-not-applied (the enhancement toggle is off, or the offer is merely available)
-    /// must NOT lock the rows — only an actually-applied Burn does.
+    /// must NOT lock the rows: `table_form` locks only when `subtitle_presenter` is `ServerBurn`,
+    /// and here the live route is Direct, so Timing stays live and no reason note is drawn.
     #[test]
     fn subtitles_tab_timing_and_color_stay_live_when_not_applied() {
         let _g = plx_base::testlock::serial();
@@ -4691,13 +4692,13 @@ mod style_page_tests {
         }
     }
 
-    /// Style is dimmed with the locked note only for the actual own burn, and follows Timing's
-    /// availability: an ordinary transcode omits both, an own burn keeps both drawn and dim.
+    /// Style follows Timing's availability: a transcode with no subtitle selected omits both, a
+    /// server burn (any `ServerBurn`) keeps both drawn and dim with the reason under Style.
     #[test]
     fn style_follows_timings_availability() {
         let _g = plx_base::testlock::serial();
         let has = |menu: &TrackMenuState, id| menu.form.index_of(&id).is_some();
-        // an ordinary transcode that is not the own burn: neither row
+        // a transcode with no subtitle selected: nothing to offset or style, so neither row
         let (ps, _) = enhancement_test_session(EnhTestFixture { remux: Some(false), ..Default::default() });
         let store = store_with(vec![stream(999, 0, "English", "eng", "")]);
         let menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());

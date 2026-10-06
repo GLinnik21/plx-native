@@ -8854,12 +8854,12 @@ fn live_is_original_burn(ps: &PlaybackSession) -> bool {
 
 /// **The family the enhancement's own bookkeeping should read the live route as.** Identical to
 /// [`live_family`] except a live Burn — which is wire-shaped `Other` (`remux: false`) — reads as
-/// `Remux`, because it IS the enhancement's own route. Every predicate that asks "is the
-/// enhancement's route still standing" must use this, not `live_family`, or an active Burn would
-/// appear "not offered" the instant it took effect and get silently released back to the plain
-/// candidate. Call sites that are about something else entirely (a track pick's own native/
-/// transcode split, an unrelated legacy reload) keep using `live_family`: a Burn genuinely needs
-/// re-encode-shaped handling there.
+/// `Remux`: both the enhancement's own Burn and a plain Original-quality burn with no DSP params
+/// (`live_is_original_burn`). Every predicate that asks "is the enhancement's route still
+/// standing" must use this, not `live_family`, or an active Burn would appear "not offered" the
+/// instant it took effect and get silently released back to the plain candidate. The track picks
+/// (`commit_audio_selection`, `commit_subtitle_selection`) use it too; only `legacy_action`
+/// still calls `live_family`, where a Burn genuinely needs re-encode-shaped handling.
 fn enhancement_family(ps: &PlaybackSession) -> RouteFamily {
     if live_is_own_burn(ps) || live_is_original_burn(ps) {
         RouteFamily::Remux
