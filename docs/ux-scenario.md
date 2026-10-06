@@ -132,10 +132,9 @@ Every focusable control has three visually distinct states — **idle**, **focus
 **pressed**. Focus is drawn as a scale-up on a critically damped spring plus a glow; press is a
 separate depression (`ui/press.rs`). **Every control that performs an action responds to OK.**
 
-Two focus stops do not, and both are deliberate rather than dead: the tab pill for the page you are
-*already on* (OK on Home's own pill, standing on Home, is a documented no-op), and the person page's
-header band when that person has no biography long enough to expand. Neither is a button, neither
-leaves the user stuck, and every other focus stop in the app acts.
+One focus stop does not, and it is deliberate rather than dead: the person page's header band when
+that person has no biography long enough to expand. It is not a button, it does not leave the user
+stuck, and every other focus stop in the app acts (OK on the Home pill drops focus into the hero).
 
 **A long press is its own gesture.** Holding OK for ≥500 ms on a card opens that card's context
 menu (§5.6); releasing before then is an ordinary activation. Nothing else in the app uses a hold.

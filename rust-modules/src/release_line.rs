@@ -50,6 +50,14 @@ pub(crate) fn is_nightly_date(date: &str) -> bool {
     date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Whether `n` is the shape `PLX_RC` must be — a positive decimal integer with no sign and no
+/// leading zero (`1`, `2`, `12`), the number a release candidate's reported `X.Y.Z-rc.N` carries.
+/// The leading-zero rule is semver's own for a numeric pre-release identifier: `rc.01` is not a
+/// valid version, and Sentry and every semver-ordering consumer would read it as such.
+pub(crate) fn is_rc_number(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 4 && n.bytes().all(|b| b.is_ascii_digit()) && !n.starts_with('0')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +91,18 @@ mod tests {
         assert!(!is_nightly_date("202609190"));  // 9 digits
         assert!(!is_nightly_date("2026-09-19"));  // not digits-only
         assert!(!is_nightly_date("2026091x"));
+    }
+
+    #[test]
+    fn rc_number_is_a_positive_integer_without_leading_zeros() {
+        assert!(is_rc_number("1"));
+        assert!(is_rc_number("12"));
+        assert!(!is_rc_number(""));
+        assert!(!is_rc_number("0"));
+        assert!(!is_rc_number("01"));
+        assert!(!is_rc_number("-1"));
+        assert!(!is_rc_number("1a"));
+        assert!(!is_rc_number("12345"));
     }
 
     /// Read the same `RELEASE_LINE` marker `build.rs::release_line` reads, so this test's

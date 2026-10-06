@@ -545,7 +545,7 @@ where
         })
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        let i = (want.elem.index().unwrap_or(0) as usize).min(N_ACTIONS.saturating_sub(1));
+        let i = plx_ui::geom::clamp_plain_index(want.elem.index().unwrap_or(0), N_ACTIONS);
         FocusKey { entry: self.entry, elem: H::Elem::of_index(i as u32) }
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {

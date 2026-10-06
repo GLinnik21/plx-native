@@ -448,3 +448,34 @@ fn login_phase_follower_settles_and_does_not_recycle_the_qr_screen() {
     );
     assert_eq!(d.nav.tabs.stack.page_alpha(), 1.0, "the page transition actually settled");
 }
+
+/// **A cold start lands on the FIRST profile, whatever the roster's size.** The first frame of a
+/// boot has no mounted page yet, so `capture_chrome` read the missing route as Home and published
+/// the tab strip; the picker's mount `Enter` was composed with that strip and seated focus on a
+/// strip pill. The next frame (route now Profiles, strip cleared) asked the picker to reconcile
+/// the foreign key, and `ProfilesView::reconcile` clamped it to `n - 1` — the LAST avatar. With
+/// one profile the clamp is invisible, which is why a single-profile roster never showed it.
+#[test]
+fn a_cold_start_picker_seats_focus_on_the_first_profile() {
+    use super::test_support::{frame, tick};
+    let _g = plx_base::testlock::serial();
+    for n in [1usize, 2, 4, 6] {
+        let mut saved = stored(false);
+        saved.home_users = (0..n)
+            .map(|i| HomeUserRef { uuid: format!("u{i}").into(), protected: false, ..Default::default() })
+            .collect();
+        saved.user.uuid = "u0".into();
+        let mut rig = rig(saved);
+        let mut d = Dispatcher::<AppHost>::new();
+        execute_session_command(&mut d, SessionCmd::StartSwitch(Picker::Boot));
+        for i in 0..40 {
+            frame(&mut d, &mut rig, AppArg::Profiles, tick(i), vec![]);
+        }
+        assert_eq!(rig.auth_read().0.users.len(), n);
+        assert_eq!(
+            d.focus().map(|k| k.elem),
+            Some(0),
+            "{n} profiles: the picker must open on the first avatar"
+        );
+    }
+}

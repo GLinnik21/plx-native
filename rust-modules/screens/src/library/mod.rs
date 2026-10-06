@@ -260,6 +260,18 @@ impl LibraryScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn toolbar_group(&self) -> GroupId { self.toolbar }
 
+    /// `(page alpha, focused shelf tile's pop scale)` — what a viewer sees of a focus arrival.
+    /// The scale is `None` when focus is not on a shelf tile.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_arrival(&self, focus: Option<FocusKey<u32>>) -> (f32, Option<f32>) {
+        let elem = focus.filter(|key| key.entry == self.entry).map(|key| key.elem);
+        let scale = self.shelves.iter().find_map(|shelf| {
+            let col = elem.and_then(|elem| shelf.elems.iter().position(|key| *key == elem))?;
+            Some(shelf.motion.scale(col))
+        });
+        (self.page_fade.alpha(), scale)
+    }
+
     fn reseat<H: LibraryLike>(&self, focus: FocusTarget<u32>, fx: &mut Effects<'_, H>) {
         fx.push(Fx::Deliver(MachineId::Instance(self.instance),
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))));
@@ -976,8 +988,12 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                         .or_else(|| (!self.ground_seeded).then(|| H::listing(cx).item(0).filter(|item| item.has_blur).map(|item| item.blur)).flatten());
                     self.ground_seeded |= colours.is_some();
                     self.ground.key(colours, plx_ui::widgets::PageGround::CARD_W, dt);
+                    // A page still dissolving in shows its seat unpopped: the pop starts when the
+                    // page is opaque, where it can be seen, instead of playing out under the fade.
+                    let arriving = self.page_fade.is_arriving();
                     for row in &mut self.shelves {
-                        let col = focused.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
+                        let col = focused.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem))
+                            .filter(|_| !arriving);
                         // A row at exact rest is a fixed point of `update`: skipping it changes no
                         // bit, and with hundreds of shelves stepping each one every frame is the
                         // page's whole cost.

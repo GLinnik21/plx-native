@@ -3,8 +3,8 @@
 
 * `cache-cleanup.yml` runs on `pull_request_target`, which is safe only while it never checks out
   or runs pull request code and holds nothing but `actions: write`;
-* the nightly's Sentry debug-file upload is skipped on a pull request's dry run and nowhere else
-  (a release, the schedule and a dispatched dry run keep it);
+* the nightly's and the release candidate's Sentry debug-file upload is skipped on a pull
+  request's dry run and nowhere else (a release, the schedule and a dispatched dry run keep it);
 * the tests against the bundled FFmpeg and libass run in a job of their own, beside the replays,
   and still run;
 * the nightly Homebrew Channel repository: the nightly build generates its manifest (and debug never
@@ -71,6 +71,10 @@ class SentryUpload(unittest.TestCase):
                          ["${{ github.event_name != 'pull_request' }}"])
         self.assertNotIn("upload-debug-files", code("release.yml"))
 
+    def test_only_a_pull_requests_candidate_run_skips_the_upload(self):
+        self.assertEqual(re.findall(r"upload-debug-files: (.*)", code("rc.yml")),
+                         ["${{ github.event_name != 'pull_request' }}"])
+
     def test_the_input_defaults_to_uploading_and_the_step_honours_it(self):
         build = code("build-package.yml")
         self.assertRegex(build, r"upload-debug-files:\n(?:        .*\n)*?        type: boolean\n        default: true\n")
@@ -127,8 +131,8 @@ class NightlyHomebrewRepository(unittest.TestCase):
         # names a version nothing reports; the label comes from check-package's own derivation.
         build = code("build-package.yml")
         self.assertIn("--print-nightly-label pkg/.build-config", build)
-        self.assertIn('label="${nightly_label:-$version}"', build)
-        self.assertNotIn('label="$version${nightly_date:+-nightly-$nightly_date}"', build)
+        self.assertIn('label="${nightly_label:-$version${rc:+-rc.$rc}}"', build)
+        self.assertNotIn('label="$version${nightly_date:+-nightly-$nightly_date}', build)
 
     def test_the_site_stages_the_repository_and_the_guide(self):
         pages = code("pages.yml")

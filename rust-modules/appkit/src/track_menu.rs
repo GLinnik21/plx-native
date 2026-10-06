@@ -479,6 +479,11 @@ pub struct TrackMenuState {
     /// a panel opened onto it never saw the flight and must not commit it again — doing so
     /// dismissed every later Subtitles/Audio menu on its first tick (device, 2026-10-04).
     search_watching: bool,
+    /// The playing item's external subtitles as of the last open or [`SubSig`] change — what the
+    /// Search page checks a hit against ([`Self::hit_on_item`]), because that page is built
+    /// without the item in hand. A copy, refreshed wherever the subs list is re-read, so a
+    /// subtitle that lands (or is replaced) while the page is up marks its hit at once.
+    item_sidecars: Vec<metadata::Stream>,
 }
 
 /// **What the track menu DECIDED**, for the loop to perform (spec §2.2).
@@ -606,6 +611,7 @@ impl TrackMenuState {
             background_owner: None,
             search: offer_search.then(|| plx_data::subsearch::SubSearchSnapshot::idle(0)),
             search_watching: false,
+            item_sidecars: Vec::new(),
         };
         s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         s.sync_item(ps, meta);
@@ -763,6 +769,13 @@ impl TrackMenuState {
         let (audio, sub) = Self::derive_active(ps, meta);
         self.active_audio = audio;
         self.active_sub = sub;
+        self.read_item_sidecars(meta);
+    }
+
+    /// Re-read the playing item's external subtitles for the Search page ([`Self::item_sidecars`]).
+    fn read_item_sidecars(&mut self, meta: metadata::MetadataView<'_>) {
+        self.item_sidecars =
+            tracks(meta).map(|t| t.subs.iter().filter(|s| s.external).cloned().collect()).unwrap_or_default();
     }
 
     /// The Subtitles tab's half of the live poll `Self::update` runs every tick, mirroring the
@@ -796,6 +809,7 @@ impl TrackMenuState {
             return;
         }
         self.active_sub = live_sub;
+        self.read_item_sidecars(meta);
         let Some(first) = self.pages.first().copied() else {
             let form = self.layout(ps, meta);
             // not the viewer's row any more (its track left the offered list): the checked row
@@ -1225,6 +1239,8 @@ impl TrackMenuState {
                 DownloadPhase::Installed { hit, .. } if *hit == i => Some(msg::widgets_tracks_search_added()),
                 DownloadPhase::Unconfirmed { hit } if *hit == i => Some(msg::widgets_tracks_search_requested()),
                 DownloadPhase::Failed { hit, .. } if *hit == i => Some(msg::widgets_tracks_search_add_failed()),
+                // not this session's install, but the item already lists it: read it the same way
+                _ if self.hit_on_item(h) => Some(msg::widgets_tracks_search_added()),
                 _ => None,
             };
             let title = if h.title.is_empty() { h.language.clone() } else { h.title.clone() };
@@ -1278,11 +1294,12 @@ impl TrackMenuState {
 
     /// OK on a result: ask the store to install it, quoting the generation on screen so a press
     /// against a replaced result set (whose keys are dead) is refused there rather than sent.
-    /// Inert while a download is busy, and on the row already installed or requested.
+    /// Inert while a download is busy, and on the row already installed or requested — or already
+    /// on the item ([`Self::hit_on_item`]), which would list the subtitle twice.
     fn search_download(&self, i: usize) -> TrackOk {
         use plx_data::subsearch::DownloadPhase;
         let Some(s) = self.search.as_ref() else { return TrackOk::Inert };
-        if s.download.busy() || i >= s.hits.len() {
+        if s.download.busy() || i >= s.hits.len() || self.hit_on_item(&s.hits[i]) {
             return TrackOk::Inert;
         }
         if let DownloadPhase::Installed { hit, .. } | DownloadPhase::Unconfirmed { hit } = &s.download {
@@ -1291,6 +1308,13 @@ impl TrackMenuState {
             }
         }
         TrackOk::Search(plx_data::subsearch::SubSearchCmd::Download { gen: s.gen, hit: i })
+    }
+
+    /// Does the playing item already carry this hit as a sidecar — the same release name and
+    /// language, as [`metadata::Stream::is_sidecar_release`] reads them? Adding it again would list
+    /// one subtitle twice, so such a row reads Added and is inert.
+    fn hit_on_item(&self, h: &plx_data::subsearch::SubHit) -> bool {
+        self.item_sidecars.iter().any(|s| s.is_sidecar_release(&h.title, &h.language_code))
     }
 
     /// OK on a language: back to the Search page, searching in it. The panel's copy of the search
@@ -4102,6 +4126,7 @@ mod focus_tests {
             background_owner: None,
             search: None,
             search_watching: false,
+            item_sidecars: Vec::new(),
         }
     }
 
@@ -5605,10 +5630,20 @@ mod motion_tests {
 
     /// A Subtitles-tab menu with one English track, offered a search in state `s`, on the Search page.
     fn on_search_page(s: SubSearchSnapshot) -> (TrackMenuState, plx_data::stores::metadata::MetadataStore) {
+        on_search_page_with(Vec::new(), s)
+    }
+
+    /// [`on_search_page`], with `extra` subtitle streams on the playing item beside the English one.
+    fn on_search_page_with(
+        extra: Vec<metadata::Stream>,
+        s: SubSearchSnapshot,
+    ) -> (TrackMenuState, plx_data::stores::metadata::MetadataStore) {
         plx_media::player::sidecar::reset();
         let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with(vec![metadata::Stream { id: 1, index: 0, lang: "English".into(),
-            lang_code: "eng".into(), codec: "srt".into(), ..Default::default() }]);
+        let mut subs = vec![metadata::Stream { id: 1, index: 0, lang: "English".into(),
+            lang_code: "eng".into(), codec: "srt".into(), ..Default::default() }];
+        subs.extend(extra);
+        let store = store_with(subs);
         let mut menu = TrackMenuState::new_with(&ps, store.view(), 1, vec!["eng".into()], true);
         menu.set_search(SubSearchSnapshot::idle(7));
         menu.focus_key(TrackRow::OpenSearch.key().0);
@@ -5774,6 +5809,56 @@ mod motion_tests {
         assert!(stream.sdh && stream.forced, "sdh={} forced={}", stream.sdh, stream.forced);
     }
 
+    /// A sidecar the server already carries, as the playing item lists it: the release name PMS
+    /// copied from the candidate it was downloaded from, under a NEW id.
+    fn sidecar(id: i64, title: &str, lang_code: &str) -> metadata::Stream {
+        metadata::Stream { id, lang_code: lang_code.into(), title: title.into(), external: true,
+            key: format!("/library/streams/{id}"), codec: "srt".into(), ..Default::default() }
+    }
+
+    /// **Regression (owner report):** a hit the item ALREADY carries as a sidecar (downloaded
+    /// earlier, or on another client) could be pressed and added a second time, and the track menu
+    /// then listed it twice until the film was reloaded. It reads "Added" like the row installed
+    /// this session and OK does nothing on it; its neighbours stay live.
+    #[test]
+    fn a_hit_the_item_already_carries_reads_added_and_cannot_be_added_again() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, store) = on_search_page_with(
+            vec![sidecar(5, "a", "nld")],
+            snap(SearchStatus::Ready, None, vec![hit("a"), hit("b")], DownloadPhase::None),
+        );
+        let (row_a, row_b) = (TrackRow::SearchHit(0), TrackRow::SearchHit(1));
+        let value_of = |menu: &TrackMenuState, id: TrackRow| {
+            let i = menu.form.index_of(&id).expect("on the page");
+            let row = menu.form.table.sections.iter().flat_map(|s| &s.rows).nth(i).unwrap();
+            row.value.clone().unwrap_or_default()
+        };
+        assert_eq!(value_of(&menu, row_a), plx_platform::i18n::msg::widgets_tracks_search_added());
+        assert_eq!(value_of(&menu, row_b), "", "a hit the item lacks is not marked");
+        menu.focus_key(row_a.key().0);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
+        menu.focus_key(row_b.key().0);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Search(SubSearchCmd::Download { gen: 7, hit: 1 }));
+    }
+
+    /// The identity is the release name AND the language: the same release in another language, or
+    /// an embedded track that merely shares the title, is not "already added".
+    #[test]
+    fn only_a_sidecar_of_the_same_release_and_language_marks_a_hit_added() {
+        let _g = plx_base::testlock::serial();
+        let embedded = metadata::Stream { external: false, key: String::new(), ..sidecar(6, "a", "nld") };
+        let (mut menu, store) = on_search_page_with(
+            vec![sidecar(5, "a", "fra"), embedded, sidecar(7, "", "nld")],
+            snap(SearchStatus::Ready, None, vec![hit("a"), SubHit { title: String::new(), ..hit("a") }],
+                DownloadPhase::None),
+        );
+        for i in 0..2 {
+            menu.focus_key(TrackRow::SearchHit(i).key().0);
+            assert_eq!(menu.on_ok(store.view()), TrackOk::Search(SubSearchCmd::Download { gen: 7, hit: i }),
+                "hit {i}");
+        }
+    }
+
     /// The installed subtitle joins the PLAYING item's list, once, and only that item's.
     #[test]
     fn an_installed_subtitle_is_appended_to_the_playing_item_once_and_only_there() {
@@ -5788,5 +5873,38 @@ mod motion_tests {
         assert!(!store.run(append(format!("{rk}-other"))), "another item's landing is dropped");
         let ids: Vec<i64> = store.view().playing().unwrap().subs.iter().map(|s| s.id).collect();
         assert_eq!(ids, [1, 9]);
+    }
+
+    /// **Regression (owner report):** PMS gives a re-downloaded subtitle a NEW id, so the stale
+    /// entry for the same release and the new one both sat in the list (two rows, one subtitle)
+    /// until a reload. The new id takes the old entry's place.
+    #[test]
+    fn a_reinstalled_subtitle_replaces_its_stale_entry_instead_of_duplicating_it() {
+        let _g = plx_base::testlock::serial();
+        let mut store = store_with(vec![metadata::Stream { id: 1, ..Default::default() }, sidecar(5, "rel", "nld")]);
+        let (sid, rk) = { let p = store.view().playing().expect("playing"); (p.sid, p.rk.clone()) };
+        let append = |stream| plx_data::stores::metadata::MetadataCmd::AppendPlayingSub { sid, rk: rk.clone(), stream };
+        assert!(store.run(append(sidecar(9, "rel", "nld"))), "the list changed");
+        let ids = |store: &plx_data::stores::metadata::MetadataStore| -> Vec<i64> {
+            store.view().playing().unwrap().subs.iter().map(|s| s.id).collect()
+        };
+        assert_eq!(ids(&store), [1, 9], "one entry for the subtitle, under the new id, in place");
+        assert!(!store.run(append(sidecar(9, "rel", "nld"))), "the same id again is a no-op");
+        assert_eq!(ids(&store), [1, 9]);
+    }
+
+    /// A different release, a different language, or a nameless stream is a different subtitle:
+    /// it still appends beside what is there.
+    #[test]
+    fn a_different_subtitle_still_appends() {
+        let _g = plx_base::testlock::serial();
+        let mut store = store_with(vec![sidecar(5, "rel", "nld"), sidecar(6, "", "nld")]);
+        let (sid, rk) = { let p = store.view().playing().expect("playing"); (p.sid, p.rk.clone()) };
+        let append = |stream| plx_data::stores::metadata::MetadataCmd::AppendPlayingSub { sid, rk: rk.clone(), stream };
+        assert!(store.run(append(sidecar(9, "other", "nld"))), "another release");
+        assert!(store.run(append(sidecar(10, "rel", "fra"))), "the same release in another language");
+        assert!(store.run(append(sidecar(11, "", "nld"))), "an empty title names nothing, so matches nothing");
+        let ids: Vec<i64> = store.view().playing().unwrap().subs.iter().map(|s| s.id).collect();
+        assert_eq!(ids, [5, 6, 9, 10, 11]);
     }
 }

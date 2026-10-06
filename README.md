@@ -131,6 +131,14 @@ it with Dev Manager; a package installed that way does not update itself.
 release does, but nobody has watched it play. Each nightly is deleted 30 days after it is
 published, so link to a specific `.ipk` at your own risk.
 
+## Release candidates
+
+Before a release, CI may publish a release candidate as a
+[prerelease](https://github.com/GLinnik21/plx-native/releases?q=rc) named like `PlxNative 0.8.0-rc.1`.
+It is the release build itself, so it **installs as the regular PlxNative app**, replacing the one
+you have the way an update would. It is not in the Homebrew Channel, and the Channel will not offer
+the final release over it either: reinstall the final by hand once it is out.
+
 ## Privacy
 
 **Your library data never reaches me.** The app talks to your Plex server, to `plex.tv` to sign in,

@@ -803,7 +803,12 @@ impl Bridge {
     }
 
     fn capture_chrome(&mut self, d: &mut Dispatcher<AppHost>) {
-        let route = d.top_arg().cloned().unwrap_or(AppArg::Home);
+        // **The route being mounted, not Home by default.** This runs before the frame's nav
+        // commit, so on a boot's first frame there is no top page yet — only a parked `Root`.
+        // Reading that gap as Home published the tab strip under whatever mounted next: a
+        // cold-start picker's mount `Enter` was composed with it and seated focus on a pill, and
+        // the next frame's reconcile clamped that foreign key to the picker's LAST avatar.
+        let route = d.top_or_mounting_arg().cloned().unwrap_or(AppArg::Home);
         let route = &route;
         let search = *route == AppArg::Search;
         if matches!(route, AppArg::Home | AppArg::Library) || search {
@@ -2699,8 +2704,10 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
     }
 }
 
-/// **A press on the shared top strip** — the ONE door for its four destinations, so the seed or
-/// command each one carries cannot be forgotten at one of the three screens that wear the bar.
+/// **A press on the shared top strip** — the door for the Search / Movies / Shows destinations and
+/// for BACK-to-Home (`focus_pill`), so the seed or command each one carries cannot be forgotten at
+/// one of the three screens that wear the bar. A press on the HOME pill goes through
+/// [`nav_home_pill`] instead, which seats the hero rather than a strip pill.
 ///
 /// It is `app::nav`'s four `Nav` variants, minus the enum: what each arm did BESIDE the flip is a
 /// seed or a queued command that the destination's mount consumes, so it is set at the PRESS and
@@ -2738,6 +2745,21 @@ pub(crate) fn nav_tab(
         HomeTab::Search => AppArg::Search,
     };
     nav_peer(d, arg, ret);
+}
+
+/// **A press on the Home PILL** — from the Library or Search, or on Home itself.
+///
+/// Every other pill drops focus into the page it opens (a tab mint seats the first element and
+/// animates the arrival). The Home pill used to keep it on the strip, so one pill of the four
+/// answered a press differently: Home returned with focus restored to wherever the press had left
+/// it, which is the strip, or did nothing at all on Home. It seats the hero's action row instead,
+/// the same place the strip's DOWN link goes. The BACK key is not a press on the pill and still
+/// lands on the strip pill the user came from ([`nav_tab`]'s `focus_pill`).
+pub(crate) fn nav_home_pill(
+    d: &mut Dispatcher<AppHost>, rig: &mut Bridge, ret: Option<ReturnState<u32, PageMemory>>,
+) {
+    rig.home_command(HomeCmd::Hero);
+    nav_peer(d, AppArg::Home, ret);
 }
 
 /// A peer of Home: select that pill unless it is already the page on top.
@@ -3374,6 +3396,14 @@ mod library_host_freeze_tests;
 #[cfg(test)]
 #[path = "library_shelf_action_tests.rs"]
 mod library_shelf_action_tests;
+
+#[cfg(test)]
+#[path = "library_tab_arrival_tests.rs"]
+mod library_tab_arrival_tests;
+
+#[cfg(test)]
+#[path = "strip_home_pill_tests.rs"]
+mod strip_home_pill_tests;
 
 #[cfg(test)]
 #[path = "search_publication_tests.rs"]

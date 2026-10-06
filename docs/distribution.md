@@ -1258,6 +1258,46 @@ luna-send -i -a com.webos.appInstallService luna://com.webos.appInstallService/d
 wholesale, so stopping at the install leaves the packaged binary behind and you are looking at a
 build you did not make.
 
+## 7c. Release candidates (2026-10-06)
+
+**Actions → Release candidate → Run workflow, with the inputs the release takes.** `rc.yml` builds
+the stable package exactly as `release.yml` does (`build-package.yml`, `flavor: stable`, production
+telemetry, every gate, the LGPL source) and publishes it as a GitHub **prerelease** for people to
+install before the release is cut. `ci/rc.py`'s module doc is the full account; what differs from a
+release is deliberately small:
+
+| | release `vX.Y.Z` | candidate `rc/vX.Y.Z-rc.N` |
+|---|---|---|
+| package id and version | `com.beb.plxnative`, `X.Y.Z` | the same — webOS installs only three integers |
+| version the app reports | `X.Y.Z` | `X.Y.Z-rc.N` (Makefile `RC=N`, `build.rs`'s `PLX_CHANNEL=rc` arm) |
+| tag | `vX.Y.Z`, on the line | `rc/vX.Y.Z-rc.N`, on the bump commit, **no branch moves** |
+| GitHub release | latest | prerelease, `--latest=false` |
+| Homebrew Channel manifest | attached | none (`build-package.yml` refuses one) |
+| release audit | completed and pushed | none |
+
+**It replaces the stable install.** A candidate is the stable id, so on a television it installs
+over PlxNative the way an update does; the debug and nightly installs are separate ids
+(`docs/two-installs.md`) and are not the package being installed. That is the point — a candidate
+under its own id would not prove what playback does under the shipped one (item 1 of that document's §6).
+Two consequences the prerelease body states for testers: the Homebrew Channel never offers a
+candidate (it resolves `releases/latest`), and because a candidate carries the final's package
+version — and the Channel compares versions by string equality — the Channel will not offer the
+final release over a candidate either. Testers reinstall the final by hand.
+
+**Promotion ships the tested source, or nothing.** `release.yml`'s `candidate` input names the tag;
+`prepare` makes its usual bump commit and then refuses unless that commit's tree is the candidate's,
+before anything is pushed. Anything that landed on the line after the candidate was cut is a reason
+to cut `rc.N+1`. The release binary is still a fresh build: only the reported version string differs
+from the candidate's.
+
+**Numbering burns.** `ci/rc.py plan` numbers per version from the `rc/vX.Y.Z-rc.*` tags, and the tag
+is pushed before the build runs, so a failed run consumes its number. Delete the tag (and any
+release) first to reuse it. A candidate for a version that already has a `vX.Y.Z` tag is refused.
+
+**Dry runs** (`dry_run: true`, or a same-repo pull request touching `rc.yml` or `ci/rc.py`) build the
+line as it stands under the next candidate number and bump, tag and publish nothing. `rc.yml` shares
+`release.yml`'s concurrency group, so a candidate and a release never interleave.
+
 ---
 
 ## 8. Release CI (built 2026-08-01)

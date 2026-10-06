@@ -238,10 +238,10 @@ fn step_index<K: IndexElem>(entry: EntryId, k: FocusKey<K>, dir: Dir, n: usize) 
 }
 
 fn clamp_index<K: IndexElem>(entry: EntryId, want: FocusKey<K>, n: usize) -> FocusKey<K> {
-    let i = want.elem.index().unwrap_or(0) as usize;
+    let i = plx_ui::geom::clamp_plain_index(want.elem.index().unwrap_or(0), n);
     FocusKey {
         entry,
-        elem: K::of_index(i.min(n.saturating_sub(1)) as u32),
+        elem: K::of_index(i as u32),
     }
 }
 

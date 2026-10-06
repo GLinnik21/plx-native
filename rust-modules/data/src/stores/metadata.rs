@@ -169,7 +169,8 @@ pub enum MetadataCmd {
     /// A subtitle the server just installed for the PLAYING item (the player's subtitle search),
     /// appended to its subtitle list so the menu lists it and the pick can be committed. Touches
     /// nothing else — not `InstallPlaying`, which clears the skipped markers and replaces the whole
-    /// leaf — and lands only on the same `(sid, rk)`.
+    /// leaf — and lands only on the same `(sid, rk)`. A stream that is the SAME subtitle as one
+    /// already listed (`Stream::same_subtitle`, under a new id) replaces it rather than joining it.
     AppendPlayingSub { sid: ServerId, rk: String, stream: crate::metadata::Stream },
     MarkSkipped(crate::metadata::Marker),
     RetirePlaying,
