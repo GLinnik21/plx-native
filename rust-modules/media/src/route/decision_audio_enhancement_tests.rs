@@ -1179,25 +1179,181 @@ fn native_capable_pick_with_pref_on_goes_remux_not_native() {
     cleanup(&mut ps);
 }
 
+/// Settle the claimed reload of a pick and hand back every request the fixture saw.
+fn pick_and_settle(ps: &mut PlaybackSession, pick: CarriedAudio) {
+    commit_audio_selection(ps, pick);
+    assert!(pending_user_route_intent(UserRouteIntent::Retranscode));
+    let (action, tail) = claim(ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(ps, &action, tail);
+}
+
 #[test]
-fn non_direct_playable_pick_drops_candidate_legacy_retranscode_rows_absent() {
+fn a_non_playable_pick_from_direct_play_becomes_a_remux_naming_it() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    let mut cand = candidate(true, a5(), Some(2));
+    cand.fps = 23.976;
+    install(&mut ps, &live, Delivery::Direct, a5(), Some(cand), 0);
+    pick_and_settle(&mut ps, a4());
+    let kept = ps.auto_original.as_ref().expect("the candidate survives the pick");
+    assert!(kept.direct && kept.audio_converted && !kept.feeds_part());
+    assert_eq!(kept.audio.as_ref().map(|a| a.sid), Some(14));
+    assert_eq!(kept.fps, 23.976);
+    assert_eq!(kept.subtitle_ordinal, Some(2));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE, false));
+    assert_eq!(ps.cur_audio, Some(a4()));
+    assert!(
+        !matches!(
+            menu_enhancement_availability(&ps),
+            EnhancementAvailability::Disabled(DisabledReason::NotOriginalQuality)
+        ),
+        "Original quality is what is playing: {:?}",
+        menu_enhancement_availability(&ps)
+    );
+    let requests = live.finish();
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert_eq!(query_param(last, "directStreamAudio"), Some("1"), "{last}");
+    assert_eq!(query_param(last, "audioStreamID"), Some("14"), "{last}");
+    assert_eq!(query_param(last, "videoResolution"), None, "{last}");
+    assert_eq!(query_param(last, "maxVideoBitrate"), None, "{last}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn the_same_pick_with_the_preference_on_is_an_enhanced_remux() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let live = Live::start(EnhMode::Honor("ac3"));
     crate::player::restore_audio_enhancements(PREF);
     install(&mut ps, &live, Delivery::Direct, a5(), Some(candidate(true, a5(), None)), 0);
+    pick_and_settle(&mut ps, a4());
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, false));
+    let requests = live.finish();
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert_eq!(query_param(last, "normalizeLoudness"), Some("1"), "{last}");
+    assert_eq!(query_param(last, "audioStreamID"), Some("14"), "{last}");
+    assert_eq!(query_param(last, "videoResolution"), None, "{last}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn a_refused_enhancement_on_a_non_playable_pick_still_switches_the_track() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    // Refuses only a request that carries the enhancement params; a plain one is served.
+    let live = Live::start(EnhMode::Refuse);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Direct, a5(), Some(candidate(true, a5(), None)), 0);
     commit_audio_selection(&mut ps, a4());
-    assert!(ps.auto_original.is_none(), "a direct candidate cannot feed TrueHD");
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode, "the pick's own reload still lands");
+    settle(&mut ps, &action, tail);
+    assert_eq!(ps.cur_audio, Some(a4()));
+    assert_eq!(ps.cur_contract.audio, NONE);
+    let requests = live.finish();
+    let d = decisions(&requests);
+    assert_eq!(d.len(), 2, "the refused ask, then the fallback: {requests:?}");
+    assert_eq!(query_param(d[0], "normalizeLoudness"), Some("1"));
+    let fallback = d[1];
+    assert!(!fallback.contains("normalizeLoudness") && !fallback.contains("dialogBoost"), "{fallback}");
+    assert_eq!(query_param(fallback, "directStreamAudio"), Some("1"), "{fallback}");
+    assert_eq!(query_param(fallback, "audioStreamID"), Some("14"), "{fallback}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn a_non_playable_pick_with_a_subtitle_on_screen_still_burns_through_a_re_encode() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install(&mut ps, &live, Delivery::Direct, a5(), Some(candidate(true, a5(), Some(2))), 77);
+    pick_and_settle(&mut ps, a4());
+    assert!(!ps.cur_contract.remux, "a burn is never a remux");
+    let requests = live.finish();
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert_eq!(query_param(last, "subtitleStreamID"), Some("77"), "{last}");
+    assert!(query_param(last, "videoResolution").is_some(), "capped: {last}");
+    assert_eq!(query_param(last, "directStreamAudio"), None, "{last}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn turning_that_subtitle_off_returns_to_the_remux() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install(&mut ps, &live, Delivery::Direct, a5(), Some(candidate(true, a5(), Some(2))), 77);
+    pick_and_settle(&mut ps, a4());
+    assert!(!ps.cur_contract.remux);
+    // The pick's reload has landed: the pump would settle the action to Stable before the next.
+    reset_player_control_for_test(&ps);
+    commit_subtitle_selection(&mut ps, -1, 0, false);
     assert!(pending_user_route_intent(UserRouteIntent::Retranscode));
     let (action, tail) = claim(&mut ps);
-    assert!(!action.displaced_pick, "the legacy reload was queued itself");
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert!(!ps.cur_contract.remux);
-    assert_eq!(ps.cur_contract.audio, NONE);
-    assert!(!audio_enhancements_offered_live(&ps), "rows absent");
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE, false));
     let requests = live.finish();
-    assert!(!requests.iter().any(|r| r.contains("normalizeLoudness")), "{requests:?}");
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert_eq!(query_param(last, "directStreamAudio"), Some("1"), "{last}");
+    assert_eq!(query_param(last, "audioStreamID"), Some("14"), "{last}");
+    assert_eq!(query_param(last, "videoResolution"), None, "{last}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn a_non_playable_pick_under_a_fixed_rung_stays_a_capped_re_encode() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::P720);
+    install(&mut ps, &live, Delivery::Direct, a5(), Some(candidate(true, a5(), None)), 0);
+    ps.cur_contract.ceiling = Some(crate::abr::Rung::P1080High.ceiling());
+    pick_and_settle(&mut ps, a4());
+    assert!(!ps.cur_contract.remux, "a fixed rung never becomes a remux (I5)");
+    let requests = live.finish();
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert!(query_param(last, "videoResolution").is_some(), "capped: {last}");
+    assert_eq!(query_param(last, "directStreamAudio"), None, "{last}");
+    cleanup(&mut ps);
+}
+
+#[test]
+fn a_non_playable_pick_on_an_unusable_dv_base_layer_drops_the_candidate() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    let mut cand = candidate(true, a5(), None);
+    cand.dovi = plx_data::metadata::Dovi { present: true, profile: 5, ..plx_data::metadata::Dovi::NONE };
+    assert!(cand.dovi.base_layer_unusable());
+    install(&mut ps, &live, Delivery::Direct, a5(), Some(cand), 0);
+    pick_and_settle(&mut ps, a4());
+    assert!(ps.auto_original.is_none(), "no copy of this video is legal");
+    assert!(!ps.cur_contract.remux);
+    live.finish();
+    cleanup(&mut ps);
+}
+
+#[test]
+fn picking_a_playable_track_again_clears_audio_converted() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install(&mut ps, &live, Delivery::Direct, a5(), Some(candidate(true, a5(), None)), 0);
+    pick_and_settle(&mut ps, a4());
+    assert!(ps.auto_original.as_ref().is_some_and(|c| c.audio_converted));
+    commit_audio_selection(&mut ps, a1());
+    let c = ps.auto_original.as_ref().expect("still standing");
+    assert!(!c.audio_converted && c.feeds_part());
+    assert_eq!(c.audio.as_ref().map(|a| a.sid), Some(11));
+    live.finish();
     cleanup(&mut ps);
 }
 
@@ -1605,8 +1761,9 @@ fn absorbed_native_without_enhancement_unchanged() {
     assert!(!action.displaced_pick, "only an enhancement reconcile sets the marker");
     assert_eq!(tail, ClaimTail::Retranscode, "retranscode_for, exactly as before");
     settle(&mut ps, &action, tail);
-    assert!(!ps.cur_contract.remux);
-    assert_eq!(ps.cur_contract.audio, NONE);
+    // A standing Original candidate on Original quality, no subtitle: the plain rebuild is the
+    // Original remux (it used to be a capped re-encode, which read as "Other" and hid the rows).
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE, false));
     live.finish();
     cleanup(&mut ps);
 }

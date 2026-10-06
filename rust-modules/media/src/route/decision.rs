@@ -3538,6 +3538,7 @@ pub fn arm_auto_fixture(
                 codec: "aac".into(),
                 ..CarriedAudio::named(0, -1)
             }),
+            audio_converted: false,
             subtitle_ordinal: None,
         });
         s.auto_fixture_base = hls_base.trim_end_matches('/').to_owned();
@@ -4091,7 +4092,9 @@ fn recovery_route(ps: &PlaybackSession, candidate: &AutoOriginalCandidate) -> Op
         carried: candidate.audio.as_ref(),
         ..facts(ps)
     };
-    let family = if candidate.direct {
+    // `feeds_part`, not `direct`: a candidate whose audio the server must convert is built as a
+    // remux, so the offer is judged as one.
+    let family = if candidate.feeds_part() {
         RouteFamily::Direct
     } else {
         RouteFamily::Remux
@@ -4110,7 +4113,7 @@ pub(super) fn recovery_flavour(
     candidate: &AutoOriginalCandidate,
     want: plx_plex::plex::AudioEnhancements,
 ) -> RecoveryFlavour {
-    if candidate.direct && !want.any() {
+    if candidate.feeds_part() && !want.any() {
         RecoveryFlavour::Direct
     } else {
         RecoveryFlavour::Remux(want)
@@ -8178,7 +8181,7 @@ fn prepare_original_remux(
     // session replaces its registration; a direct candidate needs no remux at all.
     if enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
         note_enhancement_refused(" in Original recovery; fell back", audio);
-        if candidate.direct {
+        if candidate.feeds_part() {
             let _ = c.transcode_stop(&replacement);
             return Some(OriginalRemux::RefusedToDirect);
         }
@@ -8325,6 +8328,13 @@ fn retranscode_contract(ps: &PlaybackSession) -> plx_plex::plex::EncodeContract 
     if keep_enhanced {
         return enhanced_remux_contract(want_live(ps), matches!(route, Some(EnhancementRoute::Burn)));
     }
+    if plain_rebuild_is_remux(ps) {
+        // Not the enhancement's remux (`NONE`, on purpose): the Legacy fallback contract is built
+        // before a refusal is known, so carrying the Boost/Normalize params here would repeat the
+        // ask the server just refused and reject the track pick itself. Wanted-and-offered
+        // enhancement is already `enhancement_step`'s job.
+        return enhanced_remux_contract(plx_plex::plex::AudioEnhancements::NONE, false);
+    }
     re_encode_contract(ps, cur_delivery(ps), cur_ceiling(ps))
 }
 
@@ -8347,6 +8357,26 @@ fn re_encode_contract(
             enhancements_offered(&facts(ps), RouteFamily::Other),
         ),
     }
+}
+
+/// **Does a plain rebuild of this route stay the Original remux?** A standing Original candidate
+/// on Auto/Original quality, no fixed rung, progressive MKV, video still copyable and no subtitle
+/// on screen: the viewer is hearing a track the TV cannot decode, the server copies the video and
+/// converts only that audio, and a rebuild (a seek, a track pick) must ask for exactly that
+/// instead of a capped re-encode. No live-family term, so turning a burned subtitle off returns
+/// to the remux. `cur_sub_sid == 0` is required: every transcode rebuild with a subtitle sends
+/// `subtitles=burn`, which the remux shape does not honour.
+///
+/// Not a loop: the automatic Original -> HLS fallback writes a ceiling and `FixedHls` into the
+/// contract before it rebuilds, a fixed rung fails `enhancement_quality`, and a refused remux is
+/// rejected with the current stream retained rather than retried.
+fn plain_rebuild_is_remux(ps: &PlaybackSession) -> bool {
+    enhancement_quality()
+        && ps.auto_original.is_some()
+        && ps.cur_contract.ceiling.is_none()
+        && cur_delivery(ps) == plx_plex::plex::TranscodeDelivery::ProgressiveMkv
+        && !is_no_video_copy(ps)
+        && ps.cur_sub_sid == 0
 }
 
 /// Log the harness-readable pair every enhancement-graded decision produces, shared by
@@ -8435,19 +8465,20 @@ fn retranscode_fallback_codecs(
     contract: &plx_plex::plex::EncodeContract,
 ) -> (String, String) {
     if contract.remux {
+        let carried = inputs.carried_audio.as_ref().filter(|a| !a.codec.is_empty());
         (
             inputs.src_vcodec.clone(),
-            if contract.audio.any() {
+            // A carried track the profile cannot admit is converted by the server to the
+            // profile's first target (ac3), exactly as for an enhanced remux.
+            if contract.audio.any()
+                || carried.is_some_and(|a| !plx_plex::plex::is_dp_audio_track(&a.codec, a.channels))
+            {
                 // I4: the enhanced audio is re-encoded to the profile's first target; the source
                 // codec here would describe bytes that never arrive (silent audio).
                 "ac3".to_owned()
             } else {
                 // A plain remux copies the carried track; server default falls back to the file's.
-                inputs
-                    .carried_audio
-                    .as_ref()
-                    .filter(|a| !a.codec.is_empty())
-                    .map_or_else(|| inputs.src_acodec.clone(), |a| a.codec.clone())
+                carried.map_or_else(|| inputs.src_acodec.clone(), |a| a.codec.clone())
             },
         )
     } else if matches!(contract.delivery, plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
@@ -8854,7 +8885,7 @@ pub fn enhancement_step(ps: &PlaybackSession) -> EnhancementStep {
     }
     if applied.any() && !want.any() {
         return match ps.auto_original.as_ref() {
-            Some(candidate) if candidate.direct => EnhancementStep::ReleaseToDirect,
+            Some(candidate) if candidate.feeds_part() => EnhancementStep::ReleaseToDirect,
             Some(_) => EnhancementStep::Remux(enhanced_remux_contract(
                 plx_plex::plex::AudioEnhancements::NONE,
                 false,
@@ -9469,6 +9500,7 @@ fn test_original_candidate(subtitle_ordinal: Option<i32>) -> AutoOriginalCandida
             can_normalize_loudness: false,
             immersive: true,
         }),
+        audio_converted: false,
         subtitle_ordinal,
     }
 }

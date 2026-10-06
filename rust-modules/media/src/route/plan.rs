@@ -238,10 +238,22 @@ pub(super) struct AutoOriginalCandidate {
     /// The audio track this candidate carries. `None` = server default, facts unknown (issue
     /// #266 fails closed on it: no enhancement is ever offered without a known, capable track).
     pub(super) audio: Option<CarriedAudio>,
+    /// The carried audio is a track the TV cannot direct-play, picked while this candidate was
+    /// standing. The candidate still describes a direct-playable Part (video, DV, fps, subtitle
+    /// facts are all true of it), but the audio now carried must be converted by the server, so
+    /// returning to Original means a remux naming that track, not the Part. Only
+    /// [`retarget_audio`](Self::retarget_audio) writes it; a later direct-playable pick clears it.
+    pub(super) audio_converted: bool,
     pub(super) subtitle_ordinal: Option<i32>,
 }
 
 impl AutoOriginalCandidate {
+    /// Whether this candidate's route feeds the Part itself: direct, and with an audio the TV can
+    /// decode. The reader of `direct` that means "may play the Part with this audio".
+    pub(super) fn feeds_part(&self) -> bool {
+        self.direct && !self.audio_converted
+    }
+
     /// Follow a mid-play audio pick on a Direct or Remux route (issue #266). These two methods are
     /// the ONLY writers of the candidate's audio and subtitle halves once it is installed.
     ///
@@ -252,15 +264,19 @@ impl AutoOriginalCandidate {
     ///
     /// The track is taken as a unit (sid, ordinal, codec, channels, capability, immersive), so the
     /// release's Load payload can never pair one track's ordinal with another's codec. `immersive`
-    /// survives only on a direct candidate, for `carried_track`'s reason. `false` means the pick
-    /// cannot be carried by this candidate — a direct candidate cannot feed a track the TV cannot
-    /// decode — and the caller drops the candidate.
+    /// survives only on a candidate that feeds the Part, for `carried_track`'s reason.
+    ///
+    /// A direct candidate given a track the TV cannot decode is KEPT, marked `audio_converted`:
+    /// the server copies the video and converts only that audio, which is a remux, not a
+    /// re-encode. `false` means no copy is legal at all — an unusable Dolby Vision base layer
+    /// forbids copying the video — and the caller drops the candidate.
     pub(super) fn retarget_audio(&mut self, a: &CarriedAudio, direct_plays: bool) -> bool {
-        if self.direct && !direct_plays {
+        if self.dovi.base_layer_unusable() && !direct_plays {
             return false;
         }
+        self.audio_converted = self.direct && !direct_plays;
         let mut carried = a.clone();
-        carried.immersive &= self.direct;
+        carried.immersive &= self.feeds_part();
         self.audio = Some(carried);
         true
     }
@@ -1730,6 +1746,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             // The explicit pick's own fetched stream; a server-default candidate (no pick) is
             // `None` and recovery falls back to the source codec (`Session::src_acodec`).
             audio: carried_track(tracks, carry_audio_id, audio_ordinal, direct),
+            audio_converted: false,
             subtitle_ordinal,
         });
     }

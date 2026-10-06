@@ -98,7 +98,9 @@ impl AudioEnhancements {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct EncodeContract {
     /// true = container-only remux (the source codecs are direct-playable, the container
-    /// isn't): copy video+audio into progressive MKV, no re-encode, keeps 4K/HDR.
+    /// isn't): copy what the profile admits of video+audio into progressive MKV, and let the
+    /// server convert the rest (an audio track the TV cannot decode becomes the profile's own
+    /// codec; the video is never re-encoded), keeps 4K/HDR.
     /// false = full re-encode to the profile's HEVC/AC3 target at up to 4K.
     pub remux: bool,
     /// The coupled profile/query/endpoint/demux contract for this encoder session.

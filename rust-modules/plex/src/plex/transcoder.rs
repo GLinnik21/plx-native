@@ -296,8 +296,9 @@ impl Client {
             .str("protocol", protocol)
             .int("directPlay", 0)
             .int("directStream", copy_ok as i64);
-        // the one block the two flavors differ in: container-only REMUX copies the codecs
-        // (a resolution/bitrate cap would force a re-encode), RE-ENCODE caps at the ceiling this
+        // the one block the two flavors differ in: container-only REMUX copies the codecs the
+        // profile admits and the server converts the rest, e.g. an audio track the TV cannot
+        // decode (a resolution/bitrate cap would force a re-encode), RE-ENCODE caps at the ceiling this
         // playback is bound by, so an undecodable source goes to the profile's HEVC target
         // instead of downscaled H264.
         //
