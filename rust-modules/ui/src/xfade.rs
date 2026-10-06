@@ -212,6 +212,15 @@ impl Xfade {
     pub fn is_swapping(&self) -> bool {
         self.phase != Phase::Idle
     }
+
+    /// The new content is on its way in and not yet fully opaque (`Hold` waiting on data, or the
+    /// `In` ramp). Motion that is meant to be SEEN — a focus pop — should start once this goes
+    /// false, because under the ramp it is mostly dissolved away. Unlike
+    /// [`is_swapping`](Self::is_swapping) it is false during `Out`, where the old content is
+    /// still the one on screen.
+    pub fn is_arriving(&self) -> bool {
+        matches!(self.phase, Phase::Hold | Phase::In)
+    }
 }
 
 // ---------------------------------------------------------------------------------------
