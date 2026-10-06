@@ -235,7 +235,67 @@ pub const ENABLED: bool = cfg!(feature = "devtriggers");
 /// recorder's own parser, goes through the same door instead of re-spelling the prefix.
 #[cfg(any(feature = "devtriggers", test, feature = "test-support"))]
 pub fn path(name: &str) -> std::path::PathBuf {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(root) = private::root() {
+        return root.join(format!("plxnative-{name}"));
+    }
     crate::paths::in_runtime_dir(&format!("plxnative-{name}"))
+}
+
+/// Run `f` with THIS thread's trigger namespace redirected to a fresh private directory, which is
+/// removed afterwards (also when `f` panics).
+///
+/// **A host test that arms a trigger must not do it in the shared runtime root.** A host test run
+/// resolves that root to the bare `/tmp` (only the `hostsim` feature lets `PLXNATIVE_RUNTIME_DIR`
+/// steer it, [`crate::paths::ENV_STEERABLE`]), and the root is one directory for the whole
+/// machine: every test binary of this `make check`, and of any other checkout's, reads the same
+/// `/tmp/plxnative-*`. `jail_fixture_keeps_repair_open_through_the_screen_tick` armed
+/// `plxnative-failtest` there for a few milliseconds, and a second process's
+/// `a_click_on_the_picture_toggles_play_pause_but_not_over_a_failure` that read the file in that
+/// window saw a failed playback and swallowed its click (`left: []  right: [Transport(None)]`;
+/// 119 of 150 runs with the two side by side). `serial()` cannot help, it is one process's lock.
+///
+/// Only the calling thread is redirected, so a test that spawns a worker which reads a trigger
+/// must keep arming it in the shared root (none does today). Everything resolves through
+/// [`path`], so [`flag`] and [`read`] see the private root; [`read_sample`] and the log sinks
+/// do not. Not nestable: the inner call replaces the outer root for its own extent.
+#[cfg(any(test, feature = "test-support"))]
+pub fn with_private_triggers<R>(f: impl FnOnce() -> R) -> R {
+    private::with(f)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+mod private {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    thread_local! {
+        static ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn root() -> Option<PathBuf> {
+        ROOT.with(|r| r.borrow().clone())
+    }
+
+    pub(super) fn with<R>(f: impl FnOnce() -> R) -> R {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "plx-private-triggers-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("a private trigger directory");
+        struct Restore(Option<PathBuf>, PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ROOT.with(|r| *r.borrow_mut() = self.0.take());
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let _restore = Restore(ROOT.with(|r| r.borrow_mut().replace(dir.clone())), dir);
+        f()
+    }
 }
 
 #[cfg(test)]
@@ -247,22 +307,58 @@ mod tests {
         if !super::ENABLED {
             return; // a release build reads nothing; nothing to distinguish
         }
-        // Arms a real trigger in the shared runtime root, which is what
-        // `dev`'s `a_directory_is_not_an_armed_trigger` scans — they must not overlap.
-        let _g = crate::testlock::serial();
-        // Write through `path()` itself, NOT a literal and NOT `env::temp_dir()`. The literal was
-        // right when the namespace was always `/tmp/plxnative-…`, but it stops meeting the read as
-        // soon as an instance root is in effect; `env::temp_dir()` never met it at all, since on
-        // the dev Mac that is a per-user `/var/folders/…/T/` path. Going through the same door the
-        // code under test uses keeps the write and the read together wherever the root points.
-        let p = super::path("devtest-empty");
-        std::fs::write(&p, "").unwrap();
-        let got = super::read("devtest-empty");
-        let _ = std::fs::remove_file(p);
+        // Armed in a private root. It used to write `devtest-empty` into the shared runtime root
+        // (the bare `/tmp` on a host test run), where a second checkout's copy of this test raced
+        // the same file, and where `dev`'s `a_directory_is_not_an_armed_trigger` scans.
+        // Write through `path()` itself, NOT a literal and NOT `env::temp_dir()`: the write and the
+        // read must go through the one door.
+        let got = super::with_private_triggers(|| {
+            let p = super::path("devtest-empty");
+            std::fs::write(&p, "").unwrap();
+            super::read("devtest-empty")
+        });
         assert_eq!(
             got.as_deref(),
             Some(""),
             "an empty trigger must not read as absent"
         );
+    }
+
+    /// A private trigger root is private: the write lands outside the shared runtime root, is
+    /// visible to `flag`/`read` on this thread, invisible to another thread, and gone afterwards.
+    #[test]
+    fn private_triggers_stay_out_of_the_shared_runtime_root() {
+        if !super::ENABLED {
+            return;
+        }
+        let name = "devtest-private";
+        let shared = super::path(name);
+        let (inside, armed, other_thread) = super::with_private_triggers(|| {
+            let p = super::path(name);
+            std::fs::write(&p, "x").unwrap();
+            let other = std::thread::spawn(move || super::flag(name)).join().unwrap();
+            (super::flag(name), p, other)
+        });
+        assert!(inside, "the arming thread sees its own trigger");
+        assert!(!other_thread, "another thread keeps the shared root");
+        assert_ne!(armed, shared);
+        assert_ne!(
+            armed.parent(),
+            shared.parent(),
+            "{armed:?} is directly in the shared runtime root"
+        );
+        assert!(!armed.exists(), "the private root is removed afterwards");
+        assert_eq!(super::path(name), shared, "the redirect ends with the closure");
+    }
+
+    /// The redirect and the removal also end when the body panics.
+    #[test]
+    fn a_panicking_body_still_restores_the_root() {
+        let shared = super::path("devtest-panic");
+        let result = std::panic::catch_unwind(|| {
+            super::with_private_triggers(|| panic!("body"));
+        });
+        assert!(result.is_err());
+        assert_eq!(super::path("devtest-panic"), shared);
     }
 }
