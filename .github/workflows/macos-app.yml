@@ -1,0 +1,89 @@
+name: macOS app
+
+# `PlxNative.app` — the self-contained macOS bundle `make macapp-zip` builds (`ci/mkmacapp.py`,
+# `docs/macos-app.md`) — as a download, for somebody who has no Mac build environment. The zip is
+# the ditto archive the recipe makes, uploaded unchanged beside the README that tells the recipient
+# how to open an ad-hoc-signed app. Download it from the run's Artifacts section.
+#
+# Not part of Simulator CI: that job builds the debug `hostsim` simulator and replays recordings
+# against it; this is the fourth configuration (`--release --no-default-features --features
+# hostsim`) in its own target dir, and a release build on every PR would double the macOS bill for
+# an artifact nobody downloads. It runs on `main`, on demand, and on PRs that change the recipe.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-app.yml'
+      - 'ci/mkmacapp.py'
+      - 'ci/build-libass.sh'
+      - 'ci/build-libass.py'
+      - 'ci/libass-dependencies.json'
+      - 'docs/macos-app-readme.md'
+      - 'rust-modules/**'
+      - '!rust-modules/**/*.md'
+      - 'assets/logo-master.png'
+      - 'pkg/appfont*.ttf'
+      - 'pkg/le-roots.pem'
+  pull_request:
+    paths:
+      - '.github/workflows/macos-app.yml'
+      - 'ci/mkmacapp.py'
+      - 'docs/macos-app-readme.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: Build PlxNative.app (Apple Silicon)
+    # macos-latest is arm64, which is the only architecture the bundle supports (docs/macos-app.md,
+    # "Apple Silicon only"): the binary and every bundled dylib come from this runner's Homebrew.
+    runs-on: macos-latest
+    # Same bound as Simulator CI's macOS jobs, which do a comparable build plus libass.
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install SDL
+        # The libraries the bundle copies in come from here; cmake and pkg-config build libass.
+        timeout-minutes: 15
+        run: brew install sdl2_ttf cmake pkg-config
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: rust-modules -> target-macapp
+          key: macos-app
+      - name: Build and package
+        run: make macapp-zip
+      - name: Smoke-launch the bundled binary
+        # The bundle's own self-containment check has already run; this proves it also STARTS
+        # from inside the bundle (dyld resolving every @rpath, the dlopen'd SDL3, the fonts in
+        # Contents/Resources) and draws a 1080p frame. A throwaway runtime dir keeps it off
+        # ~/Library/Application Support.
+        run: |
+          python3 tools/sim-smoke.py \
+            --binary "$GITHUB_WORKSPACE/pkg/PlxNative.app/Contents/MacOS/PlxNative" \
+            --runtime "$RUNNER_TEMP/plxnative-app-runtime" \
+            --assets "$GITHUB_WORKSPACE/pkg/PlxNative.app/Contents/Resources" \
+            --output "$RUNNER_TEMP/plxnative-app.png"
+      - name: Upload the app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: PlxNative-macOS-${{ github.sha }}
+          path: |
+            pkg/PlxNative-*.zip
+            pkg/PlxNative-README.md
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve launch capture
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: PlxNative-macOS-launch-${{ github.sha }}
+          path: ${{ runner.temp }}/plxnative-app.png
+          if-no-files-found: ignore
+          retention-days: 7

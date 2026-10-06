@@ -98,6 +98,12 @@ recipient does **right-click → Open** once, or clears the quarantine attribute
 `docs/macos-app-readme.md` is the note that ships beside the zip and says so in their words. Real
 notarisation needs a paid Developer ID; nothing else about the bundle would change.
 
+The `macOS app` workflow (`.github/workflows/macos-app.yml`) builds the same zip on an Apple
+Silicon runner on every `main` push that touches the app, and on demand from the Actions tab, and
+uploads it with that README as the run's `PlxNative-macOS-<sha>` artifact (kept 30 days). It also
+launches the bundled binary once and captures a 1080p frame, so a bundle that does not start fails
+the run instead of reaching somebody's Downloads folder.
+
 **Apple Silicon only.** The binary is built for the host architecture and the bundled libraries
 come from that Homebrew prefix, so an Intel Mac needs the whole thing rebuilt on (or cross-built
 for) x86-64, with an x86-64 Homebrew to take the dylibs from. `lipo` cannot fix this after the
