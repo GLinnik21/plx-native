@@ -126,9 +126,11 @@ jobs:
         # A nightly's package version is `<next X.Y>.<date>`, and `X.Y` follows the TRACKED
         # version of whatever was checked out. A real run from a maintenance branch would
         # publish `0.7.<date>` after trunk's `0.8.<date>` — numerically LOWER than what people
-        # already installed, which the installer can refuse as a downgrade — and Homebrew Channel
-        # would offer it as the newest build. Dry runs are unaffected: they publish nothing, and
-        # proving this pipeline from a branch is what they are for.
+        # already installed. webOS 4.5's installer accepts that (it passes downgrade: true and
+        # installs the older version), so it would not be refused: Homebrew Channel would offer
+        # the older build as an update to the newest one, which is the harm. Dry runs are
+        # unaffected: they publish nothing, and proving this pipeline from a branch is what they
+        # are for.
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run != true
         env:
           REF: ${{ github.ref }}

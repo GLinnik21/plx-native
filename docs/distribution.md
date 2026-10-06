@@ -1367,9 +1367,18 @@ builds it from the newest nightly release: the index, that nightly's manifest wi
 Channel compares version strings, each nightly's PACKAGE version carries its cut date as the patch
 (`X.Y.YYYYMMDD`, `ci/version_rule.py::nightly_package_triplet`) — the reported version
 (`X.Y.Z-nightly-YYYYMMDD`) is the human one. `repo-json` refuses a manifest whose id, sha256 or
-dated version disagrees with its release. Not yet proven on a television: that the installer
-accepts the date patch and upgrades over the previous nightly (the on-device matrix is the
-pre-merge check).
+dated version disagrees with its release.
+
+**Measured on the dev television (webOS 4.5, 2026-10-06), through `dev/install` and a throwaway app
+id so no real install was touched:** the installer accepted every version form tried and moved the
+installed version each time — fresh install and upgrade for `0.8.261006` to `0.8.261007`, for the
+8-digit `0.8.20261006` to `0.8.20261007`, and for the `0.8.0+nightly.20261006` suffix form; the
+old per-cycle `0.8.0` upgraded to `0.8.20261006` (the path an existing nightly install takes); a
+same-version reinstall and a LOWER version both installed (every status event carries
+`downgrade: true`). So this firmware's installer neither restricts the syntax or size nor refuses
+a downgrade; the `main`-only guard exists because Homebrew Channel would offer an older build as an
+update, not because the installer would refuse it. Not covered: Homebrew Channel's own download,
+hash check and Update button, other firmware, and a package with a storage service.
 
 **Not built: on-device CI.** It is the only real gate, but `tests/run.py` has **no mutual-exclusion
 lock** (no `flock`, no pidfile), and there is one television — a scheduled run overlapping with the

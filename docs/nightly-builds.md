@@ -108,7 +108,8 @@ Some consequences:
 - **No downgrade across a release.** A release raises the version the next nightly heads for, so
   the package version keeps rising straight through it.
 - **Nightlies come only from `main`.** A build from a maintenance branch would carry a lower
-  version than one you already installed, so the pipeline refuses to publish one.
+  version than one you already installed, yet Homebrew Channel would still offer it as an update,
+  so the pipeline refuses to publish one.
 - **At most one nightly a day**, because the date is the whole build number.
 - **The package version is not the commit.** The commit a build came from is in its release notes
   and on its description page in Homebrew Channel.
