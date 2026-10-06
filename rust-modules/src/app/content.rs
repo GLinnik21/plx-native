@@ -658,8 +658,12 @@ fn home_requests(app: &mut App, now: u32) {
                 if !home_tab_available(app.bridge.browse_directory(), tab) { continue; }
                 match tab {
                     // The Home pill ON Home: nothing to navigate to, but a transition queued a
-                    // moment ago is still withdrawable, and that is what this press means.
-                    HomeTab::Home => { bridge::nav_cancel(&mut app.pages); }
+                    // moment ago is still withdrawable, and focus drops into the hero like every
+                    // other pill's arrival.
+                    HomeTab::Home => {
+                        bridge::nav_cancel(&mut app.pages);
+                        bridge::nav_home_pill(&mut app.pages, &mut app.bridge, None);
+                    }
                     other => bridge::nav_tab(&mut app.pages, &mut app.bridge, other, None, Some(ret)),
                 }
             }
@@ -722,8 +726,10 @@ fn search_requests(app: &mut App) {
             SearchReq::Tab(tab) => {
                 if !app.bridge.search_tab_available(*tab) { continue; }
                 if matches!(tab, HomeTab::Search) { continue }
-                bridge::nav_tab(&mut app.pages, &mut app.bridge, *tab,
-                    Some(crate::app::chrome::Pill::Home), Some(ret));
+                match tab {
+                    HomeTab::Home => bridge::nav_home_pill(&mut app.pages, &mut app.bridge, Some(ret)),
+                    other => bridge::nav_tab(&mut app.pages, &mut app.bridge, *other, None, Some(ret)),
+                }
             }
             SearchReq::Account => {
                 // The owned screen releases its keyboard before emitting this request. Do not
@@ -838,10 +844,8 @@ fn library_requests(app: &mut App, now: u32) {
                 bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home,
                     Some(crate::app::chrome::Pill::Section(kind)), Some(ret));
             }
-            LibraryReq::Tab(tab) => {
-                bridge::nav_tab(&mut app.pages, &mut app.bridge, tab,
-                    Some(crate::app::chrome::Pill::Home), Some(ret));
-            }
+            LibraryReq::Tab(HomeTab::Home) => bridge::nav_home_pill(&mut app.pages, &mut app.bridge, Some(ret)),
+            LibraryReq::Tab(tab) => bridge::nav_tab(&mut app.pages, &mut app.bridge, tab, None, Some(ret)),
             LibraryReq::ItemMenu { sid, rk, from_deck } => {
                 let Some((item, opener)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
                 if item.sid != sid || item.rk != rk || !plx_screens::item_menu::has_actions(&item) { continue; }
