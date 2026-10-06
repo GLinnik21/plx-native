@@ -32,6 +32,18 @@
         ]
       }
     ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/cloud-unshallow.sh",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
