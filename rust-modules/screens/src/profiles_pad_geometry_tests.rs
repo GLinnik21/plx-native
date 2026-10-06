@@ -532,3 +532,21 @@ fn only_the_grid_group_is_reachable_while_the_pad_is_open() {
     assert_eq!(groups[0].len, PAD_ROWS * PAD_COLS);
 }
 
+
+/// A key from another namespace — the tab strip's pill, the read-out's *Back*, a keypad cell —
+/// that reaches the roster's `reconcile` is re-seated on the FIRST avatar. It used to clamp to
+/// `n - 1`, which is how a cold start opened the picker on the last profile.
+#[test]
+fn reconcile_reseats_a_foreign_key_on_the_first_avatar_and_a_stale_index_on_the_last() {
+    let snap = snapshot(Phase::Profiles, (0..4).map(|i| user(&format!("u{i}"), false)).collect());
+    let s = ProfilesScreen::new(EntryId(0), snap.read());
+    let c = cx_with(None, &snap);
+    let want = |elem| FocusKey { entry: EntryId(0), elem };
+    let at = |elem| Focusable::<SessionHost>::reconcile(&s, want(elem), &c).elem;
+    for foreign in [plx_ui::dispatch::STRIP_BASE + 4, READOUT_BACK, pad_elem(1, 1)] {
+        assert_eq!(at(foreign), 0, "{foreign:#x}");
+    }
+    assert_eq!(at(9), 3, "a roster that shrank under the cursor clamps to the last avatar");
+    assert_eq!(at(2), 2);
+    assert_eq!(at(FOOTER), FOOTER, "the footer is its own control and stays");
+}

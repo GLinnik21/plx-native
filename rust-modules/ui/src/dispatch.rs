@@ -42,6 +42,7 @@ use super::{Painter, Rect};
 /// The strip's control namespace: `of_index(STRIP_BASE + stable_id)`, never display position.
 /// A removed pill therefore cannot renumber another destination or collide with a page's tile.
 pub const STRIP_BASE: u32 = 0xFFFF_0000;
+const _: () = assert!(STRIP_BASE >= super::geom::NAMESPACE_FLOOR);
 
 /// The input owner's page COMPOSED with the container's strip (§6.2): the strip is a `Row`
 /// group above the page's own, contributed only while the page allows it.
@@ -588,6 +589,18 @@ where
     /// until the commit's `Mount` step has run.
     pub fn top_arg(&self) -> Option<&H::Arg> {
         self.nav.top_page().map(|e| &e.arg)
+    }
+
+    /// The page the NEXT nav commit puts on top: the argument of the last parked op that mounts
+    /// one (`Root`/`Push`/`Replace`/`SelectTab`), else the page already there. A caller that
+    /// runs BEFORE the frame's commit (the bridge's chrome capture) asks this rather than
+    /// [`Self::top_arg`], which is `None` on a boot's first frame — the route is parked, not
+    /// mounted — and would make that frame look like no page at all.
+    pub fn next_top_arg(&self) -> Option<&H::Arg> {
+        self.parked.iter().rev().find_map(|(s, _)| match &s.fx {
+            Fx::Nav(NavOp::Root(a) | NavOp::Push(a) | NavOp::Replace(a) | NavOp::SelectTab(a)) => Some(a),
+            _ => None,
+        }).or_else(|| self.top_arg())
     }
 
     /// …and its `ScreenId`, the identity every argument of one screen shares.

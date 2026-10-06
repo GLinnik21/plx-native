@@ -1194,6 +1194,7 @@ pub mod word {
 /// screen's Done/Try again) the next time anyone TYPED the mismatch, rather than the next time
 /// anyone ran the app on a television.
 pub const BAND: u32 = 0x4000_0000;
+const _: () = assert!(BAND >= plx_ui::geom::NAMESPACE_FLOOR);
 /// The decision alert's two answers (Cancel, Delete), above the band.
 pub const ALERT: u32 = 0x4000_0100;
 

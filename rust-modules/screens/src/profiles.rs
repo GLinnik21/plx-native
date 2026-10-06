@@ -172,6 +172,9 @@ const READOUT_BACK: u32 = 0x1000_0001;
 /// Keypad cell `(r, c)` is `PAD_BASE + r * PAD_COLS + c`.
 const PAD_BASE: u32 = 0x2000_0000;
 
+// The screen's carved namespaces must stay above the plain-index range `reconcile` clamps in.
+const _: () = assert!(FOOTER >= geom::NAMESPACE_FLOOR && READOUT_BACK > FOOTER && PAD_BASE > READOUT_BACK);
+
 const ROSTER_GROUP: GroupId = GroupId(1);
 
 /// What an OK on this screen MEANS — decided without doing it.
@@ -1488,10 +1491,13 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
                 elem: FOOTER,
             };
         }
-        if (want.elem as usize) >= n {
+        // a shrunk roster clamps to the last avatar; a key from ANOTHER namespace (a strip pill, the
+        // read-out's *Back*, a keypad cell) re-seats on the first — see `clamp_plain_index`
+        let seated = geom::clamp_plain_index(want.elem, n) as u32;
+        if seated != want.elem {
             return plx_machine::machine::FocusKey {
                 entry: self.entry,
-                elem: (n - 1) as u32,
+                elem: seated,
             };
         }
         want
