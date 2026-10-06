@@ -32,6 +32,24 @@ def run(args, *, cwd=None, env=None):
     subprocess.run([str(x) for x in args], cwd=cwd, env=env, check=True)
 
 
+# Per-source bound on the curl step: a dead host must hand over to the next source quickly.
+# Three attempts (the first plus --retry 2) of --connect-timeout 15 plus two --retry-delay 2
+# pauses is at most ~49 s to give up on a host that never answers (a refused or reset
+# connection fails at once); --max-time caps one attempt at 5 minutes for a stalled
+# transfer. With the one mirror FreeType carries today, a dead primary costs ~49 s before
+# the mirror is tried.
+CURL_BOUNDS = ['--connect-timeout', '15', '--retry', '2', '--retry-delay', '2', '--max-time', '300']
+
+
+def sources_of(dep):
+    """The canonical upstream URL first, then transport-only fallbacks. Every one must yield
+    the same pinned bytes; a mirror is never a different release and never recorded as origin."""
+    mirrors = dep.get('mirrors', [])
+    if not isinstance(mirrors, list) or not all(isinstance(url, str) and url for url in mirrors):
+        raise ValueError('mirrors of ' + dep['id'] + ' must be a list of URLs')
+    return [dep['url'], *mirrors]
+
+
 def archive(dep, folder):
     target = folder / dep['archive']
     if target.is_file() and digest(target) == dep['sha256']:
@@ -39,15 +57,25 @@ def archive(dep, folder):
     # ARM and host builds share downloads, but never a partial pathname.
     fd, candidate = tempfile.mkstemp(prefix=target.name + '.', dir=folder)
     os.close(fd)
+    failures = []
     try:
-        run(['curl', '-fL', '--retry', '3', '--connect-timeout', '30',
-             dep['url'], '-o', candidate])
-        if digest(Path(candidate)) != dep['sha256']:
-            raise ValueError('source checksum mismatch: ' + dep['archive'])
-        os.replace(candidate, target)
+        for url in sources_of(dep):
+            result = subprocess.run(['curl', '-fsSL', *CURL_BOUNDS, url, '-o', candidate])
+            if result.returncode != 0:
+                failures.append(url + ' (curl exit ' + str(result.returncode) + ')')
+                print('libass: ' + dep['archive'] + ' not available from ' + url +
+                      ' (curl exit ' + str(result.returncode) + '); trying the next source', flush=True)
+                continue
+            # A source that answers with the wrong bytes is never skipped past: a mirror
+            # serving something else must be seen, not hidden behind a later source.
+            if digest(Path(candidate)) != dep['sha256']:
+                raise ValueError('source checksum mismatch: ' + dep['archive'] + ' from ' + url)
+            os.replace(candidate, target)
+            print('libass: ' + dep['archive'] + ' fetched from ' + url, flush=True)
+            return target
+        raise ValueError('could not download ' + dep['archive'] + ' from any source: ' + '; '.join(failures))
     finally:
         Path(candidate).unlink(missing_ok=True)
-    return target
 
 
 def extract(path, folder):
