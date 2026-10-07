@@ -1,4 +1,4 @@
-# count: 7
+# count: 10
 # Card-screen conformance expected failures (shrink-only), one per line, tab-separated:
 #   <screen source file>	<screen> <case>	# <reason>
 # Read by rust-modules/screens/src/cards_conformance_tests.rs: a listed case that now passes, or an
@@ -10,3 +10,6 @@ rust-modules/screens/src/person.rs	person determinism_idle	# page still reports 
 rust-modules/screens/src/search/mod.rs	search pop_rule	# a Restore/Reconcile arrival grows from rest (per-row CardRow spring: tick -> row.motion.update, search/mod.rs:517) instead of being adopted whole
 rust-modules/screens/src/search/mod.rs	search geometry	# place() ignores the live press (render::tile multiplies it in, search/render.rs:411) and rest_rect is the UNSCALED row_rect, not the settled focus-scaled rect (search/mod.rs:599-611)
 rust-modules/screens/src/library/mod.rs	library_shelves pop_rule	# a Restore/Reconcile arrival on a hub shelf grows from rest (per-row CardRow spring: tick -> row.motion.update, library/mod.rs:1006) instead of being adopted whole; the grid adopts whole (GridPart::tick)
+rust-modules/screens/src/home/mod.rs	home pop_rule	# a Restore/Reconcile arrival grows from rest (per-position CardRow spring: tick -> update_grid -> shelf.update, home/mod.rs:982) instead of being adopted whole
+rust-modules/screens/src/detail/mod.rs	detail_shelves pop_rule	# a Restore/Reconcile arrival on the Related shelf grows from rest (per-position CardRow spring: tick -> self.related.update, detail/mod.rs:3236) instead of being adopted whole
+rust-modules/screens/src/detail/mod.rs	detail_shelves geometry	# place() ignores the live press for a Related card (Located::Related -> related::rect, detail/mod.rs:1416-1418, scales by the pop only; draw_focused_in multiplies the press in, detail/related.rs:162)

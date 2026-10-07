@@ -9,7 +9,7 @@ use plx_machine::machine::{Chrome, Host, InputEvent, PressRead, ScreenId};
 use plx_ui::screen::{At, Focusable, ScreenArg};
 
 #[derive(Clone, PartialEq, Eq)]
-struct TestArg;
+pub(super) struct TestArg;
 impl LogicalState for TestArg {
     fn write(&self, c: &mut Canon) { c.u32(0); }
     fn probe(&self, _: &mut String) {}
@@ -30,7 +30,7 @@ impl ScreenArg for TestArg {
     }
 }
 
-struct TestHost;
+pub(super) struct TestHost;
 
 impl Host for TestHost {
     type Arg = TestArg;
@@ -58,7 +58,7 @@ thread_local! {
         std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
 }
 
-fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
+pub(super) fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
@@ -87,6 +87,12 @@ fn cx<'a>(measure: &'a dyn plx_machine::machine::Measure, elem: Option<u32>) -> 
 // Synchronizing the identity registry and querying/hash-writing a screen read shared stores
 // and legacy panels. Require the caller's guard; acquiring one here would deadlock install().
 fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailScreen {
+    bare_held(sid, rk)
+}
+
+/// [`bare`] for a caller that already holds the serial guard in a way the type cannot show (the
+/// card-conformance matrix runs every harness inside `run_all`'s guard, `cards_harness`).
+pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
     let mut screen = DetailScreen {
         entry: EntryId(7),
         sid,
