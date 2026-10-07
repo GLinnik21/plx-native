@@ -972,12 +972,7 @@ impl Bridge {
         // The page pass may be submitting a cached host quad. Opener lifts are live paint
         // above that quad, like Popover::scrim_lifting's legacy callback scope.
         let _live = plx_ui::popover::host::live();
-        let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
-            press: opener_press(d),
-            focus: plx_machine::machine::FocusRead { current: None , ..Default::default() },
-            owner: plx_machine::machine::InputOwner::Entry(entry) };
-        parts.owner = plx_machine::machine::InputOwner::Entry(entry);
-        parts.focus.current = focus;
+        let parts = opener_parts(d, entry, focus);
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         let mut frame = DrawFrame::with_navigation(&cx, plx_ui::Painter::root(), self.navigation_presentation());
         screen.redraw_focused(&mut frame, focus);
@@ -2417,14 +2412,31 @@ pub(crate) fn opener_press(d: &Dispatcher<AppHost>) -> plx_machine::machine::Pre
     plx_machine::machine::PressRead { scale: d.input.press.scale(), is_long: false, held_ms: None }
 }
 
+/// **The context the opener lift draws with**: the page's own pieces for `entry`'s focused element,
+/// with the press taken from [`opener_press`] and nothing else standing in for it. `redraw_opener`
+/// builds its whole `Cx` from this, so the scale the lift draws at is observable
+/// (`parts.press.scale`) without a renderer.
+pub(crate) fn opener_parts(
+    d: &Dispatcher<AppHost>,
+    entry: EntryId,
+    focus: Option<plx_machine::machine::FocusKey<u32>>,
+) -> CxParts<u32> {
+    CxParts {
+        tick: Tick { ms: 0, dt_us: 0 },
+        press: opener_press(d),
+        focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() },
+        owner: plx_machine::machine::InputOwner::Entry(entry),
+    }
+}
+
 /// **Present the item context menu** over the page the hold happened on (idempotent while one is
 /// up, for `open_settings`'s reason: a second hold must not stack a second panel).
 ///
 /// **It does not touch the press.** A hold the screen answered was already abandoned onto its
 /// release spring by the dispatcher (`InputMachine::cancel_press`), so the card springs from its dip
 /// up to its pop as the menu opens, and the press is the ONE owner of that motion: the page and
-/// the opener lift ([`opener_press`]) both draw its scale, and `Press::tick` reports the frames it
-/// moves the card as page damage so the host snapshot below is re-taken until the card rests (see
+/// the opener lift ([`opener_press`]) both draw its scale, and `Press::tick` reports the frames a
+/// cancelled long hold visibly moves the card as page damage (a tap's spring is not) so the host snapshot below is re-taken until the card rests (see
 /// the style paragraph). Ending the press at rest here instead (`Press::settle`, rc.3) made the
 /// card jump to its pop in one frame, the lost animation the owner reported.
 ///

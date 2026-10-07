@@ -615,13 +615,21 @@ fn opening_the_item_menu_leaves_the_press_springing_and_the_opener_lift_follows_
     // And the lift keeps following it frame by frame, up through the overshoot to rest.
     let mut ms = 200;
     let mut rose = false;
+    let mut moving_frames = 0;
     for _ in 0..80 {
         ms += 16;
         d.input.press.tick(ms, 0.016);
         assert_eq!(opener_press(&d).scale, d.input.press.scale(), "lift and page agree at {ms} ms");
+        // …and the context `redraw_opener` really draws with is built from that press: the scale
+        // the lift paints at is the press's own, and (while it moves) not the resting 1.0 a lift
+        // that stopped reading the press would draw.
+        let lift = opener_parts(&d, host, None).press.scale;
+        assert_eq!(lift, d.input.press.scale(), "the drawn lift scale is the press's at {ms} ms");
+        if (d.input.press.scale() - 1.0).abs() > 0.01 { moving_frames += 1; assert_ne!(lift, 1.0, "…not the pop at {ms} ms"); }
         rose |= d.input.press.scale() > dipped + 0.05;
     }
     assert!(rose, "the spring really moved the card");
+    assert!(moving_frames > 5, "the lift was checked mid-spring, not only at rest");
     assert!(!d.input.press.is_active());
     assert_eq!(opener_press(&d).scale, 1.0, "at rest the lift is the resting pop");
 }

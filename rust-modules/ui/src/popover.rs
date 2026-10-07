@@ -39,8 +39,9 @@
 //!   (`idle::take_page_damage`), with [`host_refresh`] as the decision.
 //! - **The opener's card may still be moving when the panel opens, and the snapshot follows it.**
 //!   A hold the app takes leaves the card springing from its press dip up to its pop beneath the
-//!   item menu. That motion is the HOST's (`Press::tick` raises page damage on every frame it
-//!   moves the card), so the snapshot is re-taken per frame until the card rests while the
+//!   item menu. That motion is the HOST's (`Press::tick` raises page damage on every frame a
+//!   cancelled long hold visibly moves the card; a tap's spring raises none), so the snapshot is
+//!   re-taken per frame until the card rests while the
 //!   [`Opener`] lift draws the same live press scale above it: one owner, no frame on which the
 //!   page, the snapshot and the lift disagree.
 use crate::{theme, Painter, Rect, Spring};
@@ -194,6 +195,11 @@ pub fn own_motion() -> OwnMotion {
 /// the frame a panel opens (the item menu over a grid whose focus spring has not landed): the
 /// snapshot holds that frame and the page finishes its last few pixels when the panel lets go.
 /// Accepted — it is the account menu's behaviour since the cache existed.
+///
+/// The one motion that IS a reason with a panel open arrives as `page_dirty`, not `page_moving`:
+/// the release spring of a cancelled long hold (`Press::tick` reports it as page damage while it
+/// visibly moves), whose card the opener lift draws live above the snapshot at the press's own
+/// scale, so the snapshot is re-taken per frame until the card rests. A tap's spring is not one.
 ///
 /// The panel's own motion and damage never reach either term: they are attributed at the source
 /// (`own_motion`, `host::live`, `host::input_scope`, `host::page_pass`). Earlier shapes subtracted a merged per-frame

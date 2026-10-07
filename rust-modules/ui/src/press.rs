@@ -267,20 +267,32 @@ impl Press {
     /// Advance the press spring + phase machine one frame. Poll [`take_commit`] afterwards for the
     /// deferred activation.
     ///
-    /// **A frame that moved the card is PAGE damage, not only motion.** The spring reports to the
-    /// present gate as motion, which keeps frames coming; but a page held under a panel is one
-    /// frozen snapshot, and motion under an open panel is deliberately not a reason to re-take it
-    /// (`popover::host_refresh`). The release spring is exactly that case when a hold is TAKEN: the
-    /// card springs from its dip to its pop beneath the item menu's scrim, so the snapshot must be
-    /// re-taken on every frame the press moves it, or it keeps the dipped card while the opener's
-    /// lift (the same card, drawn live above the dim at the press's own scale) grows over it. One
-    /// owner, then: the press moves the card, the page and the lift both draw that scale, and the
-    /// snapshot is re-taken until it rests. Quiet once the press is at rest.
+    /// **A cancelled LONG HOLD's visible motion is PAGE damage, not only motion.** The spring
+    /// reports to the present gate as motion, which keeps frames coming; but a page held under a
+    /// panel is one frozen snapshot, and motion under an open panel is deliberately not a reason to
+    /// re-take it (`popover::host_refresh`). The release spring of a hold the app TAKES is exactly
+    /// the case that needs one: the card springs from its dip to its pop beneath the item menu's
+    /// scrim, so the snapshot must be re-taken on every frame the press visibly moves it, or it
+    /// keeps the dipped card while the opener's lift (the same card, drawn live above the dim at
+    /// the press's own scale) grows over it. One owner, then: the press moves the card, the page
+    /// and the lift both draw that scale, and the snapshot is re-taken until it rests.
+    ///
+    /// **Only for a press that latched long, and only while it visibly moves.** A tap that opens a
+    /// cached surface (a Library chip, the account menu, a Settings snapshot) springs back under
+    /// it too, but nothing there is drawn live above the frozen page, and a re-capture per frame
+    /// of that ~0.35 s spring defers presents for nothing: a tap stays motion-only. And the
+    /// invisible tails (the release spring's last ~0.1 s, the dip's f32 landing) move `pos` by
+    /// less than a pixel; [`idle::settled`](plx_machine::idle::settled) is the rest test the gate
+    /// itself uses, so those frames stay saved. A phase change (the release, the landing on rest)
+    /// always reports, so the snapshot is also re-taken at the exact resting card.
     pub fn tick(&mut self, now: u32, dt: f32) {
-        let (pos, phase) = (self.sp.pos, self.phase);
+        let phase = self.phase;
         self.step(now, dt);
-        if self.sp.pos != pos || self.phase != phase {
-            plx_machine::idle::invalidate();
+        if self.long {
+            let target = if self.phase == Phase::Down { DIP } else { REST };
+            if self.phase != phase || !plx_machine::idle::settled(self.sp.pos, target, self.sp.vel) {
+                plx_machine::idle::invalidate();
+            }
         }
     }
 
@@ -672,36 +684,92 @@ mod tests {
         p.begin_ctl(3000);
         assert_eq!(p.held_ms(3200), None, "a control face has no hold gesture");
     }
-    /// **The spring-back is page damage while it moves, so a frozen host snapshot cannot hold a
-    /// stale card.** A hold the app takes leaves the card springing from its dip to its pop UNDER
-    /// the item menu's scrim, over the shared host snapshot. A spring only reports MOTION (the
-    /// present gate), and motion under an open panel is deliberately not a reason to re-take the
-    /// snapshot (`popover::host_refresh`), so without damage per moving frame the snapshot kept the
-    /// dipped card while the opener's lift grew over it: two copies of the card and its title.
-    /// A press at rest, or held steady at its dip, is quiet.
+    /// Tick a spring-back to rest, one frame at a time, reporting per frame whether it raised
+    /// damage, whether the spring was still visibly moving (or changed phase) on that frame, and
+    /// whether the PAGE-damage take (`idle::take_page_damage`, what `host_refresh` reads) saw it.
+    fn spring_back_frames(p: &mut Press, now: &mut u32) -> Vec<(bool, bool, bool)> {
+        let mut out = Vec::new();
+        let _ = plx_machine::idle::take_local_damage();
+        let _ = plx_machine::idle::take_page_damage();
+        while p.is_active() && out.len() < 120 {
+            let phase = p.phase;
+            *now = now.wrapping_add(16);
+            p.tick(*now, 0.016);
+            let target = if p.phase == Phase::Down { DIP } else { REST };
+            let moving = p.phase != phase || !plx_machine::idle::settled(p.sp.pos, target, p.sp.vel);
+            let raised = plx_machine::idle::take_local_damage() > 0;
+            out.push((raised, moving, plx_machine::idle::take_page_damage()));
+        }
+        assert!(!p.is_active(), "the spring-back ends");
+        out
+    }
+
+    /// **A cancelled LONG HOLD's spring-back is page damage while it visibly moves, so a frozen
+    /// host snapshot cannot hold a stale card.** A hold the app takes leaves the card springing
+    /// from its dip to its pop UNDER the item menu's scrim, over the shared host snapshot. A spring
+    /// only reports MOTION (the present gate), and motion under an open panel is deliberately not a
+    /// reason to re-take the snapshot (`popover::host_refresh`), so without damage per moving frame
+    /// the snapshot kept the dipped card while the opener's lift grew over it: two copies of the
+    /// card and its title. The damage reaches `take_page_damage`, which is what the host reads, and
+    /// it stops with the visible motion (`idle::settled`): the invisible tails of the spring, and a
+    /// press held steady at its dip, raise nothing, so the idle gate still saves those frames.
     #[test]
-    fn a_moving_press_reports_page_damage_each_frame_and_a_resting_one_does_not() {
+    fn a_cancelled_long_holds_spring_back_is_page_damage_only_while_it_visibly_moves() {
         let _serial = plx_base::testlock::serial();
         let mut p = Press::new();
         let mut now = 1000;
         p.begin(now);
-        run(&mut p, &mut now, 400); // the dip has arrived
-        p.cancel(); // the hold was answered: spring back
+        run(&mut p, &mut now, LONG_MS + 100); // past LONG_MS, and the dip has arrived and settled
+        assert!(p.was_long(), "the hold latched");
         let _ = plx_machine::idle::take_local_damage();
-        let mut frames = 0;
-        while p.is_active() && frames < 120 {
+        for _ in 0..5 {
             now = now.wrapping_add(16);
             p.tick(now, 0.016);
-            frames += 1;
-            assert!(
-                plx_machine::idle::take_local_damage() > 0,
-                "frame {frames} of the spring-back moved the card (scale {}) and must say so",
-                p.scale()
-            );
+            assert_eq!(plx_machine::idle::take_local_damage(), 0, "held steady at its dip is quiet");
         }
-        assert!(!p.is_active(), "the spring-back ends");
+        p.cancel(); // the hold was answered: spring back
+        let frames = spring_back_frames(&mut p, &mut now);
+        for (n, (raised, moving, page)) in frames.iter().enumerate() {
+            assert_eq!(raised, moving, "frame {}: damage must track visible motion", n + 1);
+            assert!(!moving || *page, "frame {}: a moving frame is PAGE damage", n + 1);
+        }
+        assert!(frames.iter().filter(|f| f.1).count() > 5, "the spring really moved the card");
+        assert!(frames.iter().any(|f| !f.1), "…and its invisible tail raised nothing");
         now = now.wrapping_add(16);
         p.tick(now, 0.016);
         assert_eq!(plx_machine::idle::take_local_damage(), 0, "a press at rest is quiet");
+    }
+
+    /// **A TAP's release spring is NOT page damage.** A tap that opens a cached surface (the
+    /// Library's Sort chip, the account menu, a Settings snapshot) has its press spring back
+    /// beneath that surface too, but nothing there needs re-capturing: only a taken hold's card is
+    /// drawn live above the frozen page. Raising damage per frame of every tap's ~0.35 s spring
+    /// re-took the page snapshot each frame (each capture defers presents up to 4 frames). The
+    /// spring stays motion-only; the one report allowed is the closing `Spring::jump` onto rest.
+    #[test]
+    fn a_taps_release_spring_is_not_page_damage() {
+        let _serial = plx_base::testlock::serial();
+        for ctl in [false, true] {
+            let mut p = Press::new();
+            let mut now = 1000;
+            if ctl { p.begin_ctl(now) } else { p.begin(now) }
+            run(&mut p, &mut now, 100);
+            p.release(now);
+            let frames = spring_back_frames(&mut p, &mut now);
+            assert!(frames.len() > 10, "the release spring really ran");
+            let (loud, quiet): (Vec<&(bool, bool, bool)>, Vec<&(bool, bool, bool)>) =
+                frames.iter().partition(|f| f.0);
+            assert!(loud.len() <= 1, "ctl={ctl}: only the closing jump may report, got {}", loud.len());
+            assert!(quiet.len() > 10, "ctl={ctl}");
+            assert!(loud.iter().all(|f| f.1), "ctl={ctl}: …and only on the frame it lands at rest");
+        }
+        // A short press ABANDONED mid-dip (navigation, BACK) is no hold either.
+        let mut p = Press::new();
+        let mut now = 1000;
+        p.begin(now);
+        run(&mut p, &mut now, 100);
+        p.cancel();
+        let frames = spring_back_frames(&mut p, &mut now);
+        assert!(frames.iter().filter(|f| f.0).count() <= 1, "an abandoned short press is motion-only");
     }
 }
