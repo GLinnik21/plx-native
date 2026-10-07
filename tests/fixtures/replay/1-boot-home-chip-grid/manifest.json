@@ -1,7 +1,7 @@
 {
  "anchor": true,
  "blobs": false,
- "build": "0.8.0-dev",
+ "build": "0.9.0-dev",
  "clock": {
   "start": 0
  },
@@ -172,7 +172,7 @@
   "probe": "controlled=home version=1"
  },
  "schema": 3,
- "state_fp": 3109788404986066319,
+ "state_fp": 14333139794472628045,
  "triggers": [
   "plxnative-app-init",
   "plxnative-rec",
