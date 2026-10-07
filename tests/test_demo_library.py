@@ -166,7 +166,8 @@ class Manifests(unittest.TestCase):
             tool.check(assets, catalog)
 
     def test_check_refuses_a_tagline_that_is_not_marked_demo(self):
-        assets, catalog = self._with(tagline="Our own words.")
+        # The first movie now carries its own marked tagline, so the unmarked case clears the mark.
+        assets, catalog = self._with(tagline="Our own words.", demo_values=[])
         with self.assertRaises(AssertionError):
             tool.check(assets, catalog)
         assets, catalog = self._with(tagline="Our own words.", demo_values=["tagline"])
@@ -198,9 +199,10 @@ class Completeness(unittest.TestCase):
 
     # The pending list may only SHRINK. Its length per category is pinned here, in the test, not in
     # the list's own file: growing the list means editing this table, which a reviewer sees. When a
-    # content PR fixes a gap it deletes the entry from `pending.json` AND lowers the number here.
-    PENDING_CEILING = {"backdrop": 12, "cast": 15, "country": 28, "creators": 3, "directors": 1,
-                       "logo": 27, "poster": 8, "tagline": 28, "writers": 25}
+    # content PR fixes a gap it deletes the entry from `pending.json` AND lowers the number here;
+    # a category that reaches zero leaves the table.
+    PENDING_CEILING = {"backdrop": 12, "country": 1, "creators": 1,
+                       "logo": 27, "poster": 8, "writers": 1}
 
     CITED = {"source": "https://www.wikidata.org/wiki/Q42", "retrieved": "2026-10-07"}
 
@@ -218,7 +220,7 @@ class Completeness(unittest.TestCase):
             movies.append(m)
         return tool.complete_gaps(self.assets, dict(self.catalog, movies=movies)).get(key, [])
 
-    def test_sintel_is_the_one_title_with_no_gaps_and_tears_of_steel_lacks_only_its_logo(self):
+    def test_sintel_has_no_gaps_and_tears_of_steel_lacks_only_its_logo(self):
         gaps = tool.complete_gaps(self.assets, self.catalog)
         self.assertNotIn("sintel", gaps)
         self.assertEqual(gaps["tears-of-steel"], ["logo"])

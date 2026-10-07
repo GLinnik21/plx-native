@@ -790,7 +790,7 @@ class CatalogDetailFields(unittest.TestCase):
 
 class DetailFixtures(unittest.TestCase):
     """`tests/demo_library/fixtures/detail-<rk>.json` is the mock's `/library/metadata/<rk>`
-    answer for each complete title, committed so the data crate can parse it
+    answer for each fixture title, committed so the data crate can parse it
     (`rust-modules/data/src/metadata_demo_fixture_tests.rs`) without a derived-art cache."""
     TITLES = {"sintel": 102, "tears-of-steel": 105}
 

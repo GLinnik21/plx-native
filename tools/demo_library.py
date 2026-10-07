@@ -9,7 +9,7 @@ the images the mock server serves, and write the credits.
     python3 tools/demo_library.py check     # validate the two manifests; no network
     python3 tools/demo_library.py check --complete  # also: every title and episode complete, bar the
                                             # shrink-only list in tests/demo_library/pending.json
-    python3 tools/demo_library.py fixtures  # capture the complete titles' detail responses
+    python3 tools/demo_library.py fixtures  # capture the two fixture titles' detail responses
 
 Two committed manifests drive it:
 
@@ -839,11 +839,11 @@ def site_credits(assets, catalog, dst=SITE_CREDITS):
 
 
 FIXTURES = ROOT / "tests" / "demo_library" / "fixtures"
-FIXTURE_TITLES = {"sintel": 102, "tears-of-steel": 105}  # the two complete titles, by ratingKey
+FIXTURE_TITLES = {"sintel": 102, "tears-of-steel": 105}  # the two fixture titles, by ratingKey
 
 
 def fixtures(dst=FIXTURES):
-    """Capture the mock's `/library/metadata/<rk>` answer for each complete title, the detail
+    """Capture the mock's `/library/metadata/<rk>` answer for each fixture title, the detail
     pages the data crate parses (`metadata_demo_fixture_tests.rs`). Needs the derived artwork."""
     sys.path.insert(0, str(ROOT / "tests"))
     import mock_pms
