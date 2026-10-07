@@ -1,6 +1,6 @@
 name: Issue labels
 
-# Labels issues as they are filed: one kind (bug / enhancement / question), the areas it is about,
+# Labels issues as they are filed: one kind (bug / enhancement), the areas it is about,
 # and `user-report` when the author is not a maintainer. The rules, the fallback and what is never
 # added are in ci/label-issue.py. Labels are only added, never removed.
 #
