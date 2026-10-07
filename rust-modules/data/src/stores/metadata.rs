@@ -59,7 +59,9 @@
 //! - `ClearItem{sid, rk}` → `metadata::clear_item` — a Detail page's teardown: the same, but only
 //!   for the item that page showed, so a page torn down late (a copy on another server fading out
 //!   over its source page, which has already asked for its own item) cancels nothing of the page
-//!   now asking.
+//!   now asking. Sent whether or not that item had landed: a page closed before its fetch arrived
+//!   supersedes its own request (the late landing is dropped) and leaves the slot to the page
+//!   under it.
 //! - `LoadSeason(usize)` → `metadata::load_season` — flip the season strip optimistically, fetch
 //!   the episodes off-thread (debounced landing through `pump_season`).
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.

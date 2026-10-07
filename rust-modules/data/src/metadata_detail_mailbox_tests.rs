@@ -557,6 +557,43 @@ fn closing_one_servers_page_leaves_the_other_servers_pending_request_alone() {
     assert_eq!(current(test_state()).map(|d| d.sid), None);
 }
 
+/// **A page that closes before its own fetch lands must not disturb the page under it.**
+///
+/// The residual hole behind the "empty page on previous server return": Detail A (server A) is
+/// `current`, B's copy is presented over it, and BACK is pressed BEFORE B's metadata lands. B was
+/// never `current`, so its teardown used to send nothing, and B's in-flight fetch then replaced
+/// A's item in the single slot — A's identity-filtered view went empty with nothing left to ask
+/// again. B's teardown now sends its addressed `ClearItem` whether or not its item arrived: it
+/// supersedes B's own request (the late landing is dropped) and leaves A's item in `current`.
+#[test]
+fn closing_a_page_before_its_fetch_lands_drops_that_landing_and_keeps_the_page_under_it() {
+    let _serial = plx_base::testlock::serial();
+    clear(test_state(), test_adapter());
+    let a = plx_plex::plex::ServerId::from_raw(0);
+    let b = plx_plex::plex::ServerId::from_raw(1);
+    let item = |sid, title: &str| Detail { sid, rk: "42".into(), title: title.into(), ..Default::default() };
+
+    // A's copy is the loaded item; B's fresh open then asks for its own.
+    let gen_a = begin_detail_for_test(test_adapter(), a, "42");
+    land_detail(test_adapter(), a, "42", gen_a, Some(item(a, "on A")));
+    assert!(pump_detail(test_state(), test_adapter()));
+    let gen_b = begin_detail_for_test(test_adapter(), b, "42");
+    assert_eq!(detail_request_status(test_adapter(), b, "42"), Some(true));
+
+    // BACK before B lands: B's teardown closes B's item.
+    clear_item(test_state(), test_adapter(), b, "42");
+    assert_eq!(current(test_state()).map(|d| (d.sid, d.title.clone())), Some((a, "on A".to_string())),
+        "closing B leaves A's item in the slot");
+    assert!(!detail_loading(test_adapter()), "B's own in-flight fetch is superseded");
+    assert_ne!(detail_generation(test_adapter()), gen_b, "the generation moved past B's request");
+
+    // B's fetch lands late: it is dropped, A's item stays.
+    land_detail(test_adapter(), b, "42", gen_b, Some(item(b, "on B")));
+    assert!(!pump_detail(test_state(), test_adapter()), "B's late landing is dropped");
+    assert_eq!(current(test_state()).map(|d| (d.sid, d.title.clone())), Some((a, "on A".to_string())));
+    clear(test_state(), test_adapter());
+}
+
 /// Spec §15.1 `a_refused_spawn_lands_a_refusal_event`, on the real store: a request whose
 /// worker the OS refused is answered by a `Refused` record, and the pump settles the spinner
 /// off it — exactly one event for the request, nothing latched.

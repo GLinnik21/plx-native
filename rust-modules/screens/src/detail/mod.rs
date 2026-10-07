@@ -173,15 +173,15 @@ pub struct DetailScreen {
     /// for the same (sid, rk) that predates this promotion's own admission.
     refresh_gen: u32,
     restore_intent: Option<RestoreIntent>,
-    /// This page has already asked the Metadata store to drop the slot it owned. §3.4's
+    /// This page has already sent its addressed `ClearItem` to the Metadata store. §3.4's
     /// `pop_sequence` delivers `WillLeave(ForGood)` AND `Unmount` to the same body, and both land
-    /// in the teardown arm below; the `self.detail(meta).is_some()` guard there used to disarm
-    /// itself because the first `Clear` had already run against the process-wide slot by the time
-    /// the second event arrived. With the store owned per `Bridge` the `Clear` crosses
-    /// `AppFx::Store` and is still queued, so the guard reads a slot this page has already
-    /// disclaimed and emits a SECOND non-idempotent `Clear` — a second `supersede_detail`
-    /// generation against an item nobody is looking at. Not hashed: it is teardown bookkeeping for
-    /// one event pair, never a property of the page's logical shape.
+    /// in the teardown arm below, so without the latch one teardown would send two. The command is
+    /// idempotent in effect (it drops `current` only while `current` is this page's item, and
+    /// supersedes a load only while this page's item is the one awaited), but each send crosses
+    /// `AppFx::Store` and a second supersede would bump the request generation again. The page does
+    /// not ask whether its own item ever landed: a page closed before its fetch arrived must still
+    /// retire that fetch, or the landing replaces the page underneath it. Not hashed: it is
+    /// teardown bookkeeping for one event pair, never a property of the page's logical shape.
     /// (`screens/person.rs`'s `PersonCmd::Close` has the identical un-latched shape; reported
     /// separately rather than fixed here.)
     teardown_cleared: bool,
@@ -1950,9 +1950,12 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 self.restore_intent = None;
                 self.refresh = DetailRefreshPhase::None;
                 self.return_pending = false;
-                // `&& !self.teardown_cleared`: see the field. One teardown, one `Clear`, even
-                // though §3.4 delivers this arm twice and the queued command has not run yet.
-                if self.detail(meta).is_some() && !self.teardown_cleared {
+                // Sent whether or not this page's item ever landed: a page closed before its
+                // fetch arrived still has to retire that fetch, or the landing displaces the
+                // page uncovered underneath it. `ClearItem` is addressed, so it touches the
+                // slot only while the slot is this page's. `!self.teardown_cleared`: see the
+                // field. One teardown, one `ClearItem`, even though §3.4 delivers this arm twice.
+                if !self.teardown_cleared {
                     self.teardown_cleared = true;
                     fx.push(Fx::App(AppFx::Store(
                         StoreId::Metadata,

@@ -1155,18 +1155,16 @@ mod library_publication_tests {
         plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
     }
 
-    /// Regression for the fix the double-fetch fix introduced: `DetailScreen`'s own teardown
-    /// (`WillLeave(Leave::ForGood)`/`Unmount`) only clears the store's `current()` — and supersedes
-    /// whatever fetch is still in flight — when `self.detail(meta)` ALREADY sees loaded content for
-    /// this identity at that instant (detail/mod.rs's `WillLeave`/`Unmount` arm). A Back pressed
-    /// before the page's own fetch has landed sees nothing loaded yet, skips that clear, and leaves
-    /// the in-flight fetch unsupervised — so it lands into `current()` after the page is gone, with
-    /// nobody left to supersede it. The pre-fix `Enter(Fresh)` condition
-    /// (`self.detail(meta).is_none()`) read that orphaned landing as "already loaded" and skipped
-    /// the refetch outright, so reopening the SAME item showed whatever the orphaned fetch happened
-    /// to land — stale watched state, stale progress — instead of a fresh fetch. A fresh open must
-    /// always refetch, exactly once, no matter what the store still remembers about this item; only
-    /// a fetch already in flight for it suppresses that.
+    /// A fresh open always refetches, exactly once, no matter what the store still remembers about
+    /// this item; only a fetch already in flight for it suppresses that.
+    ///
+    /// History: `DetailScreen`'s teardown used to send its clear only when its own item had
+    /// already landed, so a Back pressed before the page's fetch landed left that fetch
+    /// unsupervised and it repopulated `current()` after the page was gone; the pre-fix
+    /// `Enter(Fresh)` condition (`self.detail(meta).is_none()`) then read the orphaned landing as
+    /// "already loaded" and skipped the refetch. Teardown now retires the page's own fetch whether
+    /// or not it landed, so the orphan no longer arises through Back — but the refetch rule is
+    /// kept honest by seeding the slot with that same leftover by hand.
     #[test]
     fn reopening_the_same_detail_after_back_refetches_once() {
         let _guard = plx_base::testlock::serial();
@@ -1176,9 +1174,9 @@ mod library_publication_tests {
         let mut rig = bridge::Bridge::for_test(|| 0);
         let mut frame_no = 0;
 
-        // Home never touches the metadata store's detail slot, so it is the underlying page A's
-        // orphaned landing survives Back under — a second Detail underneath would overwrite
-        // `current()` with its own landing and mask the bug this test is for.
+        // Home never touches the metadata store's detail slot, so it is the underlying page the
+        // leftover survives Back under — a second Detail underneath would overwrite `current()`
+        // with its own landing and mask the rule this test is for.
         bridge::show_page(&mut pages, AppArg::Home);
         frame(&mut pages, &mut rig, &mut frame_no);
 
@@ -1189,28 +1187,27 @@ mod library_publication_tests {
         let gen_a = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert_eq!(gen_a - before_open, 1, "the fresh open issues exactly one fetch");
 
-        // Back BEFORE A's own fetch has landed: `self.detail(meta)` sees nothing loaded yet, so
-        // teardown's conditional `Clear` (detail/mod.rs's `WillLeave`/`Unmount` arm) does not fire,
-        // and the still in-flight fetch is not superseded.
+        // Back BEFORE A's own fetch has landed: teardown retires that fetch even though nothing
+        // had loaded for A yet.
         let ret = pages.return_state();
         bridge::nav_pop_with_return(&mut pages, ret);
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == AppArg::Home),
             "Back lands on Home");
-        assert!(rig.metadata_mut().view().current().is_none(),
-            "nothing had loaded for A yet, so teardown had nothing to clear");
-
-        // The orphaned fetch lands now, with nobody left to supersede it.
-        assert!(land_detail_for_test(&mut rig, sid, "detail-a", gen_a, Some(plx_data::metadata::Detail {
+        assert!(rig.metadata_mut().view().current().is_none());
+        let leftover = |watched| plx_data::metadata::Detail {
             sid,
             rk: "detail-a".into(),
             title: "Detail A".into(),
-            watched: true,
+            watched,
             ..Default::default()
-        })), "the orphaned fetch's landing is not superseded");
-        assert_eq!(rig.metadata_mut().view().current().map(|d| d.rk.as_str()), Some("detail-a"),
-            "the orphaned landing repopulates current() after the page that asked for it is gone");
+        };
+        assert!(!land_detail_for_test(&mut rig, sid, "detail-a", gen_a, Some(leftover(true))),
+            "A's fetch was superseded by its page's teardown, so its late landing is dropped");
+        assert!(rig.metadata_mut().view().current().is_none(), "nothing repopulates current() behind Home");
 
+        // Whatever else leaves this item in the slot, a fresh open must still refetch.
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), Some(leftover(true)));
         let before_reopen = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         bridge::nav_push(&mut pages, a.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
@@ -1218,7 +1215,7 @@ mod library_publication_tests {
 
         assert_eq!(after_reopen - before_reopen, 1,
             "reopening the same Detail page after Back must refetch exactly once, not reuse the \
-             store's orphaned leftover for this item");
+             store's leftover for this item");
 
         drain_detail_workers(&mut rig);
         rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
@@ -1237,6 +1234,52 @@ mod library_publication_tests {
     #[test]
     fn dismissing_another_servers_presented_copy_repopulates_the_previous_servers_detail() {
         back_out_of_other_servers_copy(true);
+    }
+
+    /// BACK pressed BEFORE B's metadata lands. B was never `current`, so its teardown used to send
+    /// nothing; B's in-flight fetch then replaced A's item and A's identity-filtered view went
+    /// empty with nothing left to ask again (the photographed empty Detail page).
+    #[test]
+    fn dismissing_another_servers_presented_copy_before_it_lands_keeps_the_previous_servers_detail() {
+        let _guard = plx_base::testlock::serial();
+        let sa = plx_plex::plex::ServerId::from_raw(3);
+        let sb = plx_plex::plex::ServerId::from_raw(4);
+        let a = AppArg::Content(ContentArg::Detail { sid: sa, rk: "42".into() });
+        let b = AppArg::Content(ContentArg::Detail { sid: sb, rk: "42".into() });
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+        let full = |sid, title: &str| plx_data::metadata::Detail {
+            sid, rk: "42".into(), title: title.into(), summary: "synopsis".into(), ..Default::default()
+        };
+
+        bridge::show_page(&mut pages, AppArg::Home);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        bridge::nav_push(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let gen_a = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        assert!(land_detail_for_test(&mut rig, sa, "42", gen_a, Some(full(sa, "on A"))));
+        pages.nav.next_style = plx_ui::containers::modal::Style::Opaque { snapshot: true };
+        pages.request(MachineId::Nav, NavOp::Present(b.clone()));
+        for _ in 0..3 { frame(&mut pages, &mut rig, &mut frame_no); }
+        // B's request is in flight and has NOT landed: A's item is still the loaded one.
+        let gen_b = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        assert_eq!(rig.metadata_mut().view().detail_request_status(sb, "42"), Some(true));
+        assert_eq!(rig.metadata_mut().view().current().map(|d| d.sid), Some(sa));
+
+        bridge::dismiss_surfaces(&mut pages);
+        for _ in 0..60 { frame(&mut pages, &mut rig, &mut frame_no); }
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == a), "BACK lands on A's Detail");
+
+        // B's fetch finishes after its page is gone: it must not displace A's item.
+        land_detail_for_test(&mut rig, sb, "42", gen_b, Some(full(sb, "on B")));
+        for _ in 0..3 { frame(&mut pages, &mut rig, &mut frame_no); }
+        assert_eq!(rig.metadata_mut().view().current().map(|d| (d.sid, d.title.clone())),
+            Some((sa, "on A".to_string())),
+            "A's own detail is still loaded after BACK from a copy that never landed");
+
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
     }
 
     fn back_out_of_other_servers_copy(present: bool) {
@@ -1670,8 +1713,9 @@ mod library_publication_tests {
         frame(&mut pages, &mut rig, &mut frame_no);
 
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
-        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), stale_b + 1,
-            "Back starts one replacement for the requested reconciliation B superseded");
+        assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), stale_b + 2,
+            "Back starts one replacement for the requested reconciliation B superseded, and B's \
+             own teardown retires B's in-flight fetch (one generation each)");
         let reconciliation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(true));
         if !navigate {
