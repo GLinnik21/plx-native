@@ -108,6 +108,7 @@ pub fn draw(
     row: &CardRow,
     top: f32,
     focused: Option<usize>,
+    press: f32,
     measure: &dyn plx_machine::machine::Measure,
 ) {
     p.text(
@@ -134,6 +135,7 @@ pub fn draw(
         SLOT,
         &RowStyle::CAST,
         plx_ui::consts::SCR_W,
+        press,
         |i| {
             d.credit(i)
                 .map(|c| Art::Person {

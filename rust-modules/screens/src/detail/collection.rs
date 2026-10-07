@@ -97,6 +97,7 @@ pub fn draw(
     top: f32,
     focused: Option<usize>,
     heading_focused: bool,
+    press: f32,
     measure: &dyn Measure,
 ) {
     let Some(c) = d.collection.as_ref() else { return };
@@ -110,7 +111,7 @@ pub fn draw(
         &m,
         measure,
     );
-    related::draw_strip(p, &c.members, row, top, focused, measure);
+    related::draw_strip(p, &c.members, row, top, focused, press, measure);
 }
 
 pub fn draw_focused(

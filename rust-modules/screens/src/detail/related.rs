@@ -77,6 +77,7 @@ pub fn draw(
     row: &CardRow,
     top: f32,
     focused: Option<usize>,
+    press: f32,
     measure: &dyn plx_machine::machine::Measure,
 ) {
     let lift = row.lift();
@@ -89,7 +90,7 @@ pub fn draw(
         0,
         1,
     );
-    draw_strip(p, &d.related, row, top, focused, measure);
+    draw_strip(p, &d.related, row, top, focused, press, measure);
 }
 
 /// A Detail poster shelf's cards under its heading — Related's, and the collection shelf's
@@ -100,6 +101,7 @@ pub fn draw_strip(
     row: &CardRow,
     top: f32,
     focused: Option<usize>,
+    press: f32,
     measure: &dyn plx_machine::machine::Measure,
 ) {
     card_row::strip(
@@ -112,6 +114,7 @@ pub fn draw_strip(
         RowStyle::HOME.w + RowStyle::HOME.gap,
         &RowStyle::HOME,
         plx_ui::consts::SCR_W,
+        press,
         |i| Art::Poster(items.get(i).map(tile_facts::of)),
         |i| items.get(i).and_then(|m| m.resume_frac()),
         |i| card_row::TileLabel::title(&items[i].title),

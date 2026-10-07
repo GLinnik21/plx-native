@@ -321,6 +321,8 @@ struct Flow<'a> {
     /// the rest) rather than wherever its spring has it — what a scroll TARGET must be computed
     /// against (`ui/person.rs`'s `Settled`/`scroll_target` doc has the full argument).
     settled: bool,
+    /// The press dip factor this frame (`f.press.dip()`), for the shelves' focused tile.
+    press: f32,
 }
 
 impl Column for Flow<'_> {
@@ -364,7 +366,7 @@ impl Column for Flow<'_> {
         let (kinds, n) = present(self.person);
         if let Some(&kind) = kinds[..n].get(i - 1) {
             self.screen
-                .draw_shelf(p, env, self.person, kind, self.focus_child == Some(i), measure);
+                .draw_shelf(p, env, self.person, kind, self.focus_child == Some(i), self.press, measure);
         }
     }
 }
@@ -909,6 +911,7 @@ impl PersonScreen {
             focus_child: self.flow_child(p, focus_elem),
             focus_elem,
             settled: false,
+            press: 1.0,
         }
     }
 
@@ -919,6 +922,7 @@ impl PersonScreen {
             focus_child: self.flow_child(p, focus_elem),
             focus_elem,
             settled: true,
+            press: 1.0,
         }
     }
 
@@ -1106,12 +1110,7 @@ impl PersonScreen {
         let Some(placed) = Focusable::<H>::place(&shelf, &key.elem, f.cx, At::Drawn) else {
             return;
         };
-        let press_scale = if f.press.scale > 0.0 {
-            f.press.scale
-        } else {
-            1.0
-        };
-        let scale = self.shelves[kind].scale(col) * press_scale;
+        let scale = self.shelves[kind].scale(col) * f.press.dip();
         let label = card_row::TileLabel::titled(&item.title, person.role(kind, col))
             .settling(self.shelves[kind].settle_lag(person.shelf(kind).len(), col, &SHELF_STYLE));
         card_row::draw_focused(
@@ -1238,7 +1237,7 @@ impl PersonScreen {
         }
     }
 
-    fn draw_shelf(&self, p: Painter, _env: &Env, person: &Person, kind: usize, focused: bool, measure: &dyn plx_machine::machine::Measure) {
+    fn draw_shelf(&self, p: Painter, _env: &Env, person: &Person, kind: usize, focused: bool, press: f32, measure: &dyn plx_machine::machine::Measure) {
         let items = person.shelf(kind);
         let row = &self.shelves[kind];
         let cur_col = if focused { row.focus() } else { -1 };
@@ -1280,6 +1279,7 @@ impl PersonScreen {
             pitch,
             &SHELF_STYLE,
             SCR_W,
+            press,
             |i| Art::Poster(items.get(i).map(tile_facts::of)),
             |i| items.get(i).and_then(|m| m.resume_frac()),
             |i| match items.get(i) {
@@ -1696,7 +1696,8 @@ impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
         };
         self.amb.draw(p, Rect::FULL);
         let col = self.scroll;
-        let live = self.live_flow(person, cur);
+        let mut live = self.live_flow(person, cur);
+        live.press = f.press.dip();
         col.draw(&live, &env, p, f.measure);
         self.draw_shelf_state(p, &env, person);
 

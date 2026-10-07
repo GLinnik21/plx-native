@@ -677,7 +677,7 @@ impl DetailScreen {
                 row,
                 self.section_top(2, d, measure) - self.scroll.pos,
                 self.episode_scroll.pos,
-                self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0) * f.press.scale,
+                self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0) * f.press.dip(),
                 &self.episode_lift(i),
                 f.measure,
                 meta,
@@ -689,7 +689,7 @@ impl DetailScreen {
                 &self.related,
                 i,
                 self.section_top(3, d, measure) - self.scroll.pos,
-                f.press.scale,
+                f.press.dip(),
                 f.measure,
             ),
             Some(Located::Extras(i)) => extras::draw_focused(
@@ -698,7 +698,7 @@ impl DetailScreen {
                 &self.extras,
                 i,
                 self.section_top(6, d, measure) - self.scroll.pos,
-                f.press.scale,
+                f.press.dip(),
                 f.measure,
             ),
             Some(Located::Collection(i)) => collection::draw_focused(
@@ -707,7 +707,7 @@ impl DetailScreen {
                 &self.collection,
                 i,
                 self.section_top(7, d, measure) - self.scroll.pos,
-                f.press.scale,
+                f.press.dip(),
                 f.measure,
             ),
             _ => {}
@@ -2148,6 +2148,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                             Some(Located::Extras(i)) => Some(i),
                             _ => None,
                         },
+                        f.press.dip(),
                         f.measure,
                     ),
                     7 => collection::draw(
@@ -2160,6 +2161,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                             _ => None,
                         },
                         focus == Some(Located::CollectionHeading),
+                        f.press.dip(),
                         f.measure,
                     ),
                     3 => related::draw(
@@ -2171,6 +2173,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                             Some(Located::Related(i)) => Some(i),
                             _ => None,
                         },
+                        f.press.dip(),
                         f.measure,
                     ),
                     4 => cast::draw(
@@ -2182,6 +2185,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                             Some(Located::Cast(i)) => Some(i),
                             _ => None,
                         },
+                        f.press.dip(),
                         f.measure,
                     ),
                     5 => self.about_rows.draw(

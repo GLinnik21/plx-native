@@ -849,6 +849,8 @@ pub fn draw_focused(
 /// (`TileLabel::default()` for a row that captions every tile through `extra` instead), and `extra`
 /// any per-tile caption drawn for EVERY tile (cast names/roles). `label` is invoked for the focused
 /// index only. `axis_span` widens the cull band where captions should survive slightly off-screen.
+/// `press` is the press dip factor folded into the focused tile's scale (`1.0` idle): the caller
+/// takes it from its frame (`f.press.dip()`), like every other card draw, never from a global.
 #[allow(clippy::too_many_arguments)]
 pub fn strip<'a>(
     p: Painter,
@@ -860,6 +862,7 @@ pub fn strip<'a>(
     pitch: f32,
     sty: &RowStyle,
     axis_span: f32,
+    press: f32,
     art: impl Fn(usize) -> Art<'a>,
     resume: impl Fn(usize) -> Option<f32>,
     label: impl Fn(usize) -> TileLabel,
@@ -885,8 +888,8 @@ pub fn strip<'a>(
     if focus_col >= 0 && (focus_col as usize) < n {
         let i = focus_col as usize;
         let x = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).x;
-        // fold the ui::press click dip into the focused tile's scale (1.0 when idle) — same as home
-        let s = row.scale(i) * crate::press::scale();
+        // fold the press click dip into the focused tile's scale (1.0 when idle) — same as home
+        let s = focused_scale(row, i, press);
         let rect = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).scaled(s);
         draw_focused(
             pr,
@@ -900,6 +903,12 @@ pub fn strip<'a>(
         );
         extra(pr, i, x, true);
     }
+}
+
+/// The scale [`strip`] draws the focused tile `i` at: its pop spring times the caller's `press` dip.
+#[inline]
+fn focused_scale(row: &CardRow, i: usize, press: f32) -> f32 {
+    row.scale(i) * press
 }
 
 /// **The one trailing FACT under a focused tile** — the caption rung, for every poster shelf in the
@@ -1548,6 +1557,21 @@ pub fn resume_bar(p: Painter, r: Rect, frac: f32, rad: f32) {
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
+    /// `strip`'s press is its parameter: the focused tile's scale is the pop times the dip handed
+    /// in, whatever the process-wide `press::scale()` snapshot says, and an idle `PressRead`
+    /// (scale 0.0 before any press machine read) dips by 1.0, not to nothing.
+    #[test]
+    fn a_strip_takes_its_press_from_the_caller() {
+        let _guard = plx_base::testlock::serial();
+        let row = super::CardRow::new();
+        let rest = row.scale(2);
+        assert_eq!(super::focused_scale(&row, 2, 1.0), rest);
+        assert_eq!(super::focused_scale(&row, 2, 0.9), rest * 0.9);
+        assert_eq!(plx_machine::machine::PressRead::default().dip(), 1.0);
+        let moving = plx_machine::machine::PressRead { scale: 0.92, ..Default::default() };
+        assert_eq!(moving.dip(), 0.92);
+    }
+
     /// A collection's caption is its size — "1 item", "3 items" — never a year it does not have.
     #[test]
     fn a_collection_caption_counts_its_items() {
