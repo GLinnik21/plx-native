@@ -1201,3 +1201,33 @@ fn a_second_open_of_the_pending_detail_page_leaves_no_seed_behind() {
     assert_eq!(d.nav.tabs.stack.depth(), 2, "one detail page, not two");
     assert!(rig.mounter.seed.is_none(), "no unspent seed is left for a later mount");
 }
+
+/// **A dismissed item menu's opener lift stands down once focus has left the opener tile.**
+/// `dismiss` returns input to the page on the same frame but the surface lingers (`Closing`) for
+/// its fade; a D-pad press in that window moves the page's focus to the neighbour, and a lift that
+/// kept repainting the menu's ORIGINAL key drew the old tile fully popped and captioned above the
+/// page — two tiles focused at once (Collection, owner's recording). The decision is
+/// [`opener_lift`], shared by every page.
+#[test]
+fn a_closing_item_menus_opener_lift_stands_down_when_focus_moves_off_the_opener() {
+    let _g = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+    let host = d.nav.top_page().unwrap().id;
+    let mut row = plx_data::pms::PmsMovie::default();
+    row.rk = "42".into();
+    row.kind = 0;
+    let key = |elem| plx_machine::machine::FocusKey { entry: host, elem };
+    open_item_menu(&mut d, card_menu_arg(&row, false, true, host, Some(key(7)), None));
+    frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
+    assert_eq!(opener_lift(&d), Some((host, Some(key(7)))), "open: the lift paints the opener");
+
+    let ev = script_key(Key::Back, tick(2));
+    frame(&mut d, &mut rig, AppArg::Home, tick(2), ev);
+    assert_eq!(d.nav.modals.top().map(|s| s.phase), Some(Phase::Closing));
+    d.set_focus(Some(key(7)));
+    assert_eq!(opener_lift(&d), Some((host, Some(key(7)))), "closing, focus still on the opener: it stays lifted");
+    d.set_focus(Some(key(8)));
+    assert_eq!(opener_lift(&d), None, "closing, focus moved to the neighbour: the old tile is NOT repainted as focused");
+}
