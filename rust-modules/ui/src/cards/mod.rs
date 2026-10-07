@@ -51,7 +51,7 @@ use crate::{Painter, Rect};
 mod grid;
 mod shelf;
 
-pub use grid::{Grid, GridSpec};
+pub use grid::{Grid, GridSpec, ScrollMode};
 pub use shelf::Shelf;
 
 #[cfg(any(test, feature = "test-support"))]
