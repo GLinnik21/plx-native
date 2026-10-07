@@ -42,7 +42,7 @@ const INSTANCE: InstanceId = InstanceId(65);
 const QUERY: &str = "conformance";
 
 fn movie(rk: &str) -> Item {
-    Item::Media(plx_data::pms::PmsMovie { rk: rk.into(), title: format!("Synthetic {rk}"), ..Default::default() })
+    Item::Media(plx_data::pms::PmsMovie { rk: rk.into(), ..Default::default() })
 }
 fn movies(rks: &[String]) -> Vec<Shelf> {
     vec![Shelf { kind: Kind::Movie, items: rks.iter().map(|rk| movie(rk)).collect() }]

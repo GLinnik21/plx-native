@@ -66,7 +66,7 @@ impl Harness {
         let sid = plx_plex::plex::ServerId::from_raw(0);
         let mut directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, vec![
             plx_data::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Movie,
-                row: plx_data::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } }]);
+                row: plx_data::browse::SrcRow { section: 0, pinned: true, current: true, ..Default::default() } }]);
         let (listing, hubs, stores) = match set {
             Set::Grid => (listing_of(&rks), plx_data::stores::browse::HubsSnapshot::empty_for_test(), None),
             Set::Shelf => {
