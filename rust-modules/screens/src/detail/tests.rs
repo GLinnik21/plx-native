@@ -130,7 +130,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         related: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::HOME),
         collection: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::HOME),
         extras: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::EPISODE),
-        cast: CardRow::new(),
+        cast: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::CAST),
         tabs: TabStrip::new(),
         season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(),
@@ -3224,6 +3224,33 @@ fn a_page_without_a_collection_declares_no_collection_stops() {
     assert!(groups.iter().all(|g| g.id != collection::HEADING_GROUP && g.id != collection::COLLECTION_GROUP));
     assert_eq!(Focusable::<TestHost>::group_of(&screen, &collection::HEADING_ELEM, &cx(&measure, None)), None,
         "a heading with no collection is no focus stop");
+    clear();
+}
+
+/// The page's focus groups are the frame the engine keeps its remembered cursors against: their ids
+/// and their order in `groups()` are frozen, and a page with nothing remembered seats on Play.
+#[test]
+fn the_pages_focus_group_ids_and_order_and_its_first_focus_are_frozen() {
+    let sid = ServerId::UNSET;
+    let mut d = collection_movie(sid);
+    d.cast = vec![plx_data::metadata::Cast {
+        tag: "Person".into(), role: String::new(), thumb: String::new(), id: 5, tag_key: String::new(),
+    }];
+    d.extras = vec![plx_data::metadata::Extra { rk: "x1".into(), ..Default::default() }];
+    let _guard = install(d);
+    let screen = bare(&_guard, sid, "m1");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let context = cx(&measure, None);
+    let mut groups = Vec::new();
+    Focusable::<TestHost>::groups(&screen, &context, &mut groups);
+    let ids: Vec<u32> = groups.iter().map(|g| g.id.0).collect();
+    assert_eq!(ids, [hero::HERO_GROUP.0, 4, 6, 8, 7, 3, about::ABOUT_GROUP.0],
+        "hero, cast, extras, collection heading, collection, related, about");
+    assert_eq!(
+        (cast::CAST_GROUP.0, extras::EXTRAS_GROUP.0, collection::HEADING_GROUP.0, collection::COLLECTION_GROUP.0, related::RELATED_GROUP.0),
+        (4, 6, 8, 7, 3));
+    let first = Focusable::<TestHost>::reconcile(&screen, FocusKey { entry: EntryId(7), elem: 0 }, &context);
+    assert_eq!(first.elem, hero::ELEM_PLAY, "a page with nothing remembered seats on Play");
     clear();
 }
 

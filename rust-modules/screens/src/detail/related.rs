@@ -45,7 +45,7 @@ pub fn item<'a>(d: &'a Detail, key: u32) -> Option<&'a PmsMovie> {
     d.related.get(locate(key)?)
 }
 
-/// `band` is this shelf's live label-band expansion ([`CardRow::band_expand`]), 0 collapsed → 1
+/// `band` is this shelf's live label-band expansion ([`plx_ui::cards::Shelf::band_expand`]), 0 collapsed → 1
 /// focused. The band is the SHARED collapse every other screen uses, not a fixed reservation: a
 /// shelf that holds no focus draws no label, so it gives the room back and the next section's
 /// heading rises to the design system's own region gap behind it.

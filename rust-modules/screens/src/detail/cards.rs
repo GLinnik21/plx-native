@@ -6,12 +6,13 @@ use std::collections::HashMap;
 
 use plx_data::metadata::Detail;
 use plx_data::pms::PmsMovie;
-use plx_machine::machine::Host;
-use plx_ui::card_row::{RowStyle, TileLabel};
-use plx_ui::cards::CardSource;
+use plx_machine::machine::{Host, Measure};
+use plx_ui::card_row::{self, RowStyle, TileLabel};
+use plx_ui::cards::{CardSource, Tile};
 use plx_ui::widgets::Art;
+use plx_ui::Painter;
 
-use super::{collection, extras, related};
+use super::{cast, collection, extras, related};
 use crate::registry::tile_facts;
 
 /// Which of the page's shelves a [`Cards`] reads.
@@ -20,6 +21,7 @@ pub(super) enum Which {
     Related,
     Collection,
     Extras,
+    Cast,
 }
 
 impl Which {
@@ -28,6 +30,7 @@ impl Which {
         match self {
             Which::Related | Which::Collection => &RowStyle::HOME,
             Which::Extras => &RowStyle::EPISODE,
+            Which::Cast => &RowStyle::CAST,
         }
     }
 }
@@ -41,6 +44,9 @@ pub(super) struct Cards<'a> {
     key_by_local: &'a HashMap<u32, u32>,
     local_by_key: &'a HashMap<u32, u32>,
     len: usize,
+    /// The top of the tiles and the live press dip, which the cast names under them need.
+    row_y: f32,
+    press: f32,
 }
 
 impl<'a> Cards<'a> {
@@ -50,11 +56,12 @@ impl<'a> Cards<'a> {
         key_by_local: &'a HashMap<u32, u32>,
         local_by_key: &'a HashMap<u32, u32>,
     ) -> Self {
-        let mut cards = Self { which, d, key_by_local, local_by_key, len: 0 };
+        let mut cards = Self { which, d, key_by_local, local_by_key, len: 0, row_y: 0.0, press: 1.0 };
         let n = match which {
             Which::Related => d.related.len().min(512),
             Which::Collection => collection::len(d),
             Which::Extras => extras::len(d),
+            Which::Cast => d.credits_len().min(512),
         };
         // The projections are rebuilt on every landing; a page whose items outran them shows none
         // rather than a card with no key.
@@ -63,11 +70,19 @@ impl<'a> Cards<'a> {
         cards
     }
 
+    /// Where the shelf's tiles are drawn (`row_y`, in the painter's space) and the live press dip.
+    pub(super) fn drawn_at(mut self, row_y: f32, press: f32) -> Self {
+        self.row_y = row_y;
+        self.press = press;
+        self
+    }
+
     fn local(&self, i: usize) -> Option<u32> {
         match self.which {
             Which::Related => related::elem(i),
             Which::Collection => collection::elem(i),
             Which::Extras => extras::elem(i),
+            Which::Cast => cast::elem(i),
         }
     }
 
@@ -76,6 +91,7 @@ impl<'a> Cards<'a> {
             Which::Related => related::locate(local),
             Which::Collection => collection::locate(local),
             Which::Extras => extras::locate(local),
+            Which::Cast => cast::locate(local),
         }
     }
 
@@ -83,7 +99,7 @@ impl<'a> Cards<'a> {
         match self.which {
             Which::Related => &self.d.related,
             Which::Collection => collection::members(self.d),
-            Which::Extras => &[],
+            Which::Extras | Which::Cast => &[],
         }
     }
 }
@@ -107,6 +123,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
         match self.which {
             Which::Related | Which::Collection => Art::Poster(self.movies().get(i).map(tile_facts::of)),
             Which::Extras => extras::art(self.d, i),
+            Which::Cast => cast::art(self.d, i),
         }
     }
 
@@ -114,13 +131,27 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
         match self.which {
             Which::Related | Which::Collection => TileLabel::title(&self.movies()[i].title),
             Which::Extras => extras::label(self.d, i),
+            // the names are drawn under every headshot (`overlay`), not as the focused block
+            Which::Cast => TileLabel::default(),
         }
     }
 
     fn progress(&self, i: usize) -> Option<f32> {
         match self.which {
             Which::Related | Which::Collection => self.movies().get(i).and_then(|m| m.resume_frac()),
-            Which::Extras => None,
+            Which::Extras | Which::Cast => None,
         }
+    }
+
+    fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
+        if self.which != Which::Cast {
+            return;
+        }
+        // The name sits on the slot's own centre, dropped by the focus pop alone: the tile's scale
+        // less the press dip it was drawn with.
+        let slot = card_row::tile_rect(i, plx_ui::consts::MARGIN_X, cast::SLOT, 0.0, 0.0,
+            (RowStyle::CAST.w, RowStyle::CAST.h));
+        let pop = if tile.focused { tile.scale / self.press } else { tile.scale };
+        cast::draw_label(p, self.d, i, slot.x + RowStyle::CAST.w * 0.5, self.row_y - p.dy(), tile.focused, pop, measure);
     }
 }

@@ -1,10 +1,8 @@
-# count: 6
+# count: 4
 # Screens that still assemble their card sections from the L0 primitives (`card_row::draw_tile`,
 # `draw_focused`, `strip`, `paint_visible`, `CardRow`, `GridPop`, `GridBands`, thread-local
 # `press::scale()`) instead of `plx_ui::cards::{Shelf, Grid}` (shared-card-sections plan). The list
 # only SHRINKS: a screen leaves it in the PR that adopts the component. Whole test files are exempt.
-rust-modules/screens/src/detail/cast.rs	Detail's cast shelf
-rust-modules/screens/src/detail/mod.rs	Detail's shelves and episode strip
 rust-modules/screens/src/home/mod.rs	Home's shelves
 rust-modules/screens/src/library/draw.rs	Library shelves
 rust-modules/screens/src/library/mod.rs	Library shelves
