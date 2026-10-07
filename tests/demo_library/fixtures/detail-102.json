@@ -1,0 +1,220 @@
+{
+ "MediaContainer": {
+  "Metadata": [
+   {
+    "Chapter": [
+     {
+      "endTimeOffset": 101000,
+      "id": 1,
+      "index": 1,
+      "startTimeOffset": 0,
+      "tag": "Snowbound"
+     },
+     {
+      "endTimeOffset": 162000,
+      "id": 2,
+      "index": 2,
+      "startTimeOffset": 101000,
+      "tag": "The Shaman's Hut"
+     },
+     {
+      "endTimeOffset": 353000,
+      "id": 3,
+      "index": 3,
+      "startTimeOffset": 162000,
+      "tag": "Scales"
+     },
+     {
+      "endTimeOffset": 484000,
+      "id": 4,
+      "index": 4,
+      "startTimeOffset": 353000,
+      "tag": "The Long Search"
+     },
+     {
+      "endTimeOffset": 684000,
+      "id": 5,
+      "index": 5,
+      "startTimeOffset": 484000,
+      "tag": "The Dragon's Lair"
+     },
+     {
+      "endTimeOffset": 744000,
+      "id": 6,
+      "index": 6,
+      "startTimeOffset": 684000,
+      "tag": "Aftermath"
+     },
+     {
+      "endTimeOffset": 888064,
+      "id": 7,
+      "index": 7,
+      "startTimeOffset": 744000,
+      "tag": "Credits"
+     }
+    ],
+    "Collection": [
+     {
+      "id": 1,
+      "tag": "Blender Open Movies"
+     },
+     {
+      "id": 4,
+      "tag": "Shorts"
+     }
+    ],
+    "Country": [
+     {
+      "tag": "Netherlands"
+     }
+    ],
+    "Director": [
+     {
+      "id": 2,
+      "tag": "Colin Levy",
+      "tagKey": "demo-person-2"
+     }
+    ],
+    "Genre": [
+     {
+      "filter": "genre=1",
+      "id": 1,
+      "tag": "Animation"
+     },
+     {
+      "filter": "genre=2",
+      "id": 2,
+      "tag": "Fantasy"
+     },
+     {
+      "filter": "genre=4",
+      "id": 4,
+      "tag": "Action"
+     },
+     {
+      "filter": "genre=3",
+      "id": 3,
+      "tag": "Short"
+     }
+    ],
+    "Marker": [],
+    "Media": [
+     {
+      "Part": [
+       {
+        "Stream": [
+         {
+          "bitDepth": 8,
+          "codec": "h264",
+          "default": true,
+          "displayTitle": "720p (H264)",
+          "frameRate": 24.0,
+          "height": 872,
+          "id": 1021,
+          "index": 0,
+          "language": "und",
+          "languageCode": "und",
+          "selected": true,
+          "streamType": 1,
+          "width": 2048
+         },
+         {
+          "audioChannelLayout": "stereo",
+          "canNormalizeLoudness": "1",
+          "channels": 2,
+          "codec": "aac",
+          "default": true,
+          "displayTitle": "eng (AAC)",
+          "id": 1022,
+          "index": 1,
+          "language": "eng",
+          "languageCode": "eng",
+          "selected": true,
+          "streamType": 2
+         }
+        ],
+        "container": "mp4",
+        "duration": 888064,
+        "file": "/synthetic/sintel-film.mp4",
+        "id": 102,
+        "key": "/library/parts/102/1/file.mp4",
+        "size": 282690045
+       }
+      ],
+      "aspectRatio": 2.349,
+      "audioChannels": 2,
+      "audioCodec": "aac",
+      "bitrate": 2547,
+      "container": "mp4",
+      "duration": 888064,
+      "height": 872,
+      "id": 102,
+      "videoCodec": "h264",
+      "videoFrameRate": "24p",
+      "videoResolution": "720",
+      "width": 2048
+     }
+    ],
+    "Rating": [],
+    "Role": [
+     {
+      "id": 5,
+      "role": "Sintel",
+      "tag": "Halina Reijn",
+      "tagKey": "demo-person-5"
+     },
+     {
+      "id": 6,
+      "role": "Shaman",
+      "tag": "Thom Hoffman",
+      "tagKey": "demo-person-6"
+     }
+    ],
+    "UltraBlurColors": {
+     "bottomLeft": "#0a0604",
+     "bottomRight": "#0b0605",
+     "topLeft": "#4f2012",
+     "topRight": "#4a1d0f"
+    },
+    "Writer": [
+     {
+      "id": 3,
+      "tag": "Esther Wouda",
+      "tagKey": "demo-person-3"
+     },
+     {
+      "id": 4,
+      "tag": "Martin Lodewijk",
+      "tagKey": "demo-person-4"
+     }
+    ],
+    "addedAt": 1788531200,
+    "art": "/library/metadata/102/art/1790000000",
+    "duration": 888064,
+    "guid": "plex://movie/demo-sintel",
+    "key": "/library/metadata/102",
+    "lastViewedAt": 1789999400,
+    "librarySectionID": 1,
+    "librarySectionKey": "/library/sections/1",
+    "librarySectionTitle": "Movies",
+    "originallyAvailableAt": "2010-09-27",
+    "ratingKey": "102",
+    "studio": "Blender Foundation",
+    "summary": "A lone young woman crosses frozen wastes and ruined cities in search of Scales, the baby dragon she rescued and raised before it was taken from her. The closer she comes to the dragons' lair, the less certain she is of what she will find there.",
+    "tagline": "A girl, a dragon, and the long road between them.",
+    "thumb": "/library/metadata/102/thumb/1790000000",
+    "title": "Sintel",
+    "titleSort": "Sintel",
+    "type": "movie",
+    "updatedAt": 1788531200,
+    "viewOffset": 435000,
+    "year": 2010
+   }
+  ],
+  "allowSync": false,
+  "identifier": "com.plexapp.plugins.library",
+  "mediaTagPrefix": "/system/bundle/media/flags/",
+  "mediaTagVersion": 1,
+  "size": 1
+ }
+}

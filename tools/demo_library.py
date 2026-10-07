@@ -7,6 +7,7 @@ the images the mock server serves, and write the credits.
     python3 tools/demo_library.py credits   # rewrite docs/screenshots/CREDITS.md and site/credits.html
     python3 tools/demo_library.py site-credits  # rewrite site/credits.html only (make screenshots does)
     python3 tools/demo_library.py check     # validate the two manifests; no network
+    python3 tools/demo_library.py fixtures  # capture the complete titles' detail responses
 
 Two committed manifests drive it:
 
@@ -16,7 +17,7 @@ Two committed manifests drive it:
 * `tests/demo_library/catalog.json` — the library itself (titles, credits, synopses, watch state,
   shelves) and, per item, which asset each image is derived from and how (`mode`, `anchor`, `crop`).
 
-Nothing is committed but the manifests: the sources and the derived images live in a cache outside
+Nothing is committed but the manifests and the two captured detail fixtures: the sources and the derived images live in a cache outside
 the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`, ~390 MB of sources,
 283 MB of it the complete Sintel the player figure plays), so a fresh clone rebuilds them with one
 command. Derivation is ffmpeg with fixed filters and fixed
@@ -32,6 +33,7 @@ import html
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -316,6 +318,53 @@ def media_path(assets, aid):
 
 # ------------------------------------------------------------------ validation ----------------
 
+# The review-score marks a catalog `ratings` row may name: the ones the app badges
+# (`data/src/metadata.rs`, `RatingArt`) minus what this library never claims. The TMDB mark is
+# refused (its terms forbid this use), Rotten Tomatoes' "certified" is a state only RT itself
+# awards, and Metacritic has no badge in the app.
+RATING_IMAGES = frozenset({
+    "imdb://image.rating",
+    "rottentomatoes://image.rating.ripe", "rottentomatoes://image.rating.rotten",
+    "rottentomatoes://image.rating.upright", "rottentomatoes://image.rating.spilled",
+})
+DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _cited(key, what, row):
+    """A real value is shown only with where it came from and when it was read."""
+    src = row.get("source")
+    assert isinstance(src, str) and src.startswith("https://"), f"{key}: {what} needs an https `source`"
+    assert DATE.match(str(row.get("retrieved", ""))), f"{key}: {what} needs a `retrieved` date (YYYY-MM-DD)"
+
+
+def check_cited_metadata(key, kind, rec):
+    """The optional metadata the mock serves beyond the basics. Nothing here may be invented: a
+    content rating and every review score carry their source and retrieval date, a tagline is our
+    own text and says so (`demo_values`), and the lists are well formed."""
+    if "contentRating" in rec:
+        row = rec["contentRating"]
+        assert isinstance(row, dict) and row.get("value"), f"{key}: contentRating is {{value, source, retrieved}}"
+        _cited(key, "contentRating", row)
+    for row in rec.get("ratings", []):
+        assert row.get("image") in RATING_IMAGES, \
+            f"{key}: rating image {row.get('image')!r} is not one of {sorted(RATING_IMAGES)}"
+        assert row.get("type") in ("critic", "audience"), f"{key}: rating type"
+        assert isinstance(row.get("value"), (int, float)) and 0 < row["value"] <= 10, \
+            f"{key}: a rating value is on PMS's 0-10 scale"
+        _cited(key, "a rating", row)
+    if "tagline" in rec:
+        assert rec["tagline"] and "tagline" in rec.get("demo_values", []), \
+            f"{key}: a tagline is our own text and is listed in `demo_values`"
+    for field in ("countries", "creators"):
+        if field in rec:
+            assert isinstance(rec[field], list) and rec[field] and all(isinstance(n, str) and n for n in rec[field]), \
+                f"{key}: {field} is a non-empty list of names"
+    assert "creators" not in rec or kind == "show", f"{key}: only a show has creators"
+    for src in rec.get("sources", []):
+        _cited(key, "a source", dict(src, source=src.get("url")))
+        assert src.get("fields"), f"{key}: a source names the fields it supplied"
+
+
 def check(assets, catalog):
     """Every referenced asset exists and carries a licence; every asset is referenced; ids unique."""
     used = set()
@@ -328,6 +377,7 @@ def check(assets, catalog):
                 aid = rec[role]["asset"]
                 assert aid in assets, f"{key}: {role} asset {aid!r} is not in assets.json"
                 used.add(aid)
+        check_cited_metadata(key, kind, rec)
         if "media" in rec:
             assert rec["media"] in assets, f"{key}: media {rec['media']!r} is not in assets.json"
             used.add(rec["media"])
@@ -644,9 +694,27 @@ def site_credits(assets, catalog, dst=SITE_CREDITS):
     print(f"demo_library: wrote {dst}")
 
 
+FIXTURES = ROOT / "tests" / "demo_library" / "fixtures"
+FIXTURE_TITLES = {"sintel": 102, "tears-of-steel": 105}  # the two complete titles, by ratingKey
+
+
+def fixtures(dst=FIXTURES):
+    """Capture the mock's `/library/metadata/<rk>` answer for each complete title, the detail
+    pages the data crate parses (`metadata_demo_fixture_tests.rs`). Needs the derived artwork."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    import mock_pms
+    pms = mock_pms.MockPms(mock_pms.CatalogLibrary(CATALOG))
+    dst.mkdir(parents=True, exist_ok=True)
+    for slug, rk in FIXTURE_TITLES.items():
+        status, _, body = pms.handle("GET", f"/library/metadata/{rk}")
+        assert status == 200, (slug, status)
+        (dst / f"detail-{rk}.json").write_text(json.dumps(json.loads(body), indent=1, sort_keys=True) + "\n")
+        print(f"demo_library: wrote {dst / f'detail-{rk}.json'}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("command", choices=["fetch", "derive", "credits", "site-credits", "check"])
+    ap.add_argument("command", choices=["fetch", "derive", "credits", "site-credits", "check", "fixtures"])
     a = ap.parse_args()
     assets, catalog = load()
     check(assets, catalog)
@@ -659,6 +727,8 @@ def main():
         site_credits(assets, catalog)
     elif a.command == "site-credits":
         site_credits(assets, catalog)
+    elif a.command == "fixtures":
+        fixtures()
     else:
         print("demo_library: manifests ok")
 
