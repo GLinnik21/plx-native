@@ -1,4 +1,4 @@
-{"updated":"2026-10-07T09:44:17Z",
+{"updated":"2026-10-07T09:46:22Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -520,5 +520,6 @@
 {"id":37512786837,"at":"2026-10-06T18:37:51Z","sha":"4a0dab4fb","title":"Settings: BACK keycap hint for restarting after a language change","pr":473,"jobs":{"macOS simulator build + launch":425,"macOS tests against bundled FFmpeg and ASS":481,"Windows launcher syntax":15,"Linux simulator build + launch":276}},
 {"id":37565982997,"at":"2026-10-07T03:16:27Z","sha":"89cd87e7c","title":"RC.1 nits: Settings pill and fade, hold pop, Library BACK glide, empty Detail, cast marquee, Collection lift, login timi","pr":480,"jobs":{"Linux simulator build + launch":306,"Windows launcher syntax":17,"macOS simulator build + launch":453,"macOS tests against bundled FFmpeg and ASS":291}},
 {"id":37598278898,"at":"2026-10-07T09:06:12Z","sha":"7247ec131","title":"First run asks every profile which libraries it wants","pr":481,"jobs":{"Linux simulator build + launch":240,"Windows launcher syntax":16,"macOS simulator build + launch":571,"macOS tests against bundled FFmpeg and ASS":328}},
-{"id":37600409322,"at":"2026-10-07T09:24:37Z","sha":"d07086c5e","title":"Focused card captions marquee with their title instead of eliding","pr":482,"jobs":{"Linux simulator build + launch":285,"macOS simulator build + launch":490,"Windows launcher syntax":17,"macOS tests against bundled FFmpeg and ASS":261}}
+{"id":37600409322,"at":"2026-10-07T09:24:37Z","sha":"d07086c5e","title":"Focused card captions marquee with their title instead of eliding","pr":482,"jobs":{"Linux simulator build + launch":285,"macOS simulator build + launch":490,"Windows launcher syntax":17,"macOS tests against bundled FFmpeg and ASS":261}},
+{"id":37602073805,"at":"2026-10-07T09:39:03Z","sha":"10d917ce3","title":"Label new issues automatically","pr":479,"jobs":{"Windows launcher syntax":18,"macOS tests against bundled FFmpeg and ASS":291,"macOS simulator build + launch":421,"Linux simulator build + launch":283}}
 ]}
