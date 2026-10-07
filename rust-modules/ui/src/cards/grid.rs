@@ -282,6 +282,13 @@ impl Grid {
         self.bands = GridBands::new();
     }
 
+    /// The grid's height for `len` cards with its caption bands as they are now: the span from the
+    /// first row's top to the end of the last row's band, the pitch's air included, as `poster_grid::max_scroll_in` counts it (what a `Stack` lays the next section
+    /// after, and bounds its scroll by).
+    pub fn height(&self, len: usize) -> f32 {
+        poster_grid::row_top_in(&self.spec.geom(), len.div_ceil(self.spec.cols), 0.0, &self.bands.geometry())
+    }
+
     /// The cards the scroll can show out of `len`: what `draw` and `record_stops` touch.
     pub fn window(&self, len: usize) -> std::ops::Range<usize> {
         poster_grid::visible_in(&self.spec.geom(), len, self.spec.top, self.scroll.pos)

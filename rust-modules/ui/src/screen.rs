@@ -243,6 +243,14 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// has focused (`app::bridge::opener_lift`), so an implementer may draw `focus` as focused
     /// without checking that the page has not moved on.
     fn redraw_focused(&self, _f: &mut DrawFrame<'_, '_, H>, _focus: Option<FocusKey<H::Elem>>) {}
+    /// **The card the page has focused, and where it sits** — the host's question for an item menu
+    /// and for the focus probe, asked of whichever card page is on screen so the host names no
+    /// screen type. `focus` is the engine key to answer for (a page answers only its own entry's
+    /// cards); `None` for a page with no card, which is the default. The rect is measured only
+    /// when `at` names how (`None` for a caller that wants the item alone).
+    fn focused_card<'a>(&self, _cx: &Cx<'a, H>, _focus: Option<FocusKey<H::Elem>>, _at: Option<At>) -> Option<FocusedCard<'a>> {
+        None
+    }
     /// Typed application inspection during migration; the library never names a screen type.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
@@ -425,6 +433,14 @@ pub enum At {
     Drawn,
 }
 
+/// The card a page has focused ([`Screen::focused_card`]): the catalog item behind it, as the
+/// application's own type (this layer names none, so the host downcasts it), and its rect.
+#[derive(Clone, Copy)]
+pub struct FocusedCard<'a> {
+    pub item: &'a dyn std::any::Any,
+    pub rect: Option<Rect>,
+}
+
 /// What was painted / where it rests / what clipped it (§7.6).
 #[derive(Clone, Copy, Debug)]
 pub struct Placed {
@@ -602,19 +618,24 @@ macro_rules! focusable_via_composed {
 /// `TableScreen`/`DocumentScreen` over its own state (`fn $view(&self) -> impl Focusable<$h>`).
 /// The screen keeps the widgets; the composition is rebuilt per query, exactly as the draw
 /// rebuilds it (phase 5b's family pages).
+///
+/// The second form is for a screen generic over its host (a page that reads its store through a
+/// host trait): `focusable_via_view!(Screen, H: [Bounds], view)` writes
+/// `impl<H: Bounds> Focusable<H> for Screen` and calls `self.view::<H>()`, so the view method is
+/// generic too (`fn view<H: Bounds>(&self) -> impl Focusable<H> + '_`) — a `cards::Stack` page.
 #[macro_export]
 macro_rules! focusable_via_view {
-    ($t:ty, $h:ty, $view:ident) => {
-        impl $crate::screen::Focusable<$h> for $t {
+    (@impl [$($gen:tt)*] $t:ty, $h:ty, $view:ident, [$($turbofish:tt)*]) => {
+        impl $($gen)* $crate::screen::Focusable<$h> for $t {
             fn groups(&self, cx: &plx_machine::machine::Cx<'_, $h>, out: &mut Vec<$crate::screen::GroupSpec>) {
-                $crate::screen::Focusable::<$h>::groups(&self.$view(), cx, out)
+                $crate::screen::Focusable::<$h>::groups(&self.$view $($turbofish)* (), cx, out)
             }
             fn group_of(
                 &self,
                 key: &<$h as plx_machine::machine::Host>::Elem,
                 cx: &plx_machine::machine::Cx<'_, $h>,
             ) -> Option<plx_machine::machine::GroupId> {
-                $crate::screen::Focusable::<$h>::group_of(&self.$view(), key, cx)
+                $crate::screen::Focusable::<$h>::group_of(&self.$view $($turbofish)* (), key, cx)
             }
             fn neighbour(
                 &self,
@@ -622,7 +643,7 @@ macro_rules! focusable_via_view {
                 dir: $crate::screen::Dir,
                 cx: &plx_machine::machine::Cx<'_, $h>,
             ) -> $crate::screen::Step<<$h as plx_machine::machine::Host>::Elem> {
-                $crate::screen::Focusable::<$h>::neighbour(&self.$view(), key, dir, cx)
+                $crate::screen::Focusable::<$h>::neighbour(&self.$view $($turbofish)* (), key, dir, cx)
             }
             fn place(
                 &self,
@@ -630,14 +651,14 @@ macro_rules! focusable_via_view {
                 cx: &plx_machine::machine::Cx<'_, $h>,
                 at: $crate::screen::At,
             ) -> Option<$crate::screen::Placed> {
-                $crate::screen::Focusable::<$h>::place(&self.$view(), key, cx, at)
+                $crate::screen::Focusable::<$h>::place(&self.$view $($turbofish)* (), key, cx, at)
             }
             fn reconcile(
                 &self,
                 want: plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem>,
                 cx: &plx_machine::machine::Cx<'_, $h>,
             ) -> plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem> {
-                $crate::screen::Focusable::<$h>::reconcile(&self.$view(), want, cx)
+                $crate::screen::Focusable::<$h>::reconcile(&self.$view $($turbofish)* (), want, cx)
             }
             fn seat(
                 &self,
@@ -645,9 +666,15 @@ macro_rules! focusable_via_view {
                 from: $crate::screen::Placed,
                 cx: &plx_machine::machine::Cx<'_, $h>,
             ) -> plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem> {
-                $crate::screen::Focusable::<$h>::seat(&self.$view(), g, from, cx)
+                $crate::screen::Focusable::<$h>::seat(&self.$view $($turbofish)* (), g, from, cx)
             }
         }
+    };
+    ($t:ty, $h:ident: [$($bound:tt)+], $view:ident) => {
+        $crate::focusable_via_view!(@impl [<$h: $($bound)+>] $t, $h, $view, [::<$h>]);
+    };
+    ($t:ty, $h:ty, $view:ident) => {
+        $crate::focusable_via_view!(@impl [] $t, $h, $view, []);
     };
 }
 

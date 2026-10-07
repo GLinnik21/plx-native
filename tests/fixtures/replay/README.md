@@ -352,3 +352,12 @@ afresh on the unchanged shape (`tests/focusfp.sh --rec --only 6,12`, old fixture
 `tools/plxnative-rec import`, manifests restored byte for byte, `anchor: true` kept) and replayed SAME in
 Targets and Resolve (`make check-replay`, three consecutive runs) with every difference counter zero. The
 closed alphabet did not move: every new string is already a synthetic or localized literal it admits.
+
+`cards::Stack` (Collection and Person adopting it) moved the state shape, because both screens'
+logical state gained the stack's motion canon. All three anchors loaded and replayed SAME on the
+commit before it (`make check-replay`, six replays, every counter zero) and were then observed
+being refused on the branch (`replay: REFUSED — invalid or incompatible recording`, all three, both
+modes), so nothing could be compared. They were re-recorded with `tests/focusfp.sh --rec --only
+1,6,12`, `tools/plxnative-rec check`, then `tools/plxnative-rec rerecord` (shape `(3,
+3109788404986066319)` to `(3, 14333139794472628045)`, anchors preserved) and replayed SAME in
+Targets and Resolve with zero difference counters.

@@ -1074,3 +1074,417 @@ fn an_external_grid_writes_no_scroll_of_its_own() {
     Grid::new(ENTRY, GridSpec::new(520.0, 96.0).external()).write(&mut ext);
     assert_ne!(own.finish(), ext.finish(), "a self-scrolling grid does write its scroll");
 }
+
+// ---- Stack (L2) ----------------------------------------------------------------------------
+
+mod stack {
+    use super::*;
+    use crate::cards::{Kind, SectionSpec, Stack, StackEvent, StackPage};
+    use crate::card_row;
+    use crate::screen::Focusable;
+    use plx_machine::machine::GroupId;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Sec { Head, Aside, Row, Items, Status }
+
+    const HEAD_ELEM: u32 = 1;
+    const STATUS_ELEM: u32 = 2;
+    const ASIDE_ELEM: u32 = 3;
+    const HEAD_H: f32 = 400.0;
+    const ROW_STYLE: &RowStyle = &card_row::RowStyle::HOME;
+    const COLS_SPEC: GridSpec = GridSpec::new(0.0, 96.0);
+
+    /// A page of a header, a shelf, a grid and a Retry-like overlay, over `Cards`.
+    struct Page {
+        row: Cards,
+        items: Cards,
+        revision: u64,
+        status: bool,
+        pending: bool,
+        /// A zero-height focusable that reveals the header's block (`reveal_with`).
+        aside: bool,
+        /// A header tall enough that the shelf below it needs the page scrolled to be on screen.
+        tall: bool,
+    }
+
+    impl CardSource<FixtureHost> for &Cards {
+        fn len(&self) -> usize { self.elems.len() }
+        fn elem(&self, i: usize) -> u32 { self.elems[i] }
+        fn index_of(&self, e: &u32) -> Option<usize> { self.elems.iter().position(|x| x == e) }
+        fn art(&self, _i: usize) -> Art<'_> { Art::Poster(None) }
+        fn label(&self, _i: usize) -> TileLabel { TileLabel::default() }
+        fn more(&self) -> bool { self.more }
+    }
+
+    impl StackPage<FixtureHost> for Page {
+        type Key = Sec;
+        type Cards<'a> = &'a Cards;
+        fn revision(&self, _cx: &Cx9<'_>) -> u64 { self.revision }
+        fn pending(&self, _cx: &Cx9<'_>, _want: &u32) -> bool { self.pending }
+        fn sections(&self, _cx: &Cx9<'_>, out: &mut Vec<SectionSpec<Sec>>) {
+            // the page's own ids, none of them a position; the grid is listed first, as a page
+            // whose first-press seat is its members would have it
+            out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: if self.tall { 700.0 } else { HEAD_H }, focusable: true }, GroupId(7)).ranked(1));
+            if self.aside {
+                out.push(SectionSpec::new(Sec::Aside, Kind::Custom { height: 0.0, focusable: true }, GroupId(6)).ranked(1));
+            }
+            out.push(SectionSpec::new(Sec::Row, Kind::Shelf { style: ROW_STYLE, heading: 60.0 }, GroupId(3)).ranked(1));
+            out.push(SectionSpec::new(Sec::Items, Kind::Grid { spec: COLS_SPEC }, GroupId(0)));
+            if self.status {
+                out.push(SectionSpec::new(Sec::Status, Kind::Overlay { rect: Rect::new(96.0, 460.0, 400.0, 80.0), focusable: true }, GroupId(9)).ranked(2));
+            }
+        }
+        fn fallback(&self, _cx: &Cx9<'_>, out: &mut Vec<Sec>) { out.extend([Sec::Items, Sec::Row, Sec::Status, Sec::Head]) }
+        fn cards<'a>(&'a self, _cx: &'a Cx9<'_>, k: Sec) -> Option<&'a Cards> {
+            match k { Sec::Row => Some(&self.row), Sec::Items => Some(&self.items), _ => None }
+        }
+        fn elem_of(&self, k: Sec) -> Option<u32> {
+            match k { Sec::Head => Some(HEAD_ELEM), Sec::Aside => Some(ASIDE_ELEM), Sec::Status => Some(STATUS_ELEM), _ => None }
+        }
+        fn reveal_with(&self, k: Sec) -> Option<Sec> { (k == Sec::Aside).then_some(Sec::Head) }
+        fn focus_rect(&self, _cx: &Cx9<'_>, k: Sec, section: Rect) -> Rect {
+            if k == Sec::Head { Rect::new(360.0, section.y + 96.0, 1344.0, 300.0) } else { section }
+        }
+    }
+
+    struct Rig {
+        stack: Stack<Sec>,
+        page: Page,
+        view: FixtureView,
+        focus: Option<FocusKey<u32>>,
+        ms: u32,
+    }
+
+    fn rig(row: usize, items: usize) -> Rig {
+        let ids = |base: u32, n: usize| (0..n as u32).map(|i| base + i).collect::<Vec<_>>();
+        let mut r = Rig {
+            stack: Stack::new(ENTRY),
+            page: Page { row: Cards::new(ids(100, row), false), items: Cards::new(ids(1000, items), false), revision: 1, status: false, pending: false, aside: false, tall: false },
+            view: FixtureView::default(),
+            focus: None,
+            ms: 0,
+        };
+        r.run(1);
+        r
+    }
+
+    impl Rig {
+        fn cx(&self) -> Cx9<'_> {
+            Cx {
+                views: FixtureViews { store: &self.view },
+                tick: Tick { ms: self.ms, dt_us: 16_667 },
+                measure: &FixtureMeasure,
+                press: PressRead { scale: 1.0, ..Default::default() },
+                focus: FocusRead { current: self.focus, ..Default::default() },
+                owner: InputOwner::Entry(ENTRY),
+            }
+        }
+        fn feed(&mut self, ev: ScreenEvent<FixtureHost>) -> (Option<StackEvent<Sec, u32>>, bool) {
+            let mut present = Present::new();
+            let mut out = Vec::new();
+            let mut got = None;
+            let (_, moving) = plx_machine::idle::scoped_motion(|| {
+                let cx = Cx {
+                    views: FixtureViews { store: &self.view },
+                    tick: Tick { ms: self.ms, dt_us: 16_667 },
+                    measure: &FixtureMeasure,
+                    press: PressRead { scale: 1.0, ..Default::default() },
+                    focus: FocusRead { current: self.focus, ..Default::default() },
+                    owner: InputOwner::Entry(ENTRY),
+                };
+                let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
+                got = self.stack.on(&self.page, &ev, &cx, &mut fx);
+            });
+            (got, moving || present.page_moving())
+        }
+        fn go(&mut self, elem: u32, by: By) {
+            let from = self.focus;
+            let to = FocusKey { entry: ENTRY, elem };
+            self.focus = Some(to);
+            self.feed(ScreenEvent::FocusMoved { from, to, by });
+        }
+        fn run(&mut self, frames: u32) -> bool {
+            let mut moved = false;
+            for _ in 0..frames {
+                self.ms += MS;
+                moved |= self.feed(ScreenEvent::Tick(Tick { ms: self.ms, dt_us: 16_667 })).1;
+            }
+            moved
+        }
+        fn place(&self, elem: u32) -> Option<Placed> {
+            self.stack.view(&self.page).place(&elem, &self.cx(), At::Drawn)
+        }
+        fn reconcile(&self, want: u32) -> u32 {
+            let key = FocusKey { entry: ENTRY, elem: want };
+            self.stack.view(&self.page).reconcile(key, &self.cx()).elem
+        }
+    }
+
+    #[test]
+    fn a_section_that_names_a_block_reveals_that_block_not_its_own_sliver() {
+        let mut r = rig(6, 60);
+        r.page.aside = true;
+        r.page.tall = true;
+        r.page.revision += 1;
+        r.run(1);
+        r.go(100, By::Restore);
+        r.run(2);
+        r.go(1030, By::Dir);
+        r.run(120);
+        assert!(r.stack.scroll() > 100.0, "setup: the page is scrolled down: {}", r.stack.scroll());
+        r.go(ASIDE_ELEM, By::Dir);
+        r.run(240);
+        assert!(r.stack.scroll().abs() < 0.5, "the aside sits in the header's block: the page goes home, not to the aside's own top: {}", r.stack.scroll());
+    }
+
+    #[test]
+    fn the_scroll_target_is_measured_against_the_settled_caption_bands() {
+        let mut r = rig(6, 24);
+        r.page.tall = true;
+        r.page.revision += 1;
+        r.run(1);
+        r.go(100, By::Dir);
+        r.run(1);
+        let first = r.stack.target();
+        r.run(240);
+        assert!(first > 0.0, "setup: the shelf below a tall header needs the page scrolled: {first}");
+        assert_eq!(r.stack.target(), first, "the target was the destination from the first frame, not a chase of the opening band");
+        assert!((r.stack.scroll() - first).abs() < 0.5);
+    }
+
+    #[test]
+    fn sections_run_again_only_when_the_revision_moves() {
+        let mut r = rig(6, 24);
+        let built = r.stack.rebuilds;
+        r.run(5);
+        r.go(1005, By::Dir);
+        r.run(20);
+        assert_eq!(r.stack.rebuilds, built, "ticks, focus moves and settling never rebuild the layout");
+        r.page.revision += 1;
+        r.run(1);
+        assert_eq!(r.stack.rebuilds, built + 1, "a content revision rebuilds it once");
+    }
+
+    #[test]
+    fn the_layout_stacks_header_shelf_and_grid_in_document_order() {
+        let r = rig(6, 24);
+        let view = r.stack.view(&r.page);
+        let head = view.place(&HEAD_ELEM, &r.cx(), At::Drawn).unwrap().rect;
+        let row = view.place(&100, &r.cx(), At::Drawn).unwrap().rect;
+        let grid = view.place(&1000, &r.cx(), At::Drawn).unwrap().rect;
+        assert_eq!(head.y, 96.0, "the page's own focus rect: the section top plus its inset");
+        assert_eq!(row.y, HEAD_H + 60.0, "a shelf's tiles sit under the header and its heading");
+        assert!(grid.y > row.y + ROW_STYLE.h, "the grid starts after the shelf: {grid:?} vs {row:?}");
+        let mut groups = Vec::new();
+        view.groups(&r.cx(), &mut groups);
+        assert_eq!(groups.len(), 3, "header, shelf, grid");
+        assert_eq!(r.stack.group(Sec::Items), Some(GroupId(0)));
+    }
+
+    /// A section's group id is the page's own and is listed in the page's rank: not its position
+    /// in the document, and not shifted by which other sections exist.
+    #[test]
+    fn group_ids_and_their_order_are_the_pages_not_positions() {
+        let mut r = rig(6, 24);
+        let ids = |r: &Rig| {
+            let mut groups = Vec::new();
+            r.stack.view(&r.page).groups(&r.cx(), &mut groups);
+            groups.iter().map(|g| g.id.0).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&r), [0, 7, 3], "grid first (rank), then header, then shelf");
+        assert_eq!((r.stack.group(Sec::Head), r.stack.group(Sec::Row)), (Some(GroupId(7)), Some(GroupId(3))));
+        r.page.aside = true;
+        r.page.status = true;
+        r.page.revision += 1;
+        r.run(1);
+        assert_eq!(ids(&r), [0, 7, 6, 3, 9]);
+        assert_eq!((r.stack.group(Sec::Head), r.stack.group(Sec::Row), r.stack.group(Sec::Items)),
+            (Some(GroupId(7)), Some(GroupId(3)), Some(GroupId(0))), "a section keeps its id as others come and go");
+        let view = r.stack.view(&r.page);
+        let cx = r.cx();
+        let key = |g: u32| view.seat(GroupId(g), crate::screen::Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None }, &cx).elem;
+        assert!((1000..1024).contains(&key(0)) && (100..106).contains(&key(3)), "a card of the section the id names");
+        assert_eq!((key(7), key(9)), (HEAD_ELEM, STATUS_ELEM), "seat finds the section by its id");
+        assert_eq!(view.group_of(&1000, &cx), Some(GroupId(0)));
+        assert_eq!(view.group_of(&STATUS_ELEM, &cx), Some(GroupId(9)));
+    }
+
+    /// A group the page no longer lists degrades to the page's fallback; it never panics.
+    #[test]
+    fn seating_into_an_unlisted_group_degrades_to_the_fallback() {
+        let r = rig(6, 24);
+        let view = r.stack.view(&r.page);
+        let from = crate::screen::Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None };
+        assert_eq!(view.seat(GroupId(42), from, &r.cx()).elem, 1000, "the first of the fallback order");
+        let mut empty = rig(0, 0);
+        empty.page.pending = false;
+        let view = empty.stack.view(&empty.page);
+        assert_eq!(view.seat(GroupId(3), from, &empty.cx()).elem, HEAD_ELEM, "an emptied shelf's group: the header");
+    }
+
+    /// Two paging sections ask in one tick: both asks reach the page on a later tick, whatever
+    /// other events arrive between (the page reads a `Want` only on a tick).
+    #[test]
+    fn a_second_paging_section_is_not_dropped_by_an_event_that_is_not_a_tick() {
+        let mut r = rig(3, 3);
+        r.page.row.more = true;
+        r.page.items.more = true;
+        let tick = |r: &mut Rig| { r.ms += MS; r.feed(ScreenEvent::Tick(Tick { ms: r.ms, dt_us: 16_667 })).0 };
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            if let Some(StackEvent::Card(k, CardEvent::Want(_))) = tick(&mut r) { seen.push(k); }
+            // a non-tick event between ticks must neither deliver nor lose a queued ask
+            let (got, _) = r.feed(ScreenEvent::Cover);
+            assert!(got.is_none(), "a Want is only ever reported on a tick: {got:?}");
+        }
+        assert!(seen.contains(&Sec::Row) && seen.contains(&Sec::Items), "both sections' asks arrive: {seen:?}");
+    }
+
+    #[test]
+    fn focus_on_a_deep_grid_row_scrolls_the_page_and_the_header_scrolls_it_home() {
+        let mut r = rig(6, 60);
+        r.go(1000, By::Restore);
+        r.run(2);
+        r.go(1030, By::Dir);
+        r.run(120);
+        assert!(r.stack.scroll() > 100.0, "the page followed the focused row: {}", r.stack.scroll());
+        let at = r.place(1030).unwrap().rect;
+        assert!(at.y >= 0.0 && at.y + at.h <= SCR_H_F, "and the row is on screen: {at:?}");
+        r.go(HEAD_ELEM, By::Dir);
+        r.run(240);
+        assert!(r.stack.scroll().abs() < 0.5, "focus on the header brings the page home: {}", r.stack.scroll());
+    }
+
+    #[test]
+    fn a_page_stays_put_when_focus_leaves_it_unless_it_asks_to_go_home() {
+        let scrolled = |home: bool| {
+            let mut r = rig(6, 60);
+            r.stack = Stack::new(ENTRY).home_when_unfocused(home);
+            r.run(1);
+            r.go(1000, By::Restore);
+            r.run(2);
+            r.go(1030, By::Dir);
+            r.run(120);
+            let deep = r.stack.scroll();
+            assert!(deep > 100.0, "the page followed the focused row: {deep}");
+            r.focus = None;
+            r.run(240);
+            (deep, r.stack.scroll(), r)
+        };
+        let (deep, after, _) = scrolled(false);
+        assert!((after - deep).abs() < 0.5, "by default the page stays where it was: {deep} -> {after}");
+        let (_, after, mut r) = scrolled(true);
+        assert!(after.abs() < 0.5, "with home_when_unfocused the page scrolls home: {after}");
+        r.page.status = true;
+        r.page.revision += 1;
+        r.run(1);
+        r.go(1030, By::Dir);
+        r.run(120);
+        assert!(r.stack.scroll() > 100.0);
+        r.go(STATUS_ELEM, By::Dir);
+        r.run(240);
+        assert!(r.stack.scroll().abs() < 0.5, "an out-of-flow overlay held counts as unfocused: {}", r.stack.scroll());
+    }
+
+    const SCR_H_F: f32 = crate::consts::SCR_H;
+
+    #[test]
+    fn stops_are_the_rects_placement_answers_at_any_scroll() {
+        let mut r = rig(6, 60);
+        r.go(1000, By::Restore);
+        r.go(1031, By::Dir);
+        r.run(60);
+        let cx = r.cx();
+        let mut f = DrawFrame::new(&cx, Painter::root());
+        r.stack.view(&r.page).record_stops(&mut f);
+        let stops = f.stops().to_vec();
+        assert!(!stops.is_empty());
+        for s in stops {
+            let placed = r.place(s.key.elem).unwrap().rect;
+            assert!((placed.y - s.rect.y).abs() < 0.01 && (placed.x - s.rect.x).abs() < 0.01, "{}: {placed:?} vs {:?}", s.key.elem, s.rect);
+        }
+    }
+
+    #[test]
+    fn events_press_hold_and_paging_come_back_keyed_by_section() {
+        let mut r = rig(6, 20);
+        r.page.items.more = true;
+        r.go(1002, By::Dir);
+        assert_eq!(r.feed(ScreenEvent::PressCommit(PressId(1))).0, Some(StackEvent::Card(Sec::Items, CardEvent::Activate(1002))));
+        assert_eq!(r.feed(ScreenEvent::PressHold(PressId(1))).0, Some(StackEvent::Card(Sec::Items, CardEvent::Hold(1002))));
+        r.go(102, By::Dir);
+        assert_eq!(r.feed(ScreenEvent::PressCommit(PressId(1))).0, Some(StackEvent::Card(Sec::Row, CardEvent::Activate(102))));
+        assert_eq!(r.feed(ScreenEvent::Activate(HEAD_ELEM)).0, Some(StackEvent::Press(Sec::Head)));
+        r.go(1015, By::Dir);
+        let want = (0..3).find_map(|_| match r.feed(ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 })).0 {
+            Some(StackEvent::Card(Sec::Items, CardEvent::Want(range))) => Some(range),
+            _ => None,
+        });
+        assert!(want.is_some_and(|w| w.start == 20), "focus near the tail asks for more cards");
+    }
+
+    #[test]
+    fn reconcile_keeps_identity_then_clamps_in_the_section_then_falls_back() {
+        let mut r = rig(6, 12);
+        r.go(1005, By::Dir);
+        r.run(2);
+        assert_eq!(r.reconcile(1005), 1005, "a shown element is kept");
+        r.page.items.elems.retain(|&e| e != 1005);
+        r.page.revision += 1;
+        r.run(1);
+        assert_eq!(r.reconcile(1005), 1006, "the same position in the same section");
+        r.page.items.elems.truncate(5);
+        assert_eq!(r.reconcile(1005), 1004, "clamped when the section got shorter");
+        r.page.items.elems.clear();
+        r.page.revision += 1;
+        r.run(1);
+        assert_eq!(r.reconcile(1005), 100, "an emptied section falls back to the page's order");
+        r.page.pending = true;
+        assert_eq!(r.reconcile(1005), 1005, "a page still loading keeps the wanted focus");
+    }
+
+    #[test]
+    fn a_landing_above_the_focus_shifts_the_page_so_the_tile_stays_put() {
+        let mut r = rig(6, 60);
+        r.go(1000, By::Restore);
+        r.go(1020, By::Dir);
+        r.run(240);
+        let was = r.place(1020).unwrap().rect;
+        r.page.items.elems.splice(0..0, (0..6).map(|i| 900 + i));
+        r.page.revision += 1;
+        r.run(1);
+        let is = r.place(1020).unwrap().rect;
+        assert!((is.y - was.y).abs() < 0.5, "a row inserted above the focus moves nothing on screen: {was:?} -> {is:?}");
+    }
+
+    #[test]
+    fn a_settled_page_is_quiet_and_its_canon_repeats() {
+        let mut r = rig(6, 60);
+        r.go(1000, By::Restore);
+        r.go(1020, By::Dir);
+        assert!(r.run(10), "a moving page reports motion");
+        r.run(400);
+        assert!(!r.run(3), "a settled one reports none");
+        let canon = |r: &Rig| { let mut c = Canon::new(); r.stack.write(&mut c); c.finish() };
+        let first = canon(&r);
+        r.run(5);
+        assert_eq!(canon(&r), first, "and the same events leave the same bytes");
+    }
+
+    #[test]
+    fn memory_restores_the_scroll_and_the_shelf_viewport() {
+        let mut r = rig(40, 60);
+        r.go(1000, By::Restore);
+        r.go(1030, By::Dir);
+        r.run(200);
+        r.go(139, By::Dir);
+        r.run(200);
+        let m = r.stack.memory();
+        let mut fresh = rig(40, 60);
+        fresh.stack.restore(&m);
+        fresh.go(139, By::Restore);
+        fresh.run(1);
+        assert_eq!(fresh.stack.memory(), m, "scroll and shelf viewport come back whole");
+        assert!(fresh.place(139).is_some_and(|p| p.rect.x >= 0.0 && p.rect.x < crate::consts::SCR_W));
+    }
+}

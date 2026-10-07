@@ -50,9 +50,11 @@ use crate::{Painter, Rect};
 
 mod grid;
 mod shelf;
+mod stack;
 
 pub use grid::{Grid, GridSpec, ScrollMode};
 pub use shelf::Shelf;
+pub use stack::{Kind, SectionSpec, Stack, StackEvent, StackMemory, StackPage, StackView};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod conformance;
