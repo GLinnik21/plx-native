@@ -25,6 +25,9 @@ use plx_ui::{Env, Painter, Rect, Spring};
 use super::registry::{tile_facts, AppFx, CardKeys, CardPageMemory, CollectionLike, ContentArg,
     ContentLike, ContentPanel, ContentReq, PageMemory};
 
+#[cfg(test)]
+pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
+
 const HEADER_ELEM: u32 = 0;
 const RETRY_ELEM: u32 = 1;
 const FIRST_CARD_ELEM: u32 = 0x1000;

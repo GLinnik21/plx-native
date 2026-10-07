@@ -63,6 +63,9 @@ const HEADER_GROUP: GroupId = GroupId(1);
 const ENTRY_GROUP: GroupId = GroupId(0);
 const SHELF_GROUP: [GroupId; NSHELF] = [GroupId(2), GroupId(3)];
 
+#[cfg(test)]
+pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
+
 /// Where an element key falls in this screen's own row model — the one place the `u32` namespace
 /// is decoded, so `on_header`/`focus_pos`'s legacy jobs (deriving "which row" from a struct field)
 /// become "which row" derived from the key the engine handed back instead.
