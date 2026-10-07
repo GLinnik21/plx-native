@@ -14,6 +14,7 @@ use super::{CardEvent, CardSource, Landed, Seen, Tile};
 use crate::card_row;
 use crate::consts::{K_SCROLL, MARGIN_X, SCR_H};
 use crate::card_row::RowStyle;
+use super::pool::ShrinkKey;
 use crate::poster_grid::{self, Geom, GridBand, GridBands, GridPop, COLS, STYLE};
 use crate::screen::{
     Activate, At, AxisMask, By, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
@@ -86,6 +87,8 @@ pub struct Grid {
     target: f32,
     bands: GridBands,
     pop: GridPop,
+    /// Which element the running let-go belongs to: the element-keyed pool (`pool.rs`), idle unless the dev switch is on.
+    shrink: ShrinkKey,
     seen: Seen,
     landed: Option<Landed>,
     /// External mode: the document shift the last tick's landing needs (see [`Grid::landed_shift`]).
@@ -105,6 +108,7 @@ impl Grid {
             target: 0.0,
             bands: GridBands::new(),
             pop: GridPop::new(),
+            shrink: ShrinkKey::new(),
             seen: Seen::Nothing,
             landed: None,
             shift: 0.0,
@@ -168,6 +172,10 @@ impl Grid {
         let focus = super::focused_index(&cx.focus, self.entry, src);
         self.landed = None;
         self.shift = 0.0;
+        let pooled = super::pool::pop_pool();
+        if pooled {
+            self.shrink.follow(&mut self.pop, src);
+        }
         let prev = self.pop.cell();
         // where the previously focused cell was on screen, before any band moves
         let was = prev.map(|p| self.cell(p, &self.bands.geometry()).y);
@@ -205,6 +213,9 @@ impl Grid {
         self.reveal = wanted;
         self.bands.tick(self.spec.style.k_scroll, dt);
         self.pop.tick(focus, &self.spec.style, dt);
+        if pooled {
+            self.shrink.note(&self.pop, src);
+        }
         if self.spec.scroll == ScrollMode::External {
             return;
         }

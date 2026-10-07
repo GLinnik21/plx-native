@@ -1102,6 +1102,8 @@ pub(crate) unsafe fn construct(
     // dev: /tmp/plxnative-stillclock=<ms> holds every free-running animation clock (spinners)
     // still, so a screenshot of a waiting screen settles on one deterministic frame.
     if !controlled { crate::dev::scenarios::arm_stillclock(); }
+    // dev: /tmp/plxnative-poppool keys the card sections' pop springs by element, not position
+    if !controlled { crate::dev::scenarios::arm_poppool(); }
     // dev: profile is asynchronous EXT_disjoint_timer_query timing; hwcnt is the serialized
     // direct Mali counter-attribution run. Their content names ONE phase (empty = frame.ui).
     // Combining them would perturb the timer result, so fail closed when both are present.

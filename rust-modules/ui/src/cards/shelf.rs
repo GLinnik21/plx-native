@@ -9,6 +9,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 
+use super::pool::RowPool;
 use super::{CardEvent, CardSource, Landed, SectionFrame, Seen, Tile};
 use crate::card_row::{self, CardRow, RowStyle};
 use crate::consts::SCR_W;
@@ -43,12 +44,14 @@ pub struct Shelf {
     dormant: bool,
     /// The last tick ran dormant, so the next awake one starts the focused card's pop from rest.
     slept: bool,
+    /// The element-keyed pop pool, empty unless the dev switch is on (`pool.rs`).
+    pool: RowPool,
 }
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
         Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, ahead: LOOK_AHEAD, asked: None,
-            margin: 0.0, dormant: false, slept: false }
+            margin: 0.0, dormant: false, slept: false, pool: RowPool::new() }
     }
 
     /// Cards this far past the screen's leading (left) edge still paint (a popped card's shadow
@@ -142,6 +145,7 @@ impl Shelf {
         if self.dormant {
             // nothing is lifted under the fade, and whatever was lets go like an unfocused shelf's
             self.slept = true;
+            self.pool.clear();
             self.seen = Seen::Nothing;
             self.left = false;
             if !self.row.at_exact_rest() {
@@ -157,6 +161,14 @@ impl Shelf {
                 self.seen = Seen::Deliberate(i);
             }
         }
+        // the element-keyed pool: springs follow their elements before anything reads a cell
+        let pooled = super::pool::pop_pool();
+        let carried = if pooled {
+            self.pool.follow(&mut self.row, src, focus)
+        } else {
+            self.pool.clear();
+            false
+        };
         if let Some(i) = focus {
             let prev = self.prev();
             match (self.seen, prev) {
@@ -165,7 +177,11 @@ impl Shelf {
                 // no FocusMoved, another index: the same element, moved by a content landing
                 (Seen::Nothing, Some(p)) if p != i => {
                     let dx = (i as f32 - p as f32) * self.pitch();
-                    self.row.relocate(p, i, dx);
+                    if carried {
+                        self.row.shift_scroll(dx);
+                    } else {
+                        self.row.relocate(p, i, dx);
+                    }
                     self.row.clamp_scroll(src.len(), self.style);
                     self.landed = Some(Landed { from: p, to: i });
                 }
@@ -192,6 +208,15 @@ impl Shelf {
                 self.row.park();
             }
         }
+        if pooled {
+            self.pool.admit(&self.row, src, focus);
+        }
+    }
+
+    /// Held pops in the element-keyed pool.
+    #[cfg(test)]
+    pub(crate) fn pool_len(&self) -> usize {
+        self.pool.len()
     }
 
     /// The paging rule: the window's last card plus look-ahead (or the focused card's, if further).

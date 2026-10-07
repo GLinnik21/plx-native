@@ -255,6 +255,17 @@ pub(crate) fn arm_stillclock() {
     screenshot::arm_stillclock();
 }
 
+/// `/tmp/plxnative-poppool` — key the card sections' pop springs by ELEMENT instead of by position
+/// (`plx_ui::cards::set_pop_pool`; the owner's by-feel comparison, decision 2). Read once at boot.
+/// The switch only exists with `devtriggers`, hence the gate on the body.
+pub(crate) fn arm_poppool() {
+    #[cfg(feature = "devtriggers")]
+    if plx_base::devtrig::flag("poppool") {
+        plx_ui::cards::set_pop_pool(true);
+        plx_base::eventlog::log("cards: pop springs keyed by element by /tmp/plxnative-poppool");
+    }
+}
+
 /// `/tmp/plxnative-anim` — the animation-diagnostic overlay (off by default).
 pub(crate) fn arm_anim() {
     if plx_base::devtrig::flag("anim") {
