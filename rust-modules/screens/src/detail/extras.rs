@@ -84,6 +84,7 @@ pub fn draw(
     row: &CardRow,
     top: f32,
     focused: Option<usize>,
+    press: f32,
     measure: &dyn plx_machine::machine::Measure,
 ) {
     let n = len(d);
@@ -110,6 +111,7 @@ pub fn draw(
         STYLE.w + STYLE.gap,
         &STYLE,
         plx_ui::consts::SCR_W,
+        press,
         |i| d.extras.get(i).map(|e| thumb(d, e)).unwrap_or(Art::Thumb {
             sid: d.sid.raw(),
             key: "",

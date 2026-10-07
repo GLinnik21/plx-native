@@ -280,6 +280,16 @@ pub struct PressRead {
     pub held_ms: Option<u32>,
 }
 
+impl PressRead {
+    /// The dip factor a card multiplies its focus scale by: [`scale`](Self::scale) while a press is
+    /// visibly moving it, `1.0` otherwise. `PressRead::default()` (no press machine read yet) has
+    /// scale `0.0`, which as a factor would draw the tile at nothing; this is the one guard.
+    #[inline]
+    pub fn dip(&self) -> f32 {
+        if self.scale > 0.0 { self.scale } else { 1.0 }
+    }
+}
+
 /// What a machine may read about focus (§7.3 step 5): the engine owns the state, screens read it.
 #[derive(Clone, Debug)]
 pub struct FocusRead<K> {
