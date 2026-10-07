@@ -2602,6 +2602,34 @@ mod tests {
         owner.close();
     }
 
+    /// DUMP MODE at the Person site, through the real pump: a request that is out when the pump
+    /// runs lands on THAT pump however late the worker posts. The worker here posts 25 ms after the
+    /// pump has started; a plain take (the site's conversion reverted) returns empty and this
+    /// fails on the first assertion. Covers only a request that was never superseded; see the
+    /// landgate module doc's known hole for one that was.
+    #[test]
+    fn dump_mode_a_request_out_lands_on_the_pump_that_runs_whatever_the_worker() {
+        let mut owner = Owner::default();
+        let _serial = plx_base::testlock::serial();
+        owner.open(S0, "161", "5d776", "Idina Menzel", "");
+        let gen = owner.gen();
+        owner.hold_off();
+        owner.adapter.fetch[at(S0, K_MEDIA)].claim();
+        let gate = plx_machine::landgate::Gate::default();
+        gate.arm_dump(std::time::Duration::from_secs(20));
+        let worker = Arc::clone(&owner.adapter);
+        let join = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            worker.land(at(S0, K_MEDIA), gen, media(vec![PmsMovie::default()], Vec::new()));
+        });
+        assert!(owner.state.pump_with_gate(&owner.adapter, &gate),
+            "the answer the pump owed must be taken by the pump that asked");
+        assert_eq!(owner.current().unwrap().shelf(0).len(), 1);
+        assert!(!owner.adapter.fetch[at(S0, K_MEDIA)].busy(), "the TAKE released the claim");
+        join.join().unwrap();
+        owner.close();
+    }
+
     /// A FAILED fetch (None) must leave a populated page alone and schedule a retry — the
     /// "one wifi hiccup blanked a populated grid" regression, in this store's shape.
     #[test]

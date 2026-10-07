@@ -514,6 +514,33 @@ mod tests {
         assert_eq!(state.view().revision(), paged_rev, "a dropped landing changes nothing");
     }
 
+    /// DUMP MODE at the Collection site, through the real pump: a request that is out lands on the
+    /// pump that runs, however late the worker posts (25 ms here). A plain take (the conversion
+    /// reverted) returns empty and the first assertion fails. A request that was superseded is the
+    /// landgate module doc's known hole, not covered.
+    #[test]
+    fn dump_mode_a_request_out_lands_on_the_pump_that_runs_whatever_the_worker() {
+        let _serial = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let adapter = Arc::new(CollectionAdapter::default());
+        let mut state = CollectionState::default();
+        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        let generation = state.generation();
+        adapter.fetch.claim();
+        let gate = plx_machine::landgate::Gate::default();
+        gate.arm_dump(std::time::Duration::from_secs(20));
+        let worker = Arc::clone(&adapter);
+        let join = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            worker.land(generation, Landing::Header { rk: None, head: header("Set", 130) });
+        });
+        assert!(state.pump_with_gate(&adapter, &gate),
+            "the header the pump owed must be taken by the pump that asked");
+        assert!(state.view().current().unwrap().header_ready);
+        assert!(!adapter.fetch.busy(), "the TAKE released the claim");
+        join.join().unwrap();
+    }
+
     #[test]
     fn paging_asks_for_the_next_page_only_when_the_grid_wants_more() {
         let adapter = Arc::new(CollectionAdapter::default());

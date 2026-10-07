@@ -329,8 +329,8 @@ impl SubSearchState {
         gate: &plx_machine::landgate::Gate) -> bool {
         if self.retry_cd > 0 { self.retry_cd -= 1; }
         let mut changed = false;
-        let mail = crate::stores::take_landing(gate, crate::stores::StoreId::SubtitleSearch,
-            || adapter.fetch.take());
+        let mail = crate::stores::take_landing_owed(gate, crate::stores::StoreId::SubtitleSearch,
+            || adapter.fetch.busy(), || adapter.fetch.take());
         if let Some(mail) = mail {
             // every landing repaints, the failure branch included — a spinner already answered
             // must not wait for the next keypress
@@ -706,6 +706,31 @@ mod tests {
         assert_eq!(state.view().status(), SearchStatus::Searching, "the stale answer is dropped");
         assert!(state.view().hits().is_empty());
         assert!(!adapter.busy_for_test(), "the take still released the claim");
+    }
+
+    /// DUMP MODE at the SubtitleSearch site, through the real pump: a request that is out lands on
+    /// the pump that runs, however late the worker posts (25 ms here). A plain take (the conversion
+    /// reverted) returns empty and the first assertion fails. A request that was superseded is the
+    /// landgate module doc's known hole, not covered. Serial for the reason the test above gives.
+    #[test]
+    fn dump_mode_a_request_out_lands_on_the_pump_that_runs_whatever_the_worker() {
+        let _serial = plx_base::testlock::serial();
+        let (mut state, adapter) = opened("nl");
+        let generation = state.generation();
+        adapter.fetch.claim();
+        let gate = plx_machine::landgate::Gate::default();
+        gate.arm_dump(std::time::Duration::from_secs(20));
+        let worker = Arc::clone(&adapter);
+        let join = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            worker.land(generation, Landing::Search(Ok(vec![hit("/library/streams/1", "a", 5)])));
+        });
+        assert!(state.pump_with_gate(&adapter, &gate),
+            "the answer the pump owed must be taken by the pump that asked");
+        assert_eq!(state.view().status(), SearchStatus::Ready);
+        assert_eq!(state.view().hits().len(), 1);
+        assert!(!adapter.busy_for_test(), "the TAKE released the claim");
+        join.join().unwrap();
     }
 
     /// Candidate keys die with their search: a press quoting a replaced generation is refused.

@@ -3,7 +3,7 @@
 //!
 //! Deliberately NOT routed through `stores::tape`: its controlled-record schema is a closed list
 //! of store names, and Search — the other store a screen pumps every frame — also lands through
-//! the plain [`super::take_landing`] gate. A replay fixture that needs this store's landings adds
+//! the plain-gate spelling ([`super::take_landing_owed`], the dump-mode-aware [`super::take_landing`]). A replay fixture that needs this store's landings adds
 //! a record schema then.
 
 use crate::subsearch::{SubSearchAdapter, SubSearchState, SubSearchView};

@@ -27,7 +27,8 @@
 //! * A landing the recording never saw at all is delivered at once and counted as `extra`.
 //! * A recorded landing that never arrives is counted as `missing` when the replay ends.
 //!
-//! **The wait is REPLAY-ONLY, bounded and taken at most once per (frame, owner, store)**, so a store
+//! **The due-frame wait is REPLAY-ONLY, bounded and taken at most once per (frame, owner, store)**
+//! (dump mode's `take_owed` wait is a separate poll with its own fail-closed timeout, below), so a store
 //! whose landing is due at a site that will not produce it cannot spend the budget twice on one
 //! frame. It is a stop-gap for one specific reason, worth saying plainly: the honest end state is
 //! §5.5's closed replay, where the recorded payload is INJECTED and no fetch happens at all. That
@@ -48,7 +49,47 @@
 //! their recorded frames exactly as they did. Gating a whole `pump()` would have suppressed the
 //! spawn that produces the very landing being waited for.
 //!
-//! **Cost outside a recording or a replay is one relaxed `AtomicBool` load** (`Gate`'s armed flag): the
+//! **Dump mode** ([`Gate::arm_dump`], the deterministic frame dump) is the third way to arm a
+//! gate, and the one that needs no recording. The replay gate above keys a landing to a RECORDED
+//! frame; a dump has no recording, so it aims to make the landing frame a function of the request
+//! instead: a request issued in iteration k lands on the next execution of its site, whatever the
+//! worker's timing, PROVIDED the request is not superseded before it lands (see the known hole
+//! below). A site that asks through [`Gate::take_owed`] / [`Gate::take_all_owed`] says whether a
+//! request it spawned is still unanswered (`owed`, the store's own single-flight claim); the take
+//! polls until mail arrives, and the claim is released BY THE TAKE, never when the worker
+//! finishes (for `stores::Fetch` that is how it already worked). The wait is a poll count of
+//! [`WAIT_STEP_US`] sleeps (at least the timeout in real time) and fails closed: past it the gate
+//! panics naming the store rather than let a frame be written without the answer.
+//!
+//! **Which sites are protected: only FOUR, Person, Collection, Search and SubtitleSearch.** The
+//! claim is per MAILBOX (a store-wide claim would make one mailbox's pump wait on another's), and
+//! only those four stores have one converted. Metadata (detail, alt-sources, season), Hubs,
+//! Browse and ViewState still do a SINGLE poll in dump mode, as before, so a landing at any of
+//! them still follows the worker's timing (`Bridge::take_live_results` makes the Hubs and Browse
+//! discovery takes among them); so do that function's session adapter drains (results, capture,
+//! commits, erase), which do not go through this gate at all. Arming dump mode therefore does NOT yet make a run
+//! deterministic. S5a-2 and S5a-3 convert the rest; a plain `take` under dump mode is not yet
+//! counted or refused.
+//!
+//! **KNOWN HOLE (fixed in S5a-2): a superseded request can still land the new one by timing.**
+//! The converted sites supersede by `clear()` plus a generation bump while the old worker is
+//! still out, and `stores::Fetch::take` releases the claim on mail of ANY generation. So if the
+//! stale answer reaches the mailbox before the new request's, `take_owed` returns it (the site
+//! drops it on its generation), the new request's claim is already released, and the new answer
+//! lands on a later execution, by worker timing. `owed` cannot tell a stale answer from the one it
+//! is waiting for. The sites a storyboard supersedes at are exactly the ones a video shows
+//! (search typing, person-to-person navigation). The ignored test
+//! `dump_mode_a_superseded_requests_stale_answer_does_not_release_the_new_claim` (plx_data,
+//! `search_dump_tests.rs`) reproduces it.
+//!
+//! What the dump driver (the app layer, later) must also do, none of it possible down here:
+//! within one iteration run the takes, then the busy/debt sample, then the draw; and override the
+//! clocks the app owns that a held virtual clock freezes: the poster's `P_RETRY` backoff
+//! (`src/app/adapters/poster.rs`, `retry_at`) and evict cooldown run on `app::clock::now()`, so
+//! under a held clock a retry is never due. In a dump a failed image or fetch is a bug (the mock
+//! is local), so the driver must fail fast on it instead of waiting for the retry.
+//!
+//! **Cost outside a recording, a replay or a dump is one relaxed `AtomicBool` load** (`Gate`'s armed flag): the
 //! helpers return the closure's own answer and never take the lock.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -85,6 +126,9 @@ enum Mode {
     Recording,
     /// Hold an early landing to its recorded frame and grade the rest.
     Replaying,
+    /// DUMP MODE: a site that asks through [`Gate::take_owed`] waits (bounded, fail-closed) for
+    /// the answer its own request owes instead of taking whatever has arrived.
+    Dumping(std::time::Duration),
 }
 
 struct State {
@@ -176,6 +220,98 @@ pub fn arm_sparse_replay(&self, sched: BTreeMap<u32,Vec<(u64,u32)>>) {
     self.armed.store(true, Ordering::Relaxed);
 }
 
+/// Arm DUMP MODE (the deterministic frame dump): from here a landing site that consumes its
+/// mailbox through [`Gate::take_owed`] / [`Gate::take_all_owed`] blocks until mail arrives for the
+/// claim it owes (it has been TAKEN), or a poll-count timeout of `timeout` passes, which panics
+/// naming the store (fail closed: a frame written past a missing answer would be a
+/// nondeterministic frame). Only the sites converted to `take_owed` wait (Person, Collection,
+/// Search, SubtitleSearch); every other site still takes as before. [`Gate::disarm`] ends it.
+///
+/// **Panics if a recording or a replay is armed on this gate**, the way the recorder and replayer
+/// refuse to be armed together: arming dump over one would silently wipe its schedule or its
+/// landings. Disarm first. Arming dump again over a dump just resets it.
+///
+/// This is a runtime switch, off by default, armed only by the dump driver. Nothing in a shipping
+/// loop calls it, and an unarmed gate stays one relaxed load.
+pub fn arm_dump(&self, timeout: std::time::Duration) {
+    self.with(|s| {
+        assert!(matches!(s.mode, Mode::Off | Mode::Dumping(_)),
+            "landgate: arm_dump on a gate with a recording or a replay already armed; disarm it first");
+        *s = State { mode: Mode::Dumping(timeout), frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(),
+            waited: BTreeSet::new(), diffs: Vec::new() };
+    });
+    self.armed.store(true, Ordering::Relaxed);
+}
+
+fn dump_timeout(&self) -> Option<std::time::Duration> {
+    self.with(|s| match s.mode { Mode::Dumping(t) => Some(t), _ => None })
+}
+
+/// A site that OWES an answer: `owed` says whether a request this site spawned has not been taken
+/// yet. The claim is the store's own in-flight state, marked when the request is spawned on the
+/// main thread and released by the take that consumes its mail (`stores::Fetch::busy` / `take`),
+/// never when the worker finishes, so it is per MAILBOX; a store-wide claim would make the
+/// detail pump wait on a season request's mailbox.
+///
+/// Off dump mode this is [`Gate::take`]. In dump mode it polls `f` until it answers, or `owed`
+/// reads false after a poll (the request was superseded or abandoned, so nothing will land), or
+/// the dump timeout passes (panic naming `name`).
+///
+/// **KNOWN HOLE (fixed in S5a-2):** it returns on the FIRST `Some`, and cannot tell a superseded
+/// request's stale answer from the one it is waiting for. With `stores::Fetch` that stale answer
+/// also releases the NEWER request's claim, so the new answer lands on a later call by worker
+/// timing. The guarantee holds only for a request that is not superseded before it lands.
+pub fn take_owed<T>(&self, ord: StoreOrd, name: &str, owed: impl Fn() -> bool,
+    mut f: impl FnMut() -> Option<T>) -> Option<T> {
+    if !self.armed.load(Ordering::Relaxed) {
+        return f();
+    }
+    let Some(timeout) = self.dump_timeout() else { return self.take(ord, f) };
+    let mut polls = 0u64;
+    loop {
+        if let Some(v) = f() {
+            return Some(v);
+        }
+        if !owed() {
+            return None;
+        }
+        Self::dump_wait(name, &mut polls, timeout);
+    }
+}
+
+/// [`Gate::take_owed`] for a site that drains a QUEUE: every batch is collected until the
+/// requests the site owes have all been taken. No site calls it yet, and its `owed` cannot see
+/// the batch taken so far, so a site whose done-marker is written after the take cannot use it
+/// as is. It carries the same stale-answer KNOWN HOLE as [`Gate::take_owed`].
+pub fn take_all_owed<T>(&self, ord: StoreOrd, name: &str, owed: impl Fn() -> bool,
+    mut f: impl FnMut() -> Vec<T>) -> Vec<T> {
+    if !self.armed.load(Ordering::Relaxed) {
+        return f();
+    }
+    let Some(timeout) = self.dump_timeout() else { return self.take_all(ord, f) };
+    let mut polls = 0u64;
+    let mut out = Vec::new();
+    loop {
+        out.extend(f());
+        if !owed() {
+            return out;
+        }
+        Self::dump_wait(name, &mut polls, timeout);
+    }
+}
+
+/// One poll interval of a dump wait, or the fail-closed panic once `timeout` has passed. The
+/// timeout is a poll COUNT of [`WAIT_STEP_US`] sleeps, like [`WAIT_POLLS`] and for the same reason
+/// (`ci/check-deps.sh`'s `wall` rule keeps wall-clock reads out of this crate), so the real wait
+/// is the timeout or a little more, never less.
+fn dump_wait(name: &str, polls: &mut u64, timeout: std::time::Duration) {
+    if *polls >= (timeout.as_micros() as u64 / WAIT_STEP_US).max(1) {
+        panic!("landgate dump mode: the {name} store still owes an answer after {timeout:?}; failing closed");
+    }
+    *polls += 1;
+    std::thread::sleep(std::time::Duration::from_micros(WAIT_STEP_US));
+}
+
 /// Disarm: the ordinary state, and what a host test restores.
 pub fn disarm(&self) {
     self.armed.store(false, Ordering::Relaxed);
@@ -252,9 +388,14 @@ pub fn landed(&self, ord: StoreOrd) {
     }
     self.with(|s| {
         let i = ord.0;
-        if s.mode == Mode::Recording {
-            *s.lands.entry(i).or_default() += 1;
-            return;
+        match s.mode {
+            Mode::Recording => {
+                *s.lands.entry(i).or_default() += 1;
+                return;
+            }
+            // dump mode records nothing and grades nothing
+            Mode::Off | Mode::Dumping(_) => return,
+            Mode::Replaying => {}
         }
         let frame = s.frame;
         let why = match s.sched.get_mut(&i).and_then(|q| q.front_mut()) {
@@ -375,6 +516,16 @@ pub fn arm_recording() { FIXTURE_GATE.arm_recording(); }
 pub fn arm_replay(sched: Vec<Vec<(u64, u32)>>) { FIXTURE_GATE.arm_replay(sched); }
 #[cfg(any(test, feature = "test-support"))]
 pub fn arm_sparse_replay(sched: BTreeMap<u32,Vec<(u64,u32)>>) { FIXTURE_GATE.arm_sparse_replay(sched); }
+#[cfg(any(test, feature = "test-support"))]
+pub fn arm_dump(timeout: std::time::Duration) { FIXTURE_GATE.arm_dump(timeout); }
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_owed<T>(ord: StoreOrd, name: &str, owed: impl Fn() -> bool, f: impl FnMut() -> Option<T>) -> Option<T> {
+    FIXTURE_GATE.take_owed(ord, name, owed, f)
+}
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_all_owed<T>(ord: StoreOrd, name: &str, owed: impl Fn() -> bool, f: impl FnMut() -> Vec<T>) -> Vec<T> {
+    FIXTURE_GATE.take_all_owed(ord, name, owed, f)
+}
 #[cfg(any(test, feature = "test-support"))]
 pub fn disarm() { FIXTURE_GATE.disarm(); }
 #[cfg(any(test, feature = "test-support"))]
@@ -539,6 +690,175 @@ mod tests {
         lands.sort_by_key(|(o, _)| o.0);
         assert_eq!(lands, vec![(A, 1), (B, 2)], "arrivals are COUNTED, not flagged");
         assert!(take_frame_lands().is_empty(), "drained once");
+    }
+
+    // ---- dump mode (the deterministic frame dump) -------------------------------------------
+
+    /// A fake one-slot store with the claim `stores::Fetch` has: marked at spawn on the main
+    /// thread, released by the TAKE that consumes the mail (never by the worker finishing).
+    #[derive(Default)]
+    struct FakeStore {
+        owed: AtomicBool,
+        slot: Mutex<Option<u32>>,
+    }
+
+    impl FakeStore {
+        fn spawn(self: &std::sync::Arc<Self>, answer: u32, delay: std::time::Duration) {
+            self.owed.store(true, Ordering::SeqCst);
+            let me = std::sync::Arc::clone(self);
+            std::thread::spawn(move || {
+                std::thread::sleep(delay);
+                *me.slot.lock().unwrap() = Some(answer);
+            });
+        }
+        fn take(&self) -> Option<u32> {
+            let v = self.slot.lock().unwrap().take()?;
+            self.owed.store(false, Ordering::SeqCst);
+            Some(v)
+        }
+        fn owed(&self) -> bool { self.owed.load(Ordering::SeqCst) }
+    }
+
+    /// One iteration's order is: takes, then the draw. Frame 1 issues a request AFTER its take; the
+    /// answer is posted at a random point within the following iterations. In dump mode it must
+    /// land on frame 2 for every one of 100 seeds, and the spring it starts must trace identically.
+    #[test]
+    fn a_request_lands_on_the_next_execution_of_its_site_whatever_the_worker_timing() {
+        let _g = plx_base::testlock::serial();
+        let _armed = Armed;
+        let mut traces = Vec::new();
+        for seed in 0..100u64 {
+            arm_dump(std::time::Duration::from_secs(20));
+            let store = std::sync::Arc::new(FakeStore::default());
+            // a deterministic spread of 0..3 ms delays and 0..2 ms iteration jitter
+            let mix = |n: u64| (seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ n.wrapping_mul(0xBF58_476D_1CE4_E5B9)) >> 40;
+            let delay = std::time::Duration::from_micros(mix(1) % 3000);
+            let (mut landed_at, mut spring, mut trace) = (None, None::<(f32, f32)>, Vec::new());
+            for f in 0..6u64 {
+                begin_frame(f);
+                if let Some(v) = take_owed(A, "fake", || store.owed(), || store.take()) {
+                    assert_eq!(v, 7);
+                    landed_at = Some(f);
+                    spring = Some((0.0, 1.0)); // (position, velocity) from the landing's own frame
+                }
+                if let Some((x, v)) = spring.as_mut() {
+                    *v += (1.0 - *x) * 0.25 - *v * 0.35;
+                    *x += *v;
+                    trace.push((*x).to_bits());
+                }
+                if f == 1 {
+                    store.spawn(7, delay); // dispatched after this iteration's take
+                }
+                std::thread::sleep(std::time::Duration::from_micros(mix(10 + f) % 2000));
+            }
+            assert_eq!(landed_at, Some(2), "seed {seed}: the request must land on the next execution");
+            traces.push(trace);
+            disarm();
+        }
+        assert!(traces.windows(2).all(|w| w[0] == w[1]), "the spring trace is the same for every seed");
+    }
+
+    /// Outside dump mode the SAME site does not wait: the landing frame follows the worker. This
+    /// is the failure dump mode exists to remove, so the contrast must be observable here. The
+    /// worker is released by a channel after frame 0's take, so no clock decides the order.
+    #[test]
+    fn without_dump_mode_the_landing_frame_follows_the_worker() {
+        let _g = plx_base::testlock::serial();
+        let _armed = Armed;
+        arm_recording();
+        let store = std::sync::Arc::new(FakeStore::default());
+        store.owed.store(true, Ordering::SeqCst);
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let worker = std::sync::Arc::clone(&store);
+        let join = std::thread::spawn(move || {
+            held.recv().unwrap();
+            *worker.slot.lock().unwrap() = Some(7);
+        });
+        begin_frame(0);
+        assert!(take_owed(A, "fake", || store.owed(), || store.take()).is_none(), "nothing yet: no wait");
+        release.send(()).unwrap();
+        join.join().unwrap();
+        begin_frame(1);
+        assert_eq!(take_owed(A, "fake", || store.owed(), || store.take()), Some(7), "lands whenever it came");
+    }
+
+    /// A claim whose request was abandoned (superseded, or its screen left): the owner releases
+    /// it, so the site's take returns at once instead of waiting for an answer nobody will post.
+    #[test]
+    fn an_abandoned_claim_causes_no_wait() {
+        let _g = plx_base::testlock::serial();
+        let _armed = Armed;
+        // a short timeout: any wait for the abandoned request would fail closed (panic) here
+        arm_dump(std::time::Duration::from_millis(100));
+        let store = FakeStore::default();
+        store.owed.store(true, Ordering::SeqCst);
+        store.owed.store(false, Ordering::SeqCst); // the owner's supersede/clear
+        begin_frame(0);
+        assert!(take_owed(A, "fake", || store.owed(), || store.take()).is_none());
+    }
+
+    /// A claim that is never answered fails CLOSED, naming the store, instead of writing a frame.
+    #[test]
+    #[should_panic(expected = "the fake store still owes an answer")]
+    fn an_unanswered_claim_fails_closed_naming_the_store() {
+        let _g = plx_base::testlock::serial();
+        let _armed = Armed;
+        arm_dump(std::time::Duration::from_millis(40));
+        let store = FakeStore::default();
+        store.owed.store(true, Ordering::SeqCst);
+        begin_frame(0);
+        let _ = take_owed(A, "fake", || store.owed(), || store.take());
+    }
+
+    /// Arming dump mode over a recording or a replay would silently wipe it: refused, loudly.
+    #[test]
+    #[should_panic(expected = "a recording or a replay already armed")]
+    fn arm_dump_refuses_a_gate_that_is_recording() {
+        let gate = Gate::default();
+        gate.arm_recording();
+        gate.arm_dump(std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "a recording or a replay already armed")]
+    fn arm_dump_refuses_a_gate_that_is_replaying() {
+        let gate = Gate::default();
+        gate.arm_replay(vec![vec![(1, 1)]]);
+        gate.arm_dump(std::time::Duration::from_secs(1));
+    }
+
+    /// Disarming first is the way through, and re-arming a dump is allowed.
+    #[test]
+    fn arm_dump_after_a_disarm_and_over_a_dump_is_allowed() {
+        let gate = Gate::default();
+        gate.arm_recording();
+        gate.disarm();
+        gate.arm_dump(std::time::Duration::from_secs(1));
+        gate.arm_dump(std::time::Duration::from_secs(2));
+    }
+
+    /// A queue site collects every batch its claims owe, not just the first to arrive.
+    #[test]
+    fn a_queue_site_waits_for_every_request_it_owes() {
+        let _g = plx_base::testlock::serial();
+        let _armed = Armed;
+        arm_dump(std::time::Duration::from_secs(20));
+        let owed = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(2));
+        let mail = std::sync::Arc::new(Mutex::new(Vec::<u32>::new()));
+        for (n, delay) in [(1u32, 3u64), (2, 25)] {
+            let mail = std::sync::Arc::clone(&mail);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+                mail.lock().unwrap().push(n);
+            });
+        }
+        begin_frame(0);
+        let got = take_all_owed(B, "fake", || owed.load(Ordering::SeqCst) > 0, || {
+            let v = std::mem::take(&mut *mail.lock().unwrap());
+            owed.fetch_sub(v.len() as u32, Ordering::SeqCst);
+            v
+        });
+        assert_eq!(got, vec![1, 2]);
     }
 
     #[test]

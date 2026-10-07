@@ -20,6 +20,7 @@
 //! and keeps this crate's test-mode behaviour when a dependent's tests build it. The application
 //! crate enables it in `[dev-dependencies]` only, so no shipped build sees it.
 
+pub mod dump; // dump mode's gfx half: prewarm drains to empty, GPU readiness forced (default off)
 pub mod egl; // boot-time EGL capability probe (extensions, swap behaviour, buffer age) — diagnostic only
 pub mod gfx;
 #[cfg(feature = "devtriggers")]

@@ -469,9 +469,10 @@ fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
     });
 }
 
-/// Block until the GPU has finished all queued commands. Used ONLY as a completion boundary and
-/// coarse wall-clock aid for the draw profiler (`ui::profile`) — it is not a GPU timestamp and it
-/// serializes the pipeline, so never call it on the normal render path.
+/// Block until the GPU has finished all queued commands. Used as a completion boundary by the draw
+/// profiler (`ui::profile`), a coarse wall-clock aid, and by dump mode's GPU wait
+/// (`snapshot_frame_begin`, only while `crate::dump` is armed). It is not a GPU timestamp and it
+/// serializes the pipeline, so never call it on the normal render path of a live loop.
 #[cfg(feature = "devtriggers")]
 pub fn gl_finish() {
     unsafe { glFinish() }
@@ -2190,6 +2191,19 @@ pub fn snapshot_defers(fence: Option<bool>, deferred: u32) -> bool {
     fence == Some(false) && deferred < SNAPSHOT_DEFER_MAX
 }
 
+/// Dump mode's GPU wait. `glFinish` is bound only in a `devtriggers` build (the dump driver's own
+/// build), so a shipping binary has no call to it here at all.
+fn dump_wait_for_gpu() {
+    #[cfg(feature = "devtriggers")]
+    gl_finish();
+}
+
+/// [`snapshot_defers`] under dump mode, which never defers: the GPU was just waited out, so
+/// readiness is a constant instead of an environmental observation.
+pub fn snapshot_defers_in(dump: bool, fence: Option<bool>, deferred: u32) -> bool {
+    !dump && snapshot_defers(fence, deferred)
+}
+
 /// Close a presented frame: a frame that captured the page leaves a fence behind it.
 pub fn snapshot_frame_end() {
     if SNAPSHOT_THIS_FRAME.swap(false, Ordering::Relaxed) {
@@ -2204,10 +2218,16 @@ pub fn snapshot_frame_end() {
 /// answer; controlled replay supplies the recorded one. Native fence retirement still follows
 /// the actual GPU, and the independent physical window gate still governs every swap.
 pub fn snapshot_frame_begin(readiness: impl FnOnce(bool) -> bool) {
+    // DUMP MODE (`crate::dump`): the GPU is waited out BEFORE the sample, so the fence has
+    // signalled and the capture is never pending; GPU speed is not an input to the dump.
+    let dump = crate::dump::armed();
+    if dump {
+        dump_wait_for_gpu();
+    }
     // SAFETY: main render thread.
     let fence = unsafe { (*std::ptr::addr_of!(SNAPSHOT_FENCE)).as_ref().map(|f| f.signaled()) };
     let n = SNAPSHOT_DEFERRED.load(Ordering::Relaxed);
-    let defer = snapshot_defers(fence, n);
+    let defer = snapshot_defers_in(dump, fence, n);
     if defer {
         SNAPSHOT_DEFERRED.store(n + 1, Ordering::Relaxed);
     } else if fence.is_some() {
