@@ -8,7 +8,7 @@ use plx_ui::cards::conformance::{check_expected, run_all, Mount, Outcome};
 const EXPECTED: &str = include_str!("../../../ci/allow/cards-conformance.txt");
 
 /// Every in-scope card screen with a harness. Collection, Person, Search, Library (grid and
-/// shelves), Home and Detail's four shelves are in scope; the rest are in [`PENDING`].
+/// shelves), Home and Detail's four shelves (Related is `detail_shelves`) are in scope; the rest are in [`PENDING`].
 fn table() -> Vec<(&'static str, Mount)> {
     vec![
         ("collection", super::collection::cards_harness::mount as Mount),
@@ -18,12 +18,15 @@ fn table() -> Vec<(&'static str, Mount)> {
         ("library_shelves", super::library::cards_harness::mount_shelves as Mount),
         ("home", super::home::cards_harness::mount as Mount),
         ("detail_shelves", super::detail::cards_harness::mount as Mount),
+        ("detail_collection", super::detail::cards_harness::mount_collection as Mount),
+        ("detail_extras", super::detail::cards_harness::mount_extras as Mount),
+        ("detail_cast", super::detail::cards_harness::mount_cast as Mount),
     ]
 }
 
 /// In-scope screens whose harness is not built yet; the registry test keeps the two lists whole.
 const PENDING: &[&str] = &[];
-const IN_SCOPE: &[&str] = &["collection", "person", "search", "library_grid", "library_shelves", "home", "detail_shelves"];
+const IN_SCOPE: &[&str] = &["collection", "person", "search", "library_grid", "library_shelves", "home", "detail_shelves", "detail_collection", "detail_extras", "detail_cast"];
 
 #[test]
 fn every_in_scope_card_screen_is_in_the_table_or_pending() {

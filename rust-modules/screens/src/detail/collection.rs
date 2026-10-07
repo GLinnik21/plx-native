@@ -2,11 +2,10 @@
 //! Related row. It is headed by the shared linked heading (`ui::linked_heading`), whose own focus
 //! group sits above the shelf's cards: UP from any card reaches it, DOWN returns to the card the
 //! shelf remembered, OK opens the collection page. The members are ordinary poster cards drawn by
-//! the same strip as Related ([`super::related::draw_strip`]).
+//! the same shared shelf as Related (`plx_ui::cards::Shelf`, driven by [`super::cards::Cards`]).
 
 use plx_data::metadata::{CollectionShelf, Detail};
 use plx_data::pms::PmsMovie;
-use plx_ui::card_row::CardRow;
 use plx_ui::linked_heading::LinkedHeading;
 use plx_machine::machine::{GroupId, Measure};
 use plx_ui::{Painter, Rect};
@@ -82,48 +81,25 @@ pub fn heading_rect(
     h.face_rect(plx_ui::consts::MARGIN_X, top - lift, f32::from(focused), &m)
 }
 
-pub fn rect(row: &CardRow, index: usize, top: f32, at_drawn: bool) -> Rect {
-    related::rect(row, index, top, at_drawn)
-}
-
-pub fn block_h(band: f32) -> f32 {
-    related::block_h(band)
-}
-
-pub fn draw(
+/// The linked heading above the member cards, `lift` being the shelf's live label lift
+/// (`Shelf::heading_lift`).
+pub fn draw_heading(
     p: Painter,
     d: &Detail,
-    row: &CardRow,
     top: f32,
-    focused: Option<usize>,
-    heading_focused: bool,
-    press: f32,
+    lift: f32,
+    focused: bool,
     measure: &dyn Measure,
 ) {
     let Some(c) = d.collection.as_ref() else { return };
     let h = heading(c);
     let m = h.measure(measure);
-    h.draw(
-        p,
-        plx_ui::consts::MARGIN_X,
-        top - row.lift(),
-        f32::from(heading_focused),
-        &m,
-        measure,
-    );
-    related::draw_strip(p, &c.members, row, top, focused, press, measure);
+    h.draw(p, plx_ui::consts::MARGIN_X, top - lift, f32::from(focused), &m, measure);
 }
 
-pub fn draw_focused(
-    p: Painter,
-    d: &Detail,
-    row: &CardRow,
-    index: usize,
-    top: f32,
-    press: f32,
-    measure: &dyn Measure,
-) {
-    related::draw_focused_in(p, members(d), row, index, top, press, measure);
+/// The shelf's block height at label-band expansion `band` — Related's, under a linked heading.
+pub fn block_h(band: f32) -> f32 {
+    related::block_h(band)
 }
 
 #[cfg(test)]

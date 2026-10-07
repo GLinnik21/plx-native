@@ -765,6 +765,37 @@ pub struct DrawFrame<'a, 'views, H: Host> {
     stops: Vec<Stop<H::Elem>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static STOPS_IN_RECORDING_WALK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a recording walk registers stops (only ever true inside [`record_stops_while_recording`]).
+#[cfg(any(test, feature = "test-support"))]
+fn stops_in_recording_walk() -> bool {
+    STOPS_IN_RECORDING_WALK.with(|v| v.get())
+}
+#[cfg(not(any(test, feature = "test-support")))]
+const fn stops_in_recording_walk() -> bool {
+    false
+}
+
+/// **Run `f` so a recording walk ALSO registers its stops** (test only). A host test has no GL
+/// context, so it can only run a screen's real `draw` through a recording painter, which places no
+/// stop (`DrawFrame::records_stops`); inside this scope the stops are placed exactly as the visible
+/// walk would place them, and nothing is painted. Per thread, restored on unwind.
+#[cfg(any(test, feature = "test-support"))]
+pub fn record_stops_while_recording<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            STOPS_IN_RECORDING_WALK.with(|v| v.set(self.0));
+        }
+    }
+    let _restore = Restore(STOPS_IN_RECORDING_WALK.with(|v| v.replace(true)));
+    f()
+}
+
 impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     pub fn new(cx: &'a Cx<'views, H>, painter: Painter) -> Self {
         Self::with_navigation(cx, painter, NavPresentation::default())
@@ -807,7 +838,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     /// folded in here (`Painter::to_screen`) and the stop is clipped to the cascade's clip
     /// intersected with `s.clip` (also in painter space).
     pub fn stop(&mut self, p: Painter, mut s: Stop<H::Elem>) {
-        if p.is_recording() || !self.records_stops() {
+        if (p.is_recording() && !stops_in_recording_walk()) || !self.records_stops() {
             return;
         }
         let (rect, _, cascade_clip) = p.to_screen(s.rect);
@@ -836,7 +867,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     /// anything (`if !f.records_stops() { return; }` at the top of each `record_stops`), and
     /// [`Self::stop`] refuses outside it as the backstop for inline producers.
     pub fn records_stops(&self) -> bool {
-        !self.painter.is_recording() && !plx_gfx::gfx::blur_source_pass()
+        (!self.painter.is_recording() || stops_in_recording_walk()) && !plx_gfx::gfx::blur_source_pass()
     }
 
     pub fn stops(&self) -> &[Stop<H::Elem>] {

@@ -109,10 +109,10 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         episode_text_lift: [plx_ui::text_lift::TextLift::new(); EP_SCALE_MAX],
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
-        related: CardRow::new(),
-        collection: CardRow::new(),
-        extras: CardRow::new(),
-        cast: CardRow::new(),
+        related: plx_ui::cards::Shelf::new(EntryId(8), &plx_ui::card_row::RowStyle::HOME),
+        collection: plx_ui::cards::Shelf::new(EntryId(8), &plx_ui::card_row::RowStyle::HOME),
+        extras: plx_ui::cards::Shelf::new(EntryId(8), &plx_ui::card_row::RowStyle::EPISODE),
+        cast: plx_ui::cards::Shelf::new(EntryId(8), &plx_ui::card_row::RowStyle::CAST),
         tabs: TabStrip::new(),
         season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(),
@@ -430,15 +430,10 @@ fn detail_focus_places_and_hit_map_agree_for_all_three_scrolled_strips() {
         assert_strip_hit_geometry(&screen, &episode_elems, &measure);
     }
 
-    for focus in [0, 6, 11] {
-        for _ in 0..180 {
-            screen.related.update(12, Some(focus), &plx_ui::card_row::RowStyle::HOME, 1.0 / 60.0);
-            screen.cast.update(12, Some(focus), &plx_ui::card_row::RowStyle::CAST, 1.0 / 60.0);
-        }
-        for _ in 0..180 {
-            screen.related.update(12, None, &plx_ui::card_row::RowStyle::HOME, 1.0 / 60.0);
-            screen.cast.update(12, None, &plx_ui::card_row::RowStyle::CAST, 1.0 / 60.0);
-        }
+    for parked in [110.0, 400.0, 700.0] {
+        // each shelf parks scrolled so a tile straddles the left edge, whatever the card pitch
+        screen.related.restore_scroll(parked, 12);
+        screen.cast.restore_scroll(parked, 12);
         scroll_to(&mut screen, 3);
         assert_strip_hit_geometry(&screen, &related_elems, &measure);
         scroll_to(&mut screen, 4);
