@@ -11,20 +11,21 @@ use plx_ui::card_row::{RowStyle, TileLabel};
 use plx_ui::cards::CardSource;
 use plx_ui::widgets::Art;
 
-use super::related;
+use super::{collection, related};
 use crate::registry::tile_facts;
 
 /// Which of the page's shelves a [`Cards`] reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Which {
     Related,
+    Collection,
 }
 
 impl Which {
     /// The shelf's tile style, the one its group, its placement and its draw all read.
     pub(super) const fn style(self) -> &'static RowStyle {
         match self {
-            Which::Related => &RowStyle::HOME,
+            Which::Related | Which::Collection => &RowStyle::HOME,
         }
     }
 }
@@ -50,6 +51,7 @@ impl<'a> Cards<'a> {
         let mut cards = Self { which, d, key_by_local, local_by_key, len: 0 };
         let n = match which {
             Which::Related => d.related.len().min(512),
+            Which::Collection => collection::len(d),
         };
         // The projections are rebuilt on every landing; a page whose items outran them shows none
         // rather than a card with no key.
@@ -61,18 +63,21 @@ impl<'a> Cards<'a> {
     fn local(&self, i: usize) -> Option<u32> {
         match self.which {
             Which::Related => related::elem(i),
+            Which::Collection => collection::elem(i),
         }
     }
 
     fn locate(&self, local: u32) -> Option<usize> {
         match self.which {
             Which::Related => related::locate(local),
+            Which::Collection => collection::locate(local),
         }
     }
 
     fn movies(&self) -> &'a [PmsMovie] {
         match self.which {
             Which::Related => &self.d.related,
+            Which::Collection => collection::members(self.d),
         }
     }
 }
@@ -94,19 +99,19 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
 
     fn art(&self, i: usize) -> Art<'_> {
         match self.which {
-            Which::Related => Art::Poster(self.movies().get(i).map(tile_facts::of)),
+            Which::Related | Which::Collection => Art::Poster(self.movies().get(i).map(tile_facts::of)),
         }
     }
 
     fn label(&self, i: usize) -> TileLabel {
         match self.which {
-            Which::Related => TileLabel::title(&self.movies()[i].title),
+            Which::Related | Which::Collection => TileLabel::title(&self.movies()[i].title),
         }
     }
 
     fn progress(&self, i: usize) -> Option<f32> {
         match self.which {
-            Which::Related => self.movies().get(i).and_then(|m| m.resume_frac()),
+            Which::Related | Which::Collection => self.movies().get(i).and_then(|m| m.resume_frac()),
         }
     }
 }

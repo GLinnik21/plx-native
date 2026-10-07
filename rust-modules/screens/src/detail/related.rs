@@ -2,11 +2,9 @@
 
 use plx_data::metadata::Detail;
 use plx_data::pms::PmsMovie;
-use crate::registry::tile_facts;
-use plx_ui::card_row::{self, CardRow, RowStyle};
+use plx_ui::card_row::{self, RowStyle};
 use plx_machine::machine::GroupId;
-use plx_ui::widgets::Art;
-use plx_ui::{theme, Painter, Rect};
+use plx_ui::{theme, Painter};
 
 pub const RELATED_ELEM_RANGE_START: u32 = 640;
 pub const RELATED_ELEM_RANGE_END: u32 = 1152;
@@ -47,22 +45,6 @@ pub fn item<'a>(d: &'a Detail, key: u32) -> Option<&'a PmsMovie> {
     d.related.get(locate(key)?)
 }
 
-pub fn rect(row: &CardRow, index: usize, top: f32, at_drawn: bool) -> Rect {
-    let base = card_row::tile_rect(
-        index,
-        plx_ui::consts::MARGIN_X,
-        RowStyle::HOME.w + RowStyle::HOME.gap,
-        row.scroll_x(),
-        top + LABEL_H,
-        (RowStyle::HOME.w, RowStyle::HOME.h),
-    );
-    if at_drawn {
-        base.scaled(row.scale(index))
-    } else {
-        base.scaled(RowStyle::HOME.focus_scale)
-    }
-}
-
 /// `band` is this shelf's live label-band expansion ([`CardRow::band_expand`]), 0 collapsed → 1
 /// focused. The band is the SHARED collapse every other screen uses, not a fixed reservation: a
 /// shelf that holds no focus draws no label, so it gives the room back and the next section's
@@ -81,71 +63,6 @@ pub fn draw_heading(p: Painter, top: f32, lift: f32) {
         theme::TEXT_HEADING,
         0,
         1,
-    );
-}
-
-/// A Detail poster shelf's cards under its heading — Related's, and the collection shelf's
-/// (`super::collection`), which is the same strip under a linked heading.
-pub fn draw_strip(
-    p: Painter,
-    items: &[PmsMovie],
-    row: &CardRow,
-    top: f32,
-    focused: Option<usize>,
-    press: f32,
-    measure: &dyn plx_machine::machine::Measure,
-) {
-    card_row::strip(
-        p,
-        row,
-        items.len(),
-        focused.map(|i| i as i32).unwrap_or(-1),
-        top + LABEL_H,
-        (RowStyle::HOME.w, RowStyle::HOME.h),
-        RowStyle::HOME.w + RowStyle::HOME.gap,
-        &RowStyle::HOME,
-        plx_ui::consts::SCR_W,
-        press,
-        |i| Art::Poster(items.get(i).map(tile_facts::of)),
-        |i| items.get(i).and_then(|m| m.resume_frac()),
-        |i| card_row::TileLabel::title(&items[i].title),
-        |_, _, _, _| {},
-        measure,
-    );
-}
-
-/// The focused card of a strip drawn by [`draw_strip`], last so its glow sits over its neighbours.
-pub fn draw_focused_in(
-    p: Painter,
-    items: &[PmsMovie],
-    row: &CardRow,
-    index: usize,
-    top: f32,
-    press: f32,
-    measure: &dyn plx_machine::machine::Measure,
-) {
-    let Some(item) = items.get(index) else {
-        return;
-    };
-    let base = card_row::tile_rect(
-        index,
-        plx_ui::consts::MARGIN_X,
-        RowStyle::HOME.w + RowStyle::HOME.gap,
-        row.scroll_x(),
-        top + LABEL_H,
-        (RowStyle::HOME.w, RowStyle::HOME.h),
-    );
-    let scale = row.scale(index) * press;
-    card_row::draw_focused(
-        p,
-        Art::Poster(Some(tile_facts::of(item))),
-        base.scaled(scale),
-        scale,
-        &RowStyle::HOME,
-        item.resume_frac(),
-        &card_row::TileLabel::title(&item.title)
-            .settling(row.settle_lag(items.len(), index, &RowStyle::HOME)),
-        measure,
     );
 }
 

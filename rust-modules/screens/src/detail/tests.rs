@@ -128,7 +128,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::HOME),
-        collection: CardRow::new(),
+        collection: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::HOME),
         extras: CardRow::new(),
         cast: CardRow::new(),
         tabs: TabStrip::new(),
@@ -3297,6 +3297,13 @@ fn the_heading_is_a_hover_focus_stop_that_wins_over_the_member_cards() {
     let heading = FocusKey { entry: EntryId(7), elem: collection::HEADING_ELEM };
     let context = cx(&measure, Some(heading.elem));
     let mut draw = DrawFrame::new(&context, plx_ui::Painter::root());
+    // the shelf registers its cards as the page draws it; the page registers the rest after
+    let d = screen.detail(test_store().view()).unwrap();
+    let frame = plx_ui::cards::SectionFrame {
+        y: screen.section_top(7, d, &measure) - screen.scroll.pos + related::LABEL_H,
+        clip: plx_ui::Rect::FULL,
+    };
+    screen.collection.record_stops(&mut draw, plx_ui::Painter::root(), &screen.cards(cards::Which::Collection, d), frame);
     screen.record_stops(&mut draw);
     let stops = draw.into_stops();
     let at = stops.iter().position(|s| s.key == heading).expect("the heading registers a stop");
