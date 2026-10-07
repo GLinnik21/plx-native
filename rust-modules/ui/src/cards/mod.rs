@@ -17,11 +17,18 @@
 //!   (`cx.focus.current`, filtered to its entry) and resolves the element to an index through
 //!   [`CardSource::index_of`], so a landing that reorders content cannot leave it naming another
 //!   item. Events carry `H::Elem`. (The pop springs are still per position — owner decision 2 is
-//!   open — and are re-validated against the resolved index every tick.)
+//!   open — so a tick that finds the focused element at another index with NO `FocusMoved`, a
+//!   content landing, MOVES the spring to the new index, snaps the cell it left to rest and shifts
+//!   the scroll by the index delta so the tile does not move on screen — [`Landed`] reports it.
+//!   A non-deliberate `FocusMoved` adopts the new card whole and snaps the old one to rest; only a
+//!   deliberate move lets the old tile go over frames. At most one tile reads lifted in any frame,
+//!   including the one between the landing and the tick.)
 //! - **The pop rule.** A tile the engine reports focused that no deliberate move (`By::Dir` /
 //!   `By::Pointer`) announced draws at FULL focus scale at once — a restore or reconcile is adopted
 //!   whole, a page returns exactly as it was left. An unfocused tile draws at rest (or the live
 //!   let-go of the one that just lost focus). A deliberate move grows from rest.
+//! - **One frame convention.** A [`SectionFrame`]'s `y` is screen space; the painter handed to
+//!   `draw` may carry any translate (see [`SectionFrame`]).
 //! - **Press comes from the frame**, `cx.press` / `f.press` through `PressRead::dip()`, never the
 //!   thread-local. [`Shelf::place`] / [`Grid::place`] answer the live drawn rect and the stop the
 //!   draw registers is the same value; `rest_rect` is the settled focus-scaled rect.
@@ -102,12 +109,44 @@ pub enum CardEvent<E> {
     Want(Range<usize>),
 }
 
-/// Where a [`Shelf`] sits for one call. `y` is the top of its tiles in the caller's painter space
-/// (the painter carries the page offset, as every screen's does), `clip` the stops' own clip.
+/// Where a [`Shelf`] sits for one call. `y` is the top of its tiles in SCREEN space, the one
+/// convention `place`, `draw`, `record_stops` and `redraw_focused` all read: `place` answers it
+/// as is, and the draw calls map it into the painter they are given through that painter's own
+/// translate (`Painter::dy`), so a painter carrying a page offset or a block origin paints, and
+/// registers the stops of, the very rects `place` reports. `clip` is the stops' own clip.
 #[derive(Clone, Copy, Debug)]
 pub struct SectionFrame {
     pub y: f32,
     pub clip: Rect,
+}
+
+/// What the `FocusMoved` events since a section's last tick told it about the card focus went to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Seen {
+    /// None arrived: a focused card that is not where the section last had it is the SAME element
+    /// moved by a content landing.
+    Nothing,
+    /// A deliberate move (`By::Dir` / `By::Pointer`) handed focus to this card: it grows from rest.
+    Deliberate(usize),
+    /// A restore, a reconcile or a seat: adopted whole.
+    Other,
+}
+
+impl Seen {
+    pub(crate) fn of(by: &crate::screen::By, arrived: usize) -> Self {
+        if matches!(by, crate::screen::By::Dir | crate::screen::By::Pointer) { Seen::Deliberate(arrived) } else { Seen::Other }
+    }
+}
+
+/// The focused element's card index changed because the CONTENT did (an insert or a reorder
+/// before it), not because focus moved: the section carried its pop to `to`, snapped the tile it
+/// left to rest and shifted its scroll so the tile stayed where it was on screen. Readable through
+/// [`Shelf::landed`] / [`Grid::landed`] for the tick that did it, so an owner that scrolls a page
+/// around the section (a later `Stack`) can shift by the same amount.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Landed {
+    pub from: usize,
+    pub to: usize,
 }
 
 /// The index of the engine-focused card in `src`, when focus is in `entry`'s page and on this
@@ -134,4 +173,11 @@ pub(crate) fn want(asked: &mut Option<(usize, usize)>, len: usize, end: usize, m
 #[inline]
 pub(crate) fn press_scale(pop: f32, focused: bool, cx: &Cx<'_, impl Host>) -> f32 {
     if focused { pop * cx.press.dip() } else { pop }
+}
+
+/// `r` (screen space) in painter `p`'s space: the painter's own translate undone, so a rect drawn
+/// or registered through `p` lands where `r` says on the screen.
+#[inline]
+pub(crate) fn to_local(p: Painter, r: Rect) -> Rect {
+    Rect::new(r.x, r.y - p.dy(), r.w, r.h)
 }

@@ -16,7 +16,7 @@ use plx_machine::present::Present;
 
 const ENTRY: EntryId = EntryId(9);
 const SHELF_AT: SectionFrame = SectionFrame { y: 300.0, clip: Rect::FULL };
-const GRID: GridSpec = GridSpec { top: 520.0, edge: 96.0 };
+const GRID: GridSpec = GridSpec::new(520.0, 96.0);
 const MS: u32 = 16;
 
 type Cx9<'a> = Cx<'a, FixtureHost>;
@@ -59,6 +59,7 @@ trait Section {
     fn neighbour(&self, src: &Cards, key: FocusKey<u32>, dir: Dir) -> Step<u32>;
     fn focus_scale() -> f32;
     fn scroll(&self) -> f32;
+    fn landed(&self) -> Option<super::Landed>;
     fn restore_scroll(&mut self, scroll: f32, n: usize);
     fn write(&self, c: &mut Canon);
 }
@@ -91,6 +92,9 @@ impl Section for Shelf {
     }
     fn scroll(&self) -> f32 {
         Shelf::scroll(self)
+    }
+    fn landed(&self) -> Option<super::Landed> {
+        Shelf::landed(self)
     }
     fn restore_scroll(&mut self, scroll: f32, n: usize) {
         Shelf::restore_scroll(self, scroll, n)
@@ -128,6 +132,9 @@ impl Section for Grid {
     }
     fn scroll(&self) -> f32 {
         Grid::scroll(self)
+    }
+    fn landed(&self) -> Option<super::Landed> {
+        Grid::landed(self)
     }
     fn restore_scroll(&mut self, scroll: f32, _n: usize) {
         Grid::restore_scroll(self, scroll)
@@ -384,6 +391,76 @@ fn shelf_grows_from_rest_on_a_move() {
 #[test]
 fn grid_grows_from_rest_on_a_move() {
     a_move_grows_from_rest::<Grid>();
+}
+
+/// How many tiles read lifted (above rest) right now.
+fn lifted<S: Section>(r: &Rig<S>) -> usize {
+    r.src.elems.iter().filter(|&&e| r.sect.scale_of(&r.cx(), &r.src, e).unwrap() > 1.01).count()
+}
+
+/// A content landing that moves the focused element to another index (no `FocusMoved`: it is the
+/// SAME element) carries its pop with it: one lifted tile in every frame, nothing lets go, and the
+/// tile stays where it was on screen. `insert` cards land before it (a whole row for the grid, so
+/// its column holds).
+fn a_landing_carries_the_pop_with_the_focused_elem<S: Section>(insert: usize) {
+    let mut r = settled::<S>(40);
+    r.land_focus(112, By::Restore);
+    r.run(240);
+    let full = S::focus_scale();
+    let before = r.sect.place(&r.cx(), &r.src, 112, At::Drawn).unwrap().rect;
+    for k in 0..insert {
+        r.src.elems.insert(0, 900 + k as u32);
+    }
+    assert_eq!(lifted(&r), 1, "before the tick the landing reads ONE lifted tile");
+    for frame in 0..2 {
+        r.run(1);
+        let want = (frame == 0).then_some(super::Landed { from: 12, to: 12 + insert });
+        assert_eq!(r.sect.landed(), want, "the tick that carried the pop reports it, the next one does not");
+        for &e in r.src.elems.iter().filter(|&&e| e != 112) {
+            let s = r.sect.scale_of(&r.cx(), &r.src, e).unwrap();
+            assert!((s - 1.0).abs() < 0.0005, "frame {frame}: elem {e} is at {s}, not at rest");
+        }
+        let s = r.sect.scale_of(&r.cx(), &r.src, 112).unwrap();
+        assert!((s - full).abs() < 0.002, "frame {frame}: the focused elem is at {s}, not {full}");
+        let now = r.sect.place(&r.cx(), &r.src, 112, At::Drawn).unwrap().rect;
+        assert!((now.x - before.x).abs() < 0.5 && (now.y - before.y).abs() < 0.5 && (now.w - before.w).abs() < 0.5,
+            "frame {frame}: the focused tile jumped from {before:?} to {now:?}");
+    }
+    r.run(240);
+    let now = r.sect.place(&r.cx(), &r.src, 112, At::Drawn).unwrap().rect;
+    assert!((now.x - before.x).abs() < 0.5 && (now.y - before.y).abs() < 0.5, "settled at {now:?}, was {before:?}");
+}
+#[test]
+fn shelf_landing_carries_the_pop_and_the_scroll() {
+    a_landing_carries_the_pop_with_the_focused_elem::<Shelf>(1);
+}
+#[test]
+fn grid_landing_carries_the_pop_and_the_scroll() {
+    a_landing_carries_the_pop_with_the_focused_elem::<Grid>(poster_grid::COLS);
+}
+
+/// A restore or reconcile arrival is adopted whole and the tile it leaves goes straight to rest —
+/// it was not "let go" by anyone — with ONE lifted tile even on the frame before the tick.
+fn a_non_deliberate_arrival_rests_the_old_tile<S: Section>() {
+    let mut r = settled::<S>(8);
+    r.land_focus(101, By::Restore);
+    r.run(240);
+    for by in [By::Reconcile, By::Restore] {
+        let (from, to) = if by == By::Reconcile { (101, 104) } else { (104, 101) };
+        r.land_focus(to, by);
+        assert_eq!(lifted(&r), 1, "{by:?}: one lifted tile before the tick");
+        r.run(1);
+        assert!((r.sect.scale_of(&r.cx(), &r.src, from).unwrap() - 1.0).abs() < 0.0005, "{by:?}: the old tile lets go");
+        assert!((r.sect.scale_of(&r.cx(), &r.src, to).unwrap() - S::focus_scale()).abs() < 0.002);
+    }
+}
+#[test]
+fn shelf_rests_the_old_tile_on_a_non_deliberate_arrival() {
+    a_non_deliberate_arrival_rests_the_old_tile::<Shelf>();
+}
+#[test]
+fn grid_rests_the_old_tile_on_a_non_deliberate_arrival() {
+    a_non_deliberate_arrival_rests_the_old_tile::<Grid>();
 }
 
 /// Focus in another entry (a menu's, another page's) is not this section's focus.

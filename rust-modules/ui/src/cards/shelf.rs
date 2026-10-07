@@ -9,11 +9,11 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 
-use super::{CardEvent, CardSource, SectionFrame, Tile};
+use super::{CardEvent, CardSource, Landed, SectionFrame, Seen, Tile};
 use crate::card_row::{self, CardRow, RowStyle};
 use crate::consts::SCR_W;
 use crate::screen::{
-    Activate, At, AxisMask, By, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
+    Activate, At, AxisMask, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
     Stop,
 };
 use crate::{Painter, Rect};
@@ -25,16 +25,19 @@ pub struct Shelf {
     entry: EntryId,
     style: &'static RowStyle,
     row: CardRow,
-    /// The cell a deliberate move (`By::Dir` / `By::Pointer`) just handed focus to: its pop grows
-    /// from rest. Cleared by the next tick. Any other focused cell is adopted at full pop.
-    armed: Option<usize>,
+    /// What the `FocusMoved`s since the last tick said: a deliberate move (`By::Dir` /
+    /// `By::Pointer`) grows its cell from rest, any other arrival is adopted at full pop, and none
+    /// at all means a changed focused index is a content landing. Cleared by the tick.
+    seen: Seen,
+    /// The landing the last tick carried the focused pop through, if there was one.
+    landed: Option<Landed>,
     ahead: usize,
     asked: Option<(usize, usize)>,
 }
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
-        Self { entry, style, row: CardRow::new(), armed: None, ahead: LOOK_AHEAD, asked: None }
+        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, ahead: LOOK_AHEAD, asked: None }
     }
 
     /// Cards beyond the visible window a [`CardEvent::Want`] asks for (default 6).
@@ -63,7 +66,9 @@ impl Shelf {
             ScreenEvent::FocusMoved { from, to, by } => {
                 let here = |e: &H::Elem| src.index_of(e);
                 let arrived = (to.entry == self.entry).then(|| here(&to.elem)).flatten();
-                self.armed = arrived.filter(|_| matches!(by, By::Dir | By::Pointer));
+                if let Some(a) = arrived {
+                    self.seen = Seen::of(by, a);
+                }
                 let left = from.filter(|k| k.entry == self.entry).and_then(|k| here(&k.elem));
                 if arrived.is_some() || left.is_some() {
                     fx.invalidate(Provenance::Input);
@@ -89,12 +94,29 @@ impl Shelf {
 
     fn tick<H: Host, S: CardSource<H>>(&mut self, dt: f32, cx: &Cx<'_, H>, src: &S) {
         let focus = super::focused_index(&cx.focus, self.entry, src);
+        self.landed = None;
         if let Some(i) = focus {
-            if self.row.focus() != i as i32 && self.armed != Some(i) {
-                self.row.adopt(i, self.style);
+            let prev = self.prev();
+            match (self.seen, prev) {
+                // a deliberate move: grows from rest, and the tile it left lets go over frames
+                (Seen::Deliberate(a), _) if a == i => {}
+                // no FocusMoved, another index: the same element, moved by a content landing
+                (Seen::Nothing, Some(p)) if p != i => {
+                    let dx = (i as f32 - p as f32) * self.pitch();
+                    self.row.relocate(p, i, dx);
+                    self.landed = Some(Landed { from: p, to: i });
+                }
+                // a restore, a reconcile, a seat: adopted whole, the old tile straight to rest
+                _ if prev != Some(i) => {
+                    if let Some(p) = prev {
+                        self.row.rest(p);
+                    }
+                    self.row.adopt(i, self.style);
+                }
+                _ => {}
             }
         }
-        self.armed = None;
+        self.seen = Seen::Nothing;
         if focus.is_some() || !self.row.at_exact_rest() {
             self.row.update(src.len(), focus, self.style, dt);
             if focus.is_none() {
@@ -112,12 +134,35 @@ impl Shelf {
         super::want(&mut self.asked, src.len(), end, src.more()).map(CardEvent::Want)
     }
 
-    /// The pop scale of card `i` given the engine's focus: the live spring for a card the shelf
-    /// has been told about, FULL for a focused card it has not (adopted whole, never a one-frame
-    /// collapse), the live let-go or rest for every other.
+    /// The cell the row last recorded as focused.
+    fn prev(&self) -> Option<usize> {
+        usize::try_from(self.row.focus()).ok()
+    }
+
+    /// The landing the last tick carried the focused card's pop through (see [`Landed`]).
+    pub fn landed(&self) -> Option<Landed> {
+        self.landed
+    }
+
+    /// The pop scale of card `i` given the engine's focus, exactly what the next tick will have
+    /// made of it, so no frame shows two lifted tiles: the live spring for a card the shelf has
+    /// been told about (a deliberate move grows from rest, the tile it left lets go), the landed
+    /// element's spring at its new index with the old one at rest, FULL for a focused card adopted
+    /// whole (never a one-frame collapse) with the one it left at rest.
     fn pop(&self, i: usize, focus: Option<usize>) -> f32 {
-        if focus == Some(i) && self.row.focus() != i as i32 && self.armed != Some(i) {
-            self.style.focus_scale
+        let Some(j) = focus else { return self.row.scale(i) };
+        let prev = self.prev();
+        if prev == Some(j) || self.seen == Seen::Deliberate(j) {
+            return self.row.scale(i);
+        }
+        let live = match (self.seen, prev) {
+            (Seen::Nothing, Some(p)) => self.row.scale(p),
+            _ => self.style.focus_scale,
+        };
+        if i == j {
+            live
+        } else if prev == Some(i) {
+            1.0
         } else {
             self.row.scale(i)
         }
@@ -133,7 +178,7 @@ impl Shelf {
         self.style.w + self.style.gap
     }
 
-    /// Card `i`'s settled (unpopped) rect in the section's painter space.
+    /// Card `i`'s settled (unpopped) rect in SCREEN space.
     fn slot(&self, i: usize, at: SectionFrame) -> Rect {
         card_row::tile_rect(i, self.style.margin_x, self.pitch(), self.row.scroll_x(), at.y,
             (self.style.w, self.style.h))
@@ -164,7 +209,8 @@ impl Shelf {
         })
     }
 
-    /// Draw the shelf into `p` (the section's painter: page offset and alpha already applied) and
+    /// Draw the shelf into `p` (alpha already applied; any translate it carries is undone, see
+    /// [`SectionFrame`]) and
     /// register its stops: non-focused cards first, the focused one last; only on-axis cards paint
     /// and only they resolve artwork or register a stop.
     pub fn draw<H: Host, S: CardSource<H>>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
@@ -192,7 +238,7 @@ impl Shelf {
         let focus = super::focused_index(&f.focus, self.entry, src);
         for i in (0..src.len()).filter(|&i| crate::on_axis(self.slot(i, at).x, self.style.w, SCR_W, 0.0)) {
             let s = super::press_scale(self.pop(i, focus), focus == Some(i), f.cx);
-            let slot = self.slot(i, at);
+            let slot = super::to_local(p, self.slot(i, at));
             f.stop(p, Stop {
                 key: FocusKey { entry: self.entry, elem: src.elem(i) },
                 rect: slot.scaled(s),
@@ -232,7 +278,7 @@ impl Shelf {
         s: f32,
         focused: bool,
     ) {
-        let unscrolled = card_row::tile_rect(i, self.style.margin_x, self.pitch(), 0.0, at.y,
+        let unscrolled = card_row::tile_rect(i, self.style.margin_x, self.pitch(), 0.0, at.y - pr.dy(),
             (self.style.w, self.style.h));
         let rect = unscrolled.scaled(s);
         if focused {
@@ -292,9 +338,14 @@ impl Shelf {
         self.row.restore_scroll(scroll, n, self.style);
     }
 
-    /// The row's heading lift and caption band, for the caller's section layout.
-    pub fn row(&self) -> &CardRow {
-        &self.row
+    /// How far the shelf's heading must rise, live, to clear the focused tile.
+    pub fn heading_lift(&self) -> f32 {
+        self.row.lift()
+    }
+
+    /// The caption band the shelf reserves under its tiles right now, for the caller's layout.
+    pub fn under_band(&self) -> f32 {
+        self.row.under_band()
     }
 
     pub fn write(&self, c: &mut Canon) {

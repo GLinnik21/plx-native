@@ -8,7 +8,7 @@
 use plx_machine::machine::{Canon, Cx, Effects, EntryId, FocusKey, GroupId, Host, ScreenEvent};
 use plx_machine::present::{PresentEvent, Provenance};
 
-use super::{CardEvent, CardSource, Tile};
+use super::{CardEvent, CardSource, Landed, Seen, Tile};
 use crate::card_row;
 use crate::consts::{CARD_H, K_SCROLL, MARGIN_X, SCR_H, SCR_W};
 use crate::poster_grid::{self, GridBand, GridBands, GridPop, COLS, STYLE};
@@ -29,6 +29,17 @@ pub struct GridSpec {
     /// The content edge a scrolled row snaps to (`poster_grid::snap_row`), and the line rows above
     /// the snapped one are culled against.
     pub edge: f32,
+    /// Whether the grid scrolls home when focus is not in it (a page with a header above the grid
+    /// wants that). `false` leaves the scroll where it is for a page whose other focus zones must
+    /// not scroll the grid away.
+    pub home_when_unfocused: bool,
+}
+
+impl GridSpec {
+    /// A grid that scrolls home when focus leaves it.
+    pub const fn new(top: f32, edge: f32) -> Self {
+        Self { top, edge, home_when_unfocused: true }
+    }
 }
 
 pub struct Grid {
@@ -38,6 +49,8 @@ pub struct Grid {
     target: f32,
     bands: GridBands,
     pop: GridPop,
+    seen: Seen,
+    landed: Option<Landed>,
     ahead: usize,
     asked: Option<(usize, usize)>,
 }
@@ -51,6 +64,8 @@ impl Grid {
             target: 0.0,
             bands: GridBands::new(),
             pop: GridPop::new(),
+            seen: Seen::Nothing,
+            landed: None,
             ahead: LOOK_AHEAD,
             asked: None,
         }
@@ -81,6 +96,9 @@ impl Grid {
                 // A deliberate move is the only focus change the eye should see travel; a restore
                 // or a reconcile is adopted whole by the next tick.
                 let deliberate = matches!(by, By::Dir | By::Pointer);
+                if let Some(a) = arrived {
+                    self.seen = Seen::of(by, a);
+                }
                 self.bands.focus(arrived.map(|i| i / COLS), deliberate);
                 if let Some(i) = arrived.filter(|_| deliberate) {
                     self.pop.arm(i);
@@ -105,11 +123,33 @@ impl Grid {
 
     fn tick<H: Host, S: CardSource<H>>(&mut self, dt: f32, cx: &Cx<'_, H>, src: &S, fx: &mut Effects<'_, H>) {
         let focus = super::focused_index(&cx.focus, self.entry, src);
-        self.target = focus.map_or(0.0, |i| {
-            poster_grid::snap_row(self.scroll.pos, i / COLS, src.len(), self.spec.top, self.spec.edge)
-        });
+        self.landed = None;
+        let prev = self.pop.cell();
+        // where the previously focused cell was on screen, before any band moves
+        let was = prev.map(|p| self.cell(p, &self.bands.geometry()).y);
         // A focus the reader did not move (a restore, a landing) adopts its band settled.
         self.bands.focus(focus.map(|i| i / COLS), false);
+        if let Some(i) = focus {
+            match (self.seen, prev) {
+                (Seen::Deliberate(a), _) if a == i => {}
+                // no FocusMoved, another index: the same element, moved by a content landing; the
+                // scroll shifts by what its row moved so the tile stays where it was on screen
+                (Seen::Nothing, Some(p)) if p != i => {
+                    self.pop.relocate(i);
+                    if let Some(was) = was {
+                        self.scroll.pos += self.cell(i, &self.bands.geometry()).y - was;
+                    }
+                    self.landed = Some(Landed { from: p, to: i });
+                }
+                _ if prev != Some(i) => self.pop.adopt(i, &STYLE),
+                _ => {}
+            }
+        }
+        self.seen = Seen::Nothing;
+        let home = if self.spec.home_when_unfocused { 0.0 } else { self.target };
+        self.target = focus.map_or(home, |i| {
+            poster_grid::snap_row(self.scroll.pos, i / COLS, src.len(), self.spec.top, self.spec.edge)
+        });
         self.bands.tick(STYLE.k_scroll, dt);
         self.pop.tick(focus, &STYLE, dt);
         self.scroll.step(self.target, K_SCROLL, dt);
@@ -123,6 +163,11 @@ impl Grid {
         let window = ((self.scroll.pos + SCR_H - self.spec.top) / poster_grid::ROW_PITCH).ceil().max(0.0) as usize * COLS;
         let focus = super::focused_index(&cx.focus, self.entry, src).map_or(0, |i| i + 1 + self.ahead);
         super::want(&mut self.asked, src.len(), window.max(focus), src.more()).map(CardEvent::Want)
+    }
+
+    /// The landing the last tick carried the focused card's pop through (see [`Landed`]).
+    pub fn landed(&self) -> Option<Landed> {
+        self.landed
     }
 
     /// The pop of card `i` given the engine's focus (`GridPop::scale`'s rule: a focused card the
@@ -187,7 +232,7 @@ impl Grid {
         let bands = self.bands.geometry();
         for i in poster_grid::visible(src.len(), self.spec.top, self.scroll.pos) {
             let s = super::press_scale(self.pop(i, focus), focus == Some(i), f.cx);
-            let cell = self.cell(i, &bands);
+            let cell = super::to_local(p, self.cell(i, &bands));
             f.stop(p, Stop {
                 key: FocusKey { entry: self.entry, elem: src.elem(i) },
                 rect: cell.scaled(s),
@@ -224,7 +269,7 @@ impl Grid {
         focused: bool,
         bands: &[GridBand],
     ) {
-        let rect = self.cell(i, bands).scaled(s);
+        let rect = super::to_local(p, self.cell(i, bands)).scaled(s);
         if !card_row::paint_visible(p, rect, s, focused) {
             return;
         }
