@@ -163,12 +163,15 @@ impl CardHarness for Harness {
         let want = self.focus.ok_or("nothing focused")?;
         let (_, col) = self.at(want.elem).ok_or("the focused card is not on a shelf")?;
         match l {
-            Landing::Reorder => plx_data::pms::reverse_test_shelves(&mut self.state),
-            // No hook inserts a card; a longer catalog reversed puts the new card (the last
-            // minted rk) first and every old card one place later.
+            // A landing the row can follow: the focused card moves one place along a row that
+            // scrolls further than a place (reversing the row would send it past the scroll range,
+            // where the shelf's clamp rightly lets the tile move on screen).
+            Landing::Reorder => plx_data::pms::rotate_test_shelves_right(&mut self.state),
+            // No hook inserts a card; a longer catalog rotated puts the new card (the last minted
+            // rk) first and every old card one place later.
             Landing::InsertAbove => {
                 plx_data::pms::seed_for_test(&mut self.state, &self.adapter, self.n + 1, plx_data::pms::HubState::Ready);
-                plx_data::pms::reverse_test_shelves(&mut self.state);
+                plx_data::pms::rotate_test_shelves_right(&mut self.state);
             }
             Landing::RemoveFocused => {
                 let rk = self.screen.borrow().item_at(self.snap.view(), 0, col).map(|m| m.rk.clone()).ok_or("no item behind the focus")?;

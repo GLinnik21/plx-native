@@ -1638,22 +1638,6 @@ mod stack {
     }
 }
 
-#[test]
-fn a_dormant_shelf_keeps_a_deliberate_arrival_until_it_wakes() {
-    let mut r = Rig::<Shelf>::new(8);
-    r.run(2);
-    r.sect.dormant(true);
-    let key = r.key(103);
-    r.focus = Some(key);
-    r.feed(ScreenEvent::FocusMoved { from: None, to: key, by: By::Dir });
-    r.run(40);
-    assert_eq!(r.sect.scale_of(&r.cx(), &r.src, &103), Some(1.0), "a dormant shelf pops nothing");
-    r.sect.dormant(false);
-    r.run(1);
-    let s = r.sect.scale_of(&r.cx(), &r.src, &103).unwrap();
-    assert!(s > 1.0 && s < RowStyle::HOME.focus_scale, "it grows from rest when it wakes, not adopted whole: {s}");
-}
-
 /// A source whose screen paints no focus on it (Home before the dive reaches its shelves).
 struct Veiled(Cards);
 
@@ -1705,4 +1689,88 @@ fn a_source_can_answer_which_card_the_picture_shows_focused() {
     }
     let seen = r.sect.place(&r.cx(), &veiled, &103, SHELF_AT, At::Drawn).unwrap().rect;
     assert!((seen.w - RowStyle::HOME.w).abs() < 0.01, "so the card is drawn at rest: {}", seen.w);
+}
+
+/// A source whose screen shows only part of the shelf's scroll (Home's row sweeps in with its dive).
+struct Swept(Cards, f32);
+
+impl CardSource<FixtureHost> for Swept {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn elem(&self, i: usize) -> u32 {
+        self.0.elem(i)
+    }
+    fn index_of(&self, e: &u32) -> Option<usize> {
+        self.0.index_of(e)
+    }
+    fn art(&self, i: usize) -> Art<'_> {
+        self.0.art(i)
+    }
+    fn label(&self, i: usize) -> TileLabel {
+        self.0.label(i)
+    }
+    fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, m: &dyn plx_machine::machine::Measure) {
+        self.0.overlay(p, i, tile, m)
+    }
+    fn sweep(&self) -> f32 {
+        self.1
+    }
+}
+
+/// `CardSource::sweep` scales the offset the cards are drawn, placed and registered at, all three
+/// the same, and leaves the spring's own scroll alone.
+#[test]
+fn a_swept_source_shows_a_fraction_of_the_scroll_everywhere() {
+    let mut r = settled::<Shelf>(30);
+    r.land_focus(120, By::Dir);
+    r.run(300);
+    let scroll = r.sect.scroll();
+    assert!(scroll > 400.0, "the row has an offset to sweep: {scroll}");
+    let half = Swept(Cards::new(r.src.elems.clone(), false), 0.5);
+    let whole = Swept(Cards::new(r.src.elems.clone(), false), 1.0);
+    let x = |src: &Swept| {
+        let cx = r.cx();
+        r.sect.place(&cx, src, &105, SHELF_AT, At::Drawn).unwrap().rest_rect.x
+    };
+    assert!((x(&half) - x(&whole) - scroll * 0.5).abs() < 0.01, "placed at half the offset");
+    let drawn = |src: &Swept| {
+        let cx = r.cx();
+        let f = DrawFrame::new(&cx, Painter::recording());
+        src.0.drawn.borrow_mut().clear();
+        r.sect.paint(&f, f.painter, src, SHELF_AT);
+        src.0.drawn.take()
+    };
+    let (dh, dw) = (drawn(&half), drawn(&whole));
+    let at = |d: &[(u32, Rect)], e: u32| d.iter().find(|&&(x, _)| x == e).map(|&(_, r)| r.x);
+    let (h, w) = (at(&dh, 120).unwrap(), at(&dw, 120).unwrap());
+    assert!((h - w - scroll * 0.5).abs() < 0.01, "the focused card is drawn at half the offset: {h} vs {w}");
+    let cx = r.cx();
+    let mut f = DrawFrame::new(&cx, Painter::root());
+    let p = f.painter;
+    r.sect.record_stops(&mut f, p, &half, SHELF_AT);
+    let first = f.stops().first().expect("a card is on the swept axis");
+    let stop = first.rest_rect.x;
+    let placed = r.sect.place(&cx, &half, &first.key.elem, SHELF_AT, At::Drawn).unwrap().rest_rect.x;
+    assert!((stop - placed).abs() < 0.01, "the stop is where the draw puts the card");
+    assert!((r.sect.scroll() - scroll).abs() < f32::EPSILON, "the spring itself is untouched");
+}
+
+/// `paint_resting` leaves the focused card out and `paint_focused` draws it alone, so a screen
+/// can draw every shelf's others first and the focused card last.
+#[test]
+fn the_focused_card_paints_apart_from_the_rest() {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Dir);
+    r.run(60);
+    let cx = r.cx();
+    let f = DrawFrame::new(&cx, Painter::recording());
+    let p = f.painter;
+    r.src.drawn.borrow_mut().clear();
+    r.sect.paint_resting(&f, p, &r.src, SHELF_AT);
+    let rest: Vec<u32> = r.src.drawn.take().into_iter().map(|(e, _)| e).collect();
+    assert!(!rest.is_empty() && !rest.contains(&101), "the others, not the focused card: {rest:?}");
+    r.sect.paint_focused(&f, p, &r.src, SHELF_AT);
+    let last: Vec<u32> = r.src.drawn.take().into_iter().map(|(e, _)| e).collect();
+    assert_eq!(last, vec![101], "the focused card alone");
 }

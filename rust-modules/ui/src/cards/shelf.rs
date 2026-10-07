@@ -13,7 +13,7 @@ use super::{CardEvent, CardSource, Landed, SectionFrame, Seen, Tile};
 use crate::card_row::{self, CardRow, RowStyle};
 use crate::consts::SCR_W;
 use crate::screen::{
-    Activate, At, AxisMask, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
+    Activate, At, AxisMask, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step,
     Stop,
 };
 use crate::{Painter, Rect};

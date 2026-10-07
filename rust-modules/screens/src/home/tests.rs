@@ -440,7 +440,7 @@ fn observe_card(h: &mut plx_ui::card_motion::History, s: &HomeScreen, view: Hubs
 }
 
 #[test]
-fn a_retained_shelf_offset_does_not_make_the_late_dive_read_as_fast() {
+fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
     use plx_ui::card_motion::{History, Verdict};
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
@@ -459,9 +459,7 @@ fn a_retained_shelf_offset_does_not_make_the_late_dive_read_as_fast() {
         observe_card(&mut h, &s, snapshot.view(), 16)
     };
     assert_eq!(late_dive_frame(0.0), Verdict::Settled, "vertical late-dive control is under 120px/s");
-    // The shelf draws at its own scroll, not scaled by the dive (`cards::Shelf`): a retained offset
-    // no longer sweeps the row sideways while it dives in, so it cannot read as fast either.
-    assert_eq!(late_dive_frame(4000.0), Verdict::Settled, "the retained offset rides the dive without moving the card");
+    assert_eq!(late_dive_frame(4000.0), Verdict::Moving, "the retained-offset product moves the card fast");
 }
 
 #[test]
