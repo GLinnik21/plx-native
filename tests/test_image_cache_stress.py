@@ -3,6 +3,8 @@
 import importlib.util
 import json
 from pathlib import Path
+import select
+import socket
 import tempfile
 import threading
 import unittest
@@ -79,6 +81,74 @@ class FixtureTest(unittest.TestCase):
         access = {"cold": stress.access_summary(records)["cold"],
                   "warm": {"unique_listing_items": 1200, "image_requests": 0}}
         self.assertIn("cold run did not fetch 1001 distinct tile images", stress.grade(access, cold, warm))
+
+
+class HeldRecordFixture(stress.Fixture):
+    """A fixture whose access log write waits for the test, so the test decides the order."""
+
+    def __init__(self):
+        super().__init__()
+        self.reached = threading.Event()
+        self.proceed = threading.Event()
+
+    def record(self, *args, **fields):
+        self.reached.set()
+        self.proceed.wait(5)  # an upper bound on a hang; the test always sets it
+        super().record(*args, **fields)
+
+
+class RecordedBeforeAnsweredTest(unittest.TestCase):
+    """A client that has been answered can read the stats and find its own request in them.
+
+    The fixture's snapshot is the evidence the stress run grades (`access_summary`), and a harness
+    that has just seen a response reads it at once. So the access log row is written BEFORE the
+    first byte of the response goes out. Written after, the row trails the answer by however long
+    the server thread is descheduled, and a reader that was just answered saw a count one short
+    (CI's `0 != 1` on `image_failures`, under four steps sharing four cores).
+    """
+
+    def setUp(self):
+        self.fixture = HeldRecordFixture()
+        self.server = stress.http.server.ThreadingHTTPServer(("127.0.0.1", 0), stress.handler(self.fixture))
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.fixture.proceed.set()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        self.fixture.close()
+
+    def answered_when_recording_starts(self, path):
+        """True when response bytes are already on the client's socket as the row starts to be written."""
+        self.fixture.reached.clear()
+        self.fixture.proceed.clear()
+        with socket.create_connection(("127.0.0.1", self.server.server_port), timeout=5) as conn:
+            conn.sendall(f"GET {path} HTTP/1.1\r\nHost: fixture\r\nConnection: close\r\n\r\n".encode())
+            self.assertTrue(self.fixture.reached.wait(5), f"{path} was never recorded")
+            # Loopback delivers inside the sender's send(), so what the server has sent is readable now.
+            answered = bool(select.select([conn], [], [], 0)[0])
+            self.fixture.proceed.set()
+            while conn.recv(65536):
+                pass
+        return answered
+
+    def test_every_recorded_answer_is_recorded_first(self):
+        image = FixtureTest.image_path(None, 1)
+        cases = dict(
+            image=image,
+            invalid_image="/photo/:/transcode?url=/nope",
+            metadata="/library/sections/1/all?X-Plex-Container-Size=1",
+            unknown_endpoint="/no/such/endpoint")
+        for name, path in cases.items():
+            with self.subTest(name):
+                self.assertFalse(self.answered_when_recording_starts(path),
+                                 "the response was sent before the access log row was written")
+        self.fixture.control(dict(images=False))
+        with self.subTest("refused image"):
+            self.assertFalse(self.answered_when_recording_starts(image))
+        self.assertEqual(self.fixture.snapshot()["phases"]["cold"]["image_failures"], 1)  # the refused one
 
 
 def legs():
