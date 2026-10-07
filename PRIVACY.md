@@ -39,7 +39,8 @@ addresses and identifiers of those servers, the profile names and pictures on yo
 pictures and other downloaded artwork (posters, backdrops and cast images) are cached as
 bounded files for reuse across restarts — your
 Home library choices, your recent searches, your playback quality preference, and local technical
-logs: a small rotating event log and a bounded storage status snapshot. It also stores your answers
+logs: an event log and an error-output log, each emptied every time the app launches, a crash log
+that is kept until the television restarts, and a bounded storage status snapshot. It also stores your answers
 to the two optional-reporting questions, the random Crash report ID if you turned crash reports on,
 the random Analytics ID if you turned product analytics on, any report waiting to be sent, a
 marker recording how much of the crash log has already been read, and — for a server you were
@@ -60,8 +61,9 @@ in next: the next sign-in is asked afresh. Switching between the profiles of one
 not a sign-out and keeps all of it, including the server access token(s) and PIN check cached for
 a profile you are not currently using, so that profile can be switched to again with no internet.
 A queued report is deleted once sent, or at the moment you switch
-its category off or sign out. The event log rotates continuously and the storage snapshot is
-replaced when its bounded status changes. **webOS gives an application no way to run code as it
+its category off or sign out. The event log and the error-output log are emptied every time the app launches, the crash log is
+kept until the television restarts (the television clears its temporary storage then), and the storage
+snapshot is replaced when its bounded status changes. **webOS gives an application no way to run code as it
 is removed**, so the sign-in and the reporting answers can survive an uninstall — use Delete all
 local data before uninstalling if you want nothing of PlxNative left on the television.
 
