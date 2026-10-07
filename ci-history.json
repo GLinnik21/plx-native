@@ -1,4 +1,4 @@
-{"updated":"2026-10-07T09:11:27Z",
+{"updated":"2026-10-07T09:16:02Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -516,5 +516,6 @@
 {"id":37505165115,"at":"2026-10-06T17:38:53Z","sha":"483074bc6","title":"nightly: serve nightlies as a Homebrew Channel repository, with a guide","pr":472,"jobs":{"Linux simulator build + launch":352,"Windows launcher syntax":15,"macOS simulator build + launch":523,"macOS tests against bundled FFmpeg and ASS":371}},
 {"id":37509005752,"at":"2026-10-06T18:08:33Z","sha":"b9dc2e187","title":"Playback: the intended audio track is converted, not swapped; subtitles stay styled and selected; the app says so","pr":474,"jobs":{"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":291,"macOS simulator build + launch":391,"Linux simulator build + launch":266}},
 {"id":37512786837,"at":"2026-10-06T18:37:51Z","sha":"4a0dab4fb","title":"Settings: BACK keycap hint for restarting after a language change","pr":473,"jobs":{"macOS simulator build + launch":425,"macOS tests against bundled FFmpeg and ASS":481,"Windows launcher syntax":15,"Linux simulator build + launch":276}},
-{"id":37565982997,"at":"2026-10-07T03:16:27Z","sha":"89cd87e7c","title":"RC.1 nits: Settings pill and fade, hold pop, Library BACK glide, empty Detail, cast marquee, Collection lift, login timi","pr":480,"jobs":{"Linux simulator build + launch":306,"Windows launcher syntax":17,"macOS simulator build + launch":453,"macOS tests against bundled FFmpeg and ASS":291}}
+{"id":37565982997,"at":"2026-10-07T03:16:27Z","sha":"89cd87e7c","title":"RC.1 nits: Settings pill and fade, hold pop, Library BACK glide, empty Detail, cast marquee, Collection lift, login timi","pr":480,"jobs":{"Linux simulator build + launch":306,"Windows launcher syntax":17,"macOS simulator build + launch":453,"macOS tests against bundled FFmpeg and ASS":291}},
+{"id":37598278898,"at":"2026-10-07T09:06:12Z","sha":"7247ec131","title":"First run asks every profile which libraries it wants","pr":481,"jobs":{"Linux simulator build + launch":240,"Windows launcher syntax":16,"macOS simulator build + launch":571,"macOS tests against bundled FFmpeg and ASS":328}}
 ]}
