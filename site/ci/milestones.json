@@ -1,0 +1,145 @@
+{
+  "note": "Hand-measured local-loop milestones, quoted from merged PR bodies. Not collected automatically. Append a point to a series (or start a series) with a number you can cite: date = the PR's merge date, pr and commit = the merge commit, value in the series' unit, optional before (the same measurement before the change) and max (the upper end of a quoted range), what, and a one-line source. Never estimate or interpolate. tools/test_ci_history.py checks the shape.",
+  "series": [
+    {
+      "id": "unit-suite",
+      "title": "Unit suite run, default features",
+      "description": "Test binaries already built; cargo ran the 14 binaries one after another, the wrapper runs them side by side.",
+      "unit": "s",
+      "machine": "Apple M4, 10 cores (make build-bench)",
+      "points": [
+        {"date": "2026-10-05", "pr": 446, "commit": "9bf86e569", "before": 83.6, "value": 15.9,
+         "what": "Per-crate test binaries side by side (tools/cargo-test-parallel.py)",
+         "source": "PR #446 body, Numbers: 83.6 s (main 228a7482) -> 15.9 s in make build-bench."}
+      ]
+    },
+    {
+      "id": "test-crate",
+      "title": "Edit one file, then run that crate's tests",
+      "description": "Before: make test-fast. After: make test-crate C=<crate>. Full run of the crate's tests, warm target-fast, medians of 3.",
+      "unit": "s",
+      "machine": "Apple M4, 10 cores",
+      "points": [
+        {"date": "2026-10-05", "pr": 446, "commit": "9bf86e569", "before": 27.2, "value": 1.7,
+         "what": "plx_base, full run",
+         "source": "PR #446 body, make test-fast vs make test-crate table."},
+        {"date": "2026-10-05", "pr": 446, "commit": "9bf86e569", "before": 22.7, "value": 8.3,
+         "what": "plx_screens, full run",
+         "source": "PR #446 body, make test-fast vs make test-crate table."}
+      ]
+    },
+    {
+      "id": "arm-edit-rebuild",
+      "title": "ARM edit-rebuild after touching one file",
+      "description": "make pkg/plxnative after editing rust-modules/screens/src/clock_readout.rs; fat-LTO release profile before, the tvdev profile after.",
+      "unit": "s",
+      "machine": "Apple M4, 10 cores",
+      "points": [
+        {"date": "2026-10-05", "pr": 447, "commit": "8d01c2002", "before": 69.7, "value": 11.2,
+         "what": "A plain local ARM build uses the tvdev cargo profile",
+         "source": "PR #447 body, Measurements: medians of 3 runs each (70.6, 69.7, 68.7 s against 11.7, 11.2, 10.7 s)."}
+      ]
+    },
+    {
+      "id": "check-python",
+      "title": "make check-python, alone",
+      "description": "The Python, shell and C gates.",
+      "unit": "s",
+      "machine": "Apple M4, 10 cores, other sessions running",
+      "points": [
+        {"date": "2026-10-05", "pr": 450, "commit": "875c1563f", "before": 408, "value": 170,
+         "what": "Harness gate self-tests plant every variant at once; harness runs beside the rest",
+         "source": "PR #450 body, Numbers: median of 3 runs, main 8d01c200 against the PR."},
+        {"date": "2026-10-07", "pr": 492, "commit": "0ab50b6f4", "before": 193, "value": 88,
+         "what": "One manifest of gates, run four at a time",
+         "source": "PR #492 body, Numbers: make check-python alone, 3 runs each (193 / 188 / 197 s against 88 / 87 / 88 s), on 11c5d9a1."}
+      ]
+    },
+    {
+      "id": "check-lone",
+      "title": "make check, a lone run",
+      "description": "The whole host gate on one checkout with nothing else running.",
+      "unit": "s",
+      "machine": "Apple M4, 10 cores, 16 GB",
+      "points": [
+        {"date": "2026-10-06", "pr": 460, "commit": "8d017fd7d", "value": 185, "max": 205,
+         "what": "Measured basis for the two-slot check lock",
+         "source": "PR #460 body: a lone warm make check is about 185-205 s."},
+        {"date": "2026-10-07", "pr": 492, "commit": "0ab50b6f4", "before": 203, "value": 101,
+         "what": "Python/shell/C gates run concurrently from one manifest",
+         "source": "PR #492 body: lone make check 203 s (main b79a17de) -> 101 s, three runs each."}
+      ]
+    },
+    {
+      "id": "check-pair",
+      "title": "Two make check at once (wall of the pair)",
+      "description": "Two checkouts running the whole gate side by side, which the two-slot lock allows.",
+      "unit": "s",
+      "machine": "Apple M4, 10 cores, 16 GB",
+      "points": [
+        {"date": "2026-10-06", "pr": 460, "commit": "8d017fd7d", "value": 250, "max": 316,
+         "what": "Two slots instead of one",
+         "source": "PR #460 body: about 250-316 s for the pair, 0.67-0.76 of the back-to-back time."},
+        {"date": "2026-10-07", "pr": 492, "commit": "0ab50b6f4", "before": 281, "value": 208,
+         "what": "Gates run concurrently, pair 1",
+         "source": "PR #492 body, Pair table, on b79a17de."},
+        {"date": "2026-10-07", "pr": 492, "commit": "0ab50b6f4", "before": 254, "value": 193,
+         "what": "Gates run concurrently, pair 2",
+         "source": "PR #492 body, Pair table, on b79a17de."}
+      ]
+    },
+    {
+      "id": "plx-media-pass",
+      "title": "plx_media unit tests, default pass",
+      "description": "Wall time of the crate's test binary with 4 test threads.",
+      "unit": "s",
+      "machine": "Apple M4, 10 cores",
+      "points": [
+        {"date": "2026-10-07", "pr": 490, "commit": "b79a17deb", "before": 61.6, "value": 14.0,
+         "what": "Six tests no longer idle on an 8 s mock deadline each",
+         "source": "PR #490 body, section 1 table: default pass, 4 test threads."}
+      ]
+    },
+    {
+      "id": "host-edit-rebuild",
+      "title": "Host test build after a one-file edit, by crate",
+      "description": "make build-bench, medians of 3. Before: HOST_THREADS=0. After: rustc -Zthreads=8. Non-incremental unless the line says incremental.",
+      "unit": "s",
+      "machine": "Apple M4, 10 cores",
+      "points": [
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 19.9, "value": 17.2, "what": "plx_base cbuf.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 19.1, "value": 16.3, "what": "plx_machine landgate.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 20.1, "value": 15.8, "what": "plx_platform devcaps.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 11.8, "value": 7.8, "what": "plx_gfx overdraw.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 16.9, "value": 13.2, "what": "plx_net stream_redirect.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 10.5, "value": 7.3, "what": "plx_ui dwell.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 16.0, "value": 12.9, "what": "plx_plex retry.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 13.9, "value": 11.1, "what": "plx_telemetry window.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 12.7, "value": 9.4, "what": "plx_data tape.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 9.8, "value": 6.9, "what": "plx_session scripted.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 10.3, "value": 7.6, "what": "plx_media units.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 8.5, "value": 5.9, "what": "plx_appkit skip_pill.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 8.1, "value": 5.5, "what": "plx_screens clock_readout.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 4.8, "value": 2.8, "what": "app coldstart.rs", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 10.2, "value": 7.3, "what": "plx_ui lib.rs (the hub)", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 6.9, "value": 5.7, "what": "plx_base cbuf.rs, incremental", "source": "PR #454 body, Evidence table."},
+        {"date": "2026-10-05", "pr": 454, "commit": "2be259682", "before": 3.1, "value": 3.0, "what": "plx_ui lib.rs, incremental", "source": "PR #454 body, Evidence table."}
+      ]
+    },
+    {
+      "id": "macos-sim-cache",
+      "title": "macOS simulator jobs, host FFmpeg and libass cache miss against hit",
+      "description": "Run 1 had every cache miss and save; run 2, an empty follow-up commit with the same inputs, restored them. These are GitHub runner job times quoted from the PR, not an M4.",
+      "unit": "s",
+      "machine": "GitHub Actions macOS runner (CI job time, one run each)",
+      "points": [
+        {"date": "2026-10-07", "pr": 489, "commit": "572cc6fa9", "before": 474, "value": 350,
+         "what": "macOS simulator build + launch: miss, then hit",
+         "source": "PR #489 body, Measured on this PR table (Run 1 miss, Run 2 hit)."},
+        {"date": "2026-10-07", "pr": 489, "commit": "572cc6fa9", "before": 374, "value": 163,
+         "what": "macOS tests against bundled FFmpeg and ASS: miss, then hit",
+         "source": "PR #489 body, Measured on this PR table (Run 1 miss, Run 2 hit)."}
+      ]
+    }
+  ]
+}
