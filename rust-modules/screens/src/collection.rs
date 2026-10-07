@@ -165,6 +165,10 @@ pub struct CollectionScreen {
     /// motion (`ui::poster_grid::GridBands`), so a focused member's caption opens room under its
     /// row rather than drawing over the posters below. Presentation, not logical state.
     bands: plx_ui::poster_grid::GridBands,
+    /// The focused member's pop and the previous one's let-go (`ui::poster_grid::GridPop`) — the
+    /// Library grid's springs, so a member lifts and settles over frames instead of stepping to
+    /// `focus_scale`. Presentation, not logical state.
+    pop: plx_ui::poster_grid::GridPop,
     /// The header summary's focus lift ([`Self::summary_marked`]). Presentation, not logical state.
     summary_lift: plx_ui::text_lift::TextLift,
 }
@@ -193,6 +197,7 @@ impl CollectionScreen {
             scroll: Spring::default(), scroll_target: 0.0, ground: PageGround::new(),
             ground_seeded: false, summary_more: false, links_c: Vec::new(), synced: None,
             bands: plx_ui::poster_grid::GridBands::new(),
+            pop: plx_ui::poster_grid::GridPop::new(),
             summary_lift: plx_ui::text_lift::TextLift::new() }
     }
 
@@ -290,8 +295,16 @@ impl CollectionScreen {
     }
 
     fn card_rect(&self, index: usize, focused: bool, press: f32) -> Rect {
-        let scale = if focused { plx_ui::poster_grid::STYLE.focus_scale * if press > 0.0 { press } else { 1.0 } } else { 1.0 };
-        self.cell(index).scaled(scale)
+        self.cell(index).scaled(self.tile_scale(index, focused, press))
+    }
+
+    /// **The one scale a member draws at — for its RECT and for its TREATMENT, always together**
+    /// (`card_row::draw_tile`/`draw_focused` derive the radius and shadow ramp from it): the live
+    /// pop times the live press while focused, the live let-go for the member that just lost
+    /// focus, rest for every other.
+    fn tile_scale(&self, index: usize, focused: bool, press: f32) -> f32 {
+        self.pop.scale(index, focused, &plx_ui::poster_grid::STYLE)
+            * if focused && press > 0.0 { press } else { 1.0 }
     }
 
     /// Member `index`'s resting cell at the live scroll and live caption bands — the ONE rect
@@ -391,6 +404,8 @@ impl CollectionScreen {
         // move opens it with motion from `FocusMoved`, as the Library grid does.
         self.bands.focus(self.focused_row(collection, cx), false);
         self.bands.tick(plx_ui::poster_grid::STYLE.k_scroll, t.dt());
+        self.pop.tick(cx.focus.current.filter(|key| key.entry == self.entry)
+            .and_then(|key| self.item_index(collection, key.elem)), &plx_ui::poster_grid::STYLE, t.dt());
         self.scroll.step(self.scroll_target, K_SCROLL, t.dt());
         let header_focused = cx.focus.current
             .is_some_and(|key| key.entry == self.entry && key.elem == HEADER_ELEM);
@@ -660,7 +675,12 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
                 if let Some(collection) = self.collection(cx) {
                     let row = self.item_index(collection, to.elem).map(|index| index / plx_ui::poster_grid::COLS);
                     self.bands.focus(row, matches!(by, By::Dir | By::Pointer));
-                    if let Some(index) = self.item_index(collection, to.elem) { self.maybe_page(collection, index, fx); }
+                    if let Some(index) = self.item_index(collection, to.elem) {
+                        // A deliberate move is the only focus change the eye should see travel;
+                        // a restore or a reconcile is adopted whole by the next tick.
+                        if matches!(by, By::Dir | By::Pointer) { self.pop.arm(index); }
+                        self.maybe_page(collection, index, fx);
+                    }
                     if to.elem == HEADER_ELEM && matches!(by, By::Dir | By::Pointer) { self.header_marked = true; }
                 }
                 fx.invalidate(Provenance::Input); Handled::Yes
@@ -872,6 +892,53 @@ mod tests {
         let out = step(&mut screen, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &cx(store.view(), Some(key)));
         assert!(out.iter().any(|e| matches!(&e.fx, plx_machine::machine::Fx::App(AppFx::Content(
             ContentReq::Push(ContentArg::Detail { rk, .. }))) if rk == "b")));
+    }
+
+    fn tick_at(screen: &mut CollectionScreen, store: &plx_data::stores::collection::CollectionStore,
+        focus: Option<plx_machine::machine::FocusKey<u32>>, ms: u32) {
+        step(screen, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }), &cx(store.view(), focus));
+    }
+
+    /// RC.1 nit 7: a member gaining focus grew in one frame, and the one losing it snapped back —
+    /// the Collection page drew `focus_scale` as a step where the Library grid and every Home
+    /// shelf spring the pop. A D-pad move now arms the shared `GridPop` (the `FocusMoved` arm) and
+    /// the frame's ticks carry it: the new member is between rest and full one frame in, the old
+    /// one is between full and rest, and both settle.
+    #[test]
+    fn a_member_gaining_focus_grows_over_frames_and_the_one_losing_it_lets_go() {
+        let (store, mut screen) = seeded();
+        let c = store.view().current().unwrap();
+        let (a, b) = (screen.key_at(c, 0), screen.key_at(c, 1));
+        let full = CARD_W * plx_ui::poster_grid::STYLE.focus_scale;
+        // A landing adopts its first focus at full scale.
+        tick_at(&mut screen, &store, Some(a), 16);
+        assert_eq!(screen.card_rect(0, true, 1.0).w, full, "a seated focus is adopted whole");
+        step(&mut screen, ScreenEvent::FocusMoved { from: Some(a), to: b, by: By::Dir }, &cx(store.view(), Some(b)));
+        tick_at(&mut screen, &store, Some(b), 32);
+        let (new, old) = (screen.card_rect(1, true, 1.0).w, screen.card_rect(0, false, 1.0).w);
+        assert!(new > CARD_W + 0.1 && new < full - 0.1, "the new member starts growing from rest: {new}");
+        assert!(old > CARD_W + 0.1 && old < full - 0.1, "the old member lets go rather than snapping: {old}");
+        for n in 0..120 { tick_at(&mut screen, &store, Some(b), 48 + n * 16); }
+        assert!((screen.card_rect(1, true, 1.0).w - full).abs() < 0.5, "…and settles at full scale");
+        assert_eq!(screen.card_rect(0, false, 1.0).w, CARD_W, "a settled neighbour costs nothing");
+    }
+
+    /// A hold menu leaves the page's focus where it was (the menu is its own input scope) while
+    /// the host keeps ticking: the member whose menu is open stays at the SETTLED pop — neither
+    /// restarted from rest nor let go — which is what the opener redraw (`redraw_focused`) paints.
+    #[test]
+    fn a_hold_menu_over_a_settled_member_keeps_it_popped() {
+        let (store, mut screen) = seeded();
+        let c = store.view().current().unwrap();
+        let (a, b) = (screen.key_at(c, 0), screen.key_at(c, 1));
+        let full = CARD_W * plx_ui::poster_grid::STYLE.focus_scale;
+        tick_at(&mut screen, &store, Some(a), 0);
+        step(&mut screen, ScreenEvent::FocusMoved { from: Some(a), to: b, by: By::Pointer }, &cx(store.view(), Some(b)));
+        for n in 0..120 { tick_at(&mut screen, &store, Some(b), 16 + n * 16); }
+        step(&mut screen, ScreenEvent::Cover, &cx(store.view(), Some(b)));
+        for n in 0..60 { tick_at(&mut screen, &store, Some(b), 3000 + n * 16); }
+        assert!((screen.card_rect(1, true, 1.0).w - full).abs() < 0.5,
+            "the member whose menu is open stays lifted");
     }
 
     /// The failed page's read-out is the shared page read-out (#268): page-placed, the untyped
