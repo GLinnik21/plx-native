@@ -67,11 +67,19 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 App-owned text comes from typed `i18n::msg` accessors. Keep protocol identifiers and server-returned
 metadata untouched. Measure translated labels with the injected `Measure`; complete questions must
 remain inside their safe frames at the shared theme sizes. Tile labels are the exception: they
-belong to their card, never to the safe area. `card_row::place_label` centres a focused tile's
-block on its card, or starts every line at the card's leading edge where the centred block would
-leave the panel — judged where the tile will REST (`CardRow::settle_lag`, passed through
-`TileLabel::settling`), so a scroll glide never flips the block's alignment or width mid-flight;
-cast names scroll off-screen with their headshots at full width.
+belong to their card, never to the safe area. `card_row::anchor_label` (the pure decision;
+`place_label` feeds it the card's edges and the screen's room) places a focused tile's block
+**centred** on its card while the centred block sits on the panel; where it would not, **leading**
+(every line starts at the card's left edge) while the room to the right shows the whole block; and
+where the room to the right is a sliver (the last card of a row) **trailing** — the window ends on
+the card's own right edge and reaches LEFT over the room the neighbours leave (never past the row's
+`margin_x`), and every line is right-aligned to that edge, so a caption does not run off the card
+into the margin. Only a trailing block may be wider than `under_budget` (it is given what it
+wants, up to that room); a block that still does not fit glides inside its window, in lockstep
+through the one `marquee::Block`. All of it is judged where the tile will REST
+(`CardRow::settle_lag`, passed through `TileLabel::settling`), so a scroll glide never flips the
+block's alignment or width mid-flight. A headshot's credit label is not placed this way: it is a
+box inside its own slot (`draw_credit_label`), which cannot cross the margin, and it never moves.
 
 **Focused text that does not fit marquees; it is never left ending in an ellipsis.** The scope is
 every line of a FOCUSED card's label block: a poster's title AND its caption line (year, character
