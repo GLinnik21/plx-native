@@ -4082,6 +4082,75 @@ mod lifecycle_regression_tests {
         }
     }
 
+    /// A REAL card hold on Home's grid, driven through the whole chain the television runs: the OK
+    /// key goes down and stays down, the dispatcher's `InputMachine::tick` delivers `PressHold`
+    /// at `LONG_MS`, Home answers it with `HomeReq::ItemMenu`, `content_requests` drains that and
+    /// `bridge::open_item_menu` presents the menu (or the app declines). Steps frame by frame
+    /// until the dispatcher abandons the press (the frame the hold was delivered and answered) and
+    /// returns the press as it stands on that frame, `(active, scale)`, with the app.
+    fn hold_a_home_card(declined: bool) -> (bool, f32, App, u32) {
+        let mut app = app();
+        let mut t = 0u32;
+        super::super::bridge::show_page(&mut app.pages, AppArg::Home);
+        app.bridge.seed_hub_grid_for_test(3, 4);
+        if declined {
+            // The first card is a collection: the menu has nothing to offer it.
+            app.bridge.retag_hub_item_as_collection_for_test("1");
+        }
+        settle(&mut app, &mut t);
+        let entry = app.pages.nav.top_page().unwrap().id;
+        let instance = app.pages.nav.instance_of(entry).unwrap();
+        app.pages.emit(plx_machine::machine::MachineId::Nav, plx_machine::machine::Fx::Deliver(
+            plx_machine::machine::MachineId::Instance(instance),
+            plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(
+                plx_screens::registry::AppMsg::Home(plx_screens::registry::HomeCmd::FocusGrid { row: 0, col: 0 })))));
+        for _ in 0..40 { step(&mut app, &mut t, vec![]); }
+        assert!(!super::super::bridge::item_menu_up(&app.pages), "premise: no menu yet");
+
+        // OK goes down and STAYS down: a hold, never a release.
+        let down = plx_ui::fixture::key(plx_machine::machine::Key::Ok, plx_machine::machine::Tick { ms: t + 16, dt_us: 16_000 });
+        step(&mut app, &mut t, vec![down]);
+        for _ in 0..6 { step(&mut app, &mut t, vec![]); }
+        assert!(app.pages.input.press.is_live() && app.pages.input.press.scale() < 0.99,
+            "premise: the hold is armed on the dispatcher's press and dipped");
+        for _ in 0..80 {
+            step(&mut app, &mut t, vec![]);
+            if !app.pages.input.press.is_live() {
+                return (app.pages.input.press.is_active(), app.pages.input.press.scale(), app, t);
+            }
+        }
+        panic!("the hold never reached the app");
+    }
+
+    /// A card hold the app takes (the item menu opens) ends the press AT REST on the very frame the
+    /// hold is answered, before the menu's surface is even mounted, let alone captured, so the
+    /// poster keeps its pop under the scrim.
+    #[test]
+    fn a_real_card_hold_that_opens_the_item_menu_ends_the_press_at_rest() {
+        let _serial = plx_base::testlock::serial();
+        let (active, scale, mut app, mut t) = hold_a_home_card(false);
+        assert!(!active, "the press is at rest the moment the menu is asked for, not springing back");
+        assert_eq!(scale, 1.0);
+        for _ in 0..4 {
+            step(&mut app, &mut t, vec![]);
+            assert!(!app.pages.input.press.is_active(), "…and stays at rest through the menu's opening");
+        }
+        assert!(super::super::bridge::item_menu_up(&app.pages), "the hold opened the item menu");
+    }
+
+    /// A hold the app DECLINES (nothing to offer a collection) is not taken: the dispatcher
+    /// abandons the press and it springs back, then comes to rest.
+    #[test]
+    fn a_real_card_hold_the_app_declines_springs_back() {
+        let _serial = plx_base::testlock::serial();
+        let (active, scale, mut app, mut t) = hold_a_home_card(true);
+        assert!(active && scale < 0.99, "the declined hold springs back: active={active} scale={scale}");
+        for _ in 0..4 { step(&mut app, &mut t, vec![]); }
+        assert!(!super::super::bridge::item_menu_up(&app.pages), "a collection has no item menu");
+        for _ in 0..40 { step(&mut app, &mut t, vec![]); }
+        assert!(!app.pages.input.press.is_active(), "…and the spring comes to rest");
+    }
+
     /// **Press Play, and let the plan land INSIDE the player push's dip-out** — the order the
     /// television produces whenever the resolve is quicker than the 140 ms fade. `start_playback`
     /// pushes the player while the plan is still resolving; the next frame's dip-out PREPARES the

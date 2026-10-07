@@ -1191,6 +1191,19 @@ impl Bridge {
         self.stores.hubs.seed_for_test(items, hub_state);
     }
 
+    /// [`seed_hubs_for_test`](Self::seed_hubs_for_test) as a grid of `rows` shelves of `items` cards.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn seed_hub_grid_for_test(&mut self, rows: usize, items: usize) {
+        self.stores.hubs.seed_grid_for_test(rows, items);
+    }
+
+    /// Make the shelf card `rk` a collection: the item menu has nothing to offer it, so a hold on it
+    /// is the one the app declines.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn retag_hub_item_as_collection_for_test(&mut self, rk: &str) {
+        self.stores.hubs.retag_test_item_as_collection(rk);
+    }
+
     #[cfg(test)]
     pub(crate) fn seed_hubs_for_directory_test(
         &mut self,
