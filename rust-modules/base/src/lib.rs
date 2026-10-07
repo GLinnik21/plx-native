@@ -30,3 +30,5 @@ pub mod diag; // the frame instruments (`heartbeat`, `spans`) and the zlib helpe
 pub mod testlock; // one lock for every test that touches a process-global
 #[cfg(any(test, feature = "test-support"))]
 pub mod testnet; // the one accept for a loopback test server whose listener is nonblocking
+#[cfg(any(test, feature = "test-support"))]
+pub mod testscratch; // per-process scratch directories a test binary removes when it exits

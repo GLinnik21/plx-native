@@ -211,16 +211,29 @@ pub(super) fn write_partial(socket: &mut std::net::TcpStream, n: usize) {
     socket.write_all(&vec![0x55; n]).expect("partial body");
 }
 
-/// Loopback PMS that answers PlayQueue / PUT / `/decision` long enough for `build_stream`.
-pub(super) fn plan_pms(
-    n: usize,
-    mde_body: &'static [u8],
-) -> (
+/// How long [`plan_pms`]'s server waits for the `n` requests it was told to expect.
+const PLAN_PMS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
+
+type PlanPms = (
     i32,
     std::sync::mpsc::Receiver<Vec<String>>,
     std::thread::JoinHandle<()>,
-) {
-    plan_pms_inner(n, mde_body, None)
+);
+
+/// Loopback PMS that answers PlayQueue / PUT / `/decision` long enough for `build_stream`.
+///
+/// **`n` is the exact number of requests the scenario makes, and the server enforces it.** It
+/// serves until it has seen `n`, then stops and publishes them; if its deadline passes first it
+/// PANICS (after publishing what it saw), so the caller's `server.join().unwrap()` fails the test
+/// naming the count it expected and the requests it got. A count that is too high used to be
+/// silent: the server sat out the whole deadline while the test held the crate-wide serial lock,
+/// every later test queued behind it, and the suite only paid the idle seconds (PR #446 found it
+/// at four requests where the code made three; six tests were doing it again at 8 s each). A
+/// scenario that legitimately makes FEWER requests under some outcomes says so with
+/// [`plan_pms_within`] with `exact = false`. A count that is too LOW is caught by the caller's own assertions, because
+/// the server stops answering at `n`.
+pub(super) fn plan_pms(n: usize, mde_body: &'static [u8]) -> PlanPms {
+    serve_plan_pms(n, mde_body, None, PLAN_PMS_DEADLINE, true)
 }
 
 /// Same as [`plan_pms`], plus a bounded `start.mkv` body so Remote Auto can probe a remux.
@@ -230,29 +243,36 @@ pub(super) fn plan_pms_with_start_mkv(
     n: usize,
     mde_body: &'static [u8],
     start_bytes: usize,
-) -> (
-    i32,
-    std::sync::mpsc::Receiver<Vec<String>>,
-    std::thread::JoinHandle<()>,
-) {
-    plan_pms_inner(n, mde_body, Some(start_bytes))
+) -> PlanPms {
+    serve_plan_pms(n, mde_body, Some(start_bytes), PLAN_PMS_DEADLINE, true)
 }
 
-pub(super) fn plan_pms_inner(
+/// [`plan_pms`] with its own deadline and its own say on the guard: `exact = false` is the
+/// explicit opt-in for a scenario whose request count depends on the outcome (`n` is then an
+/// upper bound and a short count is not a failure; it still sits the deadline out, so say why at
+/// the call). The guard's own tests use it with a short deadline instead of sitting the real one out.
+pub(super) fn plan_pms_within(
+    n: usize,
+    mde_body: &'static [u8],
+    deadline: std::time::Duration,
+    exact: bool,
+) -> PlanPms {
+    serve_plan_pms(n, mde_body, None, deadline, exact)
+}
+
+fn serve_plan_pms(
     n: usize,
     mde_body: &'static [u8],
     start_bytes: Option<usize>,
-) -> (
-    i32,
-    std::sync::mpsc::Receiver<Vec<String>>,
-    std::thread::JoinHandle<()>,
-) {
+    deadline: std::time::Duration,
+    exact: bool,
+) -> PlanPms {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port() as i32;
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        let deadline = std::time::Instant::now() + deadline;
         let mut requests = Vec::new();
         while requests.len() < n && std::time::Instant::now() < deadline {
             match plx_base::testnet::accept(&listener) {
@@ -297,7 +317,14 @@ pub(super) fn plan_pms_inner(
                 Err(error) => panic!("accept plan request: {error}"),
             }
         }
-        tx.send(requests).expect("publish plan requests");
+        let seen = requests.len();
+        tx.send(requests.clone()).expect("publish plan requests");
+        assert!(
+            !exact || seen >= n,
+            "the mock PMS was told to expect {n} requests and saw {seen} before its deadline, so the \
+             test sat idle holding the serial lock: either the code makes fewer requests than the \
+             count says (fix the count) or a request that should be made is missing: {requests:#?}"
+        );
     });
     (port, rx, handle)
 }

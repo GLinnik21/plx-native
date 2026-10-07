@@ -123,18 +123,20 @@ impl Drop for Rig {
 }
 
 /// **(i)(ii)(v) The DID frame makes no PMS call; the machine waits; the worker lands the Load at the
-/// resumed offset.** When the frame returns the server has been asked NOTHING, the machine is parked
-/// (`PreparePending`: a second DID or Play is consumed, no Load starts), and the landing's frame
-/// carries on into the Load exactly as the inline resume did — `disp_base` seeded, the URL at the
-/// offset, one `/decision`.
+/// resumed offset.** When the frame returns no answer has been written (the rig holds them all), so
+/// the frame did not wait on the server; the machine is parked (`PreparePending`: a second DID or
+/// Play is consumed, no Load starts), and the landing's frame carries on into the Load exactly as
+/// the inline resume did — `disp_base` seeded, the URL at the offset, one `/decision`. The request
+/// log is not graded before the landing: the worker may already have sent its request.
 #[test]
 fn a_foreground_resume_frame_makes_no_pms_call_and_the_worker_lands_the_load_at_the_offset() {
     let mut rig = Rig::new(120);
+    rig.flight.hold_answers();
     let activation = rig.did_foreground();
     assert_eq!(
-        rig.flight.decisions(),
+        rig.flight.answered(),
         0,
-        "the foreground frame made a PMS round trip on the frame thread: {:?}",
+        "the foreground frame waited for a PMS answer on the frame thread: {:?}",
         rig.flight.requests()
     );
     assert_eq!(activation, ForegroundActivation::Handled);
@@ -150,8 +152,9 @@ fn a_foreground_resume_frame_makes_no_pms_call_and_the_worker_lands_the_load_at_
             "a second claim must be consumed while the flight flies"
         );
     }
-    assert_eq!(rig.flight.decisions(), 0);
+    assert_eq!(rig.flight.answered(), 0, "the second claims waited for a PMS answer");
     assert!(rig.actuator.loads.is_empty());
+    rig.flight.release_answers();
 
     assert_eq!(rig.frames_until_settled(), ForegroundActivation::Launched);
     assert_eq!(rig.flight.decisions(), 1, "exactly one /decision for the restore");
@@ -271,8 +274,10 @@ fn a_foreground_restore_after_a_suspend_inside_an_original_trial_flies_and_keeps
     FlightRig::arm_original_trial(&mut rig.ps, 1800);
     FlightRig::suspend_in_original_trial(&mut rig.ps);
     let armed = rig.flight.decisions();
+    let answered = rig.flight.answered();
     let suspended = rig.lifecycle.state;
 
+    rig.flight.hold_answers();
     assert_eq!(rig.did_foreground(), ForegroundActivation::Handled);
     assert!(
         rig.lifecycle.flight_pending(),
@@ -281,8 +286,9 @@ fn a_foreground_restore_after_a_suspend_inside_an_original_trial_flies_and_keeps
         rig.lifecycle.state,
         suspended,
     );
-    assert_eq!(rig.flight.decisions(), armed, "the DID frame made a PMS round trip");
+    assert_eq!(rig.flight.answered(), answered, "the DID frame waited for a PMS answer on the frame thread");
     assert!(crate::route::original_recovery_pending(), "flying must not consume the trial's rollback");
+    rig.flight.release_answers();
 
     assert_eq!(rig.frames_until_settled(), ForegroundActivation::Launched);
     assert_eq!(rig.flight.decisions(), armed + 1, "exactly one /decision for the restore");

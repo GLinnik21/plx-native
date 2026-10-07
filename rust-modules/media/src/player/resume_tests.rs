@@ -88,22 +88,26 @@ impl Drop for Rig {
 }
 
 /// **The cold resume's frame makes no PMS call; the worker lands the Load later.** When the resume
-/// frame returns the server has been asked NOTHING, the play is still `Resolving`, and the landing
-/// installs the replacement at the saved offset exactly as the inline rebuild did: the HUD's clock
-/// is seeded, the old encoder retired, the start transaction `Prepared` for the Load to claim.
+/// frame returns no answer has been written (the rig holds them all), so the frame did not wait on
+/// the server; the play is still `Resolving`, and the landing installs the replacement at the saved
+/// offset exactly as the inline rebuild did: the HUD's clock is seeded, the old encoder retired, the
+/// start transaction `Prepared` for the Load to claim. The request log is not graded at the frame's
+/// return: the worker may already have sent its request by then.
 #[test]
 fn a_cold_resume_frame_makes_no_pms_call_and_the_worker_lands_the_load_later() {
     let mut rig = Rig::new(120);
+    rig.flight.hold_answers();
     assert_eq!(rig.begin(), ResumeStart::Pending);
     assert_eq!(
-        rig.flight.decisions(),
+        rig.flight.answered(),
         0,
-        "the resume frame made a PMS round trip on the frame thread: {:?}",
+        "the resume frame waited for a PMS answer on the frame thread: {:?}",
         rig.flight.requests()
     );
     assert!(crate::route::resume_flight_outstanding(), "the rebuild must be a flight the loop waits on");
     assert_eq!(state(&rig.ps), PlaybackState::Resolving, "the viewer keeps the resolve spinner");
     assert!(crate::route::control_phase_label().contains("Preparing"), "{}", crate::route::control_phase_label());
+    rig.flight.release_answers();
 
     assert_eq!(rig.land(), ResumeOutcome::Prepared);
     assert_eq!(rig.flight.decisions(), 1, "exactly one /decision for the resume");

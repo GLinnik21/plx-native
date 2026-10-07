@@ -26,10 +26,16 @@ What it does, in order:
 3. Runs them with a bounded number of jobs (`--jobs`, default `PLX_TEST_JOBS` or min(6, CPUs)), largest
    binary first. Each runs the way cargo runs it: cwd is the package directory and the
    CARGO_MANIFEST_DIR / CARGO_PKG_* / library-path environment is set. Each also gets its own
-   PLXNATIVE_RUNTIME_DIR (a subdirectory of the caller's, named for the package) and its own
+   PLXNATIVE_RUNTIME_DIR (a subdirectory of the caller's, named for the package; only the hostsim
+   build reads it) and its own
    RUST_TEST_THREADS share, so the binaries cannot share the runtime root's files and the
    machine is not oversubscribed jobs-fold (timing tests are sensitive to that). Each runs with
    NO_PROXY=* so the curl tests' loopback servers are never handed to a caller's HTTPS_PROXY.
+   Each also gets its own EMPTY `TMPDIR` (a `tmp` directory beside that runtime subdirectory),
+   and a binary that exits leaving anything in it FAILS the run, naming the leftovers: a test
+   fixture that creates a `$TMPDIR/<name>-<pid>` and never removes it used to pile up tens of
+   thousands of directories in the developer's temp dir, because the only removal was a later
+   process reusing the pid.
 4. Prints each binary's output WHOLE, under a cargo-style `Running` line, in the order they
    finish -- never interleaved -- so every binary's literal `test result:` line is in the log.
    It does not stop at the first failing binary (cargo would): every binary runs, every failure
@@ -140,10 +146,23 @@ class Run:
         var = libpath_var()
         old = self.env.get(var)
         self.env[var] = os.pathsep.join([*extra, *([old] if old else [])])
+        self.tmpdir: str | None = None
+        self.leaked: list[str] = []
         if runtime_root is not None:
             sub = os.path.join(runtime_root, self.name)
             os.makedirs(sub, exist_ok=True)
             self.env["PLXNATIVE_RUNTIME_DIR"] = sub
+            self.tmpdir = os.path.join(sub, "tmp")
+            os.makedirs(self.tmpdir, exist_ok=True)
+            # The user's own primary group, as a real per-user temp directory has: a directory made
+            # under a parent of another group hands that group to every file created inside it, and
+            # the storage-diagnostics tests refuse files that are not ours.
+            try:
+                os.chown(self.tmpdir, -1, os.getegid())
+            except OSError:
+                pass
+            os.chmod(self.tmpdir, 0o700)
+            self.env["TMPDIR"] = self.tmpdir
         # No proxy for the test binaries, whatever the caller's environment carries: the curl tests
         # aim fake names (`*.plex.direct`, `.invalid`) at loopback servers of their own, and libcurl
         # would hand them to an HTTPS_PROXY instead (a cloud agent sandbox sets one; ~20 TLS and
@@ -163,6 +182,20 @@ class Run:
             return os.path.getsize(self.exe)
         except OSError:
             return 0
+
+    def sweep_tmpdir(self) -> None:
+        """Whatever the binary left in its private `TMPDIR` is a leak: record it and remove it."""
+        if not self.tmpdir:
+            return
+        try:
+            self.leaked = sorted(os.listdir(self.tmpdir))
+        except OSError:
+            return
+        for name in self.leaked:
+            # Read-only subdirectories (a fixture's "unwritable" candidate) block a plain rm -r.
+            subprocess.run(["chmod", "-R", "u+rwx", os.path.join(self.tmpdir, name)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["rm", "-rf", os.path.join(self.tmpdir, name)])
 
 
 def main() -> int:
@@ -230,6 +263,15 @@ def main() -> int:
             r.output, _ = r.proc.communicate()
             r.code = r.proc.returncode
             r.elapsed = time.monotonic() - r.started
+            r.sweep_tmpdir()
+            if r.leaked:
+                r.output += ("\ncargo-test-parallel: this binary left " + str(len(r.leaked)) +
+                             " entr" + ("y" if len(r.leaked) == 1 else "ies") +
+                             " in its TMPDIR after it exited (a fixture that creates scratch space "
+                             "and never removes it; plx_base::testscratch removes per-process "
+                             "directories at exit): " + ", ".join(r.leaked[:8]) + "\n").encode()
+                if r.code == 0:
+                    r.code = 1
         with print_lock:
             live.discard(r)
             rel = os.path.relpath(r.exe)

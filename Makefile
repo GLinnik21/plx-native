@@ -1472,7 +1472,8 @@ check-cargo-lint: lint
 # so the suite's wall time was their SUM and one slow binary set it: measured 2026-10-05, `plx_media`
 # alone was 28.7 s of 78.8 s because one test held `testlock::serial()` for 16 s. UNIT_RUN builds
 # exactly what the `cargo ... test --lib -p ...` after it names, then runs the binaries side by
-# side (tools/cargo-test-parallel.py: bounded jobs, each in its own PLXNATIVE_RUNTIME_DIR, every
+# side (tools/cargo-test-parallel.py: bounded jobs, each in its own PLXNATIVE_RUNTIME_DIR and an
+# empty TMPDIR that it must leave empty, every
 # binary's `test result:` line printed, any failing binary fails the gate). It must run from
 # `rust-modules/` like the cargo line it wraps. UNIT_SUITE is the same package list as the literal
 # `-p` lists in the recipes below (those stay literal because ci/test_ci_split.py greps for them);
@@ -1482,19 +1483,20 @@ UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net
 
 # The default-feature unit suite and everything that drives cargo through ci/ self-tests.
 check-cargo-unit-default:
-	@# EVERY host test runs in a THROWAWAY runtime root, and that is a correctness fix rather than
-	@# hygiene. `paths` resolves the session file out of the runtime dir, which on the host defaults
-	@# to a bare `/tmp` — so `browse::record_pins` writing a profile's library selection wrote the
-	@# TEST FIXTURES' machine ids ("mac-mini", "nas-home") into /tmp/auth.json, and the next run's
-	@# `resolve_pins` read them back as a recorded answer. The suite was grading itself against its
-	@# own residue, and against a file the simulator and the Mac app share.
-	@#
-	@# It was invisible for as long as the pin governed Home alone, because no host assertion read
-	@# one. It stopped being invisible the moment the favourite switch started governing the tab
-	@# strip: the same seeded table produced a two-pill strip on a clean machine and a one-pill
-	@# strip on this one. That is exactly the failure `[[make-check-hides-host-assumptions]]`
-	@# describes — a check that only ever passes where it was written — and the fix is the same one:
-	@# give the run an empty environment instead of the developer's.
+	@# WHAT `PLXNATIVE_RUNTIME_DIR` DOES HERE: nothing, in THIS (default-feature) pass. The variable is
+	@# honoured only when `paths::ENV_STEERABLE` (`cfg!(feature = "hostsim")`) is on, which is a
+	@# compile-time guarantee that a shipping build cannot be steered, so the default pass resolves the
+	@# runtime root to the bare `/tmp` whatever is exported (the `hostsim` pass below does honour it).
+	@# The variable is still passed, because the wrapper hands each binary a subdirectory of it, and
+	@# because the hostsim pass and the simulator recipes need it; it is not what isolates this pass.
+	@# What does: the session file and the persistent-state root a test does not redirect resolve to
+	@# per-process scratch directories (`session::fallback_file`, `paths::test_default_persistent_state_root`,
+	@# both `plx_base::testscratch::process_dir`), a test that arms a trigger or reads the event log
+	@# uses `devtrig::with_private_triggers` / `eventlog::with_private_log` (ci/test_check_collisions.py
+	@# scans for the rest), and the wrapper gives every binary its own empty `TMPDIR` and fails one that
+	@# leaves anything in it. History: the suite once graded itself against its own residue in
+	@# `/tmp/auth.json` (`browse::record_pins` wrote fixtures' machine ids there and the next run's
+	@# `resolve_pins` read them back), which is `[[make-check-hides-host-assumptions]]` in one example.
 	@#
 	@# `mktemp -d` per invocation rather than a fixed path, so two checkouts (or two lanes) cannot
 	@# share one, and it is removed on the way out whether the suite passed or not.

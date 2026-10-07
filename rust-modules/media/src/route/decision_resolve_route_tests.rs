@@ -2428,9 +2428,17 @@ fn retry_after_start_failure_suppresses_enhancement() {
 
 /// One cold `build_stream` against a loopback PMS that answers every `/decision` with `mde`.
 /// Returns the plan and the request lines PMS saw.
+///
+/// `expected_requests` is what the scenario makes, no more and no fewer, and it is asserted: a
+/// PlayQueue POST always, then the `hasMDE=1` direct-play probe, the transcode `/decision` and
+/// the track-selection PUT only where the scenario reaches them (two for a probe that settles on
+/// a direct play, three for a fixed-rung re-encode, four where a probe is followed by a transcode
+/// decision and its PUT). The mock fails the test when it is told to expect more than the code
+/// sends, rather than idling on its deadline while holding the serial lock.
 #[cfg(feature = "devtriggers")]
 fn cold_audio_resolve(
     name: &'static str,
+    expected_requests: usize,
     mde: &'static [u8],
     audio: Vec<plx_data::metadata::Stream>,
     subs: Vec<plx_data::metadata::Stream>,
@@ -2439,7 +2447,7 @@ fn cold_audio_resolve(
 ) -> (Plan, Vec<String>) {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let (port, rx, server) = plan_pms(4, mde);
+    let (port, rx, server) = plan_pms(expected_requests, mde);
     let sid = plx_plex::plex::register_for_test(name, "127.0.0.1", port, "token", name);
     let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     let mut item = fourk_item_with_subs(sid, audio, subs);
@@ -2449,6 +2457,7 @@ fn cold_audio_resolve(
     let requests = rx.recv_timeout(std::time::Duration::from_secs(15)).expect("PMS never saw the resolve");
     server.join().unwrap();
     plx_plex::plex::reset_servers_for_test();
+    assert_eq!(requests.len(), expected_requests, "the scenario's request count changed: {requests:#?}");
     (plan, requests)
 }
 
@@ -2479,6 +2488,7 @@ fn request_with<'a>(requests: &'a [String], needle: &str) -> Vec<&'a String> {
 fn a_cold_start_whose_default_cannot_direct_play_remuxes_and_names_the_default() {
     let (plan, requests) = cold_audio_resolve(
         "cold-remux-default",
+        4,
         MDE_TRANSCODE_COPY,
         vec![cold_track(1, "truehd", "eng", true, ""), cold_track(2, "ac3", "eng", false, "Commentary")],
         Vec::new(),
@@ -2505,6 +2515,7 @@ fn a_cold_start_whose_default_cannot_direct_play_remuxes_and_names_the_default()
 fn a_cold_start_with_a_subtitle_keeps_a_same_language_or_foreign_non_commentary_stand_in() {
     let (plan, requests) = cold_audio_resolve(
         "cold-sub-stand-in",
+        2,
         MDE_DIRECTPLAY,
         vec![cold_track(1, "truehd", "eng", true, ""), cold_track(3, "ac3", "fra", false, "")],
         vec![selected_sub(50, "srt")],
@@ -2522,6 +2533,7 @@ fn a_cold_start_with_a_subtitle_keeps_a_same_language_or_foreign_non_commentary_
 fn a_cold_start_with_a_subtitle_and_only_a_commentary_to_stand_in_burns_it() {
     let (plan, requests) = cold_audio_resolve(
         "cold-sub-burn",
+        4,
         MDE_TRANSCODE,
         vec![cold_track(1, "truehd", "eng", true, ""), cold_track(2, "ac3", "eng", false, "Commentary")],
         vec![selected_sub(50, "srt")],
@@ -2547,6 +2559,7 @@ fn a_cold_start_with_a_subtitle_and_only_a_commentary_to_stand_in_burns_it() {
 fn a_file_with_no_stand_in_and_a_subtitle_is_not_newly_burned() {
     let (plan, requests) = cold_audio_resolve(
         "cold-sub-no-stand-in",
+        4,
         MDE_TRANSCODE_COPY,
         vec![cold_track(1, "truehd", "eng", true, "")],
         vec![selected_sub(50, "srt")],
@@ -2568,6 +2581,7 @@ fn a_file_with_no_stand_in_and_a_subtitle_is_not_newly_burned() {
 fn a_fixed_rung_is_not_newly_burned_for_audio() {
     let (plan, requests) = cold_audio_resolve(
         "cold-sub-fixed-rung",
+        3,
         MDE_TRANSCODE,
         vec![cold_track(1, "truehd", "eng", true, ""), cold_track(2, "ac3", "eng", false, "Commentary")],
         vec![selected_sub(50, "srt")],
@@ -2587,6 +2601,7 @@ fn a_fixed_rung_is_not_newly_burned_for_audio() {
 fn a_stand_in_is_dropped_when_direct_play_does_not_result() {
     let (_, requests) = cold_audio_resolve(
         "cold-sub-stand-in-dropped",
+        3,
         MDE_TRANSCODE,
         vec![cold_track(1, "truehd", "eng", true, ""), cold_track(3, "ac3", "fra", false, "")],
         vec![selected_sub(50, "srt")],
@@ -2609,6 +2624,7 @@ fn a_stand_in_is_dropped_when_direct_play_does_not_result() {
 fn forced_direct_play_refuses_an_unplayable_session_pick() {
     let (plan, _) = cold_audio_resolve(
         "cold-forced-session-pick",
+        2,
         MDE_DIRECTPLAY,
         vec![cold_track(1, "ac3", "rus", true, ""), cold_track(2, "truehd", "eng", false, "")],
         Vec::new(),
@@ -2624,6 +2640,7 @@ fn forced_direct_play_refuses_an_unplayable_session_pick() {
 fn forced_direct_play_keeps_its_stand_in() {
     let (plan, requests) = cold_audio_resolve(
         "cold-forced-stand-in",
+        2,
         MDE_DIRECTPLAY,
         vec![
             cold_track(1, "truehd", "eng", true, ""),
@@ -2644,6 +2661,7 @@ fn forced_direct_play_keeps_its_stand_in() {
 fn uncopyable_video_keeps_its_stand_in() {
     let (plan, requests) = cold_audio_resolve(
         "cold-p5-stand-in",
+        2,
         MDE_DIRECTPLAY,
         vec![
             cold_track(1, "truehd", "eng", true, ""),

@@ -102,7 +102,7 @@ impl TempCandidates {
             "plxnative-runtime-fallback-{tag}-{}",
             std::process::id()
         ));
-        let _ = std::fs::remove_dir_all(&base);
+        plx_base::testscratch::remove_tree(&base);
         let durable_a = base.join("media-developer");
         let durable_b = base.join("media-internal");
         let runtime = base.join("tmp-runtime");
@@ -124,9 +124,9 @@ impl TempCandidates {
 impl Drop for TempCandidates {
     fn drop(&mut self) {
         redirect_candidates_for_test(None);
-        // The two "durable" dirs are unwritable (no entries were ever created inside them), so
-        // removing the writable `base` they sit under does not need their own mode restored.
-        let _ = std::fs::remove_dir_all(&self.base);
+        // The two "durable" dirs are unwritable, and a test that seeds a stale file INSIDE one leaves
+        // an entry nothing may unlink until the mode is back: `remove_tree` restores it first.
+        plx_base::testscratch::remove_tree(&self.base);
     }
 }
 

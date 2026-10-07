@@ -1201,14 +1201,9 @@ pub fn persistent_state_root() -> PathBuf {
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_default_persistent_state_root() -> PathBuf {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
-    PATH.get_or_init(|| {
-        let dir = std::env::temp_dir()
-            .join(format!("plxnative-persistent-state-fallback-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::create_dir_all(&dir);
-        dir
-    })
-    .clone()
+    // Removed when the test process exits (`testscratch`): the only removal this directory used to
+    // have was a later process reusing the pid, so every run left one behind.
+    PATH.get_or_init(|| crate::testscratch::process_dir("persistent-state-fallback")).clone()
 }
 
 #[cfg(any(test, feature = "test-support"))]
