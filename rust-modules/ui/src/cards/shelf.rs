@@ -13,7 +13,7 @@ use super::{CardEvent, CardSource, Landed, SectionFrame, Seen, Tile};
 use crate::card_row::{self, CardRow, RowStyle};
 use crate::consts::SCR_W;
 use crate::screen::{
-    Activate, At, AxisMask, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
+    Activate, At, AxisMask, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step,
     Stop,
 };
 use crate::{Painter, Rect};
@@ -51,8 +51,9 @@ impl Shelf {
             margin: 0.0, dormant: false, slept: false }
     }
 
-    /// Cards this far past either screen edge still paint (a popped card's shadow reaches onto the
-    /// screen from beyond it) and register their stops. Default 0.
+    /// Cards this far past the screen's leading (left) edge still paint (a popped card's shadow
+    /// reaches onto the screen from beyond it) and register their stops; the trailing edge is not
+    /// widened. Default 0.
     pub const fn cull_margin(mut self, px: f32) -> Self {
         self.margin = px;
         self
@@ -61,7 +62,8 @@ impl Shelf {
     /// Hold every card at rest while the owner's page is still dissolving in: a lifted tile under
     /// a fade plays its selection where nobody can see it. The shelf keeps no pop meanwhile (the
     /// springs ease to rest like an unfocused shelf's); the first awake tick starts the focused
-    /// card's pop from rest, as a deliberate move does. Set it before each [`on`](Self::on).
+    /// card's pop from rest, as a deliberate move does (a restore or reconcile announced since the last
+    /// dormant tick is still adopted whole). Set it before each [`on`](Self::on).
     pub fn dormant(&mut self, held: bool) {
         self.dormant = held;
     }
@@ -74,6 +76,20 @@ impl Shelf {
 
     pub fn style(&self) -> &'static RowStyle {
         self.style
+    }
+
+    /// The y the screen last laid the shelf out at (kept in the motion canon).
+    pub fn base_y(&self) -> f32 {
+        self.row.base_y
+    }
+
+    pub fn set_base_y(&mut self, y: f32) {
+        self.row.base_y = y;
+    }
+
+    /// How far card `i`'s caption block still trails the scroll (`n` cards in the shelf).
+    pub fn settle_lag(&self, n: usize, i: usize) -> f32 {
+        self.row.settle_lag(n, i, self.style)
     }
 
     /// The one entry: feed it every event the screen receives.
@@ -135,7 +151,9 @@ impl Shelf {
             return;
         }
         if std::mem::take(&mut self.slept) {
-            if let Some(i) = focus {
+            // an arrival announced since the last dormant tick (a restore, a reconcile) keeps its
+            // own rule; only a focus no event told the shelf about wakes growing from rest
+            if let (Some(i), Seen::Nothing) = (focus, self.seen) {
                 self.seen = Seen::Deliberate(i);
             }
         }
@@ -230,15 +248,19 @@ impl Shelf {
     }
 
     /// Card `i`'s settled (unpopped) rect in SCREEN space.
-    fn slot(&self, i: usize, at: SectionFrame) -> Rect {
-        card_row::tile_rect(i, self.style.margin_x, self.pitch(), self.row.scroll_x(), at.y,
-            (self.style.w, self.style.h))
+    fn slot(&self, i: usize, at: SectionFrame, sx: f32) -> Rect {
+        card_row::tile_rect(i, self.style.margin_x, self.pitch(), sx, at.y, (self.style.w, self.style.h))
+    }
+
+    /// The scroll the row is drawn at: the spring's, scaled by [`CardSource::sweep`].
+    fn drawn_scroll<H: Host, S: CardSource<H>>(&self, src: &S) -> f32 {
+        self.row.scroll_x() * src.sweep()
     }
 
     /// The settled, unpopped rect of the shelf's first card in SCREEN space: where the strip
     /// starts, for a screen that registers the shelf's group extent there.
     pub fn head(&self, at: SectionFrame) -> Rect {
-        self.slot(0, at)
+        self.slot(0, at, self.row.scroll_x())
     }
 
     /// Where `elem` is: the LIVE drawn rect (pop and press folded in) for `At::Drawn`, the settled
@@ -253,7 +275,7 @@ impl Shelf {
     ) -> Option<Placed> {
         let i = src.index_of(elem)?;
         let focus = super::focused_index(&cx.focus, self.entry, src);
-        let slot = self.slot(i, at);
+        let slot = self.slot(i, at, self.drawn_scroll(src));
         let s = match how {
             At::Drawn => super::press_scale(self.pop(i, focus), focus == Some(i), cx),
             At::SpringTarget => if focus == Some(i) { self.style.focus_scale } else { 1.0 },
@@ -274,21 +296,34 @@ impl Shelf {
         self.record_stops(f, p, src, at);
     }
 
-    /// Paint the cards without registering stops (the focused card is always painted, on-axis or
-    /// not; the rest only when on-axis), for a screen that records its page's stops in
-    /// its own order (non-focused cards first, the focused one last; only on-axis cards paint and
-    /// resolve artwork).
+    /// Paint the cards without registering stops ([`paint_resting`](Self::paint_resting), then
+    /// [`paint_focused`](Self::paint_focused)), for a screen that records its page's stops in
+    /// its own order.
     pub fn paint<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
+        self.paint_resting(f, p, src, at);
+        self.paint_focused(f, p, src, at);
+    }
+
+    /// The on-axis cards but the focused one (only on-axis cards paint and resolve artwork), for a
+    /// screen that draws the focused card of ALL its shelves after every shelf's others, so its
+    /// glow overlaps the neighbouring shelves.
+    pub fn paint_resting<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
         let n = src.len();
         let focus = super::focused_index(&f.focus, self.entry, src);
-        let sx = self.row.scroll_x();
+        let sx = self.drawn_scroll(src);
         let pr = p.translate(-sx, 0.0);
-        let visible = |i: usize| crate::on_axis(self.slot(i, at).x, self.style.w, SCR_W, self.margin);
+        let visible = |i: usize| crate::on_axis(self.slot(i, at, sx).x, self.style.w, SCR_W, self.margin);
         for i in (0..n).filter(|&i| focus != Some(i) && visible(i)) {
             let s = self.pop(i, focus);
             self.draw_card(f, pr, src, i, at, s, false);
         }
-        if let Some(i) = focus.filter(|&i| i < n) {
+    }
+
+    /// The focused card, painted whether or not it is on-axis.
+    pub fn paint_focused<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
+        let focus = super::focused_index(&f.focus, self.entry, src);
+        let pr = p.translate(-self.drawn_scroll(src), 0.0);
+        if let Some(i) = focus.filter(|&i| i < src.len()) {
             let s = super::press_scale(self.pop(i, focus), true, f.cx);
             self.draw_card(f, pr, src, i, at, s, true);
         }
@@ -302,15 +337,16 @@ impl Shelf {
             return;
         }
         let focus = super::focused_index(&f.focus, self.entry, src);
-        for i in (0..src.len()).filter(|&i| crate::on_axis(self.slot(i, at).x, self.style.w, SCR_W, self.margin)) {
+        let sx = self.drawn_scroll(src);
+        for i in (0..src.len()).filter(|&i| crate::on_axis(self.slot(i, at, sx).x, self.style.w, SCR_W, self.margin)) {
             let s = super::press_scale(self.pop(i, focus), focus == Some(i), f.cx);
-            let slot = super::to_local(p, self.slot(i, at));
+            let slot = super::to_local(p, self.slot(i, at, sx));
             f.stop(p, Stop {
                 key: FocusKey { entry: self.entry, elem: src.elem(i) },
                 rect: slot.scaled(s),
                 rest_rect: slot.scaled(self.style.focus_scale),
                 clip: at.clip,
-                hover: Hover::Focus,
+                hover: src.hover(i),
                 activate: Activate::Press,
             });
         }
@@ -328,7 +364,7 @@ impl Shelf {
     ) {
         let Some(i) = focus.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem)) else { return };
         let s = super::press_scale(self.pop(i, Some(i)), true, f.cx);
-        self.draw_card(f, p.translate(-self.row.scroll_x(), 0.0), src, i, at, s, true);
+        self.draw_card(f, p.translate(-self.drawn_scroll(src), 0.0), src, i, at, s, true);
     }
 
     /// One card at scale `s` in the scrolled painter `pr`. The rect and the treatment derive from
@@ -352,7 +388,7 @@ impl Shelf {
         let rect = unscrolled.scaled(s);
         if focused {
             let label = src.label(i).revealed(self.row.band_reveal())
-                .settling(self.row.settle_lag(src.len(), i, self.style));
+                .settling(self.row.settle_lag(src.len(), i, self.style) * src.sweep());
             card_row::draw_focused(pr, src.art(i), rect, s, self.style, src.progress(i), &label, f.measure);
         } else {
             card_row::draw_tile(pr, src.art(i), rect, s, self.style, src.progress(i));
@@ -413,6 +449,12 @@ impl Shelf {
     #[cfg(any(test, feature = "test-support"))]
     pub fn at_rest(&self) -> bool {
         self.row.at_exact_rest()
+    }
+
+    /// The scroll spring's velocity, for a diagnostic witness.
+    #[cfg(feature = "devtriggers")]
+    pub fn scroll_velocity(&self) -> f32 {
+        self.row.scroll_velocity()
     }
 
     /// Restore a saved viewport (`n` is the current card count).

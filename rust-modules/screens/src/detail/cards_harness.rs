@@ -219,6 +219,7 @@ impl CardHarness for Harness {
         self.at(elem).map(|i| self.rks[i].clone()).unwrap_or_default()
     }
     fn scroll(&self) -> Option<f32> { Some(self.shelf().scroll()) }
+    fn scroll_max(&self) -> Option<f32> { Some(self.shelf().style().max_scroll(self.cards().len())) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         let want = self.focus.ok_or("nothing focused")?;
         let at = self.at(want.elem).ok_or("the focused card is not on the shelf")?;

@@ -1067,6 +1067,30 @@ fn a_dormant_shelf_keeps_its_cards_at_rest_and_wakes_growing_from_rest() {
     assert!((r.scale(102).unwrap() - full).abs() < 0.002);
 }
 
+/// The restore rule survives idle dormant ticks: a restore announced AFTER the shelf slept, on the
+/// tick the page wakes, is adopted whole, while a deliberate arrival after the same ticks still
+/// grows from rest.
+#[test]
+fn a_restore_after_dormant_ticks_arrives_popped_and_a_deliberate_move_still_grows() {
+    let full = RowStyle::HOME.focus_scale;
+    let mut restored = settled::<Shelf>(8);
+    restored.sect.dormant(true);
+    restored.run(3);
+    restored.sect.dormant(false);
+    restored.land_focus(102, By::Restore);
+    restored.run(1);
+    assert_eq!(restored.scale(102), Some(full), "a restore arrives already popped");
+
+    let mut dived = settled::<Shelf>(8);
+    dived.sect.dormant(true);
+    dived.run(3);
+    dived.sect.dormant(false);
+    dived.land_focus(102, By::Dir);
+    dived.run(1);
+    let first = dived.scale(102).unwrap();
+    assert!(first > 1.0 && first < full - 0.02, "a deliberate arrival grows from rest: {first}");
+}
+
 /// A lifted card that goes dormant lets go over frames and ends parked exactly at rest.
 #[test]
 fn a_shelf_that_goes_dormant_lets_its_lifted_card_go() {
@@ -1636,4 +1660,141 @@ mod stack {
         assert_eq!(fresh.stack.memory(), m, "scroll and shelf viewport come back whole");
         assert!(fresh.place(139).is_some_and(|p| p.rect.x >= 0.0 && p.rect.x < crate::consts::SCR_W));
     }
+}
+
+/// A source whose screen paints no focus on it (Home before the dive reaches its shelves).
+struct Veiled(Cards);
+
+impl CardSource<FixtureHost> for Veiled {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn elem(&self, i: usize) -> u32 {
+        self.0.elem(i)
+    }
+    fn index_of(&self, e: &u32) -> Option<usize> {
+        self.0.index_of(e)
+    }
+    fn focus_index(&self, _e: &u32) -> Option<usize> {
+        None
+    }
+    fn art(&self, i: usize) -> Art<'_> {
+        self.0.art(i)
+    }
+    fn label(&self, i: usize) -> TileLabel {
+        self.0.label(i)
+    }
+}
+
+#[test]
+fn a_source_can_answer_which_card_the_picture_shows_focused() {
+    let mut r = Rig::<Shelf>::new(8);
+    r.run(2);
+    r.land_focus(103, By::Restore);
+    r.run(60);
+    let veiled = Veiled(Cards::new((0..8u32).map(|i| 100 + i).collect(), false));
+    let popped = r.sect.place(&r.cx(), &r.src, &103, SHELF_AT, At::Drawn).unwrap().rect;
+    assert!((popped.w - RowStyle::HOME.w * RowStyle::HOME.focus_scale).abs() < 0.5, "popped under the engine's focus");
+    // The engine still holds the card, the picture does not: the shelf lets it go.
+    let mut present = Present::new();
+    let mut out = Vec::new();
+    for _ in 0..120 {
+        r.ms += MS;
+        let cx = Cx {
+            views: FixtureViews { store: &r.view },
+            tick: Tick { ms: r.ms, dt_us: 16_667 },
+            measure: &FixtureMeasure,
+            press: PressRead { scale: r.press, ..Default::default() },
+            focus: FocusRead { current: r.focus, ..Default::default() },
+            owner: InputOwner::Entry(ENTRY),
+        };
+        let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
+        r.sect.on(&ScreenEvent::Tick(cx.tick), &cx, &veiled, &mut fx);
+    }
+    let seen = r.sect.place(&r.cx(), &veiled, &103, SHELF_AT, At::Drawn).unwrap().rect;
+    assert!((seen.w - RowStyle::HOME.w).abs() < 0.01, "so the card is drawn at rest: {}", seen.w);
+}
+
+/// A source whose screen shows only part of the shelf's scroll (Home's row sweeps in with its dive).
+struct Swept(Cards, f32);
+
+impl CardSource<FixtureHost> for Swept {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn elem(&self, i: usize) -> u32 {
+        self.0.elem(i)
+    }
+    fn index_of(&self, e: &u32) -> Option<usize> {
+        self.0.index_of(e)
+    }
+    fn art(&self, i: usize) -> Art<'_> {
+        self.0.art(i)
+    }
+    fn label(&self, i: usize) -> TileLabel {
+        self.0.label(i)
+    }
+    fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, m: &dyn plx_machine::machine::Measure) {
+        self.0.overlay(p, i, tile, m)
+    }
+    fn sweep(&self) -> f32 {
+        self.1
+    }
+}
+
+/// `CardSource::sweep` scales the offset the cards are drawn, placed and registered at, all three
+/// the same, and leaves the spring's own scroll alone.
+#[test]
+fn a_swept_source_shows_a_fraction_of_the_scroll_everywhere() {
+    let mut r = settled::<Shelf>(30);
+    r.land_focus(120, By::Dir);
+    r.run(300);
+    let scroll = r.sect.scroll();
+    assert!(scroll > 400.0, "the row has an offset to sweep: {scroll}");
+    let half = Swept(Cards::new(r.src.elems.clone(), false), 0.5);
+    let whole = Swept(Cards::new(r.src.elems.clone(), false), 1.0);
+    let x = |src: &Swept| {
+        let cx = r.cx();
+        r.sect.place(&cx, src, &105, SHELF_AT, At::Drawn).unwrap().rest_rect.x
+    };
+    assert!((x(&half) - x(&whole) - scroll * 0.5).abs() < 0.01, "placed at half the offset");
+    let drawn = |src: &Swept| {
+        let cx = r.cx();
+        let f = DrawFrame::new(&cx, Painter::recording());
+        src.0.drawn.borrow_mut().clear();
+        r.sect.paint(&f, f.painter, src, SHELF_AT);
+        src.0.drawn.take()
+    };
+    let (dh, dw) = (drawn(&half), drawn(&whole));
+    let at = |d: &[(u32, Rect)], e: u32| d.iter().find(|&&(x, _)| x == e).map(|&(_, r)| r.x);
+    let (h, w) = (at(&dh, 120).unwrap(), at(&dw, 120).unwrap());
+    assert!((h - w - scroll * 0.5).abs() < 0.01, "the focused card is drawn at half the offset: {h} vs {w}");
+    let cx = r.cx();
+    let mut f = DrawFrame::new(&cx, Painter::root());
+    let p = f.painter;
+    r.sect.record_stops(&mut f, p, &half, SHELF_AT);
+    let first = f.stops().first().expect("a card is on the swept axis");
+    let stop = first.rest_rect.x;
+    let placed = r.sect.place(&cx, &half, &first.key.elem, SHELF_AT, At::Drawn).unwrap().rest_rect.x;
+    assert!((stop - placed).abs() < 0.01, "the stop is where the draw puts the card");
+    assert!((r.sect.scroll() - scroll).abs() < f32::EPSILON, "the spring itself is untouched");
+}
+
+/// `paint_resting` leaves the focused card out and `paint_focused` draws it alone, so a screen
+/// can draw every shelf's others first and the focused card last.
+#[test]
+fn the_focused_card_paints_apart_from_the_rest() {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Dir);
+    r.run(60);
+    let cx = r.cx();
+    let f = DrawFrame::new(&cx, Painter::recording());
+    let p = f.painter;
+    r.src.drawn.borrow_mut().clear();
+    r.sect.paint_resting(&f, p, &r.src, SHELF_AT);
+    let rest: Vec<u32> = r.src.drawn.take().into_iter().map(|(e, _)| e).collect();
+    assert!(!rest.is_empty() && !rest.contains(&101), "the others, not the focused card: {rest:?}");
+    r.sect.paint_focused(&f, p, &r.src, SHELF_AT);
+    let last: Vec<u32> = r.src.drawn.take().into_iter().map(|(e, _)| e).collect();
+    assert_eq!(last, vec![101], "the focused card alone");
 }

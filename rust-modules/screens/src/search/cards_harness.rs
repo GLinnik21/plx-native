@@ -161,6 +161,7 @@ impl CardHarness for Harness {
         }
     }
     fn scroll(&self) -> Option<f32> { self.screen.rows.first().map(|r| r.shelf.scroll()) }
+    fn scroll_max(&self) -> Option<f32> { self.screen.rows.first().map(|r| r.shelf.style().max_scroll(self.cards().len())) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         let (_, col) = self.focus.and_then(|k| self.at(k.elem)).ok_or("nothing focused")?;
         match l {

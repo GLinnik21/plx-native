@@ -2312,6 +2312,20 @@ pub fn reverse_test_shelves(state: &mut PmsState) {
     commit(state, build);
 }
 
+/// Test hook: every shelf's last card moves to its head, so each other card sits one place later
+/// (an item landing above the focus, or a reorder that moves a card by one place).
+#[cfg(any(test, feature = "test-support"))]
+pub fn rotate_test_shelves_right(state: &mut PmsState) {
+    plx_base::testlock::assert_held("the pms hub catalog (rotate_test_shelves_right)");
+    for source in state.srcs.iter_mut() {
+        if let Some(build) = source.last.as_mut() {
+            for shelf in &mut build.shelves { shelf.items.rotate_right(1); }
+        }
+    }
+    let build = merge(&state.srcs);
+    commit(state, build);
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn seed_grid_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, rows: usize, items: usize) {
     plx_base::testlock::assert_held("the pms hub catalog (seed_grid_for_test)");

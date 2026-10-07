@@ -51,6 +51,13 @@ pub struct RowStyle {
     pub right_reserve: f32,
 }
 impl RowStyle {
+    /// The furthest a row of `n` cells scrolls: the content past the viewport, 0 for a row that
+    /// fits whole.
+    pub fn max_scroll(&self, n: usize) -> f32 {
+        let viewport = SCR_W - 2.0 * self.margin_x;
+        (n as f32 * (self.w + self.gap) - self.gap - viewport).max(0.0)
+    }
+
     /// This style with `r` px of the panel's right edge reserved — see [`RowStyle::right_reserve`].
     /// A `const fn` so a screen can name the result once, beside the constant it derives it from,
     /// rather than rebuilding it per frame.
@@ -353,8 +360,7 @@ impl CardRow {
     /// Restore a saved viewport without animating from the constructor's origin. Clamp against
     /// current content because the row may have shrunk while its screen was covered or evicted.
     pub fn restore_scroll(&mut self, scroll: f32, n: usize, sty: &RowStyle) {
-        let viewport = SCR_W - 2.0 * sty.margin_x;
-        let max = (n as f32 * (sty.w + sty.gap) - sty.gap - viewport).max(0.0);
+        let max = sty.max_scroll(n);
         self.scroll_x.jump(scroll.clamp(0.0, max));
     }
     /// Pull the scroll back into `[0, max]` for `n` cells when it lies outside (a [`relocate`](Self::relocate)
@@ -362,8 +368,7 @@ impl CardRow {
     /// target is derived from the scroll, so this moves both; a scroll already inside is left
     /// alone, so a clamp that does not bite adds no spring.
     pub fn clamp_scroll(&mut self, n: usize, sty: &RowStyle) {
-        let viewport = SCR_W - 2.0 * sty.margin_x;
-        let max = (n as f32 * (sty.w + sty.gap) - sty.gap - viewport).max(0.0);
+        let max = sty.max_scroll(n);
         let at = self.scroll_x.pos.clamp(0.0, max);
         if at != self.scroll_x.pos {
             self.scroll_x.jump(at);
