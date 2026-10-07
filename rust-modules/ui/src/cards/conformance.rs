@@ -79,6 +79,12 @@ pub trait CardHarness {
     fn scroll(&self) -> Option<f32> {
         None
     }
+    /// The column count of a grid layout, `None` for a horizontal strip. A landing may move a
+    /// focused card to another COLUMN of a grid (its x changes with its index); a strip's card
+    /// must not move at all.
+    fn columns(&self) -> Option<usize> {
+        None
+    }
     /// Apply a landing, then deliver what the host does on one: the store-changed event and the
     /// engine's `reconcile` of the focused element. `Err` when the harness cannot stage it.
     fn landing(&mut self, l: Landing) -> Result<(), &'static str>;
@@ -264,7 +270,9 @@ pub fn geometry(mount: Mount) -> Outcome {
 }
 
 /// Landing: reorder, insert-above and remove-focused keep the focused identity (removal falls to
-/// a placeable element).
+/// a placeable element); on the frame the landing becomes visible every card but the focused one
+/// is at rest (the tile now at the old index lets go of nothing), and a focused element that
+/// stayed the same item has not moved on screen.
 pub fn landing(mount: Mount) -> Outcome {
     let mut bad = Vec::new();
     for l in [Landing::Reorder, Landing::InsertAbove, Landing::RemoveFocused] {
@@ -277,8 +285,30 @@ pub fn landing(mount: Mount) -> Outcome {
         h.focus(cards[1], By::Restore);
         h.tick(SETTLE);
         let before = h.identity(cards[1]);
+        let rect_before = h.place(cards[1], At::Drawn).map(|p| p.rect);
         if let Err(why) = h.landing(l) {
             return Outcome::Unsupported(why);
+        }
+        h.tick(1);
+        if let Some(now) = h.focused() {
+            let lifted: Vec<u32> = h
+                .cards()
+                .into_iter()
+                .filter(|&c| c != now && h.scale(c).is_some_and(|s| (s - 1.0).abs() > 0.001))
+                .collect();
+            if !lifted.is_empty() {
+                bad.push(format!("{l:?}: cards {lifted:?} are off rest on the frame after the landing"));
+            }
+            if l != Landing::RemoveFocused && h.identity(now) == before {
+                if let (Some(was), Some(is)) = (rect_before, h.place(now, At::Drawn).map(|p| p.rect)) {
+                    // a grid's column legitimately moves with the index; its row and size may not
+                    let moved = !(rect_eq(Rect::new(0.0, was.y, was.w, was.h), Rect::new(0.0, is.y, is.w, is.h))
+                        && (h.columns().is_some() || (was.x - is.x).abs() < 0.5));
+                    if moved {
+                        bad.push(format!("{l:?}: the focused tile moved on screen, {} -> {}", show(was), show(is)));
+                    }
+                }
+            }
         }
         h.tick(SETTLE);
         let Some(now) = h.focused() else {

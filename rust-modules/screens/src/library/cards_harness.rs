@@ -209,6 +209,7 @@ impl CardHarness for Harness {
             Set::Shelf => self.screen.shelves.first()?.motion.scroll_x(),
         })
     }
+    fn columns(&self) -> Option<usize> { (self.set == Set::Grid).then_some(super::layout::COLS) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         if self.set == Set::Shelf {
             return Err("no test seam edits a seeded hub shelf's items (seed_shelves_for_test mints rk from the index)");

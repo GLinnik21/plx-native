@@ -5337,7 +5337,7 @@ class DepGates(unittest.TestCase):
             with self.subTest(input=rel):
                 self.assertIn(rel, reported, out)
 
-    def _plant(self, name, content):
+    def _plant(self, name, content, crate_dir=None):
         """Write `content` to a temp file under rust-modules/src that no ci/allow/*.txt names,
         run the private copy's ci/check-deps.sh with it present, and guarantee removal even if
         the assertion that follows fails. An orphan .rs file with no `mod` statement pointing at
@@ -5345,7 +5345,7 @@ class DepGates(unittest.TestCase):
         '*.rs'`, which is all these gates scan with — so this is the cheapest way to prove a gate
         catches a shape without touching a real, permanent source file."""
         # `player/` and `route/` are the media layer crate's now (docs/module-layers.md, Split 11).
-        crate = "media" if name.split("/")[0] in ("player", "route") else None
+        crate = crate_dir or ("media" if name.split("/")[0] in ("player", "route") else None)
         target = os.path.join(self.tree, "rust-modules", *([crate] if crate else []), "src", name)
         self.assertFalse(os.path.exists(target), f"stale self-test artifact at {target} — remove it by hand")
         try:
@@ -5784,6 +5784,40 @@ impl PersonOwnerGateFixture {
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("ok — tmppath", out)
 
+    def test_cards_gate_catches_a_screen_assembling_its_own_strip(self):
+        """Shared-card-sections L1: a screen draws card sections with `plx_ui::cards::{Shelf, Grid}`.
+        RED: a file in `screens/` outside ci/allow/cards.txt that names an L0 primitive, qualified
+        or imported by name, must fail `cards`; GREEN: the component itself is fine."""
+        r = self._plant(
+            "_check_deps_selftest_cards_strip.rs",
+            "pub fn draw_row() {\n    plx_ui::card_row::strip();\n}\n"
+            "use plx_ui::card_row::{draw_tile, RowStyle};\n"
+            "pub struct Mine(plx_ui::card_row::CardRow);\n"
+            "use plx_ui::card_row::*;\n"
+            "use plx_ui::card_row as rows;\n"
+            "pub fn cell() { plx_ui::poster_grid::cell(0, 0.0, 0.0, &[]); }\n"
+            "use plx_ui::poster_grid::{visible, COLS};\n",
+            crate_dir="screens",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("cards:", out)
+        self.assertIn("_check_deps_selftest_cards_strip.rs:2", out)
+        self.assertIn("_check_deps_selftest_cards_strip.rs:4", out)
+        self.assertIn("_check_deps_selftest_cards_strip.rs:5", out)
+        for line in (6, 7, 8, 9):  # glob and renamed card_row imports, hand-rolled grid geometry
+            self.assertIn(f"_check_deps_selftest_cards_strip.rs:{line}", out)
+
+    def test_cards_gate_allows_the_shared_component(self):
+        r = self._plant(
+            "_check_deps_selftest_cards_ok.rs",
+            "pub struct Mine(plx_ui::cards::Shelf);\n",
+            crate_dir="screens",
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — cards", out)
+
     def test_sink_gate_catches_the_video_sink_named_outside_the_player(self):
         """Step L15: the Starfish/ACB verbs are the player's alone. RED: a module outside
         `player/`, `port.rs` and `tv/` that reaches `tv::sink::installed()` must fail `sink`."""
@@ -5929,7 +5963,8 @@ impl PersonOwnerGateFixture {
         # that step's entries: 0 + 42 = 42. Merging main brought main's system toast (#392) and its
         # two callers: 42 + 2 = 44. Step L15 moved all 44 behind the `tv` interfaces and the port:
         # 44 - 44 = 0.
-        "cards-conformance.txt": 10,  # card-screen Tier 2 expected failures (PR 0, 2026-10-07; Home and Detail added); only shrinks
+        "cards-conformance.txt": 16,  # card-screen Tier 2 expected failures (PR 0, 2026-10-07; Home and Detail added); only shrinks
+        "cards.txt": 14,  # screens still assembling card sections from the L0 primitives (2026-10-07); only shrinks
         "blocking.txt": 2,  # frame-thread allow_blocking sites, 2026-10-06; only shrinks
         "layers.txt": 0,
         "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs

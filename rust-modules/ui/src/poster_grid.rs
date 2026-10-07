@@ -119,6 +119,30 @@ impl GridPop {
         self.pop = (Some(index), Spring::at(1.0));
     }
 
+    /// The cell the pop currently belongs to.
+    pub fn cell(&self) -> Option<usize> {
+        self.pop.0
+    }
+
+    /// The focused element moved to cell `to` because the CONTENT changed (a landing): the pop
+    /// spring, velocity and all, goes with it, and a let-go already running on `to` is dropped
+    /// (that cell now holds the element that is popped).
+    pub fn relocate(&mut self, to: usize) {
+        if self.pop.0.is_some() {
+            self.pop.0 = Some(to);
+        }
+        if self.shrink.0 == Some(to) {
+            self.shrink.0 = None;
+        }
+    }
+
+    /// Cell `to` is focused with no deliberate move (a restore, a reconcile): FULL scale at once
+    /// and nothing lets go, the cell it left is simply at rest.
+    pub fn adopt(&mut self, to: usize, style: &RowStyle) {
+        self.shrink = (None, Spring::at(1.0));
+        self.pop = (Some(to), Spring::at(style.focus_scale));
+    }
+
     /// Advance the pop one tick; `focused` is the focused cell's index, if focus is in the grid.
     pub fn tick(&mut self, focused: Option<usize>, style: &RowStyle, dt: f32) {
         if focused != self.pop.0 {
