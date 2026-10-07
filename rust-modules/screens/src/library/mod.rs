@@ -1007,10 +1007,13 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                     // element's row (`Landed`) comes back as the document shift that keeps the
                     // tile where it was on screen; the scroll and its target both take it, so the
                     // spring has nothing to chase. `refresh` ran in `sync` above and shifts nothing.
+                    // A shift the document cannot honour (a tile near either end) clamps, each of
+                    // the two on its own, so a clamp that does not bite adds no spring.
                     let shift = self.pair.detail.on(ev, cx, fx, self.scroll.pos);
                     if shift != 0.0 {
-                        self.scroll.pos += shift;
-                        self.scroll_target += shift;
+                        let max = self.target_layout.max_scroll();
+                        self.scroll.pos = (self.scroll.pos + shift).clamp(0.0, max);
+                        self.scroll_target = (self.scroll_target + shift).clamp(0.0, max);
                     }
                     self.relayout(focused);
                     // A first seat that applies a bookmarked scroll clamps it to the document, so

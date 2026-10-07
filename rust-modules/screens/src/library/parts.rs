@@ -241,6 +241,7 @@ impl GridPart {
             view.changed_page_ranges(old.view()).map(|ranges| ranges.collect::<Vec<_>>()));
         self.snapshot = Some(view.retain());
         let Some(id) = view.id() else {
+            if self.identity.is_some() { self.grid.forget_pop(); }
             self.elems.clear();
             self.indexes.elems.clear();
             self.identity = None;
@@ -249,6 +250,9 @@ impl GridPart {
         let section = LibrarySectionIdentity { sid: id.sid, key: id.section };
         let total = view.total().max(0) as usize;
         let stamp = (id.epoch, id.sid, id.section, id.query);
+        // A new stamp is a new content set; a covered page's grid never ticked across the swap,
+        // so its pop would otherwise read the same element at a new index as a landing.
+        if self.identity.is_some_and(|old| old != stamp) { self.grid.forget_pop(); }
         if self.identity != Some(stamp) || self.elems.len() != total || changed.is_none() {
             self.elems.clear();
             self.elems.reserve(total);
@@ -385,6 +389,13 @@ fn grid_clip() -> Rect {
     Rect::new(MARGIN_X - 32.0, CONTENT_TOP, GRID_RIGHT - MARGIN_X + 32.0, SCR_H - CONTENT_TOP)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Every `(index, Tile.scale)` the grid handed `CardSource::overlay`, in paint order: what the
+    /// card renderer is given, for tests that assert on it instead of recomputing it.
+    pub(super) static OVERLAID: std::cell::RefCell<Vec<(usize, f32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The grid's `CardSource`: the published items read through the part's element index. Built from
 /// the part's FIELDS (borrows only), so a call can hold it while the grid is borrowed mutably.
 struct GridSrc<'a, 'v> {
@@ -407,6 +418,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
         self.view.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())
     }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
+        #[cfg(test)] OVERLAID.with(|seen| seen.borrow_mut().push((i, tile.scale)));
         if let Some(item) = self.view.item(i).filter(|item| item.kind == 3) {
             plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius, false, measure);
         }

@@ -251,6 +251,7 @@ impl CardHarness for Harness {
 mod pop_tests {
     use super::*;
     use plx_ui::consts::{CARD_H, CARD_W};
+    use crate::library::parts::OVERLAID;
 
     fn width(h: &Harness, elem: u32) -> f32 { h.place(elem, At::Drawn).unwrap().rect.w }
 
@@ -333,21 +334,37 @@ mod pop_tests {
     /// handed, so the label never slides and the shadow lets go (Home's treatment).
     #[test]
     fn a_pressed_grid_tile_hands_the_card_renderer_the_scale_its_rect_was_built_from() {
+        let _guard = plx_base::testlock::serial();
         let mut h = Harness::new(Set::Grid, 12);
         let cards = h.cards();
         h.focus(cards[3], By::Restore);
         h.tick(1);
         let pop = h.scale(cards[3]).unwrap();
+        let handed = |h: &mut Harness, press: f32| {
+            h.set_press(press);
+            OVERLAID.with(|seen| seen.borrow_mut().clear());
+            let cx: Cx<'_, LibHost> = Cx {
+                views: Views { listing: h.listing.view(), directory: h.directory.view(), hubs: h.hubs.view() },
+                tick: Tick { ms: h.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+                press: PressRead { scale: h.press, ..Default::default() },
+                focus: FocusRead { current: h.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
+            let _discovery = plx_ui::frame::backdrop::discover(std::rc::Rc::new(std::cell::RefCell::new(Default::default())));
+            let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
+            Part::<LibHost>::draw(&mut h.screen.pair.detail, &mut frame, Rect::FULL);
+            OVERLAID.with(|seen| seen.borrow().iter().find(|(i, _)| *i == 3).map(|(_, s)| *s))
+                .expect("the focused tile reaches the renderer")
+        };
+        let ring = |s: f32| (s - 1.0) / (RowStyle::HOME.focus_scale - 1.0);
         for press in [1.0_f32, 0.96, 0.918] {
+            let s = handed(&mut h, press);
             let rect = h.drawn_rect(cards[3], press).unwrap();
-            let s = pop * press;
             assert!((rect.w - CARD_W * s).abs() < 0.001,
-                "the treatment scale is the one the rect was built from: rect.w={} s={s}", rect.w);
+                "the scale handed to the renderer is the one the rect was built from: rect.w={} s={s}", rect.w);
             assert!((rect.h / s - CARD_H).abs() < 0.01,
                 "a press never moves the label: rect.h/s={} (rest {CARD_H})", rect.h / s);
+            assert!(s < pop * 1.0001, "a press only ever shrinks the pop: {s} vs {pop}");
         }
-        let ring = |press: f32| (pop * press - 1.0) / (RowStyle::HOME.focus_scale - 1.0);
-        assert!(ring(1.0) > 0.99, "a resting focused tile wears the whole shadow and sheen");
-        assert!(ring(0.918) < 0.1, "…and lets go of them under a full press: {}", ring(0.918));
+        assert!(ring(handed(&mut h, 1.0)) > 0.99, "a resting focused tile wears the whole shadow and sheen");
+        assert!(ring(handed(&mut h, 0.918)) < 0.1, "…and lets go of them under a full press");
     }
 }

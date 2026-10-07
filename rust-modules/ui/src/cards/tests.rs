@@ -950,6 +950,26 @@ fn an_external_grid_reports_the_landing_shift() {
     assert_eq!(r.sect.grid.landed_shift(), 0.0, "and the next tick reports nothing");
 }
 
+/// The other direction: rows removed above the focused element move it to an EARLIER row. The
+/// owner settles the band on the new row before the tick (`settle_band`), and the shift must still
+/// be the rows' pitch exactly, not the pitch less the band the new row has opened.
+#[test]
+fn an_external_grid_reports_the_landing_shift_for_an_earlier_row() {
+    let mut r = Rig::<ExtGrid>::new(40);
+    r.land_focus(110, By::Restore);
+    r.run(240);
+    let before = r.sect.grid.place(&r.cx(), &r.src, &110, At::Drawn).unwrap().rect;
+    r.src.elems.drain(0..EXT.cols);
+    r.sect.grid.settle_band(Some(1));
+    tick_grid_alone(&mut r);
+    let pitch = EXT_STYLE.h + crate::card_row::LABEL_BAND_COLLAPSED + crate::consts::UNDER_LABEL_AIR;
+    assert_eq!(r.sect.grid.landed(), Some(super::Landed { from: 10, to: 10 - EXT.cols }));
+    assert!((r.sect.grid.landed_shift() + pitch).abs() < 0.01, "one row moved up: {}", r.sect.grid.landed_shift());
+    r.sect.grid.set_page(520.0, r.sect.page + r.sect.grid.landed_shift());
+    let now = r.sect.grid.place(&r.cx(), &r.src, &110, At::Drawn).unwrap().rect;
+    assert!((now.y - before.y).abs() < 0.5, "the tile stayed put once the owner applied the shift: {before:?} -> {now:?}");
+}
+
 /// `Shelf::head` is the first card's settled, unpopped rect: the one `place` answers for it while
 /// it is not focused.
 #[test]

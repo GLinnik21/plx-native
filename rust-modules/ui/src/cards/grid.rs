@@ -180,11 +180,15 @@ impl Grid {
                 // scroll shifts by what its row moved so the tile stays where it was on screen
                 (Seen::Nothing, Some(p)) if p != i => {
                     self.pop.relocate(i);
-                    if let Some(was) = was {
-                        let by = self.cell(i, &self.bands.geometry()).y - was;
-                        match self.spec.scroll {
-                            ScrollMode::Own => self.scroll.pos += by,
-                            ScrollMode::External => self.shift = by,
+                    match self.spec.scroll {
+                        ScrollMode::Own => if let Some(was) = was {
+                            self.scroll.pos += self.cell(i, &self.bands.geometry()).y - was;
+                        },
+                        // The owner may have opened the new row's band before this tick, so `was`
+                        // would be measured under it: the rows' pitch is the shift, bands aside.
+                        ScrollMode::External => {
+                            let rows = (i / self.spec.cols) as f32 - (p / self.spec.cols) as f32;
+                            self.shift = rows * self.spec.geom().pitch();
                         }
                     }
                     self.landed = Some(Landed { from: p, to: i });
@@ -262,6 +266,15 @@ impl Grid {
     /// animating.
     pub fn settle_band(&mut self, row: Option<usize>) {
         self.bands.focus(row, false);
+    }
+
+    /// Forget the focus pop's cell and any pending move: a fresh content set whose old indexes mean
+    /// nothing, so the next tick adopts the focused element whole instead of reading it as the
+    /// same element landing at a new index. For an owner that was not ticking while its content
+    /// was replaced (a covered page).
+    pub fn forget_pop(&mut self) {
+        self.pop = GridPop::new();
+        self.seen = Seen::Nothing;
     }
 
     /// The caption bands closed and settled: a fresh content set whose old rows mean nothing.
