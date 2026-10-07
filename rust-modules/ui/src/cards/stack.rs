@@ -130,6 +130,8 @@ pub struct Stack<K, E = u32> {
     revision: Option<u64>,
     scroll: Spring,
     target: f32,
+    /// Scroll home when focus is not in the page's flow ([`Stack::home_when_unfocused`]).
+    home: bool,
     /// The section and position focus was last on, for the reconcile rule.
     last: Option<(K, usize)>,
     queue: Vec<(K, CardEvent<u32>)>,
@@ -153,6 +155,7 @@ impl<K: Copy + Eq, E> Stack<K, E> {
             revision: None,
             scroll: Spring::at(0.0),
             target: 0.0,
+            home: false,
             last: None,
             queue: Vec::new(),
             restore: None,
@@ -160,6 +163,14 @@ impl<K: Copy + Eq, E> Stack<K, E> {
             rebuilds: 0,
             _elem: PhantomData,
         }
+    }
+
+    /// Scroll the page home (0) whenever focus is not on a section in the flow: nothing of this
+    /// page focused (a menu over it, the pointer gone) or an out-of-flow [`Kind::Overlay`] held.
+    /// Off by default: a page whose focus is elsewhere then stays where it is.
+    pub fn home_when_unfocused(mut self, on: bool) -> Self {
+        self.home = on;
+        self
     }
 
     pub fn scroll(&self) -> f32 {
@@ -375,8 +386,10 @@ impl<K: Copy + Eq, E> Stack<K, E> {
             self.scroll.pos += shift;
             self.target += shift;
         }
-        if let Some((i, _)) = focus {
-            self.target = self.wanted(p, cx, i);
+        match focus {
+            Some((i, _)) if !matches!(self.specs[i].kind, Kind::Overlay { .. }) => self.target = self.wanted(p, cx, i),
+            _ if self.home => self.target = 0.0,
+            _ => {}
         }
         self.scroll.step(self.target, K_SCROLL, dt);
         if (self.scroll.pos - self.target).abs() > 0.25 || self.scroll.vel.abs() > 0.5 {

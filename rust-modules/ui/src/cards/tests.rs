@@ -1252,6 +1252,37 @@ mod stack {
         assert!(r.stack.scroll().abs() < 0.5, "focus on the header brings the page home: {}", r.stack.scroll());
     }
 
+    #[test]
+    fn a_page_stays_put_when_focus_leaves_it_unless_it_asks_to_go_home() {
+        let scrolled = |home: bool| {
+            let mut r = rig(6, 60);
+            r.stack = Stack::new(ENTRY).home_when_unfocused(home);
+            r.run(1);
+            r.go(1000, By::Restore);
+            r.run(2);
+            r.go(1030, By::Dir);
+            r.run(120);
+            let deep = r.stack.scroll();
+            assert!(deep > 100.0, "the page followed the focused row: {deep}");
+            r.focus = None;
+            r.run(240);
+            (deep, r.stack.scroll(), r)
+        };
+        let (deep, after, _) = scrolled(false);
+        assert!((after - deep).abs() < 0.5, "by default the page stays where it was: {deep} -> {after}");
+        let (_, after, mut r) = scrolled(true);
+        assert!(after.abs() < 0.5, "with home_when_unfocused the page scrolls home: {after}");
+        r.page.status = true;
+        r.page.revision += 1;
+        r.run(1);
+        r.go(1030, By::Dir);
+        r.run(120);
+        assert!(r.stack.scroll() > 100.0);
+        r.go(STATUS_ELEM, By::Dir);
+        r.run(240);
+        assert!(r.stack.scroll().abs() < 0.5, "an out-of-flow overlay held counts as unfocused: {}", r.stack.scroll());
+    }
+
     const SCR_H_F: f32 = crate::consts::SCR_H;
 
     #[test]
