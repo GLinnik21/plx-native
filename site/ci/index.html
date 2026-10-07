@@ -1,0 +1,652 @@
+<!doctype html>
+<!-- Live CI build-time page: https://plxnative.com/ci/
+     The CI numbers are ci-history.json on the `ci-metrics` branch, kept current by .github/workflows/ci-metrics.yml
+     (tools/ci-history.py); this page only reads it. The local-loop numbers are milestones.json beside this file,
+     appended by hand from merged PR bodies (see "Adding a milestone" below). Deliberately not in sitemap.xml and
+     not linked from the landing page; it is for people working on the build.
+
+     Nothing here names a job: every series is derived from the rows, so a job that appears or disappears
+     (a gap in the line, never a zero) needs no edit to this file. Colours are assigned by first appearance, so a
+     new job never repaints an old one.
+
+     Local testing: serve site/ and a data file from the same directory (python3 -m http.server) and open
+     /ci/?data=ci-history.json. `data` accepts a same-origin RELATIVE path only; anything else is ignored.
+
+     Keep this file's text ASCII: the Pages build runs tools/subset-site-fonts.py check over every staged
+     page, and a non-ASCII character here is one more glyph the subset font has to carry
+     (tools/test_ci_history.py fails on one). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="description" content="How long a PlxNative pull request waits on CI, per job and in runner minutes, and how often main goes red; plus hand-measured local build milestones.">
+<meta name="theme-color" content="#202022">
+<title>PlxNative CI Build Time</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="48x48" href="/icons/favicon-48.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
+<style>
+/* Layout: one reading column; summary tiles, one range control shared by the CI charts, then the
+   hand-measured local milestones. System fonts only: the site self-hosts its one font and this page needs no more. */
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --fg: #19202b;
+  --muted: #5d6675;
+  --rule: #dfe3ea;
+  --grid: #e9ecf1;
+  --marker: #9aa3b2;
+  --good: #1f7a4a;
+  --bad: #a3461f;
+  --warn: #9a7b0a;
+  --chip: #eef1f5;
+  --focus: #0f6e78;
+  --total: #19202b;
+  --wf-ci: #1f5fa8;
+  --wf-sim: #c2581a;
+  --c0: #1f5fa8; --c1: #c2581a; --c2: #0f7b6c; --c3: #7a4fb3;
+  --c4: #9a7b0a; --c5: #b8467e; --c6: #5b6b86; --c7: #7a3b2b;
+  --font-display: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-body: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151b; --panel: #181d25; --fg: #e3e7ee; --muted: #9aa3b2; --rule: #2a313c; --grid: #222934;
+    --marker: #5d6675; --good: #5fc48d; --bad: #e8875c; --warn: #d9b84a; --chip: #222934; --focus: #4fb8c2;
+    --total: #e3e7ee; --wf-ci: #6aa5e8; --wf-sim: #f0955c;
+    --c0: #6aa5e8; --c1: #f0955c; --c2: #4fc1ad; --c3: #a48ef0;
+    --c4: #d9b84a; --c5: #e57fb0; --c6: #93a3bf; --c7: #d08a76; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11151b; --panel: #181d25; --fg: #e3e7ee; --muted: #9aa3b2; --rule: #2a313c; --grid: #222934;
+  --marker: #5d6675; --good: #5fc48d; --bad: #e8875c; --warn: #d9b84a; --chip: #222934; --focus: #4fb8c2;
+  --total: #e3e7ee; --wf-ci: #6aa5e8; --wf-sim: #f0955c;
+  --c0: #6aa5e8; --c1: #f0955c; --c2: #4fc1ad; --c3: #a48ef0;
+  --c4: #d9b84a; --c5: #e57fb0; --c6: #93a3bf; --c7: #d08a76; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 var(--font-body); }
+a { color: inherit; text-decoration-color: var(--marker); text-underline-offset: 2px; }
+.wrap { max-width: 1040px; margin: 0 auto; padding-inline: 16px; padding-block: 28px 48px; display: grid; gap: 28px; }
+header { display: grid; gap: 6px; }
+h1 { font: 600 30px/1.15 var(--font-display); margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+h2 { font: 600 20px/1.2 var(--font-display); margin: 0; text-wrap: balance; }
+h3 { font: 600 15px/1.3 var(--font-display); margin: 0; }
+.lede { color: var(--muted); margin: 0; max-width: 68ch; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.app { display: grid; gap: 28px; }
+.app[hidden] { display: none; }
+.status { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 16px; margin: 0; color: var(--muted); }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 820px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.tile { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 14px 12px; display: grid; align-content: start; gap: 4px; min-width: 0; }
+.tile .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.tile .value { font: 500 28px/1.1 var(--font-mono); font-variant-numeric: tabular-nums; }
+.tile .value small { font-size: 14px; color: var(--muted); font-weight: 400; }
+.tile .note { font-size: 13px; color: var(--muted); }
+.chip { display: inline-block; justify-self: start; font: 500 12px/1 var(--font-mono); padding: 4px 6px; border-radius: 3px; background: var(--chip); }
+.chip.good { color: var(--good); } .chip.bad { color: var(--bad); }
+.bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; background: var(--panel); }
+.seg button { font: 500 13px/1 var(--font-body); color: var(--muted); background: none; border: 0; padding: 9px 14px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--rule); }
+.seg button[aria-pressed="true"] { color: var(--fg); background: var(--chip); }
+.seg button:focus-visible, .legend button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.hint { color: var(--muted); font-size: 13px; }
+section.chart { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 16px 14px; display: grid; gap: 10px; min-width: 0; }
+.chart-head { display: grid; gap: 4px; }
+.chart-head p { margin: 0; color: var(--muted); font-size: 13px; max-width: 80ch; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--muted); }
+.legend button { display: inline-flex; align-items: center; gap: 6px; font: inherit; color: inherit; background: none; border: 0; padding: 3px 2px; cursor: pointer; text-align: left; }
+.legend button[aria-pressed="false"] { opacity: 0.45; text-decoration: line-through; }
+.swatch { width: 18px; height: 0; border-top: 3px solid; border-radius: 2px; flex: none; }
+.swatch.dash { border-top-style: dashed; }
+.swatch.box { width: 10px; height: 10px; border-top-width: 0; border-radius: 2px; background: currentColor; }
+.plot { position: relative; width: 100%; min-width: 0; }
+.plot svg { display: block; width: 100%; height: auto; overflow: visible; }
+.plot text { fill: var(--muted); font: 11px var(--font-mono); }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--rule); border-radius: 5px; padding: 8px 10px; font-size: 12px; line-height: 1.45; box-shadow: 0 4px 14px rgba(0,0,0,0.12); max-width: 340px; z-index: 2; }
+.tip b { font-weight: 500; }
+.tip .t { color: var(--muted); }
+.tip .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+.empty { color: var(--muted); margin: 0; padding: 24px 0; }
+.marks { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 4px 20px; font-size: 13px; }
+.marks li { display: flex; gap: 8px; min-width: 0; }
+.marks .n { font: 500 11px/18px var(--font-mono); min-width: 18px; height: 18px; text-align: center; border-radius: 9px; background: var(--chip); color: var(--fg); flex: none; }
+.marks .d { color: var(--muted); font-family: var(--font-mono); font-size: 12px; flex: none; }
+.marks .w { min-width: 0; overflow-wrap: anywhere; }
+.ms-head { display: grid; gap: 6px; }
+.ms-head p { margin: 0; color: var(--muted); max-width: 78ch; }
+.ms-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 12px; }
+.ms { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 14px 10px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.ms .desc { margin: 0; color: var(--muted); font-size: 13px; }
+.ms .mach { font: 12px var(--font-mono); color: var(--muted); }
+.pt { display: grid; gap: 3px; padding-top: 8px; border-top: 1px solid var(--rule); }
+.pt .what { display: flex; flex-wrap: wrap; gap: 2px 8px; font-size: 13px; }
+.pt .what .d { color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+.trk { display: grid; grid-template-columns: 54px minmax(0, 1fr) 88px; align-items: center; gap: 8px; font: 12px var(--font-mono); }
+.trk .lab { color: var(--muted); }
+.trk .rail { height: 10px; position: relative; }
+.trk .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 3px 3px 0; min-width: 2px; }
+.trk .fill.before { background: var(--marker); }
+.trk .fill.after { background: var(--c2); }
+.trk .fill.only { background: var(--c0); }
+.trk .fill.ext { opacity: 0.4; }
+.trk .val { text-align: right; }
+.pt .src { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+details.more > summary { cursor: pointer; color: var(--muted); font-size: 13px; padding-top: 6px; }
+footer { color: var(--muted); font-size: 13px; display: grid; gap: 6px; max-width: 78ch; }
+code { font-family: var(--font-mono); font-size: 0.92em; background: var(--chip); padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>PlxNative CI build time</h1>
+    <p class="lede">What a pull request waits for, job by job, and what it costs in runner minutes, from GitHub's own timings of every finished push to <code>main</code>. Dots are single runs; lines are the median of the last 7. <span id="asof"></span></p>
+  </header>
+
+  <p class="status" id="status" role="status">Loading build timings...</p>
+
+  <div class="app" id="app" hidden>
+    <div class="tiles" id="tiles"></div>
+
+    <div class="bar">
+      <div class="seg" role="group" aria-label="Time range">
+        <button type="button" id="r-30d" aria-pressed="true">Last 30 days</button>
+        <button type="button" id="r-recent" aria-pressed="false">Last 10 days</button>
+        <button type="button" id="r-all" aria-pressed="false">All time</button>
+      </div>
+      <span class="hint">Hover or tap a chart to read one run. Click a legend entry to hide a series.</span>
+    </div>
+
+    <section class="chart" id="wait">
+      <div class="chart-head">
+        <h2>How long a pull request waits</h2>
+        <p>Per commit, the longest job of its CI and Simulator CI runs, which is what a push waits for (the runs go side by side). The thin lines are each workflow's own longest job. Queueing before a job starts is not in GitHub's job timings, so real waits are a little longer.</p>
+      </div>
+      <div class="legend"></div>
+      <div class="plot"></div>
+      <ul class="marks"></ul>
+    </section>
+
+    <section class="chart" id="ci">
+      <div class="chart-head">
+        <h2>CI: every job</h2>
+        <p>One line per job that finished green, taken from the data as it comes: a job that is new starts a new line, a job that was removed ends its line, and a run without a job leaves a gap, not a zero.</p>
+      </div>
+      <div class="legend"></div>
+      <div class="plot"></div>
+    </section>
+
+    <section class="chart" id="sim">
+      <div class="chart-head">
+        <h2>Simulator CI: every job</h2>
+        <p>The same, for the simulator workflow.</p>
+      </div>
+      <div class="legend"></div>
+      <div class="plot"></div>
+    </section>
+
+    <section class="chart" id="cost">
+      <div class="chart-head">
+        <h2>Runner minutes per push</h2>
+        <p>The sum of every green job's minutes, which several optimisations traded wall time against: a split into parallel jobs lowers the wait and raises this. The total counts only commits that ran both workflows.</p>
+      </div>
+      <div class="legend"></div>
+      <div class="plot"></div>
+    </section>
+
+    <section class="chart" id="red">
+      <div class="chart-head">
+        <h2>Red pushes and re-runs, per week</h2>
+        <p>The share of finished CI and Simulator CI runs on <code>main</code> that failed, and that passed only after a re-run. Cancelled runs (a newer push superseding an older one) are not counted.</p>
+      </div>
+      <div class="legend"></div>
+      <div class="plot"></div>
+    </section>
+
+    <div class="ms-head">
+      <h2>Local development loop: measured milestones</h2>
+      <p>These are not collected: each number was measured by hand with <code>make build-bench</code> (or the timing the PR names) on <b>one Apple M4, 10 cores</b>, and quoted from the body of the merged PR that made the change. They are comparable with each other and not across machines, nor with the CI runners above. A bar pair is the same measurement before and after; a lighter extension is the upper end of a quoted range.</p>
+    </div>
+    <p class="status" id="ms-status" role="status" hidden></p>
+    <div class="ms-grid" id="ms"></div>
+  </div>
+
+  <footer>
+    <p>Host checks ran as one job until Oct 1; since then they are parallel jobs plus a short aggregator, and the chart shows each separately. Runner timings on shared GitHub machines are noisy, so read the median line, not single dots. Numbered markers are pushes titled <code>Build:</code>, <code>CI:</code> or <code>Check:</code>.</p>
+    <p>Pull-request runs are not collected, so the wait is the one of the push that merged the PR, which runs the same jobs. The nightly dry run (<code>ARM build + gates</code>) only runs on pull requests that touch its inputs and is not here. Red runs are recorded since the collector learned to (rows older than that read as green until a full refresh).</p>
+    <p>The data is <a href="https://raw.githubusercontent.com/GLinnik21/plx-native/ci-metrics/ci-history.json"><code>ci-history.json</code></a> on the <code>ci-metrics</code> branch. Adding a milestone: append a point to <code>site/ci/milestones.json</code> (<code>date</code>, <code>pr</code> and <code>commit</code>, <code>value</code> in the series' unit, optional <code>before</code> and <code>max</code>, <code>what</code>, and a one-line <code>source</code>), or start a new series; take the number from a PR body, never estimate one.</p>
+  </footer>
+</div>
+
+<script>
+const REPO = "GLinnik21/plx-native";
+const DATA_URL = "https://raw.githubusercontent.com/" + REPO + "/ci-metrics/ci-history.json";
+
+// `?data=<relative path>` points the page at a local file for testing (see the comment at the top).
+// Only a same-origin relative path is honoured; an absolute URL, a scheme or a "//" host is ignored.
+function dataUrl() {
+  const given = new URLSearchParams(location.search).get("data");
+  if (given && /^[\w.\/-]+$/.test(given) && !given.startsWith("/") && !given.split("/").includes("..")) {
+    const u = new URL(given, location.href);
+    if (u.origin === location.origin) return u.href;
+  }
+  return DATA_URL;
+}
+
+const WORKFLOWS = { ci: "CI", sim: "Simulator CI" };
+const RANGES = { "30d": 30, recent: 10, all: Infinity };
+const MARK_TITLE = /^(build|ci|check):/i;
+const PR_SUFFIX = /\s*\(#(\d+)\)\s*$/;
+const NPAL = 8;       // --c0 .. --c7; a ninth series repeats a colour with a dashed line
+
+let ROWS = { ci: [], sim: [] };     // every kept run, oldest first
+let GREEN = { ci: [], sim: [] };    // the green ones (jobs of a red run are partial)
+let COMMITS = [];                   // one per commit: its runs, the longest job and the minutes
+let JOBS = [];                      // [{wf, name, idx}] by first appearance: the colour of a job never changes
+let MARKS = [];
+let COVERAGE = null;                // the first run that records its conclusion
+let CHARTS = {};                    // per chart: the drawn series, kept for the legend toggles and the tooltip
+const HIDDEN = {};                  // per chart: series ids switched off
+
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmtDate = (d) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+const fmtStamp = (d) => d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+const fmtMin = (s) => (s / 60).toFixed(1);
+const median = (a) => { const b = [...a].sort((x, y) => x - y); const m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+const isGreen = (r) => !r.conclusion || r.conclusion === "success";   // rows from before conclusions were recorded were green
+
+let range = "30d";
+try { const saved = localStorage.getItem("ci-range"); if (saved in RANGES) range = saved; } catch (e) {}
+
+// ---- data: everything below is derived from the rows; no job or workflow is named here ----
+
+function medians(vals) {
+  const out = []; const seen = [];
+  for (const v of vals) {
+    if (v == null) { out.push(null); continue; }
+    seen.push(v); out.push(median(seen.slice(-7)));
+  }
+  return out;
+}
+
+function prepare(doc) {
+  for (const id of Object.keys(WORKFLOWS)) {
+    ROWS[id] = (Array.isArray(doc[id]) ? doc[id] : [])
+      .map((r) => ({ ...r, wf: id, d: new Date(r.at), title: String(r.title || ""), jobs: r.jobs || {}, failed: r.failed || [] }))
+      .filter((r) => !isNaN(r.d)).sort((a, b) => a.d - b.d);
+    GREEN[id] = ROWS[id].filter((r) => isGreen(r) && Object.keys(r.jobs).length);
+  }
+  const all = [...ROWS.ci, ...ROWS.sim];
+  const withConclusion = all.filter((r) => r.conclusion).map((r) => r.d);
+  COVERAGE = withConclusion.length ? new Date(Math.min(...withConclusion)) : null;
+
+  // job colours: first appearance across both workflows, ties by name
+  const first = new Map();
+  for (const id of Object.keys(WORKFLOWS)) for (const r of GREEN[id]) for (const n of Object.keys(r.jobs)) {
+    const k = id + "|" + n; if (!first.has(k)) first.set(k, { wf: id, name: n, at: r.d });
+  }
+  JOBS = [...first.values()].sort((a, b) => a.at - b.at || a.wf.localeCompare(b.wf) || a.name.localeCompare(b.name)).map((j, i) => ({ ...j, idx: i }));
+
+  // commits: the runs of one sha; a commit with a red run has no honest wait, so it is left out
+  const bySha = new Map();
+  for (const r of all) {
+    if (!bySha.has(r.sha)) bySha.set(r.sha, { sha: r.sha, d: r.d, title: r.title, pr: r.pr, runs: {} });
+    const c = bySha.get(r.sha); c.runs[r.wf] = r; if (r.d < c.d) c.d = r.d;
+  }
+  COMMITS = [...bySha.values()].filter((c) => Object.values(c.runs).every((r) => isGreen(r) && Object.keys(r.jobs).length))
+    .sort((a, b) => a.d - b.d);
+  for (const c of COMMITS) {
+    c.longest = {}; c.total = {};
+    for (const [wf, r] of Object.entries(c.runs)) { const v = Object.values(r.jobs); c.longest[wf] = Math.max(...v); c.total[wf] = v.reduce((x, y) => x + y, 0); }
+    c.wait = Math.max(...Object.values(c.longest));
+    c.minutes = Object.keys(WORKFLOWS).every((wf) => c.runs[wf]) ? Object.values(c.total).reduce((x, y) => x + y, 0) : null;
+  }
+
+  const seenMark = new Set();
+  MARKS = all.filter((r) => MARK_TITLE.test(r.title)).filter((r) => !seenMark.has(r.sha) && seenMark.add(r.sha)).sort((a, b) => a.d - b.d).map((r) => {
+    // rows written by the current tool carry `pr` and a title without the suffix; older rows only have the title
+    if ("pr" in r) return { d: r.d, pr: r.pr ? String(r.pr) : "", what: r.title };
+    const pr = PR_SUFFIX.exec(r.title);
+    return { d: r.d, pr: pr ? pr[1] : "", what: r.title.replace(PR_SUFFIX, "") };
+  });
+}
+
+function mk(id, label, col, vals, o = {}) {
+  return { id, label, col, vals, sm: medians(vals), w: o.w || 2.2, dots: !!o.dots, dash: !!o.dash };
+}
+
+function chartData(id) {
+  if (id === "wait") {
+    const rows = COMMITS;
+    return { rows, unit: "min", series: [
+      mk("wait", "PR wait (slower of CI and Simulator CI)", "--total", rows.map((c) => c.wait), { dots: true, w: 2.6 }),
+      ...Object.keys(WORKFLOWS).map((wf) => mk(wf, WORKFLOWS[wf] + ", longest job", wf === "ci" ? "--wf-ci" : "--wf-sim", rows.map((c) => c.longest[wf] ?? null), { w: 1.6 })),
+    ] };
+  }
+  if (id === "cost") {
+    const rows = COMMITS;
+    return { rows, unit: "min", series: [
+      mk("minutes", "CI + Simulator CI, per commit", "--total", rows.map((c) => c.minutes), { dots: true, w: 2.6 }),
+      ...Object.keys(WORKFLOWS).map((wf) => mk(wf, WORKFLOWS[wf], wf === "ci" ? "--wf-ci" : "--wf-sim", rows.map((c) => c.total[wf] ?? null), { w: 1.6 })),
+    ] };
+  }
+  const rows = GREEN[id];
+  const jobs = JOBS.filter((j) => j.wf === id);
+  return { rows, unit: "min", series: jobs.map((j) => mk(j.wf + "|" + j.name, j.name, "--c" + (j.idx % NPAL), rows.map((r) => (j.name in r.jobs ? r.jobs[j.name] : null)), { dash: j.idx >= NPAL })) };
+}
+
+// ---- drawing ----
+
+function niceStep(max) {
+  const raw = Math.max(max, 0.1) / 5; const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (raw <= m * p) return m * p;
+  return 10 * p;
+}
+
+function frame(plot, rowsAll, ymaxUnits, yLabel) {
+  const last = rowsAll[rowsAll.length - 1].d;
+  const from = range === "all" ? rowsAll[0].d : new Date(last.getTime() - RANGES[range] * 864e5);
+  const W = Math.max(320, plot.clientWidth), H = W < 560 ? 260 : 320;
+  const m = { l: 40, r: 12, t: 30, b: 28 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const t0 = from.getTime(), t1 = last.getTime() + Math.max((last - from) * 0.01, 36e5);
+  const x = (d) => m.l + ((d.getTime() - t0) / (t1 - t0)) * iw;
+  const step = niceStep(ymaxUnits); const ytop = Math.ceil(ymaxUnits / step) * step || step;
+  const y = (v) => m.t + ih - (v / ytop) * ih;
+  let s = "";
+  for (let v = 0; v <= ytop + 1e-9; v += step) {
+    s += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="${css("--grid")}" stroke-width="1" fill="none"/>`;
+    s += `<text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${+v.toFixed(1)}</text>`;
+  }
+  s += `<text x="${m.l - 6}" y="${m.t - 14}" text-anchor="end">${yLabel}</text>`;
+  const span = t1 - t0, nT = Math.max(2, Math.floor(iw / 90)), dayMs = 864e5;
+  const tickDays = Math.max(1, Math.ceil(span / dayMs / nT));
+  const start = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate() + 1));
+  for (let d = start; d.getTime() <= t1; d = new Date(d.getTime() + tickDays * dayMs)) {
+    s += `<line x1="${x(d)}" x2="${x(d)}" y1="${m.t + ih}" y2="${m.t + ih + 4}" stroke="${css("--marker")}" fill="none"/>`;
+    s += `<text x="${x(d)}" y="${H - 8}" text-anchor="middle">${fmtDate(d)}</text>`;
+  }
+  return { s, W, H, m, iw, ih, x, y, from, last };
+}
+
+function legendHtml(id, items) {
+  return items.map((it) => {
+    const on = !HIDDEN[id].has(it.id);
+    const sw = it.box ? `<i class="swatch box" style="color:var(${it.col})"></i>` : `<i class="swatch${it.dash ? " dash" : ""}" style="border-color:var(${it.col})"></i>`;
+    return `<button type="button" data-s="${esc(it.id)}" aria-pressed="${on}">${sw}${esc(it.label)}</button>`;
+  }).join("");
+}
+
+function bindLegend(sec, id) {
+  sec.querySelector(".legend").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-s]"); if (!b) return;
+    const k = b.dataset.s;
+    if (HIDDEN[id].has(k)) HIDDEN[id].delete(k); else HIDDEN[id].add(k);
+    draw(id);
+  });
+}
+
+function drawLines(id) {
+  const sec = document.getElementById(id);
+  const plot = sec.querySelector(".plot");
+  const marksEl = sec.querySelector(".marks");
+  const { rows, series } = CHARTS[id] || (CHARTS[id] = chartData(id));
+  sec.querySelector(".legend").innerHTML = legendHtml(id, series);
+  if (!rows.length || !series.length) { plot.innerHTML = `<p class="empty">No runs with these jobs yet.</p>`; if (marksEl) marksEl.innerHTML = ""; return; }
+  const live = series.filter((s) => !HIDDEN[id].has(s.id));
+  const last = rows[rows.length - 1].d;
+  const from0 = range === "all" ? rows[0].d : new Date(last.getTime() - RANGES[range] * 864e5);
+  const vis = []; rows.forEach((r, i) => { if (r.d >= from0) vis.push(i); });
+  let ymax = 0; for (const s of live) for (const i of vis) if (s.vals[i] != null) ymax = Math.max(ymax, s.vals[i] / 60, s.sm[i] / 60);
+  const f = frame(plot, rows, ymax, "min");
+  const { W, H, m, iw, ih, x, y, from } = f;
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(sec.querySelector("h2").textContent)}, minutes per run">` + f.s;
+  const marks = id === "wait" ? MARKS.filter((mk2) => mk2.d >= from && mk2.d <= last).map((mk2, i) => ({ ...mk2, n: i + 1 })) : [];
+  for (const mk2 of marks)
+    s += `<line x1="${x(mk2.d)}" x2="${x(mk2.d)}" y1="${m.t}" y2="${m.t + ih}" stroke="${css("--marker")}" stroke-dasharray="2 3" fill="none"/>`;
+  for (const se of [...live].sort((a, b) => a.w - b.w)) {   // the thick headline line is drawn last, on top
+    const c = css(se.col);
+    let seg = [];
+    const flush = () => {
+      if (seg.length > 1) s += `<polyline points="${seg.join(" ")}" fill="none" stroke="${c}" stroke-width="${se.w}" stroke-linejoin="round" stroke-linecap="round"${se.dash ? ' stroke-dasharray="6 4"' : ""}/>`;
+      seg = [];
+    };
+    for (const i of vis) {
+      const r = rows[i];
+      if (se.vals[i] == null) { flush(); continue; }
+      if (se.dots) s += `<circle cx="${x(r.d).toFixed(1)}" cy="${y(se.vals[i] / 60).toFixed(1)}" r="2.2" fill="${c}" fill-opacity="0.3"/>`;
+      seg.push(`${x(r.d).toFixed(1)},${y(se.sm[i] / 60).toFixed(1)}`);
+    }
+    flush();
+    // the end of every drawn line, and a run that stands alone between two gaps, get a dot
+    for (let k = 0; k < vis.length; k++) {
+      const i = vis[k]; if (se.vals[i] == null) continue;
+      const prev = k > 0 && se.vals[vis[k - 1]] != null, next = k + 1 < vis.length && se.vals[vis[k + 1]] != null;
+      if (!prev && !next) s += `<circle cx="${x(rows[i].d)}" cy="${y(se.sm[i] / 60)}" r="2.6" fill="${c}"/>`;
+      if (!next) s += `<circle cx="${x(rows[i].d)}" cy="${y(se.sm[i] / 60)}" r="4" fill="${c}" stroke="${css("--panel")}" stroke-width="2"/>`;
+    }
+  }
+  // number badges along the top: spread apart where markers bunch up, kept inside the plot, each tied to its line
+  const gap = marks.length ? Math.max(10, Math.min(18, iw / marks.length)) : 18, pos = marks.map((mk2) => x(mk2.d));
+  for (let i = 1; i < pos.length; i++) pos[i] = Math.max(pos[i], pos[i - 1] + gap);
+  for (let i = pos.length - 1; i >= 0; i--) pos[i] = Math.min(pos[i], i === pos.length - 1 ? W - m.r - 8 : pos[i + 1] - gap);
+  marks.forEach((mk2, i) => {
+    const mx = Math.max(pos[i], m.l - 8);
+    if (Math.abs(mx - x(mk2.d)) > 1) s += `<line x1="${mx}" y1="${m.t - 4}" x2="${x(mk2.d)}" y2="${m.t}" stroke="${css("--marker")}" fill="none"/>`;
+    s += `<circle cx="${mx}" cy="${m.t - 12}" r="8" fill="${css("--chip")}" stroke="${css("--marker")}" stroke-width="1"/>`;
+    s += `<text x="${mx}" y="${m.t - 8.5}" text-anchor="middle" style="fill:${css("--fg")}">${mk2.n}</text>`;
+  });
+  s += `<line class="cursor" x1="0" x2="0" y1="${m.t}" y2="${m.t + ih}" stroke="${css("--fg")}" stroke-opacity="0" fill="none"/>`;
+  s += `<rect class="hit" x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent"/>`;
+  s += `</svg><div class="tip" hidden></div>`;
+  plot.innerHTML = s;
+  if (marksEl) marksEl.innerHTML = marks.map((mk2) => {
+    const pr = mk2.pr ? `<a href="https://github.com/${REPO}/pull/${mk2.pr}">#${mk2.pr}</a> ` : "";
+    return `<li><span class="n">${mk2.n}</span><span class="d">${fmtDate(mk2.d)}</span><span class="w">${pr}${esc(mk2.what)}</span></li>`;
+  }).join("") || `<li class="d">No build changes in this range.</li>`;
+
+  const svg = plot.querySelector("svg"), tip = plot.querySelector(".tip"), cur = plot.querySelector(".cursor");
+  const pick = (ev) => {
+    const pt = ev.touches ? ev.touches[0] : ev;
+    const box = svg.getBoundingClientRect(); const sx = ((pt.clientX - box.left) / box.width) * W;
+    let best = vis[0], bd = Infinity;
+    for (const i of vis) { const dd = Math.abs(x(rows[i].d) - sx); if (dd < bd) { bd = dd; best = i; } }
+    const r = rows[best], cx = x(r.d);
+    cur.setAttribute("x1", cx); cur.setAttribute("x2", cx); cur.setAttribute("stroke-opacity", "0.35");
+    const lines = live.filter((se) => se.vals[best] != null)
+      .map((se) => `<div class="mono"><i class="sw" style="background:var(${se.col})"></i><b>${fmtMin(se.vals[best])}</b> min ${esc(se.label)} <span class="t">(median ${fmtMin(se.sm[best])})</span></div>`).join("");
+    tip.innerHTML = `<div class="t mono">${fmtStamp(r.d)} | ${esc(r.sha)}</div><div>${esc(r.title)}</div>` + (lines || `<div class="t">no data for the visible series</div>`);
+    tip.hidden = false;
+    const px = (cx / W) * box.width; const tw = tip.offsetWidth;
+    tip.style.left = Math.min(Math.max(0, px + 12), Math.max(0, box.width - tw)) + "px";
+    tip.style.top = "8px";
+  };
+  const hide = () => { tip.hidden = true; cur.setAttribute("stroke-opacity", "0"); };
+  svg.addEventListener("mousemove", pick); svg.addEventListener("touchstart", pick, { passive: true });
+  svg.addEventListener("touchmove", pick, { passive: true }); svg.addEventListener("mouseleave", hide);
+}
+
+// ISO week start (Monday, UTC) as a timestamp
+const weekStart = (d) => { const t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); return t - ((d.getUTCDay() + 6) % 7) * 864e5; };
+
+function weeks() {
+  if (!COVERAGE) return [];
+  const byWeek = new Map();
+  for (const r of [...ROWS.ci, ...ROWS.sim]) {
+    if (!r.conclusion) continue;
+    const k = weekStart(r.d);
+    if (!byWeek.has(k)) byWeek.set(k, { t: k, total: 0, failed: 0, rerun: 0 });
+    const w = byWeek.get(k); w.total++;
+    if (!isGreen(r)) w.failed++; else if ((r.attempt || 1) > 1) w.rerun++;
+  }
+  return [...byWeek.values()].sort((a, b) => a.t - b.t);
+}
+
+function drawRed() {
+  const sec = document.getElementById("red");
+  const plot = sec.querySelector(".plot");
+  const items = [{ id: "failed", label: "Failed", col: "--bad", box: true }, { id: "rerun", label: "Passed after a re-run", col: "--warn", box: true }];
+  sec.querySelector(".legend").innerHTML = legendHtml("red", items);
+  const all = weeks();
+  if (!all.length) {
+    plot.innerHTML = `<p class="empty">The collector did not record run verdicts before this page's data was written, so this series starts with its next run. Rows written earlier read as green.</p>`;
+    return;
+  }
+  const lastT = all[all.length - 1].t;
+  const from = range === "all" ? all[0].t : lastT - Math.max(RANGES[range], 7) * 864e5 + 6 * 864e5;
+  const ws = all.filter((w) => w.t >= weekStart(new Date(from)));
+  const pct = (n, t) => (t ? (100 * n) / t : 0);
+  let ymax = 0; for (const w of ws) ymax = Math.max(ymax, pct(w.failed + w.rerun, w.total));
+  const W = Math.max(320, plot.clientWidth), H = W < 560 ? 240 : 280;
+  const m = { l: 40, r: 12, t: 20, b: 28 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const step = niceStep(Math.max(ymax, 5)); const ytop = Math.ceil(Math.max(ymax, 5) / step) * step;
+  const y = (v) => m.t + ih - (v / ytop) * ih;
+  const slot = iw / ws.length, bw = Math.min(46, slot * 0.62);
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Share of runs that failed or needed a re-run, per week">`;
+  for (let v = 0; v <= ytop + 1e-9; v += step) {
+    s += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="${css("--grid")}" stroke-width="1" fill="none"/>`;
+    s += `<text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${+v.toFixed(1)}</text>`;
+  }
+  s += `<text x="${m.l - 6}" y="${m.t - 8}" text-anchor="end">%</text>`;
+  const hidden = HIDDEN.red;
+  ws.forEach((w, i) => {
+    const cx = m.l + slot * (i + 0.5);
+    const fh = hidden.has("failed") ? 0 : pct(w.failed, w.total), rh = hidden.has("rerun") ? 0 : pct(w.rerun, w.total);
+    if (fh) s += `<rect x="${cx - bw / 2}" y="${y(fh)}" width="${bw}" height="${y(0) - y(fh)}" rx="3" fill="${css("--bad")}"/>`;
+    if (rh) s += `<rect x="${cx - bw / 2}" y="${y(fh + rh)}" width="${bw}" height="${Math.max(0, y(fh) - y(fh + rh) - 2)}" rx="3" fill="${css("--warn")}"/>`;
+    s += `<text x="${cx}" y="${H - 8}" text-anchor="middle">${fmtDate(new Date(w.t))}</text>`;
+    s += `<rect class="hit" data-i="${i}" x="${cx - slot / 2}" y="${m.t}" width="${slot}" height="${ih}" fill="transparent"/>`;
+  });
+  s += `</svg><div class="tip" hidden></div>`;
+  plot.innerHTML = s;
+  const svg = plot.querySelector("svg"), tip = plot.querySelector(".tip");
+  const show = (ev) => {
+    const t = ev.target.closest(".hit"); if (!t) return;
+    const w = ws[+t.dataset.i], box = svg.getBoundingClientRect();
+    tip.innerHTML = `<div class="t mono">week of ${fmtDate(new Date(w.t))}</div>` +
+      `<div class="mono"><b>${w.total}</b> runs</div>` +
+      `<div class="mono"><i class="sw" style="background:var(--bad)"></i><b>${w.failed}</b> failed (${pct(w.failed, w.total).toFixed(0)}%)</div>` +
+      `<div class="mono"><i class="sw" style="background:var(--warn)"></i><b>${w.rerun}</b> passed after a re-run (${pct(w.rerun, w.total).toFixed(0)}%)</div>`;
+    tip.hidden = false;
+    const px = ((m.l + slot * (+t.dataset.i + 0.5)) / W) * box.width, tw = tip.offsetWidth;
+    tip.style.left = Math.min(Math.max(0, px + 12), Math.max(0, box.width - tw)) + "px"; tip.style.top = "8px";
+  };
+  svg.addEventListener("mousemove", show); svg.addEventListener("touchstart", show, { passive: true });
+  svg.addEventListener("mouseleave", () => { tip.hidden = true; });
+}
+
+function draw(id) { if (id === "red") drawRed(); else drawLines(id); }
+
+function tiles() {
+  const rows = COMMITS;
+  const lastMed = (k) => median(rows.slice(-7).map((c) => c[k]).filter((v) => v != null));
+  const peak = (k) => { let best = 0; const v = []; for (const c of rows) { if (c[k] == null) continue; v.push(c[k]); best = Math.max(best, median(v.slice(-7))); } return best; };
+  const tile = (label, valueHtml, noteHtml) => `<div class="tile"><div class="label">${label}</div><div class="value">${valueHtml}</div>${noteHtml}</div>`;
+  const trend = (k) => {
+    const now = lastMed(k), pk = peak(k), drop = Math.round((1 - now / pk) * 100);
+    return drop >= 5 ? `<span class="chip good">-${drop}%</span><span class="note">vs ${fmtMin(pk)} min peak</span>` : `<span class="chip">at its peak</span>`;
+  };
+  const out = [];
+  out.push(rows.length ? tile("PR wait now", `${fmtMin(lastMed("wait"))} <small>min</small>`, trend("wait") + `<span class="note">median of the last 7 pushes</span>`) : tile("PR wait now", "n/a", ""));
+  const withMin = rows.filter((c) => c.minutes != null);
+  out.push(withMin.length ? tile("Runner minutes per push", `${fmtMin(lastMed("minutes"))} <small>min</small>`, trend("minutes") + `<span class="note">CI + Simulator CI, last 7</span>`) : tile("Runner minutes per push", "n/a", ""));
+  const ws = weeks();
+  if (ws.length) {
+    const recent = ws.filter((w) => w.t > ws[ws.length - 1].t - 28 * 864e5);
+    const tot = recent.reduce((a, w) => a + w.total, 0), bad = recent.reduce((a, w) => a + w.failed, 0), rr = recent.reduce((a, w) => a + w.rerun, 0);
+    out.push(tile("Red pushes, 4 weeks", `${(100 * bad / (tot || 1)).toFixed(0)}<small>%</small>`, `<span class="note">${bad} of ${tot} runs failed</span>`));
+    out.push(tile("Re-runs, 4 weeks", `${(100 * rr / (tot || 1)).toFixed(0)}<small>%</small>`, `<span class="note">${rr} passed only after a re-run</span>`));
+  } else {
+    out.push(tile("Red pushes", "n/a", `<span class="note flow">Recorded from the collector's next run.</span>`));
+    out.push(tile("Re-runs", "n/a", ""));
+  }
+  document.getElementById("tiles").innerHTML = out.join("");
+}
+
+// ---- hand-measured milestones (site/ci/milestones.json) ----
+
+const fmtNum = (v) => (Math.abs(v) < 100 ? v.toFixed(1) : String(Math.round(v)));
+function fmtVal(v, unit) { return fmtNum(v) + " " + unit; }
+
+function renderMilestones(doc) {
+  const el = document.getElementById("ms"), st = document.getElementById("ms-status");
+  const series = Array.isArray(doc && doc.series) ? doc.series : [];
+  if (!series.length) { st.hidden = false; st.textContent = "No milestones recorded yet."; return; }
+  el.innerHTML = series.map((se) => {
+    const pts = (Array.isArray(se.points) ? se.points : []).map((p, i) => ({ p, i }))
+      .sort((a, b) => String(a.p.date).localeCompare(String(b.p.date)) || a.i - b.i).map((x) => x.p);
+    const top = Math.max(1e-9, ...pts.flatMap((p) => [p.before, p.value, p.max].filter((v) => typeof v === "number")));
+    const pct = (v) => Math.max(0, Math.min(100, (v / top) * 100)).toFixed(1);
+    const unit = se.unit || "";
+    const row = (cls, lab, v, ext) => `<div class="trk"><span class="lab">${lab}</span><span class="rail"><span class="fill ${cls}" style="width:${pct(v)}%"></span>` +
+      (ext ? `<span class="fill ${cls} ext" style="width:${pct(ext)}%"></span>` : "") + `</span><span class="val">${ext ? esc(fmtNum(v) + "-" + fmtNum(ext) + " " + unit) : esc(fmtVal(v, unit))}</span></div>`;
+    const body = pts.map((p) => {
+      const pr = p.pr ? `<a href="https://github.com/${REPO}/pull/${esc(p.pr)}">#${esc(p.pr)}</a>` : "";
+      const commit = p.commit ? `<a href="https://github.com/${REPO}/commit/${esc(p.commit)}"><span class="mono">${esc(String(p.commit).slice(0, 9))}</span></a>` : "";
+      const bars = typeof p.before === "number"
+        ? row("before", "before", p.before) + row("after", "after", p.value, p.max)
+        : row("only", "", p.value, p.max);
+      return `<div class="pt"><div class="what"><span class="d">${esc(p.date)}</span>${pr}${commit}<span>${esc(p.what || "")}</span></div>${bars}<div class="src">${esc(p.source || "")}</div></div>`;
+    });
+    const many = body.length > 5;
+    return `<article class="ms"><h3>${esc(se.title || se.id)}</h3>` + (se.description ? `<p class="desc">${esc(se.description)}</p>` : "") +
+      (se.machine ? `<div class="mach">${esc(se.machine)}</div>` : "") +
+      (many ? `<details class="more"><summary>${body.length} measurements</summary>${body.join("")}</details>` : body.join("")) + `</article>`;
+  }).join("");
+}
+
+async function loadMilestones() {
+  const st = document.getElementById("ms-status");
+  try {
+    const res = await fetch(new URL("milestones.json", location.href).href, { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    renderMilestones(await res.json());
+  } catch (e) { st.hidden = false; st.textContent = "The milestones could not be loaded (" + (e && e.message ? e.message : "network error") + ")."; }
+}
+
+function render() {
+  for (const id of Object.keys(RANGES)) document.getElementById("r-" + id).setAttribute("aria-pressed", String(range === id));
+  for (const id of ["wait", "ci", "sim", "cost", "red"]) draw(id);
+}
+
+function fail(why) {
+  const el = document.getElementById("status");
+  el.hidden = false;
+  const link = document.createElement("a");
+  link.href = DATA_URL; link.textContent = "ci-history.json";
+  el.replaceChildren(`The build timings could not be loaded (${why}). The data is `, link, " on the ci-metrics branch; reload to try again.");
+}
+
+async function main() {
+  let doc;
+  try {
+    const res = await fetch(dataUrl(), { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    doc = await res.json();
+  } catch (e) { fail(e && e.message ? e.message : "network error"); return; }
+  prepare(doc);
+  if (!ROWS.ci.length && !ROWS.sim.length) { fail("the file holds no runs yet"); return; }
+  const upd = doc.updated ? new Date(doc.updated) : null;
+  document.getElementById("asof").textContent = upd && !isNaN(upd) ? "Data updated " + fmtStamp(upd) + "." : "";
+  document.getElementById("status").hidden = true;
+  document.getElementById("app").hidden = false;
+  for (const id of ["wait", "ci", "sim", "cost", "red"]) { HIDDEN[id] = new Set(); bindLegend(document.getElementById(id), id); }
+  tiles(); render(); loadMilestones();
+  for (const id of Object.keys(RANGES))
+    document.getElementById("r-" + id).addEventListener("click", () => { range = id; try { localStorage.setItem("ci-range", id); } catch (e) {} render(); });
+  let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(render, 120); });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", render);
+  new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+}
+main();
+</script>
+</body>
+</html>

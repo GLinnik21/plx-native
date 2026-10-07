@@ -306,6 +306,28 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     the failing message says the same. Run it locally with
     `python3 ci/check-build-budgets.py --graph --src rust-modules/src` plus one `--src` per layer crate,
     as `ci.yml` spells it (add `--binary <path>` to grade a stripped binary); `ci/test_build_budgets.py` covers pass, fail, warn and the json schema.
+  - *Live chart.* https://plxnative.com/ci/ (`site/ci/index.html`, noindex, not linked from the
+    landing page) answers how long a pull request waits (per commit, the longest job of the CI and
+    Simulator CI runs of a `main` push), each job's minutes for both workflows, the runner minutes
+    per push, and the share of runs per week that failed or passed only after a re-run. Every series
+    is derived from the rows (nothing names a job), so a job added or removed shows as a new or
+    ended line and a missing job in one run is a gap, not a zero. It reads `ci-history.json` from
+    the orphan `ci-metrics` branch (raw.githubusercontent.com), which `.github/workflows/ci-metrics.yml`
+    updates through `tools/ci-history.py` after every finished CI / Simulator CI push run on `main`
+    (one ~20 s ubuntu job, `concurrency`-collapsed, `actions: read` + `contents: write`, no pull-request
+    trigger; incremental and idempotent; `tools/test_ci_history.py`, in `check-python`, uses a fake `gh`).
+    Rows record `conclusion` and `attempt` and, for a red run, the names of the jobs that failed
+    (`jobs` holds only green jobs); cancelled runs are not recorded. The runs listing's
+    `status=success` filter is stale, so the tool filters `conclusion` and `event` itself, and the
+    listing can repeat or skip a run across pages, so an occasional gap is closed with
+    `gh workflow run ci-metrics.yml -f full=true`. That same command backfills a branch that does not
+    exist yet, records the verdict of rows written before verdicts existed and finds old red runs.
+    `python3 tools/ci-history.py --in <ci-history.json> --dry-run [--full]` prints how many rows a real
+    run would add and writes nothing. The lower half of the page, "Local development loop", is
+    `site/ci/milestones.json`: numbers measured by hand with `make build-bench` on one Apple M4 and
+    quoted from merged PR bodies, never collected; append a point with its PR and a one-line source.
+    To look at a local data file, serve `site/` with the file beside it and open
+    `/ci/?data=ci-history.json` (a same-origin relative path only).
 - `make build-bench [ARGS='--runs 5 --json out.json']` / `make build-bench-quick` — the repeatable
   local **build benchmark** (`tools/build-bench.py`), so a build-affecting change pastes a
   before/after table instead of an ad-hoc scratch-script number. It prints a Markdown table (median /

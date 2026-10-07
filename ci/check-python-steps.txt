@@ -175,6 +175,9 @@ python3 ci/test_ci_workflows.py
 python3 ci/test_build_budgets.py
 # tools/ci-durations.py (CI duration trends) against canned `gh api` output; no network.
 python3 tools/test_ci_durations.py
+# tools/ci-history.py (the live page's data: incremental merge, filtering, re-runs, paging stop) against a fake `gh api`,
+# and the shape of site/ci/milestones.json and site/ci/index.html; no network.
+python3 tools/test_ci_history.py
 # `make test-crate` (the crate-only loop: it must carry the full suite's feature set) and the parallel
 # test runner every unit recipe goes through (a failing binary fails the gate, a missing binary is not
 # a pass, every `test result:` line is printed), both against a fake cargo; nothing is compiled.
