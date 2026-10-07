@@ -542,7 +542,18 @@ pub(crate) fn hero_flip_dir(cycle: u32) -> i32 {
     if cycle % 2 == 0 { 1 } else { -1 }
 }
 
+/// What a hero bench flips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PongTarget {
+    /// The billboard carousel: `HomeCmd::Flip`.
+    Hero,
+    /// Focus across the first shelf's first three cards: the real Left/Right key (pair with
+    /// `plxnative-grid`, which seats the first card).
+    Grid,
+}
+
 pub(crate) struct HeroBench {
+    pub(crate) target: PongTarget,
     /// A round trip: the open half is the cycle's first flip, the close half its second, so every
     /// flip is measured and the next cycle's first flip follows the report on the next frame.
     pub(crate) clock: BenchClock,
@@ -550,8 +561,8 @@ pub(crate) struct HeroBench {
 }
 
 impl HeroBench {
-    pub(crate) fn new(n: u32, period_ms: u32) -> Self {
-        Self { clock: BenchClock::round_trip(n), period_ms: period_ms.max(MIN_HERO_PERIOD_MS) }
+    pub(crate) fn new(n: u32, period_ms: u32, target: PongTarget) -> Self {
+        Self { target, clock: BenchClock::round_trip(n), period_ms: period_ms.max(MIN_HERO_PERIOD_MS) }
     }
 }
 
@@ -576,8 +587,8 @@ mod tests {
 
     #[test]
     fn the_hero_bench_never_flips_faster_than_the_carousel_accepts() {
-        assert_eq!(HeroBench::new(10, 1).period_ms, MIN_HERO_PERIOD_MS);
-        assert_eq!(HeroBench::new(10, 700).period_ms, 700);
+        assert_eq!(HeroBench::new(10, 1, PongTarget::Hero).period_ms, MIN_HERO_PERIOD_MS);
+        assert_eq!(HeroBench::new(10, 700, PongTarget::Grid).period_ms, 700);
     }
 
     /// A clock past its boot-settle gate, for the tests that drive the cycle machine itself.

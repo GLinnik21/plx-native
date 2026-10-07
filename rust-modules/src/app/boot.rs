@@ -1298,7 +1298,7 @@ pub(crate) unsafe fn construct(
     let hero_bench = (!controlled)
         .then(crate::dev::scenarios::herobench_value)
         .flatten()
-        .map(|(n, period)| crate::dev::scenarios::bench::HeroBench::new(n, period));
+        .map(|(n, period, target)| crate::dev::scenarios::bench::HeroBench::new(n, period, target));
 
     // dev: /tmp/plxnative-framedrop — the FRAME-DROP DETECTOR. When present, each frame is timed with
     // the high-res perf counter (pump / draw / swap, NO glFinish so it doesn't perturb the pipeline),

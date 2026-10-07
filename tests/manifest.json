@@ -467,6 +467,22 @@
       "comment": "The Home hero carousel flipped back and forth over three titles (0-1-2-1-0-...) every 600 ms, faster than a slide settles, through the same HomeCmd::Flip the Left/Right key lands on (dev::scenarios::bench::HeroBench). 60 cycles of two flips each, one `bench: kind=hero` line per cycle with the missed refreshes of both flips, graded by grade_bench like push-100. Needs at least three heroes in the Home carousel (a shorter carousel wraps and the A-B-A walk degenerates). `herobench=<n>,<period_ms>`: the period is clamped to 400 ms, the carousel's own flip cooldown. bench_missed_max 0 is the frame budget, not a measured baseline."
     },
     {
+      "name": "grid-pong",
+      "tier": "ui",
+      "route": "home",
+      "bench": "hero",
+      "run_secs": 120,
+      "warmup_s": 8,
+      "bench_missed_max": 0,
+      "mock": {},
+      "triggers": {
+        "plxnative-herobench": "60,600,grid",
+        "plxnative-grid": true,
+        "plxnative-framedrop": true
+      },
+      "comment": "The same ping-pong as hero-pong, but on the first shelf: Left/Right key presses across its first three cards, 0-1-2-1-0 (focus ring, caption and wash colour change), seated with plxnative-grid. One `bench: kind=hero` line per cycle. bench_missed_max 0 is the frame budget, not a measured baseline."
+    },
+    {
       "name": "onboard-sources",
       "tier": "ui",
       "route": "onboard",

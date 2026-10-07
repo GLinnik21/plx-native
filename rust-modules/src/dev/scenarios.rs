@@ -502,17 +502,17 @@ pub(crate) fn deepbench_value() -> Option<(u32, String)> {
         (parse_bench_n(n), rk.trim().to_string())
     })
 }
-/// `/tmp/plxnative-herobench[=<n>[,<period_ms>]]` — `(n, period_ms)`, defaulting to 100 flips'
-/// worth of cycles at [`bench::DEFAULT_HERO_PERIOD_MS`]. A period below the carousel's flip
-/// cooldown is raised to it by [`bench::HeroBench::new`].
-pub(crate) fn herobench_value() -> Option<(u32, u32)> {
+/// `/tmp/plxnative-herobench[=<n>[,<period_ms>[,grid]]]` — `(n, period_ms, target)`, defaulting to
+/// 100 cycles at [`bench::DEFAULT_HERO_PERIOD_MS`] over the hero carousel. A period below the
+/// carousel's flip cooldown is raised to it by [`bench::HeroBench::new`]; `grid` flips focus
+/// across the first shelf's cards instead.
+pub(crate) fn herobench_value() -> Option<(u32, u32, bench::PongTarget)> {
     plx_base::devtrig::read("herobench").map(|v| {
-        let v = v.trim();
-        let (n, period) = v.split_once(',').unwrap_or((v, ""));
-        (
-            parse_bench_n(n.trim()),
-            period.trim().parse().unwrap_or(bench::DEFAULT_HERO_PERIOD_MS),
-        )
+        let mut parts = v.trim().split(',').map(str::trim);
+        let n = parse_bench_n(parts.next().unwrap_or(""));
+        let period = parts.next().and_then(|p| p.parse().ok()).unwrap_or(bench::DEFAULT_HERO_PERIOD_MS);
+        let target = if parts.next() == Some("grid") { bench::PongTarget::Grid } else { bench::PongTarget::Hero };
+        (n, period, target)
     })
 }
 fn parse_bench_n(v: &str) -> u32 {
@@ -2507,7 +2507,16 @@ pub(crate) fn hero_bench_tick(app: &mut App, now: u32) {
         bench::BenchStep::Nothing => {}
         bench::BenchStep::Settled(waited, capped) => log_bench_settled("hero", waited, capped),
         bench::BenchStep::Start(cycle) | bench::BenchStep::Settle(cycle) => {
-            app.bridge.home_command(HomeCmd::Flip(bench::hero_flip_dir(cycle)));
+            let dir = bench::hero_flip_dir(cycle);
+            match app.scenarios.hero_bench.as_ref().unwrap().target {
+                bench::PongTarget::Hero => {
+                    app.bridge.home_command(HomeCmd::Flip(dir));
+                }
+                bench::PongTarget::Grid => {
+                    let key = if dir > 0 { Key::Right } else { Key::Left };
+                    app.inputs.extend(crate::app::bridge::script_key(key, Tick { ms: now, dt_us: 0 }));
+                }
+            }
         }
         bench::BenchStep::Report(cycle) => {
             let b = app.scenarios.hero_bench.as_ref().unwrap();
