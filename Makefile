@@ -1681,6 +1681,9 @@ check-python-rest: check-localization check-c-unit
 	@# The release-candidate workflow's pure logic (numbering, the version/line rule it shares
 	@# with release.yml, the prerelease body) — same reason: a candidate is cut by hand, rarely.
 	python3 ci/rc.py --selftest
+	@# The issue labeler's pure logic (.github/workflows/issue-labels.yml): what survives a model
+	@# answer, the keyword fallback, `user-report` from the author's association. No network.
+	python3 ci/label-issue.py --selftest
 	@# The two host-side readers of the back-buffer-wait captures, against synthetic traces/JSONL.
 	python3 tools/analyze-sched-trace.py --self-test
 	python3 tools/analyze-hwcnt-wait.py --self-test
