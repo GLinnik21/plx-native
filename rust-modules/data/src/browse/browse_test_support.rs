@@ -112,11 +112,7 @@ impl TestBrowse {
     }
 
     pub(super) fn first_run_asks(&self) -> bool {
-        let session = plx_plex::plex::session::peek();
-        plx_plex::plex::pins::asks(
-            self.state.sources.len(),
-            session.pins_for(&plx_plex::plex::session::current_profile_key()),
-        )
+        crate::stores::browse::onboard::asks_for_sources(self.state.sources.len())
     }
 }
 pub(super) struct RegisteredCleanup;

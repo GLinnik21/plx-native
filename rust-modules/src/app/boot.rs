@@ -1372,7 +1372,8 @@ pub(crate) unsafe fn construct(
     // boot who's-watching picker, else Home.
     //
     // …and Home is intercepted by the first-run question when this profile has never been
-    // asked it and the roster holds more than one source (`screens::onboard`). It belongs HERE as
+    // asked it and the roster holds more than one source — or the profile is a managed one,
+    // whose roster is the household's single server (`plex::pins::asks`; `screens::onboard`). It belongs HERE as
     // well as on the login path, because a single-Plex-Home-user account never meets the
     // picker at all: the two paths into Home are the picker's `take_ready` and this gate, and
     // a question asked on only one of them is a question half the accounts never see.
