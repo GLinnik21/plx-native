@@ -250,15 +250,19 @@ fn a_card_held_with_repeat_beats_still_delivers_one_hold_and_no_tap() {
     assert!(!events.contains("\"press_commit\""), "a real hold does not also activate the card");
 }
 
-/// A hold that is TAKEN — the item menu opening over the card — ends the press at REST, not on the
-/// release spring. The dip is a press-in on the focus pop (`press::DIP` brings a popped card back to
-/// its unpopped size), so a spring-back left running under the menu is a card in motion beneath a
-/// scrim and the frozen host snapshot taken of it: it read as a poster that had lost its pop, with
-/// its title drawn twice while the opener lift (drawn at rest) and the page (drawn mid-spring)
-/// disagreed. A hold that is NOT taken (page 700) keeps the dip until release, by design.
+/// **A hold the screen answers is NOT yet a taken hold.** The screen only asks the app for the
+/// item menu (`ContentReq::ItemMenu`); the app can still decline (no actions for the item, no
+/// menu argument, a stale sid/rk). A declined hold leaves no menu over the card, so the press must
+/// end on its release spring — a snap from the dip (~0.92) to 1.0 in one frame is a card jumping
+/// under the user's thumb. Only the app opening the menu ends the press at REST
+/// ([`InputMachine::settle_press`], called by `bridge::open_item_menu`), and the dip is a press-in
+/// on the focus pop (`press::DIP` brings a popped card back to its unpopped size), so a spring-back
+/// left running beneath a menu's scrim and frozen host snapshot reads as a poster that lost its
+/// pop with its title drawn twice. A hold that is NOT answered (page 700) keeps the dip until the
+/// release, by design.
 #[test]
-fn a_taken_hold_ends_the_press_at_rest_so_the_card_keeps_its_pop_under_the_menu() {
-    for (page, taken) in [(701, true), (700, false)] {
+fn a_hold_the_app_declines_springs_back_and_one_it_opens_a_menu_for_ends_at_rest() {
+    for (page, answered) in [(701, true), (700, false)] {
         let (mut d, mut rig) = boot(FixtureArg::Page(page));
         d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
         let mut dipped = 1.0f32;
@@ -271,16 +275,49 @@ fn a_taken_hold_ends_the_press_at_rest_so_the_card_keeps_its_pop_under_the_menu(
         }
         let held_at = held_at.expect("OK held past LONG_MS delivers the hold");
         assert!(dipped < 0.95, "the held card dips while the hold is undecided (page {page}: {dipped})");
-        // The frame AFTER the one that delivered the hold: a taken hold has already ended the press.
-        if taken {
-            assert!(!d.input.press.is_active(), "a taken hold leaves no spring-back running");
+        if answered {
+            // The screen took the hold and the app has not (yet) opened a menu: the press is
+            // abandoned onto its spring-back, not snapped to rest.
+            assert!(d.input.arm.is_none(), "an answered hold disarms the press");
+            assert!(d.input.press.is_active(), "…but its spring-back is still playing");
+            assert!(d.input.press.scale() < 0.99, "…from the dip, not from rest: no one-frame snap");
+            // The app opens the menu: the press ends at rest.
+            d.input.settle_press();
+            assert!(!d.input.press.is_active(), "a menu that opened leaves no spring-back running");
             assert_eq!(d.input.press.scale(), 1.0);
-            assert!(d.input.arm.is_none());
         } else {
-            assert!(d.input.press.is_active(), "an untaken hold holds the dip until the release (held at {held_at})");
+            assert!(d.input.press.is_active(), "an unanswered hold holds the dip until the release (held at {held_at})");
             assert!(d.input.press.scale() < 0.95);
         }
     }
+}
+
+/// A declined hold springs all the way back on its own, and settling with no press in flight is
+/// inert (the app settles after `open_item_menu` whether or not a press is still running).
+#[test]
+fn a_declined_hold_reaches_rest_on_its_own_and_settling_an_idle_press_is_inert() {
+    let (mut d, mut rig) = boot(FixtureArg::Page(701));
+    d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
+    let mut ms = 16;
+    while !events_of(&d, 0).contains("\"press_hold\"") && ms < 900 {
+        ms += 16;
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    }
+    let mut prev = d.input.press.scale();
+    let mut worst_step = 0.0f32;
+    for _ in 0..60 {
+        ms += 16;
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        let now = d.input.press.scale();
+        worst_step = worst_step.max((now - prev).abs());
+        prev = now;
+    }
+    assert!(!d.input.press.is_active(), "the declined press ends by itself");
+    assert_eq!(d.input.press.scale(), 1.0);
+    assert!(worst_step < 0.05, "the spring-back is continuous, not a snap (biggest step {worst_step})");
+    d.input.settle_press();
+    assert!(!d.input.press.is_active());
+    assert_eq!(d.input.press.scale(), 1.0);
 }
 
 /// Boot straight into a page of the given argument (a `Root` at frame 1).

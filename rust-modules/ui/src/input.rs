@@ -113,11 +113,13 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
     }
 
     /// A surface TOOK the hold (the item menu opened): end the press at rest rather than on the
-    /// release spring — see [`Press::settle`].
-    pub fn consume_press(&mut self) {
-        if self.arm.take().is_some() {
-            self.press.settle();
-        }
+    /// release spring — see [`Press::settle`]. Called by whoever actually opens the menu, AFTER the
+    /// dispatcher has abandoned the press ([`cancel_press`](Self::cancel_press), when the screen
+    /// answered the hold), so it works on the press the hold armed, still springing back. A hold
+    /// the app declines never reaches here and keeps that spring-back.
+    pub fn settle_press(&mut self) {
+        self.arm = None;
+        self.press.settle();
     }
 
     /// The physical release.
