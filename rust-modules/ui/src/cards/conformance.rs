@@ -79,6 +79,11 @@ pub trait CardHarness {
     fn scroll(&self) -> Option<f32> {
         None
     }
+    /// The furthest the scroll offset may reach for the current cards, when the screen exposes one
+    /// (a horizontal strip's; a grid's vertical range belongs to its owner and is not checked).
+    fn scroll_max(&self) -> Option<f32> {
+        None
+    }
     /// The column count of a grid layout, `None` for a horizontal strip. A landing may move a
     /// focused card to another COLUMN of a grid (its x changes with its index); a strip's card
     /// must not move at all.
@@ -313,16 +318,19 @@ pub fn landing(mount: Mount) -> Outcome {
         }
         // the scroll never leaves its range: not on the frame of the landing, nor on any frame
         // until rest (a shift the row cannot honour clamps instead of overscrolling and gliding back)
-        let mut under = h.scroll().filter(|&sx| sx < -0.5).map(|sx| (0, sx));
+        let outside = |h: &dyn CardHarness| {
+            h.scroll().filter(|&sx| sx < -0.5 || h.scroll_max().is_some_and(|max| sx > max + 0.5))
+        };
+        let mut under = outside(&*h).map(|sx| (0, sx));
         for frame in 1..SETTLE {
             if under.is_some() {
                 break;
             }
             h.tick(1);
-            under = h.scroll().filter(|&sx| sx < -0.5).map(|sx| (frame, sx));
+            under = outside(&*h).map(|sx| (frame, sx));
         }
         if let Some((frame, sx)) = under {
-            bad.push(format!("{l:?}: scrolled to {sx} (below 0) on frame {frame} after the landing"));
+            bad.push(format!("{l:?}: scrolled to {sx} (outside 0..={:?}) on frame {frame} after the landing", h.scroll_max()));
         }
         let Some(now) = h.focused() else {
             bad.push(format!("{l:?}: focus was lost"));

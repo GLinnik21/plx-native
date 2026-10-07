@@ -159,6 +159,7 @@ impl CardHarness for Harness {
         self.screen.borrow().item_at(self.snap.view(), row, col).map(|m| m.rk.clone()).unwrap_or_default()
     }
     fn scroll(&self) -> Option<f32> { self.screen.borrow().rows.first().map(|_| self.screen.borrow().grid.scroll_x(0)) }
+    fn scroll_max(&self) -> Option<f32> { self.screen.borrow().grid.shelves.first().map(|s| s.style().max_scroll(self.cards().len())) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         let want = self.focus.ok_or("nothing focused")?;
         let (_, col) = self.at(want.elem).ok_or("the focused card is not on a shelf")?;

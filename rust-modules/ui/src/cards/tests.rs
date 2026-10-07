@@ -1067,6 +1067,30 @@ fn a_dormant_shelf_keeps_its_cards_at_rest_and_wakes_growing_from_rest() {
     assert!((r.scale(102).unwrap() - full).abs() < 0.002);
 }
 
+/// The restore rule survives idle dormant ticks: a restore announced AFTER the shelf slept, on the
+/// tick the page wakes, is adopted whole, while a deliberate arrival after the same ticks still
+/// grows from rest.
+#[test]
+fn a_restore_after_dormant_ticks_arrives_popped_and_a_deliberate_move_still_grows() {
+    let full = RowStyle::HOME.focus_scale;
+    let mut restored = settled::<Shelf>(8);
+    restored.sect.dormant(true);
+    restored.run(3);
+    restored.sect.dormant(false);
+    restored.land_focus(102, By::Restore);
+    restored.run(1);
+    assert_eq!(restored.scale(102), Some(full), "a restore arrives already popped");
+
+    let mut dived = settled::<Shelf>(8);
+    dived.sect.dormant(true);
+    dived.run(3);
+    dived.sect.dormant(false);
+    dived.land_focus(102, By::Dir);
+    dived.run(1);
+    let first = dived.scale(102).unwrap();
+    assert!(first > 1.0 && first < full - 0.02, "a deliberate arrival grows from rest: {first}");
+}
+
 /// A lifted card that goes dormant lets go over frames and ends parked exactly at rest.
 #[test]
 fn a_shelf_that_goes_dormant_lets_its_lifted_card_go() {

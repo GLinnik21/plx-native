@@ -223,6 +223,9 @@ impl CardHarness for Harness {
             Set::Shelf => self.screen.shelves.first()?.cards.scroll(),
         })
     }
+    fn scroll_max(&self) -> Option<f32> {
+        (self.set == Set::Shelf).then(|| self.screen.shelves.first().map(|s| s.cards.style().max_scroll(self.cards().len()))).flatten()
+    }
     fn columns(&self) -> Option<usize> { (self.set == Set::Grid).then_some(super::layout::COLS) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         let (_, at) = self.focus.and_then(|k| self.cell(k.elem)).ok_or("nothing focused")?;

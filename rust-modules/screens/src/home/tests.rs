@@ -114,6 +114,24 @@ fn drawn_rect(s: &HomeScreen, view: HubsView<'_>, focus: Option<FocusKey<u32>>, 
 }
 
 impl HomeScreen {
+    /// Pop the first card of shelf 0 by feeding the shelf itself a deliberate move and a few
+    /// ticks, leaving every other part of the screen untouched.
+    fn pop_shelf_for_test(&mut self, view: HubsView<'_>) {
+        let key = first_card(self);
+        let context = cx(view, Some(key));
+        let mut shelves = std::mem::take(&mut self.grid.shelves);
+        let src = self.cards(view, 0);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
+        shelves[0].on(&ScreenEvent::FocusMoved { from: None, to: key, by: By::Dir }, &context, &src, &mut fx);
+        for frame in 0..3 {
+            shelves[0].on(&ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 }), &context, &src, &mut fx);
+        }
+        drop(src);
+        self.grid.shelves = shelves;
+    }
+
     /// `update_grid` with a throwaway effect sink and a tick of `dt` seconds.
     fn update_grid_for_test(&mut self, view: HubsView<'_>, cx: &Cx<'_, TestHost>, dt: f32) {
         let mut out = Vec::new();
@@ -1540,26 +1558,36 @@ fn the_home_census_covers_input_motion_and_current_projection() {
     plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
     let snapshot = plx_data::pms::hubs_snapshot(&state);
     let baseline = screen(snapshot.view()).hash();
-    let changes: &[fn(&mut HomeScreen)] = &[
-        |s| s.snap.vel = 1.0,
-        |s| s.hero_slide.pos = 0.4,
-        |s| s.hero_slide.vel = 1.0,
-        |s| s.hero_dir = -1.0,
-        |s| s.outgoing = Some((plx_plex::plex::ServerId::UNSET, "old".into())),
-        |s| s.grid.scroll_y.vel = 1.0,
-        |s| s.grid.scroll_target = 100.0,
-        |s| s.rows[0].elems.swap(0, 1),
-        |s| Arc::make_mut(&mut s.items)[0].last_row += 1,
-        |s| Arc::make_mut(&mut s.items)[0].last_col += 1,
-        |s| s.projected_generation = None,
-        |s| s.hero_pop.step(Some(0), 0.016),
-        |s| s.grid.shelves[0].set_base_y(1.0),
+    let changes: &[fn(&mut HomeScreen, HubsView<'_>)] = &[
+        |s, _| s.snap.vel = 1.0,
+        |s, _| s.hero_slide.pos = 0.4,
+        |s, _| s.hero_slide.vel = 1.0,
+        |s, _| s.hero_dir = -1.0,
+        |s, _| s.outgoing = Some((plx_plex::plex::ServerId::UNSET, "old".into())),
+        |s, _| s.grid.scroll_y.vel = 1.0,
+        |s, _| s.grid.scroll_target = 100.0,
+        |s, _| s.rows[0].elems.swap(0, 1),
+        |s, _| Arc::make_mut(&mut s.items)[0].last_row += 1,
+        |s, _| Arc::make_mut(&mut s.items)[0].last_col += 1,
+        |s, _| s.projected_generation = None,
+        |s, _| s.hero_pop.step(Some(0), 0.016),
+        |s, _| s.grid.shelves[0].set_base_y(1.0),
+        // a pop spring (and the focus it follows) moved by the shelf's own events
+        |s, v| { s.snap.jump(1.0); s.pop_shelf_for_test(v) },
     ];
     for (i, change) in changes.iter().enumerate() {
         let mut s = screen(snapshot.view());
-        change(&mut s);
+        change(&mut s, snapshot.view());
         assert_ne!(s.hash(), baseline, "census omitted input-state variation {i}");
     }
+    // The pop and scroll springs are hashed through the shelf itself: with the page on the shelves,
+    // popping one card moves its canon bytes and nothing else is touched.
+    let shelf_canon = |s: &HomeScreen| { let mut c = Canon::new(); s.grid.shelves[0].write(&mut c); c.finish() };
+    let mut popped = screen(snapshot.view());
+    popped.snap.jump(1.0);
+    let rest = shelf_canon(&popped);
+    popped.pop_shelf_for_test(snapshot.view());
+    assert_ne!(shelf_canon(&popped), rest, "a pop spring is part of the canon");
     // These extents are part of SHAPE, not merely runtime sequence lengths.
     assert_eq!(HERO_NBTN, 2);
     assert_eq!(plx_ui::card_row::MAX_ROW_ITEMS, 24);
@@ -1602,6 +1630,102 @@ fn an_explicit_hero_reseat_keeps_the_fold_animation_unlike_page_restoration() {
     });
     assert_eq!(s.snap_target, 0.0);
     assert_eq!(s.snap.pos, 1.0, "fresh reseating still animates the door");
+}
+
+/// A restore arrives already popped, whether or not the page idled at the hero first: the shelves
+/// slept through those ticks, and the wake must not turn the restore into a deliberate arrival.
+#[test]
+fn restore_after_n_idle_ticks_at_the_hero_arrives_popped() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let full = RowStyle::HOME.focus_scale;
+    for idle in [0, 3] {
+        let mut s = screen(view);
+        s.restore_reveal = true;
+        let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+        for frame in 0..idle {
+            step(&mut s, view, Some(hero), &ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 }));
+        }
+        let card = first_card(&s);
+        step(&mut s, view, Some(card), &ScreenEvent::FocusMoved {
+            from: Some(hero), to: card, by: By::Restore,
+        });
+        assert_eq!(s.snap.pos, 1.0, "the restore reveal opens on the shelves");
+        step(&mut s, view, Some(card), &ScreenEvent::Tick(Tick { ms: 100, dt_us: 16_667 }));
+        assert_eq!(pop_of(&s, view, Some(card), 0, 0), full, "{idle} idle ticks: the restored card is popped at once");
+    }
+}
+
+/// The dive from the hero by a deliberate move still grows the card from rest when the shelves
+/// wake, after the same idle ticks.
+#[test]
+fn a_deliberate_dive_after_idle_ticks_at_the_hero_grows_from_rest() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let full = RowStyle::HOME.focus_scale;
+    let mut s = screen(view);
+    let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    for frame in 0..3 {
+        step(&mut s, view, Some(hero), &ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 }));
+    }
+    let card = first_card(&s);
+    step(&mut s, view, Some(card), &ScreenEvent::FocusMoved { from: Some(hero), to: card, by: By::Dir });
+    let mut first_awake = None;
+    for frame in 0..120 {
+        step(&mut s, view, Some(card), &ScreenEvent::Tick(Tick { ms: 100 + frame * 16, dt_us: 16_667 }));
+        if s.snap.pos > 0.5 {
+            first_awake = Some(pop_of(&s, view, Some(card), 0, 0));
+            break;
+        }
+    }
+    let first = first_awake.expect("the dive reaches the shelves");
+    assert!(first > 1.0 && first < full - 0.02, "the pop grows from rest: {first}");
+}
+
+/// A landing the row cannot honour: the focused card moves from column 1 to column 6 of an
+/// 8-card row. The scroll lands at the row's end, never outside [0, max] on any frame, the pop
+/// follows the element, and no other tile is lifted.
+#[test]
+fn a_landing_the_row_cannot_honour_clamps_the_scroll_and_the_pop_follows() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 1, 8);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[1] };
+    pop_card(&mut s, snapshot.view(), key, 120);
+    let max = RowStyle::HOME.max_scroll(8);
+    assert!(max > 0.0);
+    plx_data::pms::reverse_test_shelves(&mut state);
+    let landed = plx_data::pms::hubs_snapshot(&state);
+    let view = landed.view();
+    s.sync_catalog(&cx(view, Some(key)));
+    assert_eq!(s.rows[0].elems.iter().position(|&e| e == key.elem), Some(6), "the card moved to column 6");
+    for frame in 0..40 {
+        step(&mut s, view, Some(key), &ScreenEvent::Tick(Tick { ms: 5_000 + frame * 16, dt_us: 16_667 }));
+        let scroll = s.grid.shelves[0].scroll();
+        assert!((0.0..=max).contains(&scroll), "frame {frame}: scroll {scroll} outside [0, {max}]");
+        for col in 0..8 {
+            let pop = pop_of(&s, view, Some(key), 0, col);
+            if col == 6 {
+                assert!(pop > 1.05, "frame {frame}: the pop follows the element, {pop}");
+            } else {
+                assert!((pop - 1.0).abs() < 0.001, "frame {frame}: column {col} is lifted, {pop}");
+            }
+        }
+    }
+    assert!((s.grid.shelves[0].scroll() - max).abs() < 0.5, "the scroll lands at the row's end");
 }
 
 #[test]

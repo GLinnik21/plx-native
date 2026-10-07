@@ -1852,7 +1852,11 @@ impl LogicalState for HomeScreen {
     fn write(&self, c: &mut Canon) {
         // Exhaustive field census. Entry/instance identity is encoded by Navigation; spinner
         // phase and backdrop resources only paint. Every motion value queried by input/reveal
-        // is encoded below, including velocities that determine the next Tick's answer.
+        // is encoded below, including velocities that determine the next Tick's answer. A shelf
+        // encodes its springs and focus (`Shelf::write`); the moves it has been told since its
+        // last tick (`seen`, `left`) and its wake latch (`slept`, `dormant`) are hand-offs from an
+        // event to the next `Tick`, not motion, and are not encoded (`dormant` is re-derived from
+        // `snap` on every `Tick`).
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
             // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
@@ -1905,7 +1909,11 @@ impl LogicalState for HomeScreen {
             write_hub_identity(&row.identity, c);
             c.u32(row.group.0).seq(row.elems.len());
             for elem in &row.elems { c.u32(*elem); }
-            self.grid.shelves[index].write(c);
+            // a row with no shelf yet (the grid trails the rows by a sync) hashes as a resting one
+            match self.grid.shelves.get(index) {
+                Some(shelf) => shelf.write(c),
+                None => Shelf::new(self.entry, &RowStyle::HOME).write(c),
+            }
         }
         c.seq(self.restored_scroll.len());
         for &(group, scroll) in &self.restored_scroll { c.u32(group).f32(scroll); }

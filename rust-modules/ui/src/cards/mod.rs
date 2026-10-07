@@ -13,6 +13,8 @@
 //!   consumes Tick and FocusMoved and reports Activate / Hold / Want; a screen that skips the call
 //!   gets no motion at all, which is visible, not subtle. It never says "handled": a screen still
 //!   observes `FocusMoved` itself for whatever else it keeps.
+//!   Home is the one exception: it feeds `Tick` and `FocusMoved` only and keeps its own press
+//!   paths, because a Continue Watching press is account-affecting.
 //! - **Elem-keyed.** The section remembers no focus. Each call it reads the ENGINE's focus
 //!   (`cx.focus.current`, filtered to its entry) and resolves the element to an index through
 //!   [`CardSource::index_of`], so a landing that reorders content cannot leave it naming another

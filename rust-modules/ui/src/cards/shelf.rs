@@ -51,8 +51,9 @@ impl Shelf {
             margin: 0.0, dormant: false, slept: false }
     }
 
-    /// Cards this far past either screen edge still paint (a popped card's shadow reaches onto the
-    /// screen from beyond it) and register their stops. Default 0.
+    /// Cards this far past the screen's leading (left) edge still paint (a popped card's shadow
+    /// reaches onto the screen from beyond it) and register their stops; the trailing edge is not
+    /// widened. Default 0.
     pub const fn cull_margin(mut self, px: f32) -> Self {
         self.margin = px;
         self
@@ -61,7 +62,8 @@ impl Shelf {
     /// Hold every card at rest while the owner's page is still dissolving in: a lifted tile under
     /// a fade plays its selection where nobody can see it. The shelf keeps no pop meanwhile (the
     /// springs ease to rest like an unfocused shelf's); the first awake tick starts the focused
-    /// card's pop from rest, as a deliberate move does. Set it before each [`on`](Self::on).
+    /// card's pop from rest, as a deliberate move does (a restore or reconcile announced since the last
+    /// dormant tick is still adopted whole). Set it before each [`on`](Self::on).
     pub fn dormant(&mut self, held: bool) {
         self.dormant = held;
     }
@@ -149,7 +151,9 @@ impl Shelf {
             return;
         }
         if std::mem::take(&mut self.slept) {
-            if let Some(i) = focus {
+            // an arrival announced since the last dormant tick (a restore, a reconcile) keeps its
+            // own rule; only a focus no event told the shelf about wakes growing from rest
+            if let (Some(i), Seen::Nothing) = (focus, self.seen) {
                 self.seen = Seen::Deliberate(i);
             }
         }
