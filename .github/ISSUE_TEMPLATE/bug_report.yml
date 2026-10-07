@@ -1,0 +1,82 @@
+name: Bug report
+description: Something in PlxNative does not work, for example playback fails, the app closes or sign-in breaks.
+labels: ["bug", "user-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is for something that is broken. Feature requests and ideas go to
+        [Discussions > Ideas](https://github.com/GLinnik21/plx-native/discussions/categories/ideas),
+        and questions to
+        [Discussions > Q&A](https://github.com/GLinnik21/plx-native/discussions/categories/q-a).
+
+        Thanks for reporting. Logs make most problems much faster to find. Please read
+        [how to collect them](https://plxnative.com/troubleshooting/#collecting-logs) first:
+        the event log is emptied every time PlxNative launches, so fetch it **before** you
+        reopen the app after the problem.
+  - type: input
+    id: tv-model
+    attributes:
+      label: TV model
+      description: For example `43LM6300PVB`. It is on the sticker on the back of the TV, and in Settings under About This TV. (A playback failure screen's bottom line shows the platform codename instead; please paste that line too, under What happened.)
+    validations:
+      required: true
+  - type: input
+    id: webos-version
+    attributes:
+      label: webOS version
+      description: For example `webOS 4.10.2`. In the TV settings it is under About This TV. A playback failure screen also shows it.
+    validations:
+      required: true
+  - type: input
+    id: plxnative-version
+    attributes:
+      label: PlxNative version
+      description: For example `0.7.0`, or the nightly's version. A playback failure screen shows it in the line at the bottom.
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How you installed PlxNative
+      options:
+        - Dev Manager (Developer Mode)
+        - Homebrew Channel
+        - Nightly build
+        - Other or not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. If a failure screen appeared, paste its bottom line exactly (it starts with `PlxNative`) or attach a photo of the screen.
+    validations:
+      required: true
+  - type: dropdown
+    id: playback-mode
+    attributes:
+      label: Playback details (only if this is about playback)
+      description: Was the item playing with Direct Play, or at a quality you chose?
+      options:
+        - Not about playback
+        - Direct Play
+        - A quality I chose
+        - Automatic quality
+        - Not sure
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Drag the files here. For playback problems attach the event log; for a crash attach the crash log and the event log; if the app does not start attach the stderr log and the crash log.
+        How to fetch them: https://plxnative.com/troubleshooting/#collecting-logs
+        Logs hold ratingKeys (item numbers on your Plex server), so think before posting publicly. Never post a Plex token or a passphrase.
+      placeholder: Attach plxnative-events.log, plxnative-crash.log and plxnative-stderr.log here.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before you submit
+      options:
+        - label: I have not pasted a Plex token or a passphrase into this issue.
+          required: true
