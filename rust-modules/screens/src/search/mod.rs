@@ -10,6 +10,8 @@ mod render;
 mod memory;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
 pub use memory::Memory;
 
 use std::borrow::Cow;
