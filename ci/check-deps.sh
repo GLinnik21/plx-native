@@ -702,6 +702,24 @@ if [ "$vis_bad" -eq 0 ]; then ok "mutators-visibility"; else fail "mutators-visi
 
 gate nav '(crate::ui|plx_ui)::nav::' "$SRC_SCREENS"
 
+# cards: a screen's card shelves and grids come from `plx_ui::cards::{Shelf, Grid}` (the
+# shared-card-sections plan, layer L1), which own the pop, press, stops, restore and paging a
+# hand-assembled strip forgets. So `screens/` may not gain a NEW direct use of the L0 primitives:
+# `card_row::{draw_tile, draw_focused, strip, paint_visible}` (qualified or imported by name),
+# `CardRow`, `GridPop`, `GridBands`, or the thread-local `press::scale()`. Whole test files are
+# skipped; the allowlist is the screens that still assemble their own, one line per file, and only
+# SHRINKS as each adopts the component. The last migration PR makes the primitives `pub(crate)` and
+# deletes this gate with the list.
+cards_pat='card_row::(draw_tile|draw_focused|strip|paint_visible)\b|\bCardRow\b|\bGridPop\b|\bGridBands\b|press::scale\(\)|use [^;]*card_row::\{[^}]*\b(draw_tile|draw_focused|strip|paint_visible)\b'
+cards_bad=0
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  p="${line%%:*}"
+  if is_wholly_test "$p"; then continue; fi
+  if ! allowed cards "$p"; then echo "    $line"; cards_bad=$((cards_bad+1)); fi
+done < <(grep_code "$cards_pat" "$SRC_SCREENS")
+if [ "$cards_bad" -eq 0 ]; then ok "cards"; else fail "cards: $cards_bad line(s) outside ci/allow/cards.txt — draw card sections with plx_ui::cards::Shelf / Grid"; fi
+
 # layer: a SCREEN never names the application. §2.1's table says `screens/` may name `ui/`,
 # `stores/`, `plex/` and `player/` and never `app/`, and until phase 10 that half of the rule was
 # prose alone — which is exactly how `screens/registry.rs` came to record, in its own module doc,

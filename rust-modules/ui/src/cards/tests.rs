@@ -197,7 +197,7 @@ impl<S: Section> Rig<S> {
         FocusKey { entry: ENTRY, elem }
     }
 
-    fn move_focus(&mut self, elem: u32, by: By) {
+    fn land_focus(&mut self, elem: u32, by: By) {
         let from = self.focus;
         self.focus = Some(self.key(elem));
         self.feed(ScreenEvent::FocusMoved { from, to: self.key(elem), by });
@@ -234,7 +234,7 @@ impl<S: Section + 'static> CardHarness for Rig<S> {
         self.focus.map(|k| k.elem)
     }
     fn focus(&mut self, elem: u32, by: By) {
-        self.move_focus(elem, by);
+        self.land_focus(elem, by);
     }
     fn tick(&mut self, frames: u32) -> bool {
         self.run(frames)
@@ -291,7 +291,7 @@ impl<S: Section + 'static> CardHarness for Rig<S> {
         // what the engine does on a landing: reconcile the focused element
         if self.src.index_of(&focused).is_none() {
             let now = self.reconcile_after_removal(at);
-            self.move_focus(now, By::Reconcile);
+            self.land_focus(now, By::Reconcile);
         }
         Ok(())
     }
@@ -299,7 +299,7 @@ impl<S: Section + 'static> CardHarness for Rig<S> {
         let want = self.focus.ok_or("nothing focused")?.elem;
         let mut fresh = Rig::<S>::new(self.src.elems.len());
         fresh.sect.restore_scroll(self.sect.scroll(), fresh.src.elems.len());
-        fresh.move_focus(want, By::Restore);
+        fresh.land_focus(want, By::Restore);
         Ok(Box::new(fresh))
     }
 }
@@ -343,7 +343,7 @@ fn unannounced_focus_is_drawn_whole<S: Section>() {
     assert_eq!(r.sect.scale_of(&r.cx(), &r.src, 100), Some(full), "…and the tick keeps it");
     // the pop of the seat the engine moves with no deliberate key, by every non-deliberate cause
     for by in [By::Restore, By::Reconcile] {
-        r.move_focus(103, by);
+        r.land_focus(103, by);
         r.run(1);
         assert_eq!(r.sect.scale_of(&r.cx(), &r.src, 103), Some(full), "{by:?} arrives whole");
     }
@@ -361,11 +361,11 @@ fn grid_draws_an_unannounced_focus_whole() {
 fn a_move_grows_from_rest<S: Section>() {
     let mut r = settled::<S>(8);
     let full = S::focus_scale();
-    r.move_focus(100, By::Restore);
+    r.land_focus(100, By::Restore);
     r.run(200);
     for by in [By::Dir, By::Pointer] {
         let (from, to) = if by == By::Dir { (100, 101) } else { (101, 100) };
-        r.move_focus(to, by);
+        r.land_focus(to, by);
         // before the tick the new tile reads rest, not full: the move armed it
         assert!(r.sect.scale_of(&r.cx(), &r.src, to).unwrap() < full - 0.02, "{by:?} starts from rest");
         r.run(1);
@@ -409,7 +409,7 @@ fn grid_ignores_another_entrys_focus() {
 /// rect; an unfocused tile's stop is its rest rect.
 fn stops_equal_placement<S: Section>() {
     let mut r = settled::<S>(8);
-    r.move_focus(101, By::Restore);
+    r.land_focus(101, By::Restore);
     r.run(200);
     let full = S::focus_scale();
     for press in [1.0, 0.96, 0.918] {
@@ -443,9 +443,9 @@ fn off_axis_tiles_register_no_stops() {
     let mut shelf = settled::<Shelf>(60);
     let n = shelf.stops(1.0).len();
     assert!(n > 0 && n < 20, "the shelf registered {n} of 60 stops");
-    shelf.move_focus(100, By::Restore);
+    shelf.land_focus(100, By::Restore);
     let mut grid = settled::<Grid>(600);
-    grid.move_focus(100, By::Restore);
+    grid.land_focus(100, By::Restore);
     let n = grid.stops(1.0).len();
     assert!(n > 0 && n < 60, "the grid registered {n} of 600 stops");
 }
@@ -455,7 +455,7 @@ fn off_axis_tiles_register_no_stops() {
 fn the_opener_redraw_paints_only_a_known_element() {
     fn run<S: Section>() {
         let mut r = settled::<S>(8);
-        r.move_focus(100, By::Restore);
+        r.land_focus(100, By::Restore);
         r.run(60);
         let cx = r.cx();
         let mut f = DrawFrame::new(&cx, Painter::recording());
@@ -473,7 +473,7 @@ fn the_opener_redraw_paints_only_a_known_element() {
 fn press_events<S: Section>() {
     let mut r = settled::<S>(8);
     assert_eq!(r.feed(ScreenEvent::PressCommit(PressId(1))).0, None, "nothing focused, nothing to activate");
-    r.move_focus(102, By::Restore);
+    r.land_focus(102, By::Restore);
     assert_eq!(r.feed(ScreenEvent::PressCommit(PressId(1))).0, Some(CardEvent::Activate(102)));
     assert_eq!(r.feed(ScreenEvent::PressHold(PressId(1))).0, Some(CardEvent::Hold(102)));
     // a landing between focus and press cannot name the wrong item: the elem is resolved at press time
@@ -516,9 +516,9 @@ fn a_source_can_refuse_a_hold() {
 fn want_events<S: Section>() {
     let mut r = settled::<S>(30);
     r.src.more = true;
-    r.move_focus(100, By::Restore);
+    r.land_focus(100, By::Restore);
     assert_eq!(r.feed(ScreenEvent::Tick(Tick { ms: 1000, dt_us: 16_667 })).0, None, "the head asks for nothing");
-    r.move_focus(129, By::Dir);
+    r.land_focus(129, By::Dir);
     let first = r.feed(ScreenEvent::Tick(Tick { ms: 1016, dt_us: 16_667 })).0;
     let Some(CardEvent::Want(range)) = first else { panic!("expected Want at the tail, got {first:?}") };
     assert_eq!(range.start, 30);
@@ -528,7 +528,7 @@ fn want_events<S: Section>() {
     let again = r.feed(ScreenEvent::Tick(Tick { ms: 1048, dt_us: 16_667 })).0;
     assert!(again.is_none() || matches!(again, Some(CardEvent::Want(_))), "a landing may ask again");
     let mut done = settled::<S>(30);
-    done.move_focus(129, By::Restore);
+    done.land_focus(129, By::Restore);
     assert_eq!(done.feed(ScreenEvent::Tick(Tick { ms: 1000, dt_us: 16_667 })).0, None, "no more, no Want");
 }
 #[test]
@@ -546,7 +546,7 @@ fn grid_wants_more_at_the_tail() {
 /// held and after focus leaves.
 fn goes_quiet<S: Section>() {
     let mut r = settled::<S>(8);
-    r.move_focus(100, By::Dir);
+    r.land_focus(100, By::Dir);
     assert!(r.run(1), "a pop reports motion");
     r.run(300);
     assert!(!r.run(1), "a settled section is quiet with focus on it");

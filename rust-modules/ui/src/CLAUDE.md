@@ -62,6 +62,18 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
    bespoke widget is only justified when nothing here is close — and then it lands *here*, as a
    reusable `View`, so the next screen gets it for free.
 
+## Card shelves and grids: `cards::Shelf` / `cards::Grid`
+
+A new screen that shows a strip or grid of media tiles uses `plx_ui::cards::{Shelf, Grid}` and
+implements `CardSource` for its content; it does not assemble `card_row::strip`, `CardRow`,
+`GridPop` or `GridBands` itself (the `cards` gate in `ci/check-deps.sh` refuses new uses in
+`screens/`; `ci/allow/cards.txt` lists the screens that have not migrated yet and only shrinks).
+The component reads focus from the engine, adopts a focus no deliberate move announced at full pop,
+takes the press from the frame, registers the stops it draws and reports one `CardEvent`
+(Activate / Hold / Want) from `on(ev, cx, src, fx)`, which the screen calls with EVERY event. The
+contract is the `//!` of `cards/mod.rs`; `cards/tests.rs` is its Tier 1 conformance, and
+`cards/conformance.rs` the Tier 2 drivers each real screen runs.
+
 ## Localization and shared reading layout
 
 App-owned text comes from typed `i18n::msg` accessors. Keep protocol identifiers and server-returned
