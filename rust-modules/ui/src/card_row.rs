@@ -1149,27 +1149,40 @@ fn glyph_lead(sz: std::os::raw::c_int, glyph: bool) -> f32 {
     }
 }
 
+/// How the lines of a label block sit in its window — the one alignment every line shares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LabelAlign {
+    /// Every line is centred on the card (`x + w / 2`).
+    Centre,
+    /// Every line starts at `x`: the card's own leading (left) edge.
+    Leading,
+    /// Every line ends at `x + w`: the card's own trailing (right) edge. The window reaches LEFT
+    /// from the card, over the room its neighbours leave, instead of off the card's right.
+    Trailing,
+}
+
 /// Where a focused tile's label block lands and how it aligns — the ONE placement every line
 /// under the tile (title, Continue-Watching glyph + name, caption) is drawn through, so the lines
-/// always read as one unit: all centred on the card, or all sharing the card's leading edge.
+/// always read as one unit: all centred on the card, all sharing its leading edge, or all sharing
+/// its trailing edge.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LabelPlace {
     /// The block's left edge, in the painter's own space.
     pub x: f32,
     /// The width the block may use; a run that does not fit it marquees (title and caption alike).
     pub w: f32,
-    /// `true`: every line is centred on the card (`x + w / 2`). `false`: every line starts at `x`,
-    /// which is the card's own leading edge.
-    pub centred: bool,
+    /// How every line sits in `x..x + w`.
+    pub align: LabelAlign,
 }
 
 impl LabelPlace {
-    /// The left edge of a `run`-wide line inside the block.
+    /// The left edge of a `run`-wide line inside the block. A run wider than the block starts at
+    /// its left edge (it glides from there), whatever the alignment.
     fn run_x(&self, run: f32) -> f32 {
-        if self.centred {
-            self.x + (self.w - run) * 0.5
-        } else {
-            self.x
+        match self.align {
+            LabelAlign::Centre => self.x + (self.w - run) * 0.5,
+            LabelAlign::Leading => self.x,
+            LabelAlign::Trailing => self.x + (self.w - run).max(0.0),
         }
     }
 }
@@ -1178,38 +1191,90 @@ impl LabelPlace {
 /// A label belongs to its card, not to the safe area: it is never moved toward the safe frame.
 const EDGE_PAD: f32 = 16.0;
 
-/// **Place a `w`-wide label block under the tile `rect`.** Centred on the card whenever the
-/// centred block sits on the panel (the design's normal case); otherwise the block starts at the
-/// card's own leading edge — the same edge for every line — and keeps whatever room the panel
-/// allows beyond the card, up to `w`. It is never shifted toward a screen edge: that pulled the
-/// label of a right-hand card under its neighbour, away from the card it names.
+/// The horizontal room a label block may use, in the painter's space — see [`anchor_label`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LabelRoom {
+    /// The panel's left edge less [`EDGE_PAD`]: a CENTRED block must sit inside `lo..hi`.
+    pub lo: f32,
+    /// The panel's right edge less [`EDGE_PAD`] and any screen reserve ([`RowStyle::right_reserve`]).
+    pub hi: f32,
+    /// The row's left content margin ([`RowStyle::margin_x`]): the furthest left a block that
+    /// reaches left of its card ([`LabelAlign::Trailing`]) may start.
+    pub floor: f32,
+}
+
+/// **The pure placement decision** for a `w`-wide block under a card that spans `lead..trail`
+/// (unscaled), given the room `room`. `want` is the block's UNCAPPED width (`w` is the widest run
+/// clamped to [`under_budget`], the reach into a neighbour's room); only a block that reaches
+/// LEFT of its card may use more than `w`.
+///
+/// 1. the block centred on the card sits inside `lo..hi` → [`LabelAlign::Centre`], `w` wide (the
+///    design's normal case; nothing is clipped, nothing changes);
+/// 2. else it starts at the card's leading edge ([`LabelAlign::Leading`]) and keeps the room to
+///    `hi`, up to `w` — whenever that shows the WHOLE block (a card with room to its right);
+/// 3. else the block overflows its room on the right. If the room LEFT of the card's trailing edge
+///    (down to `room.floor`) is larger than the room right of its leading edge, it is
+///    [`LabelAlign::Trailing`]: the window ends on the card's own right edge and reaches left, up
+///    to `want` wide, so the card at the end of a row keeps its caption under it instead of
+///    running into the margin;
+/// 4. else it stays leading and glides in the room to `hi`.
+///
+/// A block that still does not fit the room it was given glides inside it (the caller's marquee).
+/// The trailing edge is the card's, but never past `hi`: a card whose right edge is inside a
+/// reserved band (the Library's rail) ends its block where the band starts.
+pub fn anchor_label(lead: f32, trail: f32, w: f32, want: f32, room: LabelRoom) -> LabelPlace {
+    let cx = (lead + trail) * 0.5;
+    let x = cx - w * 0.5;
+    if x >= room.lo && x + w <= room.hi {
+        return LabelPlace { x, w, align: LabelAlign::Centre };
+    }
+    // Whole pixels: the room left before the panel edge is what the runs marquee against, and a
+    // gliding shelf must not re-key the elide cache with every sub-pixel of travel.
+    let right = (room.hi - lead).max(0.0);
+    let trail = trail.min(room.hi);
+    let left = (trail - room.floor).max(0.0);
+    if w > right && left > right {
+        let w = want.max(w).min(left).floor();
+        return LabelPlace { x: trail - w, w, align: LabelAlign::Trailing };
+    }
+    LabelPlace { x: lead, w: right.min(w).floor(), align: LabelAlign::Leading }
+}
+
+/// **Place a `w`-wide label block under the tile `rect`** — [`place_label_wide`] for a block with
+/// no wider wish. A block is centred on its card, starts at the card's leading edge, or (at the
+/// end of a row, where the room on the right is not enough) ends at its trailing edge; it is
+/// never shifted by some other amount toward a screen edge.
+pub fn place_label(p: Painter, rect: Rect, sty: &RowStyle, w: f32, lag: f32) -> LabelPlace {
+    place_label_wide(p, rect, sty, w, w, lag)
+}
+
+/// **[`anchor_label`] with the card's edges and the screen's room.** `w` is the block's width
+/// clamped to [`under_budget`], `want` its uncapped one.
 ///
 /// **The panel test is a screen fact and `rect` usually is not.** [`strip`] draws a shelf through
 /// `translate(-scroll_x, 0)`, so every rect below it is a CONTENT coordinate; `p.dx()` converts,
 /// so the comparison happens in screen space and the answer comes back in the painter's. An
 /// untranslated caller (`home`, `library`, `profiles`) has `dx == 0`.
 ///
-/// **Where the tile is going, not where it is.** `lag` is [`CardRow::settle_lag`]: the centred /
-/// leading-edge choice and the block's width are decided at the tile's SETTLED screen position,
-/// while `x` still follows the live card. A tile that glides in from the right used to cross the
-/// panel-edge threshold part-way through, so the block flipped alignment and re-sized (re-deciding
-/// which lines overflow, flipping the title into its marquee) on the way — the label visibly jumped.
+/// **Where the tile is going, not where it is.** `lag` is [`CardRow::settle_lag`]: the
+/// alignment and the block's width are decided at the tile's SETTLED screen position, while `x`
+/// still follows the live card. A tile that glides in from the right used to cross the panel-edge
+/// threshold part-way through, so the block flipped alignment and re-sized (re-deciding which
+/// lines overflow, flipping the title into its marquee) on the way — the label visibly jumped.
 ///
 /// The right bound is the panel's edge less whatever the SCREEN has reserved there
-/// (`RowStyle::right_reserve` — the Library's A–Z rail). The leading edge is the UNSCALED card's,
-/// so a focus pop never moves the block or re-keys the width-keyed wrap/elide caches.
-pub fn place_label(p: Painter, rect: Rect, sty: &RowStyle, w: f32, lag: f32) -> LabelPlace {
+/// (`RowStyle::right_reserve` — the Library's A–Z rail); the left one the row's content margin
+/// ([`RowStyle::margin_x`]). The card's edges are the UNSCALED card's, so a focus pop never moves
+/// the block or re-keys the width-keyed wrap/elide caches.
+pub fn place_label_wide(p: Painter, rect: Rect, sty: &RowStyle, w: f32, want: f32, lag: f32) -> LabelPlace {
     let settled_dx = p.dx() + lag;
-    let lo = EDGE_PAD - settled_dx;
-    let hi = SCR_W - sty.right_reserve - EDGE_PAD - settled_dx;
-    let x = rect.cx() - w * 0.5;
-    if x >= lo && x + w <= hi {
-        return LabelPlace { x, w, centred: true };
-    }
+    let room = LabelRoom {
+        lo: EDGE_PAD - settled_dx,
+        hi: SCR_W - sty.right_reserve - EDGE_PAD - settled_dx,
+        floor: sty.margin_x - settled_dx,
+    };
     let lead = rect.cx() - sty.w * 0.5;
-    // Whole pixels: the room left before the panel edge is what the runs marquee against, and a
-    // gliding shelf must not re-key the elide cache with every sub-pixel of travel.
-    LabelPlace { x: lead, w: (hi - lead).min(w).max(0.0).floor(), centred: false }
+    anchor_label(lead, lead + sty.w, w, want, room)
 }
 
 /// The focused tile's single-line title, drawn in the block `at`: plain whenever the run fits the
@@ -1320,8 +1385,9 @@ pub fn label_band(p: Painter, rect: Rect, sty: &RowStyle) -> (f32, f32) {
 }
 
 /// The focused tile's whole label block — title (with its optional Continue-Watching glyph) and
-/// caption — placed ONCE by [`place_label`] from the wider of its two runs, so both lines share one
-/// alignment: centred on the card together, or starting together at the card's leading edge.
+/// caption — placed ONCE by [`place_label_wide`] from the wider of its two runs (plus the uncapped
+/// `want`), so both lines share one alignment: centred together, starting together at the card's
+/// leading edge, or ending together at its trailing edge when the room to the right is too small.
 fn draw_label_block(
     p: Painter,
     rect: Rect,
@@ -1339,7 +1405,10 @@ fn draw_label_block(
     let title_run = title_w_val.map_or(0.0, |w| (lead + w).min(full));
     let caption_str = label.caption.as_ref().map(|c| c.to_string_lossy());
     let caption_w = caption_str.as_ref().map_or(0.0, |s| measure.width_str(s, csz, false));
-    let at = place_label(p, rect, sty, title_run.max(caption_w.min(full)), label.settle_lag);
+    // …and the UNCAPPED widest run, which only a block that reaches left of its card may use
+    // ([`anchor_label`]).
+    let want = title_w_val.map_or(0.0, |w| lead + w).max(caption_w);
+    let at = place_label_wide(p, rect, sty, title_run.max(caption_w.min(full)), want, label.settle_lag);
 
     // Which lines of the block do not fit it? They glide together on ONE clock and ONE cycle (the
     // longest's); when none does, the clock is released so an overflowing block focused again
@@ -1634,11 +1703,12 @@ mod tests {
         assert_eq!(row.scroll_x(), 0.0);
     }
 
-    /// Every placement is card-anchored: a block is either centred on its card or starts at the
-    /// card's own leading edge, whatever the scroll, the rail reserve or the block's width — and
-    /// a leading-edge block never runs past the panel (or the rail) on the right.
+    /// Every placement is card-anchored: a block is centred on its card, starts at the card's own
+    /// leading edge, or ends at its trailing edge, whatever the scroll, the rail reserve or the
+    /// block's width — and never runs past the panel (or the rail) on the right, nor left of the
+    /// row's content margin when it reaches left.
     #[test]
-    fn focused_label_blocks_are_centred_on_or_lead_from_their_card() {
+    fn focused_label_blocks_are_centred_on_or_anchored_to_their_card() {
         for dx in [0.0, -290.0, -2900.0, 240.0] {
             let p = Painter::root().translate(dx, 0.0);
             for reserve in [0.0, 112.0] {
@@ -1647,53 +1717,182 @@ mod tests {
                     let rect = Rect::new(screen_x - dx, 300.0, sty.w, sty.h);
                     for w in [120.0, 280.0, under_budget(&sty)] {
                         let at = place_label(p, rect, &sty, w, 0.0);
-                        if at.centred {
-                            assert_eq!(at.x + at.w * 0.5, rect.cx(), "a centred block shares the card's centre");
-                            assert_eq!(at.w, w);
-                        } else {
-                            assert_eq!(at.x, rect.x, "a constrained block starts at the card's leading edge");
-                            assert!(at.w <= w);
-                            assert!(at.x + dx + at.w <= SCR_W - reserve - EDGE_PAD);
+                        match at.align {
+                            LabelAlign::Centre => {
+                                assert_eq!(at.x + at.w * 0.5, rect.cx(), "a centred block shares the card's centre");
+                                assert_eq!(at.w, w);
+                            }
+                            LabelAlign::Leading => {
+                                assert_eq!(at.x, rect.x, "a leading block starts at the card's leading edge");
+                                assert!(at.w <= w);
+                                assert!(at.x + dx + at.w <= SCR_W - reserve - EDGE_PAD);
+                                assert_eq!(at.run_x(at.w), at.x);
+                            }
+                            LabelAlign::Trailing => {
+                                let edge = (rect.x + sty.w).min(SCR_W - reserve - EDGE_PAD - dx);
+                                assert_eq!(at.x + at.w, edge, "a trailing block ends at the card's right edge (or the band's)");
+                                assert!(at.w <= w);
+                                assert!(at.x + dx >= sty.margin_x - 0.01, "and never starts left of the content margin");
+                                assert_eq!(at.run_x(at.w), at.x);
+                                assert_eq!(at.run_x(60.0) + 60.0, at.x + at.w, "a short run ends on the block's edge");
+                            }
                         }
-                        // Both lines of a block share its edge (left) or its centre.
-                        assert_eq!(at.run_x(at.w), at.x);
                     }
                 }
             }
         }
     }
 
-    /// Title and caption are one unit: at the right edge, a short caption under a long title
-    /// starts where the title does instead of being pushed against the panel edge on its own.
+    // ---- the pure anchor decision ------------------------------------------------------------
+
+    /// A 1920 panel with the usual air at both edges and the 96px content margin.
+    const ROOM: LabelRoom = LabelRoom { lo: EDGE_PAD, hi: SCR_W - EDGE_PAD, floor: MARGIN_X };
+
+    /// A block that fits centred under its card is exactly where it always was: nothing is
+    /// clipped, so nothing moves.
     #[test]
-    fn title_and_caption_share_the_leading_edge_when_constrained() {
+    fn a_block_that_fits_centred_is_unchanged() {
+        let at = anchor_label(700.0, 950.0, 400.0, 400.0, ROOM);
+        assert_eq!(at, LabelPlace { x: 625.0, w: 400.0, align: LabelAlign::Centre });
+        // even beside the right margin, when the centred block still sits on the panel
+        let at = anchor_label(1500.0, 1750.0, 500.0, 500.0, ROOM);
+        assert_eq!(at.align, LabelAlign::Centre);
+    }
+
+    /// A card with room on its right keeps today's leading-edge window: the whole block shows.
+    #[test]
+    fn an_overflowing_block_with_room_on_the_right_stays_leading() {
+        let at = anchor_label(100.0, 350.0, 600.0, 600.0, ROOM);
+        assert_eq!(at, LabelPlace { x: 100.0, w: 600.0, align: LabelAlign::Leading });
+    }
+
+    /// At the end of a row the room on the right is a sliver: the window ends on the card's own
+    /// right edge and reaches left, and the lines are right-aligned to that edge.
+    #[test]
+    fn an_overflowing_block_at_the_right_margin_anchors_to_the_cards_right_edge() {
+        let at = anchor_label(1574.0, 1824.0, 700.0, 700.0, ROOM);
+        assert_eq!(at, LabelPlace { x: 1124.0, w: 700.0, align: LabelAlign::Trailing });
+        assert_eq!(at.run_x(300.0), 1524.0, "a shorter line ends on the same edge");
+        assert_eq!(at.run_x(700.0), 1124.0);
+    }
+
+    /// A block that reaches left of its card may be wider than the shared reach (`w`, clamped to
+    /// the budget): it takes what it wants of the room, so a title that would have glided shows
+    /// whole. A centred or leading block never does.
+    #[test]
+    fn a_trailing_block_takes_the_width_it_wants_and_the_others_do_not() {
+        let at = anchor_label(1574.0, 1824.0, 560.0, 720.0, ROOM);
+        assert_eq!(at, LabelPlace { x: 1104.0, w: 720.0, align: LabelAlign::Trailing });
+        assert_eq!(anchor_label(700.0, 950.0, 400.0, 900.0, ROOM).w, 400.0);
+        assert_eq!(anchor_label(100.0, 350.0, 600.0, 900.0, ROOM).w, 600.0);
+        // the card's edge inside a reserved band: the block ends where the band starts
+        let railed = LabelRoom { hi: 1700.0, ..ROOM };
+        let at = anchor_label(1574.0, 1824.0, 560.0, 560.0, railed);
+        assert_eq!((at.x + at.w, at.align), (1700.0, LabelAlign::Trailing));
+    }
+
+    /// Too long even for the room to the left: the window is clamped to the content margin and
+    /// the run glides inside it (the caller's marquee), never past either bound.
+    #[test]
+    fn a_block_too_long_both_ways_clamps_to_the_content_margin() {
+        let at = anchor_label(1574.0, 1824.0, 2400.0, 2400.0, ROOM);
+        assert_eq!(at, LabelPlace { x: MARGIN_X, w: 1824.0 - MARGIN_X, align: LabelAlign::Trailing });
+        // …and a card in the middle of a narrow panel whose left room is the larger one
+        let narrow = LabelRoom { lo: 16.0, hi: 700.0, floor: 96.0 };
+        let at = anchor_label(400.0, 650.0, 900.0, 900.0, narrow);
+        assert_eq!(at, LabelPlace { x: 96.0, w: 554.0, align: LabelAlign::Trailing });
+        // the other way round the window is the larger room to the right, and glides in it
+        let at = anchor_label(100.0, 350.0, 2400.0, 2400.0, ROOM);
+        assert_eq!(at, LabelPlace { x: 100.0, w: 1804.0, align: LabelAlign::Leading });
+    }
+
+    /// Title and caption are one unit: at the right edge both end at the card's right edge, so a
+    /// short caption under a long title ends where the title does.
+    #[test]
+    fn title_and_caption_share_the_trailing_edge_at_the_end_of_a_row() {
         let sty = RowStyle::HOME;
         let rect = Rect::new(SCR_W - MARGIN_X - sty.w, 300.0, sty.w, sty.h);
         let at = place_label(Painter::root(), rect, &sty, under_budget(&sty), 0.0);
-        assert!(!at.centred);
-        assert_eq!(at.run_x(60.0), rect.x);
-        assert_eq!(at.run_x(at.w), rect.x);
+        assert_eq!(at.align, LabelAlign::Trailing);
+        assert_eq!(at.run_x(60.0) + 60.0, rect.x + sty.w);
+        assert_eq!(at.run_x(at.w) + at.w, rect.x + sty.w);
         let mid = Rect::new(700.0, 300.0, sty.w, sty.h);
         let centred = place_label(Painter::root(), mid, &sty, 200.0, 0.0);
-        assert!(centred.centred, "a block with room stays centred on its card");
+        assert_eq!(centred.align, LabelAlign::Centre, "a block with room stays centred on its card");
         assert_eq!(centred.run_x(60.0) + 30.0, mid.cx());
     }
 
-    /// Issue 6: a focused label that would overflow near the right edge stays with its card — it
-    /// starts at the card's own leading edge and keeps the room beyond the card — instead of being
-    /// pulled left toward the safe-area boundary, under the neighbouring tile.
+    /// The same card at the same place, wherever the shelf has scrolled: the decision is made in
+    /// screen space, so a shelf scrolled by thousands of pixels anchors its last card the same way.
     #[test]
-    fn a_right_edge_card_label_starts_at_the_card_instead_of_the_safe_area() {
+    fn the_anchor_is_judged_in_screen_space() {
         let sty = RowStyle::HOME;
         for dx in [0.0, -2900.0] {
             let p = Painter::root().translate(dx, 0.0);
-            let screen_x = SCR_W - MARGIN_X - sty.w;
-            let rect = Rect::new(screen_x - dx, 300.0, sty.w, sty.h);
+            let rect = Rect::new(SCR_W - MARGIN_X - sty.w - dx, 300.0, sty.w, sty.h);
             let (x, width) = label_band(p, rect, &sty);
-            assert_eq!(x, rect.x, "the label leads from its card, not from the safe area");
-            assert!(width > sty.w, "the label keeps the usable room beyond the card");
-            assert!(x + dx + width <= SCR_W, "the label still ends on the panel");
+            assert_eq!(x + width, rect.x + sty.w, "the widest label ends on its card's right edge");
+            assert!(width > sty.w, "and reaches left over the room the neighbours leave");
+            assert!(x + dx >= sty.margin_x - 0.01, "never past the content margin");
         }
+    }
+
+    /// The text runs of one focused tile at the end of a shelf: the x of every run on its title
+    /// line and on its caption line.
+    fn end_of_row_runs(title: &str, caption: &str) -> (Vec<f32>, Vec<f32>, Rect) {
+        let sty = RowStyle::HOME;
+        let rect = Rect::new(SCR_W - MARGIN_X - sty.w, 300.0, sty.w, sty.h);
+        let ty = rect.y + rect.h + UNDER_DROP;
+        let label = TileLabel::titled(title, caption);
+        let log = crate::draw_census::capture(|| {
+            draw_focused(Painter::recording(), Art::Poster(None), rect, 1.0, &sty, None, &label,
+                &crate::fixture::FixtureMeasure);
+        });
+        let (mut t, mut c) = (Vec::new(), Vec::new());
+        for (_, r) in log.into_iter().filter(|(tag, r)| *tag == 100 && r.y >= ty - 8.0) {
+            if r.y < ty + UNDER_LINE_H { t.push(r.x) } else { c.push(r.x) }
+        }
+        (t, c, rect)
+    }
+
+    /// Drawn: the last card of a shelf with a title wider than its card and than the room on its
+    /// right but narrower than the room on its left — the title and caption each draw ONE still
+    /// run, ending on the card's right edge and inside the content bounds.
+    #[test]
+    fn a_right_anchored_caption_draws_inside_the_content_bounds_and_ends_at_the_cards_edge() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let title = "Wallace & Gromit: Vengeance Most Fowl and the Curse of the Were-Rabbit";
+        let caption = "A caption wider than the card";
+        let (t, c, rect) = end_of_row_runs(title, caption);
+        let edge = rect.x + RowStyle::HOME.w;
+        let title_w = measure_w(title, theme::size::LABEL);
+        let caption_w = measure_w(caption, theme::size::CAPTION);
+        assert!(title_w > under_budget(&RowStyle::HOME), "the title is wider than the shared reach");
+        assert!(title_w > SCR_W - EDGE_PAD - rect.x, "the title overflows the room on the card's right");
+        assert!(title_w < edge - MARGIN_X, "and fits the room on its left");
+        assert_eq!((t.len(), c.len()), (1, 1), "both lines fit the window: one still run each ({t:?} {c:?})");
+        assert!((t[0] + title_w - edge).abs() < 0.5, "the title ends on the card's right edge: {t:?}");
+        assert!((c[0] + caption_w - edge).abs() < 0.5, "and so does the caption: {c:?}");
+        assert!(t[0] >= MARGIN_X && c[0] >= MARGIN_X, "inside the content margin: {t:?} {c:?}");
+        assert!(edge <= SCR_W - MARGIN_X, "and the right margin");
+    }
+
+    /// And a title too long even for the room to the left glides inside the clamped window — a run
+    /// and its follower, the glide starting at the window's left edge (the content margin), never
+    /// at the card — while a short caption under it still ends on the card's edge.
+    #[test]
+    fn a_title_too_long_for_both_sides_glides_inside_the_clamped_window() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let (t, c, rect) = end_of_row_runs(LONG_TITLE, "1979");
+        assert_eq!(t.len(), 2, "a run and its follower: {t:?}");
+        assert!((leftmost(&t) - MARGIN_X).abs() < 0.5, "the glide starts at the content margin: {t:?}");
+        assert_eq!(c.len(), 1);
+        assert!((c[0] + measure_w("1979", theme::size::CAPTION) - (rect.x + RowStyle::HOME.w)).abs() < 0.5,
+            "the short caption still ends on the card's edge: {c:?}");
     }
 
     #[test]
@@ -2204,7 +2403,7 @@ mod tests {
                     row.update(n, Some(to), &sty, 1.0 / 60.0);
                     let p = Painter::root().translate(-row.scroll_x(), 0.0);
                     let at = place_label(p, rect, &sty, under_budget(&sty), row.settle_lag(n, to, &sty));
-                    seen.push((at.centred, at.w));
+                    seen.push((at.align, at.w));
                 }
                 let settled = *seen.last().unwrap();
                 assert!(
