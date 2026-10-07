@@ -347,6 +347,14 @@ pub struct Dispatcher<H: Host> {
     pub page_snapshot: Box<dyn super::containers::transition::PageSnapshot>,
     page_image: super::containers::transition::PageImage,
     page_stops: Vec<Stop<H::Elem>>,
+    /// The placeholders the held page image carries, noted while the page was drawn live into the
+    /// snapshot (`placeholder::since`), and the entry they belong to. Re-noted on every frame the
+    /// image is painted without the live page, so the counter does not read 0 over a captured
+    /// spinner.
+    page_debt: Option<(plx_machine::machine::EntryId, super::placeholder::Debt)>,
+    /// The alpha the last visible pass painted the page image at, `None` when the page was drawn
+    /// live (or not at all). See [`Dispatcher::held_page_image`].
+    page_image_alpha: Option<f32>,
     pub budget: Budget,
     pub nav: Navigation<H>,
     /// The Input machine (§2.2): the engine, the hit map, the press and its arm.
@@ -408,6 +416,8 @@ where
             page_snapshot: Box::new(super::popover::host::TransitionSnapshot::default()),
             page_image: Default::default(),
             page_stops: Vec::new(),
+            page_debt: None,
+            page_image_alpha: None,
             focus_override: None,
             frame: 0,
             carried_streak: 0,
@@ -732,6 +742,16 @@ where
     pub fn video_plane_frame(&self) -> bool {
         self.present.video_plane()
             && self.top_screen().map(|s| s.render()) == Some(super::screen::RenderStrategy::VideoPlane)
+    }
+
+    /// **Is the page on screen a held image?** `Some(alpha)` when the last visible pass painted the
+    /// top page as its captured snapshot instead of drawing it (a `PageDip` push's IN half and the
+    /// hold after it), `None` when it drew the page live. Such a frame shows whatever the page
+    /// looked like when it was captured; the placeholders it contained are re-counted on it
+    /// (`placeholder::renote`), but the pixel sentinel sees them only at alpha 1 and never sees a
+    /// caption, so the demo-video driver treats an image frame as debt rather than as clean.
+    pub fn held_page_image(&self) -> Option<f32> {
+        self.page_image_alpha
     }
 
     /// Whether this frame may show the page as a frozen image at all: a freezing transition, a
@@ -1313,6 +1333,7 @@ where
             if matches!(paint, super::containers::transition::PagePaint::Live) {
                 self.page_snapshot.release();
                 self.page_image = Default::default();
+                self.page_debt = None;
             }
             if matches!(paint, super::containers::transition::PagePaint::Held(_)
                 | super::containers::transition::PagePaint::ReplacementCapture) {
@@ -1325,7 +1346,8 @@ where
                 plx_machine::idle::invalidate();
             }
         }
-        let Dispatcher { nav, input, page_snapshot, page_image, page_stops, .. } = self;
+        let Dispatcher { nav, input, page_snapshot, page_image, page_stops, page_debt, page_image_alpha, .. } = self;
+        if !source_pass { *page_image_alpha = None; }
         let mut stops = Vec::new();
         let mut set = RenderSet {
             // the shared poster/logo residency (ui/tex.rs) is the one pool rule (c) sums beside
@@ -1425,7 +1447,9 @@ where
                         if full_alpha { page_navigation.page_alpha = 1.0; }
                         let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), page_navigation);
                         if !full_alpha { f.page_alpha *= nav.tabs.stack.transition.page_alpha(); }
+                        let drawn_from = super::placeholder::mark();
                         backdrop::draw_span("page", || inst.screen.draw(&mut f));
+                        if capture { *page_debt = Some((e.id, super::placeholder::since(drawn_from))); }
                         report.drawn.push(inst.id);
                         let drawn_stops = f.into_stops();
                         if capture { *page_stops = drawn_stops.clone(); }
@@ -1444,6 +1468,12 @@ where
                             else { nav.tabs.stack.transition.page_alpha() };
                         backdrop::draw_span("page.image", || page_snapshot.draw(alpha, true));
                     } else if let Some(alpha) = paint.frozen_alpha() {
+                        if !source_pass { *page_image_alpha = Some(alpha); }
+                        // The image stands in for a page nothing draws this frame: it carries the
+                        // placeholders it was captured with (see `placeholder::Debt`).
+                        if let Some((id, debt)) = page_debt.as_ref() {
+                            if *id == e.id { super::placeholder::renote(debt); }
+                        }
                         let _image_layer = backdrop::layer(Z(Z::CHROME.0 - 1), false);
                         let source_alpha = if source_pass { 1.0 } else { alpha };
                         backdrop::draw_span("page.image", || page_snapshot.draw(source_alpha, !visible_live));

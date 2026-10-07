@@ -593,14 +593,39 @@ pub const PANEL_FROST_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.72);
 /// black-tinted QR texture, and the only place in the app where the app paints something this
 /// bright on purpose.
 pub const SURFACE_QR_PLATE: [f32; 4] = COOL_0;
-/// Poster/thumb skeleton flat placeholder.
+/// **The one exact colour the `placeholder-sentinel` build paints every placeholder in**: #FF00FE.
+/// The palette never uses it (`the_sentinel_is_in_no_palette_stop` greps this file for the code),
+/// so a pixel of exactly this value on a frame is a placeholder the frame drew. Defined in every
+/// build, so a scanner and the tests can name it; only the three tokens below ever take it, and
+/// only under the feature (`placeholder.rs`).
+pub const PLACEHOLDER_SENTINEL: [f32; 4] = rgb8(0xff, 0x00, 0xfe);
+/// The sentinel's 8-bit code, for the frame scanner (S5b) that compares written pixels to it.
+pub const PLACEHOLDER_SENTINEL_RGB8: [u8; 3] = [0xff, 0x00, 0xfe];
+
+/// Poster/thumb skeleton flat placeholder. Under the `placeholder-sentinel` feature this is
+/// [`PLACEHOLDER_SENTINEL`] (`placeholder.rs`); in every other build it is `COOL_850`.
+#[cfg(not(feature = "placeholder-sentinel"))]
 pub const CARD_PLACEHOLDER: [f32; 4] = COOL_850;
+#[cfg(feature = "placeholder-sentinel")]
+pub const CARD_PLACEHOLDER: [f32; 4] = PLACEHOLDER_SENTINEL;
+/// A tile that has **nothing to load** — a person the server has no headshot of, a collection with
+/// no artwork of its own (the neutral tile). The same `COOL_850` stop as [`CARD_PLACEHOLDER`] and
+/// painted identically, but it is ABSENCE, not a wait: the sentinel build leaves it alone, so the
+/// pixel oracle never flags a tile that is correct to show.
+pub const CARD_ABSENT: [f32; 4] = COOL_850;
 /// Loading-skeleton gradient — top. The same `COOL_850` stop as [`CARD_PLACEHOLDER`]: a card whose
 /// artwork is on the way and one with none to load are the same object at rest. Both lean BLUE,
-/// away from the neutral panel greys, so a missing poster never reads as a panel.
+/// away from the neutral panel greys, so a missing poster never reads as a panel. The sentinel
+/// build paints [`PLACEHOLDER_SENTINEL`] here.
+#[cfg(not(feature = "placeholder-sentinel"))]
 pub const SKELETON_TOP: [f32; 4] = COOL_850;
-/// Loading-skeleton gradient — bottom.
+#[cfg(feature = "placeholder-sentinel")]
+pub const SKELETON_TOP: [f32; 4] = PLACEHOLDER_SENTINEL;
+/// Loading-skeleton gradient — bottom (the sentinel build paints [`PLACEHOLDER_SENTINEL`]).
+#[cfg(not(feature = "placeholder-sentinel"))]
 pub const SKELETON_BOT: [f32; 4] = COOL_900;
+#[cfg(feature = "placeholder-sentinel")]
+pub const SKELETON_BOT: [f32; 4] = PLACEHOLDER_SENTINEL;
 
 // ── Scrims (near-black; alpha supplied per call) ─────────────────────────────
 // Hero/scroll scrim ink; use via [`scrim`]. Defined in `gfx::tokens` (the renderer paints with it).

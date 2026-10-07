@@ -2198,3 +2198,48 @@ fn frozen_dispatch_modal_takes_the_single_snapshot() {
     d.draw(&mut rig, true);
     assert!(!d.page_snapshot.valid(), "page-only pixels cannot serve a modal's chrome prefix");
 }
+
+/// **A held page image carries the placeholders it was captured with.** During a push the
+/// destination is drawn live once (the floor capture) and then painted as its image until the page
+/// is quiescent, so nothing walks the page on those frames: a spinner, a "Loading" title or a
+/// skeleton captured into the image stays on screen while the counter, which counts at the draw,
+/// would read 0 and the demo-video driver would write the frame. The capture's debt is re-noted
+/// on every frame the image stands in for the page, and `held_page_image` says so.
+#[test]
+fn a_held_page_image_keeps_the_placeholders_it_captured_counted() {
+    use crate::placeholder::{self, Reason};
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(QUIESCENCE_PAGE)));
+    let mut image_frames = 0;
+    let mut live_frames = 0;
+    for i in 0..40u32 {
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let ((), frame) = placeholder::capture(|| {
+            d.frame_with(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap, false);
+            d.draw(&mut rig, true);
+        });
+        if d.top_arg() != Some(&FixtureArg::Page(QUIESCENCE_PAGE)) {
+            continue;
+        }
+        if d.held_page_image().is_some() {
+            image_frames += 1;
+            assert!(frame.count > 0, "frame {i}: an image of a page with a spinner counted nothing");
+            assert_eq!(frame.of(Reason::DetailSpinner), frame.entries.len(), "frame {i}: {frame:?}");
+        } else {
+            live_frames += 1;
+            assert!(frame.count > 0, "frame {i}: the live page drew its placeholder uncounted");
+        }
+    }
+    assert!(image_frames >= 3, "premise: the destination was shown as an image ({image_frames} frames)");
+    assert!(live_frames >= 1, "premise: the page went live again ({live_frames} frames)");
+}
+
+/// The held-image query is `None` for a page drawn live and for a page that was never captured.
+#[test]
+fn held_page_image_is_none_while_the_page_draws_live() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.draw(&mut rig, true);
+    assert_eq!(d.held_page_image(), None);
+}

@@ -575,6 +575,7 @@ impl CollectionScreen {
     fn status_overlay<'a>(collection: Option<&Collection>, tick: u32,
         measure: &dyn plx_machine::machine::Measure) -> StatusOverlay<'a> {
         match collection.map(|c| c.status).unwrap_or(CollectionStatus::Loading) {
+            // placeholder-exempt: builds the value only; counted where drawn (StatusOverlay::draw_geometry, Working)
             CollectionStatus::Loading => StatusOverlay::new(Self::status_frame(), plx_platform::i18n::msg::browse_collection_loading_c(), StatusKind::Working).phase(tick),
             CollectionStatus::Empty => StatusOverlay::new(Self::status_frame(), plx_platform::i18n::msg::browse_collection_empty_c(), StatusKind::Empty),
             CollectionStatus::Unavailable => StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::browse_collection_unavailable_c(), StatusKind::Failed)

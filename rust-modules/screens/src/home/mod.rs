@@ -187,6 +187,10 @@ struct Backdrop {
     tex: (u32, f32, f32),
     outgoing_tex: (u32, f32, f32),
     keyed: Option<(plx_plex::plex::ServerId, String)>,
+    /// The hero art path the page names NOW when that art is wanted on screen and has no texture
+    /// yet (`bind` sets it, `draw` counts it — `placeholder.rs`: a count belongs at the DRAW,
+    /// never at the resolve, and `prefetch` resolves neighbours it never draws). Empty otherwise.
+    pending_art: String,
 }
 
 impl Backdrop {
@@ -199,6 +203,7 @@ impl Backdrop {
             tex: (0, 0.0, 0.0),
             outgoing_tex: (0, 0.0, 0.0),
             keyed: None,
+            pending_art: String::new(),
         }
     }
 
@@ -233,6 +238,10 @@ impl Backdrop {
         } else {
             self.tex = (0, 0.0, 0.0);
             self.outgoing_tex = (0, 0.0, 0.0);
+        }
+        self.pending_art.clear();
+        if let Some(h) = hero.filter(|h| snap < HERO_ART_CULL && self.tex.0 == 0 && !h.item.art.is_empty()) {
+            self.pending_art.push_str(&h.item.art);
         }
 
         let changed = match (self.keyed.as_ref(), selected) {
@@ -285,6 +294,9 @@ impl Backdrop {
     }
 
     fn draw(&self, p: Painter, env: &Env, slide: Option<(f32, f32)>) {
+        if !self.pending_art.is_empty() && env.hero_a > 0.01 && env.sp < HERO_ART_CULL {
+            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::HomeBackdrop, &self.pending_art);
+        }
         let incoming_a = reveal(self.tex.0, &self.art);
         let outgoing_a = reveal(self.outgoing_tex.0, &self.outgoing_art);
         // THE GROUND: the wash, the one art layer dissolving over it (the snap dive, or the art
@@ -2629,6 +2641,7 @@ fn status_read(
     }
     Some(match view.state {
         plx_data::pms::HubState::Loading => {
+            // placeholder-exempt: builds the value only; counted where drawn (StatusOverlay::draw_geometry, Working)
             (plx_platform::i18n::msg::browse_home_loading_c(), StatusKind::Working, None)
         }
         plx_data::pms::HubState::Failed => (
@@ -2937,6 +2950,8 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod placeholder_tests;
 #[cfg(test)]
 pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
 

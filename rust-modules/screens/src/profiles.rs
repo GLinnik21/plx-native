@@ -1257,6 +1257,7 @@ impl ProfilesScreen {
         // 4 entry dots — replaced by a spinner while the PIN verifies; a rejected PIN pulses the
         // (all-filled) dots DANGER red, then the entry restarts on the same pad.
         if self.pad.submitting {
+            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::PageSpinner, "profiles-pin");
             Spinner::new(SCR_W as f32 * 0.5, dots_y + PAD_DOT * 0.5, 22.0)
                 .phase(self.spin_ms as u32)
                 .tint(theme::TEXT_PRIMARY)
@@ -1863,6 +1864,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             if users.is_empty() {
                 // roster not here yet (persisted seed empty, refresh in flight) — a spinner, not a
                 // blank page. It always ends: a failed refresh is the read-out above.
+                plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::PageSpinner, "profiles-roster");
                 Spinner::new(SCR_W as f32 * 0.5, ROW_Y + self.row_sty.h * 0.5, 26.0)
                     .phase(self.spin_ms as u32)
                     .tint(theme::TEXT_PRIMARY)
@@ -1894,6 +1896,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
                 theme::scrim_black(0.88),
                 0.0,
             );
+            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::PageSpinner, "profiles-switching");
             Spinner::new(SCR_W as f32 * 0.5, 500.0, 26.0)
                 .phase(self.spin_ms as u32)
                 .tint(theme::TEXT_PRIMARY)

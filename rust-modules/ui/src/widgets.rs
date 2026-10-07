@@ -664,7 +664,10 @@ pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad
                     crate::collection_tile::draw_fan_name(p, frame, r, m.title);
                 }
             } else {
-                p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
+                // Counted where it is DRAWN: `Art::Poster(None)` (a not-yet-loaded index) and an
+                // empty thumb path reach here with no resolve at all, as does a miss.
+                crate::placeholder::skeleton(p, crate::placeholder::Reason::CardSkeleton,
+                    m.map_or("", |m| m.thumb), r, rad);
             }
             // The ONE state language on every poster, drawn in this shared composite so Home
             // shelves + the Library grid + Search + the person page + the detail page's Related
@@ -698,7 +701,7 @@ pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad
                 }
             }
         }
-        Art::Thumb { .. } => {
+        Art::Thumb { key, .. } => {
             let (t, tw, th) = image;
             if t != 0 {
                 p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
@@ -706,7 +709,7 @@ pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad
                     crate::collection_tile::draw_fan_name(p, frame, r, name);
                 }
             } else {
-                p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
+                crate::placeholder::ground(p, crate::placeholder::Reason::CardGround, key, r, rad);
             }
         }
         // A LANDSCAPE tile of a real catalog row: the item's own 16:9 art, and the same state
@@ -726,7 +729,11 @@ pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad
                 if t != 0 {
                     p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
                 } else {
-                    p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
+                    // `tex_carded_still` returns false for texture 0 before it paints anything, so
+                    // a still with no picture ALWAYS lands here (`a_still_with_no_texture_is_never_fused`).
+                    // `Art::Still(None)` and an empty `still_key` reach it without a resolve.
+                    crate::placeholder::skeleton(p, crate::placeholder::Reason::CardSkeleton,
+                        m.map_or("", |m| still_key(&m)), r, rad);
                 }
                 if m.is_some() { still_ground(p, r, rad, band, STILL_SCRIM_A); }
             }
@@ -746,7 +753,7 @@ pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad
             if t != 0 {
                 p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
             } else {
-                p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
+                person_ground(p, key, r, rad);
                 // Only for a person the server has NO headshot of — an unresolved texture with a
                 // key behind it is merely still loading, and glyphing that would flash a "no
                 // photo" mark on every tile of every page for the length of its fetch.
@@ -764,6 +771,18 @@ pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad
                 }
             }
         }
+    }
+}
+
+/// The ground of a person tile with no texture. A person the server has NO headshot of (empty
+/// `key`) is ABSENCE, not a wait: it wears the never-sentinel [`theme::CARD_ABSENT`] and is not
+/// counted. A key behind an unresolved texture is a fetch in flight, and is a placeholder.
+fn person_ground(p: Painter, key: &str, r: Rect, rad: f32) {
+    if key.is_empty() {
+        // placeholder-exempt: absence, a person the server has no headshot of; nothing will arrive
+        p.rrect_sheened(r, rad, theme::CARD_ABSENT);
+    } else {
+        crate::placeholder::ground(p, crate::placeholder::Reason::CardGround, key, r, rad);
     }
 }
 
@@ -1783,6 +1802,7 @@ pub fn skeleton_phase(ms: u32) -> f32 {
 /// only latch the gate on for the next frame, never off, so it self-sustains for exactly as long as
 /// something keeps drawing one.
 fn skeleton_sheen(p: Painter, r: Rect, rad: f32, phase: f32) {
+    // placeholder-exempt: the sweep is paint over a skeleton its caller (`skeleton_bar`, `skeleton_sheet`) counted first
     plx_machine::idle::invalidate();
     let band = (r.w * SKEL_BAND).max(1.0);
     // travel from fully off the left edge to fully off the right, so the block is clean at both
@@ -1805,7 +1825,11 @@ fn skeleton_sheen(p: Painter, r: Rect, rad: f32, phase: f32) {
 /// **A line of text that has not arrived** — a chip-radius bar at the run's own measured height, so
 /// the block it stands in keeps its height and nothing reflows when the words land.
 pub fn skeleton_bar(p: Painter, r: Rect, phase: f32) {
+    crate::placeholder::note(p, crate::placeholder::Reason::SkeletonBar, "");
     let rad = r.h * 0.5; // a chip radius on a text-line bar IS its half height
+    if crate::placeholder::sentinel_fill(p, r, rad) {
+        return;
+    }
     let base = theme::white(SKEL_BAR_A);
     p.rect(r, rad, base, base, 0.0);
     skeleton_sheen(p, r, rad, phase);
@@ -1815,7 +1839,11 @@ pub fn skeleton_bar(p: Painter, r: Rect, phase: f32) {
 /// missing poster, plus the sweep. Same geometry and same resting card edge as the real tile, which
 /// is the whole point: the placeholder is the card, without the picture.
 pub fn skeleton_sheet(p: Painter, r: Rect, rad: f32, phase: f32) {
+    crate::placeholder::note(p, crate::placeholder::Reason::SkeletonSheet, "");
     p.rect(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT, 0.0);
+    if crate::placeholder::sentinel_fill(p, r, rad) {
+        return;
+    }
     skeleton_sheen(p, r, rad, phase);
     // the resting card edge, so the placeholder holds its own boundary exactly as the real tile does
     p.rring(r, rad, theme::CARD_SHEEN_W, theme::CARD_SHEEN);
@@ -2561,12 +2589,19 @@ pub fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32
         }
     }
     if !drew {
-        p.rect_sheened(
-            r,
-            d * 0.5,
-            theme::CONTROL_IDLE_FILL,
-            theme::CONTROL_IDLE_FILL,
-        );
+        if thumb_s.is_empty() {
+            // no picture to wait for: the face is the avatar (absence, not a wait)
+            p.rect_sheened(
+                r,
+                d * 0.5,
+                theme::CONTROL_IDLE_FILL,
+                theme::CONTROL_IDLE_FILL,
+            );
+        } else {
+            // a picture is on its way: the same face, counted
+            crate::placeholder::face(p, crate::placeholder::Reason::ProfileChip, thumb_s, r, d * 0.5,
+                theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_FILL);
+        }
         if initial_c.to_bytes().is_empty() {
             // nobody to name — signed out, or signed in with no roster landed yet. A generic
             // person glyph either way; the unfurled label above is what tells the two apart.
@@ -3071,13 +3106,21 @@ impl View for Spinner {
         if !plx_machine::motion::phase_clocks_held() {
             plx_machine::idle::invalidate();
         }
+        #[cfg_attr(feature = "placeholder-sentinel", allow(unused_variables))]
         let t = (self.phase % Self::PERIOD_MS) as f32 / Self::PERIOD_MS as f32;
         for i in 0..self.dots {
             let ang =
                 i as f32 / self.dots as f32 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-            let lead = (t - i as f32 / self.dots as f32).rem_euclid(1.0);
-            let a = (1.0 - lead) * 0.85 + 0.12; // bright at the leading dot, fading behind it
-            let c = [self.col[0], self.col[1], self.col[2], self.col[3] * a];
+            #[cfg(not(feature = "placeholder-sentinel"))]
+            let c = {
+                let lead = (t - i as f32 / self.dots as f32).rem_euclid(1.0);
+                let a = (1.0 - lead) * 0.85 + 0.12; // bright at the leading dot, fading behind it
+                [self.col[0], self.col[1], self.col[2], self.col[3] * a]
+            };
+            // The sentinel build paints every dot at alpha 1 in the one exact colour, whatever the
+            // tint, the leading-dot fade or the cascade (`placeholder.rs`).
+            #[cfg(feature = "placeholder-sentinel")]
+            let (c, p) = (theme::PLACEHOLDER_SENTINEL, crate::placeholder::painter(p));
             let (dx, dy) = (self.cx + self.r * ang.cos(), self.cy + self.r * ang.sin());
             let d = self.dot_r;
             p.rect(Rect::new(dx - d, dy - d, 2.0 * d, 2.0 * d), d, c, c, 0.0);
@@ -4162,6 +4205,11 @@ impl<'a> StatusOverlay<'a> {
         // the centre alone. Using the cap band for one and a line-box metric for the other put the
         // two states on different baselines in the same frame.
         if working {
+            // A Working read-out is a wait that owns the surface (Home's hub load, a collection's,
+            // the Library's, a sign-in): counted where it is drawn. Home's `status_read` and the
+            // collection's `status_overlay` only build the value.
+            crate::placeholder::note(p, crate::placeholder::Reason::WorkingReadout,
+                self.caption.to_str().unwrap_or(""));
             Spinner::new(
                 self.frame.cx(),
                 cy - Spinner::R_PAGE - theme::space::XS,
@@ -4227,6 +4275,7 @@ impl<'a> StatusOverlay<'a> {
                 // Cap-top on the band's top edge, exactly where the settled note's `TextView` puts
                 // its first line, so a report that lands does not hop; the ring sits on the cap band.
                 let (gutter_x, text) = Self::busy_note_split(band, measure.width(line, Self::NOTE_SZ, false));
+                // placeholder-exempt: an inline busy NOTE ("sending the report"), not a content stand-in
                 Spinner::leading(gutter_x, band.y + measure.cap_h(Self::NOTE_SZ) * 0.5)
                     .phase(self.phase)
                     .tint(ink)
@@ -7918,6 +7967,10 @@ mod tab_capsule_motion_tests;
 #[cfg(test)]
 #[path = "widgets_poster_mark_tests.rs"]
 mod poster_mark_tests;
+
+#[cfg(test)]
+#[path = "widgets_placeholder_tests.rs"]
+mod placeholder_tests;
 
 #[cfg(test)]
 #[path = "widgets_ambient_ground_tests.rs"]

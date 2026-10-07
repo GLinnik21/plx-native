@@ -212,3 +212,11 @@ python3 ci/test_cargo_seed.py
 # pure logic, manifest tamper, adopt refusing anything but `linux-ci`, and the pinned-ffmpeg fetch against a
 # fake opener. Offline, no ffmpeg; the one real-ffmpeg case is off unless PLXNATIVE_SITE_VIDEO_FFMPEG is set.
 python3 tests/test_site_video.py
+# The placeholder-accounting gate (rust-modules/ui/src/placeholder.rs): every reference to
+# SKELETON_TOP / SKELETON_BOT / CARD_PLACEHOLDER / STALE_ALPHA / Spinner::new|leading / a `*_loading`
+# message needs a `placeholder::` counter call beside it or a reasoned `placeholder-exempt:` comment, so
+# the demo-video dump cannot miss a draw site nobody hooked. Pure grep, no cargo; the self-tests run
+# on synthetic trees in a private temp dir. Pinned: ci/test_ci_split.py needs the test file named, and
+# the test file itself fails if the gate line below is dropped from this file.
+python3 ci/test_check_placeholders.py
+python3 ci/check-placeholders.py

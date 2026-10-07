@@ -29,6 +29,12 @@ default = []
 # surface; `devtriggers`: the dev instruments of `tex`, `glassload`, `testpat`, ...).
 devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_platform/devtriggers", "plx_gfx/devtriggers"]
 threadcheck = ["plx_base/threadcheck"]
+# **The pixel oracle of the placeholder accounting** (`placeholder.rs`): every placeholder is
+# painted flat in one exact colour (#FF00FE) at alpha 1, ignoring the painter's alpha cascade and
+# the sheen, so a frame scanner can find one by pixel value. Forwarded from the application crate,
+# which enables it for the demo-video dump build ONLY: a shipping or television build never has it,
+# and it is not in any default set.
+placeholder-sentinel = []
 # The `cfg(test)` seams other crates' tests use (see lib.rs) plus the test-mode behaviour that
 # `cfg(test)` alone cannot give a dependent (the GL calls a host test must not make, the draw
 # census). Enabled from the dependents' `[dev-dependencies]`; never in a shipped build. It enables

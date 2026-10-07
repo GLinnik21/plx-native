@@ -107,6 +107,7 @@ impl LibraryScreen {
                     } else { plx_platform::i18n::msg::browse_library_no_matches().into() };
                 (caption, None)
             }
+            // placeholder-exempt: builds the caption only; a Loading readout draws as the Library spinner (draw_page, LibrarySpinner)
             Readout::Loading => (plx_platform::i18n::msg::browse_library_loading().into(), None),
             Readout::Grid => (String::new(), None),
         };

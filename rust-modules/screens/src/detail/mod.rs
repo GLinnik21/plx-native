@@ -25,6 +25,8 @@ pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_test
 mod geometry_tests;
 #[cfg(test)]
 mod identity_tests;
+#[cfg(test)]
+mod placeholder_tests;
 
 use plx_data::metadata::{Detail, Extra, Spot};
 use crate::registry::PlayIntent;
@@ -2111,6 +2113,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                             meta,
                         );
                         if meta.season_loading() {
+                            plx_ui::placeholder::note(below_hero, plx_ui::placeholder::Reason::SeasonSpinner, &self.rk);
                             plx_ui::widgets::Spinner::new(
                                 plx_ui::consts::SCR_W * 0.5,
                                 top + episodes::H * 0.5,
@@ -2183,6 +2186,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                 }
             }
         } else if meta.detail_loading() {
+            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailSpinner, &self.rk);
             plx_ui::widgets::Spinner::new(
                 plx_ui::consts::SCR_W * 0.5,
                 (self.content_top(measure, meta) + plx_ui::consts::SCR_H) * 0.5 - self.scroll.pos,
@@ -2317,6 +2321,11 @@ impl DetailScreen {
         } else {
             (0, 0.0, 0.0)
         };
+        // The backdrop is DRAWN only when its alpha is visible (`art_alpha`), and a path with no
+        // texture behind it is art that has not arrived: the bare wash is the placeholder.
+        if backdrop_pending(art_alpha, texture, &path) {
+            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailBackdrop, &path);
+        }
         let ground_flat = self
             .ground
             .is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
@@ -2378,7 +2387,11 @@ impl DetailScreen {
         let title = d
             .map(|d| d.title.as_str())
             .or_else(|| self.selected().map(|m| m.title.as_str()))
-            .unwrap_or(plx_platform::i18n::msg::browse_library_loading());
+            .unwrap_or_else(|| {
+                // No item has landed: the hero's title IS the "Loading" message (counted at the draw).
+                plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailTitle, &self.rk);
+                plx_platform::i18n::msg::browse_library_loading()
+            });
         let chrome = p.alpha(self.preview_chrome);
         // NOT `self.preview_chrome * self.preview_synopsis`: synopsis_target already tracks
         // chrome_target exactly (both states — background autoplay, full-trailer — target the
@@ -3912,6 +3925,13 @@ impl DetailScreen {
 /// full-screen sheet over the plane (sound, no picture).
 fn preview_punch_through(picture: bool) -> bool {
     picture
+}
+
+/// Is the Detail backdrop a WAIT this frame: its art is drawn at a visible alpha, it names a path,
+/// and that path has no texture yet (the bare wash stands in)? A path of `""` is an item with no
+/// artwork: nothing will arrive, so it is absence, not a wait.
+fn backdrop_pending(art_alpha: f32, texture: u32, path: &str) -> bool {
+    art_alpha > 0.01 && texture == 0 && !path.is_empty()
 }
 
 /// The keyed ambient wash is an opaque stand-in for the clear. Over a live plane it is the same

@@ -772,6 +772,7 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
                     .reason(plx_platform::i18n::msg::settings_onboard_failed_reason_c())
                     .draw(&env, p);
             } else {
+                plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::PageSpinner, "onboard");
                 Spinner::new(lf.x + lf.w * 0.5, lf.y + StatusOverlay::CTRL_H, 22.0)
                     .phase(self.phase_ms as u32)
                     .tint(theme::TEXT_TERTIARY)

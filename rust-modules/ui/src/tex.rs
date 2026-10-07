@@ -82,6 +82,13 @@ pub trait Source {
     /// An item's clearLogo, at the source's one logo request box.
     fn logo(&self, srv: u16, rk: &str) -> Option<PosterKey>;
     fn logo_warm(&self, srv: u16, rk: &str) -> Warm;
+    /// Has this item's clearLogo SETTLED as a miss (a 404 for an item with no logo, an undecodable
+    /// body)? A pure peek that starts nothing. `false` for everything that can still change
+    /// (unrequested, in flight, parked for a retry) and for a logo that arrived. The default is
+    /// "never settled": a source that cannot tell keeps the pending reading.
+    fn logo_failed(&self, _srv: u16, _rk: &str) -> bool {
+        false
+    }
     /// The render cache cannot keep this key resident: its decoded result was rejected, an
     /// already-resident texture was released under count/byte pressure, or a brand-new arrival was
     /// refused outright because pressure left nothing evictable that was not on screen a moment
@@ -279,6 +286,11 @@ pub fn logo_src(srv: u16, rk: &str) -> Option<(u32, f32, f32)> {
     let key = with_source(|s| s.logo(srv, rk), None)?;
     let (id, w, h) = resolve_key(key);
     (id != 0 && w > 0.0 && h > 0.0).then_some((id, w, h))
+}
+
+/// An item's clearLogo has settled as a miss: it will never arrive (see [`Source::logo_failed`]).
+pub fn logo_failed(srv: u16, rk: &str) -> bool {
+    with_source(|s| s.logo_failed(srv, rk), false)
 }
 
 pub fn logo_warm(srv: u16, rk: &str) -> Warm {

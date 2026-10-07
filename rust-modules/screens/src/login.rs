@@ -1764,6 +1764,7 @@ impl LoginScreen {
             // black-on-white QR.
             p.tex(self.qr_tex, inner, 0.0, theme::scrim_black(1.0));
         } else {
+            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::PageSpinner, "login-qr");
             Spinner::new(card.x + card.w * 0.5, card.y + card.h * 0.5, 22.0)
                 .phase(self.spin_ms as u32)
                 .tint(theme::scrim_black(0.5))
@@ -1786,6 +1787,7 @@ impl LoginScreen {
         }
 
         let escaping = qr_escape_offered(self.phase_ms);
+        plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::PageSpinner, "login-status");
         Spinner::new(right.status_spinner.cx(), right.status_spinner.cy(), STATUS_SPINNER_R)
             .phase(self.spin_ms as u32)
             .tint(theme::TEXT_SECONDARY)
@@ -1827,6 +1829,7 @@ impl LoginScreen {
             let top = bottom - h;
             if note.busy {
                 let cap = measure.cap_h(theme::size::CAPTION);
+                // placeholder-exempt: an inline busy NOTE beside one line of sign-in text, not a content stand-in
                 Spinner::leading(layout.narrative.x, top + cap / 2.0)
                     .phase(self.spin_ms as u32)
                     .tint(theme::TEXT_TERTIARY)
