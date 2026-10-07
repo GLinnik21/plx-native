@@ -2,7 +2,7 @@
 //! Related row. It is headed by the shared linked heading (`ui::linked_heading`), whose own focus
 //! group sits above the shelf's cards: UP from any card reaches it, DOWN returns to the card the
 //! shelf remembered, OK opens the collection page. The members are ordinary poster cards drawn by
-//! the same strip as Related ([`super::related::draw_strip`]).
+//! the same shared shelf as Related (`plx_ui::cards::Shelf`, driven by [`super::cards::Cards`]).
 
 use plx_data::metadata::{CollectionShelf, Detail};
 use plx_data::pms::PmsMovie;

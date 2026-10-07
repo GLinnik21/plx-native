@@ -865,9 +865,11 @@ pub fn draw_focused(
 /// a lone strip needs (home's `Grid` keeps its own CROSS-row pass, which this deliberately does
 /// not try to own).
 ///
-/// This is the loop the detail page's Related and Cast rows and the person page's Movies/Shows
-/// shelves all run; it lives here rather than in a screen so the culling discipline travels with
-/// it. **Only tiles that pass `on_axis` are drawn, and therefore only they call `resolve_tex_wh_on`** —
+/// Nothing in production calls this loop any more: the detail, person and collection shelves draw
+/// through `cards::Shelf` (which shares this module's [`tile_rect`] formula and culling rule), and
+/// Home's `Grid` runs its own cross-row pass. It stays only until the shelf migration's last step
+/// deletes it; the discipline below is the one `Shelf` kept. **Only tiles that pass `on_axis` are
+/// drawn, and therefore only they call `resolve_tex_wh_on`** —
 /// the 64-slot poster LRU must never see an off-screen request, which is exactly what a
 /// hand-rolled per-screen copy of this loop keeps getting wrong.
 ///

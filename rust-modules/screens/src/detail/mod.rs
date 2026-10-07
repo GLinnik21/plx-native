@@ -2712,8 +2712,12 @@ impl DetailScreen {
                     elems.push((e, Activate::Immediate));
                 }
             }
-            // After the member cards, so the heading wins wherever its focused face overlaps
-            // them (`LinkedHeading::stop`).
+            // The shelf cards registered inside `draw`'s section loop, before every stop here, and
+            // a later stop wins an overlap. For the hero, seasons, episodes and About that order
+            // is immaterial: none of their stops shares a pixel with a card's (pinned from the
+            // real draw by `no_shelf_card_stop_overlaps_the_hero_season_episode_or_about_stops`).
+            // The heading is the one stop that DOES overlap the cards, and it wins them by being
+            // registered after (`LinkedHeading::stop`).
             if collection::len(d) > 0 {
                 elems.push((collection::HEADING_ELEM, Activate::Direct));
             }

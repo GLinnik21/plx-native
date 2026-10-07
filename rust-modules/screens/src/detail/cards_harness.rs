@@ -22,6 +22,13 @@ pub(crate) struct Harness {
     ms: u32,
 }
 
+fn cx_of<'a>(ms: u32, press: f32, focus: Option<FocusKey<u32>>) -> Cx<'a, TestHost> {
+    static MEASURE: FixtureMeasure = FixtureMeasure;
+    Cx { views: (), tick: Tick { ms, dt_us: 16_667 }, measure: &MEASURE,
+        press: PressRead { scale: press, ..Default::default() },
+        focus: FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) }
+}
+
 fn mount_of(which: Which, n: usize) -> Box<dyn CardHarness> {
     Box::new(Harness::new(which, (0..n).map(|i| format!("r{i}")).collect()))
 }
@@ -114,10 +121,7 @@ impl Harness {
     }
 
     fn cx(&self) -> Cx<'_, TestHost> {
-        static MEASURE: FixtureMeasure = FixtureMeasure;
-        Cx { views: (), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &MEASURE,
-            press: PressRead { scale: self.press, ..Default::default() },
-            focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) }
+        cx_of(self.ms, self.press, self.focus)
     }
 
     fn step(&mut self, ev: ScreenEvent<TestHost>) -> bool {
@@ -136,7 +140,7 @@ impl Harness {
 
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: ENTRY, elem } }
 
-    /// The index of `elem` on the Related shelf.
+    /// The index of `elem` on the shelf.
     fn at(&self, elem: u32) -> Option<usize> {
         (0..self.rks.len()).find(|&i| self.local(i).and_then(|l| self.screen.engine_key(l)) == Some(elem))
     }
@@ -237,4 +241,102 @@ impl CardHarness for Harness {
         fresh.focus(now.elem, By::Restore);
         Ok(Box::new(fresh))
     }
+}
+
+/// The stops the real `Screen::draw` registers for each shelf (the arms of its section loop) are
+/// the rects `Focusable::place(.., At::Drawn)` answers, for every on-axis card, wherever the page
+/// and the shelf are scrolled. The Tier 2 `drawn_rect` above is a formula and `place` the thing
+/// under test, so neither can see a draw arm that frames its shelf differently.
+#[cfg(test)]
+mod real_draw {
+    use super::*;
+    use super::super::tests::drawn_stops;
+
+    const CARDS: usize = 24;
+
+    impl Harness {
+        /// The stops of one real draw at the harness's current state.
+        fn real_stops(&mut self) -> Vec<Stop<u32>> {
+            let context = cx_of(self.ms, self.press, self.focus);
+            drawn_stops(&mut self.screen, &context)
+        }
+
+        /// Where the page puts the page at `scroll`.
+        fn scroll_page(&mut self, scroll: f32) {
+            self.screen.scroll.jump(scroll);
+            self.screen.scroll_target = scroll;
+        }
+
+        /// The cards whose slot is on the horizontal axis now: the ones the draw registers.
+        fn on_axis_cards(&self) -> Vec<u32> {
+            let style = self.style();
+            self.cards().into_iter().filter(|&elem| {
+                let i = self.at(elem).unwrap();
+                let slot = card_row::tile_rect(i, style.margin_x, self.pitch(), self.shelf().scroll(), 0.0,
+                    (style.w, style.h));
+                plx_ui::on_axis(slot.x, style.w, plx_ui::consts::SCR_W, 0.0)
+            }).collect()
+        }
+
+        /// Every on-axis card has exactly one stop, and it is `place`'s drawn rect.
+        fn assert_stops_are_placed(&mut self, phase: &str) -> usize {
+            let stops = self.real_stops();
+            let wanted = self.on_axis_cards();
+            let all = self.cards();
+            let mine: Vec<_> = stops.iter().filter(|s| all.contains(&s.key.elem)).collect();
+            assert!(!wanted.is_empty(), "{phase}: the fixture must show cards");
+            assert_eq!(mine.len(), wanted.len(), "{phase}: one stop per on-axis card");
+            for elem in &wanted {
+                let stop = mine.iter().find(|s| s.key.elem == *elem)
+                    .unwrap_or_else(|| panic!("{phase}: card {elem} has no stop"));
+                let placed = self.place(*elem, At::Drawn).expect("a card on the shelf places");
+                let (a, b) = (stop.rect, placed.rect);
+                assert!((a.x - b.x).abs() < 0.01 && (a.y - b.y).abs() < 0.01
+                    && (a.w - b.w).abs() < 0.01 && (a.h - b.h).abs() < 0.01,
+                    "{phase}: card {elem} drawn stop {a:?} != placed {b:?}");
+            }
+            wanted.len()
+        }
+    }
+
+    fn run(which: Which) {
+        let _guard = plx_base::testlock::serial();
+        let rks: Vec<String> = (0..CARDS).map(|i| format!("r{i}")).collect();
+        let mut h = Harness::new(which, rks);
+        let section_top = {
+            let d = h.screen.detail(test_store().view()).unwrap();
+            h.screen.section_top(h.section(), d, &FixtureMeasure)
+        };
+        h.assert_stops_are_placed("scroll 0");
+        // the page scrolled: the section sits well up the screen
+        h.scroll_page((section_top - 300.0).max(0.0));
+        h.assert_stops_are_placed("page scrolled");
+        // a focused, popped first card, shelf at rest
+        let cards = h.cards();
+        h.focus(cards[0], By::Dir);
+        h.tick(60);
+        let first = h.assert_stops_are_placed("popped first card");
+        let popped = h.real_stops().into_iter().find(|s| s.key.elem == cards[0]).unwrap();
+        assert!(popped.rect.w > h.style().w, "the focused first card is drawn popped");
+        // the shelf scrolled, a later card focused and popped
+        h.focus(cards[CARDS - 2], By::Dir);
+        h.tick(120);
+        assert!(h.shelf().scroll() > 0.0, "the shelf scrolled to the focused card");
+        let later = h.assert_stops_are_placed("shelf scrolled");
+        assert!(later < CARDS && first < CARDS, "the fixture must leave cards off axis");
+        // mid-flight: the page and the shelf still moving
+        h.focus(cards[3], By::Dir);
+        h.tick(4);
+        h.assert_stops_are_placed("mid-scroll");
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+    }
+
+    #[test]
+    fn related_stops_from_the_real_draw_are_the_placed_rects() { run(Which::Related); }
+    #[test]
+    fn collection_stops_from_the_real_draw_are_the_placed_rects() { run(Which::Collection); }
+    #[test]
+    fn extras_stops_from_the_real_draw_are_the_placed_rects() { run(Which::Extras); }
+    #[test]
+    fn cast_stops_from_the_real_draw_are_the_placed_rects() { run(Which::Cast); }
 }

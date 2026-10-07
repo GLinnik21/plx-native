@@ -63,10 +63,13 @@ impl<'a> Cards<'a> {
             Which::Extras => extras::len(d),
             Which::Cast => d.credits_len().min(512),
         };
-        // The projections are rebuilt on every landing; a page whose items outran them shows none
-        // rather than a card with no key.
-        let published = n > 0 && cards.local(n - 1).is_some_and(|local| key_by_local.contains_key(&local));
-        cards.len = if published { n } else { 0 };
+        // The projections are rebuilt on every landing (`StoreChanged` -> `sync_keys`), but the app
+        // pumps the Metadata store and then draws in the same loop turn, one frame before that
+        // notice reaches the screen (`app::run`: `loop_requests`, then `draw`). For that draw the
+        // published list can outrun the keys: show the keyed prefix, never a card with no key and
+        // not the whole shelf blanked (which would also snap a focused pop to rest).
+        let keyed = |i: usize| cards.local(i).is_some_and(|local| key_by_local.contains_key(&local));
+        cards.len = if n == 0 || keyed(n - 1) { n } else { (0..n).take_while(|&i| keyed(i)).count() };
         cards
     }
 

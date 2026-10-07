@@ -86,6 +86,17 @@ fn cx<'a>(measure: &'a dyn plx_machine::machine::Measure, elem: Option<u32>) -> 
 
 // Synchronizing the identity registry and querying/hash-writing a screen read shared stores
 // and legacy panels. Require the caller's guard; acquiring one here would deadlock install().
+/// The stops one REAL `Screen::draw` of `screen` registers, in registration order. A host test has
+/// no GL, so the draw runs through a recording painter with its stops switched on
+/// (`record_stops_while_recording`); the frame clear is kept off the framebuffer.
+pub(super) fn drawn_stops(screen: &mut DetailScreen, context: &Cx<'_, TestHost>) -> Vec<Stop<u32>> {
+    let mut f = DrawFrame::new(context, plx_ui::Painter::recording());
+    plx_ui::screen::record_stops_while_recording(|| {
+        plx_gfx::gfx::without_frame_clear(|| Screen::<TestHost>::draw(screen, &mut f));
+    });
+    f.into_stops()
+}
+
 fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailScreen {
     bare_held(sid, rk)
 }
@@ -3323,16 +3334,8 @@ fn the_heading_is_a_hover_focus_stop_that_wins_over_the_member_cards() {
     screen.scroll_target = top;
     let heading = FocusKey { entry: EntryId(7), elem: collection::HEADING_ELEM };
     let context = cx(&measure, Some(heading.elem));
-    let mut draw = DrawFrame::new(&context, plx_ui::Painter::root());
     // the shelf registers its cards as the page draws it; the page registers the rest after
-    let d = screen.detail(test_store().view()).unwrap();
-    let frame = plx_ui::cards::SectionFrame {
-        y: screen.section_top(7, d, &measure) - screen.scroll.pos + related::LABEL_H,
-        clip: plx_ui::Rect::FULL,
-    };
-    screen.collection.record_stops(&mut draw, plx_ui::Painter::root(), &screen.cards(cards::Which::Collection, d), frame);
-    screen.record_stops(&mut draw);
-    let stops = draw.into_stops();
+    let stops = drawn_stops(&mut screen, &context);
     let at = stops.iter().position(|s| s.key == heading).expect("the heading registers a stop");
     assert_eq!(stops[at].hover, Hover::Focus);
     let last_member = screen.engine_key(collection::elem(3).unwrap()).unwrap();
@@ -3346,6 +3349,134 @@ fn the_heading_is_a_hover_focus_stop_that_wins_over_the_member_cards() {
     map.swap();
     let hit = map.resolve(Some(heading.entry), PointerKind::Click, placed.rect.cx(), placed.rect.cy(), None);
     assert_eq!(hit.hit, Some(heading));
+    clear();
+}
+
+/// **The hero, season, episode and about stops never overlap a shelf card's.** The shelves register
+/// their cards inside the section loop of `draw`, BEFORE `record_stops` adds the hero, seasons,
+/// episodes, the collection heading and About, and a later stop wins an overlap. The order is only
+/// immaterial if those groups never share a pixel; this draws a page with all four shelves and
+/// every other group, at a sweep of scroll positions and with each shelf's first card focused
+/// (popped), and holds every shelf-card stop apart from every other on-screen stop but the heading
+/// (which is meant to win over the cards under it).
+#[test]
+fn no_shelf_card_stop_overlaps_the_hero_season_episode_or_about_stops() {
+    let sid = ServerId::UNSET;
+    let mut page = detail(sid, "show");
+    page.episodes = (1..=6).map(|i| episode(&format!("e{i}"), i)).collect();
+    page.related = (1..=12).map(|i| collection_member(sid, &format!("r{i}"))).collect();
+    page.collection = Some(plx_data::metadata::CollectionShelf {
+        title: "Example Trilogy".into(),
+        section: 1,
+        tag: 812,
+        members: (1..=12).map(|i| collection_member(sid, &format!("m{i}"))).collect(),
+        count: 12,
+    });
+    page.extras = (1..=12)
+        .map(|i| plx_data::metadata::Extra { rk: format!("x{i}"), ..Default::default() })
+        .collect();
+    page.cast = (1..=12)
+        .map(|i| plx_data::metadata::Cast {
+            tag: format!("c{i}"),
+            id: 100 + i,
+            role: String::new(),
+            thumb: String::new(),
+            tag_key: String::new(),
+        })
+        .collect();
+    let _guard = install(page);
+    let mut screen = bare(&_guard, sid, "show");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let shelves: [Vec<u32>; 4] = [
+        (0..12).filter_map(|i| related::elem(i)).collect(),
+        (0..12).filter_map(|i| collection::elem(i)).collect(),
+        (0..12).filter_map(|i| extras::elem(i)).collect(),
+        (0..12).filter_map(|i| cast::elem(i)).collect(),
+    ];
+    let keyed: Vec<Vec<u32>> = shelves
+        .iter()
+        .map(|s| s.iter().map(|&e| screen.engine_key(e).expect("every card has a key")).collect())
+        .collect();
+    let is_card = |elem: u32| keyed.iter().any(|s| s.contains(&elem));
+    let last = {
+        let d = screen.detail(test_store().view()).unwrap();
+        let (sections, n) = screen.sections(Some(d));
+        screen.section_top(sections[n - 1], d, &measure)
+    };
+    let mut focuses: Vec<Option<u32>> = vec![None];
+    focuses.extend(keyed.iter().map(|s| Some(s[0])));
+    focuses.push(season::elem(0).and_then(|e| screen.engine_key(e)));
+    focuses.push(Some(hero::ELEM_PLAY));
+    let screen_rect = plx_ui::Rect::FULL;
+    let (mut cards_seen, mut others_seen) = ([0usize; 4], 0usize);
+    for step_at in 0..=((last / 120.0).ceil() as i32) {
+        let scroll = (step_at as f32 * 120.0).min(last);
+        screen.scroll.jump(scroll);
+        screen.scroll_target = scroll;
+        for focus in &focuses {
+            let context = cx(&measure, *focus);
+            let stops = drawn_stops(&mut screen, &context);
+            let shown = |s: &Stop<u32>| s.rect.intersect(s.clip).intersect(screen_rect);
+            let on_screen = |s: &&Stop<u32>| {
+                let r = shown(s);
+                r.w > 0.0 && r.h > 0.0
+            };
+            let cards: Vec<_> = stops.iter().filter(|s| is_card(s.key.elem)).filter(on_screen).collect();
+            let others: Vec<_> = stops
+                .iter()
+                .filter(|s| !is_card(s.key.elem) && s.key.elem != collection::HEADING_ELEM)
+                .filter(on_screen)
+                .collect();
+            for (i, shelf) in keyed.iter().enumerate() {
+                cards_seen[i] += cards.iter().filter(|s| shelf.contains(&s.key.elem)).count();
+            }
+            others_seen += others.len();
+            for c in &cards {
+                for o in &others {
+                    let (a, b) = (shown(c), shown(o));
+                    assert!(
+                        a.intersect(b).w <= 0.0 || a.intersect(b).h <= 0.0,
+                        "scroll {scroll}, focus {focus:?}: shelf card {} {a:?} overlaps stop {} {b:?}",
+                        c.key.elem, o.key.elem
+                    );
+                }
+            }
+        }
+    }
+    assert!(cards_seen.iter().all(|&n| n > 0), "every shelf must show cards somewhere in the sweep: {cards_seen:?}");
+    assert!(others_seen > 0, "the sweep must show hero, season, episode or About stops");
+    clear();
+}
+
+/// **A draw between a landing and its `StoreChanged` still shows the cards that have keys.** The
+/// app pumps the Metadata store AFTER the frame's dispatcher steps and draws in the same loop turn
+/// (`app::run`: `loop_requests` then `draw`), while the store's notice reaches the screen as
+/// `StoreChanged` only in the NEXT frame's `frame_ingest`. For that one draw the published list
+/// can be longer than the key projection; the shelf must keep the keyed prefix rather than vanish.
+#[test]
+fn a_draw_before_the_landing_is_synced_keeps_the_keyed_prefix_of_the_shelf() {
+    let sid = ServerId::UNSET;
+    let mut page = collection_movie(sid);
+    page.collection = None;
+    let mut grown = page.clone();
+    page.related = ["r1", "r2"].iter().map(|rk| collection_member(sid, rk)).collect();
+    grown.related = ["r1", "r2", "r3", "r4", "r5"].iter().map(|rk| collection_member(sid, rk)).collect();
+    let _guard = install(page);
+    let mut screen = bare(&_guard, sid, "m1");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let context = cx(&measure, None);
+    let keys: Vec<u32> = (0..2).map(|i| screen.engine_key(related::elem(i).unwrap()).unwrap()).collect();
+    let shown = |stops: &[Stop<u32>]| stops.iter().filter(|s| keys.contains(&s.key.elem)).count();
+    assert_eq!(shown(&drawn_stops(&mut screen, &context)), 2, "the synced shelf shows its cards");
+
+    // the landing publishes five cards; `StoreChanged` has not reached the screen yet
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(grown));
+    assert_eq!(shown(&drawn_stops(&mut screen, &context)), 2,
+        "the cards that have keys keep drawing while the rest wait for their keys");
+    screen.sync_keys(test_store().view());
+    let all: Vec<u32> = (0..5).map(|i| screen.engine_key(related::elem(i).unwrap()).unwrap()).collect();
+    let stops = drawn_stops(&mut screen, &context);
+    assert_eq!(stops.iter().filter(|s| all.contains(&s.key.elem)).count(), 5, "all five once synced");
     clear();
 }
 
