@@ -251,6 +251,102 @@ fn a_better_candidate_finishing_last_causes_exactly_one_final_repoint() {
     );
 }
 
+/// **Regression: every sign-in said "This is taking longer than usual."** A server that answered
+/// in a few milliseconds still held discovery for its dead public route's whole `remote` deadline
+/// (10 s on a television), because the race waited for EVERY direct candidate. A candidate that
+/// cannot outrank the verified winner is not waited for.
+#[test]
+fn a_healthy_server_does_not_wait_out_a_dead_lower_ranked_route() {
+    let plan = race_plan(); // local https (ranks first), remote https
+    let dial: ProbeDial = status_dial(|origin, _, _| {
+        if origin.host().starts_with("203-") {
+            // The public address a router will not hairpin: silent until the deadline.
+            std::thread::sleep(Duration::from_secs(3));
+            return (0, Vec::new());
+        }
+        (200, identity_json("race-machine"))
+    });
+    let policy = ProbeDeadlines {
+        local: Duration::from_secs(5),
+        remote: Duration::from_secs(10),
+        grace: Duration::from_millis(1_500),
+    };
+    let started = Instant::now();
+    let reach = probe_server_racing(&plan, dial, &threaded_spawn, policy, &mut |_, _, _| {});
+    assert!(matches!(reach, Reach::At(ref c, _) if c.location == probe::Location::Local));
+    assert!(started.elapsed() < Duration::from_secs(1),
+        "settled on the LAN answer in {:?}, not after the dead route's deadline", started.elapsed());
+}
+
+/// The other half of the rule: a better-ranked route that has not answered keeps the race open,
+/// but only for `grace` after the first verified answer, not for its own full deadline.
+#[test]
+fn a_dead_better_ranked_route_costs_at_most_the_grace_after_the_first_answer() {
+    let plan = race_plan();
+    let dial: ProbeDial = status_dial(|origin, _, _| {
+        if origin.host().starts_with("192-") {
+            std::thread::sleep(Duration::from_secs(3)); // the LAN route is the dead one
+            return (0, Vec::new());
+        }
+        (200, identity_json("race-machine"))
+    });
+    let policy = ProbeDeadlines {
+        local: Duration::from_secs(5),
+        remote: Duration::from_secs(10),
+        grace: Duration::from_millis(200),
+    };
+    let started = Instant::now();
+    let reach = probe_server_racing(&plan, dial, &threaded_spawn, policy, &mut |_, _, _| {});
+    let took = started.elapsed();
+    assert!(matches!(reach, Reach::At(ref c, _) if c.location == probe::Location::Remote));
+    assert!(took >= Duration::from_millis(200), "the better route was given its grace ({took:?})");
+    assert!(took < Duration::from_millis(1_500), "and no more than that ({took:?})");
+}
+
+/// A better-ranked route that answers INSIDE the grace still wins, with one final re-point.
+#[test]
+fn a_better_route_answering_inside_the_grace_still_wins() {
+    let mut plan = race_plan();
+    plan.candidates.swap(0, 1);
+    let dial: ProbeDial = status_dial(|origin, _, _| {
+        if origin.host().starts_with("192-") {
+            std::thread::sleep(Duration::from_millis(60));
+        }
+        (200, identity_json("race-machine"))
+    });
+    let policy = ProbeDeadlines {
+        local: Duration::from_secs(5),
+        remote: Duration::from_secs(10),
+        grace: Duration::from_millis(1_500),
+    };
+    let mut activated = Vec::new();
+    let reach = probe_server_racing(&plan, dial, &threaded_spawn, policy,
+        &mut |_, c, _| activated.push(c.location));
+    assert!(matches!(reach, Reach::At(ref c, _) if c.location == probe::Location::Local));
+    assert_eq!(activated, [probe::Location::Remote, probe::Location::Local]);
+}
+
+/// The decision itself, with no thread and no clock.
+#[test]
+fn the_race_ends_early_only_when_no_unanswered_route_could_outrank_the_winner() {
+    let plan = race_plan();
+    let grace = Duration::from_millis(1_500);
+    let winner = |index: usize| {
+        let candidate = plan.candidates[index].clone();
+        let origin = dial_target(&candidate).unwrap();
+        Winner { index, score: candidate_score(&candidate, &origin), candidate, origin }
+    };
+    let (local, remote) = (winner(0), winner(1));
+    assert!(!race_decided(&plan, &[1], None, None, grace), "no winner, nothing to decide");
+    assert!(race_decided(&plan, &[1], Some(&local), Some(Duration::ZERO), grace),
+        "a pending remote cannot outrank the local winner");
+    assert!(!race_decided(&plan, &[0], Some(&remote), Some(Duration::from_millis(1_499)), grace),
+        "a pending local could still outrank a remote winner, inside the grace");
+    assert!(race_decided(&plan, &[0], Some(&remote), Some(grace), grace),
+        "…and is not waited for once the grace is spent");
+    assert!(race_decided(&plan, &[], Some(&remote), Some(Duration::ZERO), grace));
+}
+
 /// Pending means a worker really exists. Refusing one launch cannot leave the coordinator
 /// awaiting a message that can never be sent.
 #[test]
@@ -339,6 +435,7 @@ fn relay_only_server_gets_a_fresh_probe_budget_after_direct_timeouts_and_is_admi
     let policy = ProbeDeadlines {
         local: Duration::from_millis(10),
         remote: Duration::from_millis(50),
+        grace: Duration::from_millis(50),
     };
     let relay_budgets = Arc::new(Mutex::new(Vec::new()));
     let relay_budgets_at_dial = Arc::clone(&relay_budgets);
@@ -486,6 +583,7 @@ fn an_on_time_result_queued_before_the_deadline_survives_coordinator_delay() {
     let policy = ProbeDeadlines {
         local: Duration::from_millis(5),
         remote: Duration::from_millis(5),
+        grace: Duration::from_millis(5),
     };
     let reach = probe_server_racing(&plan, dial, &spawn, policy, &mut |_, _, _| {});
     assert!(matches!(reach, Reach::At(..)));
@@ -505,6 +603,7 @@ fn a_late_local_result_is_ignored_while_a_remote_deadline_remains_live() {
     let policy = ProbeDeadlines {
         local: Duration::from_millis(5),
         remote: Duration::from_millis(100),
+        grace: Duration::from_millis(100),
     };
     let mut activated = Vec::new();
     let reach = probe_server_racing(&plan, dial, &threaded_spawn, policy, &mut |_, c, _| {

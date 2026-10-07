@@ -127,6 +127,7 @@ pub fn test_policy() -> ProbeDeadlines {
     ProbeDeadlines {
         local: Duration::from_secs(1),
         remote: Duration::from_secs(1),
+        grace: Duration::from_millis(250),
     }
 }
 

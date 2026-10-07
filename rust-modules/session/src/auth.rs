@@ -2124,11 +2124,18 @@ impl From<(i32, Vec<u8>)> for ProbeReply {
 pub struct ProbeDeadlines {
     local: Duration,
     remote: Duration,
+    /// How long a better-ranked route that has not answered keeps the race open after the FIRST
+    /// verified, credential-eligible answer ([`race_decided`]). It bounds the cost of a dead
+    /// address (a public IP the router will not hairpin, a share's private LAN) on a healthy
+    /// connection: without it a server that answered in 100 ms still held discovery for the dead
+    /// route's whole `remote` deadline, which is what made every ordinary sign-in "slow".
+    grace: Duration,
 }
 
 const PROBE_DEADLINES: ProbeDeadlines = ProbeDeadlines {
     local: Duration::from_secs(5),
     remote: Duration::from_secs(10),
+    grace: Duration::from_millis(1_500),
 };
 const SERVER_GAP: Duration = Duration::from_secs(4);
 // Authenticated admission starts only after identity probing has produced a candidate. Endpoint
@@ -2349,6 +2356,39 @@ fn settle_probe_message(
     }
 }
 
+/// Could candidate `index`, which has not answered yet, still replace `best`? Its score is a
+/// function of the candidate alone ([`candidate_score`]), so this is known BEFORE it answers; a
+/// candidate this build cannot put a credential on never becomes `best` ([`settle_probe_message`])
+/// and so never counts.
+fn could_outrank(plan: &ProbePlan, index: usize, best: &Winner) -> bool {
+    let c = &plan.candidates[index];
+    if !c.credential_eligible {
+        return false;
+    }
+    let Some(origin) = dial_target(c) else { return false };
+    let score = candidate_score(c, &origin);
+    score > best.score || (score == best.score && index < best.index)
+}
+
+/// **Is the race over, with some candidates still unanswered?** Pure, so the rule is gradeable
+/// on the host without a socket or a clock.
+///
+/// A race has to wait for every candidate only while one of them could still change the answer.
+/// Once a verified, eligible winner exists, a candidate that cannot outrank it is irrelevant, and
+/// one that could (a better-ranked route) is given `grace` from the first win and no longer.
+/// `since_first_win` is `None` before any win. This is what keeps a healthy sign-in from waiting
+/// out a dead route's full deadline (5 s local, 10 s remote) behind an answer it already has.
+fn race_decided(
+    plan: &ProbePlan,
+    undecided: &[usize],
+    best: Option<&Winner>,
+    since_first_win: Option<Duration>,
+    grace: Duration,
+) -> bool {
+    let (Some(best), Some(since)) = (best, since_first_win) else { return false };
+    since >= grace || !undecided.iter().any(|&i| could_outrank(plan, i, best))
+}
+
 /// Race one phase of a server's candidates. The spawner is injected because refusal is a result
 /// the coordinator must settle, not an exceptional path a unit test can reach through real OS
 /// exhaustion. Only a successful spawn creates a pending entry. Each entry owns an absolute
@@ -2425,6 +2465,7 @@ fn race_batch(
         observed: vec![None; plan.candidates.len()],
         ..BatchResult::default()
     };
+    let mut first_win: Option<Instant> = None;
     while live > 0 {
         // Drain results that completed on time BEFORE expiring by the coordinator's current clock.
         // Spawn setup and queue backlog are allowed to delay observation; `finished` is the fact
@@ -2479,11 +2520,62 @@ fn race_batch(
         if live == 0 {
             break;
         }
+        if first_win.is_none() && result.first.is_some() {
+            first_win = Some(Instant::now());
+        }
+        // A candidate whose worker already claimed completion owes a message that is about to
+        // land, so it is never skipped; only one still dialling can be left behind.
+        let undecided: Vec<usize> = indices
+            .iter()
+            .copied()
+            .filter(|&i| {
+                pending[i]
+                    .as_ref()
+                    .is_some_and(|p| p.state.load(Ordering::Acquire) == PROBE_PENDING)
+            })
+            .collect();
+        if undecided.len() == live
+            && race_decided(
+                plan,
+                &undecided,
+                result.best.as_ref(),
+                first_win.map(|at| at.elapsed()),
+                policy.grace,
+            )
+        {
+            let mut left_behind = 0usize;
+            for &index in &undecided {
+                if let Some(p) = pending[index].take() {
+                    if p
+                        .state
+                        .compare_exchange(
+                            PROBE_PENDING,
+                            PROBE_EXPIRED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        left_behind += 1;
+                    }
+                }
+            }
+            if left_behind > 0 {
+                log(&format!(
+                    "auth: '{}' settled on its first verified route; {left_behind} slower or lower-ranked address(es) not waited for",
+                    plan.name
+                ));
+            }
+            break;
+        }
         let next = indices
             .iter()
             .filter_map(|&i| pending[i].as_ref())
             .filter(|p| p.state.load(Ordering::Acquire) == PROBE_PENDING)
             .map(|p| p.deadline)
+            // Wake for the end of the grace too, but only while it is still ahead: a past one
+            // would turn the wait below into a zero-timeout spin.
+            .chain(first_win.map(|at| at + policy.grace).filter(|end| *end > Instant::now()))
             .min();
         let received = match next {
             Some(next) => rx.recv_timeout(next.saturating_duration_since(Instant::now())),
@@ -2516,7 +2608,9 @@ fn race_batch(
 
 /// Parallel within one server, with relay held out until every direct candidate has settled.
 /// The coordinator alone activates: first usable immediately, then at most one re-point to the
-/// final best score. Workers only dial, classify and send a message.
+/// final best score. Workers only dial, classify and send a message. A phase ends when its last
+/// candidate settles, or earlier once a verified winner cannot be outranked by anything still
+/// unanswered, or has waited out `ProbeDeadlines::grace` for what could ([`race_decided`]).
 fn probe_server_racing(
     plan: &ProbePlan,
     dial: ProbeDial,
