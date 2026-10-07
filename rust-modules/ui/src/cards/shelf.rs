@@ -148,6 +148,7 @@ impl Shelf {
                 (Seen::Nothing, Some(p)) if p != i => {
                     let dx = (i as f32 - p as f32) * self.pitch();
                     self.row.relocate(p, i, dx);
+                    self.row.clamp_scroll(src.len(), self.style);
                     self.landed = Some(Landed { from: p, to: i });
                 }
                 // a restore, a reconcile, a seat: adopted whole, the old tile straight to rest

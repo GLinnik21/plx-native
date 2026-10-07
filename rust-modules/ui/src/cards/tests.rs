@@ -555,6 +555,68 @@ fn grid_landing_carries_the_pop_and_the_scroll() {
     a_landing_carries_the_pop_with_the_focused_elem::<Grid>(poster_grid::COLS);
 }
 
+/// The farthest a `n`-card HOME shelf can scroll.
+fn home_max_scroll(n: usize) -> f32 {
+    let sty = &RowStyle::HOME;
+    (n as f32 * (sty.w + sty.gap) - sty.gap - (crate::consts::SCR_W - 2.0 * sty.margin_x)).max(0.0)
+}
+
+/// Move `elem` to index `to` of the source (a landing that reorders).
+fn put_at(r: &mut Rig<Shelf>, elem: u32, to: usize) {
+    r.src.elems.retain(|&e| e != elem);
+    r.src.elems.insert(to, elem);
+}
+
+/// A landing that moves the focused card to the head of a row sitting at scroll 0 would shift the
+/// scroll to -2 pitches (a blank band on the left, then a glide back): the scroll never leaves
+/// `[0, max]` on any frame.
+#[test]
+fn shelf_landing_to_the_head_never_overscrolls() {
+    let mut r = settled::<Shelf>(40);
+    r.land_focus(102, By::Restore);
+    r.run(240);
+    assert_eq!(r.sect.scroll(), 0.0, "card 2 is on screen, the row did not scroll");
+    put_at(&mut r, 102, 0);
+    let max = home_max_scroll(40);
+    for frame in 0..240 {
+        r.run(1);
+        let sx = r.sect.scroll();
+        assert!((0.0..=max).contains(&sx), "frame {frame}: scroll {sx} left [0, {max}]");
+    }
+}
+
+/// An insert above the focus on a row that fits entirely cannot be honoured at all: the scroll
+/// stays exactly at 0 with no spring.
+#[test]
+fn shelf_landing_on_a_row_that_fits_stays_at_zero() {
+    let mut r = settled::<Shelf>(3);
+    r.land_focus(101, By::Restore);
+    r.run(240);
+    r.src.elems.insert(0, 900);
+    for frame in 0..240 {
+        r.run(1);
+        assert_eq!(r.sect.scroll(), 0.0, "frame {frame}: a row that fits scrolled");
+    }
+}
+
+/// Where the shift IS honourable (a landing mid-row) the tile keeps its screen x exactly, and the
+/// scroll moves by the whole shift.
+#[test]
+fn shelf_landing_mid_row_keeps_the_tile_exactly() {
+    let mut r = settled::<Shelf>(40);
+    r.land_focus(112, By::Restore);
+    r.run(240);
+    let (before, sx) = (Section::place(&r.sect, &r.cx(), &r.src, 112, At::Drawn).unwrap().rect, Section::scroll(&r.sect));
+    assert!(sx > 0.0 && sx < home_max_scroll(40) - 400.0, "a mid-row scroll, got {sx}");
+    r.src.elems.insert(0, 900);
+    for frame in 0..2 {
+        r.run(1);
+        let now = Section::place(&r.sect, &r.cx(), &r.src, 112, At::Drawn).unwrap().rect;
+        assert!((now.x - before.x).abs() < 0.01, "frame {frame}: x {} -> {}", before.x, now.x);
+    }
+    assert!((r.sect.scroll() - sx - (RowStyle::HOME.w + RowStyle::HOME.gap)).abs() < 0.01);
+}
+
 /// A restore or reconcile arrival is adopted whole and the tile it leaves goes straight to rest —
 /// it was not "let go" by anyone — with ONE lifted tile even on the frame before the tick.
 fn a_non_deliberate_arrival_rests_the_old_tile<S: Section>() {
