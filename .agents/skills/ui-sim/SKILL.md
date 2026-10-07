@@ -244,6 +244,9 @@ make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero 
   composes `site/og/card.html` around the home figure the same run staged, so a run that includes
   `home` needs a headless Chromium (Chrome, Chromium or a Playwright cache; `CHROME=` overrides).
   Outputs are all-or-nothing: one failed scene and nothing is written anywhere.
+- **The site's copies follow the render.** After re-rendering the `site-*` scenes, run
+  `python3 tools/render-site-variants.py` (the WebP of every close-up and the phone copies of
+  tiles and player) and then `python3 tools/render-site-glows.py`; both read the rendered JPEGs.
 - **Screenshot triggers worth knowing.** `grid=<row>,<col>` (Home), `libgrid=<row>,<col>` (the
   library's All grid), `libshelf=<shelf>,<col>` (a library shelf; the view scrolls to it),
   `libtype=<movies|shows|seasons|episodes|collections>` (the All grid's TYPE menu value, applied

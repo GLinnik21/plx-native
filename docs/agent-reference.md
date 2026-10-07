@@ -885,7 +885,9 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   rather than copying them into `site/`. The close-up stills `site/media/closeup-*.jpg` and the
   link-preview card `site/media/og-card.jpg` are `make screenshots` outputs (`ui-sim` skill,
   "Documentation screenshots"): the card is `site/og/card.html` (not deployed) rendered around
-  the home figure by `tools/render-og-card.sh`; re-render after editing the card.
+  the home figure by `tools/render-og-card.sh`; re-render after editing the card. Their WebP and
+  phone (`-narrow`) copies come from those JPEGs through `tools/render-site-variants.py`, and the
+  glows behind them through `tools/render-site-glows.py`: run both, in that order, after a re-render.
 - `pkg/` — deployable payload: `appinfo.json` (native app manifest), `plxnative` binary, icons,
   `appfont*.ttf`, and the prebuilt `.ipk`.
 - `ipkroot/` — ipk staging (`ctl/control`, `data/`, `debian-binary`); assembled by `make ipk`.
