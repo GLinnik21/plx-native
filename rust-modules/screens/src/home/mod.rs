@@ -2937,6 +2937,8 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
 
 /// A focused tile's title line. The deck's carries the amber ▶ only while OK on a Continue
 /// Watching card plays (`DeckPress::Play`): the triangle promises the press, so when OK opens the

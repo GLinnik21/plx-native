@@ -17,6 +17,8 @@ mod section;
 mod trailer;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
 
 #[cfg(test)]
 mod geometry_tests;
