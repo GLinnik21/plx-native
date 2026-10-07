@@ -1,16 +1,16 @@
 {
- "generated": "2026-10-07T22:36:37Z",
+ "generated": "2026-10-07T22:40:28Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 22.4,
+   "change7_pct": 21.9,
    "d30": null,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 101,
+   "n_now": 102,
    "n_prev": 62,
-   "now": 246,
+   "now": 245.0,
    "prev7": 201.0,
    "state": "worse",
    "threshold_abs": 30.0,
@@ -40,9 +40,9 @@
    "group": "ci",
    "id": "push_wait",
    "label": "Wait after merge",
-   "n_now": 113,
+   "n_now": 114,
    "n_prev": 75,
-   "now": 512,
+   "now": 512.0,
    "prev7": 967,
    "state": "better",
    "threshold_abs": 60.0,
@@ -232,9 +232,9 @@
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 101,
+   "n_now": 102,
    "n_prev": 62,
-   "now": 17,
+   "now": 17.0,
    "prev7": 17.0,
    "state": "flat",
    "threshold_abs": 30.0,
@@ -243,14 +243,14 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -17.7,
+   "change7_pct": -17.8,
    "d30": null,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 101,
+   "n_now": 102,
    "n_prev": 62,
-   "now": 745,
+   "now": 744.0,
    "prev7": 905.0,
    "state": "flat",
    "threshold_abs": 30.0,
@@ -264,9 +264,9 @@
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 46,
+   "n_now": 47,
    "n_prev": 0,
-   "now": 284.0,
+   "now": 277,
    "prev7": null,
    "state": "new",
    "threshold_abs": 30.0,
@@ -276,13 +276,8 @@
  ],
  "regressions": [
   {
-   "change_pct": 22.4,
+   "change_pct": 21.9,
    "commits": [
-    {
-     "pr": 507,
-     "sha": "8b85ddf9c",
-     "title": "Library: the All grid is a cards::Grid (external scroll), with an exact, clamped landing shift"
-    },
     {
      "pr": 509,
      "sha": "6a3e85699",
@@ -327,6 +322,11 @@
      "pr": 517,
      "sha": "965948deb",
      "title": "Demo library (S2b): the hero-geometry check, pinned to the layout's Rust constants"
+    },
+    {
+     "pr": 523,
+     "sha": "ef720591b",
+     "title": "Library: the hub shelves are cards::Shelf, and a landing can no longer overscroll a shelf"
     }
    ],
    "from": 201.0,
@@ -334,7 +334,7 @@
    "label": "Simulator CI: Linux simulator build + launch",
    "since": "2026-10-07",
    "threshold_pct": 20.0,
-   "to": 246
+   "to": 245.0
   }
  ],
  "schema": 1,
@@ -349,7 +349,7 @@
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "label": "Simulator CI: macOS simulator build + launch",
-   "now": 745
+   "now": 744.0
   },
   {
    "group": "ci",
@@ -361,7 +361,7 @@
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "now": 284.0
+   "now": 277
   },
   {
    "group": "ci",
