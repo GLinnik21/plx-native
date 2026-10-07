@@ -250,6 +250,39 @@ fn a_card_held_with_repeat_beats_still_delivers_one_hold_and_no_tap() {
     assert!(!events.contains("\"press_commit\""), "a real hold does not also activate the card");
 }
 
+/// A hold that is TAKEN — the item menu opening over the card — ends the press at REST, not on the
+/// release spring. The dip is a press-in on the focus pop (`press::DIP` brings a popped card back to
+/// its unpopped size), so a spring-back left running under the menu is a card in motion beneath a
+/// scrim and the frozen host snapshot taken of it: it read as a poster that had lost its pop, with
+/// its title drawn twice while the opener lift (drawn at rest) and the page (drawn mid-spring)
+/// disagreed. A hold that is NOT taken (page 700) keeps the dip until release, by design.
+#[test]
+fn a_taken_hold_ends_the_press_at_rest_so_the_card_keeps_its_pop_under_the_menu() {
+    for (page, taken) in [(701, true), (700, false)] {
+        let (mut d, mut rig) = boot(FixtureArg::Page(page));
+        d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
+        let mut dipped = 1.0f32;
+        let mut held_at = None;
+        for ms in (32..=900).step_by(16) {
+            d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+            if held_at.is_some() { break; }
+            dipped = dipped.min(d.input.press.scale());
+            if events_of(&d, 0).contains("\"press_hold\"") { held_at = Some(ms); }
+        }
+        let held_at = held_at.expect("OK held past LONG_MS delivers the hold");
+        assert!(dipped < 0.95, "the held card dips while the hold is undecided (page {page}: {dipped})");
+        // The frame AFTER the one that delivered the hold: a taken hold has already ended the press.
+        if taken {
+            assert!(!d.input.press.is_active(), "a taken hold leaves no spring-back running");
+            assert_eq!(d.input.press.scale(), 1.0);
+            assert!(d.input.arm.is_none());
+        } else {
+            assert!(d.input.press.is_active(), "an untaken hold holds the dip until the release (held at {held_at})");
+            assert!(d.input.press.scale() < 0.95);
+        }
+    }
+}
+
 /// Boot straight into a page of the given argument (a `Root` at frame 1).
 fn boot(arg: FixtureArg) -> (Dispatcher<FixtureHost>, FixtureRig) {
     let mut d: Dispatcher<FixtureHost> = Dispatcher::new();

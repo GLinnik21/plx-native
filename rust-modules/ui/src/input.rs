@@ -112,6 +112,14 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
         }
     }
 
+    /// A surface TOOK the hold (the item menu opened): end the press at rest rather than on the
+    /// release spring — see [`Press::settle`].
+    pub fn consume_press(&mut self) {
+        if self.arm.take().is_some() {
+            self.press.settle();
+        }
+    }
+
     /// The physical release.
     pub fn release(&mut self, now: u32) {
         self.press.release(now);

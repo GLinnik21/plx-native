@@ -623,7 +623,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 // was arranging by hand.
                 if let Some(arg) = app.bridge.content_menu_arg(&app.pages, entry, &ret) {
                     bridge::open_item_menu(&mut app.pages, arg);
-                    app.input.press.cancel();
+                    app.input.press.settle();
                     app.ok_armed = false;
                 }
             }
@@ -682,7 +682,7 @@ fn home_requests(app: &mut App, now: u32) {
                 // there is, and a menu opened on the root leaves onto the root's own stack.
                 let arg = bridge::card_menu_arg(item, from_deck, true, entry, ret.focus, opener.rect);
                 bridge::open_item_menu(&mut app.pages, arg);
-                app.input.press.cancel();
+                app.input.press.settle();
                 app.ok_armed = false;
             }
         }
@@ -746,7 +746,7 @@ fn search_requests(app: &mut App) {
                 if item.sid != *sid || item.rk != *rk || !plx_screens::item_menu::has_actions(&item) { continue; }
                 let arg = bridge::card_menu_arg(&item, false, false, entry, ret.focus, opener.rect);
                 bridge::open_item_menu(&mut app.pages, arg);
-                app.input.press.cancel();
+                app.input.press.settle();
                 app.ok_armed = false;
             }
         }
@@ -851,7 +851,7 @@ fn library_requests(app: &mut App, now: u32) {
                 if item.sid != sid || item.rk != rk || !plx_screens::item_menu::has_actions(&item) { continue; }
                 let arg = bridge::card_menu_arg(&item, from_deck, false, entry, ret.focus, opener.rect);
                 bridge::open_item_menu(&mut app.pages, arg);
-                app.input.press.cancel();
+                app.input.press.settle();
                 app.ok_armed = false;
             }
             LibraryReq::Detail { sid, ref rk } | LibraryReq::Play { sid, ref rk, .. } => {

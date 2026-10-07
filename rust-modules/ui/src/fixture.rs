@@ -383,9 +383,10 @@ impl Machine<FixtureHost> for FixtureScreen {
             ScreenEvent::Input(InputEvent {
                 kind: InputKind::Key { key: Key::Ok, .. },
                 ..
-            }) if self.row.kind == ElemKind::Card && self.arg != FixtureArg::Page(700) => {
+            }) if self.row.kind == ElemKind::Card && !matches!(self.arg, FixtureArg::Page(700 | 701)) => {
                 // OK on a card page opens a page: the structural op that must mount THIS frame.
-                // Page 700 instead exercises the engine's holdable card press path.
+                // Pages 700 and 701 instead exercise the engine's holdable card press path; 701's
+                // hold is TAKEN (it opens a surface), 700's is not.
                 // A Bare or Control row leaves OK to the engine (`after_step`): activation on the
                 // down edge, or a non-holdable press.
                 self.state.keys += 1;
@@ -418,6 +419,8 @@ impl Machine<FixtureHost> for FixtureScreen {
                 fx.push(Fx::Log(LogLine(format!("fixture: mounted {:?}", self.arg))));
                 Handled::Yes
             }
+            // Page 701: a card whose HOLD is taken, as Home's is when it raises the item menu.
+            ScreenEvent::PressHold(_) if self.arg == FixtureArg::Page(701) => Handled::Yes,
             ScreenEvent::StoreChanged(_, _) => {
                 self.state.items_seen = cx.views.store.items.len() as u32;
                 self.row.len = self.state.items_seen as usize;

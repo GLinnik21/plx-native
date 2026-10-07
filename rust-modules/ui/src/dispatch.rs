@@ -1949,7 +1949,7 @@ where
         let owner = InputOwner::Entry(entry);
         match ev {
             ScreenEvent::PressHold(_) if handled == Handled::Yes => {
-                self.input.cancel_press();
+                self.input.consume_press();
             }
             ScreenEvent::Enter(e) if is_owner && self.engine_page() => {
                 if matches!(e, Enter::Restored) {
