@@ -571,7 +571,13 @@ def handler(fixture):
         def log_message(self, _format, *_args):
             pass  # BaseHTTPRequestHandler would print the token-bearing request.
 
-        def send_body(self, status, content_type, data):
+        def send_body(self, status, content_type, data, record=None):
+            # `record(size)` writes the access log row. It runs BEFORE the first byte goes out: a
+            # client that has just been answered reads /__stress/stats (or the log) and must find
+            # its own request there. Recorded after the write, the row trails the answer by however
+            # long this thread is descheduled -- under a loaded CPU a reader saw the count one short.
+            if record:
+                record(len(data))
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
@@ -582,10 +588,8 @@ def handler(fixture):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-        def send_json(self, status, obj):
-            data = json.dumps(obj, separators=(",", ":")).encode()
-            self.send_body(status, "application/json", data)
-            return len(data)
+        def send_json(self, status, obj, record=None):
+            self.send_body(status, "application/json", json.dumps(obj, separators=(",", ":")).encode(), record)
 
         def do_POST(self):
             if self.path != "/__stress/control" or self.client_address[0] not in ("127.0.0.1", "::1"):
@@ -618,27 +622,28 @@ def handler(fixture):
                             1 <= width <= 1920 and 1 <= height <= 1080):
                         raise ValueError("invalid fixture image")
                 except ValueError:
-                    self.send_json(400, {"error": "invalid fixture image"})
-                    fixture.record("invalid_image", path, 400, 0)
+                    self.send_json(400, {"error": "invalid fixture image"},
+                                   lambda _size: fixture.record("invalid_image", path, 400, 0))
                     return
                 with fixture.lock:
                     enabled = fixture.images
                 status = 200 if enabled else 503
                 data = image_jpeg(int(match[1])) if enabled else b"images disabled"
-                self.send_body(status, "image/jpeg" if enabled else "text/plain", data)
                 # The canonical key excludes auth and includes every transform the app uses.
                 key = f"{source}|{width}x{height}|{query.get('format', ['jpeg'])[0]}|minSize={query.get('minSize', [''])[0]}"
-                fixture.record("image", source, status, len(data), image_id=int(match[1]), key=key)
+                self.send_body(status, "image/jpeg" if enabled else "text/plain", data,
+                               lambda size: fixture.record("image", source, status, size,
+                                                           image_id=int(match[1]), key=key))
                 return
             try:
                 response = fixture.metadata(path, query)
             except ValueError:
                 response = None
             status = 200 if response is not None else 404
-            size = self.send_json(status, {"MediaContainer": response} if response is not None
-                                  else {"error": "unknown fixture endpoint"})
             fields = {"start": response["offset"], "count": response["size"]} if response and "offset" in response else {}
-            fixture.record("metadata", path, status, size, **fields)
+            self.send_json(status, {"MediaContainer": response} if response is not None
+                           else {"error": "unknown fixture endpoint"},
+                           lambda size: fixture.record("metadata", path, status, size, **fields))
     return Handler
 
 
