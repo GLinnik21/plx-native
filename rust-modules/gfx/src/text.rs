@@ -421,6 +421,8 @@ fn drain_budgeted<T>(
 /// Rasterise and upload recorded misses for one dip frame. Host tests deliberately substitute a
 /// residency ledger: there is no GL context there, while the queue and deadline remain identical.
 pub fn drain_prewarm(budget_us: u64, now: impl FnMut() -> u64) -> usize {
+    // dump mode: drain to empty, whatever the CPU's speed (`crate::dump`)
+    let budget_us = if crate::dump::armed() { u64::MAX } else { budget_us };
     PREWARM.with(|slot| {
         let mut jobs = std::mem::take(&mut *slot.borrow_mut());
         let done = drain_budgeted(&mut jobs, budget_us, now, rasterise_warm);
@@ -474,6 +476,8 @@ pub fn drain_background_prewarm(budget_us: u64, now: impl FnMut() -> u64) -> usi
 }
 
 fn drain_background_prewarm_at(budget_us: u64, mut now: impl FnMut() -> u64, live: impl Fn() -> usize) -> usize {
+    // dump mode: no time budget (the occupancy ceiling below is logical and still applies)
+    let budget_us = if crate::dump::armed() { u64::MAX } else { budget_us };
     BACKGROUND.with(|b| {
         let mut done = 0;
         let ceiling = TCACHE.saturating_sub(PREWARM_HEADROOM);
@@ -528,8 +532,11 @@ pub fn prewarm_pending() -> bool {
 /// The queue changes only inside an iteration's own phases — a panel's recording walk in
 /// `update`, the budgeted drain on the presenting side before the draw, the draw's warm pass — and
 /// a frame that does not present drains nothing, so the latch is the queue as that iteration's
-/// springs saw it.
+/// springs saw it. In dump mode the latch is always `false` (see `crate::dump`).
 pub fn latch_surface_text_pending(pending: bool) {
+    // dump mode: forced false on the premise that the dump driver drains to empty before the
+    // sample, so the sample is never an input (`crate::dump`); the product loop's order differs
+    let pending = pending && !crate::dump::armed();
     SURFACE_TEXT_PENDING.with(|latch| latch.set(Some(pending)));
 }
 

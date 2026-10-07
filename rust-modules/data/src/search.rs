@@ -993,9 +993,8 @@ fn pump_with_optional_directory(
         // are outside it, so the query still goes out when it went out.
         // the take ALWAYS releases the single-flight claim, whatever the landing turns out to
         // be — dropping a stale one without that is how the flag latches forever
-        let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Search, || {
-            adapter.fetch[i].take()
-        });
+        let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Search,
+            || adapter.fetch[i].busy(), || adapter.fetch[i].take());
         if let Some(m) = taken {
             if m.gen == state.gen {
                 record(state, i, m.what);
@@ -1493,3 +1492,7 @@ mod merge_ranking_tests;
 #[cfg(test)]
 #[path = "search_publication_tests.rs"]
 mod publication_tests;
+
+#[cfg(test)]
+#[path = "search_dump_tests.rs"]
+mod dump_tests;

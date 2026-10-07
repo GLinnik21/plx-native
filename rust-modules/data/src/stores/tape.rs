@@ -117,7 +117,7 @@ pub fn take_store_landing<T: serde::Serialize + serde::de::DeserializeOwned>(
         if reply.is_some() { gate.landed(id.ord()); }
         reply
     } else {
-        super::take_landing(gate, id, || fetch.take())
+        super::take_landing_owed(gate, id, || fetch.busy(), || fetch.take())
     }
 }
 
