@@ -10,6 +10,10 @@
 * the host FFmpeg and libass builds in the simulator jobs are CACHED where the build scripts really
   write, under a key that names every input the scripts key on (a cache that "hits" and still
   rebuilds, or one that outlives a changed input, both stay green);
+* ci.yml's `paths` filter (`CiPathFilter`): evaluated with GitHub's rules, a docs-only or
+  repository-metadata-only change (issue forms, a PR template, prose, images) starts no run, while
+  every file a gate reads (PRIVACY.md, the credits pair, an `include_str!` target, the workflows)
+  still does, and no other workflow carries a catch-all `'**'` filter;
 * the nightly Homebrew Channel repository: the nightly build generates its manifest (and debug never
   does), a real nightly can only be cut from main, the manifest reaches the release, and the site
   stages the repository and the guide.
@@ -400,6 +404,149 @@ class BuildBenchWorkflow(unittest.TestCase):
         self.assertTrue(set(daily) <= set(bb.ALL_SCENARIOS), daily)
         self.assertNotIn("check", daily)   # the gate has its own, failure-tolerant step
         self.assertNotIn("arm", daily)     # no ARM archive on a runner; the benchmark never builds FFmpeg
+
+
+class CiPathFilter(unittest.TestCase):
+    """ci.yml's `paths` list (the `&ci_paths` anchor, shared by `push` and `pull_request`), run through
+    GitHub's matching rules, because a wrong line here fails silently in BOTH directions: a gate-read
+    file excluded means a run that should have caught a break never starts, and a prose file left
+    in means ~20 runner-minutes per documentation edit (#261, #513).
+
+    The rules (docs.github.com, "Workflow syntax", filter pattern cheat sheet): patterns are
+    evaluated in order; a `!` pattern removes what an earlier pattern matched, a later positive
+    pattern puts it back; `*` matches any characters but `/`; `**` matches any characters including
+    `/`, and `**/` also matches no directory at all; `?` matches one character but `/`."""
+
+    @staticmethod
+    def anchor():
+        lines = text("ci.yml").splitlines()
+        start = next(i for i, l in enumerate(lines) if l.strip() == "paths: &ci_paths")
+        patterns = []
+        for line in lines[start + 1:]:
+            stripped = line.strip()
+            if stripped.startswith("#") or not stripped:
+                continue
+            if not stripped.startswith("- "):
+                break
+            patterns.append(stripped[2:].strip().strip("'\""))
+        return patterns
+
+    @staticmethod
+    def regex(pattern):
+        out, i = [], 0
+        while i < len(pattern):
+            if pattern.startswith("**/", i):
+                out.append("(?:.*/)?")
+                i += 3
+            elif pattern.startswith("**", i):
+                out.append(".*")
+                i += 2
+            elif pattern[i] == "*":
+                out.append("[^/]*")
+                i += 1
+            elif pattern[i] == "?":
+                out.append("[^/]")
+                i += 1
+            else:
+                out.append(re.escape(pattern[i]))
+                i += 1
+        return re.compile("".join(out) + r"\Z")
+
+    @classmethod
+    def triggers(cls, path, patterns=None):
+        included = False
+        for pattern in patterns if patterns is not None else cls.anchor():
+            negative = pattern.startswith("!")
+            if cls.regex(pattern[1:] if negative else pattern).match(path):
+                included = not negative
+        return included
+
+    def test_pull_request_uses_the_same_list_as_push(self):
+        self.assertRegex(text("ci.yml"), r"(?m)^  pull_request:\n    paths: \*ci_paths$")
+        self.assertEqual(len(re.findall(r"(?m)^\s+paths: &ci_paths$", text("ci.yml"))), 1)
+
+    def test_the_matcher_follows_githubs_rules(self):
+        t = self.triggers
+        self.assertTrue(t("a/b/c.rs", ["**"]))
+        self.assertTrue(t("x", ["**"]))
+        self.assertFalse(t("a/b.md", ["**", "!a/**"]))
+        self.assertTrue(t("a/b.md", ["**", "!a/**", "a/b.md"]), "a later positive pattern re-includes")
+        self.assertFalse(t("a/b.md", ["**", "a/b.md", "!a/**"]), "a later negative pattern excludes again")
+        self.assertTrue(t("a/b/c.md", ["**", "!a/*.md"]), "`*` does not cross `/`")
+        self.assertFalse(t("a/b/c.md", ["**", "!a/**/*.md"]))
+        self.assertFalse(t("a/c.md", ["**", "!a/**/*.md"]), "`**/` also matches no directory")
+        self.assertFalse(t("README.md", ["**", "!README.md"]))
+        self.assertTrue(t("docs/README.md", ["**", "!README.md"]), "a bare name is anchored at the root")
+
+    # Every path here is read by a gate or ships, so skipping the run for it would hide a break.
+    MUST_TRIGGER = (
+        "rust-modules/ui/src/widgets.rs", "rust-modules/Cargo.lock", "rust-modules/build.rs", "src/main.c",
+        "Makefile", ".gitignore", "ci/check-package.py", "ci/check-python-steps.txt",
+        "tests/test_harness.py", "tests/README.md", "tools/check-parallel.py", "locales/en/settings.json",
+        "pkg/appinfo.json", "assets/icons/play.svg",
+        ".github/workflows/ci.yml", ".github/workflows/pages.yml", ".github/workflows/release.yml",
+        ".github/actions/host-rust/action.yml",
+        ".claude/hooks/outbound-guard.py", ".claude/hooks/outbound-guard-test.py",
+        ".agents/skills/wake-tv/wake-tv.sh",
+        "PRIVACY.md", "LICENSE", "LICENSING.md", "TRADEMARKS.md", "THIRD-PARTY-NOTICES.md",
+        "docs/screenshots/CREDITS.md", "site/credits.html", "site/index.html", "site/ci/index.html",
+        "docs/measurements/p1b-logs/pipe_abr_pin_320.log",
+    )
+    # Prose, images and repository metadata: no gate reads them (the evidence is in ci.yml).
+    MUST_NOT_TRIGGER = (
+        ".github/ISSUE_TEMPLATE/bug_report.yml", ".github/ISSUE_TEMPLATE/config.yml",
+        ".github/FUNDING.yml", ".github/PULL_REQUEST_TEMPLATE.md", ".github/pull_request_template.md",
+        ".github/CODEOWNERS", ".github/dependabot.yml",
+        "README.md", "CONTRIBUTING.md", "SECURITY.md", "AGENTS.md", "CLAUDE.md",
+        "docs/agent-reference.md", "docs/troubleshooting.md", "docs/release-notes/v0.8.0.md",
+        "docs/plex-openapi.json", "docs/screenshots/home.jpg", "docs/assets/sentry-wordmark-dark.svg",
+        "docs/webosbrew-package.yml", "docs/measurements/m2-verbose-rerun.txt",
+        "site/404.html", "site/media/closeup-glass.jpg", "tools/render-doc-page.py",
+        "rust-modules/media/src/player/CLAUDE.md", ".agents/skills/ui-sim/SKILL.md",
+        ".claude/settings.json", ".claude/workflows/swarm-gate.js", ".claude/agents/doc-claim-auditor.md",
+        ".codex/agents/doc-claim-auditor.toml",
+    )
+
+    def test_what_a_gate_reads_triggers(self):
+        patterns = self.anchor()
+        for path in self.MUST_TRIGGER:
+            with self.subTest(path):
+                self.assertTrue(self.triggers(path, patterns), f"{path} is read by a gate but starts no run")
+                self.assertTrue((ROOT / path).exists(), f"{path} is gone: update MUST_TRIGGER")
+
+    def test_prose_images_and_repository_metadata_do_not(self):
+        patterns = self.anchor()
+        for path in self.MUST_NOT_TRIGGER:
+            with self.subTest(path):
+                self.assertFalse(self.triggers(path, patterns), f"{path} starts the whole CI for nothing")
+
+    def test_every_compile_time_include_triggers(self):
+        # `include_str!`/`include_bytes!` pull a file into the build, so a change to it changes what the
+        # crate tests (PRIVACY.md, LICENSE, the locale and fixture files...) compile against.
+        patterns, seen = self.anchor(), 0
+        include = re.compile(r'include_(?:str|bytes)!\(\s*"([^"]+)"')
+        for folder, dirs, files in os.walk(ROOT / "rust-modules"):
+            dirs[:] = [d for d in dirs if not d.startswith("target")]
+            for name in files:
+                if not name.endswith(".rs"):
+                    continue
+                source = Path(folder, name)
+                for target in include.findall(source.read_text(errors="replace")):
+                    resolved = (source.parent / target).resolve()
+                    try:
+                        relative = resolved.relative_to(ROOT).as_posix()
+                    except ValueError:
+                        continue
+                    seen += 1
+                    with self.subTest(f"{source.relative_to(ROOT).as_posix()} -> {relative}"):
+                        self.assertTrue(self.triggers(relative, patterns), f"{relative} is include_str!ed")
+        self.assertGreater(seen, 50)
+
+    def test_only_ci_has_a_catch_all_filter(self):
+        # Every other workflow lists the files it builds from, so a documentation push cannot start it.
+        for wf in sorted(WORKFLOWS.glob("*.yml")):
+            catch_all = re.findall(r"(?m)^\s+- ['\"]?\*\*['\"]?\s*$", code(wf.name))
+            self.assertEqual(len(catch_all), 1 if wf.name == "ci.yml" else 0, wf.name)
 
 
 if __name__ == "__main__":
