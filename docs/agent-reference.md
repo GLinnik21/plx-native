@@ -294,17 +294,6 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     the failing message says the same. Run it locally with
     `python3 ci/check-build-budgets.py --graph --src rust-modules/src` plus one `--src` per layer crate,
     as `ci.yml` spells it (add `--binary <path>` to grade a stripped binary); `ci/test_build_budgets.py` covers pass, fail, warn and the json schema.
-  - *Live chart.* https://plxnative.com/ci/ (`site/ci/index.html`, noindex, not linked from the
-    landing page) plots every CI job's minutes per successful `main` push, with a 7-run median and
-    numbered markers on pushes titled `Build:` / `CI:` / `Check:`. It reads `ci-history.json` from
-    the orphan `ci-metrics` branch (raw.githubusercontent.com), which `.github/workflows/ci-metrics.yml`
-    updates through `tools/ci-history.py` after every CI / Simulator CI run on `main` (it is
-    incremental and idempotent; `tools/test_ci_history.py`, in `check-python`, uses a fake `gh`).
-    The runs listing's `status=success` filter is stale, so the tool filters `conclusion` and `event`
-    itself, and the listing can repeat or skip a run across pages, so an occasional gap is closed
-    with `gh workflow run ci-metrics.yml -f full=true`. That same command backfills a branch that
-    does not exist yet. To look at a local data file, serve `site/` with the file beside it and open
-    `/ci/?data=ci-history.json` (a same-origin relative path only).
 - `make build-bench [ARGS='--runs 5 --json out.json']` / `make build-bench-quick` — the repeatable
   local **build benchmark** (`tools/build-bench.py`), so a build-affecting change pastes a
   before/after table instead of an ad-hoc scratch-script number. It prints a Markdown table (median /
