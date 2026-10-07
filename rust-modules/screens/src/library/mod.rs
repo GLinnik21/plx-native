@@ -548,11 +548,14 @@ impl LibraryScreen {
         } else { None };
         if let Some(want) = want {
             self.scroll_target = want;
+            // Only a SAVED viewport is jumped to. A `Restore` that carries none is a reseat the
+            // page asked of itself (BACK to the top, a section's first seat): the reader sees the
+            // scroll spring carry them there, as Home's BACK glides back to the hero.
             if by == By::Restore {
                 if let Some(saved) = self.restore_scroll.take() {
                     self.scroll_target = saved.clamp(0.0, self.target_layout.max_scroll());
+                    self.scroll.jump(self.scroll_target);
                 }
-                self.scroll.jump(self.scroll_target);
             }
         } else {
             self.scroll_target = self.scroll_target.clamp(0.0, self.target_layout.max_scroll());
