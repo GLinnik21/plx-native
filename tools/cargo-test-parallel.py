@@ -28,7 +28,8 @@ What it does, in order:
    CARGO_MANIFEST_DIR / CARGO_PKG_* / library-path environment is set. Each also gets its own
    PLXNATIVE_RUNTIME_DIR (a subdirectory of the caller's, named for the package) and its own
    RUST_TEST_THREADS share, so the binaries cannot share the runtime root's files and the
-   machine is not oversubscribed jobs-fold (timing tests are sensitive to that).
+   machine is not oversubscribed jobs-fold (timing tests are sensitive to that). Each runs with
+   NO_PROXY=* so the curl tests' loopback servers are never handed to a caller's HTTPS_PROXY.
 4. Prints each binary's output WHOLE, under a cargo-style `Running` line, in the order they
    finish -- never interleaved -- so every binary's literal `test result:` line is in the log.
    It does not stop at the first failing binary (cargo would): every binary runs, every failure
@@ -143,6 +144,12 @@ class Run:
             sub = os.path.join(runtime_root, self.name)
             os.makedirs(sub, exist_ok=True)
             self.env["PLXNATIVE_RUNTIME_DIR"] = sub
+        # No proxy for the test binaries, whatever the caller's environment carries: the curl tests
+        # aim fake names (`*.plex.direct`, `.invalid`) at loopback servers of their own, and libcurl
+        # would hand them to an HTTPS_PROXY instead (a cloud agent sandbox sets one; ~20 TLS and
+        # redirect tests then fail with CURLE_SSL_CONNECT_ERROR). The TV has no proxy. Only the
+        # binaries get this; cargo's own crate downloads above still use the caller's proxy.
+        self.env["NO_PROXY"] = self.env["no_proxy"] = "*"
         if threads and "RUST_TEST_THREADS" not in os.environ:
             self.env["RUST_TEST_THREADS"] = str(threads)
         self.proc: subprocess.Popen | None = None

@@ -11,6 +11,7 @@ the gate:
 * a failed build returns cargo's own status and runs nothing;
 * each binary gets its own PLXNATIVE_RUNTIME_DIR under the caller's, runs in its package directory,
   and receives the --filter (and only there);
+* no binary inherits the caller's proxy (NO_PROXY=* for each);
 * a binary killed by a signal fails the run.
 """
 from __future__ import annotations
@@ -51,6 +52,7 @@ for i, a in enumerate(args):
 # itself, anything else passes. It records cwd/runtime/args so the tests can read them back.
 FAKE_BIN = """#!/bin/sh
 name=$(basename "$0")
+echo "noproxy=$NO_PROXY,$no_proxy" >> "$FAKE_HOME/proxy.log"
 echo "bin=$name cwd=$(pwd) runtime=$PLXNATIVE_RUNTIME_DIR args=$*" >> "$FAKE_HOME/bins.log"
 case "$name" in
   fail_*) echo "test result: FAILED. 0 passed; 1 failed; 0 ignored"; exit 101;;
@@ -181,6 +183,18 @@ class RunnerEnvironment(unittest.TestCase):
             out = f.run(["plx_a", "plx_b"], "--filter", "route::")
             self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
             self.assertTrue(all(line.endswith("args=route::") for line in f.started()), f.started())
+
+    def test_a_proxy_in_the_callers_environment_never_reaches_a_test_binary(self):
+        # The curl tests resolve fake names (`*.plex.direct`, `.invalid`) to loopback servers they
+        # start themselves. libcurl honours HTTPS_PROXY, so on a host that sets one (a cloud agent
+        # sandbox, a corporate laptop) those requests went to the proxy instead: about twenty TLS
+        # and redirect tests failed with CURLE_SSL_CONNECT_ERROR (35) for a reason that has nothing
+        # to do with the code. The TV has no proxy, so the suite grades the TV's environment.
+        with Fixture() as f:
+            out = f.run(["plx_a"], env={"HTTPS_PROXY": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9",
+                                        "NO_PROXY": "localhost", "no_proxy": "localhost"})
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+            self.assertEqual((f.home / "proxy.log").read_text().splitlines(), ["noproxy=*,*"])
 
     def test_no_runtime_dir_from_the_caller_gets_a_private_one_that_is_removed(self):
         with Fixture() as f:

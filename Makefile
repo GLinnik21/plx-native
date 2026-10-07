@@ -1740,6 +1740,7 @@ check-python-rest: check-localization check-c-unit
 	python3 .claude/hooks/outbound-guard-test.py
 	python3 .claude/hooks/release-config-check-test.py
 	python3 .claude/hooks/tv-lock-guard-test.py
+	python3 .claude/hooks/cloud-unshallow-test.py
 	@# The PMS probe's own offline suite (~3ms). It talks to the maintainer's real server with a
 	@# real token, so its redaction and its session CLEANUP are the two things that must not
 	@# regress -- and both are only covered here. It sat outside this target until 2026-08-27,
