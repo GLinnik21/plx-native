@@ -84,11 +84,15 @@ the L0 `CardRow` (the `cards` gate also refuses `card_row::*`, `card_row as x` a
 `GridSpec::new(top, edge)` is the six-column `poster_grid::STYLE` grid from `MARGIN_X` that
 springs its own scroll (Collection); `.columns(cols, style, left)` sets the column count, card
 style and left edge (a rail-aware or episode grid), and `.external()` selects `ScrollMode::External`
-for a grid inside a document whose page scroll another owner drives (the Library, the later
-`Stack`): the grid never steps a scroll, the owner calls `set_page(top, scroll)` before each
-`on` / `draw` / `place`, reads the scroll the focused row wants from `reveal_target()` and the
-document shift a content landing needs from `landed_shift()`, and the grid does not home when focus
-is elsewhere.
+for a grid inside a document whose page scroll another owner drives (the Library's All grid, the
+later `Stack`): the grid never steps a scroll, the owner calls `set_page(top, scroll)` before each
+`on` / `draw` / `place`, may read the scroll the focused row wants from `reveal_target()` (the
+Library does not: it reveals by its own rule over the settled layout) and applies the document
+shift a content landing needs, `landed_shift()`, to its scroll and scroll target; the grid does
+not home when focus is elsewhere. An owner whose columns, style or document top change at run time
+(the Library's episode listing, its shelf run) hands them over with `set_columns` / `set_page`;
+`settle_band` adopts a restored focus row's caption band before the next tick so a layout built in
+between sizes the document from it. The Library's hub SHELVES are not on the component yet.
 
 ## Localization and shared reading layout
 

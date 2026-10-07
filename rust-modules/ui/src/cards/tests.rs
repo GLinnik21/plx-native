@@ -961,3 +961,96 @@ fn shelf_head_is_the_first_cards_unpopped_slot() {
     assert_eq!(r.sect.head(SHELF_AT), placed.rect);
     assert_eq!(placed.rect.y, SHELF_AT.y);
 }
+
+/// An owner whose column count changes at run time (the Library's episode listing) hands the grid
+/// the new columns; the cells follow and the focused tile's pop and caption band carry over
+/// instead of being corrupted or restarted.
+#[test]
+fn set_columns_regrids_the_cells_and_keeps_the_pop_and_bands() {
+    let mut r = settled::<ExtGrid>(600);
+    r.land_focus(105, By::Dir);
+    r.run(240);
+    let canon = |r: &Rig<ExtGrid>| { let mut c = Canon::new(); r.sect.write(&mut c); c.finish() };
+    let before = canon(&r);
+    let pop = r.sect.scale_of(&r.cx(), &r.src, 105).unwrap();
+    assert!(pop > 1.0, "the focused tile is lifted");
+    let narrow = RowStyle { w: 150.0, h: 225.0, gap: 20.0, ..EXT_STYLE };
+    r.sect.grid.set_columns(6, narrow, 100.0);
+    assert_eq!(canon(&r), before, "the springs are untouched by a geometry change");
+    assert_eq!(r.sect.scale_of(&r.cx(), &r.src, 105), Some(pop));
+    let cell = |r: &Rig<ExtGrid>, e: u32| r.sect.place(&r.cx(), &r.src, e, At::SpringTarget).unwrap().rest_rect;
+    let (c0, c1, c6) = (cell(&r, 100), cell(&r, 101), cell(&r, 106));
+    assert!((c1.cx() - c0.cx() - (narrow.w + narrow.gap)).abs() < 0.01, "columns are the new width apart");
+    assert!((c6.cx() - c0.cx()).abs() < 0.01, "the seventh card wraps to column 0 of the next row");
+    assert!(matches!(r.sect.grid.neighbour(&r.src, r.key(100), Dir::Down), Step::Move(k) if k == r.key(106)));
+    match r.sect.grid.group_spec(plx_machine::machine::GroupId(1), 600).kind {
+        crate::screen::GroupKind::Grid { cols, .. } => assert_eq!(cols, 6),
+        _ => panic!("a grid registers a Grid group"),
+    }
+}
+
+/// `settle_band` opens a row's caption band at once; it never cuts short a band `on` is opening,
+/// and `reset_bands` closes them.
+#[test]
+fn settle_band_opens_settled_and_reset_bands_closes() {
+    let mut r = settled::<ExtGrid>(80);
+    r.sect.grid.settle_band(Some(3));
+    let open = |r: &Rig<ExtGrid>, row: usize| r.sect.grid.band_geometry().iter().find(|b| b.row == row).map(|b| b.expansion);
+    assert_eq!(open(&r, 3), Some(1.0));
+    r.land_focus(100 + 4 * EXT.cols as u32, By::Dir);
+    r.run(1);
+    let mid = open(&r, 4).unwrap();
+    assert!(mid > 0.0 && mid < 1.0, "a deliberate move opens its band over frames: {mid}");
+    r.sect.grid.settle_band(Some(4));
+    assert_eq!(open(&r, 4), Some(mid), "settling the row already focused changes nothing");
+    r.sect.grid.reset_bands();
+    assert!(r.sect.grid.band_geometry().iter().all(|b| b.row == usize::MAX), "no band survives a reset");
+}
+
+/// A card the source has not loaded is not painted, but its stop still registers: the Library's
+/// listing is paged, and a slot whose page has not landed draws nothing.
+#[test]
+fn an_unloaded_card_is_not_painted_but_keeps_its_stop() {
+    struct Holey(Cards);
+    impl CardSource<FixtureHost> for Holey {
+        fn len(&self) -> usize { self.0.len() }
+        fn elem(&self, i: usize) -> u32 { self.0.elem(i) }
+        fn index_of(&self, e: &u32) -> Option<usize> { self.0.index_of(e) }
+        fn art(&self, i: usize) -> Art<'_> { self.0.art(i) }
+        fn label(&self, i: usize) -> TileLabel { self.0.label(i) }
+        fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, m: &dyn plx_machine::machine::Measure) {
+            self.0.overlay(p, i, tile, m)
+        }
+        fn loaded(&self, i: usize) -> bool { i != 1 }
+    }
+    let r = settled::<ExtGrid>(8);
+    let src = Holey(Cards::new(r.src.elems.clone(), false));
+    let cx = r.cx();
+    let mut f = DrawFrame::new(&cx, Painter::recording());
+    r.sect.grid.draw(&mut f, Painter::recording(), &src);
+    let painted: Vec<u32> = src.0.drawn.borrow().iter().map(|&(e, _)| e).collect();
+    assert!(painted.contains(&100) && !painted.contains(&101), "card 1 is skipped: {painted:?}");
+    let mut f = DrawFrame::new(&cx, Painter::root());
+    r.sect.grid.record_stops(&mut f, Painter::root(), &src);
+    assert!(f.stops().iter().any(|s| s.key.elem == 101), "…but its stop is registered");
+}
+
+/// In external mode the grid's canon omits the scroll fields (the owner writes its own) and the
+/// owner can write the bands and the pop on their own, in its own order.
+#[test]
+fn an_external_grid_writes_no_scroll_of_its_own() {
+    let mut r = settled::<ExtGrid>(40);
+    r.land_focus(105, By::Dir);
+    r.run(3);
+    let mut whole = Canon::new();
+    r.sect.grid.write(&mut whole);
+    let mut parts = Canon::new();
+    r.sect.grid.write_bands(&mut parts);
+    r.sect.grid.write_pop(&mut parts);
+    assert_eq!(whole.finish(), parts.finish(), "bands then pop, and no scroll");
+    let mut own = Canon::new();
+    Grid::new(ENTRY, GridSpec::new(520.0, 96.0)).write(&mut own);
+    let mut ext = Canon::new();
+    Grid::new(ENTRY, GridSpec::new(520.0, 96.0).external()).write(&mut ext);
+    assert_ne!(own.finish(), ext.finish(), "a self-scrolling grid does write its scroll");
+}
