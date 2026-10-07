@@ -146,26 +146,22 @@ pub fn resolve(libs: &[LibRef<'_>], rec: Option<&HomePins>) -> Vec<bool> {
 
 /// Does the first-run route have a question for this profile?
 ///
-/// **Two conditions, and both are the design's.** A DECISION to make, and never twice — a
-/// first-run screen that comes back is not a first-run screen.
+/// **Asked of everyone, once.** The "pick your libraries" question is part of onboarding (owner
+/// decision, 2026-10-07): the account holder and a managed profile, with or without remote access,
+/// on one server or several. It was asked only when the roster held more than one source — a
+/// single-server install met a screen with one household's shelves and nothing to weigh — and, for
+/// a managed profile (whose roster is the household's server alone, so never more than one), not
+/// at all (RC.1). What a profile has to choose is which libraries its Home, its tab strip and its
+/// Library offer, and that is a choice on one server as much as on three; the screen itself skips
+/// the one shape with nothing in it, a single source holding a single library
+/// (`screens::onboard`), which is knowable only once discovery has landed, after this gate.
 ///
-/// The decision is, for the account holder, **more than one source**: a single-server install
-/// would meet a screen with one household's shelves and nothing to weigh — 90% of installs, and
-/// the rejected alternative the canvas names. It counts SOURCES, not libraries: the question is
-/// whose shelves reach your Home, and a second library on your own server is not a second answer
-/// to it.
-///
-/// **A managed profile is asked with one source too** (`managed`, from
-/// [`Session::profile_is_managed`](super::session::Session::profile_is_managed)). Its roster is
-/// the household's server alone — plex.tv grants it no friend's share and the switch hides every
-/// server it was not given — so under the account holder's rule it was structurally never asked,
-/// and the one choice it does have, which of that server's libraries its profile favours (what
-/// its Home, its tab strip and its Library offer), was never put. The screen itself skips a
-/// first run with a single library on a single server (`screens::onboard`): that is the one shape
-/// with nothing to choose, and it is knowable only once discovery has landed, after this gate.
-/// With NO source there is nothing to ask about for anybody.
-pub fn asks(sources: usize, managed: bool, rec: Option<&HomePins>) -> bool {
-    (sources > 1 || (managed && sources == 1)) && !rec.is_some_and(|r| r.asked)
+/// A DECISION to make, and never twice — a first-run screen that comes back is not a first-run
+/// screen: once a profile's record says it was `asked`, this is `false` for good. With NO source
+/// there is nothing to ask about for anybody. It counts SOURCES, not libraries, because the
+/// roster is what has landed by the time the route is chosen.
+pub fn asks(sources: usize, rec: Option<&HomePins>) -> bool {
+    sources >= 1 && !rec.is_some_and(|r| r.asked)
 }
 
 /// **Which rows of the table are this profile's ANSWER, and which are still only a default.**
@@ -557,54 +553,32 @@ mod tests {
         assert_eq!(resolve(&roster(), Some(&rec)), vec![false, false, true]);
     }
 
-    /// **The gate.** One source is not a question for the account holder, and the same profile is
-    /// never asked twice.
+    /// **The gate asks everyone.** Owner decision, 2026-10-07: the first-run "pick your libraries"
+    /// question is part of onboarding, asked of the account holder and of a managed profile alike
+    /// (the gate no longer distinguishes them), on one server or several, and never twice for the
+    /// same profile.
     #[test]
-    fn the_route_appears_for_a_roster_with_more_than_one_source_and_only_once() {
+    fn the_route_asks_whenever_there_is_a_source_and_only_once() {
         let answered = HomePins {
             user: "u-7".into(),
             asked: true,
             ..Default::default()
         };
-        assert!(
-            !asks(1, false, None),
-            "a single-server install goes straight to Home"
-        );
-        assert!(
-            !asks(0, false, None),
-            "…and so does one that has not discovered anything"
-        );
-        assert!(asks(2, false, None), "two sources and nobody has been asked");
-        assert!(!asks(2, false, Some(&answered)), "asked once, never again");
-        assert!(
-            asks(3, false, None),
-            "a third source is still the same one question"
-        );
+        assert!(asks(1, None), "one source, nobody has asked");
+        assert!(asks(2, None), "two sources, nobody has asked");
+        assert!(asks(3, None), "a third source is still the same one question");
+        assert!(!asks(1, Some(&answered)), "asked once, never again (one source)");
+        assert!(!asks(2, Some(&answered)), "asked once, never again (two sources)");
+        assert!(!asks(0, None), "with nothing discovered there is nothing to ask about");
+        assert!(!asks(0, Some(&answered)));
         // An entry that exists but records no answer is still an entry — only `asked` decides.
         let touched = HomePins {
             user: "u-7".into(),
             asked: false,
             ..Default::default()
         };
-        assert!(asks(2, false, Some(&touched)));
-    }
-
-    /// **A managed profile's roster is one server, and it is still asked.** The RC.1 report: no
-    /// managed profile ever met the question, because its roster never held a second source.
-    #[test]
-    fn a_managed_profile_is_asked_with_one_source_and_still_only_once() {
-        let answered = HomePins {
-            user: "u-kid".into(),
-            asked: true,
-            ..Default::default()
-        };
-        assert!(asks(1, true, None), "the household's one server, a profile nobody has asked");
-        assert!(!asks(1, true, Some(&answered)), "asked once, never again");
-        assert!(
-            !asks(0, true, None),
-            "with nothing discovered there is nothing to ask about, for anybody"
-        );
-        assert!(asks(2, true, None), "and a managed profile with a second source is asked as before");
+        assert!(asks(1, Some(&touched)), "an unanswered entry is still owed");
+        assert!(asks(2, Some(&touched)), "an unanswered entry is still owed");
     }
 
     /// A library whose server nobody has named cannot be recorded — the key is the machine, and a

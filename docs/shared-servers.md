@@ -371,11 +371,12 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
   available** button in the actions row when a second pinned source holds the film. **OK navigates**
   to that server's page rather than swapping the copy in place, which is also what settles the
   per-server resume position.
-- **F — a first-run route** (new): after the profile picker, before Home, only when the roster holds
-  more than one source — or the profile is a Plex Home managed one (RC.1: its roster is the
-  household's server alone, so it was never asked; a first run with one source and one library
-  skips itself). Two columns, own libraries `On` and a friend's `Off`, focus on *Start
-  watching*, BACK skips. **LANDED — see §12, which also records the one place the OWNER's ruling
+- **F — a first-run route** (new): after the profile picker, before Home, asked of EVERY profile
+  once — the account holder and a Plex Home managed one, one server or several (owner decision,
+  2026-10-07; the canvas drew it for more than one source only, and RC.1 found a managed profile,
+  whose roster is the household's server alone, never met it). A first run with one source and one
+  library has nothing to choose and skips itself. Two columns, own libraries `On` and a friend's
+  `Off`, focus on *Start watching*, BACK skips. **LANDED — see §12, which also records the one place the OWNER's ruling
   overrides this canvas: the selection is per Plex Home PROFILE, not per install.**
 
 **PINNING is the new concept.** Three orthogonal states: *granted* (plex.tv's answer), *pinned*
@@ -679,7 +680,7 @@ it existed. That is also what makes the canvas's "a share arriving later does no
 screen" honest rather than merely quiet.
 
 The rules are `plex::pins` — pure, no store, host-graded: the HOUSEHOLD default, the recorded
-answer, the "more than one source (or a managed profile), once per profile" gate, and a **never-empty floor** (a recorded
+answer, the "any source at all, once per profile" gate, and a **never-empty floor** (a recorded
 selection CAN be emptied without any toggle — pin only a friend's library, then lose the friend
 from the roster). Only the rows a viewer ANSWERED are recorded (`pins::answers`): a default
 nobody chose keeps re-deriving, which is what lets a Home roster landing after the first-run screen

@@ -145,10 +145,10 @@ impl LogicalState for OnboardState {
     }
 }
 
-/// **The one shape of first run with no decision in it: one source holding one library.** A
-/// managed profile is asked on a single server (`plex::pins::asks`), and a server with a single
-/// library gives it a one-row table whose only row refuses to turn off. Knowable only once
-/// discovery has landed — which is why the gate cannot say it and the screen does.
+/// **The one shape of first run with no decision in it: one source holding one library.** Every
+/// profile is asked on a single server (`plex::pins::asks`), and a server with a single library
+/// gives it a one-row table whose only row refuses to turn off. Knowable only once discovery has
+/// landed — which is why the gate cannot say it and the screen does.
 ///
 /// **One SOURCE, and not just one library.** A library count of 1 beside a second source that has
 /// not answered yet is the roster landing in two steps, and a friend's share arriving later must
@@ -1568,7 +1568,7 @@ mod tests {
         }
     }
 
-    /// **A first run with nothing to choose leaves by itself.** A managed profile is asked on a
+    /// **A first run with nothing to choose leaves by itself.** Every profile is asked on a
     /// single server (`plex::pins::asks`), and when that server turns out to hold ONE library the
     /// screen would be a one-row table whose only row refuses to turn off (the never-empty floor).
     /// It records that the question was put — an empty `ApplyPins`, so it is never reopened — and
