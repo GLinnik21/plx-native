@@ -246,9 +246,18 @@ def label_issue(repo, number, token, repo_labels, ask, dry_run, only_if_unlabele
     if only_if_unlabeled and issue.get("labels"):
         print(f"#{number}: already labeled, skipped")
         return
+    if dry_run:
+        # The whole pick, as if the issue had no labels, so a dry run on an already-labeled issue
+        # still shows what the classifier would choose.
+        picks = decide(dict(issue, labels=[]), repo_labels, ask)
+        have = {l["name"] for l in issue.get("labels", [])}
+        add = [p for p in picks if p not in have]
+        print(f"#{number} {issue.get('title', '')!r}: picks {', '.join(picks) or 'nothing'}; "
+              f"would add {', '.join(add) or 'nothing'}")
+        return
     add = decide(issue, repo_labels, ask)
     print(f"#{number} {issue.get('title', '')!r}: {', '.join(add) if add else 'nothing to add'}")
-    if add and not dry_run:
+    if add:
         request("POST", f"{API}/repos/{repo}/issues/{number}/labels", token, {"labels": add})
 
 
@@ -271,6 +280,9 @@ def main():
         numbers += [i["number"] for i in paged(f"{API}/repos/{repo}/issues?state=open", token)
                     if "pull_request" not in i and not i.get("labels")]
     if not numbers:
+        if args.unlabeled:
+            print("every open issue already has a label")
+            return 0
         sys.exit("nothing to do: pass --issue N or --unlabeled")
     copilot = os.environ.get("COPILOT_GITHUB_TOKEN")
     api_key = os.environ.get("ANTHROPIC_API_KEY")
