@@ -1956,7 +1956,10 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                     self.teardown_cleared = true;
                     fx.push(Fx::App(AppFx::Store(
                         StoreId::Metadata,
-                        StoreCmd::Metadata(MetadataCmd::Clear),
+                        StoreCmd::Metadata(MetadataCmd::ClearItem {
+                            sid: self.sid,
+                            rk: self.rk.clone(),
+                        }),
                     )));
                 }
                 Handled::Yes

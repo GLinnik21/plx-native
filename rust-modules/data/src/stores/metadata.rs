@@ -56,6 +56,10 @@
 //! - `RequestDetail{sid, rk}` → `metadata::request_detail` — supersede any in-flight load, fetch
 //!   off-thread; lands through the identity-keyed `DETAIL_LANDING` and `pump_detail`.
 //! - `Clear` → `metadata::clear` — drop the loaded item, supersede everything in flight.
+//! - `ClearItem{sid, rk}` → `metadata::clear_item` — a Detail page's teardown: the same, but only
+//!   for the item that page showed, so a page torn down late (a copy on another server fading out
+//!   over its source page, which has already asked for its own item) cancels nothing of the page
+//!   now asking.
 //! - `LoadSeason(usize)` → `metadata::load_season` — flip the season strip optimistically, fetch
 //!   the episodes off-thread (debounced landing through `pump_season`).
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
@@ -153,6 +157,11 @@ pub enum MetadataCmd {
     RequestDetail { sid: ServerId, rk: String },
     /// Close the page: drop the item and supersede everything in flight.
     Clear,
+    /// A page closing: drop `(sid, rk)` if it is the loaded item and supersede the in-flight load
+    /// only if it is that item's. A page that is torn down AFTER another page has already taken
+    /// the slot back (a presented copy on another server fading out over its own source page)
+    /// must not cancel the page now asking.
+    ClearItem { sid: ServerId, rk: String },
     /// The server/profile switch: drop the COMPLETE owned state — including the `now`/`playing`
     /// that `Clear` deliberately spares (D3) — and rotate the worker adapter, so a worker spawned
     /// before the reset can only land into the retired `Arc`, never the replacement's mailbox.

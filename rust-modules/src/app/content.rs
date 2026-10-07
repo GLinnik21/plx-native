@@ -1225,6 +1225,69 @@ mod library_publication_tests {
         plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
     }
 
+    /// Server A's Detail, opened over the SAME item's copy on server B (the *Also available*
+    /// panel), then BACK: A's page must ask for its own metadata again.
+    #[test]
+    fn backing_out_of_another_servers_copy_repopulates_the_previous_servers_detail() {
+        back_out_of_other_servers_copy(false);
+    }
+
+    /// The same, through the door the product uses: *Also available* PRESENTS the copy as an opaque
+    /// surface over the page (`ContentReq::Present`), and BACK dismisses it.
+    #[test]
+    fn dismissing_another_servers_presented_copy_repopulates_the_previous_servers_detail() {
+        back_out_of_other_servers_copy(true);
+    }
+
+    fn back_out_of_other_servers_copy(present: bool) {
+        let _guard = plx_base::testlock::serial();
+        let sa = plx_plex::plex::ServerId::from_raw(3);
+        let sb = plx_plex::plex::ServerId::from_raw(4);
+        let a = AppArg::Content(ContentArg::Detail { sid: sa, rk: "42".into() });
+        let b = AppArg::Content(ContentArg::Detail { sid: sb, rk: "42".into() });
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+        let full = |sid, title: &str| plx_data::metadata::Detail {
+            sid, rk: "42".into(), title: title.into(), summary: "synopsis".into(), ..Default::default()
+        };
+
+        bridge::show_page(&mut pages, AppArg::Home);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        bridge::nav_push(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let gen_a = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        assert!(land_detail_for_test(&mut rig, sa, "42", gen_a, Some(full(sa, "on A"))));
+        if present {
+            pages.nav.next_style = plx_ui::containers::modal::Style::Opaque { snapshot: true };
+            pages.request(MachineId::Nav, NavOp::Present(b.clone()));
+        } else {
+            bridge::nav_push(&mut pages, b.clone());
+        }
+        for _ in 0..3 { frame(&mut pages, &mut rig, &mut frame_no); }
+        let gen_b = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        assert!(land_detail_for_test(&mut rig, sb, "42", gen_b, Some(full(sb, "on B"))));
+        assert_eq!(rig.metadata_mut().view().current().map(|d| d.sid), Some(sb));
+
+        if present {
+            bridge::dismiss_surfaces(&mut pages);
+        } else {
+            let ret = pages.return_state();
+            bridge::nav_pop_with_return(&mut pages, ret);
+        }
+        for _ in 0..60 { frame(&mut pages, &mut rig, &mut frame_no); }
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == a), "BACK lands on A's Detail");
+        assert_eq!(rig.metadata_mut().view().detail_request_status(sa, "42"), Some(true),
+            "A asks its own server for its metadata again after BACK from B's copy");
+        let gen = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        assert!(land_detail_for_test(&mut rig, sa, "42", gen, Some(full(sa, "on A"))));
+        assert_eq!(rig.metadata_mut().view().current().map(|d| (d.sid, d.title.clone())),
+            Some((sa, "on A".to_string())));
+
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+    }
+
     #[test]
     fn a_covered_detail_refresh_waits_until_its_page_owns_metadata_again() {
         let _guard = plx_base::testlock::serial();

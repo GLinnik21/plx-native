@@ -224,6 +224,7 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
             json!({"metadata":match cmd {
                 MetadataCmd::RequestDetail { sid, rk } => json!({"request_detail":[sid.raw(),rk]}),
                 MetadataCmd::Clear => json!("clear"),
+                MetadataCmd::ClearItem { sid, rk } => json!({"clear_item":[sid.raw(),rk]}),
                 _ => return Err("unsupported controlled metadata command"),
             }})
         }

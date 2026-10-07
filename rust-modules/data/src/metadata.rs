@@ -1798,6 +1798,24 @@ fn clear(state: &mut MetadataState, adapter: &MetadataAdapter) {
     alt_clear(state);
 }
 
+/// Close ONE page's item. Unlike [`clear`] it names whose page is going, because a page is not
+/// always the last to touch the slot: when a surface over Detail A (the *Also available* copy on
+/// server B) is dismissed, A is uncovered and asks for its own metadata while B's body — whose
+/// detail is still `current()` — is only torn down a few frames later. An unaddressed clear then
+/// superseded A's brand-new request and A was left empty with nothing left to ask again.
+fn clear_item(state: &mut MetadataState, adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str) {
+    let same = |s, r: &str| plx_plex::plex::same_item((s, r), (sid, rk));
+    let awaited_elsewhere = adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner())
+        .as_ref().is_some_and(|(s, r)| !same(*s, r));
+    if !awaited_elsewhere {
+        supersede_detail(adapter);
+    }
+    if state.current.as_ref().is_some_and(|d| same(d.sid, &d.rk)) {
+        state.current = None;
+        alt_clear(state);
+    }
+}
+
 /// The server/profile switch: unlike `clear()`, this drops the COMPLETE owned state — the `now`
 /// caption and `playing` track store `clear()` deliberately spares (D3, for a Detail page torn
 /// down and reopened mid-playback) do not belong to the NEXT profile. Adapter rotation is done by
@@ -3545,6 +3563,10 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
         }
         MetadataCmd::Clear => {
             clear(state, adapter);
+            true
+        }
+        MetadataCmd::ClearItem { sid, rk } => {
+            clear_item(state, adapter, sid, &rk);
             true
         }
         MetadataCmd::Reset => {
