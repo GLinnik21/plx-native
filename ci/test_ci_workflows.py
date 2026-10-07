@@ -7,6 +7,9 @@
   request's dry run and nowhere else (a release, the schedule and a dispatched dry run keep it);
 * the tests against the bundled FFmpeg and libass run in a job of their own, beside the replays,
   and still run;
+* the host FFmpeg and libass builds in the simulator jobs are CACHED where the build scripts really
+  write, under a key that names every input the scripts key on (a cache that "hits" and still
+  rebuilds, or one that outlives a changed input, both stay green);
 * the nightly Homebrew Channel repository: the nightly build generates its manifest (and debug never
   does), a real nightly can only be cut from main, the manifest reaches the release, and the site
   stages the repository and the guide.
@@ -15,11 +18,14 @@ Text-level on purpose, like ci/test_ci_timeouts.py (no YAML library on a stock r
 """
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
-WORKFLOWS = Path(__file__).resolve().parent.parent / ".github/workflows"
+ROOT = Path(__file__).resolve().parent.parent
+WORKFLOWS = ROOT / ".github/workflows"
 
 
 def text(name):
@@ -156,6 +162,157 @@ class HostToolTests(unittest.TestCase):
         # The simulator job keeps everything else it had.
         for step in ("make sim-macos", "tests/replay_fixtures.py", "tools/sim-smoke.py"):
             self.assertIn(step, macos)
+
+
+def cache_steps(job):
+    """Every `actions/cache` step of a simulators.yml job: {"path": [...], "key": str}."""
+    found = []
+    for step in re.split(r"(?m)^      - ", job_body("simulators.yml", job))[1:]:
+        if "uses: actions/cache@" not in step:
+            continue
+        lines = step.splitlines()
+        at = next(i for i, l in enumerate(lines) if l.strip().startswith("path:"))
+        inline = lines[at].split("path:", 1)[1].strip()
+        paths = [inline] if inline not in ("", "|") else []
+        for l in lines[at + 1:]:
+            if not l.startswith("            "):
+                break
+            paths.append(l.strip())
+        key = next(l.split("key:", 1)[1].strip() for l in lines if l.strip().startswith("key:"))
+        found.append({"path": paths, "key": key})
+    return found
+
+
+def cache_of(job, path):
+    """The one cache step of `job` that stores `path`."""
+    hits = [c for c in cache_steps(job) if path in c["path"]]
+    assert len(hits) == 1, f"{job}: {len(hits)} cache steps store {path}"
+    return hits[0]
+
+
+def hashed(key):
+    """The files a key passes to hashFiles()."""
+    return set(re.findall(r"'([^']+)'", " ".join(re.findall(r"hashFiles\(([^)]*)\)", key))))
+
+
+def makefile_list(variable):
+    """The words of a Makefile variable assigned with backslash continuations."""
+    text = (ROOT / "Makefile").read_text()
+    body = re.search(rf"(?m)^{variable}\s*=((?:.*\\\n)*.*)$", text).group(1)
+    return body.replace("\\\n", " ").split()
+
+
+class HostLibraryCaches(unittest.TestCase):
+    """A cache hit must mean no rebuild, and a changed input must mean one.
+
+    The first version cached `vendor/ffmpeg-prefix-host` and `vendor/ffmpeg-build`, logged "Cache
+    hit", and rebuilt FFmpeg anyway on every run (libass, which had no cache at all, likewise): the
+    restored header is older than the fresh checkout's `ci/build-ffmpeg.sh`, so make re-ran the
+    script, and the script keeps its objects under `~/.cache/plxnative/ffmpeg`, which nothing saved.
+    """
+
+    MACOS_JOBS = ("macos", "macos-host-tests")
+    LIBASS_JOBS = ("linux", "macos", "macos-host-tests")
+    FFMPEG_WORK = "~/.cache/plxnative/ffmpeg"
+    LIBASS_PREFIX = "vendor/libass-prefix-host"
+    LIBASS_SOURCES = "vendor/libass-sources"
+
+    def test_no_cache_stores_a_prefix_make_would_judge_by_mtime(self):
+        # A restored prefix is OLDER than the checkout's script, so make re-runs the script. Cache
+        # the script's own work tree instead, which the script re-validates by content.
+        for job in self.LIBASS_JOBS:
+            for cache in cache_steps(job):
+                for path in cache["path"]:
+                    self.assertNotIn("ffmpeg-prefix", path, job)
+                    self.assertNotIn("ffmpeg-build", path, job)
+        self.assertNotIn("restore-keys", code("simulators.yml"),
+                         "a prefix match would restore a build of different inputs")
+
+    def test_the_cache_paths_are_where_the_scripts_write(self):
+        sh = (ROOT / "ci/build-ffmpeg.sh").read_text()
+        self.assertIn("CACHE_ROOT=${PLX_BUILD_CACHE-$HOME/.cache/plxnative}", sh)
+        self.assertIn('WORK="$CACHE_ROOT/ffmpeg/$ARCHTAG-$VERSION-$KEY"', sh)
+        # The pinned tarball lives in the same directory, so a hit needs no download either.
+        self.assertIn('CACHED_TAR="$CACHE_ROOT/ffmpeg/ffmpeg-$VERSION-', sh)
+        py = (ROOT / "ci/build-libass.py").read_text()
+        self.assertIn(f"ROOT / ('{self.LIBASS_PREFIX}' if host", py)
+        self.assertIn(f"sources = ROOT / '{self.LIBASS_SOURCES}'", py)
+        self.assertIn("stamp = prefix / '.dependencies-key'", py)
+        for job in self.MACOS_JOBS:
+            cache_of(job, self.FFMPEG_WORK)
+        for job in self.LIBASS_JOBS:
+            cache_of(job, self.LIBASS_PREFIX)
+            cache_of(job, self.LIBASS_SOURCES)
+
+    def test_the_ffmpeg_key_names_every_input_the_script_keys_on(self):
+        sh = (ROOT / "ci/build-ffmpeg.sh").read_text()
+        # The script hashes these into its own tree key; the workflow key must move with them.
+        inherited = set(re.findall(r'"\$ROOT/(ci/[\w.-]+)"', re.search(r"INHERITED=.*", sh).group(0)))
+        self.assertEqual(inherited, {"ci/arm-cc.py", "ci/check-link-evidence.py"})
+        for job in self.MACOS_JOBS:
+            key = cache_of(job, self.FFMPEG_WORK)["key"]
+            self.assertEqual(hashed(key), {"ci/build-ffmpeg.sh", *inherited}, job)
+            self.assertIn("runner.os", key)
+            self.assertIn("runner.arch", key)
+            # The compiler, SDK and build environment are inputs the script reads from the machine.
+            self.assertIn("steps.toolchain.outputs.id", key)
+        self.assertEqual(cache_of("macos", self.FFMPEG_WORK)["key"],
+                         cache_of("macos-host-tests", self.FFMPEG_WORK)["key"],
+                         "one entry must serve both macOS jobs")
+
+    def test_the_libass_key_names_every_input_the_recipe_lists(self):
+        py = (ROOT / "ci/build-libass.py").read_text()
+        # Everything build-libass.py folds into its own `.dependencies-key`, besides the toolchain.
+        read = {"ci/build-libass.py", "ci/libass-dependencies.json",
+                *re.findall(r"ROOT / '(ci/[\w.-]+)'\)\.read_bytes", py)}
+        listed = set(makefile_list("LIBASS_INPUTS"))
+        self.assertTrue(read <= listed, read - listed)
+        for job in self.LIBASS_JOBS:
+            key = cache_of(job, self.LIBASS_PREFIX)["key"]
+            self.assertEqual(hashed(key), listed, job)
+            self.assertIn("runner.os", key)
+            self.assertIn("runner.arch", key)
+            self.assertIn("steps.toolchain.outputs.id", key)
+            # The tarballs are pinned by checksum, so their entry is shared by every OS and moves
+            # only with the pins; a facade edit must not re-save 25 MB of sources.
+            sources = cache_of(job, self.LIBASS_SOURCES)["key"]
+            self.assertEqual(hashed(sources), {"ci/libass-dependencies.json"}, job)
+            self.assertNotIn("runner.os", sources)
+        self.assertEqual(len({cache_of(j, self.LIBASS_PREFIX)["key"] for j in self.LIBASS_JOBS}), 1)
+
+    def test_the_toolchain_is_identified_before_any_cache_is_restored(self):
+        for job in self.LIBASS_JOBS:
+            body = job_body("simulators.yml", job)
+            step = body.index("id: toolchain")
+            self.assertIn("ci/host-toolchain-id.sh", body[step:step + 200])
+            self.assertIn('"$GITHUB_OUTPUT"', body[step:step + 200])
+            self.assertLess(step, body.index("uses: actions/cache@"), job)
+        triggers = text("simulators.yml").split("pull_request:")[0]
+        self.assertIn("'ci/host-toolchain-id.sh'", triggers)
+
+    def test_the_toolchain_id_moves_with_what_a_build_reads_from_the_machine(self):
+        names = ("CFLAGS", "CPPFLAGS", "LDFLAGS", "CXXFLAGS", "PKG_CONFIG_PATH", "RELEASE")
+
+        def ident(**extra):
+            env = {k: v for k, v in os.environ.items() if k not in names}
+            env.update(extra)
+            return subprocess.run(["sh", str(ROOT / "ci/host-toolchain-id.sh")], env=env,
+                                  capture_output=True, text=True, check=True).stdout.strip()
+
+        base = ident()
+        # Hex, because tools/prune-gh-caches.py reads a trailing hex segment as a hash generation.
+        self.assertRegex(base, r"^[0-9a-f]{16}$")
+        self.assertEqual(base, ident())
+        for name in names:
+            self.assertNotEqual(base, ident(**{name: "1"}), name)
+
+    def test_a_cache_miss_still_builds_from_the_pinned_sources(self):
+        # The macOS tests job exists to test the bundled libraries built from the pinned sources; a
+        # cached build of the same inputs is the same thing, and every build step is still there.
+        self.assertIn("make check-ffmpeg", job_body("simulators.yml", "macos-host-tests"))
+        self.assertIn("make check-ass", job_body("simulators.yml", "macos-host-tests"))
+        self.assertIn("make sim-macos", job_body("simulators.yml", "macos"))
+        self.assertIn("make sim-linux", job_body("simulators.yml", "linux"))
 
 
 if __name__ == "__main__":

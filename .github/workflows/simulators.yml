@@ -22,6 +22,7 @@ on:
       - 'pkg/le-roots.pem'
       - 'LICENSE'
       - 'ci/build-ffmpeg.sh'
+      - 'ci/host-toolchain-id.sh'
       - 'ci/stage-host-ffmpeg.sh'
       - 'ci/build-libass.sh'
       - 'ci/build-libass.py'
@@ -62,6 +63,21 @@ jobs:
         with:
           packages: libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev libgl1-mesa-dri xvfb xauth gdb cmake pkg-config
           recommends: "true"
+      - id: toolchain
+        name: Identify the host toolchain
+        run: echo "id=$(./ci/host-toolchain-id.sh)" >> "$GITHUB_OUTPUT"
+      - name: Cache the host libass stack
+        # This job builds only libass (FreeType, FriBidi, HarfBuzz, libass: ~1-2 minutes of the
+        # job); see the `macos` job for how the two entries below work and what keys them.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/libass-prefix-host
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'src/ass.c', 'src/ass_composite.h', 'include/ass.h') }}
+      - name: Cache the libass source tarballs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/libass-sources
+          key: host-libass-sources-${{ hashFiles('ci/libass-dependencies.json') }}
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: rust-modules -> target-sim-ci
@@ -120,12 +136,55 @@ jobs:
         # would otherwise run to the job's limit.
         timeout-minutes: 15
         run: brew install sdl2_ttf cmake pkg-config
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - id: toolchain
+        name: Identify the host toolchain
+        # The compiler, SDK and build environment are inputs of both builds below, and a
+        # `hashFiles` key cannot see them: see ci/host-toolchain-id.sh for what it covers and why.
+        run: echo "id=$(./ci/host-toolchain-id.sh)" >> "$GITHUB_OUTPUT"
+      - name: Cache the host FFmpeg build tree
+        # A hit here means NO rebuild. This used to cache `vendor/ffmpeg-prefix-host` and
+        # `vendor/ffmpeg-build`, which hit and did nothing: the restored header is older than the
+        # fresh checkout's `ci/build-ffmpeg.sh`, so make re-ran the script, and the script keeps
+        # its extracted source and every object under `$PLX_BUILD_CACHE/ffmpeg/<arch>-<version>-<key>`
+        # (default `~/.cache/plxnative`), which nothing saved; it configured and compiled FFmpeg
+        # (52-79 s) every run. So this caches that tree, plus the pinned tarball beside it, and
+        # leaves the prefix to be re-installed from it (about a second). No mtime decides anything:
+        # the script re-derives its own content key on every run (version, SHA-256 pin, compiler,
+        # configure flags, the hashes of `ci/arm-cc.py` and `ci/check-link-evidence.py`, and the
+        # build variables it inherits), so a stale restore can only fail to match and rebuild, never
+        # hand back objects of other inputs. This key therefore only has to change when those can:
+        # the script, the two files it hashes, and the machine side (`steps.toolchain`). Without the
+        # last, a runner-image update would keep hitting and rebuilding on every run.
+        #
+        # The ARM job in ci.yml caches the same directory for the same reason.
+        #
+        # A pull request whose inputs are unchanged restores `main`'s entry and saves nothing;
+        # only one that edits an input saves its own, which `cache-cleanup.yml` deletes on close.
+        # The entry is ~34 MB compressed.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            vendor/ffmpeg-prefix-host
-            vendor/ffmpeg-build
-          key: host-ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh') }}
+          path: ~/.cache/plxnative/ffmpeg
+          key: host-ffmpeg-work-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/arm-cc.py', 'ci/check-link-evidence.py') }}
+      - name: Cache the host libass stack
+        # `ci/build-libass.py` stamps `vendor/libass-prefix-host/.dependencies-key` with a content
+        # key (pins, the script, the compiler, the flags, the two helper scripts) and skips the
+        # FreeType/FriBidi/HarfBuzz/libass builds (72-104 s) when the stamp and the four static
+        # libraries are present; the facade (`src/ass.c`) is relinked every run. This caches that
+        # prefix (~2.5 MB compressed). The key lists every file of the Makefile's `LIBASS_INPUTS`
+        # (a superset of what the script hashes) plus the machine side, as above.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/libass-prefix-host
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'src/ass.c', 'src/ass_composite.h', 'include/ass.h') }}
+      - name: Cache the libass source tarballs
+        # The script verifies and fetches all four archives BEFORE it looks at its stamp, so
+        # without these a prefix hit still downloaded ~25 MB from four hosts. Pinned by SHA-256 (the
+        # script re-checks every file), so the entry moves only with the pins and is shared by every
+        # OS. The fetch logic and its mirror fallback are untouched.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/libass-sources
+          key: host-libass-sources-${{ hashFiles('ci/libass-dependencies.json') }}
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: rust-modules -> target-sim-ci
@@ -179,15 +238,32 @@ jobs:
         # (build.rs links it for every host test binary) and libass's dependencies need cmake.
         timeout-minutes: 15
         run: brew install sdl2_ttf cmake pkg-config
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        # The SAME key as the `macos` job, so one entry serves both. On a miss both jobs build
-        # FFmpeg and the later save is refused as already existing; that happens only when
-        # ci/build-ffmpeg.sh changes.
+      - id: toolchain
+        name: Identify the host toolchain
+        run: echo "id=$(./ci/host-toolchain-id.sh)" >> "$GITHUB_OUTPUT"
+      - name: Cache the host FFmpeg build tree
+        # The SAME key as the `macos` job, so one entry serves both; see that job for what the
+        # entry holds and why it is the script's work tree rather than the prefix. A cached build
+        # of the same inputs is the bundled FFmpeg built from the pinned source, which is what
+        # this job tests: the script re-derives its content key (version, SHA-256 pin, compiler,
+        # flags) on every run and rebuilds on any difference. On a miss both jobs build FFmpeg and
+        # the later save is refused as already existing; that happens only when an input changes.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            vendor/ffmpeg-prefix-host
-            vendor/ffmpeg-build
-          key: host-ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh') }}
+          path: ~/.cache/plxnative/ffmpeg
+          key: host-ffmpeg-work-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/arm-cc.py', 'ci/check-link-evidence.py') }}
+      - name: Cache the host libass stack
+        # The same entry as the `macos` job's (same key), which explains it. Likewise the bundled
+        # libass built from the pinned sources, restored instead of rebuilt when no input moved.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/libass-prefix-host
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'src/ass.c', 'src/ass_composite.h', 'include/ass.h') }}
+      - name: Cache the libass source tarballs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/libass-sources
+          key: host-libass-sources-${{ hashFiles('ci/libass-dependencies.json') }}
       - name: Install nightly Rust
         # `make check-ffmpeg` runs the host suite's FFmpeg-backed tests on the toolchain `make
         # check` uses; the simulator job builds on the runner's default one. `rust-src` is not
@@ -199,8 +275,8 @@ jobs:
         # the test suite — `make check` has none, so these are #[ignore]d there.
         run: make check-ffmpeg
       - name: Tests against the bundled ASS renderer
-        # Builds the pinned host libass first (the `macos` job builds its own copy for the
-        # simulator; neither is cached, so this is the one duplicated build, off the critical path).
+        # Builds the pinned host libass first, unless the cache above restored a build of exactly
+        # these inputs (the script's own content key decides; see the `macos` job).
         run: make check-ass
 
   windows-launcher:
