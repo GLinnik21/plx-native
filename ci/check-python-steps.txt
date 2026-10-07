@@ -207,3 +207,8 @@ python3 ci/test-compat.py
 # The cargo seed's own suite (restore only into an absent dir, the app crate never in the seed,
 # key refresh, off switch, clone failure), against a fake root and a private cache.
 python3 ci/test_cargo_seed.py
+# tools/site_video.py, the host half of the site demo video (encode, quality gates, the sentinel scan, the
+# manifest and `adopt`): the scanner on synthetic RGB frames, the encode argv asserted (never run), the gates'
+# pure logic, manifest tamper, adopt refusing anything but `linux-ci`, and the pinned-ffmpeg fetch against a
+# fake opener. Offline, no ffmpeg; the one real-ffmpeg case is off unless PLXNATIVE_SITE_VIDEO_FFMPEG is set.
+python3 tests/test_site_video.py
