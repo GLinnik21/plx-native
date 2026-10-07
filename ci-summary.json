@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-07T22:19:02Z",
+ "generated": "2026-10-07T22:20:34Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -279,11 +279,6 @@
    "change_pct": 22.4,
    "commits": [
     {
-     "pr": 506,
-     "sha": "178e7c398",
-     "title": "Search adopts cards::Shelf: each result row's pop, scroll, stops and placement come from the shared component"
-    },
-    {
      "pr": 491,
      "sha": "8a58e665f",
      "title": "Up Next: the player screen comes to rest, and the site's Up Next close-up is rerendered"
@@ -327,6 +322,11 @@
      "pr": 515,
      "sha": "5c18b8920",
      "title": "Detail: the Related, Collection, Extras and Cast shelves are cards::Shelf"
+    },
+    {
+     "pr": 516,
+     "sha": "e494cea2f",
+     "title": "CI page: a working instrument for build time (PR runs, daily local bench, what got slower)"
     }
    ],
    "from": 201.0,
