@@ -982,6 +982,72 @@ fn shelf_head_is_the_first_cards_unpopped_slot() {
     assert_eq!(placed.rect.y, SHELF_AT.y);
 }
 
+/// A dormant shelf (its page still dissolving in) holds every card at rest, whatever focus does,
+/// and the first awake tick starts the focused card's pop FROM REST, as a deliberate move does,
+/// even for an arrival that would otherwise be adopted whole. Nothing is lifted meanwhile.
+#[test]
+fn a_dormant_shelf_keeps_its_cards_at_rest_and_wakes_growing_from_rest() {
+    let mut r = settled::<Shelf>(8);
+    let full = RowStyle::HOME.focus_scale;
+    r.sect.dormant(true);
+    r.land_focus(102, By::Restore);
+    for _ in 0..30 {
+        r.run(1);
+        assert_eq!(r.scale(102), Some(1.0), "no lift under the fade");
+        assert_eq!(lifted(&r), 0);
+    }
+    assert!(!r.run(1), "a dormant shelf at rest is quiet");
+    r.sect.dormant(false);
+    r.run(1);
+    let first = r.scale(102).unwrap();
+    assert!(first > 1.0 && first < full - 0.02, "the pop starts from rest, not whole: {first}");
+    r.run(200);
+    assert!((r.scale(102).unwrap() - full).abs() < 0.002);
+}
+
+/// A lifted card that goes dormant lets go over frames and ends parked exactly at rest.
+#[test]
+fn a_shelf_that_goes_dormant_lets_its_lifted_card_go() {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Dir);
+    r.run(200);
+    assert!(r.scale(101).unwrap() > 1.05);
+    r.sect.dormant(true);
+    r.run(300);
+    assert_eq!(r.scale(101), Some(1.0));
+    assert!(r.sect.at_rest(), "parked exactly at rest, so an owner may stop stepping it");
+    assert!(!r.run(1));
+}
+
+/// `cull_margin` keeps painting and registering a card whose left edge is just past the screen's.
+#[test]
+fn a_cull_margin_keeps_a_card_just_off_the_left_edge() {
+    let mut plain = settled::<Shelf>(60);
+    let mut margined = settled::<Shelf>(60);
+    margined.sect = Shelf::new(ENTRY, &RowStyle::HOME).cull_margin(400.0);
+    for r in [&mut plain, &mut margined] {
+        r.land_focus(130, By::Restore);
+        r.run(300);
+    }
+    let (a, b) = (plain.stops(1.0).len(), margined.stops(1.0).len());
+    assert!(b > a, "a 400 px margin registers cards the plain shelf culls: {a} vs {b}");
+}
+
+/// `paint` draws exactly what `draw` does without registering stops.
+#[test]
+fn paint_draws_the_cards_and_registers_no_stops() {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Restore);
+    r.run(2);
+    let cx = r.cx();
+    let f = DrawFrame::new(&cx, Painter::recording());
+    r.src.drawn.borrow_mut().clear();
+    let p = f.painter;
+    r.sect.paint(&f, p, &r.src, SHELF_AT);
+    assert!(!r.src.drawn.borrow().is_empty());
+    assert!(f.stops().is_empty());
+}
+
 /// An owner whose column count changes at run time (the Library's episode listing) hands the grid
 /// the new columns; the cells follow and the focused tile's pop and caption band carry over
 /// instead of being corrupted or restarted.

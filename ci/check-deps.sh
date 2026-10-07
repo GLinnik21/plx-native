@@ -708,7 +708,8 @@ gate nav '(crate::ui|plx_ui)::nav::' "$SRC_SCREENS"
 # `card_row::{draw_tile, draw_focused, strip, paint_visible}` (qualified or imported by name),
 # a glob or renamed import of `card_row` (`card_row::*`, `card_row as x`), the hand-rolled grid
 # geometry `poster_grid::{cell, visible, snap_row}` (qualified or imported by name), `CardRow`,
-# `GridPop`, `GridBands`, or the thread-local `press::scale()`. Whole test files are
+# `GridPop`, `GridBands`, or the thread-local `press::scale()` (named in code: inside a string
+# literal, as a canon SHAPE does, it is data). Whole test files are
 # skipped; the allowlist is the screens that still assemble their own, one line per file, and only
 # SHRINKS as each adopts the component. The last migration PR makes the primitives `pub(crate)` and
 # deletes this gate with the list.
@@ -718,6 +719,8 @@ while IFS= read -r line; do
   [ -z "$line" ] && continue
   p="${line%%:*}"
   if is_wholly_test "$p"; then continue; fi
+  # A primitive named only inside a string literal (a screen's canon SHAPE text) is data, not use.
+  if ! printf '%s\n' "${line#*:*:}" | strip_strings_and_comments /dev/stdin | grep -qE "$cards_pat"; then continue; fi
   if ! allowed cards "$p"; then echo "    $line"; cards_bad=$((cards_bad+1)); fi
 done < <(grep_code "$cards_pat" "$SRC_SCREENS")
 if [ "$cards_bad" -eq 0 ]; then ok "cards"; else fail "cards: $cards_bad line(s) outside ci/allow/cards.txt — draw card sections with plx_ui::cards::Shelf / Grid"; fi

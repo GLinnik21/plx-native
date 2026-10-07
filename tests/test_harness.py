@@ -5808,6 +5808,17 @@ impl PersonOwnerGateFixture {
         for line in (6, 7, 8, 9):  # glob and renamed card_row imports, hand-rolled grid geometry
             self.assertIn(f"_check_deps_selftest_cards_strip.rs:{line}", out)
 
+    def test_cards_gate_ignores_a_primitive_named_only_inside_a_string(self):
+        """A screen's canon SHAPE text may name a type that no longer draws it; the code still may not."""
+        r = self._plant(
+            "_check_deps_selftest_cards_text.rs",
+            'pub const SHAPE: &str = "Page{motion:CardRow}";\n',
+            crate_dir="screens",
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — cards", out)
+
     def test_cards_gate_allows_the_shared_component(self):
         r = self._plant(
             "_check_deps_selftest_cards_ok.rs",
@@ -5963,8 +5974,8 @@ impl PersonOwnerGateFixture {
         # that step's entries: 0 + 42 = 42. Merging main brought main's system toast (#392) and its
         # two callers: 42 + 2 = 44. Step L15 moved all 44 behind the `tv` interfaces and the port:
         # 44 - 44 = 0.
-        "cards-conformance.txt": 3,  # card-screen Tier 2 expected failures (PR 0, 2026-10-07; Home and Detail added; Collection adopted Grid, PR 2b); only shrinks
-        "cards.txt": 4,  # screens still assembling card sections from the L0 primitives (2026-10-07); only shrinks
+        "cards-conformance.txt": 2,  # card-screen Tier 2 expected failures (PR 0, 2026-10-07; Home and Detail added; Collection adopted Grid, PR 2b); only shrinks
+        "cards.txt": 2,  # screens still assembling card sections from the L0 primitives (2026-10-07); only shrinks
         "blocking.txt": 2,  # frame-thread allow_blocking sites, 2026-10-06; only shrinks
         "layers.txt": 0,
         "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs

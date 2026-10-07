@@ -697,6 +697,35 @@ pub fn seed_named_shelves_for_owner_test(
     st.hubs.commit_staged(true);
 }
 
+/// Replace the items of section `sec`'s first published shelf with one card per `rks` entry, in
+/// that order, and publish the result (the revision moves). The content landing a hub shelf has on
+/// the set (a refetch that reorders, inserts or drops a title) without a worker: the card's rating
+/// key is the entry, so a test names which title moved.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_first_shelf_items_for_owner_test(
+    state: &mut super::BrowseState,
+    sec: usize,
+    rks: &[String],
+) {
+    let Some(st) = state.state_mut(sec) else {
+        return;
+    };
+    let mut shelves = st.hubs.committed.as_ref().clone();
+    if let Some(first) = shelves.first_mut() {
+        first.total = rks.len();
+        first.items = rks
+            .iter()
+            .map(|rk| PmsMovie {
+                rk: rk.clone(),
+                title: rk.clone(),
+                ..Default::default()
+            })
+            .collect();
+    }
+    st.hubs.land_ok(shelves);
+    st.hubs.commit_staged(true);
+}
+
 /// A worker success held behind the Library's publication gate, without starting a worker.
 #[cfg(any(test, feature = "test-support"))]
 pub fn stage_shelves_for_owner_test(state: &mut super::BrowseState, sec: usize) {

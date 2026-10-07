@@ -37,11 +37,33 @@ pub struct Shelf {
     left: bool,
     ahead: usize,
     asked: Option<(usize, usize)>,
+    /// How far past the screen edge a card still paints and registers a stop (default 0).
+    margin: f32,
+    /// The page is still dissolving in ([`dormant`](Shelf::dormant)): no card is lifted yet.
+    dormant: bool,
+    /// The last tick ran dormant, so the next awake one starts the focused card's pop from rest.
+    slept: bool,
 }
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
-        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, ahead: LOOK_AHEAD, asked: None }
+        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, ahead: LOOK_AHEAD, asked: None,
+            margin: 0.0, dormant: false, slept: false }
+    }
+
+    /// Cards this far past either screen edge still paint (a popped card's shadow reaches onto the
+    /// screen from beyond it) and register their stops. Default 0.
+    pub const fn cull_margin(mut self, px: f32) -> Self {
+        self.margin = px;
+        self
+    }
+
+    /// Hold every card at rest while the owner's page is still dissolving in: a lifted tile under
+    /// a fade plays its selection where nobody can see it. The shelf keeps no pop meanwhile (the
+    /// springs ease to rest like an unfocused shelf's); the first awake tick starts the focused
+    /// card's pop from rest, as a deliberate move does. Set it before each [`on`](Self::on).
+    pub fn dormant(&mut self, held: bool) {
+        self.dormant = held;
     }
 
     /// Cards beyond the visible window a [`CardEvent::Want`] asks for (default 6).
@@ -98,8 +120,25 @@ impl Shelf {
     }
 
     fn tick<H: Host, S: CardSource<H>>(&mut self, dt: f32, cx: &Cx<'_, H>, src: &S) {
-        let focus = super::focused_index(&cx.focus, self.entry, src);
+        let focus = super::focused_index(&cx.focus, self.entry, src)
+            .filter(|_| !self.dormant);
         self.landed = None;
+        if self.dormant {
+            // nothing is lifted under the fade, and whatever was lets go like an unfocused shelf's
+            self.slept = true;
+            self.seen = Seen::Nothing;
+            self.left = false;
+            if !self.row.at_exact_rest() {
+                self.row.update(src.len(), None, self.style, dt);
+                self.row.park();
+            }
+            return;
+        }
+        if std::mem::take(&mut self.slept) {
+            if let Some(i) = focus {
+                self.seen = Seen::Deliberate(i);
+            }
+        }
         if let Some(i) = focus {
             let prev = self.prev();
             match (self.seen, prev) {
@@ -161,7 +200,7 @@ impl Shelf {
     /// element's spring at its new index with the old one at rest, FULL for a focused card adopted
     /// whole (never a one-frame collapse) with the one it left at rest.
     fn pop(&self, i: usize, focus: Option<usize>) -> f32 {
-        let Some(j) = focus else { return self.row.scale(i) };
+        let Some(j) = focus.filter(|_| !self.dormant) else { return self.row.scale(i) };
         let prev = self.prev();
         if prev == Some(j) || self.seen == Seen::Deliberate(j) {
             return self.row.scale(i);
@@ -227,15 +266,22 @@ impl Shelf {
     }
 
     /// Draw the shelf into `p` (alpha already applied; any translate it carries is undone, see
-    /// [`SectionFrame`]) and
-    /// register its stops: non-focused cards first, the focused one last; only on-axis cards paint
-    /// and only they resolve artwork or register a stop.
+    /// [`SectionFrame`]) and register its stops: [`paint`](Self::paint), then
+    /// [`record_stops`](Self::record_stops).
     pub fn draw<H: Host, S: CardSource<H>>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
+        self.paint(f, p, src, at);
+        self.record_stops(f, p, src, at);
+    }
+
+    /// Paint the cards without registering stops, for a screen that records its page's stops in
+    /// its own order (non-focused cards first, the focused one last; only on-axis cards paint and
+    /// resolve artwork).
+    pub fn paint<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
         let n = src.len();
         let focus = super::focused_index(&f.focus, self.entry, src);
         let sx = self.row.scroll_x();
         let pr = p.translate(-sx, 0.0);
-        let visible = |i: usize| crate::on_axis(self.slot(i, at).x, self.style.w, SCR_W, 0.0);
+        let visible = |i: usize| crate::on_axis(self.slot(i, at).x, self.style.w, SCR_W, self.margin);
         for i in (0..n).filter(|&i| focus != Some(i) && visible(i)) {
             let s = self.pop(i, focus);
             self.draw_card(f, pr, src, i, at, s, false);
@@ -244,7 +290,6 @@ impl Shelf {
             let s = super::press_scale(self.pop(i, focus), true, f.cx);
             self.draw_card(f, pr, src, i, at, s, true);
         }
-        self.record_stops(f, p, src, at);
     }
 
     /// Register the stops of the on-axis cards: each is the rect [`draw`](Self::draw) paints.
@@ -253,7 +298,7 @@ impl Shelf {
             return;
         }
         let focus = super::focused_index(&f.focus, self.entry, src);
-        for i in (0..src.len()).filter(|&i| crate::on_axis(self.slot(i, at).x, self.style.w, SCR_W, 0.0)) {
+        for i in (0..src.len()).filter(|&i| crate::on_axis(self.slot(i, at).x, self.style.w, SCR_W, self.margin)) {
             let s = super::press_scale(self.pop(i, focus), focus == Some(i), f.cx);
             let slot = super::to_local(p, self.slot(i, at));
             f.stop(p, Stop {
@@ -348,6 +393,22 @@ impl Shelf {
 
     pub fn scroll(&self) -> f32 {
         self.row.scroll_x()
+    }
+
+    /// Card `i`'s live pop spring (no press, no focus rule): what a probe reads between frames.
+    pub fn scale(&self, i: usize) -> f32 {
+        self.row.scale(i)
+    }
+
+    /// Every spring is parked exactly at rest: nothing here needs stepping.
+    pub fn at_rest(&self) -> bool {
+        self.row.at_exact_rest()
+    }
+
+    /// The live label-band expansion, 0 collapsed to 1 focused, for a caller that sizes its page
+    /// from it (`card_row::under_band` of it is what [`under_band`](Self::under_band) answers).
+    pub fn band_expand(&self) -> f32 {
+        self.row.band_expand()
     }
 
     /// Restore a saved viewport (`n` is the current card count).

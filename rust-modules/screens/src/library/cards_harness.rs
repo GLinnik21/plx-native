@@ -1,5 +1,5 @@
 //! The Tier 2 card-conformance harnesses for the Library page (`cards_conformance_tests.rs`): the
-//! All grid (a `GridPart` over `cards::Grid`) and the section's hub shelves (`CardRow`s above it).
+//! All grid (a `GridPart` over `cards::Grid`) and the section's hub shelves (`cards::Shelf`s above it).
 //! A child module of `library` so it reads the private rect and scale helpers the screen's own
 //! tests read. One `Harness` drives either card set; `Set` says which.
 use super::*;
@@ -85,6 +85,12 @@ impl Harness {
                 (publication.listing, publication.section_hubs, Some(stores))
             }
         };
+        // A hub shelf's landing edits its own items, whose rating keys the seed names.
+        let rks = match set {
+            Set::Grid => rks,
+            Set::Shelf => hubs.view().shelves().first()
+                .map(|shelf| shelf.items.iter().map(|item| item.rk.clone()).collect()).unwrap_or_default(),
+        };
         let mut h = Self { set, n, rks, listing, directory, hubs, _stores: stores,
             screen: LibraryScreen::new(ENTRY, INSTANCE, SecKind::Movie), focus: None, press: 1.0, ms: 0 };
         h.sync();
@@ -124,7 +130,6 @@ impl Harness {
     }
 
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: ENTRY, elem } }
-    fn is_focused(&self, elem: u32) -> bool { self.focus.map(|k| k.elem) == Some(elem) }
 
     fn cell(&self, elem: u32) -> Option<(usize, usize)> {
         match self.set {
@@ -168,12 +173,10 @@ impl CardHarness for Harness {
     fn place(&self, elem: u32, at: At) -> Option<Placed> {
         Focusable::<LibHost>::place(&self.screen, &elem, &self.cx(), at)
     }
-    /// What the draw paints: the grid's `place(Drawn)` rect (live pop x press for the focused cell), or the
-    /// shelf's `shelf_rect` (live pop already in it) scaled by the press of the focused tile
-    /// (`draw_shelf_tile`).
+    /// What the draw paints: the component's `place(Drawn)` rect (live pop x press for the focused
+    /// card), the very rect the draw builds and registers its stop from.
     fn drawn_rect(&self, elem: u32, press: f32) -> Option<Rect> {
         let (row, col) = self.cell(elem)?;
-        let focused = self.is_focused(elem);
         Some(match self.set {
             Set::Grid => {
                 let mut cx = self.cx();
@@ -181,16 +184,22 @@ impl CardHarness for Harness {
                 self.screen.pair.detail.rect_at(&cx, col)
             }
             Set::Shelf => {
-                let rect = self.screen.shelf_rect(row, col);
-                if focused && press > 0.0 { rect.scaled(press) } else { rect }
+                let mut cx = self.cx();
+                cx.press = PressRead { scale: press, ..Default::default() };
+                let elem = self.screen.shelves[row].elems[col];
+                self.screen.shelf_placed(row, &elem, &cx).expect("a published card places").rect
             }
         })
     }
     fn scale(&self, elem: u32) -> Option<f32> {
-        let (row, col) = self.cell(elem)?;
+        let (row, _) = self.cell(elem)?;
         Some(match self.set {
             Set::Grid => self.screen.pair.detail.scale_of(&self.cx(), elem)?,
-            Set::Shelf => self.screen.shelves[row].motion.scale(col),
+            Set::Shelf => {
+                let cx = self.cx();
+                let src = self.screen.hub_src(row, &cx);
+                self.screen.shelves[row].cards.scale_of(&cx, &src, &elem)?
+            }
         })
     }
     fn focus_scale(&self) -> f32 { RowStyle::HOME.focus_scale }
@@ -209,21 +218,26 @@ impl CardHarness for Harness {
     fn scroll(&self) -> Option<f32> {
         Some(match self.set {
             Set::Grid => self.screen.scroll.pos,
-            Set::Shelf => self.screen.shelves.first()?.motion.scroll_x(),
+            Set::Shelf => self.screen.shelves.first()?.cards.scroll(),
         })
     }
     fn columns(&self) -> Option<usize> { (self.set == Set::Grid).then_some(super::layout::COLS) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
-        if self.set == Set::Shelf {
-            return Err("no test seam edits a seeded hub shelf's items (seed_shelves_for_test mints rk from the index)");
-        }
         let (_, at) = self.focus.and_then(|k| self.cell(k.elem)).ok_or("nothing focused")?;
         match l {
             Landing::Reorder => self.rks.swap(0, 2),
             Landing::InsertAbove => self.rks.insert(0, "landed".into()),
             Landing::RemoveFocused => { self.rks.remove(at); }
         }
-        self.listing = listing_of(&self.rks);
+        match self.set {
+            Set::Grid => self.listing = listing_of(&self.rks),
+            // The hub shelf's items are republished the way a refetch would land them.
+            Set::Shelf => {
+                let stores = self._stores.as_ref().ok_or("the shelf set has no store")?;
+                stores.browse.borrow_mut().seed_first_shelf_items_for_test(0, &self.rks);
+                self.hubs = stores.capture_browse(&mut self.directory).section_hubs;
+            }
+        }
         self.step(ScreenEvent::StoreChanged(plx_data::stores::StoreId::Browse.ord(), 1));
         let want = self.focus.unwrap();
         let now = Focusable::<LibHost>::reconcile(&self.screen, want, &self.cx());
