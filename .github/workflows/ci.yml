@@ -66,7 +66,8 @@ jobs:
   # parallel preserves that literally — a red clippy cannot mask a broken ARM link, and vice versa.
   #
   # They used to be one job running `make check` (~13-15 min, the PR critical path by ten minutes).
-  # `make check` is still exactly these gates, in the same recipes: the Makefile's `check-cargo` is
+  # `make check` is still exactly these gates, in the same targets (the Python ones are the lines of
+  # ci/check-python-steps.txt): the Makefile's `check-cargo` is
   # the serial union of `check-cargo-lint`, `check-cargo-unit-default` and `check-cargo-unit-hostsim`,
   # and `check-python` (itself `check-python-rest` plus `check-python-harness`) is the fourth and
   # fifth. Each job below runs ONE of them. `ci/test_ci_split.py` (part of
@@ -227,7 +228,8 @@ jobs:
   host-python:
     name: host python/shell/C gates
     runs-on: ubuntu-latest
-    # Measured max 4.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    # Measured max 4.6 min over the last 40 successful runs of the old serial recipe (it runs its steps
+    # concurrently now, so it is much shorter); limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -243,7 +245,8 @@ jobs:
           fetch-depth: 0
 
       # Neither a Rust toolchain nor SDL: `check-python` never invokes cargo (its self-tests that
-      # mention one use fakes) and links nothing.
+      # mention one use fakes) and links nothing. The ~70 gates are ci/check-python-steps.txt, run
+      # concurrently by tools/check-parallel.py: as many at once as the runner has cores (4 here, cap 4).
       - name: make check-python-rest
         run: make check-python-rest
 

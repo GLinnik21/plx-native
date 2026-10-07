@@ -90,16 +90,19 @@ class Recipes(unittest.TestCase):
                 self.assertIn(f"{FLAG}='-Zthreads=4'", recipe(goal, "HOST_THREADS=4"))
 
     def test_off_means_no_recipe_names_it(self):
+        # One `make -n` per condition, naming every goal it applies to: each parse of the Makefile is
+        # ~0.5 s and this used to run one per goal and condition (30). `-n` prints each goal's recipe
+        # once, so the output holds exactly the lines the per-goal runs held.
         for what, args, env in (("override", ["HOST_THREADS=0"], None), ("one is serial", ["HOST_THREADS=1"], None),
                                 ("CI", [], {"CI": "true"}), ("GITHUB_ACTIONS", [], {"GITHUB_ACTIONS": "true"}),
                                 ("RELEASE", ["RELEASE=1"], None), ("stable", ["FLAVOR=stable"], None)):
-            for goal in HOST_RECIPES:
-                if goal[0] in ("test-fast", "test-crate", "build-bench") and what in ("RELEASE",):
-                    continue  # those goals refuse RELEASE=1 outright
-                with self.subTest(f"{what}: {goal[0]}"):
-                    out = recipe(goal, *args, env=env)
-                    self.assertNotIn(FLAG, out)
-                    self.assertNotIn("Zthreads", out)
+            # those goals refuse RELEASE=1 outright
+            goals = [goal for goal in HOST_RECIPES
+                     if not (goal[0] in ("test-fast", "test-crate", "build-bench") and what in ("RELEASE",))]
+            with self.subTest(f"{what}: {', '.join(goal[0] for goal in goals)}"):
+                out = make("-n", *[word for goal in goals for word in goal], *args, env=env)
+                self.assertNotIn(FLAG, out)
+                self.assertNotIn("Zthreads", out)
 
     def test_the_arm_and_simulator_recipes_never_name_it(self):
         text = (ROOT / "Makefile").read_text()

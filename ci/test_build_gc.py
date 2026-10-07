@@ -10,6 +10,8 @@ import tempfile
 import time
 import unittest
 
+import check_steps
+
 ROOT = Path(__file__).resolve().parent.parent
 MODES = ("--incremental", "--orphans", "--lanes", "--stale", "--cache", "--worktrees", "--all")
 
@@ -663,8 +665,8 @@ class InstallDiskWatchTests(unittest.TestCase):
 class MakeCheckContractTests(unittest.TestCase):
     def test_host_check_runs_gc_regressions(self):
         # `make check` is `tools/check-lock.py`'s machine-wide queue wrapper (two slots) around
-        # `check-unlocked`, which fans out to the `check-python` recipe this asserts on;
-        # `make check` still runs it, just queued.
+        # `check-unlocked`, which fans out to `check-python` and so to the step manifest
+        # (ci/check-python-steps.txt) this asserts on; `make check` still runs it, just queued.
         lines = (ROOT / "Makefile").read_text().splitlines()
 
         def recipe_of(target):
@@ -681,7 +683,7 @@ class MakeCheckContractTests(unittest.TestCase):
         unlocked = "\n".join(recipe_of("check-unlocked"))
         self.assertIn("check-cargo", unlocked)
         self.assertIn("check-python", unlocked)
-        self.assertIn("\tpython3 ci/test_build_gc.py", recipe_of("check-python-rest"))
+        self.assertIn("python3 ci/test_build_gc.py", check_steps.commands())
 
 
 if __name__ == "__main__":

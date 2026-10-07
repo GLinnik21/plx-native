@@ -31,6 +31,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import check_steps
+
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tools" / "build-bench.py"
 
@@ -507,7 +509,7 @@ class MakefileWiringTests(unittest.TestCase):
         m = re.search(r"^SIDE_EFFECT_FREE = (.*)$", self.makefile, re.M)
         self.assertIsNotNone(m)
         self.assertTrue({"build-bench", "build-bench-quick"} <= set(m.group(1).split()))
-        self.assertIn("python3 ci/test_build_bench.py", self.recipe("check-python-rest:"))
+        self.assertIn("python3 ci/test_build_bench.py", check_steps.commands())
 
 
 if __name__ == "__main__":

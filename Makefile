@@ -1428,9 +1428,11 @@ check-localization:
 #
 # Each branch's output is held until it ends and printed whole, in this order (cargo, python), so
 # the log reads the same as the old serial one and two lines never interleave; a failing branch is
-# printed first and stops the other. At most two run at once: this Mac's swap is routinely full.
-# Run one half alone with `make check-cargo` / `make check-python` (each is the exact set of
-# lines that branch runs here, so a half that fails is reproduced without the other).
+# printed first and stops the other. At most two BRANCHES run at once: this Mac's swap is routinely full,
+# and `check-python` fans out inside itself (`check-python-rest` runs up to four steps, beside
+# `check-python-harness`), which is the other bound on resident processes.
+# Run one half alone with `make check-cargo` / `make check-python` (each is exactly the set of
+# gates that branch runs here, so a half that fails is reproduced without the other).
 .PHONY: check-cargo check-cargo-lint check-cargo-unit-default check-cargo-unit-hostsim check-python check-python-harness check-python-rest
 check-unlocked:
 	@python3 tools/check-parallel.py \
@@ -1607,10 +1609,21 @@ build-bench build-bench-quick:
 
 # `check-python` is TWO branches run at once (tools/check-parallel.py, the same helper as
 # `check-unlocked`): `check-python-harness` is tests/test_harness.py alone, and `check-python-rest`
-# is every other Python/shell/C gate, in the order they always ran. They share nothing (the
-# harness edits private copies of the tree, never the checkout), and CI runs each as its own job
-# (ci/test_ci_split.py pins that the two are the whole of `check-python`). Measured 2026-10-05 on
-# a 10-core Mac: the serial chain was ~370 s, the harness ~190 s of it; the two halves overlap now.
+# is every other Python/shell/C gate. They share nothing (the harness edits private copies of the
+# tree, never the checkout), and CI runs each as its own job (ci/test_ci_split.py pins that the two
+# are the whole of `check-python`). Measured 2026-10-05 on a 10-core Mac: the serial chain was ~370 s,
+# the harness ~190 s of it; the two halves overlap now.
+#
+# `check-python-rest` is ITSELF concurrent: it is only the runner over ci/check-python-steps.txt, the
+# one list of its ~70 gates (one command per line, with the reason for each), which
+# `tools/check-parallel.py --steps` runs a bounded number at a time (cores, at most four, or
+# PLX_CHECK_STEP_JOBS=N), printing each step's whole output, wall and CPU time when it ends and
+# running every step even when one fails. It was one serial recipe of ~200 s (~115 s of CPU: most of
+# the rest was steps waiting on timers and subprocesses), the longest branch of a lone `make check`
+# and the CI job. A gate is added to the manifest and nowhere else: this recipe never names one, CI
+# runs this target, and ci/test_ci_split.py fails on a test file no gate runs. Steps run beside each
+# other, so they must not share a scratch path, a port or the checkout (the manifest's header, and
+# ci/test_check_collisions.py).
 check-python:
 	@python3 tools/check-parallel.py \
 	  rest='$(MAKE) --no-print-directory check-python-rest' \
@@ -1662,169 +1675,8 @@ check-c-unit:
 	cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/crashtrace" ci/crashtrace-test.c src/crashtrace.c && "$$d/crashtrace"; \
 	cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/private-log" ci/private-log-test.c && "$$d/private-log"
 
-check-python-rest: check-localization check-c-unit
-	python3 ci/test_ass_composite.py
-	python3 ci/test_ass_regions.py
-	@# The libass source fetch: canonical URL first, `mirrors` as a transport fallback, the pinned
-	@# sha256 checked against whichever source answered. Local sockets only, no real network.
-	python3 ci/test_libass_fetch.py
-	@# The flavour transform, host-side and free. Its central assertion — that the STABLE transform
-	@# is the identity — is the mechanical guarantee that having a second app id cannot perturb the
-	@# released .ipk, whose sha256 every user's television verifies at install. That property is
-	@# worth checking on every host run rather than only in the release job, which is the one place
-	@# it would be too late to learn otherwise. It also cross-checks the three copies of the app id
-	@# (here, ci/flavor.py, rust-modules/base/src/paths.rs), which no compiler can.
-	python3 ci/flavor.py --selftest
-	@# The nightly workflow's pure logic (version/label/tag arithmetic, the skip decision, the
-	@# release-note template, and the latest.json/prune field mapping) — no git repository, no
-	@# network, so a broken `ci/nightly.py` is caught here rather than at 03:00 UTC in the
-	@# scheduled run nobody is watching.
-	python3 ci/nightly.py --selftest
-	@# The release-candidate workflow's pure logic (numbering, the version/line rule it shares
-	@# with release.yml, the prerelease body) — same reason: a candidate is cut by hand, rarely.
-	python3 ci/rc.py --selftest
-	@# The issue labeler's pure logic (.github/workflows/issue-labels.yml): what survives a model
-	@# answer, the keyword fallback, `user-report` from the author's association. No network.
-	python3 ci/label-issue.py --selftest
-	@# The two host-side readers of the back-buffer-wait captures, against synthetic traces/JSONL.
-	python3 tools/analyze-sched-trace.py --self-test
-	python3 tools/analyze-hwcnt-wait.py --self-test
-	python3 tools/test_tv_capture_bench.py
-	@# tv-sched-trace.sh's read-back (drain, host-side bound, ^C, restore) against a fake tracefs and tv-ssh.
-	python3 -W ignore tools/test_tv_sched_trace.py
-	@# ...and the stamp decoder `ci/check-package.py` grades every "is this a RELEASE build?"
-	@# assertion through. It is pure string arithmetic over values only THIS file produces, and it
-	@# had been wrong since the telemetry field was added to RUST_CFG — decoding every real stamp as
-	@# "neither shipped configuration", which is a SKIP, so three gates printed nothing and nobody
-	@# saw it. Free, and the one place the make-side and python-side spellings of the stamp meet.
-	python3 ci/check-package.py --selftest
-	@# The restructure's structure gates (spec §15.2): greps with counted allowlists under
-	@# ci/allow/. tests/test_harness.py runs the same script; this line is the one a reader sees.
-	ci/check-deps.sh
-	@# The module-layer gate (docs/module-layers.md): every reference one module makes to another
-	@# must point DOWN the target crate graph in ci/module-layers.ini, and only the webOS port may
-	@# name the webOS modules (`[port webos]`), unless it is one of the counted migration entries in
-	@# ci/allow/layers.txt, which only shrinks. This is what keeps the module graph from growing new
-	@# cycles while the crate split is under way, and webOS from spreading. ~3 s, no cargo.
-	python3 ci/test_module_graph.py
-	python3 ci/check-module-layers.py
-	@# The statics gate (spec §0 done-criterion 1): static mut under ui/ and screens/ is zero except
-	@# the named render caches in ci/allow/statics.txt and the legacy modules still awaiting their
-	@# phase in ci/allow/statics-migration.txt — a counted list that only shrinks.
-	ci/check-statics.sh
-	@# The module-cycle ratchet: the top-level module cycle may shrink, never grow. The checker runs on the
-	@# real tree against ci/module-cycle-baseline.json (~1.5 s); its self-test uses a synthetic crate.
-	python3 ci/test_module_cycle.py
-	python3 ci/check-module-cycle.py
-	python3 tests/player_pointer.py --selftest
-	python3 tests/test_replay_fixtures.py
-	python3 tools/prune-gh-caches.py --selftest
-	python3 tests/test_mock_pms_library.py
-	@# The demo library and the screenshot scene manifest (make screenshots). Offline: the cases
-	@# that serve the catalog skip, and say so, where the derived artwork cache is absent.
-	python3 tests/test_demo_library.py
-	python3 tests/test_image_cache_stress.py
-	@# Host-only halves of the opt-in live diagnostics: /proc/interrupt parsing, rate normalization,
-	@# stack aggregation and folded output. Neither command resolves a TV or takes its lock.
-	tools/profile-graphics --selftest
-	tools/plxnative-sample selftest
-	@# The direct-screen TV command's own host-only contract: `--server N` must suppress the
-	@# singular token boot (which cannot register N>0) and must construct the exact identity marker
-	@# that `up` requires after launch. No SSH or television access occurs in this self-test.
-	python3 tools/mock-guest.py --selftest
-	tools/tv-session.sh selftest
-	python3 ci/test_tv_session.py
-	@# The three PreToolUse/PostToolUse hooks' own suites (~0.6s together). They were not in this
-	@# target until 2026-08-26, which meant the guard that decides whether a private value may
-	@# leave this machine was covered by a test nobody ran on a normal check -- the same shape as
-	@# the bug that produced the leak it exists to prevent, where the check computed its answer and
-	@# printed it instead of gating on it. Cheap, and the one place a weakened rule gets caught.
-	python3 .claude/hooks/outbound-guard-test.py
-	python3 .claude/hooks/release-config-check-test.py
-	python3 .claude/hooks/tv-lock-guard-test.py
-	python3 .claude/hooks/cloud-unshallow-test.py
-	@# The PMS probe's own offline suite (~3ms). It talks to the maintainer's real server with a
-	@# real token, so its redaction and its session CLEANUP are the two things that must not
-	@# regress -- and both are only covered here. It sat outside this target until 2026-08-27,
-	@# which is the same shape as the hook gap above: a suite that exists, passes, and is never
-	@# run. `pms-rung-sweep.py` drives that probe once per rung, so its pairing rules ride along.
-	python3 tools/test_pms_hls_probe.py
-	python3 tools/test_pms_rung_sweep.py
-	@# The Cloud Lab diagnostics/control receiver, against a real TLS listener on loopback with a freshly
-	@# generated certificate: an accepted upload, a wrong secret, an oversized body, a foreign
-	@# path, a bare GET and the rate limit — the six refusals that are the whole of its exposure to
-	@# the public internet. ~5 s, most of it the two deliberate rate-limit waits, and it needs no
-	@# router: the UPnP half reports what is on this LAN rather than asserting anything.
-	@# It runs here because the receiver has no other gate — nothing in cargo can see a python file.
-	python3 tools/plxnative-lab selftest
-	python3 tools/test_abr_transfer_bound.py
-	python3 tools/test_abr_calibrate_plant.py
-	python3 tools/test_abr_window_grade.py
-	python3 tools/test_scrub_logs.py
-	@# `deploy`'s payload check, both halves, host-only. `test_deploy_manifest.py` re-derives
-	@# `DEPLOY_FILES` from `APP_FILES` via `make -s print-*` (never `make -p` — see the ban on it
-	@# elsewhere in this file) and would have caught the drift that let `pkg/splash.png` sit in
-	@# every `.ipk` and reach no deployed app directory; `test_verify_deploy.py` covers the md5
-	@# comparison `verify-deploy` runs against the television, with no ssh and no device.
-	python3 ci/test_deploy_manifest.py
-	python3 ci/test_verify_deploy.py
-	python3 ci/test_link_evidence.py
-	python3 ci/test_packaged_elf.py
-	python3 ci/test_check_elf.py
-	python3 ci/test_build_gc.py
-	@# CI runs the cargo half as three parallel jobs: this pins that no gate fell between them.
-	python3 ci/test_ci_split.py
-	@# No CI job may lack timeout-minutes, no `apt-get update` / `curl` may be unbounded (run 36904995113 hung 4 h 36 min).
-	python3 ci/test_ci_timeouts.py
-	python3 ci/test_ci_workflows.py
-	@# The build-health budgets (ci/build-budgets.json): the checker against canned metadata, and the json schema.
-	python3 ci/test_build_budgets.py
-	@# tools/ci-durations.py (CI duration trends) against canned `gh api` output; no network.
-	python3 tools/test_ci_durations.py
-	@# `make test-fast` (the opt-in incremental loop) is fenced off from every other target.
-	python3 ci/test_test_fast.py
-	@# `make test-crate` (the crate-only loop: it must carry the full suite's feature set) and the parallel
-	@# test runner every unit recipe goes through (a failing binary fails the gate, a missing binary is not
-	@# a pass, every `test result:` line is printed), both against a fake cargo; nothing is compiled.
-	python3 ci/test_test_crate.py
-	python3 ci/test_cargo_test_parallel.py
-	@# `make build-bench`: table/JSON shape, edit-and-restore, refusals, skips and the Makefile wiring, against a fake cargo.
-	python3 ci/test_build_bench.py
-	@# `ARM_PROFILE`: a plain local build compiles the ARM staticlib with the fast `tvdev` profile and
-	@# everything that ships or runs in CI keeps fat-LTO `release`; resolved through print-bench-config.
-	python3 ci/test_arm_profile.py
-	@# `HOST_THREADS`: rustc's parallel front end for the local host test builds only; off for CI, RELEASE,
-	@# SYMBOLS and every non-debug flavour, and named by no ARM, simulator, clippy or workflow line.
-	python3 ci/test_host_threads.py
-	@# ...and the other half of that rule: a timing run (tests/run.py --fps*, profile-graphics, tv-sched-trace)
-	@# refuses a deployed `tvdev` binary and builds with ARM_PROFILE=release; functional runs do not. No TV.
-	python3 tests/test_arm_profile_guard.py
-	python3 ci/test_source_bundle.py
-	python3 ci/test_restore_runtime.py
-	python3 ci/test-compat.py
-	@# Two checkouts running the scratch-writing steps at once (test-compat.py, the C unit tests) must not
-	@# corrupt each other: each pair is run side by side against one shared TMPDIR.
-	python3 ci/test_check_collisions.py
-	@# The `check` lock wrapper's own suite: two shared runs at once and a third waiting (naming both
-	@# holders), a SIGKILLed holder freeing its slot, PLX_CHECK_SLOTS=1 serializing, exclusive mode for
-	@# the benchmarks (blocks and is blocked by shared runs, not starved by a stream of them, two
-	@# exclusive requests do not deadlock), the default slot count, --timeout exiting 75 and
-	@# PLX_CHECK_LOCK=off bypassing it. Runs against a throwaway lock path -- never the real
-	@# ~/.cache/plxnative/check.lock* -- so it cannot contend with the `check` that is running it.
-	python3 ci/test_check_lock.py
-	python3 tools/test_check_parallel.py
-	@# The cargo seed's own suite (restore only into an absent dir, the app crate never in the seed,
-	@# key refresh, off switch, clone failure), against a fake root and a private cache.
-	python3 ci/test_cargo_seed.py
-	@# `tools/tv-ssh`, the ssh/scp front door every TV caller shares, against FAKE ssh/sshpass on
-	@# PATH: key accepted -> sshpass never run; key refused -> sshpass; unreachable -> no password
-	@# attempt; no address or password on any line; and the Makefile's echoed commands stay silent about both.
-	python3 ci/test_tv_ssh.py
-	@# `tools/tv-config.sh`, the ONE resolver for the TV address and Wake-on-LAN MAC (this checkout's
-	@# .tv-host/.tv-mac, the main checkout's, then ~/.config/plxnative/), and every reader of it
-	@# (tv-ssh, wake-tv, the Makefile's TV, tests/run.py, stream-screen.py), against a throwaway repo
-	@# with a linked worktree. No TV, no network; placeholder values only.
-	python3 ci/test_tv_config.py
+check-python-rest:
+	@python3 tools/check-parallel.py --steps ci/check-python-steps.txt
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the

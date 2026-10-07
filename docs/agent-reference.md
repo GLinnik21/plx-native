@@ -159,7 +159,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   slots bound every `make check` across every worktree on the machine to TWO at a time, because
   concurrent cold builds (~1 GB RSS each) thrash far worse than queuing (measured 2026-09-28: a lone
   run ~10 min, seven concurrent ones stretched one run to 60 min). It was a single lock until
-  2026-10-06; on an Apple M4 (10 cores, 16 GB) a lone warm run is ~185-205 s and two at once finish in
+  2026-10-06; on an Apple M4 (10 cores, 16 GB) a lone warm run was ~185-205 s (~200 s on 2026-10-07 on main b79a17de with `check-python-rest` still one serial recipe of ~200 s; ~101 s once it runs its steps concurrently, `check-python-harness` ~85-100 s now being the long branch) and two at once finish in
   0.67-0.76 of the back-to-back time (warm, cold, and cold without the seed cache; 5-6 GB peak, no
   swap growth, each run of a pair 1.35-1.55x slower than alone). Three at once was not measured and
   is expected to swap on 16 GB. A third caller waits and gets EVERY holder's pid/worktree/start time
@@ -174,7 +174,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   gate `check.lock.gate` and then EVERY slot, and a check that arrives while the gate is held waits, so a
   benchmark waits only for the runs already going and then has the machine to itself (two benchmarks
   cannot deadlock; they are not ordered between themselves). `check-unlocked` runs two independent branches at once
-  (`tools/check-parallel.py`, never more than two): `check-cargo` (clippy, both unit-test passes,
+  (`tools/check-parallel.py`, never more than two branches): `check-cargo` (clippy, both unit-test passes,
   the lab-diagnostics type-check and the ci/ self-tests that drive cargo) and `check-python` (every
   Python/shell/C gate, including `tests/test_harness.py`; it never invokes cargo and modifies no
   source or build input; only Python bytecode caches may appear). Each branch's output is held and printed whole in that order, so the log
@@ -182,8 +182,16 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `make check-python` run one half alone. `check-cargo` is itself the serial union of
   `check-cargo-lint` (clippy + the lab-diagnostics type-check), `check-cargo-unit-default` and
   `check-cargo-unit-hostsim`. `check-python` is likewise two branches run side by side,
-  `check-python-harness` (`tests/test_harness.py` alone, ~190 s) and `check-python-rest` (every
-  other gate). CI runs the three cargo targets plus those two as five parallel jobs
+  `check-python-harness` (`tests/test_harness.py` alone, ~65-85 s) and `check-python-rest` (every
+  other gate, ~70 of them). `check-python-rest` is only the runner over **`ci/check-python-steps.txt`**,
+  the one list of those gates: `tools/check-parallel.py --steps` runs them a bounded number at a time
+  (the core count, at most 4; `PLX_CHECK_STEP_JOBS=N` overrides), prints each step's whole output with its
+  wall and CPU time when it ends, runs every step even when one fails and ends with the failed
+  steps by name. A new gate is ONE line in that file (CI runs the same target, so there is no second place),
+  and `ci/test_ci_split.py` fails on a test file that no gate runs. Because steps overlap, a step
+  must write only to a directory it made, bind port 0 and not touch the checkout
+  (`ci/test_check_collisions.py` runs a mix of them together and scans for fixed ports); the manifest's
+  header lists the rules. CI runs the three cargo targets plus those two as five parallel jobs
   (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`, `host-python-harness`) behind an aggregator named
   `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens`
   **twice: once on the default feature set and once with `--features hostsim`**, which is not a
