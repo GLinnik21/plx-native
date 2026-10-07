@@ -307,27 +307,33 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     `python3 ci/check-build-budgets.py --graph --src rust-modules/src` plus one `--src` per layer crate,
     as `ci.yml` spells it (add `--binary <path>` to grade a stripped binary); `ci/test_build_budgets.py` covers pass, fail, warn and the json schema.
   - *Live chart.* https://plxnative.com/ci/ (`site/ci/index.html`, noindex, not linked from the
-    landing page) answers how long a pull request waits (per commit, the longest job of the CI and
-    Simulator CI runs of a `main` push), each job's minutes for both workflows, the runner minutes
-    per push, and the share of runs per week that failed or passed only after a re-run. Every series
-    is derived from the rows (nothing names a job), so a job added or removed shows as a new or
-    ended line and a missing job in one run is a gap, not a zero. It reads `ci-history.json` from
-    the orphan `ci-metrics` branch (raw.githubusercontent.com), which `.github/workflows/ci-metrics.yml`
-    updates through `tools/ci-history.py` after every finished CI / Simulator CI push run on `main`
-    (one ~20 s ubuntu job, `concurrency`-collapsed, `actions: read` + `contents: write`, no pull-request
-    trigger; incremental and idempotent; `tools/test_ci_history.py`, in `check-python`, uses a fake `gh`).
-    Rows record `conclusion` and `attempt` and, for a red run, the names of the jobs that failed
-    (`jobs` holds only green jobs); cancelled runs are not recorded. The runs listing's
-    `status=success` filter is stale, so the tool filters `conclusion` and `event` itself, and the
-    listing can repeat or skip a run across pages, so an occasional gap is closed with
-    `gh workflow run ci-metrics.yml -f full=true`. That same command backfills a branch that does not
-    exist yet, records the verdict of rows written before verdicts existed and finds old red runs.
-    `python3 tools/ci-history.py --in <ci-history.json> --dry-run [--full]` prints how many rows a real
-    run would add and writes nothing. The lower half of the page, "Local development loop", is
-    `site/ci/milestones.json`: numbers measured by hand with `make build-bench` on one Apple M4 and
-    quoted from merged PR bodies, never collected; append a point with its PR and a one-line source.
-    To look at a local data file, serve `site/` with the file beside it and open
-    `/ci/?data=ci-history.json` (a same-origin relative path only).
+    landing page) is the working instrument for what a developer waits on: a "now" block (each
+    metric's 7-day median, its change against the previous 7 days and 30 days ago, worse ones first),
+    the slowest items right now, any regression of the last week with the commits in it, and the
+    time series behind them. It reads three files from the orphan `ci-metrics` branch
+    (raw.githubusercontent.com): `ci-history.json` (runs), `build-history.json` (the daily
+    benchmark, written by the benchmark workflow) and `ci-summary.json` (derived: `tools/ci-summary.py`
+    computes the "now" rows, the slowest list and the regressions as pure functions, so a later
+    alerting job can reuse them; per-class thresholds and the noise they were chosen from are in its
+    docstring). Nothing names a job: every series is derived from the rows, so a job added or removed
+    shows as a new or ended line and a missing job in one run is a gap, not a zero.
+    `.github/workflows/ci-metrics.yml` runs `tools/ci-history.py` and `tools/ci-summary.py` after
+    every finished CI / Simulator CI / Nightly run that is a push to `main` or a pull request (one
+    short ubuntu job, `concurrency`-collapsed, `actions: read` + `contents: write`; it checks out
+    only three tool files (the collector, the summary and the reader it imports) and never runs pull-request code, so a fork's pull request is recorded too,
+    with `pr: null`). Rows carry `event` (absent = a push to main), the PR number, `conclusion`,
+    `attempt`, `wall` (created to last update, for a re-run: what the developer waited) and the green
+    jobs (`failed` names the others); the nightly is recorded for pull requests only; cancelled runs
+    get no row and are counted per day in `cancelled`. Per-run rows are kept 90 days, then folded
+    into one `daily` entry per workflow, event and day. The runs listing's `status=success` filter is
+    stale, so the tool filters `conclusion` and `event` itself, and the listing can repeat or skip a
+    run across pages, so an occasional gap is closed with `gh workflow run ci-metrics.yml -f
+    full=true` (which also fills the `cancelled` days an incremental pass leaves empty, backfills a
+    branch that does not exist yet and finds old red runs). `python3 tools/ci-history.py --in
+    <ci-history.json> --dry-run [--full]` prints how many rows a real run would add and writes
+    nothing. `tools/test_ci_history.py` and `tools/test_ci_summary.py`, in `check-python`, use a fake
+    `gh` and synthetic series. To look at local data files, serve `site/` with the files beside the
+    page and open `/ci/?data=ci-history.json` (a same-origin relative path only).
 - `make build-bench [ARGS='--runs 5 --json out.json']` / `make build-bench-quick` — the repeatable
   local **build benchmark** (`tools/build-bench.py`), so a build-affecting change pastes a
   before/after table instead of an ad-hoc scratch-script number. It prints a Markdown table (median /
@@ -370,6 +376,22 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `ci/test_build_bench.py` (a fake cargo, a scratch repository) pins the table and JSON shape, the
   restore-on-failure and dirty-target refusal, the skips, and that the mirrored cargo subcommand
   skeletons still equal the Makefile's recipes.
+- **The daily build-time series** (`.github/workflows/build-bench.yml`, `tools/build-history.py`).
+  Every day at 04:17 UTC, and on `gh workflow run build-bench.yml` (a same-day run replaces that day's
+  record; `-f only=noop,leaf` narrows it), a GitHub-hosted macOS runner builds main's tip and times,
+  with this benchmark, a no-op host build, the edit-rebuild of `plx_base`, `plx_ui`, `plx_screens`
+  and the app crate, and the unit suite (each the median of 3 runs, with min and max), and, in a
+  second job on its own runner, `make check` once with its cargo and python branches (the opt-in
+  scenario: `make build-bench ARGS='--only check --runs 1'` times it locally; it runs
+  `check-unlocked`, because the benchmark already holds the check lock). One record per day is
+  appended to `build-history.json` on the `ci-metrics` branch (the same branch as `ci-history.json`,
+  pushed with a retry because `ci-metrics.yml` writes it too) and summarised into `ci-summary.json`
+  beside it; the page at plxnative.com/ci/ reads those files. The numbers are for the trend of one
+  runner type, not the absolute time on a dev Mac. A failed benchmark writes nothing; a red `check`
+  costs only its own rows; a day whose runner printed load or swap warnings is recorded with
+  `noisy: true` and drawn marked, never dropped. `ci/test_build_history.py` pins the record and the
+  merge, and `ci/test_ci_workflows.py` the workflow's triggers (no pull-request trigger), guards,
+  permissions and timeouts.
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
 - **`make SYMBOLS=1 symbols`** — build with DWARF and split it into **`pkg/plxnative.debug`**, the

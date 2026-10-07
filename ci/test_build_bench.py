@@ -386,6 +386,100 @@ class SkipTests(unittest.TestCase):
             sb.assert_sources_untouched(self)
 
 
+DASH = "—"
+# What the real `check-unlocked` prints: the python branch's own output nests a banner of its own, and
+# the two top-level banners come last (tools/check-parallel.py prints a branch when it ends).
+FAKE_CHECK_MAKEFILE = SCRATCH_MAKEFILE + (
+    "check-unlocked:\n"
+    "\t@echo \"$$PLX_CHECK_LOCK|$$MAKEFLAGS|$$PLXNATIVE_RUNTIME_DIR\" > $(CURDIR)/../check-env.txt\n"
+    "\t@test -z \"$$FAKE_CHECK_FAIL\" || { echo 'FAILED: a gate'; exit 1; }\n"
+    f"\t@echo '==== step: rest {DASH} ok (9.0s, cpu 20.0s) ===='\n"
+    f"\t@echo '==== step: cargo {DASH} ok (42.5s, cpu 90.1s) ===='\n"
+    f"\t@echo '==== step: python {DASH} ok (31.2s, cpu 60.0s) ===='\n"
+    "\t@echo '==== check: 2 steps all ok ===='\n")
+
+
+class CheckScenarioTests(unittest.TestCase):
+    """`--only check`: the whole host gate, opt-in, without taking the lock this process already holds."""
+
+    def test_it_is_opt_in(self):
+        self.assertNotIn("check", bb.ALL_SCENARIOS)
+        self.assertNotIn("check", bb.QUICK_SCENARIOS)
+        self.assertIn("check", bb.OPTIONAL_SCENARIOS)
+        self.assertIn("check", bb.TITLES)
+
+    def test_wall_time_and_branch_times_are_reported(self):
+        with Sandbox() as sb:
+            (sb.repo / "Makefile").write_text(FAKE_CHECK_MAKEFILE, encoding="utf-8")
+            out = sb.repo.parent / "check.json"
+            proc = sb.run("--runs", "2", "--only", "check", "--json", str(out),
+                          env={"MAKEFLAGS": "-j9", "PLXNATIVE_RUNTIME_DIR": "/should/not/leak"})
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertRegex(proc.stdout, re.escape(f"| {bb.TITLES['check']} | 2 | ") + r"[\d.]+ s \| [\d.]+ s \| [\d.]+ s \|")
+            self.assertIn("cargo branch 42 s, python branch 31 s", proc.stdout)
+            doc = json.loads(out.read_text())
+            (sc,) = doc["scenarios"]
+            self.assertEqual(sc["id"], "check")
+            self.assertEqual(len(sc["samples"]), 2)
+            self.assertEqual(sc["branches"]["cargo"]["median"], 42.5)
+            self.assertEqual(sc["branches"]["python"]["max"], 31.2)
+            # No lock (this process holds it exclusively), and nothing of the bench's environment leaks in.
+            lock, makeflags, runtime = (sb.repo.parent / "check-env.txt").read_text().strip().split("|")
+            self.assertEqual(lock, "off")
+            self.assertNotIn("-j9", makeflags)   # make adds its own flags (--no-print-directory); ours are not inherited
+            self.assertEqual(runtime, "")
+            self.assertEqual(sb.calls(), [])   # the gate runs through make, not through this script's cargo
+
+    def test_a_red_gate_is_a_failed_run_and_records_no_number(self):
+        with Sandbox() as sb:
+            (sb.repo / "Makefile").write_text(FAKE_CHECK_MAKEFILE, encoding="utf-8")
+            out = sb.repo.parent / "red.json"
+            proc = sb.run("--runs", "1", "--only", "check", "--json", str(out), env={"FAKE_CHECK_FAIL": "1"})
+            self.assertEqual(proc.returncode, 1, proc.stderr)
+            self.assertIn("FAILED: check: the gate exited", proc.stdout)
+            doc = json.loads(out.read_text())
+            self.assertTrue(doc["failure"])
+            self.assertNotIn("median", doc["scenarios"][0])
+            self.assertEqual(doc["scenarios"][0]["status"], "failed")
+
+    def test_a_gate_that_prints_no_branch_banner_is_refused(self):
+        with Sandbox() as sb:
+            (sb.repo / "Makefile").write_text(SCRATCH_MAKEFILE + "check-unlocked:\n\t@echo nothing useful\n")
+            proc = sb.run("--runs", "1", "--only", "check")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("no `==== step: <branch>", proc.stdout)
+
+    def test_the_banner_parser_takes_the_last_banner_of_each_branch(self):
+        text = (f"==== step: cargo {DASH} ok (1.0s) ====\n==== step: python {DASH} ok (2.0s, cpu 3.0s) ====\n"
+                f"==== step: cargo {DASH} FAILED, exit 1 (7.5s, cpu 9.0s) ====\n==== step: other {DASH} ok (99.0s) ====\n")
+        self.assertEqual(bb.parse_check_branches(text), {"cargo": 7.5, "python": 2.0})
+        self.assertEqual(bb.parse_check_branches("no banners"), {})
+
+
+class RunnerBlockTests(unittest.TestCase):
+    ALLOWED = {"cpu", "cores", "system", "arch", "runner_os", "runner_arch", "image_os", "image_version"}
+
+    def test_the_json_names_the_machine_without_identifying_it(self):
+        with Sandbox() as sb:
+            out = sb.repo.parent / "r.json"
+            proc = sb.run("--runs", "1", "--only", "noop", "--json", str(out),
+                          env={"RUNNER_OS": "macOS", "RUNNER_ARCH": "ARM64", "ImageOS": "macos15", "ImageVersion": "20260101.1"})
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            runner = json.loads(out.read_text())["runner"]
+            self.assertLessEqual(set(runner), self.ALLOWED)
+            self.assertTrue(runner["cpu"])
+            self.assertEqual((runner["runner_os"], runner["runner_arch"], runner["image_os"], runner["image_version"]),
+                             ("macOS", "ARM64", "macos15", "20260101.1"))
+
+    def test_off_a_runner_only_the_machine_fields_are_present(self):
+        with Sandbox() as sb:
+            out = sb.repo.parent / "r2.json"
+            env = {k: "" for k in ("RUNNER_OS", "RUNNER_ARCH", "ImageOS", "ImageVersion")}
+            proc = sb.run("--runs", "1", "--only", "noop", "--json", str(out), env=env)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(set(json.loads(out.read_text())["runner"]), {"cpu", "cores", "system", "arch"})
+
+
 class NoiseTests(unittest.TestCase):
     def test_load_above_core_count_warns(self):
         with Sandbox() as sb:

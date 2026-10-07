@@ -315,5 +315,92 @@ class HostLibraryCaches(unittest.TestCase):
         self.assertIn("make sim-linux", job_body("simulators.yml", "linux"))
 
 
+class BuildBenchWorkflow(unittest.TestCase):
+    """The daily build-time measurement (build-bench.yml): a schedule that can only ever run main's tip.
+
+    It runs a macOS runner for tens of minutes a day and its second job holds a token that can push to
+    a branch, so the shape that keeps both bounded is pinned: no trigger a pull request can pull, the
+    repository and default-branch guards, an empty workflow-level grant, the write permission on the
+    publish job alone, bounded timeouts.
+    """
+
+    NAME = "build-bench.yml"
+
+    def test_the_only_triggers_are_the_schedule_and_a_manual_dispatch(self):
+        body = code(self.NAME)
+        on = body[body.index("\non:\n") + 1:body.index("\npermissions:")]
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):", on), ["schedule", "workflow_dispatch"])
+        self.assertRegex(on, r"(?m)^    - cron: \"\d+ \d+ \* \* \*\"$")   # once a day, not hourly
+        for trigger in ("pull_request", "pull_request_target", "push", "workflow_run", "issue_comment"):
+            self.assertNotIn(trigger, on)
+
+    def test_it_runs_only_for_this_repository_and_its_default_branch(self):
+        for job in ("measure", "gate"):
+            body = job_body(self.NAME, job)
+            self.assertIn("github.repository == 'GLinnik21/plx-native'", body, job)
+            self.assertIn("github.ref_name == github.event.repository.default_branch", body, job)
+
+    def test_the_workflow_grants_nothing_and_only_publish_may_write(self):
+        body = code(self.NAME)
+        self.assertRegex(body, r"(?m)^permissions: \{\}$")
+        for job in ("measure", "gate"):
+            self.assertEqual(re.findall(r"contents: (\w+)", job_body(self.NAME, job)), ["read"], job)
+        self.assertEqual(re.findall(r"contents: (\w+)", job_body(self.NAME, "publish")), ["write"])
+        self.assertEqual(len(re.findall(r"(?m)^\s+[a-z-]+: (?:write|read)\b", body)), 3)
+        # nothing in the jobs that run the build can push: their checkouts keep no credential
+        for job in ("measure", "gate"):
+            self.assertIn("persist-credentials: false", job_body(self.NAME, job), job)
+
+    def test_the_jobs_are_bounded(self):
+        for job, ceiling in (("measure", 40), ("gate", 40), ("publish", 10)):
+            m = re.search(r"(?m)^    timeout-minutes: (\d+)$", job_body(self.NAME, job))
+            self.assertIsNotNone(m, job)
+            self.assertLessEqual(int(m.group(1)), ceiling, job)
+        # the whole-gate run is bounded on its own, and may not fail the measurement
+        gate = job_body(self.NAME, "gate")
+        step = gate[gate.index("the whole gate once"):gate.index("Keep the document")]
+        self.assertIn("continue-on-error: true", step)
+        self.assertRegex(step, r"timeout-minutes: \d+")
+        self.assertIn("--only check", step)
+        # ...and the rows job never runs it (a slow, runner-dependent row must not delay the rest)
+        self.assertNotIn("check", re.findall(r"--only (\S+)", job_body(self.NAME, "measure"))[0].split(","))
+
+    def test_a_failed_measurement_publishes_nothing(self):
+        publish = job_body(self.NAME, "publish")
+        self.assertIn("needs: [measure, gate]", publish)
+        self.assertIn("always() && needs.measure.result == 'success'", publish)
+        # the gate job may be skipped or red; only the rows job gates the record
+        self.assertNotIn("needs.gate", publish)
+        self.assertRegex(publish, r"python3 \.\./tools/build-history\.py")
+        self.assertRegex(publish, r"python3 \.\./tools/ci-summary\.py --history ci-history\.json --bench build-history\.json --out ci-summary\.json")
+
+    def test_measurements_do_not_overlap_and_a_lost_push_race_is_retried(self):
+        body = code(self.NAME)
+        self.assertRegex(body, r"(?m)^concurrency:\n  group: build-bench\n  cancel-in-progress: false$")
+        publish = job_body(self.NAME, "publish")
+        self.assertIn("for attempt in 1 2 3", publish)
+        self.assertIn("git reset -q --hard FETCH_HEAD", publish)
+        # the data branch is only ever pushed to, never force-pushed
+        self.assertNotIn("--force", publish)
+        self.assertNotRegex(publish, r"push[^\n]* -f\b")
+        self.assertIn("HEAD:refs/heads/ci-metrics", publish)
+
+    def test_every_action_is_pinned_to_a_commit(self):
+        for line in code(self.NAME).splitlines():
+            m = re.match(r"\s*(?:- )?uses: (\S+)", line)
+            if m:
+                self.assertRegex(m.group(1), r"@[0-9a-f]{40}$", line)
+
+    def test_the_daily_set_is_one_the_benchmark_knows(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("build_bench_for_wf", ROOT / "tools" / "build-bench.py")
+        bb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bb)
+        daily = re.search(r"DEFAULT_ONLY: (\S+)", code(self.NAME)).group(1).split(",")
+        self.assertTrue(set(daily) <= set(bb.ALL_SCENARIOS), daily)
+        self.assertNotIn("check", daily)   # the gate has its own, failure-tolerant step
+        self.assertNotIn("arm", daily)     # no ARM archive on a runner; the benchmark never builds FFmpeg
+
+
 if __name__ == "__main__":
     unittest.main()

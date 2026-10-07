@@ -35,6 +35,10 @@
 python3 ci/test_check_lock.py
 # `make build-bench`: table/JSON shape, edit-and-restore, refusals, skips and the Makefile wiring, against a fake cargo.
 python3 ci/test_build_bench.py
+# The daily build-time record (tools/build-history.py -> build-history.json on the ci-metrics branch): the record shape,
+# one record per day (a same-day re-run replaces it), nothing written for a failed benchmark, a red `check` costing only
+# its own rows, a noisy day marked and kept, nothing identifying in the runner block. Synthetic documents, no cargo.
+python3 ci/test_build_history.py
 python3 ci/test_build_gc.py
 python3 ci/test_check_elf.py
 # Nothing that runs at once may collide: two checkouts running the scratch-writing steps (test-compat.py,
@@ -175,9 +179,12 @@ python3 ci/test_ci_workflows.py
 python3 ci/test_build_budgets.py
 # tools/ci-durations.py (CI duration trends) against canned `gh api` output; no network.
 python3 tools/test_ci_durations.py
-# tools/ci-history.py (the live page's data: incremental merge, filtering, re-runs, paging stop) against a fake `gh api`,
-# and the shape of site/ci/milestones.json and site/ci/index.html; no network.
+# tools/ci-history.py (the live page's data: incremental merge, filtering, pull-request and nightly rows, re-runs,
+# cancelled counts, retention fold, paging stop) against a fake `gh api`, and the shape of site/ci/index.html; no network.
 python3 tools/test_ci_history.py
+# tools/ci-summary.py (the page's "now" block, slowest list and regressions) against synthetic series: step up and down,
+# noisy flat, missing days, the re-run wall rule, PR/push separation; no network.
+python3 tools/test_ci_summary.py
 # `make test-crate` (the crate-only loop: it must carry the full suite's feature set) and the parallel
 # test runner every unit recipe goes through (a failing binary fails the gate, a missing binary is not
 # a pass, every `test result:` line is printed), both against a fake cargo; nothing is compiled.
