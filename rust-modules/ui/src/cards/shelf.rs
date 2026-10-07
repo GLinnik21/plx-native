@@ -415,12 +415,6 @@ impl Shelf {
         self.row.at_exact_rest()
     }
 
-    /// The live label-band expansion, 0 collapsed to 1 focused, for a caller that sizes its page
-    /// from it (`card_row::under_band` of it is what [`under_band`](Self::under_band) answers).
-    pub fn band_expand(&self) -> f32 {
-        self.row.band_expand()
-    }
-
     /// Restore a saved viewport (`n` is the current card count).
     pub fn restore_scroll(&mut self, scroll: f32, n: usize) {
         self.row.restore_scroll(scroll, n, self.style);
