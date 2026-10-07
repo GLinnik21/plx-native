@@ -379,7 +379,11 @@ pub fn facts_pending(p: &Person) -> bool {
     // arriving. One failed attempt is enough to say "this is what the page is": the band degrades
     // to the name it already has, which is exactly the finished-not-broken read the doc above asks
     // for. A later success still fills it in — `profiled` is what draws the content.
-    !p.profiled && !p.profile_tried
+    //
+    // **And only when there is something to ask.** A person with no plex.tv guid is never
+    // addressed (`address` has nothing to send), so no attempt can ever turn `profile_tried`; the
+    // wait would be unbounded in exactly the way the paragraph above rules out.
+    !p.profiled && !p.profile_tried && !p.guid.is_empty()
 }
 
 // Shelves have their OWN pending question already — [`loading`], just below — which is `!landed`
@@ -1859,6 +1863,18 @@ pub fn install_credits_for_test(&mut self, groups: &[(&str, usize)]) {
     self.revision += 1;
 }
 
+/// TEST ONLY: settle the plex.tv profile question as a landed (empty) answer does, so the header
+/// is no longer waiting on facts ([`facts_pending`]) and its placeholder sweep is not running. A
+/// harness that never pumps the store's fetches has no other way to end that wait.
+pub fn install_profile_for_test(&mut self) {
+    let Some(p) = self.current.as_mut() else {
+        return;
+    };
+    p.profiled = true;
+    p.profile_tried = true;
+    self.revision += 1;
+}
+
 /// TEST ONLY: publish shelves onto the open person exactly as a successful landing would, so the
 /// screen's focus/flow tests need neither a server nor the mailbox. Lands them on the FIRST source
 /// (minting one for the open person's own server when the registry is empty, which is the state
@@ -2733,6 +2749,22 @@ mod tests {
             RETRY_FRAMES,
             "a failure must back off before retrying"
         );
+        owner.close();
+    }
+
+    /// A person with no plex.tv guid is never ASKED for a profile (`address` has nothing to send),
+    /// so `profile_tried` can never turn: if `facts_pending` stayed true the header would sweep its
+    /// placeholders, and the page would repaint at 60 fps, for an answer that cannot arrive.
+    #[test]
+    fn a_person_without_a_guid_is_not_waiting_on_facts() {
+        let mut owner = Owner::default();
+        let _serial = plx_base::testlock::serial();
+        owner.open(S0, "7", "", "Nobody", "");
+        let p = owner.current().unwrap();
+        assert!(address(F_PROFILE, p).is_none(), "nothing can be asked");
+        assert!(!facts_pending(p), "so there is nothing to wait for");
+        owner.open(S0, "8", "00000000000000000000aaaa", "Somebody", "");
+        assert!(facts_pending(owner.current().unwrap()), "a guid-bearing person still waits for its profile");
         owner.close();
     }
 
