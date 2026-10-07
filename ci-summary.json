@@ -1,0 +1,403 @@
+{
+ "generated": "2026-10-07T22:18:29Z",
+ "metrics": [
+  {
+   "change30_pct": null,
+   "change7_pct": 22.6,
+   "d30": null,
+   "group": "ci",
+   "id": "sim|Linux simulator build + launch",
+   "label": "Simulator CI: Linux simulator build + launch",
+   "n_now": 100,
+   "n_prev": 62,
+   "now": 246.5,
+   "prev7": 201.0,
+   "state": "worse",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": -98.3,
+   "change7_pct": -99.6,
+   "d30": 241,
+   "group": "ci",
+   "id": "ci|host checks (NOT a device gate)",
+   "label": "CI: host checks (NOT a device gate)",
+   "n_now": 108,
+   "n_prev": 72,
+   "now": 4.0,
+   "prev7": 952.5,
+   "state": "better",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 113.3,
+   "change7_pct": -46.8,
+   "d30": 241,
+   "group": "ci",
+   "id": "push_wait",
+   "label": "Wait after merge",
+   "n_now": 111,
+   "n_prev": 75,
+   "now": 514,
+   "prev7": 967,
+   "state": "better",
+   "threshold_abs": 60.0,
+   "threshold_pct": 15.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 108.2,
+   "change7_pct": -10.6,
+   "d30": 128,
+   "group": "ci",
+   "id": "ci|cross-build (armv7) + artifact assertions",
+   "label": "CI: cross-build (armv7) + artifact assertions",
+   "n_now": 108,
+   "n_prev": 72,
+   "now": 266.5,
+   "prev7": 298.0,
+   "state": "flat",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": null,
+   "d30": null,
+   "group": "ci",
+   "id": "ci|host harness tests",
+   "label": "CI: host harness tests",
+   "n_now": 35,
+   "n_prev": 0,
+   "now": 138,
+   "prev7": null,
+   "state": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": null,
+   "d30": null,
+   "group": "ci",
+   "id": "ci|host lint + type-checks",
+   "label": "CI: host lint + type-checks",
+   "n_now": 91,
+   "n_prev": 0,
+   "now": 172,
+   "prev7": null,
+   "state": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": null,
+   "d30": null,
+   "group": "ci",
+   "id": "ci|host python/shell/C gates",
+   "label": "CI: host python/shell/C gates",
+   "n_now": 91,
+   "n_prev": 0,
+   "now": 242,
+   "prev7": null,
+   "state": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": null,
+   "d30": null,
+   "group": "ci",
+   "id": "ci|host unit tests (default features)",
+   "label": "CI: host unit tests (default features)",
+   "n_now": 91,
+   "n_prev": 0,
+   "now": 288,
+   "prev7": null,
+   "state": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": null,
+   "d30": null,
+   "group": "ci",
+   "id": "ci|host unit tests (hostsim)",
+   "label": "CI: host unit tests (hostsim)",
+   "n_now": 91,
+   "n_prev": 0,
+   "now": 234,
+   "prev7": null,
+   "state": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": -5.1,
+   "d30": null,
+   "group": "ci",
+   "id": "minutes",
+   "label": "Runner time per push",
+   "n_now": 84,
+   "n_prev": 53,
+   "now": 2382.5,
+   "prev7": 2511,
+   "state": "flat",
+   "threshold_abs": 240.0,
+   "threshold_pct": 15.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": -3.4,
+   "d30": null,
+   "group": "ci",
+   "id": "nightly|ARM build + gates / build + verify",
+   "label": "Nightly: ARM build + gates / build + verify",
+   "n_now": 67,
+   "n_prev": 43,
+   "now": 760,
+   "prev7": 787,
+   "state": "flat",
+   "threshold_abs": 120.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 27.3,
+   "d30": null,
+   "group": "ci",
+   "id": "nightly|plan today's nightly",
+   "label": "Nightly: plan today's nightly",
+   "n_now": 67,
+   "n_prev": 43,
+   "now": 14,
+   "prev7": 11,
+   "state": "flat",
+   "threshold_abs": 120.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 20.0,
+   "d30": null,
+   "group": "ci",
+   "id": "nightly|publish nightly prerelease",
+   "label": "Nightly: publish nightly prerelease",
+   "n_now": 67,
+   "n_prev": 43,
+   "now": 18,
+   "prev7": 15,
+   "state": "flat",
+   "threshold_abs": 120.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 284.0,
+   "change7_pct": -5.0,
+   "d30": 235,
+   "group": "ci",
+   "id": "pr_wait",
+   "label": "PR CI wait",
+   "n_now": 184,
+   "n_prev": 174,
+   "now": 902.5,
+   "prev7": 950.0,
+   "state": "flat",
+   "threshold_abs": 90.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 0.0,
+   "d30": null,
+   "group": "ci",
+   "id": "sim|Windows launcher syntax",
+   "label": "Simulator CI: Windows launcher syntax",
+   "n_now": 100,
+   "n_prev": 62,
+   "now": 17.0,
+   "prev7": 17.0,
+   "state": "flat",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": -17.0,
+   "d30": null,
+   "group": "ci",
+   "id": "sim|macOS simulator build + launch",
+   "label": "Simulator CI: macOS simulator build + launch",
+   "n_now": 100,
+   "n_prev": 62,
+   "now": 751.0,
+   "prev7": 905.0,
+   "state": "flat",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": null,
+   "d30": null,
+   "group": "ci",
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "n_now": 45,
+   "n_prev": 0,
+   "now": 291,
+   "prev7": null,
+   "state": "new",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  }
+ ],
+ "regressions": [
+  {
+   "change_pct": 22.6,
+   "commits": [
+    {
+     "pr": 505,
+     "sha": "bdc1ee912",
+     "title": "cards::Grid: columns, style and left edge from the spec, and an externally driven scroll mode"
+    },
+    {
+     "pr": 506,
+     "sha": "178e7c398",
+     "title": "Search adopts cards::Shelf: each result row's pop, scroll, stops and placement come from the shared component"
+    },
+    {
+     "pr": 491,
+     "sha": "8a58e665f",
+     "title": "Up Next: the player screen comes to rest, and the site's Up Next close-up is rerendered"
+    },
+    {
+     "pr": 507,
+     "sha": "8b85ddf9c",
+     "title": "Library: the All grid is a cards::Grid (external scroll), with an exact, clamped landing shift"
+    },
+    {
+     "pr": 509,
+     "sha": "6a3e85699",
+     "title": "Demo library: text content for the 28 titles the completeness gate listed"
+    },
+    {
+     "pr": 508,
+     "sha": "e976ab97e",
+     "title": "Dump mode (S5a-1): four landing sites wait for their own request, prewarm and GPU readiness are constants"
+    },
+    {
+     "pr": 510,
+     "sha": "dee8d0b9e",
+     "title": "Dump mode (S5a-3): Home's hubs and the controlled-Home discovery take wait for their own request, plain takes under dump"
+    },
+    {
+     "pr": 511,
+     "sha": "1ab45c0c7",
+     "title": "cards::Stack: Collection and Person become a page of card sections with no hand-written focus code"
+    },
+    {
+     "pr": 512,
+     "sha": "823dd4cbc",
+     "title": "Dump mode (S5a-2): a superseded request cannot release the new claim; Metadata, Browse and ViewState land on their own r"
+    },
+    {
+     "pr": 513,
+     "sha": "33937fcb1",
+     "title": "Troubleshooting: how to collect the app's logs, and a bug-report form that asks for them"
+    }
+   ],
+   "from": 201.0,
+   "id": "sim|Linux simulator build + launch",
+   "label": "Simulator CI: Linux simulator build + launch",
+   "since": "2026-10-07",
+   "threshold_pct": 20.0,
+   "to": 246.5
+  }
+ ],
+ "schema": 1,
+ "slowest": [
+  {
+   "group": "ci",
+   "id": "nightly|ARM build + gates / build + verify",
+   "label": "Nightly: ARM build + gates / build + verify",
+   "now": 760
+  },
+  {
+   "group": "ci",
+   "id": "sim|macOS simulator build + launch",
+   "label": "Simulator CI: macOS simulator build + launch",
+   "now": 751.0
+  },
+  {
+   "group": "ci",
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "now": 291
+  },
+  {
+   "group": "ci",
+   "id": "ci|host unit tests (default features)",
+   "label": "CI: host unit tests (default features)",
+   "now": 288
+  },
+  {
+   "group": "ci",
+   "id": "ci|cross-build (armv7) + artifact assertions",
+   "label": "CI: cross-build (armv7) + artifact assertions",
+   "now": 266.5
+  }
+ ],
+ "thresholds": {
+  "bench": {
+   "percent": 25.0,
+   "seconds": 5.0
+  },
+  "ci_job": {
+   "percent": 20.0,
+   "seconds": 20.0
+  },
+  "minutes": {
+   "percent": 15.0,
+   "seconds": 240.0
+  },
+  "nightly": {
+   "percent": 25.0,
+   "seconds": 120.0
+  },
+  "pr_wait": {
+   "percent": 25.0,
+   "seconds": 90.0
+  },
+  "push_wait": {
+   "percent": 15.0,
+   "seconds": 60.0
+  },
+  "sim_job": {
+   "percent": 20.0,
+   "seconds": 30.0
+  }
+ }
+}
