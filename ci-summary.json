@@ -1,16 +1,16 @@
 {
- "generated": "2026-10-07T23:55:34Z",
+ "generated": "2026-10-07T23:57:05Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 21.4,
+   "change7_pct": 21.6,
    "d30": null,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 103,
+   "n_now": 104,
    "n_prev": 63,
-   "now": 244,
+   "now": 244.5,
    "prev7": 201,
    "state": "worse",
    "threshold_abs": 30.0,
@@ -34,15 +34,15 @@
    "unit": "s"
   },
   {
-   "change30_pct": 109.1,
-   "change7_pct": -48.0,
+   "change30_pct": 108.3,
+   "change7_pct": -48.2,
    "d30": 241,
    "group": "ci",
    "id": "push_wait",
    "label": "Wait after merge",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 76,
-   "now": 504.0,
+   "now": 502,
    "prev7": 968.5,
    "state": "better",
    "threshold_abs": 60.0,
@@ -51,14 +51,14 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -22.9,
+   "change7_pct": -25.6,
    "d30": null,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 103,
+   "n_now": 104,
    "n_prev": 63,
-   "now": 699,
+   "now": 675.0,
    "prev7": 907,
    "state": "better",
    "threshold_abs": 30.0,
@@ -344,9 +344,9 @@
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 103,
+   "n_now": 104,
    "n_prev": 63,
-   "now": 17,
+   "now": 17.0,
    "prev7": 17,
    "state": "flat",
    "threshold_abs": 30.0,
@@ -360,9 +360,9 @@
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 0,
-   "now": 261,
+   "now": 230.5,
    "prev7": null,
    "state": "new",
    "threshold_abs": 30.0,
@@ -372,13 +372,8 @@
  ],
  "regressions": [
   {
-   "change_pct": 21.4,
+   "change_pct": 21.6,
    "commits": [
-    {
-     "pr": 511,
-     "sha": "1ab45c0c7",
-     "title": "cards::Stack: Collection and Person become a page of card sections with no hand-written focus code"
-    },
     {
      "pr": 512,
      "sha": "823dd4cbc",
@@ -423,6 +418,11 @@
      "pr": 524,
      "sha": "fbe87425c",
      "title": "Routing: report links go to the form chooser, the sandbox help points at the guide, and a sign-in section"
+    },
+    {
+     "pr": 525,
+     "sha": "a7188ad24",
+     "title": "Home: the hub shelves are cards::Shelf"
     }
    ],
    "from": 201,
@@ -430,7 +430,7 @@
    "label": "Simulator CI: Linux simulator build + launch",
    "since": "2026-10-07",
    "threshold_pct": 20.0,
-   "to": 244
+   "to": 244.5
   }
  ],
  "schema": 1,
@@ -445,7 +445,7 @@
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "label": "Simulator CI: macOS simulator build + launch",
-   "now": 699
+   "now": 675.0
   },
   {
    "group": "ci",
@@ -461,9 +461,9 @@
   },
   {
    "group": "ci",
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "now": 261
+   "id": "sim|Linux simulator build + launch",
+   "label": "Simulator CI: Linux simulator build + launch",
+   "now": 244.5
   }
  ],
  "thresholds": {
