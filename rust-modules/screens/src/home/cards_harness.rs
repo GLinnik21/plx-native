@@ -30,7 +30,8 @@ pub(crate) struct Harness {
     state: plx_data::pms::PmsState,
     adapter: std::sync::Arc<plx_data::pms::PmsAdapter>,
     snap: plx_data::pms::HubsSnapshot,
-    screen: HomeScreen,
+    /// Behind a cell because the real `Screen::draw` the stops are read from takes `&mut`.
+    screen: std::cell::RefCell<HomeScreen>,
     focus: Option<FocusKey<u32>>,
     press: f32,
     ms: u32,
@@ -44,14 +45,14 @@ impl Harness {
         let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
         plx_data::pms::seed_for_test(&mut state, &adapter, n, plx_data::pms::HubState::Ready);
         let snap = plx_data::pms::hubs_snapshot(&state);
-        let mut h = Self { n, state, adapter, snap, screen: HomeScreen::new(ENTRY, INSTANCE), focus: None, press: 1.0, ms: 0 };
+        let mut h = Self { n, state, adapter, snap, screen: std::cell::RefCell::new(HomeScreen::new(ENTRY, INSTANCE)), focus: None, press: 1.0, ms: 0 };
         let snap = plx_data::pms::hubs_snapshot(&h.state);
         {
             let cx = Cx::<HomeHost> { views: snap.view(), tick: Tick::default(), measure: &FixtureMeasure,
                 press: PressRead::default(), focus: FocusRead::default(), owner: InputOwner::Entry(ENTRY) };
-            h.screen.sync_catalog(&cx);
+            h.screen.get_mut().sync_catalog(&cx);
         }
-        h.screen.layout_grid();
+        h.screen.get_mut().layout_grid();
         h.prime_on_grid();
         h
     }
@@ -62,8 +63,8 @@ impl Harness {
     /// page does (`RestoreMemory`, then a `Restore` arrival jumps the dive), then let go: the
     /// page is left on the grid with nothing focused and every card at rest.
     fn prime_on_grid(&mut self) {
-        let Some(&first) = self.screen.rows.first().and_then(|r| r.elems.first()) else { return };
-        let mem = Screen::<HomeHost>::memory_at(&self.screen, None);
+        let Some(&first) = self.screen.borrow().rows.first().and_then(|r| r.elems.first()) else { return };
+        let mem = Screen::<HomeHost>::memory_at(&*self.screen.borrow(), None);
         self.step(ScreenEvent::RestoreMemory(mem));
         self.focus(first, By::Restore);
         self.tick(30);
@@ -85,7 +86,7 @@ impl Harness {
                 press: PressRead { scale: self.press, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(INSTANCE), &mut present);
-            Machine::<HomeHost>::step(&mut self.screen, &ev, &cx, &mut fx);
+            Machine::<HomeHost>::step(self.screen.get_mut(), &ev, &cx, &mut fx);
         });
         moving || present.page_moving()
     }
@@ -93,7 +94,7 @@ impl Harness {
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: ENTRY, elem } }
 
     fn at(&self, elem: u32) -> Option<(usize, usize)> {
-        self.screen.rows.iter().enumerate().find_map(|(r, row)| row.elems.iter().position(|e| *e == elem).map(|c| (r, c)))
+        self.screen.borrow().rows.iter().enumerate().find_map(|(r, row)| row.elems.iter().position(|e| *e == elem).map(|c| (r, c)))
     }
 
     /// The store changed under the page: re-publish and deliver the event the host sends.
@@ -104,7 +105,7 @@ impl Harness {
 }
 
 impl CardHarness for Harness {
-    fn cards(&self) -> Vec<u32> { self.screen.rows.first().map(|r| r.elems.clone()).unwrap_or_default() }
+    fn cards(&self) -> Vec<u32> { self.screen.borrow().rows.first().map(|r| r.elems.clone()).unwrap_or_default() }
     fn focused(&self) -> Option<u32> { self.focus.map(|k| k.elem) }
     fn focus(&mut self, elem: u32, by: By) {
         let from = self.focus;
@@ -123,36 +124,41 @@ impl CardHarness for Harness {
     fn uncover(&mut self) { self.step(ScreenEvent::Uncover); }
     fn set_press(&mut self, scale: f32) { self.press = scale; }
     fn neighbour(&self, elem: u32, dir: Dir) -> Nb {
-        match Focusable::<HomeHost>::neighbour(&self.screen, self.key(elem), dir, &self.cx()) {
+        match Focusable::<HomeHost>::neighbour(&*self.screen.borrow(), self.key(elem), dir, &self.cx()) {
             Step::Move(k) => Nb::To(k.elem),
             Step::Edge => Nb::Edge,
         }
     }
     fn place(&self, elem: u32, at: At) -> Option<Placed> {
-        Focusable::<HomeHost>::place(&self.screen, &elem, &self.cx(), at)
+        Focusable::<HomeHost>::place(&*self.screen.borrow(), &elem, &self.cx(), at)
     }
-    /// What the draw paints and registers: `drawn_card_geometry`, whose press multiplies every
-    /// tile it is given, so only the focused tile is handed the live press.
+    /// What the real `Screen::draw` registers for the card: the stop's rect, read back from the
+    /// frame, with the press the harness was given on the focused card.
     fn drawn_rect(&self, elem: u32, press: f32) -> Option<Rect> {
-        let (row, col) = self.at(elem)?;
-        let focused = self.focus.map(|k| k.elem) == Some(elem);
-        Some(self.screen.drawn_card_geometry(row, col, if focused { press } else { 1.0 }).0)
+        let mut cx = self.cx();
+        cx.press = PressRead { scale: press, ..Default::default() };
+        let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
+        plx_ui::screen::record_stops_while_recording(|| {
+            plx_gfx::gfx::without_frame_clear(|| Screen::<HomeHost>::draw(&mut *self.screen.borrow_mut(), &mut f));
+        });
+        f.into_stops().into_iter().find(|stop| stop.key.elem == elem).map(|stop| stop.rect)
     }
     fn scale(&self, elem: u32) -> Option<f32> {
-        let (row, col) = self.at(elem)?;
-        Some(self.screen.grid.shelf(row).scale(col))
+        let (row, _) = self.at(elem)?;
+        let screen = self.screen.borrow();
+        screen.grid.shelves.get(row)?.scale_of(&self.cx(), &screen.cards(self.snap.view(), row), &elem)
     }
     fn focus_scale(&self) -> f32 { RowStyle::HOME.focus_scale }
     fn canon(&self) -> u64 {
         let mut c = Canon::new();
-        LogicalState::write(&self.screen, &mut c);
+        LogicalState::write(&*self.screen.borrow(), &mut c);
         c.finish()
     }
     fn identity(&self, elem: u32) -> String {
         let Some((row, col)) = self.at(elem) else { return String::new() };
-        self.screen.item_at(self.snap.view(), row, col).map(|m| m.rk.clone()).unwrap_or_default()
+        self.screen.borrow().item_at(self.snap.view(), row, col).map(|m| m.rk.clone()).unwrap_or_default()
     }
-    fn scroll(&self) -> Option<f32> { self.screen.rows.first().map(|_| self.screen.grid.shelf(0).scroll_x()) }
+    fn scroll(&self) -> Option<f32> { self.screen.borrow().rows.first().map(|_| self.screen.borrow().grid.scroll_x(0)) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         let want = self.focus.ok_or("nothing focused")?;
         let (_, col) = self.at(want.elem).ok_or("the focused card is not on a shelf")?;
@@ -165,21 +171,21 @@ impl CardHarness for Harness {
                 plx_data::pms::reverse_test_shelves(&mut self.state);
             }
             Landing::RemoveFocused => {
-                let rk = self.screen.item_at(self.snap.view(), 0, col).map(|m| m.rk.clone()).ok_or("no item behind the focus")?;
+                let rk = self.screen.borrow().item_at(self.snap.view(), 0, col).map(|m| m.rk.clone()).ok_or("no item behind the focus")?;
                 plx_data::pms::remove_test_item(&mut self.state, &rk);
             }
         }
         self.republish();
-        let now = Focusable::<HomeHost>::reconcile(&self.screen, want, &self.cx());
+        let now = Focusable::<HomeHost>::reconcile(&*self.screen.borrow(), want, &self.cx());
         if now != want { self.focus(now.elem, By::Reconcile); }
         Ok(())
     }
     fn memory_roundtrip(&mut self) -> Result<Box<dyn CardHarness>, &'static str> {
-        let mem = Screen::<HomeHost>::memory_at(&self.screen, self.focus);
+        let mem = Screen::<HomeHost>::memory_at(&*self.screen.borrow(), self.focus);
         let mut fresh = Harness::new(self.n);
         fresh.step(ScreenEvent::RestoreMemory(mem));
         let want = self.focus.ok_or("nothing focused")?;
-        let now = Focusable::<HomeHost>::reconcile(&fresh.screen, want, &fresh.cx());
+        let now = Focusable::<HomeHost>::reconcile(&*fresh.screen.borrow(), want, &fresh.cx());
         fresh.focus(now.elem, By::Restore);
         Ok(Box::new(fresh))
     }

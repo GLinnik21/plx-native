@@ -86,6 +86,24 @@ pub trait CardSource<H: Host> {
     fn loaded(&self, _i: usize) -> bool {
         true
     }
+    /// The card the ENGINE's focused element `e` is shown on, for the pop, the caption and the
+    /// opener redraw: [`index_of`](Self::index_of) unless the screen paints a different focus
+    /// than the engine holds (Home's hero dive keeps the card it came from lifted until the
+    /// shelves are the picture, and shows none while the picture is still the billboard).
+    fn focus_index(&self, e: &H::Elem) -> Option<usize> {
+        self.index_of(e)
+    }
+    /// How the hit map treats card `i`'s stop (`Hover::OnlyIfFocused` keeps a partly visible row
+    /// from taking the pointer's focus as it passes). A [`Shelf`] reads it; a `Grid` does not.
+    fn hover(&self, _i: usize) -> crate::screen::Hover {
+        crate::screen::Hover::Focus
+    }
+    /// How much of the shelf's scroll the screen shows, 0 to 1 (default 1, all of it): the offset
+    /// the cards are drawn, placed and registered at, and the caption's settle lag, are scaled by
+    /// it. Home's row sweeps in with its hero dive, so a row with a retained offset does not jump.
+    fn sweep(&self) -> f32 {
+        1.0
+    }
     /// Whether a hold on card `i` is a [`CardEvent::Hold`].
     fn holdable(&self, _i: usize) -> bool {
         true
@@ -166,7 +184,7 @@ pub(crate) fn focused_index<H: Host, S: CardSource<H>>(
     src: &S,
 ) -> Option<usize> {
     let key = focus.current.filter(|key| key.entry == entry)?;
-    src.index_of(&key.elem)
+    src.focus_index(&key.elem)
 }
 
 /// The paging rule shared by both sections: ask for cards up to `end` once per `(len, end)`.

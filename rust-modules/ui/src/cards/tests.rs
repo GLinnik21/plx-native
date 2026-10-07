@@ -1637,3 +1637,72 @@ mod stack {
         assert!(fresh.place(139).is_some_and(|p| p.rect.x >= 0.0 && p.rect.x < crate::consts::SCR_W));
     }
 }
+
+#[test]
+fn a_dormant_shelf_keeps_a_deliberate_arrival_until_it_wakes() {
+    let mut r = Rig::<Shelf>::new(8);
+    r.run(2);
+    r.sect.dormant(true);
+    let key = r.key(103);
+    r.focus = Some(key);
+    r.feed(ScreenEvent::FocusMoved { from: None, to: key, by: By::Dir });
+    r.run(40);
+    assert_eq!(r.sect.scale_of(&r.cx(), &r.src, &103), Some(1.0), "a dormant shelf pops nothing");
+    r.sect.dormant(false);
+    r.run(1);
+    let s = r.sect.scale_of(&r.cx(), &r.src, &103).unwrap();
+    assert!(s > 1.0 && s < RowStyle::HOME.focus_scale, "it grows from rest when it wakes, not adopted whole: {s}");
+}
+
+/// A source whose screen paints no focus on it (Home before the dive reaches its shelves).
+struct Veiled(Cards);
+
+impl CardSource<FixtureHost> for Veiled {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn elem(&self, i: usize) -> u32 {
+        self.0.elem(i)
+    }
+    fn index_of(&self, e: &u32) -> Option<usize> {
+        self.0.index_of(e)
+    }
+    fn focus_index(&self, _e: &u32) -> Option<usize> {
+        None
+    }
+    fn art(&self, i: usize) -> Art<'_> {
+        self.0.art(i)
+    }
+    fn label(&self, i: usize) -> TileLabel {
+        self.0.label(i)
+    }
+}
+
+#[test]
+fn a_source_can_answer_which_card_the_picture_shows_focused() {
+    let mut r = Rig::<Shelf>::new(8);
+    r.run(2);
+    r.land_focus(103, By::Restore);
+    r.run(60);
+    let veiled = Veiled(Cards::new((0..8u32).map(|i| 100 + i).collect(), false));
+    let popped = r.sect.place(&r.cx(), &r.src, &103, SHELF_AT, At::Drawn).unwrap().rect;
+    assert!((popped.w - RowStyle::HOME.w * RowStyle::HOME.focus_scale).abs() < 0.5, "popped under the engine's focus");
+    // The engine still holds the card, the picture does not: the shelf lets it go.
+    let mut present = Present::new();
+    let mut out = Vec::new();
+    for _ in 0..120 {
+        r.ms += MS;
+        let cx = Cx {
+            views: FixtureViews { store: &r.view },
+            tick: Tick { ms: r.ms, dt_us: 16_667 },
+            measure: &FixtureMeasure,
+            press: PressRead { scale: r.press, ..Default::default() },
+            focus: FocusRead { current: r.focus, ..Default::default() },
+            owner: InputOwner::Entry(ENTRY),
+        };
+        let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
+        r.sect.on(&ScreenEvent::Tick(cx.tick), &cx, &veiled, &mut fx);
+    }
+    let seen = r.sect.place(&r.cx(), &veiled, &103, SHELF_AT, At::Drawn).unwrap().rect;
+    assert!((seen.w - RowStyle::HOME.w).abs() < 0.01, "so the card is drawn at rest: {}", seen.w);
+}
