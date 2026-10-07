@@ -2,17 +2,19 @@
 """The demo library behind the documentation screenshots: fetch its openly licensed artwork, derive
 the images the mock server serves, and write the credits.
 
-    python3 tools/demo_library.py fetch     # download every pinned asset (sha256-checked)
+    python3 tools/demo_library.py fetch     # download every pinned asset (sha256 and pixel size checked)
     python3 tools/demo_library.py derive    # fetch, then build posters/backdrops/stills
     python3 tools/demo_library.py credits   # rewrite docs/screenshots/CREDITS.md and site/credits.html
     python3 tools/demo_library.py site-credits  # rewrite site/credits.html only (make screenshots does)
     python3 tools/demo_library.py check     # validate the two manifests; no network
+    python3 tools/demo_library.py check --complete  # also: every title and episode complete, bar the
+                                            # shrink-only list in tests/demo_library/pending.json
     python3 tools/demo_library.py fixtures  # capture the complete titles' detail responses
 
 Two committed manifests drive it:
 
-* `tests/demo_library/assets.json` — every SOURCE file: pinned URL, sha256, byte size, licence,
-  author, attribution. A download whose hash differs is refused, so the artwork cannot drift under
+* `tests/demo_library/assets.json` — every SOURCE file: pinned URL, sha256, byte size, kind,
+  pixel width and height, licence, author, attribution. A download whose hash differs is refused, so the artwork cannot drift under
   the screenshots without the manifest changing in review.
 * `tests/demo_library/catalog.json` — the library itself (titles, credits, synopses, watch state,
   shelves) and, per item, which asset each image is derived from and how (`mode`, `anchor`, `crop`).
@@ -98,8 +100,27 @@ def fetch(assets, only=None):
             finally:
                 if os.path.exists(tmp.name):
                     os.unlink(tmp.name)
+        got = _dimensions(dst, a)
+        if got != (a["width"], a["height"]):
+            sys.exit(f"demo_library: {aid}: {got[0]}x{got[1]} != pinned {a['width']}x{a['height']} "
+                     f"in assets.json ({dst})")
         out[aid] = dst
     return out
+
+
+def _dimensions(path, asset):
+    """(width, height) of a source: an image through Pillow (which reads the header, not the
+    pixels), the one `media` video through ffprobe, so the manifest's sizes are checked against
+    the files themselves and the hero-art geometry can trust them without opening anything."""
+    if asset.get("kind") == "media":
+        out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                              "stream=width,height", "-of", "csv=p=0", str(path)],
+                             capture_output=True, text=True, check=True).stdout
+        w, h = out.strip().split(",")
+        return int(w), int(h)
+    from PIL import Image
+    with Image.open(path) as im:
+        return im.size
 
 
 # ------------------------------------------------------------------ derivation ----------------
@@ -360,6 +381,12 @@ def check_cited_metadata(key, kind, rec):
             assert isinstance(rec[field], list) and rec[field] and all(isinstance(n, str) and n for n in rec[field]), \
                 f"{key}: {field} is a non-empty list of names"
     assert "creators" not in rec or kind == "show", f"{key}: only a show has creators"
+    # An empty credit list is a claim, so it is cited: `cast_none` / `writers_none` say that the
+    # source was read and credits no performer / writer. They stand in for the list, not beside it.
+    for none, listed in (("cast_none", "cast"), ("writers_none", "writers")):
+        if none in rec:
+            _cited(key, none, rec[none])
+            assert not rec.get(listed), f"{key}: {none} contradicts the {listed} it lists"
     for src in rec.get("sources", []):
         _cited(key, "a source", dict(src, source=src.get("url")))
         assert src.get("fields"), f"{key}: a source names the fields it supplied"
@@ -380,6 +407,7 @@ def check(assets, catalog):
         check_cited_metadata(key, kind, rec)
         if "media" in rec:
             assert rec["media"] in assets, f"{key}: media {rec['media']!r} is not in assets.json"
+            assert assets[rec["media"]].get("kind") == "media", f"{key}: media is an asset of kind media"
             used.add(rec["media"])
         if "stand_in" in rec:
             assert kind == "episode" and rec["stand_in"] is True and "media" not in rec, \
@@ -399,6 +427,9 @@ def check(assets, catalog):
             assert a.get(field) not in (None, ""), f"asset {aid}: missing {field}"
         assert a["licence"].startswith(("CC BY", "CC0", "Public domain")), f"asset {aid}: licence {a['licence']!r}"
         assert "-SA" not in a["licence"] and "-NC" not in a["licence"] and "-ND" not in a["licence"], aid
+        assert a.get("kind") in ASSET_KINDS, f"asset {aid}: kind {a.get('kind')!r} is not one of {sorted(ASSET_KINDS)}"
+        for field in ("width", "height"):
+            assert type(a.get(field)) is int and a[field] > 0, f"asset {aid}: {field} is a positive pixel count"
     unused = sorted(set(assets) - used)
     assert not unused, f"assets never used: {unused}"
     for ref in [c["item"] for c in catalog["continue_watching"]] + catalog["watched"] + catalog["added_order"] \
@@ -410,6 +441,119 @@ def check(assets, catalog):
         assert sorted(order) == sorted(members), \
             f"collection_order[{name!r}] must list every member exactly once: {sorted(members)}"
     return True
+
+
+# ------------------------------------------------------------------ completeness -------------
+
+# What a source file IS (`kind` in assets.json), which decides the roles it may fill: a title's
+# poster is a `poster`, its backdrop a `backdrop` or a `still`, an episode's thumbnail a `still`.
+# `media` is a film itself, `headshot` a photograph of a person (none yet).
+ASSET_KINDS = frozenset({"poster", "backdrop", "still", "headshot", "media"})
+# The licences the demo library accepts, exactly. Share-alike is not among them: it would put the
+# credits page's whole body under the same terms (owner decision pending).
+LICENCES = frozenset({"CC0 1.0", "CC0", "Public domain", "CC BY 3.0", "CC BY 4.0"})
+# The categories a gap is reported (and listed in the pending file) under.
+GAP_CATEGORIES = frozenset({
+    "title", "year", "summary", "genres", "directors", "creators", "tagline", "cast", "writers",
+    "country", "poster", "backdrop", "logo", "still"})
+PENDING = ROOT / "tests" / "demo_library" / "pending.json"
+
+
+def _is_cited(row):
+    return (isinstance(row, dict) and str(row.get("source", "")).startswith("https://")
+            and bool(DATE.match(str(row.get("retrieved", "")))))
+
+
+def _asset_kind(assets, ref):
+    """The kind of the asset a `{"asset": id}` recipe names, or None."""
+    return assets.get(ref.get("asset"), {}).get("kind") if isinstance(ref, dict) else None
+
+
+def _gaps_of(assets, catalog, kind, rec):
+    gaps = set()
+    if not (isinstance(rec.get("title"), str) and rec["title"]):
+        gaps.add("title")
+    if kind == "episode":
+        if not rec.get("summary"):
+            gaps.add("summary")
+        if _asset_kind(assets, rec.get("thumb")) != "still":
+            gaps.add("still")
+        return gaps
+    if not isinstance(rec.get("year"), int):
+        gaps.add("year")
+    if not rec.get("summary"):
+        gaps.add("summary")
+    if not rec.get("genres"):
+        gaps.add("genres")
+    credit = "creators" if kind == "show" else "directors"
+    if not rec.get(credit):
+        gaps.add(credit)
+    if not (rec.get("tagline") and "tagline" in rec.get("demo_values", [])):
+        gaps.add("tagline")
+    if not (rec.get("cast") or _is_cited(rec.get("cast_none"))):
+        gaps.add("cast")
+    # A show's creators are the writers its page shows ("Created by"), so they count as listed.
+    if not (rec.get("writers") or (kind == "show" and rec.get("creators")) or _is_cited(rec.get("writers_none"))):
+        gaps.add("writers")
+    if not rec.get("countries"):
+        gaps.add("country")
+    if _asset_kind(assets, rec.get("poster")) != "poster":
+        gaps.add("poster")
+    if _asset_kind(assets, rec.get("art")) not in ("backdrop", "still"):
+        gaps.add("backdrop")
+    # A clearLogo is cut from the item's own poster; only an owner-approved title may go without.
+    logo = rec.get("logo")
+    cut_from_poster = (isinstance(logo, dict) and logo.get("asset") == rec.get("poster", {}).get("asset")
+                       and _asset_kind(assets, logo) == "poster")
+    if not (cut_from_poster or rec["id"] in catalog.get("logo_none_approved", [])):
+        gaps.add("logo")
+    return gaps
+
+
+def complete_gaps(assets, catalog):
+    """{item key: sorted gap categories} for every title and episode that is not yet complete,
+    judged from the manifests alone (no file is opened). The rule is S2 of the demo-library plan;
+    `check_cited_metadata` already refuses a value that is present but uncited."""
+    out = {}
+    for key, kind, rec in item_keys(catalog):
+        gaps = _gaps_of(assets, catalog, kind, rec)
+        if gaps:
+            out[key] = sorted(gaps)
+    return out
+
+
+def check_assets_complete(assets):
+    """Per source file: an accepted licence, and no headshot that carries the Commons
+    personality-rights tag (a person's likeness is not covered by the photograph's licence). A
+    headshot must record its `tags`: an absent list is "not looked at", never "clear"."""
+    for aid, a in sorted(assets.items()):
+        assert a["licence"] in LICENCES, \
+            f"asset {aid}: licence {a['licence']!r} is not one of {sorted(LICENCES)}"
+        if a["kind"] == "headshot":
+            assert isinstance(a.get("tags"), list), f"asset {aid}: a headshot records the file page's `tags`"
+            assert not any("personality" in str(t).lower() for t in a["tags"]), \
+                f"asset {aid}: a headshot with the personality-rights tag is refused"
+
+
+def load_pending():
+    """{item key: sorted gap categories} the committed `pending.json` accepts for now."""
+    return json.loads(PENDING.read_text())["pending"]
+
+
+def check_complete(assets, catalog, pending=None):
+    """The completeness gate. The catalog may hold only what `pending` lists: a gap that is not on
+    the list fails (new content must be complete), and so does a listed gap that no longer exists
+    (the entry is deleted when its content lands, so the list can only shrink). Returns the gaps."""
+    pending = load_pending() if pending is None else pending
+    check_assets_complete(assets)
+    gaps = complete_gaps(assets, catalog)
+    new = {k: sorted(set(v) - set(pending.get(k, []))) for k, v in gaps.items()}
+    new = {k: v for k, v in new.items() if v}
+    assert not new, f"incomplete and not pending (fill them in; never add to the pending list): {new}"
+    stale = {k: sorted(set(v) - set(gaps.get(k, []))) for k, v in pending.items()}
+    stale = {k: v for k, v in stale.items() if v}
+    assert not stale, f"pending entries that are complete now (delete them from {PENDING.name}): {stale}"
+    return gaps
 
 
 # ------------------------------------------------------------------ credits -------------------
@@ -715,7 +859,12 @@ def fixtures(dst=FIXTURES):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("command", choices=["fetch", "derive", "credits", "site-credits", "check", "fixtures"])
+    ap.add_argument("--complete", action="store_true",
+                    help="with `check`: also require every title and episode to be complete "
+                         "(tests/demo_library/pending.json lists what is not yet)")
     a = ap.parse_args()
+    if a.complete and a.command != "check":
+        ap.error("--complete belongs to `check`")
     assets, catalog = load()
     check(assets, catalog)
     if a.command == "fetch":
@@ -731,6 +880,15 @@ def main():
         fixtures()
     else:
         print("demo_library: manifests ok")
+        if a.complete:
+            gaps = check_complete(assets, catalog)
+            counts = {}
+            for fields in gaps.values():
+                for f in fields:
+                    counts[f] = counts.get(f, 0) + 1
+            by = ", ".join(f"{f} {n}" for f, n in sorted(counts.items())) or "none"
+            print(f"demo_library: complete except the pending list: {len(gaps)} of "
+                  f"{len(list(item_keys(catalog)))} items pending ({by})")
 
 
 if __name__ == "__main__":

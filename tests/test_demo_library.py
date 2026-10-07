@@ -5,10 +5,13 @@ stand-in and the scene manifest. The second half serves the catalog itself, whic
 derived artwork cache (`make demo-library`, ~390 MB of downloads); it is skipped, loudly, where
 the cache is absent, so a fresh clone's `make check` stays offline.
 """
+import collections
 import contextlib
+import copy
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -187,6 +190,210 @@ class Manifests(unittest.TestCase):
                 for src in rec["sources"]:
                     self.assertTrue(src["url"].startswith("https://"))
                     self.assertRegex(src["retrieved"], r"^\d{4}-\d{2}-\d{2}$")
+
+
+class Completeness(unittest.TestCase):
+    """`check --complete`: what a title must carry to be shown in the demo library, judged on the
+    committed JSON alone (the manifests; no image is ever opened)."""
+
+    # The pending list may only SHRINK. Its length per category is pinned here, in the test, not in
+    # the list's own file: growing the list means editing this table, which a reviewer sees. When a
+    # content PR fixes a gap it deletes the entry from `pending.json` AND lowers the number here.
+    PENDING_CEILING = {"backdrop": 12, "cast": 15, "country": 28, "creators": 3, "directors": 1,
+                       "logo": 27, "poster": 8, "tagline": 28, "writers": 25}
+
+    CITED = {"source": "https://www.wikidata.org/wiki/Q42", "retrieved": "2026-10-07"}
+
+    def setUp(self):
+        self.assets, self.catalog = tool.load()
+
+    def _gaps(self, key, **changes):
+        """The gaps of movie `key` after `changes` (a None value removes the field)."""
+        movies = []
+        for m in self.catalog["movies"]:
+            m = copy.deepcopy(m)
+            if m["id"] == key:
+                for k, v in changes.items():
+                    m.pop(k, None) if v is None else m.__setitem__(k, v)
+            movies.append(m)
+        return tool.complete_gaps(self.assets, dict(self.catalog, movies=movies)).get(key, [])
+
+    def test_sintel_is_the_one_title_with_no_gaps_and_tears_of_steel_lacks_only_its_logo(self):
+        gaps = tool.complete_gaps(self.assets, self.catalog)
+        self.assertNotIn("sintel", gaps)
+        self.assertEqual(gaps["tears-of-steel"], ["logo"])
+
+    def test_each_required_field_is_a_gap_when_absent(self):
+        # field removed from a complete title -> the category it is reported under
+        cases = {"title": "title", "year": "year", "summary": "summary", "genres": "genres",
+                 "directors": "directors", "tagline": "tagline", "cast": "cast",
+                 "writers": "writers", "countries": "country", "poster": "poster",
+                 "art": "backdrop", "logo": "logo"}
+        for field, category in cases.items():
+            with self.subTest(field=field):
+                self.assertEqual(self._gaps("sintel", **{field: None}).count(category), 1)
+
+    def test_a_cited_cast_none_or_writers_none_stands_in_for_the_list(self):
+        self.assertIn("cast", self._gaps("sintel", cast=[]))
+        self.assertEqual(self._gaps("sintel", cast=[], cast_none=dict(self.CITED, note="no performers")), [])
+        self.assertIn("writers", self._gaps("sintel", writers=[]))
+        self.assertEqual(self._gaps("sintel", writers=[], writers_none=dict(self.CITED, note="checked")), [])
+
+    def test_check_refuses_an_uncited_cast_none_or_a_contradicting_one(self):
+        for field in ("cast_none", "writers_none"):
+            with self.subTest(field=field):
+                for bad in ({"note": "trust me"}, dict(self.CITED, source="http://x")):
+                    movies = [dict(m) for m in self.catalog["movies"]]
+                    movies[0][field] = bad
+                    with self.assertRaises(AssertionError):
+                        tool.check(self.assets, dict(self.catalog, movies=movies))
+        movies = [dict(m) for m in self.catalog["movies"]]
+        sintel = next(m for m in movies if m["id"] == "sintel")
+        sintel["cast_none"] = dict(self.CITED, note="x")  # sintel HAS a cast
+        with self.assertRaises(AssertionError):
+            tool.check(self.assets, dict(self.catalog, movies=movies))
+
+    def test_a_tagline_must_be_listed_as_demo_text(self):
+        self.assertIn("tagline", self._gaps("sintel", demo_values=[]))
+
+    def test_the_art_must_be_the_kind_its_role_needs(self):
+        # a portrait one-sheet is not a backdrop
+        self.assertIn("backdrop", self._gaps("sintel", art={"asset": "sintel-poster", "mode": "cover"}))
+        # a header is not a poster
+        self.assertIn("poster", self._gaps("sintel", poster={"asset": "bs-sintel-header"}))
+        # a logo is cut from a poster-kind asset
+        logo = dict(copy.deepcopy(next(m for m in self.catalog["movies"] if m["id"] == "sintel")["logo"]),
+                    asset="bs-sintel-header")
+        self.assertIn("logo", self._gaps("sintel", logo=logo))
+
+    def test_an_episode_needs_a_still(self):
+        shows = copy.deepcopy(self.catalog["shows"])
+        ep = shows[0]["seasons"][0]["episodes"][0]
+        key = f"{shows[0]['id']}/1/{ep['index']}"
+        self.assertNotIn(key, tool.complete_gaps(self.assets, dict(self.catalog, shows=shows)))
+        ep.pop("thumb")
+        self.assertEqual(tool.complete_gaps(self.assets, dict(self.catalog, shows=shows))[key], ["still"])
+        ep["thumb"] = {"asset": "sintel-poster"}  # a poster is not a still
+        self.assertEqual(tool.complete_gaps(self.assets, dict(self.catalog, shows=shows))[key], ["still"])
+
+    def test_a_show_needs_creators_where_a_movie_needs_directors(self):
+        shows = copy.deepcopy(self.catalog["shows"])
+        shows[0].pop("creators", None)
+        self.assertIn("creators", tool.complete_gaps(self.assets, dict(self.catalog, shows=shows))[shows[0]["id"]])
+
+    def test_every_asset_carries_a_kind_and_its_dimensions(self):
+        for field, bad in (("kind", None), ("kind", "banner"), ("width", None), ("width", 0),
+                           ("height", None), ("height", "720")):
+            with self.subTest(field=field, bad=bad):
+                a = {k: v for k, v in self.assets["sintel-poster"].items() if k != field}
+                if bad is not None:
+                    a[field] = bad
+                with self.assertRaises(AssertionError):
+                    tool.check(dict(self.assets, **{"sintel-poster": a}), self.catalog)
+
+    def test_a_poster_role_gap_is_never_hidden_by_the_kinds(self):
+        # every use of an asset in a role its kind does not fit is a reported gap
+        roles = {"poster": ({"poster"}, "poster"), "art": ({"backdrop", "still"}, "backdrop"),
+                 "thumb": ({"still"}, "still")}
+        gaps = tool.complete_gaps(self.assets, self.catalog)
+        for key, _, rec in tool.item_keys(self.catalog):
+            for role, (kinds, category) in roles.items():
+                if role in rec and self.assets[rec[role]["asset"]]["kind"] not in kinds:
+                    self.assertIn(category, gaps.get(key, []), f"{key}: {role}")
+
+    def test_assets_must_be_cc0_public_domain_or_cc_by_without_share_alike(self):
+        tool.check_assets_complete(self.assets)
+        for licence in ("CC BY-SA 4.0", "CC BY-SA 3.0", "CC BY 2.0", "CC BY-NC 4.0", "GFDL"):
+            with self.subTest(licence=licence):
+                broken = dict(self.assets, **{"sintel-poster": dict(self.assets["sintel-poster"], licence=licence)})
+                with self.assertRaises(AssertionError):
+                    tool.check_assets_complete(broken)
+
+    def test_a_headshot_must_not_carry_the_personality_rights_tag(self):
+        shot = dict(self.assets["sintel-poster"], kind="headshot", tags=[])
+        tool.check_assets_complete(dict(self.assets, face=shot))
+        for tags in (["Personality-Rights"], ["cc-by-4.0", "personality rights"]):
+            with self.subTest(tags=tags):
+                with self.assertRaises(AssertionError):
+                    tool.check_assets_complete(dict(self.assets, face=dict(shot, tags=tags)))
+        # no recorded tags is "not looked at", not "clear"
+        with self.assertRaises(AssertionError):
+            tool.check_assets_complete(dict(self.assets, face={k: v for k, v in shot.items() if k != "tags"}))
+
+    def test_the_committed_gaps_are_exactly_the_pending_list(self):
+        gaps = tool.complete_gaps(self.assets, self.catalog)
+        self.assertEqual(gaps, tool.load_pending(), "pending.json must list every current gap and "
+                         "nothing that is fixed: delete the entry you fixed; never add one")
+
+    def test_a_new_gap_is_refused_and_so_is_a_stale_pending_entry(self):
+        gaps = tool.complete_gaps(self.assets, self.catalog)
+        tool.check_complete(self.assets, self.catalog, pending=gaps)
+        with self.assertRaises(AssertionError):
+            tool.check_complete(self.assets, self.catalog, pending={})
+        with self.assertRaises(AssertionError):
+            tool.check_complete(self.assets, self.catalog, pending=dict(gaps, sintel=["cast"]))
+
+    def test_the_pending_list_never_grows(self):
+        counts = collections.Counter(f for fields in tool.load_pending().values() for f in fields)
+        self.assertEqual(dict(counts), self.PENDING_CEILING,
+                         "pending grew (never allowed) or shrank (lower PENDING_CEILING to match)")
+
+    def test_pending_names_only_known_items_and_categories(self):
+        keys = {k for k, _, _ in tool.item_keys(self.catalog)}
+        for key, fields in tool.load_pending().items():
+            self.assertIn(key, keys)
+            self.assertEqual(fields, sorted(set(fields)))
+            self.assertLessEqual(set(fields), tool.GAP_CATEGORIES)
+
+    def test_the_command_runs_offline_and_passes_with_the_list_in_place(self):
+        r = subprocess.run([sys.executable, str(ROOT / "tools" / "demo_library.py"), "check", "--complete"],
+                           capture_output=True, text=True,
+                           env=dict(os.environ, PLXNATIVE_DEMO_CACHE=str(ROOT / "no-such-cache")))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("pending", r.stdout)
+
+
+@unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow absent (`python3 -m pip install Pillow`)")
+class AssetDimensions(unittest.TestCase):
+    """`fetch` checks each source's declared width and height against the file itself."""
+
+    def _png(self, d, w, h):
+        from PIL import Image
+        path = pathlib.Path(d) / "src" / "pic.png"
+        path.parent.mkdir(parents=True)
+        Image.new("RGB", (w, h), (12, 34, 56)).save(path)
+        return {"pic": {"url": "https://example.invalid/pic.png", "sha256": tool.sha256(path),
+                        "bytes": path.stat().st_size, "kind": "still", "width": w, "height": h}}
+
+    def _fetch(self, d, assets):
+        with unittest.mock.patch.object(tool, "cache_dir", return_value=pathlib.Path(d)), \
+                unittest.mock.patch.object(tool.urllib.request, "urlopen", side_effect=OSError("offline")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return tool.fetch(assets)
+
+    def test_a_matching_size_passes_without_the_network(self):
+        with tempfile.TemporaryDirectory() as d:
+            assets = self._png(d, 7, 5)
+            self.assertEqual(list(self._fetch(d, assets)), ["pic"])
+
+    def test_a_wrong_width_or_height_is_refused(self):
+        for field in ("width", "height"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as d:
+                assets = self._png(d, 7, 5)
+                assets["pic"][field] += 1
+                with self.assertRaises(SystemExit) as raised:
+                    self._fetch(d, assets)
+                self.assertIn("pic", str(raised.exception))
+
+    def test_the_committed_sizes_match_the_cached_files_when_present(self):
+        assets, _ = tool.load()
+        cached = {aid: a for aid, a in assets.items() if a["kind"] != "media" and tool.source_path(aid, a).exists()}
+        if not cached:
+            self.skipTest("no source cache; `make demo-library` fetches it")
+        from PIL import Image
+        for aid, a in cached.items():
+            with self.subTest(asset=aid), Image.open(tool.source_path(aid, a)) as im:
+                self.assertEqual(im.size, (a["width"], a["height"]))
 
 
 class Credits(unittest.TestCase):
