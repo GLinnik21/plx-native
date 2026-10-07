@@ -73,7 +73,6 @@ impl Harness {
         self.screen.item_index(self.store.view().current()?, elem)
     }
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: ENTRY, elem } }
-    fn is_focused(&self, elem: u32) -> bool { self.focus.map(|k| k.elem) == Some(elem) }
 }
 
 impl CardHarness for Harness {
@@ -107,23 +106,33 @@ impl CardHarness for Harness {
     fn place(&self, elem: u32, at: At) -> Option<Placed> {
         Focusable::<CollectionHost>::place(&self.screen, &elem, &self.cx(), at)
     }
+    /// The rect the grid registers as `elem`'s stop at `press` (`Grid::record_stops`, which `draw`
+    /// ends with and which uses the very rect `draw` paints; painting itself needs the GL context
+    /// a host test does not have).
     fn drawn_rect(&self, elem: u32, press: f32) -> Option<Rect> {
-        Some(self.screen.card_rect(self.index(elem)?, self.is_focused(elem), press))
+        let collection = self.store.view().current()?;
+        let cx = Cx { press: PressRead { scale: press, ..Default::default() }, ..self.cx() };
+        let painter = plx_ui::Painter::root();
+        let mut f = plx_ui::screen::DrawFrame::new(&cx, painter);
+        self.screen.grid.record_stops(&mut f, painter, &self.screen.members(collection));
+        f.stops().iter().find(|stop| stop.key.elem == elem).map(|stop| stop.rect)
     }
     fn scale(&self, elem: u32) -> Option<f32> {
-        Some(self.screen.tile_scale(self.index(elem)?, self.is_focused(elem), 1.0))
+        let collection = self.store.view().current()?;
+        self.screen.grid.scale_of(&self.cx(), &self.screen.members(collection), &elem)
     }
     fn focus_scale(&self) -> f32 { plx_ui::poster_grid::STYLE.focus_scale }
     fn canon(&self) -> u64 {
         let mut c = Canon::new();
         LogicalState::write(&self.screen, &mut c);
+        self.screen.grid.write(&mut c);
         c.finish()
     }
     fn identity(&self, elem: u32) -> String {
         let c = self.store.view().current().unwrap();
         self.index(elem).map(|i| c.items[i].rk.clone()).unwrap_or_default()
     }
-    fn scroll(&self) -> Option<f32> { Some(self.screen.scroll.pos) }
+    fn scroll(&self) -> Option<f32> { Some(self.screen.grid.scroll()) }
     fn columns(&self) -> Option<usize> { Some(plx_ui::poster_grid::COLS) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         let focused = self.focus.map(|k| k.elem);
