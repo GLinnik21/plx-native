@@ -71,7 +71,9 @@ belong to their card, never to the safe area. `card_row::place_label` centres a 
 block on its card, or starts every line at the card's leading edge where the centred block would
 leave the panel — judged where the tile will REST (`CardRow::settle_lag`, passed through
 `TileLabel::settling`), so a scroll glide never flips the block's alignment or width mid-flight;
-cast names scroll off-screen with their headshots at full width.
+cast names scroll off-screen with their headshots at full width. A FOCUSED headshot's name (or
+role, once it overflows its two lines) that does not fit its slot marquees like a poster title,
+through the same `marquee::Marquee::glide`.
 
 Alert titles, eyebrows and reading text use `theme::alert::TEXT_ALIGN`: the common left padding
 edge. Decision dialogs follow the same rule as the About, biography and track-information panels.
