@@ -22,9 +22,43 @@ expiry.
 
 This used to happen and is fixed: PlxNative now keeps your sign-in in its own private storage, and
 uses the TV's key manager service where the platform provides one. If you still see it on the
-current release, use **Details → Send report** on the sign-in screen, or [open an
-issue](https://github.com/GLinnik21/plx-native/issues) with your TV model and webOS platform
-release.
+current release, [open an issue](https://github.com/GLinnik21/plx-native/issues/new/choose)
+with your TV model and webOS platform release. If the sign-in screen shows a failure, also use
+**Details → Send report** and quote the **Report ID** it then shows in your issue, as described in
+[Can't sign in, or no servers are found](#cant-sign-in-or-no-servers-are-found). A report on its
+own carries no way to reply to you.
+
+## Can't sign in, or no servers are found
+
+The sign-in screen says what stopped it. The wording that matters most:
+
+- **"Signed in as *your account*. This Plex account has no server yet."** Sign-in worked, but
+  plex.tv listed no Plex Media Server on that account, so the app had nothing to connect to. This
+  is about the account, not your network. Check that you signed in with the same Plex account your
+  server is signed in to, and that it is the account you use in Plex's own apps. Signed in
+  with a different account, you will see exactly this.
+- **"plex.tv listed your servers, but none of them answered. Make sure your Plex Media Server is on
+  and online, then try again."** The account has a server, but the TV could not reach it. Check
+  that it is running and connected.
+- **"Your Plex server refused the connection — check its network access settings."** The server
+  answered and said no.
+- **"This TV couldn't make a secure connection to plex.tv. Check the TV's date and time, then try
+  again."**, or on the Home screen **"This TV's clock looks wrong. Connect the TV to the internet
+  once, then try again."** A certificate is only valid between two dates, so a TV with the wrong
+  date or time can fail to make a secure connection. Set it right in the TV's settings.
+
+If none of that explains it, press **Details** on the failure screen. Once a report has been sent
+or saved, the card shows **Report ID** followed by letters and digits in groups of four
+(for example `41de 4cd3 88e4 0416 54de 38f2 787c 3922`). If it shows no Report ID yet and offers
+**Send report**, press that, then open **Details** again. The report says which sign-in step failed
+and how the connection answered; it never includes your account name, tokens, PIN, sign-in code or
+network addresses.
+
+A report carries no name or account, so I can only find yours by its Report ID. Please quote the
+**Report ID** when you ask for help, either in [Discussions >
+Q&A](https://github.com/GLinnik21/plx-native/discussions/categories/q-a) or in a [GitHub
+issue](https://github.com/GLinnik21/plx-native/issues/new/choose), together with your TV model and
+webOS platform release.
 
 ## Playback reports `jail_missing_rtkmem`
 
@@ -161,7 +195,7 @@ logs](#collecting-logs) before you reopen the app. Include:
 - whether the item was Direct Play or a chosen quality;
 - what happened after you pressed Play.
 
-Report it in [GitHub Issues](https://github.com/GLinnik21/plx-native/issues).
+Report it in [GitHub Issues](https://github.com/GLinnik21/plx-native/issues/new/choose).
 
 If you're sharing an old event log, know that log redaction has improved across releases — a log
 written by a much older PlxNative version can still show an address that a current release would

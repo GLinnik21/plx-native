@@ -464,7 +464,7 @@
     }
   },
   "widgets.reason.jail_help": {
-    "value": "Repair requires a rooted TV and Homebrew Channel access. See github.com/GLinnik21/plx-native/issues/74 for help.",
+    "value": "Repair requires a rooted TV and Homebrew Channel access. See plxnative.com/troubleshooting/#playback-reports-jail_missing_rtkmem for help.",
     "description": "reason jail_help"
   },
   "widgets.tracks.empty": {

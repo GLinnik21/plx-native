@@ -121,13 +121,13 @@ Some consequences:
 - **Homebrew Channel will not take the URL.** Check it character by character, including `https://`
   and the `.json` ending. Typing with the TV remote makes this the most common slip.
 - **Install or update fails.** Note the exact message, the version Homebrew Channel lists and your
-  TV model and webOS version, and [open an issue](https://github.com/GLinnik21/plx-native/issues).
+  TV model and webOS version, and [open an issue](https://github.com/GLinnik21/plx-native/issues/new/choose).
   Installing nightlies through Homebrew Channel is new, so a failure here is worth reporting.
 - **The app is gone after a while.** That is the Developer Mode session expiring, not the nightly.
   See the [installation guide](install-and-verify.md#important-developer-mode-expires).
 
 ## Reporting problems
 
-[Open an issue](https://github.com/GLinnik21/plx-native/issues/new) and include the **reported
+[Open an issue](https://github.com/GLinnik21/plx-native/issues/new/choose) and include the **reported
 version** from the About screen, for example `0.8.0-nightly-20261006`, with your TV model and webOS
 version. Do not post passwords, Plex tokens or screenshots that show them.

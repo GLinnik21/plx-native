@@ -112,7 +112,7 @@
     "many": "{heading} · {count} PISTAS",
     "other": "{heading} · {count} PISTAS"
   },
-  "widgets.reason.jail_help": "La reparación requiere un televisor con root y acceso a Homebrew Channel. Consulta github.com/GLinnik21/plx-native/issues/74 para obtener ayuda.",
+  "widgets.reason.jail_help": "La reparación requiere un televisor con root y acceso a Homebrew Channel. Ayuda: plxnative.com/troubleshooting/#playback-reports-jail_missing_rtkmem.",
   "widgets.tracks.empty": "No hay pistas",
   "widgets.tracks.bytes": {
     "one": "{count} byte",

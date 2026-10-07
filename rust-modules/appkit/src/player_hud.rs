@@ -2643,6 +2643,31 @@ mod tests {
         assert!(out.is_empty(), "rows wider than the screen:\n  {}", out.join("\n  "));
     }
 
+    /// The sandbox failure's help sentence ends in a URL that cannot break, and it is drawn as the
+    /// read-out's note — centred CAPTION, two lines of [`StatusOverlay::REASON_W`]. It must fit
+    /// that in every shipped language, or the pointer to the fix is the part an ellipsis eats.
+    #[test]
+    fn the_jail_help_note_fits_the_note_slot_in_every_language() {
+        use plx_base::fontcov::advances::ShippedMeasure;
+        use plx_ui::fit::HEADROOM;
+        use plx_ui::text_view::TextView;
+        use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            let help = msg::widgets_reason_jail_help();
+            let fits = !TextView::new(help, theme::size::CAPTION, theme::TEXT_TERTIARY)
+                .h(plx_ui::label::HAlign::Center)
+                .max_lines(2)
+                .with_measure(&ShippedMeasure)
+                .truncates(StatusOverlay::REASON_W * HEADROOM);
+            if !fits {
+                out.push(format!("{}: {help}", language.tag()));
+            }
+        }
+        assert!(out.is_empty(), "jail help cut short:\n  {}", out.join("\n  "));
+    }
+
     /// Every Force verdict fits the read-out's two-line reason slot, in every shipped language.
     #[test]
     fn every_forced_verdict_fits_the_reason_slot_in_every_language() {
