@@ -71,9 +71,24 @@ belong to their card, never to the safe area. `card_row::place_label` centres a 
 block on its card, or starts every line at the card's leading edge where the centred block would
 leave the panel — judged where the tile will REST (`CardRow::settle_lag`, passed through
 `TileLabel::settling`), so a scroll glide never flips the block's alignment or width mid-flight;
-cast names scroll off-screen with their headshots at full width. A FOCUSED headshot's name (or
-role, once it overflows its two lines) that does not fit its slot marquees like a poster title,
-through the same `marquee::Marquee::glide`.
+cast names scroll off-screen with their headshots at full width.
+
+**Focused text that does not fit marquees; it is never left ending in an ellipsis.** The scope is
+every line of a FOCUSED card's label block: a poster's title AND its caption line (year, character
+or credit role, "Show · S1 · E4", a server handle — every shelf, the Library and Collection grids,
+Person credits and Search draw it through `card_row::draw_label_block`), and a headshot's name and
+role. All go through the one `marquee::Marquee::glide_in`. A headshot's label (a cast shelf names
+EVERY tile, focused or not) is `card_row::draw_credit_label`: a name line and ONE role line on the
+same two baselines in every state — never a role wrapped to two lines at rest and one clipped line
+on focus, which made the block change height and jump with focus. Unfocused, a line that does not
+fit ends in an ellipsis and stays still; focused, the same lines glide. The
+lines of one block are ONE `marquee::Block`: one clock, one cycle (the longest overflowing line's),
+so title and sub-line leave their rest beat together and loop together; a line that fits stays
+plain and still, and the shared clock is released only when no line overflows. An UNFOCUSED card
+draws no sub-line at all (the block belongs to the focus), and the persistent on-artwork lines
+(`widgets::poster_label`, the still overlay's show and address) stay elided: they are on every card
+at once and are part of the art, not of the focus. A new focused sub-line on a card goes through
+`TileLabel::caption` or a `marquee::Block`, never a screen-local clip-and-offset.
 
 Alert titles, eyebrows and reading text use `theme::alert::TEXT_ALIGN`: the common left padding
 edge. Decision dialogs follow the same rule as the About, biography and track-information panels.

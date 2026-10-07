@@ -1103,15 +1103,27 @@ pub fn settled_top(r: usize, focus: Option<usize>, pitch_fixed: f32) -> f32 {
 // reading, a slow glide left, a gap, then the same run re-entering from the right, forever while
 // this tile holds focus.
 
+// The CAPTION under the title is the same story one size down (a year, a character, an episode's
+// "Show · S1 · E4", a server handle): elided it hid the part that tells two credits apart, so it
+// marquees in the same block when it still does not fit. Title and caption are ONE block with ONE
+// clock and ONE cycle ([`marquee::Marquee::glide_in`]) — they leave their rest beat together and
+// loop together; a line that fits stays plain and still.
+//
 // The timing (rest beat, glide, loop) is `crate::marquee`'s, shared with the menu rows; this
-// shelf's focused title owns its own clock there.
+// shelf's focused label block owns its own clock there.
 use crate::marquee::{self, TITLE as MARQUEE};
 
 thread_local! {
-    /// The focused tile title's marquee clock. Only one tile holds focus app-wide, so one clock;
-    /// a popover menu's focused row has its own (`table`), so the two never restart each other.
+    /// The focused tile's label-block marquee clock (title AND caption, keyed by the block).
+    /// Only one tile holds focus app-wide, so one clock; a popover menu's focused row has its own
+    /// (`table`), so the two never restart each other.
     static TITLE_CLOCK: marquee::Clock = const { marquee::Clock::new() };
 }
+
+/// Air above and below a marquee's clip window, so ascenders and descenders glide inside the clip
+/// instead of being sliced by it.
+const MARQUEE_AIR: f32 = 6.0;
+
 
 /// Air between Continue-Watching's play glyph and the name that follows it.
 const PLAY_ICON_GAP: f32 = 10.0;
@@ -1144,7 +1156,7 @@ fn glyph_lead(sz: std::os::raw::c_int, glyph: bool) -> f32 {
 pub struct LabelPlace {
     /// The block's left edge, in the painter's own space.
     pub x: f32,
-    /// The width the block may use; runs are elided or marqueed to it.
+    /// The width the block may use; a run that does not fit it marquees (title and caption alike).
     pub w: f32,
     /// `true`: every line is centred on the card (`x + w / 2`). `false`: every line starts at `x`,
     /// which is the card's own leading edge.
@@ -1180,8 +1192,8 @@ const EDGE_PAD: f32 = 16.0;
 /// **Where the tile is going, not where it is.** `lag` is [`CardRow::settle_lag`]: the centred /
 /// leading-edge choice and the block's width are decided at the tile's SETTLED screen position,
 /// while `x` still follows the live card. A tile that glides in from the right used to cross the
-/// panel-edge threshold part-way through, so the block flipped alignment and re-sized (re-eliding
-/// the caption, flipping the title into its marquee) on the way — the label visibly jumped.
+/// panel-edge threshold part-way through, so the block flipped alignment and re-sized (re-deciding
+/// which lines overflow, flipping the title into its marquee) on the way — the label visibly jumped.
 ///
 /// The right bound is the panel's edge less whatever the SCREEN has reserved there
 /// (`RowStyle::right_reserve` — the Library's A–Z rail). The leading edge is the UNSCALED card's,
@@ -1195,13 +1207,15 @@ pub fn place_label(p: Painter, rect: Rect, sty: &RowStyle, w: f32, lag: f32) -> 
         return LabelPlace { x, w, centred: true };
     }
     let lead = rect.cx() - sty.w * 0.5;
-    // Whole pixels: the room left before the panel edge is what the runs are elided to, and a
+    // Whole pixels: the room left before the panel edge is what the runs marquee against, and a
     // gliding shelf must not re-key the elide cache with every sub-pixel of travel.
     LabelPlace { x: lead, w: (hi - lead).min(w).max(0.0).floor(), centred: false }
 }
 
 /// The focused tile's single-line title, drawn in the block `at`: plain whenever the run fits the
-/// block, else a looping [`crate::marquee`] glide inside it — see the section doc above for why. Reports to
+/// block, else a looping [`crate::marquee`] glide inside it (in step with the caption's, through
+/// `block`) — see the section doc above for why. It never touches the clock when it fits: the
+/// caller releases it once, when NO line of the block overflows. Reports to
 /// [`plx_machine::idle`] only on a frame the marquee is actually gliding, so a screen full of short
 /// (or resting) titles costs the present gate nothing.
 ///
@@ -1219,6 +1233,7 @@ fn title_marquee(
     y: f32,
     glyph: bool,
     w: f32,
+    block: Option<&marquee::Block>,
 ) {
     let (sz, bold) = (theme::size::LABEL, 1);
     let isz = play_icon_size(sz);
@@ -1235,9 +1250,6 @@ fn title_marquee(
         );
     };
     if w <= budget {
-        // a fitting title RELEASES the clock, so an overflowing one focused again later starts
-        // from its rest beat rather than resuming mid-glide
-        TITLE_CLOCK.with(|c| c.release());
         // The [glyph? + gap + name] group is ONE run, placed like every other line of the block.
         let gx = at.run_x(lead + w);
         if glyph {
@@ -1246,7 +1258,7 @@ fn title_marquee(
         p.text(text, gx + lead, y, sz, theme::TEXT_PRIMARY, 0, bold);
         return;
     }
-    let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
+    let Some(block) = block else { return };
     // An overflowing run fills the whole block, so the window IS the block; the glyph, when
     // present, sits fixed at its left edge and only the text window after it scrolls. An
     // overflowing focused title never lets the screen rest (`Marquee::report`) — which is what
@@ -1256,12 +1268,13 @@ fn title_marquee(
     }
     let text_x0 = at.x + lead;
     TITLE_CLOCK.with(|clock| {
-        MARQUEE.glide(
+        MARQUEE.glide_in(
             clock,
             p,
-            &s,
+            &block.key,
             w,
-            Rect::new(text_x0, y - 6.0, budget, UNDER_LINE_H + 12.0),
+            block.cycle_w,
+            Rect::new(text_x0, y - MARQUEE_AIR, budget, UNDER_LINE_H + 2.0 * MARQUEE_AIR),
             |dx| {
                 p.text(text, text_x0 + dx, y, sz, theme::TEXT_PRIMARY, 0, bold);
             },
@@ -1319,27 +1332,134 @@ fn draw_label_block(
 ) {
     let full = under_budget(sty);
     let csz = theme::size::CAPTION;
-    let elide_caption = |s: &str, w: f32| plx_gfx::text::elide_by(s, w, false, |t| measure.width_str(t, csz, false));
     // Measured once and threaded through: the title's drawn width feeds both how wide the block
     // is asked to be and (unchanged) how title_marquee decides plain vs. looping.
     let title_w_val = label.title.as_ref().map(|t| title_w(t.as_ptr(), measure));
-    let title_run = title_w_val.map_or(0.0, |w| (glyph_lead(theme::size::LABEL, label.glyph) + w).min(full));
-    // The caption string is converted from the raw `CStr` once and reused for both elide passes
-    // below, even though the two passes elide to different budgets (`full` to size the block,
-    // `at.w` — never wider, per `place_label` — to fit the block that was actually placed).
+    let lead = glyph_lead(theme::size::LABEL, label.glyph);
+    let title_run = title_w_val.map_or(0.0, |w| (lead + w).min(full));
     let caption_str = label.caption.as_ref().map(|c| c.to_string_lossy());
-    let caption_run = caption_str.as_ref().map_or(0.0, |s| {
-        measure.width_str(&elide_caption(s, full), csz, false)
-    });
-    let at = place_label(p, rect, sty, title_run.max(caption_run), label.settle_lag);
+    let caption_w = caption_str.as_ref().map_or(0.0, |s| measure.width_str(s, csz, false));
+    let at = place_label(p, rect, sty, title_run.max(caption_w.min(full)), label.settle_lag);
+
+    // Which lines of the block do not fit it? They glide together on ONE clock and ONE cycle (the
+    // longest's); when none does, the clock is released so an overflowing block focused again
+    // later starts from its rest beat rather than resuming mid-glide.
+    let title_over = title_w_val.is_some_and(|w| w > (at.w - lead).max(0.0));
+    let caption_over = caption_w > at.w;
+    let title_text = label.title.as_ref().map_or(std::borrow::Cow::Borrowed(""), |t| t.to_string_lossy());
+    let block = marquee::Block::of(
+        (&title_text, title_over.then_some(title_w_val.unwrap_or(0.0))),
+        (caption_str.as_deref().unwrap_or(""), caption_over.then_some(caption_w)),
+    );
+    if block.is_none() {
+        TITLE_CLOCK.with(|c| c.release());
+    }
     if let Some(t) = &label.title {
-        title_marquee(p, at, t.as_ptr(), y, label.glyph, title_w_val.unwrap_or(0.0));
+        title_marquee(p, at, t.as_ptr(), y, label.glyph, title_w_val.unwrap_or(0.0), block.as_ref());
         y += UNDER_LINE_H + UNDER_LINE_GAP;
     }
     if let Some(s) = &caption_str {
-        if let Ok(tc) = std::ffi::CString::new(elide_caption(s, at.w)) {
-            let w = measure.width(&tc, csz, false);
-            p.text(tc.as_ptr(), at.run_x(w), y, csz, theme::TEXT_SECONDARY, 0, 0);
+        let Ok(tc) = std::ffi::CString::new(s.as_ref()) else { return };
+        if let Some(block) = block.as_ref().filter(|_| caption_over) {
+            TITLE_CLOCK.with(|clock| {
+                MARQUEE.glide_in(
+                    clock,
+                    p,
+                    &block.key,
+                    caption_w,
+                    block.cycle_w,
+                    Rect::new(at.x, y - MARQUEE_AIR, at.w, UNDER_CAPTION_H + 2.0 * MARQUEE_AIR),
+                    |dx| { p.text(tc.as_ptr(), at.x + dx, y, csz, theme::TEXT_SECONDARY, 0, 0); },
+                )
+            });
+        } else {
+            p.text(tc.as_ptr(), at.run_x(caption_w), y, csz, theme::TEXT_SECONDARY, 0, 0);
+        }
+    }
+}
+
+/// The line box of a credit label's role line: the caption size plus a hair of air.
+pub const CREDIT_ROLE_LEADING: f32 = theme::size::CAPTION as f32 + theme::space::XS;
+
+/// Where a credit label's role line starts below its name line's cap top — the name's cap height
+/// and a gap. One number for the label in every state, so the two baselines never move.
+fn credit_role_dy(measure: &dyn plx_machine::machine::Measure) -> f32 {
+    measure.cap_h(theme::size::LABEL) + theme::space::XS
+}
+
+/// **A persistent two-line label under a headshot** — the name, then the role / job, drawn for
+/// EVERY tile of a shelf, focused or not (a poster shelf draws only the focused tile's block, see
+/// [`draw_label_block`]; a cast shelf names everyone). `at` is the label's box: its left edge and
+/// width (the text budget) and the cap top of the name line.
+///
+/// **One shape in every state.** The name is ONE line and the role is ONE line, always, on the same
+/// two baselines — a block that wraps the role to two lines unfocused and shows one clipped, gliding
+/// line focused changes height and jumps when focus moves. What differs is only what a line that
+/// does not fit does:
+/// - unfocused: it ends in an ellipsis (`…`), still;
+/// - focused: it is never elided — it glides through its budget ([`marquee`]'s title timing, drawn
+///   as a run and its follower inside a clip window the budget wide), the name and the role on ONE
+///   [`marquee::Block`] (one clock, one cycle) so they leave their rest beat and loop together,
+///   exactly like a poster's title and caption. A focused line that fits stays centred and still.
+///
+/// `clock` is the caller's: one headshot holds focus app-wide, so one clock per shelf; it is
+/// released here whenever no focused line overflows, so the next overflowing label starts from its
+/// rest beat. A line is centred when plain and starts at `at.x` while gliding.
+pub fn draw_credit_label(
+    p: Painter,
+    clock: &marquee::Clock,
+    at: Rect,
+    name: &str,
+    role: &str,
+    focused: bool,
+    measure: &dyn plx_machine::machine::Measure,
+) {
+    use crate::label::{HAlign, Label, VAlign};
+    if at.w <= 0.0 {
+        return;
+    }
+    let (nsz, rsz) = (theme::size::LABEL, theme::size::CAPTION);
+    let name_w = measure.width_str(name, nsz, focused);
+    let role_w = measure.width_str(role, rsz, false);
+    let over = |w: f32, present: bool| (focused && present && w > at.w).then_some(w);
+    let block = marquee::Block::of(
+        (name, over(name_w, !name.is_empty())),
+        (role, over(role_w, !role.is_empty())),
+    );
+    if focused && block.is_none() {
+        clock.release();
+    }
+    let (name_y, role_y) = (at.y, at.y + credit_role_dy(measure));
+    // (text, size, bold, colour, cap top, line box height, full run width when it overflows)
+    let lines = [
+        (name, nsz, focused, if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY },
+            name_y, nsz as f32 + theme::space::XS, over(name_w, !name.is_empty())),
+        (role, rsz, false, theme::TEXT_TERTIARY, role_y, CREDIT_ROLE_LEADING, over(role_w, !role.is_empty())),
+    ];
+    for (text, sz, bold, col, y, h, overflow) in lines {
+        if text.is_empty() {
+            continue;
+        }
+        let frame = Rect::new(at.x, y, at.w, h);
+        let style = |l: Label| if bold { l.bold() } else { l };
+        if let (Some(run_w), Some(block)) = (overflow, block.as_ref()) {
+            let Ok(c) = std::ffi::CString::new(text) else { continue };
+            let label = style(Label::new(c.as_ptr(), sz, col)).h(HAlign::Left).v(VAlign::CapTop);
+            marquee::TITLE.glide_in(
+                clock,
+                p,
+                &block.key,
+                run_w,
+                block.cycle_w,
+                Rect::new(frame.x, frame.y - MARQUEE_AIR, frame.w, frame.h + 2.0 * MARQUEE_AIR),
+                |dx| {
+                    label.draw(p, Rect::new(frame.x + dx, frame.y, frame.w, frame.h));
+                },
+            );
+        } else {
+            let shown = plx_gfx::text::elide_by(text, frame.w, false, |t| measure.width_str(t, sz, bold));
+            let Ok(c) = std::ffi::CString::new(shown) else { continue };
+            style(Label::new(c.as_ptr(), sz, col)).h(HAlign::Center).v(VAlign::CapTop).draw(p, frame);
         }
     }
 }
@@ -2065,8 +2185,8 @@ mod tests {
     /// The focused label's alignment and width are decided ONCE per focus move, not re-decided on
     /// every frame of the scroll glide. Moving right onto a tile that needs the row to scroll, the
     /// tile starts off to the right and glides left; judged against its LIVE screen position the
-    /// block flipped between "centred" and "leading edge" (and re-sized, re-eliding the caption
-    /// and flipping the title into its marquee) part-way through, which read as the label jumping.
+    /// block flipped between "centred" and "leading edge" (and re-sized, re-deciding which lines
+    /// overflow and flipping the title into its marquee) part-way through, which read as the label jumping.
     #[test]
     fn a_label_block_keeps_its_placement_through_the_scroll_glide() {
         for sty in [RowStyle::HOME, RowStyle::EPISODE] {
@@ -2094,5 +2214,207 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- the focused caption marquees with its title ----------------------------------------
+
+    const LONG_CAPTION: &str = "Dr. Alexandra Wolkowicz-Harrington Smythe, chief consulting physician to the \
+        royal household";
+    const LONG_TITLE: &str = "The Extraordinarily Long and Winding Adventures of Alexandra Wolkowicz-\
+        Harrington Smythe and Her Many Consulting Physicians Across the Whole Wide Royal Household";
+
+    /// Draw one focused tile in the middle of the panel and return the x of every text run on its
+    /// title line and on its caption line (a marquee is a run plus its follower).
+    fn label_runs(title: &str, caption: &str) -> (Vec<f32>, Vec<f32>) {
+        let sty = RowStyle::HOME;
+        let rect = Rect::new(700.0, 300.0, sty.w, sty.h);
+        let ty = rect.y + rect.h + UNDER_DROP;
+        let label = TileLabel::titled(title, caption);
+        let log = crate::draw_census::capture(|| {
+            draw_focused(Painter::recording(), Art::Poster(None), rect, 1.0, &sty, None, &label,
+                &crate::fixture::FixtureMeasure);
+        });
+        let (mut t, mut c) = (Vec::new(), Vec::new());
+        for (_, r) in log.into_iter().filter(|(tag, r)| *tag == 100 && r.y >= ty - 8.0) {
+            if r.y < ty + UNDER_LINE_H { t.push(r.x) } else { c.push(r.x) }
+        }
+        (t, c)
+    }
+
+    fn leftmost(xs: &[f32]) -> f32 {
+        xs.iter().copied().fold(f32::MAX, f32::min)
+    }
+
+    /// A focused tile's caption — a year, a character, an episode address — is read like its
+    /// title: one that does not fit the block rests, glides through, and reports damage while it
+    /// moves, instead of ending in an ellipsis that hides the part that tells two credits apart.
+    #[test]
+    fn a_focused_caption_that_does_not_fit_marquees() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let _ = plx_machine::idle::take_local_damage();
+        let (title, rest) = label_runs("Alien", LONG_CAPTION);
+        assert_eq!(title.len(), 1, "a fitting title stays one still run: {title:?}");
+        assert_eq!(rest.len(), 2, "the caption is a run and its follower: {rest:?}");
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "resting is not damage");
+        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 500.0) / 1000.0);
+        let (_, gliding) = label_runs("Alien", LONG_CAPTION);
+        assert!(leftmost(&gliding) < leftmost(&rest), "the caption has moved left: {rest:?} -> {gliding:?}");
+        assert!(plx_machine::idle::take_local_damage() > 0, "a gliding frame reports");
+    }
+
+    /// And nothing else moves: a caption that fits is one still run, centred like it always was,
+    /// and a title that fits leaves the shared clock alone — a settled shelf stays quiet.
+    #[test]
+    fn a_fitting_caption_stays_one_still_run_and_reports_nothing() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        for _ in 0..3 {
+            plx_machine::idle::frame_begin(1.5);
+            let _ = plx_machine::idle::take_local_damage();
+            let (title, caption) = label_runs("Alien", "1979");
+            assert_eq!((title.len(), caption.len()), (1, 1));
+            assert_eq!(plx_machine::idle::take_local_damage(), 0);
+        }
+    }
+
+    fn measure_w(s: &str, sz: i32) -> f32 {
+        use plx_machine::machine::Measure as _;
+        crate::fixture::FixtureMeasure.width_str(s, sz, false)
+    }
+
+    /// **The title and its caption are one block, so they start, glide and loop together.** Each
+    /// looping on its OWN period, one would restart mid-way through the other's glide — a block
+    /// that never rests at once. The block's cycle is its longest run's: the shorter run finishes
+    /// its glide early (seamlessly back at its rest position) and waits for the longer to finish.
+    #[test]
+    fn a_title_and_its_caption_glide_in_lockstep() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let (t0, c0) = label_runs(LONG_TITLE, LONG_CAPTION);
+        let (title_x, cap_x) = (leftmost(&t0), leftmost(&c0));
+        assert_eq!((t0.len(), c0.len()), (2, 2), "both overflow: {t0:?} {c0:?}");
+        let mut elapsed = 0.0_f32;
+        let mut at = |ms: f32| {
+            plx_machine::idle::frame_begin((ms - elapsed) / 1000.0);
+            elapsed = ms;
+            label_runs(LONG_TITLE, LONG_CAPTION)
+        };
+        // both leave the rest beat together
+        let (t, c) = at(MARQUEE.hold_ms + 400.0);
+        assert!(leftmost(&t) < title_x && leftmost(&c) < cap_x, "both glide: {t:?} {c:?}");
+        // the caption's own period ends first; it waits at rest while the title is still gliding
+        let own = MARQUEE.period(measure_w(LONG_CAPTION, theme::size::CAPTION));
+        let (t, c) = at(own + 500.0);
+        assert!(leftmost(&t) < title_x, "the longer title is still gliding: {t:?}");
+        assert!(c.iter().any(|x| (x - cap_x).abs() < 0.5), "the caption is back at rest, not looping: {c:?}");
+        // and both restart together when the longer one loops
+        let cycle = MARQUEE.period(measure_w(LONG_TITLE, theme::size::LABEL));
+        let (t, c) = at(cycle + 300.0);
+        assert!((leftmost(&t) - title_x).abs() < 0.5 && (leftmost(&c) - cap_x).abs() < 0.5,
+            "both restart together: {t:?} {c:?}");
+    }
+
+    // ---- a credit label is one name line and one role line, in every state -------------------
+
+    thread_local! {
+        static CREDIT_CLOCK: marquee::Clock = const { marquee::Clock::new() };
+    }
+
+    /// Every text run one credit label draws, as `(x, y)`.
+    fn credit_runs(name: &str, role: &str, focused: bool) -> Vec<(f32, f32)> {
+        let at = Rect::new(500.0, 100.0, 222.0, 60.0);
+        crate::draw_census::capture(|| {
+            CREDIT_CLOCK.with(|c| draw_credit_label(Painter::recording(), c, at, name, role, focused,
+                &crate::fixture::FixtureMeasure));
+        })
+        .into_iter()
+        .filter(|(tag, _)| *tag == 100)
+        .map(|(_, r)| (r.x, r.y))
+        .collect()
+    }
+
+    /// The distinct baselines (rounded) a set of runs sits on, top to bottom.
+    fn baselines(runs: &[(f32, f32)]) -> Vec<i32> {
+        let mut ys: Vec<i32> = runs.iter().map(|r| r.1.round() as i32).collect();
+        ys.sort_unstable();
+        ys.dedup();
+        ys
+    }
+
+    const CREDIT_CASES: [(&str, &str); 4] = [
+        ("Ana", "Director"),
+        ("Sergio Hasselbaink", "Barley, the lumberjack"),
+        ("Rogier Schippers", "Captain, the long-suffering hero of the northern wastes"),
+        ("Alexandra Wolkowicz-Harrington Smythe", LONG_CAPTION),
+    ];
+
+    /// **One shape, focused or not.** A headshot's label is a name line and a role line, ALWAYS:
+    /// the same two baselines for a short role, a medium one and one that is far too long, focused
+    /// or resting, mid-glide or not. A role that wrapped to two lines when unfocused and became
+    /// one clipped line on focus made the block change height and jump when focus moved.
+    #[test]
+    fn a_credit_label_is_one_name_line_and_one_role_line_in_every_state() {
+        let _serial = plx_base::testlock::serial();
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        CREDIT_CLOCK.with(|c| c.release());
+        let reference = baselines(&credit_runs("Ana", "Director", false));
+        assert_eq!(reference.len(), 2, "a name line and a role line: {reference:?}");
+        for (name, role) in CREDIT_CASES {
+            for focused in [false, true] {
+                CREDIT_CLOCK.with(|c| c.release());
+                for ms in [0.0_f32, MARQUEE.hold_ms + 700.0, 4000.0] {
+                    plx_machine::idle::frame_begin(ms / 1000.0);
+                    let runs = credit_runs(name, role, focused);
+                    assert_eq!(baselines(&runs), reference,
+                        "{name:?}/{role:?} focused={focused} at {ms} ms: {runs:?}");
+                }
+            }
+        }
+    }
+
+    /// Unfocused, a name or role that does not fit is ONE elided run — it neither wraps nor
+    /// glides, so a resting shelf of credits is still and every label is a single line.
+    #[test]
+    fn an_unfocused_credit_label_that_overflows_is_one_elided_run_per_line() {
+        let _serial = plx_base::testlock::serial();
+        for (name, role) in CREDIT_CASES {
+            for ms in [0.0_f32, 5000.0] {
+                plx_machine::idle::frame_begin(ms / 1000.0);
+                let _ = plx_machine::idle::take_local_damage();
+                assert_eq!(credit_runs(name, role, false).len(), 2, "{name:?}/{role:?}");
+                assert_eq!(plx_machine::idle::take_local_damage(), 0, "an unfocused label never animates");
+            }
+        }
+    }
+
+    /// Focused and too long, name and role glide on one clock and one cycle, like a poster's
+    /// title and caption, and a fitting focused label draws two still runs and reports nothing.
+    #[test]
+    fn a_focused_credit_label_glides_only_the_lines_that_do_not_fit() {
+        let _serial = plx_base::testlock::serial();
+        CREDIT_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let _ = plx_machine::idle::take_local_damage();
+        let (long_name, long_role) = CREDIT_CASES[3];
+        let rest = credit_runs("Ana", long_role, true);
+        assert_eq!(rest.len(), 3, "a still name, plus the role and its follower: {rest:?}");
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "resting is not damage");
+        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 500.0) / 1000.0);
+        let moved = credit_runs("Ana", long_role, true);
+        assert!(moved.iter().map(|r| r.0).fold(f32::MAX, f32::min)
+            < rest.iter().map(|r| r.0).fold(f32::MAX, f32::min), "the role glides: {rest:?} -> {moved:?}");
+        assert!(plx_machine::idle::take_local_damage() > 0);
+        CREDIT_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.5);
+        let _ = plx_machine::idle::take_local_damage();
+        assert_eq!(credit_runs("Ana", "Director", true).len(), 2);
+        assert_eq!(credit_runs(long_name, "Director", true).len(), 3, "the long name and its follower");
+        CREDIT_CLOCK.with(|c| c.release());
+        let _ = plx_machine::idle::take_local_damage();
+        assert_eq!(credit_runs("Ana", "Director", true).len(), 2);
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "a fitting label never reports");
     }
 }
