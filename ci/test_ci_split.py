@@ -20,6 +20,8 @@ import re
 import unittest
 from pathlib import Path
 
+import check_steps
+
 ROOT = Path(__file__).resolve().parent.parent
 MAKEFILE = (ROOT / "Makefile").read_text().splitlines()
 CI = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -118,6 +120,75 @@ class CheckPythonIsTheUnion(unittest.TestCase):
     def test_the_harness_runs_in_no_other_target(self):
         for target in ("check-python", "check-python-rest"):
             self.assertNotIn("tests/test_harness.py", rule(target)[1], target)
+        self.assertFalse([c for c in check_steps.commands() if "tests/test_harness.py" in c])
+
+
+# Test files that no `make check` target runs, each with the reason. A file that is not named by the
+# step manifest, the Makefile, the harness or a workflow, and is not here, fails the test below, so a
+# new test file cannot be written and then never run.
+NOT_RUN_BY_CHECK = {
+    ".claude/hooks/build-gc-auto-test.py":
+        "the SessionEnd hook's own suite: asserts the hook returns in under a second and a detached child "
+        "appears 2 s later, which is a wall-clock claim a loaded `make check` would turn into a flake",
+}
+# Where a test file may be named and still count as run: the step manifest's commands, the Makefile's
+# recipes (comments stripped), the harness (which runs some ci/ suites over private copies of the tree)
+# and the workflows.
+TEST_FILE_GLOBS = ("ci/test_*.py", "ci/test-*.py", "ci/*-test.c", "tools/test_*.py", "tests/test_*.py",
+                   ".claude/hooks/*-test.py", ".claude/hooks/test_*.py")
+
+
+def named_by_a_gate():
+    makefile = "\n".join(line for line in MAKEFILE if not line.lstrip().startswith(("#", "@#"))
+                         and not line.lstrip("\t").startswith("@#"))
+    workflows = "\n".join(p.read_text() for p in sorted((ROOT / ".github/workflows").glob("*.yml")))
+    return "\n".join(check_steps.commands()) + "\n" + makefile + "\n" + workflows
+
+
+def named_by_the_harness(path):
+    """The harness builds some paths from parts (`os.path.join(root, "ci", "test_x.py")`), so its text
+    is matched by file name."""
+    return Path(path).name in (ROOT / "tests/test_harness.py").read_text()
+
+
+class CheckPythonRestIsTheManifestRunner(unittest.TestCase):
+    """`make check-python-rest` (what `make check` and the CI job `host-python` run) is ONLY the runner
+    over ci/check-python-steps.txt, so the local run and CI cannot disagree about what a gate is, and a
+    gate is added in exactly one place."""
+
+    def test_the_target_is_exactly_the_runner_over_the_manifest(self):
+        prereqs, recipe = rule("check-python-rest")
+        self.assertEqual(prereqs, [], "a prerequisite runs outside the manifest, serially, ahead of every step")
+        self.assertEqual(recipe.strip(), "@python3 tools/check-parallel.py --steps ci/check-python-steps.txt")
+
+    def test_the_manifest_has_no_duplicate_and_names_real_programs(self):
+        commands = check_steps.commands()
+        self.assertGreater(len(commands), 50)
+        self.assertEqual(len(commands), len(set(commands)))
+        for command in commands:
+            words = command.split()
+            if words[0] == "make":
+                target = next(w for w in words[1:] if not w.startswith("-"))
+                self.assertTrue(any(line.startswith(target + ":") for line in MAKEFILE), command)
+                continue
+            self.assertTrue(any((ROOT / w).is_file() for w in words), f"{command!r} runs no file of this repo")
+
+    def test_every_test_file_is_run_by_some_gate_or_exempted_with_a_reason(self):
+        text = named_by_a_gate()
+        files = sorted({p.relative_to(ROOT).as_posix() for glob in TEST_FILE_GLOBS for p in ROOT.glob(glob)})
+        self.assertGreater(len(files), 50)
+        unnamed = [f for f in files if f not in text and not named_by_the_harness(f)
+                   and f not in NOT_RUN_BY_CHECK]
+        self.assertEqual(unnamed, [], "test files no gate runs: add each to ci/check-python-steps.txt "
+                                      "(or to NOT_RUN_BY_CHECK here, with the reason)")
+
+    def test_an_exemption_is_still_needed(self):
+        text = named_by_a_gate()
+        for path, reason in NOT_RUN_BY_CHECK.items():
+            self.assertTrue((ROOT / path).is_file(), f"{path} is gone: drop its exemption")
+            self.assertNotIn(path, text, f"{path} is run by a gate now: drop its exemption")
+            self.assertFalse(named_by_the_harness(path), f"{path} is run by the harness now: drop its exemption")
+            self.assertTrue(reason)
 
 
 class CiRunsEveryTarget(unittest.TestCase):

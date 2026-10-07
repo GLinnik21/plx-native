@@ -161,7 +161,7 @@ tables say so, but `check-deps.sh`'s `layer` gate scans only `screens/`.
 
 ## The gate
 
-`make check-python` runs `ci/check-module-layers.py` (about 3 s, no cargo) after its own suite,
+`make check-python` runs `ci/check-module-layers.py` (about 3 s, no cargo) beside its own suite,
 `ci/test_module_graph.py`. It fails when:
 
 - a reference, production **or** `cfg(test)`, names a layer its own layer does not `use`, and

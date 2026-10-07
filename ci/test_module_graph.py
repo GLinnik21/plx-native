@@ -18,7 +18,12 @@ _spec.loader.exec_module(gate)
 class Tree:
     def __init__(self, files):
         self._temp = tempfile.TemporaryDirectory(prefix='module-graph-')
-        self.root = Path(self._temp.name).resolve()
+        # One level below the private directory, never directly in $TMPDIR: `Crate` looks for the
+        # layer crates beside its root (`root.parent/*/Cargo.toml`), so a root straight in $TMPDIR made
+        # every case stat each entry of the shared temp directory (38,000 of them on a dev Mac: 14 s of
+        # a 34-case file) and read the Cargo.toml of any unrelated directory it found there.
+        self.root = Path(self._temp.name).resolve() / 'tree'
+        self.root.mkdir()
         for name, source in files.items():
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -37,6 +42,15 @@ def refs(files, test=None):
 
 
 LIB = 'mod a; mod b; mod c;\n'
+
+
+class Fixture(unittest.TestCase):
+    def test_a_tree_root_has_a_private_parent(self):
+        # `Crate` globs `root.parent/*/Cargo.toml` for the split layer crates. A root straight in $TMPDIR
+        # made that glob stat every entry of the shared temp directory (14 s of this file) and read the
+        # Cargo.toml of any unrelated directory in it, so a fixture's parent must hold only the fixture.
+        with Tree({'lib.rs': LIB}) as tree:
+            self.assertEqual([p.name for p in tree.root.parent.iterdir()], [tree.root.name])
 
 
 class Resolution(unittest.TestCase):
