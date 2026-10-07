@@ -335,3 +335,20 @@ afresh on the unchanged shape (`tests/focusfp.sh --rec --only 1,6,12`, old fixtu
 `tools/plxnative-rec import`, manifests restored byte for byte, `anchor: true` kept) and replayed
 SAME in Targets and Resolve (`tests/replay_fixtures.py`, three consecutive runs) with every
 difference counter zero.
+
+The rc1 UI nits (PR #480: `TableView` pages — `255c3fbc` lets rows slide off the bottom screen edge and
+dissolves them at the top, and `8182db77` makes a row's focus ink follow the sliding pill — and
+`3c1bf765`, the Filmography credit table drawn as a page) changed recorded behaviour without moving the
+shape: a page now draws rows that used to be culled below the fold, so they take text measurements the
+old recordings never took. `6-settings-family` and `12-filmography-detail-return` were observed being
+refused on the first of them (`replay: REFUSED — replay measurement table miss`, both modes), while
+`1-boot-home-chip-grid` stayed SAME. The divergence was attributed from the measurements themselves, by
+comparing the `metrics` records of a fresh recording against the committed one: Settings gained exactly
+two Width queries, both the Privacy & data destination's bottom row, which now slides in under the bottom
+edge ("Delete all local data" and its sub-line); Filmography gained exactly three, all of the below-the-fold credit rows
+the page now draws (an em dash, a credit title and a "Character N" sub-line). Each is measured once, not
+per frame, so it is a new measured run and not a measurement taken every frame. The anchors were recorded
+afresh on the unchanged shape (`tests/focusfp.sh --rec --only 6,12`, old fixtures removed,
+`tools/plxnative-rec import`, manifests restored byte for byte, `anchor: true` kept) and replayed SAME in
+Targets and Resolve (`make check-replay`, three consecutive runs) with every difference counter zero. The
+closed alphabet did not move: every new string is already a synthetic or localized literal it admits.
