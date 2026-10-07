@@ -237,9 +237,9 @@ class ContentFocusFlows(unittest.TestCase):
         self.assertIsNone(focusfp_check.check(5, log))
 
     def test_person_return_preserves_the_selected_card(self):
-        log = ["focus route=person card=1 sid=0 rk=1001 group=2 elem=4096",
+        log = ["focus route=person card=1 sid=0 rk=1001 group=4 elem=4096",
                "focus route=detail sid=0 rk=1001",
-               "focus route=person card=1 sid=0 rk=1001 group=2 elem=4096",
+               "focus route=person card=1 sid=0 rk=1001 group=4 elem=4096",
                "focus route=detail sid=0 rk=1001"]
         self.assertIsNone(focusfp_check.check(5, log))
         self.assertIsNotNone(focusfp_check.check(5, [*log[:2], log[2].replace("rk=1001", "rk=1002"), log[3]]))

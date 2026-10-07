@@ -2079,7 +2079,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // twelve pitches (`pitches:[f32;12]`); the previous pin was 0x7063_dff7_775b_9075.
 // Collection adopts `cards::Stack` (cards-stack PR 5): its logical state gains the stack's motion
 // canon (`stack:Stack{scroll,target,sections}`); the previous pin was 0xac96_3316_a3a3_7bd4.
-const SCREEN_SHAPES_PIN: u64 = 0xbc1d_d51d_5b11_1273;
+// Person adopts `cards::Stack` (cards-stack PR 5): its logical state gains the stack's motion canon
+// (`stack:Stack{scroll,target,sections}`), the same as Collection's; the previous pin was
+// 0xbc1d_d51d_5b11_1273.
+const SCREEN_SHAPES_PIN: u64 = 0xdb39_f424_a0be_5fd2;
 
 #[cfg(test)]
 mod arg_tests {

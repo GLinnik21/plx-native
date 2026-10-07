@@ -1084,10 +1084,11 @@ mod stack {
     use crate::screen::Focusable;
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    enum Sec { Head, Row, Items, Status }
+    enum Sec { Head, Aside, Row, Items, Status }
 
     const HEAD_ELEM: u32 = 1;
     const STATUS_ELEM: u32 = 2;
+    const ASIDE_ELEM: u32 = 3;
     const HEAD_H: f32 = 400.0;
     const ROW_STYLE: &RowStyle = &card_row::RowStyle::HOME;
     const COLS_SPEC: GridSpec = GridSpec::new(0.0, 96.0);
@@ -1099,6 +1100,10 @@ mod stack {
         revision: u64,
         status: bool,
         pending: bool,
+        /// A zero-height focusable that reveals the header's block (`reveal_with`).
+        aside: bool,
+        /// A header tall enough that the shelf below it needs the page scrolled to be on screen.
+        tall: bool,
     }
 
     impl CardSource<FixtureHost> for &Cards {
@@ -1116,7 +1121,10 @@ mod stack {
         fn revision(&self, _cx: &Cx9<'_>) -> u64 { self.revision }
         fn pending(&self, _cx: &Cx9<'_>, _want: &u32) -> bool { self.pending }
         fn sections(&self, _cx: &Cx9<'_>, out: &mut Vec<SectionSpec<Sec>>) {
-            out.push(SectionSpec { key: Sec::Head, kind: Kind::Custom { height: HEAD_H, focusable: true } });
+            out.push(SectionSpec { key: Sec::Head, kind: Kind::Custom { height: if self.tall { 700.0 } else { HEAD_H }, focusable: true } });
+            if self.aside {
+                out.push(SectionSpec { key: Sec::Aside, kind: Kind::Custom { height: 0.0, focusable: true } });
+            }
             out.push(SectionSpec { key: Sec::Row, kind: Kind::Shelf { style: ROW_STYLE, heading: 60.0 } });
             out.push(SectionSpec { key: Sec::Items, kind: Kind::Grid { spec: COLS_SPEC } });
             if self.status {
@@ -1128,9 +1136,10 @@ mod stack {
             match k { Sec::Row => Some(&self.row), Sec::Items => Some(&self.items), _ => None }
         }
         fn elem_of(&self, k: Sec) -> Option<u32> {
-            match k { Sec::Head => Some(HEAD_ELEM), Sec::Status => Some(STATUS_ELEM), _ => None }
+            match k { Sec::Head => Some(HEAD_ELEM), Sec::Aside => Some(ASIDE_ELEM), Sec::Status => Some(STATUS_ELEM), _ => None }
         }
-        fn focus_rect(&self, k: Sec, section: Rect) -> Rect {
+        fn reveal_with(&self, k: Sec) -> Option<Sec> { (k == Sec::Aside).then_some(Sec::Head) }
+        fn focus_rect(&self, _cx: &Cx9<'_>, k: Sec, section: Rect) -> Rect {
             if k == Sec::Head { Rect::new(360.0, section.y + 96.0, 1344.0, 300.0) } else { section }
         }
     }
@@ -1147,7 +1156,7 @@ mod stack {
         let ids = |base: u32, n: usize| (0..n as u32).map(|i| base + i).collect::<Vec<_>>();
         let mut r = Rig {
             stack: Stack::new(ENTRY),
-            page: Page { row: Cards::new(ids(100, row), false), items: Cards::new(ids(1000, items), false), revision: 1, status: false, pending: false },
+            page: Page { row: Cards::new(ids(100, row), false), items: Cards::new(ids(1000, items), false), revision: 1, status: false, pending: false, aside: false, tall: false },
             view: FixtureView::default(),
             focus: None,
             ms: 0,
@@ -1206,6 +1215,38 @@ mod stack {
             let key = FocusKey { entry: ENTRY, elem: want };
             self.stack.view(&self.page).reconcile(key, &self.cx()).elem
         }
+    }
+
+    #[test]
+    fn a_section_that_names_a_block_reveals_that_block_not_its_own_sliver() {
+        let mut r = rig(6, 60);
+        r.page.aside = true;
+        r.page.tall = true;
+        r.page.revision += 1;
+        r.run(1);
+        r.go(100, By::Restore);
+        r.run(2);
+        r.go(1030, By::Dir);
+        r.run(120);
+        assert!(r.stack.scroll() > 100.0, "setup: the page is scrolled down: {}", r.stack.scroll());
+        r.go(ASIDE_ELEM, By::Dir);
+        r.run(240);
+        assert!(r.stack.scroll().abs() < 0.5, "the aside sits in the header's block: the page goes home, not to the aside's own top: {}", r.stack.scroll());
+    }
+
+    #[test]
+    fn the_scroll_target_is_measured_against_the_settled_caption_bands() {
+        let mut r = rig(6, 24);
+        r.page.tall = true;
+        r.page.revision += 1;
+        r.run(1);
+        r.go(100, By::Dir);
+        r.run(1);
+        let first = r.stack.target();
+        r.run(240);
+        assert!(first > 0.0, "setup: the shelf below a tall header needs the page scrolled: {first}");
+        assert_eq!(r.stack.target(), first, "the target was the destination from the first frame, not a chase of the opening band");
+        assert!((r.stack.scroll() - first).abs() < 0.5);
     }
 
     #[test]

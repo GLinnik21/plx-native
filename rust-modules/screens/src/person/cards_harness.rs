@@ -3,6 +3,7 @@
 //! private geometry the way its own tests do.
 use super::*;
 use plx_machine::machine::{FocusKey, FocusRead, Host, InputOwner, PressRead, Tick};
+use plx_ui::screen::{Placed, Step};
 use plx_ui::cards::conformance::{CardHarness, Landing, Nb};
 use plx_ui::fixture::FixtureMeasure;
 
@@ -61,7 +62,9 @@ impl Harness {
         self.store.install_profile_for_test();
         let cx: Cx<'_, PersonHost> = Cx { views: self.store.view(), tick: Tick::default(), measure: &FixtureMeasure,
             press: PressRead::default(), focus: FocusRead::default(), owner: InputOwner::Entry(ENTRY) };
-        self.screen.refresh_store_cache(&cx);
+        self.screen.page.refresh_store_cache(&cx);
+        // the stack lays its sections out on the first event it sees after the content moved
+        self.step(ScreenEvent::Cover);
     }
 
     fn cx(&self) -> Cx<'_, PersonHost> {
@@ -87,7 +90,7 @@ impl Harness {
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: ENTRY, elem } }
 
     fn at(&self, elem: u32) -> Option<(usize, usize)> {
-        match self.screen.locate(self.store.view().current()?, elem)? {
+        match self.screen.page.locate(self.store.view().current()?, elem)? {
             Located::Shelf(kind, col) => Some((kind, col)),
             _ => None,
         }
@@ -98,7 +101,7 @@ impl CardHarness for Harness {
     fn cards(&self) -> Vec<u32> {
         let p = self.store.view().current().unwrap();
         (0..NSHELF).flat_map(|kind| (0..p.shelf(kind).len()).map(move |col| (kind, col)))
-            .map(|(kind, col)| self.screen.shelf_key(p, kind, col).elem).collect()
+            .map(|(kind, col)| self.screen.page.shelf_key(p, kind, col).elem).collect()
     }
     fn focused(&self) -> Option<u32> { self.focus.map(|k| k.elem) }
     fn focus(&mut self, elem: u32, by: By) {
@@ -129,19 +132,15 @@ impl CardHarness for Harness {
     /// The rect the page registers as the stop of `elem` (the shelf's draw registers the rect it
     /// paints), at the live press.
     fn drawn_rect(&self, elem: u32, _press: f32) -> Option<Rect> {
-        let (kind, _) = self.at(elem)?;
-        let p = self.store.view().current()?;
+        self.at(elem)?;
         let cx = self.cx();
         let mut frame = DrawFrame::new(&cx, plx_ui::Painter::root());
-        let at = self.screen.shelf_frame(p, kind)?;
-        let root = frame.painter;
-        self.screen.shelves[kind].record_stops(&mut frame, root, &self.screen.cards_of(p, kind), at);
+        self.screen.stack.view(&self.screen.page).record_stops(&mut frame);
         frame.stops().iter().find(|s| s.key.elem == elem).map(|s| s.rect)
     }
     fn scale(&self, elem: u32) -> Option<f32> {
-        let (kind, _) = self.at(elem)?;
-        let p = self.store.view().current()?;
-        self.screen.shelves[kind].scale_of(&self.cx(), &self.screen.cards_of(p, kind), &elem)
+        self.at(elem)?;
+        self.screen.stack.view(&self.screen.page).scale_of(&self.cx(), &elem)
     }
     fn focus_scale(&self) -> f32 { SHELF_STYLE.focus_scale }
     fn canon(&self) -> u64 {

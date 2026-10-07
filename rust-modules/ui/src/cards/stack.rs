@@ -87,11 +87,11 @@ pub trait StackPage<H: Host> {
     }
     /// The focus rect (and hit target) of a focusable `Custom` / `Overlay` section, given the
     /// section's own rect on screen.
-    fn focus_rect(&self, _k: Self::Key, section: Rect) -> Rect {
+    fn focus_rect(&self, _cx: &Cx<'_, H>, _k: Self::Key, section: Rect) -> Rect {
         section
     }
     /// The focus group of a focusable `Custom` / `Overlay` section.
-    fn plain_group(&self, _k: Self::Key, id: GroupId, extent: Rect) -> GroupSpec {
+    fn plain_group(&self, _cx: &Cx<'_, H>, _k: Self::Key, id: GroupId, extent: Rect) -> GroupSpec {
         GroupSpec {
             id,
             kind: GroupKind::Free,
@@ -102,6 +102,11 @@ pub trait StackPage<H: Host> {
             len: 1,
             elem: ElemKind::Bare,
         }
+    }
+    /// When focus is on section `k`, the scroll reveals section `j`'s block instead: a focusable
+    /// `Custom` that is part of a larger block (a header band holding two controls) names the block.
+    fn reveal_with(&self, _k: Self::Key) -> Option<Self::Key> {
+        None
     }
     /// A shelf's heading in `r` (screen space); `lift` is how far it must rise, live, to clear the
     /// focused tile.
@@ -175,6 +180,11 @@ impl<K: Copy + Eq, E> Stack<K, E> {
 
     pub fn scroll(&self) -> f32 {
         self.scroll.pos
+    }
+
+    #[cfg(test)]
+    pub(crate) fn target(&self) -> f32 {
+        self.target
     }
 
     /// The focus group of section `k` (its position in the current layout).
@@ -270,10 +280,6 @@ impl<K: Copy + Eq, E> Stack<K, E> {
     /// Section `i`'s top in document space.
     fn top<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize) -> f32 {
         (0..i).map(|j| self.height(p, cx, j)).sum()
-    }
-
-    fn doc_h<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>) -> f32 {
-        self.top(p, cx, self.specs.len())
     }
 
     /// Hand every grid the page: its top in document space and the scroll.
@@ -398,8 +404,21 @@ impl<K: Copy + Eq, E> Stack<K, E> {
         self.sync_pages(p, cx);
     }
 
+    /// Section `n`'s height with focus on section `focus`, measured at its DESTINATION: a shelf's
+    /// caption band open when focused and closed otherwise, wherever its spring is now. A scroll
+    /// target computed against the live bands chases a moving goal for as long as they animate.
+    fn settled_height<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, n: usize, focus: usize) -> f32 {
+        match &self.specs[n].kind {
+            Kind::Shelf { style, heading } => {
+                if self.len_of(p, cx, n) == 0 { 0.0 } else { heading + style.h + card_row::under_band((n == focus) as i32 as f32) }
+            }
+            _ => self.height(p, cx, n),
+        }
+    }
+
     /// The scroll that shows section `i` focused: the grid's own reveal rule, the minimal reveal
-    /// of a shelf's block or a plain section otherwise.
+    /// of a shelf's block (against its settled bands) or of a plain section (or the block the page
+    /// names, [`StackPage::reveal_with`]) otherwise.
     fn wanted<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize) -> f32 {
         if let Body::Grid(g) = &self.bodies[i] {
             return g.reveal_target().unwrap_or(self.target);
@@ -407,10 +426,12 @@ impl<K: Copy + Eq, E> Stack<K, E> {
         if matches!(self.specs[i].kind, Kind::Overlay { .. }) {
             return self.target;
         }
-        let (top, h) = (self.top(p, cx, i), self.height(p, cx, i));
-        let max = (self.doc_h(p, cx) - (SCR_H - MARGIN_Y)).max(0.0);
-        let hi = if matches!(self.specs[i].kind, Kind::Shelf { .. }) { top - MARGIN_Y } else { top };
-        card_row::reveal(self.scroll.pos, top + h - (SCR_H - MARGIN_Y), hi, max)
+        let j = p.reveal_with(self.specs[i].key).and_then(|k| self.index(k)).unwrap_or(i);
+        let h = |n: usize| self.settled_height(p, cx, n, i);
+        let (top, height) = ((0..j).map(h).sum::<f32>(), h(j));
+        let max = ((0..self.specs.len()).map(h).sum::<f32>() - (SCR_H - MARGIN_Y)).max(0.0);
+        let hi = if matches!(self.specs[j].kind, Kind::Shelf { .. }) { top - MARGIN_Y } else { top };
+        card_row::reveal(self.scroll.pos, top + height - (SCR_H - MARGIN_Y), hi, max)
     }
 
     // ---- placement -------------------------------------------------------------------------
@@ -436,7 +457,7 @@ impl<K: Copy + Eq, E> Stack<K, E> {
             Body::Shelf(s) => s.place(cx, &p.cards(cx, k)?, elem, self.frame(p, cx, i), how),
             Body::Grid(g) => g.place(cx, &p.cards(cx, k)?, elem, how),
             Body::Plain => {
-                let rect = p.focus_rect(k, self.rect(p, cx, i));
+                let rect = p.focus_rect(cx, k, self.rect(p, cx, i));
                 (p.elem_of(k).as_ref() == Some(elem)).then_some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: Some(0) })
             }
         }
@@ -454,9 +475,9 @@ pub struct StackView<'a, K, E, P> {
 }
 
 impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
-    /// The stops of every card section, registered exactly as [`paint`](Self::paint) ends each
-    /// section with them (the very rects it draws), without painting: a host test has no GL
-    /// context, and a page's harness reads the rects through this.
+    /// The stops of every section, registered exactly as [`paint`](Self::paint) ends each section
+    /// with them (the very rects it draws, in the same z order), without painting: a host test
+    /// has no GL context, and a page's harness reads the rects through this.
     pub fn record_stops<H: Host>(&self, f: &mut DrawFrame<'_, '_, H>)
     where
         P: StackPage<H, Key = K>,
@@ -467,8 +488,37 @@ impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
             match (&s.specs[i].kind, &s.bodies[i]) {
                 (Kind::Shelf { .. }, Body::Shelf(sh)) => if let Some(src) = self.page.cards(f.cx, k) { sh.record_stops(f, f.painter, &src, s.frame(self.page, f.cx, i)) },
                 (Kind::Grid { .. }, Body::Grid(g)) => if let Some(src) = self.page.cards(f.cx, k) { g.record_stops(f, f.painter, &src) },
+                (Kind::Custom { focusable, .. } | Kind::Overlay { focusable, .. }, _) => self.plain_stop(f, i, *focusable),
                 _ => {}
             }
+        }
+    }
+
+    /// The stop of section `i` when it is a focusable `Custom` / `Overlay`.
+    fn plain_stop<H: Host>(&self, f: &mut DrawFrame<'_, '_, H>, i: usize, focusable: bool)
+    where
+        P: StackPage<H, Key = K>,
+    {
+        let (s, page) = (self.stack, self.page);
+        let (k, r) = (s.specs[i].key, s.rect(page, f.cx, i));
+        if let (true, Some(elem)) = (focusable, page.elem_of(k)) {
+            let rect = page.focus_rect(f.cx, k, r);
+            // a control wholly off the screen can be neither pointed at nor allowed to sit under a
+            // card in the hit map's z order
+            if !crate::on_axis(rect.y, rect.h, SCR_H, 0.0) {
+                return;
+            }
+            f.stop(
+                f.painter,
+                Stop {
+                    key: FocusKey { entry: s.entry, elem },
+                    rect,
+                    rest_rect: rect,
+                    clip: Rect::FULL,
+                    hover: Hover::Focus,
+                    activate: Activate::Direct,
+                },
+            );
         }
     }
 
@@ -530,17 +580,7 @@ impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
                 }
                 (Kind::Custom { focusable, .. } | Kind::Overlay { focusable, .. }, _) => {
                     page.custom_draw(k, f, r, s.scroll.pos);
-                    if let (true, Some(elem)) = (*focusable, page.elem_of(k)) {
-                        let rect = page.focus_rect(k, r);
-                        f.stop(f.painter, Stop {
-                            key: FocusKey { entry: s.entry, elem },
-                            rect,
-                            rest_rect: rect,
-                            clip: Rect::FULL,
-                            hover: Hover::Focus,
-                            activate: Activate::Direct,
-                        });
-                    }
+                    self.plain_stop(f, i, *focusable);
                 }
                 _ => {}
             }
@@ -604,7 +644,7 @@ impl<K: Copy + Eq, E, H: Host, P: StackPage<H, Key = K>> Focusable<H> for StackV
                 }
                 (Kind::Custom { focusable: true, .. } | Kind::Overlay { focusable: true, .. }, _) => {
                     if p.elem_of(k).is_some() {
-                        out.push(p.plain_group(k, id, p.focus_rect(k, s.rect(p, cx, i))));
+                        out.push(p.plain_group(cx, k, id, p.focus_rect(cx, k, s.rect(p, cx, i))));
                     }
                 }
                 _ => {}

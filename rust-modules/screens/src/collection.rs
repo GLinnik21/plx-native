@@ -438,14 +438,14 @@ impl<H: ContentLike + CollectionLike> StackPage<H> for Page {
         match k { Sec::Head => Some(HEADER_ELEM), Sec::Status => Some(RETRY_ELEM), Sec::Items => None }
     }
 
-    fn focus_rect(&self, k: Sec, section: Rect) -> Rect {
+    fn focus_rect(&self, _cx: &Cx<'_, H>, k: Sec, section: Rect) -> Rect {
         match k {
             Sec::Head => Self::header_rect(-section.y),
             Sec::Items | Sec::Status => section,
         }
     }
 
-    fn plain_group(&self, k: Sec, id: GroupId, extent: Rect) -> GroupSpec {
+    fn plain_group(&self, _cx: &Cx<'_, H>, k: Sec, id: GroupId, extent: Rect) -> GroupSpec {
         let (reachable, edge) = match k {
             Sec::Head => (AxisMask::VERTICAL, [EdgeRule::Stop, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop]),
             Sec::Items | Sec::Status => (AxisMask::BOTH, [EdgeRule::Stop; 4]),
