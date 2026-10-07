@@ -340,7 +340,13 @@ pub struct PlaybackSession {
     /// The next episode of the item now playing, or None (a movie, the last episode, or a queue
     /// that failed). Installed by [`apply_plan`]; [`request_play`] retires it the moment a new item
     /// resolves. Read through [`up_next`], which lends a `&'static`.
-    up_next: Option<UpNext>,
+    ///
+    /// Shared, not owned: [`publication`](Self::publication) copies the session every frame, and
+    /// the Up Next still is a card whose placement history is keyed by the address of this row's
+    /// `thumb` (`plx_ui::widgets::Art::motion_identity`). A deep copy gave the card a new identity
+    /// every frame, so a still that was not cached yet was declined for ever and the player
+    /// screen never came to rest.
+    up_next: Option<std::sync::Arc<UpNext>>,
     /// The whole queue behind the item now playing — the playing row included, in queue order,
     /// projected to `plex::QueueRow` ON THE RESOLVE WORKER (a `Metadata` row carries its entire
     /// Media/Part/Stream/Role tree; a show's queue is dozens of them, and this device is 32-bit).
@@ -7104,7 +7110,7 @@ pub(super) struct QueueInfo {
 /// only writer is what keeps that reference sound. A caller that STARTS the next episode must
 /// clone first: `request_play` clears this before the new plan lands.
 pub fn up_next(ps: &PlaybackSession) -> Option<&UpNext> {
-    ps.up_next.as_ref()
+    ps.up_next.as_deref()
 }
 
 /// The current playback's queue rows, in queue order, the row now playing among them — locate it
@@ -8175,7 +8181,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             stream_immersive: plan.immersive,
             title,
             ctxline,
-            up_next: plan.up_next,
+            up_next: plan.up_next.map(std::sync::Arc::new),
             queue: plan.queue,
             // The frame tick is the MACHINE's, not the plan's: a landing replaces the session's
             // contents and must not rewind the stamp `Player::set_now` wrote this iteration.

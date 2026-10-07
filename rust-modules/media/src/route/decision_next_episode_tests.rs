@@ -55,3 +55,19 @@ fn a_failed_write_changes_and_reports_nothing() {
     assert_eq!(next_episode_mode(), NextEpisodeMode::Countdown);
     assert!(events.is_empty(), "{events:?}");
 }
+
+/// The Up Next still is a card, and a card's placement history is keyed by the ADDRESS of its
+/// thumb path (`plx_ui::widgets::Art::motion_identity`). The screen reads the per-frame
+/// [`PlaybackSession::publication`], so a publication that copies the path hands the card a new
+/// identity every frame: its placement stays unknown, a still that is not in the cache yet is
+/// declined for ever, and each decline asks for another frame — a player screen that never comes
+/// to rest (the `site-up-next` screenshot scene timed out on exactly this).
+#[test]
+fn every_publication_lends_the_same_up_next_thumb() {
+    let mut ps = PlaybackSession::IDLE;
+    ps.up_next = Some(UpNext { thumb: "/library/metadata/2011003/thumb/1".into(), ..Default::default() }.into());
+    let (a, b) = (ps.publication(), ps.publication());
+    let (a, b) = (up_next(&a).unwrap(), up_next(&b).unwrap());
+    assert_eq!(a.thumb, "/library/metadata/2011003/thumb/1");
+    assert_eq!(a.thumb.as_ptr(), b.thumb.as_ptr(), "two frames must see one card identity");
+}
