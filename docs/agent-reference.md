@@ -206,7 +206,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   with `--no-run --message-format=json-render-diagnostics`, runs the reported test executables with
   a bounded job count (`PLX_TEST_JOBS`, default `min(6, CPUs)`; each binary gets its share of
   `RUST_TEST_THREADS`), each in its package directory with its own `PLXNATIVE_RUNTIME_DIR`
-  subdirectory, and prints every binary's whole output, including its literal `test result:` line.
+  subdirectory (honoured by the `hostsim` pass only: `paths::ENV_STEERABLE` is off in the default
+  pass, which resolves the runtime root to `/tmp`) and its own EMPTY `TMPDIR` that the binary must
+  leave empty (a fixture that leaks `$TMPDIR/<name>-<pid>` fails the run; per-process scratch uses
+  `plx_base::testscratch::process_dir`, removed at exit), and prints every binary's whole output,
+  including its literal `test result:` line.
   It keeps the gate honest: every binary runs even after a failure (exit 101 if any failed), a
   package that produced no test executable, or a build that reported none, is an error, and a
   failed build returns cargo's status. `ci/test_cargo_test_parallel.py` pins those. CI is

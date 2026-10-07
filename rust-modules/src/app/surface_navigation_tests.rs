@@ -724,6 +724,12 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
 #[test]
 fn account_to_settings_never_unfreezes_the_host() {
     let _g = plx_base::testlock::serial();
+    // The account menu builds its rows only from a SETTLED session (`peek_settled`), and the first
+    // read of one is asynchronous (a job on the storage worker). Run alone, in a fresh process, the
+    // three frames below beat that read about one run in forty and the menu had no rows to walk
+    // (`d.focus()` was `None`). The scratch session is saved through the cache, so it is settled and
+    // signed out (a client id, no account) before the first frame, whatever ran before this test.
+    let _session = plx_plex::plex::session::TempSession::new("account-to-settings");
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
@@ -732,8 +738,8 @@ fn account_to_settings_never_unfreezes_the_host() {
     frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
     assert_eq!(d.host_policy(), (HostUpdate::Frozen, HostRender::Cached));
 
-    // Focus the Settings row and commit it. Signed out (a host test has no session file the
-    // fixture wrote), the rows are [Sign in, Settings], so one DOWN then OK.
+    // Focus the Settings row and commit it. Signed out (the scratch session carries a client id and
+    // no account), the rows are [Sign in, Settings], so one DOWN then OK.
     let menu_entry = d.nav.modals.top().unwrap().entry.id;
     let mut t = 2;
     let mut press = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, key: Key| {

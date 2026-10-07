@@ -229,14 +229,9 @@ static TEST_FILE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 #[cfg(any(test, feature = "test-support"))]
 fn fallback_file() -> std::path::PathBuf {
     static PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    PATH.get_or_init(|| {
-        let dir = std::env::temp_dir()
-            .join(format!("plxnative-session-fallback-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::create_dir_all(&dir);
-        dir.join("auth.json")
-    })
-    .clone()
+    // Removed when the test process exits (`plx_base::testscratch`).
+    PATH.get_or_init(|| plx_base::testscratch::process_dir("session-fallback").join("auth.json"))
+        .clone()
 }
 
 /// The same process-global scratch path [`fallback_file`] resolves to, exposed to other modules'
