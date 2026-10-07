@@ -112,6 +112,12 @@ impl PersonStore {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn install_profile_for_test(&mut self) {
+        self.state.install_profile_for_test();
+        self.bump();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn seed_ownership_fixture_for_test(&mut self) {
         self.state.seed_ownership_fixture_for_test(&self.adapter);
         self.bump();

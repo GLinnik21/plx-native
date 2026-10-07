@@ -20,7 +20,8 @@ use plx_data::person::{Person, NSHELF};
 use plx_plex::plex::ServerId;
 use plx_data::pms::PmsMovie;
 use plx_data::stores::person::PersonCmd;
-use plx_ui::card_row::{self, CardRow, RowStyle};
+use plx_ui::card_row::{self, RowStyle, TileLabel};
+use plx_ui::cards::{CardEvent, CardSource, SectionFrame, Shelf};
 use plx_ui::consts::*;
 use plx_ui::label::{Label, VAlign};
 use plx_ui::linked_heading::LinkedHeading;
@@ -321,8 +322,6 @@ struct Flow<'a> {
     /// the rest) rather than wherever its spring has it — what a scroll TARGET must be computed
     /// against (`ui/person.rs`'s `Settled`/`scroll_target` doc has the full argument).
     settled: bool,
-    /// The press dip factor this frame (`f.press.dip()`), for the shelves' focused tile.
-    press: f32,
 }
 
 impl Column for Flow<'_> {
@@ -354,7 +353,7 @@ impl Column for Flow<'_> {
     fn focus_child(&self) -> Option<usize> {
         self.focus_child
     }
-    fn draw_child(&self, i: usize, env: &Env, p: Painter, measure: &dyn plx_machine::machine::Measure) {
+    fn draw_child(&self, i: usize, _env: &Env, p: Painter, measure: &dyn plx_machine::machine::Measure) {
         debug_assert!(
             !self.settled,
             "the settled flow is a measurement, never a draw"
@@ -365,8 +364,7 @@ impl Column for Flow<'_> {
         }
         let (kinds, n) = present(self.person);
         if let Some(&kind) = kinds[..n].get(i - 1) {
-            self.screen
-                .draw_shelf(p, env, self.person, kind, self.focus_child == Some(i), self.press, measure);
+            self.screen.draw_shelf_heading(p, kind, measure);
         }
     }
 }
@@ -389,120 +387,48 @@ fn scroll_target(col: &ScrollColumn, live: &Flow<'_>, settled: &Flow<'_>) -> f32
 }
 
 // -------------------------------------------------------------------------------------------
-// the stable-key shelf `Focusable`
+// the shelf's content, for `plx_ui::cards::Shelf`
 // -------------------------------------------------------------------------------------------
 
-/// One shelf's `Focusable` geometry. `keys[col]` is stable for the catalog item's identity, so a
-/// landing may move an item between shelves without moving the engine cursor off that item.
-struct OffsetShelf<'a> {
-    row: &'a CardRow,
-    keys: Vec<u32>,
-    row_y: f32,
-    group: GroupId,
-    entry: EntryId,
-    extent: Rect,
+/// One shelf's cards, read over the store's person and the page's element interning. The engine
+/// element of a card is stable for the catalog item's identity ([`CardKeys`]), so a landing may
+/// move an item between shelves without moving the engine cursor off that item: each shelf's
+/// `index_of` simply stops (or starts) answering for it.
+struct ShelfCards<'a> {
+    person: &'a Person,
+    kind: usize,
+    cards: &'a CardKeys,
 }
 
-impl<'a> OffsetShelf<'a> {
-    fn col_of(&self, elem: u32) -> Option<usize> {
-        self.keys.iter().position(|&key| key == elem)
+impl<H: ContentLike> CardSource<H> for ShelfCards<'_> {
+    fn len(&self) -> usize {
+        self.person.shelf(self.kind).len()
     }
-}
-
-impl<H: ContentLike> Focusable<H> for OffsetShelf<'_> {
-    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
-        out.push(GroupSpec {
-            id: self.group,
-            kind: GroupKind::Row { wrap: false },
-            seat: Seat::Remembered,
-            reachable: AxisMask::BOTH,
-            edge: [EdgeRule::Geometric; 4],
-            extent: self.extent,
-            len: self.keys.len(),
-            elem: ElemKind::Card,
-        });
+    fn elem(&self, i: usize) -> u32 {
+        self.person
+            .shelf(self.kind)
+            .get(i)
+            .and_then(|m| self.cards.elem_for(m.sid, &m.rk))
+            .unwrap_or(HEADER_ELEM)
     }
-    fn group_of(&self, key: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        self.col_of(*key).map(|_| self.group)
+    fn index_of(&self, e: &u32) -> Option<usize> {
+        let id = self.cards.get(*e)?;
+        self.person
+            .shelf(self.kind)
+            .iter()
+            .position(|m| plx_plex::plex::same_item((m.sid, m.rk.as_str()), (id.sid, id.rk.as_str())))
     }
-    fn neighbour(
-        &self,
-        key: plx_machine::machine::FocusKey<u32>,
-        dir: Dir,
-        _cx: &Cx<'_, H>,
-    ) -> Step<u32> {
-        let Some(i) = self.col_of(key.elem) else {
-            return Step::Edge;
-        };
-        match dir {
-            Dir::Left if i > 0 => Step::Move(shelf_key_from(self, i - 1)),
-            Dir::Right if i + 1 < self.keys.len() => Step::Move(shelf_key_from(self, i + 1)),
-            _ => Step::Edge,
+    fn art(&self, i: usize) -> Art<'_> {
+        Art::Poster(self.person.shelf(self.kind).get(i).map(tile_facts::of))
+    }
+    fn label(&self, i: usize) -> TileLabel {
+        match self.person.shelf(self.kind).get(i) {
+            Some(m) => TileLabel::titled(&m.title, self.person.role(self.kind, i)),
+            None => TileLabel::default(),
         }
     }
-    fn place(&self, key: &u32, _cx: &Cx<'_, H>, at: At) -> Option<Placed> {
-        let i = self.col_of(*key)?;
-        let pitch = SHELF_STYLE.w + SHELF_STYLE.gap;
-        let rest = card_row::tile_rect(
-            i,
-            SHELF_STYLE.margin_x,
-            pitch,
-            self.row.scroll_x(),
-            self.row_y,
-            (SHELF_STYLE.w, SHELF_STYLE.h),
-        );
-        let s = match at {
-            At::Drawn => self.row.scale(i),
-            At::SpringTarget => {
-                if self.row.focus() == i as i32 {
-                    SHELF_STYLE.focus_scale
-                } else {
-                    1.0
-                }
-            }
-        };
-        Some(Placed {
-            rect: rest.scaled(s),
-            rest_rect: rest,
-            clip: self.extent,
-            index: Some(i as u32),
-        })
-    }
-    fn reconcile(
-        &self,
-        want: plx_machine::machine::FocusKey<u32>,
-        _cx: &Cx<'_, H>,
-    ) -> plx_machine::machine::FocusKey<u32> {
-        let i = self.col_of(want.elem).unwrap_or(0);
-        shelf_key_from(self, i.min(self.keys.len().saturating_sub(1)))
-    }
-    fn seat(
-        &self,
-        _g: GroupId,
-        from: Placed,
-        _cx: &Cx<'_, H>,
-    ) -> plx_machine::machine::FocusKey<u32> {
-        let pitch = SHELF_STYLE.w + SHELF_STYLE.gap;
-        let cx_ = from.rect.x + from.rect.w * 0.5;
-        let guess = ((cx_ - SHELF_STYLE.margin_x + self.row.scroll_x()) / pitch).max(0.0) as usize;
-        let from_i = from.index.map_or(guess, |i| i as usize);
-        let i = card_row::column_near_x(
-            cx_,
-            SHELF_STYLE.margin_x,
-            pitch,
-            SHELF_STYLE.w,
-            self.row.scroll_x(),
-            self.keys.len(),
-            from_i,
-        );
-        shelf_key_from(self, i)
-    }
-}
-
-fn shelf_key_from(s: &OffsetShelf<'_>, col: usize) -> plx_machine::machine::FocusKey<u32> {
-    plx_machine::machine::FocusKey {
-        entry: s.entry,
-        elem: s.keys.get(col).copied().unwrap_or(HEADER_ELEM),
+    fn progress(&self, i: usize) -> Option<f32> {
+        self.person.shelf(self.kind).get(i).and_then(|m| m.resume_frac())
     }
 }
 
@@ -543,7 +469,7 @@ pub struct PersonScreen {
     teardown_closed: bool,
 
     // ---- render cache: animation (never hashed; a spring position is not logical state) ----
-    shelves: [CardRow; NSHELF],
+    shelves: [Shelf; NSHELF],
     scroll: ScrollColumn,
     amb: PageGround,
     amb_seeded: bool,
@@ -566,6 +492,11 @@ pub struct PersonScreen {
     header: HeaderFlow,
     header_dirty: bool,
     links_c: Vec<Link>,
+    /// The store revision ([`PersonView::revision`](plx_data::person::PersonView::revision)) the
+    /// card interning and `links_c` were last derived at; `None` until a person is there. The
+    /// content counter, not the request epoch and not a shelf length: a same-length shelf
+    /// replacement moves it.
+    synced: Option<u64>,
     covered_ready_c: bool,
     /// The biography's focus lift ([`Self::bio_marked`]). Presentation, not logical state.
     bio_lift: plx_ui::text_lift::TextLift,
@@ -627,7 +558,7 @@ impl PersonScreen {
             cards: CardKeys::new(FIRST_CARD_ELEM),
             return_pending: false,
             teardown_closed: false,
-            shelves: [CardRow::new(); NSHELF],
+            shelves: [Shelf::new(entry, &SHELF_STYLE), Shelf::new(entry, &SHELF_STYLE)],
             scroll: ScrollColumn::new(HEADER_TOP, TOP_MARGIN),
             amb: PageGround::new(),
             amb_seeded: false,
@@ -640,6 +571,7 @@ impl PersonScreen {
             header: HeaderFlow::default(),
             header_dirty: true,
             links_c: Vec::new(),
+            synced: None,
             covered_ready_c: false,
             bio_lift: plx_ui::text_lift::TextLift::new(),
         }
@@ -676,11 +608,20 @@ impl PersonScreen {
     }
 
     fn refresh_store_cache<H: PersonLike>(&mut self, cx: &Cx<'_, H>) {
+        self.covered_ready_c = false;
+        let Some(person) = self.person(cx) else {
+            self.synced = None;
+            self.links_c.clear();
+            return;
+        };
+        self.covered_ready_c = person.credited && !H::person(cx).loading();
+        let revision = H::person(cx).revision();
+        if self.synced == Some(revision) {
+            return;
+        }
+        self.synced = Some(revision);
         self.sync_card_keys(cx);
         self.links_c.clear();
-        self.covered_ready_c = false;
-        let Some(person) = self.person(cx) else { return };
-        self.covered_ready_c = person.credited && !H::person(cx).loading();
         let (kinds, n) = present(person);
         if entry_reachable(person) {
             self.links_c.push(Link { from: HEADER_GROUP, dir: Dir::Down, to: ENTRY_GROUP });
@@ -700,6 +641,7 @@ impl PersonScreen {
     }
 
     pub fn restore(&mut self, memory: &CardPageMemory) {
+        self.synced = None;
         self.cards.merge(&memory.cards, FIRST_CARD_ELEM, "person");
         self.header_marked |= memory.header_marked;
     }
@@ -911,7 +853,6 @@ impl PersonScreen {
             focus_child: self.flow_child(p, focus_elem),
             focus_elem,
             settled: false,
-            press: 1.0,
         }
     }
 
@@ -922,32 +863,40 @@ impl PersonScreen {
             focus_child: self.flow_child(p, focus_elem),
             focus_elem,
             settled: true,
-            press: 1.0,
         }
     }
 
-    fn offset_shelf<'a>(&'a self, p: &'a Person, kind: usize) -> Option<OffsetShelf<'a>> {
-        let keys: Vec<u32> = p
-            .shelf(kind)
-            .iter()
-            .filter_map(|m| self.elem_for(m))
-            .collect();
-        if keys.is_empty() {
-            return None;
-        }
+    /// Shelf `kind`'s content over `person` and the page's interning.
+    fn cards_of<'a>(&'a self, person: &'a Person, kind: usize) -> ShelfCards<'a> {
+        ShelfCards { person, kind, cards: &self.cards }
+    }
+
+    /// Where shelf `kind`'s tiles sit now (screen space), if the shelf is on the page.
+    fn shelf_frame(&self, p: &Person, kind: usize) -> Option<SectionFrame> {
         let (kinds, tot) = present(p);
         let pos = kinds[..tot].iter().position(|&k| k == kind)?;
-        Some(OffsetShelf {
-            row: &self.shelves[kind],
-            keys,
-            row_y: self.shelf_row_y(p, pos),
-            group: SHELF_GROUP[kind],
-            entry: self.entry,
-            extent: Rect::new(0.0, self.shelf_row_y(p, pos), SCR_W, CARD_H),
-        })
+        let y = self.shelf_row_y(p, pos);
+        Some(SectionFrame { y, clip: Rect::new(0.0, y, SCR_W, CARD_H) })
     }
 
-    fn tick<H: ContentLike + PersonLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    /// Feed `ev` to every shelf: the one entry the cards component needs. Answers the card event
+    /// (`Activate` / `Hold`) the focused shelf produced, if any.
+    fn feed_shelves<H: ContentLike + PersonLike>(
+        &mut self,
+        ev: &ScreenEvent<H>,
+        cx: &Cx<'_, H>,
+        fx: &mut Effects<'_, H>,
+    ) -> Option<CardEvent<u32>> {
+        let p = self.person(cx)?;
+        let mut out = None;
+        for kind in 0..NSHELF {
+            let src = ShelfCards { person: p, kind, cards: &self.cards };
+            out = self.shelves[kind].on(ev, cx, &src, fx).or(out);
+        }
+        out
+    }
+
+    fn tick<H: ContentLike + PersonLike>(&mut self, ev: &ScreenEvent<H>, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let dt = t.dt();
         let cur = cx.focus.current.map(|k| k.elem);
         self.refresh_store_cache(cx);
@@ -970,20 +919,7 @@ impl PersonScreen {
             self.amb_seeded = true;
         }
 
-        let focus_child = self.flow_child(p, cur);
-        for kind in 0..NSHELF {
-            let n = p.shelf(kind).len();
-            let (kinds, tot) = present(p);
-            let pos = kinds[..tot].iter().position(|&kk| kk == kind);
-            let shelf_focus = pos
-                .filter(|&pos| focus_child == Some(pos + 1))
-                .and_then(|_| self.locate(p, cur.unwrap_or(u32::MAX)))
-                .and_then(|l| match l {
-                    Located::Shelf(kk, col) if kk == kind => Some(col),
-                    _ => None,
-                });
-            self.shelves[kind].update(n, shelf_focus, &SHELF_STYLE, dt);
-        }
+        self.feed_shelves(ev, cx, fx);
 
         let live = self.live_flow(p, cur);
         let settled = self.settled_flow(p, cur);
@@ -1063,8 +999,10 @@ impl PersonScreen {
         }
     }
 
-    fn commit_card<H: ContentLike + PersonLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
-        if let Some(m) = self.focused_item(cx.focus.current, cx) {
+    /// A press committed on card `elem`: leave for its detail page.
+    fn open_card<H: ContentLike + PersonLike>(&self, elem: u32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let item = self.person(cx).and_then(|p| self.focused_movie_in(p, Some(elem)));
+        if let Some(m) = item {
             fx.push(plx_machine::machine::Fx::App(AppFx::Content(
                 ContentReq::Push(ContentArg::Detail {
                     sid: m.sid,
@@ -1098,31 +1036,14 @@ impl PersonScreen {
         let Some(person) = self.person(f.cx) else {
             return;
         };
-        let Some(Located::Shelf(kind, col)) = self.locate(person, key.elem) else {
+        let Some(Located::Shelf(kind, _)) = self.locate(person, key.elem) else {
             return;
         };
-        let Some(item) = person.shelf(kind).get(col) else {
+        let Some(frame) = self.shelf_frame(person, kind) else {
             return;
         };
-        let Some(shelf) = self.offset_shelf(person, kind) else {
-            return;
-        };
-        let Some(placed) = Focusable::<H>::place(&shelf, &key.elem, f.cx, At::Drawn) else {
-            return;
-        };
-        let scale = self.shelves[kind].scale(col) * f.press.dip();
-        let label = card_row::TileLabel::titled(&item.title, person.role(kind, col))
-            .settling(self.shelves[kind].settle_lag(person.shelf(kind).len(), col, &SHELF_STYLE));
-        card_row::draw_focused(
-            f.painter.alpha(f.page_alpha),
-            Art::Poster(Some(tile_facts::of(item))),
-            placed.rest_rect.scaled(scale),
-            scale,
-            &SHELF_STYLE,
-            item.resume_frac(),
-            &label,
-            f.measure,
-        );
+        let p = f.painter.alpha(f.page_alpha);
+        self.shelves[kind].redraw_focused(f, p, &self.cards_of(person, kind), frame, Some(key));
     }
 
     // ---- draw ----
@@ -1237,11 +1158,10 @@ impl PersonScreen {
         }
     }
 
-    fn draw_shelf(&self, p: Painter, _env: &Env, person: &Person, kind: usize, focused: bool, press: f32, measure: &dyn plx_machine::machine::Measure) {
-        let items = person.shelf(kind);
-        let row = &self.shelves[kind];
-        let cur_col = if focused { row.focus() } else { -1 };
-        let hy = -row.lift();
+    /// Shelf `kind`'s heading and count, drawn in the shelf block's own space; the tiles are the
+    /// cards component's ([`draw_shelves`](Self::draw_shelves)).
+    fn draw_shelf_heading(&self, p: Painter, kind: usize, measure: &dyn plx_machine::machine::Measure) {
+        let hy = -self.shelves[kind].heading_lift();
         Label::new(
             shelf_title()[kind].as_ptr(),
             theme::size::HEADLINE,
@@ -1268,27 +1188,22 @@ impl PersonScreen {
                 ),
             );
         }
-        let pitch = SHELF_STYLE.w + SHELF_STYLE.gap;
-        card_row::strip(
-            p,
-            row,
-            items.len(),
-            cur_col,
-            SHELF_LABEL_H,
-            (SHELF_STYLE.w, SHELF_STYLE.h),
-            pitch,
-            &SHELF_STYLE,
-            SCR_W,
-            press,
-            |i| Art::Poster(items.get(i).map(tile_facts::of)),
-            |i| items.get(i).and_then(|m| m.resume_frac()),
-            |i| match items.get(i) {
-                Some(m) => card_row::TileLabel::titled(&m.title, person.role(kind, i)),
-                None => card_row::TileLabel::default(),
-            },
-            |_, _, _, _| {},
-            measure,
-        );
+    }
+
+    /// The tiles of every shelf that is on screen (the focused shelf is never culled, as the
+    /// column's own cull has it), drawn and stop-registered by the cards component.
+    fn draw_shelves<H: ContentLike + PersonLike>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, person: &Person, cur: Option<u32>) {
+        let live = self.live_flow(person, cur);
+        let (kinds, n) = present(person);
+        for (pos, &kind) in kinds[..n].iter().enumerate() {
+            let child = pos + 1;
+            let top = self.scroll.child_top(&live, child) - self.scroll.scroll.pos;
+            if live.focus_child != Some(child) && !plx_ui::on_axis(top, live.height(child), SCR_H, 0.0) {
+                continue;
+            }
+            let Some(frame) = self.shelf_frame(person, kind) else { continue };
+            self.shelves[kind].draw(f, p, &self.cards_of(person, kind), frame);
+        }
     }
 
     fn draw_shelf_state(&self, p: Painter, env: &Env, person: &Person) {
@@ -1371,8 +1286,8 @@ impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
             });
         }
         for kind in 0..NSHELF {
-            if let Some(shelf) = self.offset_shelf(p, kind) {
-                Focusable::<H>::groups(&shelf, cx, out);
+            if let Some(frame) = self.shelf_frame(p, kind) {
+                out.push(self.shelves[kind].group_spec(SHELF_GROUP[kind], p.shelf(kind).len(), frame.clip));
             }
         }
     }
@@ -1382,9 +1297,7 @@ impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
         match self.locate(p, *key)? {
             Located::Header => Some(HEADER_GROUP),
             Located::Entry => entry_reachable(p).then_some(ENTRY_GROUP),
-            Located::Shelf(kind, _) => self
-                .offset_shelf(p, kind)
-                .and_then(|s| Focusable::<H>::group_of(&s, key, cx)),
+            Located::Shelf(kind, _) => Some(SHELF_GROUP[kind]),
         }
     }
 
@@ -1398,10 +1311,7 @@ impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
             return Step::Edge;
         };
         match self.locate(p, key.elem) {
-            Some(Located::Shelf(kind, _)) => self
-                .offset_shelf(p, kind)
-                .map(|s| Focusable::<H>::neighbour(&s, key, dir, cx))
-                .unwrap_or(Step::Edge),
+            Some(Located::Shelf(kind, _)) => self.shelves[kind].neighbour::<H, _>(&self.cards_of(p, kind), key, dir),
             _ => Step::Edge,
         }
     }
@@ -1430,9 +1340,10 @@ impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
                     index: Some(0),
                 })
             }
-            Located::Shelf(kind, _) => self
-                .offset_shelf(p, kind)
-                .and_then(|s| Focusable::<H>::place(&s, key, cx, at)),
+            Located::Shelf(kind, _) => {
+                let frame = self.shelf_frame(p, kind)?;
+                self.shelves[kind].place(cx, &self.cards_of(p, kind), key, frame, at)
+            }
         }
     }
 
@@ -1510,13 +1421,12 @@ impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
         }
         for kind in 0..NSHELF {
             if SHELF_GROUP[kind] == g {
-                return self
-                    .offset_shelf(p, kind)
-                    .map(|s| Focusable::<H>::seat(&s, g, from, cx))
-                    .unwrap_or(plx_machine::machine::FocusKey {
+                return self.shelves[kind].seat::<H, _>(&self.cards_of(p, kind), from).unwrap_or(
+                    plx_machine::machine::FocusKey {
                         entry: self.entry,
                         elem: HEADER_ELEM,
-                    });
+                    },
+                );
             }
         }
         plx_machine::machine::FocusKey {
@@ -1548,6 +1458,9 @@ impl PersonScreen {
 impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        // The cards component's one entry: every event reaches every shelf. A Tick reaches them
+        // from inside `tick`, where the layout that reads their live state is computed.
+        let card = if matches!(ev, ScreenEvent::Tick(_)) { None } else { self.feed_shelves(ev, cx, fx) };
         match ev {
             ScreenEvent::RestoreMemory(PageMemory::Person(memory)) => {
                 self.restore(memory);
@@ -1555,7 +1468,7 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                self.tick(*t, cx, fx);
+                self.tick(ev, *t, cx, fx);
                 Handled::Yes
             }
             ScreenEvent::Enter(_) | ScreenEvent::Uncover => {
@@ -1603,11 +1516,13 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
                 Handled::Yes
             }
             ScreenEvent::PressCommit(_) => {
-                self.commit_card(cx, fx);
+                if let Some(CardEvent::Activate(elem)) = card {
+                    self.open_card(elem, cx, fx);
+                }
                 Handled::Yes
             }
             ScreenEvent::PressHold(_) => {
-                if self.focused_item(cx.focus.current, cx).is_some() {
+                if let Some(CardEvent::Hold(_)) = card {
                     fx.push(plx_machine::machine::Fx::App(AppFx::Content(
                         ContentReq::ItemMenu,
                     )));
@@ -1696,12 +1611,14 @@ impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
         };
         self.amb.draw(p, Rect::FULL);
         let col = self.scroll;
-        let mut live = self.live_flow(person, cur);
-        live.press = f.press.dip();
+        let live = self.live_flow(person, cur);
         col.draw(&live, &env, p, f.measure);
         self.draw_shelf_state(p, &env, person);
 
-        self.record_stops(f, person, cur);
+        // Stops register in z order: the header band, then the tiles over it, the entry pill last.
+        self.record_header_stop(f);
+        self.draw_shelves(f, p, person, cur);
+        self.record_entry_stop(f, person);
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
@@ -1730,16 +1647,10 @@ impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
 }
 
 impl PersonScreen {
-    /// Register this frame's hit-map stops for the header/entry Bare rows — the shelves' own
-    /// stops are the engine's ordinary `Card` hit-testing over [`OffsetShelf::place`], which needs
-    /// no separate registration; only the two Bare rows (no drawn tile the strip already stops)
-    /// need one, mirroring `screens::login::LoginScreen::draw_readout`'s single `f.stop(...)`.
-    fn record_stops<H: ContentLike + PersonLike>(
-        &self,
-        f: &mut DrawFrame<'_, '_, H>,
-        person: &Person,
-        cur: Option<u32>,
-    ) {
+    /// The header band's hit-map stop. The shelves' stops are the cards component's (registered by
+    /// its draw); only the two Bare rows have no drawn tile of that kind and need one here, mirroring
+    /// `screens::login::LoginScreen::draw_readout`'s single `f.stop(...)`.
+    fn record_header_stop<H: ContentLike + PersonLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         if !f.records_stops() { return; }
         let hp = f.painter;
         f.stop(
@@ -1756,30 +1667,11 @@ impl PersonScreen {
                 activate: Activate::Direct,
             },
         );
-        for kind in 0..NSHELF {
-            let Some(shelf) = self.offset_shelf(person, kind) else {
-                continue;
-            };
-            for elem in shelf.keys.iter().copied() {
-                let Some(placed) = Focusable::<H>::place(&shelf, &elem, f.cx, At::Drawn) else {
-                    continue;
-                };
-                f.stop(
-                    hp,
-                    Stop {
-                        key: plx_machine::machine::FocusKey {
-                            entry: self.entry,
-                            elem,
-                        },
-                        rect: placed.rect,
-                        rest_rect: placed.rest_rect,
-                        clip: placed.clip,
-                        hover: Hover::Focus,
-                        activate: Activate::Press,
-                    },
-                );
-            }
-        }
+    }
+
+    /// The Filmography pill's stop, when it is on the screen.
+    fn record_entry_stop<H: ContentLike + PersonLike>(&self, f: &mut DrawFrame<'_, '_, H>, person: &Person) {
+        if !f.records_stops() { return; }
         if entry_reachable(person) {
             let r = self.entry_rect(person, f.measure);
             if plx_ui::on_axis(r.y, r.h, SCR_H, 0.0) {
@@ -1790,7 +1682,6 @@ impl PersonScreen {
                 );
             }
         }
-        let _ = cur;
     }
 }
 
@@ -1880,6 +1771,40 @@ mod tests {
 
     fn focus_of(s: &PersonScreen, store: &plx_data::stores::person::PersonStore, kind: usize, col: usize) -> plx_machine::machine::FocusKey<u32> {
         s.shelf_key(store.view().current().unwrap(), kind, col)
+    }
+
+    /// Run the shelves' tick `frames` times with the engine focus on `focus`, so a focused tile
+    /// has grown to its settled pop. Just the cards component's entry, not the whole page tick.
+    fn settle_shelves(
+        s: &mut PersonScreen,
+        store: &plx_data::stores::person::PersonStore,
+        focus: plx_machine::machine::FocusKey<u32>,
+        frames: u32,
+    ) {
+        let m = FixtureMeasure;
+        let mut present = plx_machine::present::Present::new();
+        let mut buf: Vec<plx_machine::machine::Stamped<PersonHost>> = Vec::new();
+        for _ in 0..frames {
+            let cxv = cx_at(&m, store.view(), focus);
+            let mut fx = Effects::new(
+                &mut buf,
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
+                &mut present,
+            );
+            s.feed_shelves(&ScreenEvent::Tick(Tick { ms: 0, dt_us: 16_667 }), &cxv, &mut fx);
+        }
+    }
+
+    /// Every stop the page registers, in z order: the header band, the tiles of each shelf, the
+    /// entry pill — what `Screen::draw` registers without painting.
+    fn page_stops(s: &PersonScreen, f: &mut DrawFrame<'_, '_, PersonHost>, person: &Person) {
+        s.record_header_stop(f);
+        for kind in 0..NSHELF {
+            if let Some(frame) = s.shelf_frame(person, kind) {
+                s.shelves[kind].record_stops(f, f.painter, &s.cards_of(person, kind), frame);
+            }
+        }
+        s.record_entry_stop(f, person);
     }
 
     #[test]
@@ -2281,11 +2206,9 @@ mod tests {
         s.refresh_store_cache(&cx(&measure, store.view()));
         s.remeasure_header(store.view().current().unwrap(), &measure);
         s.header.exp_d = PORTRAIT_BARE;
-        for _ in 0..120 {
-            s.shelves[0].update(2, Some(1), &SHELF_STYLE, 0.016);
-        }
-
         let key = focus_of(&s, &store, 0, 1);
+        settle_shelves(&mut s, &store, key, 120);
+
         let stale_entry = s.entry_rect(store.view().current().unwrap(), &measure);
         let initial_tile = Focusable::<PersonHost>::place(
             &s, &key.elem, &cx(&measure, store.view()), At::Drawn)
@@ -2302,7 +2225,7 @@ mod tests {
             "the fixture must reproduce the stale pill/tile overlap");
         let (x, y) = (stale_overlap.cx(), stale_overlap.cy());
         let mut frame = DrawFrame::new(&context, plx_ui::Painter::root());
-        s.record_stops(&mut frame, store.view().current().unwrap(), None);
+        page_stops(&s, &mut frame, store.view().current().unwrap());
         let mut hit = HitMap::new();
         hit.fill(frame.into_stops());
         hit.swap();
@@ -2313,7 +2236,7 @@ mod tests {
         s.scroll.scroll.jump(s.scroll.scroll.pos + entry.y + entry.h + 1.0);
         let context = cx(&measure, store.view());
         let mut frame = DrawFrame::new(&context, plx_ui::Painter::root());
-        s.record_stops(&mut frame, store.view().current().unwrap(), None);
+        page_stops(&s, &mut frame, store.view().current().unwrap());
         assert!(frame.stops().iter().all(|stop| stop.key.elem != ENTRY_ELEM),
             "an entry wholly above the viewport registers no pointer stop");
         store.run(PersonCmd::Close);
@@ -2435,7 +2358,7 @@ mod tests {
                 plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
                 &mut present,
             );
-            s.commit_card(&cxv, &mut fx);
+            Machine::<PersonHost>::step(&mut s, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &cxv, &mut fx);
         }
         assert!(buf.is_empty(), "no focus means no navigation effect");
         // Feed the identical `Cx` shape but with focus parked on the first movie tile.
@@ -2455,7 +2378,7 @@ mod tests {
                 plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
                 &mut present,
             );
-            s.commit_card(&cxv2, &mut fx);
+            Machine::<PersonHost>::step(&mut s, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &cxv2, &mut fx);
         }
         assert!(buf.iter().any(|st| matches!(
             &st.fx,
@@ -3249,6 +3172,37 @@ mod tests {
         assert!(links.iter().any(|link| {
             link.from == ENTRY_GROUP && link.dir == Dir::Down && link.to == SHELF_GROUP[0]
         }));
+        store.run(PersonCmd::Close);
+    }
+
+    /// A landing may move the focused item from one shelf to the other. The engine element is the
+    /// item's identity, so focus stays on it; the shelf it left lets go of the lift and the shelf it
+    /// joined adopts it at the full pop (no frame shows two lifted tiles, none shows it collapsed).
+    #[test]
+    fn an_item_that_changes_shelf_in_a_landing_keeps_focus_and_is_lifted_on_its_new_shelf() {
+        let _serial = plx_base::testlock::serial();
+        let (mut store, mut s) = seed(2, 1);
+        let m = FixtureMeasure;
+        let moved = focus_of(&s, &store, 0, 0);
+        settle_shelves(&mut s, &store, moved, 120);
+        let lift = |s: &PersonScreen, store: &plx_data::stores::person::PersonStore, kind: usize, elem: u32| {
+            let p = store.view().current().unwrap();
+            s.shelves[kind].scale_of(&cx_at(&m, store.view(), moved), &s.cards_of(p, kind), &elem)
+        };
+        assert_eq!(lift(&s, &store, 0, moved.elem), Some(SHELF_STYLE.focus_scale));
+
+        // "m0" leaves the movies and joins the shows.
+        store.install_for_test(vec![item("m1")], vec![item("s0"), item("m0")]);
+        s.refresh_store_cache(&cx(&m, store.view()));
+        assert_eq!(s.locate(store.view().current().unwrap(), moved.elem), Some(Located::Shelf(1, 1)));
+        let now = Focusable::<PersonHost>::reconcile(&s, moved, &cx_at(&m, store.view(), moved));
+        assert_eq!(now, moved, "the cursor stays on the item across shelves");
+        settle_shelves(&mut s, &store, moved, 1);
+        assert_eq!(lift(&s, &store, 1, moved.elem), Some(SHELF_STYLE.focus_scale), "adopted whole on its new shelf");
+        let other = focus_of(&s, &store, 0, 0);
+        assert_eq!(lift(&s, &store, 0, other.elem), Some(1.0), "the movies shelf shows nothing lifted");
+        settle_shelves(&mut s, &store, moved, 120);
+        assert!(Focusable::<PersonHost>::place(&s, &moved.elem, &cx_at(&m, store.view(), moved), At::Drawn).is_some());
         store.run(PersonCmd::Close);
     }
 

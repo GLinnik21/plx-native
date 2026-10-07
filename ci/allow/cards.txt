@@ -1,4 +1,4 @@
-# count: 13
+# count: 12
 # Screens that still assemble their card sections from the L0 primitives (`card_row::draw_tile`,
 # `draw_focused`, `strip`, `paint_visible`, `CardRow`, `GridPop`, `GridBands`, thread-local
 # `press::scale()`) instead of `plx_ui::cards::{Shelf, Grid}` (shared-card-sections plan). The list
@@ -12,7 +12,6 @@ rust-modules/screens/src/home/mod.rs	Home's shelves
 rust-modules/screens/src/library/draw.rs	Library shelves
 rust-modules/screens/src/library/mod.rs	Library shelves and grid
 rust-modules/screens/src/library/parts.rs	the Library grid
-rust-modules/screens/src/person.rs	Person's shelves
 rust-modules/screens/src/profiles.rs	the profile avatars (a thin public wrapper later)
 rust-modules/screens/src/search/mod.rs	Search's shelves
 rust-modules/screens/src/search/render.rs	Search's shelves

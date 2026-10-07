@@ -297,11 +297,22 @@ impl Person {
 #[derive(Clone, Copy, Default)]
 pub struct PersonView<'a> {
     current: Option<&'a Person>,
+    revision: u64,
 }
 
 impl<'a> PersonView<'a> {
     pub fn current(self) -> Option<&'a Person> {
         self.current
+    }
+
+    /// The content counter: bumped whenever the open person's content changes (a landing that
+    /// applies, a roster rebuild, a local watched edit) or the person itself is opened, closed or
+    /// replaced. A reader derives its per-card state again when this moves. It is NOT the request
+    /// epoch (`generation`, which a session change or a fresh open moves with no content change,
+    /// and which a landing never moves), and a shelf length can stay put while the items behind
+    /// it change.
+    pub fn revision(self) -> u64 {
+        self.revision
     }
 
     pub fn loading(self) -> bool {
@@ -315,6 +326,8 @@ impl<'a> PersonView<'a> {
 pub struct PersonState {
     current: Option<Person>,
     generation: u32,
+    /// The content counter [`PersonView::revision`] reads.
+    revision: u64,
     retry_cd: [u32; NFETCH],
     dev_held: usize,
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
@@ -326,6 +339,7 @@ impl Default for PersonState {
         Self {
             current: None,
             generation: 0,
+            revision: 0,
             retry_cd: [0; NFETCH],
             dev_held: usize::MAX,
             session_watch: Default::default(),
@@ -336,7 +350,7 @@ impl Default for PersonState {
 
 impl PersonState {
     pub fn view(&self) -> PersonView<'_> {
-        PersonView { current: self.current.as_ref() }
+        PersonView { current: self.current.as_ref(), revision: self.revision }
     }
 
     fn current(&self) -> Option<&Person> {
@@ -365,7 +379,11 @@ pub fn facts_pending(p: &Person) -> bool {
     // arriving. One failed attempt is enough to say "this is what the page is": the band degrades
     // to the name it already has, which is exactly the finished-not-broken read the doc above asks
     // for. A later success still fills it in — `profiled` is what draws the content.
-    !p.profiled && !p.profile_tried
+    //
+    // **And only when there is something to ask.** A person with no plex.tv guid is never
+    // addressed (`address` has nothing to send), so no attempt can ever turn `profile_tried`; the
+    // wait would be unbounded in exactly the way the paragraph above rules out.
+    !p.profiled && !p.profile_tried && !p.guid.is_empty()
 }
 
 // Shelves have their OWN pending question already — [`loading`], just below — which is `!landed`
@@ -737,6 +755,7 @@ fn set_watched_local(state: &mut PersonState, sid: ServerId, rk: &str, on: bool)
     }
     if hit {
         resettle(p);
+        state.revision += 1;
     }
     hit
 }
@@ -785,6 +804,7 @@ fn open(
         }
     }
     state.supersede(adapter);
+    state.revision += 1;
     let srcs = sources(sid, key, name);
     state.current = Some(Person {
         sid,
@@ -902,6 +922,7 @@ const DEV_BIO: &str = "";
 /// screen is now mounted (the bug `metadata::clear` carries the same guard for).
 fn close(state: &mut PersonState, adapter: &PersonAdapter) {
     state.supersede(adapter);
+    state.revision += u64::from(state.current.is_some());
     state.current = None;
 }
 
@@ -1015,6 +1036,7 @@ impl PersonState {
         if self.current.is_some() {
             changed |= seed_dev_credits(self);
         }
+        self.revision += u64::from(changed);
         changed
     }
 
@@ -1838,6 +1860,19 @@ pub fn install_credits_for_test(&mut self, groups: &[(&str, usize)]) {
         })
         .collect();
     p.credited = true;
+    self.revision += 1;
+}
+
+/// TEST ONLY: settle the plex.tv profile question as a landed (empty) answer does, so the header
+/// is no longer waiting on facts ([`facts_pending`]) and its placeholder sweep is not running. A
+/// harness that never pumps the store's fetches has no other way to end that wait.
+pub fn install_profile_for_test(&mut self) {
+    let Some(p) = self.current.as_mut() else {
+        return;
+    };
+    p.profiled = true;
+    p.profile_tried = true;
+    self.revision += 1;
 }
 
 /// TEST ONLY: publish shelves onto the open person exactly as a successful landing would, so the
@@ -1875,6 +1910,7 @@ pub fn install_for_test(&mut self, movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) 
     p.srcs[0].landed = true;
     p.srcs[0].roled = false;
     resettle(p);
+    self.revision += 1;
 }
 
 /// TEST ONLY: land one named source's shelves through the same per-source ownership and merge
@@ -1895,6 +1931,7 @@ pub fn install_source_for_test(&mut self, sid: ServerId, movies: Vec<PmsMovie>, 
     source.landed = true;
     source.roled = false;
     resettle(p);
+    self.revision += 1;
 }
 
 pub fn seed_ownership_fixture_for_test(&mut self, adapter: &Arc<PersonAdapter>) {
@@ -2713,6 +2750,67 @@ mod tests {
             "a failure must back off before retrying"
         );
         owner.close();
+    }
+
+    /// A person with no plex.tv guid is never ASKED for a profile (`address` has nothing to send),
+    /// so `profile_tried` can never turn: if `facts_pending` stayed true the header would sweep its
+    /// placeholders, and the page would repaint at 60 fps, for an answer that cannot arrive.
+    #[test]
+    fn a_person_without_a_guid_is_not_waiting_on_facts() {
+        let mut owner = Owner::default();
+        let _serial = plx_base::testlock::serial();
+        owner.open(S0, "7", "", "Nobody", "");
+        let p = owner.current().unwrap();
+        assert!(address(F_PROFILE, p).is_none(), "nothing can be asked");
+        assert!(!facts_pending(p), "so there is nothing to wait for");
+        owner.open(S0, "8", "00000000000000000000aaaa", "Somebody", "");
+        assert!(facts_pending(owner.current().unwrap()), "a guid-bearing person still waits for its profile");
+        owner.close();
+    }
+
+    /// `revision` is the content counter, not the request epoch: a landing moves it and no
+    /// request does, an opening of the identity already held moves neither, a failed landing
+    /// changes no content, and a same-length shelf replacement still moves it (the case a
+    /// length stamp misses).
+    #[test]
+    fn the_revision_follows_content_and_not_requests() {
+        let mut owner = Owner::default();
+        let _serial = plx_base::testlock::serial();
+        owner.open(S0, "6059", "0000000000000000000000ff", "Nobody", "");
+        let (rev, gen) = (owner.state.view().revision(), owner.gen());
+        assert!(rev > 0, "opening a person is a content change");
+
+        owner.open(S0, "6059", "0000000000000000000000ff", "Nobody", "");
+        assert_eq!((owner.state.view().revision(), owner.gen()), (rev, gen), "a redundant open is a no-op");
+
+        owner.supersede();
+        assert!(owner.gen() > gen, "a request epoch moved");
+        assert_eq!(owner.state.view().revision(), rev, "...and the content did not");
+
+        let gen = owner.gen();
+        owner.land(F_PROFILE, gen, Landing::Profile(None));
+        assert!(!owner.pump());
+        assert_eq!(owner.state.view().revision(), rev, "a failed landing changes no content");
+
+        owner.land(F_PROFILE, gen, Landing::Profile(Some(plx_plex::plex::discover::PersonProfile::default())));
+        assert!(owner.pump());
+        let after_landing = owner.state.view().revision();
+        assert!(after_landing > rev, "an applied landing is a content change");
+        assert_eq!(owner.gen(), gen, "...and no request epoch moved with it");
+
+        let mk = |rk: &str| PmsMovie { sid: S0, rk: rk.into(), ..Default::default() };
+        owner.state.install_for_test(vec![mk("a"), mk("b")], vec![]);
+        let two = owner.state.view().revision();
+        assert!(two > after_landing);
+        owner.state.install_for_test(vec![mk("a"), mk("c")], vec![]);
+        assert!(owner.state.view().revision() > two, "same length, different items: still a change");
+
+        let before_close = owner.state.view().revision();
+        owner.close();
+        assert!(owner.state.view().revision() > before_close, "closing the person is a content change");
+        let closed = owner.state.view().revision();
+        owner.close();
+        assert_eq!(owner.state.view().revision(), closed, "closing nothing is not");
     }
 
     /// `roles_from` keeps exactly THIS person's credit per row — matched by the tag's numeric id

@@ -31,13 +31,17 @@ pub struct Shelf {
     seen: Seen,
     /// The landing the last tick carried the focused pop through, if there was one.
     landed: Option<Landed>,
+    /// A `FocusMoved` since the last tick took focus off a card of this shelf: a deliberate way
+    /// out, which lets that tile go over frames. Without one, a focused card that is no longer in
+    /// the source left it in a content landing (it joined another section), and nobody lets go.
+    left: bool,
     ahead: usize,
     asked: Option<(usize, usize)>,
 }
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
-        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, ahead: LOOK_AHEAD, asked: None }
+        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, ahead: LOOK_AHEAD, asked: None }
     }
 
     /// Cards beyond the visible window a [`CardEvent::Want`] asks for (default 6).
@@ -70,6 +74,7 @@ impl Shelf {
                     self.seen = Seen::of(by, a);
                 }
                 let left = from.filter(|k| k.entry == self.entry).and_then(|k| here(&k.elem));
+                self.left |= left.is_some();
                 if arrived.is_some() || left.is_some() {
                     fx.invalidate(Provenance::Input);
                 }
@@ -116,7 +121,13 @@ impl Shelf {
                 _ => {}
             }
         }
+        // the focused element left the source (a landing moved it to another section): the tile
+        // now at its index must not be left lifted, shrinking over frames
+        if let (None, Some(p), false) = (focus, self.prev(), self.left) {
+            self.row.rest(p);
+        }
         self.seen = Seen::Nothing;
+        self.left = false;
         if focus.is_some() || !self.row.at_exact_rest() {
             self.row.update(src.len(), focus, self.style, dt);
             if focus.is_none() {
