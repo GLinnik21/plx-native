@@ -58,6 +58,7 @@ trait Section {
     fn redraw(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, src: &Cards, focus: Option<FocusKey<u32>>);
     fn neighbour(&self, src: &Cards, key: FocusKey<u32>, dir: Dir) -> Step<u32>;
     fn focus_scale() -> f32;
+    fn columns() -> Option<usize>;
     fn scroll(&self) -> f32;
     fn landed(&self) -> Option<super::Landed>;
     fn restore_scroll(&mut self, scroll: f32, n: usize);
@@ -89,6 +90,9 @@ impl Section for Shelf {
     }
     fn focus_scale() -> f32 {
         RowStyle::HOME.focus_scale
+    }
+    fn columns() -> Option<usize> {
+        None
     }
     fn scroll(&self) -> f32 {
         Shelf::scroll(self)
@@ -129,6 +133,9 @@ impl Section for Grid {
     }
     fn focus_scale() -> f32 {
         poster_grid::STYLE.focus_scale
+    }
+    fn columns() -> Option<usize> {
+        Some(poster_grid::COLS)
     }
     fn scroll(&self) -> f32 {
         Grid::scroll(self)
@@ -284,6 +291,9 @@ impl<S: Section + 'static> CardHarness for Rig<S> {
     }
     fn scroll(&self) -> Option<f32> {
         Some(self.sect.scroll())
+    }
+    fn columns(&self) -> Option<usize> {
+        S::columns()
     }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         let focused = self.focus.ok_or("nothing focused")?.elem;

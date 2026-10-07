@@ -124,6 +124,7 @@ impl CardHarness for Harness {
         self.index(elem).map(|i| c.items[i].rk.clone()).unwrap_or_default()
     }
     fn scroll(&self) -> Option<f32> { Some(self.screen.scroll.pos) }
+    fn columns(&self) -> Option<usize> { Some(plx_ui::poster_grid::COLS) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         let focused = self.focus.map(|k| k.elem);
         let at = focused.and_then(|e| self.index(e)).ok_or("nothing focused")?;
