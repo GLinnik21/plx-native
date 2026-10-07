@@ -53,11 +53,13 @@ use crate::card_row::TileLabel;
 use crate::widgets::Art;
 use crate::{Painter, Rect};
 
+mod avatars;
 mod grid;
 mod pool;
 mod shelf;
 mod stack;
 
+pub use avatars::AvatarRow;
 pub use grid::{Grid, GridSpec, ScrollMode};
 #[cfg(any(test, feature = "devtriggers"))]
 pub use pool::set_pop_pool;

@@ -97,16 +97,16 @@ fn clamp_index<K: IndexElem>(entry: EntryId, want: FocusKey<K>, n: usize) -> Foc
 /// One shelf (`CardRow`) as the draw sees it this frame: the same arguments `card_row::strip`
 /// takes, so `place` and the drawn tile are one formula.
 pub struct Shelf<'a> {
-    pub row: &'a card_row::CardRow,
-    pub n: usize,
-    pub sty: &'a card_row::RowStyle,
-    pub row_y: f32,
-    pub size: (f32, f32),
-    pub pitch: f32,
-    pub group: GroupId,
-    pub entry: EntryId,
+    pub(crate) row: &'a card_row::CardRow,
+    pub(crate) n: usize,
+    pub(crate) sty: &'a card_row::RowStyle,
+    pub(crate) row_y: f32,
+    pub(crate) size: (f32, f32),
+    pub(crate) pitch: f32,
+    pub(crate) group: GroupId,
+    pub(crate) entry: EntryId,
     /// The row's horizontal extent (the panel width for a full-bleed shelf).
-    pub extent: Rect,
+    pub(crate) extent: Rect,
 }
 
 impl<H: Host> Focusable<H> for Shelf<'_>

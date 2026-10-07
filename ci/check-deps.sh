@@ -710,8 +710,8 @@ gate nav '(crate::ui|plx_ui)::nav::' "$SRC_SCREENS"
 # geometry `poster_grid::{cell, visible, snap_row}` (qualified or imported by name), `CardRow`,
 # `GridPop`, `GridBands`, or the thread-local `press::scale()`. Whole test files are
 # skipped; the allowlist is the screens that still assemble their own, one line per file, and only
-# SHRINKS as each adopts the component. The last migration PR makes the primitives `pub(crate)` and
-# deletes this gate with the list.
+# SHRINKS as each adopts the component. The list is empty and the primitives are `pub(crate)`, so
+# the gate is the backstop against a screen re-exporting one by another path.
 cards_pat='card_row::(draw_tile|draw_focused|strip|paint_visible)\b|card_row::\*|card_row[[:space:]]+as\b|\bCardRow\b|\bGridPop\b|\bGridBands\b|press::scale\(\)|use [^;]*card_row::\{[^}]*\b(draw_tile|draw_focused|strip|paint_visible)\b|poster_grid::(cell|visible|snap_row)\b|use [^;]*poster_grid::\{[^}]*\b(cell|visible|snap_row)\b'
 cards_bad=0
 while IFS= read -r line; do
