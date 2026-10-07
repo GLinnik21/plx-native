@@ -120,8 +120,10 @@ class ManifestFacts(unittest.TestCase):
 
 class WorkflowsNeverNameTheFastProfile(unittest.TestCase):
     def test_no_workflow_mentions_it(self):
-        for wf in sorted((ROOT / ".github").rglob("*.yml")):
-            with self.subTest(wf.name):
+        # Workflows and composite actions only: ci.yml's `paths` filter skips pushes that touch only
+        # the rest of .github/ (issue forms, FUNDING.yml), which are not workflows.
+        for wf in sorted([*(ROOT / ".github/workflows").glob("*.yml"), *(ROOT / ".github/actions").glob("*/action.yml")]):
+            with self.subTest(wf.relative_to(ROOT).as_posix()):
                 self.assertNotIn("tvdev", wf.read_text())
 
 
