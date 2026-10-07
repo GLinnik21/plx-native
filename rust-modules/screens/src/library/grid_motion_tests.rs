@@ -26,16 +26,16 @@ fn an_all_grid_tile_and_its_rows_animate_back_when_focus_leaves() {
     engine.set(OWNER, start, Some(page.pair.groups_config().detail), By::Restore);
     deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from: None, to: start, by: By::Restore });
     settle(&mut page, &mut engine, &fixture, 0);
-    let rest = page.pair.detail.rect_at(13, false, 1.0).w;
-    let full = page.pair.detail.rect_at(12, true, 1.0).w;
+    let rest = page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), 13).w;
+    let full = page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), 12).w;
     assert!(full > rest + 1.0, "the settled focused tile is lifted");
 
     direction(&mut page, &mut engine, &fixture, Dir::Right);
     frame(&mut page, &mut engine, &fixture, 2000);
-    let leaving = page.pair.detail.rect_at(12, false, 1.0).w;
+    let leaving = page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), 12).w;
     assert!(strictly_between(leaving, rest, full), "one frame after RIGHT the old tile is mid-return: {leaving}");
     settle(&mut page, &mut engine, &fixture, 2016);
-    assert_eq!(page.pair.detail.rect_at(12, false, 1.0).w, rest);
+    assert_eq!(page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), 12).w, rest);
 
     let below = page.layout.row_y(4, page.scroll.pos);
     direction(&mut page, &mut engine, &fixture, Dir::Down);
@@ -98,7 +98,7 @@ fn a_type_switch_never_draws_the_empty_interim_layout() {
         ms += 16;
         assert!((head(&page) - at_rest).abs() < 0.5, "the heading moved when the answer landed: {} vs {at_rest}", head(&page));
         if page.grid_fade.alpha() > 0.0 {
-            { let r = page.pair.detail.rect_at(0, false, 1.0); first.push([r.x, r.y, r.w, r.h]); }
+            { let r = page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), 0); first.push([r.x, r.y, r.w, r.h]); }
         }
     }
     assert!(!first.is_empty() && first.iter().all(|r| *r == first[first.len() - 1]),
@@ -158,7 +158,7 @@ fn a_section_switch_settles(order: Arrival, items: usize, restore: Option<f32>) 
         frame(&mut page, &mut engine, &fixture, ms);
         ms += 16;
         if page.page_fade.alpha() > 0.0 && page.grid_fade.alpha() > 0.0 && !page.pair.detail.elems.is_empty() {
-            let r = page.pair.detail.rect_at(0, false, 1.0);
+            let r = page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), 0);
             drawn.push((i, [r.x, r.y, r.w, r.h]));
         }
     }

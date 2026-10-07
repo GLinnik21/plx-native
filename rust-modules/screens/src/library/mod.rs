@@ -456,7 +456,7 @@ impl LibraryScreen {
     fn relayout(&mut self, focus: Option<FocusKey<u32>>) {
         let grid_focus = focus.filter(|key| key.entry == self.entry)
             .and_then(|key| self.pair.detail.index_of(key.elem));
-        self.pair.detail.focus_row(grid_focus.map(|index| index / self.layout.cols()), false);
+        self.pair.detail.settle_band(grid_focus.map(|index| index / self.layout.cols()));
         self.run.set(self.shelves.iter().map(|row| layout::shelf_pitch(row.landscape, row.motion.band_expand())));
         self.target_run.set(self.shelves.iter().map(|row| layout::shelf_pitch(row.landscape,
             f32::from(focus.is_some_and(|key| row.elems.contains(&key.elem))))));
@@ -896,20 +896,14 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 }
             }
             ScreenEvent::FocusMoved { from, to, by } => {
-                let grid_focus = Some(*to).filter(|key| key.entry == self.entry)
-                    .and_then(|key| self.pair.detail.index_of(key.elem));
-                self.pair.detail.focus_row(grid_focus.map(|index| index / self.layout.cols()), matches!(by, By::Dir | By::Pointer));
+                // The grid opens the row's caption band and, for a deliberate move only, grows the
+                // tile from rest over the frames after this, as a shelf's does. A restore or a
+                // reconcile is adopted whole by its next tick so a page returning from a Detail
+                // push lands as it was left.
+                self.pair.detail.on(ev, cx, fx, self.scroll.pos);
                 if matches!(by, By::Dir | By::Pointer) {
                     self.initial = false;
                     self.provisional = None;
-                    // A deliberate move is the only focus change the poster wall animates: the
-                    // tile grows from rest over the frames after this, as a shelf's does. A
-                    // restore or a reconcile is left to `GridPart::tick`, which adopts its cell
-                    // at full scale so a page returning from a Detail push lands as it was left.
-                    if let Some(index) = Some(*to).filter(|key| key.entry == self.entry)
-                        .and_then(|key| self.pair.detail.index_of(key.elem)) {
-                        self.pair.detail.pop_from_rest(index);
-                    }
                 }
                 let from_group = from.and_then(|key| <Self as Focusable<H>>::group_of(self, &key.elem, cx));
                 let to_group = <Self as Focusable<H>>::group_of(self, &to.elem, cx);
@@ -1009,9 +1003,15 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                         if col.is_none() { row.motion.park(); }
                     }
                     self.scroll.step(self.scroll_target, K_SCROLL, dt);
-                    let grid_focus = focused.filter(|key| key.entry == self.entry)
-                        .and_then(|key| self.pair.detail.index_of(key.elem));
-                    self.pair.detail.tick(grid_focus, dt);
+                    // The grid steps its pop and bands. A content landing that moved the focused
+                    // element's row (`Landed`) comes back as the document shift that keeps the
+                    // tile where it was on screen; the scroll and its target both take it, so the
+                    // spring has nothing to chase. `refresh` ran in `sync` above and shifts nothing.
+                    let shift = self.pair.detail.on(ev, cx, fx, self.scroll.pos);
+                    if shift != 0.0 {
+                        self.scroll.pos += shift;
+                        self.scroll_target += shift;
+                    }
                     self.relayout(focused);
                     // A first seat that applies a bookmarked scroll clamps it to the document, so
                     // behind a section reveal it waits for the same shelves the reveal does:

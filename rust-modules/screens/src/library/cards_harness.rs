@@ -1,5 +1,5 @@
 //! The Tier 2 card-conformance harnesses for the Library page (`cards_conformance_tests.rs`): the
-//! All grid (a `GridPart` of the poster wall) and the section's hub shelves (`CardRow`s above it).
+//! All grid (a `GridPart` over `cards::Grid`) and the section's hub shelves (`CardRow`s above it).
 //! A child module of `library` so it reads the private rect and scale helpers the screen's own
 //! tests read. One `Harness` drives either card set; `Set` says which.
 use super::*;
@@ -168,14 +168,18 @@ impl CardHarness for Harness {
     fn place(&self, elem: u32, at: At) -> Option<Placed> {
         Focusable::<LibHost>::place(&self.screen, &elem, &self.cx(), at)
     }
-    /// What the draw paints: the grid's `rect_at` (live pop x press for the focused cell), or the
+    /// What the draw paints: the grid's `place(Drawn)` rect (live pop x press for the focused cell), or the
     /// shelf's `shelf_rect` (live pop already in it) scaled by the press of the focused tile
     /// (`draw_shelf_tile`).
     fn drawn_rect(&self, elem: u32, press: f32) -> Option<Rect> {
         let (row, col) = self.cell(elem)?;
         let focused = self.is_focused(elem);
         Some(match self.set {
-            Set::Grid => self.screen.pair.detail.rect_at(col, focused, press),
+            Set::Grid => {
+                let mut cx = self.cx();
+                cx.press = PressRead { scale: press, ..Default::default() };
+                self.screen.pair.detail.rect_at(&cx, col)
+            }
             Set::Shelf => {
                 let rect = self.screen.shelf_rect(row, col);
                 if focused && press > 0.0 { rect.scaled(press) } else { rect }
@@ -185,8 +189,7 @@ impl CardHarness for Harness {
     fn scale(&self, elem: u32) -> Option<f32> {
         let (row, col) = self.cell(elem)?;
         Some(match self.set {
-            // `GridPart::tile_scale` is private to `parts`: its rect is the card rect times it.
-            Set::Grid => self.screen.pair.detail.rect_at(col, self.is_focused(elem), 1.0).w / self.screen.layout.card_w(),
+            Set::Grid => self.screen.pair.detail.scale_of(&self.cx(), elem)?,
             Set::Shelf => self.screen.shelves[row].motion.scale(col),
         })
     }
@@ -239,5 +242,112 @@ impl CardHarness for Harness {
         let now = Focusable::<LibHost>::reconcile(&fresh.screen, want, &fresh.cx());
         fresh.focus(now.elem, By::Restore);
         Ok(Box::new(fresh))
+    }
+}
+
+/// The All grid's focus pop, ported from the `GridPart`-internal tests that read `rect_at` /
+/// `tile_scale` / `treatment_scale` (deleted with the part's own pop): the same assertions, now
+/// read through `Focusable::place` and `Grid::scale_of`, the values the draw and the stops share.
+mod pop_tests {
+    use super::*;
+    use plx_ui::consts::{CARD_H, CARD_W};
+
+    fn width(h: &Harness, elem: u32) -> f32 { h.place(elem, At::Drawn).unwrap().rect.w }
+
+    #[test]
+    fn episode_grid_geometry_and_page_window_share_four_column_rows() {
+        let mut h = Harness::new(Set::Grid, 80);
+        let layout = Layout::new(false, &[], 20, true).with_episodes(true);
+        h.screen.pair.detail.set_geometry(layout, 0.0, layout, 0.0);
+        let cx = h.cx();
+        let (first, next_row) = (h.screen.pair.detail.rect_at(&cx, 0), h.screen.pair.detail.rect_at(&cx, 4));
+        assert_eq!(next_row.x, first.x);
+        assert!((next_row.y - first.y - layout.grid_pitch()).abs() < 0.001);
+        assert_eq!((first.w, first.h), (layout.card_w(), layout.card_h()));
+        let scroll = layout.row_reveal(12);
+        h.screen.pair.detail.set_geometry(layout, scroll, layout, scroll);
+        let window = h.screen.pair.detail.window();
+        assert!(window.contains(&48), "row 12's first episode must be in its page window");
+        assert!(window.len() < 32, "the window should request only nearby episode rows");
+    }
+
+    /// Owner report, 2026-09-09: "in the All section the poster just pops right away, not
+    /// animated". A deliberate move grows the new tile from rest over frames and lets the old go.
+    #[test]
+    fn a_newly_focused_grid_tile_grows_over_frames_and_the_old_one_lets_go() {
+        let mut h = Harness::new(Set::Grid, 12);
+        let cards = h.cards();
+        let full = CARD_W * RowStyle::HOME.focus_scale;
+        h.focus(cards[3], By::Dir);
+        h.tick(1);
+        let first = width(&h, cards[3]);
+        assert!(first > CARD_W + 0.1 && first < full - 0.1,
+            "one frame in, the tile is between rest and full scale: {first} (rest {CARD_W}, full {full})");
+        h.tick(120);
+        assert!((width(&h, cards[3]) - full).abs() < 0.5, "…and settles at full scale");
+        h.focus(cards[4], By::Dir);
+        h.tick(1);
+        let (old, new) = (width(&h, cards[3]), width(&h, cards[4]));
+        assert!(old > CARD_W + 0.1 && old < full - 0.1, "the old tile lets go rather than snapping: {old}");
+        assert!(new > CARD_W + 0.1 && new < full - 0.1, "the new tile starts growing from rest: {new}");
+        h.tick(120);
+        assert_eq!(width(&h, cards[3]), CARD_W, "a settled neighbour costs nothing");
+    }
+
+    /// The tile LOSING focus must draw its shrinking rect and its treatment (radius, shadow) at one
+    /// scale: `scale_of` is the value `Grid::draw` hands both.
+    #[test]
+    fn an_unfocusing_grid_tile_draws_its_shrinking_rect_and_treatment_at_the_same_scale() {
+        let mut h = Harness::new(Set::Grid, 12);
+        let cards = h.cards();
+        h.focus(cards[3], By::Restore);
+        h.tick(60);
+        h.focus(cards[4], By::Dir);
+        h.tick(1);
+        let scale = h.scale(cards[3]).unwrap();
+        assert!(scale > 1.0 && scale < RowStyle::HOME.focus_scale,
+            "mid-shrink, the outgoing tile's own scale sits strictly between rest and full: {scale}");
+        assert!((width(&h, cards[3]) - CARD_W * scale).abs() < 0.001,
+            "the rect's width is CARD_W times the exact same scale: rect.w={} scale={scale}", width(&h, cards[3]));
+        assert!((1.0_f32 - scale).abs() > 0.01, "a fresh mid-shrink tile must not already read as rest");
+        h.tick(120);
+        assert_eq!(h.scale(cards[3]), Some(1.0), "…and once settled, the shared scale agrees it is at rest");
+    }
+
+    /// A cell focused without a deliberate move is a restore or a reconcile: FULL scale on its
+    /// first frame, before and after the tick that adopts it.
+    #[test]
+    fn a_cell_focused_without_a_move_is_adopted_at_full_scale() {
+        let mut h = Harness::new(Set::Grid, 12);
+        let cards = h.cards();
+        let full = CARD_W * RowStyle::HOME.focus_scale;
+        h.focus(cards[5], By::Restore);
+        assert_eq!(width(&h, cards[5]), full, "the frame BEFORE the tick already draws it whole");
+        h.tick(1);
+        assert_eq!(width(&h, cards[5]), full, "and the tick adopts it without a step of animation");
+        h.tick(3);
+        assert_eq!(width(&h, cards[5]), full, "…and it stays there");
+    }
+
+    /// The click-in animation: the press is in the rect AND in the scale the card renderer is
+    /// handed, so the label never slides and the shadow lets go (Home's treatment).
+    #[test]
+    fn a_pressed_grid_tile_hands_the_card_renderer_the_scale_its_rect_was_built_from() {
+        let mut h = Harness::new(Set::Grid, 12);
+        let cards = h.cards();
+        h.focus(cards[3], By::Restore);
+        h.tick(1);
+        let pop = h.scale(cards[3]).unwrap();
+        for press in [1.0_f32, 0.96, 0.918] {
+            let rect = h.drawn_rect(cards[3], press).unwrap();
+            let s = pop * press;
+            assert!((rect.w - CARD_W * s).abs() < 0.001,
+                "the treatment scale is the one the rect was built from: rect.w={} s={s}", rect.w);
+            assert!((rect.h / s - CARD_H).abs() < 0.01,
+                "a press never moves the label: rect.h/s={} (rest {CARD_H})", rect.h / s);
+        }
+        let ring = |press: f32| (pop * press - 1.0) / (RowStyle::HOME.focus_scale - 1.0);
+        assert!(ring(1.0) > 0.99, "a resting focused tile wears the whole shadow and sheen");
+        assert!(ring(0.918) < 0.1, "…and lets go of them under a full press: {}", ring(0.918));
     }
 }

@@ -1,4 +1,4 @@
-# count: 7
+# count: 6
 # Card-screen conformance expected failures (shrink-only), one per line, tab-separated:
 #   <screen source file>	<screen> <case>	# <reason>
 # Read by rust-modules/screens/src/cards_conformance_tests.rs: a listed case that now passes, or an
@@ -7,6 +7,5 @@ rust-modules/screens/src/library/mod.rs	library_shelves pop_rule	# a Restore/Rec
 rust-modules/screens/src/home/mod.rs	home pop_rule	# a Restore/Reconcile arrival grows from rest (per-position CardRow spring: tick -> update_grid -> shelf.update, home/mod.rs:982) instead of being adopted whole
 rust-modules/screens/src/detail/mod.rs	detail_shelves pop_rule	# a Restore/Reconcile arrival on the Related shelf grows from rest (per-position CardRow spring: tick -> self.related.update, detail/mod.rs:3236) instead of being adopted whole
 rust-modules/screens/src/detail/mod.rs	detail_shelves geometry	# place() ignores the live press for a Related card (Located::Related -> related::rect, detail/mod.rs:1416-1418, scales by the pop only; draw_focused_in multiplies the press in, detail/related.rs:162)
-rust-modules/screens/src/library/parts.rs	library_grid landing	# InsertAbove: GridPart::tick (parts.rs:212) feeds GridPop::tick the new index, which sets `shrink = pop`, so the tile now at the old index lets go over frames instead of resting; the pop does not move with the element
 rust-modules/screens/src/home/mod.rs	home landing	# Reorder/InsertAbove: the per-position CardRow spring stays at the old index (update_grid -> shelf.update steps the tile now there back to rest) and the shelf scroll does not follow the element, so the focused tile moves on screen
 rust-modules/screens/src/detail/mod.rs	detail_shelves landing	# InsertAbove: the Related shelf's per-position CardRow spring stays at the old index and its scroll does not shift, so the focused tile jumps a pitch on screen; RemoveFocused: the Reconcile arrival lets the old index's tile go instead of resting it
