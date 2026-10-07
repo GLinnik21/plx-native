@@ -67,6 +67,18 @@ Scenarios (each a named row; `--only ID,ID` selects, `--quick` is `noop,leaf,siz
             the FFmpeg build is never triggered.
   sizes     `du` of rust-modules/target*, and how many target dirs there are. Not timed.
 
+One more scenario is OPT-IN, never part of the default set (so the table a PR pastes stays
+comparable), and is selected only by name:
+
+  check     the whole host gate, once per run: `make --no-print-directory check-unlocked` (what
+            `make check` runs, minus its lock: this script already holds the machine-wide lock
+            exclusively, so taking it again would wait on itself). The sample is the gate's wall
+            time; the times of its two top-level branches, `cargo` and `python`, are read from the
+            `==== step: cargo -- ok (123.4s ...) ====` banners tools/check-parallel.py prints and
+            reported beside it. A red gate is a failed run: nothing is recorded for it. It is the
+            slowest row by far, so the daily runner job (.github/workflows/build-bench.yml) runs it
+            once, as `--only check --runs 1`.
+
 Every timed scenario runs `--runs` times (default 3), INTERLEAVED (one round runs each scenario in
 turn), and is reported as median / min / max. The host's load average and swap are sampled before
 every run and a WARNING is printed when load exceeds the core count or swap is over 90% full: on a
@@ -152,6 +164,9 @@ ARM_ARGS_TAIL = ("--message-format=json-render-diagnostics",)  # after the featu
 
 ALL_SCENARIOS = ("noop", "leaf", "machine", "platform", "gfx", "net", "ui", "plex", "telemetry", "data", "session", "media", "appkit", "screens", "app", "hub", "leaf-inc", "hub-inc", "tests", "arm", "sizes")
 QUICK_SCENARIOS = ("noop", "leaf", "sizes")
+# Selectable with --only, never part of the default set: the table a PR pastes must stay comparable.
+OPTIONAL_SCENARIOS = ("check",)
+CHECK_BRANCHES = ("cargo", "python")
 TITLES = {
     "noop": "No-op host test build",
     "leaf": "Edit leaf (plx_base cbuf.rs), non-incremental",
@@ -174,6 +189,7 @@ TITLES = {
     "tests": "Unit suite run (default features)",
     "arm": "ARM staticlib rebuild (touch lib.rs)",
     "sizes": "Target dir sizes",
+    "check": "make check, whole host gate",
 }
 SWAP_WARN_PCT = 90.0
 EDIT_FILES = {"leaf": LEAF_FILE, "leaf-inc": LEAF_FILE, "machine": MACHINE_LEAF_FILE, "platform": PLATFORM_LEAF_FILE, "gfx": GFX_LEAF_FILE, "net": NET_LEAF_FILE, "ui": UI_LEAF_FILE, "plex": PLEX_LEAF_FILE, "telemetry": TELEMETRY_LEAF_FILE, "data": DATA_LEAF_FILE, "session": SESSION_LEAF_FILE, "media": MEDIA_LEAF_FILE, "appkit": APPKIT_LEAF_FILE, "screens": SCREENS_LEAF_FILE, "app": APP_LEAF_FILE, "hub": HUB_FILE, "hub-inc": HUB_FILE}
@@ -313,6 +329,16 @@ class Cargo:
                               capture_output=True, text=True)
         return time.monotonic() - t0, proc
 
+    def run_check(self, repo: Path):
+        """The whole host gate once, without the lock this process already holds exclusively."""
+        env = {k: v for k, v in self.base_env.items()
+               if k not in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "PLXNATIVE_RUNTIME_DIR")}
+        env["PLX_CHECK_LOCK"] = "off"
+        t0 = time.monotonic()
+        proc = subprocess.run(["make", "--no-print-directory", "check-unlocked"], cwd=repo, env=env,
+                              capture_output=True, text=True)
+        return time.monotonic() - t0, proc
+
     def build(self, incremental: bool, what: str):
         """`cargo test --lib --no-run` with JSON on stdout -> (seconds, build summary)."""
         secs, proc = self.run(HOST_TEST_BUILD_ARGS, self.env(incremental), what)
@@ -359,6 +385,21 @@ def summarize_artifacts(stdout: str) -> dict:
             "machine_rebuilt": machine_rebuilt, "platform_rebuilt": platform_rebuilt,
             "gfx_rebuilt": gfx_rebuilt, "net_rebuilt": net_rebuilt, "ui_rebuilt": ui_rebuilt,
             "plex_rebuilt": plex_rebuilt, "telemetry_rebuilt": telemetry_rebuilt, "data_rebuilt": data_rebuilt, "session_rebuilt": session_rebuilt, "media_rebuilt": media_rebuilt, "appkit_rebuilt": appkit_rebuilt, "screens_rebuilt": screens_rebuilt}
+
+
+CHECK_BANNER = re.compile(r"^==== step: (cargo|python) \u2014 (\w+).*?\(([\d.]+)s", re.M)
+
+
+def parse_check_branches(text: str) -> dict[str, float]:
+    """The wall seconds of `check-unlocked`'s two top-level branches, from tools/check-parallel.py's banners.
+
+    The last banner of each name wins: the python branch's own output nests more banners, and the
+    top-level ones are printed after everything the branch said.
+    """
+    out: dict[str, float] = {}
+    for m in CHECK_BANNER.finditer(text):
+        out[m.group(1)] = float(m.group(3))
+    return out
 
 
 def parse_test_result(text: str) -> dict | None:
@@ -474,6 +515,16 @@ class Bench:
                 raise BenchError(f"unit suite: no `test result:` line (cargo exited "
                                  f"{proc.returncode}): {proc.stderr.strip()[-400:]}")
             sample.update(seconds=secs, **result)
+        elif sid == "check":
+            secs, proc = self.cargo.run_check(self.repo)
+            if proc.returncode != 0:
+                tail = (proc.stdout + proc.stderr).strip()[-600:]
+                raise BenchError(f"check: the gate exited {proc.returncode}: {tail}")
+            branches = parse_check_branches(proc.stdout)
+            missing = [b for b in CHECK_BRANCHES if b not in branches]
+            if missing:
+                raise BenchError("check: no `==== step: <branch> ... ====` banner for " + ", ".join(missing))
+            sample.update(seconds=secs, **{f"{b}_seconds": branches[b] for b in CHECK_BRANCHES})
         elif sid == "arm":
             sample.update(self.run_arm())
         else:
@@ -581,6 +632,9 @@ def row_info(sid: str, res: dict) -> str:
     if sid == "tests":
         text = f"{last['passed']} passed / {last['failed']} failed / {last['ignored']} ignored"
         return text + (" **FAILURES**" if last["failed"] else "")
+    if sid == "check":
+        parts = [f"{b} branch {last[b + '_seconds']:.0f} s" for b in CHECK_BRANCHES if b + "_seconds" in last]
+        return "last run: " + ", ".join(parts) + " (the branches run side by side)"
     if sid == "arm":
         return f"archive {last['archive_bytes'] / 1048576:.1f} MiB, sha256 {last['archive_sha256'][:16]}"
     return ""
@@ -588,10 +642,14 @@ def row_info(sid: str, res: dict) -> str:
 
 def scenario_docs(bench: Bench) -> list[dict]:
     docs = []
-    for sid in ALL_SCENARIOS:
+    for sid in ALL_SCENARIOS + OPTIONAL_SCENARIOS:
         res = bench.results.get(sid)
         if res is not None:
-            docs.append({**res, **stats(res["samples"]), "info": row_info(sid, res)})
+            doc = {**res, **stats(res["samples"]), "info": row_info(sid, res)}
+            if sid == "check" and res["samples"]:
+                doc["branches"] = {b: stats([{"seconds": x[f"{b}_seconds"]} for x in res["samples"] if f"{b}_seconds" in x])
+                                   for b in CHECK_BRANCHES}
+            docs.append(doc)
     return docs
 
 
@@ -648,6 +706,20 @@ def host_info(cores: int) -> dict:
             "cores": cores}
 
 
+def runner_info(host: dict) -> dict:
+    """What a record may say about the machine it ran on: no hostname, user name, path or serial.
+
+    The CPU brand string, the core count, the OS release and architecture, and (only when the
+    process runs on a GitHub-hosted runner) the four variables GitHub documents for naming the image.
+    """
+    out = {"cpu": host["machine"], "cores": host["cores"], "system": host["os"], "arch": platform.machine()}
+    for key, var in (("runner_os", "RUNNER_OS"), ("runner_arch", "RUNNER_ARCH"),
+                     ("image_os", "ImageOS"), ("image_version", "ImageVersion")):
+        if os.environ.get(var):
+            out[key] = os.environ[var]
+    return out
+
+
 # ---------------------------------------------------------------- main
 
 def parse_args(argv):
@@ -655,7 +727,8 @@ def parse_args(argv):
     p.add_argument("--runs", type=int, default=None,
                    help="runs per timed scenario (default 3; 1 with --quick)")
     p.add_argument("--quick", action="store_true", help=f"only {','.join(QUICK_SCENARIOS)}, one run")
-    p.add_argument("--only", help="comma-separated scenario ids: " + ",".join(ALL_SCENARIOS))
+    p.add_argument("--only", help="comma-separated scenario ids: " + ",".join(ALL_SCENARIOS)
+                   + "; opt-in, only by name: " + ",".join(OPTIONAL_SCENARIOS))
     p.add_argument("--cold", action="store_true",
                    help="build rust-modules/target-fast if absent instead of skipping the incremental rows")
     p.add_argument("--json", metavar="PATH", help="also write machine-readable results here")
@@ -672,7 +745,7 @@ def main(argv=None) -> int:
     repo = Path(args.repo).resolve()
     if args.only:
         scenarios = [s.strip() for s in args.only.split(",") if s.strip()]
-        unknown = [s for s in scenarios if s not in ALL_SCENARIOS]
+        unknown = [s for s in scenarios if s not in ALL_SCENARIOS + OPTIONAL_SCENARIOS]
         if unknown:
             print(f"build-bench: unknown scenario(s): {', '.join(unknown)}", file=sys.stderr)
             return 2
@@ -708,12 +781,14 @@ def main(argv=None) -> int:
         shutil.rmtree(bench.cargo.runtime_dir, ignore_errors=True)
     bad = bench.guard.verify_clean(edit_targets)
 
+    host = host_info(cores)
     doc = {
         "schema": 1,
         "git_sha": git_out(repo, "rev-parse", "--short=12", "HEAD"),
         "tree_dirty": bool(git_out(repo, "status", "--porcelain", "--untracked-files=no")),
         "toolchain": bench.cargo.toolchain_version(),
-        "host": host_info(cores),
+        "host": host,
+        "runner": runner_info(host),
         "runs": runs,
         "config": {k: cfg[k] for k in ("RUST_NIGHTLY", "RUST_TDIR", "RUST_TARGET", "RUST_FEATFLAGS",
                                        "TEST_FAST_TDIR")},
