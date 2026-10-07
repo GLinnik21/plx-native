@@ -72,7 +72,14 @@ The component reads focus from the engine, adopts a focus no deliberate move ann
 takes the press from the frame, registers the stops it draws and reports one `CardEvent`
 (Activate / Hold / Want) from `on(ev, cx, src, fx)`, which the screen calls with EVERY event. The
 contract is the `//!` of `cards/mod.rs`; `cards/tests.rs` is its Tier 1 conformance, and
-`cards/conformance.rs` the Tier 2 drivers each real screen runs.
+`cards/conformance.rs` the Tier 2 drivers each real screen runs. Three rules a screen can break by
+reaching around the component: a `SectionFrame`'s `y` (and a `Grid`'s `top`) is SCREEN space and
+`draw` undoes the painter's own translate, so hand it the painter you have, never a pre-offset
+one; a content landing that moves the focused element's index is the component's to absorb (the
+pop and the scroll follow the element, `Shelf::landed` / `Grid::landed` report it) so the screen
+does not re-seat anything; and read a shelf through `heading_lift()` / `under_band()`, not through
+the L0 `CardRow` (the `cards` gate also refuses `card_row::*`, `card_row as x` and the hand-rolled
+`poster_grid::{cell, visible, snap_row}`).
 
 ## Localization and shared reading layout
 

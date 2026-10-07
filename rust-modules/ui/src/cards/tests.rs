@@ -24,6 +24,14 @@ type Cx9<'a> = Cx<'a, FixtureHost>;
 struct Cards {
     elems: Vec<u32>,
     more: bool,
+    /// The screen rect each card was really painted at, as the overlay hook saw it.
+    drawn: std::cell::RefCell<Vec<(u32, Rect)>>,
+}
+
+impl Cards {
+    fn new(elems: Vec<u32>, more: bool) -> Self {
+        Self { elems, more, drawn: Default::default() }
+    }
 }
 
 impl CardSource<FixtureHost> for Cards {
@@ -45,6 +53,9 @@ impl CardSource<FixtureHost> for Cards {
     fn more(&self) -> bool {
         self.more
     }
+    fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, _measure: &dyn plx_machine::machine::Measure) {
+        self.drawn.borrow_mut().push((self.elems[i], p.to_screen(tile.rect).1));
+    }
 }
 
 /// The two components behind one test surface; `at` is the shelf's frame, ignored by the grid.
@@ -55,6 +66,7 @@ trait Section {
     fn place(&self, cx: &Cx9<'_>, src: &Cards, e: u32, how: At) -> Option<Placed>;
     fn scale_of(&self, cx: &Cx9<'_>, src: &Cards, e: u32) -> Option<f32>;
     fn stops(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, src: &Cards);
+    fn draw(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, p: Painter, src: &Cards);
     fn redraw(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, src: &Cards, focus: Option<FocusKey<u32>>);
     fn neighbour(&self, src: &Cards, key: FocusKey<u32>, dir: Dir) -> Step<u32>;
     fn focus_scale() -> f32;
@@ -81,6 +93,9 @@ impl Section for Shelf {
     }
     fn stops(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, src: &Cards) {
         Shelf::record_stops(self, f, f.painter, src, SHELF_AT)
+    }
+    fn draw(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, p: Painter, src: &Cards) {
+        Shelf::draw(self, f, p, src, SHELF_AT)
     }
     fn redraw(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, src: &Cards, focus: Option<FocusKey<u32>>) {
         Shelf::redraw_focused(self, f, f.painter, src, SHELF_AT, focus)
@@ -125,6 +140,9 @@ impl Section for Grid {
     fn stops(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, src: &Cards) {
         Grid::record_stops(self, f, f.painter, src)
     }
+    fn draw(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, p: Painter, src: &Cards) {
+        Grid::draw(self, f, p, src)
+    }
     fn redraw(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, src: &Cards, focus: Option<FocusKey<u32>>) {
         Grid::redraw_focused(self, f, f.painter, src, focus)
     }
@@ -164,7 +182,7 @@ impl<S: Section> Rig<S> {
     fn new(n: usize) -> Self {
         Self {
             sect: S::new(),
-            src: Cards { elems: (0..n as u32).map(|i| 100 + i).collect(), more: false },
+            src: Cards::new((0..n as u32).map(|i| 100 + i).collect(), false),
             view: FixtureView::default(),
             focus: None,
             press: 1.0,
@@ -235,6 +253,22 @@ impl<S: Section> Rig<S> {
         f.stops().to_vec()
     }
 
+    /// Run `draw` for real, painting through a recording painter that carries a page scroll of
+    /// `dy` (the screen rect each card was painted at, as the overlay hook saw it), and the stops
+    /// `record_stops` registers through a painting one with the same scroll (a recording painter
+    /// refuses stops, so the two cannot come out of one pass).
+    fn drawn_and_stops(&self, press: f32, dy: f32) -> (Vec<(u32, Rect)>, Vec<crate::screen::Stop<u32>>) {
+        let cx = self.cx_with(press);
+        let mut f = DrawFrame::new(&cx, Painter::recording().translate(0.0, dy));
+        self.src.drawn.borrow_mut().clear();
+        let p = f.painter;
+        self.sect.draw(&mut f, p, &self.src);
+        let drawn = self.src.drawn.take();
+        let mut f = DrawFrame::new(&cx, Painter::root().translate(0.0, dy));
+        self.sect.stops(&mut f, &self.src);
+        (drawn, f.stops().to_vec())
+    }
+
     fn reconcile_after_removal(&self, at: usize) -> u32 {
         self.src.elems[at.min(self.src.elems.len() - 1)]
     }
@@ -271,9 +305,9 @@ impl<S: Section + 'static> CardHarness for Rig<S> {
     fn place(&self, elem: u32, at: At) -> Option<Placed> {
         self.sect.place(&self.cx(), &self.src, elem, at)
     }
-    /// The rect the draw registers as the card's stop at `press`.
+    /// The rect the draw REALLY paints the card at (the overlay hook's), not the stop's.
     fn drawn_rect(&self, elem: u32, press: f32) -> Option<Rect> {
-        self.stops(press).into_iter().find(|s| s.key.elem == elem).map(|s| s.rect)
+        self.drawn_and_stops(press, 0.0).0.into_iter().find(|&(e, _)| e == elem).map(|(_, r)| r)
     }
     fn scale(&self, elem: u32) -> Option<f32> {
         self.sect.scale_of(&self.cx(), &self.src, elem)
@@ -524,6 +558,39 @@ fn grid_stops_equal_placement_at_every_press() {
     stops_equal_placement::<Grid>();
 }
 
+/// What the draw really paints, the stop it registers and what `place` answers are one rect, at
+/// every press and under a page scroll: `SectionFrame::y` / the grid's `top` are SCREEN space and
+/// the painter's own translate is undone, so a scrolled page's painter and `place` agree.
+fn drawn_stop_and_place_agree<S: Section>() {
+    let mut r = settled::<S>(8);
+    r.land_focus(101, By::Restore);
+    r.run(200);
+    for dy in [0.0f32, -200.0] {
+        for press in [1.0, 0.96, 0.918] {
+            let (drawn, stops) = r.drawn_and_stops(press, dy);
+            assert!(drawn.len() >= 3 && stops.len() >= 3, "dy {dy}: drew {} registered {}", drawn.len(), stops.len());
+            assert!(drawn.iter().any(|&(e, _)| e == 101), "the focused tile was painted");
+            for (e, rect) in drawn {
+                let stop = stops.iter().find(|s| s.key.elem == e).expect("a painted tile registers a stop").rect;
+                let placed = r.sect.place(&r.cx_with(press), &r.src, e, At::Drawn).unwrap().rect;
+                for (what, other) in [("stop", stop), ("place", placed)] {
+                    assert!((rect.x - other.x).abs() < 0.5 && (rect.y - other.y).abs() < 0.5
+                        && (rect.w - other.w).abs() < 0.5 && (rect.h - other.h).abs() < 0.5,
+                        "dy {dy} press {press} elem {e}: painted {rect:?} vs {what} {other:?}");
+                }
+            }
+        }
+    }
+}
+#[test]
+fn shelf_paints_the_rect_it_registers_and_places() {
+    drawn_stop_and_place_agree::<Shelf>();
+}
+#[test]
+fn grid_paints_the_rect_it_registers_and_places() {
+    drawn_stop_and_place_agree::<Grid>();
+}
+
 /// A shelf paints and registers only tiles on the axis; a grid only the rows the scroll can show.
 #[test]
 fn off_axis_tiles_register_no_stops() {
@@ -553,6 +620,27 @@ fn the_opener_redraw_paints_only_a_known_element() {
     }
     run::<Shelf>();
     run::<Grid>();
+}
+
+/// With focus out of the grid it scrolls home by default (Collection's header sits above it); a
+/// spec that says otherwise leaves the scroll where it is for a page with other focus zones.
+#[test]
+fn a_grid_scrolls_home_when_unfocused_only_if_its_spec_says_so() {
+    for (home, hold) in [(true, false), (false, true)] {
+        let mut r = settled::<Grid>(60);
+        r.sect = Grid::new(ENTRY, GridSpec { home_when_unfocused: home, ..GRID });
+        r.land_focus(130, By::Restore);
+        r.run(300);
+        let at = r.sect.scroll();
+        assert!(at > 100.0, "the focused row scrolled into view: {at}");
+        r.focus = None;
+        r.run(300);
+        if hold {
+            assert!((r.sect.scroll() - at).abs() < 0.5, "the scroll stayed at {at}, now {}", r.sect.scroll());
+        } else {
+            assert!(r.sect.scroll().abs() < 0.5, "the scroll went home, now {}", r.sect.scroll());
+        }
+    }
 }
 
 // ---- events ---------------------------------------------------------------------------------
@@ -588,7 +676,7 @@ fn a_source_can_refuse_a_hold() {
         fn holdable(&self, _i: usize) -> bool { false }
     }
     let r = settled::<Shelf>(4);
-    let src = NoHold(Cards { elems: r.src.elems.clone(), more: false });
+    let src = NoHold(Cards::new(r.src.elems.clone(), false));
     let mut shelf = Shelf::new(ENTRY, &RowStyle::HOME);
     let mut r2 = r;
     r2.focus = Some(r2.key(100));

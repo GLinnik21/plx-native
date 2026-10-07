@@ -706,11 +706,13 @@ gate nav '(crate::ui|plx_ui)::nav::' "$SRC_SCREENS"
 # shared-card-sections plan, layer L1), which own the pop, press, stops, restore and paging a
 # hand-assembled strip forgets. So `screens/` may not gain a NEW direct use of the L0 primitives:
 # `card_row::{draw_tile, draw_focused, strip, paint_visible}` (qualified or imported by name),
-# `CardRow`, `GridPop`, `GridBands`, or the thread-local `press::scale()`. Whole test files are
+# a glob or renamed import of `card_row` (`card_row::*`, `card_row as x`), the hand-rolled grid
+# geometry `poster_grid::{cell, visible, snap_row}` (qualified or imported by name), `CardRow`,
+# `GridPop`, `GridBands`, or the thread-local `press::scale()`. Whole test files are
 # skipped; the allowlist is the screens that still assemble their own, one line per file, and only
 # SHRINKS as each adopts the component. The last migration PR makes the primitives `pub(crate)` and
 # deletes this gate with the list.
-cards_pat='card_row::(draw_tile|draw_focused|strip|paint_visible)\b|\bCardRow\b|\bGridPop\b|\bGridBands\b|press::scale\(\)|use [^;]*card_row::\{[^}]*\b(draw_tile|draw_focused|strip|paint_visible)\b'
+cards_pat='card_row::(draw_tile|draw_focused|strip|paint_visible)\b|card_row::\*|card_row[[:space:]]+as\b|\bCardRow\b|\bGridPop\b|\bGridBands\b|press::scale\(\)|use [^;]*card_row::\{[^}]*\b(draw_tile|draw_focused|strip|paint_visible)\b|poster_grid::(cell|visible|snap_row)\b|use [^;]*poster_grid::\{[^}]*\b(cell|visible|snap_row)\b'
 cards_bad=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue

@@ -5792,7 +5792,11 @@ impl PersonOwnerGateFixture {
             "_check_deps_selftest_cards_strip.rs",
             "pub fn draw_row() {\n    plx_ui::card_row::strip();\n}\n"
             "use plx_ui::card_row::{draw_tile, RowStyle};\n"
-            "pub struct Mine(plx_ui::card_row::CardRow);\n",
+            "pub struct Mine(plx_ui::card_row::CardRow);\n"
+            "use plx_ui::card_row::*;\n"
+            "use plx_ui::card_row as rows;\n"
+            "pub fn cell() { plx_ui::poster_grid::cell(0, 0.0, 0.0, &[]); }\n"
+            "use plx_ui::poster_grid::{visible, COLS};\n",
             crate_dir="screens",
         )
         out = r.stdout + r.stderr
@@ -5801,6 +5805,8 @@ impl PersonOwnerGateFixture {
         self.assertIn("_check_deps_selftest_cards_strip.rs:2", out)
         self.assertIn("_check_deps_selftest_cards_strip.rs:4", out)
         self.assertIn("_check_deps_selftest_cards_strip.rs:5", out)
+        for line in (6, 7, 8, 9):  # glob and renamed card_row imports, hand-rolled grid geometry
+            self.assertIn(f"_check_deps_selftest_cards_strip.rs:{line}", out)
 
     def test_cards_gate_allows_the_shared_component(self):
         r = self._plant(
