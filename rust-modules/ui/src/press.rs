@@ -182,7 +182,15 @@ impl Press {
         self.publish();
     }
 
-    /// Abort the in-flight press (navigation / BACK arrived): spring back WITHOUT committing.
+    /// Abort the in-flight press: spring back WITHOUT committing. The ONE way a press that will not
+    /// activate ends — navigation or BACK arrived, a hold the app declined, and a hold the app
+    /// TOOK (the item menu opens over the card). The last is deliberately the same spring: the
+    /// card goes from its dip (a press-in on the focus pop; [`DIP`] is a popped card's unpopped
+    /// size) back up to its pop on the underdamped release a normal OK press gets, as the menu
+    /// opens, and the opener's lift and the page both draw that scale (see [`tick`](Self::tick)
+    /// for how the frozen host snapshot keeps up). Ending the press at rest instead — which this
+    /// module did from 2026-10-07 to rc.3 — pops the card in one frame, the "still no animation"
+    /// of the 0.8.0-rc.3 report.
     pub fn cancel(&mut self) {
         let s = &mut *self;
         if s.phase != Phase::Idle {
@@ -192,28 +200,6 @@ impl Press {
             s.commit_at = 0;
             s.release_at = 0;
         }
-        self.publish();
-    }
-
-    /// End the in-flight press AT REST, with no spring-back: the hold was TAKEN — a surface (the
-    /// item menu) really opened over the card (a hold the app declines is [`cancel`](Self::cancel)led
-    /// instead and keeps its bounce). A press already at rest is left alone. The dip is a press-in on the card's focus pop, so a release bounce left
-    /// running under the menu is a poster in motion beneath a scrim and the frozen host snapshot of
-    /// it: the page, the snapshot and the opener's lift (drawn at rest) then disagree, and the card
-    /// reads as having lost its pop with its title doubled. The opener keeps the pop it had when
-    /// focused, as it does for the whole life of the menu. [`cancel`](Self::cancel) is for the press
-    /// that was ABANDONED (navigation, BACK), where the bounce is the feedback.
-    pub fn settle(&mut self) {
-        let s = &mut *self;
-        if s.phase == Phase::Idle {
-            return; // nothing in flight (as `cancel`): a press already at rest has nothing to end
-        }
-        s.sp.jump(REST);
-        s.phase = Phase::Idle;
-        s.want_commit = false;
-        s.cancelled = true;
-        s.commit_at = 0;
-        s.release_at = 0;
         self.publish();
     }
 
@@ -280,7 +266,25 @@ impl Press {
 
     /// Advance the press spring + phase machine one frame. Poll [`take_commit`] afterwards for the
     /// deferred activation.
+    ///
+    /// **A frame that moved the card is PAGE damage, not only motion.** The spring reports to the
+    /// present gate as motion, which keeps frames coming; but a page held under a panel is one
+    /// frozen snapshot, and motion under an open panel is deliberately not a reason to re-take it
+    /// (`popover::host_refresh`). The release spring is exactly that case when a hold is TAKEN: the
+    /// card springs from its dip to its pop beneath the item menu's scrim, so the snapshot must be
+    /// re-taken on every frame the press moves it, or it keeps the dipped card while the opener's
+    /// lift (the same card, drawn live above the dim at the press's own scale) grows over it. One
+    /// owner, then: the press moves the card, the page and the lift both draw that scale, and the
+    /// snapshot is re-taken until it rests. Quiet once the press is at rest.
     pub fn tick(&mut self, now: u32, dt: f32) {
+        let (pos, phase) = (self.sp.pos, self.phase);
+        self.step(now, dt);
+        if self.sp.pos != pos || self.phase != phase {
+            plx_machine::idle::invalidate();
+        }
+    }
+
+    fn step(&mut self, now: u32, dt: f32) {
         let s = &mut *self;
         match s.phase {
             Phase::Idle => {}
@@ -667,5 +671,37 @@ mod tests {
         let mut p = Press::new();
         p.begin_ctl(3000);
         assert_eq!(p.held_ms(3200), None, "a control face has no hold gesture");
+    }
+    /// **The spring-back is page damage while it moves, so a frozen host snapshot cannot hold a
+    /// stale card.** A hold the app takes leaves the card springing from its dip to its pop UNDER
+    /// the item menu's scrim, over the shared host snapshot. A spring only reports MOTION (the
+    /// present gate), and motion under an open panel is deliberately not a reason to re-take the
+    /// snapshot (`popover::host_refresh`), so without damage per moving frame the snapshot kept the
+    /// dipped card while the opener's lift grew over it: two copies of the card and its title.
+    /// A press at rest, or held steady at its dip, is quiet.
+    #[test]
+    fn a_moving_press_reports_page_damage_each_frame_and_a_resting_one_does_not() {
+        let _serial = plx_base::testlock::serial();
+        let mut p = Press::new();
+        let mut now = 1000;
+        p.begin(now);
+        run(&mut p, &mut now, 400); // the dip has arrived
+        p.cancel(); // the hold was answered: spring back
+        let _ = plx_machine::idle::take_local_damage();
+        let mut frames = 0;
+        while p.is_active() && frames < 120 {
+            now = now.wrapping_add(16);
+            p.tick(now, 0.016);
+            frames += 1;
+            assert!(
+                plx_machine::idle::take_local_damage() > 0,
+                "frame {frames} of the spring-back moved the card (scale {}) and must say so",
+                p.scale()
+            );
+        }
+        assert!(!p.is_active(), "the spring-back ends");
+        now = now.wrapping_add(16);
+        p.tick(now, 0.016);
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "a press at rest is quiet");
     }
 }

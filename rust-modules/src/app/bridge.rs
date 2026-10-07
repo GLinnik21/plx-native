@@ -973,7 +973,7 @@ impl Bridge {
         // above that quad, like Popover::scrim_lifting's legacy callback scope.
         let _live = plx_ui::popover::host::live();
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
-            press: plx_machine::machine::PressRead { scale: 1.0, is_long: false, held_ms: None },
+            press: opener_press(d),
             focus: plx_machine::machine::FocusRead { current: None , ..Default::default() },
             owner: plx_machine::machine::InputOwner::Entry(entry) };
         parts.owner = plx_machine::machine::InputOwner::Entry(entry);
@@ -2404,9 +2404,29 @@ fn strip_menu_arg(
     }
 }
 
+/// **What the opener lift reads of the press: the dispatcher's own, live.** The lift is the page's
+/// focused card drawn a second time above the dim, and the page draws it at the press scale
+/// (`DrawFrame.press`, from `Dispatcher::parts`), so the lift must be handed the SAME number or the
+/// two disagree on every frame the press is moving. They did, while this was a constant `1.0`: a
+/// taken hold's card was drawn at its pop by the lift and at its dip by the page and the host
+/// snapshot, and the owner saw a poster that popped in one frame with its title doubled.
+///
+/// Only the scale is the lift's business; a hold in flight or the hint's elapsed time is not (the
+/// lift draws one card, not the page's hold hint).
+pub(crate) fn opener_press(d: &Dispatcher<AppHost>) -> plx_machine::machine::PressRead {
+    plx_machine::machine::PressRead { scale: d.input.press.scale(), is_long: false, held_ms: None }
+}
+
 /// **Present the item context menu** over the page the hold happened on (idempotent while one is
-/// up, for `open_settings`'s reason: a second hold must not stack a second panel). Opening it
-/// settles the press that raised it (see the body).
+/// up, for `open_settings`'s reason: a second hold must not stack a second panel).
+///
+/// **It does not touch the press.** A hold the screen answered was already abandoned onto its
+/// release spring by the dispatcher (`InputMachine::cancel_press`), so the card springs from its dip
+/// up to its pop as the menu opens, and the press is the ONE owner of that motion: the page and
+/// the opener lift ([`opener_press`]) both draw its scale, and `Press::tick` reports the frames it
+/// moves the card as page damage so the host snapshot below is re-taken until the card rests (see
+/// the style paragraph). Ending the press at rest here instead (`Press::settle`, rc.3) made the
+/// card jump to its pop in one frame, the lost animation the owner reported.
 ///
 /// The style is `Compact`, whose host policy is `(Frozen, Cached)`: the page under the panel is
 /// drawn once into the shared snapshot and served from it, and its focus springs do not advance
@@ -2419,11 +2439,6 @@ pub(crate) fn open_item_menu(d: &mut Dispatcher<AppHost>, arg: plx_screens::regi
     }
     d.nav.next_style = Style::Compact;
     d.request(MachineId::Nav, NavOp::Present(AppArg::ItemMenu(arg)));
-    // The hold that raised the menu ends at REST: the dip is a press-in on the card's focus pop, so
-    // a spring-back left running under the scrim and the frozen host snapshot reads as a poster
-    // that lost its pop. Only here, where a menu really opens: a hold the app declines keeps its
-    // bounce. It is the dispatcher's press — the one a card hold arms — not `App.input.press`.
-    d.input.settle_press();
 }
 
 /// Is a Library Sort/Filter/Sources menu up (any phase)?

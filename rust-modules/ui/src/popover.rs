@@ -37,6 +37,12 @@
 //!   was the bio panel's private `OWN_DAMAGE` ledger and is now [`own_motion`] / [`host::live`] /
 //!   [`host::input_scope`] / [`host::page_pass`], shared — attributed at the source and counted
 //!   (`idle::take_page_damage`), with [`host_refresh`] as the decision.
+//! - **The opener's card may still be moving when the panel opens, and the snapshot follows it.**
+//!   A hold the app takes leaves the card springing from its press dip up to its pop beneath the
+//!   item menu. That motion is the HOST's (`Press::tick` raises page damage on every frame it
+//!   moves the card), so the snapshot is re-taken per frame until the card rests while the
+//!   [`Opener`] lift draws the same live press scale above it: one owner, no frame on which the
+//!   page, the snapshot and the lift disagree.
 use crate::{theme, Painter, Rect, Spring};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 

@@ -567,12 +567,17 @@ fn the_card_menu_is_a_surface_over_the_page_the_hold_happened_on() {
     }
 }
 
-/// **Opening the item menu ends the press that is armed ON THE DISPATCHER at rest**, so the card
-/// keeps its pop under the scrim; a menu that is NOT opened (the app declined the hold) leaves
-/// that press to spring back. The card hold is armed on `d.input.press` — the legacy
-/// `App.input.press` is the player control rows' alone, and settling it did nothing.
+/// **Opening the item menu leaves the card's press to its release spring, and the opener lift
+/// draws at that press's own scale.** The press is the ONE owner of the card's motion: the
+/// dispatcher abandoned it when the hold was answered (`cancel_press`, the underdamped release
+/// spring), and the menu opening neither ends it early (the card would jump from its dip to its
+/// pop in one frame, 0.8.0-rc.3) nor starts a second animation. The lift is the page's card drawn
+/// again above the dim: handed the SAME scale the page reads, the two never disagree, whatever
+/// frame the spring is on. A lift fixed at rest drew the pop while the page (and the host snapshot
+/// taken from it) still held the dip, which is the doubled title the owner saw. The card hold is
+/// armed on `d.input.press` — the legacy `App.input.press` is the player control rows' alone.
 #[test]
-fn opening_the_item_menu_settles_the_dispatchers_press_and_declining_does_not() {
+fn opening_the_item_menu_leaves_the_press_springing_and_the_opener_lift_follows_it() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
@@ -585,31 +590,40 @@ fn opening_the_item_menu_settles_the_dispatchers_press_and_declining_does_not() 
     // `cancel_press` (what the dispatcher does when the screen answers the hold) finds an arm to
     // abandon and really starts the spring-back. Arming the bare `press` alone leaves `arm` None
     // and `cancel_press` a no-op. The whole chain from a real key hold through `content_requests`
-    // is `run.rs`'s `a_real_card_hold_*` tests; this one pins `open_item_menu`'s own half.
-    let dip = |d: &mut Dispatcher<AppHost>| {
-        d.input.arm(
-            plx_machine::machine::PressArm {
-                key: plx_machine::machine::FocusKey { entry: host, elem: 0 },
-                from: plx_machine::machine::PressFrom::Key,
-                holdable: true,
-            },
-            MachineId::Nav,
-            0,
-        );
-        for ms in (16..200).step_by(16) { d.input.press.tick(ms, 0.016); }
-        assert!(d.input.press.is_live() && d.input.press.scale() < 0.99, "dipped");
-        d.input.cancel_press(); // what the dispatcher does when it hears the hold answered
-        assert!(d.input.press.is_active() && !d.input.press.is_live(), "abandoned and springing back");
-    };
+    // is `run.rs`'s `a_real_card_hold_*` tests; this one pins the two halves that live here:
+    // opening the menu leaves the press alone, and the lift reads it.
+    d.input.arm(
+        plx_machine::machine::PressArm {
+            key: plx_machine::machine::FocusKey { entry: host, elem: 0 },
+            from: plx_machine::machine::PressFrom::Key,
+            holdable: true,
+        },
+        MachineId::Nav,
+        0,
+    );
+    for ms in (16..200).step_by(16) { d.input.press.tick(ms, 0.016); }
+    assert!(d.input.press.is_live() && d.input.press.scale() < 0.99, "dipped");
+    d.input.cancel_press(); // what the dispatcher does when it hears the hold answered
+    assert!(d.input.press.is_active() && !d.input.press.is_live(), "abandoned and springing back");
+    let dipped = d.input.press.scale();
+    assert_eq!(opener_press(&d).scale, dipped, "the lift draws the card at the press's own scale");
 
-    dip(&mut d);
-    // declined: nothing opens, so nothing settles
-    assert!(d.input.press.is_active() && !d.input.press.is_live(), "a declined hold still springs back");
-
-    // opened: the press ends at rest
     open_item_menu(&mut d, card_menu_arg(&row, false, true, host, None, None));
-    assert!(!d.input.press.is_active(), "the menu opening ends the card's press");
-    assert_eq!(d.input.press.scale(), 1.0);
+    assert!(d.input.press.is_active(), "the menu opening does not end the spring-back");
+    assert_eq!(d.input.press.scale(), dipped, "…nor move the card by a frame");
+
+    // And the lift keeps following it frame by frame, up through the overshoot to rest.
+    let mut ms = 200;
+    let mut rose = false;
+    for _ in 0..80 {
+        ms += 16;
+        d.input.press.tick(ms, 0.016);
+        assert_eq!(opener_press(&d).scale, d.input.press.scale(), "lift and page agree at {ms} ms");
+        rose |= d.input.press.scale() > dipped + 0.05;
+    }
+    assert!(rose, "the spring really moved the card");
+    assert!(!d.input.press.is_active());
+    assert_eq!(opener_press(&d).scale, 1.0, "at rest the lift is the resting pop");
 }
 
 /// **OK on a row reports ONE request and dismisses in the same drain**, carrying the row and
