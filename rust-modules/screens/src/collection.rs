@@ -38,8 +38,9 @@ const HEADER_ELEM: u32 = 0;
 const RETRY_ELEM: u32 = 1;
 const FIRST_CARD_ELEM: u32 = 0x1000;
 
-/// The page's sections, in document order. A `cards::Stack` numbers its focus groups by position
-/// in this list (it is always all three), which is what [`HEADER_GROUP`] and the rest name.
+/// The page's sections, in document order. Each has the focus group the page names it by
+/// ([`GRID_GROUP`], [`HEADER_GROUP`], [`STATUS_GROUP`]) and `groups()` lists them in that order:
+/// with nothing focused the engine's first press seats the first member, then the header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sec {
     /// The collection's art, title, meta line and summary (one focus element when the summary
@@ -50,8 +51,9 @@ enum Sec {
     /// The quiet read-outs, and Retry for a failed load.
     Status,
 }
-const HEADER_GROUP: GroupId = GroupId(0);
-const GRID_GROUP: GroupId = GroupId(1);
+const GRID_GROUP: GroupId = GroupId(0);
+const HEADER_GROUP: GroupId = GroupId(1);
+const STATUS_GROUP: GroupId = GroupId(2);
 
 // ── The page's geometry: `Collections.dc.html` C1, measured from its DOM (a 1920×1080 stage).
 
@@ -414,13 +416,13 @@ impl<H: ContentLike + CollectionLike> StackPage<H> for Page {
         let collection = self.collection(cx);
         let head = collection.is_some_and(CollectionScreen::shows_head);
         let failed = collection.is_some_and(|c| c.status == CollectionStatus::Failed);
-        out.push(SectionSpec { key: Sec::Head, kind: Kind::Custom { height: GRID_TOP, focusable: head && self.summary_more } });
-        out.push(SectionSpec { key: Sec::Items, kind: Kind::Grid { spec: GridSpec::new(GRID_TOP, CONTENT_TOP) } });
+        out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: GRID_TOP, focusable: head && self.summary_more }, HEADER_GROUP).ranked(1));
+        out.push(SectionSpec::new(Sec::Items, Kind::Grid { spec: GridSpec::new(GRID_TOP, CONTENT_TOP) }, GRID_GROUP));
         let retry = if failed {
             CollectionScreen::status_overlay(collection, cx.tick.ms, cx.measure).action_frame_measured(cx.measure)
         } else { None };
-        out.push(SectionSpec { key: Sec::Status,
-            kind: Kind::Overlay { rect: retry.unwrap_or(CollectionScreen::status_frame()), focusable: retry.is_some() } });
+        out.push(SectionSpec::new(Sec::Status,
+            Kind::Overlay { rect: retry.unwrap_or(CollectionScreen::status_frame()), focusable: retry.is_some() }, STATUS_GROUP).ranked(2));
     }
 
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) {
@@ -735,9 +737,9 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
 }
 
 impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
-    fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: At) -> Option<plx_ui::screen::FocusedCard<'a>> {
+    fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<plx_ui::screen::FocusedCard<'a>> {
         let item = self.focused_item(focus, cx)?;
-        Some(plx_ui::screen::FocusedCard { item, rect: self.focused_rect(focus, cx, at) })
+        Some(plx_ui::screen::FocusedCard { item, rect: at.and_then(|at| self.focused_rect(focus, cx, at)) })
     }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         self.stack.view(&self.page).redraw_focused(f, focus);
@@ -1153,6 +1155,43 @@ mod tests {
         let c = store.view().current().unwrap();
         let got = Focusable::<CollectionHost>::reconcile(&screen, got, &cx(store.view(), Some(got)));
         assert_eq!(got, screen.key_at(c, 0), "past the end, the last member that is left");
+    }
+
+    /// The page's group ids are the page's own, and the first group listed is the grid's: a
+    /// truncating summary makes the header focusable, and with nothing focused the engine's
+    /// first D-pad press still seats the first MEMBER, not the header.
+    #[test]
+    fn a_page_with_a_truncating_summary_seats_the_first_member_on_the_first_press() {
+        let (mut store, mut screen) = seeded();
+        store.edit_for_test(|c| c.summary = "A long collection summary that runs on. ".repeat(40));
+        screen.page.sync(store.view().current().unwrap(), &FixtureMeasure);
+        tick_at(&mut screen, &store, None, 32);
+        assert!(screen.page.summary_more);
+        let context = cx(store.view(), None);
+        let mut links = Vec::new();
+        Screen::<CollectionHost>::links(&screen, &mut links);
+        let mut engine = plx_ui::focus::FocusEngine::new();
+        let plx_ui::focus::Outcome::Moved { to, .. } =
+            engine.move_dir(context.owner, &screen, &links, Dir::Down, &context)
+        else {
+            panic!("the first press must seat something");
+        };
+        assert_eq!(to, screen.key_at(store.view().current().unwrap(), 0), "the first member, not the header");
+        let mut groups = Vec::new();
+        Focusable::<CollectionHost>::groups(&screen, &context, &mut groups);
+        let ids: Vec<u32> = groups.iter().map(|g| g.id.0).collect();
+        assert_eq!(ids, [0, 1], "grid is group 0, header group 1, in that order");
+    }
+
+    /// With no collection at all, reconcile answers the header, as before (never the bare `want`).
+    #[test]
+    fn reconcile_with_nothing_to_own_answers_the_header() {
+        let store = plx_data::stores::collection::CollectionStore::default();
+        let mut screen = CollectionScreen::new(EntryId(9), set());
+        tick_at(&mut screen, &store, None, 16);
+        let want = plx_machine::machine::FocusKey { entry: EntryId(9), elem: 0x7777 };
+        let got = Focusable::<CollectionHost>::reconcile(&screen, want, &cx(store.view(), None));
+        assert_eq!(got, plx_machine::machine::FocusKey { entry: EntryId(9), elem: HEADER_ELEM });
     }
 
     #[test]

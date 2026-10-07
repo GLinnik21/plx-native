@@ -12,6 +12,10 @@
 //!   An [`Kind::Overlay`] is out of flow at a screen rect. The `Stack` owns the one scroll; every
 //!   [`Grid`] runs in [`ScrollMode::External`] and is handed the page before each call, so the
 //!   grid's reveal rule, landing shift and bands are used as they are.
+//! - **Groups.** Each section carries the focus group the page names it by ([`SectionSpec::group`])
+//!   and where that group is listed ([`SectionSpec::rank`]): ids are stable per section kind, never
+//!   positions, because the engine keys its cursors by `(entry, group)` and a fresh mount targets
+//!   `GroupId(0)`.
 //! - **Cost.** `sections` runs again only when [`StackPage::revision`] moves, so a page puts
 //!   everything its section list depends on (status, a truncated summary, the item count) in it.
 //! - **Reconcile.** The focused element is kept when a section still shows it; else a page still
@@ -48,13 +52,36 @@ pub enum Kind {
     Overlay { rect: Rect, focusable: bool },
 }
 
+/// One section of a page: what it is and the focus group the PAGE names it by.
+///
+/// The group id is the page's, not a position: the engine remembers a cursor per
+/// `(EntryId, GroupId)` and a fresh mount targets `GroupId(0)`, so a section keeps its id however
+/// many other sections exist. Ids must be unique among the sections of a page.
 #[derive(Clone, Copy)]
 pub struct SectionSpec<K> {
     pub key: K,
     pub kind: Kind,
+    pub group: GroupId,
+    /// Where this section's group stands in [`Focusable::groups`] (ascending; ties keep document
+    /// order). The engine seats the first non-empty group of that order when nothing is focused.
+    pub rank: u32,
 }
 
-/// What [`Stack::on`] reports. One at most per call (further ones are queued for the next).
+impl<K> SectionSpec<K> {
+    /// A section in document order, its group listed in document order too.
+    pub fn new(key: K, kind: Kind, group: GroupId) -> Self {
+        Self { key, kind, group, rank: 0 }
+    }
+
+    /// List this section's group at `rank` instead of in document order.
+    pub fn ranked(mut self, rank: u32) -> Self {
+        self.rank = rank;
+        self
+    }
+}
+
+/// What [`Stack::on`] reports. One at most per call; a `Want` beyond the first of a tick waits for
+/// the next tick (a `Want` is only ever read on a tick), so none is lost.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StackEvent<K, E> {
     Card(K, CardEvent<E>),
@@ -139,7 +166,15 @@ pub struct Stack<K, E = u32> {
     home: bool,
     /// The section and position focus was last on, for the reconcile rule.
     last: Option<(K, usize)>,
-    queue: Vec<(K, CardEvent<u32>)>,
+    /// `Want`s a tick could not report yet, oldest first. Only `Want`s wait here: an activation or
+    /// a hold comes from the one focused section and is reported at once.
+    queue: Vec<(K, std::ops::Range<usize>)>,
+    /// Indices into `specs` in [`SectionSpec::rank`] order.
+    order: Vec<usize>,
+    /// Section tops in document space, refreshed with every pass over the sections' heights.
+    tops: Vec<f32>,
+    /// The element focus was last on: the last answer of a `seat` nothing else can answer.
+    last_elem: u32,
     restore: Option<StackMemory<K>>,
     /// How many times `sections` ran (the cost case's counter).
     #[cfg(test)]
@@ -147,15 +182,11 @@ pub struct Stack<K, E = u32> {
     _elem: PhantomData<E>,
 }
 
-fn blank<K: Copy>() -> Vec<SectionSpec<K>> {
-    Vec::new()
-}
-
 impl<K: Copy + Eq, E> Stack<K, E> {
     pub fn new(entry: EntryId) -> Self {
         Self {
             entry,
-            specs: blank(),
+            specs: Vec::new(),
             bodies: Vec::new(),
             revision: None,
             scroll: Spring::at(0.0),
@@ -163,6 +194,9 @@ impl<K: Copy + Eq, E> Stack<K, E> {
             home: false,
             last: None,
             queue: Vec::new(),
+            order: Vec::new(),
+            tops: Vec::new(),
+            last_elem: 0,
             restore: None,
             #[cfg(test)]
             rebuilds: 0,
@@ -187,9 +221,13 @@ impl<K: Copy + Eq, E> Stack<K, E> {
         self.target
     }
 
-    /// The focus group of section `k` (its position in the current layout).
+    /// The focus group the page named section `k` (`None` while the layout has no such section).
     pub fn group(&self, k: K) -> Option<GroupId> {
-        self.index(k).map(|i| GroupId(i as u32))
+        self.index(k).map(|i| self.specs[i].group)
+    }
+
+    fn index_of_group(&self, g: GroupId) -> Option<usize> {
+        self.specs.iter().position(|s| s.group == g)
     }
 
     fn index(&self, k: K) -> Option<usize> {
@@ -258,6 +296,12 @@ impl<K: Copy + Eq, E> Stack<K, E> {
                 }
             })
             .collect();
+        self.order.clear();
+        self.order.extend(0..specs.len());
+        self.order.sort_by_key(|&i| specs[i].rank);
+        self.queue.retain(|(k, _)| specs.iter().any(|s| s.key == *k));
+        self.tops.reserve(specs.len());
+        self.queue.reserve(specs.len());
         self.specs = specs;
     }
 
@@ -277,19 +321,32 @@ impl<K: Copy + Eq, E> Stack<K, E> {
         }
     }
 
-    /// Section `i`'s top in document space.
+    /// Section `i`'s top in document space: the cached one, else (before the first pass) summed.
     fn top<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize) -> f32 {
-        (0..i).map(|j| self.height(p, cx, j)).sum()
+        match self.tops.get(i) {
+            Some(t) if self.tops.len() == self.specs.len() => *t,
+            _ => (0..i).map(|j| self.height(p, cx, j)).sum(),
+        }
+    }
+
+    /// Re-measure every section's top (one pass, no allocation once the buffer has grown).
+    fn retop<H: Host, P: StackPage<H, Key = K>>(&mut self, p: &P, cx: &Cx<'_, H>) {
+        let mut tops = std::mem::take(&mut self.tops);
+        tops.clear();
+        let mut y = 0.0;
+        for i in 0..self.specs.len() {
+            tops.push(y);
+            y += self.height(p, cx, i);
+        }
+        self.tops = tops;
     }
 
     /// Hand every grid the page: its top in document space and the scroll.
     fn sync_pages<H: Host, P: StackPage<H, Key = K>>(&mut self, p: &P, cx: &Cx<'_, H>) {
+        self.retop(p, cx);
         for i in 0..self.bodies.len() {
-            if matches!(self.bodies[i], Body::Grid(_)) {
-                let top = self.top(p, cx, i);
-                if let Body::Grid(g) = &mut self.bodies[i] {
-                    g.set_page(top, self.scroll.pos);
-                }
+            if let Body::Grid(g) = &mut self.bodies[i] {
+                g.set_page(self.tops[i], self.scroll.pos);
             }
         }
     }
@@ -360,12 +417,20 @@ impl<K: Copy + Eq, E> Stack<K, E> {
                 Body::Grid(g) => g.on(ev, cx, &src, fx),
                 Body::Plain => None,
             };
-            if let Some(c) = got {
-                if reported.is_none() { reported = Some(StackEvent::Card(k, c)); } else { self.queue.push((k, c)); }
+            match got {
+                Some(CardEvent::Want(r)) => self.queue.push((k, r)),
+                Some(c) => reported = Some(StackEvent::Card(k, c)),
+                None => {}
             }
         }
         match ev {
-            ScreenEvent::Tick(t) => self.tick(t.dt(), p, cx, fx),
+            ScreenEvent::Tick(t) => {
+                self.tick(t.dt(), p, cx, fx);
+                if reported.is_none() && !self.queue.is_empty() {
+                    let (k, r) = self.queue.remove(0);
+                    reported = Some(StackEvent::Card(k, CardEvent::Want(r)));
+                }
+            }
             ScreenEvent::Activate(e) => {
                 reported = reported.or_else(|| {
                     let i = self.owner(p, cx, e)?;
@@ -374,9 +439,8 @@ impl<K: Copy + Eq, E> Stack<K, E> {
             }
             _ => {}
         }
-        if reported.is_none() && !self.queue.is_empty() {
-            let (k, c) = self.queue.remove(0);
-            reported = Some(StackEvent::Card(k, c));
+        if !matches!(ev, ScreenEvent::Tick(_)) {
+            self.sync_pages(p, cx);
         }
         reported
     }
@@ -385,6 +449,9 @@ impl<K: Copy + Eq, E> Stack<K, E> {
         let focus = self.focused(p, cx);
         if let Some((i, at)) = focus {
             self.last = Some((self.specs[i].key, at));
+            if let Some(key) = cx.focus.current {
+                self.last_elem = key.elem;
+            }
         }
         // a content landing moved the focused row: the document follows so the tile stays put
         let shift: f32 = self.bodies.iter().map(|b| if let Body::Grid(g) = b { g.landed_shift() } else { 0.0 }).sum();
@@ -475,9 +542,10 @@ pub struct StackView<'a, K, E, P> {
 }
 
 impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
-    /// The stops of every section, registered exactly as [`paint`](Self::paint) ends each section
-    /// with them (the very rects it draws, in the same z order), without painting: a host test
-    /// has no GL context, and a page's harness reads the rects through this.
+    /// The stops of every section, registered as [`paint`](Self::paint) ends each section with
+    /// them (the very rects it draws, in the same z order), without painting: a host test has no
+    /// GL context, and a page's harness reads the rects through this. Paint culls a shelf wholly
+    /// off the screen, so it registers no stops for it; this registers them all.
     pub fn record_stops<H: Host>(&self, f: &mut DrawFrame<'_, '_, H>)
     where
         P: StackPage<H, Key = K>,
@@ -588,7 +656,7 @@ impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
     }
 }
 
-impl<K: Copy + Eq, E, H: Host, P: StackPage<H, Key = K>> Part<H> for StackView<'_, K, E, P> {
+impl<K: Copy + Eq, E, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Part<H> for StackView<'_, K, E, P> {
     fn prepare(&mut self, _b: &mut crate::frame::Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         self.paint(f);
@@ -612,7 +680,9 @@ impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
         }
     }
 
-    /// The first focusable of the page's fallback order.
+    /// The first focusable of the page's fallback order; when nothing is focusable, the element of
+    /// the LAST section of that order that has one (the page's home, e.g. its header), focusable
+    /// or not.
     fn fallback_key<H: Host>(&self, cx: &Cx<'_, H>) -> Option<FocusKey<H::Elem>>
     where
         P: StackPage<H, Key = K>,
@@ -620,17 +690,18 @@ impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
         let mut order = Vec::new();
         self.page.fallback(cx, &mut order);
         order
-            .into_iter()
-            .find_map(|k| self.stack.index(k).and_then(|i| self.nth(cx, i, 0)))
+            .iter()
+            .find_map(|&k| self.stack.index(k).and_then(|i| self.nth(cx, i, 0)))
+            .or_else(|| order.iter().rev().find_map(|&k| self.page.elem_of(k)))
             .map(|elem| FocusKey { entry: self.stack.entry, elem })
     }
 }
 
-impl<K: Copy + Eq, E, H: Host, P: StackPage<H, Key = K>> Focusable<H> for StackView<'_, K, E, P> {
+impl<K: Copy + Eq, E, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> for StackView<'_, K, E, P> {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         let (s, p) = (self.stack, self.page);
-        for i in 0..s.specs.len() {
-            let (k, id) = (s.specs[i].key, GroupId(i as u32));
+        for &i in &s.order {
+            let (k, id) = (s.specs[i].key, s.specs[i].group);
             match (&s.specs[i].kind, &s.bodies[i]) {
                 (Kind::Shelf { .. }, Body::Shelf(sh)) => {
                     let Some(src) = p.cards(cx, k).filter(|c| c.len() > 0) else { continue };
@@ -653,7 +724,7 @@ impl<K: Copy + Eq, E, H: Host, P: StackPage<H, Key = K>> Focusable<H> for StackV
     }
 
     fn group_of(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<GroupId> {
-        self.stack.owner(self.page, cx, key).map(|i| GroupId(i as u32))
+        self.stack.owner(self.page, cx, key).map(|i| self.stack.specs[i].group)
     }
 
     fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, cx: &Cx<'_, H>) -> Step<H::Elem> {
@@ -678,6 +749,11 @@ impl<K: Copy + Eq, E, H: Host, P: StackPage<H, Key = K>> Focusable<H> for StackV
         if s.owner(p, cx, &want.elem).is_some() {
             return at(want.elem);
         }
+        // not laid out yet (no event has reached the page): nothing can be judged gone, so the
+        // wanted focus stands until the first layout
+        if s.revision.is_none() {
+            return want;
+        }
         if p.pending(cx, &want.elem) {
             return want;
         }
@@ -689,16 +765,21 @@ impl<K: Copy + Eq, E, H: Host, P: StackPage<H, Key = K>> Focusable<H> for StackV
 
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         let (s, p) = (self.stack, self.page);
-        let i = (g.0 as usize).min(s.specs.len().saturating_sub(1));
         let at = |elem| FocusKey { entry: s.entry, elem };
-        let k = s.specs[i].key;
-        let seated = match &s.bodies[i] {
-            Body::Shelf(sh) => p.cards(cx, k).and_then(|c| sh.seat(&c, from)),
-            Body::Grid(gr) => p.cards(cx, k).and_then(|c| gr.seat(&c, from)),
-            Body::Plain => p.elem_of(k).map(at),
-        };
+        let seated = s.index_of_group(g).and_then(|i| {
+            let k = s.specs[i].key;
+            match &s.bodies[i] {
+                Body::Shelf(sh) => p.cards(cx, k).and_then(|c| sh.seat(&c, from)),
+                Body::Grid(gr) => p.cards(cx, k).and_then(|c| gr.seat(&c, from)),
+                Body::Plain => p.elem_of(k).map(at),
+            }
+        });
         // `groups` lists only a section that has an element, and the engine seats only into a
-        // listed group; a page that emptied in between falls back through the reconcile order
-        seated.or_else(|| self.fallback_key(cx)).expect("Stack::seat into a group the page no longer lists")
+        // listed group; a group the page no longer lists (it emptied in between) degrades to the
+        // page's fallback, then to any element it shows, then to where focus last was
+        seated
+            .or_else(|| self.fallback_key(cx))
+            .or_else(|| (0..s.specs.len()).find_map(|i| self.nth(cx, i, 0)).map(at))
+            .unwrap_or(FocusKey { entry: s.entry, elem: s.last_elem })
     }
 }

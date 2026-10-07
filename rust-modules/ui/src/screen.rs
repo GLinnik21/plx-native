@@ -246,8 +246,9 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// **The card the page has focused, and where it sits** — the host's question for an item menu
     /// and for the focus probe, asked of whichever card page is on screen so the host names no
     /// screen type. `focus` is the engine key to answer for (a page answers only its own entry's
-    /// cards); `None` for a page with no card, which is the default.
-    fn focused_card<'a>(&self, _cx: &Cx<'a, H>, _focus: Option<FocusKey<H::Elem>>, _at: At) -> Option<FocusedCard<'a>> {
+    /// cards); `None` for a page with no card, which is the default. The rect is measured only
+    /// when `at` names how (`None` for a caller that wants the item alone).
+    fn focused_card<'a>(&self, _cx: &Cx<'a, H>, _focus: Option<FocusKey<H::Elem>>, _at: Option<At>) -> Option<FocusedCard<'a>> {
         None
     }
     /// Typed application inspection during migration; the library never names a screen type.

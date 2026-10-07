@@ -54,8 +54,10 @@ const HEADER_ELEM: u32 = 0;
 const ENTRY_ELEM: u32 = 1;
 const FIRST_CARD_ELEM: u32 = 0x1000;
 
-/// The page's sections, in document order. A `cards::Stack` numbers its focus groups by position
-/// in this list, so they are not named here: [`PersonScreen::links`] asks the stack for them.
+/// The page's sections, in document order, and the focus group each is known by. The ids are the
+/// page's and fixed per section kind (the engine remembers a cursor per `(entry, group)`, and a
+/// fresh mount targets `GroupId(0)`, the Filmography pill): a shelf keeps its id whichever other
+/// shelves exist. `groups()` lists them in document order: header, pill, then the shelves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sec {
     /// The header band: portrait, name, facts, biography (one focus element), and the Filmography
@@ -71,6 +73,14 @@ enum Sec {
     /// The shelf of this kind (0 = Movies, 1 = Shows).
     Shelf(usize),
 }
+
+const HEADER_GROUP: GroupId = GroupId(1);
+const ENTRY_GROUP: GroupId = GroupId(0);
+/// Group of the shelf of each kind (movies, shows).
+const SHELF_GROUP: [GroupId; NSHELF] = [GroupId(2), GroupId(3)];
+/// Sections with no focus element still carry a distinct id ([`SectionSpec::group`]); none is listed.
+const STATE_GROUP: GroupId = GroupId(8);
+const GAP_GROUP: [GroupId; NSHELF] = [GroupId(9), GroupId(10)];
 
 #[cfg(test)]
 pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
@@ -379,7 +389,7 @@ struct Page {
     /// that card's own source answers; the engine remains the sole owner of the key itself.
     return_pending: bool,
 
-    // ---- render cache: animation (never hashed; a spring position is not logical state) ----
+    // ---- render cache: ambient ground and skeleton clock (never hashed; the page's own scroll and card springs are the stack's, which IS in the canon) ----
     amb: PageGround,
     amb_seeded: bool,
     /// Skeleton spinner clock, in ms — cached each tick from [`spin_phase`](Self::spin_phase)'s
@@ -1054,10 +1064,6 @@ impl Page {
 fn shelf_title() -> [&'static std::ffi::CStr; NSHELF] { [plx_platform::i18n::msg::browse_kind_movies_c(), plx_platform::i18n::msg::browse_kind_shows_c()] }
 
 // -------------------------------------------------------------------------------------------
-// Focusable / Machine / Screen
-// -------------------------------------------------------------------------------------------
-
-// -------------------------------------------------------------------------------------------
 // the sections / Machine / Screen
 // -------------------------------------------------------------------------------------------
 
@@ -1090,13 +1096,13 @@ impl<H: ContentLike + PersonLike> StackPage<H> for Page {
     fn sections(&self, cx: &Cx<'_, H>, out: &mut Vec<SectionSpec<Sec>>) {
         let person = self.person(cx);
         let (kinds, n) = person.map_or(([0; NSHELF], 0), present);
-        out.push(SectionSpec { key: Sec::Head, kind: Kind::Custom { height: HEADER_TOP + self.header.exp_h, focusable: person.is_some() } });
-        out.push(SectionSpec { key: Sec::Entry, kind: Kind::Custom { height: 0.0, focusable: person.is_some_and(entry_reachable) } });
-        out.push(SectionSpec { key: Sec::State, kind: Kind::Custom { height: 0.0, focusable: false } });
+        out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: HEADER_TOP + self.header.exp_h, focusable: person.is_some() }, HEADER_GROUP));
+        out.push(SectionSpec::new(Sec::Entry, Kind::Custom { height: 0.0, focusable: person.is_some_and(entry_reachable) }, ENTRY_GROUP));
+        out.push(SectionSpec::new(Sec::State, Kind::Custom { height: 0.0, focusable: false }, STATE_GROUP));
         for (pos, &kind) in kinds[..n].iter().enumerate() {
             let gap = if pos == 0 { BAND_GAP_TO_SHELF } else { SHELF_GAP };
-            out.push(SectionSpec { key: Sec::Gap(kind), kind: Kind::Custom { height: gap, focusable: false } });
-            out.push(SectionSpec { key: Sec::Shelf(kind), kind: Kind::Shelf { style: &SHELF_STYLE, heading: SHELF_LABEL_H } });
+            out.push(SectionSpec::new(Sec::Gap(kind), Kind::Custom { height: gap, focusable: false }, GAP_GROUP[kind]));
+            out.push(SectionSpec::new(Sec::Shelf(kind), Kind::Shelf { style: &SHELF_STYLE, heading: SHELF_LABEL_H }, SHELF_GROUP[kind]));
         }
     }
 
@@ -1340,9 +1346,9 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
 }
 
 impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
-    fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: At) -> Option<FocusedCard<'a>> {
+    fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<FocusedCard<'a>> {
         let item = self.focused_item(focus, cx)?;
-        Some(FocusedCard { item, rect: self.focused_rect(focus, cx, at) })
+        Some(FocusedCard { item, rect: at.and_then(|at| self.focused_rect(focus, cx, at)) })
     }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         self.stack.view(&self.page).redraw_focused(f, focus);
@@ -1365,7 +1371,8 @@ impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
             return;
         }
         self.page.amb.draw(p, Rect::FULL);
-        // Stops register in z order: the header band, the Filmography pill, then the tiles.
+        // Stops register in z order, section by section in document order: the header band, the
+        // Filmography pill, then each shelf's tiles (a shelf wholly off the screen registers none).
         self.stack.view(&self.page).paint(f);
     }
     fn render(&self) -> RenderStrategy {
@@ -1750,7 +1757,7 @@ mod tests {
     /// **The mount-on-entry-pill rule's PENDING half** (module doc, point 2 of `ui/person.rs`'s
     /// own doc): with no filmography answered yet but a guid to ask plex.tv with,
     /// `entry_reachable_of` holds the entry group open even though `has_entry_of` is false — which
-    /// is exactly what lets a fresh mount's default `ContainerGroup(GroupId(0))` target
+    /// is exactly what lets a fresh mount's default `FirstInGroup(GroupId(0))` target
     /// (`ENTRY_GROUP`) have somewhere to land before credits have answered at all.
     #[test]
     fn a_fresh_mount_holds_the_entry_group_pending_credits() {
@@ -2905,6 +2912,84 @@ mod tests {
             (hit.x, hit.y, hit.w, hit.h),
             "place and the recorded stop share the hit geometry"
         );
+        store.run(PersonCmd::Close);
+    }
+
+    /// A landed page entered the way the container enters a fresh mount (`FirstInGroup(GroupId(0))`)
+    /// opens on the Filmography pill: group 0 is the pill's, whatever else the page holds.
+    #[test]
+    fn a_fresh_mount_of_a_landed_page_seats_the_filmography_pill() {
+        let _serial = plx_base::testlock::serial();
+        let (mut store, mut s) = seed(2, 1);
+        store.install_credits_for_test(&[("Actor", 3)]);
+        s.page.refresh_store_cache(&cx(&FixtureMeasure, store.view()));
+        lay(&mut s, &store, &FixtureMeasure);
+        let context = cx(&FixtureMeasure, store.view());
+        let mut engine = plx_ui::focus::FocusEngine::new();
+        let plx_ui::focus::Outcome::Moved { to, .. } = engine.enter(
+            context.owner,
+            &s,
+            plx_machine::machine::FocusTarget::FirstInGroup(GroupId(0)),
+            None,
+            &context,
+        ) else {
+            panic!("a landed page must seat");
+        };
+        assert_eq!(to, plx_machine::machine::FocusKey { entry: EntryId(0), elem: ENTRY_ELEM });
+        store.run(PersonCmd::Close);
+    }
+
+    /// A shelf's group id belongs to its kind, not to which other shelves the page holds: the
+    /// engine remembers a cursor per `(entry, group)`.
+    #[test]
+    fn a_shelf_keeps_its_group_id_whichever_other_shelves_exist() {
+        let _serial = plx_base::testlock::serial();
+        let group_of_kind = |movies: usize, shows: usize, kind: usize| {
+            let (store, s) = seed(movies, shows);
+            let context = cx(&FixtureMeasure, store.view());
+            let elem = focus_of(&s, &store, kind, 0).elem;
+            let g = Focusable::<PersonHost>::group_of(&s, &elem, &context);
+            let mut store = store;
+            store.run(PersonCmd::Close);
+            g
+        };
+        assert!(group_of_kind(1, 1, 1).is_some());
+        assert_eq!(group_of_kind(1, 1, 1), group_of_kind(0, 1, 1), "Shows with and without Movies");
+        assert_eq!(group_of_kind(1, 1, 0), group_of_kind(1, 0, 0), "Movies with and without Shows");
+        assert_ne!(group_of_kind(1, 1, 0), group_of_kind(1, 1, 1));
+    }
+
+    /// With no person to show, reconcile answers the header (never the bare `want`).
+    #[test]
+    fn reconcile_with_no_person_answers_the_header() {
+        let _serial = plx_base::testlock::serial();
+        let store = plx_data::stores::person::PersonStore::default();
+        let mut s = PersonScreen::new(EntryId(0), ServerId::UNSET, "161".to_string(), String::new(), String::new(), String::new());
+        lay(&mut s, &store, &FixtureMeasure);
+        let want = plx_machine::machine::FocusKey { entry: EntryId(0), elem: 0x7777 };
+        let got = Focusable::<PersonHost>::reconcile(&s, want, &cx(&FixtureMeasure, store.view()));
+        assert_eq!(got, plx_machine::machine::FocusKey { entry: EntryId(0), elem: HEADER_ELEM });
+    }
+
+    /// Owner decision 3 (one recovery rule on every card screen): a focused card that disappears
+    /// hands focus to the card now at the same position, clamped within its own section.
+    #[test]
+    fn a_removed_focused_card_hands_focus_to_the_same_position_clamped() {
+        let _serial = plx_base::testlock::serial();
+        let (mut store, mut s) = seed(3, 1);
+        let m = FixtureMeasure;
+        let want = focus_of(&s, &store, 0, 1);
+        settle_shelves(&mut s, &store, want, 3);
+        store.install_for_test(vec![item("m0"), item("m2")], vec![item("s0")]);
+        s.page.refresh_store_cache(&cx(&m, store.view()));
+        settle_shelves(&mut s, &store, want, 1);
+        let got = Focusable::<PersonHost>::reconcile(&s, want, &cx_at(&m, store.view(), want));
+        assert_eq!(got, focus_of(&s, &store, 0, 1), "the card that slid into position 1 takes focus");
+        store.install_for_test(vec![item("m0")], vec![item("s0")]);
+        s.page.refresh_store_cache(&cx(&m, store.view()));
+        settle_shelves(&mut s, &store, got, 1);
+        let got = Focusable::<PersonHost>::reconcile(&s, got, &cx_at(&m, store.view(), got));
+        assert_eq!(got, focus_of(&s, &store, 0, 0), "past the end, the last card left in the SAME section");
         store.run(PersonCmd::Close);
     }
 

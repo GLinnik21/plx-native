@@ -945,7 +945,7 @@ impl Bridge {
             }
         } else {
             // A card page — Person or Collection — answers its focused card and where it sits.
-            let card = real.focused_card(&cx, ret.focus, At::Drawn)?;
+            let card = real.focused_card(&cx, ret.focus, Some(At::Drawn))?;
             let (item, rect) = (card.item.downcast_ref::<plx_data::pms::PmsMovie>(), card.rect);
             let item = item.filter(|m| plx_screens::item_menu::has_actions(m))?;
             Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
@@ -2148,7 +2148,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             let filmography = d.nav.is_surface(owner)
                 && d.nav.entry(owner).is_some_and(|e| matches!(e.arg, AppArg::Content(ContentArg::Filmography { .. })));
             let _ = write!(out, " card={} filmography={}", card as u8, filmography as u8);
-            let item = instance.screen.focused_card(&cx, focus, At::Drawn)
+            let item = instance.screen.focused_card(&cx, focus, None)
                 .and_then(|card| card.item.downcast_ref::<plx_data::pms::PmsMovie>());
             if let Some(item) = item {
                 let _ = write!(out, " sid={} rk=", item.sid.raw());
@@ -2156,7 +2156,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             } else { out.push_str(" sid=- rk=-"); }
         }
         AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef { rk, sec, tag, .. })) => {
-            let item = instance.screen.focused_card(&cx, focus, At::Drawn)
+            let item = instance.screen.focused_card(&cx, focus, None)
                 .and_then(|card| card.item.downcast_ref::<plx_data::pms::PmsMovie>());
             let _ = write!(out, " card={} collection_rk=", card as u8);
             crate::focusprobe::push_rk(&mut out, rk);

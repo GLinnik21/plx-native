@@ -1082,6 +1082,7 @@ mod stack {
     use crate::cards::{Kind, SectionSpec, Stack, StackEvent, StackPage};
     use crate::card_row;
     use crate::screen::Focusable;
+    use plx_machine::machine::GroupId;
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum Sec { Head, Aside, Row, Items, Status }
@@ -1121,14 +1122,16 @@ mod stack {
         fn revision(&self, _cx: &Cx9<'_>) -> u64 { self.revision }
         fn pending(&self, _cx: &Cx9<'_>, _want: &u32) -> bool { self.pending }
         fn sections(&self, _cx: &Cx9<'_>, out: &mut Vec<SectionSpec<Sec>>) {
-            out.push(SectionSpec { key: Sec::Head, kind: Kind::Custom { height: if self.tall { 700.0 } else { HEAD_H }, focusable: true } });
+            // the page's own ids, none of them a position; the grid is listed first, as a page
+            // whose first-press seat is its members would have it
+            out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: if self.tall { 700.0 } else { HEAD_H }, focusable: true }, GroupId(7)).ranked(1));
             if self.aside {
-                out.push(SectionSpec { key: Sec::Aside, kind: Kind::Custom { height: 0.0, focusable: true } });
+                out.push(SectionSpec::new(Sec::Aside, Kind::Custom { height: 0.0, focusable: true }, GroupId(6)).ranked(1));
             }
-            out.push(SectionSpec { key: Sec::Row, kind: Kind::Shelf { style: ROW_STYLE, heading: 60.0 } });
-            out.push(SectionSpec { key: Sec::Items, kind: Kind::Grid { spec: COLS_SPEC } });
+            out.push(SectionSpec::new(Sec::Row, Kind::Shelf { style: ROW_STYLE, heading: 60.0 }, GroupId(3)).ranked(1));
+            out.push(SectionSpec::new(Sec::Items, Kind::Grid { spec: COLS_SPEC }, GroupId(0)));
             if self.status {
-                out.push(SectionSpec { key: Sec::Status, kind: Kind::Overlay { rect: Rect::new(96.0, 460.0, 400.0, 80.0), focusable: true } });
+                out.push(SectionSpec::new(Sec::Status, Kind::Overlay { rect: Rect::new(96.0, 460.0, 400.0, 80.0), focusable: true }, GroupId(9)).ranked(2));
             }
         }
         fn fallback(&self, _cx: &Cx9<'_>, out: &mut Vec<Sec>) { out.extend([Sec::Items, Sec::Row, Sec::Status, Sec::Head]) }
@@ -1275,7 +1278,66 @@ mod stack {
         let mut groups = Vec::new();
         view.groups(&r.cx(), &mut groups);
         assert_eq!(groups.len(), 3, "header, shelf, grid");
-        assert_eq!(r.stack.group(Sec::Items), Some(plx_machine::machine::GroupId(2)));
+        assert_eq!(r.stack.group(Sec::Items), Some(GroupId(0)));
+    }
+
+    /// A section's group id is the page's own and is listed in the page's rank: not its position
+    /// in the document, and not shifted by which other sections exist.
+    #[test]
+    fn group_ids_and_their_order_are_the_pages_not_positions() {
+        let mut r = rig(6, 24);
+        let ids = |r: &Rig| {
+            let mut groups = Vec::new();
+            r.stack.view(&r.page).groups(&r.cx(), &mut groups);
+            groups.iter().map(|g| g.id.0).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&r), [0, 7, 3], "grid first (rank), then header, then shelf");
+        assert_eq!((r.stack.group(Sec::Head), r.stack.group(Sec::Row)), (Some(GroupId(7)), Some(GroupId(3))));
+        r.page.aside = true;
+        r.page.status = true;
+        r.page.revision += 1;
+        r.run(1);
+        assert_eq!(ids(&r), [0, 7, 6, 3, 9]);
+        assert_eq!((r.stack.group(Sec::Head), r.stack.group(Sec::Row), r.stack.group(Sec::Items)),
+            (Some(GroupId(7)), Some(GroupId(3)), Some(GroupId(0))), "a section keeps its id as others come and go");
+        let view = r.stack.view(&r.page);
+        let cx = r.cx();
+        let key = |g: u32| view.seat(GroupId(g), crate::screen::Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None }, &cx).elem;
+        assert!((1000..1024).contains(&key(0)) && (100..106).contains(&key(3)), "a card of the section the id names");
+        assert_eq!((key(7), key(9)), (HEAD_ELEM, STATUS_ELEM), "seat finds the section by its id");
+        assert_eq!(view.group_of(&1000, &cx), Some(GroupId(0)));
+        assert_eq!(view.group_of(&STATUS_ELEM, &cx), Some(GroupId(9)));
+    }
+
+    /// A group the page no longer lists degrades to the page's fallback; it never panics.
+    #[test]
+    fn seating_into_an_unlisted_group_degrades_to_the_fallback() {
+        let r = rig(6, 24);
+        let view = r.stack.view(&r.page);
+        let from = crate::screen::Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None };
+        assert_eq!(view.seat(GroupId(42), from, &r.cx()).elem, 1000, "the first of the fallback order");
+        let mut empty = rig(0, 0);
+        empty.page.pending = false;
+        let view = empty.stack.view(&empty.page);
+        assert_eq!(view.seat(GroupId(3), from, &empty.cx()).elem, HEAD_ELEM, "an emptied shelf's group: the header");
+    }
+
+    /// Two paging sections ask in one tick: both asks reach the page on a later tick, whatever
+    /// other events arrive between (the page reads a `Want` only on a tick).
+    #[test]
+    fn a_second_paging_section_is_not_dropped_by_an_event_that_is_not_a_tick() {
+        let mut r = rig(3, 3);
+        r.page.row.more = true;
+        r.page.items.more = true;
+        let tick = |r: &mut Rig| { r.ms += MS; r.feed(ScreenEvent::Tick(Tick { ms: r.ms, dt_us: 16_667 })).0 };
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            if let Some(StackEvent::Card(k, CardEvent::Want(_))) = tick(&mut r) { seen.push(k); }
+            // a non-tick event between ticks must neither deliver nor lose a queued ask
+            let (got, _) = r.feed(ScreenEvent::Cover);
+            assert!(got.is_none(), "a Want is only ever reported on a tick: {got:?}");
+        }
+        assert!(seen.contains(&Sec::Row) && seen.contains(&Sec::Items), "both sections' asks arrive: {seen:?}");
     }
 
     #[test]
