@@ -1185,6 +1185,31 @@ impl TableView {
         edge_alpha(y + h - ROW_INK_PAD, vis_bot, ROW_INK_PAD)
     }
 
+    /// How much of the ink band of the row spanning content `cy..cy + h` the focus pill covers
+    /// RIGHT NOW, 0..1 — the ONE rule a row's ink is derived from, so the ink can never disagree
+    /// with the fill sliding under it (the same reason `widgets::cap_cover` exists for a tab strip).
+    ///
+    /// The ink band is the row less its empty [`ROW_INK_PAD`] above and below, and less the
+    /// [`PILL_INSET`] the pill itself keeps off the row's edge (a two-line row's title caps start
+    /// ~15px under its top, measured on a sim capture), so the label only goes fully dark once the
+    /// pill's edge has passed its caps and goes back to light as the pill leaves —
+    /// reading the SELECTION instead (as this once did) flipped the next row's label to the pill's
+    /// near-black ink on the frame focus moved, a row before the pill got there: dark text on the
+    /// dark ground. Linear in coverage, like the strip's; shape it HERE if a device capture ever
+    /// asks, not with a second spring (the ink would start leading the fill). A table that does not
+    /// hold focus draws no pill and so covers nothing. At rest on a row the answer is exactly 1.
+    fn pill_cover(&self, cy: f32, h: f32) -> f32 {
+        if !self.list_focused {
+            return 0.0;
+        }
+        let inset = ROW_INK_PAD + PILL_INSET;
+        let (top, bot) = (cy + inset, cy + h - inset);
+        if bot <= top {
+            return 0.0;
+        }
+        ((self.hl_bot.pos.min(bot) - self.hl_top.pos.max(top)) / (bot - top)).clamp(0.0, 1.0)
+    }
+
     /// The nearest **selectable** row to `i`: `i` itself when it is one, else the first non-separator
     /// after it, else the last one before it — so selection cannot come to rest on a grouping
     /// hairline, whoever set it. The one exception is a list that is ALL separators, which has no
@@ -1529,19 +1554,24 @@ impl TableView {
                 view.draw(p, Rect::new(x, sy + (h - ink_h) * 0.5, w, ink_h));
                 return;
             }
-            // **`list_focused` gates the INK, not just the pill.** `ink` is near-black and is only
-            // legible ON the accent pill; suppressing the pill while still flipping the ink drew
-            // black-on-panel rows, which is what the owner saw the moment focus moved to the
-            // Sources panel's level pills. The two are one decision and are read from one flag.
+            // **The INK follows the PILL, and `list_focused` gates both.** `ink` is near-black and
+            // is only legible ON the accent pill, so a row wears it exactly as far as the pill
+            // currently covers its ink band (`pill_cover`) — not from the frame focus moves to it,
+            // when the pill is still a row away and the label read black on the dark ground. A
+            // table that holds no focus draws no pill and covers nothing; suppressing the pill
+            // while still flipping the ink drew black-on-panel rows, which is what the owner saw
+            // the moment focus moved to the Sources panel's level pills. `focused` stays the
+            // SELECTION (the marquee runs on the selected row).
             let focused = gi == self.sel && self.list_focused;
-            let base = if focused {
-                ink
-            } else if row.dim {
-                dimc
-            } else {
-                white
+            let cover = self.pill_cover(cy, h);
+            // `cross` at the ends is exact, so a row at rest on either side is the colour it always was
+            let on_pill = |rest: [f32; 4], over: [f32; 4]| match cover {
+                c if c <= 0.0 => rest,
+                c if c >= 1.0 => over,
+                c => theme::cross(rest, over, c),
             };
-            let row_bg = if focused { crate::ACCENT } else { PANEL_BG };
+            let base = on_pill(if row.dim { dimc } else { white }, ink);
+            let row_bg = on_pill(PANEL_BG, crate::ACCENT);
             let cyc = sy + h * 0.5; // row vertical center
 
             // Leading column (SVG): the PICKER's tick, or an ACTION's glyph — one or the other, and
@@ -1592,7 +1622,7 @@ impl TableView {
                     // knocked out of the interior
                     let sty = crate::widgets::BadgeStyle::Outlined {
                         col: base,
-                        border: if focused { base } else { theme::OVERLAY_BORDER },
+                        border: on_pill(theme::OVERLAY_BORDER, ink),
                         bg: row_bg,
                     };
                     bx += crate::widgets::badge(p, bx, cyc, b.text(), None, sty, measure) + BADGE_GAP;
@@ -1606,7 +1636,7 @@ impl TableView {
             // step is the ink's ALONE — the run itself is bold (see [`VALUE_BOLD`], which all three
             // calls below take so the measure and the paint can never be two different faces).
             if let Some(v) = row.readout() {
-                let ink = row_value_ink(row, focused);
+                let ink = on_pill(row_value_ink(row, false), row_value_ink(row, true));
                 // the value gives way before the label (`row_columns`): elided to its column
                 let vsz = theme::size::LABEL;
                 let value_w = self.row_columns(row, frame.w, measure).value_w;
@@ -1706,11 +1736,7 @@ impl TableView {
             // while the badges sat on the title's line: right-aligned and row-centred, a chip now
             // occupies the sub-line's band too, and an unbounded sub-line would run under it.
             if !row.detail.is_empty() {
-                let sub = if focused {
-                    theme::scrim_black(0.6)
-                } else {
-                    dimc
-                };
+                let sub = on_pill(dimc, theme::scrim_black(0.6));
                 let detail = plx_gfx::text::elide_by(&row.detail, text_w, false, |t| {
                     measure.width_str(t, theme::size::CAPTION, false)
                 });
@@ -2432,5 +2458,60 @@ mod tests {
             assert_eq!(row_text_xs(&t, frame, 0).len(), 1, "an unfocused overflowing label: one elided run");
             assert_eq!(plx_machine::idle::take_local_damage(), 0, "nothing animates, nothing reports");
         }
+    }
+
+    // ---- the focus pill's ink -----------------------------------------------------------------
+
+    fn three_rows(sel: i32) -> TableView {
+        let mut t = TableView::new();
+        t.set_sections(vec![Section::new("S").row(Row::new("a")).row(Row::new("b")).row(Row::new("c"))], sel, false);
+        t
+    }
+
+    fn cover_of(t: &TableView, gi: i32) -> f32 {
+        t.pill_cover(t.row_top(gi), t.row_height(gi))
+    }
+
+    /// **A row's ink follows the sliding pill, not the selection.** The reporter filmed Settings:
+    /// moving focus down turned the NEXT row's label black on the first frame, while the pill was
+    /// still a row away, so for a few frames it was dark text on the dark ground. The ink is a
+    /// function of how much of the row's ink band the pill covers NOW, so it lands with the pill
+    /// and the row the pill is leaving brightens as it goes.
+    #[test]
+    fn a_rows_ink_follows_the_pill_not_the_selection() {
+        let _serial = plx_base::testlock::serial();
+        let mut t = three_rows(0);
+        assert_eq!((cover_of(&t, 0), cover_of(&t, 1)), (1.0, 0.0), "at rest the pill's row is inked, the others are not");
+
+        t.move_sel(1);
+        assert_eq!(t.sel, 1);
+        t.update(1.0 / 60.0, 600.0);
+        assert_eq!(cover_of(&t, 1), 0.0, "one frame in, the pill has not reached the new row's ink: it stays light");
+        assert_eq!(cover_of(&t, 0), 1.0, "the pill still sits under the old row's ink: it stays dark");
+
+        let (mut prev_new, mut prev_old) = (0.0f32, 1.0f32);
+        let mut crossed = false;
+        for _ in 0..240 {
+            t.update(1.0 / 60.0, 600.0);
+            let (new, old) = (cover_of(&t, 1), cover_of(&t, 0));
+            if new > 0.0 {
+                // ink never leads the fill: the new row only darkens once the pill's leading edge
+                // is inside its ink band
+                assert!(t.hl_bot.pos > t.row_top(1) + ROW_INK_PAD + PILL_INSET, "ink led the pill: cover {new} with the edge at {}", t.hl_bot.pos);
+            }
+            assert!(new + 1e-4 >= prev_new, "the arriving row's ink only grows: {prev_new} -> {new}");
+            assert!(old <= prev_old + 1e-4, "the leaving row's ink only fades: {prev_old} -> {old}");
+            crossed |= new > 0.0 && new < 1.0 && old > 0.0 && old < 1.0;
+            (prev_new, prev_old) = (new, old);
+        }
+        assert!(crossed, "the premise: some frame has both rows part-covered");
+        assert_eq!((cover_of(&t, 1), cover_of(&t, 0)), (1.0, 0.0), "settled: the new row is inked, the old is released");
+    }
+
+    /// A table that does not hold focus draws no pill, so no row is inked for one.
+    #[test]
+    fn an_unfocused_table_inks_no_row() {
+        let t = three_rows(1).unfocused();
+        assert_eq!((0..3).map(|i| cover_of(&t, i)).sum::<f32>(), 0.0);
     }
 }
