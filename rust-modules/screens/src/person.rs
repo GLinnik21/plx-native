@@ -3175,6 +3175,37 @@ mod tests {
         store.run(PersonCmd::Close);
     }
 
+    /// A landing may move the focused item from one shelf to the other. The engine element is the
+    /// item's identity, so focus stays on it; the shelf it left lets go of the lift and the shelf it
+    /// joined adopts it at the full pop (no frame shows two lifted tiles, none shows it collapsed).
+    #[test]
+    fn an_item_that_changes_shelf_in_a_landing_keeps_focus_and_is_lifted_on_its_new_shelf() {
+        let _serial = plx_base::testlock::serial();
+        let (mut store, mut s) = seed(2, 1);
+        let m = FixtureMeasure;
+        let moved = focus_of(&s, &store, 0, 0);
+        settle_shelves(&mut s, &store, moved, 120);
+        let lift = |s: &PersonScreen, store: &plx_data::stores::person::PersonStore, kind: usize, elem: u32| {
+            let p = store.view().current().unwrap();
+            s.shelves[kind].scale_of(&cx_at(&m, store.view(), moved), &s.cards_of(p, kind), &elem)
+        };
+        assert_eq!(lift(&s, &store, 0, moved.elem), Some(SHELF_STYLE.focus_scale));
+
+        // "m0" leaves the movies and joins the shows.
+        store.install_for_test(vec![item("m1")], vec![item("s0"), item("m0")]);
+        s.refresh_store_cache(&cx(&m, store.view()));
+        assert_eq!(s.locate(store.view().current().unwrap(), moved.elem), Some(Located::Shelf(1, 1)));
+        let now = Focusable::<PersonHost>::reconcile(&s, moved, &cx_at(&m, store.view(), moved));
+        assert_eq!(now, moved, "the cursor stays on the item across shelves");
+        settle_shelves(&mut s, &store, moved, 1);
+        assert_eq!(lift(&s, &store, 1, moved.elem), Some(SHELF_STYLE.focus_scale), "adopted whole on its new shelf");
+        let other = focus_of(&s, &store, 0, 0);
+        assert_eq!(lift(&s, &store, 0, other.elem), Some(1.0), "the movies shelf shows nothing lifted");
+        settle_shelves(&mut s, &store, moved, 120);
+        assert!(Focusable::<PersonHost>::place(&s, &moved.elem, &cx_at(&m, store.view(), moved), At::Drawn).is_some());
+        store.run(PersonCmd::Close);
+    }
+
     #[test]
     fn the_first_shelf_fits_at_rest() {
         let h = shelf_block_h_at(card_row::under_band(1.0));

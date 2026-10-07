@@ -507,6 +507,34 @@ fn grid_rests_the_old_tile_on_a_non_deliberate_arrival() {
     a_non_deliberate_arrival_rests_the_old_tile::<Grid>();
 }
 
+/// A focused element that LEAVES the source in a landing (it moved to another section) with no
+/// `FocusMoved` away from it: nobody let it go, so the tile now at its index is not left lifted and
+/// shrinking over frames; every tile is at rest on the frame of the tick. A deliberate move out
+/// (a `FocusMoved` whose `from` is in this section) still lets the old tile go over frames.
+#[test]
+fn shelf_rests_a_focused_tile_whose_element_left_the_source() {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Restore);
+    r.run(240);
+    r.src.elems.retain(|&e| e != 101);
+    r.run(1);
+    for &e in &r.src.elems {
+        let s = r.sect.scale_of(&r.cx(), &r.src, &e).unwrap();
+        assert!((s - 1.0).abs() < 0.0005, "elem {e} is at {s} after the focused element left, not at rest");
+    }
+
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Restore);
+    r.run(240);
+    let away = FocusKey { entry: EntryId(77), elem: 5 };
+    let from = r.focus;
+    r.focus = Some(away);
+    r.feed(ScreenEvent::FocusMoved { from, to: away, by: By::Dir });
+    r.run(1);
+    let s = r.sect.scale_of(&r.cx(), &r.src, &101).unwrap();
+    assert!(s > 1.0005 && s < RowStyle::HOME.focus_scale - 0.0005, "a deliberate move out lets the tile go over frames, at {s}");
+}
+
 /// Focus in another entry (a menu's, another page's) is not this section's focus.
 fn focus_in_another_entry_is_ignored<S: Section>() {
     let mut r = settled::<S>(8);
