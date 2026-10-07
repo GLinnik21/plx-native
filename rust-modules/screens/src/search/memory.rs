@@ -34,6 +34,6 @@ impl SearchScreen {
     pub(super) fn page_memory(&self) -> Memory {
         Memory { profile: self.draft.profile(), query: self.query_gen, next_elem: self.next_elem,
             keys: self.keys.clone(), scroll: self.scroll.pos,
-            rows: self.rows.iter().map(|row| (row.kind, row.motion.scroll_x())).collect() }
+            rows: self.rows.iter().map(|row| (row.kind, row.shelf.scroll())).collect() }
     }
 }

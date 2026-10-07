@@ -1,6 +1,6 @@
 //! The Tier 2 card-conformance harness for Search (`cards_conformance_tests.rs`): the Movies
 //! result shelf of a real query. A child module of `search` so it reads the private row model
-//! and `row_rect` the way the screen's own tests do.
+//! and `frame` the way the screen's own tests do.
 use super::*;
 use plx_data::search::view::SearchView;
 use plx_data::search::Shelf;
@@ -131,17 +131,21 @@ impl CardHarness for Harness {
     fn place(&self, elem: u32, at: At) -> Option<Placed> {
         Focusable::<SearchHost>::place(&self.screen, &elem, &self.cx(), at)
     }
-    /// What `render::tile` paints: the drawn `row_rect` scaled by the row's live pop times the
-    /// live press of the focused tile.
-    fn drawn_rect(&self, elem: u32, press: f32) -> Option<Rect> {
-        let (row, col) = self.at(elem)?;
-        let focused = self.focus.map(|k| k.elem) == Some(elem);
-        let scale = self.screen.rows[row].motion.scale(col) * if focused && press > 0.0 { press } else { 1.0 };
-        Some(self.screen.row_rect(row, col, At::Drawn).scaled(scale))
+    /// The rect the page registers as the stop of `elem` (the shelf's draw registers the rect it
+    /// paints), at the live press.
+    fn drawn_rect(&self, elem: u32, _press: f32) -> Option<Rect> {
+        let (row, _) = self.at(elem)?;
+        let cx = self.cx();
+        let mut frame = DrawFrame::new(&cx, plx_ui::Painter::root());
+        let src = self.screen.cards(self.snap.view(), row)?;
+        let root = frame.painter;
+        self.screen.rows[row].shelf.record_stops(&mut frame, root, &src, self.screen.frame(row, At::Drawn));
+        frame.stops().iter().find(|s| s.key.elem == elem).map(|s| s.rect)
     }
     fn scale(&self, elem: u32) -> Option<f32> {
-        let (row, col) = self.at(elem)?;
-        Some(self.screen.rows[row].motion.scale(col))
+        let (row, _) = self.at(elem)?;
+        let src = self.screen.cards(self.snap.view(), row)?;
+        self.screen.rows[row].shelf.scale_of(&self.cx(), &src, &elem)
     }
     fn focus_scale(&self) -> f32 { layout::style(Kind::Movie).focus_scale }
     fn canon(&self) -> u64 {
@@ -156,7 +160,7 @@ impl CardHarness for Harness {
             _ => String::new(),
         }
     }
-    fn scroll(&self) -> Option<f32> { self.screen.rows.first().map(|r| r.motion.scroll_x()) }
+    fn scroll(&self) -> Option<f32> { self.screen.rows.first().map(|r| r.shelf.scroll()) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         let (_, col) = self.focus.and_then(|k| self.at(k.elem)).ok_or("nothing focused")?;
         match l {

@@ -276,7 +276,7 @@ fn a_vertical_step_between_shelves_keeps_the_visual_column() {
     fixture.query("column").shelves(vec![shelf(Kind::Movie, "a", 20), shelf(Kind::Show, "b", 20)]);
     let mut screen = fixture.screen();
     let style = layout::style(Kind::Movie);
-    screen.rows[0].motion.restore_scroll(4.0 * (style.w + style.gap), 20, &style);
+    screen.rows[0].shelf.restore_scroll(4.0 * (style.w + style.gap), 20);
     let mut engine = FocusEngine::new();
     let sixth = screen.key(screen.rows[0].elems[6]);
     engine.set(OWNER, sixth, Some(screen.rows[0].group), By::Restore);
@@ -442,7 +442,7 @@ fn a_tile_scrolled_under_the_chrome_is_not_a_pointer_target() {
     let mut screen = fixture.screen();
     let elem = screen.rows[0].elems[0];
     let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
-    let rest = screen.row_rect(0, 0, At::Drawn);
+    let rest = <SearchScreen as Focusable<HostFixture>>::place(&screen, &elem, &fixture.cx(None), At::Drawn).unwrap().rect;
 
     // Fully on screen: hit anywhere inside it.
     assert_eq!(hit(&screen, &fixture, &[elem], rest.cx(), rest.cy()), Some(elem));
@@ -961,4 +961,76 @@ fn a_collection_shelf_counts_results_and_its_tiles_count_items() {
     assert_eq!(item_count(1), "1 item");
     // Cardinal rules apply to the absolute value, including negative wire counts.
     assert_eq!((item_count(0), item_count(-1)), ("0 items".to_owned(), "-1 item".to_owned()));
+}
+
+// ---- result rows follow their kind, not their place in the list -------------------------------
+
+/// The pop of `elem` on result row `row`, as the row's shelf would draw it now.
+fn pop_of(screen: &SearchScreen, fixture: &Fixture, focus: Option<FocusKey<u32>>, row: usize, elem: u32) -> Option<f32> {
+    let src = screen.cards(fixture.search.view(), row)?;
+    screen.rows[row].shelf.scale_of::<HostFixture, _>(&fixture.cx(focus), &src, &elem)
+}
+
+/// Sources answer one at a time, so a row can land above rows already on the page. Each row keeps
+/// its own shelf (its scroll and its lifted card), keyed by its kind; a row inserted above must
+/// not hand its neighbour's scroll or pop to itself.
+#[test]
+fn a_row_that_lands_above_keeps_the_neighbours_scroll_and_pop_with_the_neighbour() {
+    let _serial = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.query("landing").shelves(vec![shelf(Kind::Show, "s", 20)]);
+    let mut screen = fixture.screen();
+    let pitch = layout::style(Kind::Show).w + layout::style(Kind::Show).gap;
+    screen.rows[0].shelf.restore_scroll(3.0 * pitch, 20);
+    let focus = Some(screen.key(screen.rows[0].elems[5]));
+    deliver(&mut screen, &fixture, focus, ScreenEvent::FocusMoved { from: None, to: focus.unwrap(), by: By::Restore });
+    for i in 0..60 { deliver(&mut screen, &fixture, focus, ScreenEvent::Tick(tick(i))); }
+    let scrolled = screen.rows[0].shelf.scroll();
+    assert!(scrolled > 0.0);
+    let elem = focus.unwrap().elem;
+    assert_eq!(pop_of(&screen, &fixture, focus, 0, elem), Some(layout::style(Kind::Show).focus_scale));
+
+    fixture.shelves(vec![shelf(Kind::Movie, "m", 20), shelf(Kind::Show, "s", 20)]);
+    deliver(&mut screen, &fixture, focus, ScreenEvent::StoreChanged(StoreId::Search.ord(), 1));
+    deliver(&mut screen, &fixture, focus, ScreenEvent::Tick(tick(100)));
+    assert_eq!(screen.rows.iter().map(|row| row.kind).collect::<Vec<_>>(), [Kind::Movie, Kind::Show]);
+    assert_eq!(screen.rows[0].shelf.scroll(), 0.0, "the new row starts at its own beginning");
+    assert_eq!(screen.rows[1].shelf.scroll(), scrolled, "the Show row keeps the Show row's scroll");
+    assert_eq!(pop_of(&screen, &fixture, focus, 1, elem), Some(layout::style(Kind::Show).focus_scale),
+        "and its lifted card stays lifted");
+    let first = screen.rows[0].elems[0];
+    assert_eq!(pop_of(&screen, &fixture, focus, 0, first), Some(1.0), "the new row lifts nothing");
+}
+
+/// Collection's `dismissing_a_hold_menu_and_moving_leaves_no_stale_lift`, on a result row: the
+/// opener a hold covers sits at full pop under the menu's focus (the opener redraw reads it), and
+/// once the menu is dismissed and focus moves on, the old card lets go and the new one grows from
+/// rest, so nothing stays lifted for a stale redraw to read.
+#[test]
+fn dismissing_a_hold_menu_and_moving_leaves_no_stale_lift() {
+    let _serial = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.query("opener").shelves(vec![shelf(Kind::Movie, "m", 6)]);
+    let mut screen = fixture.screen();
+    let mut engine = seated(&screen, &fixture);
+    let a = step_dir(&mut screen, &fixture, &mut engine, Dir::Down).unwrap();
+    for i in 0..60 { frame(&mut screen, &fixture, &engine, i); }
+    let full = layout::style(Kind::Movie).focus_scale;
+    let at_full = |screen: &SearchScreen| pop_of(screen, &fixture, Some(a), 0, a.elem).is_some_and(|pop| (pop - full).abs() < 0.001);
+    assert!(at_full(&screen), "the settled opener is at full pop");
+
+    // The menu opens over the page: the page keeps its focus and its pop.
+    deliver(&mut screen, &fixture, Some(a), ScreenEvent::Cover);
+    for i in 0..30 { frame(&mut screen, &fixture, &engine, 100 + i); }
+    assert!(at_full(&screen), "covered, the opener stays lifted");
+    let held = <SearchScreen as Focusable<HostFixture>>::place(&screen, &a.elem, &fixture.cx(Some(a)), At::Drawn).unwrap();
+    assert!((held.rect.w - held.rest_rect.w).abs() < 0.01, "the opener redraw paints the settled rect");
+    deliver(&mut screen, &fixture, Some(a), ScreenEvent::Uncover);
+
+    let b = step_dir(&mut screen, &fixture, &mut engine, Dir::Right).unwrap();
+    assert_ne!(a, b);
+    frame(&mut screen, &fixture, &engine, 200);
+    let (old, new) = (pop_of(&screen, &fixture, Some(b), 0, a.elem).unwrap(), pop_of(&screen, &fixture, Some(b), 0, b.elem).unwrap());
+    assert!(old < full - 0.001 && old >= 1.0, "the old opener is letting go, not held at full pop: {old}");
+    assert!(new < full - 0.001, "the new card grows from rest: {new}");
 }

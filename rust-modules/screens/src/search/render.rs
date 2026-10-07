@@ -2,8 +2,7 @@
 use super::*;
 use crate::registry::tile_facts;
 use plx_data::search::scope::{ScopeSource, SourceScopeSnapshot};
-use plx_ui::card_row::{self, TileLabel};
-use plx_ui::consts::{MARGIN_X, SCR_H, SCR_W};
+use plx_ui::consts::{MARGIN_X, SCR_H};
 use plx_ui::label::{HAlign, Label, VAlign};
 use plx_ui::widgets::{Art, Button, StatusKind, StatusOverlay};
 use plx_ui::{theme, Env, Painter, View};
@@ -147,11 +146,11 @@ pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '
     }
     for (i, row) in screen.rows.iter().enumerate() {
         let (kinds, n) = screen.kinds();
-        let top = layout::top(&kinds[..n], i, |j| screen.rows[j].motion.band_expand())
+        let top = layout::top(&kinds[..n], i, |j| screen.rows[j].shelf.under_band())
             - screen.scroll.pos;
         if !plx_ui::on_axis(
             top,
-            layout::block_h(row.kind, row.motion.band_expand()),
+            layout::block_h(row.kind, row.shelf.under_band()),
             SCR_H,
             0.0,
         ) {
@@ -180,22 +179,13 @@ pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '
                     } else {
                         p
                     },
-                    Rect::new(MARGIN_X + dx, top - row.motion.lift(), 0.0, cap),
+                    Rect::new(MARGIN_X + dx, top - row.shelf.heading_lift(), 0.0, cap),
                 );
                 f.cx.measure.width(run, size, bold != 0)
             },
         );
-        let focused =
-            f.cx.focus
-                .current
-                .and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
-        for col in 0..row.elems.len() {
-            if focused != Some(col) {
-                tile(screen, i, col, false, f, p);
-            }
-        }
-        if let Some(col) = focused {
-            tile(screen, i, col, true, f, p);
+        if let Some(src) = screen.cards(H::search(f.cx), i) {
+            row.shelf.draw(f, p, &src, screen.frame(i, At::Drawn));
         }
     }
 }
@@ -389,90 +379,12 @@ fn empty<H: SearchLike>(screen: &SearchScreen, f: &DrawFrame<'_, '_, H>, p: Pain
         );
 }
 
-pub(super) fn tile<H: SearchLike>(
-    screen: &SearchScreen,
-    row: usize,
-    col: usize,
-    focused: bool,
-    f: &mut DrawFrame<'_, '_, H>,
-    p: Painter,
-) {
-    let view = H::search(f.cx);
-    let Some(shelf) = view.shelves().get(row) else {
-        return;
-    };
-    let Some(item) = shelf.items.get(col) else {
-        return;
-    };
-    let model = &screen.rows[row];
-    let style = layout::style(model.kind);
-    let rest = screen.row_rect(row, col, At::Drawn);
-    let pop = model.motion.scale(col);
-    let press = if focused && f.press.scale > 0.0 {
-        f.press.scale
-    } else {
-        1.0
-    };
-    let scale = pop * press;
-    let rect = rest.scaled(scale);
-    if !plx_ui::on_axis(rect.x, rect.w, SCR_W, 32.0) {
-        return;
-    }
-    let art = tile_art(model.kind, item);
-    let resume = match item {
-        Item::Media(media) if model.kind != Kind::Episode => media.resume_frac(),
-        _ => None,
-    };
-    if focused {
-        let sid = match item {
-            Item::Media(media) => media.sid,
-            Item::Tag(tag) => tag.sid,
-            Item::Collection(hit) => hit.item.sid,
-        };
-        let handle = view
-            .scope()
-            .sources()
-            .iter()
-            .find(|source| source.sid == sid && !source.household)
-            .map_or("", |source| source.handle.as_str());
-        let fact = subtitle(model.kind, item, handle);
-        card_row::draw_focused(
-            p,
-            art,
-            rect,
-            scale,
-            &style,
-            resume,
-            &TileLabel::titled(item.title(), &fact)
-                .revealed(model.motion.band_reveal())
-                .settling(model.motion.settle_lag(model.elems.len(), col, &style)),
-            f.measure,
-        );
-    } else {
-        card_row::draw_tile(p, art, rect, scale, &style, resume);
-    }
-    if let (Kind::Episode, Item::Media(media)) = (model.kind, item) {
-        plx_ui::widgets::still_overlay(p, &tile_facts::of(media), rect, style.tile_radius(rect, scale), false, f.measure);
-    }
-    stop(
-        screen,
-        model.elems[col],
-        if matches!(model.kind, Kind::Movie | Kind::Show | Kind::Episode) {
-            ElemKind::Card
-        } else {
-            ElemKind::Bare
-        },
-        f,
-        p,
-    );
-}
-
 /// What a result tile draws. A collection always draws through `Art::Poster` with its row, so the
 /// shared card composite decides between its poster (custom, or #274's fan for the server's
 /// composite) and the shared neutral collection tile (`ui::collection_tile`, for a row with no
 /// thumb) — this screen draws no collection face of its own. A tag-shaped collection hit is
 /// already a thumb-less collection row by the time it lands (`search::CollectionHit::from_tag`).
-fn tile_art(kind: Kind, item: &Item) -> Art<'_> {
+pub(super) fn tile_art(kind: Kind, item: &Item) -> Art<'_> {
     match (kind, item) {
         (Kind::Episode, Item::Media(media)) => Art::Still(Some(tile_facts::of(media))),
         (_, Item::Media(media)) => Art::Poster(Some(tile_facts::of(media))),
@@ -639,7 +551,7 @@ fn heading_flow(
     dx
 }
 
-fn subtitle(kind: Kind, item: &Item, handle: &str) -> String {
+pub(super) fn subtitle(kind: Kind, item: &Item, handle: &str) -> String {
     let mut parts = Vec::new();
     match item {
         Item::Media(media) if kind == Kind::Episode => {
