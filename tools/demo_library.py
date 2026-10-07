@@ -9,6 +9,9 @@ the images the mock server serves, and write the credits.
     python3 tools/demo_library.py check     # validate the two manifests; no network
     python3 tools/demo_library.py check --complete  # also: every title and episode complete, bar the
                                             # shrink-only list in tests/demo_library/pending.json
+    python3 tools/demo_library.py hero-report  # per hero-eligible title: where its declared
+                                            # `art.subject` box lands in the 1920x1080 frame, the
+                                            # zones it overlaps and the verdict; no network, no images
     python3 tools/demo_library.py fixtures  # capture the two fixture titles' detail responses
 
 Two committed manifests drive it:
@@ -18,6 +21,18 @@ Two committed manifests drive it:
   the screenshots without the manifest changing in review.
 * `tests/demo_library/catalog.json` — the library itself (titles, credits, synopses, watch state,
   shelves) and, per item, which asset each image is derived from and how (`mode`, `anchor`, `crop`).
+
+Hero art. A title the home hero can show (the pinned hero and alternatives, Continue Watching,
+Recently Added) must have its subject on the RIGHT with logo and text off the centre. Its catalog
+`art` declares `subject: [x0, y0, x1, y1]` in SOURCE pixels, read off the image by a person;
+`check --complete` maps that box into the frame by arithmetic from the recipe (`mode: cover` only,
+`anchor`/`crop`) and the asset's recorded width and height, and fails the title (category
+`hero_art`) when the box is missing, outside the source, cut off by the crop, left of 60% of the
+frame, or over a text zone. The zones are copied in `HERO_PINS`, each pinned to the Rust constant
+it comes from, and `check --complete` re-reads that source so a layout change cannot leave the
+check stale. Titles that fail are listed in `pending.json` under `hero_art`; the list only shrinks,
+and the demo-video workflow (stage S6 of the plan; not in the tree yet) is to refuse to run while
+it, or any pending entry, is non-empty.
 
 Nothing is committed but the manifests and the two captured detail fixtures: the sources and the derived images live in a cache outside
 the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`, ~390 MB of sources,
@@ -139,18 +154,33 @@ def _cover(w, h, anchor):
             f"crop={w}:{h}:{x}:{y}")
 
 
+def recipe_anchor(recipe):
+    """Where a cover crop sits: the recipe's `anchor`, else the one its named `crop` stands for,
+    else the centre. The deriver and the hero-art geometry (`hero_map_box`) both read it here."""
+    return recipe.get("anchor") or {"focus-right": "right", "upper": "upper"}.get(recipe.get("crop", ""), "center")
+
+
+def recipe_stamp(recipe):
+    """The part of an image recipe that decides its pixels. `subject` (the hero-art box a person
+    read off the source) is a declaration about the picture, not a step in making it, so declaring
+    or correcting one never re-derives an image."""
+    return {k: v for k, v in recipe.items() if k != "subject"}
+
+
 def derive_image(src, dst, size, recipe):
     """One image, per its recipe:
 
     * `mode: cover` (default) — fill the frame and crop at `anchor` (`center`/`right`/`left`/`upper`).
     * `mode: extend` — for wide key art: fit the whole picture to the frame's HEIGHT, pin it to
       `anchor`, and fill the rest with a blurred, darkened stretch of itself. This is how a 2.9:1
-      banner becomes a 16:9 backdrop without cropping its subject out of the frame.
+      banner becomes a 16:9 backdrop without cropping its subject out of the frame. Art a hero can
+      show may not use it (the pad boundary is a visible seam in the text zone): `hero_geometry`
+      refuses `extend`, so such a title is `cover` with a declared `art.subject`.
     * `crop: focus-right` / `upper` — a named anchor for a cover crop (poster from a landscape still).
     """
     w, h = size
     mode = recipe.get("mode", "cover")
-    anchor = recipe.get("anchor") or {"focus-right": "right", "upper": "upper"}.get(recipe.get("crop", ""), "center")
+    anchor = recipe_anchor(recipe)
     if mode == "extend":
         x = "W-w" if anchor == "right" else "(W-w)/2"
         graph = (f"[0:v]format=rgb24,split[a][b];"
@@ -301,7 +331,7 @@ def derive(assets, catalog):
             dst = out / key.replace("/", "_") / f"{role}.jpg"
             dst.parent.mkdir(parents=True, exist_ok=True)
             stamp = dst.with_suffix(".recipe")
-            want = json.dumps([assets[recipe["asset"]]["sha256"], size, recipe], sort_keys=True)
+            want = json.dumps([assets[recipe["asset"]]["sha256"], size, recipe_stamp(recipe)], sort_keys=True)
             if not dst.exists() or not stamp.exists() or stamp.read_text() != want:
                 derive_image(paths[recipe["asset"]], dst, size, recipe)
                 stamp.write_text(want)
@@ -443,6 +473,298 @@ def check(assets, catalog):
     return True
 
 
+# ------------------------------------------------------------------ hero art geometry --------
+
+# The home hero and the detail page both paint a title's derived 1920x1080 backdrop full bleed
+# with text laid over its left; the owner's rule is that the picture's SUBJECT is on the RIGHT and
+# neither logo nor text covers the centre of the composition. A machine cannot see a subject, so a
+# person reads it off the SOURCE image and declares it, `art.subject = [x0, y0, x1, y1]` in source
+# pixels; this module then does the part a machine can: map that box into the frame by arithmetic
+# (cover scale, then the crop at the anchor, from the asset's recorded width and height; no image
+# is opened, so it runs offline on Linux and in `make check`) and require it to be clear of every
+# zone the layout draws text or chrome in. Whether the box really covers the subject stays the
+# owner's eye (the signed contact sheet).
+
+# What a `cover` crop at each named anchor keeps: the share of the horizontal / vertical overflow
+# cut off the left / top. `_cover`'s crop expressions as numbers; any other anchor is the centre.
+COVER_ANCHORS = {"right": (1.0, 0.5), "left": (0.0, 0.5), "upper": (0.5, 0.3)}
+# The subject's centre must be at or right of 60% of the frame (the owner's rule, not a layout fact).
+HERO_CENTRE_MIN_X = 0.60 * ART[0]
+# ffmpeg rounds the scaled picture to whole pixels, so the mapped box is good to about one.
+HERO_FRAME_EPS = 1.0
+
+# The layout numbers the zones come from, each COPIED here and pinned to where it lives in the Rust
+# source: `check_hero_pins` re-reads the source and fails when a copy has drifted, so a layout change
+# cannot leave the check judging a frame that no longer exists. name -> [file, kind, key, value]:
+#   const    `const KEY: T = <expression>;` (the expression may name other pins), value the number
+#   literal  the number captured by the regex KEY (a figure only a test or a comment states)
+#   text     the source text KEY must still contain (a formula the zones rebuild), value None
+# SCR_W / SCR_H come first: later expressions are written in them.
+HERO_PINS = {
+    "SCR_W": ["rust-modules/base/src/surface.rs", "const", "LOGICAL_W", 1920.0],
+    "SCR_H": ["rust-modules/base/src/surface.rs", "const", "LOGICAL_H", 1080.0],
+    "MARGIN_X": ["rust-modules/ui/src/consts.rs", "const", "MARGIN_X", 96.0],
+    "PEEK_Y": ["rust-modules/ui/src/consts.rs", "const", "PEEK_Y", 811.0],
+    "TITLE_DY": ["rust-modules/ui/src/consts.rs", "const", "TITLE_DY", 34.0],
+    "COL_W": ["rust-modules/ui/src/landing_hero.rs", "const", "COL_W", 660.0],
+    "TEXT_BOTTOM": ["rust-modules/ui/src/landing_hero.rs", "const", "TEXT_BOTTOM", 692.0],
+    "SPACE_MD": ["rust-modules/ui/src/theme.rs", "const", "space::MD", 24.0],
+    "CTRL_H": ["rust-modules/ui/src/widgets.rs", "const", "CTRL_H", 60.0],
+    "HERO_SCRIM_W": ["rust-modules/ui/src/widgets.rs", "const", "HERO_SCRIM_W", 1536.0],
+    "HERO_SCRIM_TOP": ["rust-modules/ui/src/widgets.rs", "const", "HERO_SCRIM_TOP", 162.0],
+    "HERO_SCRIM_R_TOP": ["rust-modules/ui/src/widgets.rs", "const", "HERO_SCRIM_R_TOP", 702.0],
+    "HERO_LOGO_TOP_DETAIL": ["rust-modules/ui/src/widgets.rs", "literal", r"y=(\d+) on detail", 298.0],
+    "HERO_LOGO_TOP_HOME": ["rust-modules/ui/src/hero_logo.rs", "literal", r"tall\.y,\s*([0-9.]+),", 260.0],
+    "HERO_TEXT_W": ["rust-modules/ui/src/detail_layout.rs", "const", "HERO_TEXT_W", 943.0],
+    "PEOPLE_W": ["rust-modules/ui/src/detail_layout.rs", "const", "PEOPLE_W", 560.0],
+    "PEOPLE_LEAD": ["rust-modules/ui/src/detail_layout.rs", "const", "PEOPLE_LEAD", 32.0],
+    "PEOPLE_MAX_LINES": ["rust-modules/ui/src/detail_layout.rs", "const", "PEOPLE_MAX_LINES", 4.0],
+    # The formulas the zones rebuild from those numbers:
+    "HOME_ROW_RULE": ["rust-modules/screens/src/home/mod.rs", "text",
+                      "const HERO_ROW_Y: f32 = HERO_TEXT_BOTTOM + theme::space::MD;", None],
+    "HOME_CTRL_RULE": ["rust-modules/screens/src/home/mod.rs", "text",
+                       "const HERO_CTRL_D: f32 = StatusOverlay::CTRL_H;", None],
+    "HOME_SHELF_HEADING_RULE": ["rust-modules/screens/src/home/mod.rs", "text", "row_y - TITLE_DY - lift", None],
+    "HOME_SHELF_PEEK_RULE": ["rust-modules/screens/src/home/mod.rs", "text",
+                             "let top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos;", None],
+    "DETAIL_PEOPLE_RULE": ["rust-modules/ui/src/detail_layout.rs", "text",
+                           "Rect::new(SCR_W - MARGIN_X - PEOPLE_W, 700.0, PEOPLE_W, 100.0)", None],
+    "DETAIL_TEXT_RULE": ["rust-modules/ui/src/detail_layout.rs", "text",
+                         "Rect::new(MARGIN_X, TITLE_BOTTOM - 200.0, HERO_TEXT_W, 200.0)", None],
+}
+
+
+def _rust_expr(expr, names):
+    """The value of a Rust arithmetic expression (numbers, + - * /, names, `a::b::` paths and
+    `as f32` casts) with each name looked up in `names`. Anything else is refused."""
+    import ast
+    src = re.sub(r"\bas\s+f32\b", "", re.sub(r"(?:[A-Za-z_]\w*::)+", "", expr)).strip()
+    try:
+        tree = ast.parse(src, mode="eval")
+    except SyntaxError:
+        raise AssertionError(f"not an arithmetic expression: {expr!r}")
+
+    def ev(node):
+        if isinstance(node, ast.Expression):
+            return ev(node.body)
+        if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+            return float(node.value)
+        if isinstance(node, ast.Name):
+            assert node.id in names, f"unknown name {node.id!r} in {expr!r}"
+            return float(names[node.id])
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            return -ev(node.operand)
+        if isinstance(node, ast.BinOp) and type(node.op) in (ast.Add, ast.Sub, ast.Mult, ast.Div):
+            a, b = ev(node.left), ev(node.right)
+            return {ast.Add: a + b, ast.Sub: a - b, ast.Mult: a * b, ast.Div: a / b if b else float("nan")}[type(node.op)]
+        raise AssertionError(f"not an arithmetic expression: {expr!r}")
+    return round(ev(tree), 6)
+
+
+def _rust_pin_value(root, pin, names):
+    """What the Rust source says for one pin: a number, or (for `text`) True when the text is there.
+    Raises AssertionError when the source no longer says it."""
+    file, kind, key = pin[0], pin[1], pin[2]
+    path = root / file
+    assert path.is_file(), f"{file} does not exist"
+    text = path.read_text()
+    if kind == "text":
+        assert key in text, f"{file} no longer contains `{key}`"
+        return True
+    if kind == "literal":
+        found = re.findall(key, text)
+        assert len(found) == 1, f"{file}: /{key}/ matches {len(found)} times, not once"
+        return float(found[0])
+    scope, name = text, key
+    if "::" in key:  # `mod::NAME`: the constant inside `pub mod mod { ... }`
+        mod, name = key.split("::", 1)
+        m = re.search(rf"pub mod {mod}\s*\{{", text)
+        assert m, f"{file} has no `pub mod {mod}`"
+        scope = text[m.end():text.index("\n}", m.end())]
+    found = re.findall(rf"\bconst\s+{re.escape(name)}\s*:\s*\w+\s*=\s*([^;]+);", scope)
+    assert len(found) == 1, f"{file}: `const {name}` is declared {len(found)} times, not once"
+    return _rust_expr(found[0], names)
+
+
+def check_hero_pins(pins=None, root=None):
+    """Re-read every pinned layout number from the Rust source and fail, naming each constant and
+    its file, when a Python copy has drifted or the source no longer says what the zone is built on."""
+    pins = HERO_PINS if pins is None else pins
+    root = ROOT if root is None else pathlib.Path(root)
+    names, drift = {}, []
+    for name, pin in pins.items():
+        try:
+            got = _rust_pin_value(root, pin, names)
+        except AssertionError as e:
+            drift.append(f"{name}: {e} ({pin[0]})")
+            continue
+        if pin[1] == "text":
+            continue
+        names[name] = got
+        if pin[1] == "const":
+            names[pin[2].split("::")[-1]] = got  # an expression may use the constant's own name
+        if abs(got - pin[3]) > 1e-3:
+            drift.append(f"{name}: {pin[0]} says {got:g}, tools/demo_library.py HERO_PINS says {pin[3]:g}")
+    assert not drift, ("the hero zones no longer match the layout; update HERO_PINS (and re-check the zone "
+                       "list) from the Rust source:\n  " + "\n  ".join(drift))
+
+
+def hero_zones(pins=None):
+    """The rectangles ([x0, y0, x1, y1], frame pixels) hero art must keep its subject out of, built
+    from the pinned layout numbers. `advisory` ones are reported, never gated."""
+    v = {n: p[3] for n, p in (HERO_PINS if pins is None else pins).items()}
+    w, h = v["SCR_W"], v["SCR_H"]
+    text_r = v["MARGIN_X"] + v["HERO_TEXT_W"]
+    people_l = w - v["MARGIN_X"] - v["PEOPLE_W"]
+
+    def zone(name, rect, uses, **extra):
+        return dict(name=name, rect=rect, uses=uses, **extra)
+    return [
+        # Home: the logo (paints up from the band to y 260), title, meta, synopsis and the CTA row
+        # (HERO_ROW_Y = TEXT_BOTTOM + MD, CTRL_H tall), all in the COL_W column from the margin.
+        zone("home text column", [v["MARGIN_X"], v["HERO_LOGO_TOP_HOME"], v["MARGIN_X"] + v["COL_W"],
+                                  v["TEXT_BOTTOM"] + v["SPACE_MD"] + v["CTRL_H"]],
+             ["MARGIN_X", "HERO_LOGO_TOP_HOME", "COL_W", "TEXT_BOTTOM", "SPACE_MD", "CTRL_H"]),
+        # The peek shelf: its heading draws TITLE_DY above the row origin PEEK_Y, its cards below.
+        zone("home shelf row", [0.0, v["PEEK_Y"] - v["TITLE_DY"], w, h], ["PEEK_Y", "TITLE_DY", "SCR_H", "SCR_W"]),
+        # Detail: logo, identity line, synopsis and buttons, to the synopsis' wrap edge. The chain
+        # below the title is measured at run time, so this runs to the foot of the frame.
+        zone("detail text column", [v["MARGIN_X"], v["HERO_LOGO_TOP_DETAIL"], text_r, h],
+             ["MARGIN_X", "HERO_LOGO_TOP_DETAIL", "HERO_TEXT_W", "SCR_H"]),
+        # The facts row runs from there to the people column and sits level with that column's top
+        # line (a 4-line block reaches PEOPLE_MAX_LINES * PEOPLE_LEAD below it).
+        zone("detail facts row", [text_r, v["HERO_SCRIM_R_TOP"], people_l,
+                                  v["HERO_SCRIM_R_TOP"] + v["PEOPLE_MAX_LINES"] * v["PEOPLE_LEAD"]],
+             ["MARGIN_X", "HERO_TEXT_W", "SCR_W", "PEOPLE_W", "HERO_SCRIM_R_TOP", "PEOPLE_MAX_LINES", "PEOPLE_LEAD"]),
+        # The right-aligned Starring block, from where the right wedge starts to the frame's foot.
+        zone("detail starring column", [people_l, v["HERO_SCRIM_R_TOP"], w - v["MARGIN_X"], h],
+             ["SCR_W", "MARGIN_X", "PEOPLE_W", "HERO_SCRIM_R_TOP", "SCR_H"]),
+        # The left wedge's scrim: it darkens, it does not hide, so its share is only printed.
+        zone("hero scrim", [0.0, v["HERO_SCRIM_TOP"], v["HERO_SCRIM_W"], h],
+             ["HERO_SCRIM_TOP", "HERO_SCRIM_W", "SCR_H"], advisory=True),
+    ]
+
+
+def hero_map_box(src_w, src_h, recipe, box, frame=ART):
+    """`box` ([x0, y0, x1, y1] in source pixels) where it lands in the derived frame for a `cover`
+    recipe: scale by max(frame_w / src_w, frame_h / src_h), then crop the overflow at the anchor
+    (`COVER_ANCHORS`). Pure arithmetic on the recorded size; ffmpeg's rounding is within a pixel."""
+    assert recipe.get("mode", "cover") == "cover", "only a cover crop has this mapping"
+    fw, fh = frame
+    s = max(fw / src_w, fh / src_h)
+    fx, fy = COVER_ANCHORS.get(recipe_anchor(recipe), (0.5, 0.5))
+    ox, oy = (src_w * s - fw) * fx, (src_h * s - fh) * fy
+    x0, y0, x1, y1 = box
+    return [x0 * s - ox, y0 * s - oy, x1 * s - ox, y1 * s - oy]
+
+
+def _overlap(a, b):
+    """Area of the intersection of two [x0, y0, x1, y1] rectangles (0 when they only touch)."""
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    return w * h if w > 1e-6 and h > 1e-6 else 0.0
+
+
+def _is_box(subject):
+    return (isinstance(subject, (list, tuple)) and len(subject) == 4
+            and all(type(n) in (int, float) and n >= 0 for n in subject)
+            and subject[2] > subject[0] and subject[3] > subject[1])
+
+
+def hero_geometry(assets, rec):
+    """The hero-art verdict for one title, from its manifests alone. `verdict` is `pass`, `fail` or
+    `skip` (no art: that is a backdrop gap already); `reasons` says why it fails: `extend`/`mode`
+    (not a cover crop), `no-subject`, `bad-subject`, `outside-source`, `outside-frame` (the crop cuts
+    the subject off), `centre-left`, and `overlap:<zone>` per gated zone it touches."""
+    out = {"verdict": "fail", "reasons": [], "box": None, "overlaps": {}, "centre_x": None,
+           "scrim_share": None, "source": None}
+    art = rec.get("art")
+    if not art:
+        return dict(out, verdict="skip", reasons=["no-art"])
+    src = assets[art["asset"]]
+    out["source"] = (src["width"], src["height"])
+    mode = art.get("mode", "cover")
+    if mode != "cover":
+        out["reasons"] = ["extend" if mode == "extend" else "mode"]
+        return out
+    subject = art.get("subject")
+    if subject is None:
+        out["reasons"] = ["no-subject"]
+    elif not _is_box(subject):
+        out["reasons"] = ["bad-subject"]
+    elif subject[2] > src["width"] or subject[3] > src["height"]:
+        out["reasons"] = ["outside-source"]
+    if out["reasons"]:
+        return out
+    box = out["box"] = hero_map_box(src["width"], src["height"], art, subject)
+    fw, fh = ART
+    if box[0] < -HERO_FRAME_EPS or box[1] < -HERO_FRAME_EPS or box[2] > fw + HERO_FRAME_EPS \
+            or box[3] > fh + HERO_FRAME_EPS:
+        out["reasons"] = ["outside-frame"]
+        return out
+    out["centre_x"] = (box[0] + box[2]) / 2
+    if out["centre_x"] < HERO_CENTRE_MIN_X:
+        out["reasons"].append("centre-left")
+    area = (box[2] - box[0]) * (box[3] - box[1])
+    for z in hero_zones():
+        hit = _overlap(box, z["rect"])
+        if z.get("advisory"):
+            out["scrim_share"] = hit / area
+        else:
+            out["overlaps"][z["name"]] = hit
+            if hit:
+                out["reasons"].append(f"overlap:{z['name']}")
+    out["verdict"] = "fail" if out["reasons"] else "pass"
+    return out
+
+
+def hero_eligible(catalog):
+    """The titles the home hero can show, in catalog order: the pinned hero and its alternatives, the
+    Continue Watching deck (an episode stands for its show) and Recently Added. A title taken out
+    of all of them can never be a hero, which is the other way to satisfy the check."""
+    pool = {catalog.get("hero")} | set(catalog.get("hero_alternatives", [])) | set(catalog.get("added_order", []))
+    pool |= {c["item"].split("/")[0] for c in catalog.get("continue_watching", [])}
+    return [t["id"] for t in catalog["movies"] + catalog.get("shows", []) if t["id"] in pool]
+
+
+def hero_gap(assets, catalog, rec):
+    """The reasons `rec` fails the hero check; empty when it passes, has no art or is not eligible."""
+    if rec["id"] not in hero_eligible(catalog):
+        return []
+    v = hero_geometry(assets, rec)
+    return v["reasons"] if v["verdict"] == "fail" else []
+
+
+def hero_report(assets, catalog):
+    """Print the zones with the Rust constants they are pinned to, then one line per hero-eligible
+    title: its art recipe, the declared subject, where the box lands, the area it shares with each
+    gated zone, and the verdict."""
+    print("hero zones (frame pixels x0 y0 x1 y1); each number is pinned to the Rust source in HERO_PINS:")
+    for z in hero_zones():
+        tag = " (advisory)" if z.get("advisory") else ""
+        print(f"  {z['name']:<24} {' '.join(f'{n:g}' for n in z['rect'])}{tag}")
+    print("pins (python copy == Rust source, checked by `check --complete`):")
+    for name, (file, kind, key, value) in HERO_PINS.items():
+        print(f"  {name:<24} {'' if value is None else f'{value:g}':<7} {file} {kind} {key}")
+    print(f"the subject's centre must be at x >= {HERO_CENTRE_MIN_X:g}; `extend` art is refused\n")
+    counts = {"pass": 0, "fail": 0, "skip": 0}
+    films = {t["id"]: t for t in catalog["movies"] + catalog.get("shows", [])}
+    for key in hero_eligible(catalog):
+        rec = films[key]
+        v = hero_geometry(assets, rec)
+        counts[v["verdict"]] += 1
+        art = rec.get("art", {})
+        src = "-" if v["source"] is None else "{}x{}".format(*v["source"])
+        recipe = f"{art.get('mode', 'cover')}/{recipe_anchor(art)}" if art else "-"
+        subject = json.dumps(art.get("subject")) if art.get("subject") is not None else "-"
+        box = "-" if v["box"] is None else "[" + ", ".join(f"{n:.0f}" for n in v["box"]) + "]"
+        hits = ", ".join(f"{n} {a:.0f}px2" for n, a in v["overlaps"].items() if a) or "-"
+        scrim = "-" if v["scrim_share"] is None else f"{v['scrim_share']:.0%}"
+        print(f"{key:<26} {src:>10} {recipe:<14} subject {subject} -> {box} overlaps {hits} "
+              f"scrim {scrim} {v['verdict']} {', '.join(v['reasons']) or '-'}")
+    print(f"\nhero art: {counts['pass']} pass, {counts['fail']} fail, {counts['skip']} skip (no art)")
+
+
 # ------------------------------------------------------------------ completeness -------------
 
 # What a source file IS (`kind` in assets.json), which decides the roles it may fill: a title's
@@ -455,7 +777,7 @@ LICENCES = frozenset({"CC0 1.0", "CC0", "Public domain", "CC BY 3.0", "CC BY 4.0
 # The categories a gap is reported (and listed in the pending file) under.
 GAP_CATEGORIES = frozenset({
     "title", "year", "summary", "genres", "directors", "creators", "tagline", "cast", "writers",
-    "country", "poster", "backdrop", "logo", "still"})
+    "country", "poster", "backdrop", "hero_art", "logo", "still"})
 PENDING = ROOT / "tests" / "demo_library" / "pending.json"
 
 
@@ -501,6 +823,9 @@ def _gaps_of(assets, catalog, kind, rec):
         gaps.add("poster")
     if _asset_kind(assets, rec.get("art")) not in ("backdrop", "still"):
         gaps.add("backdrop")
+    # Art a hero can show must also put its subject on the right, clear of the text (`hero_geometry`).
+    if hero_gap(assets, catalog, rec):
+        gaps.add("hero_art")
     # A clearLogo is cut from the item's own poster; only an owner-approved title may go without.
     logo = rec.get("logo")
     cut_from_poster = (isinstance(logo, dict) and logo.get("asset") == rec.get("poster", {}).get("asset")
@@ -545,6 +870,7 @@ def check_complete(assets, catalog, pending=None):
     the list fails (new content must be complete), and so does a listed gap that no longer exists
     (the entry is deleted when its content lands, so the list can only shrink). Returns the gaps."""
     pending = load_pending() if pending is None else pending
+    check_hero_pins()
     check_assets_complete(assets)
     gaps = complete_gaps(assets, catalog)
     new = {k: sorted(set(v) - set(pending.get(k, []))) for k, v in gaps.items()}
@@ -858,7 +1184,8 @@ def fixtures(dst=FIXTURES):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("command", choices=["fetch", "derive", "credits", "site-credits", "check", "fixtures"])
+    ap.add_argument("command", choices=["fetch", "derive", "credits", "site-credits", "check", "hero-report",
+                                        "fixtures"])
     ap.add_argument("--complete", action="store_true",
                     help="with `check`: also require every title and episode to be complete "
                          "(tests/demo_library/pending.json lists what is not yet)")
@@ -878,6 +1205,8 @@ def main():
         site_credits(assets, catalog)
     elif a.command == "fixtures":
         fixtures()
+    elif a.command == "hero-report":
+        hero_report(assets, catalog)
     else:
         print("demo_library: manifests ok")
         if a.complete:
