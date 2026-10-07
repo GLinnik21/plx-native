@@ -949,3 +949,15 @@ fn an_external_grid_reports_the_landing_shift() {
     tick_grid_alone(&mut r);
     assert_eq!(r.sect.grid.landed_shift(), 0.0, "and the next tick reports nothing");
 }
+
+/// `Shelf::head` is the first card's settled, unpopped rect: the one `place` answers for it while
+/// it is not focused.
+#[test]
+fn shelf_head_is_the_first_cards_unpopped_slot() {
+    let mut r = settled::<Shelf>(8);
+    r.focus = None;
+    r.run(300);
+    let placed = r.place(100, At::SpringTarget).unwrap();
+    assert_eq!(r.sect.head(SHELF_AT), placed.rect);
+    assert_eq!(placed.rect.y, SHELF_AT.y);
+}

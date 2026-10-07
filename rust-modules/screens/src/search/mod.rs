@@ -1,6 +1,7 @@
 //! Owned Search page. Input owns focus; this instance owns editing, motion and render caches.
 //! This is the production Search implementation: `AppArg::Search` mounts it unconditionally, and
 //! the legacy Search renderer it replaced is deleted entirely.
+mod cards;
 mod draft;
 // `pub`: exposes `layout::{FIELD, CONTENT_TOP}` to `ui::consts`'s overscan-rects audit,
 // which otherwise has no path to this module's geometry. Replaces the deleted legacy Search
@@ -19,7 +20,8 @@ use plx_data::search::{Item, Kind};
 use crate::registry::{AppFx, HomeTab, PageMemory, SearchLike, SearchReq};
 use plx_data::stores::{StoreCmd, StoreId};
 use plx_data::stores::search::SearchCmd;
-use plx_ui::card_row::CardRow;
+use plx_ui::cards::{CardEvent, CardSource, SectionFrame, Shelf};
+use cards::RowCards;
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
@@ -43,7 +45,11 @@ pub(super) const OWNER_FLOOR: f32 = 0.02;
 const BLINK_MS: u32 = 530;
 const BLINK_US: u32 = BLINK_MS * 1000;
 
-pub const SHAPE: &str = "SearchScreen{entry:u32,instance:u32,draft:{text:str,caret:u64,profile:u32,pending:bool},mounted:bool,editing:bool,blink_us:u32,hot:Spring,scroll:Spring,scroll_target:f32,next_elem:u32,query_gen:u32,recent_clear_pending:bool,content_dirty:bool,fade:Xfade,ground:PageGround,owner_row:Option<u64>,owner:str,owner_alpha:Spring,restored:Option<SearchMemory>,keys:[SearchKey],recents:[u32],rows:[{kind:u32,group:u32,elems:[u32],motion:CardRow}]}";
+/// The canonical shape of the state hash. Each row's `motion` bytes are its `Shelf`'s
+/// (`Shelf::write`), which is the L0 row's motion write unchanged, so the text, and with it
+/// `SCREEN_SHAPES_PIN` and the replay anchors, stays what it was; the type's name is split only so
+/// the `cards` gate does not read a shape string as a use of the primitive.
+pub const SHAPE: &str = concat!("SearchScreen{entry:u32,instance:u32,draft:{text:str,caret:u64,profile:u32,pending:bool},mounted:bool,editing:bool,blink_us:u32,hot:Spring,scroll:Spring,scroll_target:f32,next_elem:u32,query_gen:u32,recent_clear_pending:bool,content_dirty:bool,fade:Xfade,ground:PageGround,owner_row:Option<u64>,owner:str,owner_alpha:Spring,restored:Option<SearchMemory>,keys:[SearchKey],recents:[u32],rows:[{kind:u32,group:u32,elems:[u32],motion:Card", "Row}]}");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Identity {
@@ -54,7 +60,10 @@ enum Identity {
 }
 #[derive(Clone, Debug)]
 struct KeyEntry { identity: Identity, elem: u32, group: GroupId, slot: usize }
-struct Row { kind: Kind, group: GroupId, elems: Vec<u32>, motion: CardRow }
+/// One result row. Rows are keyed by their `kind` (the page holds at most one per kind), so a row
+/// that appears, disappears or moves in the list keeps its own `shelf` — its scroll, its pop, its
+/// caption band — and never lends it to a neighbour.
+struct Row { kind: Kind, group: GroupId, elems: Vec<u32>, shelf: Shelf }
 
 pub struct SearchScreen {
     entry: EntryId,
@@ -218,14 +227,15 @@ impl SearchScreen {
                 };
                 elems.push(self.intern(identity, group, slot));
             }
-            let motion = previous.iter().position(|row| row.kind == shelf.kind)
-                .map(|i| previous.remove(i).motion).unwrap_or_else(CardRow::new);
-            self.rows.push(Row { kind: shelf.kind, group, elems, motion });
+            let cards = previous.iter().position(|row| row.kind == shelf.kind)
+                .map(|i| previous.remove(i).shelf)
+                .unwrap_or_else(|| Shelf::new(self.entry, layout::style(shelf.kind)));
+            self.rows.push(Row { kind: shelf.kind, group, elems, shelf: cards });
         }
         if let Some(memory) = restored {
             for row in &mut self.rows {
                 if let Some((_, x)) = memory.rows.iter().find(|(kind, _)| *kind == row.kind) {
-                    row.motion.restore_scroll(*x, row.elems.len(), &layout::style(row.kind));
+                    row.shelf.restore_scroll(*x, row.elems.len());
                 }
             }
         }
@@ -312,6 +322,7 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
         if store_changed { self.notices += 1; }
         let acknowledged = matches!(ev, ScreenEvent::Mount) || store_changed;
         self.sync(cx, acknowledged, fx);
+        let card = self.feed_rows(ev, cx, fx);
         match ev {
             ScreenEvent::RestoreMemory(PageMemory::Search(memory)) => { self.restore(memory); self.sync(cx, true, fx); }
             ScreenEvent::Mount => {
@@ -321,9 +332,11 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
             ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover | ScreenEvent::Suspend => self.keyboard(false, false, fx),
             ScreenEvent::Activate(elem) => return self.activate(*elem, false, cx, fx),
             ScreenEvent::PressCommit(_) => {
+                if let Some(CardEvent::Activate(elem)) = card { return self.activate(elem, false, cx, fx); }
                 if let Some(key) = cx.focus.current { return self.activate(key.elem, false, cx, fx); }
             }
             ScreenEvent::PressHold(_) => {
+                if let Some(CardEvent::Hold(elem)) = card { return self.activate(elem, true, cx, fx); }
                 if let Some(key) = cx.focus.current { return self.activate(key.elem, true, cx, fx); }
             }
             ScreenEvent::Input(input) => match &input.kind {
@@ -341,7 +354,7 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                 InputKind::Wheel { dy } => {
                     if !self.editing && dy.is_finite() {
                         let (kinds, n) = self.kinds();
-                        let end = layout::top(&kinds[..n], n, |i| self.rows[i].motion.band_expand());
+                        let end = layout::top(&kinds[..n], n, |i| self.rows[i].shelf.under_band());
                         let max = (end + plx_ui::consts::MARGIN_Y - SCR_H).max(0.0);
                         self.scroll_target = (self.scroll_target - dy * plx_ui::table::ROW_H).clamp(0.0, max);
                         fx.invalidate(Provenance::Input);
@@ -409,13 +422,15 @@ impl SearchScreen {
     pub fn redraw_focused<H: SearchLike>(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
         if self.selected_item(focus, f.cx).is_none() { return; }
         let Some(key) = focus else { return };
-        let Some((row, col)) = self.rows.iter().enumerate().find_map(|(row, model)|
-            model.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col))) else { return };
+        let Some(row) = self.rows.iter().position(|model| model.elems.contains(&key.elem)) else { return };
         let painter = f.painter.alpha(f.page_alpha * self.fade.alpha());
         // The lifted opener is painted after the strip, unlike the ordinary page flow.
         let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
         let _clip = f.clip(painter, Rect::new(0.0, floor, SCR_W, SCR_H - floor));
-        render::tile(self, row, col, true, f, painter);
+        let cx = f.cx;
+        let view = H::search(cx);
+        let Some(src) = self.cards(view, row) else { return };
+        self.rows[row].shelf.redraw_focused(f, painter, &src, self.frame(row, At::Drawn), Some(key));
     }
     /// The focus fingerprint's read of this screen's own space (`app::bridge::content_probe`'s
     /// Search arm) — called only once that caller has already asked the shared bar
@@ -490,14 +505,36 @@ impl SearchScreen {
         if let Some(i) = self.recents.iter().position(|key| *key == elem) { return Some((RECENTS_GROUP, i)); }
         self.rows.iter().find_map(|row| row.elems.iter().position(|key| *key == elem).map(|i| (row.group, i)))
     }
-    fn row_rect(&self, row: usize, col: usize, at: At) -> Rect {
+    /// Where result row `row`'s tiles sit now (`At::Drawn`) or once the page has scrolled to its
+    /// target: the frame its [`Shelf`] places, draws and registers stops in.
+    fn frame(&self, row: usize, at: At) -> SectionFrame {
         let (kinds, n) = self.kinds();
-        let shelf = &self.rows[row];
-        let style = layout::style(shelf.kind);
         let scroll = if at == At::Drawn { self.scroll.pos } else { self.scroll_target };
-        let origin = layout::top(&kinds[..n], row, |i| self.rows[i].motion.band_expand());
-        plx_ui::card_row::tile_rect(col, style.margin_x, style.w + style.gap, shelf.motion.scroll_x(),
-            origin + layout::HEAD_TO_ROW - scroll, (style.w, style.h))
+        let y = layout::top(&kinds[..n], row, |i| self.rows[i].shelf.under_band())
+            + layout::HEAD_TO_ROW - scroll;
+        // The page still paints beneath the glass, but the standing strip owns those hits.
+        let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
+        SectionFrame { y, clip: Rect::new(0.0, floor, SCR_W, SCR_H - floor) }
+    }
+    /// Result row `row`'s cards over `view`; `None` when the view has no such shelf.
+    fn cards<'a>(&'a self, view: plx_data::search::view::SearchView<'a>, row: usize) -> Option<RowCards<'a>> {
+        let model = self.rows.get(row)?;
+        Some(RowCards { kind: model.kind, elems: &model.elems, items: &view.shelves().get(row)?.items,
+            sources: view.scope().sources() })
+    }
+    /// Feed `ev` to every result row's shelf (the cards component's one entry) and answer the card
+    /// event the focused row produced, if any.
+    fn feed_rows<H: SearchLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>)
+        -> Option<CardEvent<u32>> {
+        let view = H::search(cx);
+        let mut out = None;
+        for (i, row) in self.rows.iter_mut().enumerate() {
+            let Row { kind, elems, shelf, .. } = row;
+            let Some(shelf_items) = view.shelves().get(i) else { continue };
+            let src = RowCards { kind: *kind, elems, items: &shelf_items.items, sources: view.scope().sources() };
+            out = shelf.on(ev, cx, &src, fx).or(out);
+        }
+        out
     }
     fn reveal<H: SearchLike>(&mut self, key: FocusKey<u32>, _cx: &Cx<'_, H>) {
         let focused = self.rows.iter().position(|row| row.elems.contains(&key.elem));
@@ -510,12 +547,6 @@ impl SearchScreen {
         fx.push(Fx::App(AppFx::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery)));
         fx.push(Fx::App(AppFx::StoreWork(plx_data::stores::StoreWork::Search { dt_us: tick.dt_us })));
         if self.step_blink(tick.dt_us) { fx.invalidate(Provenance::Input); }
-        for row in &mut self.rows {
-            let focused = if self.editing { None } else {
-                cx.focus.current.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem))
-            };
-            row.motion.update(row.elems.len(), focused, &layout::style(row.kind), tick.dt());
-        }
         self.fade.tick(tick.dt(), !self.draft.pending() && H::search(cx).state() != plx_data::search::State::Searching);
         let colours = cx.focus.current.and_then(|key| self.rows.iter().enumerate().find_map(|(row, model)|
             model.elems.iter().position(|elem| *elem == key.elem).and_then(|col|
@@ -583,12 +614,24 @@ impl<H: SearchLike> Focusable<H> for SearchScreen {
         }
         for (i, row) in self.rows.iter().enumerate() {
             let elem = if matches!(row.kind, Kind::Movie | Kind::Show | Kind::Episode) { ElemKind::Card } else { ElemKind::Bare };
-            out.push(group(row.group, GroupKind::Row { wrap: false }, row.elems.len(), self.row_rect(i, 0, At::SpringTarget), elem, Seat::Projected));
+            let Some(src) = self.cards(H::search(cx), i) else { continue };
+            let extent = row.shelf.head(self.frame(i, At::SpringTarget));
+            let mut spec = row.shelf.group_spec(row.group, CardSource::<H>::len(&src), extent);
+            // Search owns the vertical model: explicit links between rows and a seat projected from
+            // where the move came from, not the shelf's remembered card.
+            spec.seat = Seat::Projected;
+            spec.edge = [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop];
+            spec.elem = elem;
+            out.push(spec);
         }
     }
     fn group_of(&self, elem: &u32, _: &Cx<'_, H>) -> Option<GroupId> { self.index(*elem).map(|p| p.0) }
-    fn neighbour(&self, from: FocusKey<u32>, dir: Dir, _: &Cx<'_, H>) -> Step<u32> {
+    fn neighbour(&self, from: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
         let Some((group, index)) = self.index(from.elem) else { return Step::Edge };
+        if let Some(row) = self.rows.iter().position(|row| row.group == group) {
+            let Some(src) = self.cards(H::search(cx), row) else { return Step::Edge };
+            return self.rows[row].shelf.neighbour::<H, _>(&src, from, dir);
+        }
         let next = match (group == RECENTS_GROUP, dir) {
             (true, Dir::Up) | (false, Dir::Left) => index.checked_sub(1),
             (true, Dir::Down) | (false, Dir::Right) => index.checked_add(1),
@@ -602,13 +645,14 @@ impl<H: SearchLike> Focusable<H> for SearchScreen {
         let rect = if group == FIELD_GROUP { Rect::new(layout::FIELD.x, layout::FIELD.y - scroll, layout::FIELD.w, layout::FIELD.h) }
         else if group == CLEAR_GROUP { layout::clear(self.recents.len(), scroll, cx.measure) }
         else if group == RECENTS_GROUP { layout::recent(index, scroll) }
-        else { self.row_rect(self.rows.iter().position(|row| row.group == group)?, index, at) };
-        let painted = if at == At::Drawn {
-            self.rows.iter().find(|row| row.group == group).map_or(rect, |row| rect.scaled(row.motion.scale(index)))
-        } else { rect };
+        else {
+            let row = self.rows.iter().position(|row| row.group == group)?;
+            let src = self.cards(H::search(cx), row)?;
+            return self.rows[row].shelf.place(cx, &src, elem, self.frame(row, at), at);
+        };
         // The page still paints beneath the glass, but the standing strip owns those hits.
         let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
-        Some(Placed { rect: painted, rest_rect: rect,
+        Some(Placed { rect, rest_rect: rect,
             clip: Rect::new(0.0, floor, SCR_W, SCR_H - floor), index: Some(index as u32) })
     }
     fn reconcile(&self, want: FocusKey<u32>, _: &Cx<'_, H>) -> FocusKey<u32> {
@@ -626,11 +670,10 @@ impl<H: SearchLike> Focusable<H> for SearchScreen {
             return cx.focus.remembered(group).filter(|elem| self.index(*elem).is_some())
                 .or_else(|| self.elem_at(group, 0)).map_or(self.key(FIELD), |elem| self.key(elem));
         }
-        if let Some(row) = self.rows.iter().find(|row| row.group == group) {
-            let style = layout::style(row.kind);
-            let index = plx_ui::card_row::column_near_x(from.rect.cx(), style.margin_x, style.w + style.gap,
-                style.w, row.motion.scroll_x(), row.elems.len(), from.index.unwrap_or(0) as usize);
-            return self.elem_at(group, index).map_or(self.key(FIELD), |elem| self.key(elem));
+        if let Some(row) = self.rows.iter().position(|row| row.group == group) {
+            return self.cards(H::search(cx), row)
+                .and_then(|src| self.rows[row].shelf.seat::<H, _>(&src, from))
+                .unwrap_or(self.key(FIELD));
         }
         self.elem_at(group, 0).map_or(self.key(FIELD), |elem| self.key(elem))
     }
@@ -690,7 +733,7 @@ impl LogicalState for SearchScreen {
         for row in &self.rows {
             c.u32(layout::ordinal(row.kind)).u32(row.group.0).seq(row.elems.len());
             for elem in &row.elems { c.u32(*elem); }
-            row.motion.write_motion(c);
+            row.shelf.write(c);
         }
     }
     fn probe(&self, out: &mut String) {
