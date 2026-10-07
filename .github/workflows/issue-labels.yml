@@ -14,8 +14,10 @@ name: Issue labels
 # whatever the model answers is filtered down to the repository's own labels before anything is
 # written. The token can write issues and nothing else.
 #
-# Claude picks the labels when the repository has an `ANTHROPIC_API_KEY` Actions secret; without
-# it the job still runs and labels from keyword rules (one kind, one area, `user-report`).
+# A model picks the labels when the repository has a `COPILOT_GITHUB_TOKEN` Actions secret (a
+# fine-grained personal access token with the "Copilot Requests" permission; Copilot Free works) or
+# an `ANTHROPIC_API_KEY` one. Without either the job still runs and labels from keyword rules (one
+# kind, one area, `user-report`).
 
 on:
   issues:
@@ -45,14 +47,20 @@ jobs:
     name: label issues
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      HAS_COPILOT: ${{ secrets.COPILOT_GITHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           sparse-checkout: ci/label-issue.py
           sparse-checkout-cone-mode: false
+      - name: Install the Copilot CLI
+        if: env.HAS_COPILOT == 'true'
+        run: npm install -g @github/copilot@1.0.92
       - name: Label
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           EVENT: ${{ github.event_name }}
           ACTION: ${{ github.event.action }}

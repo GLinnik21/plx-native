@@ -10,12 +10,18 @@ How a label is chosen:
 * `user-report` is not guessed: it goes on when the author is not the owner, a member or a
   collaborator (`author_association`), which is what "reported by a user of a released build"
   means for an issue filed here.
-* The kind and areas come from Claude when the repository has an `ANTHROPIC_API_KEY` Actions
-  secret, given the repository's labels and their descriptions as they are right now.
+* The kind and areas come from a model, given the repository's labels and their descriptions as
+  they are right now: GitHub Copilot when the repository has a `COPILOT_GITHUB_TOKEN` Actions
+  secret (a fine-grained personal access token with the "Copilot Requests" permission; one
+  prompt per issue, which Copilot Free's monthly allowance covers at this repository's rate), or
+  Claude when it has an `ANTHROPIC_API_KEY` secret. Copilot runs as the Copilot CLI in an empty
+  directory with its shell, file-write, URL and built-in MCP tools denied and without the
+  workflow's issue-writing token in its environment, so an issue body that tries to steer it has
+  nothing to act with.
   A label added to the repository is therefore a candidate the next time without touching this
   file. The answer is untrusted text: anything that is not one of the candidate labels is dropped,
   at most one kind and MAX_AREAS areas survive.
-* Without the secret, or if the API is unreachable or answers nonsense, KEYWORDS decides instead
+* Without either secret, or if the model fails or answers nonsense, KEYWORDS decides instead
   (one kind, one area), so a missing key or an outage degrades to coarser labels, never to none.
   (GitHub Models, which needed no secret, was retired on 2026-07-30.)
 
@@ -23,7 +29,7 @@ Triage outcomes (`duplicate`, `invalid`, `wontfix`, `good first issue`, `help wa
 maintainer's call and are never candidates.
 
     ci/label-issue.py --issue 478            # label one issue (GITHUB_TOKEN, GITHUB_REPOSITORY,
-                                             # optional ANTHROPIC_API_KEY)
+                                             # optional COPILOT_GITHUB_TOKEN / ANTHROPIC_API_KEY)
     ci/label-issue.py --unlabeled            # label every open issue that has no labels
     ci/label-issue.py --issue 478 --dry-run  # print the decision, change nothing
     ci/label-issue.py --selftest             # pure logic, no network; `make check` runs it
@@ -34,7 +40,10 @@ import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -92,14 +101,16 @@ def prompt(issue, cands):
 
 def parse_answer(text):
     """The label list in a model answer, or None when there is no JSON object with `labels`."""
-    m = re.search(r"\{.*\}", text or "", re.S)
-    if not m:
-        return None
-    try:
-        value = json.loads(m.group(0)).get("labels")
-    except (ValueError, AttributeError):
-        return None
-    return [v for v in value if isinstance(v, str)] if isinstance(value, list) else None
+    # The innermost object that names `labels`: a CLI may print other text, braces included,
+    # around the answer.
+    for m in re.finditer(r'\{[^{}]*"labels"[^{}]*\}', text or ""):
+        try:
+            value = json.loads(m.group(0)).get("labels")
+        except ValueError:
+            continue
+        if isinstance(value, list):
+            return [v for v in value if isinstance(v, str)]
+    return None
 
 
 def sanitize(picked, cands):
@@ -174,6 +185,42 @@ def paged(url, token):
         page += 1
 
 
+def copilot_asker(token, exe="copilot"):
+    """`ask(messages) -> str | None` through the Copilot CLI; None without a token or the CLI."""
+    def ask(messages):
+        path = shutil.which(exe)
+        if not token or not path:
+            return None
+        text = messages[0]["content"] + "\n\n" + messages[1]["content"]
+        cmd = [path, "-p", text, "-s", "--disable-builtin-mcps",
+               "--deny-tool=shell", "--deny-tool=write", "--deny-tool=url"]
+        # Only what the CLI needs: no GITHUB_TOKEN, so it holds no credential that can write here.
+        env = {"PATH": os.environ.get("PATH", ""), "COPILOT_GITHUB_TOKEN": token}
+        with tempfile.TemporaryDirectory() as home:
+            env["HOME"] = home
+            try:
+                run = subprocess.run(cmd, cwd=home, env=env, capture_output=True, text=True, timeout=180)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                print(f"Copilot unavailable ({e}); using keyword rules", file=sys.stderr)
+                return None
+        if run.returncode != 0:
+            print(f"Copilot failed (exit {run.returncode}): {run.stderr.strip()[-500:]}", file=sys.stderr)
+            return None
+        return run.stdout
+    return ask
+
+
+def first_answer(*askers):
+    """One asker that tries each of `askers` in turn and returns the first non-None answer."""
+    def ask(messages):
+        for a in askers:
+            answer = a(messages)
+            if answer is not None:
+                return answer
+        return None
+    return ask
+
+
 def model_asker(api_key):
     """`ask(messages) -> str | None` against the Anthropic Messages API; None without a key."""
     def ask(messages):
@@ -225,9 +272,11 @@ def main():
                     if "pull_request" not in i and not i.get("labels")]
     if not numbers:
         sys.exit("nothing to do: pass --issue N or --unlabeled")
+    copilot = os.environ.get("COPILOT_GITHUB_TOKEN")
     api_key = os.environ.get("ANTHROPIC_API_KEY")
-    print("classifier: " + (MODEL if api_key else "keyword rules (no ANTHROPIC_API_KEY)"))
-    ask = model_asker(api_key)
+    names = (["Copilot CLI"] if copilot else []) + ([MODEL] if api_key else [])
+    print("classifier: " + (", then ".join(names) if names else "keyword rules (no model secret)"))
+    ask = first_answer(copilot_asker(copilot), model_asker(api_key))
     for n in numbers:
         label_issue(repo, n, token, repo_labels, ask, args.dry_run, args.only_if_unlabeled or args.unlabeled)
 
@@ -297,6 +346,32 @@ def selftest():
 
         def test_no_api_key_means_keywords(self):
             self.assertIsNone(model_asker(None)(prompt(arabic, candidates(labels))))
+            self.assertIsNone(copilot_asker(None)(prompt(arabic, candidates(labels))))
+            self.assertIsNone(copilot_asker("t", exe="no-such-copilot-cli")(prompt(arabic, candidates(labels))))
+
+        def test_cli_chatter_around_the_answer(self):
+            out = 'Thinking {about it}...\n{"labels": ["bug", "subtitles"]}\nTotal usage: {1 request}'
+            self.assertEqual(parse_answer(out), ["bug", "subtitles"])
+
+        def test_first_answer_falls_through(self):
+            ask = first_answer(lambda m: None, lambda m: "b", lambda m: "c")
+            self.assertEqual(ask([]), "b")
+            self.assertIsNone(first_answer(lambda m: None)([]))
+
+        def test_copilot_gets_no_github_token(self):
+            import stat
+            with tempfile.TemporaryDirectory() as d:
+                fake = os.path.join(d, "copilot")
+                with open(fake, "w") as f:
+                    f.write('#!/bin/sh\necho "{\\"labels\\": [\\"${GITHUB_TOKEN:-none}\\", \\"$COPILOT_GITHUB_TOKEN\\"]}"\n')
+                os.chmod(fake, stat.S_IRWXU)
+                old = os.environ.get("GITHUB_TOKEN")
+                os.environ["GITHUB_TOKEN"] = "write-token"
+                try:
+                    out = copilot_asker("copilot-token", exe=fake)(prompt(arabic, candidates(labels)))
+                finally:
+                    os.environ.pop("GITHUB_TOKEN") if old is None else os.environ.__setitem__("GITHUB_TOKEN", old)
+            self.assertEqual(parse_answer(out), ["none", "copilot-token"])
 
         def test_keywords_question(self):
             issue = {"title": "How do I change the server?", "body": "", "labels": []}
