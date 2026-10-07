@@ -83,8 +83,8 @@ fn a_failed_source_backs_off_alone_and_the_others_still_answer() {
     owner.set_query("wallace");
     let gen = owner.state.gen;
 
-    owner.adapter.fetch[0].claim();
-    owner.adapter.fetch[1].claim();
+    owner.adapter.fetch[0].claim(gen);
+    owner.adapter.fetch[1].claim(gen);
     owner.land(
         0,
         gen,

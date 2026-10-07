@@ -330,7 +330,7 @@ impl SubSearchState {
         if self.retry_cd > 0 { self.retry_cd -= 1; }
         let mut changed = false;
         let mail = crate::stores::take_landing_owed(gate, crate::stores::StoreId::SubtitleSearch,
-            || adapter.fetch.busy(), || adapter.fetch.take());
+            || adapter.fetch.busy(), || adapter.fetch.take_current(|m| m.gen));
         if let Some(mail) = mail {
             // every landing repaints, the failure branch included — a spinner already answered
             // must not wait for the next keypress
@@ -365,7 +365,7 @@ impl SubSearchState {
         };
         let generation = self.generation;
         let fallback = job.failure();
-        adapter.fetch.claim();
+        adapter.fetch.claim(generation);
         let worker = Arc::clone(adapter);
         let spawned = plx_base::task::spawn_small("subsearch", move || {
             // the mailbox is filled OUTSIDE the guard, so a panicking job lands as a FAILURE and
@@ -710,14 +710,14 @@ mod tests {
 
     /// DUMP MODE at the SubtitleSearch site, through the real pump: a request that is out lands on
     /// the pump that runs, however late the worker posts (25 ms here). A plain take (the conversion
-    /// reverted) returns empty and the first assertion fails. A request that was superseded is the
-    /// landgate module doc's known hole, not covered. Serial for the reason the test above gives.
+    /// reverted) returns empty and the first assertion fails. A superseded request is the next
+    /// test. Serial for the reason the test above gives.
     #[test]
     fn dump_mode_a_request_out_lands_on_the_pump_that_runs_whatever_the_worker() {
         let _serial = plx_base::testlock::serial();
         let (mut state, adapter) = opened("nl");
         let generation = state.generation();
-        adapter.fetch.claim();
+        adapter.fetch.claim(generation);
         let gate = plx_machine::landgate::Gate::default();
         gate.arm_dump(std::time::Duration::from_secs(20));
         let worker = Arc::clone(&adapter);
@@ -730,6 +730,34 @@ mod tests {
         assert_eq!(state.view().status(), SearchStatus::Ready);
         assert_eq!(state.view().hits().len(), 1);
         assert!(!adapter.busy_for_test(), "the TAKE released the claim");
+        join.join().unwrap();
+    }
+
+    /// A superseded request's stale answer arrives FIRST: it must neither end the dump wait nor
+    /// release the NEW request's claim, so the new answer lands on the pump that was owed it.
+    #[test]
+    fn dump_mode_a_superseded_requests_stale_answer_does_not_release_the_new_claim() {
+        let _serial = plx_base::testlock::serial();
+        let (mut state, adapter) = opened("nl");
+        let stale = state.generation();
+        adapter.fetch.claim(stale); // request A is out
+        state.run(&adapter, SubSearchCmd::SetLanguage("en".into())); // supersedes A
+        let current = state.generation();
+        assert_ne!(stale, current);
+        adapter.fetch.claim(current); // request B is out
+        let gate = plx_machine::landgate::Gate::default();
+        gate.arm_dump(std::time::Duration::from_secs(20));
+        let worker = Arc::clone(&adapter);
+        let join = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            worker.land(stale, Landing::Search(Ok(vec![hit("/library/streams/9", "old", 5)])));
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            worker.land(current, Landing::Search(Ok(vec![hit("/library/streams/1", "a", 5)])));
+        });
+        assert!(state.pump_with_gate(&adapter, &gate),
+            "B was out when the pump ran, so B's answer must land on this pump");
+        assert_eq!(state.view().hits().len(), 1);
+        assert!(!adapter.busy_for_test(), "B's own answer released B's claim");
         join.join().unwrap();
     }
 

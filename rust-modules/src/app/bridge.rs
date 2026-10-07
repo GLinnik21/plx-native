@@ -1748,7 +1748,7 @@ impl Bridge {
         // frame's own work) spawned, so a request issued in iteration k lands in k+1 whatever the
         // worker's timing. The claim is the adapter's own count (`HubsStore::owed`).
         let mut results = self.stores.landgate.take_all_owed(StoreId::Hubs.ord(), StoreId::Hubs.name(),
-            || self.stores.hubs.owed(), || self.stores.hubs.take_results());
+            |_| self.stores.hubs.owed(), || self.stores.hubs.take_results());
         results.sort_by_key(|result| result.request_id());
         results.into_iter().map(|result| (
             plx_machine::machine::Addr {
