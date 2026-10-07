@@ -272,7 +272,8 @@ pub fn geometry(mount: Mount) -> Outcome {
 /// Landing: reorder, insert-above and remove-focused keep the focused identity (removal falls to
 /// a placeable element); on the frame the landing becomes visible every card but the focused one
 /// is at rest (the tile now at the old index lets go of nothing), and a focused element that
-/// stayed the same item has not moved on screen.
+/// stayed the same item has not moved on screen, and the scroll stays within range on the landing's
+/// frame and every one after it until rest.
 pub fn landing(mount: Mount) -> Outcome {
     let mut bad = Vec::new();
     for l in [Landing::Reorder, Landing::InsertAbove, Landing::RemoveFocused] {
@@ -310,7 +311,19 @@ pub fn landing(mount: Mount) -> Outcome {
                 }
             }
         }
-        h.tick(SETTLE);
+        // the scroll never leaves its range: not on the frame of the landing, nor on any frame
+        // until rest (a shift the row cannot honour clamps instead of overscrolling and gliding back)
+        let mut under = h.scroll().filter(|&sx| sx < -0.5).map(|sx| (0, sx));
+        for frame in 1..SETTLE {
+            if under.is_some() {
+                break;
+            }
+            h.tick(1);
+            under = h.scroll().filter(|&sx| sx < -0.5).map(|sx| (frame, sx));
+        }
+        if let Some((frame, sx)) = under {
+            bad.push(format!("{l:?}: scrolled to {sx} (below 0) on frame {frame} after the landing"));
+        }
         let Some(now) = h.focused() else {
             bad.push(format!("{l:?}: focus was lost"));
             continue;

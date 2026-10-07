@@ -357,6 +357,18 @@ impl CardRow {
         let max = (n as f32 * (sty.w + sty.gap) - sty.gap - viewport).max(0.0);
         self.scroll_x.jump(scroll.clamp(0.0, max));
     }
+    /// Pull the scroll back into `[0, max]` for `n` cells when it lies outside (a [`relocate`](Self::relocate)
+    /// shift the row cannot honour: a tile near either end, or a row that fits whole). The scroll
+    /// target is derived from the scroll, so this moves both; a scroll already inside is left
+    /// alone, so a clamp that does not bite adds no spring.
+    pub fn clamp_scroll(&mut self, n: usize, sty: &RowStyle) {
+        let viewport = SCR_W - 2.0 * sty.margin_x;
+        let max = (n as f32 * (sty.w + sty.gap) - sty.gap - viewport).max(0.0);
+        let at = self.scroll_x.pos.clamp(0.0, max);
+        if at != self.scroll_x.pos {
+            self.scroll_x.jump(at);
+        }
+    }
     /// Which cell holds focus (`-1` none), as `update` last recorded it.
     #[inline]
     pub fn focus(&self) -> i32 {

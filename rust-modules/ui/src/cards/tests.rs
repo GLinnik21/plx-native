@@ -555,6 +555,68 @@ fn grid_landing_carries_the_pop_and_the_scroll() {
     a_landing_carries_the_pop_with_the_focused_elem::<Grid>(poster_grid::COLS);
 }
 
+/// The farthest a `n`-card HOME shelf can scroll.
+fn home_max_scroll(n: usize) -> f32 {
+    let sty = &RowStyle::HOME;
+    (n as f32 * (sty.w + sty.gap) - sty.gap - (crate::consts::SCR_W - 2.0 * sty.margin_x)).max(0.0)
+}
+
+/// Move `elem` to index `to` of the source (a landing that reorders).
+fn put_at(r: &mut Rig<Shelf>, elem: u32, to: usize) {
+    r.src.elems.retain(|&e| e != elem);
+    r.src.elems.insert(to, elem);
+}
+
+/// A landing that moves the focused card to the head of a row sitting at scroll 0 would shift the
+/// scroll to -2 pitches (a blank band on the left, then a glide back): the scroll never leaves
+/// `[0, max]` on any frame.
+#[test]
+fn shelf_landing_to_the_head_never_overscrolls() {
+    let mut r = settled::<Shelf>(40);
+    r.land_focus(102, By::Restore);
+    r.run(240);
+    assert_eq!(r.sect.scroll(), 0.0, "card 2 is on screen, the row did not scroll");
+    put_at(&mut r, 102, 0);
+    let max = home_max_scroll(40);
+    for frame in 0..240 {
+        r.run(1);
+        let sx = r.sect.scroll();
+        assert!((0.0..=max).contains(&sx), "frame {frame}: scroll {sx} left [0, {max}]");
+    }
+}
+
+/// An insert above the focus on a row that fits entirely cannot be honoured at all: the scroll
+/// stays exactly at 0 with no spring.
+#[test]
+fn shelf_landing_on_a_row_that_fits_stays_at_zero() {
+    let mut r = settled::<Shelf>(3);
+    r.land_focus(101, By::Restore);
+    r.run(240);
+    r.src.elems.insert(0, 900);
+    for frame in 0..240 {
+        r.run(1);
+        assert_eq!(r.sect.scroll(), 0.0, "frame {frame}: a row that fits scrolled");
+    }
+}
+
+/// Where the shift IS honourable (a landing mid-row) the tile keeps its screen x exactly, and the
+/// scroll moves by the whole shift.
+#[test]
+fn shelf_landing_mid_row_keeps_the_tile_exactly() {
+    let mut r = settled::<Shelf>(40);
+    r.land_focus(112, By::Restore);
+    r.run(240);
+    let (before, sx) = (Section::place(&r.sect, &r.cx(), &r.src, 112, At::Drawn).unwrap().rect, Section::scroll(&r.sect));
+    assert!(sx > 0.0 && sx < home_max_scroll(40) - 400.0, "a mid-row scroll, got {sx}");
+    r.src.elems.insert(0, 900);
+    for frame in 0..2 {
+        r.run(1);
+        let now = Section::place(&r.sect, &r.cx(), &r.src, 112, At::Drawn).unwrap().rect;
+        assert!((now.x - before.x).abs() < 0.01, "frame {frame}: x {} -> {}", before.x, now.x);
+    }
+    assert!((r.sect.scroll() - sx - (RowStyle::HOME.w + RowStyle::HOME.gap)).abs() < 0.01);
+}
+
 /// A restore or reconcile arrival is adopted whole and the tile it leaves goes straight to rest —
 /// it was not "let go" by anyone — with ONE lifted tile even on the frame before the tick.
 fn a_non_deliberate_arrival_rests_the_old_tile<S: Section>() {
@@ -982,6 +1044,72 @@ fn shelf_head_is_the_first_cards_unpopped_slot() {
     assert_eq!(placed.rect.y, SHELF_AT.y);
 }
 
+/// A dormant shelf (its page still dissolving in) holds every card at rest, whatever focus does,
+/// and the first awake tick starts the focused card's pop FROM REST, as a deliberate move does,
+/// even for an arrival that would otherwise be adopted whole. Nothing is lifted meanwhile.
+#[test]
+fn a_dormant_shelf_keeps_its_cards_at_rest_and_wakes_growing_from_rest() {
+    let mut r = settled::<Shelf>(8);
+    let full = RowStyle::HOME.focus_scale;
+    r.sect.dormant(true);
+    r.land_focus(102, By::Restore);
+    for _ in 0..30 {
+        r.run(1);
+        assert_eq!(r.scale(102), Some(1.0), "no lift under the fade");
+        assert_eq!(lifted(&r), 0);
+    }
+    assert!(!r.run(1), "a dormant shelf at rest is quiet");
+    r.sect.dormant(false);
+    r.run(1);
+    let first = r.scale(102).unwrap();
+    assert!(first > 1.0 && first < full - 0.02, "the pop starts from rest, not whole: {first}");
+    r.run(200);
+    assert!((r.scale(102).unwrap() - full).abs() < 0.002);
+}
+
+/// A lifted card that goes dormant lets go over frames and ends parked exactly at rest.
+#[test]
+fn a_shelf_that_goes_dormant_lets_its_lifted_card_go() {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Dir);
+    r.run(200);
+    assert!(r.scale(101).unwrap() > 1.05);
+    r.sect.dormant(true);
+    r.run(300);
+    assert_eq!(r.scale(101), Some(1.0));
+    assert!(r.sect.at_rest(), "parked exactly at rest, so an owner may stop stepping it");
+    assert!(!r.run(1));
+}
+
+/// `cull_margin` keeps painting and registering a card whose left edge is just past the screen's.
+#[test]
+fn a_cull_margin_keeps_a_card_just_off_the_left_edge() {
+    let mut plain = settled::<Shelf>(60);
+    let mut margined = settled::<Shelf>(60);
+    margined.sect = Shelf::new(ENTRY, &RowStyle::HOME).cull_margin(400.0);
+    for r in [&mut plain, &mut margined] {
+        r.land_focus(130, By::Restore);
+        r.run(300);
+    }
+    let (a, b) = (plain.stops(1.0).len(), margined.stops(1.0).len());
+    assert!(b > a, "a 400 px margin registers cards the plain shelf culls: {a} vs {b}");
+}
+
+/// `paint` draws exactly what `draw` does without registering stops.
+#[test]
+fn paint_draws_the_cards_and_registers_no_stops() {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Restore);
+    r.run(2);
+    let cx = r.cx();
+    let f = DrawFrame::new(&cx, Painter::recording());
+    r.src.drawn.borrow_mut().clear();
+    let p = f.painter;
+    r.sect.paint(&f, p, &r.src, SHELF_AT);
+    assert!(!r.src.drawn.borrow().is_empty());
+    assert!(f.stops().is_empty());
+}
+
 /// An owner whose column count changes at run time (the Library's episode listing) hands the grid
 /// the new columns; the cells follow and the focused tile's pop and caption band carry over
 /// instead of being corrupted or restarted.
@@ -1027,22 +1155,24 @@ fn settle_band_opens_settled_and_reset_bands_closes() {
     assert!(r.sect.grid.band_geometry().iter().all(|b| b.row == usize::MAX), "no band survives a reset");
 }
 
+/// A source whose card 1 has not loaded.
+struct Holey(Cards);
+impl CardSource<FixtureHost> for Holey {
+    fn len(&self) -> usize { self.0.len() }
+    fn elem(&self, i: usize) -> u32 { self.0.elem(i) }
+    fn index_of(&self, e: &u32) -> Option<usize> { self.0.index_of(e) }
+    fn art(&self, i: usize) -> Art<'_> { self.0.art(i) }
+    fn label(&self, i: usize) -> TileLabel { self.0.label(i) }
+    fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, m: &dyn plx_machine::machine::Measure) {
+        self.0.overlay(p, i, tile, m)
+    }
+    fn loaded(&self, i: usize) -> bool { i != 1 }
+}
+
 /// A card the source has not loaded is not painted, but its stop still registers: the Library's
 /// listing is paged, and a slot whose page has not landed draws nothing.
 #[test]
 fn an_unloaded_card_is_not_painted_but_keeps_its_stop() {
-    struct Holey(Cards);
-    impl CardSource<FixtureHost> for Holey {
-        fn len(&self) -> usize { self.0.len() }
-        fn elem(&self, i: usize) -> u32 { self.0.elem(i) }
-        fn index_of(&self, e: &u32) -> Option<usize> { self.0.index_of(e) }
-        fn art(&self, i: usize) -> Art<'_> { self.0.art(i) }
-        fn label(&self, i: usize) -> TileLabel { self.0.label(i) }
-        fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, m: &dyn plx_machine::machine::Measure) {
-            self.0.overlay(p, i, tile, m)
-        }
-        fn loaded(&self, i: usize) -> bool { i != 1 }
-    }
     let r = settled::<ExtGrid>(8);
     let src = Holey(Cards::new(r.src.elems.clone(), false));
     let cx = r.cx();
@@ -1052,6 +1182,25 @@ fn an_unloaded_card_is_not_painted_but_keeps_its_stop() {
     assert!(painted.contains(&100) && !painted.contains(&101), "card 1 is skipped: {painted:?}");
     let mut f = DrawFrame::new(&cx, Painter::root());
     r.sect.grid.record_stops(&mut f, Painter::root(), &src);
+    assert!(f.stops().iter().any(|s| s.key.elem == 101), "…but its stop is registered");
+}
+
+
+/// The same for a shelf: a card the source has not loaded (a hub item not published yet) is not
+/// painted, its stop still registers, and the focused one is skipped too.
+#[test]
+fn a_shelf_does_not_paint_an_unloaded_card() {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Restore);
+    r.run(60);
+    let src = Holey(Cards::new(r.src.elems.clone(), false));
+    let cx = r.cx();
+    let mut f = DrawFrame::new(&cx, Painter::recording());
+    Shelf::draw(&r.sect, &mut f, Painter::recording(), &src, SHELF_AT);
+    let painted: Vec<u32> = src.0.drawn.borrow().iter().map(|&(e, _)| e).collect();
+    assert!(painted.contains(&100) && !painted.contains(&101), "card 1 (focused, unloaded) is skipped: {painted:?}");
+    let mut f = DrawFrame::new(&cx, Painter::root());
+    Shelf::record_stops(&r.sect, &mut f, Painter::root(), &src, SHELF_AT);
     assert!(f.stops().iter().any(|s| s.key.elem == 101), "…but its stop is registered");
 }
 
