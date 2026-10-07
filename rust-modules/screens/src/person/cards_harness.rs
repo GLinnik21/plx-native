@@ -54,8 +54,11 @@ impl Harness {
     fn install(&mut self) {
         self.store.install_for_test(self.movies.iter().map(|m| item(m)).collect(),
             (0..SHOWS).map(|i| item(&format!("s{i}"))).collect());
-        // A landed credits answer, so the facts spinner (which never settles) is not running.
+        // A landed credits and profile answer: with no store pump here, the header's facts wait
+        // (`facts_pending`, a repaint loop by design until the profile is asked) would otherwise
+        // never end.
         self.store.install_credits_for_test(&[("Actor", 9)]);
+        self.store.install_profile_for_test();
         let cx: Cx<'_, PersonHost> = Cx { views: self.store.view(), tick: Tick::default(), measure: &FixtureMeasure,
             press: PressRead::default(), focus: FocusRead::default(), owner: InputOwner::Entry(ENTRY) };
         self.screen.refresh_store_cache(&cx);
@@ -123,18 +126,22 @@ impl CardHarness for Harness {
     fn place(&self, elem: u32, at: At) -> Option<Placed> {
         Focusable::<PersonHost>::place(&self.screen, &elem, &self.cx(), at)
     }
-    /// What `draw_focused_card` paints: the SpringTarget `rest_rect` scaled by the shelf's live
-    /// pop times the live press (person.rs, the draw at the `placed.rest_rect.scaled(scale)` site).
-    fn drawn_rect(&self, elem: u32, press: f32) -> Option<Rect> {
-        let (kind, col) = self.at(elem)?;
-        let placed = self.place(elem, At::Drawn)?;
-        let focused = self.focus.map(|k| k.elem) == Some(elem);
-        let scale = self.screen.shelves[kind].scale(col) * if focused && press > 0.0 { press } else { 1.0 };
-        Some(placed.rest_rect.scaled(scale))
+    /// The rect the page registers as the stop of `elem` (the shelf's draw registers the rect it
+    /// paints), at the live press.
+    fn drawn_rect(&self, elem: u32, _press: f32) -> Option<Rect> {
+        let (kind, _) = self.at(elem)?;
+        let p = self.store.view().current()?;
+        let cx = self.cx();
+        let mut frame = DrawFrame::new(&cx, plx_ui::Painter::root());
+        let at = self.screen.shelf_frame(p, kind)?;
+        let root = frame.painter;
+        self.screen.shelves[kind].record_stops(&mut frame, root, &self.screen.cards_of(p, kind), at);
+        frame.stops().iter().find(|s| s.key.elem == elem).map(|s| s.rect)
     }
     fn scale(&self, elem: u32) -> Option<f32> {
-        let (kind, col) = self.at(elem)?;
-        Some(self.screen.shelves[kind].scale(col))
+        let (kind, _) = self.at(elem)?;
+        let p = self.store.view().current()?;
+        self.screen.shelves[kind].scale_of(&self.cx(), &self.screen.cards_of(p, kind), &elem)
     }
     fn focus_scale(&self) -> f32 { SHELF_STYLE.focus_scale }
     fn canon(&self) -> u64 {
