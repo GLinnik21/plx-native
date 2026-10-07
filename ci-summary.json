@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-07T23:30:57Z",
+ "generated": "2026-10-07T23:31:47Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -259,14 +259,14 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -2.6,
+   "change7_pct": -2.2,
    "d30": null,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 66,
+   "n_now": 67,
    "n_prev": 44,
-   "now": 762.0,
+   "now": 765,
    "prev7": 782.5,
    "state": "flat",
    "threshold_abs": 120.0,
@@ -280,9 +280,9 @@
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "label": "Nightly: plan today's nightly",
-   "n_now": 66,
+   "n_now": 67,
    "n_prev": 44,
-   "now": 14.0,
+   "now": 14,
    "prev7": 11.0,
    "state": "flat",
    "threshold_abs": 120.0,
@@ -296,9 +296,9 @@
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 66,
+   "n_now": 67,
    "n_prev": 44,
-   "now": 18.0,
+   "now": 18,
    "prev7": 15.0,
    "state": "flat",
    "threshold_abs": 120.0,
@@ -439,7 +439,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 762.0
+   "now": 765
   },
   {
    "group": "ci",
