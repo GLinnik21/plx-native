@@ -1,4 +1,4 @@
-# count: 6
+# count: 7
 # Card-screen conformance expected failures (shrink-only), one per line, tab-separated:
 #   <screen source file>	<screen> <case>	# <reason>
 # Read by rust-modules/screens/src/cards_conformance_tests.rs: a listed case that now passes, or an
@@ -9,3 +9,4 @@ rust-modules/screens/src/person.rs	person geometry	# place() ignores the live pr
 rust-modules/screens/src/person.rs	person determinism_idle	# page still reports Motion 180 frames after the pop settles; cause NOT isolated (candidate: facts spinner / loading() under the test seam, or the scroll column) - investigate in PR 4
 rust-modules/screens/src/search/mod.rs	search pop_rule	# a Restore/Reconcile arrival grows from rest (per-row CardRow spring: tick -> row.motion.update, search/mod.rs:517) instead of being adopted whole
 rust-modules/screens/src/search/mod.rs	search geometry	# place() ignores the live press (render::tile multiplies it in, search/render.rs:411) and rest_rect is the UNSCALED row_rect, not the settled focus-scaled rect (search/mod.rs:599-611)
+rust-modules/screens/src/library/mod.rs	library_shelves pop_rule	# a Restore/Reconcile arrival on a hub shelf grows from rest (per-row CardRow spring: tick -> row.motion.update, library/mod.rs:1006) instead of being adopted whole; the grid adopts whole (GridPart::tick)

@@ -14,11 +14,13 @@ fn table() -> Vec<(&'static str, Mount)> {
         ("collection", super::collection::cards_harness::mount as Mount),
         ("person", super::person::cards_harness::mount as Mount),
         ("search", super::search::cards_harness::mount as Mount),
+        ("library_grid", super::library::cards_harness::mount_grid as Mount),
+        ("library_shelves", super::library::cards_harness::mount_shelves as Mount),
     ]
 }
 
 /// In-scope screens whose harness is not built yet; the registry test keeps the two lists whole.
-const PENDING: &[&str] = &["library_grid", "library_shelves", "home", "detail_shelves"];
+const PENDING: &[&str] = &["home", "detail_shelves"];
 const IN_SCOPE: &[&str] = &["collection", "person", "search", "library_grid", "library_shelves", "home", "detail_shelves"];
 
 #[test]
