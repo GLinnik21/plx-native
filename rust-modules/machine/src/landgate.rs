@@ -55,21 +55,48 @@
 //! instead: a request issued in iteration k lands on the next execution of its site, whatever the
 //! worker's timing, PROVIDED the request is not superseded before it lands (see the known hole
 //! below). A site that asks through [`Gate::take_owed`] / [`Gate::take_all_owed`] says whether a
-//! request it spawned is still unanswered (`owed`, the store's own single-flight claim); the take
-//! polls until mail arrives, and the claim is released BY THE TAKE, never when the worker
-//! finishes (for `stores::Fetch` that is how it already worked). The wait is a poll count of
+//! request it spawned is still unanswered (`owed`, the site's own in-flight marker, per MAILBOX);
+//! the take polls until mail arrives. The marker is never cleared by the worker finishing, but
+//! WHEN the take clears it differs by site: `stores::Fetch::take` releases it on the take,
+//! `pms::take_landings` counts its landings down inside the take, and Browse discovery's
+//! `src_fetching` clears only when the answer is APPLIED, after the take. That is enough for
+//! `take_owed`, which stops at its first answer and never re-reads `owed`; the queue take
+//! (`take_all_owed`) reads `owed` after every batch, so its claim must be released INSIDE the
+//! take. The wait is a poll count of
 //! [`WAIT_STEP_US`] sleeps (at least the timeout in real time) and fails closed: past it the gate
 //! panics naming the store rather than let a frame be written without the answer.
 //!
-//! **Which sites are protected: only FOUR, Person, Collection, Search and SubtitleSearch.** The
-//! claim is per MAILBOX (a store-wide claim would make one mailbox's pump wait on another's), and
-//! only those four stores have one converted. Metadata (detail, alt-sources, season), Hubs,
-//! Browse and ViewState still do a SINGLE poll in dump mode, as before, so a landing at any of
-//! them still follows the worker's timing (`Bridge::take_live_results` makes the Hubs and Browse
-//! discovery takes among them); so do that function's session adapter drains (results, capture,
-//! commits, erase), which do not go through this gate at all. Arming dump mode therefore does NOT yet make a run
-//! deterministic. S5a-2 and S5a-3 convert the rest; a plain `take` under dump mode is not yet
-//! counted or refused.
+//! **Which sites are protected: SIX.** Person, Collection, Search and SubtitleSearch (the claim is
+//! per MAILBOX: a store-wide claim would make one mailbox's pump wait on another's, so each
+//! store's single-flight `stores::Fetch` is its own), plus the two the Bridge takes for itself in
+//! `Bridge::take_hubs_results` / `Bridge::take_live_results`:
+//!
+//! * **Home's hubs.** The claim is `PmsAdapter::owed`, a count of workers spawned through
+//!   `pms::spawn_fetch` whose landing `pms::take_landings` has not yet moved out. It cannot be
+//!   `Src::fetching`, which clears when a landing is APPLIED, after the take that delivered it.
+//!   The take is a queue take (`take_all_owed`), so every request spawned in one iteration is
+//!   collected by the next.
+//!   A profile reset rotates the adapter, so a retired worker's count and mailbox go with it and
+//!   nothing waits on it.
+//! * **The controlled-Home Browse discovery take**, whose claim is `src_fetching`. It exists only
+//!   on a Bridge built with a `HomeIo` (the recorder and replay shape); a product-shape Bridge
+//!   discovers through `Browse::discover_pump`, which is NOT converted.
+//!
+//! **Not protected:** Metadata (detail, alt-sources, season), Browse's own pumps (discovery,
+//! directory, letters, page, section hubs) and ViewState still take through the plain
+//! [`Gate::take`] / [`Gate::take_all`], which polls once in dump mode, so a landing at any of them
+//! still follows the worker's timing. **That is counted, not silent:** every plain take under dump
+//! mode ticks [`Gate::unconverted_takes`] for its store ordinal, a counter the dump driver asserts
+//! is EMPTY at the end of a run, and [`Gate::arm_dump_strict`] turns the first one into a panic
+//! once every site is converted. The session adapter's drains in `Bridge::take_live_results`
+//! (results, capture, commits, erase, incident delivery) are the one gap the counter cannot see:
+//! they poll their own queues once per frame and never call this gate, so they neither wait nor
+//! tick it. Arming dump mode therefore does NOT yet make a run deterministic by itself, and for the
+//! session half the driver must do the work: either no session traffic is out after the first
+//! sampled frame (a `--guest` boot against a local mock finishes its session work during boot), or
+//! it waits on those queues itself. `SessionAdapter::persistence_pending()` (what the test helper
+//! `Bridge::settle_session_io_for_test` loops on) covers only commits, erasures and captures: the
+//! results queue and incident delivery have no pending probe at all.
 //!
 //! **KNOWN HOLE (fixed in S5a-2): a superseded request can still land the new one by timing.**
 //! The converted sites supersede by `clear()` plus a generation bump while the old worker is
@@ -142,6 +169,11 @@ struct State {
     waited: BTreeSet<u32>,
     /// Replay: mismatches observed since the last drain, `(frame, ordinal, why)`.
     diffs: Vec<(u64, u32, Diff)>,
+    /// Dump mode: plain [`Gate::take`] / [`Gate::take_all`] calls per ordinal since arming, that
+    /// is, a landing site that did NOT ask through `take_owed` / `take_all_owed`.
+    plain: BTreeMap<u32,u64>,
+    /// Dump mode: a plain take panics instead of only counting ([`Gate::arm_dump_strict`]).
+    strict: bool,
 }
 
 /// A bound on the mismatch buffer, so a replay of a build whose stores land continuously cannot
@@ -177,7 +209,8 @@ impl Default for Gate {
         Self {
             armed: AtomicBool::new(false),
             state: Mutex::new(State { mode: Mode::Off, frame: 0, lands: BTreeMap::new(),
-                sched: BTreeMap::new(), waited: BTreeSet::new(), diffs: Vec::new() }),
+                sched: BTreeMap::new(), waited: BTreeSet::new(), diffs: Vec::new(),
+                plain: BTreeMap::new(), strict: false }),
         }
     }
 }
@@ -192,7 +225,7 @@ fn with<T>(&self, f: impl FnOnce(&mut State) -> T) -> T {
 pub fn arm_recording(&self) {
     self.with(|s| {
         *s = State { mode: Mode::Recording, frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(),
-            waited: BTreeSet::new(), diffs: Vec::new() };
+            waited: BTreeSet::new(), diffs: Vec::new(), plain: BTreeMap::new(), strict: false };
     });
     self.armed.store(true, Ordering::Relaxed);
 }
@@ -215,6 +248,8 @@ pub fn arm_sparse_replay(&self, sched: BTreeMap<u32,Vec<(u64,u32)>>) {
             sched: sched.into_iter().map(|(ord,queue)| (ord,VecDeque::from(queue))).collect(),
             waited: BTreeSet::new(),
             diffs: Vec::new(),
+            plain: BTreeMap::new(),
+            strict: false,
         };
     });
     self.armed.store(true, Ordering::Relaxed);
@@ -224,8 +259,9 @@ pub fn arm_sparse_replay(&self, sched: BTreeMap<u32,Vec<(u64,u32)>>) {
 /// mailbox through [`Gate::take_owed`] / [`Gate::take_all_owed`] blocks until mail arrives for the
 /// claim it owes (it has been TAKEN), or a poll-count timeout of `timeout` passes, which panics
 /// naming the store (fail closed: a frame written past a missing answer would be a
-/// nondeterministic frame). Only the sites converted to `take_owed` wait (Person, Collection,
-/// Search, SubtitleSearch); every other site still takes as before. [`Gate::disarm`] ends it.
+/// nondeterministic frame). Only the sites converted to `take_owed` / `take_all_owed` wait (see
+/// the module doc for which); every other site still takes as before, and is counted in
+/// [`Gate::unconverted_takes`]. [`Gate::disarm`] ends it.
 ///
 /// **Panics if a recording or a replay is armed on this gate**, the way the recorder and replayer
 /// refuse to be armed together: arming dump over one would silently wipe its schedule or its
@@ -234,13 +270,54 @@ pub fn arm_sparse_replay(&self, sched: BTreeMap<u32,Vec<(u64,u32)>>) {
 /// This is a runtime switch, off by default, armed only by the dump driver. Nothing in a shipping
 /// loop calls it, and an unarmed gate stays one relaxed load.
 pub fn arm_dump(&self, timeout: std::time::Duration) {
+    self.arm_dump_with(timeout, false);
+}
+
+/// [`Gate::arm_dump`] where a plain [`Gate::take`] / [`Gate::take_all`] PANICS naming the store
+/// ordinal, instead of only being counted ([`Gate::unconverted_takes`]). Meant for a dump whose
+/// every landing site is converted: a site left on the plain take would otherwise hand the frame
+/// whatever the worker timing produced, without a word.
+pub fn arm_dump_strict(&self, timeout: std::time::Duration) {
+    self.arm_dump_with(timeout, true);
+}
+
+fn arm_dump_with(&self, timeout: std::time::Duration, strict: bool) {
     self.with(|s| {
         assert!(matches!(s.mode, Mode::Off | Mode::Dumping(_)),
             "landgate: arm_dump on a gate with a recording or a replay already armed; disarm it first");
         *s = State { mode: Mode::Dumping(timeout), frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(),
-            waited: BTreeSet::new(), diffs: Vec::new() };
+            waited: BTreeSet::new(), diffs: Vec::new(), plain: BTreeMap::new(), strict };
     });
     self.armed.store(true, Ordering::Relaxed);
+}
+
+/// DUMP MODE's fail-closed signal: `(ordinal, calls)` for every store whose landing site took
+/// through the plain [`Gate::take`] / [`Gate::take_all`] since [`Gate::arm_dump`], oldest ordinal
+/// first. A plain take polls once and returns whatever the worker has produced by then, so a site
+/// listed here makes the dump nondeterministic; the dump driver asserts this is EMPTY at the end of
+/// a run. It counts calls, not mail (a site polled every frame ticks every frame), and it is empty
+/// outside dump mode.
+pub fn unconverted_takes(&self) -> Vec<(StoreOrd, u64)> {
+    if !self.armed.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
+    self.with(|s| s.plain.iter().map(|(&i, &n)| (StoreOrd(i), n)).collect())
+}
+
+/// A plain take: counted under dump mode, and refused there when armed strict. The panic is raised
+/// outside the state lock.
+fn note_plain_take(&self, ord: StoreOrd) {
+    let strict = self.with(|s| {
+        if !matches!(s.mode, Mode::Dumping(_)) {
+            return false;
+        }
+        *s.plain.entry(ord.0).or_default() += 1;
+        s.strict
+    });
+    if strict {
+        panic!("landgate dump mode: store ordinal {} took through the plain take, not take_owed; \
+            failing closed", ord.0);
+    }
 }
 
 fn dump_timeout(&self) -> Option<std::time::Duration> {
@@ -249,8 +326,9 @@ fn dump_timeout(&self) -> Option<std::time::Duration> {
 
 /// A site that OWES an answer: `owed` says whether a request this site spawned has not been taken
 /// yet. The claim is the store's own in-flight state, marked when the request is spawned on the
-/// main thread and released by the take that consumes its mail (`stores::Fetch::busy` / `take`),
-/// never when the worker finishes, so it is per MAILBOX; a store-wide claim would make the
+/// main thread and never released by the worker finishing (`stores::Fetch::busy` / `take` release
+/// it on the take; Browse discovery's `src_fetching` only on apply, which `take_owed` tolerates),
+/// so it is per MAILBOX; a store-wide claim would make the
 /// detail pump wait on a season request's mailbox.
 ///
 /// Off dump mode this is [`Gate::take`]. In dump mode it polls `f` until it answers, or `owed`
@@ -280,9 +358,11 @@ pub fn take_owed<T>(&self, ord: StoreOrd, name: &str, owed: impl Fn() -> bool,
 }
 
 /// [`Gate::take_owed`] for a site that drains a QUEUE: every batch is collected until the
-/// requests the site owes have all been taken. No site calls it yet, and its `owed` cannot see
-/// the batch taken so far, so a site whose done-marker is written after the take cannot use it
-/// as is. It carries the same stale-answer KNOWN HOLE as [`Gate::take_owed`].
+/// requests the site owes have all been taken. Home's hubs (`Bridge::take_hubs_results`) is its one
+/// caller. Its `owed` cannot see the batch taken so far, so the claim has to be released INSIDE the
+/// take (`pms::take_landings` counts its landings down as it moves them out); a site whose
+/// done-marker is written after the take cannot use it as is. It carries the same stale-answer
+/// KNOWN HOLE as [`Gate::take_owed`].
 pub fn take_all_owed<T>(&self, ord: StoreOrd, name: &str, owed: impl Fn() -> bool,
     mut f: impl FnMut() -> Vec<T>) -> Vec<T> {
     if !self.armed.load(Ordering::Relaxed) {
@@ -317,7 +397,7 @@ pub fn disarm(&self) {
     self.armed.store(false, Ordering::Relaxed);
     self.with(|s| {
         *s = State { mode: Mode::Off, frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(),
-            waited: BTreeSet::new(), diffs: Vec::new() };
+            waited: BTreeSet::new(), diffs: Vec::new(), plain: BTreeMap::new(), strict: false };
     });
 }
 
@@ -423,6 +503,7 @@ pub fn take<T>(&self, ord: StoreOrd, mut f: impl FnMut() -> Option<T>) -> Option
     if !self.armed.load(Ordering::Relaxed) {
         return f();
     }
+    self.note_plain_take(ord);
     let got = match self.phase(ord) {
         Phase::Hold => return None,
         Phase::Due => Self::wait_for(f),
@@ -439,6 +520,7 @@ pub fn take_all<T>(&self, ord: StoreOrd, mut f: impl FnMut() -> Vec<T>) -> Vec<T
     if !self.armed.load(Ordering::Relaxed) {
         return f();
     }
+    self.note_plain_take(ord);
     let got = match self.phase(ord) {
         Phase::Hold => return Vec::new(),
         Phase::Due => Self::wait_for(|| {
@@ -859,6 +941,64 @@ mod tests {
             v
         });
         assert_eq!(got, vec![1, 2]);
+    }
+
+    /// The fail-closed signal for a site not yet converted: a plain take under dump mode is
+    /// counted per ordinal, take_owed is not, and nothing is counted outside dump mode.
+    #[test]
+    fn a_plain_take_under_dump_mode_is_counted_and_take_owed_is_not() {
+        let gate = Gate::default();
+        assert!(gate.unconverted_takes().is_empty(), "disarmed: nothing counted");
+        gate.take(A, || Some(1));
+        assert!(gate.unconverted_takes().is_empty(), "disarmed: still nothing");
+        gate.arm_dump(std::time::Duration::from_secs(1));
+        gate.begin_frame(0);
+        assert_eq!(gate.take_owed(A, "a", || false, || Some(1)), Some(1));
+        assert_eq!(gate.take_all_owed(B, "b", || false, || vec![1]), vec![1]);
+        assert!(gate.unconverted_takes().is_empty(), "a converted site is never counted");
+        gate.take(A, || None::<u32>);
+        gate.take(A, || Some(2));
+        gate.take_all(B, Vec::<u32>::new);
+        assert_eq!(gate.unconverted_takes(), vec![(A, 2), (B, 1)], "calls, not mail, per ordinal");
+        gate.arm_dump(std::time::Duration::from_secs(1));
+        assert!(gate.unconverted_takes().is_empty(), "arming again starts a fresh count");
+        gate.take(A, || None::<u32>);
+        gate.disarm();
+        assert!(gate.unconverted_takes().is_empty(), "disarm ends it");
+    }
+
+    /// Recording and replay never count a plain take: only dump mode owes the determinism.
+    #[test]
+    fn a_plain_take_is_not_counted_while_recording() {
+        let gate = Gate::default();
+        gate.arm_recording();
+        gate.take(A, || Some(1));
+        assert!(gate.unconverted_takes().is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "took through the plain take")]
+    fn a_strict_dump_refuses_a_plain_take() {
+        let gate = Gate::default();
+        gate.arm_dump_strict(std::time::Duration::from_secs(1));
+        gate.take(A, || Some(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "took through the plain take")]
+    fn a_strict_dump_refuses_a_plain_take_all() {
+        let gate = Gate::default();
+        gate.arm_dump_strict(std::time::Duration::from_secs(1));
+        gate.take_all(A, || vec![1]);
+    }
+
+    /// Strict only refuses the plain take: a converted site still works under it.
+    #[test]
+    fn a_strict_dump_allows_converted_sites() {
+        let gate = Gate::default();
+        gate.arm_dump_strict(std::time::Duration::from_secs(1));
+        assert_eq!(gate.take_owed(A, "a", || false, || Some(3)), Some(3));
+        assert_eq!(gate.take_all_owed(A, "a", || false, || vec![4]), vec![4]);
     }
 
     #[test]

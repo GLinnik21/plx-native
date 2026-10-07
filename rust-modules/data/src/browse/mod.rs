@@ -3586,6 +3586,13 @@ pub fn adapter_fetching_for_test(adapter: &BrowseAdapter) -> bool {
     adapter.fetching.load(Ordering::SeqCst)
 }
 
+/// Is a discovery request this adapter spawned still unanswered or unapplied? `src_fetching` is
+/// raised when the request is handed to its launcher and cleared when the answer is APPLIED, so a
+/// take that finds the mailbox empty while it reads true is waiting for a worker that is out.
+pub fn discovery_owed(adapter: &BrowseAdapter) -> bool {
+    adapter.src_fetching.load(Ordering::SeqCst)
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_adapter_src_fetching_for_test(adapter: &BrowseAdapter, fetching: bool) {
     adapter.src_fetching.store(fetching, Ordering::SeqCst);

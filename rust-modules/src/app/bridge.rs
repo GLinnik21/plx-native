@@ -1747,8 +1747,11 @@ impl Bridge {
     /// arrival waits for the frame the recording delivered it on (§3.3 step 3). Off a replay, one
     /// relaxed atomic load and the same call.
     fn take_hubs_results(&self) -> AppResults {
-        let mut results =
-            self.stores.landgate.take_all(StoreId::Hubs.ord(), || self.stores.hubs.take_results());
+        // Dump mode waits here for every hub request the previous execution of this site (or the
+        // frame's own work) spawned, so a request issued in iteration k lands in k+1 whatever the
+        // worker's timing. The claim is the adapter's own count (`HubsStore::owed`).
+        let mut results = self.stores.landgate.take_all_owed(StoreId::Hubs.ord(), StoreId::Hubs.name(),
+            || self.stores.hubs.owed(), || self.stores.hubs.take_results());
         results.sort_by_key(|result| result.request_id());
         results.into_iter().map(|result| (
             plx_machine::machine::Addr {
@@ -1808,7 +1811,8 @@ impl Bridge {
         }
         results.extend(self.take_hubs_results());
         if self.home_io.is_some() {
-            if let Some(result) = self.stores.landgate.take(StoreId::Browse.ord(),
+            if let Some(result) = self.stores.landgate.take_owed(StoreId::Browse.ord(), StoreId::Browse.name(),
+                || self.stores.browse.borrow().discovery_owed(),
                 || self.stores.browse.borrow_mut().take_discovery()) {
                 results.push((plx_machine::machine::Addr {
                     to: MachineId::Store(StoreId::Browse.ord()),
@@ -3439,6 +3443,10 @@ mod session_dispatch_tests;
 #[cfg(test)]
 #[path = "home_retention_tests.rs"]
 mod home_retention_tests;
+
+#[cfg(test)]
+#[path = "hubs_dump_tests.rs"]
+mod hubs_dump_tests;
 
 #[cfg(test)]
 #[path = "library_bookmark_tests.rs"]
