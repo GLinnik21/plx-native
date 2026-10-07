@@ -1144,6 +1144,25 @@ impl Bridge {
 
     pub(crate) fn landgate(&self) -> &plx_machine::landgate::Gate { &self.stores.landgate }
 
+    /// **Landing claims still open**, by store name: a request this owner spawned whose answer no
+    /// take has moved out yet. The frame-dump driver (`dev::framedump`) holds the picture while any
+    /// is open. It is the subset the owner can read without a take: Home's hubs
+    /// (`HubsStore::owed`) and the controlled-Home Browse discovery. The `Fetch`-based stores
+    /// (metadata, person, collection, search, view state) keep their claim inside the store and
+    /// answer through `take_owed` alone, so a request spawned this iteration is seen by NEXT
+    /// iteration's take, which waits for it (`plx_machine::landgate`'s module doc).
+    #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
+    pub(crate) fn open_claims(&self) -> Vec<&'static str> {
+        let mut open = Vec::new();
+        if self.stores.hubs.owed() {
+            open.push(StoreId::Hubs.name());
+        }
+        if self.stores.browse.borrow().discovery_owed() {
+            open.push(StoreId::Browse.name());
+        }
+        open
+    }
+
     /// The `MetadataStore`'s own async detail landing — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_detail(&mut self) -> bool {
         self.stores.metadata.pump_detail_with_gate(&self.stores.landgate)

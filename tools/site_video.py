@@ -3,6 +3,7 @@
 and adopt them into `site/media/`.
 
     python3 tools/site_video.py ffmpeg-fetch                   # the pinned static GPL ffmpeg; prints its path
+    python3 tools/site_video.py render --out DIR [--frames 180]    # needs `make site-video-sim`
     python3 tools/site_video.py encode MASTER.mkv frames.tsv --out DIR [--render render.json]
     python3 tools/site_video.py gates DIR --master MASTER.mkv --frames-b second-run/frames.tsv
     python3 tools/site_video.py scan-sentinel --size 1920x1080 [--tee] [FILE|-]   # RGB24 stream scanner
@@ -12,16 +13,19 @@ and adopt them into `site/media/`.
     python3 tools/site_video.py adopt artifact.zip [--write]        # dry run unless --write
 
 Plan: the demo-video pipeline's stages S4 (the sentinel), S5b (the writer, which produces the INPUT
-contract below) and S6/S7 (this file). Nothing here renders: it consumes a master and writes files.
+contract below) and S6/S7 (this file). `render` is the launcher: it boots the mock catalog, runs the
+dump simulator (`rust-modules/src/dev/framedump.rs`, built by `make site-video-sim`) and writes the
+master, `frames.tsv`, `dump.json` and `render.json`. Every other subcommand consumes a master and
+runs no simulator.
 
 THE INPUT CONTRACT (what the S5b dump writer must produce)
 
 * `master.mkv`: FFV1 (`-level 3 -g 1`), RGB, 1920x1080, 60 fps, one packet per WRITTEN frame, no audio.
 * `frames.tsv`: UTF-8, LF, a header line exactly `n<TAB>t_ms<TAB>xxh3<TAB>debt<TAB>holds`, then one
-  row per written frame: `n` the written-frame index (0, 1, 2, ... with no gap), `t_ms` the virtual
-  time T(n) in integer ms, `xxh3` the 16-hex-digit XXH3-64 of the frame's RGB24 bytes, `debt` the
+  row per written frame: `n` the written-frame index (0, 1, 2, ... with no gap), `t_ms` the output
+  time T(n) = round(n * 1000 / 60) in integer ms (`gate_frames_tsv` fails any row that is not exactly that), `xxh3` the 16-hex-digit XXH3-64 of the frame's RGB24 bytes, `debt` the
   draw-site placeholder count at that frame (must be 0), `holds` how many held repeats preceded it
-  (informational). The row count equals the master's frame count.
+  (informational: it is timing, so the run-twice gate compares the other four columns). The row count equals the master's frame count.
 * `render.json`, the render record: see `RENDER_RECORD_FIELDS` and `validate_render_record`.
 
 THE OUTPUTS: the four encodes and two posters named in `site/index.html` and `site/styles.css`
@@ -72,6 +76,11 @@ Video = collections.namedtuple("Video", "name codec width height")
 Poster = collections.namedtuple("Poster", "name width height")
 
 FPS = 60
+# The dump driver's default preroll (`framedump::DEFAULT_PREROLL`): unwritten virtual frames that cover
+# the still-Home boot, whose first paint needs about 10 `Advance`s. The driver fails closed on any
+# advance at or after the preroll, so a preroll shorter than the boot's advances (about 10; 0 certainly)
+# fails the boot. 60 is that boot with room to spare, not a threshold.
+DEFAULT_PREROLL = 60
 # Mirrors the four <source> elements of `#feel` in site/index.html, in their order there (a test reads
 # the HTML and compares): phones (max-width 759px) take a 720p encode, everything else 1080p, and the
 # browser takes the first source whose `codecs` it can decode.
@@ -379,7 +388,7 @@ def parse_frames_tsv(text):
     return rows
 
 
-# What S5b writes next to the master, as JSON. `dotted path -> (type, what)`.
+# What `render` writes next to the master (from the app's dump.json), as JSON. `dotted path -> (type, what)`.
 RENDER_RECORD_FIELDS = {
     "schema": (int, f"{SCHEMA}"),
     "storyboard_sha256": (str, "sha256 of the storyboard JSON the run played"),
@@ -430,10 +439,24 @@ Result = collections.namedtuple("Result", "name status detail")
 PASS, FAIL, SKIP = "pass", "fail", "skip"
 
 
+def frame_ms(n):
+    """T(n) = round(n * 1000 / 60) in whole ms, the driver's `framedump::virtual_ms` exactly: integer
+    round-half-up, `(n * 1000 + 30) // 60`. (No tie exists: `1000 n mod 60` is never 30.)"""
+    return (n * 1000 + FPS // 2) // FPS
+
+
 def gate_frames_tsv(rows, record, master_frames):
-    """The tsv matches the master and the record, and no written frame carries placeholder debt."""
+    """The tsv matches the master and the record, no written frame carries placeholder debt, and every
+    row's `t_ms` is T(n): a render with a skipped stretch of virtual time (a cut) fails here."""
     out = []
     n = len(rows)
+    skewed = [(r[0], r[1]) for r in rows if r[1] != frame_ms(r[0])]
+    if skewed:
+        out.append(Result("frames/t_ms", FAIL,
+                          f"{len(skewed)} rows are not T(n) = round(n*1000/60) ms (first: frame {skewed[0][0]} has "
+                          f"{skewed[0][1]}, want {frame_ms(skewed[0][0])}): virtual time was skipped, a cut"))
+    else:
+        out.append(Result("frames/t_ms", PASS, f"all {n} rows are T(n) = round(n*1000/60) ms"))
     counts = {"the master": master_frames, "render.json frames.count": _dig(record, "frames.count")[0]}
     bad = [f"{k} has {v}" for k, v in counts.items() if v != n]
     out.append(Result("frames/count", FAIL if bad else PASS,
@@ -459,16 +482,26 @@ def gate_sentinel_record(record):
     return Result("sentinel/inline", PASS, f"{scanned} frames scanned inline, 0 flagged")
 
 
+def _comparable(rows):
+    """What two renders must agree on: everything but `holds`, which counts held repeats and so depends
+    on how fast a worker answered. The frame's content (`xxh3`), its time and its debt must not."""
+    return [r[:4] for r in rows]
+
+
 def gate_run_twice(tsv_a, tsv_b):
+    """Run-twice equality: the rows of the two frames.tsv agree on n, t_ms, xxh3 and debt. The informational
+    `holds` column is timing and is left out of the comparison (the stage S5b measurement: the same 180
+    frames hashed identically across two renders while one frame's `holds` read 306 and 347)."""
     if tsv_b is None:
         return Result("run-twice", FAIL, "no second frames.tsv supplied (--frames-b): the run-twice check is mandatory")
-    a, b = sha256_file(tsv_a), sha256_file(tsv_b)
-    if a != b:
-        ra, rb = parse_frames_tsv(pathlib.Path(tsv_a).read_text()), parse_frames_tsv(pathlib.Path(tsv_b).read_text())
-        first = next((i for i, (x, y) in enumerate(zip(ra, rb)) if x != y), None)
+    ra, rb = parse_frames_tsv(pathlib.Path(tsv_a).read_text()), parse_frames_tsv(pathlib.Path(tsv_b).read_text())
+    ca, cb = _comparable(ra), _comparable(rb)
+    if ca != cb:
+        first = next((i for i, (x, y) in enumerate(zip(ca, cb)) if x != y), None)
         where = f"first differing frame {first}" if first is not None else f"{len(ra)} vs {len(rb)} frames"
-        return Result("run-twice", FAIL, f"the two renders differ ({where}); sha256 {a[:12]} != {b[:12]}")
-    return Result("run-twice", PASS, f"both renders hash to {a[:12]}")
+        return Result("run-twice", FAIL, f"the two renders differ ({where})")
+    digest = hashlib.sha256(repr(ca).encode()).hexdigest()
+    return Result("run-twice", PASS, f"both renders agree on {len(ra)} frames (n, t_ms, xxh3, debt: {digest[:12]})")
 
 
 def gate_hero_pool(record):
@@ -1058,9 +1091,171 @@ def contact_sheet(ffmpeg, master, out, count=12, columns=4, tile_width=480, run=
     return picks
 
 
+# ------------------------------------------------------------------ render (the dump launcher) ---
+SIM_BIN = ROOT / "rust-modules" / "target-sim-video" / "release" / "plxnative-sim"
+DEMO_TOKEN = "demo-library-token"  # the mock accepts any token; `tools/screenshots.py` uses the same
+FRAME_W, FRAME_H = 1920, 1080
+
+
+def ffv1_argv(ffmpeg, master, fps=FPS, width=FRAME_W, height=FRAME_H):
+    """RGB24 on stdin to the master: FFV1 level 3, every frame an intra frame, no audio."""
+    return [str(ffmpeg), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
+            "-framerate", str(fps), "-i", "-", "-an", "-c:v", "ffv1", "-level", "3", "-g", "1",
+            "-pix_fmt", "bgr0", str(master)]
+
+
+def sim_env(runtime, out_dir, fifo, frames, preroll, allow_absent, max_hold_ms, base=None, no_hold=False):
+    """The simulator's environment: this machine's minus every PLXNATIVE_* variable (a developer's own
+    session settings must not leak into a render), plus the dump's."""
+    env = {k: v for k, v in (os.environ if base is None else base).items() if not k.startswith("PLXNATIVE_")}
+    env.update({
+        "PLXNATIVE_RUNTIME_DIR": str(runtime),
+        "PLXNATIVE_APP_DIR": str(ROOT / "pkg"),
+        "PLXNATIVE_WIN": f"{FRAME_W}x{FRAME_H}",
+        "PLXNATIVE_DUMP": str(out_dir),
+        "PLXNATIVE_DUMP_OUT": str(fifo),
+        "PLXNATIVE_DUMP_FRAMES": str(frames),
+        "PLXNATIVE_DUMP_PREROLL": str(preroll),
+        "PLXNATIVE_DUMP_MAX_HOLD_MS": str(max_hold_ms),
+    })
+    if allow_absent:
+        env["PLXNATIVE_DUMP_ALLOW_ABSENT"] = "1"
+    if no_hold:
+        env["PLXNATIVE_DUMP_NO_HOLD"] = "1"
+    return env
+
+
+def build_render_record(storyboard, dump, scanned, hits, frames_rows, platform_label):
+    """render.json (schema 1) from what the app reported (`dump.json`) and what this side counted."""
+    sb = json.dumps(storyboard, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        "schema": SCHEMA,
+        "storyboard_sha256": hashlib.sha256(sb).hexdigest(),
+        "storyboard": storyboard,
+        "frames": {"count": frames_rows, "fps": FPS, "width": dump.get("width", FRAME_W), "height": dump.get("height", FRAME_H)},
+        "placeholder_debt": {"frames_with_debt": dump["frames_with_debt"]},
+        "sentinel": {"scanned_frames": scanned, "hits": hits},
+        # S5c fills these from the storyboard interpreter; the dump core knows neither.
+        "hero_pool": {"logged": [], "eligible": []},
+        "opened_rating_keys": [],
+        "dump": {k: dump.get(k) for k in ("preroll", "iterations", "holds", "advances", "hold_reasons", "unconverted_takes",
+                                           "clock_origin_ms", "wall_ms")},
+        "platform": platform_label,
+    }
+
+
+def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=None, allow_absent=False, max_hold_ms=60000,
+               timeout=3600, keep=False, say=print, no_hold=False):
+    """Boot the mock catalog PMS on a free port, run the dump build against it headless, pipe its RGB24
+    frames through the sentinel scan into ffmpeg, and leave `master.mkv`, `frames.tsv`, `dump.json` and
+    `render.json` in `out_dir`. Returns the render record. Raises Failure on anything not clean."""
+    import threading
+    sim_bin = pathlib.Path(sim_bin)
+    if not sim_bin.is_file():
+        raise Failure(f"{sim_bin}: not built; run `make site-video-sim`")
+    sys.path.insert(0, str(ROOT / "tests"))
+    import mock_pms
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for stale in ("master.mkv", "frames.tsv", "dump.json", "render.json"):
+        (out_dir / stale).unlink(missing_ok=True)
+    runtime = pathlib.Path(tempfile.mkdtemp(prefix="plxnative-render-"))
+    fifo = runtime / "frames.rgb"
+    os.mkfifo(fifo)
+    srv, pms = mock_pms.serve(0, catalog=CATALOG, hero=hero)
+    port = srv.server_address[1]
+    sim = enc = None
+    result = {}
+    try:
+        for name, value in {"plextv": f"http://127.0.0.1:{port}", "token": DEMO_TOKEN, "heropin": "0"}.items():
+            (runtime / f"plxnative-{name}").write_text(value)
+        enc = subprocess.Popen(ffv1_argv(ffmpeg, out_dir / "master.mkv"), stdin=subprocess.PIPE)
+        log = open(runtime / "sim.out", "w")
+        sim = subprocess.Popen([str(sim_bin), "127.0.0.1", str(port)], stdout=log, stderr=subprocess.STDOUT,
+                               env=sim_env(runtime, out_dir, fifo, frames, preroll, allow_absent, max_hold_ms,
+                                           no_hold=no_hold))
+
+        def pump():
+            try:
+                with open(fifo, "rb") as src:
+                    result["scan"] = scan_stream(src, FRAME_W, FRAME_H, tee=enc.stdin)
+            except BaseException as e:  # noqa: BLE001 - reported by the caller thread
+                result["error"] = e
+
+        reader = threading.Thread(target=pump, daemon=True)
+        reader.start()
+        t0 = time.monotonic()
+        try:
+            rc = sim.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            sim.kill()
+            rc = None
+        if reader.is_alive():
+            if rc is not None and "scan" not in result:
+                try:  # the simulator never opened the FIFO: let the reader's open() return
+                    os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+                except OSError:
+                    pass
+            reader.join(30)
+        secs = time.monotonic() - t0
+        log.close()
+        try:
+            enc.stdin.close()
+        except BrokenPipeError:
+            pass
+        enc_rc = enc.wait()
+        tail = "\n    ".join((runtime / "sim.out").read_text(errors="replace").splitlines()[-12:])
+        dump_path = out_dir / "dump.json"
+        dump = json.loads(dump_path.read_text()) if dump_path.exists() else None
+        scanned, hit = result.get("scan", (0, None))
+        problems = []
+        if rc is None:
+            problems.append(f"the simulator did not finish within {timeout}s")
+        elif rc != 0:
+            problems.append(f"the simulator exited {rc}" + (f": {dump['failed']}" if dump and dump.get("failed") else ""))
+        if "error" in result:
+            problems.append(f"the frame stream failed: {result['error']}")
+        if hit:
+            problems.append(f"SENTINEL: {hit.message()}")
+        if enc_rc != 0:
+            problems.append(f"ffmpeg exited {enc_rc}")
+        if pms.unknown:
+            problems.append(f"the mock could not answer: {sorted(set(pms.unknown))[:5]}")
+        rows = []
+        if not problems:
+            rows = parse_frames_tsv((out_dir / "frames.tsv").read_text())
+            if len(rows) != frames or scanned != frames:
+                problems.append(f"frames.tsv has {len(rows)} rows and the scanner saw {scanned}, want {frames}")
+        if problems:
+            raise Failure("render failed: " + "; ".join(problems) + f"\n  instance root: {runtime}\n  sim log tail:\n    {tail}")
+        storyboard = {"scene": "home", "pin_hero": True, "frames": frames, "preroll": preroll, "script": "hold"}
+        record = build_render_record(storyboard, dump, scanned, 0, len(rows), current_platform())
+        bad = validate_render_record(record)
+        if bad:
+            raise Failure("render.json is malformed: " + "; ".join(bad))
+        (out_dir / "render.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+        say(f"site_video: rendered {frames} frames in {secs:.1f}s ({dump['holds']} held repeats over "
+            f"{dump['iterations']} iterations) into {out_dir}")
+        return record
+    finally:
+        for proc in (sim, enc):
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+        srv.shutdown()
+        srv.server_close()
+        if not keep:
+            shutil.rmtree(runtime, ignore_errors=True)
+
+
 # ------------------------------------------------------------------ command line ----------------
 def _ffmpeg_from(args, run=subprocess.run):
     return resolve_ffmpeg(args.ffmpeg, args.cache, run)
+
+
+def cmd_render(args):
+    ffmpeg, _ = _ffmpeg_from(args)
+    run_render(args.bin, args.out, ffmpeg, args.frames, args.preroll, args.hero, args.allow_absent,
+               args.max_hold_ms, args.timeout, args.keep_runtime, no_hold=args.no_hold)
 
 
 def cmd_ffmpeg_fetch(args):
@@ -1166,6 +1361,23 @@ def main(argv=None):
     p = sub.add_parser("ffmpeg-fetch", help="fetch the pinned static GPL ffmpeg; print its path", parents=[tool])
     p.add_argument("--pin", choices=sorted(PINS))
     p.set_defaults(fn=cmd_ffmpeg_fetch)
+    p = sub.add_parser("render", help="run the dump simulator against the mock catalog -> master.mkv, frames.tsv, render.json",
+                       parents=[tool])
+    p.add_argument("--out", required=True, help="the output directory (created)")
+    p.add_argument("--bin", default=str(SIM_BIN), help="the dump build (`make site-video-sim`)")
+    p.add_argument("--frames", type=int, default=180, help="written frames (default 180, three seconds)")
+    p.add_argument("--preroll", type=int, default=DEFAULT_PREROLL,
+                   help=f"virtual frames run first and not written (default {DEFAULT_PREROLL}: it covers the still-Home "
+                        "boot; a boot that needs more, or a preroll of 0, fails closed in the driver)")
+    p.add_argument("--hero", help="the film the Home hero pins (default: the catalog's `hero`)")
+    p.add_argument("--allow-absent", action="store_true",
+                   help="PROOF ONLY: do not fail on a hero logo that settled as a miss or a card with no art key")
+    p.add_argument("--no-hold", action="store_true",
+                   help="NEGATIVE TEST ONLY: write every frame whatever its debt (the gates must then fail)")
+    p.add_argument("--max-hold-ms", type=int, default=60000, help="fail closed after this long without progress")
+    p.add_argument("--timeout", type=int, default=3600)
+    p.add_argument("--keep-runtime", action="store_true", help="keep the simulator's instance root for inspection")
+    p.set_defaults(fn=cmd_render)
     p = sub.add_parser("encode", help="master -> the four encodes and two posters", parents=[tool])
     p.add_argument("master")
     p.add_argument("frames")

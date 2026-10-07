@@ -134,6 +134,12 @@ pub(crate) unsafe fn run(app: &mut App) {
                 replay_inject(app, fr, &v);
             }
         }
+        // The frame dump (`dev::framedump`) owns the clock and the placeholder count from here:
+        // it must run before anything reads `clock::now()`.
+        #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
+        if crate::dev::framedump::requested() {
+            crate::dev::framedump::iteration_begin(app);
+        }
         plx_platform::tv::window::pump_bus();
         plx_platform::tv::home::poll();
         // The one toast key mode owes the viewer (`net::keypin`'s facts), on every route.
@@ -421,6 +427,11 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         && app.window_activity.allow_present(
             plx_machine::idle::should_present(fr.now) || app.pages.budget.has_queued_work(),
         );
+    // A dump draws every iteration: a held repeat and a written frame alike are a draw.
+    #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
+    if crate::dev::framedump::active() {
+        fr.present = true;
+    }
     app.rec.present(fr.present);
     if fr.present {
         app.window_activity.begin_present(fr.player);
@@ -504,6 +515,11 @@ unsafe fn present_and_swap(
     wslg_frame_budget: Option<super::window_activity::WslgFrameBudget>,
 ) {
     if fr.present {
+        // The dump's full prewarm drain and pre-draw debt sample, after the takes and before the draw.
+        #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
+        if crate::dev::framedump::active() {
+            crate::dev::framedump::pre_draw(app);
+        }
         // the glyph cache's frame serial (phase 11, text.rs's hot window): a drawn frame
         plx_gfx::text::begin_frame();
         // A finished underlay-field reduction is read HERE, before framebuffer 0 holds anything
@@ -529,8 +545,20 @@ unsafe fn present_and_swap(
             plx_media::player::sim_video::composite_under();
         }
         // Before the swap, never after: the back buffer is undefined once presented.
+        // A dump decides here whether this frame is written (`dev::framedump`); otherwise the
+        // ordinary screenshot seam.
+        #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
+        let dumping = crate::dev::framedump::active();
+        #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
+        if dumping && crate::dev::framedump::after_draw(app, _vx, _vy, _vw, _vh) {
+            app.running = false;
+        }
+        #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
+        let screenshot_seam = !dumping;
+        #[cfg(all(feature = "hostsim", not(feature = "devtriggers")))]
+        let screenshot_seam = true;
         #[cfg(feature = "hostsim")]
-        if crate::shot::maybe_capture(_vx, _vy, _vw, _vh) {
+        if screenshot_seam && crate::shot::maybe_capture(_vx, _vy, _vw, _vh) {
             // The headless one-shot is done: finish this frame, then leave through the ordinary
             // shutdown rather than exiting from inside the frame (see `shot::maybe_capture`).
             app.running = false;

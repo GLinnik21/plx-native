@@ -169,8 +169,10 @@ class SentinelStream(unittest.TestCase):
                 self.assertEqual(sv.main(["scan-sentinel", "--size", "bogus", str(bad_path)]), 1)
 
 
-def tsv(rows):
-    return sv.TSV_HEADER + "\n" + "".join(f"{n}\t{n * 16}\t{h}\t{d}\t0\n" for n, h, d in rows)
+def tsv(rows, t_ms=None):
+    """A frames.tsv; each row's t_ms is T(n) unless `t_ms` (a list) overrides it."""
+    return sv.TSV_HEADER + "\n" + "".join(
+        f"{n}\t{sv.frame_ms(n) if t_ms is None else t_ms[i]}\t{h}\t{d}\t0\n" for i, (n, h, d) in enumerate(rows))
 
 
 GOOD_ROWS = [(0, "0123456789abcdef", 0), (1, "fedcba9876543210", 0), (2, "00000000000000ff", 0)]
@@ -213,6 +215,23 @@ class FramesTsvAndRecord(unittest.TestCase):
         self.assertIn("frame 1", res["placeholder-debt"].detail)
         self.assertEqual(res["frames/count"].status, sv.PASS)
 
+    def test_t_ms_is_pinned_to_the_drivers_rounding(self):
+        # The same values as framedump.rs's `t_of_n_is_the_rounded_sixtieth_of_a_second`.
+        self.assertEqual([sv.frame_ms(n) for n in range(10)], [0, 17, 33, 50, 67, 83, 100, 117, 133, 150])
+        self.assertEqual((sv.frame_ms(59), sv.frame_ms(60), sv.frame_ms(600)), (983, 1000, 10_000))
+        for n in (35_999, 36_000, 36_001, 1_000_003):
+            self.assertEqual(sv.frame_ms(n), int(n * 1000 / 60 + 0.5), n)
+
+    def test_a_skipped_stretch_of_virtual_time_fails_the_t_ms_gate(self):
+        # The measured cut master: t_ms ran 0, 17, 200 and every other gate passed it.
+        rows = sv.parse_frames_tsv(tsv(GOOD_ROWS, t_ms=[0, 17, 200]))
+        res = {r.name: r for r in sv.gate_frames_tsv(rows, record(), 3)}
+        self.assertEqual(res["frames/t_ms"].status, sv.FAIL)
+        self.assertIn("frame 2 has 200, want 33", res["frames/t_ms"].detail)
+        for t in ([1, 17, 33], [0, 16, 33], [0, 17, 34]):  # one ms off, either side, on any row
+            rows = sv.parse_frames_tsv(tsv(GOOD_ROWS, t_ms=t))
+            self.assertEqual({r.name: r.status for r in sv.gate_frames_tsv(rows, record(), 3)}["frames/t_ms"], sv.FAIL, t)
+
     def test_zero_debt_passes_and_a_record_that_disagrees_fails(self):
         rows = sv.parse_frames_tsv(tsv(GOOD_ROWS))
         self.assertEqual({r.status for r in sv.gate_frames_tsv(rows, record(), 3)}, {sv.PASS})
@@ -225,7 +244,7 @@ class FramesTsvAndRecord(unittest.TestCase):
         self.assertEqual(res["frames/count"].status, sv.FAIL)
         self.assertIn("the master has 4", res["frames/count"].detail)
 
-    def test_run_twice_equality_is_a_hash_of_the_two_files(self):
+    def test_run_twice_equality_compares_everything_but_the_timing_column(self):
         with tempfile.TemporaryDirectory() as tmp:
             a, b, c = (pathlib.Path(tmp, n) for n in "abc")
             a.write_text(tsv(GOOD_ROWS))
@@ -236,6 +255,16 @@ class FramesTsvAndRecord(unittest.TestCase):
             self.assertEqual(diff.status, sv.FAIL)
             self.assertIn("first differing frame 2", diff.detail)
             self.assertEqual(sv.gate_run_twice(a, None).status, sv.FAIL)  # not supplied: fail closed
+
+    def test_run_twice_ignores_how_many_holds_preceded_a_frame_but_not_its_pixels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a, b, c = (pathlib.Path(tmp, n) for n in "abc")
+            a.write_text(tsv(GOOD_ROWS))
+            b.write_text(tsv(GOOD_ROWS).replace("\t0\t0\n", "\t0\t347\n", 1))
+            c.write_text(tsv(GOOD_ROWS).replace("0123456789abcdef", "0123456789abcdee"))
+            self.assertNotEqual(a.read_bytes(), b.read_bytes())
+            self.assertEqual(sv.gate_run_twice(a, b).status, sv.PASS, "holds is timing")
+            self.assertEqual(sv.gate_run_twice(a, c).status, sv.FAIL, "a pixel is not")
 
     def test_the_hero_pool_must_be_a_subset_of_the_eligible_set(self):
         self.assertEqual(sv.gate_hero_pool(record()).status, sv.PASS)
@@ -271,6 +300,47 @@ class FramesTsvAndRecord(unittest.TestCase):
             del holder[leaf]
             with self.subTest(dotted):
                 self.assertTrue(any(dotted in p for p in sv.validate_render_record(rec)))
+
+
+class RenderLauncher(unittest.TestCase):
+    """`render`: the pieces that need no simulator. The run itself is `make site-video-sim` plus a Mac (the
+    only verified host: no CI job builds the dump simulator yet), and its determinism is graded by the
+    run-twice gate."""
+
+    def test_the_ffv1_argv_is_the_input_contract(self):
+        argv = sv.ffv1_argv("/x/ffmpeg", "m.mkv")
+        joined = " ".join(argv)
+        for want in ("-f rawvideo -pix_fmt rgb24 -s 1920x1080", "-framerate 60", "-c:v ffv1 -level 3 -g 1", "-an"):
+            self.assertIn(want, joined)
+        self.assertEqual(argv[-1], "m.mkv")
+
+    def test_the_simulator_env_drops_every_inherited_plxnative_variable(self):
+        env = sv.sim_env("/rt", "/out", "/rt/fifo", 180, 60, False, 60000,
+                         base={"PLXNATIVE_TV": "x", "PATH": "/bin", "PLXNATIVE_DUMP_NO_HOLD": "1"})
+        self.assertEqual(env["PATH"], "/bin")
+        self.assertNotIn("PLXNATIVE_TV", env)
+        self.assertNotIn("PLXNATIVE_DUMP_NO_HOLD", env, "a developer's switch must not reach a render")
+        self.assertNotIn("PLXNATIVE_DUMP_ALLOW_ABSENT", env, "off unless asked")
+        self.assertEqual((env["PLXNATIVE_DUMP"], env["PLXNATIVE_DUMP_FRAMES"], env["PLXNATIVE_WIN"]),
+                         ("/out", "180", "1920x1080"))
+        on = sv.sim_env("/rt", "/out", "/rt/fifo", 1, 0, True, 1, base={}, no_hold=True)
+        self.assertEqual((on["PLXNATIVE_DUMP_ALLOW_ABSENT"], on["PLXNATIVE_DUMP_NO_HOLD"]), ("1", "1"))
+
+    def test_the_record_it_builds_passes_the_validator(self):
+        dump = {"frames_with_debt": 0, "width": 1920, "height": 1080, "preroll": 60, "iterations": 5, "holds": 2,
+                "advances": 0, "hold_reasons": {}, "unconverted_takes": [], "clock_origin_ms": 1000000, "wall_ms": 9}
+        rec = sv.build_render_record({"scene": "home"}, dump, 180, 0, 180, "darwin-local")
+        self.assertEqual(sv.validate_render_record(rec), [])
+        self.assertEqual(rec["frames"], {"count": 180, "fps": 60, "width": 1920, "height": 1080})
+        self.assertEqual(rec["sentinel"], {"scanned_frames": 180, "hits": 0})
+        again = sv.build_render_record({"scene": "home"}, dump, 180, 0, 180, "darwin-local")
+        self.assertEqual(rec["storyboard_sha256"], again["storyboard_sha256"], "a pure function of the storyboard")
+
+    def test_a_missing_simulator_is_refused_before_anything_starts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(sv.Failure) as cm:
+                sv.run_render(pathlib.Path(tmp, "nope"), tmp, "ffmpeg", 3)
+            self.assertIn("make site-video-sim", str(cm.exception))
 
 
 class SizeGate(unittest.TestCase):
