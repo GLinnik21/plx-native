@@ -161,9 +161,10 @@ pub struct CollectionScreen {
     ground_seeded: bool,
     summary_more: bool,
     links_c: Vec<Link>,
-    /// `(items, summary bytes)` the last [`Self::sync`] saw — derived, not logical state. The
-    /// frame tick re-syncs only when either moved; `StoreChanged` always re-syncs.
-    synced: Option<(usize, usize)>,
+    /// The store's content revision (`CollectionView::revision`) the last [`Self::sync_to`] saw —
+    /// derived, not logical state. The frame tick re-syncs only when it moved (a same-length
+    /// content change moves it; the item count does not); `StoreChanged` always re-syncs.
+    synced: Option<u64>,
     /// The focused row's caption band and the rows still closing behind it — the Library grid's
     /// motion (`ui::poster_grid::GridBands`), so a focused member's caption opens room under its
     /// row rather than drawing over the posters below. Presentation, not logical state.
@@ -225,8 +226,13 @@ impl CollectionScreen {
         H::collection(cx).current().filter(|c| c.id.same_collection(&self.id))
     }
 
+    /// [`Self::sync`] for the store's content as of `revision`.
+    fn sync_to(&mut self, collection: &Collection, revision: u64, measure: &dyn plx_machine::machine::Measure) {
+        self.synced = Some(revision);
+        self.sync(collection, measure);
+    }
+
     fn sync(&mut self, collection: &Collection, measure: &dyn plx_machine::machine::Measure) {
-        self.synced = Some((collection.items.len(), collection.summary.len()));
         if self.id.rk.is_empty() && !collection.id.rk.is_empty() { self.id.rk = collection.id.rk.clone(); }
         self.elems = self.cards.intern_all(
             collection.items.iter().map(|item| (item.sid, item.rk.as_str())), "collection");
@@ -395,8 +401,9 @@ impl CollectionScreen {
         let Some(collection) = self.collection(cx) else { return };
         // `sync` walks every member against every key and measures the summary — per landing, not
         // per frame (a few hundred members would otherwise cost a quadratic walk every tick).
-        if self.synced != Some((collection.items.len(), collection.summary.len())) {
-            self.sync(collection, cx.measure);
+        let revision = H::collection(cx).revision();
+        if self.synced != Some(revision) {
+            self.sync_to(collection, revision, cx.measure);
         }
         if let Some(index) = cx.focus.current.filter(|key| key.entry == self.entry)
             .and_then(|key| self.item_index(collection, key.elem)) {
@@ -718,7 +725,9 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
                 self.return_pending = false; Handled::No
             }
             ScreenEvent::StoreChanged(ord, _) if *ord == plx_data::stores::StoreId::Collection.ord() => {
-                if let Some(collection) = self.collection(cx) { self.sync(collection, cx.measure); }
+                if let Some(collection) = self.collection(cx) {
+                    self.sync_to(collection, H::collection(cx).revision(), cx.measure);
+                }
                 if self.return_pending {
                     let settled = cx.focus.current.filter(|key| key.entry == self.entry)
                         .is_some_and(|key| self.collection(cx).is_some_and(|c| !self.awaiting_restore(c, key.elem)));
@@ -865,6 +874,19 @@ mod tests {
         let out = step(&mut screen, ScreenEvent::Activate(HEADER_ELEM), &cx(store.view(), None));
         assert!(opens_summary(&out), "OK on the header opens the summary sheet");
         assert!(screen.header_marked);
+    }
+
+    /// The frame tick re-derives `elems`/`labels` when the store's CONTENT moved, not when its size
+    /// did: a member replaced by another (same count, same summary length) must be followed.
+    #[test]
+    fn a_same_length_content_change_is_synced_by_the_frame_tick() {
+        let (mut store, mut screen) = seeded();
+        let (before_elems, before_labels) = (screen.elems.clone(), screen.labels.clone());
+        store.edit_for_test(|c| c.items[1] = PmsMovie { kind: 2, season_index: 4, ..item("z") });
+        tick_at(&mut screen, &store, None, 16);
+        assert_ne!(screen.elems[1], before_elems[1], "the replaced member has its own element");
+        assert_ne!(screen.labels[1], before_labels[1], "and its own label");
+        assert_eq!(screen.elems.len(), 3);
     }
 
     #[test]

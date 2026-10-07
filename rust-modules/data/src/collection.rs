@@ -87,24 +87,33 @@ impl Collection {
 }
 
 #[derive(Clone, Copy, Default)]
-pub struct CollectionView<'a> { current: Option<&'a Collection> }
+pub struct CollectionView<'a> { current: Option<&'a Collection>, revision: u64 }
 
 impl<'a> CollectionView<'a> {
     pub fn current(self) -> Option<&'a Collection> { self.current }
+    /// The content counter: bumped whenever the collection's items, summary, status or `more`
+    /// change (or the collection itself is replaced). A reader derives its per-member state again
+    /// when this moves; the request epoch (`generation`) does not move on paging, and an item
+    /// count or summary length can stay put while the content behind it changes.
+    pub fn revision(self) -> u64 { self.revision }
 }
 
 pub struct CollectionState {
     current: Option<Collection>,
     generation: u32,
+    /// The content counter [`CollectionView::revision`] reads.
+    revision: u64,
     retry_cd: u32,
 }
 
 impl Default for CollectionState {
-    fn default() -> Self { Self { current: None, generation: 0, retry_cd: 0 } }
+    fn default() -> Self { Self { current: None, generation: 0, revision: 0, retry_cd: 0 } }
 }
 
 impl CollectionState {
-    pub fn view(&self) -> CollectionView<'_> { CollectionView { current: self.current.as_ref() } }
+    pub fn view(&self) -> CollectionView<'_> {
+        CollectionView { current: self.current.as_ref(), revision: self.revision }
+    }
 
     fn supersede(&mut self, adapter: &CollectionAdapter) {
         self.generation = self.generation.checked_add(1).expect("collection generation exhausted");
@@ -113,6 +122,12 @@ impl CollectionState {
     }
 
     pub fn run(&mut self, adapter: &Arc<CollectionAdapter>, cmd: crate::stores::collection::CollectionCmd) -> bool {
+        let changed = self.run_cmd(adapter, cmd);
+        self.revision += u64::from(changed);
+        changed
+    }
+
+    fn run_cmd(&mut self, adapter: &Arc<CollectionAdapter>, cmd: crate::stores::collection::CollectionCmd) -> bool {
         use crate::stores::collection::CollectionCmd;
         match cmd {
             CollectionCmd::Open { target } => {
@@ -158,6 +173,7 @@ impl CollectionState {
         let (id, want) = (c.id.clone(), c.want);
         self.supersede(adapter);
         self.current = Some(Collection::loading(id, want, now));
+        self.revision += 1;
         true
     }
 
@@ -195,7 +211,10 @@ impl CollectionState {
         let Some(c) = self.current.as_ref() else { return };
         let Some(client) = plx_plex::plex::client_for(c.id.sid) else {
             self.retry_cd = RETRY_FRAMES;
-            if c.items.is_empty() { self.current.as_mut().unwrap().status = CollectionStatus::Failed; }
+            if c.items.is_empty() {
+                self.current.as_mut().unwrap().status = CollectionStatus::Failed;
+                self.revision += 1;
+            }
             return;
         };
         let generation = self.generation;
@@ -212,6 +231,12 @@ impl CollectionState {
     }
 
     fn apply(&mut self, landing: Landing) -> bool {
+        let changed = self.apply_landing(landing);
+        self.revision += u64::from(changed);
+        changed
+    }
+
+    fn apply_landing(&mut self, landing: Landing) -> bool {
         let Some(c) = self.current.as_mut() else { return false };
         match landing {
             Landing::Header { rk, head } => {
@@ -259,6 +284,7 @@ impl CollectionState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn install_for_test(&mut self, items: Vec<PmsMovie>, status: CollectionStatus) {
         let Some(c) = self.current.as_mut() else { return };
+        self.revision += 1;
         c.title = if c.id.name.is_empty() { "Collection".into() } else { c.id.name.clone() };
         c.summary = "A collection summary long enough for screen layout tests.".into();
         c.child_count = items.len();
@@ -272,7 +298,7 @@ impl CollectionState {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn edit_for_test(&mut self, edit: impl FnOnce(&mut Collection)) {
-        if let Some(c) = self.current.as_mut() { edit(c); }
+        if let Some(c) = self.current.as_mut() { edit(c); self.revision += 1; }
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -463,6 +489,29 @@ mod tests {
         assert_eq!(member(&row("episode", "/still", "", ""), sid).thumb, "",
             "a landscape still is never cropped into a portrait cell");
         assert_eq!(member(&row("movie", "/poster", "", ""), sid).thumb, "/poster");
+    }
+
+    /// `generation` is the request epoch (paging leaves it); `revision` is the content counter
+    /// (a header and a page both move it, a dropped landing does not).
+    #[test]
+    fn the_revision_follows_content_while_the_generation_follows_requests() {
+        let adapter = Arc::new(CollectionAdapter::default());
+        let mut state = CollectionState::default();
+        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        let (generation, opened) = (state.generation(), state.view().revision());
+        adapter.land(generation, Landing::Header { rk: None, head: header("Set", 130) });
+        assert!(state.take_landing_for_test(&adapter));
+        let header_rev = state.view().revision();
+        assert!(header_rev > opened, "a header landing is a content change");
+        let page = (0..PAGE_SIZE).map(|i| PmsMovie { rk: i.to_string(), ..Default::default() }).collect();
+        adapter.land(generation, Landing::Page { start: 0, got: PAGE_SIZE, items: page, total: 130 });
+        assert!(state.take_landing_for_test(&adapter));
+        let paged_rev = state.view().revision();
+        assert!(paged_rev > header_rev, "a page landing is a content change");
+        assert_eq!(state.generation(), generation, "…while paging leaves the request epoch alone");
+        adapter.land(generation, Landing::Page { start: 0, got: 0, items: Vec::new(), total: 130 });
+        assert!(!state.take_landing_for_test(&adapter));
+        assert_eq!(state.view().revision(), paged_rev, "a dropped landing changes nothing");
     }
 
     #[test]
