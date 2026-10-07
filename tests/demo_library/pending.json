@@ -1,209 +1,108 @@
 {
  "comment": "What the completeness gate (`python3 tools/demo_library.py check --complete`) still finds missing, per item key (`slug` or `slug/season/episode`), by category. This list may only SHRINK: a content change that fills a gap deletes its entry here, and the check refuses an entry that is already complete as well as a gap that is not listed. Never add an entry to silence a failure; tests/test_demo_library.py pins the per-category counts (PENDING_CEILING) so growth cannot pass review unnoticed.",
  "pending": {
-  "spring": [
-   "cast",
-   "country",
-   "tagline",
-   "writers"
-  ],
-  "sprite-fright": [
-   "cast",
-   "country",
-   "tagline",
-   "writers"
-  ],
   "charge": [
-   "cast",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "tears-of-steel": [
    "logo"
   ],
   "cosmos-laundromat": [
-   "cast",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "big-buck-bunny": [
-   "cast",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "elephants-dream": [
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "nosferatu": [
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "metropolis": [
    "backdrop",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "night-of-the-living-dead": [
    "backdrop",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "the-general": [
    "backdrop",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "sherlock-jr": [
    "backdrop",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "his-girl-friday": [
    "backdrop",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "plan-9-from-outer-space": [
    "backdrop",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "the-kid": [
    "backdrop",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "safety-last": [
    "backdrop",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "the-cabinet-of-dr-caligari": [
    "backdrop",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "a-trip-to-the-moon": [
    "backdrop",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "wing-it": [
-   "cast",
-   "country",
-   "directors",
    "logo",
-   "poster",
-   "tagline",
-   "writers"
+   "poster"
   ],
   "coffee-run": [
-   "cast",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "hero": [
-   "cast",
-   "country",
    "logo",
-   "poster",
-   "tagline",
-   "writers"
+   "poster"
   ],
   "glass-half": [
-   "cast",
-   "country",
    "logo",
-   "poster",
-   "tagline"
+   "poster"
   ],
   "the-daily-dweebs": [
    "backdrop",
-   "cast",
-   "country",
-   "logo",
-   "tagline",
-   "writers"
+   "logo"
   ],
   "singularity": [
-   "cast",
-   "country",
    "logo",
-   "poster",
-   "tagline",
-   "writers"
+   "poster"
   ],
   "sita-sings-the-blues": [
-   "cast",
-   "country",
    "logo",
-   "poster",
-   "tagline"
+   "poster"
   ],
   "seder-masochism": [
-   "cast",
-   "country",
-   "logo",
-   "tagline"
+   "logo"
   ],
   "caminandes": [
-   "cast",
-   "country",
-   "creators",
    "logo",
-   "poster",
-   "tagline",
-   "writers"
+   "poster"
   ],
   "sherlock-holmes": [
    "backdrop",
-   "country",
-   "creators",
    "logo",
-   "poster",
-   "tagline",
-   "writers"
+   "poster"
   ],
   "hubblecast": [
-   "cast",
    "country",
    "creators",
    "logo",
    "poster",
-   "tagline",
    "writers"
   ]
  }

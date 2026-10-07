@@ -1,4 +1,4 @@
-//! The demo library's complete titles, parsed from the mock's captured detail responses
+//! The demo library's two fixture titles, parsed from the mock's captured detail responses
 //! (`tests/demo_library/fixtures/detail-<rk>.json`, written by `tools/demo_library.py fixtures`).
 //!
 //! `fetch_detail` builds a `Detail` inline from a network read, so these tests drive the same

@@ -42,8 +42,48 @@
    "directors": [
     "Andy Goralczyk"
    ],
-   "writers": [],
-   "cast": [],
+   "writers": [
+    "Andy Goralczyk"
+   ],
+   "tagline": "A shepherd girl, her dog, and the spirits that hold back the thaw.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q62770443",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers"
+     ],
+     "url": "https://studio.blender.org/projects/spring/",
+     "note": "Blender Studio project page: written and directed by Andy Goralczyk; facts only",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/spring/pages/credits/",
+     "note": "the film's credits page on Blender Studio lists no performer; facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast_none": {
+    "source": "https://studio.blender.org/projects/spring/pages/credits/",
+    "retrieved": "2026-10-07",
+    "note": "the credits page names no performer"
+   },
    "summary": "A shepherd girl and her dog climb into the mountains to face the ancient spirits who hold back the thaw, and to keep the cycle of life turning. A wordless fable of fear, loss and renewal, painted in moss, snow and firelight.",
    "poster": {
     "asset": "spring-poster"
@@ -235,8 +275,56 @@
    "directors": [
     "Matthew Luhn"
    ],
-   "writers": [],
-   "cast": [],
+   "writers": [
+    "Matthew Luhn"
+   ],
+   "tagline": "A weekend in the woods that the woods took personally.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q100999451",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers",
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/sprite-fright/pages/credits/",
+     "note": "the film's credits page on Blender Studio (Written and Directed by; Voices); facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast": [
+    {
+     "name": "Valerie LaPointe"
+    },
+    {
+     "name": "Gabriel Bisset-Smith"
+    },
+    {
+     "name": "Nicole Davis"
+    },
+    {
+     "name": "Homer Todiwala"
+    },
+    {
+     "name": "Ed Kear"
+    },
+    {
+     "name": "Eric Peterson"
+    }
+   ],
    "summary": "A group of rowdy teenagers on a weekend in the woods discovers that the forest's tiny, adorable mushroom sprites do not take kindly to litter. An eighties-style creature comedy in which the cute things are the monsters.",
    "poster": {
     "asset": "sprite-fright-poster"
@@ -285,8 +373,41 @@
    "directors": [
     "Hjalti Hjalmarsson"
    ],
-   "writers": [],
-   "cast": [],
+   "writers": [
+    "Hjalti Hjalmarsson"
+   ],
+   "tagline": "One battery, one old man, and the machine built to stop him.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q115715270",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers",
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/charge/pages/credits/",
+     "note": "the film's credits page on Blender Studio (Written and directed by); it lists no performer; facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast_none": {
+    "source": "https://studio.blender.org/projects/charge/pages/credits/",
+    "retrieved": "2026-10-07",
+    "note": "the credits page names no performer"
+   },
    "summary": "In a frozen, energy-starved future, an old man breaks into a guarded facility to steal a single battery, and meets the machine built to stop him.",
    "poster": {
     "asset": "charge-poster"
@@ -402,8 +523,46 @@
    "directors": [
     "Mathieu Auvray"
    ],
-   "writers": [],
-   "cast": [],
+   "writers": [
+    "Esther Wouda"
+   ],
+   "tagline": "One sheep, one salesman, and a life on offer.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q20968125",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers",
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/cosmos-laundromat/pages/credits/",
+     "note": "the film's credits page on Blender Studio (Written by; Voice Franck; Voice Victor); facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast": [
+    {
+     "name": "Pierre Bokma",
+     "role": "Franck"
+    },
+    {
+     "name": "Reinout Scholten van Aschat",
+     "role": "Victor"
+    }
+   ],
    "summary": "On a desolate island, a suicidal sheep called Franck meets Victor, a mysterious salesman who offers him the gift of a lifetime: a chance to live a different life, and then another.",
    "poster": {
     "asset": "cosmos-laundromat-poster"
@@ -433,8 +592,47 @@
    "directors": [
     "Sacha Goedegebure"
    ],
-   "writers": [],
-   "cast": [],
+   "writers": [
+    "Sacha Goedegebure"
+   ],
+   "tagline": "A gentle giant, three rodents, and one elaborate revenge.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q282456",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers"
+     ],
+     "url": "https://en.wikipedia.org/wiki/Big_Buck_Bunny",
+     "note": "Wikipedia infobox; names and credits only, no prose copied",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/big-buck-bunny/pages/credits/",
+     "note": "the film's credits page on Blender Studio lists no performer; facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast_none": {
+    "source": "https://studio.blender.org/projects/big-buck-bunny/pages/credits/",
+    "retrieved": "2026-10-07",
+    "note": "the credits page names no performer"
+   },
    "summary": "A gentle giant of a rabbit wakes up to a perfect spring morning, until three bullying rodents flatten his favourite butterfly. Revenge, it turns out, is best served with elaborate traps.",
    "poster": {
     "asset": "big-buck-bunny-poster"
@@ -463,7 +661,37 @@
    "directors": [
     "Bassam Kurdali"
    ],
-   "writers": [],
+   "writers": [
+    "Pepijn Zwanenberg",
+    "Bassam Kurdali",
+    "Andy Goralczyk",
+    "Ton Roosendaal"
+   ],
+   "tagline": "Proog sees wonders in the Machine. Emo sees wires.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q825197",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers"
+     ],
+     "url": "https://en.wikipedia.org/wiki/Elephants_Dream",
+     "note": "Wikipedia infobox; names and credits only, no prose copied",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Tygo Gernandt",
@@ -501,7 +729,35 @@
    "directors": [
     "F. W. Murnau"
    ],
-   "writers": [],
+   "writers": [
+    "Henrik Galeen"
+   ],
+   "tagline": "A house deal in the mountains, and a shadow that follows home.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Germany"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q151895",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers"
+     ],
+     "url": "https://en.wikipedia.org/wiki/Nosferatu",
+     "note": "Wikipedia infobox; names and credits only, no prose copied",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Max Schreck",
@@ -548,7 +804,28 @@
    "directors": [
     "Fritz Lang"
    ],
-   "writers": [],
+   "writers": [
+    "Thea von Harbou",
+    "Fritz Lang"
+   ],
+   "tagline": "Above, the towers shine. Below, the machines keep time.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Germany"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q151599",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Brigitte Helm",
@@ -588,7 +865,36 @@
    "directors": [
     "George A. Romero"
    ],
-   "writers": [],
+   "writers": [
+    "George A. Romero",
+    "John A. Russo"
+   ],
+   "tagline": "Seven strangers, one farmhouse, and the long night outside.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "United States"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q623051",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers"
+     ],
+     "url": "https://en.wikipedia.org/wiki/Night_of_the_Living_Dead",
+     "note": "Wikipedia infobox; names and credits only, no prose copied",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Duane Jones",
@@ -628,7 +934,38 @@
     "Buster Keaton",
     "Clyde Bruckman"
    ],
-   "writers": [],
+   "writers": [
+    "Al Boasberg",
+    "Clyde Bruckman",
+    "Buster Keaton",
+    "Charles Henry Smith"
+   ],
+   "tagline": "One engineer, one locomotive, and no help on the way.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "United States"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q850159",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers"
+     ],
+     "url": "https://en.wikipedia.org/wiki/The_General_(1926_film)",
+     "note": "Wikipedia infobox; names and credits only, no prose copied",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Buster Keaton",
@@ -666,7 +1003,37 @@
    "directors": [
     "Buster Keaton"
    ],
-   "writers": [],
+   "writers": [
+    "Jean Havez",
+    "Joseph A. Mitchell",
+    "Clyde Bruckman"
+   ],
+   "tagline": "A projectionist who solves the case by stepping into the screen.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "United States"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q1569918",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers"
+     ],
+     "url": "https://en.wikipedia.org/wiki/Sherlock_Jr.",
+     "note": "Wikipedia infobox; names and credits only, no prose copied",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Buster Keaton",
@@ -707,7 +1074,37 @@
    "directors": [
     "Howard Hawks"
    ],
-   "writers": [],
+   "writers": [
+    "Charles Lederer",
+    "Ben Hecht",
+    "Charles MacArthur"
+   ],
+   "tagline": "One last story, one ex-husband, and a deadline that will not wait.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "United States"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q1066714",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers"
+     ],
+     "url": "https://en.wikipedia.org/wiki/His_Girl_Friday",
+     "note": "Wikipedia infobox; names and credits only, no prose copied",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Cary Grant",
@@ -745,7 +1142,35 @@
    "directors": [
     "Edward D. Wood Jr."
    ],
-   "writers": [],
+   "writers": [
+    "Edward D. Wood Jr."
+   ],
+   "tagline": "The ninth plan starts in a small California cemetery.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "United States"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q257515",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers"
+     ],
+     "url": "https://en.wikipedia.org/wiki/Plan_9_from_Outer_Space",
+     "note": "Wikipedia infobox; names and credits only, no prose copied",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Gregory Walcott",
@@ -784,7 +1209,35 @@
    "directors": [
     "Charlie Chaplin"
    ],
-   "writers": [],
+   "writers": [
+    "Charlie Chaplin"
+   ],
+   "tagline": "A tramp, a foundling, and the day the authorities call.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "United States"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q374172",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers"
+     ],
+     "url": "https://en.wikipedia.org/wiki/The_Kid_(1921_film)",
+     "note": "Wikipedia infobox; names and credits only, no prose copied",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Charlie Chaplin",
@@ -823,7 +1276,37 @@
     "Fred C. Newmeyer",
     "Sam Taylor"
    ],
-   "writers": [],
+   "writers": [
+    "Hal Roach",
+    "Sam Taylor",
+    "Tim Whelan"
+   ],
+   "tagline": "A clerk's small fib and a very tall building.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "United States"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q778755",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers"
+     ],
+     "url": "https://en.wikipedia.org/wiki/Safety_Last!",
+     "note": "Wikipedia infobox; names and credits only, no prose copied",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Harold Lloyd",
@@ -861,7 +1344,28 @@
    "directors": [
     "Robert Wiene"
    ],
-   "writers": [],
+   "writers": [
+    "Hans Janowitz",
+    "Carl Mayer"
+   ],
+   "tagline": "A sleepwalker, a showman, and a town that stopped sleeping.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Germany"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q153886",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Werner Krauss",
@@ -905,7 +1409,27 @@
    "directors": [
     "Georges Méliès"
    ],
-   "writers": [],
+   "writers": [
+    "Georges Méliès"
+   ],
+   "tagline": "Astronomers, a cannon, and a Moon that looks back.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "France"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q244971",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Georges Méliès",
@@ -937,9 +1461,44 @@
     "Comedy",
     "Short"
    ],
-   "directors": [],
-   "writers": [],
-   "cast": [],
+   "directors": [
+    "Rik Schutte"
+   ],
+   "writers": [
+    "Rik Schutte"
+   ],
+   "tagline": "Two strangers, one shuttle, and a launch nobody planned.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q118732564",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "directors",
+      "writers",
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/wing-it/pages/credits/",
+     "note": "the film's credits page on Blender Studio (Written and directed by); it lists no performer; facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast_none": {
+    "source": "https://studio.blender.org/projects/wing-it/pages/credits/",
+    "retrieved": "2026-10-07",
+    "note": "the credits page names no performer (its music credits are an orchestra's live recording)"
+   },
    "summary": "An uptight engineer gets an unwelcome visit from an enthusiastic wannabe-pilot, causing both of them to be launched into the air inside an out-of-control space shuttle.",
    "poster": {
     "asset": "bs-wing-it-header"
@@ -968,8 +1527,42 @@
    "directors": [
     "Hjalti Hjalmarsson"
    ],
-   "writers": [],
-   "cast": [],
+   "tagline": "Three minutes, one coffee, and everything she remembers.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q95909732",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers",
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/coffee-run/pages/credits/",
+     "note": "the film's credits page on Blender Studio (Directed by) lists no writer and no performer; facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "writers_none": {
+    "source": "https://studio.blender.org/projects/coffee-run/pages/credits/",
+    "retrieved": "2026-10-07",
+    "note": "the credits page names no writer"
+   },
+   "cast_none": {
+    "source": "https://studio.blender.org/projects/coffee-run/pages/credits/",
+    "retrieved": "2026-10-07",
+    "note": "the credits page names no performer"
+   },
    "summary": "Fueled by caffeine, a young woman runs through the bittersweet memories of her past relationship.",
    "poster": {
     "asset": "coffee-run-poster"
@@ -998,8 +1591,41 @@
    "directors": [
     "Daniel Martinez Lara"
    ],
-   "writers": [],
-   "cast": [],
+   "writers": [
+    "Daniel Martinez Lara",
+    "Javier Salvador"
+   ],
+   "tagline": "Hand-drawn lines, set loose inside a 3D world.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q64221221",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers",
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/hero/pages/credits/",
+     "note": "the film's credits page on Blender Studio (Written by); it lists no performer; facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast_none": {
+    "source": "https://studio.blender.org/projects/hero/pages/credits/",
+    "retrieved": "2026-10-07",
+    "note": "the credits page names no performer"
+   },
    "summary": "A showcase for Grease Pencil in Blender 2.8: 2D animation tools within a full 3D pipeline, and the sixth short film funded by the Blender Cloud.",
    "poster": {
     "asset": "hero-still-red"
@@ -1031,7 +1657,45 @@
    "writers": [
     "Beorn Leonard"
    ],
-   "cast": [],
+   "tagline": "Two critics, one gallery, and one painting they agree on.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q64221136",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/glass-half/pages/credits/",
+     "note": "the film's credits page on Blender Studio (Voice Max; Voice Min; voice Steve); facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast": [
+    {
+     "name": "Ryan Millar",
+     "role": "Max"
+    },
+    {
+     "name": "Trista Mrema",
+     "role": "Min"
+    },
+    {
+     "name": "Hjalti Hjalmarsson",
+     "role": "Steve"
+    }
+   ],
    "summary": "Two amateur art critics meet in a gallery and argue passionately about the pieces they see, causing chaos for everyone else, until finally they find a piece on which they can agree.",
    "poster": {
     "asset": "glass-half-still-style",
@@ -1061,8 +1725,45 @@
    "directors": [
     "Hjalti Hjalmarsson"
    ],
-   "writers": [],
-   "cast": [],
+   "tagline": "One dog, fifty seconds, and every feeling at once.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q64215000",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers",
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/dailydweebs/pages/credits/",
+     "note": "the film's credits page on Blender Studio (Voice Actor; no writer listed); facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "writers_none": {
+    "source": "https://studio.blender.org/projects/dailydweebs/pages/credits/",
+    "retrieved": "2026-10-07",
+    "note": "the credits page names no writer"
+   },
+   "cast": [
+    {
+     "name": "Devin Compton"
+    },
+    {
+     "name": "Hjalti Hjalmarsson"
+    }
+   ],
    "summary": "A Blender Animation Studio short, directed and animated by Hjalti Hjalmarsson.",
    "poster": {
     "asset": "the-daily-dweebs-poster"
@@ -1086,8 +1787,41 @@
    "directors": [
     "Andy Goralczyk"
    ],
-   "writers": [],
-   "cast": [],
+   "writers": [
+    "Andy Goralczyk"
+   ],
+   "tagline": "A small critter loses his icy home and finds a new light.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries",
+      "writers"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q139759628",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers",
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/singularity/pages/credits/",
+     "note": "the film's credits page on Blender Studio (Written and directed by); it lists no performer; facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast_none": {
+    "source": "https://studio.blender.org/projects/singularity/pages/credits/",
+    "retrieved": "2026-10-07",
+    "note": "the credits page names no performer (its music credits are an orchestra's recording)"
+   },
    "summary": "When an ominous cosmic event swallows the icy home of a small space critter, he must find refuge among a group of luminous creatures watched over by a mysterious celestial being.",
    "poster": {
     "asset": "bs-singularity-header"
@@ -1119,7 +1853,77 @@
    "writers": [
     "Nina Paley"
    ],
-   "cast": [],
+   "tagline": "Torch songs from the 1920s, an epic from long before.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "United States"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q739285",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "cast"
+     ],
+     "url": "https://www.sitasingstheblues.com/credits.html",
+     "note": "the film's own credits and collaborators page; names and roles only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast": [
+    {
+     "name": "Reena Shah",
+     "role": "Sita (speaking)"
+    },
+    {
+     "name": "Annette Hanshaw",
+     "role": "Sita (singing, archive recordings)"
+    },
+    {
+     "name": "Debargo Sanyal",
+     "role": "Rama"
+    },
+    {
+     "name": "Sanjiv Jhaveri",
+     "role": "Dasharatha, Ravana and Valmiki"
+    },
+    {
+     "name": "Aladdin Ullah",
+     "role": "Mareecha and Hanuman"
+    },
+    {
+     "name": "Pooja Kumar",
+     "role": "Surphanakha"
+    },
+    {
+     "name": "Deepti Gupta",
+     "role": "Kaikeyi"
+    },
+    {
+     "name": "Nitya Vidyasagar",
+     "role": "Luv and Kush"
+    },
+    {
+     "name": "Aseem Chhabra",
+     "role": "Shadow puppet 1"
+    },
+    {
+     "name": "Bhavana Nagulapally",
+     "role": "Shadow puppet 2"
+    },
+    {
+     "name": "Manish Acharya",
+     "role": "Shadow puppet 3"
+    }
+   ],
    "summary": "The Ramayana, told with the torch songs of Annette Hanshaw: Sita, loyal to a husband who doubts her, and an animator in New York whose own marriage is coming apart.",
    "poster": {
     "asset": "sita-still-ram-sita-gods"
@@ -1148,7 +1952,45 @@
    "writers": [
     "Nina Paley"
    ],
-   "cast": [],
+   "tagline": "Passover retold as a musical, with the goddess back in frame.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "United States"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q56092496",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "cast"
+     ],
+     "url": "https://www.sedermasochism.com/credits/",
+     "note": "the film's own credits page (Cast, in order of appearance); names and roles only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast": [
+    {
+     "name": "Barry Gray",
+     "role": "Jesus"
+    },
+    {
+     "name": "Hiram Paley",
+     "role": "Our Father"
+    },
+    {
+     "name": "Nina Paley",
+     "role": "Sacrificial Goat"
+    }
+   ],
    "summary": "An animated musical that loosely follows the Passover Seder story, with the events of Exodus retold by Moses, Aharon, the Angel of Death, Jesus and the director's father, and a goddess's point of view restored.",
    "poster": {
     "asset": "seder-masochism-poster"
@@ -1174,7 +2016,55 @@
    "directors": [
     "Pablo Vazquez"
    ],
-   "cast": [],
+   "creators": [
+    "Pablo Vazquez"
+   ],
+   "tagline": "One llama in Patagonia, and everything in the way of lunch.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q19481039",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "creators"
+     ],
+     "url": "https://en.wikipedia.org/wiki/Caminandes",
+     "note": "Wikipedia infobox; names and credits only, no prose copied",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/caminandes-2/pages/credits/",
+     "note": "episode 2's credits page on Blender Studio lists no performer; facts only",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "cast"
+     ],
+     "url": "https://studio.blender.org/projects/caminandes-3/pages/credits/",
+     "note": "episode 3's credits page on Blender Studio lists no performer; facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast_none": {
+    "source": "https://studio.blender.org/projects/caminandes-3/pages/credits/",
+    "retrieved": "2026-10-07",
+    "note": "the credits pages of episodes 2 and 3 name no performer"
+   },
    "summary": "Koro the llama lives in Patagonia and has one talent: finding obstacles between himself and whatever he wants next. Short slapstick episodes about fences, friendship and snacks.",
    "poster": {
     "asset": "caminandes-s01e01",
@@ -1234,6 +2124,34 @@
     "Crime"
    ],
    "directors": [],
+   "creators": [
+    "Sheldon Reynolds"
+   ],
+   "tagline": "Thirty-nine half-hour cases, delivered to Baker Street.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "United States"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q2570112",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "creators"
+     ],
+     "url": "https://en.wikipedia.org/wiki/Sherlock_Holmes_(1954_TV_series)",
+     "note": "Wikipedia infobox; names and credits only, no prose copied",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Ronald Howard",
@@ -1325,7 +2243,38 @@
     "Documentary"
    ],
    "directors": [],
-   "cast": [],
+   "tagline": "Hubble's discoveries, a few minutes at a time.",
+   "demo_values": [
+    "tagline"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "cast"
+     ],
+     "url": "https://esahubble.org/videos/heic1509a/",
+     "note": "episode page credits: Narration, Dr Joe Liske (2015); facts only",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "cast"
+     ],
+     "url": "https://esahubble.org/videos/heic1608a/",
+     "note": "episode page credits: Narration, Sara Mendes da Costa (2016 to 2020); facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
+   "cast": [
+    {
+     "name": "Joe Liske",
+     "role": "Narrator"
+    },
+    {
+     "name": "Sara Mendes da Costa",
+     "role": "Narrator"
+    }
+   ],
    "summary": "ESA/Hubble's video podcast about the discoveries of the NASA/ESA Hubble Space Telescope, and about the telescope itself. The episodes here are those of 2015 to 2020.",
    "poster": {
     "asset": "esa-hubble-heic1608a"
