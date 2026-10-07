@@ -2,13 +2,18 @@
 //! its window: a beat of rest so the couch can start reading, a slow glide left, a gap, then the
 //! same run re-entering from the right, forever while it holds focus.
 //!
-//! Three users, one implementation (`ui/src/CLAUDE.md` rule 4): a focused tile's title under its
-//! card (`card_row`, [`TITLE`]), a focused cast headshot's name and role (the detail page's cast
-//! shelf, [`TITLE`], through [`Marquee::glide`] like the title), and a focused menu row's label
-//! (`table`, [`ROW`]) — a downloaded subtitle's release name is routinely three times the width
-//! of the track menu. They differ only in the rest beat, and each keeps its OWN [`Clock`],
-//! because a popover menu over a shelf draws both focused runs in one frame and a shared clock
-//! would restart on every draw.
+//! Four users, one implementation (`ui/src/CLAUDE.md` rule 4): a focused tile's title AND its
+//! caption line under the card (`card_row`, [`TITLE`]), a focused cast headshot's name and role
+//! (the detail page's cast shelf, [`TITLE`]), and a focused menu row's label (`table`, [`ROW`]) — a
+//! downloaded subtitle's release name is routinely three times the width of the track menu. They
+//! differ only in the rest beat, and each keeps its OWN [`Clock`], because a popover menu over a
+//! shelf draws both focused runs in one frame and a shared clock would restart on every draw.
+//!
+//! **Lines of one block move together** ([`Marquee::glide_in`]): a tile's title and caption (a
+//! headshot's name and role) share ONE clock and one cycle — the longest overflowing line's — so
+//! they leave their rest beat at the same instant and loop at the same instant. A shorter line
+//! finishes its glide early and waits, at its rest position, for the longest. The alternative —
+//! each line looping on its own period — has the lines restarting under each other's glide.
 //!
 //! Draw TWO copies at `x - offset` and `x - offset + text_w + GAP` (the follower), both clipped to
 //! the window — the follower is what makes the wrap seamless instead of a visible pop back to the
@@ -48,14 +53,25 @@ impl Marquee {
     /// first [`Self::hold_ms`], then a glide at [`SPEED`] until the run plus [`GAP`] of air has
     /// fully passed, then loops. A run that fits (`text_w <= budget`) is inert at every `t_ms`.
     pub fn x(&self, t_ms: f32, text_w: f32, budget: f32) -> f32 {
+        self.x_in(t_ms, text_w, budget, text_w)
+    }
+
+    /// [`Self::x`] for a run that glides as part of a GROUP whose cycle is `cycle_w` wide — the
+    /// widest overflowing run among the lines that share one clock (a tile's title and its
+    /// caption). The loop is the group's ([`Self::period`] of `cycle_w`), so every run in it starts
+    /// together and restarts together; a shorter run finishes its own glide early and then holds
+    /// at the end of its travel, which is its rest position seen from the follower (the follower
+    /// has arrived exactly where the primary began), so it waits invisibly for the longest. With
+    /// `cycle_w == text_w` this is exactly [`Self::x`].
+    pub fn x_in(&self, t_ms: f32, text_w: f32, budget: f32, cycle_w: f32) -> f32 {
         if text_w <= budget {
             return 0.0;
         }
-        let t = t_ms.max(0.0) % self.period(text_w);
+        let t = t_ms.max(0.0) % self.period(cycle_w.max(text_w));
         if t < self.hold_ms {
             0.0
         } else {
-            (t - self.hold_ms) / 1000.0 * SPEED
+            ((t - self.hold_ms) / 1000.0 * SPEED).min(text_w + GAP)
         }
     }
 
@@ -64,10 +80,17 @@ impl Marquee {
     /// question from [`Self::x`] rather than "moved since last frame": two resting frames draw
     /// nothing different, which is exactly what must NOT report as motion.
     pub fn moving(&self, t_ms: f32, text_w: f32, budget: f32) -> bool {
+        self.moving_in(t_ms, text_w, budget, text_w)
+    }
+
+    /// [`Self::moving`] for a run in a group of `cycle_w` ([`Self::x_in`]): a run that has
+    /// finished its own travel and waits for the group's longest is not moving.
+    pub fn moving_in(&self, t_ms: f32, text_w: f32, budget: f32, cycle_w: f32) -> bool {
         if text_w <= budget {
             return false;
         }
-        t_ms.max(0.0) % self.period(text_w) >= self.hold_ms
+        let t = t_ms.max(0.0) % self.period(cycle_w.max(text_w));
+        t >= self.hold_ms && (t - self.hold_ms) / 1000.0 * SPEED < text_w + GAP
     }
 
     /// One full cycle in ms — the rest beat plus the glide that carries the run and its [`GAP`]
@@ -92,7 +115,14 @@ impl Marquee {
     /// and motionless at 4 s and again at 7 s of focus (sim, 2026-09-02). `wake` (a frame, no claim
     /// that pixels changed) for the hold; `invalidate` for the glide, where they do.
     pub fn report(&self, t_ms: f32, text_w: f32, budget: f32) {
-        if self.moving(t_ms, text_w, budget) {
+        self.report_in(t_ms, text_w, budget, text_w);
+    }
+
+    /// [`Self::report`] for a run in a group ([`Self::x_in`]). Every run of the group reports, so
+    /// the frame is bought for as long as ANY of them is on screen, and `invalidate` is claimed
+    /// only by a run that is actually moving.
+    pub fn report_in(&self, t_ms: f32, text_w: f32, budget: f32, cycle_w: f32) {
+        if self.moving_in(t_ms, text_w, budget, cycle_w) {
             plx_machine::idle::invalidate();
         } else {
             plx_machine::idle::wake();
@@ -117,13 +147,61 @@ impl Marquee {
         window: Rect,
         paint: impl Fn(f32),
     ) {
-        let t_ms = self.phase(clock.read(key), run_w, window.w);
-        self.report(t_ms, run_w, window.w);
-        let off = self.x(t_ms, run_w, window.w);
+        self.glide_in(clock, p, key, run_w, run_w, window, paint);
+    }
+
+    /// **[`Self::glide`] for one line of a block of lines that move together** — a tile's title
+    /// and its caption, a headshot's name and role. Every line of the block reads the SAME
+    /// `clock` under the SAME `key` (the block's identity, not one line's text) and passes the
+    /// widest overflowing run's width as `cycle_w`, so the lines leave their rest beat together
+    /// and loop together ([`Self::x_in`]). The one caller-visible rule: call it once per
+    /// overflowing line per frame, and [`Clock::release`] the shared clock only when NO line of the
+    /// block overflows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn glide_in(
+        &self,
+        clock: &Clock,
+        p: Painter,
+        key: &str,
+        run_w: f32,
+        cycle_w: f32,
+        window: Rect,
+        paint: impl Fn(f32),
+    ) {
+        let cycle_w = cycle_w.max(run_w);
+        let t_ms = self.phase(clock.read(key), cycle_w, window.w);
+        self.report_in(t_ms, run_w, window.w, cycle_w);
+        let off = self.x_in(t_ms, run_w, window.w, cycle_w);
         p.clip(window);
         paint(-off);
         paint(-off + run_w + GAP);
         p.clip_clear();
+    }
+}
+
+/// **What the overflowing lines of one block share** — the identity its clock is keyed by and the
+/// cycle it loops on ([`Marquee::glide_in`]). Built once per frame from the block's lines, so a
+/// tile's title and caption (a headshot's name and role) cannot disagree about either.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Block {
+    /// Both lines' text: the clock restarts whenever the focused block changes, and not when only
+    /// one of two tiles' lines happens to repeat.
+    pub key: String,
+    /// The widest overflowing run in the block — the loop's length.
+    pub cycle_w: f32,
+}
+
+impl Block {
+    /// The block of two lines, each given as `(text, Some(run_w))` when it OVERFLOWS its window and
+    /// `(text, None)` when it fits. `None` when neither overflows: the caller then
+    /// [`Clock::release`]s the shared clock, so the block focused again later starts from its rest
+    /// beat instead of resuming mid-glide.
+    pub fn of(a: (&str, Option<f32>), b: (&str, Option<f32>)) -> Option<Block> {
+        let cycle_w = match (a.1, b.1) {
+            (None, None) => return None,
+            (x, y) => x.unwrap_or(0.0).max(y.unwrap_or(0.0)),
+        };
+        Some(Block { key: format!("{}\u{1}{}", a.0, b.0), cycle_w })
     }
 }
 
@@ -220,5 +298,37 @@ mod tests {
         assert_eq!(a.key.borrow().as_str(), "Alpha", "b's change never touched a's key");
         a.release();
         assert_eq!(a.read("Alpha"), 0.0, "a released clock starts the run from rest");
+    }
+
+    /// **A group shares one cycle**: a shorter run glides at the same speed from the same instant,
+    /// finishes early and waits at its rest position, and every run restarts at the longest's
+    /// loop. With one run in the group it is exactly the plain run.
+    #[test]
+    fn a_group_of_runs_starts_and_loops_together() {
+        let (short, long, budget) = (400.0, 900.0, 200.0);
+        let m = TITLE;
+        assert_eq!(m.x_in(5.0, short, budget, short), m.x(5.0, short, budget), "a group of one");
+        assert_eq!(m.x_in(m.hold_ms - 1.0, short, budget, long), 0.0, "both rest first");
+        let t = m.hold_ms + 500.0;
+        assert_eq!(m.x_in(t, short, budget, long), m.x_in(t, long, budget, long), "same speed, same start");
+        let own_end = m.period(short);
+        assert!(m.moving_in(own_end - 10.0, short, budget, long));
+        assert!(!m.moving_in(own_end + 10.0, short, budget, long), "the shorter run is done");
+        assert!(m.moving_in(own_end + 10.0, long, budget, long), "the longer is still gliding");
+        assert_eq!(m.x_in(own_end + 10.0, short, budget, long), short + GAP, "held at its full travel");
+        let cycle = m.period(long);
+        assert_eq!(m.x_in(cycle + 10.0, short, budget, long), m.x(10.0, short, budget), "restarts with the longest");
+        assert_eq!(m.x_in(cycle + 10.0, long, budget, long), m.x(10.0, long, budget));
+        assert!(!m.moving_in(1e6, 100.0, 300.0, 900.0), "a fitting run is inert in any group");
+    }
+
+    /// A block exists only while one of its lines overflows, and loops on the widest.
+    #[test]
+    fn a_block_is_the_widest_overflowing_line_and_absent_when_none_overflows() {
+        assert_eq!(Block::of(("a", None), ("b", None)), None);
+        assert_eq!(Block::of(("a", Some(300.0)), ("b", None)).map(|b| b.cycle_w), Some(300.0));
+        let both = Block::of(("a", Some(300.0)), ("b", Some(500.0))).unwrap();
+        assert_eq!(both.cycle_w, 500.0);
+        assert_ne!(both.key, Block::of(("a", Some(300.0)), ("c", Some(500.0))).unwrap().key);
     }
 }

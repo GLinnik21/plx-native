@@ -23,7 +23,7 @@ use std::os::raw::{c_char, c_int};
 pub mod qr;
 pub mod anim;
 pub mod card_row;
-pub mod marquee; // the focused run's looping glide: tile titles (card_row) and menu rows (table)
+pub mod marquee; // the focused run's looping glide: a tile's title and caption (card_row), cast name and role, menu rows (table)
 pub mod card_motion;
 #[cfg(feature = "devtriggers")]
 pub mod card_motion_metrics;

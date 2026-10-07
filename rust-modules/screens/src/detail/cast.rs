@@ -13,10 +13,10 @@ use plx_ui::widgets::Art;
 use plx_ui::{theme, Painter, Rect};
 
 thread_local! {
-    /// The focused headshot's name and role marquee clocks. One tile holds focus app-wide, so one
-    /// clock each (a poster shelf's title has its own in `card_row`, a menu row's in `table`).
-    static NAME_CLOCK: marquee::Clock = const { marquee::Clock::new() };
-    static ROLE_CLOCK: marquee::Clock = const { marquee::Clock::new() };
+    /// The focused headshot's marquee clock — its name AND role are one block on one clock and one
+    /// cycle ([`marquee::Block`]). One tile holds focus app-wide, so one clock (a poster shelf's
+    /// label block has its own in `card_row`, a menu row's in `table`).
+    static LABEL_CLOCK: marquee::Clock = const { marquee::Clock::new() };
 }
 
 pub const CAST_ELEM_RANGE_START: u32 = 1152;
@@ -121,8 +121,7 @@ pub fn draw(
     let row_y = top + LABEL_H;
     if focused.is_none() {
         // focus has left the shelf: the next headshot to take it starts from its rest beat
-        NAME_CLOCK.with(|c| c.release());
-        ROLE_CLOCK.with(|c| c.release());
+        LABEL_CLOCK.with(|c| c.release());
     }
     card_row::strip(
         p,
@@ -205,21 +204,20 @@ const MARQUEE_AIR: f32 = 6.0;
 /// The headshot's name. Unfocused it is elided to the slot; FOCUSED it is never elided — one that
 /// does not fit the slot scrolls through it ([`marquee::TITLE`], the poster title's own timing and
 /// draw), so a long name can be read in full, exactly as under a poster. A fitting name stays
-/// centred and still.
-fn draw_name(p: Painter, name: &str, frame: Rect, focused: bool, measure: &dyn Measure) {
-    let full_w = if focused { measure.width_str(name, theme::size::LABEL, true) } else { 0.0 };
-    if focused && full_w > frame.w {
+/// centred and still. `block` is the label's shared glide (`None` unless a line overflows).
+fn draw_name(p: Painter, name: &str, frame: Rect, focused: bool, block: Option<&marquee::Block>, measure: &dyn Measure) {
+    let full_w = name_run_w(name, frame, focused, measure);
+    if let (Some(full_w), Some(block)) = (full_w, block) {
         let Ok(text) = CString::new(name) else { return };
         let label = Label::new(text.as_ptr(), theme::size::LABEL, theme::TEXT_PRIMARY)
             .bold().h(HAlign::Left).v(VAlign::CapTop);
-        NAME_CLOCK.with(|clock| marquee::TITLE.glide(
-            clock, p, name, full_w,
+        LABEL_CLOCK.with(|clock| marquee::TITLE.glide_in(
+            clock, p, &block.key, full_w, block.cycle_w,
             Rect::new(frame.x, frame.y - MARQUEE_AIR, frame.w, frame.h + 2.0 * MARQUEE_AIR),
             |dx| { label.draw(p, Rect::new(frame.x + dx, frame.y, frame.w, frame.h)); },
         ));
         return;
     }
-    if focused { NAME_CLOCK.with(|c| c.release()); }
     if let Ok(name) = CString::new(name_caption(name, frame.w, focused, measure)) {
         let mut label = Label::new(name.as_ptr(), theme::size::LABEL,
             if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY })
@@ -229,25 +227,38 @@ fn draw_name(p: Painter, name: &str, frame: Rect, focused: bool, measure: &dyn M
     }
 }
 
+/// The focused name's full width when it does NOT fit its slot (the marquee case); `None` for a
+/// fitting or an unfocused name.
+fn name_run_w(name: &str, frame: Rect, focused: bool, measure: &dyn Measure) -> Option<f32> {
+    focused
+        .then(|| measure.width_str(name, theme::size::LABEL, true))
+        .filter(|w| *w > frame.w)
+}
+
+/// The focused role's full one-line width when it still does not fit its [`ROLE_LINES`] wrapped
+/// lines (the marquee case); `None` for a role that wraps cleanly or an unfocused one.
+fn role_run_w(role: &str, frame: Rect, focused: bool, measure: &dyn Measure) -> Option<f32> {
+    (focused && !role.is_empty() && role_view(role, measure).truncates(frame.w))
+        .then(|| measure.width_str(role, theme::size::CAPTION, false))
+}
+
 /// The character / job line: up to [`ROLE_LINES`] wrapped lines, centred. FOCUSED and still too
-/// long for them, it becomes ONE line that scrolls like the name above it instead of ending in an
-/// ellipsis; a role that wraps to fit keeps its lines, so a focus move never reflows a short one.
-fn draw_role(p: Painter, role: &str, frame: Rect, focused: bool, measure: &dyn Measure) {
-    let view = role_view(role, measure);
-    if focused && view.truncates(frame.w) {
+/// long for them, it becomes ONE line that scrolls like the name above it — in step with it, on
+/// the label's shared `block` — instead of ending in an ellipsis; a role that wraps to fit keeps
+/// its lines, so a focus move never reflows a short one.
+fn draw_role(p: Painter, role: &str, frame: Rect, focused: bool, block: Option<&marquee::Block>, measure: &dyn Measure) {
+    if let (Some(full_w), Some(block)) = (role_run_w(role, frame, focused, measure), block) {
         let Ok(text) = CString::new(role) else { return };
         let label = Label::new(text.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
             .h(HAlign::Left).v(VAlign::CapTop);
-        let full_w = measure.width_str(role, theme::size::CAPTION, false);
-        ROLE_CLOCK.with(|clock| marquee::TITLE.glide(
-            clock, p, role, full_w,
+        LABEL_CLOCK.with(|clock| marquee::TITLE.glide_in(
+            clock, p, &block.key, full_w, block.cycle_w,
             Rect::new(frame.x, frame.y - MARQUEE_AIR, frame.w, ROLE_LEADING + MARQUEE_AIR),
             |dx| { label.draw(p, Rect::new(frame.x + dx, frame.y, frame.w, 0.0)); },
         ));
         return;
     }
-    if focused { ROLE_CLOCK.with(|c| c.release()); }
-    view.draw(p, frame);
+    role_view(role, measure).draw(p, frame);
 }
 
 fn label(
@@ -262,11 +273,16 @@ fn label(
 ) {
     let (name_frame, role_frame) = label_frames(cx, row_y, drop, measure);
     if name_frame.w <= 0.0 { return; }
-    draw_name(p, name, name_frame, focused, measure);
+    let block = marquee::Block::of(
+        (name, name_run_w(name, name_frame, focused, measure)),
+        (role, role_run_w(role, role_frame, focused, measure)),
+    );
+    if focused && block.is_none() {
+        LABEL_CLOCK.with(|c| c.release());
+    }
+    draw_name(p, name, name_frame, focused, block.as_ref(), measure);
     if !role.is_empty() {
-        draw_role(p, role, role_frame, focused, measure);
-    } else if focused {
-        ROLE_CLOCK.with(|c| c.release());
+        draw_role(p, role, role_frame, focused, block.as_ref(), measure);
     }
 }
 
@@ -356,8 +372,7 @@ mod tests {
         physician to the royal household and director of the institute for applied diagnostics";
 
     fn restart_clocks() {
-        NAME_CLOCK.with(|c| c.release());
-        ROLE_CLOCK.with(|c| c.release());
+        LABEL_CLOCK.with(|c| c.release());
     }
 
     /// NIT 6: a poster's focused title scrolls when it does not fit; the focused headshot's name
@@ -421,6 +436,29 @@ mod tests {
         let (_, unfocused) = runs("Ana", LONG_ROLE, false);
         assert_eq!(unfocused.len(), 2, "an unfocused role still wraps and elides in two lines");
         assert_ne!(unfocused[0].y, unfocused[1].y);
+    }
+
+    /// **A headshot's name and role are one block**, like a poster's title and caption: when both
+    /// overflow they start, glide and loop together on the longer one's cycle. The shorter name
+    /// finishes its glide early and waits at rest — it does not loop under the still-gliding role.
+    #[test]
+    fn a_focused_name_and_role_that_both_overflow_glide_in_lockstep() {
+        let _serial = plx_base::testlock::serial();
+        restart_clocks();
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let (name0, role0) = runs(LONG_NAME, LONG_ROLE, true);
+        let (name_x, role_x) = (name0[0].x, role0[0].x);
+        assert_eq!((name0.len(), role0.len()), (2, 2));
+        let measure = LabelMeasure;
+        let name_period = marquee::TITLE.period(measure.width_str(LONG_NAME, theme::size::LABEL, true));
+        let role_period = marquee::TITLE.period(measure.width_str(LONG_ROLE, theme::size::CAPTION, false));
+        assert!(name_period + 3000.0 < role_period, "the fixture needs a much longer role");
+        plx_machine::idle::frame_begin((name_period + 3000.0) / 1000.0);
+        let (name, role) = runs(LONG_NAME, LONG_ROLE, true);
+        assert!(name.iter().any(|r| (r.x - name_x).abs() < 0.5),
+            "the name waits at rest for the role instead of looping: {name:?}");
+        assert!(role.iter().any(|r| r.x < role_x - 100.0),
+            "the role is still gliding: {role:?}");
     }
 
     #[test]
