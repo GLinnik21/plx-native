@@ -280,6 +280,12 @@ impl CardRow {
         self.band
             .step(focused.is_some() as i32 as f32, sty.k_scroll, dt);
     }
+    /// Adopt cell `i` as focused AT FULL pop, with no motion: the focus arrived without a deliberate
+    /// move (a restore, a reconcile, a landing), so the tile must be drawn as it was left rather than
+    /// growing from rest. The cell past the spring array shares `overflow`, as in [`CardRow::scale`].
+    pub fn adopt(&mut self, i: usize, sty: &RowStyle) {
+        if i < MAX_ROW_ITEMS { self.scale[i].jump(sty.focus_scale) } else { self.overflow.jump(sty.focus_scale) }
+    }
     /// **How far the row still has to scroll for `focused` to be where it will rest** — live
     /// scroll minus [`scroll_into_view`]'s target, so a tile's settled screen x is its live x plus
     /// this. `0` once the glide has landed, and `0` for a focus that needs no scroll at all.
