@@ -2,7 +2,7 @@
 //! [`Grid`] on `FixtureHost`, plus focused tests for the pop rule, the geometry, the events and
 //! idle. No expected-failure list: every case passes on both components.
 use super::conformance::{self, CardHarness, Landing, Mount, Nb, Outcome};
-use super::{CardEvent, CardSource, Grid, GridSpec, SectionFrame, Shelf};
+use super::{CardEvent, CardSource, Grid, GridSpec, ScrollMode, SectionFrame, Shelf};
 use crate::card_row::{RowStyle, TileLabel};
 use crate::fixture::{FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
 use crate::poster_grid;
@@ -18,6 +18,10 @@ const ENTRY: EntryId = EntryId(9);
 const SHELF_AT: SectionFrame = SectionFrame { y: 300.0, clip: Rect::FULL };
 const GRID: GridSpec = GridSpec::new(520.0, 96.0);
 const MS: u32 = 16;
+/// Four narrow columns from x = 160 in a document the owner scrolls: nothing about it is the
+/// Collection page's grid.
+const EXT_STYLE: RowStyle = RowStyle { w: 200.0, h: 300.0, gap: 36.0, ..poster_grid::STYLE };
+const EXT: GridSpec = GridSpec::new(520.0, 96.0).columns(4, EXT_STYLE, 160.0).external();
 
 type Cx9<'a> = Cx<'a, FixtureHost>;
 
@@ -166,6 +170,70 @@ impl Section for Grid {
     }
     fn write(&self, c: &mut Canon) {
         Grid::write(self, c)
+    }
+}
+
+/// A [`Grid`] in [`ScrollMode::External`] with [`EXT`]'s geometry, plus the owner's half of the
+/// contract: it hands the grid its page before each event and, after a tick, applies the landing
+/// shift and then takes the scroll the grid wants.
+struct ExtGrid {
+    grid: Grid,
+    page: f32,
+}
+
+impl Section for ExtGrid {
+    fn new() -> Self {
+        Self { grid: Grid::new(ENTRY, EXT), page: 0.0 }
+    }
+    fn on(&mut self, ev: &ScreenEvent<FixtureHost>, cx: &Cx9<'_>, src: &Cards, fx: &mut Effects<'_, FixtureHost>)
+        -> Option<CardEvent<u32>> {
+        self.grid.set_page(520.0, self.page);
+        let out = self.grid.on(ev, cx, src, fx);
+        if matches!(ev, ScreenEvent::Tick(_)) {
+            self.page += self.grid.landed_shift();
+            if let Some(want) = self.grid.reveal_target() {
+                self.page = want;
+            }
+            self.grid.set_page(520.0, self.page);
+        }
+        out
+    }
+    fn place(&self, cx: &Cx9<'_>, src: &Cards, e: u32, how: At) -> Option<Placed> {
+        self.grid.place(cx, src, &e, how)
+    }
+    fn scale_of(&self, cx: &Cx9<'_>, src: &Cards, e: u32) -> Option<f32> {
+        self.grid.scale_of(cx, src, &e)
+    }
+    fn stops(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, src: &Cards) {
+        self.grid.record_stops(f, f.painter, src)
+    }
+    fn draw(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, p: Painter, src: &Cards) {
+        self.grid.draw(f, p, src)
+    }
+    fn redraw(&self, f: &mut DrawFrame<'_, '_, FixtureHost>, src: &Cards, focus: Option<FocusKey<u32>>) {
+        self.grid.redraw_focused(f, f.painter, src, focus)
+    }
+    fn neighbour(&self, src: &Cards, key: FocusKey<u32>, dir: Dir) -> Step<u32> {
+        self.grid.neighbour(src, key, dir)
+    }
+    fn focus_scale() -> f32 {
+        EXT_STYLE.focus_scale
+    }
+    fn columns() -> Option<usize> {
+        Some(EXT.cols)
+    }
+    fn scroll(&self) -> f32 {
+        self.page
+    }
+    fn landed(&self) -> Option<super::Landed> {
+        self.grid.landed()
+    }
+    fn restore_scroll(&mut self, scroll: f32, _n: usize) {
+        self.page = scroll;
+        self.grid.set_page(520.0, scroll);
+    }
+    fn write(&self, c: &mut Canon) {
+        self.grid.write(c)
     }
 }
 
@@ -361,15 +429,19 @@ fn mount_shelf(n: usize) -> Box<dyn CardHarness> {
 fn mount_grid(n: usize) -> Box<dyn CardHarness> {
     Box::new(Rig::<Grid>::new(n))
 }
+fn mount_external_grid(n: usize) -> Box<dyn CardHarness> {
+    Box::new(Rig::<ExtGrid>::new(n))
+}
 
 #[test]
 fn the_seven_conformance_cases_pass_on_shelf_and_grid() {
-    let table: [(&'static str, Mount); 2] = [("shelf", mount_shelf), ("grid", mount_grid)];
+    let table: [(&'static str, Mount); 3] =
+        [("shelf", mount_shelf), ("grid", mount_grid), ("external", mount_external_grid)];
     let matrix = conformance::run_all(&table);
     for (s, c, o) in &matrix {
         eprintln!("{s:6} {c:18} {o:?}");
     }
-    assert_eq!(matrix.len(), 14);
+    assert_eq!(matrix.len(), 21);
     let bad: Vec<_> = matrix.iter().filter(|(_, _, o)| *o != Outcome::Pass).collect();
     assert!(bad.is_empty(), "{bad:#?}");
 }
@@ -764,4 +836,116 @@ fn shelf_goes_quiet_at_rest() {
 #[test]
 fn grid_goes_quiet_at_rest() {
     goes_quiet::<Grid>();
+}
+
+// ---- generalised geometry and the external scroll mode -----------------------------------------
+
+/// Tick the grid alone (no owner half), one frame.
+fn tick_grid_alone(r: &mut Rig<ExtGrid>) {
+    r.ms += MS;
+    let cx = Cx {
+        views: FixtureViews { store: &r.view },
+        tick: Tick { ms: r.ms, dt_us: 16_667 },
+        measure: &FixtureMeasure,
+        press: PressRead { scale: r.press, ..Default::default() },
+        focus: FocusRead { current: r.focus, ..Default::default() },
+        owner: InputOwner::Entry(ENTRY),
+    };
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
+    r.sect.grid.on(&ScreenEvent::Tick(Tick { ms: r.ms, dt_us: 16_667 }), &cx, &r.src, &mut fx);
+}
+
+/// `GridSpec::new` is the six columns of `poster_grid::STYLE` from `MARGIN_X`: Collection's call
+/// site gets exactly the geometry the free functions describe.
+#[test]
+fn the_default_spec_is_the_collection_geometry() {
+    let mut r = settled::<Grid>(30);
+    r.land_focus(100, By::Restore);
+    r.run(240);
+    let bands = poster_grid::settled(Some(0));
+    for (i, e) in [(0usize, 100u32), (5, 105), (13, 113)] {
+        let at = r.sect.place(&r.cx(), &r.src, &e, At::SpringTarget).unwrap().rest_rect;
+        let want = poster_grid::cell(i, 520.0, r.sect.scroll(), &bands).scaled(poster_grid::STYLE.focus_scale);
+        assert_eq!(at, want, "card {i}");
+    }
+}
+
+/// Columns, card size and left edge are the spec's: cells sit on its pitch from its edge, the
+/// D-pad wraps at its column count, the group registers it, and only the visible rows draw.
+#[test]
+fn a_grid_takes_its_columns_style_and_left_edge_from_its_spec() {
+    let mut r = settled::<ExtGrid>(600);
+    r.land_focus(100, By::Restore);
+    r.run(2);
+    let g = |e: u32| r.sect.place(&r.cx(), &r.src, e, At::SpringTarget).unwrap().rest_rect;
+    let (c0, c1, r1, r2) = (g(100), g(101), g(104), g(108));
+    assert!((c0.cx() - (160.0 + EXT_STYLE.w / 2.0)).abs() < 0.01, "column 0 starts at the left edge");
+    assert!((c1.cx() - c0.cx() - (EXT_STYLE.w + EXT_STYLE.gap)).abs() < 0.01, "the next column is one card + gap over");
+    assert!((r1.cx() - c0.cx()).abs() < 0.01, "the fifth card wraps to column 0 of the next row");
+    let pitch = EXT_STYLE.h + crate::card_row::LABEL_BAND_COLLAPSED + crate::consts::UNDER_LABEL_AIR;
+    assert!(((r2.y + r2.h / 2.0) - (r1.y + r1.h / 2.0) - pitch).abs() < 0.01, "rows are one style pitch apart");
+    assert!(matches!(r.sect.grid.neighbour(&r.src, r.key(100), Dir::Down), Step::Move(k) if k == r.key(104)));
+    assert!(matches!(r.sect.grid.neighbour(&r.src, r.key(103), Dir::Right), Step::Edge), "the last column is the fourth");
+    match r.sect.grid.group_spec(plx_machine::machine::GroupId(1), 600).kind {
+        crate::screen::GroupKind::Grid { cols, .. } => assert_eq!(cols, 4),
+        _ => panic!("a grid registers a Grid group"),
+    }
+    let n = r.stops(1.0).len();
+    assert!(n > 0 && n < 60, "the grid registered {n} of 600 stops");
+}
+
+/// In external mode the grid never moves a scroll of its own: ticks leave the owner's page where
+/// it is, `reveal_target` is the scroll the focused row wants (and `None` with focus elsewhere),
+/// and `set_page` is what moves the cells.
+#[test]
+fn an_external_grid_leaves_the_page_scroll_to_its_owner() {
+    assert_eq!(EXT.scroll, ScrollMode::External);
+    assert!(!EXT.home_when_unfocused, "an externally scrolled grid never homes on its own");
+    let mut r = Rig::<ExtGrid>::new(80);
+    r.land_focus(100, By::Restore);
+    tick_grid_alone(&mut r);
+    assert_eq!(r.sect.grid.reveal_target(), Some(0.0), "row 0 wants the head");
+    r.land_focus(160, By::Dir);
+    for _ in 0..60 {
+        tick_grid_alone(&mut r);
+    }
+    assert_eq!(r.sect.grid.scroll(), 0.0, "the grid did not scroll itself");
+    let want = r.sect.grid.reveal_target().expect("a focused row wants a scroll");
+    assert!(want > 100.0, "row 15 of 4 columns is below the fold: {want}");
+    let g = poster_grid::Geom::of(EXT.cols, EXT.left, &EXT_STYLE);
+    assert_eq!(want, poster_grid::snap_row_in(&g, 0.0, 15, 80, 520.0, 96.0));
+    let before = r.sect.grid.place(&r.cx(), &r.src, &160, At::SpringTarget).unwrap().rest_rect;
+    r.sect.grid.set_page(520.0, want);
+    let after = r.sect.grid.place(&r.cx(), &r.src, &160, At::SpringTarget).unwrap().rest_rect;
+    assert!((before.y - after.y - want).abs() < 0.01, "set_page moves the cells by the page scroll");
+    assert_eq!(r.sect.grid.scroll(), want);
+    r.focus = None;
+    tick_grid_alone(&mut r);
+    assert_eq!(r.sect.grid.reveal_target(), None, "focus elsewhere wants nothing");
+    assert_eq!(r.sect.grid.scroll(), want, "and does not scroll the page home");
+}
+
+/// A landing that moves the focused element reports the document shift its row moved by instead
+/// of shifting a scroll the grid does not own; applying it keeps the tile where it was.
+#[test]
+fn an_external_grid_reports_the_landing_shift() {
+    let mut r = Rig::<ExtGrid>::new(40);
+    r.land_focus(110, By::Restore);
+    r.run(240);
+    let before = r.sect.grid.place(&r.cx(), &r.src, &110, At::Drawn).unwrap().rect;
+    for k in 0..EXT.cols {
+        r.src.elems.insert(0, 900 + k as u32);
+    }
+    tick_grid_alone(&mut r);
+    let pitch = EXT_STYLE.h + crate::card_row::LABEL_BAND_COLLAPSED + crate::consts::UNDER_LABEL_AIR;
+    assert_eq!(r.sect.grid.landed(), Some(super::Landed { from: 10, to: 10 + EXT.cols }));
+    assert!((r.sect.grid.landed_shift() - pitch).abs() < 0.01, "one row moved down: {}", r.sect.grid.landed_shift());
+    assert_eq!(r.sect.grid.scroll(), r.sect.page, "the grid's scroll is the owner's, untouched");
+    r.sect.grid.set_page(520.0, r.sect.page + r.sect.grid.landed_shift());
+    let now = r.sect.grid.place(&r.cx(), &r.src, &110, At::Drawn).unwrap().rect;
+    assert!((now.y - before.y).abs() < 0.5, "the tile stayed put once the owner applied the shift: {before:?} -> {now:?}");
+    tick_grid_alone(&mut r);
+    assert_eq!(r.sect.grid.landed_shift(), 0.0, "and the next tick reports nothing");
 }

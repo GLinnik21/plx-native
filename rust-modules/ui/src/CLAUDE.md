@@ -81,6 +81,15 @@ does not re-seat anything; and read a shelf through `heading_lift()` / `under_ba
 the L0 `CardRow` (the `cards` gate also refuses `card_row::*`, `card_row as x` and the hand-rolled
 `poster_grid::{cell, visible, snap_row}`).
 
+`GridSpec::new(top, edge)` is the six-column `poster_grid::STYLE` grid from `MARGIN_X` that
+springs its own scroll (Collection); `.columns(cols, style, left)` sets the column count, card
+style and left edge (a rail-aware or episode grid), and `.external()` selects `ScrollMode::External`
+for a grid inside a document whose page scroll another owner drives (the Library, the later
+`Stack`): the grid never steps a scroll, the owner calls `set_page(top, scroll)` before each
+`on` / `draw` / `place`, reads the scroll the focused row wants from `reveal_target()` and the
+document shift a content landing needs from `landed_shift()`, and the grid does not home when focus
+is elsewhere.
+
 ## Localization and shared reading layout
 
 App-owned text comes from typed `i18n::msg` accessors. Keep protocol identifiers and server-returned

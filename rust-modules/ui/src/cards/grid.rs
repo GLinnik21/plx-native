@@ -1,7 +1,9 @@
-//! [`Grid`] — the six-column poster grid with a collapsing caption band under the focused row
-//! (`poster_grid`'s free functions are its geometry; the Collection page is its first adopter).
+//! [`Grid`] — the poster grid with a collapsing caption band under the focused row: six
+//! `poster_grid::STYLE` columns by default, any column count / style / left edge through
+//! [`GridSpec`] (`poster_grid`'s `_in` functions are its geometry). The Collection page is its first
+//! adopter; [`ScrollMode::External`] serves a grid inside a document another owner scrolls.
 //!
-//! It owns the scroll, the caption bands and the focus pop ([`GridBands`], [`GridPop`]) and runs
+//! It owns (unless external) the scroll, the caption bands and the focus pop ([`GridBands`], [`GridPop`]) and runs
 //! the same arithmetic for draw, stops, `Focusable` placement and paging, so the rect a card is
 //! drawn at, the stop it registers and the rect `place` answers are one value.
 
@@ -10,19 +12,33 @@ use plx_machine::present::{PresentEvent, Provenance};
 
 use super::{CardEvent, CardSource, Landed, Seen, Tile};
 use crate::card_row;
-use crate::consts::{CARD_H, K_SCROLL, MARGIN_X, SCR_H, SCR_W};
-use crate::poster_grid::{self, GridBand, GridBands, GridPop, COLS, STYLE};
+use crate::consts::{K_SCROLL, MARGIN_X, SCR_H};
+use crate::card_row::RowStyle;
+use crate::poster_grid::{self, Geom, GridBand, GridBands, GridPop, COLS, STYLE};
 use crate::screen::{
     Activate, At, AxisMask, By, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
     Stop,
 };
 use crate::{Painter, Rect, Spring};
 
-/// Cards past the focused one the source is asked for: two rows.
-const LOOK_AHEAD: usize = COLS * 2;
+/// Who owns the grid's vertical scroll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollMode {
+    /// The grid springs its own scroll toward the row it snaps to (the Collection page).
+    Own,
+    /// The grid sits in a document whose page scroll another owner drives (the Library, a later
+    /// `Stack`): the grid never steps or snaps a scroll of its own. The owner hands it the page
+    /// with [`Grid::set_page`] before every `on` / `draw` / `place` call, reads the scroll the grid
+    /// WANTS for its focused row from [`Grid::reveal_target`], and the document shift a content
+    /// landing needs from [`Grid::landed_shift`]. `top` is then the first row's top in DOCUMENT
+    /// space and `scroll` the owner's document offset.
+    External,
+}
 
-/// The grid's vertical geometry.
-#[derive(Clone, Copy, Debug)]
+/// The grid's geometry and scroll policy. [`GridSpec::new`] is the Collection page's six columns
+/// of `poster_grid::STYLE` from `MARGIN_X`; [`columns`](Self::columns) and
+/// [`external`](Self::external) generalise it.
+#[derive(Clone, Copy)]
 pub struct GridSpec {
     /// Top of the first row's posters in document space.
     pub top: f32,
@@ -33,13 +49,34 @@ pub struct GridSpec {
     /// wants that). `false` leaves the scroll where it is for a page whose other focus zones must
     /// not scroll the grid away.
     pub home_when_unfocused: bool,
+    /// Columns per row.
+    pub cols: usize,
+    /// The card treatment and size of every cell (`w`, `h`, `gap`, pop and scroll constants).
+    pub style: RowStyle,
+    /// The x of column 0's card.
+    pub left: f32,
+    pub scroll: ScrollMode,
 }
 
 impl GridSpec {
     /// A grid that scrolls home when focus leaves it.
     pub const fn new(top: f32, edge: f32) -> Self {
-        Self { top, edge, home_when_unfocused: true }
+        Self { top, edge, home_when_unfocused: true, cols: COLS, style: STYLE, left: MARGIN_X, scroll: ScrollMode::Own }
     }
+
+    /// `cols` columns of `style` cards starting at x = `left` (a page with an alphabet rail, or
+    /// four episode stills across).
+    pub const fn columns(self, cols: usize, style: RowStyle, left: f32) -> Self {
+        Self { cols, style, left, ..self }
+    }
+
+    /// A grid whose page scroll another owner drives ([`ScrollMode::External`]); it also stays
+    /// where it is when focus is elsewhere on the page.
+    pub const fn external(self) -> Self {
+        Self { scroll: ScrollMode::External, home_when_unfocused: false, ..self }
+    }
+
+    fn geom(&self) -> Geom { Geom::of(self.cols, self.left, &self.style) }
 }
 
 pub struct Grid {
@@ -51,6 +88,10 @@ pub struct Grid {
     pop: GridPop,
     seen: Seen,
     landed: Option<Landed>,
+    /// External mode: the document shift the last tick's landing needs (see [`Grid::landed_shift`]).
+    shift: f32,
+    /// The scroll the focused row wants (see [`Grid::reveal_target`]).
+    reveal: Option<f32>,
     ahead: usize,
     asked: Option<(usize, usize)>,
 }
@@ -66,7 +107,9 @@ impl Grid {
             pop: GridPop::new(),
             seen: Seen::Nothing,
             landed: None,
-            ahead: LOOK_AHEAD,
+            shift: 0.0,
+            reveal: None,
+            ahead: spec.cols * 2,
             asked: None,
         }
     }
@@ -99,7 +142,7 @@ impl Grid {
                 if let Some(a) = arrived {
                     self.seen = Seen::of(by, a);
                 }
-                self.bands.focus(arrived.map(|i| i / COLS), deliberate);
+                self.bands.focus(arrived.map(|i| i / self.spec.cols), deliberate);
                 if let Some(i) = arrived.filter(|_| deliberate) {
                     self.pop.arm(i);
                 }
@@ -124,11 +167,12 @@ impl Grid {
     fn tick<H: Host, S: CardSource<H>>(&mut self, dt: f32, cx: &Cx<'_, H>, src: &S, fx: &mut Effects<'_, H>) {
         let focus = super::focused_index(&cx.focus, self.entry, src);
         self.landed = None;
+        self.shift = 0.0;
         let prev = self.pop.cell();
         // where the previously focused cell was on screen, before any band moves
         let was = prev.map(|p| self.cell(p, &self.bands.geometry()).y);
         // A focus the reader did not move (a restore, a landing) adopts its band settled.
-        self.bands.focus(focus.map(|i| i / COLS), false);
+        self.bands.focus(focus.map(|i| i / self.spec.cols), false);
         if let Some(i) = focus {
             match (self.seen, prev) {
                 (Seen::Deliberate(a), _) if a == i => {}
@@ -137,21 +181,30 @@ impl Grid {
                 (Seen::Nothing, Some(p)) if p != i => {
                     self.pop.relocate(i);
                     if let Some(was) = was {
-                        self.scroll.pos += self.cell(i, &self.bands.geometry()).y - was;
+                        let by = self.cell(i, &self.bands.geometry()).y - was;
+                        match self.spec.scroll {
+                            ScrollMode::Own => self.scroll.pos += by,
+                            ScrollMode::External => self.shift = by,
+                        }
                     }
                     self.landed = Some(Landed { from: p, to: i });
                 }
-                _ if prev != Some(i) => self.pop.adopt(i, &STYLE),
+                _ if prev != Some(i) => self.pop.adopt(i, &self.spec.style),
                 _ => {}
             }
         }
         self.seen = Seen::Nothing;
         let home = if self.spec.home_when_unfocused { 0.0 } else { self.target };
-        self.target = focus.map_or(home, |i| {
-            poster_grid::snap_row(self.scroll.pos, i / COLS, src.len(), self.spec.top, self.spec.edge)
+        let wanted = focus.map(|i| {
+            poster_grid::snap_row_in(&self.spec.geom(), self.scroll.pos + self.shift, i / self.spec.cols, src.len(), self.spec.top, self.spec.edge)
         });
-        self.bands.tick(STYLE.k_scroll, dt);
-        self.pop.tick(focus, &STYLE, dt);
+        self.reveal = wanted;
+        self.bands.tick(self.spec.style.k_scroll, dt);
+        self.pop.tick(focus, &self.spec.style, dt);
+        if self.spec.scroll == ScrollMode::External {
+            return;
+        }
+        self.target = wanted.unwrap_or(home);
         self.scroll.step(self.target, K_SCROLL, dt);
         if (self.scroll.pos - self.target).abs() > 0.25 || self.scroll.vel.abs() > 0.5 {
             fx.note(PresentEvent::Motion);
@@ -160,7 +213,7 @@ impl Grid {
 
     /// The paging rule: the last row the scroll shows, or the focused card's look-ahead.
     fn want<H: Host, S: CardSource<H>>(&mut self, cx: &Cx<'_, H>, src: &S) -> Option<CardEvent<H::Elem>> {
-        let window = ((self.scroll.pos + SCR_H - self.spec.top) / poster_grid::ROW_PITCH).ceil().max(0.0) as usize * COLS;
+        let window = ((self.scroll.pos + SCR_H - self.spec.top) / self.spec.geom().pitch()).ceil().max(0.0) as usize * self.spec.cols;
         let focus = super::focused_index(&cx.focus, self.entry, src).map_or(0, |i| i + 1 + self.ahead);
         super::want(&mut self.asked, src.len(), window.max(focus), src.more()).map(CardEvent::Want)
     }
@@ -170,10 +223,39 @@ impl Grid {
         self.landed
     }
 
+    /// External mode: the document shift (pixels, positive = down) the last tick's [`Landed`] needs
+    /// so the focused tile stays where it was on screen; the owner applies it to its page scroll.
+    /// Zero in [`ScrollMode::Own`], where the grid shifts its own scroll, and when nothing landed.
+    pub fn landed_shift(&self) -> f32 {
+        self.shift
+    }
+
+    /// The scroll the last tick wanted for the focused row (`poster_grid::snap_row_in` against the
+    /// current scroll), `None` while focus is not in the grid. An external owner may take it or
+    /// apply its own reveal rule; the self-scrolling grid springs to it.
+    pub fn reveal_target(&self) -> Option<f32> {
+        self.reveal
+    }
+
+    /// External mode: hand the grid the page it is drawn on — the first row's top in document
+    /// space and the owner's document scroll. A no-op in [`ScrollMode::Own`].
+    pub fn set_page(&mut self, top: f32, scroll: f32) {
+        if self.spec.scroll == ScrollMode::External {
+            self.spec.top = top;
+            self.scroll.jump(scroll);
+            self.target = scroll;
+        }
+    }
+
+    /// The caption-band geometry (the owner's page layout reads the document height from it).
+    pub fn band_geometry(&self) -> [GridBand; poster_grid::MAX_GRID_BANDS] {
+        self.bands.geometry()
+    }
+
     /// The pop of card `i` given the engine's focus (`GridPop::scale`'s rule: a focused card the
     /// grid was not told about is FULL, the one that lost focus lets go, the rest are at rest).
     fn pop(&self, i: usize, focus: Option<usize>) -> f32 {
-        self.pop.scale(i, focus == Some(i), &STYLE)
+        self.pop.scale(i, focus == Some(i), &self.spec.style)
     }
 
     /// The live pop of `elem` (no press).
@@ -183,13 +265,13 @@ impl Grid {
     }
 
     fn cell(&self, i: usize, bands: &[GridBand]) -> Rect {
-        poster_grid::cell(i, self.spec.top, self.scroll.pos, bands)
+        poster_grid::cell_in(&self.spec.geom(), i, self.spec.top, self.scroll.pos, bands)
     }
 
     /// Whether card `i`'s row rests wholly above the content edge: the row over the one a snapped
     /// scroll put on the edge, which would show its last few pixels there.
     fn above_edge(&self, i: usize, bands: &[GridBand]) -> bool {
-        self.cell(i, bands).y + CARD_H <= self.spec.edge - (poster_grid::ROW_PITCH - CARD_H) + 0.5
+        self.cell(i, bands).y + self.spec.style.h <= self.spec.edge - (self.spec.geom().pitch() - self.spec.style.h) + 0.5
     }
 
     /// Where `elem` is: the LIVE drawn rect (pop and press folded in) for `At::Drawn`, the settled
@@ -200,9 +282,9 @@ impl Grid {
         let cell = self.cell(i, &self.bands.geometry());
         let s = match how {
             At::Drawn => super::press_scale(self.pop(i, focus), focus == Some(i), cx),
-            At::SpringTarget => if focus == Some(i) { STYLE.focus_scale } else { 1.0 },
+            At::SpringTarget => if focus == Some(i) { self.spec.style.focus_scale } else { 1.0 },
         };
-        Some(Placed { rect: cell.scaled(s), rest_rect: cell.scaled(STYLE.focus_scale), clip: Rect::FULL, index: Some(i as u32) })
+        Some(Placed { rect: cell.scaled(s), rest_rect: cell.scaled(self.spec.style.focus_scale), clip: Rect::FULL, index: Some(i as u32) })
     }
 
     /// Draw the grid into `p` (page alpha already applied) and register its stops: non-focused
@@ -210,7 +292,7 @@ impl Grid {
     pub fn draw<H: Host, S: CardSource<H>>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, src: &S) {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let bands = self.bands.geometry();
-        let window = poster_grid::visible(src.len(), self.spec.top, self.scroll.pos);
+        let window = poster_grid::visible_in(&self.spec.geom(), src.len(), self.spec.top, self.scroll.pos);
         for i in window.clone() {
             if focus == Some(i) || self.above_edge(i, &bands) {
                 continue;
@@ -230,13 +312,13 @@ impl Grid {
         }
         let focus = super::focused_index(&f.focus, self.entry, src);
         let bands = self.bands.geometry();
-        for i in poster_grid::visible(src.len(), self.spec.top, self.scroll.pos) {
+        for i in poster_grid::visible_in(&self.spec.geom(), src.len(), self.spec.top, self.scroll.pos) {
             let s = super::press_scale(self.pop(i, focus), focus == Some(i), f.cx);
             let cell = super::to_local(p, self.cell(i, &bands));
             f.stop(p, Stop {
                 key: FocusKey { entry: self.entry, elem: src.elem(i) },
                 rect: cell.scaled(s),
-                rest_rect: cell.scaled(STYLE.focus_scale),
+                rest_rect: cell.scaled(self.spec.style.focus_scale),
                 clip: Rect::FULL,
                 hover: Hover::Focus,
                 activate: Activate::Press,
@@ -274,20 +356,20 @@ impl Grid {
             return;
         }
         if focused {
-            let row = i / COLS;
+            let row = i / self.spec.cols;
             let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
             let label = src.label(i).revealed(card_row::band_reveal(open));
-            card_row::draw_focused(p, src.art(i), rect, s, &STYLE, src.progress(i), &label, f.measure);
+            card_row::draw_focused(p, src.art(i), rect, s, &self.spec.style, src.progress(i), &label, f.measure);
         } else {
-            card_row::draw_tile(p, src.art(i), rect, s, &STYLE, src.progress(i));
+            card_row::draw_tile(p, src.art(i), rect, s, &self.spec.style, src.progress(i));
         }
-        src.overlay(p, i, &Tile { rect, scale: s, radius: STYLE.tile_radius(rect, s), focused }, f.measure);
+        src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused }, f.measure);
     }
 
     /// The `Focusable` neighbour of `key`: down from above a short last row lands on its last card.
     pub fn neighbour<H: Host, S: CardSource<H>>(&self, src: &S, key: FocusKey<H::Elem>, dir: Dir) -> Step<H::Elem> {
         let Some(i) = src.index_of(&key.elem) else { return Step::Edge };
-        poster_grid::neighbour(i, src.len(), COLS, dir)
+        poster_grid::neighbour(i, src.len(), self.spec.cols, dir)
             .map_or(Step::Edge, |j| Step::Move(FocusKey { entry: self.entry, elem: src.elem(j) }))
     }
 
@@ -298,7 +380,7 @@ impl Grid {
             return None;
         }
         let bands = self.bands.geometry();
-        let col = (0..COLS).min_by(|&a, &b| {
+        let col = (0..self.spec.cols).min_by(|&a, &b| {
             let d = |c: usize| (self.cell(c, &bands).cx() - from.rect.cx()).abs();
             d(a).total_cmp(&d(b))
         })?;
@@ -309,11 +391,16 @@ impl Grid {
     pub fn group_spec(&self, id: GroupId, len: usize) -> GroupSpec {
         GroupSpec {
             id,
-            kind: GroupKind::Grid { cols: COLS, holes: &[] },
+            kind: GroupKind::Grid { cols: self.spec.cols, holes: &[] },
             seat: Seat::Remembered,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Geometric; 4],
-            extent: Rect::new(MARGIN_X, self.spec.top - self.scroll.pos, SCR_W - 2.0 * MARGIN_X, CARD_H),
+            extent: Rect::new(
+                self.spec.left,
+                self.spec.top - self.scroll.pos,
+                self.spec.cols as f32 * (self.spec.style.w + self.spec.style.gap) - self.spec.style.gap,
+                self.spec.style.h,
+            ),
             len,
             elem: ElemKind::Card,
         }
