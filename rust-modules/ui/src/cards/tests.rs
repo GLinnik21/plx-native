@@ -1155,22 +1155,24 @@ fn settle_band_opens_settled_and_reset_bands_closes() {
     assert!(r.sect.grid.band_geometry().iter().all(|b| b.row == usize::MAX), "no band survives a reset");
 }
 
+/// A source whose card 1 has not loaded.
+struct Holey(Cards);
+impl CardSource<FixtureHost> for Holey {
+    fn len(&self) -> usize { self.0.len() }
+    fn elem(&self, i: usize) -> u32 { self.0.elem(i) }
+    fn index_of(&self, e: &u32) -> Option<usize> { self.0.index_of(e) }
+    fn art(&self, i: usize) -> Art<'_> { self.0.art(i) }
+    fn label(&self, i: usize) -> TileLabel { self.0.label(i) }
+    fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, m: &dyn plx_machine::machine::Measure) {
+        self.0.overlay(p, i, tile, m)
+    }
+    fn loaded(&self, i: usize) -> bool { i != 1 }
+}
+
 /// A card the source has not loaded is not painted, but its stop still registers: the Library's
 /// listing is paged, and a slot whose page has not landed draws nothing.
 #[test]
 fn an_unloaded_card_is_not_painted_but_keeps_its_stop() {
-    struct Holey(Cards);
-    impl CardSource<FixtureHost> for Holey {
-        fn len(&self) -> usize { self.0.len() }
-        fn elem(&self, i: usize) -> u32 { self.0.elem(i) }
-        fn index_of(&self, e: &u32) -> Option<usize> { self.0.index_of(e) }
-        fn art(&self, i: usize) -> Art<'_> { self.0.art(i) }
-        fn label(&self, i: usize) -> TileLabel { self.0.label(i) }
-        fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, m: &dyn plx_machine::machine::Measure) {
-            self.0.overlay(p, i, tile, m)
-        }
-        fn loaded(&self, i: usize) -> bool { i != 1 }
-    }
     let r = settled::<ExtGrid>(8);
     let src = Holey(Cards::new(r.src.elems.clone(), false));
     let cx = r.cx();
@@ -1180,6 +1182,25 @@ fn an_unloaded_card_is_not_painted_but_keeps_its_stop() {
     assert!(painted.contains(&100) && !painted.contains(&101), "card 1 is skipped: {painted:?}");
     let mut f = DrawFrame::new(&cx, Painter::root());
     r.sect.grid.record_stops(&mut f, Painter::root(), &src);
+    assert!(f.stops().iter().any(|s| s.key.elem == 101), "…but its stop is registered");
+}
+
+
+/// The same for a shelf: a card the source has not loaded (a hub item not published yet) is not
+/// painted, its stop still registers, and the focused one is skipped too.
+#[test]
+fn a_shelf_does_not_paint_an_unloaded_card() {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Restore);
+    r.run(60);
+    let src = Holey(Cards::new(r.src.elems.clone(), false));
+    let cx = r.cx();
+    let mut f = DrawFrame::new(&cx, Painter::recording());
+    Shelf::draw(&r.sect, &mut f, Painter::recording(), &src, SHELF_AT);
+    let painted: Vec<u32> = src.0.drawn.borrow().iter().map(|&(e, _)| e).collect();
+    assert!(painted.contains(&100) && !painted.contains(&101), "card 1 (focused, unloaded) is skipped: {painted:?}");
+    let mut f = DrawFrame::new(&cx, Painter::root());
+    Shelf::record_stops(&r.sect, &mut f, Painter::root(), &src, SHELF_AT);
     assert!(f.stops().iter().any(|s| s.key.elem == 101), "…but its stop is registered");
 }
 

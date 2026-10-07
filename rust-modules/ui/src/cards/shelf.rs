@@ -274,7 +274,8 @@ impl Shelf {
         self.record_stops(f, p, src, at);
     }
 
-    /// Paint the cards without registering stops, for a screen that records its page's stops in
+    /// Paint the cards without registering stops (the focused card is always painted, on-axis or
+    /// not; the rest only when on-axis), for a screen that records its page's stops in
     /// its own order (non-focused cards first, the focused one last; only on-axis cards paint and
     /// resolve artwork).
     pub fn paint<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
@@ -293,7 +294,9 @@ impl Shelf {
         }
     }
 
-    /// Register the stops of the on-axis cards: each is the rect [`draw`](Self::draw) paints.
+    /// Register the stops of the on-axis cards: each is the rect [`draw`](Self::draw) paints. Unlike
+    /// [`paint`](Self::paint), which always paints the focused card (even past the cull), there is no
+    /// focused exception here: a focused card off the axis registers no stop.
     pub fn record_stops<H: Host, S: CardSource<H>>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
         if !f.records_stops() {
             return;
@@ -341,6 +344,9 @@ impl Shelf {
         s: f32,
         focused: bool,
     ) {
+        if !src.loaded(i) {
+            return;
+        }
         let unscrolled = card_row::tile_rect(i, self.style.margin_x, self.pitch(), 0.0, at.y - pr.dy(),
             (self.style.w, self.style.h));
         let rect = unscrolled.scaled(s);
@@ -396,12 +402,15 @@ impl Shelf {
         self.row.scroll_x()
     }
 
-    /// Card `i`'s live pop spring (no press, no focus rule): what a probe reads between frames.
-    pub fn scale(&self, i: usize) -> f32 {
-        self.row.scale(i)
+    /// Card `i`'s pop as the draw paints it before any press, given the index of the focused card
+    /// (the focus rule and [`dormant`](Self::dormant) included): what a probe reads between frames.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn drawn_pop(&self, i: usize, focus: Option<usize>) -> f32 {
+        self.pop(i, focus)
     }
 
     /// Every spring is parked exactly at rest: nothing here needs stepping.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn at_rest(&self) -> bool {
         self.row.at_exact_rest()
     }

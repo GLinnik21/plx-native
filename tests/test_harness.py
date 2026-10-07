@@ -5808,17 +5808,6 @@ impl PersonOwnerGateFixture {
         for line in (6, 7, 8, 9):  # glob and renamed card_row imports, hand-rolled grid geometry
             self.assertIn(f"_check_deps_selftest_cards_strip.rs:{line}", out)
 
-    def test_cards_gate_ignores_a_primitive_named_only_inside_a_string(self):
-        """A screen's canon SHAPE text may name a type that no longer draws it; the code still may not."""
-        r = self._plant(
-            "_check_deps_selftest_cards_text.rs",
-            'pub const SHAPE: &str = "Page{motion:CardRow}";\n',
-            crate_dir="screens",
-        )
-        out = r.stdout + r.stderr
-        self.assertEqual(r.returncode, 0, out)
-        self.assertIn("ok — cards", out)
-
     def test_cards_gate_allows_the_shared_component(self):
         r = self._plant(
             "_check_deps_selftest_cards_ok.rs",

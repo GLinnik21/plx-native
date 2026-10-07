@@ -70,7 +70,7 @@ impl Harness {
         let (listing, hubs, stores) = match set {
             Set::Grid => (listing_of(&rks), plx_data::stores::browse::HubsSnapshot::empty_for_test(), None),
             Set::Shelf => {
-                // The same seeding `tests::Fixture::shelves` does: one hub shelf of `n` tiles
+                // The same seeding `tests::Fixture::shelves` does: three hub shelves of `n` tiles
                 // over a (here unused) 120-item grid.
                 let stores = plx_data::stores::Stores::default();
                 stores.browse.borrow_mut().seed_two_source_table_for_test();
@@ -79,7 +79,7 @@ impl Harness {
                 {
                     let mut browse = stores.browse.borrow_mut();
                     browse.seed_items_for_test(120);
-                    browse.seed_shelves_for_test(0, &["movie.recentlyadded.1"], n);
+                    browse.seed_shelves_for_test(0, &["movie.recentlyadded.1", "movie.recentlyreleased.1", "movie.toprated.1"], n);
                 }
                 let publication = stores.capture_browse(&mut directory);
                 (publication.listing, publication.section_hubs, Some(stores))
@@ -173,21 +173,23 @@ impl CardHarness for Harness {
     fn place(&self, elem: u32, at: At) -> Option<Placed> {
         Focusable::<LibHost>::place(&self.screen, &elem, &self.cx(), at)
     }
-    /// What the draw paints: the component's `place(Drawn)` rect (live pop x press for the focused
-    /// card), the very rect the draw builds and registers its stop from.
+    /// What the draw paints and registers: the grid's rect for the card, the shelves' recorded stop.
     fn drawn_rect(&self, elem: u32, press: f32) -> Option<Rect> {
-        let (row, col) = self.cell(elem)?;
+        let (_, col) = self.cell(elem)?;
         Some(match self.set {
             Set::Grid => {
                 let mut cx = self.cx();
                 cx.press = PressRead { scale: press, ..Default::default() };
                 self.screen.pair.detail.rect_at(&cx, col)
             }
+            // The rect the page's real stop recording registers for the card (`record_stops`, what the
+            // draw ends with): the pointer's target, built from the draw's own placement.
             Set::Shelf => {
                 let mut cx = self.cx();
                 cx.press = PressRead { scale: press, ..Default::default() };
-                let elem = self.screen.shelves[row].elems[col];
-                self.screen.shelf_placed(row, &elem, &cx).expect("a published card places").rect
+                let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
+                self.screen.record_stops(&mut frame);
+                frame.into_stops().into_iter().find(|stop| stop.key.elem == elem)?.rect
             }
         })
     }
@@ -327,6 +329,28 @@ mod pop_tests {
         assert!((1.0_f32 - scale).abs() > 0.01, "a fresh mid-shrink tile must not already read as rest");
         h.tick(120);
         assert_eq!(h.scale(cards[3]), Some(1.0), "…and once settled, the shared scale agrees it is at rest");
+    }
+
+    /// The recorded stops follow a scrolled page: focus the last of the hub shelves, let the page
+    /// reveal it, and every card's recorded stop (the pointer's target, read off the real stop
+    /// recording) is the rect `place(Drawn)` answers, at rest and mid-press.
+    #[test]
+    fn the_recorded_shelf_stops_follow_a_scrolled_page() {
+        let _guard = plx_base::testlock::serial();
+        let mut h = Harness::new(Set::Shelf, 12);
+        assert!(h.screen.shelves.len() >= 3, "three hub shelves published");
+        let last = h.screen.shelves.len() - 1;
+        let elem = h.screen.shelves[last].elems[0];
+        h.focus(elem, By::Restore);
+        h.tick(240);
+        assert!(h.screen.scroll.pos > 1.0, "the page scrolled to reveal the last shelf: {}", h.screen.scroll.pos);
+        for press in [1.0_f32, 0.96] {
+            h.set_press(press);
+            let stop = h.drawn_rect(elem, press).expect("the focused card registers a stop");
+            let placed = h.place(elem, At::Drawn).expect("places").rect;
+            let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+            assert!(close(stop.x, placed.x) && close(stop.y, placed.y) && close(stop.w, placed.w) && close(stop.h, placed.h), "press {press}: stop {stop:?} != place {placed:?}");
+        }
     }
 
     /// A cell focused without a deliberate move is a restore or a reconcile: FULL scale on its

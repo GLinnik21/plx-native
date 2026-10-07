@@ -294,6 +294,8 @@ impl<H: Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     fn len(&self) -> usize { self.elems.len() }
     fn elem(&self, i: usize) -> u32 { self.elems.get(i).copied().unwrap_or(0) }
     fn index_of(&self, e: &u32) -> Option<usize> { self.elems.iter().position(|elem| elem == e) }
+    /// A card whose item the hub has not published draws nothing (its stop still registers).
+    fn loaded(&self, i: usize) -> bool { self.item(i).is_some() }
     fn art(&self, i: usize) -> Art<'_> {
         match (self.item(i), self.shelf) {
             (Some(item), Some(shelf)) if shelf.landscape => Art::Still(Some(tile_facts::of(item))),
