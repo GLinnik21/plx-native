@@ -1293,7 +1293,7 @@ mod stack {
         r.run(60);
         let cx = r.cx();
         let mut f = DrawFrame::new(&cx, Painter::root());
-        r.stack.view(&r.page).paint_stops_for_test(&mut f);
+        r.stack.view(&r.page).record_stops(&mut f);
         let stops = f.stops().to_vec();
         assert!(!stops.is_empty());
         for s in stops {

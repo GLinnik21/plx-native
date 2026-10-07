@@ -2077,7 +2077,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // carries it too; the previous pin was 0x97ff_59c7_9aab_e35e.
 // Library shelf run (#412): the layout carries the run's height (`shelf_run:f32`) where it carried
 // twelve pitches (`pitches:[f32;12]`); the previous pin was 0x7063_dff7_775b_9075.
-const SCREEN_SHAPES_PIN: u64 = 0xac96_3316_a3a3_7bd4;
+// Collection adopts `cards::Stack` (cards-stack PR 5): its logical state gains the stack's motion
+// canon (`stack:Stack{scroll,target,sections}`); the previous pin was 0xac96_3316_a3a3_7bd4.
+const SCREEN_SHAPES_PIN: u64 = 0xbc1d_d51d_5b11_1273;
 
 #[cfg(test)]
 mod arg_tests {

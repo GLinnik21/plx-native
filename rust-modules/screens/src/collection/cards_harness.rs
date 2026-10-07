@@ -4,6 +4,7 @@ use super::*;
 use plx_machine::machine::{FocusKey, FocusRead, Host, InputOwner, PressRead};
 use plx_ui::cards::conformance::{CardHarness, Landing, Nb};
 use plx_ui::fixture::FixtureMeasure;
+use plx_ui::screen::{Placed, Step};
 
 struct CollectionHost;
 impl Host for CollectionHost {
@@ -43,8 +44,11 @@ impl Harness {
         store.run(CollectionCmd::Open { target: CollectionTarget { id: set(), want: PAGE_SIZE } });
         store.install_for_test((0..n).map(|i| item(&format!("m{i}"))).collect(), CollectionStatus::Ready);
         let mut screen = CollectionScreen::new(ENTRY, set());
-        screen.sync(store.view().current().unwrap(), &FixtureMeasure);
-        Self { store, screen, focus: None, press: 1.0, ms: 0, n }
+        screen.page.sync(store.view().current().unwrap(), &FixtureMeasure);
+        let mut h = Self { store, screen, focus: None, press: 1.0, ms: 0, n };
+        // the stack lays its sections out on the first event it sees
+        h.step(ScreenEvent::Tick(Tick { ms: 0, dt_us: 16_667 }));
+        h
     }
 
     fn cx(&self) -> Cx<'_, CollectionHost> {
@@ -110,29 +114,26 @@ impl CardHarness for Harness {
     /// ends with and which uses the very rect `draw` paints; painting itself needs the GL context
     /// a host test does not have).
     fn drawn_rect(&self, elem: u32, press: f32) -> Option<Rect> {
-        let collection = self.store.view().current()?;
         let cx = Cx { press: PressRead { scale: press, ..Default::default() }, ..self.cx() };
         let painter = plx_ui::Painter::root();
         let mut f = plx_ui::screen::DrawFrame::new(&cx, painter);
-        self.screen.grid.record_stops(&mut f, painter, &self.screen.members(collection));
+        self.screen.stack.view(&self.screen.page).record_stops(&mut f);
         f.stops().iter().find(|stop| stop.key.elem == elem).map(|stop| stop.rect)
     }
     fn scale(&self, elem: u32) -> Option<f32> {
-        let collection = self.store.view().current()?;
-        self.screen.grid.scale_of(&self.cx(), &self.screen.members(collection), &elem)
+        self.screen.stack.view(&self.screen.page).scale_of(&self.cx(), &elem)
     }
     fn focus_scale(&self) -> f32 { plx_ui::poster_grid::STYLE.focus_scale }
     fn canon(&self) -> u64 {
         let mut c = Canon::new();
         LogicalState::write(&self.screen, &mut c);
-        self.screen.grid.write(&mut c);
         c.finish()
     }
     fn identity(&self, elem: u32) -> String {
         let c = self.store.view().current().unwrap();
         self.index(elem).map(|i| c.items[i].rk.clone()).unwrap_or_default()
     }
-    fn scroll(&self) -> Option<f32> { Some(self.screen.grid.scroll()) }
+    fn scroll(&self) -> Option<f32> { Some(self.screen.stack.scroll()) }
     fn columns(&self) -> Option<usize> { Some(plx_ui::poster_grid::COLS) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         let focused = self.focus.map(|k| k.elem);
@@ -152,7 +153,7 @@ impl CardHarness for Harness {
         let mem = Screen::<CollectionHost>::memory_at(&self.screen, self.focus);
         let mut fresh = Harness::new(self.n);
         fresh.step(ScreenEvent::RestoreMemory(mem));
-        fresh.screen.sync(fresh.store.view().current().unwrap(), &FixtureMeasure);
+        fresh.screen.page.sync(fresh.store.view().current().unwrap(), &FixtureMeasure);
         let want = self.focus.ok_or("nothing focused")?;
         let now = Focusable::<CollectionHost>::reconcile(&fresh.screen, want, &fresh.cx());
         fresh.focus(now.elem, By::Restore);

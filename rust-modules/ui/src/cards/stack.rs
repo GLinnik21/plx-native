@@ -454,10 +454,10 @@ pub struct StackView<'a, K, E, P> {
 }
 
 impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
-    /// Draw every section in document order and register their stops. Painting needs `Part::draw`'s
-    /// `&mut`, which only the trait carries; this is the same code on the shared borrow.
-    #[cfg(test)]
-    pub(crate) fn paint_stops_for_test<H: Host>(&self, f: &mut DrawFrame<'_, '_, H>)
+    /// The stops of every card section, registered exactly as [`paint`](Self::paint) ends each
+    /// section with them (the very rects it draws), without painting: a host test has no GL
+    /// context, and a page's harness reads the rects through this.
+    pub fn record_stops<H: Host>(&self, f: &mut DrawFrame<'_, '_, H>)
     where
         P: StackPage<H, Key = K>,
     {
@@ -469,6 +469,39 @@ impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
                 (Kind::Grid { .. }, Body::Grid(g)) => if let Some(src) = self.page.cards(f.cx, k) { g.record_stops(f, f.painter, &src) },
                 _ => {}
             }
+        }
+    }
+
+    /// The opener redraw: card `focus` drawn alone, popped and captioned exactly as in-page, over
+    /// whatever covers the page. Nothing is painted for an element no card section shows.
+    pub fn redraw_focused<H: Host>(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<FocusKey<H::Elem>>)
+    where
+        P: StackPage<H, Key = K>,
+    {
+        let (s, page) = (self.stack, self.page);
+        let Some(key) = focus.filter(|k| k.entry == s.entry) else { return };
+        let Some(i) = s.owner(page, f.cx, &key.elem) else { return };
+        let Some(src) = page.cards(f.cx, s.specs[i].key) else { return };
+        let p = f.painter.alpha(f.page_alpha);
+        match &s.bodies[i] {
+            Body::Shelf(sh) => sh.redraw_focused(f, p, &src, s.frame(page, f.cx, i), focus),
+            Body::Grid(g) => g.redraw_focused(f, p, &src, focus),
+            Body::Plain => {}
+        }
+    }
+
+    /// The live pop of card `elem` (no press), in whichever card section shows it.
+    pub fn scale_of<H: Host>(&self, cx: &Cx<'_, H>, elem: &H::Elem) -> Option<f32>
+    where
+        P: StackPage<H, Key = K>,
+    {
+        let (s, page) = (self.stack, self.page);
+        let i = s.owner(page, cx, elem)?;
+        let src = page.cards(cx, s.specs[i].key)?;
+        match &s.bodies[i] {
+            Body::Shelf(sh) => sh.scale_of(cx, &src, elem),
+            Body::Grid(g) => g.scale_of(cx, &src, elem),
+            Body::Plain => None,
         }
     }
 
