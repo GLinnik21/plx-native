@@ -1,4 +1,9 @@
 //! The concrete master/detail pair: A–Z rail (master) and portrait or episode listing (detail).
+//! The listing is a `plx_ui::cards::Grid` in external-scroll mode: the pop, caption bands, draw,
+//! stops, placement and neighbours are the component's, over a `CardSource` read off the published
+//! items. This part keeps the publication (element identities, indexes, the known-place memory),
+//! the target-layout `SpringTarget` placement, `groups` and `seat`, which describe where the page
+//! is going rather than where it is.
 
 pub(super) use super::rail::RailPart;
 
@@ -7,21 +12,19 @@ use std::ops::Range;
 
 use crate::registry::{tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
 use plx_ui::card_row;
+use plx_ui::cards::{CardSource, Grid, GridSpec, Tile};
 use plx_ui::consts::{MARGIN_X, SCR_H};
 use plx_ui::frame::Budget;
-use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId};
+use plx_machine::machine::{Cx, Effects, EntryId, FocusKey, GroupId, Host, Measure, ScreenEvent};
 use plx_ui::screen::{
-    Activate, At, AxisMask, Dir, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Hover, Part,
-    Placed, Seat, Step, Stop,
+    At, AxisMask, Dir, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Part, Placed, Seat,
+    Step,
 };
 use plx_ui::widgets::Art;
-use plx_ui::Rect;
+use plx_ui::{Painter, Rect};
 
 use super::identity::KeyRegistry;
-use super::layout::{
-    GridBand, Layout, CONTENT_TOP, GRID_RIGHT, MAX_GRID_BANDS,
-};
-use plx_ui::poster_grid::GridBands;
+use super::layout::{GridBand, Layout, CONTENT_TOP, GRID_RIGHT, MAX_GRID_BANDS};
 
 pub(super) const GRID_GROUP: GroupId = GroupId(0x4c49_4201);
 pub(super) const RAIL_GROUP: GroupId = GroupId(0x4c49_4202);
@@ -122,15 +125,13 @@ pub(super) struct GridPart {
     scroll: f32,
     target_layout: Layout,
     scroll_target: f32,
-    /// The focused cell's pop and the previous one's let-go — the legacy grid's `FOCUS_S` /
-    /// `PREV_S` pair, now the shared `ui::poster_grid::GridPop` the Collection page draws from
-    /// too. It only starts from REST when a deliberate MOVE arms it
-    /// ([`pop_from_rest`](Self::pop_from_rest), from the `FocusMoved` arm for `By::Dir` /
-    /// `By::Pointer`); every other way a cell becomes focused — a restore, a reconcile, a command
-    /// seating the cursor — is adopted at full scale by [`tick`](Self::tick), because a page
+    /// The poster wall (`ui::cards::Grid`, [`ScrollMode::External`](plx_ui::cards::ScrollMode)):
+    /// the focused cell's pop and the previous one's let-go, the caption bands, drawing, stops,
+    /// placement and neighbours. The page scroll is the Library's; the grid is handed it
+    /// (`Grid::set_page`) before every call. A pop starts from REST only when a deliberate move
+    /// arms it; every other way a cell becomes focused is adopted at full scale, because a page
     /// coming back from a Detail push must land exactly as it was left.
-    pop: plx_ui::poster_grid::GridPop,
-    bands: GridBands,
+    grid: Grid,
     snapshot: Option<plx_data::stores::browse::ListingSnapshot>,
     indexes: GridIndexes,
     #[cfg(test)]
@@ -151,7 +152,7 @@ impl GridPart {
         // The retained snapshot is a read-publication cache, not another cursor. Its placement
         // projection and identity are traversed below; its Arc address never enters logical state.
         let Self { entry: _, group, elems, known, identity, layout, scroll, target_layout,
-            scroll_target, pop, bands, snapshot: _, indexes: _, #[cfg(test)] test_ops: _ } = self;
+            scroll_target, grid, snapshot: _, indexes: _, #[cfg(test)] test_ops: _ } = self;
         c.u32(group.0).seq(elems.len());
         for elem in elems { c.u32(*elem); }
         c.seq(known.len());
@@ -163,70 +164,62 @@ impl GridPart {
         target_layout.write(c); c.f32(*scroll_target);
         // canonical animation state, as `PageGround::write_motion`: a spring mid-flight decides
         // the next frames even when two grids draw the same rects
-        pop.write(c);
-        bands.write(c);
+        grid.write_pop(c);
+        grid.write_bands(c);
     }
 
     pub(super) fn new(entry: EntryId, group: GroupId) -> Self {
+        let layout = Layout::new(false, &[], 0, false);
         Self {
             entry, group,
             elems: Vec::new(),
             known: Vec::new(),
             identity: None,
-            layout: Layout::new(false, &[], 0, false),
+            layout,
             scroll: 0.0,
-            target_layout: Layout::new(false, &[], 0, false),
+            target_layout: layout,
             scroll_target: 0.0,
-            pop: plx_ui::poster_grid::GridPop::new(),
-            bands: GridBands::new(),
+            // `edge` 0: nothing the document draws is above the screen's top, so no row is culled
+            // for being over a snapped scroll's edge (the Library reveals by its own rule)
+            grid: Grid::new(entry, GridSpec::new(CONTENT_TOP + layout.grid_top(), 0.0)
+                .columns(layout.cols(), layout.style(), MARGIN_X).external()),
             snapshot: None,
             indexes: GridIndexes::default(),
             #[cfg(test)] test_ops: PublicationOps::default(),
         }
     }
 
-    /// Arm the pop from REST: the cell at `index` starts at 1.0 and grows over the frames that
-    /// follow, while whatever held the pop before is handed to the shrink spring — one tile
-    /// growing as its neighbour lets go, the treatment every shelf gets from `RowMotion` and the
-    /// one the poster wall had as the legacy grid's `FOCUS_S`/`PREV_S` pair before phase 8 applied
-    /// the scale as a step. Called from the `FocusMoved` arm for `By::Dir` / `By::Pointer` and
-    /// from nowhere else: a deliberate move is the only focus change the eye should see travel.
-    pub(super) fn pop_from_rest(&mut self, index: usize) {
-        self.pop.arm(index);
+    /// The grid's one entry for the events that move it (`Tick`, `FocusMoved`; the Library keeps
+    /// its own press, hold and paging handling, so the grid's `Activate` / `Hold` / `Want` are not
+    /// used — [`GridSrc::more`](CardSource::more) is `false`, and the page requests its window
+    /// itself). `scroll` is the Library's CURRENT page scroll. Returns the document shift
+    /// (pixels, positive = down) a content landing on this tick needs so the focused tile stays
+    /// where it was on screen; the caller applies it to its scroll and scroll target.
+    pub(super) fn on<H: LibraryLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>,
+        fx: &mut Effects<'_, H>, scroll: f32) -> f32 {
+        self.grid.set_page(CONTENT_TOP + self.layout.grid_top(), scroll);
+        let src = GridSrc { elems: &self.elems, indexes: &self.indexes, view: H::listing(cx) };
+        let _ = self.grid.on(ev, cx, &src, fx);
+        if matches!(ev, ScreenEvent::Tick(_)) { self.grid.landed_shift() } else { 0.0 }
     }
 
-    /// Advance the focus pop by one tick. `focused` is the focused cell's index, if focus is in
-    /// the grid at all.
-    ///
-    /// **Order within a frame.** Inputs and the `FocusMoved` they deliver run BEFORE the screen's
-    /// `Tick`, so a D-pad step has already called [`pop_from_rest`](Self::pop_from_rest) by the
-    /// time this runs, and this only steps that spring on from 1.0. A cell that arrives here
-    /// unannounced — a restore, a reconcile, a command that seated the cursor — is ADOPTED AT FULL
-    /// SCALE with no animation, which is what makes a page returning from a Detail push draw the
-    /// rect it was left at on its first frame back (`LibraryScreen::restore` jumps the scroll
-    /// spring for the same reason).
-    pub(super) fn tick(&mut self, focused: Option<usize>, dt: f32) {
-        let style = self.layout.style();
-        self.focus_row(focused.map(|index| index / self.layout.cols()), false);
-        self.bands.tick(style.k_scroll, dt);
-        self.pop.tick(focused, &style, dt);
-    }
+    /// Adopt the focused grid row's caption band settled: a layout built before the next tick (a
+    /// restore, a landing) sizes the document from it. A no-op while that row is already focused.
+    pub(super) fn settle_band(&mut self, row: Option<usize>) { self.grid.settle_band(row); }
 
-    pub(super) fn focus_row(&mut self, row: Option<usize>, animate: bool) {
-        self.bands.focus(row, animate);
-    }
-
-    pub(super) fn band_geometry(&self) -> [GridBand; MAX_GRID_BANDS] { self.bands.geometry() }
+    pub(super) fn band_geometry(&self) -> [GridBand; MAX_GRID_BANDS] { self.grid.band_geometry() }
 
     pub(super) fn set_geometry(&mut self, layout: Layout, scroll: f32, target_layout: Layout, scroll_target: f32) {
         self.layout = layout;
         self.scroll = scroll;
         self.target_layout = target_layout;
         self.scroll_target = scroll_target;
+        self.grid.set_columns(layout.cols(), layout.style(), MARGIN_X);
+        self.grid.set_page(CONTENT_TOP + layout.grid_top(), scroll);
     }
 
     pub(super) fn restore_keys(&mut self, keys: &KeyRegistry) {
-        self.bands = GridBands::new();
+        self.grid.reset_bands();
         self.known = keys.keys().iter().filter(|key| matches!(key.identity,
             LibraryIdentity::Grid { .. } | LibraryIdentity::GridSlot { .. }))
             .map(|key| (key.elem, key.last_index as usize)).collect();
@@ -248,6 +241,7 @@ impl GridPart {
             view.changed_page_ranges(old.view()).map(|ranges| ranges.collect::<Vec<_>>()));
         self.snapshot = Some(view.retain());
         let Some(id) = view.id() else {
+            if self.identity.is_some() { self.grid.forget_pop(); }
             self.elems.clear();
             self.indexes.elems.clear();
             self.identity = None;
@@ -256,6 +250,9 @@ impl GridPart {
         let section = LibrarySectionIdentity { sid: id.sid, key: id.section };
         let total = view.total().max(0) as usize;
         let stamp = (id.epoch, id.sid, id.section, id.query);
+        // A new stamp is a new content set; a covered page's grid never ticked across the swap,
+        // so its pop would otherwise read the same element at a new index as a landing.
+        if self.identity.is_some_and(|old| old != stamp) { self.grid.forget_pop(); }
         if self.identity != Some(stamp) || self.elems.len() != total || changed.is_none() {
             self.elems.clear();
             self.elems.reserve(total);
@@ -344,102 +341,91 @@ impl GridPart {
     #[cfg(test)]
     pub(super) fn reset_publication_ops(&mut self) { self.test_ops = PublicationOps::default(); }
 
-    /// The cell's drawn rect, scaled by [`tile_scale`](Self::tile_scale) — the live pop times the
-    /// live press for the focused cell, the live shrink for the one that just lost focus, and rest
-    /// for everybody else. This function and the unfocused branch of [`Part::draw`] MUST read that
-    /// one function rather than each keep their own copy of the branch; see its doc for the defect
-    /// that a second copy caused.
-    pub(super) fn rect_at(&self, index: usize, focused: bool, press: f32) -> Rect {
-        let row = index / self.layout.cols();
-        let col = index % self.layout.cols();
-        let scale = self.tile_scale(index, focused, press);
-        Rect::new(self.layout.cell_x(col), self.layout.row_y(row, self.scroll),
-            self.layout.card_w(), self.layout.card_h()).scaled(scale)
+    /// The grid's content, read off the published items. O(1) to build: borrows, no copy.
+    fn source<'a, 'v, H: LibraryLike>(&'a self, cx: &Cx<'v, H>) -> GridSrc<'a, 'v> {
+        GridSrc { elems: &self.elems, indexes: &self.indexes, view: H::listing(cx) }
     }
 
-    /// **The one scale a cell draws at — for its RECT and for its TREATMENT, always together.**
-    /// Live pop×press while focused ([`treatment_scale`](Self::treatment_scale)), live shrink for
-    /// the cell that just lost focus, rest for everybody else.
-    ///
-    /// This exists because `Part::draw`'s unfocused tile used to keep its own inline copy of this
-    /// same branch for the RECT while handing [`card_row::draw_tile`]'s renderer a hardcoded `1.0`
-    /// for the TREATMENT — exactly the disagreement [`treatment_scale`](Self::treatment_scale)'s
-    /// own doc already warns about for the focused cell, just uncaught on the unfocused one.
-    /// `draw_tile` derives the corner radius and the card-shadow ramp from its `s` argument
-    /// (`ui/card_row.rs`'s `tile_radius`/the shadow `f`), so a tile mid-shrink was drawn with its
-    /// radius and shadow already AT REST while its rectangle was still gliding down under the live
-    /// shrink spring — the "abrupt" unfocus the owner reported in the All grid, unlike a Home
-    /// shelf, whose own `draw_tile` call has always taken `RowMotion`'s live scale for both. One
-    /// function, called from both the rect and the renderer, is what makes that impossible again.
-    fn tile_scale(&self, index: usize, focused: bool, press: f32) -> f32 {
-        if focused {
-            self.treatment_scale(index, press)
-        } else {
-            self.pop.scale(index, false, &self.layout.style())
-        }
+    /// The painter the grid draws and registers stops through: the page's alpha, and the stops
+    /// clipped to the content panel so a row scrolled up under the heading cannot be hit there.
+    fn painter<H: LibraryLike>(f: &plx_ui::screen::DrawFrame<'_, '_, H>) -> Painter {
+        f.painter.alpha(f.page_alpha).clipped(grid_clip())
     }
 
-    /// The focused cell's LIVE scale: the pop spring's position while the pop belongs to this
-    /// cell, and FULL scale when it does not. That second case is a focus this part has not been
-    /// told about yet — a restore, a reconcile, or a seat that landed after this frame's
-    /// [`tick`](Self::tick) — and those land finished rather than animating, so drawing them at
-    /// rest would be a one-frame collapse of the very card being returned to.
-    fn pop_scale(&self, index: usize) -> f32 {
-        self.pop.pop_scale(index, &self.layout.style())
-    }
-
-    /// The scale the focused cell's TREATMENT is drawn at — what
-    /// [`card_row::draw_focused`](plx_ui::card_row::draw_focused) is handed as its `s`, and
-    /// therefore THE scale [`rect_at`](Self::rect_at) built that cell's rect from: the live pop
-    /// times the live press. `draw_focused` divides by it twice (the shadow/sheen ramp and the
-    /// label's anchor at the unscaled card bottom), so handing it anything else is not a
-    /// refinement of the treatment but a rect and a treatment that disagree —
-    /// `a_pressed_grid_tile_hands_the_card_renderer_the_scale_its_rect_was_built_from` is the
-    /// account. [`tile_scale`](Self::tile_scale) is this same rule generalised past the focused
-    /// cell: it calls here when `focused`, and answers the shrink/rest cases the same invariant
-    /// covers for every other cell.
-    pub(super) fn treatment_scale(&self, index: usize, press: f32) -> f32 {
-        self.pop_scale(index) * if press > 0.0 { press } else { 1.0 }
-    }
-
-    pub(super) fn visible_window(&self) -> (usize, usize) {
-        let (lo, hi) = self.layout.visible_rows(self.scroll);
-        let cols = self.layout.cols();
-        (lo.saturating_mul(cols), hi.saturating_mul(cols).min(self.elems.len()))
-    }
-
+    #[cfg(test)]
     pub(super) fn record_stops<H: LibraryLike>(&self, f: &mut plx_ui::screen::DrawFrame<'_, '_, H>) {
-        if !f.records_stops() { return; }
-        let (lo, hi) = self.visible_window();
-        for index in lo..hi {
-            let elem = self.elems[index];
-            let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) else { continue };
-            f.stop(f.painter, Stop { key: FocusKey { entry: self.entry, elem },
-                rect: placed.rect, rest_rect: placed.rest_rect, clip: placed.clip,
-                hover: Hover::Focus, activate: Activate::Press });
-        }
+        let p = Self::painter(f);
+        let src = self.source(f.cx);
+        self.grid.record_stops(f, p, &src);
     }
 
-    pub(super) fn draw_focused<H: LibraryLike>(&self, f: &plx_ui::screen::DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
-        let Some(index) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.index_of(key.elem)) else { return };
-        let Some(item) = H::listing(f.cx).item(index) else { return };
+    /// The opener redraw: the focused card alone, popped and captioned exactly as in-page.
+    pub(super) fn draw_focused<H: LibraryLike>(&self, f: &mut plx_ui::screen::DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
         let p = f.painter.alpha(f.page_alpha);
-        let rect = self.rect_at(index, true, f.press.scale);
-        let style = self.layout.style();
-        let scale = self.treatment_scale(index, f.press.scale);
-        if !card_row::paint_visible(p, rect, scale, true) {
-            return;
-        }
-        let label = grid_label(item).revealed(card_row::band_reveal(
-            self.layout.row_expansion(index / self.layout.cols())));
-        let resume = if item.kind == 3 { None } else { item.resume_frac() };
-        // ONE scale for the rect and the treatment: the shadow and sheen ramp in with the pop and
-        // let go under the press, as a shelf's do (`RowMotion::scale` × `f.press.scale`)
-        card_row::draw_focused(p, grid_art(item), rect, scale, &style, resume, &label, f.measure);
-        if item.kind == 3 {
-            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), false, f.measure);
+        let src = self.source(f.cx);
+        self.grid.redraw_focused(f, p, &src, focus);
+    }
+
+    /// Card `index`'s drawn rect for the engine focus in `cx` (pop and press folded in).
+    #[cfg(test)]
+    pub(super) fn rect_at<H: LibraryLike>(&self, cx: &Cx<'_, H>, index: usize) -> Rect {
+        let elem = self.elems[index];
+        <Self as Focusable<H>>::place(self, &elem, cx, At::Drawn).expect("a published card places").rect
+    }
+
+    /// Card `elem`'s live pop (no press): the scale its rect and its treatment are both built from.
+    #[cfg(test)]
+    pub(super) fn scale_of<H: LibraryLike>(&self, cx: &Cx<'_, H>, elem: u32) -> Option<f32> {
+        self.grid.scale_of(cx, &self.source(cx), &elem)
+    }
+
+    /// The cards the scroll can show: what `draw` and `record_stops` touch.
+    #[cfg(test)]
+    pub(super) fn window(&self) -> std::ops::Range<usize> { self.grid.window(self.elems.len()) }
+}
+
+/// The content panel the grid's stops are clipped to.
+fn grid_clip() -> Rect {
+    Rect::new(MARGIN_X - 32.0, CONTENT_TOP, GRID_RIGHT - MARGIN_X + 32.0, SCR_H - CONTENT_TOP)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Every `(index, Tile.scale)` the grid handed `CardSource::overlay`, in paint order: what the
+    /// card renderer is given, for tests that assert on it instead of recomputing it.
+    pub(super) static OVERLAID: std::cell::RefCell<Vec<(usize, f32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The grid's `CardSource`: the published items read through the part's element index. Built from
+/// the part's FIELDS (borrows only), so a call can hold it while the grid is borrowed mutably.
+struct GridSrc<'a, 'v> {
+    elems: &'a [u32],
+    indexes: &'a GridIndexes,
+    view: plx_data::stores::browse::ListingView<'v>,
+}
+
+impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
+    fn len(&self) -> usize { self.elems.len() }
+    fn elem(&self, i: usize) -> u32 { self.elems.get(i).copied().unwrap_or(0) }
+    fn index_of(&self, e: &u32) -> Option<usize> { self.indexes.index_of(*e) }
+    fn art(&self, i: usize) -> Art<'_> {
+        self.view.item(i).map_or(Art::Poster(None), grid_art)
+    }
+    fn label(&self, i: usize) -> card_row::TileLabel {
+        self.view.item(i).map(grid_label).unwrap_or_default()
+    }
+    fn progress(&self, i: usize) -> Option<f32> {
+        self.view.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())
+    }
+    fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
+        #[cfg(test)] OVERLAID.with(|seen| seen.borrow_mut().push((i, tile.scale)));
+        if let Some(item) = self.view.item(i).filter(|item| item.kind == 3) {
+            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius, false, measure);
         }
     }
+    /// Metadata still pages ahead via `LibraryWork::Want`; a slot whose page has not landed draws
+    /// nothing (its stop still registers).
+    fn loaded(&self, i: usize) -> bool { self.view.item(i).is_some() }
 }
 
 fn item_identity(
@@ -481,31 +467,27 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
         self.index_of(*key).map(|_| self.group)
     }
 
-    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
-        let Some(index) = self.index_of(key.elem) else { return Step::Edge };
-        let next = plx_ui::poster_grid::neighbour(index, self.elems.len(), self.target_layout.cols(), dir);
-        next.map_or(Step::Edge, |i| Step::Move(FocusKey { entry: key.entry, elem: self.elems[i] }))
+    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
+        self.grid.neighbour::<H, _>(&self.source(cx), key, dir)
     }
 
+    /// `At::Drawn` is the grid's own placement (the rect `draw` paints and the stop registers);
+    /// `At::SpringTarget` is where the document is GOING — the settled bands at the scroll target
+    /// — which the grid, holding the live page, cannot say. The clip is the content panel's.
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
         let index = self.index_of(*key)?;
-        let focused = cx.focus.current.is_some_and(|focus| focus.entry == self.entry && focus.elem == *key);
-        let (rect, rest_rect) = match at {
-            At::Drawn => (self.rect_at(index, focused, cx.press.scale), self.rect_at(index, focused, 1.0)),
+        let clip = grid_clip();
+        match at {
+            At::Drawn => self.grid.place(cx, &self.source(cx), key, at).map(|placed| Placed { clip, ..placed }),
             At::SpringTarget => {
+                let focused = cx.focus.current.is_some_and(|focus| focus.entry == self.entry && focus.elem == *key);
                 let layout = self.target_layout;
                 let rect = Rect::new(layout.cell_x(index % layout.cols()),
                     layout.row_y(index / layout.cols(), self.scroll_target), layout.card_w(), layout.card_h())
                     .scaled(if focused { layout.style().focus_scale } else { 1.0 });
-                (rect, rect)
+                Some(Placed { rect, rest_rect: rect, clip, index: Some(index as u32) })
             }
-        };
-        Some(Placed {
-            rect,
-            rest_rect,
-            clip: Rect::new(MARGIN_X - 32.0, CONTENT_TOP, GRID_RIGHT - MARGIN_X + 32.0, SCR_H - CONTENT_TOP),
-            index: Some(index as u32),
-        })
+        }
     }
 
     fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, H>) -> FocusKey<u32> {
@@ -549,184 +531,11 @@ impl<H: LibraryLike> Part<H> for GridPart {
     fn prepare(&mut self, _budget: &mut Budget, _cx: &Cx<'_, H>) {}
 
     fn draw(&mut self, f: &mut plx_ui::screen::DrawFrame<'_, '_, H>, _rect: Rect) {
-        let view = H::listing(f.cx);
-        let focus = f.focus.current.filter(|key| key.entry == self.entry);
-        let (lo, hi) = self.visible_window();
-        let p = f.painter.alpha(f.page_alpha);
-        let style = self.layout.style();
-        for index in lo..hi {
-            let Some(item) = view.item(index) else { continue };
-            let selected = focus.is_some_and(|key| key.elem == self.elems[index]);
-            if selected { continue; }
-            let rect = self.rect_at(index, false, 1.0);
-            let scale = self.tile_scale(index, false, 1.0);
-            // Metadata still pages ahead via LibraryWork::Want. Hidden artwork must wait
-            // until visible: repeated warms recycle cold cache slots and keep idle uploading.
-            if !card_row::paint_visible(p, rect, scale, false) {
-                continue;
-            }
-            let resume = if item.kind == 3 { None } else { item.resume_frac() };
-            card_row::draw_tile(p, grid_art(item), rect, scale, &style, resume);
-            if item.kind == 3 {
-                plx_ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), false, f.measure);
-            }
-        }
-        self.draw_focused(f, focus);
-        self.record_stops(f);
-    }
-}
-
-#[cfg(test)]
-mod pop_tests {
-    use super::*;
-    use plx_ui::card_row::RowStyle;
-    use plx_ui::consts::{CARD_H, CARD_W};
-    use plx_machine::machine::{EntryId, GroupId};
-
-    #[test]
-    fn episode_grid_geometry_and_page_window_share_four_column_rows() {
-        let mut grid = GridPart::new(EntryId(7), GroupId(3));
-        grid.elems = (1..=80).collect();
-        let layout = Layout::new(false, &[], 20, true).with_episodes(true);
-        grid.set_geometry(layout, 0.0, layout, 0.0);
-        let first = grid.rect_at(0, false, 1.0);
-        let next_row = grid.rect_at(4, false, 1.0);
-        assert_eq!(next_row.x, first.x);
-        assert!((next_row.y - first.y - layout.grid_pitch()).abs() < 0.001);
-        assert_eq!((first.w, first.h), (layout.card_w(), layout.card_h()));
-        let scroll = layout.row_reveal(12);
-        grid.set_geometry(layout, scroll, layout, scroll);
-        let (lo, hi) = grid.visible_window();
-        assert!((lo..hi).contains(&48), "row 12's first episode must be in its page window");
-        assert!(hi - lo < 32, "the window should request only nearby episode rows");
-    }
-
-    /// Owner report, 2026-09-09: "in the All section the poster just pops right away, not
-    /// animated — nothing like that on Home". Home's shelves grow a focused tile over frames
-    /// (`RowMotion`'s per-tile springs); the owned grid applied `focus_scale` as a step. Watched
-    /// red against that: one frame after a focus move the tile was already at full scale.
-    ///
-    /// The D-pad path is `pop_from_rest` (the `FocusMoved` arm, `By::Dir`/`By::Pointer`) followed
-    /// by the frame's ticks, which is the order the loop runs them in.
-    #[test]
-    fn a_newly_focused_grid_tile_grows_over_frames_and_the_old_one_lets_go() {
-        let mut g = GridPart::new(EntryId(7), GroupId(3));
-        g.elems = (1..=12).collect();
-        let full = CARD_W * RowStyle::HOME.focus_scale;
-        let dt = 1.0 / 60.0;
-        g.pop_from_rest(3);
-        g.tick(Some(3), dt);
-        let first = g.rect_at(3, true, 1.0).w;
-        assert!(
-            first > CARD_W + 0.1 && first < full - 0.1,
-            "one frame in, the tile is between rest and full scale: {first} (rest {CARD_W}, full {full})"
-        );
-        for _ in 0..120 { g.tick(Some(3), dt); }
-        assert!((g.rect_at(3, true, 1.0).w - full).abs() < 0.5, "…and settles at full scale");
-        g.pop_from_rest(4);
-        g.tick(Some(4), dt);
-        let old = g.rect_at(3, false, 1.0).w;
-        let new = g.rect_at(4, true, 1.0).w;
-        assert!(old > CARD_W + 0.1 && old < full - 0.1, "the old tile lets go rather than snapping: {old}");
-        assert!(new > CARD_W + 0.1 && new < full - 0.1, "the new tile starts growing from rest: {new}");
-        for _ in 0..120 { g.tick(Some(4), dt); }
-        assert_eq!(g.rect_at(3, false, 1.0).w, CARD_W, "a settled neighbour costs nothing");
-    }
-
-    /// **The width-only check above cannot see this defect.** Owner report, real TV: in the All
-    /// grid a tile GAINING focus lifts smoothly, but the tile LOSING it settles back down
-    /// abruptly — unlike a Home shelf, which animates smoothly in both directions. The mechanism
-    /// is that `Part::draw`'s unfocused branch built the outgoing tile's RECT from the live shrink
-    /// spring (via `rect_at`/`tile_scale`) but handed [`card_row::draw_tile`]'s renderer a
-    /// constant `1.0` for the TREATMENT — and `draw_tile` derives the corner radius and the card
-    /// shadow's ramp from that `s` argument alone, so the tile's outline and shadow snapped to
-    /// rest in one frame while its rectangle kept gliding down under the spring. The test above
-    /// only reads `rect_at`'s own WIDTH, which never carried this bug — the rect was always built
-    /// from the live spring — so it stays green with the defect fully shipped. This asserts on
-    /// [`tile_scale`](GridPart::tile_scale) directly, the value now handed to BOTH call sites, and
-    /// that `rect_at`'s width is exactly `CARD_W` times that same number.
-    #[test]
-    fn an_unfocusing_grid_tile_draws_its_shrinking_rect_and_treatment_at_the_same_scale() {
-        let mut g = GridPart::new(EntryId(7), GroupId(3));
-        g.elems = (1..=12).collect();
-        let dt = 1.0 / 60.0;
-        g.tick(Some(3), dt); // adopted at full scale: 3 is the resting focused tile
-        for _ in 0..60 { g.tick(Some(3), dt); }
-        g.pop_from_rest(4); // focus leaves 3 for 4: 3 now shrinks back toward rest
-        g.tick(Some(4), dt);
-        let scale = g.tile_scale(3, false, 1.0);
-        assert!(scale > 1.0 && scale < RowStyle::HOME.focus_scale,
-            "mid-shrink, the outgoing tile's own scale sits strictly between rest and full: {scale}");
-        let rect = g.rect_at(3, false, 1.0);
-        assert!((rect.w - CARD_W * scale).abs() < 0.001,
-            "rect_at's width must be CARD_W times the exact same scale tile_scale answers: rect.w={} scale={scale}", rect.w);
-        // The old call site's bug was indistinguishable from "already at rest": confirm this
-        // frame's scale genuinely is not 1.0, so a renderer that received it instead of the old
-        // hardcoded constant draws a visibly different (still-elevated) tile.
-        assert!((1.0_f32 - scale).abs() > 0.01, "a fresh mid-shrink tile must not already read as rest");
-        for _ in 0..120 { g.tick(Some(4), dt); }
-        assert_eq!(g.tile_scale(3, false, 1.0), 1.0, "…and once settled, the shared scale agrees it is at rest");
-    }
-
-    /// The other half of the same design, and — unlike the test above — written AFTER it rather
-    /// than watched red against the shipped bug: a cell that becomes focused without a
-    /// `pop_from_rest` is a restore, a reconcile or a command seating the cursor, and it must draw
-    /// at FULL scale on its first frame, before and after the tick that adopts it. The red that
-    /// motivated it was real but was the bridge's, not this module's —
-    /// `library_detail_return_restores_engine_card_and_viewport_after_stack_eviction` failed at
-    /// 250 px against the 272.5 px it was left at, because a remounted grid re-popped from rest.
-    #[test]
-    fn a_cell_focused_without_a_move_is_adopted_at_full_scale() {
-        let mut g = GridPart::new(EntryId(7), GroupId(3));
-        g.elems = (1..=12).collect();
-        let full = CARD_W * RowStyle::HOME.focus_scale;
-        let dt = 1.0 / 60.0;
-        assert_eq!(g.rect_at(5, true, 1.0).w, full, "the frame BEFORE the tick already draws it whole");
-        g.tick(Some(5), dt);
-        assert_eq!(g.rect_at(5, true, 1.0).w, full, "and the tick adopts it without a step of animation");
-        for _ in 0..3 { g.tick(Some(5), dt); }
-        assert_eq!(g.rect_at(5, true, 1.0).w, full, "…and it stays there");
-    }
-
-    /// Owner report, 2026-09-09 (TV session 4), beside the pop above: "the click-in animation on
-    /// tiles was lost as well". The press DIP itself survived phase 8 — `rect_at` multiplies by
-    /// `f.press.scale` and a simulator capture of the poster wall shows the art shrink — but the
-    /// grid handed [`card_row::draw_focused`] a treatment scale with the press left OUT, and that
-    /// argument is most of what the click LOOKS like:
-    ///
-    /// * `f = (s - 1) / ring_denom` is the focus drop-shadow and perimeter sheen. On Home a press
-    ///   drives `s` from 1.09 to ~1.0006, so the tile visibly lets go of the page and presses IN;
-    ///   with `s` pinned at the pop the grid's shadow stayed at full strength through the press.
-    /// * `ty = … + (rect.h / s) * 0.5` anchors the label to the UNSCALED card bottom, so a press
-    ///   "never moves it" — true only while `s` is the scale `rect` was built from. With the press
-    ///   in the rect and not in `s`, the caption slid up and back on every click.
-    ///
-    /// Legacy did it right (`ui/library.rs::draw_focused_card`: `s = FOCUS_S.pos *
-    /// press::scale()`, passed to BOTH), as do Home, the Library's own shelves, Search, Detail and
-    /// Person. The grid was the one outlier.
-    ///
-    /// Watched red against the shipped grid: `treatment_scale` answered 1.09 while the rect it was
-    /// drawn beside had already dipped to `1.09 * DIP`, and the derived label anchor was 11 px
-    /// above the resting card bottom.
-    #[test]
-    fn a_pressed_grid_tile_hands_the_card_renderer_the_scale_its_rect_was_built_from() {
-        let mut g = GridPart::new(EntryId(7), GroupId(3));
-        g.elems = (1..=12).collect();
-        let dt = 1.0 / 60.0;
-        g.tick(Some(3), dt); // adopted at full scale: the resting focused tile
-        // `ui::press::DIP` is private; this is a press mid-dip, which is all the draw sees.
-        for press in [1.0_f32, 0.96, 0.918] {
-            let rect = g.rect_at(3, true, press);
-            let s = g.treatment_scale(3, press);
-            assert!((rect.w - CARD_W * s).abs() < 0.001,
-                "the treatment scale is the one the rect was built from: rect.w={} s={s}", rect.w);
-            // the label block's anchor (`card_row::draw_focused`): the UNSCALED card bottom
-            assert!((rect.h / s - CARD_H).abs() < 0.01,
-                "a press never moves the label: rect.h/s={} (rest {CARD_H})", rect.h / s);
-        }
-        let ring = |press: f32| (g.treatment_scale(3, press) - 1.0) / (RowStyle::HOME.focus_scale - 1.0);
-        assert!(ring(1.0) > 0.99, "a resting focused tile wears the whole shadow and sheen");
-        assert!(ring(0.918) < 0.1,
-            "…and lets go of them under a full press, as Home's does: {}", ring(0.918));
+        // Metadata still pages ahead via LibraryWork::Want. Hidden artwork waits until visible
+        // (`Grid` paints only cards `paint_visible`): repeated warms recycle cold cache slots and
+        // keep idle uploading. The grid also registers the stops of the cards it draws.
+        let p = Self::painter(f);
+        let src = self.source(f.cx);
+        self.grid.draw(f, p, &src);
     }
 }

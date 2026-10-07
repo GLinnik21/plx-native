@@ -183,18 +183,18 @@ fn grid_paint_window_keeps_cards_above_the_centered_tab_track() {
     let y = plx_ui::widgets::TOP_BAR_BOTTOM - plx_ui::consts::CARD_H - 8.0;
     let scroll = layout.row_y(2, 0.0) - y;
     page.pair.detail.set_geometry(layout, scroll, layout, scroll);
-    let rect = page.pair.detail.rect_at(index, false, 1.0);
+    let rect = page.pair.detail.rect_at(&fixture.cx(None), index);
     assert!(rect.y + rect.h > 0.0 && rect.y + rect.h < plx_ui::widgets::TOP_BAR_BOTTOM);
-    let (lo, hi) = page.pair.detail.visible_window();
-    assert!((lo..hi).contains(&index), "the real paint iterator must include this visible card");
+    let window = page.pair.detail.window();
+    assert!(window.contains(&index), "the real paint iterator must include this visible card");
 
     // The paint iterator conservatively retains overscan rows, but never the entire catalog.
     // Far outside that window, the same card must be excluded on either side of the screen.
     for y in [-2.0 * SCR_H, 2.0 * SCR_H] {
         let scroll = layout.row_y(2, 0.0) - y;
         page.pair.detail.set_geometry(layout, scroll, layout, scroll);
-        let (lo, hi) = page.pair.detail.visible_window();
-        assert!(!(lo..hi).contains(&index), "far-offscreen card at {y} must not enter paint iteration");
+        let window = page.pair.detail.window();
+        assert!(!window.contains(&index), "far-offscreen card at {y} must not enter paint iteration");
     }
 }
 

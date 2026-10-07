@@ -77,6 +77,11 @@ pub trait CardSource<H: Host> {
     /// Anything drawn on EVERY card after its body (a persistent poster label, a cast name).
     /// `tile` is where the card was drawn, press and pop included.
     fn overlay(&self, _p: Painter, _i: usize, _tile: &Tile, _measure: &dyn Measure) {}
+    /// Whether card `i`'s content is present to paint. A card that is not (a slot of a paged
+    /// listing whose page has not landed) is skipped by `draw`; its stop still registers.
+    fn loaded(&self, _i: usize) -> bool {
+        true
+    }
     /// Whether a hold on card `i` is a [`CardEvent::Hold`].
     fn holdable(&self, _i: usize) -> bool {
         true

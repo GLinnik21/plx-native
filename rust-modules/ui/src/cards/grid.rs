@@ -26,7 +26,7 @@ use crate::{Painter, Rect, Spring};
 pub enum ScrollMode {
     /// The grid springs its own scroll toward the row it snaps to (the Collection page).
     Own,
-    /// The grid sits in a document whose page scroll another owner drives (the Library, a later
+    /// The grid sits in a document whose page scroll another owner drives (the Library's All grid, a later
     /// `Stack`): the grid never steps or snaps a scroll of its own. The owner hands it the page
     /// with [`Grid::set_page`] before every `on` / `draw` / `place` call, reads the scroll the grid
     /// WANTS for its focused row from [`Grid::reveal_target`], and the document shift a content
@@ -180,11 +180,15 @@ impl Grid {
                 // scroll shifts by what its row moved so the tile stays where it was on screen
                 (Seen::Nothing, Some(p)) if p != i => {
                     self.pop.relocate(i);
-                    if let Some(was) = was {
-                        let by = self.cell(i, &self.bands.geometry()).y - was;
-                        match self.spec.scroll {
-                            ScrollMode::Own => self.scroll.pos += by,
-                            ScrollMode::External => self.shift = by,
+                    match self.spec.scroll {
+                        ScrollMode::Own => if let Some(was) = was {
+                            self.scroll.pos += self.cell(i, &self.bands.geometry()).y - was;
+                        },
+                        // The owner may have opened the new row's band before this tick, so `was`
+                        // would be measured under it: the rows' pitch is the shift, bands aside.
+                        ScrollMode::External => {
+                            let rows = (i / self.spec.cols) as f32 - (p / self.spec.cols) as f32;
+                            self.shift = rows * self.spec.geom().pitch();
                         }
                     }
                     self.landed = Some(Landed { from: p, to: i });
@@ -247,6 +251,42 @@ impl Grid {
         }
     }
 
+    /// A grid whose column count, card style or left edge changes at run time (the Library's
+    /// episode listing is four stills across where its posters are six; both fit the same band).
+    /// Only the geometry changes: the pop and the caption bands are per position and carry over.
+    pub fn set_columns(&mut self, cols: usize, style: RowStyle, left: f32) {
+        self.spec.cols = cols;
+        self.spec.style = style;
+        self.spec.left = left;
+    }
+
+    /// Open `row`'s caption band at once, settled (and close the rest), for an owner that sizes
+    /// its document from the bands before the next tick would (a restored page's first layout).
+    /// A no-op when `row` is already the focused row, so it never cuts short a band `on` is
+    /// animating.
+    pub fn settle_band(&mut self, row: Option<usize>) {
+        self.bands.focus(row, false);
+    }
+
+    /// Forget the focus pop's cell and any pending move: a fresh content set whose old indexes mean
+    /// nothing, so the next tick adopts the focused element whole instead of reading it as the
+    /// same element landing at a new index. For an owner that was not ticking while its content
+    /// was replaced (a covered page).
+    pub fn forget_pop(&mut self) {
+        self.pop = GridPop::new();
+        self.seen = Seen::Nothing;
+    }
+
+    /// The caption bands closed and settled: a fresh content set whose old rows mean nothing.
+    pub fn reset_bands(&mut self) {
+        self.bands = GridBands::new();
+    }
+
+    /// The cards the scroll can show out of `len`: what `draw` and `record_stops` touch.
+    pub fn window(&self, len: usize) -> std::ops::Range<usize> {
+        poster_grid::visible_in(&self.spec.geom(), len, self.spec.top, self.scroll.pos)
+    }
+
     /// The caption-band geometry (the owner's page layout reads the document height from it).
     pub fn band_geometry(&self) -> [GridBand; poster_grid::MAX_GRID_BANDS] {
         self.bands.geometry()
@@ -292,8 +332,7 @@ impl Grid {
     pub fn draw<H: Host, S: CardSource<H>>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, src: &S) {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let bands = self.bands.geometry();
-        let window = poster_grid::visible_in(&self.spec.geom(), src.len(), self.spec.top, self.scroll.pos);
-        for i in window.clone() {
+        for i in self.window(src.len()) {
             if focus == Some(i) || self.above_edge(i, &bands) {
                 continue;
             }
@@ -312,7 +351,7 @@ impl Grid {
         }
         let focus = super::focused_index(&f.focus, self.entry, src);
         let bands = self.bands.geometry();
-        for i in poster_grid::visible_in(&self.spec.geom(), src.len(), self.spec.top, self.scroll.pos) {
+        for i in self.window(src.len()) {
             let s = super::press_scale(self.pop(i, focus), focus == Some(i), f.cx);
             let cell = super::to_local(p, self.cell(i, &bands));
             f.stop(p, Stop {
@@ -351,6 +390,9 @@ impl Grid {
         focused: bool,
         bands: &[GridBand],
     ) {
+        if !src.loaded(i) {
+            return;
+        }
         let rect = super::to_local(p, self.cell(i, bands)).scaled(s);
         if !card_row::paint_visible(p, rect, s, focused) {
             return;
@@ -416,9 +458,24 @@ impl Grid {
         self.target = scroll;
     }
 
+    /// The grid's canonical state. In [`ScrollMode::External`] the scroll fields are the owner's
+    /// (it writes its own), so they are left out; an owner that orders its canon differently
+    /// writes [`write_bands`](Self::write_bands) and [`write_pop`](Self::write_pop) itself.
     pub fn write(&self, c: &mut Canon) {
-        c.f32(self.scroll.pos).f32(self.scroll.vel).f32(self.target);
+        if self.spec.scroll == ScrollMode::Own {
+            c.f32(self.scroll.pos).f32(self.scroll.vel).f32(self.target);
+        }
+        self.write_bands(c);
+        self.write_pop(c);
+    }
+
+    /// The caption bands' canonical state.
+    pub fn write_bands(&self, c: &mut Canon) {
         self.bands.write(c);
+    }
+
+    /// The focus pop's and let-go's canonical state.
+    pub fn write_pop(&self, c: &mut Canon) {
         self.pop.write(c);
     }
 }

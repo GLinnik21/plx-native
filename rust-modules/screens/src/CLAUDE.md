@@ -72,6 +72,13 @@ that mixes async content with a live cursor:
   the page's own seats too, so the page keeps their provenance (`LibraryScreen::placed`). Home already has this shape (the hero seats when its action row
   arrives, while focus is still on the strip); Search seats its field, which never arrives async,
   and Person and Detail keep no self-seat for a landing to strand.
+- **The grid absorbs an index landing, the page shifts its scroll.** The Library's All grid is a
+  `cards::Grid` in `ScrollMode::External`: when the focused element's index changes with no
+  `FocusMoved` (an insert or reorder before it) the grid moves its pop with the element and
+  `Grid::landed_shift()` is the document shift that keeps the tile where it was on screen;
+  `LibraryScreen` adds it to BOTH `scroll` and `scroll_target` on that tick, so the spring has
+  nothing to chase. The publication of the landing (`GridPart::refresh`, staging, commit) stays
+  the Library's.
 - **Derive re-entry position, don't store it.** `Layout::seat_for_scroll` derives the focus seat
   from the restored SCROLL rather than a saved grid index: the server's hubs change subject
   between requests, so a stored shelf index can name a different shelf on return.

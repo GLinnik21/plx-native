@@ -158,6 +158,7 @@ impl Layout {
         self
     }
 
+    #[cfg(test)]
     pub(super) fn row_expansion(&self, row: usize) -> f32 {
         self.grid_bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion)
     }
