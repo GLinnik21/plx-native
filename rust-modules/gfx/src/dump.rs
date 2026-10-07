@@ -27,6 +27,10 @@
 //!
 //! The order within one iteration is: landing takes, then the busy/debt sample, then the draw.
 //!
+//! Which landing sites WAIT for their answer in dump mode, which still do not, and the counter the
+//! driver asserts empty at the end of a run (`Gate::unconverted_takes`) are stated in
+//! `plx_machine::landgate`'s module doc; this module owns only the two gfx constants above.
+//!
 //! **Tests that arm it** hold `plx_base::testlock::serial()`: the switch is process-global, and
 //! every gfx test that reaches a hooked function holds that lock, so nothing leaks between them.
 //!

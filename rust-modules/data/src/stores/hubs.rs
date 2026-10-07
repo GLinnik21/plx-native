@@ -157,6 +157,16 @@ impl HubsStore {
         crate::pms::take_landings(&self.adapter)
     }
 
+    /// Does a worker spawned for this owner still owe a landing? The claim the landing gate's dump
+    /// mode waits on at Home's take; [`crate::pms::owed`] says why it is not `Src::fetching`.
+    pub fn owed(&self) -> bool {
+        crate::pms::owed(&self.adapter)
+    }
+
+    /// Test hook: how many spawned workers still owe a landing.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn owed_for_test(&self) -> u32 { crate::pms::owed_count_for_test(&self.adapter) }
+
     pub fn land_with_directory(
         &mut self,
         result: &HubsResult,

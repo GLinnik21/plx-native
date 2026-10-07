@@ -214,12 +214,41 @@ pub struct PmsAdapter {
     /// process-wide) is enough: a still-running old worker captured the RETIRED adapter and can
     /// only ever mint (or land) into it, never into the one a reset rotated in.
     next_request: AtomicU32,
+    /// Workers spawned through [`spawn_fetch`] whose landing [`take_landings`] has not yet taken:
+    /// `+1` on the main thread before the worker exists, `-1` when the OS refuses the spawn, `-n`
+    /// when a take moves `n` landings out. It is the claim dump mode's `take_all_owed` waits on
+    /// ([`owed`]), and it has to live here rather than on [`Src::fetching`], which clears when a
+    /// landing is APPLIED, after the take that delivered it. Every admitted worker answers exactly
+    /// once (a panicking fetch posts a failure), so it reaches zero. A request handed to a
+    /// launcher that does not call [`spawn_fetch`] (a replay) is never counted. It lives on the
+    /// adapter, so a reset's rotation retires the old count with the old mailbox.
+    owed: AtomicU32,
+    /// Test only: how many times [`take_landings`] has finished, so a fake worker can post only
+    /// AFTER a take has found its mailbox empty.
+    #[cfg(any(test, feature = "test-support"))]
+    takes: AtomicU32,
 }
 
 impl Default for PmsAdapter {
     fn default() -> Self {
-        Self { results: Mutex::new(Vec::new()), next_request: AtomicU32::new(1) }
+        Self {
+            results: Mutex::new(Vec::new()),
+            next_request: AtomicU32::new(1),
+            owed: AtomicU32::new(0),
+            #[cfg(any(test, feature = "test-support"))]
+            takes: AtomicU32::new(0),
+        }
     }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn owed_count_for_test(adapter: &PmsAdapter) -> u32 { adapter.owed.load(Ordering::SeqCst) }
+
+/// Is a worker spawned through [`spawn_fetch`] still owing this adapter a landing? Read by the
+/// landing gate's dump mode, which waits for the answer a request it issued owes
+/// (`plx_machine::landgate::Gate::take_all_owed`).
+pub fn owed(adapter: &PmsAdapter) -> bool {
+    adapter.owed.load(Ordering::SeqCst) > 0
 }
 
 fn published_home(state: &PmsState) -> &Arc<HomeCatalog> {
@@ -1695,16 +1724,69 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, launch: impl FnOnce(Hu
 
 /// The live worker adapter. Replay must replace this operation, not skip `begin_request` and
 /// thereby leave its recorded result with no matching in-flight state.
+///
+/// The claim ([`owed`]) is raised here, on the calling (main) thread, before the worker exists, and
+/// dropped again if the OS refuses the spawn: a launcher that does not come through here never
+/// raises it.
 pub fn spawn_fetch(adapter: &Arc<PmsAdapter>, request: HubRequest) -> bool {
+    // A test's refusal stands in for the OS refusing the thread, so it is taken AFTER the claim is
+    // raised and must give it back, exactly as the real refusal does.
     #[cfg(any(test, feature = "test-support"))]
-    if REFUSE_FETCH_FOR_TEST.with(|flag| flag.get()) { return false; }
+    let refused = REFUSE_FETCH_FOR_TEST.with(|flag| flag.get());
+    #[cfg(not(any(test, feature = "test-support")))]
+    let refused = false;
+    #[cfg(any(test, feature = "test-support"))]
+    let late = LATE_FETCH_FOR_TEST.with(|late| late.get())
+        .map(|(extra, items)| (extra, items, adapter.takes.load(Ordering::SeqCst)));
     let worker_adapter = Arc::clone(adapter);
-    plx_base::task::spawn_small("hubs", move || {
+    adapter.owed.fetch_add(1, Ordering::SeqCst);
+    let spawned = !refused && plx_base::task::spawn_small("hubs", move || {
         let (client, sid) = (request.client.resource, request.sid);
+        #[cfg(any(test, feature = "test-support"))]
+        let build = match late {
+            Some((extra, items, takes_at_spawn)) =>
+                late_build_for_test(&worker_adapter, takes_at_spawn, extra, items),
+            None => catch_unwind(move || fetch_source(client, sid)).ok().flatten(),
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
         let build = catch_unwind(move || fetch_source(client, sid)).ok().flatten();
         // Outside the panic guard: every admitted worker answers, including a panicking fetch.
         worker_adapter.results.lock().unwrap_or_else(|e| e.into_inner()).push(request.complete(build));
-    })
+    });
+    if !spawned {
+        adapter.owed.fetch_sub(1, Ordering::SeqCst);
+    }
+    spawned
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static LATE_FETCH_FOR_TEST: std::cell::Cell<Option<(u32, usize)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Replace only the network fetch of every [`spawn_fetch`] this test thread makes inside `f` with
+/// a worker that answers with `items` movies LATE: it posts only after the adapter's mailbox has
+/// been taken at least once since the spawn (so a take that does not wait finds it empty, every
+/// time), then yields `extra` more times so its post lands at a varying point of the poll loop of
+/// a take that does. Both waits are counts, never clocks, and bounded.
+#[cfg(any(test, feature = "test-support"))]
+pub fn with_late_fetches_for_test<R>(extra: u32, items: usize, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<(u32, usize)>);
+    impl Drop for Restore {
+        fn drop(&mut self) { LATE_FETCH_FOR_TEST.with(|late| late.set(self.0)); }
+    }
+    let _restore = Restore(LATE_FETCH_FOR_TEST.with(|late| late.replace(Some((extra, items)))));
+    f()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn late_build_for_test(adapter: &PmsAdapter, takes_at_spawn: u32, extra: u32, items: usize) -> Option<SourceBuild> {
+    for _ in 0..50_000_000u64 {
+        if adapter.takes.load(Ordering::SeqCst) > takes_at_spawn { break; }
+        std::thread::yield_now();
+    }
+    for _ in 0..extra { std::thread::yield_now(); }
+    Some(build_test(items))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1749,8 +1831,17 @@ fn request_retry(state: &mut PmsState, adapter: &Arc<PmsAdapter>) -> crate::stor
 }
 
 /// Move the worker mailbox into one owned batch. No source or catalog state changes here.
+///
+/// Releases the claim ([`owed`]) for every landing it moves out, in the same call: dump mode's
+/// `take_all_owed` reads the claim after each take. Saturating, because a test can queue a
+/// landing straight into the mailbox without a spawn.
 pub fn take_landings(adapter: &PmsAdapter) -> Vec<Landing> {
-    std::mem::take(&mut *adapter.results.lock().unwrap_or_else(|e| e.into_inner()))
+    let taken = std::mem::take(&mut *adapter.results.lock().unwrap_or_else(|e| e.into_inner()));
+    let n = u32::try_from(taken.len()).unwrap_or(u32::MAX);
+    let _ = adapter.owed.try_update(Ordering::SeqCst, Ordering::SeqCst, |owed| Some(owed.saturating_sub(n)));
+    #[cfg(any(test, feature = "test-support"))]
+    adapter.takes.fetch_add(1, Ordering::SeqCst);
+    taken
 }
 
 /// Apply one explicitly supplied batch through the live landing rules — land finished fetches,
@@ -2321,6 +2412,10 @@ mod hero_pool_tests;
 #[cfg(test)]
 #[path = "pms_multi_source_merge_tests.rs"]
 mod multi_source_merge_tests;
+
+#[cfg(test)]
+#[path = "pms_owed_tests.rs"]
+mod owed_tests;
 
 /// The library's tile abstraction (restructure spec §10) over a catalog row: the one place a
 /// `PmsMovie` becomes a `Tile`, so a widget that draws a tile asks the trait and never this type.

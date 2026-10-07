@@ -108,8 +108,8 @@ impl Initial {
             catalog_gen: self.catalog_generation,
         };
         let adapter = super::PmsAdapter {
-            results: Mutex::new(Vec::new()),
             next_request: AtomicU32::new(self.next_request),
+            ..Default::default()
         };
         Ok((state, adapter))
     }
