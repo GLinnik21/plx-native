@@ -98,7 +98,6 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         trailer_ctl: super::trailer::Transport::IDLE,
         restore_intent: None,
         teardown_cleared: false,
-        slot: SlotWatch::default(),
         refresh: DetailRefreshPhase::None,
         refresh_gen: 0,
         scroll: Spring::at(0.0),

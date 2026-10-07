@@ -185,9 +185,6 @@ pub struct DetailScreen {
     /// (`screens/person.rs`'s `PersonCmd::Close` has the identical un-latched shape; reported
     /// separately rather than fixed here.)
     teardown_cleared: bool,
-    /// Whether this page is the live top and has already re-asked for an item it found missing
-    /// from the shared Metadata slot — see [`SlotWatch`]. Not hashed: bookkeeping, not shape.
-    slot: SlotWatch,
 
     // Render state.
     scroll: Spring,
@@ -409,7 +406,6 @@ impl DetailScreen {
             refresh_gen: 0,
             restore_intent: None,
             teardown_cleared: false,
-            slot: SlotWatch::default(),
             scroll: Spring::at(0.0),
             scroll_target: 0.0,
             episode_scroll: Spring::at(0.0),
@@ -1646,26 +1642,6 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
     }
 }
 
-/// The Metadata store holds ONE detail for every Detail page that exists, so a page is only
-/// guaranteed its own item while nothing else has been loaded since it asked. Two pages are alive
-/// at once whenever a surface (the *Also available* copy on another server) sits over a page, and
-/// the surface's own load can land in the slot after the page under it was uncovered; the
-/// surface's teardown, which arrives only once its close fade settles, then empties the slot.
-/// Nothing the page did was wrong and nothing it holds can tell it: its identity-filtered view is
-/// simply empty, with no request outstanding, and `Enter` (the only other place it asks) has
-/// already passed. A page that is the live top, shows nothing and awaits nothing therefore asks
-/// once for its own item. The latch makes that ONE ask per empty spell: it re-arms only when the
-/// item has loaded (or the page is entered again), so a request that something else keeps
-/// superseding cannot turn this into a loop, and a load that failed (`Some(false)`: the request
-/// settled, so it is not "awaiting nothing") is never retried.
-#[derive(Clone, Copy, Default)]
-struct SlotWatch {
-    /// Entered and not since covered or torn down: this page, and no other, owns the slot.
-    live: bool,
-    /// The one re-ask of this empty spell has been sent.
-    asked: bool,
-}
-
 impl DetailScreen {
     fn valid(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>) -> bool {
         let d = self.detail(meta);
@@ -1715,12 +1691,10 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                self.reclaim_slot(meta, fx);
                 self.tick(*t, cx, fx);
                 Handled::Yes
             }
             ScreenEvent::Enter(kind) => {
-                self.slot = SlotWatch { live: true, asked: false };
                 let refresh = self.refresh;
                 let request_status = meta.detail_request_status(self.sid, &self.rk);
                 // Deferred is newer than every request that could already occupy this address:
@@ -1964,12 +1938,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 self.content(fx, ContentReq::Present(arg.clone()));
                 Handled::Yes
             }
-            ScreenEvent::Cover | ScreenEvent::WillLeave(Leave::Deeper) => {
-                self.slot.live = false;
-                Handled::No
-            }
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
-                self.slot = SlotWatch::default();
                 self.pending_season = None;
                 self.season_settle = 0.0;
                 self.preview_dwell = 0.0;
@@ -2037,34 +2006,6 @@ impl DetailScreen {
             }),
         )));
         self.refresh = DetailRefreshPhase::Requested;
-    }
-
-    /// See [`SlotWatch`]. Reads only: the request goes out as an effect like every other ask this
-    /// page makes. Leaves a page that owes a server reconciliation to that machinery
-    /// (`Enter`/`pump_restore`), which already re-asks on its own phase.
-    fn reclaim_slot<H: crate::registry::MetadataLike>(
-        &mut self,
-        meta: plx_data::metadata::MetadataView<'_>,
-        fx: &mut Effects<'_, H>,
-    ) {
-        if !self.slot.live {
-            return;
-        }
-        if self.detail(meta).is_some() {
-            self.slot.asked = false;
-            return;
-        }
-        if self.slot.asked
-            || self.refresh != DetailRefreshPhase::None
-            || meta.detail_request_status(self.sid, &self.rk).is_some()
-        {
-            return;
-        }
-        self.slot.asked = true;
-        fx.push(Fx::App(AppFx::Store(
-            StoreId::Metadata,
-            StoreCmd::Metadata(MetadataCmd::RequestDetail { sid: self.sid, rk: self.rk.clone() }),
-        )));
     }
 
     fn restore_target_matches(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>) -> bool {
