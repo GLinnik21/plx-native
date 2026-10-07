@@ -239,7 +239,9 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// **Repaint the focused element above a modal dim** — the item-menu opener lift, asked of
     /// whichever page hosts the menu. `focus` is the engine key the surface was opened from, passed
     /// explicitly so the page never keeps a cursor of its own. A page with no card to lift draws
-    /// nothing, which is the default.
+    /// nothing, which is the default. The host calls it only while `focus` is still what the page
+    /// has focused (`app::bridge::opener_lift`), so an implementer may draw `focus` as focused
+    /// without checking that the page has not moved on.
     fn redraw_focused(&self, _f: &mut DrawFrame<'_, '_, H>, _focus: Option<FocusKey<H::Elem>>) {}
     /// Typed application inspection during migration; the library never names a screen type.
     fn as_any(&self) -> Option<&dyn std::any::Any> {

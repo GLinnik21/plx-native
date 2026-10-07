@@ -965,9 +965,11 @@ impl Bridge {
     /// that the card stays visible behind it. The dim is the CONTAINER's now (`Screen::scrim`), so
     /// what is left here is the half only the page that drew the element can answer — a `fn()` lift
     /// has nothing to borrow a `&Dispatcher` through.
+    ///
+    /// Whether it runs at all is [`opener_lift`]'s answer, made once for every page: it stands down
+    /// once the menu is dismissed and focus has moved off the opener element.
     pub(crate) fn redraw_opener(&self, d: &Dispatcher<AppHost>) {
-        let Some((entry, focus)) = item_menu(d).map(|menu| menu.opener()) else { return };
-        if d.nav.top_page().map(|e| e.id) != Some(entry) { return; }
+        let Some((entry, focus)) = opener_lift(d) else { return };
         let Some(screen) = d.nav.entry(entry).and_then(|e| e.inst.as_ref()).map(|i| &i.screen) else { return };
         // The page pass may be submitting a cached host quad. Opener lifts are live paint
         // above that quad, like Popover::scrim_lifting's legacy callback scope.
@@ -2410,6 +2412,29 @@ fn strip_menu_arg(
 /// lift draws one card, not the page's hold hint).
 pub(crate) fn opener_press(d: &Dispatcher<AppHost>) -> plx_machine::machine::PressRead {
     plx_machine::machine::PressRead { scale: d.input.press.scale(), is_long: false, held_ms: None }
+}
+
+/// **Which element, if any, the opener lift repaints this frame** — the ONE decision every page
+/// inherits, so no screen's `redraw_focused` has to defend against a stale key.
+///
+/// The lift is the opener tile drawn again above the dim, *because it is the focused one*. That
+/// stops being true the moment the menu is dismissed: `ModalStack::dismiss` hands input back to the
+/// page on the same frame, but the surface stays in the stack until its fade settles, so a D-pad
+/// press during the fade moves the page's focus to a neighbour while this lift would still paint
+/// the OLD tile fully popped and captioned (two tiles look focused at once; the new one's pop
+/// reads late). So while the surface is `Closing`, the lift is painted only if the engine's focus
+/// on the host page is still the opener element (or there is none to compare); once focus has
+/// moved, the page draws the tiles itself and the lift stands down. While the menu is open the
+/// engine's focus is on the menu's own rows, so the lift always paints then.
+pub(crate) fn opener_lift(d: &Dispatcher<AppHost>) -> Option<(EntryId, Option<FocusKey<u32>>)> {
+    let surface = d.nav.modals.surfaces.iter().find(|s| matches!(s.entry.arg, AppArg::ItemMenu(_)))?;
+    let (entry, opener) = item_menu(d)?.opener();
+    if d.nav.top_page().map(|e| e.id) != Some(entry) { return None; }
+    if surface.phase == Phase::Closing {
+        let live = d.focus().filter(|k| k.entry == entry);
+        if live.is_some() && live != opener { return None; }
+    }
+    Some((entry, opener))
 }
 
 /// **The context the opener lift draws with**: the page's own pieces for `entry`'s focused element,
