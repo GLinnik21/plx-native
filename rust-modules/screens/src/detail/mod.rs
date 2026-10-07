@@ -6,6 +6,7 @@
 //! (springs, metrics and caches). User input cancels restoration, never the reconciliation owed.
 
 mod about;
+mod cards;
 mod cast;
 mod collection;
 mod episodes;
@@ -32,6 +33,7 @@ use plx_data::stores::metadata::MetadataCmd;
 use plx_data::stores::viewstate::ViewStateCmd;
 use plx_data::stores::{StoreCmd, StoreId};
 use plx_ui::card_row::{self, CardRow, RowStyle};
+use plx_ui::cards::{SectionFrame, Shelf};
 use plx_ui::frame::Budget;
 use plx_ui::hero_logo::{HeroLogo, LogoRung};
 use plx_ui::label::HAlign;
@@ -209,7 +211,7 @@ pub struct DetailScreen {
     /// The About card's and the Languages column's focus lifts (`Located::About(0)` / `(1)`).
     about_card_lift: TextLift,
     about_lang_lift: TextLift,
-    related: CardRow,
+    related: Shelf,
     collection: CardRow,
     extras: CardRow,
     cast: CardRow,
@@ -426,7 +428,7 @@ impl DetailScreen {
             episode_text_lift: [TextLift::new(); EP_SCALE_MAX],
             about_card_lift: TextLift::new(),
             about_lang_lift: TextLift::new(),
-            related: CardRow::new(),
+            related: Shelf::new(entry, cards::Which::Related.style()),
             collection: CardRow::new(),
             extras: CardRow::new(),
             cast: CardRow::new(),
@@ -684,15 +686,12 @@ impl DetailScreen {
                 f.measure,
                 meta,
             ),
-            Some(Located::Related(i)) => related::draw_focused(
-
+            Some(Located::Related(_)) => self.related.redraw_focused(
+                f,
                 f.painter,
-                d,
-                &self.related,
-                i,
-                self.section_top(3, d, measure) - self.scroll.pos,
-                f.press.dip(),
-                f.measure,
+                &self.cards(cards::Which::Related, d),
+                SectionFrame { y: self.section_top(3, d, measure) - self.scroll.pos + related::LABEL_H, clip: Rect::FULL },
+                focus,
             ),
             Some(Located::Extras(i)) => extras::draw_focused(
                 f.painter,
@@ -714,6 +713,22 @@ impl DetailScreen {
             ),
             _ => {}
         }
+    }
+
+    /// Shelf `which`'s cards over the published item `d` and the page's key projections.
+    fn cards<'a>(&'a self, which: cards::Which, d: &'a Detail) -> cards::Cards<'a> {
+        Self::cards_of(&self.key_by_local, &self.local_by_key, which, d)
+    }
+
+    /// [`cards`](Self::cards) without borrowing the whole screen, for a call that also borrows a
+    /// shelf mutably.
+    fn cards_of<'a>(
+        key_by_local: &'a std::collections::HashMap<u32, u32>,
+        local_by_key: &'a std::collections::HashMap<u32, u32>,
+        which: cards::Which,
+        d: &'a Detail,
+    ) -> cards::Cards<'a> {
+        cards::Cards::new(which, d, key_by_local, local_by_key)
     }
 
     fn detail<'a>(&self, meta: plx_data::metadata::MetadataView<'a>) -> Option<&'a Detail> {
@@ -808,13 +823,13 @@ impl DetailScreen {
     fn band_open(&self, section: i32) -> f32 {
         // Cast is deliberately absent: it prints a name under every headshot, so its band is
         // occupied whether or not it holds focus (`cast::block_h`).
-        let row = match section {
-            3 => &self.related,
-            6 => &self.extras,
-            7 => &self.collection,
+        let expand = match section {
+            3 => self.related.band_expand(),
+            6 => self.extras.band_expand(),
+            7 => self.collection.band_expand(),
             _ => return 0.0,
         };
-        card_row::BAND_OPEN * row.band_expand().clamp(0.0, 1.0)
+        card_row::BAND_OPEN * expand.clamp(0.0, 1.0)
     }
 
     /// Sum of [`DetailScreen::band_open`] over every section that flows ABOVE `section` — the whole
@@ -1313,10 +1328,9 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                 Dir::Up if row == episodes::Row::Text => episodes::elem(i, episodes::Row::Still),
                 _ => None,
             },
-            Located::Related(i) => {
-                row_move(i, self.detail(meta).map(|d| d.related.len()).unwrap_or(0), dir)
-                    .and_then(related::elem)
-            }
+            Located::Related(_) => return self.detail(meta).map_or(Step::Edge, |d| {
+                self.related.neighbour::<H, _>(&self.cards(cards::Which::Related, d), key, dir)
+            }),
             Located::Extras(i) => {
                 row_move(i, self.detail(meta).map(extras::len).unwrap_or(0), dir)
                     .and_then(extras::elem)
@@ -1413,13 +1427,11 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                 };
                 (drawn, rest, Some(i as u32))
             }
-            Located::Related(i) => {
-                let top = self.section_top_at(3, d?, measure, at) - vertical;
-                (
-                    related::rect(&self.related, i, top, at == At::Drawn),
-                    related::rect(&self.related, i, top, false),
-                    Some(i as u32),
-                )
+            Located::Related(_) => {
+                let d = d?;
+                let top = self.section_top_at(3, d, measure, at) - vertical;
+                let frame = SectionFrame { y: top + related::LABEL_H, clip: Rect::FULL };
+                return self.related.place(cx, &self.cards(cards::Which::Related, d), key, frame, at);
             }
             Located::Extras(i) => {
                 let top = self.section_top_at(6, d?, measure, at) - vertical;
@@ -1605,17 +1617,10 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
             ))
             .unwrap_or(extras::EXTRAS_ELEM_RANGE_START)
         } else if group == related::RELATED_GROUP {
-            let n = d.map(|d| d.related.len()).unwrap_or(0).min(512);
-            related::elem(card_row::column_near_x(
-                from.rect.cx(),
-                plx_ui::consts::MARGIN_X,
-                RowStyle::HOME.w + RowStyle::HOME.gap,
-                RowStyle::HOME.w,
-                self.related.scroll_x(),
-                n,
-                from_i,
-            ))
-            .unwrap_or(related::RELATED_ELEM_RANGE_START)
+            match d.and_then(|d| self.related.seat::<H, _>(&self.cards(cards::Which::Related, d), from)) {
+                Some(key) => return key,
+                None => related::RELATED_ELEM_RANGE_START,
+            }
         } else if group == collection::HEADING_GROUP {
             collection::HEADING_ELEM
         } else if group == collection::COLLECTION_GROUP {
@@ -1693,6 +1698,12 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         let meta = H::metadata(cx);
+        // The cards component's one entry: every event reaches every shelf it owns (its pop,
+        // scroll and let-go ride the Tick, its placement the FocusMoved). What a card DOES stays
+        // in `activate` below.
+        if let Some(d) = self.detail(meta) {
+            self.related.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Related, d), fx);
+        }
         match ev {
             ScreenEvent::Mount => {
                 self.sync_keys(meta);
@@ -2166,18 +2177,15 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                         f.press.dip(),
                         f.measure,
                     ),
-                    3 => related::draw(
-                        below_hero,
-                        d,
-                        &self.related,
-                        top,
-                        match focus {
-                            Some(Located::Related(i)) => Some(i),
-                            _ => None,
-                        },
-                        f.press.dip(),
-                        f.measure,
-                    ),
+                    3 => {
+                        related::draw_heading(below_hero, top, self.related.heading_lift());
+                        self.related.draw(
+                            f,
+                            below_hero,
+                            &self.cards(cards::Which::Related, d),
+                            SectionFrame { y: top + related::LABEL_H, clip: Rect::FULL },
+                        );
+                    }
                     4 => cast::draw(
                         below_hero,
                         d,
@@ -2746,10 +2754,6 @@ impl DetailScreen {
                 elems.push((collection::HEADING_ELEM, Activate::Direct));
             }
             elems.extend(
-                (0..d.related.len().min(512))
-                    .filter_map(|i| related::elem(i).map(|e| (e, Activate::Press))),
-            );
-            elems.extend(
                 (0..d.credits_len().min(512))
                     .filter_map(|i| cast::elem(i).map(|e| (e, Activate::Press))),
             );
@@ -3232,12 +3236,6 @@ impl DetailScreen {
         self.about_lang_lift.step(focused == Some(Located::About(1)), dt);
 
         if let Some(d) = d {
-            let related_focus = match focused {
-                Some(Located::Related(i)) => Some(i),
-                _ => None,
-            };
-            self.related
-                .update(d.related.len(), related_focus, &RowStyle::HOME, dt);
             let collection_focus = match focused {
                 Some(Located::Collection(i)) => Some(i),
                 _ => None,

@@ -5963,7 +5963,7 @@ impl PersonOwnerGateFixture {
         # that step's entries: 0 + 42 = 42. Merging main brought main's system toast (#392) and its
         # two callers: 42 + 2 = 44. Step L15 moved all 44 behind the `tv` interfaces and the port:
         # 44 - 44 = 0.
-        "cards-conformance.txt": 6,  # card-screen Tier 2 expected failures (PR 0, 2026-10-07; Home and Detail added; Collection adopted Grid, PR 2b); only shrinks
+        "cards-conformance.txt": 3,  # card-screen Tier 2 expected failures (PR 0, 2026-10-07; Home and Detail added; Collection adopted Grid, PR 2b); only shrinks
         "cards.txt": 9,  # screens still assembling card sections from the L0 primitives (2026-10-07); only shrinks
         "blocking.txt": 2,  # frame-thread allow_blocking sites, 2026-10-06; only shrinks
         "layers.txt": 0,

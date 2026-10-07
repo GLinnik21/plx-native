@@ -71,16 +71,8 @@ pub fn block_h(band: f32) -> f32 {
     LABEL_H + RowStyle::HOME.h + card_row::under_band(band)
 }
 
-pub fn draw(
-    p: Painter,
-    d: &Detail,
-    row: &CardRow,
-    top: f32,
-    focused: Option<usize>,
-    press: f32,
-    measure: &dyn plx_machine::machine::Measure,
-) {
-    let lift = row.lift();
+/// The shelf's heading, `lift` being the row's live label lift (`Shelf::heading_lift`).
+pub fn draw_heading(p: Painter, top: f32, lift: f32) {
     p.text(
         plx_platform::i18n::msg::browse_detail_related_c().as_ptr(),
         plx_ui::consts::MARGIN_X,
@@ -90,7 +82,6 @@ pub fn draw(
         0,
         1,
     );
-    draw_strip(p, &d.related, row, top, focused, press, measure);
 }
 
 /// A Detail poster shelf's cards under its heading — Related's, and the collection shelf's
@@ -121,18 +112,6 @@ pub fn draw_strip(
         |_, _, _, _| {},
         measure,
     );
-}
-
-pub fn draw_focused(
-    p: Painter,
-    d: &Detail,
-    row: &CardRow,
-    index: usize,
-    top: f32,
-    press: f32,
-    measure: &dyn plx_machine::machine::Measure,
-) {
-    draw_focused_in(p, &d.related, row, index, top, press, measure);
 }
 
 /// The focused card of a strip drawn by [`draw_strip`], last so its glow sits over its neighbours.
@@ -178,30 +157,6 @@ mod tests {
     fn every_related_key_round_trips() {
         for i in 0..512 {
             assert_eq!(locate(elem(i).unwrap()), Some(i));
-        }
-    }
-
-    #[test]
-    fn the_related_menus_anchor_is_the_tile_the_shelf_drew() {
-        let mut row = CardRow::new();
-        for _ in 0..120 {
-            row.update(12, Some(11), &RowStyle::HOME, 1.0 / 60.0);
-        }
-        for i in 0..12 {
-            let expected = card_row::tile_rect(
-                i,
-                plx_ui::consts::MARGIN_X,
-                RowStyle::HOME.w + RowStyle::HOME.gap,
-                row.scroll_x(),
-                200.0 + LABEL_H,
-                (RowStyle::HOME.w, RowStyle::HOME.h),
-            )
-            .scaled(row.scale(i));
-            let actual = rect(&row, i, 200.0, true);
-            assert_eq!(
-                (actual.x, actual.y, actual.w, actual.h),
-                (expected.x, expected.y, expected.w, expected.h)
-            );
         }
     }
 }

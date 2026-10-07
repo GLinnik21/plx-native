@@ -127,7 +127,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         episode_text_lift: [plx_ui::text_lift::TextLift::new(); EP_SCALE_MAX],
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
-        related: CardRow::new(),
+        related: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::HOME),
         collection: CardRow::new(),
         extras: CardRow::new(),
         cast: CardRow::new(),

@@ -365,6 +365,12 @@ impl Shelf {
         self.row.under_band()
     }
 
+    /// The live label-band expansion, 0 collapsed to 1 focused: what a screen that lays its column
+    /// out from the band's TRAVEL (`card_row::BAND_OPEN` times this) reads.
+    pub fn band_expand(&self) -> f32 {
+        self.row.band_expand()
+    }
+
     pub fn write(&self, c: &mut Canon) {
         self.row.write_motion(c);
     }

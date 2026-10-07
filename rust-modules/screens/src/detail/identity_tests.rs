@@ -79,7 +79,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         episode_text_lift: [plx_ui::text_lift::TextLift::new(); EP_SCALE_MAX],
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
-        related: CardRow::new(), collection: CardRow::new(),
+        related: plx_ui::cards::Shelf::new(entry, &plx_ui::card_row::RowStyle::HOME), collection: CardRow::new(),
         extras: CardRow::new(),
         cast: CardRow::new(), tabs: TabStrip::new(), season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(), disc_unfurl: [Spring::at(0.0); 3],

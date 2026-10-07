@@ -114,23 +114,26 @@ impl CardHarness for Harness {
     fn place(&self, elem: u32, at: At) -> Option<Placed> {
         Focusable::<TestHost>::place(&self.screen, &elem, &self.cx(), at)
     }
-    /// What `related::draw_focused_in` paints: the tile at the live pop times the live press
-    /// (`row.scale(index) * press`), under the section's drawn top.
+    /// What the shelf paints: the tile at the live pop times the live press, under the section's
+    /// drawn top.
     fn drawn_rect(&self, elem: u32, press: f32) -> Option<Rect> {
         let i = self.at(elem)?;
         let focused = self.focus.map(|k| k.elem) == Some(elem);
-        let row = &self.screen.related;
         let base = card_row::tile_rect(
             i,
             plx_ui::consts::MARGIN_X,
             RowStyle::HOME.w + RowStyle::HOME.gap,
-            row.scroll_x(),
+            self.screen.related.scroll(),
             self.top(At::Drawn) + related::LABEL_H,
             (RowStyle::HOME.w, RowStyle::HOME.h),
         );
-        Some(base.scaled(row.scale(i) * if focused && press > 0.0 { press } else { 1.0 }))
+        Some(base.scaled(self.scale(elem)? * if focused && press > 0.0 { press } else { 1.0 }))
     }
-    fn scale(&self, elem: u32) -> Option<f32> { Some(self.screen.related.scale(self.at(elem)?)) }
+    fn scale(&self, elem: u32) -> Option<f32> {
+        let meta = test_store().view();
+        let src = self.screen.cards(cards::Which::Related, self.screen.detail(meta)?);
+        self.screen.related.scale_of(&self.cx(), &src, &elem)
+    }
     fn focus_scale(&self) -> f32 { RowStyle::HOME.focus_scale }
     fn canon(&self) -> u64 {
         let mut c = Canon::new();
@@ -140,7 +143,7 @@ impl CardHarness for Harness {
     fn identity(&self, elem: u32) -> String {
         self.at(elem).map(|i| self.rks[i].clone()).unwrap_or_default()
     }
-    fn scroll(&self) -> Option<f32> { Some(self.screen.related.scroll_x()) }
+    fn scroll(&self) -> Option<f32> { Some(self.screen.related.scroll()) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         let want = self.focus.ok_or("nothing focused")?;
         let at = self.at(want.elem).ok_or("the focused card is not on the Related shelf")?;

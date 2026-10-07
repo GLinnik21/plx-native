@@ -109,7 +109,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         episode_text_lift: [plx_ui::text_lift::TextLift::new(); EP_SCALE_MAX],
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
-        related: CardRow::new(),
+        related: plx_ui::cards::Shelf::new(EntryId(8), &plx_ui::card_row::RowStyle::HOME),
         collection: CardRow::new(),
         extras: CardRow::new(),
         cast: CardRow::new(),
@@ -431,12 +431,12 @@ fn detail_focus_places_and_hit_map_agree_for_all_three_scrolled_strips() {
     }
 
     for focus in [0, 6, 11] {
+        // the Related shelf parks scrolled so its focused card is in view; the cast row is driven
+        screen.related.restore_scroll(focus as f32 * 150.0, 12);
         for _ in 0..180 {
-            screen.related.update(12, Some(focus), &plx_ui::card_row::RowStyle::HOME, 1.0 / 60.0);
             screen.cast.update(12, Some(focus), &plx_ui::card_row::RowStyle::CAST, 1.0 / 60.0);
         }
         for _ in 0..180 {
-            screen.related.update(12, None, &plx_ui::card_row::RowStyle::HOME, 1.0 / 60.0);
             screen.cast.update(12, None, &plx_ui::card_row::RowStyle::CAST, 1.0 / 60.0);
         }
         scroll_to(&mut screen, 3);
