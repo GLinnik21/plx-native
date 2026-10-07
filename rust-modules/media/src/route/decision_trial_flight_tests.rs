@@ -80,8 +80,7 @@ fn an_engineless_rollback_dispatched_inside_a_failed_trial_flies_and_keeps_the_s
     let rebuilt = transcode_session(&ps);
     assert_ne!(rebuilt, trial_encoder);
     assert_eq!(candidate_session(), rebuilt, "the trial's candidate describes the stream the flight installed");
-    drop(rig);
-    cleanup_trial(&mut ps);
+    cleanup_trial(&mut ps, rig);
 }
 
 /// An app-switch suspend (`begin_engine_teardown(true)`) while the flight flies drops it, as it
@@ -119,8 +118,7 @@ fn a_suspend_during_a_recovery_flight_in_a_trial_returns_the_trial_and_keeps_the
     }
     assert!(pending_still_armed());
     assert!(rollback_original_recovery(&mut ps).is_some(), "the trial still rolls back to the retained route");
-    drop(rig);
-    cleanup_trial(&mut ps);
+    cleanup_trial(&mut ps, rig);
 }
 
 /// A newer play request during a recovery flight over an Original trial's transaction SUPERSEDES
@@ -156,8 +154,7 @@ fn a_newer_play_request_supersedes_a_recovery_flight_in_a_trial_and_hands_the_tr
     assert_eq!(control_phase_label(), format!("OriginalTrial(Prepared({serial}))"), "the trial gets its transaction back");
     assert!(pending_still_armed());
     assert!(rollback_original_recovery(&mut ps).is_some(), "the trial still rolls back to the retained route");
-    drop(rig);
-    cleanup_trial(&mut ps);
+    cleanup_trial(&mut ps, rig);
 }
 
 /// A refused rebuild leaves the trial as a failed open leaves it, `OriginalTrial(Failed)`, with the
@@ -179,8 +176,7 @@ fn a_refused_recovery_flight_in_a_trial_leaves_it_failed_with_the_snapshot() {
     assert!(pending_still_armed());
     assert!(rollback_original_recovery(&mut ps).is_some(), "the refusal left the rollback available");
     assert_eq!(transcode_session(&ps), "rig-1");
-    drop(rig);
-    cleanup_trial(&mut ps);
+    cleanup_trial(&mut ps, rig);
 }
 
 /// A flight is never started over a trial whose Engine is live and unproven: `AwaitingFrame` has
@@ -195,11 +191,13 @@ fn a_recovery_flight_is_refused_while_the_trial_awaits_its_first_frame() {
     assert!(control_phase_label().starts_with("OriginalTrial(AwaitingFrame("), "refusal must touch nothing");
     assert!(pending_still_armed());
     drop(_frame);
-    drop(rig);
-    cleanup_trial(&mut ps);
+    cleanup_trial(&mut ps, rig);
 }
 
-fn cleanup_trial(ps: &mut PlaybackSession) {
+/// Tear the rig down, then reset the process-global reducer, all under the rig's lock: the reset
+/// advances the route generation, which a later test's flight must never see move under it.
+fn cleanup_trial(ps: &mut PlaybackSession, rig: FlightRig) {
+    let _serial = rig.close();
     drop(take_pending_original());
     drop(take_claim_landing());
     reset_player_control_for_test(idle_session_for_test());

@@ -39,7 +39,8 @@ enum Shape {
 }
 
 pub(crate) struct FlightRig {
-    _serial: plx_base::testlock::Serial,
+    /// `None` only once [`FlightRig::close`] has handed the lock to the test.
+    _serial: Option<plx_base::testlock::Serial>,
     done: std::sync::mpsc::Sender<()>,
     server: Option<std::thread::JoinHandle<()>>,
     log: RequestLog,
@@ -185,7 +186,7 @@ impl FlightRig {
             ps.cur_auto_original_watched = true;
             ps.cur_src = (28_000, 1_920, 1_080);
         }
-        FlightRig { _serial: serial, done, server: Some(server), log, refusals, held, answered }
+        FlightRig { _serial: Some(serial), done, server: Some(server), log, refusals, held, answered }
     }
 
     /// The rung the Auto bootstrap chose for a source that never opens (what the unopened-source
@@ -311,21 +312,40 @@ impl FlightRig {
     }
 }
 
-impl Drop for FlightRig {
-    fn drop(&mut self) {
+impl FlightRig {
+    /// Tear the rig down and hand back the crate-wide lock it held, for a test whose own cleanup
+    /// writes process-global route state (`reset_player_control_for_test` advances the route
+    /// generation). That cleanup has to run after the rig's workers and server are gone AND before
+    /// the lock is released: run after a plain `drop(rig)`, it lands inside the next test's flight
+    /// (already past `fresh_registry`, waiting on its `/decision`) and makes that test's worker
+    /// ticket stale, so its `arm_original_trial` returns `None`.
+    #[must_use = "the lock is released when this is dropped; run the test's cleanup first"]
+    pub(crate) fn close(mut self) -> plx_base::testlock::Serial {
+        self.teardown();
+        self._serial.take().expect("the rig holds the lock until it is closed")
+    }
+
+    /// Everything the drop does but release the lock. Once only: [`FlightRig::close`] runs it and
+    /// then no longer holds the lock, so the drop that follows must not touch the globals again.
+    fn teardown(&mut self) {
+        let Some(server) = self.server.take() else { return };
         self.held.store(false, Ordering::SeqCst);
         // The flight's worker (and any encoder stop it queued) finishes against THIS rig's server
         // before the server goes away and the lock is released.
         plx_base::task::drain_workers_for_test();
         let _ = self.done.send(());
-        if let Some(server) = self.server.take() {
-            let _ = server.join();
-        }
+        let _ = server.join();
         plx_plex::plex::reset_servers_for_test();
         // A landing a failed test left in the mailbox belongs to no later test.
         drop(take_claim_landing());
         crate::player::claim_hold::clear();
         // The HLS and Auto-Original shapes set the quality preference; the lock is still held (fields drop after this).
         restore_quality(Quality::Original);
+    }
+}
+
+impl Drop for FlightRig {
+    fn drop(&mut self) {
+        self.teardown();
     }
 }
