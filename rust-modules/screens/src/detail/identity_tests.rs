@@ -80,7 +80,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: plx_ui::cards::Shelf::new(entry, &plx_ui::card_row::RowStyle::HOME), collection: plx_ui::cards::Shelf::new(entry, &plx_ui::card_row::RowStyle::HOME),
-        extras: CardRow::new(),
+        extras: plx_ui::cards::Shelf::new(entry, &plx_ui::card_row::RowStyle::EPISODE),
         cast: CardRow::new(), tabs: TabStrip::new(), season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(), disc_unfurl: [Spring::at(0.0); 3],
         season_metrics: season::Metrics::new(), about_rows: about::Rows::new(),

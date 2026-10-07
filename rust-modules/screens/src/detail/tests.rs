@@ -129,7 +129,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::HOME),
         collection: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::HOME),
-        extras: CardRow::new(),
+        extras: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::EPISODE),
         cast: CardRow::new(),
         tabs: TabStrip::new(),
         season_pop: CtlPop::new(),
