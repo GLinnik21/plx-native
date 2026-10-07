@@ -195,6 +195,12 @@ impl Shelf {
             (self.style.w, self.style.h))
     }
 
+    /// The settled, unpopped rect of the shelf's first card in SCREEN space: where the strip
+    /// starts, for a screen that registers the shelf's group extent there.
+    pub fn head(&self, at: SectionFrame) -> Rect {
+        self.slot(0, at)
+    }
+
     /// Where `elem` is: the LIVE drawn rect (pop and press folded in) for `At::Drawn`, the settled
     /// one for `At::SpringTarget`; `rest_rect` is the settled focus-scaled rect either way.
     pub fn place<H: Host, S: CardSource<H>>(
