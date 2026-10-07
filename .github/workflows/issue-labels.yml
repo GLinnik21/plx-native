@@ -1,0 +1,86 @@
+name: Issue labels
+
+# Labels issues as they are filed: one kind (bug / enhancement / question), the areas it is about,
+# and `user-report` when the author is not a maintainer. The rules, the fallback and what is never
+# added are in ci/label-issue.py. Labels are only added, never removed.
+#
+# `edited` is handled only for an issue that still has no labels, so retitling an issue does not
+# keep piling labels on, and a label a maintainer removed stays removed.
+#
+# Run by hand to backfill: `issues` takes issue numbers separated by spaces, or `unlabeled` for
+# every open issue that has no labels yet.
+#
+# The issue text is never interpolated into a shell line; the script reads it from the API, and
+# whatever the model answers is filtered down to the repository's own labels before anything is
+# written. The token can write issues and nothing else.
+#
+# A model picks the labels when the repository has a `COPILOT_GITHUB_TOKEN` Actions secret (a
+# fine-grained personal access token with the "Copilot Requests" permission; Copilot Free works) or
+# an `ANTHROPIC_API_KEY` one. Without either the job still runs and labels from keyword rules (one
+# kind, one area, `user-report`).
+
+on:
+  issues:
+    types: [opened, reopened, edited]
+  workflow_dispatch:
+    inputs:
+      issues:
+        description: Issue numbers separated by spaces, or `unlabeled`.
+        required: true
+        type: string
+      dry_run:
+        description: Print the labels that would be added and change nothing.
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: issue-labels-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  label:
+    name: label issues
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HAS_COPILOT: ${{ secrets.COPILOT_GITHUB_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: ci/label-issue.py
+          sparse-checkout-cone-mode: false
+      - name: Install the Copilot CLI
+        if: env.HAS_COPILOT == 'true'
+        run: npm install -g @github/copilot@1.0.92
+      - name: Label
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          ISSUE: ${{ github.event.issue.number }}
+          INPUT_ISSUES: ${{ inputs.issues }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
+            for n in $INPUT_ISSUES; do
+              case "$n" in
+                unlabeled) args+=(--unlabeled) ;;
+                *[!0-9]*|'') echo "not an issue number: $n" >&2; exit 1 ;;
+                *) args+=(--issue "$n") ;;
+              esac
+            done
+          else
+            args+=(--issue "$ISSUE")
+            [ "$ACTION" = "edited" ] && args+=(--only-if-unlabeled)
+          fi
+          python3 ci/label-issue.py "${args[@]}"
