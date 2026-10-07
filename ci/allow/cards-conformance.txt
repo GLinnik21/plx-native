@@ -1,0 +1,9 @@
+# count: 4
+# Card-screen conformance expected failures (shrink-only), one per line, tab-separated:
+#   <screen source file>	<screen> <case>	# <reason>
+# Read by rust-modules/screens/src/cards_conformance_tests.rs: a listed case that now passes, or an
+# unlisted failing case, fails the suite. Shrinks as the shared-card-sections PRs land.
+rust-modules/screens/src/collection.rs	collection geometry	# place() ignores the live press (the stop rect stays at pop scale while the tile draws pressed) and rest_rect is the UNSCALED cell, not the settled focus-scaled rect (Focusable::place)
+rust-modules/screens/src/person.rs	person pop_rule	# a Restore/Reconcile arrival grows from rest (per-position CardRow spring: tick -> shelves[kind].update) instead of being adopted whole
+rust-modules/screens/src/person.rs	person geometry	# place() ignores the live press (the draw multiplies it in, person.rs ~:1111) and rest_rect is the UNSCALED tile rect (OffsetShelf::place)
+rust-modules/screens/src/person.rs	person determinism_idle	# page still reports Motion 180 frames after the pop settles; cause NOT isolated (candidate: facts spinner / loading() under the test seam, or the scroll column) - investigate in PR 4

@@ -23,6 +23,7 @@ use std::os::raw::{c_char, c_int};
 pub mod qr;
 pub mod anim;
 pub mod card_row;
+pub mod cards; // shared card sections (plan: shared-card-sections); PR 0 = the Tier 2 conformance drivers
 pub mod marquee; // the focused run's looping glide: a tile's title and caption (card_row), cast name and role, menu rows (table)
 pub mod card_motion;
 #[cfg(feature = "devtriggers")]

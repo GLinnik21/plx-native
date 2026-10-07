@@ -5929,6 +5929,7 @@ impl PersonOwnerGateFixture {
         # that step's entries: 0 + 42 = 42. Merging main brought main's system toast (#392) and its
         # two callers: 42 + 2 = 44. Step L15 moved all 44 behind the `tv` interfaces and the port:
         # 44 - 44 = 0.
+        "cards-conformance.txt": 4,  # card-screen Tier 2 expected failures (PR 0, 2026-10-07); only shrinks
         "blocking.txt": 2,  # frame-thread allow_blocking sites, 2026-10-06; only shrinks
         "layers.txt": 0,
         "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs
