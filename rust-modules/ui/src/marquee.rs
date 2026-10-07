@@ -2,17 +2,20 @@
 //! its window: a beat of rest so the couch can start reading, a slow glide left, a gap, then the
 //! same run re-entering from the right, forever while it holds focus.
 //!
-//! Two users, one implementation (`ui/src/CLAUDE.md` rule 4): a focused tile's title under its
-//! card (`card_row`, [`TITLE`]) and a focused menu row's label (`table`, [`ROW`]) — a downloaded
-//! subtitle's release name is routinely three times the width of the track menu. They differ only
-//! in the rest beat, and each keeps its OWN [`Clock`], because a popover menu over a shelf draws
-//! both focused runs in one frame and a shared clock would restart on every draw.
+//! Three users, one implementation (`ui/src/CLAUDE.md` rule 4): a focused tile's title under its
+//! card (`card_row`, [`TITLE`]), a focused cast headshot's name and role (the detail page's cast
+//! shelf, [`TITLE`], through [`Marquee::glide`] like the title), and a focused menu row's label
+//! (`table`, [`ROW`]) — a downloaded subtitle's release name is routinely three times the width
+//! of the track menu. They differ only in the rest beat, and each keeps its OWN [`Clock`],
+//! because a popover menu over a shelf draws both focused runs in one frame and a shared clock
+//! would restart on every draw.
 //!
 //! Draw TWO copies at `x - offset` and `x - offset + text_w + GAP` (the follower), both clipped to
 //! the window — the follower is what makes the wrap seamless instead of a visible pop back to the
 //! start: by the time `offset` reaches the full travel distance the follower has arrived exactly
 //! where the primary run started, so the loop boundary is invisible.
 
+use crate::{Painter, Rect};
 use std::cell::{Cell, RefCell};
 
 /// Glide speed, in px/s. Chosen to be readable from a couch rather than merely legible paused — a
@@ -94,6 +97,33 @@ impl Marquee {
         } else {
             plx_machine::idle::wake();
         }
+    }
+
+    /// **Paint one overflowing run as a marquee** — the ONE draw every user of this module goes
+    /// through, so a poster's title and a headshot's name and role cannot drift apart.
+    ///
+    /// `key` is the run's text (the [`Clock`]'s identity), `run_w` its drawn width, `window` the
+    /// clip it glides inside (taller than the glyphs by the caller's descender allowance; its
+    /// width is the budget). `paint(dx)` draws the run shifted by `dx` from where it rests; it is
+    /// called twice, for the run and for its follower [`GAP`] behind. Call it only for a run that
+    /// does NOT fit (`run_w > window.w`) — a fitting focused run should
+    /// [`Clock::release`] instead, which is the caller's branch to take.
+    pub fn glide(
+        &self,
+        clock: &Clock,
+        p: Painter,
+        key: &str,
+        run_w: f32,
+        window: Rect,
+        paint: impl Fn(f32),
+    ) {
+        let t_ms = self.phase(clock.read(key), run_w, window.w);
+        self.report(t_ms, run_w, window.w);
+        let off = self.x(t_ms, run_w, window.w);
+        p.clip(window);
+        paint(-off);
+        paint(-off + run_w + GAP);
+        p.clip_clear();
     }
 }
 

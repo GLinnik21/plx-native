@@ -1566,3 +1566,68 @@ fn the_runs_equal_a_fresh_recompute_after_every_kind_of_change() {
     fresh(&page, None);
     assert_eq!(page.run.len(), 0);
 }
+
+/// BACK from deep in the document returns to the top on the scroll SPRING, the way Home's BACK
+/// glides its page back to the hero — it must not snap. The reseat BACK raises arrives as
+/// `By::Restore`, and `reveal` used to treat every `Restore` as "the saved viewport": it jumped the
+/// spring onto its target even when no viewport had been saved, so BACK on Movies and TV Shows cut
+/// to the head while Home animated.
+#[test]
+fn back_to_the_top_glides_on_the_scroll_spring_instead_of_snapping() {
+    let _guard = plx_base::testlock::serial();
+    assert_back_glides(&Fixture::new(), 35);
+    let session = plx_plex::plex::session::TempSession::new("library-back-glide");
+    session.watching("u-library-back-glide");
+    assert_back_glides(&Fixture::shelves(&["movie.inprogress.1", "movie.recent.1"], 12), 100);
+}
+
+fn assert_back_glides(fixture: &Fixture, deep_index: usize) {
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let deep = page.key(page.pair.detail.elem_at(deep_index).unwrap());
+    page.relayout(Some(deep));
+    page.scroll_target = page.target_layout.row_reveal(deep_index / page.layout.cols());
+    page.scroll.jump(page.scroll_target);
+    page.relayout(Some(deep));
+    engine.set(OWNER, deep, Some(page.pair.groups_config().detail), By::Restore);
+    let deep_scroll = page.scroll.pos;
+    assert!(deep_scroll > 100.0, "the fixture must be scrolled well down the document");
+
+    // BACK, then the reseat it raises routed the way the dispatcher routes it.
+    let mut out = Vec::new();
+    let mut present = plx_machine::present::Present::new();
+    let back = ScreenEvent::Input(plx_machine::machine::InputEvent {
+        at: Tick::default(),
+        source: plx_machine::machine::Source::Script,
+        kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+    });
+    page.step(&back, &fixture.cx(Some(deep)),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    let mut moved = false;
+    for effect in out {
+        let Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))) = effect.fx else { continue };
+        let outcome = engine.enter(OWNER, &page, focus, None, &fixture.cx(engine.current(OWNER)));
+        if let Outcome::Moved { from, to, by } = outcome {
+            deliver(&mut page, &mut engine, fixture, ScreenEvent::FocusMoved { from, to, by });
+            moved = true;
+        }
+    }
+    assert!(moved, "BACK must move focus to the head of the page");
+    assert_eq!(page.scroll_target, 0.0, "BACK targets the top");
+    assert_eq!(page.scroll.pos, deep_scroll, "the spring has not been teleported onto its target");
+
+    // …and the spring then carries it there over frames, monotonically.
+    let mut last = page.scroll.pos;
+    let mut frames = 0;
+    while page.scroll.pos > 0.5 && frames < 240 {
+        frames += 1;
+        let mut out = Vec::new();
+        page.step(&ScreenEvent::Tick(Tick { ms: frames * 16, dt_us: 16_000 }), &fixture.cx(engine.current(OWNER)),
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+        assert!(page.scroll.pos <= last + 0.01, "the glide never moves back down");
+        last = page.scroll.pos;
+    }
+    assert!(frames > 4, "reaching the top takes frames (took {frames}), it is not a cut");
+    assert!(page.scroll.pos <= 0.5, "and it arrives");
+}

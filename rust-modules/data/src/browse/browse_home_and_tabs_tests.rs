@@ -558,10 +558,60 @@ fn the_first_run_question_is_asked_once_per_profile() {
         "…and the answer belongs to the person who gave it"
     );
 
-    // A single-server install is not a question at all, whoever is watching.
+    // A single-server install is not a question for the account holder (a managed profile's
+    // one-server case is `a_managed_profile_is_asked_even_on_a_single_server`).
+    t.watching("");
     browse.seed_sources(vec![a_source("mac-mini", "", true)]);
     browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
     assert!(!browse.first_run_asks());
+}
+/// **A Plex Home MANAGED profile is asked which libraries it wants, with one source or many.**
+///
+/// RC.1 report: "on first launch after all data is deleted, the app does not propose to pick the
+/// libraries for any of the managed account — with or without remote server access." The gate
+/// asked only when the roster held MORE THAN ONE source. A managed profile's roster is the
+/// household's server alone — plex.tv hands it no friend's share, and `retoken` hides every
+/// server it was not given — so it was structurally never asked, however many libraries that one
+/// server holds and however much the household wanted to keep a kid's profile to a few of them.
+/// How the server is reached (local, plex.direct, relay) is not an input to the gate, which is
+/// why the report names it and sees no difference.
+///
+/// The admin's single-server install stays the unasked case the design chose (a one-row decision
+/// on 90% of installs), and the answer still belongs to the profile that gave it.
+#[test]
+fn a_managed_profile_is_asked_even_on_a_single_server() {
+    let _g = plx_base::testlock::serial();
+    let t = TempPins::new("managed-gate");
+    plx_plex::plex::session::save(&plx_plex::plex::session::Session {
+        client_id: "cid-test".into(),
+        home_users: vec![
+            plx_plex::plex::session::HomeUserRef { id: 1, uuid: "u-dad".into(), admin: true, ..Default::default() },
+            plx_plex::plex::session::HomeUserRef { id: 2, uuid: "u-kid".into(), admin: false, ..Default::default() },
+            plx_plex::plex::session::HomeUserRef { id: 3, uuid: "u-teen".into(), admin: false, ..Default::default() },
+        ],
+        ..Default::default()
+    });
+    let mut browse = TestBrowse::default();
+    browse.seed_sources(vec![a_household_source("mac-mini")]);
+    browse.append_sections(
+        0,
+        vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)],
+    );
+
+    t.watching("u-kid");
+    assert!(browse.first_run_asks(), "a managed profile on the household's one server is owed the question");
+    t.watching("u-dad");
+    assert!(!browse.first_run_asks(), "the admin's single-server install is still not a question");
+    t.watching("");
+    assert!(!browse.first_run_asks(), "…nor is a single-user account with no Plex Home selection");
+
+    // Once put, never twice — the same once-per-profile rule every other profile lives under.
+    t.watching("u-kid");
+    browse.state.record_pins(true, &[]);
+    plx_base::storage_worker::drain_for_test();
+    assert!(!browse.first_run_asks(), "asked once, never again");
+    t.watching("u-teen");
+    assert!(browse.first_run_asks(), "…and a second managed profile on the same television is still owed it");
 }
 /// **The switch governs the strip, and a strip POSITION is not a name.**
 ///

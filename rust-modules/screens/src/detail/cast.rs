@@ -6,10 +6,18 @@ use plx_data::metadata::Detail;
 use plx_plex::plex::ServerId;
 use plx_ui::card_row::{self, CardRow, RowStyle};
 use plx_ui::label::{HAlign, Label, VAlign};
+use plx_ui::marquee;
 use plx_machine::machine::{GroupId, Measure};
 use plx_ui::text_view::TextView;
 use plx_ui::widgets::Art;
 use plx_ui::{theme, Painter, Rect};
+
+thread_local! {
+    /// The focused headshot's name and role marquee clocks. One tile holds focus app-wide, so one
+    /// clock each (a poster shelf's title has its own in `card_row`, a menu row's in `table`).
+    static NAME_CLOCK: marquee::Clock = const { marquee::Clock::new() };
+    static ROLE_CLOCK: marquee::Clock = const { marquee::Clock::new() };
+}
 
 pub const CAST_ELEM_RANGE_START: u32 = 1152;
 pub const CAST_ELEM_RANGE_END: u32 = 1664;
@@ -111,6 +119,11 @@ pub fn draw(
         1,
     );
     let row_y = top + LABEL_H;
+    if focused.is_none() {
+        // focus has left the shelf: the next headshot to take it starts from its rest beat
+        NAME_CLOCK.with(|c| c.release());
+        ROLE_CLOCK.with(|c| c.release());
+    }
     card_row::strip(
         p,
         row,
@@ -185,6 +198,58 @@ fn role_view<'a>(role: &'a str, measure: &'a dyn Measure) -> TextView<'a> {
         .max_lines(ROLE_LINES).break_long_words()
 }
 
+/// A focused run's marquee window: its frame, plus air above and below so ascenders and
+/// descenders glide inside the clip instead of being sliced by it (the poster title's allowance).
+const MARQUEE_AIR: f32 = 6.0;
+
+/// The headshot's name. Unfocused it is elided to the slot; FOCUSED it is never elided — one that
+/// does not fit the slot scrolls through it ([`marquee::TITLE`], the poster title's own timing and
+/// draw), so a long name can be read in full, exactly as under a poster. A fitting name stays
+/// centred and still.
+fn draw_name(p: Painter, name: &str, frame: Rect, focused: bool, measure: &dyn Measure) {
+    let full_w = if focused { measure.width_str(name, theme::size::LABEL, true) } else { 0.0 };
+    if focused && full_w > frame.w {
+        let Ok(text) = CString::new(name) else { return };
+        let label = Label::new(text.as_ptr(), theme::size::LABEL, theme::TEXT_PRIMARY)
+            .bold().h(HAlign::Left).v(VAlign::CapTop);
+        NAME_CLOCK.with(|clock| marquee::TITLE.glide(
+            clock, p, name, full_w,
+            Rect::new(frame.x, frame.y - MARQUEE_AIR, frame.w, frame.h + 2.0 * MARQUEE_AIR),
+            |dx| { label.draw(p, Rect::new(frame.x + dx, frame.y, frame.w, frame.h)); },
+        ));
+        return;
+    }
+    if focused { NAME_CLOCK.with(|c| c.release()); }
+    if let Ok(name) = CString::new(name_caption(name, frame.w, focused, measure)) {
+        let mut label = Label::new(name.as_ptr(), theme::size::LABEL,
+            if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY })
+            .h(HAlign::Center).v(VAlign::CapTop);
+        if focused { label = label.bold(); }
+        label.draw(p, frame);
+    }
+}
+
+/// The character / job line: up to [`ROLE_LINES`] wrapped lines, centred. FOCUSED and still too
+/// long for them, it becomes ONE line that scrolls like the name above it instead of ending in an
+/// ellipsis; a role that wraps to fit keeps its lines, so a focus move never reflows a short one.
+fn draw_role(p: Painter, role: &str, frame: Rect, focused: bool, measure: &dyn Measure) {
+    let view = role_view(role, measure);
+    if focused && view.truncates(frame.w) {
+        let Ok(text) = CString::new(role) else { return };
+        let label = Label::new(text.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+            .h(HAlign::Left).v(VAlign::CapTop);
+        let full_w = measure.width_str(role, theme::size::CAPTION, false);
+        ROLE_CLOCK.with(|clock| marquee::TITLE.glide(
+            clock, p, role, full_w,
+            Rect::new(frame.x, frame.y - MARQUEE_AIR, frame.w, ROLE_LEADING + MARQUEE_AIR),
+            |dx| { label.draw(p, Rect::new(frame.x + dx, frame.y, frame.w, 0.0)); },
+        ));
+        return;
+    }
+    if focused { ROLE_CLOCK.with(|c| c.release()); }
+    view.draw(p, frame);
+}
+
 fn label(
     p: Painter,
     name: &str,
@@ -197,15 +262,11 @@ fn label(
 ) {
     let (name_frame, role_frame) = label_frames(cx, row_y, drop, measure);
     if name_frame.w <= 0.0 { return; }
-    if let Ok(name) = CString::new(name_caption(name, name_frame.w, focused, measure)) {
-        let mut label = Label::new(name.as_ptr(), theme::size::LABEL,
-            if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY })
-            .h(HAlign::Center).v(VAlign::CapTop);
-        if focused { label = label.bold(); }
-        label.draw(p, name_frame);
-    }
+    draw_name(p, name, name_frame, focused, measure);
     if !role.is_empty() {
-        role_view(role, measure).draw(p, role_frame);
+        draw_role(p, role, role_frame, focused, measure);
+    } else if focused {
+        ROLE_CLOCK.with(|c| c.release());
     }
 }
 
@@ -272,6 +333,94 @@ mod tests {
                 assert!(view.measure_h(frame.w) > ROLE_LEADING, "exercise the old one-line truncation");
             }
         }
+    }
+
+    /// The text runs the recording painter is handed by one cast label, split into the name's and
+    /// the role's by which frame they fall in (`label_frames` stacks the role below the name).
+    fn runs(name: &str, role: &str, focused: bool) -> (Vec<Rect>, Vec<Rect>) {
+        let measure = LabelMeasure;
+        let (name_frame, role_frame) = label_frames(500.0, 100.0, 0.0, &measure);
+        let split = (name_frame.y + role_frame.y) * 0.5;
+        let log = plx_ui::draw_census::capture(|| {
+            label(Painter::recording(), name, role, 500.0, 100.0, focused, 0.0, &measure);
+        });
+        let (mut n, mut r) = (Vec::new(), Vec::new());
+        for (_, rect) in log.into_iter().filter(|(tag, _)| *tag == 100) {
+            if rect.y < split { n.push(rect) } else { r.push(rect) }
+        }
+        (n, r)
+    }
+
+    const LONG_NAME: &str = "Alexandra Wolkowicz-Harrington Smythe";
+    const LONG_ROLE: &str = "Dr. Alexandra Wolkowicz-Harrington Smythe, chief consulting \
+        physician to the royal household and director of the institute for applied diagnostics";
+
+    fn restart_clocks() {
+        NAME_CLOCK.with(|c| c.release());
+        ROLE_CLOCK.with(|c| c.release());
+    }
+
+    /// NIT 6: a poster's focused title scrolls when it does not fit; the focused headshot's name
+    /// did not — it was elided. It rests, then glides (drawn as a run and its follower) and reports
+    /// damage on every frame it moves, exactly like `card_row`'s title.
+    #[test]
+    fn a_focused_cast_name_that_does_not_fit_marquees() {
+        let _serial = plx_base::testlock::serial();
+        restart_clocks();
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let _ = plx_machine::idle::take_local_damage();
+        let (rest, _) = runs(LONG_NAME, "", true);
+        assert_eq!(rest.len(), 2, "a run and its follower: {rest:?}");
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "resting is not damage");
+        let x0 = rest.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+        plx_machine::idle::frame_begin((marquee::TITLE.hold_ms + 500.0) / 1000.0);
+        let (gliding, _) = runs(LONG_NAME, "", true);
+        let x1 = gliding.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+        assert!(x1 < x0, "the name has moved left: {x0} -> {x1}");
+        assert!(plx_machine::idle::take_local_damage() > 0, "a gliding frame reports");
+    }
+
+    /// And nothing else moves: a fitting focused name and any UNFOCUSED name draw one still run.
+    #[test]
+    fn a_fitting_or_unfocused_cast_name_stays_one_still_run() {
+        let _serial = plx_base::testlock::serial();
+        restart_clocks();
+        for _ in 0..3 {
+            plx_machine::idle::frame_begin(1.5);
+            let _ = plx_machine::idle::take_local_damage();
+            assert_eq!(runs("Ana", "", true).0.len(), 1, "a fitting focused name");
+            assert_eq!(runs(LONG_NAME, "", false).0.len(), 1, "an unfocused name elides");
+            assert_eq!(plx_machine::idle::take_local_damage(), 0);
+        }
+    }
+
+    /// The role is wrapped to two lines; only when the FOCUSED one still does not fit in them does
+    /// it become a one-line marquee. A role that wraps cleanly keeps its two lines.
+    #[test]
+    fn a_focused_role_that_overflows_its_two_lines_marquees_one_that_fits_does_not() {
+        let _serial = plx_base::testlock::serial();
+        restart_clocks();
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let _ = plx_machine::idle::take_local_damage();
+        let (_, rest) = runs("Ana", LONG_ROLE, true);
+        assert_eq!(rest.len(), 2, "a run and its follower: {rest:?}");
+        let y = rest[0].y;
+        assert!(rest.iter().all(|r| r.y == y), "one line, not a wrapped block");
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "resting is not damage");
+        plx_machine::idle::frame_begin((marquee::TITLE.hold_ms + 500.0) / 1000.0);
+        let (_, gliding) = runs("Ana", LONG_ROLE, true);
+        let x0 = rest.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+        let x1 = gliding.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+        assert!(x1 < x0, "the role has moved left: {x0} -> {x1}");
+        assert!(plx_machine::idle::take_local_damage() > 0);
+
+        restart_clocks();
+        let (_, wrapped) = runs("Ana", "Dr. Alexandra Smythe", true);
+        assert_eq!(wrapped.len(), 2, "two wrapped lines, as before");
+        assert_ne!(wrapped[0].y, wrapped[1].y);
+        let (_, unfocused) = runs("Ana", LONG_ROLE, false);
+        assert_eq!(unfocused.len(), 2, "an unfocused role still wraps and elides in two lines");
+        assert_ne!(unfocused[0].y, unfocused[1].y);
     }
 
     #[test]

@@ -2280,6 +2280,24 @@ pub fn remove_test_item(state: &mut PmsState, rk: &str) {
     commit(state, build);
 }
 
+/// Test hook: turn the shelf item `rk` into a collection, which the item menu has nothing to offer
+/// (`has_actions`) — the one Home card whose hold the app DECLINES.
+#[cfg(any(test, feature = "test-support"))]
+pub fn retag_test_item_as_collection(state: &mut PmsState, rk: &str) {
+    plx_base::testlock::assert_held("the pms hub catalog (retag_test_item_as_collection)");
+    for source in state.srcs.iter_mut() {
+        if let Some(build) = source.last.as_mut() {
+            for shelf in &mut build.shelves {
+                for item in shelf.items.iter_mut().filter(|item| item.rk == rk) {
+                    Arc::make_mut(item).kind = KIND_COLLECTION;
+                }
+            }
+        }
+    }
+    let build = merge(&state.srcs);
+    commit(state, build);
+}
+
 #[cfg(test)]
 #[path = "pms_test_support.rs"]
 mod test_support;

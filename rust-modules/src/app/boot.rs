@@ -1293,6 +1293,12 @@ pub(crate) unsafe fn construct(
             let rk = if rk.is_empty() { nav_osc_rk.clone() } else { rk };
             crate::dev::scenarios::bench::DeepBench::new(depth, rk)
         });
+    // dev: /tmp/plxnative-herobench[=<n>[,<period_ms>]] — flips the real Home hero carousel back and
+    // forth over three titles (`bench::HeroBench`), one `bench:` line per two flips.
+    let hero_bench = (!controlled)
+        .then(crate::dev::scenarios::herobench_value)
+        .flatten()
+        .map(|(n, period, target)| crate::dev::scenarios::bench::HeroBench::new(n, period, target));
 
     // dev: /tmp/plxnative-framedrop — the FRAME-DROP DETECTOR. When present, each frame is timed with
     // the high-res perf counter (pump / draw / swap, NO glFinish so it doesn't perturb the pipeline),
@@ -1372,7 +1378,8 @@ pub(crate) unsafe fn construct(
     // boot who's-watching picker, else Home.
     //
     // …and Home is intercepted by the first-run question when this profile has never been
-    // asked it and the roster holds more than one source (`screens::onboard`). It belongs HERE as
+    // asked it and the roster holds more than one source — or the profile is a managed one,
+    // whose roster is the household's single server (`plex::pins::asks`; `screens::onboard`). It belongs HERE as
     // well as on the login path, because a single-Plex-Home-user account never meets the
     // picker at all: the two paths into Home are the picker's `take_ready` and this gate, and
     // a question asked on only one of them is a question half the accounts never see.
@@ -1568,6 +1575,7 @@ pub(crate) unsafe fn construct(
             push_bench,
             modal_bench,
             deep_bench,
+            hero_bench,
             marker_tried,
             press_tried,
             press_release_at,

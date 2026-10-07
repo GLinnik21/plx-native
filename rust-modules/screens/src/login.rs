@@ -93,21 +93,50 @@ const ALERT_GROUP: GroupId = GroupId(1);
 /// names — is not in the body at all. The full field list lives in `PRIVACY.md` and the in-app
 /// Privacy Policy, not here.
 
-/// How long a working phase runs before the read-out grows a way out.
+/// How long a working phase runs before the read-out grows a way out — for the phases whose
+/// healthy duration is one plex.tv call. [`Phase::Creating`] is the pin request; discovery has its
+/// own, longer number ([`DISCOVERY_ESCAPE_AFTER_MS`]), and [`escape_after_ms`] picks between them.
 ///
-/// **Not zero**: a healthy LAN discovery finishes in well under a second, and a control that
-/// flashes past on every sign-in is noise that teaches people to ignore it. **Not longer**: from
-/// the sofa a spinner that will never stop looks exactly like one that is about to, and until this
-/// existed there was no way at all out of a wedged sign-in — BACK is the root press (see
-/// `Machine::step`'s BACK arm), and on a first-ever boot there is no stored session for it to
-/// resume, so the only exit was killing the app.
+/// **Not zero**: a control that flashes past on every sign-in is noise that teaches people to
+/// ignore it. **Not longer**: from the sofa a spinner that will never stop looks exactly like one
+/// that is about to, and until this existed there was no way at all out of a wedged sign-in — BACK
+/// is the root press (see `Machine::step`'s BACK arm), and on a first-ever boot there is no stored
+/// session for it to resume, so the only exit was killing the app.
 const ESCAPE_AFTER_MS: f32 = 12_000.0;
 
-/// Whether a wait has run long enough to be worth offering an escape from.
+/// How long DISCOVERY may run before "This is taking longer than usual." and the way out appear.
+///
+/// **Derived from what a healthy discovery costs, because the first number (twelve seconds, set
+/// when discovery was believed to take "well under a second") sat inside the healthy range and the
+/// sentence ran on every sign-in.** What a healthy single-server discovery spends, from the code
+/// (`auth::discover_and_store`; not measured on a television, which records no duration):
+///
+/// - `/api/v2/resources`: one plex.tv call, capped at 8 s, 0.3-1.5 s on a set;
+/// - the identity race: the first verified, credential-eligible answer, 0.1-0.5 s on a LAN, plus at
+///   most `ProbeDeadlines::grace` (1.5 s) when a better-ranked route is dead. Before the grace
+///   existed it was the DEAD route's whole deadline, 10 s for a public address the router will not
+///   hairpin, which is why every set crossed twelve seconds;
+/// - admission (`GET /library/sections`): under 1 s, capped at 5 s locally;
+/// - the Home roster: one more plex.tv call, under 1.5 s.
+///
+/// That is 2-5 s typically and about 11 s with every term at its slow-but-healthy end. Each EXTRA
+/// server (a friend's share) adds the 4 s `SERVER_GAP` plus its own race, about 6 s. Twenty seconds
+/// clears the primary plus one share at the slow end, and is still well inside what a stalled
+/// discovery spends (resources alone retries for up to 30 s), so the way out is not withheld from
+/// a wedged sign-in. A plex.tv that is not answering is reported earlier and on its own evidence by
+/// [`discovery_trouble_visible`], so this clock only has to cover the silent stalls.
+const DISCOVERY_ESCAPE_AFTER_MS: f32 = 20_000.0;
+
+/// The escape threshold of a working `phase`. Only meaningful for [`working_phase`]s.
+fn escape_after_ms(phase: Phase) -> f32 {
+    if phase == Phase::Discovering { DISCOVERY_ESCAPE_AFTER_MS } else { ESCAPE_AFTER_MS }
+}
+
+/// Whether a wait in `phase` has run long enough to be worth offering an escape from.
 ///
 /// Pure and separate from the draw so the threshold is gradeable on the host.
-fn escape_offered(phase_ms: f32) -> bool {
-    phase_ms >= ESCAPE_AFTER_MS
+fn escape_offered(phase: Phase, phase_ms: f32) -> bool {
+    phase_ms >= escape_after_ms(phase)
 }
 
 /// The phases that are genuinely WAITING ON A NETWORK CALL and can therefore stall.
@@ -122,11 +151,27 @@ fn working_phase(phase: Phase) -> bool {
     matches!(phase, Phase::Creating | Phase::Discovering)
 }
 
+/// Misses of ONE plex.tv account call (resources or the Home roster) after which discovery says
+/// plex.tv is not answering. A miss is a call that returned nothing usable and is retried after a
+/// backoff; it is never an expected fallback (a probe that loses the race, a dead route, a relay
+/// tried second are not counted here at all, they happen inside the call that succeeds).
+const DISCOVERY_TROUBLE_MISSES: u32 = 2;
+
+/// Age of a retry run at which one miss is enough. One account call is capped at 8 s
+/// (`auth::account_timeouts`), so a run that old has spent a whole call getting nothing.
+const DISCOVERY_TROUBLE_AFTER_MS: f32 = 8_000.0;
+
+/// Whether the Discovering read-out should say plex.tv is not answering ([`auth::discovery_trouble`]).
+///
+/// `retry` is `Some` only between a MISS of a plex.tv account call and the settling of that call
+/// (`LoginProgress::DiscoveryTrouble` / `DiscoveryRetrySettled`), so a discovery whose calls all
+/// answer first time never has one, however long its probing takes.
 fn discovery_trouble_visible(phase: Phase, retry: Option<auth::DiscoveryRetryProgress>,
     phase_ms: f32, observed_phase_ms: f32) -> bool {
     let Some(retry) = retry.filter(|_| phase == Phase::Discovering) else { return false };
-    retry.misses >= 2
-        || retry.elapsed_ms as f32 + (phase_ms - observed_phase_ms).max(0.0) >= 8_000.0
+    retry.misses >= DISCOVERY_TROUBLE_MISSES
+        || retry.elapsed_ms as f32 + (phase_ms - observed_phase_ms).max(0.0)
+            >= DISCOVERY_TROUBLE_AFTER_MS
 }
 
 /// The verb on both the failed and the stuck read-out, because it is the same call underneath.
@@ -1157,7 +1202,7 @@ impl LoginScreen {
             Phase::Error if self.plaintext_asks() => Some(ControlKind::ConnectPlaintext),
             Phase::Error => Some(ControlKind::Retry),
             Phase::Waiting if qr_escape_offered(self.phase_ms) => Some(ControlKind::RestartWait),
-            p if working_phase(p) && escape_offered(self.phase_ms) => {
+            p if working_phase(p) && escape_offered(p, self.phase_ms) => {
                 Some(ControlKind::RestartWait)
             }
             _ => None,
@@ -2400,12 +2445,41 @@ mod tests {
             ESCAPE_AFTER_MS, 12_000.0,
             "the documented twelve-second design number"
         );
-        assert!(!escape_offered(0.0), "a fresh wait offers nothing");
+        assert!(!escape_offered(Phase::Creating, 0.0), "a fresh wait offers nothing");
         assert!(
-            !escape_offered(11_999.0),
+            !escape_offered(Phase::Creating, 11_999.0),
             "nor does a healthy one — a button that flashes past teaches people to ignore it"
         );
-        assert!(escape_offered(12_000.0));
+        assert!(escape_offered(Phase::Creating, 12_000.0));
+    }
+
+    /// **Regression: "Finding your server" said "This is taking longer than usual." on every
+    /// sign-in.** Discovery waited out a dead route's whole deadline (10 s) behind an answer it
+    /// already had, so a HEALTHY discovery ran 11-13 s and crossed the twelve-second escape.
+    /// Healthy discovery is now 2-5 s typically and about 11 s at the slow end of every step
+    /// (`DISCOVERY_ESCAPE_AFTER_MS`'s own derivation); the sentence and the control it explains
+    /// must stay away from all of that and still arrive for a stall. Literal milliseconds, so a
+    /// changed constant fails here rather than agreeing with itself.
+    #[test]
+    fn a_healthy_discovery_never_says_it_is_taking_longer_than_usual_but_a_stalled_one_does() {
+        assert_eq!(DISCOVERY_ESCAPE_AFTER_MS, 20_000.0, "the derived discovery design number");
+        for healthy_ms in [500.0, 3_000.0, 5_000.0, 11_000.0, 13_000.0, 17_000.0, 19_999.0] {
+            let screen = bare_screen(Phase::Discovering, healthy_ms);
+            assert_eq!(screen.control_kind(), None,
+                "no way-out at {healthy_ms} ms of a discovery that is still making progress");
+            assert!(!screen.has_control(),
+                "and so no 'taking longer than usual' reason, which only arrives with the control");
+            assert!(!discovery_trouble_visible(Phase::Discovering, None, healthy_ms, 0.0),
+                "a discovery whose plex.tv calls all answered has no retry progress at all");
+        }
+        assert_eq!(bare_screen(Phase::Discovering, 20_000.0).control_kind(),
+            Some(ControlKind::RestartWait), "a stalled one is offered the way out");
+        assert!(bare_screen(Phase::Discovering, 20_000.0).has_control());
+        assert!(!escape_offered(Phase::Discovering, 19_999.0));
+        assert!(escape_offered(Phase::Discovering, 20_000.0));
+        // The pin request is one plex.tv call and keeps its own, shorter clock.
+        assert_eq!(bare_screen(Phase::Creating, 12_000.0).control_kind(),
+            Some(ControlKind::RestartWait));
     }
 
     #[test]
@@ -2685,8 +2759,9 @@ mod tests {
     /// **The boundaries below are literal milliseconds, not `ESCAPE_AFTER_MS`/`QR_ESCAPE_AFTER_MS`
     /// themselves.** Feeding a threshold its OWN constant as input proves only that `control_kind`
     /// compares two copies of the same symbol — it stays green under any value that constant takes,
-    /// including the reviewer's mutated `ESCAPE_AFTER_MS = 120.0`. Literal `11_999.0`/`12_000.0` and
-    /// `59_999.0`/`60_000.0` pin the twelve- and sixty-second design numbers themselves, matching
+    /// including the reviewer's mutated `ESCAPE_AFTER_MS = 120.0`. Literal `11_999.0`/`12_000.0` (Creating),
+    /// `19_999.0`/`20_000.0` (Discovering) and `59_999.0`/`60_000.0` pin the twelve-, twenty- and
+    /// sixty-second design numbers themselves, matching
     /// the two tests above that pin the same constants directly.
     #[test]
     fn the_control_exists_only_where_legacy_ever_acted_on_a_press() {
@@ -2704,11 +2779,11 @@ mod tests {
         );
         assert_eq!(bare_screen(Phase::Discovering, 0.0).control_kind(), None);
         assert_eq!(
-            bare_screen(Phase::Discovering, 11_999.0).control_kind(),
+            bare_screen(Phase::Discovering, 19_999.0).control_kind(),
             None
         );
         assert_eq!(
-            bare_screen(Phase::Discovering, 12_000.0).control_kind(),
+            bare_screen(Phase::Discovering, 20_000.0).control_kind(),
             Some(ControlKind::RestartWait)
         );
         // Error and Deleted offer their control unconditionally — no clock involved.

@@ -1247,22 +1247,26 @@ fn title_marquee(
         return;
     }
     let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
-    let t_ms = MARQUEE.phase(TITLE_CLOCK.with(|c| c.read(&s)), w, budget);
-    // An overflowing focused title never lets the screen rest (`Marquee::report`) — which is what
-    // "marquee while focused" means, and why a fitting title must never reach this branch.
-    MARQUEE.report(t_ms, w, budget);
-    let off = MARQUEE.x(t_ms, w, budget);
-    let travel = w + marquee::GAP;
     // An overflowing run fills the whole block, so the window IS the block; the glyph, when
-    // present, sits fixed at its left edge and only the text window after it scrolls.
+    // present, sits fixed at its left edge and only the text window after it scrolls. An
+    // overflowing focused title never lets the screen rest (`Marquee::report`) — which is what
+    // "marquee while focused" means, and why a fitting title must never reach this branch.
     if glyph {
         draw_glyph(at.x);
     }
     let text_x0 = at.x + lead;
-    p.clip(Rect::new(text_x0, y - 6.0, budget, UNDER_LINE_H + 12.0));
-    p.text(text, text_x0 - off, y, sz, theme::TEXT_PRIMARY, 0, bold);
-    p.text(text, text_x0 - off + travel, y, sz, theme::TEXT_PRIMARY, 0, bold);
-    p.clip_clear();
+    TITLE_CLOCK.with(|clock| {
+        MARQUEE.glide(
+            clock,
+            p,
+            &s,
+            w,
+            Rect::new(text_x0, y - 6.0, budget, UNDER_LINE_H + 12.0),
+            |dx| {
+                p.text(text, text_x0 + dx, y, sz, theme::TEXT_PRIMARY, 0, bold);
+            },
+        )
+    });
 }
 
 /// The drawn width of a focused title run (LABEL, bold); `0` for a null pointer.

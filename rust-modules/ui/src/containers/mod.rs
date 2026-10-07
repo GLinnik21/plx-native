@@ -266,6 +266,9 @@ impl<H: Host> Navigation<H> {
             NavOp::Dismiss(id) if self.is_surface(id) => {
                 let mut out = Vec::new();
                 if self.modals.dismiss(id) {
+                    // The surface hears it FIRST, so whatever it retires (`ScreenEvent::Closing`)
+                    // is queued ahead of anything the host asks for on its `Enter(Restored)`.
+                    out.push(Life::Ev(id, ScreenEvent::Closing));
                     let others_up = self
                         .modals
                         .surfaces

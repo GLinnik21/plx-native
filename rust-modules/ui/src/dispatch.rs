@@ -1930,7 +1930,8 @@ where
 
     /// The engine's half of a delivery (§7.3): a direction the owner declined goes to the
     /// engine; an OK it declined arms a press by the element's kind (or activates a bare
-    /// element on the down edge); an `Enter` seats focus; a handled `PressHold` cancels the press.
+    /// element on the down edge); an `Enter` seats focus; a handled `PressHold` cancels the press
+    /// (it springs back unless the app then opens a menu over the card and settles it).
     fn after_step(
         &mut self,
         rig: &mut dyn Rig<H>,
@@ -1949,6 +1950,9 @@ where
         let owner = InputOwner::Entry(entry);
         match ev {
             ScreenEvent::PressHold(_) if handled == Handled::Yes => {
+                // The screen answered the hold; whether a menu opens is the APP's decision, and a
+                // declined hold must spring back. The app that opens one settles the press
+                // ([`InputMachine::settle_press`]).
                 self.input.cancel_press();
             }
             ScreenEvent::Enter(e) if is_owner && self.engine_page() => {

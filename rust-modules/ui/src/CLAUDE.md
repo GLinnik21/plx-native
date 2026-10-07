@@ -71,7 +71,9 @@ belong to their card, never to the safe area. `card_row::place_label` centres a 
 block on its card, or starts every line at the card's leading edge where the centred block would
 leave the panel — judged where the tile will REST (`CardRow::settle_lag`, passed through
 `TileLabel::settling`), so a scroll glide never flips the block's alignment or width mid-flight;
-cast names scroll off-screen with their headshots at full width.
+cast names scroll off-screen with their headshots at full width. A FOCUSED headshot's name (or
+role, once it overflows its two lines) that does not fit its slot marquees like a poster title,
+through the same `marquee::Marquee::glide`.
 
 Alert titles, eyebrows and reading text use `theme::alert::TEXT_ALIGN`: the common left padding
 edge. Decision dialogs follow the same rule as the About, biography and track-information panels.
@@ -463,7 +465,11 @@ information.
   the big scroll flow: `ScrollColumn`/the shelves deliberately **cull** off-frame children by index
   (`on_axis`) instead, which avoids per-frame scissor churn and needs no clean-up. So: bounded list/panel
   → `clip`; long scrolling document → cull. (The old edge-fade-mask trick is gone — a linear fade can't
-  cut a tall two-line row evenly, which read as a broken clip; scissor replaced it.)
+  cut a tall two-line row evenly, which read as a broken clip; scissor replaced it.) `TableView` is the
+  one place rows still fade, and only WHOLE rows by their ink position, never a per-pixel mask: the top
+  edge dissolves rows (`top_edge_alpha`), a PANEL's (`draw`) bottom edge fades them before the scissor,
+  and a PAGE's (`draw_page`, what `TablePart` and the Filmography page call) bottom edge has neither —
+  its clip runs on to the bottom of the screen, so rows simply slide off it.
 
 ## When you're done
 

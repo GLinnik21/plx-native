@@ -1191,6 +1191,19 @@ impl Bridge {
         self.stores.hubs.seed_for_test(items, hub_state);
     }
 
+    /// [`seed_hubs_for_test`](Self::seed_hubs_for_test) as a grid of `rows` shelves of `items` cards.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn seed_hub_grid_for_test(&mut self, rows: usize, items: usize) {
+        self.stores.hubs.seed_grid_for_test(rows, items);
+    }
+
+    /// Make the shelf card `rk` a collection: the item menu has nothing to offer it, so a hold on it
+    /// is the one the app declines.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn retag_hub_item_as_collection_for_test(&mut self, rk: &str) {
+        self.stores.hubs.retag_test_item_as_collection(rk);
+    }
+
     #[cfg(test)]
     pub(crate) fn seed_hubs_for_directory_test(
         &mut self,
@@ -2392,7 +2405,8 @@ fn strip_menu_arg(
 }
 
 /// **Present the item context menu** over the page the hold happened on (idempotent while one is
-/// up, for `open_settings`'s reason: a second hold must not stack a second panel).
+/// up, for `open_settings`'s reason: a second hold must not stack a second panel). Opening it
+/// settles the press that raised it (see the body).
 ///
 /// The style is `Compact`, whose host policy is `(Frozen, Cached)`: the page under the panel is
 /// drawn once into the shared snapshot and served from it, and its focus springs do not advance
@@ -2405,6 +2419,11 @@ pub(crate) fn open_item_menu(d: &mut Dispatcher<AppHost>, arg: plx_screens::regi
     }
     d.nav.next_style = Style::Compact;
     d.request(MachineId::Nav, NavOp::Present(AppArg::ItemMenu(arg)));
+    // The hold that raised the menu ends at REST: the dip is a press-in on the card's focus pop, so
+    // a spring-back left running under the scrim and the frozen host snapshot reads as a poster
+    // that lost its pop. Only here, where a menu really opens: a hold the app declines keeps its
+    // bounce. It is the dispatcher's press — the one a card hold arms — not `App.input.press`.
+    d.input.settle_press();
 }
 
 /// Is a Library Sort/Filter/Sources menu up (any phase)?

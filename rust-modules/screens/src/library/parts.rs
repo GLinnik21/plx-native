@@ -15,7 +15,7 @@ use plx_ui::screen::{
     Placed, Seat, Step, Stop,
 };
 use plx_ui::widgets::Art;
-use plx_ui::{Rect, Spring};
+use plx_ui::Rect;
 
 use super::identity::KeyRegistry;
 use super::layout::{
@@ -122,16 +122,14 @@ pub(super) struct GridPart {
     scroll: f32,
     target_layout: Layout,
     scroll_target: f32,
-    /// The focused cell's pop — the spring that carries a tile toward `RowStyle::HOME.focus_scale`,
-    /// the legacy grid's `FOCUS_S` — and the cell it belongs to. It only starts from REST when a
-    /// deliberate MOVE arms it ([`pop_from_rest`](Self::pop_from_rest), from the `FocusMoved` arm
-    /// for `By::Dir` / `By::Pointer`); every other way a cell becomes focused — a restore, a
-    /// reconcile, a command seating the cursor — is adopted at full scale by [`tick`](Self::tick),
-    /// because a page coming back from a Detail push must land exactly as it was left.
-    pop: (Option<usize>, Spring),
-    /// The previously focused cell shrinking back to 1.0 (the legacy `PREV_S`); its index
-    /// clears once it has settled, so a settled grid pays for no shrinking tile.
-    shrink: (Option<usize>, Spring),
+    /// The focused cell's pop and the previous one's let-go — the legacy grid's `FOCUS_S` /
+    /// `PREV_S` pair, now the shared `ui::poster_grid::GridPop` the Collection page draws from
+    /// too. It only starts from REST when a deliberate MOVE arms it
+    /// ([`pop_from_rest`](Self::pop_from_rest), from the `FocusMoved` arm for `By::Dir` /
+    /// `By::Pointer`); every other way a cell becomes focused — a restore, a reconcile, a command
+    /// seating the cursor — is adopted at full scale by [`tick`](Self::tick), because a page
+    /// coming back from a Detail push must land exactly as it was left.
+    pop: plx_ui::poster_grid::GridPop,
     bands: GridBands,
     snapshot: Option<plx_data::stores::browse::ListingSnapshot>,
     indexes: GridIndexes,
@@ -153,7 +151,7 @@ impl GridPart {
         // The retained snapshot is a read-publication cache, not another cursor. Its placement
         // projection and identity are traversed below; its Arc address never enters logical state.
         let Self { entry: _, group, elems, known, identity, layout, scroll, target_layout,
-            scroll_target, pop, shrink, bands, snapshot: _, indexes: _, #[cfg(test)] test_ops: _ } = self;
+            scroll_target, pop, bands, snapshot: _, indexes: _, #[cfg(test)] test_ops: _ } = self;
         c.u32(group.0).seq(elems.len());
         for elem in elems { c.u32(*elem); }
         c.seq(known.len());
@@ -165,10 +163,7 @@ impl GridPart {
         target_layout.write(c); c.f32(*scroll_target);
         // canonical animation state, as `PageGround::write_motion`: a spring mid-flight decides
         // the next frames even when two grids draw the same rects
-        for (index, sp) in [pop, shrink] {
-            c.option(*index, |c, i| { c.u32(i as u32); });
-            c.f32(sp.pos).f32(sp.vel);
-        }
+        pop.write(c);
         bands.write(c);
     }
 
@@ -182,8 +177,7 @@ impl GridPart {
             scroll: 0.0,
             target_layout: Layout::new(false, &[], 0, false),
             scroll_target: 0.0,
-            pop: (None, Spring::at(1.0)),
-            shrink: (None, Spring::at(1.0)),
+            pop: plx_ui::poster_grid::GridPop::new(),
             bands: GridBands::new(),
             snapshot: None,
             indexes: GridIndexes::default(),
@@ -198,8 +192,7 @@ impl GridPart {
     /// the scale as a step. Called from the `FocusMoved` arm for `By::Dir` / `By::Pointer` and
     /// from nowhere else: a deliberate move is the only focus change the eye should see travel.
     pub(super) fn pop_from_rest(&mut self, index: usize) {
-        self.shrink = self.pop;
-        self.pop = (Some(index), Spring::at(1.0));
+        self.pop.arm(index);
     }
 
     /// Advance the focus pop by one tick. `focused` is the focused cell's index, if focus is in
@@ -216,16 +209,7 @@ impl GridPart {
         let style = self.layout.style();
         self.focus_row(focused.map(|index| index / self.layout.cols()), false);
         self.bands.tick(style.k_scroll, dt);
-        if focused != self.pop.0 {
-            self.shrink = self.pop;
-            self.pop = (focused, Spring::at(if focused.is_some() { style.focus_scale } else { 1.0 }));
-        }
-        let k = style.k_scale;
-        self.pop.1.step(if self.pop.0.is_some() { style.focus_scale } else { 1.0 }, k, dt);
-        self.shrink.1.step(1.0, k, dt);
-        if self.shrink.1.pos < 1.003 {
-            self.shrink.0 = None;
-        }
+        self.pop.tick(focused, &style, dt);
     }
 
     pub(super) fn focus_row(&mut self, row: Option<usize>, animate: bool) {
@@ -390,10 +374,8 @@ impl GridPart {
     fn tile_scale(&self, index: usize, focused: bool, press: f32) -> f32 {
         if focused {
             self.treatment_scale(index, press)
-        } else if self.shrink.0 == Some(index) {
-            self.shrink.1.pos
         } else {
-            1.0
+            self.pop.scale(index, false, &self.layout.style())
         }
     }
 
@@ -403,7 +385,7 @@ impl GridPart {
     /// [`tick`](Self::tick) — and those land finished rather than animating, so drawing them at
     /// rest would be a one-frame collapse of the very card being returned to.
     fn pop_scale(&self, index: usize) -> f32 {
-        if self.pop.0 == Some(index) { self.pop.1.pos } else { self.layout.style().focus_scale }
+        self.pop.pop_scale(index, &self.layout.style())
     }
 
     /// The scale the focused cell's TREATMENT is drawn at — what

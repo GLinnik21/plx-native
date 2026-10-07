@@ -295,7 +295,14 @@ distinct evidence, and primary selection continues with the next eligible endpoi
 Secondary servers keep the profile-specific grants plex.tv returned live and cached; their identity
 probes refresh endpoint and reachability facts without making every secondary browse before it can
 be registered. Direct identity candidates settle as one race, and a relay fallback receives its own
-local/remote probe opportunity. Authenticated fallback attempts share a separate 20-second budget,
+local/remote probe opportunity. **The race does not wait for a route that cannot change the
+answer** (`auth::race_decided`): once a verified, credential-eligible winner exists, a candidate
+that cannot outrank it (`candidate_score` is a function of the candidate alone) is left behind, and
+a better-ranked one that has not answered gets `ProbeDeadlines::grace` (1.5 s) from the first
+win, not its own 5 s/10 s deadline. Waiting for every candidate made a healthy sign-in cost a
+dead public address's full deadline, so "taking longer than usual" ran on every sign-in
+(`screens/login.rs`'s `DISCOVERY_ESCAPE_AFTER_MS` derives its number from this cost). A race with
+no winner still runs every candidate to its deadline, and the relay phase still starts only then. Authenticated fallback attempts share a separate 20-second budget,
 with each request still capped at 5 seconds for Local and 10 seconds for Remote/Relay. Only time
 inside those authenticated requests is deducted: identity probing (including later direct/cached
 or relay attempts) and inter-server pacing do not spend admission time. Offline cached-profile

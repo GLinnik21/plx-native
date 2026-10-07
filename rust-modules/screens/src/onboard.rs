@@ -116,6 +116,10 @@ pub struct OnboardScreen {
     /// cannot: a STABLE group set for the whole gap between two `rebuild`s, and a state the
     /// recorder (`OnboardState::write`, below) can actually see and replay a frame against.
     band: bool,
+    /// **First run found nothing to choose and has already left** ([`nothing_to_choose`]). Latched
+    /// because the route flip is drained after the frame that asked for it, so a second `Tick` can
+    /// arrive first — and the commit it would repeat is an `ApplyPins` plus a second `OnboardDone`.
+    self_answered: bool,
 }
 
 struct OnboardState {
@@ -139,6 +143,18 @@ impl LogicalState for OnboardState {
             self.settings, self.band, self.draft
         ));
     }
+}
+
+/// **The one shape of first run with no decision in it: one source holding one library.** A
+/// managed profile is asked on a single server (`plex::pins::asks`), and a server with a single
+/// library gives it a one-row table whose only row refuses to turn off. Knowable only once
+/// discovery has landed — which is why the gate cannot say it and the screen does.
+///
+/// **One SOURCE, and not just one library.** A library count of 1 beside a second source that has
+/// not answered yet is the roster landing in two steps, and a friend's share arriving later must
+/// not have been answered for by a screen that left before it could be seen.
+fn nothing_to_choose(directory: DirectoryView<'_>) -> bool {
+    directory.sources().len() == 1 && directory.section_count() == 1
 }
 
 fn snapshot_pins(directory: DirectoryView<'_>) -> Vec<(usize, bool)> {
@@ -180,6 +196,7 @@ impl OnboardScreen {
             },
             armed_kind: None,
             band: false, // ditto
+            self_answered: false,
         };
         s.rebuild(false, directory);
         s.form.table.list_focused = settings;
@@ -515,6 +532,15 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
                 if self.table_gen != directory.source_list_gen() {
                     self.rebuild(true, directory);
                     fx.invalidate(plx_machine::present::Provenance::Landing(fx.from()));
+                }
+                // First run with no decision in it answers itself: the question is recorded as put
+                // (an empty `ApplyPins`) and Home opens, rather than a one-row screen whose only
+                // row cannot be turned off.
+                if !self.settings && !self.self_answered && nothing_to_choose(directory) {
+                    self.self_answered = true;
+                    plx_base::eventlog::log("onboard: one library on one server — nothing to choose, entering Home");
+                    self.commit(directory, fx);
+                    return Handled::Yes;
                 }
                 let band = cx.focus.current.and_then(|k| band_index(k.elem));
                 self.pop.step(band, dt);
@@ -1540,6 +1566,55 @@ mod tests {
                 "an empty-roster spinner must present every frame it is on screen (ms={ms})"
             );
         }
+    }
+
+    /// **A first run with nothing to choose leaves by itself.** A managed profile is asked on a
+    /// single server (`plex::pins::asks`), and when that server turns out to hold ONE library the
+    /// screen would be a one-row table whose only row refuses to turn off (the never-empty floor).
+    /// It records that the question was put — an empty `ApplyPins`, so it is never reopened — and
+    /// enters Home; the viewer is shown nothing. Anything with a real choice stays: two libraries
+    /// on one server, or two sources whatever they hold.
+    #[test]
+    fn a_first_run_with_a_single_library_on_a_single_server_answers_itself_and_leaves() {
+        fn tick(s: &mut OnboardScreen, directory: DirectoryView<'_>) -> Vec<Stamped<InnerHost>> {
+            let t = ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_000 });
+            step_ev(s, &t, None, directory).1
+        }
+        fn leaves(effs: &[Stamped<InnerHost>]) -> bool {
+            effs.iter().any(|st| matches!(st.fx, Fx::App(AppFx::Loop(LoopReq::OnboardDone))))
+        }
+        let _g = plx_base::testlock::serial();
+        let _t = TempSession::new("nothing-to-choose");
+        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
+
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true]);
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let effs = tick(&mut s, browse.capture());
+        assert!(leaves(&effs), "one server, one library: nothing to choose, so the screen leaves");
+        assert!(
+            effs.iter().any(|st| matches!(
+                &st.fx,
+                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(a)))) if a.is_empty()
+            )),
+            "…having recorded that the question was put, with no answer nobody gave"
+        );
+        assert!(!leaves(&tick(&mut s, browse.capture())), "and only once, however many frames the leave takes");
+
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        assert!(!leaves(&tick(&mut s, browse.capture())), "two libraries on one server is a real choice");
+
+        let mut browse = BrowseFixture::new();
+        browse.seed_two_sources();
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        assert!(!leaves(&tick(&mut s, browse.capture())), "two sources is a real choice");
+
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+        assert!(!leaves(&tick(&mut s, browse.capture())), "the Settings editor never answers for anyone");
     }
 
     #[test]

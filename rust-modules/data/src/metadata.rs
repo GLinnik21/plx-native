@@ -1798,6 +1798,45 @@ fn clear(state: &mut MetadataState, adapter: &MetadataAdapter) {
     alt_clear(state);
 }
 
+/// Close ONE page's item. Unlike [`clear`] it names whose page is going, because a page is not
+/// always the last to touch the slot: when a surface over Detail A (the *Also available* copy on
+/// server B) is dismissed, A is uncovered and asks for its own metadata while B's body — whose
+/// detail is still `current()` — is only torn down a few frames later. An unaddressed clear then
+/// superseded A's brand-new request and A was left empty with nothing left to ask again.
+fn clear_item(state: &mut MetadataState, adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str) {
+    let same = |s, r: &str| plx_plex::plex::same_item((s, r), (sid, rk));
+    let awaited_elsewhere = adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner())
+        .as_ref().is_some_and(|(s, r)| !same(*s, r));
+    if !awaited_elsewhere {
+        supersede_detail(adapter);
+    }
+    if state.current.as_ref().is_some_and(|d| same(d.sid, &d.rk)) {
+        state.current = None;
+        alt_clear(state);
+    }
+}
+
+/// A page stops ASKING without letting go of what it shows: it was dismissed (a presented copy on
+/// another server closing over the page it was opened from) and keeps drawing its loaded item
+/// until its close fade settles and [`clear_item`] runs. Supersedes the awaited request only if it
+/// is this item's, and drops nothing from `current`. Without it the dismissed copy's request stayed
+/// the awaited one for the length of the fade, while the page under it had already been entered
+/// and had found its own item loaded: a landing inside that window replaced that item, and the
+/// copy's teardown then emptied the slot. After this, `detail_want` naming this address usually
+/// means some OTHER page has asked for it since (the same copy presented again inside the fade) —
+/// which is what lets that teardown leave the new page's request alone. Not only: a Closing surface
+/// carried into covered modals is re-entered by the container and asks for its own item too, and
+/// nested presented copies (a copy presented from inside another copy) are not covered. Answers
+/// whether a request was retired.
+fn withdraw(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str) -> bool {
+    let mine = adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner())
+        .as_ref().is_some_and(|(s, r)| plx_plex::plex::same_item((*s, r), (sid, rk)));
+    if mine {
+        supersede_detail(adapter);
+    }
+    mine
+}
+
 /// The server/profile switch: unlike `clear()`, this drops the COMPLETE owned state — the `now`
 /// caption and `playing` track store `clear()` deliberately spares (D3, for a Detail page torn
 /// down and reopened mid-playback) do not belong to the NEXT profile. Adapter rotation is done by
@@ -3547,6 +3586,11 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             clear(state, adapter);
             true
         }
+        MetadataCmd::ClearItem { sid, rk } => {
+            clear_item(state, adapter, sid, &rk);
+            true
+        }
+        MetadataCmd::Withdraw { sid, rk } => withdraw(adapter, sid, &rk),
         MetadataCmd::Reset => {
             reset(state, adapter);
             true

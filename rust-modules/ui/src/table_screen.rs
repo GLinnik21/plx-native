@@ -185,7 +185,9 @@ impl TablePart<'_> {
     }
 
     pub fn paint(&self, p: Painter, measure: &dyn Measure) {
-        self.table.draw(p, self.frame, measure);
+        // a route's content column is a PAGE: its rows run off the bottom of the screen, not the
+        // safe-area frame ([`TableView::draw_page`])
+        self.table.draw_page(p, self.frame, measure);
     }
 }
 

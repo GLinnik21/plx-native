@@ -140,7 +140,7 @@ ALL_TRIGGERS = [
     "plxnative-grid", "plxnative-autoplay", "plxnative-h265", "plxnative-playidx", "plxnative-url",
     "plxnative-play", "plxnative-server", "plxnative-ffprobe", "plxnative-token", "plxnative-servers",
     # UI/FPS scenes (both profiler triggers MUST be cleared; either invalidates production pacing)
-    "plxnative-detailosc", "plxnative-homeosc", "plxnative-heroosc", "plxnative-homefoldosc",
+    "plxnative-detailosc", "plxnative-homeosc", "plxnative-heroosc", "plxnative-herobench", "plxnative-homefoldosc",
     "plxnative-info", "plxnative-chapters", "plxnative-profile",
     "plxnative-hwcnt",
     # the track's material and the instruments that override or narrate it. `flattabs` is the one
@@ -5455,10 +5455,10 @@ def grade_frame_ceilings(scene, lines, route, overlay, warmup):
 BENCH_TAIL = (r"(?: tex=\S+)? first_ms=(?P<first>\d+(?:\.\d+)?) missed=(?P<missed>\d+)"
               r" open=(?P<open>\S+)(?: close=(?P<close>\S+))?")
 BENCH_RE = re.compile(
-    r"^bench: kind=(?P<kind>push|modal) cycle=(?P<cycle>\d+)/(?P<n>\d+) "
+    r"^bench: kind=(?P<kind>push|modal|hero) cycle=(?P<cycle>\d+)/(?P<n>\d+) "
     r"target=(?P<target>[\w-]+) worst_ms=(?P<worst>\d+(?:\.\d+)?) frames=(?P<frames>\d+) "
     r"dur_ms=(?P<dur>\d+) rss_kb=(?P<rss>\d+)(?:" + BENCH_TAIL + r")?")
-BENCH_DONE_RE = re.compile(r"^bench: kind=(?P<kind>push|modal) done cycles=(?P<n>\d+)")
+BENCH_DONE_RE = re.compile(r"^bench: kind=(?P<kind>push|modal|hero) done cycles=(?P<n>\d+)")
 
 
 def _bench_tail(m):

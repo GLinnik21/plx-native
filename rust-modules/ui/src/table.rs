@@ -415,6 +415,11 @@ const ROW_VALUE_GAP: f32 = theme::space::MD;
 /// The empty band under a row's lowest ink, which every row kind leaves: a plain row's label is
 /// centred in `ROW_H` with 13px under it, and a two-line row's centred pair leaves ~12.
 const ROW_INK_PAD: f32 = 12.0;
+/// How far below the frame's top a row's (or header's) ink is fully opaque: the band over which the
+/// top edge dissolves it ([`TableView::top_edge_alpha`]). It is exactly where the FIRST thing in a
+/// table rests — a section label's caps sit [`FIRST_HEADER_CAP_OFFSET`] under the frame's top and a
+/// headerless table's first row ink [`TOP_PAD`] + [`ROW_INK_PAD`] — so a table at rest is never faded.
+const TOP_FADE_H: f32 = FIRST_HEADER_CAP_OFFSET;
 /// A section header's ink ends at its CAPTION caps below `HEADER_CAP_INSET`.
 const HDR_INK_PAD: f32 = HDR_H - HEADER_CAP_INSET - theme::size::CAPTION as f32;
 
@@ -1172,17 +1177,51 @@ impl TableView {
         (header_w, accessory_w)
     }
 
-    /// How opaque a row spanning `y..y + h` is drawn at the viewport's bottom edge `vis_bot`.
+    /// How opaque a row spanning `y..y + h` is drawn at a PANEL's bottom edge `vis_bot` ([`Self::draw`];
+    /// a page's rows are never faded there, see [`Self::draw_page`]).
     ///
-    /// The draw hard-clips to its frame, and at the TOP that is right (a row scrolling away under
-    /// the crumb band). At the BOTTOM it cut the next row mid-glyph wherever the frame happened to
-    /// end — the Settings column at the safe area, a popover at its height cap. So a row fades as
+    /// The draw hard-clips to its frame, and at the TOP the rows dissolve before it
+    /// ([`Self::top_edge_alpha`]). At the BOTTOM of a panel it cut the next row mid-glyph wherever the
+    /// frame happened to end — a popover at its height cap. So a row fades as
     /// the edge climbs from the list's own bottom air ([`BOT_PAD`]) up through its empty lower
     /// band ([`ROW_INK_PAD`]), and is fully transparent by the time the edge reaches its ink: the
     /// scissor only ever cuts padding or nothing visible. A row resting with the list's bottom
     /// air below it — where the last row settles — is whole.
     pub fn bottom_edge_alpha(&self, y: f32, h: f32, vis_bot: f32) -> f32 {
         edge_alpha(y + h - ROW_INK_PAD, vis_bot, ROW_INK_PAD)
+    }
+
+    /// How much of the ink band of the row spanning content `cy..cy + h` the focus pill covers
+    /// RIGHT NOW, 0..1 — the ONE rule a row's ink is derived from, so the ink can never disagree
+    /// with the fill sliding under it (the same reason `widgets::cap_cover` exists for a tab strip).
+    ///
+    /// The ink band is the row less its empty [`ROW_INK_PAD`] above and below, and less the
+    /// [`PILL_INSET`] the pill itself keeps off the row's edge (a two-line row's title caps start
+    /// ~15px under its top, measured on a sim capture), so the label only goes fully dark once the
+    /// pill's edge has passed its caps and goes back to light as the pill leaves —
+    /// reading the SELECTION instead (as this once did) flipped the next row's label to the pill's
+    /// near-black ink on the frame focus moved, a row before the pill got there: dark text on the
+    /// dark ground. Linear in coverage, like the strip's; shape it HERE if a device capture ever
+    /// asks, not with a second spring (the ink would start leading the fill). A table that does not
+    /// hold focus draws no pill and so covers nothing. At rest on a row the answer is exactly 1.
+    fn pill_cover(&self, cy: f32, h: f32) -> f32 {
+        if !self.list_focused {
+            return 0.0;
+        }
+        let inset = ROW_INK_PAD + PILL_INSET;
+        let (top, bot) = (cy + inset, cy + h - inset);
+        if bot <= top {
+            return 0.0;
+        }
+        ((self.hl_bot.pos.min(bot) - self.hl_top.pos.max(top)) / (bot - top)).clamp(0.0, 1.0)
+    }
+
+    /// How opaque ink whose top is at `ink_top` is drawn under the viewport's top edge `vis_top`:
+    /// whole once it is [`TOP_FADE_H`] below it, gone as it reaches it. The top edge DISSOLVES a row
+    /// rather than cutting it (rows scroll up under the crumb band); the scissor still clips the
+    /// frame, but by then the ink it would cut is transparent.
+    fn top_edge_alpha(ink_top: f32, vis_top: f32) -> f32 {
+        ((ink_top - vis_top) / TOP_FADE_H).clamp(0.0, 1.0)
     }
 
     /// The nearest **selectable** row to `i`: `i` itself when it is one, else the first non-separator
@@ -1343,7 +1382,22 @@ impl TableView {
         self.scroll.pos
     }
 
+    /// Draw as a PANEL: a popover or menu whose `frame` is a real edge, so rows are scissored to it
+    /// and fade out before the scissor can reach their ink ([`Self::bottom_edge_alpha`]).
     pub fn draw(&self, p: Painter, frame: Rect, measure: &dyn plx_machine::machine::Measure) {
+        self.draw_in(p, frame, false, measure)
+    }
+
+    /// Draw as a PAGE's content column (`TablePart`, the Filmography page): `frame` ends at the
+    /// safe area, but the page does not — the screen's bottom edge is the real one. Rows scrolling down simply run off it, uncut and
+    /// unfaded (the fade at the safe-area line hid the rows a page scrolls to, with the margin
+    /// below it empty). The TOP still dissolves ([`Self::top_edge_alpha`]), and layout, scrolling
+    /// and hit rects are the same as [`Self::draw`]'s — only what is DRAWN below `frame` differs.
+    pub fn draw_page(&self, p: Painter, frame: Rect, measure: &dyn plx_machine::machine::Measure) {
+        self.draw_in(p, frame, true, measure)
+    }
+
+    fn draw_in(&self, p: Painter, frame: Rect, page: bool, measure: &dyn plx_machine::machine::Measure) {
         if self.n_rows() == 0 {
             Label::new(
                 plx_platform::i18n::msg::widgets_tracks_empty_c().as_ptr(),
@@ -1356,15 +1410,23 @@ impl TableView {
         }
         self.fit_notes(frame.w, measure);
         // Hard-clip everything below to the panel frame: the list overflows, so a partial edge row is
-        // cut cleanly at the frame instead of poking over the video / control buttons — and, unlike the
-        // old fade masks, a tall two-line edge row is cut uniformly (the fade left its title bright but
-        // faded its detail line, which read as a broken clip). A `ClipScope`, so it intersects with an
+        // cut cleanly at the frame instead of poking over the video / control buttons. Rows are
+        // faded as WHOLE rows by their ink position (never a per-pixel mask), so a tall two-line
+        // row stays uniform however close it is to an edge. A page's clip runs on to the bottom of
+        // the screen instead ([`Self::draw_page`]). A `ClipScope`, so it intersects with an
         // enclosing panel clip and restores it when this fn returns.
-        let _clip = crate::screen::ClipScope::open_in(p, frame);
+        let clip = if page {
+            Rect::new(frame.x, frame.y, frame.w, (crate::consts::SCR_H - frame.y).max(frame.h))
+        } else {
+            frame
+        };
+        let _clip = crate::screen::ClipScope::open_in(p, clip);
         let top0 = frame.y + TOP_PAD;
         let scroll = self.scroll.pos;
         let vis_top = frame.y;
-        let vis_bot = frame.y + frame.h;
+        let vis_bot = clip.y + clip.h;
+        // the bottom edge fades a panel's rows out before its scissor; a page has no such edge
+        let bottom_alpha = |ink_bot: f32, pad: f32| if page { 1.0 } else { edge_alpha(ink_bot, vis_bot, pad) };
 
         let white = theme::TEXT_PRIMARY;
         let dimc = theme::TEXT_TERTIARY; // was #8a8a8e; unified onto the tertiary grey
@@ -1384,7 +1446,10 @@ impl TableView {
             (py1 - py0).max(1.0),
         );
         if self.list_focused && pill.y + pill.h > vis_top && pill.y < vis_bot {
-            self.group_painter(p, self.section_of_row(self.sel)).rrect(
+            // fades with its row's ink under the top edge (focus keeps a row of context above it,
+            // so this only shows while the scroll is still catching up)
+            let fade = Self::top_edge_alpha(py0 - PILL_INSET + ROW_INK_PAD, vis_top);
+            self.group_painter(p.alpha(fade), self.section_of_row(self.sel)).rrect(
                 pill,
                 PILL_RAD,
                 PILL_RAD,
@@ -1403,7 +1468,8 @@ impl TableView {
                 // the `DIV_H` gap; it fades with the group like everything else in it
                 let y = sy - DIV_H * 0.5;
                 if y + 2.0 > vis_top && y < vis_bot {
-                    p.rect(
+                    // dissolves with the section it heads, a hair before its caps
+                    p.alpha(Self::top_edge_alpha(sy, vis_top)).rect(
                         Rect::new(content_x, y, frame.w - 2.0 * (SIDE + CONTENT_PAD), 2.0),
                         0.0,
                         theme::HAIRLINE,
@@ -1415,10 +1481,13 @@ impl TableView {
             }
             if gi == WALK_TITLE {
                 if sy + HDR_H > vis_top && sy < vis_bot {
-                    let p = p.alpha(edge_alpha(sy + HDR_H - HDR_INK_PAD, vis_bot, HDR_INK_PAD));
+                    let p = p.alpha(
+                        bottom_alpha(sy + HDR_H - HDR_INK_PAD, HDR_INK_PAD)
+                            * Self::top_edge_alpha(sy + HEADER_CAP_INSET, vis_top),
+                    );
                     let hsz = theme::size::CAPTION;
                     let (cap_top, baseline) = plx_gfx::text::text_cap_band(hsz, 0);
-                    let band = Rect::new(content_x, sy + HEADER_CAP_INSET, (text_right - content_x).max(0.0), baseline - cap_top);
+                    let band =Rect::new(content_x, sy + HEADER_CAP_INSET, (text_right - content_x).max(0.0), baseline - cap_top);
                     if let Some((title, x0)) = self.title_run(measure) {
                         let glyph = CString::new(TITLE_BACK_GLYPH).unwrap_or_default();
                         Label::new(glyph.as_ptr(), hsz, self.header_ink).v(VAlign::CapTop).draw(p, band);
@@ -1434,8 +1503,12 @@ impl TableView {
             if gi == -1 {
                 // panel/section header; scissor-clipped to `frame`
                 if sy + HDR_H > vis_top && sy < vis_bot {
-                    // fades out at the bottom edge before its caps are cut (`bottom_edge_alpha`)
-                    let p = p.alpha(edge_alpha(sy + HDR_H - HDR_INK_PAD, vis_bot, HDR_INK_PAD));
+                    // dissolves under the top edge, and a panel's fades out at the bottom edge before
+                    // its caps are cut (`bottom_edge_alpha`)
+                    let p = p.alpha(
+                        bottom_alpha(sy + HDR_H - HDR_INK_PAD, HDR_INK_PAD)
+                            * Self::top_edge_alpha(sy + HEADER_CAP_INSET, vis_top),
+                    );
                     let sec = &self.sections[si];
                     // **CAPS at CAPTION, one size in BOTH size classes.** The caps are what make a
                     // header read as a label rather than as a row, which is why the size stops
@@ -1490,8 +1563,9 @@ impl TableView {
             if sy + h < vis_top || sy > vis_bot {
                 return; // fully scrolled out; a partial edge row is drawn and scissor-clipped to `frame`
             }
-            // …and at the BOTTOM edge it is faded out before the scissor can reach its ink
-            let edge = self.bottom_edge_alpha(sy, h, vis_bot);
+            // …dissolved under the TOP edge, and (a panel's rows only) faded out at the BOTTOM edge
+            // before the scissor can reach its ink
+            let edge = bottom_alpha(sy + h - ROW_INK_PAD, ROW_INK_PAD) * Self::top_edge_alpha(sy + ROW_INK_PAD, vis_top);
             if edge <= 0.0 {
                 return;
             }
@@ -1529,19 +1603,24 @@ impl TableView {
                 view.draw(p, Rect::new(x, sy + (h - ink_h) * 0.5, w, ink_h));
                 return;
             }
-            // **`list_focused` gates the INK, not just the pill.** `ink` is near-black and is only
-            // legible ON the accent pill; suppressing the pill while still flipping the ink drew
-            // black-on-panel rows, which is what the owner saw the moment focus moved to the
-            // Sources panel's level pills. The two are one decision and are read from one flag.
+            // **The INK follows the PILL, and `list_focused` gates both.** `ink` is near-black and
+            // is only legible ON the accent pill, so a row wears it exactly as far as the pill
+            // currently covers its ink band (`pill_cover`) — not from the frame focus moves to it,
+            // when the pill is still a row away and the label read black on the dark ground. A
+            // table that holds no focus draws no pill and covers nothing; suppressing the pill
+            // while still flipping the ink drew black-on-panel rows, which is what the owner saw
+            // the moment focus moved to the Sources panel's level pills. `focused` stays the
+            // SELECTION (the marquee runs on the selected row).
             let focused = gi == self.sel && self.list_focused;
-            let base = if focused {
-                ink
-            } else if row.dim {
-                dimc
-            } else {
-                white
+            let cover = self.pill_cover(cy, h);
+            // `cross` at the ends is exact, so a row at rest on either side is the colour it always was
+            let on_pill = |rest: [f32; 4], over: [f32; 4]| match cover {
+                c if c <= 0.0 => rest,
+                c if c >= 1.0 => over,
+                c => theme::cross(rest, over, c),
             };
-            let row_bg = if focused { crate::ACCENT } else { PANEL_BG };
+            let base = on_pill(if row.dim { dimc } else { white }, ink);
+            let row_bg = on_pill(PANEL_BG, crate::ACCENT);
             let cyc = sy + h * 0.5; // row vertical center
 
             // Leading column (SVG): the PICKER's tick, or an ACTION's glyph — one or the other, and
@@ -1592,7 +1671,7 @@ impl TableView {
                     // knocked out of the interior
                     let sty = crate::widgets::BadgeStyle::Outlined {
                         col: base,
-                        border: if focused { base } else { theme::OVERLAY_BORDER },
+                        border: on_pill(theme::OVERLAY_BORDER, ink),
                         bg: row_bg,
                     };
                     bx += crate::widgets::badge(p, bx, cyc, b.text(), None, sty, measure) + BADGE_GAP;
@@ -1606,7 +1685,7 @@ impl TableView {
             // step is the ink's ALONE — the run itself is bold (see [`VALUE_BOLD`], which all three
             // calls below take so the measure and the paint can never be two different faces).
             if let Some(v) = row.readout() {
-                let ink = row_value_ink(row, focused);
+                let ink = on_pill(row_value_ink(row, false), row_value_ink(row, true));
                 // the value gives way before the label (`row_columns`): elided to its column
                 let vsz = theme::size::LABEL;
                 let value_w = self.row_columns(row, frame.w, measure).value_w;
@@ -1706,11 +1785,7 @@ impl TableView {
             // while the badges sat on the title's line: right-aligned and row-centred, a chip now
             // occupies the sub-line's band too, and an unbounded sub-line would run under it.
             if !row.detail.is_empty() {
-                let sub = if focused {
-                    theme::scrim_black(0.6)
-                } else {
-                    dimc
-                };
+                let sub = on_pill(dimc, theme::scrim_black(0.6));
                 let detail = plx_gfx::text::elide_by(&row.detail, text_w, false, |t| {
                     measure.width_str(t, theme::size::CAPTION, false)
                 });
@@ -2432,5 +2507,107 @@ mod tests {
             assert_eq!(row_text_xs(&t, frame, 0).len(), 1, "an unfocused overflowing label: one elided run");
             assert_eq!(plx_machine::idle::take_local_damage(), 0, "nothing animates, nothing reports");
         }
+    }
+
+    // ---- the focus pill's ink and the page edges ----------------------------------------------
+
+    fn three_rows(sel: i32) -> TableView {
+        let mut t = TableView::new();
+        t.set_sections(vec![Section::new("S").row(Row::new("a")).row(Row::new("b")).row(Row::new("c"))], sel, false);
+        t
+    }
+
+    fn cover_of(t: &TableView, gi: i32) -> f32 {
+        t.pill_cover(t.row_top(gi), t.row_height(gi))
+    }
+
+    /// **A row's ink follows the sliding pill, not the selection.** The reporter filmed Settings:
+    /// moving focus down turned the NEXT row's label black on the first frame, while the pill was
+    /// still a row away, so for a few frames it was dark text on the dark ground. The ink is a
+    /// function of how much of the row's ink band the pill covers NOW, so it lands with the pill
+    /// and the row the pill is leaving brightens as it goes.
+    #[test]
+    fn a_rows_ink_follows_the_pill_not_the_selection() {
+        let _serial = plx_base::testlock::serial();
+        let mut t = three_rows(0);
+        assert_eq!((cover_of(&t, 0), cover_of(&t, 1)), (1.0, 0.0), "at rest the pill's row is inked, the others are not");
+
+        t.move_sel(1);
+        assert_eq!(t.sel, 1);
+        t.update(1.0 / 60.0, 600.0);
+        assert_eq!(cover_of(&t, 1), 0.0, "one frame in, the pill has not reached the new row's ink: it stays light");
+        assert_eq!(cover_of(&t, 0), 1.0, "the pill still sits under the old row's ink: it stays dark");
+
+        let (mut prev_new, mut prev_old) = (0.0f32, 1.0f32);
+        let mut crossed = false;
+        for _ in 0..240 {
+            t.update(1.0 / 60.0, 600.0);
+            let (new, old) = (cover_of(&t, 1), cover_of(&t, 0));
+            if new > 0.0 {
+                // ink never leads the fill: the new row only darkens once the pill's leading edge
+                // is inside its ink band
+                assert!(t.hl_bot.pos > t.row_top(1) + ROW_INK_PAD + PILL_INSET, "ink led the pill: cover {new} with the edge at {}", t.hl_bot.pos);
+            }
+            assert!(new + 1e-4 >= prev_new, "the arriving row's ink only grows: {prev_new} -> {new}");
+            assert!(old <= prev_old + 1e-4, "the leaving row's ink only fades: {prev_old} -> {old}");
+            crossed |= new > 0.0 && new < 1.0 && old > 0.0 && old < 1.0;
+            (prev_new, prev_old) = (new, old);
+        }
+        assert!(crossed, "the premise: some frame has both rows part-covered");
+        assert_eq!((cover_of(&t, 1), cover_of(&t, 0)), (1.0, 0.0), "settled: the new row is inked, the old is released");
+    }
+
+    /// A table that does not hold focus draws no pill, so no row is inked for one.
+    #[test]
+    fn an_unfocused_table_inks_no_row() {
+        let t = three_rows(1).unfocused();
+        assert_eq!((0..3).map(|i| cover_of(&t, i)).sum::<f32>(), 0.0);
+    }
+
+    /// **A page's rows run off the bottom of the SCREEN** — no cut at its safe-area frame, no
+    /// fade. A panel (a popover at its height cap) is bounded, so it keeps the fade that stops its
+    /// scissor cutting a glyph; a page is not, and the fade there hid the rows it scrolled to.
+    #[test]
+    fn a_page_table_lets_rows_slide_off_the_bottom_screen_edge() {
+        let _serial = plx_base::testlock::serial();
+        let mut t = TableView::new();
+        let mut sec = Section::new("S");
+        for i in 0..30 {
+            sec = sec.row(Row::new(format!("row {i}")));
+        }
+        t.set_sections(vec![sec], 0, false);
+        let frame = Rect::new(0.0, 0.0, 700.0, 600.0);
+        let text_ys = |page: bool| -> Vec<f32> {
+            crate::draw_census::capture(|| {
+                let p = crate::Painter::recording();
+                if page {
+                    t.draw_page(p, frame, &crate::fixture::FixtureMeasure)
+                } else {
+                    t.draw(p, frame, &crate::fixture::FixtureMeasure)
+                }
+            })
+            .into_iter()
+            .filter(|(tag, _)| *tag == 100)
+            .map(|(_, r)| r.y)
+            .collect()
+        };
+        let (page, panel) = (text_ys(true), text_ys(false));
+        assert!(panel.iter().all(|&y| y < frame.h), "a panel is cut at its frame");
+        assert!(page.iter().any(|&y| y >= frame.h), "a page keeps drawing rows below its frame");
+        // a row that STARTS on screen is drawn (and scissored at the edge); one that starts past it is culled
+        assert!(page.iter().all(|&y| y < crate::consts::SCR_H + ROW_H), "rows past the screen's bottom edge are culled");
+    }
+
+    /// **The top edge dissolves; whatever rests at the top never does.** The first section label,
+    /// the page title band and the first row all sit at or below [`TOP_FADE_H`] from the frame's top,
+    /// so a table at rest is fully opaque, and a row is gone before its ink reaches the frame's edge.
+    #[test]
+    fn rows_dissolve_under_the_top_edge_and_nothing_at_rest_does() {
+        assert_eq!(TableView::top_edge_alpha(100.0 + TOP_FADE_H, 100.0), 1.0);
+        assert_eq!(TableView::top_edge_alpha(100.0 + TOP_FADE_H * 0.5, 100.0), 0.5);
+        assert_eq!(TableView::top_edge_alpha(100.0, 100.0), 0.0, "ink at the edge is gone");
+        assert_eq!(TableView::top_edge_alpha(40.0, 100.0), 0.0, "and so is ink above it");
+        assert!(FIRST_HEADER_CAP_OFFSET >= TOP_FADE_H);
+        assert!(TOP_PAD + ROW_INK_PAD >= TOP_FADE_H);
     }
 }

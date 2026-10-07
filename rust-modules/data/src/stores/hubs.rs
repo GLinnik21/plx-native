@@ -134,6 +134,11 @@ impl HubsStore {
     pub fn remove_test_item(&mut self, rk: &str) { crate::pms::remove_test_item(&mut self.state, rk); }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn retag_test_item_as_collection(&mut self, rk: &str) {
+        crate::pms::retag_test_item_as_collection(&mut self.state, rk);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn hub_len_for_test(&self, i: usize) -> usize { crate::pms::hub_len(&self.state, i) }
 
     #[cfg(any(test, feature = "test-support"))]

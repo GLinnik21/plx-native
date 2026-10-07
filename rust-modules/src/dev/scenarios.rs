@@ -158,6 +158,8 @@ pub(crate) struct Scenarios {
     pub(crate) modal_bench: Option<bench::ModalBench>,
     /// `/tmp/plxnative-deepbench` — see [`bench`]'s module doc.
     pub(crate) deep_bench: Option<bench::DeepBench>,
+    /// `/tmp/plxnative-herobench` — see [`bench`]'s module doc and [`bench::HeroBench`].
+    pub(crate) hero_bench: Option<bench::HeroBench>,
     /// The boot-time trigger flags the loop consults every frame after.
     pub(crate) dev: DevFlags,
     /// The screenshot pipeline's arms (`plxnative-libtype`, `-libgrid`, `-libshelf`, `-libmenu`, `-clockstop`) — see [`screenshot`].
@@ -498,6 +500,19 @@ pub(crate) fn deepbench_value() -> Option<(u32, String)> {
         }
         let (n, rk) = v.split_once(',').unwrap_or((v, ""));
         (parse_bench_n(n), rk.trim().to_string())
+    })
+}
+/// `/tmp/plxnative-herobench[=<n>[,<period_ms>[,grid]]]` — `(n, period_ms, target)`, defaulting to
+/// 100 cycles at [`bench::DEFAULT_HERO_PERIOD_MS`] over the hero carousel. A period below the
+/// carousel's flip cooldown is raised to it by [`bench::HeroBench::new`]; `grid` flips focus
+/// across the first shelf's cards instead.
+pub(crate) fn herobench_value() -> Option<(u32, u32, bench::PongTarget)> {
+    plx_base::devtrig::read("herobench").map(|v| {
+        let mut parts = v.trim().split(',').map(str::trim);
+        let n = parse_bench_n(parts.next().unwrap_or(""));
+        let period = parts.next().and_then(|p| p.parse().ok()).unwrap_or(bench::DEFAULT_HERO_PERIOD_MS);
+        let target = if parts.next() == Some("grid") { bench::PongTarget::Grid } else { bench::PongTarget::Hero };
+        (n, period, target)
     })
 }
 fn parse_bench_n(v: &str) -> u32 {
@@ -2158,6 +2173,9 @@ pub(crate) fn bench_frame_tick(app: &mut App, presented: bool, now: u32) {
     if let Some(b) = app.scenarios.deep_bench.as_mut() {
         bench::bench_note_frame(&mut b.clock, now, total, interval);
     }
+    if let Some(b) = app.scenarios.hero_bench.as_mut() {
+        bench::bench_note_frame(&mut b.clock, now, total, interval);
+    }
 }
 
 /// The once-per-bench `bench: kind=<k> settled` line — how long boot took to go still before the
@@ -2471,6 +2489,48 @@ pub(crate) fn deep_bench_tick(app: &mut App, now: u32) {
         bench::BenchStep::Done(n) => {
             plx_base::eventlog::log(&format!("bench: kind=deep done cycles={n} rss_root_kb={}", read_rss_kb()));
             app.scenarios.deep_bench = None;
+        }
+    }
+}
+
+/// `/tmp/plxnative-herobench` — see [`bench::HeroBench`]: `n` cycles of two flips of the real Home
+/// hero carousel through the same `HomeCmd::Flip` the Left/Right key lands on, walking three titles
+/// and back. Called from `land_results` beside the other bench ticks. Each half of the round-trip
+/// clock is one flip, measured to its settle point.
+pub(crate) fn hero_bench_tick(app: &mut App, now: u32) {
+    let Some(period) = app.scenarios.hero_bench.as_ref().map(|b| b.period_ms) else { return };
+    let step = {
+        let b = app.scenarios.hero_bench.as_mut().unwrap();
+        bench::bench_advance(&mut b.clock, now, period)
+    };
+    match step {
+        bench::BenchStep::Nothing => {}
+        bench::BenchStep::Settled(waited, capped) => log_bench_settled("hero", waited, capped),
+        bench::BenchStep::Start(cycle) | bench::BenchStep::Settle(cycle) => {
+            let dir = bench::hero_flip_dir(cycle);
+            match app.scenarios.hero_bench.as_ref().unwrap().target {
+                bench::PongTarget::Hero => {
+                    app.bridge.home_command(HomeCmd::Flip(dir));
+                }
+                bench::PongTarget::Grid => {
+                    let key = if dir > 0 { Key::Right } else { Key::Left };
+                    app.inputs.extend(crate::app::bridge::script_key(key, Tick { ms: now, dt_us: 0 }));
+                }
+            }
+        }
+        bench::BenchStep::Report(cycle) => {
+            let b = app.scenarios.hero_bench.as_ref().unwrap();
+            let c = &b.clock;
+            plx_base::eventlog::log(&format!(
+                "bench: kind=hero cycle={}/{} target={} worst_ms={:.1} frames={} dur_ms={} rss_kb={} {} {}",
+                cycle + 1, c.n, if bench::hero_flip_dir(cycle) > 0 { "next" } else { "prev" },
+                c.worst_ms(), c.frames(), now.wrapping_sub(c.cycle_start), read_rss_kb(),
+                tex_field(), c.fields(),
+            ));
+        }
+        bench::BenchStep::Done(n) => {
+            plx_base::eventlog::log(&format!("bench: kind=hero done cycles={n}"));
+            app.scenarios.hero_bench = None;
         }
     }
 }

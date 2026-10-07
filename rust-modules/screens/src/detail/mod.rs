@@ -173,18 +173,27 @@ pub struct DetailScreen {
     /// for the same (sid, rk) that predates this promotion's own admission.
     refresh_gen: u32,
     restore_intent: Option<RestoreIntent>,
-    /// This page has already asked the Metadata store to drop the slot it owned. §3.4's
+    /// This page has already sent its addressed `ClearItem` to the Metadata store. §3.4's
     /// `pop_sequence` delivers `WillLeave(ForGood)` AND `Unmount` to the same body, and both land
-    /// in the teardown arm below; the `self.detail(meta).is_some()` guard there used to disarm
-    /// itself because the first `Clear` had already run against the process-wide slot by the time
-    /// the second event arrived. With the store owned per `Bridge` the `Clear` crosses
-    /// `AppFx::Store` and is still queued, so the guard reads a slot this page has already
-    /// disclaimed and emits a SECOND non-idempotent `Clear` — a second `supersede_detail`
-    /// generation against an item nobody is looking at. Not hashed: it is teardown bookkeeping for
-    /// one event pair, never a property of the page's logical shape.
+    /// in the teardown arm below, so without the latch one teardown would send two. The command is
+    /// idempotent in effect (it drops `current` only while `current` is this page's item, and
+    /// supersedes a load only while this page's item is the one awaited), but each send crosses
+    /// `AppFx::Store` and a second supersede would bump the request generation again. The page does
+    /// not ask whether its own item ever landed: a page closed before its fetch arrived must still
+    /// retire that fetch, or the landing replaces the page underneath it. Not hashed: it is
+    /// teardown bookkeeping for one event pair, never a property of the page's logical shape.
     /// (`screens/person.rs`'s `PersonCmd::Close` has the identical un-latched shape; reported
     /// separately rather than fixed here.)
     teardown_cleared: bool,
+    /// This page was DISMISSED as a surface (`ScreenEvent::Closing`) and has withdrawn its request
+    /// from the Metadata store (`MetadataCmd::Withdraw`); it is only fading out now. From then on
+    /// the store awaiting THIS page's address usually means another page asked for it since — the
+    /// same copy presented again inside this one's fade — so the teardown's `ClearItem`, which
+    /// would retire that request and drop the item it is about to show, is not sent. Not only: a
+    /// Closing surface carried into covered modals is re-entered by the container and asks for its
+    /// own item too, and nested presented copies (a copy presented from inside another copy) are
+    /// not covered. Not hashed: lifecycle bookkeeping, like `teardown_cleared`.
+    withdrawn: bool,
 
     // Render state.
     scroll: Spring,
@@ -406,6 +415,7 @@ impl DetailScreen {
             refresh_gen: 0,
             restore_intent: None,
             teardown_cleared: false,
+            withdrawn: false,
             scroll: Spring::at(0.0),
             scroll_target: 0.0,
             episode_scroll: Spring::at(0.0),
@@ -1938,6 +1948,20 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 self.content(fx, ContentReq::Present(arg.clone()));
                 Handled::Yes
             }
+            // Dismissed: the page under this surface has just been entered again, and it decided
+            // what to ask for on the store as it stands. A request of this page's still in flight
+            // would land on top of the item that page found loaded — and this page's teardown,
+            // ~0.5 s later, would then empty the slot — so it is retired NOW (this event is queued
+            // ahead of the host's `Enter(Restored)`). What this page already loaded stays in the
+            // slot: its body keeps drawing it for the close fade.
+            ScreenEvent::Closing => {
+                self.withdrawn = true;
+                fx.push(Fx::App(AppFx::Store(
+                    StoreId::Metadata,
+                    StoreCmd::Metadata(MetadataCmd::Withdraw { sid: self.sid, rk: self.rk.clone() }),
+                )));
+                Handled::Yes
+            }
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
                 self.pending_season = None;
                 self.season_settle = 0.0;
@@ -1950,14 +1974,26 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 self.restore_intent = None;
                 self.refresh = DetailRefreshPhase::None;
                 self.return_pending = false;
-                // `&& !self.teardown_cleared`: see the field. One teardown, one `Clear`, even
-                // though §3.4 delivers this arm twice and the queued command has not run yet.
-                if self.detail(meta).is_some() && !self.teardown_cleared {
+                // Sent whether or not this page's item ever landed: a page closed before its
+                // fetch arrived still has to retire that fetch, or the landing displaces the
+                // page uncovered underneath it. `ClearItem` is addressed, so it touches the
+                // slot only while the slot is this page's. `!self.teardown_cleared`: see the
+                // field. One teardown, one `ClearItem`, even though §3.4 delivers this arm twice.
+                // A page that withdrew at dismissal sends nothing if its address is awaited again:
+                // see `withdrawn`.
+                if !self.teardown_cleared {
                     self.teardown_cleared = true;
-                    fx.push(Fx::App(AppFx::Store(
-                        StoreId::Metadata,
-                        StoreCmd::Metadata(MetadataCmd::Clear),
-                    )));
+                    let reasked = self.withdrawn
+                        && meta.detail_request_status(self.sid, &self.rk).is_some();
+                    if !reasked {
+                        fx.push(Fx::App(AppFx::Store(
+                            StoreId::Metadata,
+                            StoreCmd::Metadata(MetadataCmd::ClearItem {
+                                sid: self.sid,
+                                rk: self.rk.clone(),
+                            }),
+                        )));
+                    }
                 }
                 Handled::Yes
             }

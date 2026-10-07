@@ -195,6 +195,28 @@ impl Press {
         self.publish();
     }
 
+    /// End the in-flight press AT REST, with no spring-back: the hold was TAKEN — a surface (the
+    /// item menu) really opened over the card (a hold the app declines is [`cancel`](Self::cancel)led
+    /// instead and keeps its bounce). A press already at rest is left alone. The dip is a press-in on the card's focus pop, so a release bounce left
+    /// running under the menu is a poster in motion beneath a scrim and the frozen host snapshot of
+    /// it: the page, the snapshot and the opener's lift (drawn at rest) then disagree, and the card
+    /// reads as having lost its pop with its title doubled. The opener keeps the pop it had when
+    /// focused, as it does for the whole life of the menu. [`cancel`](Self::cancel) is for the press
+    /// that was ABANDONED (navigation, BACK), where the bounce is the feedback.
+    pub fn settle(&mut self) {
+        let s = &mut *self;
+        if s.phase == Phase::Idle {
+            return; // nothing in flight (as `cancel`): a press already at rest has nothing to end
+        }
+        s.sp.jump(REST);
+        s.phase = Phase::Idle;
+        s.want_commit = false;
+        s.cancelled = true;
+        s.commit_at = 0;
+        s.release_at = 0;
+        self.publish();
+    }
+
     /// True while a press is in flight that can still reach its activation — [`is_active`] MINUS the
     /// cancelled ones.
     ///

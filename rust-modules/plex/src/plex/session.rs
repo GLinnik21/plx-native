@@ -2735,6 +2735,23 @@ impl Session {
             .unwrap_or(false)
     }
 
+    /// **Is `uuid` a Plex Home profile that is NOT the account holder** — a managed, restricted
+    /// or Guest profile, the ones a household sets up for somebody else?
+    ///
+    /// Keyed by the uuid the caller names (the published profile, [`current_profile_key`]) rather
+    /// than by [`Session::user`], so a per-profile decision and the identity it keys on cannot
+    /// disagree. The empty uuid is the account holder with no Plex Home selection, never managed.
+    ///
+    /// **The direction of an unknown is the opposite of [`Self::active_profile_is_admin`]'s, on
+    /// purpose.** That one guards another identity's CREDENTIALS, so "cannot prove it" must read as
+    /// "not the owner". This one decides whether a profile is owed a one-time question, where the
+    /// cost of a wrong yes is the question being put once to an admin whose roster had not landed,
+    /// and the cost of a wrong no is the report this exists for: a profile never asked at all. A
+    /// uuid the roster does not list is therefore managed.
+    pub fn profile_is_managed(&self, uuid: &str) -> bool {
+        !uuid.is_empty() && !self.home_users.iter().any(|u| u.uuid == uuid && u.admin)
+    }
+
     /// **Everyone in this house, as plex.tv account ids** — the input to
     /// [`super::servers::is_household`] and so to the one "Shared by …" rule: a server whose
     /// `ownerId` is in here belongs to the household and credits nobody.

@@ -512,6 +512,131 @@ fn a_detail_landing_for_another_servers_item_of_the_same_key_is_skipped() {
     clear(test_state(), test_adapter());
 }
 
+/// **A page closing must not cancel the request of the page that took the slot back.**
+///
+/// The reported "empty page on previous server return": Detail A (server A) presents server B's
+/// copy of the same film as a surface, then BACK dismisses it. The container hands A its
+/// `Uncover` + `Enter(Restored)` the instant the dismissal starts, while B's surface is still
+/// fading out and B's detail is still `current()` — so A asks for its own metadata. B's body is
+/// unmounted a few frames LATER, and its teardown `Clear` superseded whatever was in flight, A's
+/// fresh request included: the generation moved, the landing was dropped as stale, and A sat on
+/// its hero art with no synopsis, cast or rows, with nothing left to ask again. B's teardown now
+/// closes only B's own item.
+#[test]
+fn closing_one_servers_page_leaves_the_other_servers_pending_request_alone() {
+    let _serial = plx_base::testlock::serial();
+    clear(test_state(), test_adapter());
+    let a = plx_plex::plex::ServerId::from_raw(0);
+    let b = plx_plex::plex::ServerId::from_raw(1);
+    let item = |sid, title: &str| Detail { sid, rk: "42".into(), title: title.into(), ..Default::default() };
+
+    // B's copy is the loaded item, as it is while B's surface is on screen.
+    let gen_b = begin_detail_for_test(test_adapter(), b, "42");
+    land_detail(test_adapter(), b, "42", gen_b, Some(item(b, "on B")));
+    assert!(pump_detail(test_state(), test_adapter()));
+
+    // A is uncovered and asks for its own; B's body is only now torn down.
+    let gen_a = begin_detail_for_test(test_adapter(), a, "42");
+    clear_item(test_state(), test_adapter(), b, "42");
+    assert_eq!(current(test_state()).map(|d| d.sid), None, "B's item is gone with B's page");
+    assert_eq!(detail_request_status(test_adapter(), a, "42"), Some(true),
+        "A's request is still the one awaited");
+    assert_eq!(detail_generation(test_adapter()), gen_a, "closing B did not supersede A's request");
+
+    land_detail(test_adapter(), a, "42", gen_a, Some(item(a, "on A")));
+    assert!(pump_detail(test_state(), test_adapter()), "A's landing installs");
+    assert_eq!(current(test_state()).map(|d| (d.sid, d.title.clone())), Some((a, "on A".to_string())));
+    assert_eq!(detail_request_status(test_adapter(), a, "42"), Some(false));
+
+    // …and closing a page whose item IS the awaited one still supersedes, as `clear` always did.
+    let gen = begin_detail_for_test(test_adapter(), a, "42");
+    clear_item(test_state(), test_adapter(), a, "42");
+    assert!(!detail_loading(test_adapter()), "the page's own in-flight fetch is superseded");
+    land_detail(test_adapter(), a, "42", gen, Some(item(a, "late")));
+    assert!(!pump_detail(test_state(), test_adapter()), "a landing after its own page closed is dropped");
+    assert_eq!(current(test_state()).map(|d| d.sid), None);
+}
+
+/// **A page that closes before its own fetch lands must not disturb the page under it.**
+///
+/// The residual hole behind the "empty page on previous server return": Detail A (server A) is
+/// `current`, B's copy is presented over it, and BACK is pressed BEFORE B's metadata lands. B was
+/// never `current`, so its teardown used to send nothing, and B's in-flight fetch then replaced
+/// A's item in the single slot — A's identity-filtered view went empty with nothing left to ask
+/// again. B's teardown now sends its addressed `ClearItem` whether or not its item arrived: it
+/// supersedes B's own request (the late landing is dropped) and leaves A's item in `current`.
+#[test]
+fn closing_a_page_before_its_fetch_lands_drops_that_landing_and_keeps_the_page_under_it() {
+    let _serial = plx_base::testlock::serial();
+    clear(test_state(), test_adapter());
+    let a = plx_plex::plex::ServerId::from_raw(0);
+    let b = plx_plex::plex::ServerId::from_raw(1);
+    let item = |sid, title: &str| Detail { sid, rk: "42".into(), title: title.into(), ..Default::default() };
+
+    // A's copy is the loaded item; B's fresh open then asks for its own.
+    let gen_a = begin_detail_for_test(test_adapter(), a, "42");
+    land_detail(test_adapter(), a, "42", gen_a, Some(item(a, "on A")));
+    assert!(pump_detail(test_state(), test_adapter()));
+    let gen_b = begin_detail_for_test(test_adapter(), b, "42");
+    assert_eq!(detail_request_status(test_adapter(), b, "42"), Some(true));
+
+    // BACK before B lands: B's teardown closes B's item.
+    clear_item(test_state(), test_adapter(), b, "42");
+    assert_eq!(current(test_state()).map(|d| (d.sid, d.title.clone())), Some((a, "on A".to_string())),
+        "closing B leaves A's item in the slot");
+    assert!(!detail_loading(test_adapter()), "B's own in-flight fetch is superseded");
+    assert_ne!(detail_generation(test_adapter()), gen_b, "the generation moved past B's request");
+
+    // B's fetch lands late: it is dropped, A's item stays.
+    land_detail(test_adapter(), b, "42", gen_b, Some(item(b, "on B")));
+    assert!(!pump_detail(test_state(), test_adapter()), "B's late landing is dropped");
+    assert_eq!(current(test_state()).map(|d| (d.sid, d.title.clone())), Some((a, "on A".to_string())));
+    clear(test_state(), test_adapter());
+}
+
+/// **A dismissed page stops asking at once, and keeps what it draws.**
+///
+/// A presented copy (B, on another server) is dismissed over the page it came from (A): the
+/// container enters A again immediately, but B's body fades for ~0.5 s before its teardown. B's
+/// `Withdraw` at dismissal retires B's own request so nothing of B can land into the slot A has
+/// just found its item in; it removes nothing from `current` (B's body is still drawing it), and
+/// it leaves any OTHER page's request alone.
+#[test]
+fn withdrawing_a_dismissed_page_retires_only_its_own_request_and_keeps_the_loaded_item() {
+    let _serial = plx_base::testlock::serial();
+    clear(test_state(), test_adapter());
+    let a = plx_plex::plex::ServerId::from_raw(0);
+    let b = plx_plex::plex::ServerId::from_raw(1);
+    let item = |sid, title: &str| Detail { sid, rk: "42".into(), title: title.into(), ..Default::default() };
+
+    // A is loaded; B's request is in flight when B is dismissed.
+    let gen_a = begin_detail_for_test(test_adapter(), a, "42");
+    land_detail(test_adapter(), a, "42", gen_a, Some(item(a, "on A")));
+    assert!(pump_detail(test_state(), test_adapter()));
+    let gen_b = begin_detail_for_test(test_adapter(), b, "42");
+    assert!(withdraw(test_adapter(), b, "42"), "B's own request is retired");
+    assert_eq!(detail_request_status(test_adapter(), b, "42"), None, "nothing awaits B any more");
+    assert!(!detail_loading(test_adapter()));
+    land_detail(test_adapter(), b, "42", gen_b, Some(item(b, "on B")));
+    assert!(!pump_detail(test_state(), test_adapter()), "B's landing inside its fade is dropped");
+    assert_eq!(current(test_state()).map(|d| (d.sid, d.title.clone())), Some((a, "on A".to_string())));
+
+    // B had landed before it was dismissed: its item stays for the fade, and B no longer awaits.
+    let gen_b = begin_detail_for_test(test_adapter(), b, "42");
+    land_detail(test_adapter(), b, "42", gen_b, Some(item(b, "on B")));
+    assert!(pump_detail(test_state(), test_adapter()));
+    assert!(withdraw(test_adapter(), b, "42"));
+    assert_eq!(current(test_state()).map(|d| d.sid), Some(b), "the closing body keeps drawing B");
+    assert_eq!(detail_request_status(test_adapter(), b, "42"), None);
+
+    // Another page's request is not B's to retire.
+    let gen_a = begin_detail_for_test(test_adapter(), a, "42");
+    assert!(!withdraw(test_adapter(), b, "42"));
+    assert_eq!(detail_request_status(test_adapter(), a, "42"), Some(true), "A's request is untouched");
+    assert_eq!(detail_generation(test_adapter()), gen_a);
+    clear(test_state(), test_adapter());
+}
+
 /// Spec §15.1 `a_refused_spawn_lands_a_refusal_event`, on the real store: a request whose
 /// worker the OS refused is answered by a `Refused` record, and the pump settles the spinner
 /// off it — exactly one event for the request, nothing latched.

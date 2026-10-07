@@ -85,6 +85,83 @@ impl GridBands {
     }
 }
 
+/// **The focus pop of a poster grid** — the spring that carries the focused cell toward
+/// `RowStyle::focus_scale` and the one that lets the cell that just lost focus back down, the
+/// grid's counterpart of a shelf's `RowMotion` per-tile springs. The Library's All grid and the
+/// Collection page both read their cells' scale from here, so neither draws `focus_scale` as a
+/// step.
+///
+/// It only starts from REST when a deliberate MOVE arms it ([`arm`](Self::arm), from the
+/// `FocusMoved` arm for `By::Dir` / `By::Pointer`); every other way a cell becomes focused — a
+/// restore, a reconcile, a command seating the cursor — is adopted at full scale by
+/// [`tick`](Self::tick), because a page coming back from a Detail push must land exactly as it
+/// was left. Inputs and the `FocusMoved` they deliver run BEFORE the screen's `Tick`, so a D-pad
+/// step has already armed the pop by the time `tick` steps it on from 1.0.
+///
+/// A hold menu changes nothing here: the menu is its own input scope, the page keeps its focus,
+/// and the settled pop is what the opener redraw reads ([`scale`](Self::scale)).
+pub struct GridPop {
+    pop: (Option<usize>, Spring),
+    /// The previously focused cell shrinking back to 1.0; its index clears once it has settled,
+    /// so a settled grid pays for no shrinking tile.
+    shrink: (Option<usize>, Spring),
+}
+
+impl GridPop {
+    pub const fn new() -> Self {
+        Self { pop: (None, Spring::at(1.0)), shrink: (None, Spring::at(1.0)) }
+    }
+
+    /// Arm the pop from REST: cell `index` starts at 1.0 and grows over the frames that follow,
+    /// while whatever held the pop before is handed to the shrink spring.
+    pub fn arm(&mut self, index: usize) {
+        self.shrink = self.pop;
+        self.pop = (Some(index), Spring::at(1.0));
+    }
+
+    /// Advance the pop one tick; `focused` is the focused cell's index, if focus is in the grid.
+    pub fn tick(&mut self, focused: Option<usize>, style: &RowStyle, dt: f32) {
+        if focused != self.pop.0 {
+            self.shrink = self.pop;
+            self.pop = (focused, Spring::at(if focused.is_some() { style.focus_scale } else { 1.0 }));
+        }
+        self.pop.1.step(if self.pop.0.is_some() { style.focus_scale } else { 1.0 }, style.k_scale, dt);
+        self.shrink.1.step(1.0, style.k_scale, dt);
+        if self.shrink.1.pos < 1.003 { self.shrink.0 = None; }
+    }
+
+    /// The focused cell's LIVE scale: the pop spring's position while the pop belongs to this
+    /// cell, and FULL scale when it does not — a focus this grid has not been told about yet (a
+    /// restore, a reconcile, a seat that landed after this frame's tick) lands finished rather
+    /// than animating, so drawing it at rest would be a one-frame collapse.
+    pub fn pop_scale(&self, index: usize, style: &RowStyle) -> f32 {
+        if self.pop.0 == Some(index) { self.pop.1.pos } else { style.focus_scale }
+    }
+
+    /// **The one scale a cell draws at — for its RECT and for its TREATMENT, always together**
+    /// (`card_row::draw_tile`/`draw_focused` derive the radius and shadow ramp from it): the live
+    /// pop while `focused`, the live shrink for the cell that just lost focus, rest for every
+    /// other. The press is the caller's to multiply in.
+    pub fn scale(&self, index: usize, focused: bool, style: &RowStyle) -> f32 {
+        if focused { self.pop_scale(index, style) }
+        else if self.shrink.0 == Some(index) { self.shrink.1.pos }
+        else { 1.0 }
+    }
+
+    /// Canonical animation state: a spring mid-flight decides the next frames even when two grids
+    /// draw the same rects.
+    pub fn write(&self, c: &mut plx_machine::machine::Canon) {
+        for (index, sp) in [&self.pop, &self.shrink] {
+            c.option(*index, |c, i| { c.u32(i as u32); });
+            c.f32(sp.pos).f32(sp.vel);
+        }
+    }
+}
+
+impl Default for GridPop {
+    fn default() -> Self { Self::new() }
+}
+
 /// The SETTLED bands of a grid whose focus is `row` — every reveal and scroll bound is computed
 /// from where the bands are going, never from their live springs (`card_row::settled_top`'s
 /// argument).
@@ -235,6 +312,28 @@ mod tests {
         bands.focus(None, true);
         for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
         assert!(bands.slots.iter().all(|(r, _)| r.is_none()));
+    }
+
+    /// The pop is armed from rest by a deliberate move, adopted whole when focus arrives
+    /// unannounced, lets the old cell back down and sleeps once settled.
+    #[test]
+    fn the_focus_pop_grows_from_rest_adopts_a_seat_whole_and_settles() {
+        let style = STYLE;
+        let dt = 1.0 / 60.0;
+        let mut pop = GridPop::new();
+        assert_eq!(pop.scale(3, true, &style), style.focus_scale, "an unannounced focus draws whole");
+        pop.tick(Some(3), &style, dt);
+        assert_eq!(pop.scale(3, true, &style), style.focus_scale, "…and the tick adopts it unanimated");
+        pop.arm(4);
+        pop.tick(Some(4), &style, dt);
+        let (new, old) = (pop.scale(4, true, &style), pop.scale(3, false, &style));
+        assert!(new > 1.0 && new < style.focus_scale, "the new cell grows from rest: {new}");
+        assert!(old > 1.0 && old < style.focus_scale, "the old cell lets go: {old}");
+        for _ in 0..120 { pop.tick(Some(4), &style, dt); }
+        assert!((pop.scale(4, true, &style) - style.focus_scale).abs() < 0.001);
+        assert_eq!(pop.scale(3, false, &style), 1.0);
+        let (_, moving) = plx_machine::idle::scoped_motion(|| pop.tick(Some(4), &style, dt));
+        assert!(!moving, "a settled grid lets idle suppression sleep");
     }
 
     #[test]

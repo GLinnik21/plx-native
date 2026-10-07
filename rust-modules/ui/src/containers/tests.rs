@@ -1565,6 +1565,32 @@ fn a_repeated_ask_for_the_pending_page_keeps_its_prepared_body() {
     }
 }
 
+/// **A dismissed surface hears `Closing` first, before its host is entered again, and its
+/// teardown still waits for the fade.** What the surface retires on `Closing` (Detail's
+/// `MetadataCmd::Withdraw`) must be queued ahead of whatever the host asks for on its
+/// `Enter(Restored)`, and nothing about the dismissal itself unmounts the body that is still fading.
+#[test]
+fn a_dismissed_surface_hears_closing_before_its_host_is_entered_and_leaves_only_when_settled() {
+    use crate::containers::Life;
+    use crate::screen::{Enter, ReturnState, ScreenEvent};
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    let surface = open_modal(&mut d, &mut rig, Style::Opaque { snapshot: true }, 16);
+    let life = d.nav.request(NavOp::Dismiss(surface), ReturnState::default());
+    let order: Vec<(EntryId, &str)> = life.iter().map(|step| match step {
+        Life::Ev(id, ev) => (*id, match ev {
+            ScreenEvent::Enter(Enter::Restored) => "enter_restored",
+            ev => ev.name(),
+        }),
+        _ => (EntryId(u32::MAX), "structural"),
+    }).collect();
+    assert_eq!(order, [(surface, "closing"), (home, "uncover"), (home, "enter_restored")]);
+    assert_eq!(d.nav.request(NavOp::Dismiss(surface), ReturnState::default()).len(), 0,
+        "a surface already closing is not told twice");
+    assert_eq!(d.nav.modals.surface(surface).map(|s| s.phase), Some(Phase::Closing),
+        "the body stays mounted for its fade");
+}
+
 /// **`has_pending_navigation` is a question about the PAGE stack**, and [`Navigation::moves_page`]
 /// is the one classifier that answers it — the same one [`Navigation::request`] routes by, so the
 /// guard and the commit cannot disagree about what a parked op is.

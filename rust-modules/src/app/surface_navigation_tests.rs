@@ -567,6 +567,51 @@ fn the_card_menu_is_a_surface_over_the_page_the_hold_happened_on() {
     }
 }
 
+/// **Opening the item menu ends the press that is armed ON THE DISPATCHER at rest**, so the card
+/// keeps its pop under the scrim; a menu that is NOT opened (the app declined the hold) leaves
+/// that press to spring back. The card hold is armed on `d.input.press` — the legacy
+/// `App.input.press` is the player control rows' alone, and settling it did nothing.
+#[test]
+fn opening_the_item_menu_settles_the_dispatchers_press_and_declining_does_not() {
+    let _g = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+    let host = d.nav.top_page().unwrap().id;
+    let mut row = plx_data::pms::PmsMovie::default();
+    row.rk = "42".into();
+    row.kind = 0;
+    // The press a card hold arms: `InputMachine::arm` sets BOTH the press and the arm record, so
+    // `cancel_press` (what the dispatcher does when the screen answers the hold) finds an arm to
+    // abandon and really starts the spring-back. Arming the bare `press` alone leaves `arm` None
+    // and `cancel_press` a no-op. The whole chain from a real key hold through `content_requests`
+    // is `run.rs`'s `a_real_card_hold_*` tests; this one pins `open_item_menu`'s own half.
+    let dip = |d: &mut Dispatcher<AppHost>| {
+        d.input.arm(
+            plx_machine::machine::PressArm {
+                key: plx_machine::machine::FocusKey { entry: host, elem: 0 },
+                from: plx_machine::machine::PressFrom::Key,
+                holdable: true,
+            },
+            MachineId::Nav,
+            0,
+        );
+        for ms in (16..200).step_by(16) { d.input.press.tick(ms, 0.016); }
+        assert!(d.input.press.is_live() && d.input.press.scale() < 0.99, "dipped");
+        d.input.cancel_press(); // what the dispatcher does when it hears the hold answered
+        assert!(d.input.press.is_active() && !d.input.press.is_live(), "abandoned and springing back");
+    };
+
+    dip(&mut d);
+    // declined: nothing opens, so nothing settles
+    assert!(d.input.press.is_active() && !d.input.press.is_live(), "a declined hold still springs back");
+
+    // opened: the press ends at rest
+    open_item_menu(&mut d, card_menu_arg(&row, false, true, host, None, None));
+    assert!(!d.input.press.is_active(), "the menu opening ends the card's press");
+    assert_eq!(d.input.press.scale(), 1.0);
+}
+
 /// **OK on a row reports ONE request and dismisses in the same drain**, carrying the row and
 /// the server the panel captured.
 ///

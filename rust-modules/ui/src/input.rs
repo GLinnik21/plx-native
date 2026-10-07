@@ -8,9 +8,9 @@
 //! The press protocol (§7.4): `Fx::Press(PressArm)` arms; `Input` steps the press on `Tick`,
 //! `Edge::Repeat` and `Up`, resolves dropped key-ups (`LOST_MS`, `MAX_HOLD_MS`), cancels on
 //! navigation, owner change or a pointer press whose hit leaves its arm; at `LONG_MS` it
-//! delivers `PressHold(id)` — `Handled::Yes` cancels the press (the item menu opened),
-//! `Handled::No` latches it non-committing — and on release `PressCommit(id)` to the arming
-//! owner only.
+//! delivers `PressHold(id)` — `Handled::Yes` cancels the press (it springs back, and
+//! `bridge::open_item_menu` settles it at rest only when a menu really opens), `Handled::No`
+//! latches it non-committing — and on release `PressCommit(id)` to the arming owner only.
 use super::press::Press;
 
 pub struct Input {
@@ -110,6 +110,16 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
         if self.arm.take().is_some() {
             self.press.cancel();
         }
+    }
+
+    /// A surface TOOK the hold (the item menu opened): end the press at rest rather than on the
+    /// release spring — see [`Press::settle`]. Called by whoever actually opens the menu, AFTER the
+    /// dispatcher has abandoned the press ([`cancel_press`](Self::cancel_press), when the screen
+    /// answered the hold), so it works on the press the hold armed, still springing back. A hold
+    /// the app declines never reaches here and keeps that spring-back.
+    pub fn settle_press(&mut self) {
+        self.arm = None;
+        self.press.settle();
     }
 
     /// The physical release.
