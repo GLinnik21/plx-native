@@ -276,10 +276,13 @@ make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero 
   sha256, licence, author); `catalog.json` is the library. A film's clear logo (the title art
   the home hero draws) is cut from that film's own CC BY poster by a `logo` recipe in the
   catalog, so it is a derivative under the poster's licence and CREDITS.md says so; every hero
-  candidate has one. Cutting it needs Pillow (`python3 -m pip install Pillow`), the one Python
+  candidate has one. Fetching (it checks pixel sizes) and cutting need Pillow (`python3 -m pip install Pillow`), the one Python
   package the pipeline uses. `make screenshots` is the one command: a run that succeeds also
   rewrites `CREDITS.md` beside the images, so the credits cannot lag them.
-  `python3 tools/demo_library.py check` validates both manifests offline. The cache lives outside
+  `python3 tools/demo_library.py check` validates both manifests offline, and `check --complete`
+  adds the completeness gate (every title and episode carries its credits, art and licence; what
+  is still missing is listed in `tests/demo_library/pending.json`, which may only shrink). Every
+  asset records its `kind` and pixel `width`/`height`, which `fetch` verifies. The cache lives outside
   the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`).
 - **Review before committing.** Open every image. A regenerated set is committed on its own,
   never in the same commit as a change to the pipeline.
