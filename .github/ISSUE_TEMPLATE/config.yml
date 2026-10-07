@@ -6,6 +6,3 @@ contact_links:
   - name: Ask a question
     url: https://github.com/GLinnik21/plx-native/discussions/categories/q-a
     about: Setup help and how-do-I questions. Use an issue only when something is broken.
-  - name: Troubleshooting and collecting logs
-    url: https://plxnative.com/troubleshooting/
-    about: Fixes for common problems, and how to fetch PlxNative's logs from the TV before you report one.
