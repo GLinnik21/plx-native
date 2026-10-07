@@ -115,7 +115,7 @@
     "many": "{heading} · {count} ДАРОЖАК",
     "other": "{heading} · {count} ДАРОЖКІ"
   },
-  "widgets.reason.jail_help": "Для выпраўлення патрэбны тэлевізар з root-доступам і доступ да Homebrew Channel. Даведка: github.com/GLinnik21/plx-native/issues/74.",
+  "widgets.reason.jail_help": "Для выпраўлення патрэбны тэлевізар з root-доступам і Homebrew Channel. Даведка: plxnative.com/troubleshooting/#playback-reports-jail_missing_rtkmem.",
   "widgets.tracks.empty": "Няма дарожак",
   "widgets.tracks.bytes": {
     "one": "{count} байт",

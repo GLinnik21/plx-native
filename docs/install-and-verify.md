@@ -126,7 +126,7 @@ See [LG's session guidance](https://webostv.developer.lge.com/develop/getting-st
 
 **PlxNative opens but your libraries are missing:** make sure you signed in to a Plex account with access to a server and that the server is reachable. PlxNative does not include a media library or set up Plex Media Server for you.
 
-For more connection help, see [webOSbrew's troubleshooting guide](https://www.webosbrew.org/devmode/#troubleshooting). To [report a PlxNative problem](https://github.com/GLinnik21/plx-native/issues), include your TV model, webOS version, PlxNative version, installation method, and the exact error. Do not post passwords, Passphrase, Plex tokens, or screenshots containing them.
+For more connection help, see [webOSbrew's troubleshooting guide](https://www.webosbrew.org/devmode/#troubleshooting). To [report a PlxNative problem](https://github.com/GLinnik21/plx-native/issues/new/choose), include your TV model, webOS version, PlxNative version, installation method, and the exact error. Do not post passwords, Passphrase, Plex tokens, or screenshots containing them. For a how-do-I question about setup, ask in [Discussions > Q&A](https://github.com/GLinnik21/plx-native/discussions/categories/q-a); bugs go to the issue form.
 
 If PlxNative itself is installed and opens but something inside it doesn't work — sign-in, playback, or anything else — see [Troubleshooting](troubleshooting.md).
 

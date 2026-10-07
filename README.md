@@ -84,7 +84,7 @@ installed through it ([how to keep them](docs/install-and-verify.md#important-de
 A rooted TV with Homebrew Channel has no expiry.
 
 If something goes wrong, check [Troubleshooting](docs/troubleshooting.md) first, then
-[tell me what happened](https://github.com/GLinnik21/plx-native/issues) — and if you own one of the
+[tell me what happened](https://github.com/GLinnik21/plx-native/issues/new/choose) — and if you own one of the
 sets above, it working is as useful a report as it failing.
 
 ## Installing
@@ -169,8 +169,9 @@ If that fits, it's genuinely nice to use. If it doesn't, the official app will s
 
 Issues and pull requests are welcome, especially from anyone whose television or library differs
 from mine — [**docs/building.md**](docs/building.md) is the build and the test loop, and says what
-hardware I most need help with. Security issues go through [`SECURITY.md`](SECURITY.md) rather than
-a public issue.
+hardware I most need help with. Feature ideas go to [Discussions >
+Ideas](https://github.com/GLinnik21/plx-native/discussions/categories/ideas). Security issues go
+through [`SECURITY.md`](SECURITY.md) rather than a public issue.
 
 ## Acknowledgements
 
