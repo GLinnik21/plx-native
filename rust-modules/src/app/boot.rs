@@ -1378,12 +1378,13 @@ pub(crate) unsafe fn construct(
     // boot who's-watching picker, else Home.
     //
     // …and Home is intercepted by the first-run question when this profile has never been
-    // asked it and the roster holds more than one source — or the profile is a managed one,
-    // whose roster is the household's single server (`plex::pins::asks`; `screens::onboard`). It belongs HERE as
+    // asked it and the roster holds a source at all — the account holder or a managed profile, one
+    // server or several (`plex::pins::asks`; the screen skips the one shape with nothing to choose,
+    // `screens::onboard`). It belongs HERE as
     // well as on the login path, because a single-Plex-Home-user account never meets the
     // picker at all: the two paths into Home are the picker's `take_ready` and this gate, and
     // a question asked on only one of them is a question half the accounts never see.
-    // `install_pms` above has already registered the stored roster, so "more than one source"
+    // `install_pms` above has already registered the stored roster, so "is there a source"
     // has a real answer by this line. An AUTOMATED boot is exempt for the reason the picker is
     // — a harness run must land on a deterministic Home.
     //

@@ -30,13 +30,13 @@ pub mod onboard {
         asks_for_sources(directory.sources().len())
     }
 
-    /// The gate for a roster of `sources`, judged for the profile that is watching NOW: whether
-    /// that profile is a Plex Home managed one decides if a single source is already a question
-    /// (`plex::pins::asks`). Read off the same published profile key the record is filed under.
+    /// The gate for a roster of `sources`, judged for the profile that is watching NOW
+    /// (`plex::pins::asks`): everyone is asked once, so the profile matters only for its recorded
+    /// answer. Read off the same published profile key the record is filed under.
     pub fn asks_for_sources(sources: usize) -> bool {
         let session = plx_plex::plex::session::peek();
         let profile = plx_plex::plex::session::current_profile_key();
-        plx_plex::plex::pins::asks(sources, session.profile_is_managed(&profile), session.pins_for(&profile))
+        plx_plex::plex::pins::asks(sources, session.pins_for(&profile))
     }
 }
 

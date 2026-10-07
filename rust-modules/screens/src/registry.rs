@@ -1477,8 +1477,8 @@ pub enum AppArg {
     Profiles,
     /// **"Which libraries do you want?"** — the *Favorite libraries* screen, the third and last
     /// onboarding page and the only one that is not about credentials: which of the granted
-    /// libraries this profile wants, asked once PER PROFILE and only when the roster holds more
-    /// than one. Favourites fill Home's shelves, decide which type pills the top strip draws at
+    /// libraries this profile wants, asked of EVERY profile (the account holder and a managed one, on
+    /// one server or several) exactly once. Favourites fill Home's shelves, decide which type pills the top strip draws at
     /// all, and scope the Library's own Sources picker; the grant is untouched, and Search still
     /// reaches every granted library.
     Onboard,
