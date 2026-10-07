@@ -523,9 +523,62 @@ impl DeepBench {
     }
 }
 
+// =================================================================================================
+// hero bench (`/tmp/plxnative-herobench`)
+// =================================================================================================
+
+/// Default half-period of the hero bench, ms: a flip every 600 ms, faster than the carousel's own
+/// 8 s auto-advance and faster than a slide settles, so a flip lands while the last one is still
+/// travelling — the shape of someone paging back and forth to compare titles.
+pub(crate) const DEFAULT_HERO_PERIOD_MS: u32 = 600;
+/// The hero carousel refuses a second flip inside its own cooldown (`HERO_FLIP_CD`, 0.35 s), so a
+/// shorter half-period would measure refusals, not flips.
+pub(crate) const MIN_HERO_PERIOD_MS: u32 = 400;
+
+/// The direction of a hero bench cycle's two flips: both halves of one cycle go the same way,
+/// and successive cycles alternate, so the carousel walks 0 → 1 → 2 → 1 → 0 → 1 → … over THREE
+/// titles, every one of which is left and returned to (the A-B-A case a cache has to survive).
+pub(crate) fn hero_flip_dir(cycle: u32) -> i32 {
+    if cycle % 2 == 0 { 1 } else { -1 }
+}
+
+pub(crate) struct HeroBench {
+    /// A round trip: the open half is the cycle's first flip, the close half its second, so every
+    /// flip is measured and the next cycle's first flip follows the report on the next frame.
+    pub(crate) clock: BenchClock,
+    pub(crate) period_ms: u32,
+}
+
+impl HeroBench {
+    pub(crate) fn new(n: u32, period_ms: u32) -> Self {
+        Self { clock: BenchClock::round_trip(n), period_ms: period_ms.max(MIN_HERO_PERIOD_MS) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hero_bench_walks_three_titles_and_returns_to_each() {
+        let mut at = 0i32;
+        let mut seen = std::collections::BTreeMap::<i32, u32>::new();
+        for cycle in 0..8 {
+            for _half in 0..2 {
+                at += hero_flip_dir(cycle);
+                *seen.entry(at).or_default() += 1;
+            }
+        }
+        assert_eq!(at, 0, "an even number of cycles ends where it began");
+        assert_eq!(seen.keys().copied().collect::<Vec<_>>(), vec![0, 1, 2], "never leaves three titles");
+        assert!(seen.values().all(|&n| n >= 4), "each title is revisited: {seen:?}");
+    }
+
+    #[test]
+    fn the_hero_bench_never_flips_faster_than_the_carousel_accepts() {
+        assert_eq!(HeroBench::new(10, 1).period_ms, MIN_HERO_PERIOD_MS);
+        assert_eq!(HeroBench::new(10, 700).period_ms, 700);
+    }
 
     /// A clock past its boot-settle gate, for the tests that drive the cycle machine itself.
     fn settled(mut clock: BenchClock) -> BenchClock {

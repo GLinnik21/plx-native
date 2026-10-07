@@ -452,6 +452,21 @@
       "_ceiling_note": "bench_missed_max=0 is the frame budget itself: a frame is a visible drop once its present interval spans 1.5 refreshes (25 ms), and none is tolerated. worst_ms is reported, not graded: Top->Swap includes the vsync wait, so a 19 ms worst frame (p50 of the settled cycles) is not a drop, while the former bench_worst_ms=20.0 failed it. MEASURED 2026-09-28 on the television, panel off: 28 missed refreshes in the first 17 cycles before the held-page text prewarm and idle font warming (cycle 1 alone: 7, an 82 ms cold Detail capture frame); 12 in 8 of 100 cycles after (cycle 1: 4). The rest are single frames whose own CPU work is 1-2 ms and which wait 22-39 ms in their first framebuffer command during a held-image phase — GPU/compositor backlog, attributed in docs/backdrop-blur-profiling.md, unfixed, and left failing on purpose rather than hidden by a tolerance."
     },
     {
+      "name": "hero-pong",
+      "tier": "ui",
+      "route": "home",
+      "bench": "hero",
+      "run_secs": 120,
+      "warmup_s": 8,
+      "bench_missed_max": 0,
+      "mock": {},
+      "triggers": {
+        "plxnative-herobench": "60,600",
+        "plxnative-framedrop": true
+      },
+      "comment": "The Home hero carousel flipped back and forth over three titles (0-1-2-1-0-...) every 600 ms, faster than a slide settles, through the same HomeCmd::Flip the Left/Right key lands on (dev::scenarios::bench::HeroBench). 60 cycles of two flips each, one `bench: kind=hero` line per cycle with the missed refreshes of both flips, graded by grade_bench like push-100. Needs at least three heroes in the Home carousel (a shorter carousel wraps and the A-B-A walk degenerates). `herobench=<n>,<period_ms>`: the period is clamped to 400 ms, the carousel's own flip cooldown. bench_missed_max 0 is the frame budget, not a measured baseline."
+    },
+    {
       "name": "onboard-sources",
       "tier": "ui",
       "route": "onboard",

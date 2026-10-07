@@ -1293,6 +1293,12 @@ pub(crate) unsafe fn construct(
             let rk = if rk.is_empty() { nav_osc_rk.clone() } else { rk };
             crate::dev::scenarios::bench::DeepBench::new(depth, rk)
         });
+    // dev: /tmp/plxnative-herobench[=<n>[,<period_ms>]] — flips the real Home hero carousel back and
+    // forth over three titles (`bench::HeroBench`), one `bench:` line per two flips.
+    let hero_bench = (!controlled)
+        .then(crate::dev::scenarios::herobench_value)
+        .flatten()
+        .map(|(n, period)| crate::dev::scenarios::bench::HeroBench::new(n, period));
 
     // dev: /tmp/plxnative-framedrop — the FRAME-DROP DETECTOR. When present, each frame is timed with
     // the high-res perf counter (pump / draw / swap, NO glFinish so it doesn't perturb the pipeline),
@@ -1569,6 +1575,7 @@ pub(crate) unsafe fn construct(
             push_bench,
             modal_bench,
             deep_bench,
+            hero_bench,
             marker_tried,
             press_tried,
             press_release_at,
