@@ -62,6 +62,11 @@
 //!   now asking. Sent whether or not that item had landed: a page closed before its fetch arrived
 //!   supersedes its own request (the late landing is dropped) and leaves the slot to the page
 //!   under it.
+//! - `Withdraw{sid, rk}` → `metadata::withdraw` — a Detail surface DISMISSED (`ScreenEvent::Closing`)
+//!   stops asking at once: its request, if still the awaited one, is superseded, while the item it
+//!   already loaded stays for the close fade. Its `ClearItem` follows when the fade settles —
+//!   unless the same address has been asked for again in the meantime (the copy presented anew
+//!   inside the fade), which that teardown would otherwise retire.
 //! - `LoadSeason(usize)` → `metadata::load_season` — flip the season strip optimistically, fetch
 //!   the episodes off-thread (debounced landing through `pump_season`).
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
@@ -164,6 +169,9 @@ pub enum MetadataCmd {
     /// the slot back (a presented copy on another server fading out over its own source page)
     /// must not cancel the page now asking.
     ClearItem { sid: ServerId, rk: String },
+    /// A page dismissed but still drawing (its close fade): retire the in-flight load only if it is
+    /// `(sid, rk)`'s, and keep the loaded item. The page's `ClearItem` follows at teardown.
+    Withdraw { sid: ServerId, rk: String },
     /// The server/profile switch: drop the COMPLETE owned state — including the `now`/`playing`
     /// that `Clear` deliberately spares (D3) — and rotate the worker adapter, so a worker spawned
     /// before the reset can only land into the retired `Arc`, never the replacement's mailbox.

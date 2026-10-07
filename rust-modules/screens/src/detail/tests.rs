@@ -112,6 +112,7 @@ fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailS
         refresh_gen: 0,
         restore_intent: None,
         teardown_cleared: false,
+        withdrawn: false,
         scroll: Spring::at(0.0),
         scroll_target: 0.0,
         episode_scroll: Spring::at(0.0),

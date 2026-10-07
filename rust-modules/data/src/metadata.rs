@@ -1816,6 +1816,25 @@ fn clear_item(state: &mut MetadataState, adapter: &MetadataAdapter, sid: plx_ple
     }
 }
 
+/// A page stops ASKING without letting go of what it shows: it was dismissed (a presented copy on
+/// another server closing over the page it was opened from) and keeps drawing its loaded item
+/// until its close fade settles and [`clear_item`] runs. Supersedes the awaited request only if it
+/// is this item's, and drops nothing from `current`. Without it the dismissed copy's request stayed
+/// the awaited one for the length of the fade, while the page under it had already been entered
+/// and had found its own item loaded: a landing inside that window replaced that item, and the
+/// copy's teardown then emptied the slot. After this, `detail_want` naming this address means some
+/// OTHER page has asked for it since (the same copy presented again inside the fade) — which is
+/// what lets that teardown leave the new page's request alone. Answers whether a request was
+/// retired.
+fn withdraw(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str) -> bool {
+    let mine = adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner())
+        .as_ref().is_some_and(|(s, r)| plx_plex::plex::same_item((*s, r), (sid, rk)));
+    if mine {
+        supersede_detail(adapter);
+    }
+    mine
+}
+
 /// The server/profile switch: unlike `clear()`, this drops the COMPLETE owned state — the `now`
 /// caption and `playing` track store `clear()` deliberately spares (D3, for a Detail page torn
 /// down and reopened mid-playback) do not belong to the NEXT profile. Adapter rotation is done by
@@ -3569,6 +3588,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             clear_item(state, adapter, sid, &rk);
             true
         }
+        MetadataCmd::Withdraw { sid, rk } => withdraw(adapter, sid, &rk),
         MetadataCmd::Reset => {
             reset(state, adapter);
             true

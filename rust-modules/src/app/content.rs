@@ -1278,6 +1278,305 @@ mod library_publication_tests {
         plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
     }
 
+    /// The window the "before it lands" test above steps over: BACK dismisses the presented copy
+    /// at once (A gets `Uncover` + `Enter(Restored)`), but the surface's own teardown, and with it
+    /// B's `ClearItem`, only arrives when the close spring settles. B's fetch landing INSIDE that
+    /// fade replaced A's item in the single slot, and B's late `ClearItem` then emptied it:
+    /// A sat with its hero art and nothing else, and nothing asked again.
+    fn land_b_inside_the_fade_after_back(frames_after_back: usize) {
+        let _guard = plx_base::testlock::serial();
+        let sa = plx_plex::plex::ServerId::from_raw(3);
+        let sb = plx_plex::plex::ServerId::from_raw(4);
+        let a = AppArg::Content(ContentArg::Detail { sid: sa, rk: "42".into() });
+        let b = AppArg::Content(ContentArg::Detail { sid: sb, rk: "42".into() });
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+        let full = |sid, title: &str| plx_data::metadata::Detail {
+            sid, rk: "42".into(), title: title.into(), summary: "synopsis".into(), ..Default::default()
+        };
+
+        bridge::show_page(&mut pages, AppArg::Home);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        bridge::nav_push(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let gen_a = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        assert!(land_detail_for_test(&mut rig, sa, "42", gen_a, Some(full(sa, "on A"))));
+        pages.nav.next_style = plx_ui::containers::modal::Style::Opaque { snapshot: true };
+        pages.request(MachineId::Nav, NavOp::Present(b.clone()));
+        for _ in 0..3 { frame(&mut pages, &mut rig, &mut frame_no); }
+        let gen_b = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        assert_eq!(rig.metadata_mut().view().detail_request_status(sb, "42"), Some(true));
+        assert_eq!(rig.metadata_mut().view().current().map(|d| d.sid), Some(sa));
+
+        bridge::dismiss_surfaces(&mut pages);
+        for _ in 0..frames_after_back { frame(&mut pages, &mut rig, &mut frame_no); }
+        // B's fetch finishes while its surface is still fading out over A.
+        land_detail_for_test(&mut rig, sb, "42", gen_b, Some(full(sb, "on B")));
+        for _ in 0..60 { frame(&mut pages, &mut rig, &mut frame_no); }
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == a), "BACK lands on A's Detail");
+
+        // Whatever the ordering, A must end up with its own item, loaded or on its way: never
+        // "nothing loaded and nothing asked".
+        let now = rig.metadata_mut().view().current().map(|d| (d.sid, d.title.clone()));
+        if now != Some((sa, "on A".to_string())) {
+            assert_eq!(rig.metadata_mut().view().detail_request_status(sa, "42"), Some(true),
+                "A is empty ({now:?}) after BACK from a copy that landed {frames_after_back} frames \
+                 into the fade, and nothing asks for A's metadata again");
+            let gen = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+            assert!(land_detail_for_test(&mut rig, sa, "42", gen, Some(full(sa, "on A"))));
+        }
+        assert_eq!(rig.metadata_mut().view().current().map(|d| (d.sid, d.title.clone())),
+            Some((sa, "on A".to_string())), "A's own detail is loaded after BACK");
+        assert_ne!(rig.metadata_mut().view().detail_request_status(sa, "42"), Some(true),
+            "A has no request left outstanding once its own item is loaded");
+
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+    }
+
+    #[test]
+    fn a_presented_copy_landing_one_frame_into_its_fade_leaves_the_previous_servers_detail_loaded() {
+        land_b_inside_the_fade_after_back(1);
+    }
+
+    #[test]
+    fn a_presented_copy_landing_five_frames_into_its_fade_leaves_the_previous_servers_detail_loaded() {
+        land_b_inside_the_fade_after_back(5);
+    }
+
+    #[test]
+    fn a_presented_copy_landing_ten_frames_into_its_fade_leaves_the_previous_servers_detail_loaded() {
+        land_b_inside_the_fade_after_back(10);
+    }
+
+    #[test]
+    fn a_presented_copy_landing_twenty_frames_into_its_fade_leaves_the_previous_servers_detail_loaded() {
+        land_b_inside_the_fade_after_back(20);
+    }
+
+    /// The mechanism behind the fade tests above, frame by frame: the copy's request is retired by
+    /// the dismissal itself (`ScreenEvent::Closing` → `MetadataCmd::Withdraw`), not by its teardown
+    /// half a second later, so A — entered again with its own item loaded — never has to ask, never
+    /// loses its item for a frame, and B's late landing is dropped (no alternate-sources fetch
+    /// rides on it either).
+    #[test]
+    fn a_dismissed_copy_retires_its_request_at_once_and_the_page_under_it_asks_for_nothing() {
+        let _guard = plx_base::testlock::serial();
+        let sa = plx_plex::plex::ServerId::from_raw(3);
+        let sb = plx_plex::plex::ServerId::from_raw(4);
+        let a = AppArg::Content(ContentArg::Detail { sid: sa, rk: "42".into() });
+        let b = AppArg::Content(ContentArg::Detail { sid: sb, rk: "42".into() });
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+        let full = |sid, title: &str| plx_data::metadata::Detail {
+            sid, rk: "42".into(), title: title.into(), summary: "synopsis".into(), ..Default::default()
+        };
+
+        bridge::show_page(&mut pages, AppArg::Home);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        bridge::nav_push(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let gen_a = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        assert!(land_detail_for_test(&mut rig, sa, "42", gen_a, Some(full(sa, "on A"))));
+        pages.nav.next_style = plx_ui::containers::modal::Style::Opaque { snapshot: true };
+        pages.request(MachineId::Nav, NavOp::Present(b.clone()));
+        for _ in 0..3 { frame(&mut pages, &mut rig, &mut frame_no); }
+        let gen_b = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        assert_eq!(rig.metadata_mut().view().detail_request_status(sb, "42"), Some(true));
+
+        bridge::dismiss_surfaces(&mut pages);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert_eq!(rig.metadata_mut().view().detail_request_status(sb, "42"), None,
+            "the dismissal itself retired B's request, while B's body is still fading");
+        assert!(!land_detail_for_test(&mut rig, sb, "42", gen_b, Some(full(sb, "on B"))),
+            "B's landing inside its fade is dropped");
+        for i in 0..60 {
+            frame(&mut pages, &mut rig, &mut frame_no);
+            assert_eq!(rig.metadata_mut().view().current().map(|d| (d.sid, d.title.clone())),
+                Some((sa, "on A".to_string())), "A's item stays loaded through the fade (frame {i})");
+            assert_ne!(rig.metadata_mut().view().detail_request_status(sa, "42"), Some(true),
+                "A never had to ask again (frame {i})");
+        }
+        assert!(pages.nav.modals.surfaces.is_empty(), "B's surface has been pruned");
+
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+    }
+
+    /// The same window seen from the copy's side: B is dismissed and the SAME address is
+    /// presented again before the first surface has finished fading. The first surface's late
+    /// `ClearItem` names the address the second now awaits, so it used to retire the second's
+    /// request and leave that page empty with no request outstanding.
+    #[test]
+    fn reopening_the_same_presented_copy_inside_its_fade_is_not_left_empty() {
+        let _guard = plx_base::testlock::serial();
+        let sa = plx_plex::plex::ServerId::from_raw(3);
+        let sb = plx_plex::plex::ServerId::from_raw(4);
+        let a = AppArg::Content(ContentArg::Detail { sid: sa, rk: "42".into() });
+        let b = AppArg::Content(ContentArg::Detail { sid: sb, rk: "42".into() });
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+        let full = |sid, title: &str| plx_data::metadata::Detail {
+            sid, rk: "42".into(), title: title.into(), summary: "synopsis".into(), ..Default::default()
+        };
+
+        bridge::show_page(&mut pages, AppArg::Home);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        bridge::nav_push(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let gen_a = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        assert!(land_detail_for_test(&mut rig, sa, "42", gen_a, Some(full(sa, "on A"))));
+        pages.nav.next_style = plx_ui::containers::modal::Style::Opaque { snapshot: true };
+        pages.request(MachineId::Nav, NavOp::Present(b.clone()));
+        for _ in 0..3 { frame(&mut pages, &mut rig, &mut frame_no); }
+        assert_eq!(rig.metadata_mut().view().detail_request_status(sb, "42"), Some(true));
+
+        bridge::dismiss_surfaces(&mut pages);
+        for _ in 0..3 { frame(&mut pages, &mut rig, &mut frame_no); }
+        pages.nav.next_style = plx_ui::containers::modal::Style::Opaque { snapshot: true };
+        pages.request(MachineId::Nav, NavOp::Present(b.clone()));
+        for _ in 0..60 { frame(&mut pages, &mut rig, &mut frame_no); }
+
+        // The second copy must be loaded or loading, never empty with nothing outstanding.
+        let loaded = |rig: &mut bridge::Bridge| rig.metadata_mut().view().current()
+            .is_some_and(|d| d.sid == sb);
+        if !loaded(&mut rig) {
+            assert_eq!(rig.metadata_mut().view().detail_request_status(sb, "42"), Some(true),
+                "the re-presented copy is empty and its request was retired by the first copy's \
+                 late teardown");
+            let gen = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+            assert!(land_detail_for_test(&mut rig, sb, "42", gen, Some(full(sb, "on B"))));
+        }
+        assert!(loaded(&mut rig), "the re-presented copy's detail is loaded");
+
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+    }
+
+    /// The Metadata slot is a shared MAILBOX: Detail A's own item menu (hold a Related or
+    /// Collection card, choose Play) asks for the card's item through the same slot
+    /// (`activate_card`: `RequestDetail X` + `menu_play_await` for a show, `play_item_now`'s
+    /// `describe_movie` for a movie) right after the menu dismissed itself, so A is uncovered and
+    /// entered again with X on its way. X then lands, replaces A's item, and is played (a show
+    /// through `menu_play_tick`). Nothing about that is a fault A should repair: a page that asked
+    /// for its own item again because "the slot is not showing mine" put A back into `current()`
+    /// (and re-derived the now-playing descriptor from it) while X played.
+    fn item_menu_play_from_a_detail_page(show: bool) {
+        let _guard = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("menu-play-detail", "127.0.0.1", 1, "t", "c-menu-play-detail");
+        plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+        struct Servers;
+        impl Drop for Servers {
+            fn drop(&mut self) { plx_plex::plex::reset_servers_for_test(); }
+        }
+        let _servers = Servers;
+        let a = AppArg::Content(ContentArg::Detail { sid, rk: "movie-a".into() });
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut ps = plx_media::route::PlaybackSession::default();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut pa = plx_media::player::adapter::PlayerAdapter::new(mt);
+        let mut wait = None;
+        let mut frame_no = 0;
+        let gen = |rig: &mut bridge::Bridge|
+            plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        let x_rk = if show { "show-x" } else { "movie-x" };
+        let x = || {
+            let mut d = plx_data::metadata::Detail {
+                sid, rk: x_rk.into(), title: "X".into(), summary: "x".into(), kind: "movie".into(),
+                ..Default::default()
+            };
+            if show {
+                d = detail_with_episode(sid, x_rk, "X", false);
+                d.episodes[0].title = "Pilot".into();
+            }
+            d
+        };
+
+        bridge::show_page(&mut pages, AppArg::Home);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        bridge::nav_push(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let gen_a = gen(&mut rig);
+        assert!(land_detail_for_test(&mut rig, sid, "movie-a", gen_a, Some(plx_data::metadata::Detail {
+            sid, rk: "movie-a".into(), title: "A".into(), summary: "a".into(), kind: "movie".into(),
+            ..Default::default()
+        })));
+        for _ in 0..3 { frame(&mut pages, &mut rig, &mut frame_no); }
+        let host = pages.nav.top_page().expect("A is the top page").id;
+        let card = plx_data::pms::PmsMovie {
+            sid, rk: x_rk.into(), title: "X".into(), kind: if show { 1 } else { 0 },
+            part: "/library/parts/7/file.mkv".into(), vcodec: "h264".into(), acodec: "aac".into(),
+            ..Default::default()
+        };
+        bridge::open_item_menu(&mut pages, bridge::card_menu_arg(&card, false, false, host, None, None));
+        for _ in 0..30 { frame(&mut pages, &mut rig, &mut frame_no); }
+        assert!(bridge::item_menu_up(&pages), "the item menu is up over A");
+
+        // The menu's Play row, in the order the app performs it: the menu dismisses itself in the
+        // dispatcher frame that committed the row (A is uncovered and entered again, its own item
+        // still loaded), and the app answers the row's `ItemMenuReq` after that frame — the
+        // request for X (and, for a movie, the push to the player) is issued then.
+        bridge::dismiss_surfaces(&mut pages);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        unsafe {
+            activate_card(&mut ps, &mut pa, &card, true, HUD_LINGER_MS, None,
+                &mut pages, &mut rig, &mut wait, frame_no * 16);
+        }
+        let gen_x = gen(&mut rig);
+        assert_eq!(rig.metadata_mut().view().detail_request_status(sid, x_rk), Some(true));
+        // X lands in the very next frame's update, ahead of that frame's dispatcher pass (whose
+        // Tick runs before the parked push to the player commits); a show's wait plays it there.
+        assert!(land_detail_for_test(&mut rig, sid, x_rk, gen_x, Some(x())));
+        {
+            let _frame = plx_base::task::FrameScope::enter();
+            unsafe {
+                crate::app::input::menu_play_tick(&mut ps, &mut pa, &mut pages, &mut rig, &mut wait, frame_no * 16);
+            }
+        }
+        for _ in 0..60 { frame(&mut pages, &mut rig, &mut frame_no); }
+        // The play this test started is a crate-global resolve (`route::play_pending`): withdraw it
+        // and wait its worker out, or the next test to read the player's state finds it Resolving.
+        plx_media::route::cancel_play(&mut ps);
+        let _ = plx_media::route::wait_resolve_workers_for_test(std::time::Duration::from_secs(10));
+        plx_media::player::stop_bufferfeed(&mut ps, &mut pa);
+        let played = rig.metadata_mut().view().now_playing()
+            .map(|n| (n.title.clone(), n.ep_title.clone()));
+
+        // A page that asked for itself again would land here and overwrite the mailbox.
+        let asked_for_a = rig.metadata_mut().view().detail_request_status(sid, "movie-a");
+        if asked_for_a == Some(true) {
+            let g = gen(&mut rig);
+            land_detail_for_test(&mut rig, sid, "movie-a", g, Some(plx_data::metadata::Detail {
+                sid, rk: "movie-a".into(), title: "A".into(), kind: "movie".into(), ..Default::default()
+            }));
+        }
+        assert!(bridge::player(&pages).is_some(), "X is playing");
+        assert_eq!(rig.metadata_mut().view().current().map(|d| d.rk.clone()), Some(x_rk.to_string()),
+            "the slot still holds the item being played");
+        assert_eq!(rig.metadata_mut().view().now_playing().map(|n| (n.title.clone(), n.ep_title.clone())),
+            played, "the now-playing descriptor is X's, untouched by A");
+        assert_eq!(asked_for_a, None,
+            "Detail A asked for its own item while the menu's Play of X owned the slot");
+
+        rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+        plx_data::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+    }
+
+    #[test]
+    fn item_menu_play_of_a_show_from_a_detail_page_keeps_the_slot_on_the_show() {
+        item_menu_play_from_a_detail_page(true);
+    }
+
+    #[test]
+    fn item_menu_play_of_a_movie_from_a_detail_page_keeps_the_slot_on_the_movie() {
+        item_menu_play_from_a_detail_page(false);
+    }
+
     fn back_out_of_other_servers_copy(present: bool) {
         let _guard = plx_base::testlock::serial();
         let sa = plx_plex::plex::ServerId::from_raw(3);

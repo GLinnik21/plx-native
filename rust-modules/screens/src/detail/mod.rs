@@ -185,6 +185,13 @@ pub struct DetailScreen {
     /// (`screens/person.rs`'s `PersonCmd::Close` has the identical un-latched shape; reported
     /// separately rather than fixed here.)
     teardown_cleared: bool,
+    /// This page was DISMISSED as a surface (`ScreenEvent::Closing`) and has withdrawn its request
+    /// from the Metadata store (`MetadataCmd::Withdraw`); it is only fading out now. From then on
+    /// the store awaiting THIS page's address can only mean another page asked for it since — the
+    /// same copy presented again inside this one's fade — so the teardown's `ClearItem`, which
+    /// would retire that request and drop the item it is about to show, is not sent. Not hashed:
+    /// lifecycle bookkeeping, like `teardown_cleared`.
+    withdrawn: bool,
 
     // Render state.
     scroll: Spring,
@@ -406,6 +413,7 @@ impl DetailScreen {
             refresh_gen: 0,
             restore_intent: None,
             teardown_cleared: false,
+            withdrawn: false,
             scroll: Spring::at(0.0),
             scroll_target: 0.0,
             episode_scroll: Spring::at(0.0),
@@ -1938,6 +1946,20 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 self.content(fx, ContentReq::Present(arg.clone()));
                 Handled::Yes
             }
+            // Dismissed: the page under this surface has just been entered again, and it decided
+            // what to ask for on the store as it stands. A request of this page's still in flight
+            // would land on top of the item that page found loaded — and this page's teardown,
+            // ~0.5 s later, would then empty the slot — so it is retired NOW (this event is queued
+            // ahead of the host's `Enter(Restored)`). What this page already loaded stays in the
+            // slot: its body keeps drawing it for the close fade.
+            ScreenEvent::Closing => {
+                self.withdrawn = true;
+                fx.push(Fx::App(AppFx::Store(
+                    StoreId::Metadata,
+                    StoreCmd::Metadata(MetadataCmd::Withdraw { sid: self.sid, rk: self.rk.clone() }),
+                )));
+                Handled::Yes
+            }
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
                 self.pending_season = None;
                 self.season_settle = 0.0;
@@ -1955,15 +1977,21 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 // page uncovered underneath it. `ClearItem` is addressed, so it touches the
                 // slot only while the slot is this page's. `!self.teardown_cleared`: see the
                 // field. One teardown, one `ClearItem`, even though §3.4 delivers this arm twice.
+                // A page that withdrew at dismissal sends nothing if its address is awaited again:
+                // see `withdrawn`.
                 if !self.teardown_cleared {
                     self.teardown_cleared = true;
-                    fx.push(Fx::App(AppFx::Store(
-                        StoreId::Metadata,
-                        StoreCmd::Metadata(MetadataCmd::ClearItem {
-                            sid: self.sid,
-                            rk: self.rk.clone(),
-                        }),
-                    )));
+                    let reasked = self.withdrawn
+                        && meta.detail_request_status(self.sid, &self.rk).is_some();
+                    if !reasked {
+                        fx.push(Fx::App(AppFx::Store(
+                            StoreId::Metadata,
+                            StoreCmd::Metadata(MetadataCmd::ClearItem {
+                                sid: self.sid,
+                                rk: self.rk.clone(),
+                            }),
+                        )));
+                    }
                 }
                 Handled::Yes
             }

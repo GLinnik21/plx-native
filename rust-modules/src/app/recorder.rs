@@ -633,7 +633,7 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
         let start = std::time::Instant::now();
         if let Fx::Deliver(MachineId::Instance(id), Delivery::Screen(event)) = &stamped.fx {
             if matches!(event, ScreenEvent::Mount | ScreenEvent::Enter(_) | ScreenEvent::RestoreMemory(_)
-                | ScreenEvent::Cover | ScreenEvent::Uncover | ScreenEvent::WillLeave(_)
+                | ScreenEvent::Cover | ScreenEvent::Uncover | ScreenEvent::Closing | ScreenEvent::WillLeave(_)
                 | ScreenEvent::Unmount | ScreenEvent::Suspend | ScreenEvent::Resume) {
                 rec.w.life(rec.f, id.0, event.name());
             }

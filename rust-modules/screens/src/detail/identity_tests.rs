@@ -71,7 +71,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         preview_started_for: None,
         preview_had_picture: false,
         trailer_ctl: super::trailer::Transport::IDLE,
-        restore_intent: None, teardown_cleared: false, scroll: Spring::at(0.0),
+        restore_intent: None, teardown_cleared: false, withdrawn: false, scroll: Spring::at(0.0),
         refresh: DetailRefreshPhase::None,
         refresh_gen: 0,
         scroll_target: 0.0, episode_scroll: Spring::at(0.0), tab_scroll: Spring::at(0.0),

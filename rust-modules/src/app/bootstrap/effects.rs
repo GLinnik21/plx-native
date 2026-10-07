@@ -225,6 +225,7 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
                 MetadataCmd::RequestDetail { sid, rk } => json!({"request_detail":[sid.raw(),rk]}),
                 MetadataCmd::Clear => json!("clear"),
                 MetadataCmd::ClearItem { sid, rk } => json!({"clear_item":[sid.raw(),rk]}),
+                MetadataCmd::Withdraw { sid, rk } => json!({"withdraw":[sid.raw(),rk]}),
                 _ => return Err("unsupported controlled metadata command"),
             }})
         }
@@ -300,7 +301,7 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
                 Delivery::Press { id, key, held } => json!({"press":id.0,"key":focus(*key),"held":held}),
                 Delivery::Screen(event) => {
                     let body = match event {
-                        ScreenEvent::Mount | ScreenEvent::Cover | ScreenEvent::Uncover |
+                        ScreenEvent::Mount | ScreenEvent::Cover | ScreenEvent::Uncover | ScreenEvent::Closing |
                         ScreenEvent::Unmount | ScreenEvent::Suspend | ScreenEvent::Resume => Value::Null,
                         ScreenEvent::RestoreMemory(memory) => page_memory(memory)?,
                         ScreenEvent::Enter(enter) => match enter {

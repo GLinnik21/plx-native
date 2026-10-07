@@ -594,6 +594,49 @@ fn closing_a_page_before_its_fetch_lands_drops_that_landing_and_keeps_the_page_u
     clear(test_state(), test_adapter());
 }
 
+/// **A dismissed page stops asking at once, and keeps what it draws.**
+///
+/// A presented copy (B, on another server) is dismissed over the page it came from (A): the
+/// container enters A again immediately, but B's body fades for ~0.5 s before its teardown. B's
+/// `Withdraw` at dismissal retires B's own request so nothing of B can land into the slot A has
+/// just found its item in; it removes nothing from `current` (B's body is still drawing it), and
+/// it leaves any OTHER page's request alone.
+#[test]
+fn withdrawing_a_dismissed_page_retires_only_its_own_request_and_keeps_the_loaded_item() {
+    let _serial = plx_base::testlock::serial();
+    clear(test_state(), test_adapter());
+    let a = plx_plex::plex::ServerId::from_raw(0);
+    let b = plx_plex::plex::ServerId::from_raw(1);
+    let item = |sid, title: &str| Detail { sid, rk: "42".into(), title: title.into(), ..Default::default() };
+
+    // A is loaded; B's request is in flight when B is dismissed.
+    let gen_a = begin_detail_for_test(test_adapter(), a, "42");
+    land_detail(test_adapter(), a, "42", gen_a, Some(item(a, "on A")));
+    assert!(pump_detail(test_state(), test_adapter()));
+    let gen_b = begin_detail_for_test(test_adapter(), b, "42");
+    assert!(withdraw(test_adapter(), b, "42"), "B's own request is retired");
+    assert_eq!(detail_request_status(test_adapter(), b, "42"), None, "nothing awaits B any more");
+    assert!(!detail_loading(test_adapter()));
+    land_detail(test_adapter(), b, "42", gen_b, Some(item(b, "on B")));
+    assert!(!pump_detail(test_state(), test_adapter()), "B's landing inside its fade is dropped");
+    assert_eq!(current(test_state()).map(|d| (d.sid, d.title.clone())), Some((a, "on A".to_string())));
+
+    // B had landed before it was dismissed: its item stays for the fade, and B no longer awaits.
+    let gen_b = begin_detail_for_test(test_adapter(), b, "42");
+    land_detail(test_adapter(), b, "42", gen_b, Some(item(b, "on B")));
+    assert!(pump_detail(test_state(), test_adapter()));
+    assert!(withdraw(test_adapter(), b, "42"));
+    assert_eq!(current(test_state()).map(|d| d.sid), Some(b), "the closing body keeps drawing B");
+    assert_eq!(detail_request_status(test_adapter(), b, "42"), None);
+
+    // Another page's request is not B's to retire.
+    let gen_a = begin_detail_for_test(test_adapter(), a, "42");
+    assert!(!withdraw(test_adapter(), b, "42"));
+    assert_eq!(detail_request_status(test_adapter(), a, "42"), Some(true), "A's request is untouched");
+    assert_eq!(detail_generation(test_adapter()), gen_a);
+    clear(test_state(), test_adapter());
+}
+
 /// Spec §15.1 `a_refused_spawn_lands_a_refusal_event`, on the real store: a request whose
 /// worker the OS refused is answered by a `Refused` record, and the pump settles the spinner
 /// off it — exactly one event for the request, nothing latched.
