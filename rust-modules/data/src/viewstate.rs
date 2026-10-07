@@ -496,43 +496,47 @@ pub fn pump_with_gate(
     let due = self.retry_tick();
     // the landing GATE (§3.3 step 3, `plx_machine::landgate`): under a replay the server's answer is taken
     // on the frame the recording took it on. The retry tick and `kick` below stay outside it.
-    let landed = crate::stores::take_landing(gate, crate::stores::StoreId::ViewState, || {
-        adapter.mail.lock().unwrap_or_else(|e| e.into_inner()).take()
+    // DUMP MODE: owed while a write is on the wire (`sent`, set at the spawn and cleared by the
+    // landing it answers). A completion that answers no in-flight request is dropped INSIDE the take
+    // (and logged), so it neither ends the wait nor stands in for the one owed.
+    let landed = crate::stores::take_landing_owed(gate, crate::stores::StoreId::ViewState,
+        || self.sent.is_some(), || {
+        let completion = adapter.mail.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+        if self.sent.as_ref().is_some_and(|request| request.id == completion.id) {
+            return Some(completion);
+        }
+        plx_base::eventlog::log(&format!(
+            "viewstate: completion {} ignored — in-flight identity is {}",
+            completion.id.0,
+            self.sent.as_ref().map(|request| request.id.0.to_string())
+                .unwrap_or_else(|| "none".into()),
+        ));
+        None
     });
     if let Some(completion) = landed {
-        let exact = self.sent.as_ref().is_some_and(|request| request.id == completion.id);
-        if exact {
-            let r = self.sent.take().expect("the exact in-flight request remains present");
-            let done = completion.done;
-            plx_base::eventlog::log(&format!(
-                "viewstate: rk={} {} ok={} others={}",
-                r.rk,
-                r.w.name(),
-                done.ok as i32,
-                done.also.len()
-            ));
-            // The other sources' copies could not be flipped at the press — their keys are exactly
-            // what the resolve DISCOVERS — so they are flipped here, on the main thread, and only
-            // the ones their server took. A press that reached no other source does nothing here,
-            // which is every press on a one-server install.
-            for (osid, ork) in &done.also {
-                edit_local_with_owners(*osid, ork, r.w, browse, hubs, person, collection, search, metadata);
-            }
-            // The refresh is owed whether or not the server took it: on success it is the reconcile,
-            // and on failure it is what puts the optimistic edit back to whatever the server really
-            // says. A server that can answer neither question leaves the shelves exactly as they
-            // are — `pms.rs`'s per-source rule, unchanged.
-            self.want_hubs = true;
-            if let Some(detail) = r.detail {
-                self.want_detail = Some(detail);
-            }
-        } else {
-            plx_base::eventlog::log(&format!(
-                "viewstate: completion {} ignored — in-flight identity is {}",
-                completion.id.0,
-                self.sent.as_ref().map(|request| request.id.0.to_string())
-                    .unwrap_or_else(|| "none".into()),
-            ));
+        let r = self.sent.take().expect("the exact in-flight request remains present");
+        let done = completion.done;
+        plx_base::eventlog::log(&format!(
+            "viewstate: rk={} {} ok={} others={}",
+            r.rk,
+            r.w.name(),
+            done.ok as i32,
+            done.also.len()
+        ));
+        // The other sources' copies could not be flipped at the press — their keys are exactly
+        // what the resolve DISCOVERS — so they are flipped here, on the main thread, and only
+        // the ones their server took. A press that reached no other source does nothing here,
+        // which is every press on a one-server install.
+        for (osid, ork) in &done.also {
+            edit_local_with_owners(*osid, ork, r.w, browse, hubs, person, collection, search, metadata);
+        }
+        // The refresh is owed whether or not the server took it: on success it is the reconcile,
+        // and on failure it is what puts the optimistic edit back to whatever the server really
+        // says. A server that can answer neither question leaves the shelves exactly as they
+        // are — `pms.rs`'s per-source rule, unchanged.
+        self.want_hubs = true;
+        if let Some(detail) = r.detail {
+            self.want_detail = Some(detail);
         }
     }
     if due {
@@ -1164,6 +1168,66 @@ mod tests {
             state.retry_tick(),
             "…and stays due until a fresh refusal re-arms it"
         );
+    }
+
+    /// DUMP MODE at the ViewState site, through the real pump: a write on the wire when the pump
+    /// runs lands on THAT pump however late its worker posts (25 ms here). A plain take (the
+    /// conversion reverted) finds an empty mailbox, and the write is still `sent` afterwards.
+    /// Serial like every test that arms a gate.
+    #[test]
+    fn dump_mode_a_write_on_the_wire_lands_on_the_pump_that_runs_whatever_the_worker() {
+        let _serial = plx_base::testlock::serial();
+        let mut state = ViewStateState::default();
+        let adapter = Arc::new(ViewStateAdapter::default());
+        let sent = req(&mut state, "7", Write::Watched, None);
+        let id = sent.id;
+        state.sent = Some(sent);
+        let gate = plx_machine::landgate::Gate::default();
+        gate.arm_dump(std::time::Duration::from_secs(20));
+        let worker = Arc::clone(&adapter);
+        let join = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            *worker.mail.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(Completion { id, done: Done { ok: true, also: Vec::new() } });
+        });
+        let mut hubs = Vec::new();
+        let _ = state.pump_with_gate(&adapter, &gate, &mut |_| false,
+            &mut |cmd| { hubs.push(cmd); crate::stores::StoreOutcome::default() },
+            &mut |_| false, &mut |_| false, &mut |_| false, &mut |_| false);
+        assert!(state.sent.is_none(), "the answer the pump owed must be taken by the pump that asked");
+        assert!(matches!(hubs.first(), Some(crate::stores::hubs::HubsCmd::RefetchHubs)),
+            "and the refresh it owes follows on the same pump");
+        join.join().unwrap();
+    }
+
+    /// A completion that answers no in-flight request (a stale one) is dropped INSIDE the take: it
+    /// neither ends the dump wait nor stands in for the write still on the wire.
+    #[test]
+    fn dump_mode_a_stale_completion_does_not_end_the_wait_for_the_write_on_the_wire() {
+        let _serial = plx_base::testlock::serial();
+        let mut state = ViewStateState::default();
+        let adapter = Arc::new(ViewStateAdapter::default());
+        let stale = req(&mut state, "6", Write::Watched, None).id;
+        let sent = req(&mut state, "7", Write::Watched, None);
+        let id = sent.id;
+        state.sent = Some(sent);
+        assert_ne!(stale, id);
+        let gate = plx_machine::landgate::Gate::default();
+        gate.arm_dump(std::time::Duration::from_secs(20));
+        let worker = Arc::clone(&adapter);
+        let join = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            *worker.mail.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(Completion { id: stale, done: Done::default() });
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            *worker.mail.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(Completion { id, done: Done { ok: true, also: Vec::new() } });
+        });
+        let _ = state.pump_with_gate(&adapter, &gate, &mut |_| false,
+            &mut |_| crate::stores::StoreOutcome::default(),
+            &mut |_| false, &mut |_| false, &mut |_| false, &mut |_| false);
+        assert!(state.sent.is_none(), "the write on the wire was answered by ITS completion");
+        join.join().unwrap();
     }
 
     /// `reset` is what an identity change leans on: nothing of the previous account's may be left

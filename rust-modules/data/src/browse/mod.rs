@@ -2289,7 +2289,10 @@ impl BrowseState {
         adapter: &Arc<BrowseAdapter>,
         gate: &plx_machine::landgate::Gate,
     ) -> crate::stores::StoreOutcome {
-        let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
+        // DUMP MODE: owed while the discovery claim (`src_fetching`, set at the spawn and cleared
+        // in `apply_discovery`, after its epoch check) is held. Per MAILBOX: the claim of the one mailbox taken here.
+        let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
+            || adapter.src_fetching.load(Ordering::SeqCst), || {
             adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some((epoch, source, landing)) = taken else { return Default::default() };
@@ -2302,7 +2305,10 @@ impl BrowseState {
         mail: &Mutex<Option<DirectoryResult<T>>>,
         apply: impl FnOnce(&mut SecState, Vec<T>),
     ) -> bool {
-        let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
+        // DUMP MODE: owed while this directory's own claim `flag` is held (genre and letters each
+        // have one), per mailbox.
+        let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
+            || flag.load(Ordering::SeqCst), || {
             mail.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some(result) = taken else { return false };
@@ -2444,7 +2450,9 @@ impl BrowseState {
                     state.letters = Arc::new(list);
                 }
             });
-        let page = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
+        // DUMP MODE: owed while the listing page's claim (`fetching`) is held.
+        let page = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
+            || adapter.fetching.load(Ordering::SeqCst), || {
             adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         if let Some(result) = page {
@@ -3662,6 +3670,10 @@ mod test_support;
 #[cfg(test)]
 #[path = "browse_table_tests.rs"]
 mod table_tests;
+
+#[cfg(test)]
+#[path = "browse_dump_tests.rs"]
+mod dump_tests;
 
 #[cfg(test)]
 #[path = "browse_discovery_lifecycle_tests.rs"]

@@ -3,8 +3,10 @@
 //!
 //! Deliberately NOT routed through `stores::tape`: its controlled-record schema is a closed list
 //! of store names, and Search — the other store a screen pumps every frame — also lands through
-//! the plain-gate spelling ([`super::take_landing_owed`], the dump-mode-aware [`super::take_landing`]). A replay fixture that needs this store's landings adds
-//! a record schema then.
+//! the store gate rather than the tape: both take through [`super::take_landing_owed`] (the
+//! dump-mode wait) with `Fetch::take_current`. Plain [`super::take_landing`] is a single poll in
+//! dump mode and is counted by `Gate::unconverted_takes`, so a new site uses the owed spelling. A replay fixture that
+//! needs this store's landings adds a record schema then.
 
 use crate::subsearch::{SubSearchAdapter, SubSearchState, SubSearchView};
 pub use crate::subsearch::SubSearchCmd;

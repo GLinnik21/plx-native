@@ -991,10 +991,11 @@ fn pump_with_optional_directory(
         // the landing GATE (§3.3 step 3, `plx_machine::landgate`): under a replay a source's answer is
         // taken on the frame the recording took it on. The debounce above and `maybe_spawn` below
         // are outside it, so the query still goes out when it went out.
-        // the take ALWAYS releases the single-flight claim, whatever the landing turns out to
-        // be — dropping a stale one without that is how the flag latches forever
+        // the take releases the single-flight claim with the mail that answers the CLAIMED
+        // generation; a superseded query's late answer is dropped inside it and leaves the new
+        // query's claim alone (`Fetch::take_current`)
         let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Search,
-            || adapter.fetch[i].busy(), || adapter.fetch[i].take());
+            || adapter.fetch[i].busy(), || adapter.fetch[i].take_current(|m| m.gen));
         if let Some(m) = taken {
             if m.gen == state.gen {
                 record(state, i, m.what);
@@ -1238,7 +1239,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
     // `browse` what was current would answer with a table from a different moment than the query it
     // was given. `pump` rejects a landing taken under a snapshot that has since moved.
     let favs = favs(state);
-    adapter.fetch[i].claim();
+    adapter.fetch[i].claim(gen);
     plx_base::eventlog::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
     let worker_adapter = Arc::clone(adapter);
     let spawned = plx_base::task::spawn_small("search", move || {

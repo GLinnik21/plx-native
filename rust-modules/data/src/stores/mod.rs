@@ -406,19 +406,17 @@ pub fn take_landing<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
     gate.take(id.ord(), f)
 }
 
-/// [`take_landing`] for a site whose request is tracked by `owed` (a [`Fetch::busy`]): in the
+/// [`take_landing`] for a site whose request is tracked by `owed` (a [`Fetch::busy`], or the site's own in-flight flag): in the
 /// landing gate's DUMP MODE the take waits, bounded and fail-closed, until the mail the claim owes
 /// has been taken, so a request that has not been superseded lands on the site's next execution
 /// whatever the worker's timing. Everywhere else it is exactly [`take_landing`]. `owed` must be
 /// the claim of the ONE mailbox `f` takes from, never a store-wide one: a store with several
 /// mailboxes would wait on the wrong one.
 ///
-/// **KNOWN HOLE, fixed in S5a-2.** The wait ends on the first mail of ANY generation, because
-/// [`Fetch::take`] releases the claim on any mail. If the request was superseded while its worker
-/// was out, that worker's stale answer can arrive first, release the NEW request's claim and be
-/// returned (the site then drops it on its generation), so the new request's answer lands on a
-/// later pump than the contract says, by worker timing. `search_dump_tests.rs` has the ignored
-/// reproduction.
+/// For a SUPERSEDABLE request, `f` must be [`Fetch::take_current`], not [`Fetch::take`]: the wait
+/// ends on the first mail `f` RETURNS, and `take_current` returns only the answer to the claimed
+/// generation, so a superseded request's stale answer neither ends the wait nor releases the new
+/// request's claim.
 pub fn take_landing_owed<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
     owed: impl Fn() -> bool, f: impl FnMut() -> Option<T>) -> Option<T> {
     gate.take_owed(id.ord(), id.name(), owed, f)
@@ -426,7 +424,7 @@ pub fn take_landing_owed<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
 
 /// [`take_landings`] for a queue site; see [`take_landing_owed`].
 pub fn take_landings_owed<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
-    owed: impl Fn() -> bool, f: impl FnMut() -> Vec<T>) -> Vec<T> {
+    owed: impl Fn(&[T]) -> bool, f: impl FnMut() -> Vec<T>) -> Vec<T> {
     gate.take_all_owed(id.ord(), id.name(), owed, f)
 }
 
@@ -442,11 +440,15 @@ pub fn take_landings_owed<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
 /// duplicate request). Neither can wedge or corrupt: [`Fetch::post`] is monotone on whatever the
 /// owner says beats the mail already there, and every owner discards a stale generation.
 ///
-/// The same property is the KNOWN HOLE in dump mode ([`take_landing_owed`]): the claim records
-/// that a request is out, not which generation it was for, so a stale answer ends the dump wait
-/// and frees the newer request's claim. Fixed in S5a-2 by a generation-aware claim.
+/// That second sentence describes [`Fetch::take`]. The claim also records WHICH GENERATION it was
+/// made for ([`Fetch::claim`]), and [`Fetch::take_current`] frees it only for mail that answers
+/// that generation: a superseded request's stale answer is dropped and leaves the NEWER request's
+/// claim alone, so there is no duplicate request and, in dump mode ([`take_landing_owed`]), the
+/// new request's answer lands on the site's next execution whatever order the two workers post in.
 pub struct Fetch<M> {
     in_flight: std::sync::atomic::AtomicBool,
+    /// The generation the current claim was made for; meaningful only while `in_flight`.
+    claimed: std::sync::atomic::AtomicU32,
     /// Where the worker posts what it came back with. `None` means nothing has landed since the
     /// last take.
     slot: std::sync::Mutex<Option<M>>,
@@ -459,6 +461,7 @@ impl<M> Default for Fetch<M> {
 impl<M> Fetch<M> {
     pub const IDLE: Self = Self {
         in_flight: std::sync::atomic::AtomicBool::new(false),
+        claimed: std::sync::atomic::AtomicU32::new(0),
         slot: std::sync::Mutex::new(None),
     };
 
@@ -471,8 +474,10 @@ impl<M> Fetch<M> {
         self.in_flight.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Claim the fetch, on the way into a spawn.
-    pub fn claim(&self) {
+    /// Claim the fetch for generation `gen`, on the way into a spawn. `gen` is the owner's
+    /// current generation, the one the worker will stamp its mail with.
+    pub fn claim(&self, gen: u32) {
+        self.claimed.store(gen, std::sync::atomic::Ordering::SeqCst);
         self.in_flight.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -486,11 +491,29 @@ impl<M> Fetch<M> {
     /// EMPTY mailbox releases nothing: the claim it would clear belongs to a worker still running,
     /// and the next frame would spawn a duplicate.
     ///
-    /// **KNOWN HOLE for dump mode (fixed in S5a-2):** "whatever the mail turns out to be"
-    /// includes the stale answer of a superseded request, so a dump-mode wait built on this take
-    /// ([`take_landing_owed`]) can end on that answer and release a NEWER request's claim.
+    /// A generation-stamped owner uses [`Fetch::take_current`] instead: "whatever the mail turns
+    /// out to be" includes the stale answer of a superseded request, which would release a
+    /// NEWER request's claim.
     pub fn take(&self) -> Option<M> {
         let mail = self.lock().take()?;
+        self.release();
+        Some(mail)
+    }
+
+    /// Take the mail that answers the CLAIMED generation, releasing the claim with it. `gen_of`
+    /// reads the generation a piece of mail was stamped with.
+    ///
+    /// While a claim is held, mail stamped with any OTHER generation is a superseded request's
+    /// late answer: it is dropped here (the owner would discard it on its generation check
+    /// anyway) and the claim stays held for the request that is still out. With no claim held
+    /// there is nothing to protect, and mail is taken as [`Fetch::take`] would.
+    pub fn take_current(&self, gen_of: impl Fn(&M) -> u32) -> Option<M> {
+        let mut slot = self.lock();
+        let mail = slot.take()?;
+        if self.busy() && gen_of(&mail) != self.claimed.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        drop(slot);
         self.release();
         Some(mail)
     }
@@ -562,14 +585,14 @@ mod tests {
         for delay_us in [0u64, 200, 2_000, 9_000] {
             let gate = dump_gate(20_000);
             let fetch = std::sync::Arc::new(Fetch::<u32>::IDLE);
-            assert!(take_landing_owed(&gate, StoreId::Person, || fetch.busy(), || fetch.take()).is_none());
-            fetch.claim();
+            assert!(take_landing_owed(&gate, StoreId::Person, || fetch.busy(), || fetch.take_current(|m| *m)).is_none());
+            fetch.claim(7);
             let worker = std::sync::Arc::clone(&fetch);
             let join = std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_micros(delay_us));
                 worker.post(7, |_| true);
             });
-            let got = take_landing_owed(&gate, StoreId::Person, || fetch.busy(), || fetch.take());
+            let got = take_landing_owed(&gate, StoreId::Person, || fetch.busy(), || fetch.take_current(|m| *m));
             assert_eq!(got, Some(7), "delay {delay_us}us");
             assert!(!fetch.busy(), "the TAKE released the claim");
             join.join().unwrap();
@@ -578,16 +601,68 @@ mod tests {
 
     /// What this pins, and only this: `clear` (a supersede) releases the claim, so a dump take
     /// returns at once instead of waiting for an answer nobody owes (an `owed` that was ignored,
-    /// or a claim that survived the clear, would fail closed here). It says nothing about a
-    /// stale answer racing a NEWER claim: that is the known hole, `search_dump_tests.rs` has the
-    /// ignored reproduction.
+    /// or a claim that survived the clear, would fail closed here). The stale answer racing a
+    /// NEWER claim is `a_stale_answer_leaves_the_new_claim_held` below.
     #[test]
     fn a_cleared_claim_causes_no_dump_wait() {
         let gate = dump_gate(100); // any wait on the cleared claim would fail closed (panic) here
         let fetch = Fetch::<u32>::IDLE;
-        fetch.claim();
+        fetch.claim(1);
         fetch.clear();
-        assert_eq!(take_landing_owed(&gate, StoreId::Person, || fetch.busy(), || fetch.take()), None);
+        assert_eq!(take_landing_owed(&gate, StoreId::Person, || fetch.busy(), || fetch.take_current(|m| *m)), None);
+    }
+
+    /// The sequence of the review's race model, on the real mailbox: claim(1), supersede, claim(2),
+    /// the generation-1 worker posts late. `take_current` drops that answer and leaves claim 2
+    /// held; only generation 2's own answer releases it. (`take` would have released claim 2 on
+    /// the stale answer, and the next pump would have spawned a duplicate request.)
+    #[test]
+    fn a_stale_answer_leaves_the_new_claim_held() {
+        let fetch = Fetch::<u32>::IDLE;
+        fetch.claim(1);
+        fetch.clear();
+        fetch.claim(2);
+        fetch.post(1, |_| true); // request 1's worker, late
+        assert_eq!(fetch.take_current(|m| *m), None, "the stale answer is dropped, not returned");
+        assert!(fetch.busy(), "...and request 2's claim survives it");
+        assert!(!fetch.has_mail(), "the stale mail is gone");
+        fetch.post(2, |_| true);
+        assert_eq!(fetch.take_current(|m| *m), Some(2));
+        assert!(!fetch.busy(), "only the answer to generation 2 releases its claim");
+    }
+
+    /// With NO claim held there is nothing to protect: mail is taken as before and the owner's
+    /// generation check discards it (the tests that land mail without a spawn rely on this).
+    #[test]
+    fn mail_with_no_claim_held_is_taken_as_before() {
+        let fetch = Fetch::<u32>::IDLE;
+        fetch.post(7, |_| true);
+        assert_eq!(fetch.take_current(|m| *m), Some(7));
+        assert!(!fetch.busy());
+    }
+
+    /// The same sequence through the dump wait: the stale answer lands first, B's lands later, and
+    /// the take that was owed B's answer returns B's, whatever the delays.
+    #[test]
+    fn a_stale_answer_does_not_end_the_dump_wait() {
+        for stale_us in [0u64, 300, 3_000] {
+            let gate = dump_gate(20_000);
+            let fetch = std::sync::Arc::new(Fetch::<u32>::IDLE);
+            fetch.claim(1);
+            fetch.clear();
+            fetch.claim(2);
+            let worker = std::sync::Arc::clone(&fetch);
+            let join = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_micros(stale_us));
+                worker.post(1, |_| true);
+                std::thread::sleep(std::time::Duration::from_millis(6));
+                worker.post(2, |_| true);
+            });
+            let got = take_landing_owed(&gate, StoreId::Person, || fetch.busy(), || fetch.take_current(|m| *m));
+            assert_eq!(got, Some(2), "stale after {stale_us}us");
+            assert!(!fetch.busy());
+            join.join().unwrap();
+        }
     }
 
     #[test]

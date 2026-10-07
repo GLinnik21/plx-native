@@ -111,13 +111,13 @@ fn person_completion(t: &mut Tape, slot: u32, data: &Value) -> Result<(), &'stat
 /// gate schedules the take. The one spelling of that choice for the Person and Collection stores.
 pub fn take_store_landing<T: serde::Serialize + serde::de::DeserializeOwned>(
     gate: &plx_machine::landgate::Gate, id: super::StoreId, store: &str, slot: u32,
-    fetch: &super::Fetch<T>) -> Option<T> {
+    fetch: &super::Fetch<T>, gen_of: fn(&T) -> u32) -> Option<T> {
     if active() {
-        let reply = poll(store, slot, || fetch.take());
+        let reply = poll(store, slot, || fetch.take_current(gen_of));
         if reply.is_some() { gate.landed(id.ord()); }
         reply
     } else {
-        super::take_landing_owed(gate, id, || fetch.busy(), || fetch.take())
+        super::take_landing_owed(gate, id, || fetch.busy(), || fetch.take_current(gen_of))
     }
 }
 

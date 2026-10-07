@@ -222,10 +222,11 @@ fn the_debounce_coalesces_a_burst_of_keystrokes_into_one_fetch() {
 }
 
 /// A landing for the query you have already typed past must not repopulate the one on screen —
-/// and it must still release the single-flight claim while being dropped, or that source can
-/// never search again.
+/// and it is dropped WITHOUT releasing the single-flight claim, which now belongs to the new
+/// query's request still out (releasing it would spawn a duplicate). The new query's own answer
+/// releases it, so that source can still search.
 #[test]
-fn a_landing_from_the_previous_query_is_discarded_but_still_releases_the_fetch() {
+fn a_landing_from_the_previous_query_is_discarded_and_leaves_the_new_claim_held() {
     let _g = fresh();
     let mut owner = Owner::default();
     register(&mut owner, 1);
@@ -233,7 +234,7 @@ fn a_landing_from_the_previous_query_is_discarded_but_still_releases_the_fetch()
     let stale = owner.state.gen;
     owner.set_query("wallace"); // supersedes: the fetch above is now about a string nobody typed
 
-    owner.adapter.fetch[0].claim();
+    owner.adapter.fetch[0].claim(owner.state.gen);
     hold_off(&mut owner);
     owner.land(0, stale, Some(answered(0, vec![media("Wallander")]).items));
     assert!(!owner.pump(0.0), "a superseded landing must not publish");
@@ -247,8 +248,8 @@ fn a_landing_from_the_previous_query_is_discarded_but_still_releases_the_fetch()
         "a discarded landing must not settle the spinner"
     );
     assert!(
-        !owner.adapter.fetch[0].busy(),
-        "the take must release the single-flight even for a landing it drops"
+        owner.adapter.fetch[0].busy(),
+        "a dropped stale landing must leave the new request's claim held"
     );
     // …and it must not arm a backoff either, which would delay the CURRENT query's first answer
     assert_eq!(
@@ -270,6 +271,7 @@ fn a_landing_from_the_previous_query_is_discarded_but_still_releases_the_fetch()
     );
     assert_eq!(titles(&owner.state.shelves()[0]), ["A Close Shave"]);
     assert_eq!(owner.state.state(), State::Ready);
+    assert!(!owner.adapter.fetch[0].busy(), "the new request's own answer released its claim");
     plx_plex::plex::reset_servers_for_test();
 }
 
@@ -305,7 +307,7 @@ fn reset_clears_every_claim_backoff_and_answer() {
     let mut owner = Owner::default();
     owner.set_query("wallace");
     for i in 0..NSRC {
-        owner.adapter.fetch[i].claim();
+        owner.adapter.fetch[i].claim(owner.state.gen);
         let s = &mut owner.state.src[i];
         *s = answered(0, vec![media("A Close Shave")]);
         s.retry_cd = RETRY_FRAMES;
