@@ -195,13 +195,14 @@ class Manifests(unittest.TestCase):
 
 class Completeness(unittest.TestCase):
     """`check --complete`: what a title must carry to be shown in the demo library, judged on the
-    committed JSON alone (the manifests; no image is ever opened)."""
+    committed manifests plus the Rust layout constants `HERO_PINS` re-reads (no image is ever
+    opened and nothing needs the network)."""
 
     # The pending list may only SHRINK. Its length per category is pinned here, in the test, not in
     # the list's own file: growing the list means editing this table, which a reviewer sees. When a
     # content PR fixes a gap it deletes the entry from `pending.json` AND lowers the number here;
     # a category that reaches zero leaves the table.
-    PENDING_CEILING = {"backdrop": 12, "country": 1, "creators": 1,
+    PENDING_CEILING = {"backdrop": 12, "country": 1, "creators": 1, "hero_art": 18,
                        "logo": 27, "poster": 8, "writers": 1}
 
     CITED = {"source": "https://www.wikidata.org/wiki/Q42", "retrieved": "2026-10-07"}
@@ -210,7 +211,8 @@ class Completeness(unittest.TestCase):
         self.assets, self.catalog = tool.load()
 
     def _gaps(self, key, **changes):
-        """The gaps of movie `key` after `changes` (a None value removes the field)."""
+        """The gaps of movie `key` after `changes` (a None value removes the field), bar `hero_art`:
+        no title declares a subject box yet, and `HeroGeometry` is where that category is tested."""
         movies = []
         for m in self.catalog["movies"]:
             m = copy.deepcopy(m)
@@ -218,12 +220,13 @@ class Completeness(unittest.TestCase):
                 for k, v in changes.items():
                     m.pop(k, None) if v is None else m.__setitem__(k, v)
             movies.append(m)
-        return tool.complete_gaps(self.assets, dict(self.catalog, movies=movies)).get(key, [])
+        gaps = tool.complete_gaps(self.assets, dict(self.catalog, movies=movies)).get(key, [])
+        return [g for g in gaps if g != "hero_art"]
 
-    def test_sintel_has_no_gaps_and_tears_of_steel_lacks_only_its_logo(self):
+    def test_sintel_has_only_its_hero_art_gap_and_tears_of_steel_lacks_its_logo_too(self):
         gaps = tool.complete_gaps(self.assets, self.catalog)
-        self.assertNotIn("sintel", gaps)
-        self.assertEqual(gaps["tears-of-steel"], ["logo"])
+        self.assertEqual(gaps["sintel"], ["hero_art"])
+        self.assertEqual(gaps["tears-of-steel"], ["hero_art", "logo"])
 
     def test_each_required_field_is_a_gap_when_absent(self):
         # field removed from a complete title -> the category it is reported under
@@ -353,6 +356,315 @@ class Completeness(unittest.TestCase):
                            env=dict(os.environ, PLXNATIVE_DEMO_CACHE=str(ROOT / "no-such-cache")))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("pending", r.stdout)
+
+
+class HeroGeometry(unittest.TestCase):
+    """The hero-art check: a declared subject box in SOURCE pixels is mapped into the derived
+    1920x1080 frame by arithmetic alone (no image is opened) and held against the text zones the
+    Rust layout pins. The expectations below are worked by hand from the cover rule: scale to cover,
+    then crop at the anchor."""
+
+    def setUp(self):
+        self.assets, self.catalog = tool.load()
+
+    def art(self, w, h, subject, **recipe):
+        """(assets, record) for a title whose backdrop is a `w`x`h` source with `recipe`."""
+        assets = {"src": {"kind": "backdrop", "width": w, "height": h}}
+        art = dict({"asset": "src", "mode": "cover", "anchor": "center"}, **recipe)
+        if subject is not None:
+            art["subject"] = subject
+        return assets, {"id": "t", "art": art}
+
+    def verdict(self, w, h, subject, **recipe):
+        assets, rec = self.art(w, h, subject, **recipe)
+        return tool.hero_geometry(assets, rec)
+
+    # ---- the mapping -------------------------------------------------------------------------
+
+    def test_a_source_of_the_frames_aspect_is_only_scaled(self):
+        # 3840x2160 -> scale 1/2, no crop: (2400,200,3200,1000) -> (1200,100,1600,500)
+        v = self.verdict(3840, 2160, [2400, 200, 3200, 1000])
+        self.assertEqual(v["box"], [1200, 100, 1600, 500])
+        self.assertEqual(v["verdict"], "pass", v)
+
+    def test_a_right_anchor_pins_the_sources_right_edge_to_the_frames(self):
+        # 2048x858 is wider than 16:9: the height decides, s = 1080/858 = 180/143, and a right
+        # anchor keeps the right edge, so x' = 1920 - (2048 - x) * s and y' = y * s.
+        s = 180 / 143
+        box = tool.hero_map_box(2048, 858, {"mode": "cover", "anchor": "right"}, [1500, 100, 1900, 500])
+        for got, want in zip(box, [1920 - 548 * s, 100 * s, 1920 - 148 * s, 500 * s]):
+            self.assertAlmostEqual(got, want, places=6)
+        self.assertAlmostEqual(box[0], 1230.2098, places=3)  # worked out longhand
+
+    def test_a_centre_anchor_crops_the_overflow_equally(self):
+        # same source: the scaled picture is 2048*s = 2577.9021 wide, 657.9021 over, 328.9510 a side
+        box = tool.hero_map_box(2048, 858, {"mode": "cover", "anchor": "center"}, [1000, 100, 1500, 500])
+        self.assertAlmostEqual(box[0], 1000 * 180 / 143 - 328.9510, places=3)
+        self.assertAlmostEqual(box[0], 929.7902, places=3)
+        self.assertAlmostEqual(box[2], 1500 * 180 / 143 - 328.9510, places=3)
+        # no anchor at all is the centre (`derive_image`'s default)
+        self.assertEqual(tool.hero_map_box(2048, 858, {}, [1000, 100, 1500, 500]), box)
+
+    def test_a_left_anchor_keeps_the_left_edge(self):
+        box = tool.hero_map_box(2048, 858, {"mode": "cover", "anchor": "left"}, [100, 0, 400, 858])
+        self.assertAlmostEqual(box[0], 100 * 180 / 143, places=6)
+        self.assertAlmostEqual(box[2], 400 * 180 / 143, places=6)
+
+    def test_a_portrait_source_is_cropped_by_height_and_upper_sits_at_thirty_percent(self):
+        # 1000x2000: the width decides, s = 1.92, scaled height 3840, 2760 over; `upper` drops
+        # 30% of it above the frame (828) -> y' = y*1.92 - 828; x is centred (no overflow)
+        box = tool.hero_map_box(1000, 2000, {"mode": "cover", "anchor": "upper"}, [500, 500, 900, 700])
+        for got, want in zip(box, [960, 132, 1728, 516]):
+            self.assertAlmostEqual(got, want, places=6)
+        # `crop: focus-right` is the right anchor by another name (`derive_image`'s own table)
+        a = tool.hero_map_box(2048, 858, {"crop": "focus-right"}, [1500, 100, 1900, 500])
+        b = tool.hero_map_box(2048, 858, {"anchor": "right"}, [1500, 100, 1900, 500])
+        self.assertEqual(a, b)
+
+    def test_the_anchor_table_is_the_one_the_deriver_cuts_with(self):
+        # the arithmetic and the ffmpeg crop must name the same anchors the same way
+        for anchor, x in (("right", "iw-ow"), ("left", "0"), ("center", "(iw-ow)/2"), ("upper", "(iw-ow)/2")):
+            self.assertIn(f":{x}:", tool._cover(1920, 1080, anchor))
+        self.assertIn("(ih-oh)*3/10", tool._cover(1920, 1080, "upper"))
+        self.assertEqual(set(tool.COVER_ANCHORS), {"right", "left", "upper"})
+
+    # ---- the verdict -------------------------------------------------------------------------
+
+    def test_extend_is_banned_for_hero_art(self):
+        v = self.verdict(2048, 858, [1500, 100, 1900, 500], mode="extend", anchor="right")
+        self.assertEqual(v["verdict"], "fail")
+        self.assertEqual(v["reasons"], ["extend"])
+        self.assertIsNone(v["box"])
+
+    def test_an_unknown_mode_is_refused_too(self):
+        self.assertEqual(self.verdict(2048, 858, [1500, 100, 1900, 500], mode="stretch")["reasons"], ["mode"])
+
+    def test_a_title_without_a_declared_subject_fails(self):
+        v = self.verdict(2048, 858, None, anchor="right")
+        self.assertEqual((v["verdict"], v["reasons"]), ("fail", ["no-subject"]))
+
+    def test_a_malformed_subject_fails(self):
+        for bad in ([1, 2, 3], [10, 10, 10, 50], [50, 10, 10, 50], "1,2,3,4", [1, 2, 3, "4"], [-1, 0, 5, 5]):
+            with self.subTest(subject=bad):
+                self.assertEqual(self.verdict(2048, 858, bad)["reasons"], ["bad-subject"])
+
+    def test_a_box_outside_the_source_image_fails(self):
+        for box in ([1500, 100, 2049, 500], [100, 100, 500, 859]):
+            with self.subTest(box=box):
+                v = self.verdict(2048, 858, box, anchor="right")
+                self.assertEqual((v["verdict"], v["reasons"]), ("fail", ["outside-source"]))
+        # the whole image is in bounds; what fails it is the crop, not the source
+        self.assertEqual(self.verdict(2048, 858, [0, 0, 2048, 858])["reasons"], ["outside-frame"])
+
+    def test_a_subject_the_cover_crop_cuts_off_fails(self):
+        # centre anchor loses 328.9 scaled px (261 source px) on each side of the 2048x858 art
+        v = self.verdict(2048, 858, [100, 100, 600, 500])
+        self.assertEqual((v["verdict"], v["reasons"]), ("fail", ["outside-frame"]))
+        self.assertLess(v["box"][0], 0)
+        # the portrait case: a box low in the source falls below the frame
+        v = self.verdict(1000, 2000, [500, 1000, 900, 1500], anchor="upper")
+        self.assertEqual(v["reasons"], ["outside-frame"])
+
+    def test_a_subject_in_the_text_column_fails_and_names_the_zone(self):
+        v = self.verdict(3840, 2160, [600, 700, 1200, 1000])  # frame (300,350)-(600,500)
+        self.assertEqual(v["verdict"], "fail")
+        self.assertIn("overlap:home text column", v["reasons"])
+        self.assertGreater(v["overlaps"]["home text column"], 0)
+
+    def test_a_subject_on_the_shelf_row_fails(self):
+        v = self.verdict(3840, 2160, [2800, 1700, 3400, 2100])  # frame (1400,850)-(1700,1050)
+        self.assertIn("overlap:home shelf row", v["reasons"])
+
+    def test_a_subject_in_the_starring_column_fails(self):
+        v = self.verdict(3840, 2160, [3000, 1420, 3400, 1540])  # frame (1500,710)-(1700,770)
+        self.assertEqual(v["reasons"], ["overlap:detail starring column"])  # y 770 is above the shelf row
+
+    def test_a_subject_over_the_detail_synopsis_or_facts_fails(self):
+        v = self.verdict(3840, 2160, [1800, 700, 2000, 900])  # frame (900,350)-(1000,450)
+        self.assertIn("overlap:detail text column", v["reasons"])
+        v = self.verdict(3840, 2160, [2100, 1420, 2500, 1500])  # frame (1050,710)-(1250,750)
+        self.assertEqual(v["reasons"], ["centre-left", "overlap:detail facts row"])
+
+    def test_touching_a_zone_is_not_overlapping_it(self):
+        # frame (1039,350)-(1400,500): its left edge is the detail text column's right edge
+        v = self.verdict(3840, 2160, [2078, 700, 2800, 1000])
+        self.assertEqual(v["verdict"], "pass", v)
+        v = self.verdict(3840, 2160, [2076, 700, 2800, 1000])  # one source pixel further in
+        self.assertIn("overlap:detail text column", v["reasons"])
+
+    def test_a_subject_left_of_sixty_percent_fails_on_its_centre(self):
+        v = self.verdict(3840, 2160, [2080, 700, 2400, 1000])  # frame (1040,350)-(1200,500): centre 1120
+        self.assertEqual(v["reasons"], ["centre-left"])
+        self.assertAlmostEqual(v["centre_x"], 1120)
+
+    def test_a_right_weighted_subject_clear_of_every_zone_passes(self):
+        v = self.verdict(2048, 872, [1500, 100, 1900, 500], anchor="right")
+        self.assertEqual((v["verdict"], v["reasons"]), ("pass", []), v)
+        # the scrim is advisory: the share of the box under it is reported, never gated
+        self.assertGreater(v["scrim_share"], 0)
+
+    # ---- eligibility and the gate ------------------------------------------------------------
+
+    def test_a_title_in_the_hero_pool_is_eligible_and_one_outside_it_is_not(self):
+        cat = {"movies": [{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "d"}],
+               "shows": [{"id": "s", "seasons": [{"index": 1, "episodes": [{"index": 1}]}]}],
+               "hero": "a", "hero_alternatives": [], "added_order": ["b"],
+               "continue_watching": [{"item": "s/1/1", "progress": 0.5}]}
+        self.assertEqual(tool.hero_eligible(cat), ["a", "b", "s"])  # an episode counts for its show
+
+    def test_every_catalog_title_is_in_the_hero_pool_today(self):
+        titles = {m["id"] for m in self.catalog["movies"] + self.catalog["shows"]}
+        self.assertEqual(set(tool.hero_eligible(self.catalog)), titles)
+
+    def _gap(self, w, h, subject, eligible=True, **recipe):
+        assets, rec = self.art(w, h, subject, **recipe)
+        cat = {"movies": [rec], "shows": [], "hero": "t" if eligible else "u", "hero_alternatives": [],
+               "added_order": [], "continue_watching": []}
+        return tool.hero_gap(assets, cat, rec)
+
+    def test_hero_art_is_a_gap_unless_the_geometry_passes(self):
+        self.assertTrue(self._gap(2048, 872, None, anchor="right"))
+        self.assertTrue(self._gap(2048, 872, [1500, 100, 1900, 500], anchor="center"))
+        self.assertFalse(self._gap(2048, 872, [1500, 100, 1900, 500], anchor="right"))
+
+    def test_a_title_outside_the_hero_pool_is_never_a_hero_art_gap(self):
+        self.assertFalse(self._gap(2048, 872, None, eligible=False, anchor="right"))
+
+    def test_a_title_with_no_art_is_a_backdrop_gap_not_a_hero_art_gap(self):
+        gaps = tool.complete_gaps(self.assets, self.catalog)
+        self.assertEqual(gaps["metropolis"], ["backdrop", "logo"])
+
+    def test_every_title_with_art_is_hero_art_pending_until_it_declares_a_passing_subject(self):
+        gaps = tool.complete_gaps(self.assets, self.catalog)
+        with_art = sorted(m["id"] for m in self.catalog["movies"] + self.catalog["shows"] if "art" in m)
+        self.assertEqual(sorted(k for k, g in gaps.items() if "hero_art" in g), with_art)
+        self.assertEqual(len(with_art), 18)
+        for m in self.catalog["movies"] + self.catalog["shows"]:
+            self.assertNotIn("subject", m.get("art", {}), "a subject box is read off the image by a person")
+
+    def test_a_passing_declared_subject_clears_the_pending_entry(self):
+        movies = copy.deepcopy(self.catalog["movies"])
+        sintel = next(m for m in movies if m["id"] == "sintel")
+        self.assertEqual((sintel["art"]["mode"], sintel["art"]["anchor"]), ("cover", "right"))
+        sintel["art"]["subject"] = [1500, 100, 1900, 500]  # 2048x872 source
+        cat = dict(self.catalog, movies=movies)
+        self.assertNotIn("sintel", tool.complete_gaps(self.assets, cat))
+        with self.assertRaises(AssertionError) as e:  # ...and the now-stale pending entry is refused
+            tool.check_complete(self.assets, cat)
+        self.assertIn("hero_art", str(e.exception))
+
+    def test_the_subject_does_not_change_the_derive_stamp(self):
+        a = {"asset": "x", "mode": "cover", "anchor": "right"}
+        self.assertEqual(tool.recipe_stamp(a), tool.recipe_stamp(dict(a, subject=[1, 2, 3, 4])))
+        self.assertNotEqual(tool.recipe_stamp(a), tool.recipe_stamp(dict(a, anchor="left")))
+
+    # ---- the zones are pinned to the Rust layout ---------------------------------------------
+
+    def test_the_python_zone_numbers_equal_the_rust_constants_they_copy(self):
+        tool.check_hero_pins()
+
+    def test_the_zones_are_built_from_the_pins_and_every_pin_feeds_a_zone(self):
+        zones = tool.hero_zones()
+        self.assertEqual([z["name"] for z in zones if not z.get("advisory")],
+                         ["home text column", "home shelf row", "detail text column",
+                          "detail facts row", "detail starring column"])
+        by = {z["name"]: z["rect"] for z in zones}
+        self.assertEqual(by["home text column"], [96, 260, 756, 776])
+        self.assertEqual(by["home shelf row"], [0, 777, 1920, 1080])
+        self.assertEqual(by["detail text column"], [96, 298, 1039, 1080])
+        self.assertEqual(by["detail facts row"], [1039, 702, 1264, 830])
+        self.assertEqual(by["detail starring column"], [1264, 702, 1824, 1080])
+        self.assertEqual(by["hero scrim"], [0, 162, 1536, 1080])
+        used = {n for z in zones for n in z["uses"]}
+        self.assertEqual(used, set(tool.HERO_PINS) - {n for n, p in tool.HERO_PINS.items() if p[1] == "text"})
+
+    def test_a_drifted_python_copy_fails_naming_the_constant_and_its_file(self):
+        for name, wrong in (("MARGIN_X", 90.0), ("COL_W", 600.0), ("PEEK_Y", 828.0), ("HERO_TEXT_W", 990.0),
+                            ("HERO_LOGO_TOP_HOME", 300.0), ("HERO_SCRIM_W", 1500.0)):
+            with self.subTest(name=name):
+                pins = {k: list(v) for k, v in tool.HERO_PINS.items()}
+                pins[name][-1] = wrong
+                with self.assertRaises(AssertionError) as e:
+                    tool.check_hero_pins(pins)
+                self.assertIn(name, str(e.exception))
+                self.assertIn(tool.HERO_PINS[name][0], str(e.exception))
+
+    def test_a_changed_or_removed_rust_constant_fails_the_pin_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            for pin in tool.HERO_PINS.values():
+                dst = root / pin[0]
+                if not dst.exists():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(ROOT / pin[0], dst)
+            tool.check_hero_pins(root=root)  # the copy is faithful
+            f = root / "rust-modules" / "ui" / "src" / "landing_hero.rs"
+            f.write_text(f.read_text().replace("pub const COL_W: f32 = 660.0;", "pub const COL_W: f32 = 700.0;"))
+            with self.assertRaises(AssertionError) as e:
+                tool.check_hero_pins(root=root)
+            self.assertIn("COL_W", str(e.exception))
+            # a constant that has vanished is as stale as one that moved
+            f.write_text(f.read_text().replace("pub const COL_W: f32 = 700.0;", ""))
+            with self.assertRaises(AssertionError) as e:
+                tool.check_hero_pins(root=root)
+            self.assertIn("COL_W", str(e.exception))
+
+    def test_a_changed_layout_formula_fails_the_pin_check(self):
+        # the zones that are a FORMULA (the shelf's heading line) pin the source text of the rule
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            for pin in tool.HERO_PINS.values():
+                dst = root / pin[0]
+                if not dst.exists():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(ROOT / pin[0], dst)
+            f = root / "rust-modules" / "screens" / "src" / "home" / "mod.rs"
+            f.write_text(f.read_text().replace("row_y - TITLE_DY - lift", "row_y - lift"))
+            with self.assertRaises(AssertionError) as e:
+                tool.check_hero_pins(root=root)
+            self.assertIn("HOME_SHELF_HEADING_RULE", str(e.exception))
+
+    def test_rust_expressions_are_evaluated_from_the_pinned_names(self):
+        ev = tool._rust_expr
+        self.assertEqual(ev("0.80 * crate::consts::SCR_W", {"SCR_W": 1920.0}), 1536.0)
+        self.assertEqual(ev("HERO_TEXT_BOTTOM + theme::space::MD", {"HERO_TEXT_BOTTOM": 692.0, "MD": 24.0}), 716.0)
+        self.assertEqual(ev("0.15 * crate::consts::SCR_H", {"SCR_H": 1080.0}), 162.0)
+        with self.assertRaises(AssertionError):
+            ev("UNKNOWN * 2.0", {})
+        with self.assertRaises(AssertionError):
+            ev("__import__('os')", {})
+
+    # ---- the command -------------------------------------------------------------------------
+
+    def _run(self, *args):
+        return subprocess.run([sys.executable, str(ROOT / "tools" / "demo_library.py"), *args],
+                              capture_output=True, text=True,
+                              env=dict(os.environ, PLXNATIVE_DEMO_CACHE=str(ROOT / "no-such-cache")))
+
+    def test_hero_report_prints_each_eligible_title_offline(self):
+        r = self._run("hero-report")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for key in ("sintel", "charge", "cosmos-laundromat", "hero", "singularity"):
+            self.assertRegex(r.stdout, rf"(?m)^{key} .*\bfail\b")
+        self.assertRegex(r.stdout, r"(?m)^cosmos-laundromat .*\bextend\b")
+        self.assertRegex(r.stdout, r"(?m)^sintel .*\bno-subject\b")
+        self.assertRegex(r.stdout, r"(?m)^metropolis .*\bskip\b")
+        self.assertIn("home text column", r.stdout)  # the zone table, with its pins
+        self.assertIn("rust-modules/ui/src/landing_hero.rs", r.stdout)
+
+    def test_hero_report_shows_the_mapped_box_and_overlaps_of_a_declared_title(self):
+        cat = copy.deepcopy(self.catalog)
+        next(m for m in cat["movies"] if m["id"] == "sintel")["art"]["subject"] = [100, 100, 500, 500]
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            tool.hero_report(self.assets, cat)
+        line = next(x for x in out.getvalue().splitlines() if x.startswith("sintel "))
+        self.assertIn("outside-frame", line)
+        self.assertIn("[100, 100, 500, 500]", line)
+
+    def test_check_complete_runs_the_pin_check(self):
+        with unittest.mock.patch.object(tool, "check_hero_pins", side_effect=AssertionError("drift")):
+            with self.assertRaises(AssertionError):
+                tool.check_complete(self.assets, self.catalog)
 
 
 @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow absent (`python3 -m pip install Pillow`)")
