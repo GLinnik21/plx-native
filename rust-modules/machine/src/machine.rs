@@ -442,10 +442,11 @@ pub enum ScreenEvent<H: Host> {
     Enter(Enter<H::Elem>),
     Cover,
     Uncover,
-    /// A SURFACE has been dismissed (`NavOp::Dismiss`): it no longer owns input and the page under
-    /// it has already been told `Uncover` + `Enter(Restored)` — those follow this event in the same
-    /// batch — but its body keeps drawing, and keeps its `Tick`, until the close fade settles and
-    /// `WillLeave(ForGood)` + `Unmount` arrive. This is the moment it stops ACTING for the page:
+    /// A SURFACE has been dismissed (`NavOp::Dismiss`): it no longer owns input. When no other
+    /// surface stays up, the page under it is told `Uncover` + `Enter(Restored)` after this event
+    /// in the same batch (with another surface still up the host hears nothing). Its body keeps
+    /// drawing, and keeps its `Tick`, until the close fade settles and `WillLeave(ForGood)` +
+    /// `Unmount` arrive. This is the moment it stops ACTING for the page:
     /// work it started and has not received (a pending fetch) is retired here rather than at
     /// teardown, so nothing it asked for can land on the page that was uncovered. Delivered once,
     /// only on the dismissal that starts the fade; a surface torn down without one (its host

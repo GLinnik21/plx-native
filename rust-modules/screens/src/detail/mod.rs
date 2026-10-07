@@ -187,10 +187,12 @@ pub struct DetailScreen {
     teardown_cleared: bool,
     /// This page was DISMISSED as a surface (`ScreenEvent::Closing`) and has withdrawn its request
     /// from the Metadata store (`MetadataCmd::Withdraw`); it is only fading out now. From then on
-    /// the store awaiting THIS page's address can only mean another page asked for it since — the
+    /// the store awaiting THIS page's address usually means another page asked for it since — the
     /// same copy presented again inside this one's fade — so the teardown's `ClearItem`, which
-    /// would retire that request and drop the item it is about to show, is not sent. Not hashed:
-    /// lifecycle bookkeeping, like `teardown_cleared`.
+    /// would retire that request and drop the item it is about to show, is not sent. Not only: a
+    /// Closing surface carried into covered modals is re-entered by the container and asks for its
+    /// own item too, and nested presented copies (a copy presented from inside another copy) are
+    /// not covered. Not hashed: lifecycle bookkeeping, like `teardown_cleared`.
     withdrawn: bool,
 
     // Render state.

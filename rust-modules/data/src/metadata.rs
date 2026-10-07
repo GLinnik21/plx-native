@@ -1822,10 +1822,12 @@ fn clear_item(state: &mut MetadataState, adapter: &MetadataAdapter, sid: plx_ple
 /// is this item's, and drops nothing from `current`. Without it the dismissed copy's request stayed
 /// the awaited one for the length of the fade, while the page under it had already been entered
 /// and had found its own item loaded: a landing inside that window replaced that item, and the
-/// copy's teardown then emptied the slot. After this, `detail_want` naming this address means some
-/// OTHER page has asked for it since (the same copy presented again inside the fade) — which is
-/// what lets that teardown leave the new page's request alone. Answers whether a request was
-/// retired.
+/// copy's teardown then emptied the slot. After this, `detail_want` naming this address usually
+/// means some OTHER page has asked for it since (the same copy presented again inside the fade) —
+/// which is what lets that teardown leave the new page's request alone. Not only: a Closing surface
+/// carried into covered modals is re-entered by the container and asks for its own item too, and
+/// nested presented copies (a copy presented from inside another copy) are not covered. Answers
+/// whether a request was retired.
 fn withdraw(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str) -> bool {
     let mine = adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner())
         .as_ref().is_some_and(|(s, r)| plx_plex::plex::same_item((*s, r), (sid, rk)));

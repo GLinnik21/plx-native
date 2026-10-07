@@ -66,7 +66,10 @@
 //!   stops asking at once: its request, if still the awaited one, is superseded, while the item it
 //!   already loaded stays for the close fade. Its `ClearItem` follows when the fade settles —
 //!   unless the same address has been asked for again in the meantime (the copy presented anew
-//!   inside the fade), which that teardown would otherwise retire.
+//!   inside the fade), which that teardown would otherwise retire. That "asked again" is not always
+//!   another page: a Closing surface carried into covered modals is re-entered by the container and
+//!   asks for its own item too, and nested presented copies (a copy presented from inside another
+//!   copy) are not covered.
 //! - `LoadSeason(usize)` → `metadata::load_season` — flip the season strip optimistically, fetch
 //!   the episodes off-thread (debounced landing through `pump_season`).
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.

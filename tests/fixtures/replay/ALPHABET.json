@@ -224,6 +224,7 @@
     "restore_memory",
     "cover",
     "uncover",
+    "closing",
     "will_leave",
     "suspend",
     "resume",
