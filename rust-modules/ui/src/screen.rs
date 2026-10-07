@@ -243,6 +243,13 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// has focused (`app::bridge::opener_lift`), so an implementer may draw `focus` as focused
     /// without checking that the page has not moved on.
     fn redraw_focused(&self, _f: &mut DrawFrame<'_, '_, H>, _focus: Option<FocusKey<H::Elem>>) {}
+    /// **The card the page has focused, and where it sits** — the host's question for an item menu
+    /// and for the focus probe, asked of whichever card page is on screen so the host names no
+    /// screen type. `focus` is the engine key to answer for (a page answers only its own entry's
+    /// cards); `None` for a page with no card, which is the default.
+    fn focused_card<'a>(&self, _cx: &Cx<'a, H>, _focus: Option<FocusKey<H::Elem>>, _at: At) -> Option<FocusedCard<'a>> {
+        None
+    }
     /// Typed application inspection during migration; the library never names a screen type.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
@@ -423,6 +430,14 @@ pub enum Step<K> {
 pub enum At {
     SpringTarget,
     Drawn,
+}
+
+/// The card a page has focused ([`Screen::focused_card`]): the catalog item behind it, as the
+/// application's own type (this layer names none, so the host downcasts it), and its rect.
+#[derive(Clone, Copy)]
+pub struct FocusedCard<'a> {
+    pub item: &'a dyn std::any::Any,
+    pub rect: Option<Rect>,
 }
 
 /// What was painted / where it rests / what clipped it (§7.6).
