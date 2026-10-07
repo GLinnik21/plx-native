@@ -1378,6 +1378,92 @@ fn draw_label_block(
     }
 }
 
+/// The line box of a credit label's role line: the caption size plus a hair of air.
+pub const CREDIT_ROLE_LEADING: f32 = theme::size::CAPTION as f32 + theme::space::XS;
+
+/// Where a credit label's role line starts below its name line's cap top — the name's cap height
+/// and a gap. One number for the label in every state, so the two baselines never move.
+fn credit_role_dy(measure: &dyn plx_machine::machine::Measure) -> f32 {
+    measure.cap_h(theme::size::LABEL) + theme::space::XS
+}
+
+/// **A persistent two-line label under a headshot** — the name, then the role / job, drawn for
+/// EVERY tile of a shelf, focused or not (a poster shelf draws only the focused tile's block, see
+/// [`draw_label_block`]; a cast shelf names everyone). `at` is the label's box: its left edge and
+/// width (the text budget) and the cap top of the name line.
+///
+/// **One shape in every state.** The name is ONE line and the role is ONE line, always, on the same
+/// two baselines — a block that wraps the role to two lines unfocused and shows one clipped, gliding
+/// line focused changes height and jumps when focus moves. What differs is only what a line that
+/// does not fit does:
+/// - unfocused: it ends in an ellipsis (`…`), still;
+/// - focused: it is never elided — it glides through its budget ([`marquee`]'s title timing, drawn
+///   as a run and its follower inside a clip window the budget wide), the name and the role on ONE
+///   [`marquee::Block`] (one clock, one cycle) so they leave their rest beat and loop together,
+///   exactly like a poster's title and caption. A focused line that fits stays centred and still.
+///
+/// `clock` is the caller's: one headshot holds focus app-wide, so one clock per shelf; it is
+/// released here whenever no focused line overflows, so the next overflowing label starts from its
+/// rest beat. A line is centred when plain and starts at `at.x` while gliding.
+pub fn draw_credit_label(
+    p: Painter,
+    clock: &marquee::Clock,
+    at: Rect,
+    name: &str,
+    role: &str,
+    focused: bool,
+    measure: &dyn plx_machine::machine::Measure,
+) {
+    use crate::label::{HAlign, Label, VAlign};
+    if at.w <= 0.0 {
+        return;
+    }
+    let (nsz, rsz) = (theme::size::LABEL, theme::size::CAPTION);
+    let name_w = measure.width_str(name, nsz, focused);
+    let role_w = measure.width_str(role, rsz, false);
+    let over = |w: f32, present: bool| (focused && present && w > at.w).then_some(w);
+    let block = marquee::Block::of(
+        (name, over(name_w, !name.is_empty())),
+        (role, over(role_w, !role.is_empty())),
+    );
+    if focused && block.is_none() {
+        clock.release();
+    }
+    let (name_y, role_y) = (at.y, at.y + credit_role_dy(measure));
+    // (text, size, bold, colour, cap top, line box height, full run width when it overflows)
+    let lines = [
+        (name, nsz, focused, if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY },
+            name_y, nsz as f32 + theme::space::XS, over(name_w, !name.is_empty())),
+        (role, rsz, false, theme::TEXT_TERTIARY, role_y, CREDIT_ROLE_LEADING, over(role_w, !role.is_empty())),
+    ];
+    for (text, sz, bold, col, y, h, overflow) in lines {
+        if text.is_empty() {
+            continue;
+        }
+        let frame = Rect::new(at.x, y, at.w, h);
+        let style = |l: Label| if bold { l.bold() } else { l };
+        if let (Some(run_w), Some(block)) = (overflow, block.as_ref()) {
+            let Ok(c) = std::ffi::CString::new(text) else { continue };
+            let label = style(Label::new(c.as_ptr(), sz, col)).h(HAlign::Left).v(VAlign::CapTop);
+            marquee::TITLE.glide_in(
+                clock,
+                p,
+                &block.key,
+                run_w,
+                block.cycle_w,
+                Rect::new(frame.x, frame.y - MARQUEE_AIR, frame.w, frame.h + 2.0 * MARQUEE_AIR),
+                |dx| {
+                    label.draw(p, Rect::new(frame.x + dx, frame.y, frame.w, frame.h));
+                },
+            );
+        } else {
+            let shown = plx_gfx::text::elide_by(text, frame.w, false, |t| measure.width_str(t, sz, bold));
+            let Ok(c) = std::ffi::CString::new(shown) else { continue };
+            style(Label::new(c.as_ptr(), sz, col)).h(HAlign::Center).v(VAlign::CapTop).draw(p, frame);
+        }
+    }
+}
+
 /// Full-bleed resume bar: the bottom band of the card itself (Continue Watching). Delegates to
 /// [`crate::widgets::progress_bar`], which is the ONE bar the whole app draws — a poster shelf and
 /// the detail page's episode filmstrip now make the identical call, and its doc carries the two
@@ -2229,5 +2315,106 @@ mod tests {
         let (t, c) = at(cycle + 300.0);
         assert!((leftmost(&t) - title_x).abs() < 0.5 && (leftmost(&c) - cap_x).abs() < 0.5,
             "both restart together: {t:?} {c:?}");
+    }
+
+    // ---- a credit label is one name line and one role line, in every state -------------------
+
+    thread_local! {
+        static CREDIT_CLOCK: marquee::Clock = const { marquee::Clock::new() };
+    }
+
+    /// Every text run one credit label draws, as `(x, y)`.
+    fn credit_runs(name: &str, role: &str, focused: bool) -> Vec<(f32, f32)> {
+        let at = Rect::new(500.0, 100.0, 222.0, 60.0);
+        crate::draw_census::capture(|| {
+            CREDIT_CLOCK.with(|c| draw_credit_label(Painter::recording(), c, at, name, role, focused,
+                &crate::fixture::FixtureMeasure));
+        })
+        .into_iter()
+        .filter(|(tag, _)| *tag == 100)
+        .map(|(_, r)| (r.x, r.y))
+        .collect()
+    }
+
+    /// The distinct baselines (rounded) a set of runs sits on, top to bottom.
+    fn baselines(runs: &[(f32, f32)]) -> Vec<i32> {
+        let mut ys: Vec<i32> = runs.iter().map(|r| r.1.round() as i32).collect();
+        ys.sort_unstable();
+        ys.dedup();
+        ys
+    }
+
+    const CREDIT_CASES: [(&str, &str); 4] = [
+        ("Ana", "Director"),
+        ("Sergio Hasselbaink", "Barley, the lumberjack"),
+        ("Rogier Schippers", "Captain, the long-suffering hero of the northern wastes"),
+        ("Alexandra Wolkowicz-Harrington Smythe", LONG_CAPTION),
+    ];
+
+    /// **One shape, focused or not.** A headshot's label is a name line and a role line, ALWAYS:
+    /// the same two baselines for a short role, a medium one and one that is far too long, focused
+    /// or resting, mid-glide or not. A role that wrapped to two lines when unfocused and became
+    /// one clipped line on focus made the block change height and jump when focus moved.
+    #[test]
+    fn a_credit_label_is_one_name_line_and_one_role_line_in_every_state() {
+        let _serial = plx_base::testlock::serial();
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        CREDIT_CLOCK.with(|c| c.release());
+        let reference = baselines(&credit_runs("Ana", "Director", false));
+        assert_eq!(reference.len(), 2, "a name line and a role line: {reference:?}");
+        for (name, role) in CREDIT_CASES {
+            for focused in [false, true] {
+                CREDIT_CLOCK.with(|c| c.release());
+                for ms in [0.0_f32, MARQUEE.hold_ms + 700.0, 4000.0] {
+                    plx_machine::idle::frame_begin(ms / 1000.0);
+                    let runs = credit_runs(name, role, focused);
+                    assert_eq!(baselines(&runs), reference,
+                        "{name:?}/{role:?} focused={focused} at {ms} ms: {runs:?}");
+                }
+            }
+        }
+    }
+
+    /// Unfocused, a name or role that does not fit is ONE elided run — it neither wraps nor
+    /// glides, so a resting shelf of credits is still and every label is a single line.
+    #[test]
+    fn an_unfocused_credit_label_that_overflows_is_one_elided_run_per_line() {
+        let _serial = plx_base::testlock::serial();
+        for (name, role) in CREDIT_CASES {
+            for ms in [0.0_f32, 5000.0] {
+                plx_machine::idle::frame_begin(ms / 1000.0);
+                let _ = plx_machine::idle::take_local_damage();
+                assert_eq!(credit_runs(name, role, false).len(), 2, "{name:?}/{role:?}");
+                assert_eq!(plx_machine::idle::take_local_damage(), 0, "an unfocused label never animates");
+            }
+        }
+    }
+
+    /// Focused and too long, name and role glide on one clock and one cycle, like a poster's
+    /// title and caption, and a fitting focused label draws two still runs and reports nothing.
+    #[test]
+    fn a_focused_credit_label_glides_only_the_lines_that_do_not_fit() {
+        let _serial = plx_base::testlock::serial();
+        CREDIT_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let _ = plx_machine::idle::take_local_damage();
+        let (long_name, long_role) = CREDIT_CASES[3];
+        let rest = credit_runs("Ana", long_role, true);
+        assert_eq!(rest.len(), 3, "a still name, plus the role and its follower: {rest:?}");
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "resting is not damage");
+        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 500.0) / 1000.0);
+        let moved = credit_runs("Ana", long_role, true);
+        assert!(moved.iter().map(|r| r.0).fold(f32::MAX, f32::min)
+            < rest.iter().map(|r| r.0).fold(f32::MAX, f32::min), "the role glides: {rest:?} -> {moved:?}");
+        assert!(plx_machine::idle::take_local_damage() > 0);
+        CREDIT_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.5);
+        let _ = plx_machine::idle::take_local_damage();
+        assert_eq!(credit_runs("Ana", "Director", true).len(), 2);
+        assert_eq!(credit_runs(long_name, "Director", true).len(), 3, "the long name and its follower");
+        CREDIT_CLOCK.with(|c| c.release());
+        let _ = plx_machine::idle::take_local_damage();
+        assert_eq!(credit_runs("Ana", "Director", true).len(), 2);
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "a fitting label never reports");
     }
 }

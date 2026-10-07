@@ -77,7 +77,11 @@ cast names scroll off-screen with their headshots at full width.
 every line of a FOCUSED card's label block: a poster's title AND its caption line (year, character
 or credit role, "Show · S1 · E4", a server handle — every shelf, the Library and Collection grids,
 Person credits and Search draw it through `card_row::draw_label_block`), and a headshot's name and
-role (once it overflows its two lines). All go through the one `marquee::Marquee::glide_in`. The
+role. All go through the one `marquee::Marquee::glide_in`. A headshot's label (a cast shelf names
+EVERY tile, focused or not) is `card_row::draw_credit_label`: a name line and ONE role line on the
+same two baselines in every state — never a role wrapped to two lines at rest and one clipped line
+on focus, which made the block change height and jump with focus. Unfocused, a line that does not
+fit ends in an ellipsis and stays still; focused, the same lines glide. The
 lines of one block are ONE `marquee::Block`: one clock, one cycle (the longest overflowing line's),
 so title and sub-line leave their rest beat together and loop together; a line that fits stays
 plain and still, and the shared clock is released only when no line overflows. An UNFOCUSED card
