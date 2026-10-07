@@ -1,16 +1,16 @@
 {
- "generated": "2026-10-07T22:18:29Z",
+ "generated": "2026-10-07T22:19:02Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 22.6,
+   "change7_pct": 22.4,
    "d30": null,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 62,
-   "now": 246.5,
+   "now": 246,
    "prev7": 201.0,
    "state": "worse",
    "threshold_abs": 30.0,
@@ -34,15 +34,15 @@
    "unit": "s"
   },
   {
-   "change30_pct": 113.3,
-   "change7_pct": -46.8,
+   "change30_pct": 112.9,
+   "change7_pct": -46.9,
    "d30": 241,
    "group": "ci",
    "id": "push_wait",
    "label": "Wait after merge",
-   "n_now": 111,
+   "n_now": 112,
    "n_prev": 75,
-   "now": 514,
+   "now": 513.0,
    "prev7": 967,
    "state": "better",
    "threshold_abs": 60.0,
@@ -210,15 +210,15 @@
    "unit": "s"
   },
   {
-   "change30_pct": 284.0,
-   "change7_pct": -5.0,
+   "change30_pct": 283.4,
+   "change7_pct": -5.2,
    "d30": 235,
    "group": "ci",
    "id": "pr_wait",
    "label": "PR CI wait",
-   "n_now": 184,
+   "n_now": 185,
    "n_prev": 174,
-   "now": 902.5,
+   "now": 901,
    "prev7": 950.0,
    "state": "flat",
    "threshold_abs": 90.0,
@@ -232,9 +232,9 @@
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 62,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17.0,
    "state": "flat",
    "threshold_abs": 30.0,
@@ -243,14 +243,14 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -17.0,
+   "change7_pct": -17.7,
    "d30": null,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 62,
-   "now": 751.0,
+   "now": 745,
    "prev7": 905.0,
    "state": "flat",
    "threshold_abs": 30.0,
@@ -264,9 +264,9 @@
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 45,
+   "n_now": 46,
    "n_prev": 0,
-   "now": 291,
+   "now": 284.0,
    "prev7": null,
    "state": "new",
    "threshold_abs": 30.0,
@@ -276,13 +276,8 @@
  ],
  "regressions": [
   {
-   "change_pct": 22.6,
+   "change_pct": 22.4,
    "commits": [
-    {
-     "pr": 505,
-     "sha": "bdc1ee912",
-     "title": "cards::Grid: columns, style and left edge from the spec, and an externally driven scroll mode"
-    },
     {
      "pr": 506,
      "sha": "178e7c398",
@@ -327,6 +322,11 @@
      "pr": 513,
      "sha": "33937fcb1",
      "title": "Troubleshooting: how to collect the app's logs, and a bug-report form that asks for them"
+    },
+    {
+     "pr": 515,
+     "sha": "5c18b8920",
+     "title": "Detail: the Related, Collection, Extras and Cast shelves are cards::Shelf"
     }
    ],
    "from": 201.0,
@@ -334,7 +334,7 @@
    "label": "Simulator CI: Linux simulator build + launch",
    "since": "2026-10-07",
    "threshold_pct": 20.0,
-   "to": 246.5
+   "to": 246
   }
  ],
  "schema": 1,
@@ -349,19 +349,19 @@
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "label": "Simulator CI: macOS simulator build + launch",
-   "now": 751.0
-  },
-  {
-   "group": "ci",
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "now": 291
+   "now": 745
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
    "now": 288
+  },
+  {
+   "group": "ci",
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "now": 284.0
   },
   {
    "group": "ci",
