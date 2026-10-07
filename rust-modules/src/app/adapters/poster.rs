@@ -796,9 +796,9 @@ fn logo_warm(srv: ServerId, rk: &str) -> Warm {
 }
 
 /// An item's clearLogo (transparent PNG) as a cache key once its pixels are in — `None` while
-/// pending OR when the item has no logo (the store cannot tell those two apart — which is why the
-/// text→logo swap is still a cut, see [`plx_ui::hero_logo`]). `ui::tex::logo_src` adds the
-/// texture and its TRUE PIXEL SIZE.
+/// pending OR when the item has no logo (this answer cannot tell those two apart; [`logo_failed`]
+/// is the peek that does, and the text→logo swap is still a cut, see [`plx_ui::hero_logo`]).
+/// `ui::tex::logo_src` adds the texture and its TRUE PIXEL SIZE.
 ///
 /// The ONE clearLogo resolve (home hero, detail hero, detail compact title all draw through it).
 /// How big it is DRAWN is a UI decision and lives in [`plx_ui::hero_logo::fit`]: this layer used
@@ -809,6 +809,25 @@ fn logo_warm(srv: ServerId, rk: &str) -> Warm {
 /// — so every hero page costs two of the store's [`PT_CAP`] slots, backdrop plus logo.
 fn logo_probe(srv: ServerId, rk: &str) -> Option<PosterKey> {
     lookup(srv, logo_key(srv, rk)?, Touch::Draw).0
+}
+
+/// Has this item's clearLogo SETTLED as a miss — the server answered with a non-transient
+/// failure (a 404 for an item with no logo, bytes the decoder could not read) and the slot holds
+/// `P_FAILED`? A pure peek: no LRU touch, no frame stamp, no fetch. `false` while the fetch is
+/// unsent, in flight, parked for a retry, or the pixels are in; the demo-video accounting
+/// (`plx_ui::placeholder`) reads it to tell "will never arrive" from "has not arrived".
+fn logo_failed(srv: ServerId, rk: &str) -> bool {
+    let Some(key_s) = logo_key(srv, rk) else { return false };
+    let g = store();
+    let cache_gen = plx_platform::imgcache::generation();
+    let grant_epoch = plx_plex::plex::client_for(srv).map_or(0, |c| c.grant_epoch());
+    (0..PT_CAP).any(|i| {
+        let s = &g.slots[i];
+        s.state == P_FAILED
+            && s.cache_gen == cache_gen
+            && s.grant_epoch == grant_epoch
+            && same_art(s, srv, key_s.as_bytes())
+    })
 }
 
 /// The slot a miss claims, as a PURE function of what the store looks like: the first EMPTY, else
@@ -1156,6 +1175,9 @@ impl tex::Source for PosterSource {
     }
     fn logo_warm(&self, srv: u16, rk: &str) -> Warm {
         logo_warm(ServerId::from_raw(srv), rk)
+    }
+    fn logo_failed(&self, srv: u16, rk: &str) -> bool {
+        logo_failed(ServerId::from_raw(srv), rk)
     }
     fn unresident(&self, key: PosterKey, refused: bool) {
         let mut g = store();

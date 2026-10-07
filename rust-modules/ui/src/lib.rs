@@ -49,6 +49,7 @@ pub mod frame; // RESTRUCTURE spike (spec §8.1): `Budget`, admission control fo
 pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-transition prototype
 pub mod hold_hint; // the standing "Hold [OK] for options" capsule: dwell/life schedule, hold-progress cap, fade + rise
 pub mod hit; // RESTRUCTURE (spec §7.6): the double-buffered hit map and the pointer gates
+pub mod placeholder; // placeholder accounting: a per-frame count at every placeholder DRAW + the #FF00FE pixel sentinel (feature `placeholder-sentinel`)
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod landing_hero; // shared landing hero geometry and scrim curve, also read by route/legibility checks
 pub mod icons;

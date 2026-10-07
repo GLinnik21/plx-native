@@ -508,6 +508,8 @@ impl Screen<FixtureHost> for FixtureScreen {
         }
         composed_draw(self, f);
         if matches!(self.arg, FixtureArg::Page(_)) {
+            // a page that always shows a placeholder, for the held-image debt test
+            crate::placeholder::note(f.painter, crate::placeholder::Reason::DetailSpinner, "fixture");
             f.painter.text(
                 c"pending page text".as_ptr(),
                 100.0,

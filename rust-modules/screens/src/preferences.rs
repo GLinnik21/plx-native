@@ -194,6 +194,7 @@ impl Txn {
             _ => PreferenceCmd::Load { reply },
         };
         self.saving = matches!(&command, PreferenceCmd::Save { .. });
+        // placeholder-exempt: SCOPE decision, not a non-placeholder: this is a real wait caption, left uncounted because the demo storyboard never shows Settings (a driver that does must count it)
         io.status = if self.saving {
             plx_platform::i18n::msg::settings_audio_saving()
         } else { plx_platform::i18n::msg::settings_audio_loading() }.into();

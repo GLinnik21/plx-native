@@ -117,6 +117,13 @@ threadcheck = ["plx_base/threadcheck", "plx_ui/threadcheck"]
 # Everything else compiles identically.
 lab-diagnostics = ["plx_base/lab-diagnostics", "plx_net/lab-diagnostics", "plx_platform/lab-diagnostics", "plx_media/lab-diagnostics"]
 
+# **The demo-video dump build's pixel oracle** (`rust-modules/ui/src/placeholder.rs`): every
+# placeholder the UI draws is painted flat in one exact colour (#FF00FE) at alpha 1, so the dump's
+# frame scanner can find one by pixel value. OFF by default and in NO default set, so no ordinary
+# `make`, `make check`, harness run or `RELEASE=1` build has it; only the dump build names it.
+# `plx_ui` is the one crate with a `cfg` on it.
+placeholder-sentinel = ["plx_ui/placeholder-sentinel"]
+
 # **There is no `telemetry` cargo feature, and this comment is here so nobody adds one back.**
 #
 # There WAS one, declared here, gating nothing: `mod telemetry;` in `lib.rs` was unconditional (it

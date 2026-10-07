@@ -21,9 +21,11 @@
 //! `home.rs`'s `the_home_hero_logo_never_reaches_the_top_bar`.
 //!
 //! There is deliberately no fade-in behind the text→logo swap: `ui::tex::logo_src` answers `None`
-//! both while the fetch is pending AND when the item simply has no clearLogo, so a cross-fade would
-//! need the store to distinguish `P_FAILED`/absent from `P_WANT`/`P_LOADING` first. The swap is a
-//! cut, but nothing around it MOVES, which is the part that used to read as a glitch.
+//! both while the fetch is pending AND when the item simply has no clearLogo. The store can now
+//! say which (`ui::tex::logo_failed`, a settled miss), and the placeholder accounting uses it —
+//! the text of a pending logo is a counted wait, the text of an absent one is not — but no
+//! cross-fade has been built on it. The swap is a cut, but nothing around it MOVES, which is the
+//! part that used to read as a glitch.
 use crate::label::{HAlign, Label, VAlign};
 use plx_machine::machine::Measure;
 use crate::{theme, Painter, Rect};
@@ -198,7 +200,21 @@ impl<'a> HeroLogo<'a> {
         let Ok(cs) = std::ffi::CString::new(line) else {
             return;
         };
-        Label::new(cs.as_ptr(), sz, theme::TEXT_PRIMARY)
+        // An item with a ratingKey whose logo has not resolved draws its title as text, and that is
+        // a WAIT only while the logo can still arrive: counted (and sentinel-inked) then. A logo the
+        // store has settled as a miss (the 404 of an item with no clearLogo) will never come, so
+        // the text is the answer: not counted, but reported as an absence so a driver whose
+        // storyboard promises a logo can fail fast on it. A hero with no key at all has nothing to
+        // wait for — its title is the whole answer.
+        let (p, ink) = if self.rk.is_empty() {
+            (p, theme::TEXT_PRIMARY)
+        } else if crate::tex::logo_failed(self.sid, self.rk) {
+            crate::placeholder::note_absent(p, crate::placeholder::Reason::HeroLogoAbsent, self.rk);
+            (p, theme::TEXT_PRIMARY)
+        } else {
+            crate::placeholder::ink(p, crate::placeholder::Reason::HeroLogoText, self.rk, theme::TEXT_PRIMARY)
+        };
+        Label::new(cs.as_ptr(), sz, ink)
             .bold()
             .h(self.align)
             .v(VAlign::Baseline)
@@ -213,10 +229,10 @@ mod tests {
 
     // `fit`/`place`/`band_h` are pure f32 arithmetic over their arguments — no GL, no SDL_ttf, no
     // crate globals — so unlike the catalog-backed Home tests these are ordinary parallel ones, needing
-    // neither `testlock::serial()` nor a module mutex. Everything downstream (`HeroLogo::draw` →
-    // `ui::tex::logo_src` + `text::elide`) is deliberately NOT tested here: it reaches GL and the
-    // font, and `text_cap_band`'s host fallback would measure the fallback rather than the device
-    // font, which is worse than no test.
+    // neither `testlock::serial()` nor a module mutex. The texture arm of `HeroLogo::draw`
+    // (`ui::tex::logo_src`) is deliberately NOT tested here: it reaches GL. The TEXT fallback is,
+    // under `placeholder::capture_declared` (text only declares itself there and never reaches the
+    // font): `the_text_fallback_*` below pin what the placeholder counter says about it.
 
     /// The whole low-risk claim in one assertion: the commonest logo shape does not move. If someone
     /// retunes [`theme::logo::HERO_AREA`] without meaning to shift wordmarks, this fires.
@@ -456,5 +472,84 @@ mod tests {
         let above = fit(LogoRung::lerp(Hero, Compact, 1.5), src_w, src_h, col_w);
         let at_1 = fit(LogoRung::lerp(Hero, Compact, 1.0), src_w, src_h, col_w);
         assert_eq!(above, at_1, "t>1 must clamp to t=1");
+    }
+
+    // ---- the placeholder count of the text fallback -------------------------------------------
+
+    /// A clearLogo source with one scripted answer: never resident (`logo` is `None`), and
+    /// `failed` says whether the store has SETTLED the fetch as a miss.
+    struct LogoStore {
+        failed: bool,
+    }
+    impl crate::tex::Source for LogoStore {
+        fn probe(&self, _: u16, _: &str, _: i32, _: i32, _: bool) -> Option<plx_machine::machine::PosterKey> {
+            None
+        }
+        fn warm(&self, _: u16, _: &str, _: i32, _: i32, _: bool) -> crate::tex::Warm {
+            crate::tex::Warm::Known
+        }
+        fn logo(&self, _: u16, _: &str) -> Option<plx_machine::machine::PosterKey> {
+            None
+        }
+        fn logo_warm(&self, _: u16, _: &str) -> crate::tex::Warm {
+            crate::tex::Warm::Known
+        }
+        fn logo_failed(&self, _: u16, _: &str) -> bool {
+            self.failed
+        }
+        fn unresident(&self, _: plx_machine::machine::PosterKey, _: bool) {}
+        fn idle(&self) -> bool {
+            true
+        }
+    }
+
+    /// Draw the fallback with the store in the given state. The source is thread-local and a libtest
+    /// test owns its thread, so installing one here cannot reach another test.
+    fn drawn(rk: &str, failed: bool) -> crate::placeholder::Frame {
+        crate::tex::install(Box::leak(Box::new(LogoStore { failed })));
+        let band = Rect::new(0.0, 0.0, 900.0, 120.0);
+        crate::placeholder::capture_declared(|| {
+            HeroLogo::new(0, rk, "A Title", Hero).draw(Painter::root(), band, &crate::fixture::FixtureMeasure)
+        })
+        .1
+    }
+
+    /// The logo is on its way: the hero shows its title as text in the meantime, and that is a wait.
+    #[test]
+    fn the_text_fallback_counts_while_the_clearlogo_is_still_loading() {
+        let f = drawn("42", false);
+        assert_eq!((f.count, f.of(crate::placeholder::Reason::HeroLogoText)), (1, 1), "{f:?}");
+        assert_eq!(f.entries[0].key, "42");
+        assert!(f.absent.is_empty(), "{f:?}");
+    }
+
+    /// A 404 parks the slot as failed and nothing will ever arrive: the title as text is the answer,
+    /// not a wait. It is not silent either: it is reported as an absence, for a driver whose
+    /// storyboard promises a logo to fail fast on.
+    #[test]
+    fn the_text_fallback_of_a_logo_that_will_never_come_is_an_absence_not_a_wait() {
+        let f = drawn("42", true);
+        assert_eq!(f.count, 0, "an absent logo must not hold the run for ever: {f:?}");
+        assert_eq!(f.absent.len(), 1, "{f:?}");
+        assert_eq!((f.absent[0].reason, f.absent[0].key.as_str()), (crate::placeholder::Reason::HeroLogoAbsent, "42"));
+    }
+
+    /// A hero with no ratingKey has nothing to wait for and nothing to report.
+    #[test]
+    fn the_text_fallback_of_a_hero_with_no_key_is_neither() {
+        let f = drawn("", false);
+        assert_eq!(f, crate::placeholder::Frame::default());
+    }
+
+    /// A text-prewarm pass draws nothing, so it counts and reports nothing.
+    #[test]
+    fn a_recording_pass_over_the_hero_logo_counts_nothing() {
+        crate::tex::install(Box::leak(Box::new(LogoStore { failed: false })));
+        let band = Rect::new(0.0, 0.0, 900.0, 120.0);
+        let f = crate::placeholder::capture_declared(|| {
+            HeroLogo::new(0, "42", "A Title", Hero).draw(Painter::recording(), band, &crate::fixture::FixtureMeasure)
+        })
+        .1;
+        assert_eq!(f, crate::placeholder::Frame::default());
     }
 }

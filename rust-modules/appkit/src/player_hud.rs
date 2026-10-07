@@ -1768,6 +1768,7 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
             Some(id) => {
                 plx_ui::icons::draw(p, id, Rect::new(bx, icy - bs * 0.5, bs, bs), white)
             }
+            // placeholder-exempt: the transport's inline busy mark on a button (R_INLINE), reported by the playback pipeline, not a content stand-in
             None => Spinner::new(bx + isz * 0.5, icy, Spinner::R_INLINE)
                 .phase(now)
                 .tint(white)

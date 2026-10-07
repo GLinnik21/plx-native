@@ -198,6 +198,14 @@ fn kicker_cap_top() -> f32 {
     plx_gfx::text::text_cap_band(theme::size::CAPTION, 0).0
 }
 
+/// The strip cell at strip x `x`, which the sentinel build covers flat while its season reloads:
+/// the cell shows the PREVIOUS season's art through the [`STALE_ALPHA`] cascade, which can never be
+/// an exact colour, so the cover is what the pixel oracle sees. Each draw site counts the cell
+/// first (`placeholder::note`, `StaleEpisodes`).
+fn cell_rect(x: f32) -> Rect {
+    Rect::new(x, 0.0, W, H)
+}
+
 pub fn draw(
     p: Painter,
     d: &Detail,
@@ -209,7 +217,10 @@ pub fn draw(
     measure: &dyn plx_machine::machine::Measure,
     meta: plx_data::metadata::MetadataView<'_>,
 ) {
-    let stale = if meta.season_loading() {
+    // read ONCE per strip: `season_loading` is two SeqCst loads, and the per-cell hook below must
+    // stay a branch on this local
+    let reloading = meta.season_loading();
+    let stale = if reloading {
         STALE_ALPHA
     } else {
         1.0
@@ -222,6 +233,10 @@ pub fn draw(
             continue;
         }
         draw_cell(p, d, i, ep, focused, scale(i), &lift(i), cap_top, measure);
+        if reloading {
+            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::StaleEpisodes, &ep.rk);
+            plx_ui::placeholder::stale_cover(p, cell_rect(x), CARD_RADIUS);
+        }
     }
 }
 
@@ -241,13 +256,15 @@ pub fn draw_focused(
     let Some(episode) = d.episodes.get(index) else {
         return;
     };
-    let stale = if meta.season_loading() {
+    let reloading = meta.season_loading();
+    let stale = if reloading {
         STALE_ALPHA
     } else {
         1.0
     };
+    let cell = p.alpha(stale).translate(-scroll, top);
     draw_cell(
-        p.alpha(stale).translate(-scroll, top),
+        cell,
         d,
         index,
         episode,
@@ -257,6 +274,10 @@ pub fn draw_focused(
         kicker_cap_top(),
         measure,
     );
+    if reloading {
+        plx_ui::placeholder::note(cell, plx_ui::placeholder::Reason::StaleEpisodes, &episode.rk);
+        plx_ui::placeholder::stale_cover(cell, cell_rect(strip_x(index)), CARD_RADIUS);
+    }
 }
 
 /// One filmstrip cell. `scale` is the still's pop spring; `lift` is the label block's own focus

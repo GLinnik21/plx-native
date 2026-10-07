@@ -215,11 +215,12 @@ impl InfoPanelState {
             }
         }
         if !drawn {
-            p.rrect(
+            plx_ui::placeholder::flat(
+                p,
+                plx_ui::placeholder::Reason::InfoPanelStill,
+                &thumb_path,
                 Rect::new(sx, sy, sw, sh),
                 16.0,
-                16.0,
-                theme::CARD_PLACEHOLDER,
             );
         }
 

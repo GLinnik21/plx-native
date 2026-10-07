@@ -168,6 +168,7 @@ impl LibraryScreen {
         self.draw_grid_header(f);
         if self.readout == Readout::Loading {
             // Preserve the Library's standalone loading spinner, outside either content fade.
+            plx_ui::placeholder::note(f.painter, plx_ui::placeholder::Reason::LibrarySpinner, "");
             plx_ui::widgets::Spinner::new(SCR_W * 0.5, SCR_H * 0.52, 26.0)
                 .phase(f.cx.tick.ms).draw(&env, f.painter.alpha(f.page_alpha));
         } else if self.readout != Readout::Grid {

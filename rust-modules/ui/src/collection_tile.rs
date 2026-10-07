@@ -1,5 +1,5 @@
 //! The **neutral collection tile** — what a collection with no artwork of its own draws in place of
-//! a poster: the placeholder ground, the collection mark, and the collection's name under it.
+//! a poster: the absence ground (`theme::CARD_ABSENT`), the collection mark, and the collection's name under it.
 //!
 //! A collection whose server sent no `thumb` has nothing to resolve, so without this the tile is a
 //! bare skeleton that reads as "still loading" forever and, beside its named neighbours, as a
@@ -394,7 +394,10 @@ pub fn layout(r: Rect, name_w: f32, name_h: f32) -> (Rect, Rect) {
 /// the row is a collection with no artwork (`thumb` empty) — an unresolved texture with a path
 /// behind it is merely still loading and keeps the ordinary skeleton.
 pub fn draw(p: Painter, rest: Rect, r: Rect, rad: f32, name: &str) {
-    p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
+    // A collection with no artwork of its own is ABSENCE, never a wait (`placeholder.rs`): the
+    // never-sentinel ground, not counted.
+    // placeholder-exempt: absence, a collection whose server sent no artwork; nothing will arrive
+    p.rrect_sheened(r, rad, theme::CARD_ABSENT);
     let fit = fitted(name, &NEUTRAL_NAME, rest, neutral_band(rest));
     let (glyph, column) = layout(r, fit.column, fit.height());
     icons::draw(p, Icon::Collection, glyph, theme::TEXT_TERTIARY);
