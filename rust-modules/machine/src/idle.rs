@@ -373,6 +373,10 @@ pub fn note_jump(changed: bool) {
 ///   needs [PLEX PASS]" note and the failure read-out's capsule are drawn from, and it lands on a
 ///   worker seconds after the screen that shows them has settled
 /// - a `Spring::jump` that actually teleported something (via [`note_jump`])
+/// - `Press::tick` (`plx_ui::press`), on each frame the release spring of a press that latched
+///   long (a hold) visibly moves its card, by [`settled`], and on its phase changes: the card
+///   springs under the item menu's frozen host snapshot, which must be re-taken until it rests.
+///   A tap's press never reports
 /// - an `Xfade` ramp mid-flight, and a `Spinner` being drawn — the two time-driven animators
 ///   `note_spring` cannot see
 ///

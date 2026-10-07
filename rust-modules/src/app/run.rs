@@ -4122,20 +4122,38 @@ mod lifecycle_regression_tests {
         panic!("the hold never reached the app");
     }
 
-    /// A card hold the app takes (the item menu opens) ends the press AT REST on the very frame the
-    /// hold is answered, before the menu's surface is even mounted, let alone captured, so the
-    /// poster keeps its pop under the scrim.
+    /// **A card hold the app takes (the item menu opens) springs the card from its dip up to its
+    /// pop, as the menu opens.** The dip is a press-in on the focus pop (`press::DIP` is the card's
+    /// unpopped size), and a card that goes from there to its popped size in ONE frame has lost its
+    /// pop animation (0.8.0-rc.3: "still no animation" on a long-press). The press is the one owner
+    /// of that motion: the dispatcher abandons it when the hold is answered (the release spring,
+    /// the underdamped one a normal OK press gets), and nothing ends it early when the menu opens.
+    /// The scale therefore leaves the dip, crosses the pop within a bounded number of frames and
+    /// rests, never moving more than a fraction of the dip per frame.
     #[test]
-    fn a_real_card_hold_that_opens_the_item_menu_ends_the_press_at_rest() {
+    fn a_real_card_hold_that_opens_the_item_menu_springs_the_card_up_to_its_pop() {
         let _serial = plx_base::testlock::serial();
         let (active, scale, mut app, mut t) = hold_a_home_card(false);
-        assert!(!active, "the press is at rest the moment the menu is asked for, not springing back");
-        assert_eq!(scale, 1.0);
-        for _ in 0..4 {
+        assert!(active, "the press is still springing the frame the menu is asked for");
+        assert!(scale < 0.93, "…from the dip (not already at rest): {scale}");
+        let mut prev = scale;
+        let mut worst = 0.0f32;
+        let mut crossed_at = None;
+        let mut rose = false;
+        for frame in 1..=60 {
             step(&mut app, &mut t, vec![]);
-            assert!(!app.pages.input.press.is_active(), "…and stays at rest through the menu's opening");
+            let now = app.pages.input.press.scale();
+            worst = worst.max((now - prev).abs());
+            rose |= now > prev;
+            if crossed_at.is_none() && now >= 1.0 { crossed_at = Some(frame); }
+            prev = now;
         }
         assert!(super::super::bridge::item_menu_up(&app.pages), "the hold opened the item menu");
+        assert!(rose, "the card rises from the dip");
+        assert!(crossed_at.is_some_and(|f| f <= 20), "it reaches its pop within ~0.3 s, got {crossed_at:?}");
+        assert!(worst < 0.04, "no frame jumps the card (biggest step {worst}); the dip is 0.082 deep");
+        assert!(!app.pages.input.press.is_active(), "…and the spring comes to rest under the menu");
+        assert_eq!(app.pages.input.press.scale(), 1.0);
     }
 
     /// A hold the app DECLINES (nothing to offer a collection) is not taken: the dispatcher
