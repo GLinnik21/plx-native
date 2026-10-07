@@ -104,7 +104,48 @@
    "directors": [
     "Colin Levy"
    ],
-   "writers": [],
+   "writers": [
+    "Esther Wouda",
+    "Martin Lodewijk"
+   ],
+   "tagline": "A girl, a dragon, and the long road between them.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "directors",
+      "originallyAvailableAt",
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q925587",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers",
+      "directors",
+      "studio",
+      "countries"
+     ],
+     "url": "https://durian.blender.org/about/",
+     "note": "Blender Foundation project page; facts only",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "cast"
+     ],
+     "url": "https://studio.blender.org/films/sintel/",
+     "note": "the film's own credit scroll (CC BY 3.0) names Halina Reijn as Sintel and Thom Hoffman as Shaman",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Halina Reijn",
@@ -274,7 +315,37 @@
    "directors": [
     "Ian Hubert"
    ],
-   "writers": [],
+   "writers": [
+    "Ian Hubert"
+   ],
+   "tagline": "Some moments are worth rebuilding to change.",
+   "demo_values": [
+    "tagline"
+   ],
+   "countries": [
+    "Netherlands"
+   ],
+   "sources": [
+    {
+     "fields": [
+      "directors",
+      "countries"
+     ],
+     "url": "https://www.wikidata.org/wiki/Q1173161",
+     "note": "Wikidata, CC0 1.0",
+     "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "writers",
+      "directors",
+      "cast"
+     ],
+     "url": "https://mango.blender.org/about/",
+     "note": "Blender Institute project page; facts only",
+     "retrieved": "2026-10-07"
+    }
+   ],
    "cast": [
     {
      "name": "Derek de Lint",
@@ -291,6 +362,15 @@
     {
      "name": "Vanja Rukavina",
      "role": "Celia"
+    },
+    {
+     "name": "Denise Rebergen"
+    },
+    {
+     "name": "Jody Bhe"
+    },
+    {
+     "name": "Chris Haley"
     }
    ],
    "summary": "In a future Amsterdam overrun by machines, a band of scientists and soldiers gathers in the Oude Kerk to restage one heartbreaking moment from the past, in the hope that changing it will stop the robots before they ever rise.",

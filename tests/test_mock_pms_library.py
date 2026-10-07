@@ -16,11 +16,14 @@ import urllib.request
 from mock_pms import (
     ENHANCEMENT_AAC_51_RK, ENHANCEMENT_AC3_2CH_RK, ENHANCEMENT_DEFAULT_SRT_RK,
     ENHANCEMENT_DV_P8_RK, ENHANCEMENT_EXTERNAL_SRT_RK, EXTRA_MEDIA_RK_BASE, PLEX_DIRECT_HASH,
-    Library, MockPms, plaintext_only_lan_resources, serve,
+    CatalogLibrary, Library, MockPms, demo_cache_dir, plaintext_only_lan_resources, serve,
 )
 
 
 HAS_FFMPEG_AND_FFPROBE = shutil.which("ffmpeg") and shutil.which("ffprobe")
+HAS_DEMO_CACHE = bool(HAS_FFMPEG_AND_FFPROBE) and (demo_cache_dir() / "derived").is_dir()
+CATALOG = pathlib.Path(__file__).resolve().parent / "demo_library" / "catalog.json"
+FIXTURES = pathlib.Path(__file__).resolve().parent / "demo_library" / "fixtures"
 
 
 def get(pms, path):
@@ -687,6 +690,132 @@ class Enhancement266(unittest.TestCase):
     def test_missing_transcode_fixture_file_is_rejected(self):
         with self.assertRaises(ValueError):
             serve(0, movies=0, transcode_fixture=pathlib.Path("/no/such/fixture.mkv"))
+
+
+# The fields the detail page draws that the demo catalog can supply (docs: the S1a stage of the
+# demo-library plan). Every one is asserted against what the MOCK serves, because a field the mock
+# omits is a field the screenshots and the site video silently never show.
+@unittest.skipUnless(HAS_DEMO_CACHE, "no derived demo cache (make demo-library) or no ffmpeg/ffprobe")
+class CatalogDetailFields(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.lib = CatalogLibrary(CATALOG)
+        cls.pms = MockPms(cls.lib)
+        cls.catalog = json.loads(CATALOG.read_text())
+
+    def detail(self, rk, pms=None):
+        return get(pms or self.pms, f"/library/metadata/{rk}")["Metadata"][0]
+
+    def rk_of(self, film):
+        return int(self.lib.by_slug[film])
+
+    def test_a_complete_title_serves_the_fields_the_detail_page_draws(self):
+        for film in ("sintel", "tears-of-steel"):
+            with self.subTest(film=film):
+                rec = next(m for m in self.catalog["movies"] if m["id"] == film)
+                d = self.detail(self.rk_of(film))
+                self.assertEqual(d["tagline"], rec["tagline"])
+                self.assertEqual([c["tag"] for c in d["Country"]], rec["countries"])
+                self.assertEqual([w["tag"] for w in d["Writer"]], rec["writers"])
+                self.assertEqual([r["tag"] for r in d["Role"]], [c["name"] for c in rec["cast"]])
+                self.assertEqual([r.get("role", "") for r in d["Role"]],
+                                 [c.get("role", "") for c in rec["cast"]])
+                self.assertEqual([x["tag"] for x in d["Director"]], rec["directors"])
+
+    def test_an_uncited_rating_is_never_served(self):
+        # Wikidata holds no review score and no certification for these two, so the mock serves
+        # none: the app then shows "Unrated" and no ratings row, not an invented number.
+        for film in ("sintel", "tears-of-steel"):
+            with self.subTest(film=film):
+                d = self.detail(self.rk_of(film))
+                self.assertNotIn("contentRating", d)
+                self.assertEqual(d.get("Rating", []), [])
+                for flat in ("rating", "audienceRating", "ratingImage", "audienceRatingImage"):
+                    self.assertNotIn(flat, d)
+
+    def test_no_person_is_served_with_a_photo(self):
+        # Real people's photographs are not in the demo library: the app draws its glyph.
+        for film in ("sintel", "tears-of-steel"):
+            d = self.detail(self.rk_of(film))
+            for job in ("Role", "Director", "Writer"):
+                for person in d[job]:
+                    self.assertNotIn("thumb", person, (film, job, person))
+
+    def _temp_library(self, edit):
+        """A CatalogLibrary over a copy of the catalog that `edit` has changed."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = pathlib.Path(tmp.name)
+        cat = json.loads(CATALOG.read_text())
+        edit(cat)
+        (root / "catalog.json").write_text(json.dumps(cat))
+        shutil.copy(CATALOG.parent / "assets.json", root / "assets.json")
+        lib = CatalogLibrary(root / "catalog.json")
+        return lib, MockPms(lib)
+
+    def test_a_cited_content_rating_and_ratings_are_served_as_a_server_sends_them(self):
+        cited = {"source": "https://example.invalid/cite", "retrieved": "2026-10-07"}
+
+        def edit(cat):
+            m = next(m for m in cat["movies"] if m["id"] == "sintel")
+            m["contentRating"] = dict(cited, value="PG")
+            m["ratings"] = [dict(cited, image="rottentomatoes://image.rating.ripe", value=9.1, type="critic"),
+                            dict(cited, image="imdb://image.rating", value=7.5, type="audience")]
+
+        lib, pms = self._temp_library(edit)
+        d = self.detail(int(lib.by_slug["sintel"]), pms)
+        self.assertEqual(d["contentRating"], "PG")
+        self.assertEqual(d["Rating"], [
+            {"image": "rottentomatoes://image.rating.ripe", "value": 9.1, "type": "critic"},
+            {"image": "imdb://image.rating", "value": 7.5, "type": "audience"}])
+        self.assertEqual((d["rating"], d["ratingImage"]), (9.1, "rottentomatoes://image.rating.ripe"))
+        self.assertEqual((d["audienceRating"], d["audienceRatingImage"]), (7.5, "imdb://image.rating"))
+
+    def test_show_creators_are_writers_and_episodes_inherit_the_shows_credits(self):
+        def edit(cat):
+            show = next(s for s in cat["shows"] if s["id"] == "caminandes")
+            show["creators"] = ["Pablo Vazquez"]
+            show["cast"] = [{"name": "A Voice", "role": "Koro"}]
+            show["countries"] = ["Netherlands"]
+
+        lib, pms = self._temp_library(edit)
+        show = self.detail(int(lib.by_slug["caminandes"]), pms)
+        self.assertEqual([w["tag"] for w in show["Writer"]], ["Pablo Vazquez"])
+        self.assertEqual([c["tag"] for c in show["Country"]], ["Netherlands"])
+        ep = self.detail(int(lib.by_slug["caminandes/1/1"]), pms)
+        for job in ("Director", "Writer", "Role"):
+            self.assertEqual(ep[job], show[job], job)
+        self.assertEqual([c["tag"] for c in ep["Role"]], ["A Voice"])
+
+
+class DetailFixtures(unittest.TestCase):
+    """`tests/demo_library/fixtures/detail-<rk>.json` is the mock's `/library/metadata/<rk>`
+    answer for each complete title, committed so the data crate can parse it
+    (`rust-modules/data/src/metadata_demo_fixture_tests.rs`) without a derived-art cache."""
+    TITLES = {"sintel": 102, "tears-of-steel": 105}
+
+    def test_each_fixture_carries_every_field_the_catalog_supplies(self):
+        cat = json.loads(CATALOG.read_text())
+        for film, rk in self.TITLES.items():
+            with self.subTest(film=film):
+                rec = next(m for m in cat["movies"] if m["id"] == film)
+                d = json.loads((FIXTURES / f"detail-{rk}.json").read_text())["MediaContainer"]["Metadata"][0]
+                self.assertEqual(d["title"], rec["title"])
+                self.assertEqual(d["tagline"], rec["tagline"])
+                self.assertEqual([c["tag"] for c in d["Country"]], rec["countries"])
+                self.assertEqual([w["tag"] for w in d["Writer"]], rec["writers"])
+                self.assertEqual([x["tag"] for x in d["Director"]], rec["directors"])
+                self.assertEqual([r["tag"] for r in d["Role"]], [c["name"] for c in rec["cast"]])
+
+    @unittest.skipUnless(HAS_DEMO_CACHE, "no derived demo cache (make demo-library) or no ffmpeg/ffprobe")
+    def test_each_fixture_is_what_the_mock_serves_now(self):
+        pms = MockPms(CatalogLibrary(CATALOG))
+        for film, rk in self.TITLES.items():
+            with self.subTest(film=film):
+                status, _, body = pms.handle("GET", f"/library/metadata/{rk}")
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body), json.loads((FIXTURES / f"detail-{rk}.json").read_text()),
+                                 "regenerate with `python3 tools/demo_library.py fixtures`")
 
 
 if __name__ == "__main__":

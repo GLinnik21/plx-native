@@ -47,8 +47,10 @@ which is the home hero's first slot. An episode marked `stand_in` plays: its med
 silent file of the episode's catalog length that `derive` made (never the work itself), which is
 enough for the simulator's clock sink to run the player over it. And a `continuous=1` PlayQueue
 of an episode carries the rest of its show after it, as PMS's does, so Up Next has a successor.
-Nothing recorded against it may be committed as a fixture — the harness's alphabet check would
-refuse it, correctly.
+A focus-fingerprint or replay recording made against it must not be committed under
+`tests/fixtures/replay/`: the harness's alphabet check would refuse it, correctly. The one
+sanctioned capture is `tools/demo_library.py fixtures`, which writes the demo library's own
+detail answers to `tests/demo_library/fixtures/` for the data crate's parse tests.
 
 Every mode also answers the four plex.tv calls of the QR sign-in (`/api/v2/pins`, the poll, the
 QR image, and `/api/v2/user`) with a fixed demo code, for an app booted with
@@ -1046,12 +1048,36 @@ class CatalogLibrary(Library):
             return self.genres[gid]
 
         def credits(rec):
+            # A show's creators are its `Writer` rows — what the detail hero reads "Created by"
+            # from. No person is served with a `thumb`: the app draws its glyph for a credit
+            # without a photograph, and the demo library carries no photographs of real people.
+            writers = list(dict.fromkeys(rec.get("writers", []) + rec.get("creators", [])))
             return {
                 "Genre": [dict(genre(g)) for g in rec.get("genres", [])],
                 "Director": [dict(person(n)) for n in rec.get("directors", [])],
-                "Writer": [dict(person(n)) for n in rec.get("writers", [])],
-                "Role": [dict(person(c["name"]), role=c["role"]) for c in rec.get("cast", [])],
+                "Writer": [dict(person(n)) for n in writers],
+                "Role": [dict(person(c["name"]), **({"role": c["role"]} if c.get("role") else {}))
+                         for c in rec.get("cast", [])],
             }
+
+        def described(rec):
+            """What a title's page draws beyond its credits, from the catalog's optional keys:
+            `tagline` (our own text, marked DEMO there), `Country`, and the CITED `contentRating`
+            and `Rating[]` — a title without a cited value serves none, so the app shows
+            "Unrated" and no ratings row. The flat `rating`/`audienceRating` pair is the one a
+            section listing sends; it is the first critic and the first audience row."""
+            out = {"Country": [{"tag": c} for c in rec.get("countries", [])],
+                   "Rating": [{"image": r["image"], "value": r["value"], "type": r["type"]}
+                              for r in rec.get("ratings", [])]}
+            if rec.get("tagline"):
+                out["tagline"] = rec["tagline"]
+            if "contentRating" in rec:
+                out["contentRating"] = rec["contentRating"]["value"]
+            for kind, flat in (("critic", "rating"), ("audience", "audienceRating")):
+                row = next((r for r in out["Rating"] if r["type"] == kind), None)
+                if row:
+                    out[flat], out[flat + "Image"] = row["value"], row["image"]
+            return out
 
         def base(rk, kind, section, rec, slug):
             key = slug.replace("/", "_")
@@ -1095,7 +1121,7 @@ class CatalogLibrary(Library):
             it = base(rk, "movie", movies, m, m["id"])
             dur = m["minutes"] * 60_000
             it.update(studio=m.get("studio", ""), originallyAvailableAt=m["originallyAvailableAt"],
-                      duration=dur, Chapter=[], Marker=[], **credits(m))
+                      duration=dur, Chapter=[], Marker=[], **credits(m), **described(m))
             if m.get("collections"):
                 it["Collection"] = [{"tag": c, "id": coll_id[c]} for c in m["collections"]]
             if "media" in m:
@@ -1111,7 +1137,7 @@ class CatalogLibrary(Library):
             rk = 201 + n
             show = base(rk, "show", shows, s, s["id"])
             show.update(studio=s.get("studio", ""), originallyAvailableAt=f"{s['year']}-01-01",
-                        duration=0, childCount=0, leafCount=0, viewedLeafCount=0, **credits(s))
+                        duration=0, childCount=0, leafCount=0, viewedLeafCount=0, **credits(s), **described(s))
             self.items[rk] = show
             for season in s["seasons"]:
                 srk = rk * 10 + season["index"]
@@ -1132,7 +1158,13 @@ class CatalogLibrary(Library):
                               grandparentThumb=show.get("thumb", ""), grandparentArt=show.get("art", ""),
                               year=int(e["date"][:4]), originallyAvailableAt=e["date"], duration=dur,
                               Media=self._demo_media(erk, part, dur, f"/media/TV/{s['title']}/S{season['index']:02d}E{e['index']:02d}"),
-                              Director=[], Writer=[], Role=[], Chapter=[], Marker=[])
+                              Chapter=[], Marker=[])
+                    # An episode carries its show's credits and rating, as a server's episodes do
+                    # when the agent has no per-episode crew.
+                    for field in ("Director", "Writer", "Role"):
+                        ep[field] = [dict(t) for t in show[field]]
+                    if "contentRating" in show:
+                        ep["contentRating"] = show["contentRating"]
                     if e.get("stand_in"):
                         slug = f"{s['id']}/{season['index']}/{e['index']}"
                         path = self.derived / slug.replace("/", "_") / "stand-in.mp4"

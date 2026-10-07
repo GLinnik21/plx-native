@@ -121,6 +121,73 @@ class Manifests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             tool.check(broken, catalog)
 
+    # ---- cited metadata (tagline, contentRating, ratings, countries, creators) ---------------
+
+    CITED = {"source": "https://www.wikidata.org/wiki/Q42", "retrieved": "2026-10-07"}
+
+    def _with(self, **fields):
+        """The catalog with `fields` merged into its first movie."""
+        assets, catalog = tool.load()
+        movies = [dict(m) for m in catalog["movies"]]
+        movies[0].update(fields)
+        return assets, dict(catalog, movies=movies)
+
+    def test_check_accepts_a_cited_rating_and_content_rating(self):
+        assets, catalog = self._with(
+            ratings=[dict(self.CITED, image="imdb://image.rating", value=7.5, type="audience"),
+                     dict(self.CITED, image="rottentomatoes://image.rating.ripe", value=9.1, type="critic")],
+            contentRating=dict(self.CITED, value="PG"), countries=["Netherlands"])
+        self.assertTrue(tool.check(assets, catalog))
+
+    def test_check_refuses_a_rating_without_a_source_and_retrieval_date(self):
+        row = {"image": "imdb://image.rating", "value": 7.5, "type": "audience"}
+        for missing in ("source", "retrieved"):
+            with self.subTest(missing=missing):
+                cited = {k: v for k, v in self.CITED.items() if k != missing}
+                assets, catalog = self._with(ratings=[dict(row, **cited)])
+                with self.assertRaises(AssertionError):
+                    tool.check(assets, catalog)
+
+    def test_check_refuses_tmdb_rating_images_and_rt_certified(self):
+        for image in ("themoviedb://image.rating", "tmdb://image.rating",
+                      "rottentomatoes://image.rating.certified", "metacritic://image.rating"):
+            with self.subTest(image=image):
+                assets, catalog = self._with(
+                    ratings=[dict(self.CITED, image=image, value=7.5, type="critic")])
+                with self.assertRaises(AssertionError):
+                    tool.check(assets, catalog)
+
+    def test_check_refuses_an_uncited_content_rating(self):
+        assets, catalog = self._with(contentRating={"value": "PG"})
+        with self.assertRaises(AssertionError):
+            tool.check(assets, catalog)
+
+    def test_check_refuses_a_tagline_that_is_not_marked_demo(self):
+        assets, catalog = self._with(tagline="Our own words.")
+        with self.assertRaises(AssertionError):
+            tool.check(assets, catalog)
+        assets, catalog = self._with(tagline="Our own words.", demo_values=["tagline"])
+        self.assertTrue(tool.check(assets, catalog))
+
+    def test_check_refuses_creators_on_a_movie(self):
+        assets, catalog = self._with(creators=["Someone"])
+        with self.assertRaises(AssertionError):
+            tool.check(assets, catalog)
+
+    def test_the_two_complete_titles_record_where_each_fact_came_from(self):
+        _, catalog = tool.load()
+        films = {m["id"]: m for m in catalog["movies"]}
+        for film in ("sintel", "tears-of-steel"):
+            with self.subTest(film=film):
+                rec = films[film]
+                self.assertTrue(rec["countries"])
+                self.assertTrue(rec["writers"])
+                self.assertIn("tagline", rec["demo_values"])
+                self.assertTrue(rec["sources"])
+                for src in rec["sources"]:
+                    self.assertTrue(src["url"].startswith("https://"))
+                    self.assertRegex(src["retrieved"], r"^\d{4}-\d{2}-\d{2}$")
+
 
 class Credits(unittest.TestCase):
     """CREDITS.md is written by the same command that writes the images, so it cannot lag them."""

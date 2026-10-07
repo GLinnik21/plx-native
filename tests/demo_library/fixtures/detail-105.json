@@ -1,0 +1,190 @@
+{
+ "MediaContainer": {
+  "Metadata": [
+   {
+    "Chapter": [],
+    "Collection": [
+     {
+      "id": 1,
+      "tag": "Blender Open Movies"
+     },
+     {
+      "id": 5,
+      "tag": "Blender Studio Anniversary Collection"
+     }
+    ],
+    "Country": [
+     {
+      "tag": "Netherlands"
+     }
+    ],
+    "Director": [
+     {
+      "id": 9,
+      "tag": "Ian Hubert",
+      "tagKey": "demo-person-9"
+     }
+    ],
+    "Genre": [
+     {
+      "filter": "genre=7",
+      "id": 7,
+      "tag": "Science Fiction"
+     },
+     {
+      "filter": "genre=4",
+      "id": 4,
+      "tag": "Action"
+     },
+     {
+      "filter": "genre=3",
+      "id": 3,
+      "tag": "Short"
+     }
+    ],
+    "Marker": [],
+    "Media": [
+     {
+      "Part": [
+       {
+        "Stream": [
+         {
+          "codec": "h264",
+          "displayTitle": "1080p (H.264)",
+          "height": 1080,
+          "id": 1051,
+          "index": 0,
+          "streamType": 1,
+          "width": 1920
+         },
+         {
+          "canNormalizeLoudness": "1",
+          "channels": 6,
+          "codec": "ac3",
+          "displayTitle": "English (AC3 5.1)",
+          "id": 1052,
+          "index": 1,
+          "language": "en",
+          "languageCode": "eng",
+          "selected": true,
+          "streamType": 2
+         },
+         {
+          "codec": "srt",
+          "displayTitle": "English (SRT)",
+          "id": 1053,
+          "index": 2,
+          "language": "en",
+          "languageCode": "eng",
+          "streamType": 3
+         }
+        ],
+        "container": "mkv",
+        "duration": 720000,
+        "file": "/media/Movies/Tears of Steel (2012).mkv",
+        "id": 105,
+        "key": "/library/parts/105/1700000105/file.mkv",
+        "size": 4000000000,
+        "videoProfile": "high"
+       }
+      ],
+      "aspectRatio": 1.78,
+      "audioChannels": 6,
+      "audioCodec": "ac3",
+      "bitrate": 8000,
+      "container": "mkv",
+      "duration": 720000,
+      "height": 1080,
+      "id": 105,
+      "videoCodec": "h264",
+      "videoFrameRate": "24p",
+      "videoProfile": "high",
+      "videoResolution": "1080",
+      "width": 1920
+     }
+    ],
+    "Rating": [],
+    "Role": [
+     {
+      "id": 10,
+      "role": "Old Thom",
+      "tag": "Derek de Lint",
+      "tagKey": "demo-person-10"
+     },
+     {
+      "id": 11,
+      "role": "Barley",
+      "tag": "Sergio Hasselbaink",
+      "tagKey": "demo-person-11"
+     },
+     {
+      "id": 12,
+      "role": "Captain",
+      "tag": "Rogier Schippers",
+      "tagKey": "demo-person-12"
+     },
+     {
+      "id": 13,
+      "role": "Celia",
+      "tag": "Vanja Rukavina",
+      "tagKey": "demo-person-13"
+     },
+     {
+      "id": 14,
+      "tag": "Denise Rebergen",
+      "tagKey": "demo-person-14"
+     },
+     {
+      "id": 15,
+      "tag": "Jody Bhe",
+      "tagKey": "demo-person-15"
+     },
+     {
+      "id": 16,
+      "tag": "Chris Haley",
+      "tagKey": "demo-person-16"
+     }
+    ],
+    "UltraBlurColors": {
+     "bottomLeft": "#27231c",
+     "bottomRight": "#1e2120",
+     "topLeft": "#463a2b",
+     "topRight": "#5f584e"
+    },
+    "Writer": [
+     {
+      "id": 9,
+      "tag": "Ian Hubert",
+      "tagKey": "demo-person-9"
+     }
+    ],
+    "addedAt": 1788272000,
+    "art": "/library/metadata/105/art/1790000000",
+    "duration": 720000,
+    "guid": "plex://movie/demo-tears-of-steel",
+    "key": "/library/metadata/105",
+    "lastViewedAt": 1789992200,
+    "librarySectionID": 1,
+    "librarySectionKey": "/library/sections/1",
+    "librarySectionTitle": "Movies",
+    "originallyAvailableAt": "2012-09-26",
+    "ratingKey": "105",
+    "studio": "Blender Foundation",
+    "summary": "In a future Amsterdam overrun by machines, a band of scientists and soldiers gathers in the Oude Kerk to restage one heartbreaking moment from the past, in the hope that changing it will stop the robots before they ever rise.",
+    "tagline": "Some moments are worth rebuilding to change.",
+    "thumb": "/library/metadata/105/thumb/1790000000",
+    "title": "Tears of Steel",
+    "titleSort": "Tears of Steel",
+    "type": "movie",
+    "updatedAt": 1788272000,
+    "viewOffset": 453000,
+    "year": 2012
+   }
+  ],
+  "allowSync": false,
+  "identifier": "com.plexapp.plugins.library",
+  "mediaTagPrefix": "/system/bundle/media/flags/",
+  "mediaTagVersion": 1,
+  "size": 1
+ }
+}
