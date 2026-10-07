@@ -468,8 +468,8 @@ information.
   cut a tall two-line row evenly, which read as a broken clip; scissor replaced it.) `TableView` is the
   one place rows still fade, and only WHOLE rows by their ink position, never a per-pixel mask: the top
   edge dissolves rows (`top_edge_alpha`), a PANEL's (`draw`) bottom edge fades them before the scissor,
-  and a PAGE's (`draw_page`, what `TablePart` calls) bottom edge has neither — its clip runs on to the
-  bottom of the screen, so rows simply slide off it.
+  and a PAGE's (`draw_page`, what `TablePart` and the Filmography page call) bottom edge has neither —
+  its clip runs on to the bottom of the screen, so rows simply slide off it.
 
 ## When you're done
 

@@ -670,6 +670,14 @@ impl FilmographyScreen {
         }
     }
 
+    /// The credit table, drawn as a PAGE ([`TableView::draw_page`]): the screen's bottom edge is
+    /// the real one, so rows scrolling down run off it instead of fading out at the safe-area
+    /// `frame`. Its layout, scrolling and hit rects are a panel's, so the rail and the row stops
+    /// are unchanged.
+    fn draw_table(&self, p: plx_ui::Painter, frame: Rect, measure: &dyn Measure) {
+        self.table.draw_page(p, frame, measure);
+    }
+
     fn draw_content<H: ContentLike>(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f
             .painter
@@ -725,7 +733,7 @@ impl FilmographyScreen {
         }
 
         let frame = table_frame(f.measure);
-        self.table.draw(p, frame, f.measure);
+        self.draw_table(p, frame, f.measure);
         if let Some(thumb) = self
             .preview
             .as_ref()
@@ -1750,6 +1758,28 @@ mod tests {
         assert!(remounted
             .credit_by_identity("Writer", "catalog-Written")
             .is_some());
+    }
+
+    /// **Filmography is a PAGE, so its rows run off the bottom of the screen**, not out at its
+    /// safe-area frame. Drawn through the page's own `draw_table`, with enough credits to
+    /// overflow, some rows' text must land below the table frame's bottom edge (a panel draw
+    /// culls and fades them there).
+    #[test]
+    fn the_credit_table_lets_rows_slide_off_the_bottom_screen_edge() {
+        let _serial = plx_base::testlock::serial();
+        let s = screen(6, &_serial);
+        let measure = FixtureMeasure;
+        let bottom = {
+            let frame = table_frame(&measure);
+            frame.y + frame.h
+        };
+        let log = plx_ui::draw_census::capture(|| {
+            s.draw_table(plx_ui::Painter::recording(), table_frame(&measure), &measure);
+        });
+        assert!(
+            log.iter().any(|(tag, r)| *tag == 100 && r.y >= bottom),
+            "a page's table keeps drawing rows below its safe-area frame (bottom {bottom})"
+        );
     }
 
     /// **A credit row's app-owned text fits the filmography table in every shipped language.**

@@ -1388,8 +1388,8 @@ impl TableView {
         self.draw_in(p, frame, false, measure)
     }
 
-    /// Draw as a PAGE's content column: `frame` ends at the safe area, but the page does not — the
-    /// screen's bottom edge is the real one. Rows scrolling down simply run off it, uncut and
+    /// Draw as a PAGE's content column (`TablePart`, the Filmography page): `frame` ends at the
+    /// safe area, but the page does not — the screen's bottom edge is the real one. Rows scrolling down simply run off it, uncut and
     /// unfaded (the fade at the safe-area line hid the rows a page scrolls to, with the margin
     /// below it empty). The TOP still dissolves ([`Self::top_edge_alpha`]), and layout, scrolling
     /// and hit rects are the same as [`Self::draw`]'s — only what is DRAWN below `frame` differs.
