@@ -375,7 +375,7 @@ class RenderLauncher(unittest.TestCase):
 
     def test_the_record_it_builds_carries_the_facts(self):
         dump = {"frames_with_debt": 0, "wall_ms": 9}
-        rec = sv.build_render_record({"scene": "home"}, dump, 180, 0, 180, "darwin-local", FACTS)
+        rec = sv.build_render_record({"scene": "home"}, dump, 180, 180, "darwin-local", FACTS)
         self.assertEqual(rec["hero_pool"], {"logged": ["10"], "eligible": ["10"]})
         self.assertEqual(rec["opened_rating_keys"], ["11"])
         self.assertEqual(rec["not_in_video"], ["20"])
@@ -383,11 +383,11 @@ class RenderLauncher(unittest.TestCase):
     def test_the_record_it_builds_passes_the_validator(self):
         dump = {"frames_with_debt": 0, "width": 1920, "height": 1080, "preroll": 60, "iterations": 5, "holds": 2,
                 "hold_reasons": {}, "unconverted_takes": [], "clock_origin_ms": 1000000, "wall_ms": 9}
-        rec = sv.build_render_record({"scene": "home"}, dump, 180, 0, 180, "darwin-local", FACTS)
+        rec = sv.build_render_record({"scene": "home"}, dump, 180, 180, "darwin-local", FACTS)
         self.assertEqual(sv.validate_render_record(rec), [])
         self.assertEqual(rec["frames"], {"count": 180, "fps": 60, "width": 1920, "height": 1080})
         self.assertEqual(rec["sentinel"], {"scanned_frames": 180, "hits": 0})
-        again = sv.build_render_record({"scene": "home"}, dump, 180, 0, 180, "darwin-local", FACTS)
+        again = sv.build_render_record({"scene": "home"}, dump, 180, 180, "darwin-local", FACTS)
         self.assertEqual(rec["storyboard_sha256"], again["storyboard_sha256"], "a pure function of the storyboard")
 
     def test_a_missing_simulator_is_refused_before_anything_starts(self):

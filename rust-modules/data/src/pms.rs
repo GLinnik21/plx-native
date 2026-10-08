@@ -1838,7 +1838,9 @@ fn request_retry(state: &mut PmsState, adapter: &Arc<PmsAdapter>) -> crate::stor
 pub fn take_landings(adapter: &PmsAdapter) -> Vec<Landing> {
     let taken = std::mem::take(&mut *adapter.results.lock().unwrap_or_else(|e| e.into_inner()));
     let n = u32::try_from(taken.len()).unwrap_or(u32::MAX);
-    let _ = adapter.owed.try_update(Ordering::SeqCst, Ordering::SeqCst, |owed| Some(owed.saturating_sub(n)));
+    if n != 0 {
+        let _ = adapter.owed.try_update(Ordering::SeqCst, Ordering::SeqCst, |owed| Some(owed.saturating_sub(n)));
+    }
     #[cfg(any(test, feature = "test-support"))]
     adapter.takes.fetch_add(1, Ordering::SeqCst);
     taken

@@ -120,12 +120,11 @@
 //! `Bridge::settle_session_io_for_test` loops on) covers only commits, erasures and captures: the
 //! results queue and incident delivery have no pending probe at all.
 //!
-//! What the dump driver (the app layer, later) must also do, none of it possible down here:
-//! within one iteration run the takes, then the busy/debt sample, then the draw; and override the
-//! clocks the app owns that a held virtual clock freezes: the poster's `P_RETRY` backoff
-//! (`src/app/adapters/poster.rs`, `retry_at`) and evict cooldown run on `app::clock::now()`, so
-//! under a held clock a retry is never due. In a dump a failed image or fetch is a bug (the mock
-//! is local), so the driver must fail fast on it instead of waiting for the retry.
+//! What the dump driver (`src/dev/framedump.rs`) does on top, none of it possible down here:
+//! within one iteration it runs the takes, then the busy/debt sample, then the draw; the poster's
+//! evict cooldown, which runs on the held `app::clock::now()`, is bypassed under dump
+//! (`evict_cooldown_due_in`), and a failed image or fetch (a bug against the local mock) ends the
+//! run at once (`poster::dump_failure`) instead of waiting for the `P_RETRY` backoff.
 //!
 //! **Cost outside a recording, a replay or a dump is one relaxed `AtomicBool` load** (`Gate`'s armed flag): the
 //! helpers return the closure's own answer and never take the lock.
@@ -187,6 +186,14 @@ struct State {
     strict: bool,
 }
 
+impl State {
+    /// The empty state of `mode`: every counter and schedule cleared.
+    fn new(mode: Mode) -> State {
+        State { mode, frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(), waited: BTreeSet::new(),
+            diffs: Vec::new(), plain: BTreeMap::new(), strict: false }
+    }
+}
+
 /// A bound on the mismatch buffer, so a replay of a build whose stores land continuously cannot
 /// grow this without limit between drains. The COUNT is kept whole in the driver.
 const MAX_DIFFS: usize = 64;
@@ -219,9 +226,7 @@ impl Default for Gate {
     fn default() -> Self {
         Self {
             armed: AtomicBool::new(false),
-            state: Mutex::new(State { mode: Mode::Off, frame: 0, lands: BTreeMap::new(),
-                sched: BTreeMap::new(), waited: BTreeSet::new(), diffs: Vec::new(),
-                plain: BTreeMap::new(), strict: false }),
+            state: Mutex::new(State::new(Mode::Off)),
         }
     }
 }
@@ -235,8 +240,7 @@ fn with<T>(&self, f: impl FnOnce(&mut State) -> T) -> T {
 /// Arm the RECORDING half: from here every consumed landing is stamped with its frame.
 pub fn arm_recording(&self) {
     self.with(|s| {
-        *s = State { mode: Mode::Recording, frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(),
-            waited: BTreeSet::new(), diffs: Vec::new(), plain: BTreeMap::new(), strict: false };
+        *s = State::new(Mode::Recording);
     });
     self.armed.store(true, Ordering::Relaxed);
 }
@@ -253,14 +257,8 @@ pub fn arm_replay(&self, sched: Vec<Vec<(u64, u32)>>) {
 pub fn arm_sparse_replay(&self, sched: BTreeMap<u32,Vec<(u64,u32)>>) {
     self.with(|s| {
         *s = State {
-            mode: Mode::Replaying,
-            frame: 0,
-            lands: BTreeMap::new(),
             sched: sched.into_iter().map(|(ord,queue)| (ord,VecDeque::from(queue))).collect(),
-            waited: BTreeSet::new(),
-            diffs: Vec::new(),
-            plain: BTreeMap::new(),
-            strict: false,
+            ..State::new(Mode::Replaying)
         };
     });
     self.armed.store(true, Ordering::Relaxed);
@@ -297,8 +295,7 @@ fn arm_dump_with(&self, timeout: std::time::Duration, strict: bool) {
     self.with(|s| {
         assert!(matches!(s.mode, Mode::Off | Mode::Dumping(_)),
             "landgate: arm_dump on a gate with a recording or a replay already armed; disarm it first");
-        *s = State { mode: Mode::Dumping(timeout), frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(),
-            waited: BTreeSet::new(), diffs: Vec::new(), plain: BTreeMap::new(), strict };
+        *s = State { strict, ..State::new(Mode::Dumping(timeout)) };
     });
     self.armed.store(true, Ordering::Relaxed);
 }
@@ -412,8 +409,7 @@ fn dump_wait(name: &str, polls: &mut u64, timeout: std::time::Duration) {
 pub fn disarm(&self) {
     self.armed.store(false, Ordering::Relaxed);
     self.with(|s| {
-        *s = State { mode: Mode::Off, frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(),
-            waited: BTreeSet::new(), diffs: Vec::new(), plain: BTreeMap::new(), strict: false };
+        *s = State::new(Mode::Off);
     });
 }
 

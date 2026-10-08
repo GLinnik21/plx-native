@@ -12,13 +12,13 @@ and adopt them into `site/media/`.
     python3 tools/site_video.py verify DIR|feel.manifest.json
     python3 tools/site_video.py adopt artifact.zip [--write]        # dry run unless --write
 
-Plan: the demo-video pipeline's stages S4 (the sentinel), S5b (the writer, which produces the INPUT
+Plan: the demo-video pipeline's stages S4 (the sentinel), S5b (the writer, `framedump.rs`, which produces the INPUT
 contract below) and S6/S7 (this file). `render` is the launcher: it boots the mock catalog, runs the
 dump simulator (`rust-modules/src/dev/framedump.rs`, built by `make site-video-sim`) and writes the
 master, `frames.tsv`, `dump.json` and `render.json`. Every other subcommand consumes a master and
 runs no simulator.
 
-THE INPUT CONTRACT (what the S5b dump writer must produce)
+THE INPUT CONTRACT (what the dump writer (`framedump.rs`) produces)
 
 * `master.mkv`: FFV1 (`-level 3 -g 1`), RGB, 1920x1080, 60 fps, one packet per WRITTEN frame, no audio.
 * `frames.tsv`: UTF-8, LF, a header line exactly `n<TAB>t_ms<TAB>xxh3<TAB>debt<TAB>holds`, then one
@@ -40,7 +40,6 @@ libaom or to a system ffmpeg: `--ffmpeg PATH` is an explicit, loudly non-canonic
 import argparse
 import collections
 import hashlib
-import io
 import json
 import operator
 import os
@@ -59,7 +58,6 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SITE_MEDIA = ROOT / "site" / "media"
-SITE_INDEX = ROOT / "site" / "index.html"
 CATALOG = ROOT / "tests" / "demo_library" / "catalog.json"
 STORYBOARD = ROOT / "tests" / "video" / "feel.json"
 UA = "PlxNativeSiteVideo/1.0 (+https://github.com/GLinnik21/plex-native-poc)"
@@ -95,6 +93,7 @@ POSTERS = (Poster("feel-poster.jpg", 1920, 1080), Poster("feel-poster-narrow.jpg
 MEDIA_NAMES = tuple(v.name for v in VIDEOS) + tuple(p.name for p in POSTERS)
 MANIFEST_NAME = "feel.manifest.json"
 MASTER_SIZE = (1920, 1080)
+FRAME_W, FRAME_H = MASTER_SIZE
 
 # ------------------------------------------------------------------ thresholds ------------------
 # One table. CALIBRATED ON THE FIRST RENDER, THEN FROZEN: the numbers marked "spec" come from the plan
@@ -538,9 +537,9 @@ def gate_hero_pool(record):
     return Result("hero-pool", PASS, f"{len(set(logged))} logged hero(es), all the pinned one")
 
 
-def gate_sizes(out_dir, site_media, ratio=None):
+def gate_sizes(out_dir, site_media):
     """Each file no larger than `ratio` times the file of the same name in site/media, read now."""
-    ratio = ratio or THRESHOLDS["size_ratio"]
+    ratio = THRESHOLDS["size_ratio"]
     out = []
     for name in MEDIA_NAMES:
         new, old = pathlib.Path(out_dir) / name, pathlib.Path(site_media) / name
@@ -684,8 +683,8 @@ def gate_vmaf(name, mean, mn):
                   "; ".join(problems) or f"mean {mean:.2f}, min {mn:.2f} (provisional floors)")
 
 
-def roi_box(width, height, fractions=None):
-    x, y, w, h = fractions or THRESHOLDS["banding_roi"]
+def roi_box(width, height):
+    x, y, w, h = THRESHOLDS["banding_roi"]
     return (int(width * x) // 2 * 2, int(height * y) // 2 * 2, max(2, int(width * w) // 2 * 2), max(2, int(height * h) // 2 * 2))
 
 
@@ -769,15 +768,14 @@ def gate_sentinel_master(ffmpeg, master, size, run=subprocess.run):
                                            f"{SENTINEL_MIN_RUN}-pixel run of #FF00FE")
 
 
-def run_gates(out_dir, master, frames_b=None, ffmpeg=None, site_media=SITE_MEDIA, run=subprocess.run,
-              frames_a=None, render=None, progress=None):
+def run_gates(out_dir, master, frames_b=None, ffmpeg=None, site_media=SITE_MEDIA, run=subprocess.run, progress=None):
     """Every gate of the plan's S6, each a named Result. `ffmpeg` is a path; the pure gates need none."""
     out_dir = pathlib.Path(out_dir)
     say = progress or (lambda msg: None)
     results = []
     try:
-        tsv_path = pathlib.Path(frames_a or out_dir / "frames.tsv")
-        rec_path = pathlib.Path(render or out_dir / "render.json")
+        tsv_path = out_dir / "frames.tsv"
+        rec_path = out_dir / "render.json"
         rows = parse_frames_tsv(tsv_path.read_text())
         record = json.loads(rec_path.read_text())
     except (Failure, OSError, ValueError) as e:
@@ -1105,7 +1103,7 @@ def safe_extract(zip_path, dest, limit=1 << 30):
         z.extractall(dest)
 
 
-def plan_adopt(zip_path, site_media, trees=None, tmp=None):
+def plan_adopt(zip_path, site_media, tmp):
     """Verify an artifact and return [(src, dst)] to copy. Refuses anything not rendered on linux-ci, a
     failed or missing gates record, a dirty tree, or a file whose sha256 differs."""
     extracted = pathlib.Path(tmp)
@@ -1197,8 +1195,6 @@ def contact_sheet(ffmpeg, master, out, count=12, columns=4, tile_width=480, run=
 # ------------------------------------------------------------------ render (the dump launcher) ---
 SIM_BIN = ROOT / "rust-modules" / "target-sim-video" / "release" / "plxnative-sim"
 DEMO_TOKEN = "demo-library-token"  # the mock accepts any token; `tools/screenshots.py` uses the same
-FRAME_W, FRAME_H = 1920, 1080
-
 
 def ffv1_argv(ffmpeg, master, fps=FPS, width=FRAME_W, height=FRAME_H):
     """RGB24 on stdin to the master: FFV1 level 3, every frame an intra frame, no audio."""
@@ -1310,7 +1306,7 @@ def film_facts(pms, hero_slug, catalog, event_log):
             "opened": opened, "not_in_video": flagged}
 
 
-def build_render_record(storyboard, dump, scanned, hits, frames_rows, platform_label, facts):
+def build_render_record(storyboard, dump, scanned, frames_rows, platform_label, facts):
     """render.json (schema 1) from what the app reported (`dump.json`) and what this side counted."""
     sb = json.dumps(storyboard, sort_keys=True, separators=(",", ":")).encode()
     return {
@@ -1319,7 +1315,7 @@ def build_render_record(storyboard, dump, scanned, hits, frames_rows, platform_l
         "storyboard": storyboard,
         "frames": {"count": frames_rows, "fps": FPS, "width": dump.get("width", FRAME_W), "height": dump.get("height", FRAME_H)},
         "placeholder_debt": {"frames_with_debt": dump["frames_with_debt"]},
-        "sentinel": {"scanned_frames": scanned, "hits": hits},
+        "sentinel": {"scanned_frames": scanned, "hits": 0},
         # What the launcher read back: the app's own hero line and the mock's request log (`film_facts`).
         "hero_pool": {"logged": facts["hero_logged"], "eligible": facts["hero_eligible"]},
         "opened_rating_keys": facts["opened"],
@@ -1345,7 +1341,6 @@ def quarantine(out_dir):
 STORYBOARD_SCHEMA = 1
 KEY_NAMES = ("up", "down", "left", "right", "ok", "back")
 KEY_DOWN_FRAMES = 6  # `framedump::KEY_UP_AFTER`: a tap is down for six frames
-REST_PROBE_FRAMES = 6
 
 
 def _frames(ms, fps=FPS):
@@ -1582,7 +1577,7 @@ def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=N
         events = runtime / "plxnative-events.log"
         facts = film_facts(pms, hero, json.loads(pathlib.Path(CATALOG).read_text()),
                            events.read_text(errors="replace") if events.exists() else "")
-        record = build_render_record(storyboard, dump, scanned, 0, len(rows), current_platform(), facts)
+        record = build_render_record(storyboard, dump, scanned, len(rows), current_platform(), facts)
         bad = validate_render_record(record)
         if bad:
             raise Failure("render.json is malformed: " + "; ".join(bad))

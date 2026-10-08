@@ -447,10 +447,6 @@ def derive(assets, catalog):
     return out
 
 
-def media_path(assets, aid):
-    return source_path(aid, assets[aid])
-
-
 # ------------------------------------------------------------------ validation ----------------
 
 # The review-score marks a catalog `ratings` row may name: the ones the app badges
