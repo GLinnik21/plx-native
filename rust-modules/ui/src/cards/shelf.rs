@@ -304,9 +304,10 @@ impl Shelf {
     ) -> Option<Placed> {
         let i = src.index_of(elem)?;
         let focus = super::focused_index(&cx.focus, self.entry, src);
+        let pressed = super::pressed_index(cx, self.entry, src);
         let slot = self.slot(i, at, self.drawn_scroll(src));
         let s = match how {
-            At::Drawn => super::press_scale(self.pop(src, i, focus), focus == Some(i), cx),
+            At::Drawn => super::press_scale(self.pop(src, i, focus), i, pressed, cx),
             At::SpringTarget => if focus == Some(i) { self.style.focus_scale } else { 1.0 },
         };
         Some(Placed {
@@ -339,11 +340,12 @@ impl Shelf {
     pub fn paint_resting<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
         let n = src.len();
         let focus = super::focused_index(&f.focus, self.entry, src);
+        let pressed = super::pressed_index(f.cx, self.entry, src);
         let sx = self.drawn_scroll(src);
         let pr = p.translate(-sx, 0.0);
         let visible = |i: usize| crate::on_axis(self.slot(i, at, sx).x, self.style.w, SCR_W, self.margin);
         for i in (0..n).filter(|&i| focus != Some(i) && visible(i)) {
-            let s = self.pop(src, i, focus);
+            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
             self.draw_card(f, pr, src, i, at, s, false);
         }
     }
@@ -351,9 +353,10 @@ impl Shelf {
     /// The focused card, painted whether or not it is on-axis.
     pub fn paint_focused<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
         let focus = super::focused_index(&f.focus, self.entry, src);
+        let pressed = super::pressed_index(f.cx, self.entry, src);
         let pr = p.translate(-self.drawn_scroll(src), 0.0);
         if let Some(i) = focus.filter(|&i| i < src.len()) {
-            let s = super::press_scale(self.pop(src, i, focus), true, f.cx);
+            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
             self.draw_card(f, pr, src, i, at, s, true);
         }
     }
@@ -366,9 +369,10 @@ impl Shelf {
             return;
         }
         let focus = super::focused_index(&f.focus, self.entry, src);
+        let pressed = super::pressed_index(f.cx, self.entry, src);
         let sx = self.drawn_scroll(src);
         for i in (0..src.len()).filter(|&i| crate::on_axis(self.slot(i, at, sx).x, self.style.w, SCR_W, self.margin)) {
-            let s = super::press_scale(self.pop(src, i, focus), focus == Some(i), f.cx);
+            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
             let slot = super::to_local(p, self.slot(i, at, sx));
             f.stop(p, Stop {
                 key: FocusKey { entry: self.entry, elem: src.elem(i) },
@@ -392,7 +396,8 @@ impl Shelf {
         focus: Option<FocusKey<H::Elem>>,
     ) {
         let Some(i) = focus.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem)) else { return };
-        let s = super::press_scale(self.pop(src, i, Some(i)), true, f.cx);
+        let pressed = super::pressed_index(f.cx, self.entry, src);
+        let s = super::press_scale(self.pop(src, i, Some(i)), i, pressed, f.cx);
         self.draw_card(f, p.translate(-self.drawn_scroll(src), 0.0), src, i, at, s, true);
     }
 

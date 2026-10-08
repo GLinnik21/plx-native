@@ -723,7 +723,7 @@ impl DetailScreen {
                 row,
                 self.section_top(2, d, measure) - self.scroll.pos,
                 self.episode_scroll.pos,
-                self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0) * f.press.dip(),
+                self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0) * focus.map_or(1.0, |k| f.press.dip_of(&k)),
                 &self.episode_lift(i),
                 f.measure,
                 meta,
@@ -2218,7 +2218,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                         self.cast.draw(
                             f,
                             below_hero,
-                            &self.cards(cards::Which::Cast, d).drawn_at(row_y, f.press.dip()),
+                            &self.cards(cards::Which::Cast, d).drawn_at(row_y, self.entry, f.press),
                             SectionFrame { y: row_y, clip: Rect::FULL },
                         );
                     }

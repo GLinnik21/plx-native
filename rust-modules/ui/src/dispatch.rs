@@ -277,7 +277,7 @@ pub struct Split<'a, H: Host> {
 #[derive(Clone)]
 pub struct CxParts<K> {
     pub tick: Tick,
-    pub press: PressRead,
+    pub press: PressRead<K>,
     pub focus: FocusRead<K>,
     pub owner: InputOwner,
 }
@@ -732,6 +732,7 @@ where
                 scale: self.input.press.scale(),
                 is_long: self.input.press.was_long(),
                 held_ms: self.input.press.held_ms(tick.ms),
+                owner: self.input.dip_owner,
             },
             focus: self.input.engine.read(owner),
             owner,
@@ -2086,10 +2087,15 @@ where
                         rig.log("focus: no current focus — seated by the first group's policy");
                     }
                     match outcome {
-                        Outcome::Moved { from, to, by } => out.push(Stamped {
-                            from: MachineId::Input,
-                            fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::FocusMoved { from, to, by })),
-                        }),
+                        Outcome::Moved { from, to, by } => {
+                            // Navigation abandons the press (§7.4): the pressed card springs back
+                            // where it is while focus moves on, and the tap never commits.
+                            self.input.abandon_if_off(entry, to);
+                            out.push(Stamped {
+                                from: MachineId::Input,
+                                fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::FocusMoved { from, to, by })),
+                            });
+                        }
                         Outcome::Edge(EdgeRule::Screen) => {
                             if let ScreenEvent::Input(iev) = ev {
                                 let mut again = iev.clone();
@@ -2275,11 +2281,9 @@ where
         let outcome = self.focus_resolution(rig, parts, entry, 2, tap,
             |engine, view, cx| engine.reconcile(owner, view, cx));
         if let Outcome::Moved { from, to, by } = outcome {
-            if self.input.arm.is_some_and(|arm| arm.key.entry == entry && arm.key != to) {
-                // A catalog reconciliation changes the cursor, not the identity of an ongoing
-                // gesture. Never let release activate the fallback item that replaced its arm.
-                self.input.cancel_press();
-            }
+            // A catalog reconciliation changes the cursor, not the identity of an ongoing
+            // gesture. Never let release activate the fallback item that replaced its arm.
+            self.input.abandon_if_off(entry, to);
             if let Some(id) = self.nav.instance_of(entry) {
                 let mut out = Vec::new();
                 self.execute_deliver(rig, parts, MachineId::Instance(id), Delivery::Screen(ScreenEvent::FocusMoved { from, to, by }), &mut out, report, tap);

@@ -56,6 +56,13 @@ pub struct InputMachine<K> {
     pub hit: HitMap<K>,
     pub press: Press,
     pub arm: Option<Arm<K>>,
+    /// Who the press dip belongs to: set with the arm and, unlike it, kept through an abandon and
+    /// the commit delay until the spring has settled, so the card that was pressed springs back
+    /// even though focus (and the arm) has moved on. Read as `PressRead::owner`. Like `hit`, it is
+    /// not written to the canonical state: it is the arm's key outliving the arm for the length of
+    /// the spring, a function of the recorded inputs that a replay rebuilds identically, and
+    /// it only steers which card the dip is drawn on.
+    pub dip_owner: Option<FocusKey<K>>,
     next_press: u32,
     /// The television's keyboard is up: `InputOwner::System(Keyboard)`.
     pub keyboard: bool,
@@ -79,6 +86,7 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
             hit: HitMap::new(),
             press: Press::new(),
             arm: None,
+            dip_owner: None,
             next_press: 0,
             keyboard: false,
             keyboard_owner: None,
@@ -94,6 +102,7 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
         } else {
             self.press.begin_ctl(now);
         }
+        self.dip_owner = Some(a.key);
         self.arm = Some(Arm {
             id,
             key: a.key,
@@ -105,11 +114,27 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
         id
     }
 
-    /// Abandon the press: navigation, an owner change, a pointer that left the arm.
+    /// Abandon the press: navigation, an owner change, a pointer that left the arm. The dip owner
+    /// stays (see [`dip_owner`](Self::dip_owner)); [`tick`](Self::tick) releases it once the spring
+    /// has settled.
     pub fn cancel_press(&mut self) {
         if self.arm.take().is_some() {
             self.press.cancel();
         }
+    }
+
+    /// Abandon the press if focus has moved off the element it was armed on (`now` is where focus
+    /// is). The ONE rule shared by a direction key that moves focus and by a reconciliation that
+    /// replaces the cursor: the gesture belonged to the armed element, so it never activates `now`.
+    pub fn abandon_if_off(&mut self, entry: plx_machine::machine::EntryId, now: FocusKey<K>) -> bool
+    where
+        K: PartialEq,
+    {
+        let off = self.arm.is_some_and(|arm| arm.key.entry == entry && arm.key != now);
+        if off {
+            self.cancel_press();
+        }
+        off
     }
 
     /// The physical release.
@@ -126,6 +151,9 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
     pub fn tick(&mut self, now: u32, dt: f32) -> Vec<PressEvent<K>> {
         let mut out = Vec::new();
         self.press.tick(now, dt);
+        if !self.press.is_active() {
+            self.dip_owner = None;
+        }
         let Some(arm) = self.arm.as_mut() else {
             return out;
         };
@@ -146,7 +174,7 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
     /// The press, engine and complete gesture identity are logical state. Only the double-
     /// buffered hit map is a render-side resource (rebuilt from recorded presented frames).
     pub fn write_with(&self, c: &mut Canon, elem: &dyn Fn(&K, &mut Canon)) {
-        let Self { press, engine, keyboard, keyboard_owner, next_press, arm, hit: _ } = self;
+        let Self { press, engine, keyboard, keyboard_owner, next_press, arm, dip_owner: _, hit: _ } = self;
         press.write(c);
         engine.write_with(c, elem);
         c.bool(*keyboard);

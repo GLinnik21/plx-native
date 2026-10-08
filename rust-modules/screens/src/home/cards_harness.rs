@@ -74,7 +74,7 @@ impl Harness {
 
     fn cx(&self) -> Cx<'_, HomeHost> {
         Cx { views: self.snap.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
-            press: PressRead { scale: self.press, ..Default::default() },
+            press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
             focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) }
     }
 
@@ -83,7 +83,7 @@ impl Harness {
         let mut out = Vec::new();
         let (_, moving) = plx_machine::idle::scoped_motion(|| {
             let cx = Cx::<HomeHost> { views: self.snap.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
-                press: PressRead { scale: self.press, ..Default::default() },
+                press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(INSTANCE), &mut present);
             Machine::<HomeHost>::step(self.screen.get_mut(), &ev, &cx, &mut fx);
@@ -136,7 +136,7 @@ impl CardHarness for Harness {
     /// frame, with the press the harness was given on the focused card.
     fn drawn_rect(&self, elem: u32, press: f32) -> Option<Rect> {
         let mut cx = self.cx();
-        cx.press = PressRead { scale: press, ..Default::default() };
+        cx.press = PressRead { scale: press, owner: cx.focus.current, ..Default::default() };
         let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
         plx_ui::screen::record_stops_while_recording(|| {
             plx_gfx::gfx::without_frame_clear(|| Screen::<HomeHost>::draw(&mut *self.screen.borrow_mut(), &mut f));

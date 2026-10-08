@@ -333,9 +333,10 @@ impl Grid {
     pub fn place<H: Host, S: CardSource<H>>(&self, cx: &Cx<'_, H>, src: &S, elem: &H::Elem, how: At) -> Option<Placed> {
         let i = src.index_of(elem)?;
         let focus = super::focused_index(&cx.focus, self.entry, src);
+        let pressed = super::pressed_index(cx, self.entry, src);
         let cell = self.cell(i, &self.bands.geometry());
         let s = match how {
-            At::Drawn => super::press_scale(self.pop(src, i, focus), focus == Some(i), cx),
+            At::Drawn => super::press_scale(self.pop(src, i, focus), i, pressed, cx),
             At::SpringTarget => if focus == Some(i) { self.spec.style.focus_scale } else { 1.0 },
         };
         Some(Placed { rect: cell.scaled(s), rest_rect: cell.scaled(self.spec.style.focus_scale), clip: Rect::FULL, index: Some(i as u32) })
@@ -345,15 +346,16 @@ impl Grid {
     /// cards first, the focused one last; only the cards the scroll can show are touched.
     pub fn draw<H: Host, S: CardSource<H>>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, src: &S) {
         let focus = super::focused_index(&f.focus, self.entry, src);
+        let pressed = super::pressed_index(f.cx, self.entry, src);
         let bands = self.bands.geometry();
         for i in self.window(src.len()) {
             if focus == Some(i) || self.above_edge(i, &bands) {
                 continue;
             }
-            self.draw_card(f, p, src, i, self.pop(src, i, focus), false, &bands);
+            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), i, pressed, f.cx), false, &bands);
         }
         if let Some(i) = focus.filter(|&i| i < src.len()) {
-            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), true, f.cx), true, &bands);
+            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), i, pressed, f.cx), true, &bands);
         }
         self.record_stops(f, p, src);
     }
@@ -364,9 +366,10 @@ impl Grid {
             return;
         }
         let focus = super::focused_index(&f.focus, self.entry, src);
+        let pressed = super::pressed_index(f.cx, self.entry, src);
         let bands = self.bands.geometry();
         for i in self.window(src.len()) {
-            let s = super::press_scale(self.pop(src, i, focus), focus == Some(i), f.cx);
+            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
             let cell = super::to_local(p, self.cell(i, &bands));
             f.stop(p, Stop {
                 key: FocusKey { entry: self.entry, elem: src.elem(i) },
@@ -389,7 +392,8 @@ impl Grid {
         focus: Option<FocusKey<H::Elem>>,
     ) {
         let Some(i) = focus.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem)) else { return };
-        let s = super::press_scale(self.pop(src, i, Some(i)), true, f.cx);
+        let pressed = super::pressed_index(f.cx, self.entry, src);
+        let s = super::press_scale(self.pop(src, i, Some(i)), i, pressed, f.cx);
         self.draw_card(f, p, src, i, s, true, &self.bands.geometry());
     }
 

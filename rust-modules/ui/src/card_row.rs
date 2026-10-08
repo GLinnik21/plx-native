@@ -1542,8 +1542,8 @@ mod tests {
     /// machine read) dips by 1.0, not to nothing.
     #[test]
     fn an_idle_press_read_dips_by_one() {
-        assert_eq!(plx_machine::machine::PressRead::default().dip(), 1.0);
-        let moving = plx_machine::machine::PressRead { scale: 0.92, ..Default::default() };
+        assert_eq!(plx_machine::machine::PressRead::<()>::default().dip(), 1.0);
+        let moving = plx_machine::machine::PressRead::<()> { scale: 0.92, ..Default::default() };
         assert_eq!(moving.dip(), 0.92);
     }
 

@@ -643,6 +643,7 @@ fn drawn_card_geometry_includes_press_but_its_rest_anchor_does_not() {
     for press in [0.93, 1.0, 1.025] {
         let mut context = cx(snapshot.view(), Some(key));
         context.press.scale = press;
+        context.press.owner = Some(key);
         let placed = Focusable::<TestHost>::place(&s, &key.elem, &context, At::Drawn).unwrap();
         assert!((placed.rect.w - CARD_W * pop_of(&s, snapshot.view(), Some(key), 0, 0) * press).abs() < 0.01);
         assert!((placed.rest_rect.w - CARD_W * RowStyle::HOME.focus_scale).abs() < 0.01);
