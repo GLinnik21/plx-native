@@ -472,7 +472,7 @@
         "plxnative-herobench": "60,600",
         "plxnative-framedrop": true
       },
-      "comment": "The Home hero carousel flipped back and forth over three titles (0-1-2-1-0-...) every 600 ms, faster than a slide settles, through the same HomeCmd::Flip the Left/Right key lands on (dev::scenarios::bench::HeroBench). 60 cycles of two flips each, one `bench: kind=hero` line per cycle with the missed refreshes of both flips, graded by grade_bench like push-100. Needs at least three heroes in the Home carousel (a shorter carousel wraps and the A-B-A walk degenerates). `herobench=<n>,<period_ms>`: the period is clamped to 400 ms, the carousel's own flip cooldown. bench_missed_max 0 is the frame budget, not a measured baseline."
+      "comment": "The Home hero carousel flipped back and forth over three titles (0-1-2-1-0-...) every 600 ms, faster than a slide settles, through the same HomeCmd::Flip the Left/Right key lands on (dev::scenarios::bench::HeroBench). 60 cycles of two flips each, one `bench: kind=hero` line per cycle with the missed refreshes of both flips, graded by grade_bench like push-100. Needs at least three heroes in the Home carousel (a shorter carousel wraps and the A-B-A walk degenerates). `herobench=<n>,<period_ms>`: the period is clamped to 400 ms, the carousel's own flip cooldown. bench_missed_max 0 is the frame budget, not a measured baseline. Under the deferral-aware metric (this PR) it reads 10-12 missed per 60 cycles with iv max 37-47 ms on 2026-10-08, the same before and after the menu-open fix; the 0 limit is unchanged."
     },
     {
       "name": "grid-pong",
@@ -488,7 +488,79 @@
         "plxnative-grid": true,
         "plxnative-framedrop": true
       },
-      "comment": "The same ping-pong as hero-pong, but on the first shelf: Left/Right key presses across its first three cards, 0-1-2-1-0 (focus ring, caption and wash colour change), seated with plxnative-grid. One `bench: kind=hero` line per cycle. bench_missed_max 0 is the frame budget, not a measured baseline."
+      "comment": "The same ping-pong as hero-pong, but on the first shelf: Left/Right key presses across its first three cards, 0-1-2-1-0 (focus ring, caption and wash colour change), seated with plxnative-grid. One `bench: kind=hero` line per cycle. bench_missed_max 0 is the frame budget, not a measured baseline. Under the deferral-aware metric (this PR) it reads 10-12 missed per 60 cycles with iv max 37-47 ms on 2026-10-08, the same before and after the menu-open fix; the 0 limit is unchanged."
+    },
+    {
+      "name": "home-hold",
+      "tier": "ui",
+      "route": "home",
+      "bench": "hold",
+      "run_secs": 150,
+      "warmup_s": 8,
+      "bench_missed_max": 110,
+      "bench_iv_max_ms": 55,
+      "mock": {},
+      "triggers": {
+        "plxnative-holdbench": "30",
+        "plxnative-grid": true,
+        "plxnative-framedrop": true
+      },
+      "comment": "A REAL press-and-hold on a card, 30 cycles, through the key path a remote uses (dev::scenarios::bench::PressBench, `plxnative-holdbench`): OK down and KEPT down so the press-in dip and the hold capsule's fill run past press::LONG_MS, the item menu opens out of the hold, then Back dismisses it. The key-up is never sent and no OK is queued while the menu is up (its first row is Play). One `bench: kind=hold` line per cycle; the open half covers OK-down through the menu's open spring, the close half Back through the dismiss. grade_bench fails a cycle whose target is `<host>-nomenu`/`-nocard` (it graded an idle window). Home, first shelf card (plxnative-grid seats it). Limits set 2026-10-08 from one run each on the television (debug build with ARM_PROFILE=release, mock server, panel on), with the item-menu opener-lift fix (PR #561) in the tree: 81 missed over 30 cycles (per-cycle median 3, max 5), worst present interval 46.7 ms. The same scene on a tree WITHOUT the fix read 525 missed (about 16 per cycle: the menu opens at ~21 fps, frames 47 ms apart), so these scenes FAIL there and depend on #561 being on main; they are that fix's regression test. bench_missed_max 110 and bench_iv_max_ms 55 sit above the fixed build and far below the unfixed one (the remaining slow frames are the one ~41 ms capture frame at menu open and one after Back, per cycle). `defer_first` (fence holds before a half's first frame) is reported, never graded."
+    },
+    {
+      "name": "collection-hold",
+      "tier": "ui",
+      "route": "collection",
+      "item": "collection",
+      "bench": "hold",
+      "run_secs": 150,
+      "warmup_s": 8,
+      "bench_missed_max": 60,
+      "bench_iv_max_ms": 50,
+      "mock": {"movies": 240, "rk": 50002},
+      "triggers": {
+        "plxnative-collection": "$rk",
+        "plxnative-holdbench": "30",
+        "plxnative-framedrop": true
+      },
+      "comment": "A REAL press-and-hold on a card, 30 cycles, through the key path a remote uses (dev::scenarios::bench::PressBench, `plxnative-holdbench`): OK down and KEPT down so the press-in dip and the hold capsule's fill run past press::LONG_MS, the item menu opens out of the hold, then Back dismisses it. The key-up is never sent and no OK is queued while the menu is up (its first row is Play). One `bench: kind=hold` line per cycle; the open half covers OK-down through the menu's open spring, the close half Back through the dismiss. grade_bench fails a cycle whose target is `<host>-nomenu`/`-nocard` (it graded an idle window). Collection page (a cards::Stack page, the mock collection rk 50002; the bench seats the first member card with one Down if the page opened on its header). Limits set 2026-10-08 from one run each on the television (debug build with ARM_PROFILE=release, mock server, panel on), with the item-menu opener-lift fix (PR #561) in the tree: 41 missed over 30 cycles (per-cycle median 1, max 3), worst present interval 42.6 ms. The same scene on a tree WITHOUT the fix read 498 missed (about 16 per cycle: the menu opens at ~21 fps, frames 47 ms apart), so these scenes FAIL there and depend on #561 being on main; they are that fix's regression test. bench_missed_max 60 and bench_iv_max_ms 50 sit above the fixed build and far below the unfixed one (the remaining slow frames are the one ~41 ms capture frame at menu open and one after Back, per cycle). `defer_first` (fence holds before a half's first frame) is reported, never graded."
+    },
+    {
+      "name": "home-tap",
+      "tier": "ui",
+      "route": "home",
+      "bench": "hold",
+      "run_secs": 90,
+      "warmup_s": 8,
+      "bench_missed_max": 8,
+      "bench_iv_max_ms": 40,
+      "bench_drift_ms": 4.0,
+      "mock": {},
+      "triggers": {
+        "plxnative-holdbench": "40,350,tap",
+        "plxnative-grid": true,
+        "plxnative-framedrop": true
+      },
+      "comment": "OK down, then a direction key 350 ms later (under press::LONG_MS), 40 cycles: the press-in dip and the cancel spring-back without activating, plus the one-card focus move (right, then left, so focus walks 0-1-0-1). The cancel is the app's real one (a fresh direction key abandons an armed press), not invented input; no OK key-up is sent. Home, first shelf. Limits set 2026-10-08 from one run each on the television (debug build with ARM_PROFILE=release, mock server, panel on): 4 missed over 40 cycles, worst present interval 31.2 ms. The same scene on the unfixed tree read 12 missed (limit 8: it fails). bench_drift_ms 4.0 relaxes the default 2.0 ms for the tap scenes (the collection twin tripped it at +2.87 ms on a healthy run). bench_missed_max 8 and bench_iv_max_ms 40 sit above the measured value (run-to-run spread seen was about 2 missed). `missed` also counts capture-fence deferrals."
+    },
+    {
+      "name": "collection-tap",
+      "tier": "ui",
+      "route": "collection",
+      "item": "collection",
+      "bench": "hold",
+      "run_secs": 90,
+      "warmup_s": 8,
+      "bench_missed_max": 8,
+      "bench_iv_max_ms": 40,
+      "bench_drift_ms": 4.0,
+      "mock": {"movies": 240, "rk": 50002},
+      "triggers": {
+        "plxnative-collection": "$rk",
+        "plxnative-holdbench": "40,350,tap",
+        "plxnative-framedrop": true
+      },
+      "comment": "OK down, then a direction key 350 ms later (under press::LONG_MS), 40 cycles: the press-in dip and the cancel spring-back without activating, plus the one-card focus move (right, then left, so focus walks 0-1-0-1). The cancel is the app's real one (a fresh direction key abandons an armed press), not invented input; no OK key-up is sent. Collection page (rk 50002). Limits set 2026-10-08 from one run each on the television (debug build with ARM_PROFILE=release, mock server, panel on): 3 missed over 40 cycles, worst present interval 33.2 ms, and one run tripped the default 2.0 ms drift clause at +2.87 ms, hence bench_drift_ms 4.0. The unfixed tree was not run on this scene. bench_missed_max 8 and bench_iv_max_ms 40 sit above the measured value (run-to-run spread seen was about 2 missed). `missed` also counts capture-fence deferrals."
     },
     {
       "name": "onboard-sources",

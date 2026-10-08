@@ -160,6 +160,8 @@ pub(crate) struct Scenarios {
     pub(crate) deep_bench: Option<bench::DeepBench>,
     /// `/tmp/plxnative-herobench` — see [`bench`]'s module doc and [`bench::HeroBench`].
     pub(crate) hero_bench: Option<bench::HeroBench>,
+    /// `/tmp/plxnative-holdbench` — see [`bench::PressBench`].
+    pub(crate) hold_bench: Option<bench::PressBench>,
     /// The boot-time trigger flags the loop consults every frame after.
     pub(crate) dev: DevFlags,
     /// The screenshot pipeline's arms (`plxnative-libtype`, `-libgrid`, `-libshelf`, `-libmenu`, `-clockstop`) — see [`screenshot`].
@@ -513,6 +515,24 @@ pub(crate) fn herobench_value() -> Option<(u32, u32, bench::PongTarget)> {
         let period = parts.next().and_then(|p| p.parse().ok()).unwrap_or(bench::DEFAULT_HERO_PERIOD_MS);
         let target = if parts.next() == Some("grid") { bench::PongTarget::Grid } else { bench::PongTarget::Hero };
         (n, period, target)
+    })
+}
+/// `/tmp/plxnative-holdbench[=<n>[,<period_ms>[,tap]]]` — `(n, period_ms, kind)`: `n` cycles
+/// (default 100) of a REAL press-and-hold on the focused card — OK down and kept down so the hold
+/// fill runs and the item menu opens out of it, then Back — or, with `tap`, of OK down and a
+/// direction key before the hold threshold (the press-cancel path). `period_ms` is each half's
+/// length, defaulted and clamped per kind by [`bench::PressBench::new`].
+pub(crate) fn holdbench_value() -> Option<(u32, u32, bench::PressKind)> {
+    plx_base::devtrig::read("holdbench").map(|v| {
+        let mut parts = v.trim().split(',').map(str::trim);
+        let n = parse_bench_n(parts.next().unwrap_or(""));
+        let period = parts.next().and_then(|p| p.parse().ok());
+        let tap = parts.next() == Some("tap");
+        if tap {
+            (n, period.unwrap_or(bench::DEFAULT_TAP_PERIOD_MS), bench::PressKind::Tap)
+        } else {
+            (n, period.unwrap_or(bench::DEFAULT_HOLD_PERIOD_MS), bench::PressKind::Hold)
+        }
     })
 }
 fn parse_bench_n(v: &str) -> u32 {
@@ -2158,7 +2178,21 @@ fn tex_field() -> String {
 /// frame's total. Gated on `presented`: an iteration the idle gate skipped drew nothing, so
 /// counting it toward `frames` or `worst_ms` would grade an absent frame as a fast one, exactly
 /// the reasoning `Instruments::frame_drop_line`'s own `worst` peak already uses.
-pub(crate) fn bench_frame_tick(app: &mut App, presented: bool, now: u32) {
+pub(crate) fn bench_frame_tick(app: &mut App, presented: bool, deferred: bool, now: u32) {
+    if deferred {
+        for clock in [
+            app.scenarios.push_bench.as_mut().map(|b| &mut b.clock),
+            app.scenarios.modal_bench.as_mut().map(|b| &mut b.clock),
+            app.scenarios.deep_bench.as_mut().map(|b| &mut b.clock),
+            app.scenarios.hero_bench.as_mut().map(|b| &mut b.clock),
+            app.scenarios.hold_bench.as_mut().map(|b| &mut b.clock),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            bench::bench_note_defer(clock);
+        }
+    }
     if !presented {
         return;
     }
@@ -2174,6 +2208,9 @@ pub(crate) fn bench_frame_tick(app: &mut App, presented: bool, now: u32) {
         bench::bench_note_frame(&mut b.clock, now, total, interval);
     }
     if let Some(b) = app.scenarios.hero_bench.as_mut() {
+        bench::bench_note_frame(&mut b.clock, now, total, interval);
+    }
+    if let Some(b) = app.scenarios.hold_bench.as_mut() {
         bench::bench_note_frame(&mut b.clock, now, total, interval);
     }
 }
@@ -2531,6 +2568,91 @@ pub(crate) fn hero_bench_tick(app: &mut App, now: u32) {
         bench::BenchStep::Done(n) => {
             plx_base::eventlog::log(&format!("bench: kind=hero done cycles={n}"));
             app.scenarios.hero_bench = None;
+        }
+    }
+}
+
+/// The surface the press bench can press a card of right now, and whether a card is focused on it.
+fn press_host(app: &App) -> Option<(bench::PressHost, bool)> {
+    match app.route() {
+        AppArg::Home => Some((bench::PressHost::Home, app.bridge.home_grid_focused(&app.pages))),
+        AppArg::Library => Some((bench::PressHost::Library, crate::app::bridge::Bridge::library_card_focused(&app.pages))),
+        AppArg::Content(plx_screens::registry::ContentArg::Collection(_)) =>
+            Some((bench::PressHost::Collection, app.bridge.collection_card_focused(&app.pages))),
+        _ => None,
+    }
+}
+
+/// `/tmp/plxnative-holdbench` — see [`bench::PressBench`]: `n` cycles of a REAL press on the focused
+/// card, through the key path a remote uses (`script_key`'s edges into `app.inputs`, the same queue
+/// `press_arm` and the grid pong use), so the card's press-in, the hold capsule's fill, the item
+/// menu's open and its dismissal are all inside the graded halves.
+///
+/// Open half (`Start` -> `Settle`): hold sends OK-DOWN and nothing else — no key-up, ever (the
+/// dispatcher abandons the press when it answers the hold, and an OK edge while the menu is up
+/// would land on its Play row). Close half (`Settle` -> `Report`): hold sends Back, only while the
+/// item menu is up ([`bench::press_close_key`]); tap sends a direction key, which cancels the press.
+/// OK is only ever sent by [`bench::press_allowed`]: no menu up, a card focused.
+///
+/// Reported as `bench: kind=hold ... target=<host>` (`<host>-nomenu` when a hold did not open the
+/// menu, `<host>-nocard` when no card could be pressed; `grade_bench` fails both).
+pub(crate) fn hold_bench_tick(app: &mut App, now: u32) {
+    let Some(period) = app.scenarios.hold_bench.as_ref().map(|b| b.period_ms) else { return };
+    let host = press_host(app);
+    let menu_up = crate::app::bridge::item_menu_up(&app.pages);
+    let step = {
+        let b = app.scenarios.hold_bench.as_mut().unwrap();
+        bench::bench_advance(&mut b.clock, now, period)
+    };
+    let tick = Tick { ms: now, dt_us: 0 };
+    match step {
+        bench::BenchStep::Nothing => {}
+        bench::BenchStep::Settled(waited, capped) => {
+            log_bench_settled("hold", waited, capped);
+            // A collection page opens on its header: seat the first card before the first press,
+            // a full half-period ahead of it.
+            if let Some((bench::PressHost::Collection, false)) = host {
+                app.inputs.extend(crate::app::bridge::script_key(Key::Down, tick));
+            }
+        }
+        bench::BenchStep::Start(_) => {
+            let b = app.scenarios.hold_bench.as_mut().unwrap();
+            b.host = host.map(|h| h.0);
+            b.menu_opened = false;
+            b.in_flight = host.is_some_and(|(_, focused)| bench::press_allowed(menu_up, focused));
+            if b.in_flight {
+                // The DOWN edge only: the up edge is the press's release, which a hold never gets
+                // and a tap replaces with a cancelling direction key.
+                app.inputs.push(crate::app::bridge::script_edge(Key::Ok, plx_machine::machine::Edge::Down, tick));
+            }
+        }
+        bench::BenchStep::Settle(cycle) => {
+            let b = app.scenarios.hold_bench.as_mut().unwrap();
+            b.menu_opened = menu_up;
+            let kind = b.kind;
+            if b.in_flight {
+                if let Some(key) = bench::press_close_key(kind, menu_up, cycle) {
+                    app.inputs.extend(crate::app::bridge::script_key(key, tick));
+                }
+            }
+        }
+        bench::BenchStep::Report(cycle) => {
+            let b = app.scenarios.hold_bench.as_ref().unwrap();
+            let c = &b.clock;
+            let host_name = b.host.map_or("none", bench::PressHost::name);
+            let miss = if !b.in_flight { "-nocard" }
+                else if b.kind == bench::PressKind::Hold && !b.menu_opened { "-nomenu" }
+                else { "" };
+            plx_base::eventlog::log(&format!(
+                "bench: kind=hold cycle={}/{} target={}{} worst_ms={:.1} frames={} dur_ms={} rss_kb={} {} {}",
+                cycle + 1, c.n, host_name, miss,
+                c.worst_ms(), c.frames(), now.wrapping_sub(c.cycle_start), read_rss_kb(),
+                tex_field(), c.fields(),
+            ));
+        }
+        bench::BenchStep::Done(n) => {
+            plx_base::eventlog::log(&format!("bench: kind=hold done cycles={n}"));
+            app.scenarios.hold_bench = None;
         }
     }
 }

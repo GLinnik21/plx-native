@@ -1961,7 +1961,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   no-line PASS, 191.4, 227.8", in which a 30 ms open and a 159 ms one are the same output. The
   `coldopen` line is UNARMED and unconditional, so one mount is one sample and an absent line
   fails. Its value on `cold-open` is PROVISIONAL until TV session 7 leg 6 measures it, and the
-  scene's `_coldopen_note` says so. **And, since 2026-09-19, one STRESS family** — `bench_missed_max` (missed display refreshes summed over the run, default 0: each present interval, or the first frame's Top->Swap after idle, costs `max(0, round(ms/16.67) - 1)`, so a frame is a drop once it spans 1.5 refreshes; Top->Swap alone is not graded because it includes the vsync wait), `bench_drift_ms`, and `bench_rss_growth_kb` for `push-100`/`modal-100`; for the DEEP-stack scene, `bench_depth_rss_kb` (deepest point minus the unwound root, so retained per-level state) and `bench_root_rss_kb` (an absolute ceiling on the unwound root) instead of a growth figure measured from a step-10 baseline that moves. It does not compose with the six: a scene carrying a `bench` key (every one in `tests/manifest.json`) is graded entirely by `run.py`'s `grade_bench`/`grade_deep_bench` (`deep` only for the latter) and never reaches the rate, frame-time or mount gates, so "six" counts the gates of an ordinary scene. The Search pair is the
+  scene's `_coldopen_note` says so. **And, since 2026-09-19, one STRESS family** — `bench_missed_max` (missed display refreshes summed over the run, default 0: each present interval, or the first frame's Top->Swap after idle, costs `max(0, round(ms/16.67) - 1)`, so a frame is a drop once it spans 1.5 refreshes; Top->Swap alone is not graded because it includes the vsync wait. A loop iteration the capture fence DEFERRED (`Frame::deferred`: `snapshot_pending()` was the only thing holding a present) keeps the present-to-present interval, so the next frame's interval spans it and counts; an idle skip still resets it. Deferrals before a half's first presented frame are input-to-first-frame latency, logged as `defer_first:<n>` in the half and never in `missed`. A scene may also set `bench_iv_max_ms`, a ceiling on the worst present-to-present interval from the half's `iv:` field), `bench_drift_ms`, and `bench_rss_growth_kb` for `push-100`/`modal-100`; for the DEEP-stack scene, `bench_depth_rss_kb` (deepest point minus the unwound root, so retained per-level state) and `bench_root_rss_kb` (an absolute ceiling on the unwound root) instead of a growth figure measured from a step-10 baseline that moves. It does not compose with the six: a scene carrying a `bench` key (every one in `tests/manifest.json`) is graded entirely by `run.py`'s `grade_bench`/`grade_deep_bench` (`deep` only for the latter) and never reaches the rate, frame-time or mount gates, so "six" counts the gates of an ordinary scene. The Search pair is the
   clearest illustration that these are two halves of ONE question — same screen, same trigger, the
   oscillator added or taken away. A scene with no motion and only a `loop_floor`
   gates nothing — **`home-hero` carries an `_idle_gate_note` saying exactly that, and it is the only
@@ -2198,6 +2198,24 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   became a `ModalStack` surface and `route=itemmenu` stopped existing; the interactive path is a
   real ≥500 ms hold, which no boot trigger can express). Note `/tmp/plxnative-press` is its TAP twin: it now schedules its own release
   ~150 ms in, because a down with no up is past `press::LONG_MS` and is a HOLD, not a tap.
+  `/tmp/plxnative-holdbench[=<n>[,<period_ms>[,tap]]]` is the counted twin of both
+  (`dev::scenarios::bench::PressBench`; default n=100, period 1500 ms hold / 350 ms tap, a tap is capped
+  under `LONG_MS`): a REAL press on the focused card through the remote's key path, so the card's
+  press-in, the hold capsule's fill, the item menu's open and its dismissal are inside the graded
+  halves, which `itemmenu` (a direct `request_home_menu`, graded after a 6 s warmup) never covers.
+  Hold: OK-down and nothing else (never a key-up, and no OK is queued while a menu is up, since a hold
+  menu opens on its Play row), then Back only while the menu is up. `tap`: OK-down, then a direction key
+  before the threshold, which is the app's real press-cancel path (no activation, one-card focus move,
+  right then left). Works on a Home card (pair with `plxnative-grid`), a Library card and a Collection
+  page card (`plxnative-collection=<rk>`; it seats the first card with one Down if the page opened on
+  the header). One `bench: kind=hold ... target=<home|library|collection>` line per cycle, `target`
+  suffixed `-nocard`/`-nomenu` when the cycle pressed nothing or opened no menu, which `grade_bench`
+  fails; fps scenes `home-hold`, `collection-hold`, `home-tap`, `collection-tap`, all `--mock`-runnable
+  and measured on the television on 2026-10-08 (one run each, debug build with `ARM_PROFILE=release`, mock,
+  panel on): home-hold `bench_missed_max` 110 / `bench_iv_max_ms` 55 (fixed build read 81, iv 46.7),
+  collection-hold 60 / 50 (41, 42.6), home-tap and collection-tap 8 / 40 with `bench_drift_ms` 4.0 (4 and 3
+  missed). A tree WITHOUT the item-menu opener-lift fix (PR #561) reads 525 / 498 / 12 missed on home-hold /
+  collection-hold / home-tap, so the hold scenes FAIL there and depend on #561 being on main.
   Remote-driving: `/tmp/plxnative-remote` is **not** a trigger — the app mkfifos and drains it
   every frame on every boot (so it never affects the picker; its DIAG entry is a permanent
   requirement, not an exception). Write key tokens like `down`/`ok`, or pointer clicks `ck:X,Y`

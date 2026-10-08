@@ -1319,6 +1319,12 @@ pub(crate) unsafe fn construct(
         .then(crate::dev::scenarios::herobench_value)
         .flatten()
         .map(|(n, period, target)| crate::dev::scenarios::bench::HeroBench::new(n, period, target));
+    // dev: /tmp/plxnative-holdbench[=<n>[,<period_ms>[,tap]]] — a REAL press-and-hold (or press-and-
+    // cancel) on the focused card, cycle after cycle (`bench::PressBench`).
+    let hold_bench = (!controlled)
+        .then(crate::dev::scenarios::holdbench_value)
+        .flatten()
+        .map(|(n, period, kind)| crate::dev::scenarios::bench::PressBench::new(n, period, kind));
 
     // dev: /tmp/plxnative-framedrop — the FRAME-DROP DETECTOR. When present, each frame is timed with
     // the high-res perf counter (pump / draw / swap, NO glFinish so it doesn't perturb the pipeline),
@@ -1597,6 +1603,7 @@ pub(crate) unsafe fn construct(
             modal_bench,
             deep_bench,
             hero_bench,
+            hold_bench,
             marker_tried,
             press_tried,
             press_release_at,

@@ -306,6 +306,14 @@ impl Instruments {
         self.previous_present = None;
     }
 
+    /// An iteration whose present the capture fence deferred. Same stamps as a skip, but the
+    /// cadence is NOT broken: `previous_present` stays, so the next presented frame's interval
+    /// (and its pacing sample, `frame_max`) spans the deferred iterations. Deliberate: a fence
+    /// hold is a real late picture for the panel, which `skip_present_phases` used to hide.
+    pub fn defer_present_phases(&mut self) {
+        self.seed_present_phases();
+    }
+
     /// After `mark(Prepare)`: fold this iteration's prepare span into the per-second peak.
     pub fn note_prepare(&mut self) {
         if !self.armed {
@@ -705,6 +713,25 @@ mod tests {
             ),
             "{tail}"
         );
+    }
+
+    #[test]
+    fn a_deferred_present_keeps_the_cadence_and_an_idle_skip_breaks_it() {
+        let mut deferred = Instruments::new(true, 22.0);
+        present_at(&mut deferred, 100);
+        deferred.defer_present_phases();
+        deferred.defer_present_phases();
+        present_at(&mut deferred, 147);
+        assert_eq!(deferred.pacing.n, 1, "the interval across a deferral is a pacing sample");
+        let tail = deferred.heartbeat_tail(HeartbeatFields::default(), None);
+        assert!(tail.contains("frame_n=1 frame_gt16=1 frame_gt33=1"), "{tail}");
+        assert!(tail.contains("frame_max=47.0ms"), "{tail}");
+
+        let mut idle = Instruments::new(true, 22.0);
+        present_at(&mut idle, 100);
+        idle.skip_present_phases();
+        present_at(&mut idle, 147);
+        assert_eq!(idle.pacing.n, 0, "an idle gap is not a sample");
     }
 
     #[test]

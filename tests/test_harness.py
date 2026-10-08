@@ -1235,10 +1235,47 @@ class BenchGrading(unittest.TestCase):
                          {"cycle": 1, "n": 2, "target": "detail", "worst_ms": 5.0, "frames": 5,
                           "dur_ms": 1400, "rss_kb": 1000, "first_ms": 6.0, "missed": 0,
                           "open": "first:6.0,worst:5.0@3,iv:5.0,missed:0",
-                          "close": "first:5.0,worst:16.9@2,iv:17.0,missed:0"})
+                          "close": "first:5.0,worst:16.9@2,iv:17.0,missed:0",
+                          "iv_max_ms": 17.0, "defer_first": None})
         modal_cycles, modal_done = run.parse_bench(lines, "modal")
         self.assertTrue(modal_done)
         self.assertEqual(len(modal_cycles), 1)
+
+    def test_the_new_half_fields_are_parsed_and_an_old_line_still_is(self):
+        new = ("bench: kind=hold cycle=1/2 target=home worst_ms=14.0 frames=9 dur_ms=3000 "
+               "rss_kb=1000 first_ms=6.0 missed=3 "
+               "open=first:6.0,worst:14.0@4,iv:47.2,missed:3,defer_first:2 "
+               "close=first:5.0,worst:12.0@2,iv:33.3,missed:0,defer_first:1")
+        old = ("bench: kind=hold cycle=2/2 target=home worst_ms=14.0 frames=9 dur_ms=3000 "
+               "rss_kb=1000 first_ms=6.0 missed=0 open=first:6.0,worst:14.0@4,iv:17.0,missed:0")
+        cycles, _ = run.parse_bench([new, old], "hold")
+        self.assertEqual((cycles[0]["iv_max_ms"], cycles[0]["defer_first"]), (47.2, 3))
+        self.assertEqual((cycles[1]["iv_max_ms"], cycles[1]["defer_first"]), (17.0, None))
+
+    def test_bench_iv_max_ms_fails_a_slow_interval_and_defer_first_is_reported_not_graded(self):
+        line = ("bench: kind=hold cycle=1/1 target=home worst_ms=14.0 frames=9 dur_ms=3000 "
+                "rss_kb=1000 first_ms=6.0 missed=0 "
+                "open=first:6.0,worst:14.0@4,iv:{iv},missed:0,defer_first:2")
+        done = "bench: kind=hold done cycles=1"
+        scene = {"bench": "hold", "bench_missed_max": 0}
+        ok, detail = run.grade_bench(scene, [line.format(iv="30.0"), done])
+        self.assertTrue(ok, detail)  # no ceiling set: defer_first never fails a run
+        self.assertIn("defer_first=2", detail)
+        scene["bench_iv_max_ms"] = 40.0
+        ok, detail = run.grade_bench(scene, [line.format(iv="30.0"), done])
+        self.assertTrue(ok, detail)
+        ok, detail = run.grade_bench(scene, [line.format(iv="47.0"), done])
+        self.assertFalse(ok)
+        self.assertIn("worst present interval=47.0ms vs bench_iv_max_ms 40.0", detail)
+
+    def test_a_missed_ceiling_below_the_deferral_misses_fails_the_21_fps_open(self):
+        line = ("bench: kind=hold cycle=1/1 target=home worst_ms=14.0 frames=9 dur_ms=3000 "
+                "rss_kb=1000 first_ms=6.0 missed=2 open=first:6.0,worst:14.0@4,iv:47.0,missed:2,"
+                "defer_first:0")
+        ok, detail = run.grade_bench({"bench": "hold", "bench_missed_max": 1},
+                                     [line, "bench: kind=hold done cycles=1"])
+        self.assertFalse(ok)
+        self.assertIn("missed refreshes=2", detail)
 
     def test_a_healthy_run_of_100_cycles_passes(self):
         lines = self._lines("push", [5.0] * 100, rss=[1000] * 100)
@@ -1365,7 +1402,8 @@ class DeepBenchGrading(unittest.TestCase):
             steps[0],
             {"cycle": 1, "n": 6, "target": "detail", "dir": "push", "depth": 1,
              "worst_ms": 5.0, "frames": 5, "dur_ms": 1400, "rss_kb": 1000, "first_ms": 6.0,
-             "missed": 0, "open": "first:6.0,worst:5.0@2,iv:17.0,missed:0", "close": None},
+             "missed": 0, "open": "first:6.0,worst:5.0@2,iv:17.0,missed:0", "close": None,
+             "iv_max_ms": 17.0, "defer_first": None},
         )
         self.assertEqual([s["dir"] for s in steps], ["push"] * 3 + ["pop"] * 3)
         self.assertEqual([s["depth"] for s in steps], [1, 2, 3, 2, 1, 0])
@@ -6286,7 +6324,8 @@ class FpsMock(unittest.TestCase):
         self.assertEqual(names, {"home-grid", "home-grid-deep", "home-hint", "library-shelves-deep",
                                  "hero-pong", "grid-pong", "home-idle", "item-menu", "library-scroll",
                                  "library-idle", "collection-page", "person-page", "search-type",
-                                 "show-detail"})
+                                 "show-detail", "home-hold", "collection-hold", "home-tap",
+                                 "collection-tap"})
         self.assertEqual(len(runnable) + len(skipped), len(self.scenes))
         for _, why in skipped:
             self.assertIn("real library content", why)
@@ -6306,6 +6345,64 @@ class FpsMock(unittest.TestCase):
                     self.assertIsInstance(s["mock"].get("rk"), int, s["name"])
                 self.assertNotIn("needs_shared_server", s, s["name"])
                 self.assertEqual(s.get("tier", "ui"), "ui", s["name"])
+
+    def test_the_press_scenes_drive_a_real_press_and_never_a_plain_ok(self):
+        # home-hold/collection-hold/home-tap/collection-tap (`plxnative-holdbench`): counted bench
+        # scenes graded off `bench: kind=hold` lines, mock-runnable, with the same trigger on
+        # a Home card and on the Collection page (a cards::Stack page, mock rk 50002).
+        for name, tap in (("home-hold", False), ("collection-hold", False),
+                          ("home-tap", True), ("collection-tap", True)):
+            s = self.scenes[name]
+            self.assertEqual(s["bench"], "hold", name)
+            self.assertEqual(s["route"], "home" if name.startswith("home") else "collection", name)
+            # limits measured on the television 2026-10-08 (fixed build); the unfixed 21 fps open
+            # (home-hold 525, collection-hold 498, home-tap 12 missed) must fail them
+            limits = {"home-hold": (110, 55, 525), "collection-hold": (60, 50, 498),
+                      "home-tap": (8, 40, 12), "collection-tap": (8, 40, None)}[name]
+            self.assertEqual(s["bench_missed_max"], limits[0], name)
+            self.assertEqual(s["bench_iv_max_ms"], limits[1], name)
+            if limits[2] is not None:
+                self.assertLess(s["bench_missed_max"], limits[2], name)
+            if not tap:
+                self.assertLess(s["bench_missed_max"], 30 * 16, name)
+            self.assertEqual(s.get("bench_drift_ms"), 4.0 if tap else None, name)
+            self.assertNotIn("PROVISIONAL", s["comment"], name)
+            self.assertIn("2026-10-08", s["comment"], name)
+            if not tap:
+                self.assertIn("#561", s["comment"], name)
+            value = s["triggers"]["plxnative-holdbench"]
+            self.assertEqual(value.endswith(",tap"), tap, name)
+            # the press itself is the bench's: no separate press/itemmenu trigger may ride along
+            self.assertNotIn("plxnative-press", s["triggers"], name)
+            self.assertNotIn("plxnative-itemmenu", s["triggers"], name)
+            # the bench ends on its own `done` line, with room to finish its cycles
+            n, period = int(value.split(",")[0]), (350 if tap else 1500)
+            self.assertGreater(s["run_secs"] - s["warmup_s"], n * 2 * period / 1000, name)
+        collection = self.mf.mock_scene(self.scenes["collection-hold"])
+        self.assertEqual(collection["rk"], 50002)
+        self.assertEqual(collection["triggers"]["plxnative-collection"], "$rk")
+        self.assertEqual(self.mf.mock_server_args(self.scenes["collection-hold"]), ["--movies", "240"])
+        self.assertIn("plxnative-grid", self.scenes["home-hold"]["triggers"])
+        with open(os.path.join(TESTS_DIR, "run.py")) as fh:
+            self.assertIn('"plxnative-holdbench"', fh.read(), "run.py clears the trigger between cases")
+
+    def test_a_hold_bench_cycle_that_pressed_nothing_or_opened_no_menu_fails_the_grade(self):
+        scene = {"bench": "hold", "bench_missed_max": 0}
+
+        def line(i, target, missed=0):
+            return (f"bench: kind=hold cycle={i}/2 target={target} worst_ms=18.0 frames=40 dur_ms=3000 "
+                    f"rss_kb=1000 first_ms=17.0 missed={missed} open=first:17.0,worst:18.0@3,iv:17.0,missed:0 "
+                    f"close=first:17.0,worst:18.0@3,iv:17.0,missed:0")
+        done = "bench: kind=hold done cycles=2"
+        ok, detail = run.grade_bench(scene, [line(1, "home"), line(2, "home"), done])
+        self.assertTrue(ok, detail)
+        ok, detail = run.grade_bench(scene, [line(1, "home"), line(2, "home-nomenu"), done])
+        self.assertFalse(ok)
+        self.assertIn("did not exercise the animation", detail)
+        ok, detail = run.grade_bench(scene, [line(1, "collection-nocard"), line(2, "collection"), done])
+        self.assertFalse(ok)
+        ok, detail = run.grade_bench(scene, [line(1, "home", 1), line(2, "home"), done])
+        self.assertFalse(ok, "a missed refresh in the press window fails the zero budget")
 
     def test_mock_server_args(self):
         self.assertEqual(self.mf.mock_server_args(self.scenes["home-grid"]), [])

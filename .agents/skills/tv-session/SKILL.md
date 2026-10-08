@@ -108,6 +108,10 @@ of printing a misleading `session up`.
 interactive gesture is a real ≥500 ms hold (`press::LONG_MS`), which no boot trigger can express,
 so `plxnative-itemmenu` snaps into the grid and holds the focused card for you. Driving it by hand
 instead means the FIFO's split halves — `okdown`, sleep past 500 ms, `okup` — never the `ok` tap.
+To measure the hold's own animation (the card's press-in, the capsule fill, the menu opening and
+closing) rather than the settled menu, use the counted `plxnative-holdbench` trigger or the fps scenes
+`home-hold` / `collection-hold` (`home-tap` / `collection-tap` for press-and-cancel): they send a real
+OK-down, never an OK while the menu is up, and dismiss with Back. `docs/agent-reference.md` has the wire format.
 
 `person` is the odd one: the actor page has **no boot trigger of its own** — it is *reached*
 from a detail page's cast row, so the rk you pass is the **movie's**, and `up` arms the three

@@ -776,6 +776,19 @@ impl Bridge {
         Some(f(home, &cx, focus))
     }
 
+    /// Is a MEMBER CARD focused on the mounted Collection page (not its header)? The press bench's
+    /// precondition on a `cards::Stack` page.
+    pub(crate) fn collection_card_focused(&self, d: &Dispatcher<AppHost>) -> bool {
+        let Some(entry) = d.nav.top_page() else { return false };
+        let Some(page) = entry.inst.as_ref().and_then(|i| i.screen.as_any())
+            .and_then(|s| s.downcast_ref::<plx_screens::collection::CollectionScreen>()) else { return false };
+        let focus = d.input.engine.current(InputOwner::Entry(entry.id));
+        let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
+            focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry.id) };
+        let cx = parts.cx::<AppHost>(self.views(), &self.measure);
+        page.focused_item::<AppHost>(focus, &cx).is_some()
+    }
+
     pub(crate) fn home_grid_focused(&self, d: &Dispatcher<AppHost>) -> bool {
         self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx).is_some()).unwrap_or(false)
     }
