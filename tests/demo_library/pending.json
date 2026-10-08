@@ -1,9 +1,6 @@
 {
- "comment": "What the completeness gate (`python3 tools/demo_library.py check --complete`) still finds missing, per item key (`slug` or `slug/season/episode`), by category. This list may only SHRINK: a content change that fills a gap deletes its entry here, and the check refuses an entry that is already complete as well as a gap that is not listed. Never add an entry to silence a failure; tests/test_demo_library.py pins the per-category counts (PENDING_CEILING) so growth cannot pass review unnoticed. `hero_art` is the geometric hero check (`python3 tools/demo_library.py hero-report` prints each title's verdict): a title the home hero can show needs `art.subject` = [x0, y0, x1, y1] in SOURCE pixels, read off the image by a person, and a `cover` backdrop whose mapped box clears the text zones; an entry goes when its subject is declared and passes, or when the title leaves the hero pool (the pinned hero, `hero_alternatives`, Continue Watching, Recently Added). The demo-video workflow (stage S6 of the plan; not in the tree yet) is to refuse to run while this list is non-empty.",
+ "comment": "What the completeness gate (`python3 tools/demo_library.py check --complete`) still finds missing, per item key (`slug` or `slug/season/episode`), by category. This list may only SHRINK: a content change that fills a gap deletes its entry here, and the check refuses an entry that is already complete as well as a gap that is not listed. Never add an entry to silence a failure; tests/test_demo_library.py pins the per-category counts (PENDING_CEILING) so growth cannot pass review unnoticed. `hero_art` is the geometric hero check (`python3 tools/demo_library.py hero-report` prints each title's verdict): a title the home hero can show needs `art.subject` = [x0, y0, x1, y1] in SOURCE pixels, read off the image by a person, and a `cover` backdrop whose mapped box clears the text zones; an entry goes when its subject is declared and passes, or when the title is declared `not_hero` in the catalog (allowed only for a title outside the app's hero pool: the pinned hero, `hero_alternatives` and the first `HERO_MAX` movies with art of Continue Watching then Recently Added). The demo-video workflow (stage S6 of the plan; not in the tree yet) is to refuse to run while this list is non-empty.",
  "pending": {
-  "spring": [
-   "hero_art"
-  ],
   "sintel": [
    "hero_art"
   ],
@@ -11,7 +8,6 @@
    "hero_art"
   ],
   "charge": [
-   "hero_art",
    "logo"
   ],
   "tears-of-steel": [
@@ -19,102 +15,71 @@
    "logo"
   ],
   "cosmos-laundromat": [
-   "hero_art",
    "logo"
   ],
   "big-buck-bunny": [
-   "hero_art",
    "logo"
   ],
   "elephants-dream": [
-   "hero_art",
-   "logo"
-  ],
-  "nosferatu": [
-   "hero_art",
    "logo"
   ],
   "metropolis": [
-   "backdrop",
    "logo"
   ],
   "night-of-the-living-dead": [
-   "backdrop",
    "logo"
   ],
   "the-general": [
-   "backdrop",
    "logo"
   ],
   "sherlock-jr": [
-   "backdrop",
    "logo"
   ],
   "his-girl-friday": [
-   "backdrop",
    "logo"
   ],
   "plan-9-from-outer-space": [
-   "backdrop",
    "logo"
   ],
   "the-kid": [
-   "backdrop",
    "logo"
   ],
   "safety-last": [
-   "backdrop",
    "logo"
   ],
   "the-cabinet-of-dr-caligari": [
-   "backdrop",
    "logo"
   ],
   "a-trip-to-the-moon": [
-   "backdrop",
    "logo"
   ],
   "wing-it": [
-   "hero_art",
-   "logo",
-   "poster"
+   "logo"
   ],
   "coffee-run": [
-   "hero_art",
    "logo"
   ],
   "hero": [
-   "hero_art",
-   "logo",
-   "poster"
+   "logo"
   ],
   "glass-half": [
-   "hero_art",
-   "logo",
-   "poster"
+   "logo"
   ],
   "the-daily-dweebs": [
-   "backdrop",
    "logo"
   ],
   "singularity": [
-   "hero_art",
-   "logo",
-   "poster"
+   "logo"
   ],
   "sita-sings-the-blues": [
-   "hero_art",
    "logo",
    "poster"
   ],
   "seder-masochism": [
-   "hero_art",
    "logo"
   ],
   "caminandes": [
-   "hero_art",
-   "logo",
-   "poster"
+   "logo"
   ],
   "sherlock-holmes": [
    "backdrop",
@@ -124,9 +89,6 @@
   "hubblecast": [
    "country",
    "creators",
-   "hero_art",
-   "logo",
-   "poster",
    "writers"
   ]
  }

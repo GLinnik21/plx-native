@@ -1203,6 +1203,9 @@ class CatalogLibrary(Library):
         cat = self.catalog
         if hero not in self.by_slug:
             raise ValueError(f"--hero {hero!r} is not in the catalog")
+        if any(t["id"] == hero.split("/")[0] and t.get("not_hero") for t in cat["movies"] + cat["shows"]):
+            # The head of Continue Watching is the home hero; the catalog declares this title never one.
+            raise ValueError(f"--hero {hero!r} is marked `not_hero` in the catalog")
         for i, slug in enumerate(cat["added_order"]):
             it = self.items[self.by_slug[slug]]
             added = self.now - 86_400 * (2 + 3 * i)

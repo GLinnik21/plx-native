@@ -8,12 +8,15 @@ resized and cropped from the sources below; no other change was made to them. A 
 logo (the title art over the home hero) is derived from that film's own poster, under the
 poster's licence: its title lettering is cut out onto a transparent ground and nothing is
 redrawn; where the table says so, lettering too dark to read over a backdrop is recoloured.
+Where the table says a logo is the film's own title card, it is that card (or a frame of the
+film) trimmed to its lettering, under its own licence.
 
 Written by `make screenshots` with the images; do not edit by hand.
 
 | Used as | Source | Licence | Author / attribution |
 | --- | --- | --- | --- |
 | A Trip to the Moon (poster) | [Voyage_dans_la_Lune_affiche.jpg](https://commons.wikimedia.org/wiki/File:Voyage_dans_la_Lune_affiche.jpg) | Public domain | Georges Melies |
+| A Trip to the Moon (backdrop) | [M%C3%A9li%C3%A8s_Trip_to_the_Moon_cannon_still.jpg](https://commons.wikimedia.org/wiki/File:M%C3%A9li%C3%A8s_Trip_to_the_Moon_cannon_still.jpg) | Public domain | Georges Méliès |
 | Big Buck Bunny (backdrop) | [Big.Buck.Bunny.-.Landscape.png](https://commons.wikimedia.org/wiki/File:Big.Buck.Bunny.-.Landscape.png) | CC BY 3.0 | Blender Foundation; (c) copyright Blender Foundation / www.bigbuckbunny.org |
 | Big Buck Bunny (poster) | [Big_buck_bunny_poster_big.jpg](https://commons.wikimedia.org/wiki/File:Big_buck_bunny_poster_big.jpg) | CC BY 3.0 | Blender Foundation; (c) copyright Blender Foundation / www.bigbuckbunny.org |
 | Caminandes (backdrop) | [2f897cfe4d6092c3ce77566de98019e1.jpg](https://studio.blender.org/projects/caminandes-3/) | CC BY 4.0 | Blender Studio; © Blender Foundation / studio.blender.org |
@@ -33,6 +36,7 @@ Written by `make screenshots` with the images; do not edit by hand.
 | Hero (backdrop) | [2ecb2976719298685517e7a559f7f770.png](https://studio.blender.org/projects/hero/) | CC BY 4.0 | Blender Studio; © Blender Foundation / studio.blender.org |
 | Hero (poster) | [Hero_-_screenshot-hero_red.png](https://commons.wikimedia.org/wiki/File:Hero_-_screenshot-hero_red.png) | CC BY 4.0 | Blender Foundation |
 | His Girl Friday (poster) | [His_Girl_Friday_%281940_poster%29.jpg](https://commons.wikimedia.org/wiki/File:His_Girl_Friday_(1940_poster).jpg) | Public domain | Columbia Pictures Corp |
+| His Girl Friday (backdrop) | [Frank_Orth_and_Cary_Grant_in_His_Girl_Friday.jpg](https://commons.wikimedia.org/wiki/File:Frank_Orth_and_Cary_Grant_in_His_Girl_Friday.jpg) | Public domain | Columbia Pictures |
 | Hubblecast (backdrop) | [heic1509a.jpg](https://esahubble.org/images/heic1509a/) | CC BY 4.0 | NASA, ESA, the Hubble Heritage Team (STScI/AURA), A. Nota (ESA/STScI), and the Westerlund 2 Science Team |
 | Hubblecast (poster) | [heic1608a.jpg](https://esahubble.org/images/heic1608a/) | CC BY 4.0 | NASA, ESA, Hubble Heritage Team |
 | Hubblecast: Taking the fingerprints of exoplanets (episode still) | [hubblecast102a.jpg](https://esahubble.org/videos/hubblecast102a/) | CC BY 4.0 | ESA/Hubble |
@@ -74,11 +78,15 @@ Written by `make screenshots` with the images; do not edit by hand.
 | Hubblecast: Hubble’s biggest discoveries — part 1 (episode still) | [hubblecast98a.jpg](https://esahubble.org/videos/hubblecast98a/) | CC BY 4.0 | ESA/Hubble |
 | Hubblecast: Hubble’s biggest discoveries — part 2 (episode still) | [hubblecast99a.jpg](https://esahubble.org/videos/hubblecast99a/) | CC BY 4.0 | ESA/Hubble |
 | Metropolis (poster) | [1927_Boris_Bilinski_%281900-1948%29_Plakat_f%C3%BCr_den_Film_Metropolis%2C_Staatliche_Museen_zu_Berlin.jpg](https://commons.wikimedia.org/wiki/File:1927_Boris_Bilinski_(1900-1948)_Plakat_f%C3%BCr_den_Film_Metropolis,_Staatliche_Museen_zu_Berlin.jpg) | Public domain | Boris Konstantinovitch Bilinsky (1900-1948) |
+| Metropolis (backdrop) | [Maschinenmensch_in_a_scene_from_Metropolis.jpg](https://commons.wikimedia.org/wiki/File:Maschinenmensch_in_a_scene_from_Metropolis.jpg) | Public domain | Horst von Harbou |
+| Night of the Living Dead (backdrop) | [1280px-seek%3D1677-Night_of_the_Living_Dead_%281968%29.webm.jpg](https://commons.wikimedia.org/wiki/File:Night_of_the_Living_Dead_(1968).webm) | Public domain | George A. Romero |
 | Night of the Living Dead (poster) | [Night_Of_The_Living_Dead_%281968%29_-_Poster.jpg](https://commons.wikimedia.org/wiki/File:Night_Of_The_Living_Dead_(1968)_-_Poster.jpg) | Public domain | Unknown (Image Ten / Continental) |
 | Nosferatu (backdrop) | [Nosferatu_Doorway_Frame.webp](https://commons.wikimedia.org/wiki/File:Nosferatu_Doorway_Frame.webp) | Public domain | Prana Film |
 | Nosferatu (poster) | [Max_Schreck_as_Count_Orlok_in_Nosferatu_%E2%80%93_Eine_Symphonie_des_Grauens_%281922%29.jpg](https://commons.wikimedia.org/wiki/File:Max_Schreck_as_Count_Orlok_in_Nosferatu_%E2%80%93_Eine_Symphonie_des_Grauens_(1922).jpg) | Public domain | F. W. Murnau (screenshot) |
 | Plan 9 from Outer Space (poster) | [Plan_9_from_Outer_Space%2C_poster%2C_gtfy.07034.jpg](https://commons.wikimedia.org/wiki/File:Plan_9_from_Outer_Space,_poster,_gtfy.07034.jpg) | Public domain | Reynolds Pictures, Inc. |
+| Plan 9 from Outer Space (backdrop) | [Plan_9_from_Outer_Space_still_1.jpg](https://commons.wikimedia.org/wiki/File:Plan_9_from_Outer_Space_still_1.jpg) | Public domain | Ed Wood Prod. / Valiant Pictures |
 | Safety Last! (poster) | [Safety_last_poster.jpg](https://commons.wikimedia.org/wiki/File:Safety_last_poster.jpg) | Public domain | Unknown |
+| Safety Last! (backdrop) | [Safety_Last_%281923%29_sceenshot.jpg](https://commons.wikimedia.org/wiki/File:Safety_Last_(1923)_sceenshot.jpg) | Public domain | Hal Roach Studios |
 | Seder-Masochism (poster) | [SederMasochismPoster.jpg](https://commons.wikimedia.org/wiki/File:SederMasochismPoster.jpg) | CC0 1.0 | Nina Paley |
 | Seder-Masochism (backdrop) | [Moses-Splits-Sea_by_Nina_Paley.jpg](https://commons.wikimedia.org/wiki/File:Moses-Splits-Sea_by_Nina_Paley.jpg) | CC0 1.0 | Nina Paley |
 | Sherlock Holmes (poster), Sherlock Holmes: The Case of the Cunningham Heritage (episode still) | [Meg_Lemonnier_in_Sherlock_Holmes_%28The_Case_of_the_Cunningham_Heritage%29.jpg](https://commons.wikimedia.org/wiki/File:Meg_Lemonnier_in_Sherlock_Holmes_(The_Case_of_the_Cunningham_Heritage).jpg) | Public domain | Sheldon Reynolds Productions |
@@ -86,6 +94,7 @@ Written by `make screenshots` with the images; do not edit by hand.
 | Sherlock Holmes: The Case of Lady Beryl (episode still) | [Peter_Copley_in_Sherlock_Holmes_%28The_Case_of_Lady_Beryl%29.jpg](https://commons.wikimedia.org/wiki/File:Peter_Copley_in_Sherlock_Holmes_(The_Case_of_Lady_Beryl).jpg) | Public domain | Sheldon Reynolds Productions |
 | Sherlock Holmes: The Belligerent Ghost (episode still) | [Gertrude_Flynn_in_Sherlock_Holmes_%28The_Belligerent_Ghost%29.jpg](https://commons.wikimedia.org/wiki/File:Gertrude_Flynn_in_Sherlock_Holmes_(The_Belligerent_Ghost).jpg) | Public domain | Sheldon Reynolds Productions |
 | Sherlock Holmes: The Case of the Shy Ballerina (episode still) | [Archie_Duncan_in_Sherlock_Holmes_%28The_Case_of_the_Shy_Ballerina%29.jpg](https://commons.wikimedia.org/wiki/File:Archie_Duncan_in_Sherlock_Holmes_(The_Case_of_the_Shy_Ballerina).jpg) | Public domain | Sheldon Reynolds Productions |
+| Sherlock Jr. (backdrop) | [1280px-seek%3D1984-Sherlock_Jr._%281924%29.webm.jpg](https://commons.wikimedia.org/wiki/File:Sherlock_Jr._(1924).webm) | Public domain | Buster Keaton |
 | Sherlock Jr. (poster) | [Sherlock_jr_poster.jpg](https://commons.wikimedia.org/wiki/File:Sherlock_jr_poster.jpg) | Public domain | Unknown |
 | Singularity (poster), Singularity (backdrop) | [77d22fd704cf7ee46e009032d2d906a6.webp](https://studio.blender.org/projects/singularity/) | CC BY 4.0 | Blender Studio; © Blender Foundation / studio.blender.org |
 | Sintel (backdrop) | [c091f1c8d6aacd18e0285989b69587d3.png](https://studio.blender.org/projects/sintel/) | CC BY 4.0 | Blender Studio; © Blender Foundation / studio.blender.org |
@@ -99,8 +108,12 @@ Written by `make screenshots` with the images; do not edit by hand.
 | Tears of Steel (backdrop) | [Tears_of_Steel_frame_03_3c.jpg](https://commons.wikimedia.org/wiki/File:Tears_of_Steel_frame_03_3c.jpg) | CC BY 3.0 | Blender Foundation / Project Mango |
 | Tears of Steel (poster) | [Tos-poster.png](https://commons.wikimedia.org/wiki/File:Tos-poster.png) | CC BY 3.0 | Blender Foundation / Project Mango |
 | The Cabinet of Dr. Caligari (poster) | [Das_Kabinett_des_Doktor_Caligari_1920_Poster.jpg](https://commons.wikimedia.org/wiki/File:Das_Kabinett_des_Doktor_Caligari_1920_Poster.jpg) | Public domain | Rudolf Ledl and Fritz Bernhard |
+| The Cabinet of Dr. Caligari (backdrop) | [The_Cabinet_of_Dr_Caligari_Werner_Krauss.jpg](https://commons.wikimedia.org/wiki/File:The_Cabinet_of_Dr_Caligari_Werner_Krauss.jpg) | Public domain | Robert Wiene |
+| The Daily Dweebs (backdrop) | [71139b6aa0eee73518288c3a8a756a90.png](https://studio.blender.org/projects/dailydweebs/) | CC BY 4.0 | Blender Studio; © Blender Foundation / studio.blender.org |
 | The Daily Dweebs (poster) | [The_Daily_Dweebs-movie_poster.png](https://commons.wikimedia.org/wiki/File:The_Daily_Dweebs-movie_poster.png) | CC BY 4.0 | Hjalti Hjalmarsson (Blender Cloud) |
+| The General (backdrop) | [1280px-seek%3D2465-The_General_%281926%29.webm.jpg](https://commons.wikimedia.org/wiki/File:The_General_(1926).webm) | Public domain | Clyde Bruckman, Buster Keaton |
 | The General (poster) | [The_General_%281926%29_-_Movie_Poster.png](https://commons.wikimedia.org/wiki/File:The_General_(1926)_-_Movie_Poster.png) | Public domain | United Artists Corporation |
+| The Kid (backdrop) | [1280px-seek%3D2307-The_Kid_%281921%29.webm.jpg](https://commons.wikimedia.org/wiki/File:The_Kid_(1921).webm) | Public domain | Charlie Chaplin |
 | The Kid (poster) | [The_Kid_%281921%29_poster.jpg](https://commons.wikimedia.org/wiki/File:The_Kid_(1921)_poster.jpg) | Public domain | First National |
 | Wing It! (poster), Wing It! (backdrop) | [1c60961bd2b161e546343de8022b05c9.jpg](https://studio.blender.org/projects/wing-it/) | CC BY 4.0 | Blender Studio; © Blender Foundation / studio.blender.org |
 
