@@ -408,7 +408,8 @@ What is and is not shown. Determinism is shown for the scenes the hold-injection
 (Home held, `right`, `down`, `ok` into Detail, a four second hold, `back`; and Detail booted at a
 rating key). A modal or popover fails the run closed (its dim
 field is still sampled on a cadence). `Bridge::open_claims` covers Hubs and Browse discovery; the
-rest of the argument for session drains and unclaimed stores is in `framedump.rs`'s "Claims". No CI
-job builds `site-video-sim` yet, so Linux is unverified, and a run on a Mac is a non-canonical
-preview (the Linux llvmpipe render is meant to be canonical). Not a screenshot tool: it never opens the TV and never replaces
+rest of the argument for session drains and unclaimed stores is in `framedump.rs`'s "Claims". The
+canonical render is `.github/workflows/site-video.yml` (`gh workflow run site-video.yml`; manual, Ubuntu
+24.04, Xvfb + Mesa llvmpipe, rendered twice and hold-gated, uploads one artifact and publishes nothing);
+a run on a Mac is a non-canonical preview. Not a screenshot tool: it never opens the TV and never replaces
 `make screenshots`.

@@ -77,9 +77,9 @@
 //! hold and `back` (the pop), run twice, under CPU load and with seeded extra holds (columns 1-4 of
 //! `frames.tsv` and the master identical), and a Detail page booted at a rating key; a scene with a modal
 //! or popover is refused (its dim field is still cadenced: see `after_draw`). `Bridge::open_claims`
-//! covers Hubs and Browse discovery; for the stores and the session adapter see "Claims" below. No CI
-//! job builds `site-video-sim` yet, so Linux is unverified, and a render from a Mac is a
-//! non-canonical preview.
+//! covers Hubs and Browse discovery; for the stores and the session adapter see "Claims" below. The Linux
+//! llvmpipe render (`.github/workflows/site-video.yml`: run twice and hold-gated per dispatch) is the canonical one; a
+//! render from a Mac is a non-canonical preview.
 //!
 //! **Claims.** The `Fetch` stores wait inline (`take_owed`), so the frame they land on is a function
 //! of the frame that requested them and they need no hold. Session-adapter drains and stores outside

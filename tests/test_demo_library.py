@@ -1019,6 +1019,47 @@ class OwnerDecisions(unittest.TestCase):
             self.assertIn("not a frame", self.assets[key]["notes"], key)
 
 
+class FetchRetry(unittest.TestCase):
+    """`open_url`: a cloud runner is rate-limited by wikimedia (HTTP 429), so a download backs off and
+    retries; anything else that is a client error fails at once."""
+
+    REQ = tool.urllib.request.Request("https://x.invalid/a.jpg")
+
+    def _err(self, code, retry_after=None):
+        import email.message
+        h = email.message.Message()
+        if retry_after is not None:
+            h["Retry-After"] = str(retry_after)
+        return tool.urllib.error.HTTPError("https://x.invalid/a.jpg", code, "no", h, None)
+
+    def _opener(self, outcomes):
+        queue = list(outcomes)
+
+        def opener(req, timeout):
+            out = queue.pop(0)
+            if isinstance(out, Exception):
+                raise out
+            return out
+        return opener
+
+    def test_a_429_is_retried_after_the_retry_after_it_names_then_succeeds(self):
+        waits = []
+        got = tool.open_url(self.REQ, self._opener([self._err(429, 7), self._err(503), "body"]), waits.append)
+        self.assertEqual((got, waits), ("body", [7, 10]))
+
+    def test_the_wait_is_capped_and_the_attempts_are_bounded(self):
+        waits = []
+        with self.assertRaises(tool.urllib.error.HTTPError):
+            tool.open_url(self.REQ, self._opener([self._err(429, 99999)] * tool.ATTEMPTS), waits.append)
+        self.assertEqual(waits, [tool.RETRY_AFTER_CAP] * (tool.ATTEMPTS - 1))
+
+    def test_a_404_is_not_retried(self):
+        waits = []
+        with self.assertRaises(tool.urllib.error.HTTPError):
+            tool.open_url(self.REQ, self._opener([self._err(404)]), waits.append)
+        self.assertEqual(waits, [])
+
+
 @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow absent (`python3 -m pip install Pillow`)")
 class AssetDimensions(unittest.TestCase):
     """`fetch` checks each source's declared width and height against the file itself."""

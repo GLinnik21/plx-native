@@ -2137,8 +2137,8 @@ sim-linux: $(LIBASS_HOST_STAGED)
 # `devtools` draws a frame counter into the picture, and `placeholder-sentinel` because the second
 # oracle is the sentinel colour. Like `sim-linux` it needs only libass: the storyboard plays no
 # video, so no host FFmpeg (whose staged names are `.dylib`s, which is what keeps
-# `screenshots-sim` macOS-only). It is meant to build on macOS and on Linux, but no CI job builds it yet,
-# so only macOS is verified.
+# `screenshots-sim` macOS-only). It builds on macOS (previews) and on Linux, where
+# `.github/workflows/site-video.yml` builds and runs it: that render is the canonical one.
 SITE_VIDEO_TDIR ?= $(SIM_TDIR)-video
 SITE_VIDEO_BIN   = $(SITE_VIDEO_TDIR)/release/plxnative-sim
 site-video-sim: $(LIBASS_HOST_STAGED)

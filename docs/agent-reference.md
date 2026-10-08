@@ -408,6 +408,24 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   the rule and the merge, `ci/test_build_bench.py` the restore and the failure reports, and
   `ci/test_ci_workflows.py` the workflow's triggers (no pull-request trigger), guards, permissions,
   legs and timeouts.
+- **The site demo video** (`.github/workflows/site-video.yml`). Manual only: `gh workflow run
+  site-video.yml [-f frames=N]`; no PR or push starts it, and it publishes nothing (`contents:
+  read`, one artifact kept 30 days). It is the CANONICAL render: `ubuntu-24.04` (pinned, never
+  `-latest`), the same libass caches and `./.github/actions/apt-install` action as
+  `simulators.yml`'s Linux job, with that job's SDL/GL/Xvfb package list plus `mesa-utils` (`glxinfo`,
+  which the manifest reads) and, in a second step, the apt `ffmpeg` and `python3-pil` that derive the demo art. It renders under Xvfb 1920x1080 on Mesa llvmpipe
+  (`LIBGL_ALWAYS_SOFTWARE=1`, `GALLIUM_DRIVER=llvmpipe`, `LP_NATIVE_VECTOR_WIDTH=256`, `LC_ALL=C`, `TZ=UTC`). It builds `make
+  site-video-sim`, fetches and derives the demo library (`tools/demo_library.py fetch` + `derive`,
+  the sources cached on the hash of `assets.json`, `derive` run cold every time; `fetch` backs
+  off on a wikimedia 429), fetches the pinned tool ffmpeg, runs `site_video.py render` TWICE in separate
+  processes, fails unless the two `frames.tsv` agree in columns 1-4 AND the two masters decode to the
+  same frames (a `framemd5` list; container byte equality is reported beside it), runs
+  `site_video.py hold-gate` (the scene with and without seeded extra held repeats, two more renders),
+  rescans for the sentinel, then `encode`, `contact-sheet`, `gates` and `manifest`. The manifest's `environment`
+  records the runner image version, OS, CPU model, Mesa and LLVM versions (`glxinfo -B`), the
+  packages behind them and the variables above, because the video is defined as what this pinned
+  stack renders; a new image is a new fingerprint, not a failure. `adopt` takes the artifact. It
+  reads no private file and holds no secret.
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
 - **`make SYMBOLS=1 symbols`** — build with DWARF and split it into **`pkg/plxnative.debug`**, the

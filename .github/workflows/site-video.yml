@@ -1,0 +1,274 @@
+name: Site video
+
+# The site's demo video, rendered where it is canonical: the headless Linux simulator on Mesa's
+# llvmpipe software GL. `tools/site_video.py adopt` accepts only an artifact of this workflow
+# (`platform: linux-ci` in its manifest), so this is the only producer of `site/media/feel-*`; a
+# render on a developer's Mac is a preview. See docs/agent-reference.md ("The site demo video") and
+# the ui-sim skill ("The frame dump").
+#
+# MANUAL ON PURPOSE: `gh workflow run site-video.yml` (optionally `-f frames=N`). A render costs
+# runner minutes that no ordinary PR should pay, and nothing here is a gate on code; the run-twice
+# check below proves THIS render deterministic, it does not guard main.
+#
+# PUBLISHES NOTHING. No commit, no release, no site write, no secret: `contents: read`, one artifact
+# that the owner downloads, watches, and adopts locally (`python3 tools/site_video.py adopt <zip>`,
+# which becomes a normal PR).
+#
+# WHAT "CANONICAL" MEANS HERE: the video is what this pinned software stack renders. The image is
+# pinned (`ubuntu-24.04`, never `-latest`), `LP_NATIVE_VECTOR_WIDTH` fixes llvmpipe's vector width so
+# it does not follow the host CPU, and the manifest records the runner image version, the CPU model,
+# Mesa and LLVM versions and the packages behind them (`site_video.py manifest`, "environment"). A
+# new image is a new fingerprint, not a failure.
+
+on:
+  workflow_dispatch:
+    inputs:
+      frames:
+        description: Written frames per render (60 fps; 180 is three seconds)
+        required: false
+        default: "180"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # `bash -eo pipefail`: the sentinel scan reads an ffmpeg pipe, and a dead ffmpeg must fail the step.
+    shell: bash
+
+concurrency:
+  group: site-video-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Locale and time zone pinned so nothing in the toolchain (sort order, date formatting, libc
+  # collation) can differ between two runs.
+  LC_ALL: C
+  TZ: UTC
+  # Mesa software GL, llvmpipe, 256-bit vectors whatever the CPU offers (AVX2 vs AVX-512 hosts).
+  LIBGL_ALWAYS_SOFTWARE: "1"
+  GALLIUM_DRIVER: llvmpipe
+  LP_NATIVE_VECTOR_WIDTH: "256"
+  SDL_VIDEODRIVER: x11
+  # The demo image cache (sources + derived art), inside the workspace so `actions/cache` can name it.
+  PLXNATIVE_DEMO_CACHE: ${{ github.workspace }}/.demo-cache
+
+jobs:
+  render:
+    name: Render the demo video (Linux, llvmpipe)
+    runs-on: ubuntu-24.04
+    # Measured: about 9 minutes cold (build, fetch, two renders, encodes); the maximum plus margin,
+    # the convention simulators.yml spells out.
+    timeout-minutes: 25
+    env:
+      FRAMES: ${{ inputs.frames || '180' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install SDL/OpenGL and the virtual display
+        # The same packages, the same bounded apt path as simulators.yml's Linux job (plus glxinfo,
+        # which the manifest reads the renderer from).
+        timeout-minutes: 15
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev libgl1-mesa-dri xvfb xauth cmake pkg-config mesa-utils
+          recommends: "true"
+      - name: Install ffmpeg and Pillow (the library's derive step, the mock's ffprobe, the contact sheet)
+        # Not the encoder: the encodes use the pinned static GPL build `site_video.py ffmpeg-fetch`
+        # downloads. This apt ffmpeg only derives the demo art and probes the mock's one media file.
+        timeout-minutes: 15
+        uses: ./.github/actions/apt-install
+        with:
+          packages: ffmpeg python3-pil
+
+      - id: toolchain
+        name: Identify the host toolchain
+        run: echo "id=$(./ci/host-toolchain-id.sh)" >> "$GITHUB_OUTPUT"
+      - name: Cache the host libass stack
+        # Same entry as simulators.yml's Linux job: `make site-video-sim` needs only libass, staged
+        # by the same recipe, so a hit there is a hit here (the key names every input of the recipe).
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/libass-prefix-host
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'src/ass.c', 'src/ass_composite.h', 'include/ass.h') }}
+      - name: Cache the libass source tarballs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/libass-sources
+          key: host-libass-sources-${{ hashFiles('ci/libass-dependencies.json') }}
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          # `make site-video-sim`'s own target dir (`SITE_VIDEO_TDIR`, which `site_video.py` also expects).
+          workspaces: rust-modules -> target-sim-video
+          key: site-video
+      - name: Build the frame-dump simulator
+        run: make site-video-sim
+
+      - name: Cache the demo library's source images
+        # Pinned downloads (tests/demo_library/assets.json carries every sha256): one key per manifest.
+        # Only the sources are cached.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.PLXNATIVE_DEMO_CACHE }}/src
+          key: demo-src-${{ hashFiles('tests/demo_library/assets.json') }}
+      - name: Fetch and derive the demo library
+        # `fetch` fails closed on any sha256 that differs from the pin. `derive` always runs, cold,
+        # after the source cache is restored: the derived art is recipe-hashed and cheap, so it is
+        # never a cache of its own and never stale against the pinned apt ffmpeg. The mock catalog
+        # serves exactly these files.
+        timeout-minutes: 20
+        run: |
+          python3 tools/demo_library.py fetch
+          python3 tools/demo_library.py derive
+      - name: Fetch the pinned tool ffmpeg
+        # A static GPL build fetched by URL and checked against a pinned sha256 (fail closed); the
+        # run asserts it lists libsvtav1 and libx264. A build tool, never shipped in the app.
+        timeout-minutes: 10
+        run: |
+          ffmpeg="$(python3 tools/site_video.py ffmpeg-fetch)"
+          echo "FFMPEG=$ffmpeg" >> "$GITHUB_ENV"
+          "$ffmpeg" -hide_banner -version > "$RUNNER_TEMP/ffmpeg-version.txt"
+          head -n 1 "$RUNNER_TEMP/ffmpeg-version.txt"
+
+      - name: Render, first process
+        # The mock PMS runs inside `render` (the demo library catalog on a free port); the simulator
+        # draws 1920x1080 at virtual time into the sentinel scan and the FFV1 master.
+        timeout-minutes: 25
+        run: |
+          start=$(date +%s)
+          xvfb-run -a -s '-screen 0 1920x1080x24' \
+            python3 tools/site_video.py render --out out/render-a --frames "$FRAMES"
+          echo "RENDER_A_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+      - name: Render, second process
+        timeout-minutes: 25
+        run: |
+          start=$(date +%s)
+          xvfb-run -a -s '-screen 0 1920x1080x24' \
+            python3 tools/site_video.py render --out out/render-b --frames "$FRAMES"
+          echo "RENDER_B_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      - name: Two renders must agree
+        # The tsv's columns 1-4 (index, time, XXH3 of the RGB24 frame, placeholder debt) must be
+        # identical, and the two masters must DECODE to identical frames: the per-frame hash list is
+        # compared, not the container bytes (which are reported, because byte equality is the
+        # stronger fact when it holds).
+        run: |
+          for r in a b; do
+            "$FFMPEG" -hide_banner -nostdin -v error -i "out/render-$r/master.mkv" -map 0:v:0 \
+              -f framemd5 "out/render-$r/master.framemd5"
+          done
+          verdict=""
+          if cmp -s out/render-a/master.framemd5 out/render-b/master.framemd5; then
+            decoded="identical ($(grep -vc '^#' out/render-a/master.framemd5) frames)"
+          else
+            decoded="DIFFERENT"; verdict=fail
+            diff out/render-a/master.framemd5 out/render-b/master.framemd5 | head -n 20 || true
+          fi
+          if diff <(cut -f1-4 out/render-a/frames.tsv) <(cut -f1-4 out/render-b/frames.tsv) > out/tsv.diff; then
+            tsv="identical"
+          else
+            tsv="DIFFERENT"; verdict=fail
+            head -n 20 out/tsv.diff
+          fi
+          if cmp -s out/render-a/master.mkv out/render-b/master.mkv; then bytes="identical"; else bytes="differ"; fi
+          {
+            echo "### Run twice"
+            echo
+            echo "| check | result |"
+            echo "|---|---|"
+            echo "| frames.tsv columns 1-4 | $tsv |"
+            echo "| decoded master frames (framemd5) | $decoded |"
+            echo "| master container bytes | $bytes |"
+            echo "| render wall time, first / second | ${RENDER_A_SECONDS}s / ${RENDER_B_SECONDS}s |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          test -z "$verdict"
+
+      - name: Hold-injection gate
+        # The stronger determinism proof (`framedump.rs`, "Why a hold cannot change a written frame"):
+        # the scene rendered with no extra held repeats and with seeded extra ones on every frame must
+        # write the same frames (frames.tsv columns 1-4). Two more renders, into out/hold-gate/.
+        timeout-minutes: 25
+        run: |
+          start=$(date +%s)
+          xvfb-run -a -s '-screen 0 1920x1080x24' \
+            python3 tools/site_video.py hold-gate --out out/hold-gate --frames "$FRAMES" | tee out/hold-gate.txt
+          {
+            echo "### Hold-injection gate"
+            echo
+            echo '```'
+            cat out/hold-gate.txt
+            echo '```'
+            echo "wall time, both renders: $(( $(date +%s) - start ))s"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Scan the second master for the placeholder sentinel
+        # `render` already scans every frame it pipes; this rescans what the second master DECODES to,
+        # and `gates` below rescans the first.
+        run: |
+          "$FFMPEG" -hide_banner -nostdin -v error -i out/render-b/master.mkv -f rawvideo -pix_fmt rgb24 - \
+            | python3 tools/site_video.py scan-sentinel --size 1920x1080
+
+      - name: Encode the deliverables
+        timeout-minutes: 30
+        run: |
+          python3 tools/site_video.py encode out/render-a/master.mkv out/render-a/frames.tsv \
+            --out out/deliver --render out/render-a/render.json
+      - name: Contact sheet
+        run: python3 tools/site_video.py contact-sheet out/render-a/master.mkv --out out/deliver/contact-sheet.jpg
+      - name: Gather the audit trail
+        # Everything in the deliver directory but the six media files is listed (and hashed) in the
+        # manifest as an artifact, so this is the last moment to add to it.
+        run: |
+          cp out/render-a/master.framemd5 out/deliver/master.framemd5
+          cp out/render-a/dump.json out/deliver/dump-a.json
+          cp out/render-b/dump.json out/deliver/dump-b.json
+          # The derived art the render read: names are recipe-hashed, so this list pins its bytes.
+          (cd "$PLXNATIVE_DEMO_CACHE/derived" && find . -type f -name '*.jpg' -o -type f -name '*.png' | LC_ALL=C sort \
+            | xargs sha256sum) > out/deliver/derived.sha256
+      - name: Quality gates
+        timeout-minutes: 30
+        run: |
+          python3 tools/site_video.py gates out/deliver --master out/render-a/master.mkv \
+            --frames-b out/render-b/frames.tsv | tee out/gates.txt
+          { echo '### Gates'; echo; echo '```'; cat out/gates.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Manifest
+        # Under the virtual display so `glxinfo` can name the renderer and the Mesa and LLVM versions.
+        run: |
+          xvfb-run -a -s '-screen 0 1920x1080x24' python3 tools/site_video.py manifest out/deliver
+          python3 tools/site_video.py verify out/deliver
+          {
+            echo '### Render environment'
+            echo
+            echo '```'
+            python3 -c "import json; e = json.load(open('out/deliver/feel.manifest.json'))['environment']; print(json.dumps({k: e[k] for k in ('runner_image', 'os', 'cpu', 'gl', 'env')}, indent=1))"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the deliverables
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: site-video-${{ github.sha }}
+          path: out/deliver/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload the evidence of a failed run
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: site-video-failure-${{ github.sha }}
+          path: |
+            out/render-a/frames.tsv
+            out/render-a/dump.json
+            out/render-b/frames.tsv
+            out/render-b/dump.json
+            out/render-a/master.framemd5
+            out/render-b/master.framemd5
+            out/tsv.diff
+            out/hold-gate.txt
+            out/hold-gate/*/frames.tsv
+            out/hold-gate/*/dump.json
+            out/deliver/gates.json
+          if-no-files-found: ignore
+          retention-days: 7
