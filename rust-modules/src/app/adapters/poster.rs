@@ -1392,7 +1392,8 @@ pub(crate) fn drain_decoded() {
 
 /// The GL half behind the cache, on the main thread: `img::img_upload_rgba` (a synchronous
 /// glTexImage2D, counted for the frame-drop detector), `gfx::warm_tex` (resident NOW rather than
-/// on the next draw that samples it — see that fn for the 116 ms frame it moves out of the draw)
+/// on the next draw that samples it, drawn into an offscreen target so it never takes the
+/// back-buffer wait — see that fn for the 116 ms frame it moves out of the draw)
 /// and `gfx::delete_tex`.
 pub(crate) struct GfxUploader;
 
