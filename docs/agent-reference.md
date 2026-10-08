@@ -466,12 +466,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   (`home: hero page slot N rk=R`, one line per page turn, plus the pinned page), is in the
   hero-report pass set and not `not_in_video`; `render.json` records them under `hero_pool`).
   A page push or pop dips through about three flat frames of the backdrop between the outgoing fade
-  and the incoming one: that is the app's own page transition, not a hold. The AV1 encodes use CRF 28
-  (30 left the 720p file's cross-fade frames below the 0.97 SSIM floor); the 720p one also keeps a
-  keyframe every 4 s instead of 2 s (`AV1_720_GOP`), because at 2 s the film's keyframes put it
-  at 1.41x of today's file (limit 1.25x) and a coarser CRF that fixed the size broke the VMAF floor,
-  and uses CRF 25 (`AV1_720_CRF`: the back-from-the-library cross-fade read SSIM 0.9652 at 28; 25 is
-  0.9709 at 1.15x, and 24 is 1.26x). The SSIM and VMAF gates pair frames by index in ONE time base
+  and the incoming one: that is the app's own page transition, not a hold. The AV1 encodes use CRF 22 with a keyframe every 8 s (`AV1_CODEC`; the 720p one every 12 s,
+  `AV1_720_GOP`, to stay at 1.15x of today's file against the 1.25x limit). They were re-tuned for HEADROOM
+  after the first Linux render read min VMAF 79.69 against the 80.0 floor on the 1080p one (macOS 80.10, at CRF 28 / 2 s; the 720p one, at CRF 25 / 4 s, read SSIM min 0.9709
+  against 0.97): now VMAF min 84.5 and 85.3, SSIM min 0.9796
+  and 0.9746. The floors did not move; a lower CRF is paid for by the longer GOP, never by a looser gate. The SSIM and VMAF gates pair frames by index in ONE time base
   (`BY_INDEX`, `settb=1/60,setpts=N`): pairing in each file's own time base rounded two frames of
   this film onto their neighbours and read them as SSIM 0.66 and VMAF 0.
   A page pushed in a dump does not hold its captured image while the destination's layout moves

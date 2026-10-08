@@ -220,3 +220,10 @@ python3 tests/test_site_video.py
 # the test file itself fails if the gate line below is dropped from this file.
 python3 ci/test_check_placeholders.py
 python3 ci/check-placeholders.py
+# The frame-dump switch gate (rust-modules/gfx/src/dump.rs, "The admission rule"): only the files in
+# ci/allow/dump.txt may name `plx_gfx::dump::armed` / `held_repeat` or arm it, because every branch on
+# it is product code the television does not run. Pure grep over comment- and string-blanked source,
+# no cargo; the self-tests run on synthetic trees in a private temp dir (and, like the gate above,
+# fail if the gate line below is dropped from this file).
+python3 ci/test_check_dump_consumers.py
+python3 ci/check-dump-consumers.py
