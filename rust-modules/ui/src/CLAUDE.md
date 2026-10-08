@@ -503,12 +503,14 @@ pixels miss a colour nobody overrode), which is why both exist.
 **The count is zero or non-zero, never "how many"**: the page closure runs once per walk (discovery,
 each blur source job, the visible pass) and each walk ticks. **A page shown as a held image** (a
 `PageDip` push's IN half and its quiescence hold) draws nothing, so its capture's placeholders are
-recorded (`placeholder::since`) and re-noted on every frame the image is painted; a held image is
-still debt for the pixel oracle (`Dispatcher::held_page_image`).
+recorded (`placeholder::since`) and re-noted on every frame the image is painted; the pixel oracle
+cannot see a placeholder inside a blended image, so the counter alone vouches for those frames
+(`Dispatcher::held_page_image`).
 
 **The demo-video driver's contract** (full text: `placeholder.rs` module docs, "What the dump driver
 (S5b) must do"): `reset` before the frame's first walk and `take` after the last, on the UI thread;
-force a live draw on every written frame; a held page image is debt; read the count as zero or
+force a live draw on every written frame; a held page image is not a hold reason, only its captured
+placeholders are; read the count as zero or
 non-zero only; wait out reveal springs, `Xfade` In ramps and the dip alpha after arrival; cover
 late-arriving sections (Home shelves, Detail's related/cast/extras/ratings, Library shelves, an
 `Xfade` Hold) with the landing predicate, since neither oracle sees an absent section; fail fast on

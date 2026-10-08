@@ -314,6 +314,43 @@ class RenderLauncher(unittest.TestCase):
             self.assertIn(want, joined)
         self.assertEqual(argv[-1], "m.mkv")
 
+    def test_the_master_is_muxed_bitexact_so_identical_frames_make_an_identical_file(self):
+        argv = sv.ffv1_argv("/x/ffmpeg", "m.mkv")
+        joined = " ".join(argv)
+        self.assertIn("-fflags +bitexact", joined)
+        self.assertIn("-flags:v +bitexact", joined)
+        self.assertLess(argv.index("-fflags"), len(argv) - 1, "an OUTPUT option: after -i, before the file")
+        self.assertGreater(argv.index("-fflags"), argv.index("-i"))
+
+    def test_the_locale_and_time_zone_are_pinned_whatever_the_host_has(self):
+        env = sv.sim_env("/rt", "/out", "/rt/fifo", 1, 0, False, 1,
+                         base={"LANG": "be_BY.UTF-8", "LC_TIME": "de_DE", "LANGUAGE": "be", "TZ": "Asia/Tokyo", "PATH": "/bin"})
+        self.assertEqual((env["LANG"], env["LC_ALL"], env["TZ"]), ("C", "C", "UTC"))
+        self.assertNotIn("LC_TIME", env)
+        self.assertNotIn("LANGUAGE", env)
+        self.assertEqual(env["PATH"], "/bin")
+
+    def test_the_script_and_the_hold_injection_reach_the_simulator_only_when_asked(self):
+        plain = sv.sim_env("/rt", "/out", "/rt/fifo", 1, 0, False, 1, base={})
+        self.assertNotIn("PLXNATIVE_DUMP_KEYS", plain)
+        self.assertNotIn("PLXNATIVE_DUMP_EXTRA_HOLDS", plain)
+        on = sv.sim_env("/rt", "/out", "/rt/fifo", 1, 0, False, 1, base={}, keys="100:ok", extra_holds="r7")
+        self.assertEqual((on["PLXNATIVE_DUMP_KEYS"], on["PLXNATIVE_DUMP_EXTRA_HOLDS"]), ("100:ok", "r7"))
+        zero = sv.sim_env("/rt", "/out", "/rt/fifo", 1, 0, False, 1, base={}, extra_holds=0)
+        self.assertEqual(zero["PLXNATIVE_DUMP_EXTRA_HOLDS"], "0", "k=0 is a value, not 'unset'")
+
+    def test_a_failed_run_leaves_no_master_for_encode_to_adopt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            (out / "master.mkv").write_bytes(b"m")
+            (out / "frames.tsv").write_text("t")
+            (out / "dump.json").write_text("{}")
+            sv.quarantine(out)
+            self.assertFalse((out / "master.mkv").exists() or (out / "frames.tsv").exists())
+            self.assertEqual((out / "master.partial.mkv").read_bytes(), b"m")
+            self.assertTrue((out / "frames.partial.tsv").exists() and (out / "dump.json").exists())
+            sv.quarantine(out)  # nothing left to move: not an error
+
     def test_the_simulator_env_drops_every_inherited_plxnative_variable(self):
         env = sv.sim_env("/rt", "/out", "/rt/fifo", 180, 60, False, 60000,
                          base={"PLXNATIVE_TV": "x", "PATH": "/bin", "PLXNATIVE_DUMP_NO_HOLD": "1"})
@@ -328,7 +365,7 @@ class RenderLauncher(unittest.TestCase):
 
     def test_the_record_it_builds_passes_the_validator(self):
         dump = {"frames_with_debt": 0, "width": 1920, "height": 1080, "preroll": 60, "iterations": 5, "holds": 2,
-                "advances": 0, "hold_reasons": {}, "unconverted_takes": [], "clock_origin_ms": 1000000, "wall_ms": 9}
+                "hold_reasons": {}, "unconverted_takes": [], "clock_origin_ms": 1000000, "wall_ms": 9}
         rec = sv.build_render_record({"scene": "home"}, dump, 180, 0, 180, "darwin-local")
         self.assertEqual(sv.validate_render_record(rec), [])
         self.assertEqual(rec["frames"], {"count": 180, "fps": 60, "width": 1920, "height": 1080})
@@ -341,6 +378,62 @@ class RenderLauncher(unittest.TestCase):
             with self.assertRaises(sv.Failure) as cm:
                 sv.run_render(pathlib.Path(tmp, "nope"), tmp, "ffmpeg", 3)
             self.assertIn("make site-video-sim", str(cm.exception))
+
+
+class Triggers(unittest.TestCase):
+    def test_a_trigger_is_a_lower_case_name_and_a_value(self):
+        self.assertEqual(sv.parse_triggers(["detail=102", "heropin=0"]), {"detail": "102", "heropin": "0"})
+        self.assertEqual(sv.parse_triggers(None), {})
+        self.assertEqual(sv.parse_triggers(["x="]), {"x": ""})
+
+    def test_a_name_that_could_leave_the_instance_root_is_refused(self):
+        for bad in ("../x=1", "Detail=1", "a/b=1", "=1", "detail"):
+            with self.assertRaises(sv.Failure, msg=bad):
+                sv.parse_triggers([bad])
+
+
+class HoldInjectionGate(unittest.TestCase):
+    """`compare_hold_injection`: the logic behind `site_video.py hold-gate`. A render with extra held
+    repeats on every clean frame must write the frames of the render with none."""
+
+    @staticmethod
+    def rows(hashes, holds):
+        return [(i, (i * 1000 + 30) // 60, h, 0, k) for i, (h, k) in enumerate(zip(hashes, holds))]
+
+    def test_identical_frames_with_more_holds_pass(self):
+        base = self.rows([1, 2, 3], [0, 0, 0])
+        inj = self.rows([1, 2, 3], [2, 0, 3])
+        r = sv.compare_hold_injection(base, inj)
+        self.assertEqual(r.status, sv.PASS, r.detail)
+        self.assertIn("5 extra", r.detail)
+
+    def test_one_different_pixel_fails_and_names_the_frame_and_the_column(self):
+        r = sv.compare_hold_injection(self.rows([1, 2, 3], [0, 0, 0]), self.rows([1, 9, 3], [1, 1, 1]))
+        self.assertEqual(r.status, sv.FAIL)
+        self.assertIn("frame 1", r.detail)
+        self.assertIn("hash", r.detail)
+
+    def test_time_and_debt_and_length_are_compared_too(self):
+        base = self.rows([1, 2], [0, 0])
+        skewed = [(0, 0, 1, 0, 1), (1, 99, 2, 0, 1)]
+        self.assertIn("t_ms", sv.compare_hold_injection(base, skewed).detail)
+        debt = [(0, 0, 1, 0, 1), (1, 17, 2, 4, 1)]
+        self.assertIn("debt", sv.compare_hold_injection(base, debt).detail)
+        self.assertEqual(sv.compare_hold_injection(base, self.rows([1], [1])).status, sv.FAIL)
+
+    def test_an_injection_that_did_not_run_is_not_a_pass(self):
+        same = self.rows([1, 2, 3], [0, 0, 0])
+        r = sv.compare_hold_injection(same, list(same))
+        self.assertEqual(r.status, sv.FAIL)
+        self.assertIn("did not run", r.detail)
+
+    def test_nothing_written_is_not_a_pass(self):
+        self.assertEqual(sv.compare_hold_injection([], []).status, sv.FAIL)
+
+    def test_the_holds_column_alone_never_fails_it(self):
+        base = self.rows([5, 6], [3, 3])
+        inj = self.rows([5, 6], [7, 9])
+        self.assertEqual(sv.compare_hold_injection(base, inj).status, sv.PASS)
 
 
 class SizeGate(unittest.TestCase):

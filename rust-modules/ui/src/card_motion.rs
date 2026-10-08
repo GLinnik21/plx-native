@@ -106,8 +106,23 @@ impl Drop for Scope {
 }
 
 pub fn verdict() -> Option<Verdict> { ADMISSION.with(|s| s.get()) }
+/// Should a card DRAW decline to start art work for this card? Unknown or fast placement does.
+///
+/// **Never in a frame dump** ([`plx_gfx::dump`]): a held repeat samples at `dt == 0`, which is
+/// `Unknown` by construction, and a card that scrolled in `Moving` is `Moving` for the same reason
+/// on every repeat, so under a frozen clock the verdict can never settle and the declined request
+/// would never be made (measured: one `down` on Home held 56,670 iterations on `card-skeleton`).
+/// Admitting everything is safe there because the dump draws one deterministic frame at a time
+/// and holds until every placeholder is gone. Outside the simulator `armed()` is a constant
+/// `false` and this is the verdict test alone.
 pub fn declines_request() -> bool {
-    matches!(verdict(), Some(Verdict::Unknown | Verdict::Moving))
+    declines_in(plx_gfx::dump::armed(), verdict())
+}
+
+/// [`declines_request`] as a pure function of the dump switch and the verdict.
+#[inline]
+fn declines_in(dump: bool, verdict: Option<Verdict>) -> bool {
+    !dump && matches!(verdict, Some(Verdict::Unknown | Verdict::Moving))
 }
 
 /// A declined miss has no worker whose completion could wake it. The next sample
@@ -215,5 +230,15 @@ mod tests {
         plx_machine::idle::take_local_damage();
         deferred();
         assert!(plx_machine::idle::take_local_damage() > 0, "a declined miss must request its next observation");
+    }
+
+    #[test]
+    fn a_dump_never_declines_a_draw_for_card_motion() {
+        // Held repeats sample at dt == 0, which is `Unknown`; a frozen clock never leaves it.
+        for v in [Verdict::Unknown, Verdict::Moving] {
+            assert!(declines_in(false, Some(v)), "outside a dump {v:?} declines");
+            assert!(!declines_in(true, Some(v)), "a dump admits every card draw ({v:?})");
+        }
+        assert!(!declines_in(false, Some(Verdict::Settled)) && !declines_in(false, None));
     }
 }

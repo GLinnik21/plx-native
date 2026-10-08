@@ -385,21 +385,30 @@ device-verified" is a useful, honest status. "Verified" without a TV is not.
 `rust-modules/src/dev/framedump.rs`, armed by `PLXNATIVE_DUMP=<dir>` (its module doc lists the
 variables). It drives the app from VIRTUAL time (`clock::set_replay`, 60 fps), forces a present every
 iteration at swap interval 0, and WRITES a frame only when nothing is still arriving (no placeholder
-drawn, no queued upload, an idle poster source, no held page image, no open landing claim). While a
-placeholder, an upload, the poster source or a claim is outstanding it repeats the frame with
-`dt == 0` and writes nothing; if the only debt is a held page image it advances virtual time without
-writing (a frozen clock never releases the image), and `dump.json` counts those as `advances`. That
-advance is a boot crutch, allowed only inside the unwritten preroll (`--preroll`, default 60, which
-covers the still-Home boot); at or after the preroll it fails the run closed, naming the virtual
-frame, and `--preroll 0` fails a boot-time advance too. `site_video.py gates` also fails any
+drawn, no queued upload, an idle poster source, no open landing claim). While a placeholder, an
+upload, the poster source or a claim is outstanding it repeats the frame with `dt == 0` and writes
+nothing; virtual time is never skipped, so a push to a page is filmed as the product plays it (70 ms
+out, two consecutive alpha-0 frames (the out ramp clamps to 0, then `DipPhase::Hold`, as in the
+product), 140 ms in, the frozen settle). A held page image is reported, not a hold
+reason: a capture with debt is re-captured on each repeat until clean (`plx_gfx::dump::held_repeat`).
+`--preroll` (default 60) only chooses how much boot is not written. `site_video.py gates` fails any
 `frames.tsv` row whose `t_ms` is not `round(n * 1000 / 60)`. Run it twice and compare `frames.tsv`
-(`site_video.py gates --frames-b`): the xxh3 column must match.
+(`site_video.py gates --frames-b`): the xxh3 column must match. The stronger check is
+`site_video.py hold-gate --out DIR [--keys 120:right,...]`, which renders the scene with no extra
+holds and with seeded extra held repeats on every frame (`PLXNATIVE_DUMP_EXTRA_HOLDS`) and requires
+columns 1-4 of `frames.tsv` equal. `--keys <virtual frame>:<key>,...` (`PLXNATIVE_DUMP_KEYS`) is the
+interim script until the storyboard interpreter (the down edge on that frame, the up edge six frames
+later); virtual frames count from the start of the preroll. `--trigger NAME=VALUE` writes a boot
+trigger (`--trigger detail=102` boots on that rating key's page). Each virtual frame is also run to a
+fixed point (a clean iteration must reproduce the previous one's picture; hold reason `settling`), so
+a frame never depends on how many iterations preceded it.
+A failed run leaves `master.partial.mkv`/`frames.partial.tsv`, never a `master.mkv`.
 
-What is and is not shown (S5b-1). Determinism is shown for a STILL Home scene and its reveal only.
-A page push is UNSUPPORTED: it currently jump-cuts and is refused after the preroll. Any `down` on
-Home deadlocks on the card-admission `dt == 0` gap (S5b-2). Detail is not yet deterministic: two
-runs differ by 1/255 in the Resume button's box, cause under investigation. `Bridge::open_claims`
-covers Hubs and Browse discovery only, and the session-adapter drains are unprobed. No CI job
-builds `site-video-sim` yet, so Linux is unverified, and a run on a Mac is a non-canonical
+What is and is not shown. Determinism is shown for the scenes the hold-injection gate was run on
+(Home held, `right`, `down`, `ok` into Detail, a four second hold, `back`; and Detail booted at a
+rating key). A modal or popover fails the run closed (its dim
+field is still sampled on a cadence). `Bridge::open_claims` covers Hubs and Browse discovery; the
+rest of the argument for session drains and unclaimed stores is in `framedump.rs`'s "Claims". No CI
+job builds `site-video-sim` yet, so Linux is unverified, and a run on a Mac is a non-canonical
 preview (the Linux llvmpipe render is meant to be canonical). Not a screenshot tool: it never opens the TV and never replaces
 `make screenshots`.

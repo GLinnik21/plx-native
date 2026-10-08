@@ -510,11 +510,18 @@ pub fn wake() {
 /// the exact whole-microsecond conversion of `dt`, not a summed `f32`, for the same reason
 /// `search.rs`'s debounce and `anim.rs`'s probe clock do it that way.
 #[inline]
-pub fn frame_begin(dt: f32) {
+pub fn frame_begin(dt: f32) { frame_begin_judging_rest_with(dt, dt) }
+
+/// [`frame_begin`] with a separate `dt` for the rest test ([`settled`]'s `velocity * dt`): the
+/// frame dump's held repeat stands the clock still (`dt == 0`) but must judge a creeping spring
+/// exactly as the first pass of its virtual frame did, so it passes that pass's `dt` as `rest_dt`.
+/// Outside a dump the two are the same number.
+#[inline]
+pub fn frame_begin_judging_rest_with(dt: f32, rest_dt: f32) {
     MOVING.with(|m| m.set(false));
     PAGE_MOVING.with(|m| m.set(false));
     PAGE_LAYOUT_MOVING.with(|m| m.set(false));
-    DT.with(|d| d.set(dt));
+    DT.with(|d| d.set(rest_dt));
     let dt_us = (dt * 1_000_000.0).round().max(0.0) as u64;
     MS_CLOCK_US.with(|c| c.set(c.get() + dt_us));
 }
@@ -821,6 +828,23 @@ mod tests {
         assert!(!should_present(10_016), "nothing to draw");
         invalidate();
         assert!(take_page_damage(), "the landing after a skipped frame is the page's");
+    }
+
+    /// A frame that stands the clock still (`dt == 0`, the frame dump's held repeat) reads a spring
+    /// that is still travelling as at rest, because `velocity * 0` is no distance. Giving the rest
+    /// test its own `dt` judges it as the frame before did, and the clock still does not move.
+    #[test]
+    fn a_standing_clock_can_judge_rest_with_another_dt() {
+        let _g = fresh();
+        let (pos, target, vel) = (1.0, 1.0, 100.0);
+        frame_begin(0.0);
+        assert!(settled(pos, target, vel), "no time passes, so no travel: reads as rest");
+        let before = now_ms();
+        frame_begin_judging_rest_with(0.0, 1.0 / 60.0);
+        assert!(!settled(pos, target, vel), "judged with the frame's own dt, it is still moving");
+        assert_eq!(now_ms(), before, "the clock `now_ms` reads advances by `dt`, which is 0");
+        frame_begin_judging_rest_with(1.0 / 60.0, 1.0 / 60.0);
+        assert!(!settled(pos, target, vel), "an ordinary frame is the same call with one number");
     }
 
     #[test]

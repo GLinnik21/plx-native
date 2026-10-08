@@ -2,7 +2,7 @@
 //! `plx_machine::landgate::Gate::arm_dump`).
 //!
 //! A dump writes frames from virtual time, so every wall-clock-dependent decision that reaches
-//! logical state must be a constant. Two of them live here:
+//! logical state must be a constant. The ones that live here are listed below:
 //!
 //! * **Text prewarm.** [`crate::text::drain_prewarm`] spends a microsecond budget, so how many
 //!   frames the queue takes to drain is CPU speed, and that hold decides the frame a modal turns
@@ -26,36 +26,120 @@
 //!   it samples the capture fence and reports the capture as no longer pending, so GPU speed is
 //!   never an input.
 //!
+//! * **Ground probes.** `gfx::GroundProbe::step` (the top bar's `sample_ground` and the Hero row's
+//!   `sample_control_ground` both go through it) reads on a cadence counted in PRESENTED loop
+//!   iterations, held repeats included, so the virtual frame a probe re-reads on was the number of
+//!   boot holds modulo 30 and the Resume pill's ground differed by 1/255 between runs. In dump mode
+//!   it is SYNCHRONOUS and PER CALL (`gfx::probe_mode`): copy the tap boxes, `glReadPixels`, return;
+//!   no cadence, no fence. The refusal paths (`may_read == false`, a blur-source pass, a frozen
+//!   page) still answer with the last latched value.
+//! * **Held repeats** ([`held_repeat`]). A page image's capture/replacement steps and a page dip's
+//!   floor frame advance once per virtual frame, not once per held iteration.
+//!
 //! The order within one iteration is: landing takes, then the busy/debt sample, then the draw.
 //!
 //! Which landing sites WAIT for their answer in dump mode, which still do not, and the counter the
 //! driver asserts empty at the end of a run (`Gate::unconverted_takes`) are stated in
-//! `plx_machine::landgate`'s module doc; this module owns only the two gfx constants above.
+//! `plx_machine::landgate`'s module doc; this module owns only the gfx decisions listed above.
 //!
 //! **Tests that arm it** hold `plx_base::testlock::serial()`: the switch is process-global, and
 //! every gfx test that reaches a hooked function holds that lock, so nothing leaks between them.
 //!
 //! **A runtime switch, off by default.** [`arm`] is called by the dump driver only; nothing in a
-//! shipping loop does. Unarmed, each hook costs one relaxed atomic load, and nothing else in the
-//! crate changes behaviour.
+//! shipping loop does. With `hostsim` (and in test builds) it is a runtime switch, and an unarmed
+//! hook costs one relaxed atomic load; in every other build [`armed`] and [`held_repeat`] are
+//! constant `false`, so the hooks fold away. Nothing else in the crate changes behaviour.
 
+#[cfg(any(feature = "hostsim", feature = "test-support", test))]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(any(feature = "hostsim", feature = "test-support", test))]
 static DUMP: AtomicBool = AtomicBool::new(false);
 
-/// Arm dump mode for this process.
+// Thread-local, unlike the switch: only the loop's own thread reads or writes it, and a host test
+// that sets it must not leak a "this is a repeat" into a concurrent test's page dip.
+#[cfg(any(feature = "hostsim", feature = "test-support", test))]
+thread_local! {
+    static REPEAT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Arm dump mode for this process. A no-op outside the simulator (`hostsim`) and host tests.
 pub fn arm() {
+    #[cfg(any(feature = "hostsim", feature = "test-support", test))]
     DUMP.store(true, Ordering::Relaxed);
 }
 
 /// Disarm: the ordinary behaviour, and what a host test restores.
 pub fn disarm() {
+    #[cfg(any(feature = "hostsim", feature = "test-support", test))]
     DUMP.store(false, Ordering::Relaxed);
 }
 
-/// Is dump mode armed?
+/// Is dump mode armed? **A constant `false` outside the simulator and host tests**: without
+/// `hostsim` (every television build) nothing can arm the dump, so this inlines to `false` and every
+/// `if armed()` branch in a per-frame path, old or new, is folded away. With `hostsim` it is one
+/// relaxed atomic load.
+#[inline(always)]
 pub fn armed() -> bool {
-    DUMP.load(Ordering::Relaxed)
+    #[cfg(any(feature = "hostsim", feature = "test-support", test))]
+    {
+        DUMP.load(Ordering::Relaxed)
+    }
+    #[cfg(not(any(feature = "hostsim", feature = "test-support", test)))]
+    {
+        false
+    }
+}
+
+/// **The driver's "this iteration repeats a virtual frame" fact.** The dump driver sets it at the
+/// top of every iteration that is a held repeat (`holds_run > 0`: the same virtual frame, the same
+/// clock, `dt == 0`) and clears it on the first iteration of a virtual frame. Per-iteration
+/// steppers that would otherwise advance once per ITERATION (a page image's capture / replacement
+/// state, a page dip's one-tick floor) read it and stand still on a repeat, so how many holds a
+/// frame took cannot decide which state a written frame shows. Constant `false` wherever
+/// [`armed`] is.
+#[inline(always)]
+pub fn held_repeat() -> bool {
+    #[cfg(any(feature = "hostsim", feature = "test-support", test))]
+    {
+        REPEAT.with(std::cell::Cell::get)
+    }
+    #[cfg(not(any(feature = "hostsim", feature = "test-support", test)))]
+    {
+        false
+    }
+}
+
+/// Driver only (and host tests): publish whether this iteration is a held repeat. See [`held_repeat`].
+pub fn set_held_repeat(on: bool) {
+    #[cfg(any(feature = "hostsim", feature = "test-support", test))]
+    REPEAT.with(|r| r.set(on));
+    #[cfg(not(any(feature = "hostsim", feature = "test-support", test)))]
+    let _ = on;
+}
+
+/// A host test's guard: this thread is a held repeat until it drops. It does not arm the dump.
+#[cfg(any(test, feature = "test-support"))]
+pub struct HeldRepeat;
+
+#[cfg(any(test, feature = "test-support"))]
+impl HeldRepeat {
+    pub fn new() -> Self {
+        set_held_repeat(true);
+        HeldRepeat
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Default for HeldRepeat {
+    fn default() -> Self { Self::new() }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for HeldRepeat {
+    fn drop(&mut self) {
+        set_held_repeat(false);
+    }
 }
 
 /// A host test's guard: dump mode is disarmed again even if an assertion panics.
@@ -147,6 +231,14 @@ mod tests {
         assert!(crate::gfx::snapshot_defers_in(false, Some(false), 0));
         assert!(!crate::gfx::snapshot_defers_in(true, Some(false), 0));
         assert!(!crate::gfx::snapshot_defers_in(false, None, 0));
+    }
+
+    #[test]
+    fn a_ground_probe_reads_synchronously_per_call_in_dump_mode_and_on_a_cadence_outside_it() {
+        let _g = plx_base::testlock::serial();
+        assert_eq!(crate::gfx::probe_mode(armed()), crate::gfx::ProbeMode::Cadenced);
+        let _armed = Armed::new();
+        assert_eq!(crate::gfx::probe_mode(armed()), crate::gfx::ProbeMode::Sync);
     }
 
     #[test]

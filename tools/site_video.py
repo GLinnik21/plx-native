@@ -77,9 +77,8 @@ Poster = collections.namedtuple("Poster", "name width height")
 
 FPS = 60
 # The dump driver's default preroll (`framedump::DEFAULT_PREROLL`): unwritten virtual frames that cover
-# the still-Home boot, whose first paint needs about 10 `Advance`s. The driver fails closed on any
-# advance at or after the preroll, so a preroll shorter than the boot's advances (about 10; 0 certainly)
-# fails the boot. 60 is that boot with room to spare, not a threshold.
+# the still-Home boot, so the first paint and a hero's reveal finish before the first written frame.
+# 60 is that boot with room to spare, not a threshold.
 DEFAULT_PREROLL = 60
 # Mirrors the four <source> elements of `#feel` in site/index.html, in their order there (a test reads
 # the HTML and compares): phones (max-width 759px) take a 720p encode, everything else 1080p, and the
@@ -502,6 +501,29 @@ def gate_run_twice(tsv_a, tsv_b):
         return Result("run-twice", FAIL, f"the two renders differ ({where})")
     digest = hashlib.sha256(repr(ca).encode()).hexdigest()
     return Result("run-twice", PASS, f"both renders agree on {len(ra)} frames (n, t_ms, xxh3, debt: {digest[:12]})")
+
+
+def compare_hold_injection(rows_base, rows_injected):
+    """The hold-injection gate's comparison: a render with extra held repeats on every clean frame must
+    write exactly the frames of the render with none. Columns 1-4 (n, t_ms, xxh3, debt) must be equal
+    row for row; `holds` is the thing being varied and is left out. Returns a Result."""
+    ca, cb = _comparable(rows_base), _comparable(rows_injected)
+    if not ca or not cb:
+        return Result("hold-injection", FAIL, "a render wrote no frames: nothing was compared")
+    if len(ca) != len(cb):
+        return Result("hold-injection", FAIL, f"the renders wrote {len(ca)} and {len(cb)} frames")
+    bad = [i for i, (x, y) in enumerate(zip(ca, cb)) if x != y]
+    if bad:
+        i = bad[0]
+        what = "hash" if ca[i][2] != cb[i][2] else "t_ms" if ca[i][1] != cb[i][1] else "debt" if ca[i][3] != cb[i][3] else "n"
+        return Result("hold-injection", FAIL,
+                      f"{len(bad)} of {len(ca)} frames differ under extra holds (first: frame {ca[i][0]}, its {what}: "
+                      f"{ca[i]} vs {cb[i]})")
+    extra = sum(r[4] for r in rows_injected) - sum(r[4] for r in rows_base)
+    if extra <= 0:
+        return Result("hold-injection", FAIL, "the injected render took no more holds than the base: the injection did not run")
+    return Result("hold-injection", PASS,
+                  f"{len(ca)} frames identical in n, t_ms, xxh3 and debt with {extra} extra held repeats injected")
 
 
 def gate_hero_pool(record):
@@ -1099,15 +1121,26 @@ FRAME_W, FRAME_H = 1920, 1080
 
 def ffv1_argv(ffmpeg, master, fps=FPS, width=FRAME_W, height=FRAME_H):
     """RGB24 on stdin to the master: FFV1 level 3, every frame an intra frame, no audio."""
+    # `+bitexact` on the muxer and the encoder: without it Matroska writes a random segment UID (and
+    # the encoder its version) so two renders of identical frames are different files.
     return [str(ffmpeg), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
             "-framerate", str(fps), "-i", "-", "-an", "-c:v", "ffv1", "-level", "3", "-g", "1",
-            "-pix_fmt", "bgr0", str(master)]
+            "-pix_fmt", "bgr0", "-fflags", "+bitexact", "-flags:v", "+bitexact", str(master)]
 
 
-def sim_env(runtime, out_dir, fifo, frames, preroll, allow_absent, max_hold_ms, base=None, no_hold=False):
+# The locale and time zone a render runs in, whatever the host's: dates and number formats on the
+# Detail page come from them, so a CI container and a laptop must not differ.
+PINNED_ENV = {"LANG": "C", "LC_ALL": "C", "TZ": "UTC"}
+
+
+def sim_env(runtime, out_dir, fifo, frames, preroll, allow_absent, max_hold_ms, base=None, no_hold=False,
+            keys=None, extra_holds=None):
     """The simulator's environment: this machine's minus every PLXNATIVE_* variable (a developer's own
-    session settings must not leak into a render), plus the dump's."""
-    env = {k: v for k, v in (os.environ if base is None else base).items() if not k.startswith("PLXNATIVE_")}
+    session settings must not leak into a render) and with the locale and time zone pinned
+    (`PINNED_ENV`), plus the dump's."""
+    env = {k: v for k, v in (os.environ if base is None else base).items()
+           if not k.startswith("PLXNATIVE_") and not k.startswith("LC_") and k not in ("LANG", "LANGUAGE", "TZ")}
+    env.update(PINNED_ENV)
     env.update({
         "PLXNATIVE_RUNTIME_DIR": str(runtime),
         "PLXNATIVE_APP_DIR": str(ROOT / "pkg"),
@@ -1122,6 +1155,10 @@ def sim_env(runtime, out_dir, fifo, frames, preroll, allow_absent, max_hold_ms, 
         env["PLXNATIVE_DUMP_ALLOW_ABSENT"] = "1"
     if no_hold:
         env["PLXNATIVE_DUMP_NO_HOLD"] = "1"
+    if keys:
+        env["PLXNATIVE_DUMP_KEYS"] = keys
+    if extra_holds is not None:
+        env["PLXNATIVE_DUMP_EXTRA_HOLDS"] = str(extra_holds)
     return env
 
 
@@ -1138,14 +1175,38 @@ def build_render_record(storyboard, dump, scanned, hits, frames_rows, platform_l
         # S5c fills these from the storyboard interpreter; the dump core knows neither.
         "hero_pool": {"logged": [], "eligible": []},
         "opened_rating_keys": [],
-        "dump": {k: dump.get(k) for k in ("preroll", "iterations", "holds", "advances", "hold_reasons", "unconverted_takes",
+        "dump": {k: dump.get(k) for k in ("preroll", "iterations", "holds", "hold_reasons", "unconverted_takes",
                                            "clock_origin_ms", "wall_ms")},
         "platform": platform_label,
     }
 
 
+PARTIAL = (("master.mkv", "master.partial.mkv"), ("frames.tsv", "frames.partial.tsv"))
+
+
+def quarantine(out_dir):
+    """A run that did not finish clean leaves no `master.mkv`/`frames.tsv` for `encode` or `gates` to
+    adopt: they are renamed `*.partial.*` (and a stale `render.json` is gone already)."""
+    out_dir = pathlib.Path(out_dir)
+    for name, partial in PARTIAL:
+        if (out_dir / name).exists():
+            os.replace(out_dir / name, out_dir / partial)
+
+
+def parse_triggers(specs):
+    """`NAME=VALUE` strings -> {name: value}: the boot triggers (`plxnative-<name>` files in the
+    simulator's instance root, e.g. `detail=102` opens that rating key's page at boot)."""
+    out = {}
+    for spec in specs or ():
+        name, sep, value = spec.partition("=")
+        if not sep or not re.fullmatch(r"[a-z0-9]+", name):
+            raise Failure(f"--trigger {spec!r}: want NAME=VALUE with NAME lower-case letters and digits")
+        out[name] = value
+    return out
+
+
 def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=None, allow_absent=False, max_hold_ms=60000,
-               timeout=3600, keep=False, say=print, no_hold=False):
+               timeout=3600, keep=False, say=print, no_hold=False, keys=None, extra_holds=None, triggers=None):
     """Boot the mock catalog PMS on a free port, run the dump build against it headless, pipe its RGB24
     frames through the sentinel scan into ffmpeg, and leave `master.mkv`, `frames.tsv`, `dump.json` and
     `render.json` in `out_dir`. Returns the render record. Raises Failure on anything not clean."""
@@ -1157,7 +1218,7 @@ def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=N
     import mock_pms
     out_dir = pathlib.Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    for stale in ("master.mkv", "frames.tsv", "dump.json", "render.json"):
+    for stale in ("master.mkv", "frames.tsv", "dump.json", "render.json", "master.partial.mkv", "frames.partial.tsv"):
         (out_dir / stale).unlink(missing_ok=True)
     runtime = pathlib.Path(tempfile.mkdtemp(prefix="plxnative-render-"))
     fifo = runtime / "frames.rgb"
@@ -1166,14 +1227,16 @@ def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=N
     port = srv.server_address[1]
     sim = enc = None
     result = {}
+    finished = False
     try:
-        for name, value in {"plextv": f"http://127.0.0.1:{port}", "token": DEMO_TOKEN, "heropin": "0"}.items():
+        for name, value in {"plextv": f"http://127.0.0.1:{port}", "token": DEMO_TOKEN, "heropin": "0",
+                            **(triggers or {})}.items():
             (runtime / f"plxnative-{name}").write_text(value)
         enc = subprocess.Popen(ffv1_argv(ffmpeg, out_dir / "master.mkv"), stdin=subprocess.PIPE)
         log = open(runtime / "sim.out", "w")
         sim = subprocess.Popen([str(sim_bin), "127.0.0.1", str(port)], stdout=log, stderr=subprocess.STDOUT,
                                env=sim_env(runtime, out_dir, fifo, frames, preroll, allow_absent, max_hold_ms,
-                                           no_hold=no_hold))
+                                           no_hold=no_hold, keys=keys, extra_holds=extra_holds))
 
         def pump():
             try:
@@ -1228,7 +1291,10 @@ def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=N
                 problems.append(f"frames.tsv has {len(rows)} rows and the scanner saw {scanned}, want {frames}")
         if problems:
             raise Failure("render failed: " + "; ".join(problems) + f"\n  instance root: {runtime}\n  sim log tail:\n    {tail}")
-        storyboard = {"scene": "home", "pin_hero": True, "frames": frames, "preroll": preroll, "script": "hold"}
+        storyboard = {"scene": "home", "pin_hero": True, "frames": frames, "preroll": preroll,
+                      "script": "keys" if keys else "hold"}
+        if keys:
+            storyboard["keys"] = keys
         record = build_render_record(storyboard, dump, scanned, 0, len(rows), current_platform())
         bad = validate_render_record(record)
         if bad:
@@ -1236,8 +1302,11 @@ def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=N
         (out_dir / "render.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
         say(f"site_video: rendered {frames} frames in {secs:.1f}s ({dump['holds']} held repeats over "
             f"{dump['iterations']} iterations) into {out_dir}")
+        finished = True
         return record
     finally:
+        if not finished:
+            quarantine(out_dir)
         for proc in (sim, enc):
             if proc is not None and proc.poll() is None:
                 proc.kill()
@@ -1255,7 +1324,25 @@ def _ffmpeg_from(args, run=subprocess.run):
 def cmd_render(args):
     ffmpeg, _ = _ffmpeg_from(args)
     run_render(args.bin, args.out, ffmpeg, args.frames, args.preroll, args.hero, args.allow_absent,
-               args.max_hold_ms, args.timeout, args.keep_runtime, no_hold=args.no_hold)
+               args.max_hold_ms, args.timeout, args.keep_runtime, no_hold=args.no_hold, keys=args.keys,
+               extra_holds=args.extra_holds, triggers=parse_triggers(args.trigger))
+
+
+def cmd_hold_gate(args):
+    """Render the same scene with no extra holds and with seeded extra holds on every frame; fail unless
+    every written frame agrees (columns 1-4 of frames.tsv)."""
+    ffmpeg, _ = _ffmpeg_from(args)
+    out = pathlib.Path(args.out)
+    rows = {}
+    for label, extra in (("k0", 0), (f"r{args.seed}", f"r{args.seed}")):
+        d = out / label
+        run_render(args.bin, d, ffmpeg, args.frames, args.preroll, args.hero, args.allow_absent,
+                   args.max_hold_ms, args.timeout, args.keep_runtime, keys=args.keys, extra_holds=extra,
+                   triggers=parse_triggers(args.trigger))
+        rows[label] = parse_frames_tsv((d / "frames.tsv").read_text())
+    result = compare_hold_injection(rows["k0"], rows[f"r{args.seed}"])
+    print(format_results([result]))
+    return 0 if result.status == PASS else 1
 
 
 def cmd_ffmpeg_fetch(args):
@@ -1377,7 +1464,28 @@ def main(argv=None):
     p.add_argument("--max-hold-ms", type=int, default=60000, help="fail closed after this long without progress")
     p.add_argument("--timeout", type=int, default=3600)
     p.add_argument("--keep-runtime", action="store_true", help="keep the simulator's instance root for inspection")
+    p.add_argument("--trigger", action="append", metavar="NAME=VALUE",
+                   help="a boot trigger written into the instance root as plxnative-NAME (repeatable), e.g. detail=102")
+    p.add_argument("--keys", help="the scene's script: <virtual frame>:<key>,... (up/down/left/right/ok/back); "
+                                  "virtual frames count from the start of the preroll")
+    p.add_argument("--extra-holds", help="force k (or r<seed>: seeded 0..3) extra held repeats on every clean frame "
+                                         "(the hold-injection gate's switch; a render with it is not a deliverable)")
     p.set_defaults(fn=cmd_render)
+    p = sub.add_parser("hold-gate", help="render a scene with k=0 and with seeded extra holds; fail unless every "
+                                         "written frame is identical", parents=[tool])
+    p.add_argument("--out", required=True, help="the output directory (k0/ and r<seed>/ are written under it)")
+    p.add_argument("--bin", default=str(SIM_BIN))
+    p.add_argument("--frames", type=int, default=180)
+    p.add_argument("--preroll", type=int, default=DEFAULT_PREROLL)
+    p.add_argument("--hero")
+    p.add_argument("--allow-absent", action="store_true")
+    p.add_argument("--max-hold-ms", type=int, default=60000)
+    p.add_argument("--timeout", type=int, default=3600)
+    p.add_argument("--keep-runtime", action="store_true")
+    p.add_argument("--keys")
+    p.add_argument("--trigger", action="append", metavar="NAME=VALUE")
+    p.add_argument("--seed", type=int, default=1)
+    p.set_defaults(fn=cmd_hold_gate)
     p = sub.add_parser("encode", help="master -> the four encodes and two posters", parents=[tool])
     p.add_argument("master")
     p.add_argument("frames")

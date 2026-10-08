@@ -14,7 +14,9 @@
 //! | `PLXNATIVE_DUMP_OUT=<path>` | where the RGB24 frames go: a file or a FIFO (unset: hash only, nothing is written) |
 //! | `PLXNATIVE_DUMP_MAX_HOLD_MS=<ms>` | the fail-closed wall-clock bound on a stretch without progress (default 60000) |
 //! | `PLXNATIVE_DUMP_NO_HOLD=1` | write every frame whatever the debt (a negative-test switch, never a render) |
-//! | `PLXNATIVE_DUMP_ALLOW_ABSENT=1` | do not fail on a settled-absent hero logo or a never-resolving card (a proof switch) |
+//! | `PLXNATIVE_DUMP_ALLOW_ABSENT=1` | do not fail on a settled-absent hero logo, a never-resolving card or a failed art request (a proof switch) |
+//! | `PLXNATIVE_DUMP_KEYS=<v>:<key>,...` | press `up`/`down`/`left`/`right`/`ok`/`back`: the down edge at the first iteration of virtual frame `<v>`, the up edge [`KEY_UP_AFTER`] frames later (an interim script; S5c's storyboard interpreter takes this seam) |
+//! | `PLXNATIVE_DUMP_EXTRA_HOLDS=<k>` or `r<seed>` | force `k` (or a seeded 0..=3) EXTRA held repeats on every clean virtual frame: the hold-injection gate's switch |
 //!
 //! **The clock.** `clock::set_replay(ORIGIN_MS + T(v))`, `T(v) = round(v * 1000 / 60)`, where `v` is
 //! the virtual frame in flight. The origin is a constant far above any tick the boot stamped, so a
@@ -25,36 +27,77 @@
 //! loop's own, which wait in dump mode), then [`pre_draw`] (the FULL text prewarm drain, then the
 //! debt sample), then the draw, then [`after_draw`], which decides.
 //!
-//! **The image hold.** A frame is written only when nothing says the picture is still in flux:
-//! no placeholder was drawn (`placeholder::take`), no upload is queued (`tex::has_pending`), the
-//! poster source is idle (`tex::source_idle`), the page shown is not a held image
-//! (`Dispatcher::held_page_image`) and no landing claim is open (`Bridge::open_claims`). Otherwise
-//! there are two exits, and neither writes. While a placeholder was drawn, an upload is queued, the
-//! poster source is busy or a claim is open, the iteration HOLDS: it repeats at the SAME `T(v)` (so
-//! `dt` is 0) and `v` does not advance. If the only debt is a held page image, it ADVANCES: `v`
-//! moves on without a write, because a frozen clock never releases that image (it ends by virtual
-//! time) and holding on it would never finish; `dump.json` counts these as `advances`. **An
-//! advance is a boot crutch and nothing else.** It is a cut: the held image is the whole page
-//! transition, so skipping it deletes the fade and leaves a flat frame. It is therefore allowed
-//! only inside the unwritten preroll (`v < preroll`, [`check_advance`]); at `v >= preroll` the run
-//! FAILS CLOSED, naming the virtual frame. Residency is paint state, not logical state, so how long
-//! a hold lasts is not meant to change a written frame; the run-twice comparison of `frames.tsv`
-//! is the only check of that, and it has been shown for a still Home scene only.
+//! **The hold rule.** A frame is written only when nothing says the picture is still in flux: no
+//! placeholder was drawn (`placeholder::take`), no upload is queued (`tex::has_pending`), the poster
+//! source is idle (`tex::source_idle`), no landing claim is open (`Bridge::open_claims`) and the
+//! dispatcher carries no work into its next iteration (`Dispatcher::work_carried`: a pressed key's
+//! effect, such as a nav commit, lands one iteration after the press, so without this the frame an
+//! effect shows on depends on how many iterations the frames before it took). Otherwise the
+//! iteration HOLDS: it repeats at the SAME `T(v)` (so `dt` is 0) and `v` does not advance. There is
+//! no other exit, and in particular no skipping of virtual time.
 //!
-//! **What is and is not shown (read this before trusting a render).** Determinism is shown for a
-//! STILL Home scene and its reveal only. A page push is UNSUPPORTED: it currently jump-cuts, and
-//! the driver refuses it after the preroll. Any `down` on Home deadlocks on the card-admission
-//! `dt == 0` gap (S5b-2). The Detail page is not yet deterministic: two runs differ by 1/255 in
-//! the Resume button's box and the cause is under investigation. `Bridge::open_claims` covers
-//! Hubs and Browse discovery only; the session-adapter drains are unprobed. No CI job builds
-//! `site-video-sim` yet, so Linux is unverified, and a render from a Mac is a non-canonical
-//! preview.
+//! **Settling.** A frame with none of that debt is still not written until a clean iteration at the
+//! same `T(v)` reproduces the picture of the clean one before it (the hash of the read-back; hold
+//! reason `settling`). Some state advances per ITERATION and not per millisecond (a first draw that
+//! only measures, a layout that needs a second pass, a held page image captured before a late
+//! landing), and no stepper audit finds all of it; running each frame to its fixed point makes what
+//! is written independent of how many iterations came before it. The cost is one more iteration and
+//! one more read-back per virtual frame. The product itself shows such a state for a few frames
+//! first (measured: a cast headshot that appears 40 frames late behind a held page image); the dump
+//! shows the settled picture of every frame.
+//!
+//! **A held page image is a FACT, not a hold reason** ([`Sample::page_image`]). A `PageDip` paints
+//! the page as a captured image for the whole transition, so "an image frame is never written" could
+//! only ever produce a jump cut. Instead the image never carries debt: a capture frame whose draw
+//! showed a placeholder is a debt frame like any other, so the iteration holds and
+//! [`plx_gfx::dump::held_repeat`] makes `PageImage::plan` return the SAME paint on every repeat, which
+//! re-captures the page live until the capture is clean, and only then is it written. Every `Held`
+//! frame after a clean capture re-counts zero debt (`placeholder::renote`) and is writable. A push
+//! therefore films as the product plays it: 70 ms out over the last clean source page, two
+//! consecutive alpha-0 frames (the out ramp clamps to 0, then `DipPhase::Hold`, the same two the
+//! product shows), 140 ms in over a complete destination, the frozen settle, one replacement-capture frame,
+//! then live. `PageDip::tick` likewise does not leave its one-frame `Hold` on a repeat.
+//!
+//! **Why a hold cannot change a written frame, and the gate that checks it.** Settling is the
+//! guarantee; the rest keeps the fixed point the one the product reaches. Per-iteration steppers were
+//! made to count virtual frames: the ground probes are synchronous per call (`plx_gfx::dump`), the
+//! page image and dip step once per virtual frame (above), card art admission never declines for
+//! motion (`card_motion::declines_request`), the upload budget admits on its quotas alone
+//! (`frame::Budget::take`), the poster store has no eviction cooldown and records a failed fetch
+//! instead of waiting out a retry on a clock that is held still, and a held repeat judges whether a
+//! spring is at rest (`idle::settled`, which multiplies by `dt`) with the `dt` of the virtual
+//! frame's first pass ([`idle_dt`]), so `page_quiescent` does not flip on `dt == 0`. The settle
+//! after a push therefore runs until the page's springs are at rest or `PAGE_QUIESCENCE_HOLD_MAX_MS`
+//! of VIRTUAL time, never a wall-clock event. The check is `PLXNATIVE_DUMP_EXTRA_HOLDS`:
+//! `tools/site_video.py hold-gate` renders the scene with no extra holds and with seeded extra holds
+//! on every frame and requires `frames.tsv` columns 1-4 equal.
+//!
+//! **What is and is not shown (read this before trusting a render).** Determinism is shown for the
+//! scenes the gate was run on: Home held, then `right`, `down`, `ok` (a push to Detail), a four second
+//! hold and `back` (the pop), run twice, under CPU load and with seeded extra holds (columns 1-4 of
+//! `frames.tsv` and the master identical), and a Detail page booted at a rating key; a scene with a modal
+//! or popover is refused (its dim field is still cadenced: see `after_draw`). `Bridge::open_claims`
+//! covers Hubs and Browse discovery; for the stores and the session adapter see "Claims" below. No CI
+//! job builds `site-video-sim` yet, so Linux is unverified, and a render from a Mac is a
+//! non-canonical preview.
+//!
+//! **Claims.** The `Fetch` stores wait inline (`take_owed`), so the frame they land on is a function
+//! of the frame that requested them and they need no hold. Session-adapter drains and stores outside
+//! `open_claims` cannot change what is drawn without a placeholder or a claim: every request-driven
+//! landing either paints a placeholder until it lands (card art, spinners, logos, the Detail
+//! spinner), or is a `Fetch` store taken inline. Anything that does not is a gap the storyboard
+//! interpreter's `landed` predicate (S5c) owns.
 //!
 //! **Fail closed, never fail soft.** A stretch of `PLXNATIVE_DUMP_MAX_HOLD_MS` without a virtual
 //! frame completing ends the process (exit 3, after writing `dump.json`) naming the debt reasons,
 //! the placeholder entries and the open claims. So does a hero logo that settled as a miss
-//! (`placeholder::Frame::absent`), and a card that can never resolve (an empty key while nothing
-//! else is pending), unless `ALLOW_ABSENT` says the proof accepts them. At the end the driver
+//! (`placeholder::Frame::absent`), a card that can never resolve (an empty key while nothing else
+//! is pending) and an art request that FAILED (a 404, bytes that do not decode, a refused connect:
+//! the card would hold on its placeholder to the timeout; the run ends at once naming the key),
+//! unless `ALLOW_ABSENT` says the proof accepts them. So does a modal or popover opening, and any
+//! PANIC on the loop's thread (a landgate take that never got its answer names the owed mailbox):
+//! a panic hook writes `dump.json` with the message and exits 3, so a failed run always leaves a
+//! valid summary. The launcher renames a failed run's master to `master.partial.mkv`. At the end the driver
 //! asserts `Gate::unconverted_takes()` is empty. The exit is `_exit`, not `exit`: libc's `atexit`
 //! handlers race the sign-in worker (`shot::maybe_capture`'s account of the same crash).
 //!
@@ -64,10 +107,8 @@
 //! sample clean, no open claim). It also owns `hero_pool.logged` and `opened_rating_keys`, which
 //! `render.json` carries empty until then. Nothing here assumes the script is "hold".
 //!
-//! **What this PR does NOT do (S5b-2):** the dump overrides for card admission under `dt == 0`, the
-//! poster retry backoff and evict cooldown under a held clock, `frame::Budget`'s cap, failing fast
-//! on an image failure, and the negative tests with mock delays. S5c interprets the storyboard; here
-//! the whole script is "hold the booted scene for N frames".
+//! **What this does NOT do:** the negative tests with mock delays, and the storyboard itself (S5c).
+//! The script is `PLXNATIVE_DUMP_KEYS` or "hold the booted scene for N frames".
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -76,13 +117,19 @@ use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use plx_machine::machine::{Key, Tick};
 use plx_ui::placeholder::{self, Entry, Reason};
 
 use crate::app::App;
 
-/// The preroll when none is asked for: virtual frames run and not written first. Measured: Home's
-/// boot spends about 10 `Advance`s on its first paint, so one second of virtual time covers it with
-/// room; a `--preroll` too small to cover the boot makes the run fail closed ([`check_advance`]).
+/// Virtual frames between a scripted key's down edge and its up edge: 100 ms, a tap.
+const KEY_UP_AFTER: u64 = 6;
+
+/// The preroll when none is asked for: virtual frames run and not written first, so the boot's
+/// first paint settles and a hero's reveal (a spring of well under a second) finishes before the
+/// first written frame. It is a choice of what the film starts on, not a safety bound: nothing fails
+/// when it is short, the early frames just show the boot (a preroll of 0 writes Home's first paint,
+/// held until it is clean, as frame 0).
 pub(crate) const DEFAULT_PREROLL: u32 = 60;
 /// The frame rate every written frame is spaced at.
 pub(crate) const FPS: u32 = 60;
@@ -107,10 +154,13 @@ pub(crate) struct Sample {
     pub tex_pending: bool,
     /// `!tex::source_idle()`: the poster source has work out.
     pub source_busy: bool,
-    /// `Dispatcher::held_page_image()` is `Some`: the page shown is a captured image.
+    /// `Dispatcher::held_page_image()` is `Some`: the page shown is a captured image. A REPORTED FACT
+    /// (it is in the failure message), never a hold reason: see the module doc.
     pub page_image: bool,
     /// Landing claims still open ([`crate::app::bridge::Bridge::open_claims`]).
     pub claims: Vec<&'static str>,
+    /// The dispatcher still carries work into its next iteration (`Dispatcher::work_carried`).
+    pub carried: bool,
 }
 
 /// Why this frame must be held, in a fixed order; empty means the frame may be written.
@@ -125,27 +175,13 @@ pub(crate) fn hold_reasons(s: &Sample) -> Vec<String> {
     if s.source_busy {
         why.push("source-busy".to_string());
     }
-    if s.page_image {
-        why.push("page-image".to_string());
-    }
     for c in &s.claims {
         why.push(format!("claim:{c}"));
     }
-    why
-}
-
-/// May virtual frame `v` take an [`Action::Advance`]? Only inside the unwritten preroll: an advance
-/// is a cut, so one that reaches a written frame would put a hard cut into the master. `Err` is the
-/// message the run fails with.
-pub(crate) fn check_advance(v: u64, preroll: u32) -> Result<(), String> {
-    if v < preroll as u64 {
-        return Ok(());
+    if s.carried {
+        why.push("carried-work".to_string());
     }
-    Err(format!(
-        "virtual frame {v} (preroll {preroll}): the only debt is a held page image, which would be \
-         skipped as a cut; a page push is unsupported until S5b-2, and a boot slower than the preroll \
-         needs a larger PLXNATIVE_DUMP_PREROLL"
-    ))
+    why
 }
 
 /// What one iteration does with the frame it just drew.
@@ -155,25 +191,89 @@ pub(crate) enum Action {
     Write,
     /// Debt that only WAITING clears: repeat at the same `T(v)`, dt 0, write nothing.
     Hold,
-    /// The only debt is a held page image, which ends by virtual TIME (`PAGE_QUIESCENCE_HOLD_MAX_MS`)
-    /// or by quiescence, and neither can happen while the clock is frozen: a repeat at `dt == 0`
-    /// would hold forever (measured: Home's first paint). Advance `v`, write nothing. The image's
-    /// captured placeholders are re-counted on it, so `placeholders` is ignored here: they belong
-    /// to the image, and the live draw that replaces it is judged afresh.
-    Advance,
 }
 
 /// The decision, a pure function of the sample.
 pub(crate) fn decide(s: &Sample) -> Action {
-    let waiting = s.tex_pending || s.source_busy || !s.claims.is_empty();
-    if s.page_image && !waiting {
-        return Action::Advance;
-    }
     if hold_reasons(s).is_empty() {
         Action::Write
     } else {
         Action::Hold
     }
+}
+
+/// How many EXTRA held repeats a clean virtual frame gets (the hold-injection gate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExtraHolds {
+    /// `<k>`: exactly `k` on every frame.
+    Fixed(u32),
+    /// `r<seed>`: 0..=3, a pure function of the seed and the virtual frame.
+    Seeded(u64),
+}
+
+impl ExtraHolds {
+    pub(crate) fn parse(spec: &str) -> Result<ExtraHolds, String> {
+        if let Some(seed) = spec.strip_prefix('r') {
+            seed.parse().map(ExtraHolds::Seeded).map_err(|_| format!("PLXNATIVE_DUMP_EXTRA_HOLDS={spec:?}: want <k> or r<seed>"))
+        } else {
+            spec.parse().map(ExtraHolds::Fixed).map_err(|_| format!("PLXNATIVE_DUMP_EXTRA_HOLDS={spec:?}: want <k> or r<seed>"))
+        }
+    }
+
+    pub(crate) fn for_frame(self, v: u64) -> u32 {
+        match self {
+            ExtraHolds::Fixed(k) => k,
+            ExtraHolds::Seeded(seed) => {
+                // splitmix64 over (seed, v): a fixed pure mix, so a seed names one injection pattern.
+                let mut x = v.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ seed.wrapping_mul(0xD1B5_4A32_D192_ED03);
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                x ^= x >> 27;
+                x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+                x ^= x >> 31;
+                (x % 4) as u32
+            }
+        }
+    }
+}
+
+/// `PLXNATIVE_DUMP_KEYS`: `<v>:<key>,...` sorted by frame (stable, so two keys on one frame keep
+/// their order).
+pub(crate) fn parse_keys(spec: &str) -> Result<Vec<(u64, Key)>, String> {
+    let mut out = Vec::new();
+    for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let (v, name) = part.split_once(':').ok_or_else(|| format!("PLXNATIVE_DUMP_KEYS: {part:?} is not <frame>:<key>"))?;
+        let v = v.parse::<u64>().map_err(|_| format!("PLXNATIVE_DUMP_KEYS: {part:?}: the frame is not a number"))?;
+        let key = match name {
+            "up" => Key::Up,
+            "down" => Key::Down,
+            "left" => Key::Left,
+            "right" => Key::Right,
+            "ok" => Key::Ok,
+            "back" => Key::Back,
+            other => return Err(format!("PLXNATIVE_DUMP_KEYS: {other:?} is not up/down/left/right/ok/back")),
+        };
+        out.push((v, key));
+    }
+    out.sort_by_key(|&(v, _)| v);
+    Ok(out)
+}
+
+/// A scripted key that cannot be pressed AND released inside the run is an error at start, not a
+/// key that silently never happens: the run is `preroll + frames` virtual frames (the last is
+/// `preroll + frames - 1`), the down edge is on frame `v` and the up edge on `v + KEY_UP_AFTER`.
+pub(crate) fn check_key_schedule(keys: &[(u64, Key)], preroll: u32, frames: u32) -> Result<(), String> {
+    let total = preroll as u64 + frames as u64;
+    for &(v, key) in keys {
+        if v + KEY_UP_AFTER >= total {
+            return Err(format!(
+                "PLXNATIVE_DUMP_KEYS: {key:?} at virtual frame {v} cannot come up before the run ends \
+                 (its up edge is frame {}, the last frame is {}: {preroll} preroll + {frames} frames)",
+                v + KEY_UP_AFTER, total.saturating_sub(1)
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// An entry that will never resolve: a card with no picture key at all.
@@ -224,8 +324,6 @@ pub(crate) struct Summary {
     pub preroll: u32,
     pub iterations: u64,
     pub holds: u64,
-    /// Virtual frames advanced and not written because only a page image was in the way.
-    pub advances: u64,
     pub frames_with_debt: u32,
     pub hold_reasons: BTreeMap<String, u64>,
     pub unconverted_takes: Vec<(u32, u64)>,
@@ -250,10 +348,10 @@ impl Summary {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "{{\"schema\":1,\"frames\":{},\"preroll\":{},\"iterations\":{},\"holds\":{},\"advances\":{},\
+            "{{\"schema\":1,\"frames\":{},\"preroll\":{},\"iterations\":{},\"holds\":{},\
              \"frames_with_debt\":{},\"hold_reasons\":{{{reasons}}},\"unconverted_takes\":[{unconverted}],\
              \"clock_origin_ms\":{ORIGIN_MS},\"wall_ms\":{},\"width\":{},\"height\":{},\"failed\":{}}}\n",
-            self.frames, self.preroll, self.iterations, self.holds, self.advances, self.frames_with_debt, self.wall_ms,
+            self.frames, self.preroll, self.iterations, self.holds, self.frames_with_debt, self.wall_ms,
             self.width, self.height,
             self.failed.as_deref().map(json_str).unwrap_or_else(|| "null".to_string()),
         )
@@ -268,6 +366,8 @@ struct Cfg {
     max_hold: Duration,
     no_hold: bool,
     allow_absent: bool,
+    keys: Vec<(u64, Key)>,
+    extra_holds: ExtraHolds,
 }
 
 fn env_u32(name: &str, default: u32) -> u32 {
@@ -277,7 +377,7 @@ fn env_u32(name: &str, default: u32) -> u32 {
 impl Cfg {
     fn from_env() -> Option<Cfg> {
         let dir = std::path::PathBuf::from(std::env::var_os("PLXNATIVE_DUMP")?);
-        Some(Cfg {
+        let cfg = Cfg {
             dir,
             frames: env_u32("PLXNATIVE_DUMP_FRAMES", 180),
             preroll: env_u32("PLXNATIVE_DUMP_PREROLL", DEFAULT_PREROLL),
@@ -285,7 +385,13 @@ impl Cfg {
             max_hold: Duration::from_millis(env_u32("PLXNATIVE_DUMP_MAX_HOLD_MS", 60_000) as u64),
             no_hold: std::env::var_os("PLXNATIVE_DUMP_NO_HOLD").is_some(),
             allow_absent: std::env::var_os("PLXNATIVE_DUMP_ALLOW_ABSENT").is_some(),
-        })
+            keys: std::env::var("PLXNATIVE_DUMP_KEYS").map_or_else(|_| Ok(Vec::new()), |s| parse_keys(&s)).unwrap_or_else(|e| panic!("framedump: {e}")),
+            extra_holds: std::env::var("PLXNATIVE_DUMP_EXTRA_HOLDS")
+                .map_or(Ok(ExtraHolds::Fixed(0)), |s| ExtraHolds::parse(&s))
+                .unwrap_or_else(|e| panic!("framedump: {e}")),
+        };
+        check_key_schedule(&cfg.keys, cfg.preroll, cfg.frames).unwrap_or_else(|e| panic!("framedump: {e}"));
+        Some(cfg)
     }
 }
 
@@ -300,6 +406,30 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Is a dump running (armed at the first iteration)? The loop forces a present while it is.
 pub(crate) fn active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
+}
+
+thread_local! {
+    /// The `dt` the idle gate judged the last NEW virtual frame with.
+    static IDLE_DT: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
+/// The `dt` the idle gate's rest test ([`plx_machine::idle::frame_begin_judging_rest_with`]) uses this iteration.
+///
+/// A spring is "at rest" when its position is near its target AND `velocity * dt` is under the
+/// rest threshold (`idle::settled`), so a held repeat at `dt == 0` reads every spring that is
+/// still creeping toward its target as settled and flips `page_quiescent`, whose answer picks what
+/// the page draws (a frozen page image, or the live page with its cards). Left alone, the frame a
+/// run writes would depend on whether a repeat followed the first pass of its virtual frame. A
+/// repeat therefore judges rest with the `dt` of the first pass: the springs themselves still
+/// stand still (`fr.dt == 0`), only the verdict on them is repeated, so it is the same on every
+/// iteration of a virtual frame. Outside a dump this is not called.
+pub(crate) fn idle_dt(dt: f32) -> f32 {
+    if plx_gfx::dump::held_repeat() {
+        IDLE_DT.with(std::cell::Cell::get)
+    } else {
+        IDLE_DT.with(|c| c.set(dt));
+        dt
+    }
 }
 
 struct Dump {
@@ -317,6 +447,15 @@ struct Dump {
     sum: Summary,
     pre: Sample,
     done: bool,
+    /// Index into `cfg.keys` of the next key to press.
+    keys_next: usize,
+    /// Key releases owed: (virtual frame to deliver on, key), in due order.
+    ups: Vec<(u64, Key)>,
+    /// The picture of the last CLEAN iteration of this virtual frame (pixels, hash): a frame is
+    /// written once a clean iteration reproduces it ([`Action::Hold`], "settling").
+    settle: Option<(Vec<u8>, u64)>,
+    /// Extra holds spent on this virtual frame (the hold-injection gate).
+    extras_run: u32,
 }
 
 thread_local! {
@@ -337,6 +476,7 @@ impl Dump {
             )
         });
         plx_gfx::dump::arm();
+        install_panic_hook();
         placeholder::arm();
         // The takes wait for their answers up to this long; the hold timeout is the real bound.
         app.bridge.landgate().arm_dump_strict(cfg.max_hold);
@@ -360,6 +500,10 @@ impl Dump {
             sum: Summary { frames: cfg.frames, preroll: cfg.preroll, width: WIDTH, height: HEIGHT, ..Summary::default() },
             pre: Sample::default(),
             done: false,
+            keys_next: 0,
+            ups: Vec::new(),
+            settle: None,
+            extras_run: 0,
             cfg,
         }
     }
@@ -386,6 +530,24 @@ impl Dump {
     }
 }
 
+/// A panic on the loop's thread ends the run through [`Dump::fail`]: `dump.json` carries the message
+/// (a landgate take names the mailbox it was owed) and the frame sink is flushed, instead of the
+/// process dying with only a log line. A panic while the dump is already borrowed (inside
+/// `after_draw`) falls through to the previous hook.
+fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = DUMP.try_with(|cell| {
+            if let Ok(mut g) = cell.try_borrow_mut() {
+                if let Some(d) = g.as_mut() {
+                    d.fail(format!("panic: {info}"));
+                }
+            }
+        });
+        prev(info);
+    }));
+}
+
 /// Top of every loop iteration, before anything reads the clock. The first call arms the dump.
 pub(crate) fn iteration_begin(app: &mut App) {
     DUMP.with(|cell| {
@@ -403,7 +565,30 @@ pub(crate) fn iteration_begin(app: &mut App) {
             );
             d.fail(why);
         }
+        // A repeat of the same virtual frame: the per-iteration steppers stand still (`held_repeat`).
+        plx_gfx::dump::set_held_repeat(d.holds_run > 0);
         crate::app::clock::set_replay(ORIGIN_MS + virtual_ms(d.v));
+        // The interim script: a key goes down at the FIRST iteration of its virtual frame, so a
+        // repeat never presses it twice, and comes up [`KEY_UP_AFTER`] virtual frames later, as a
+        // finger leaves a remote. Both edges at one instant would make the press machine's commit
+        // (`ui::press`: the release is read only once the press has armed, which happens in the
+        // iteration AFTER the pre-pass sees the up edge) depend on how many iterations a virtual
+        // frame took. (S5c's storyboard interpreter replaces this.)
+        if d.holds_run == 0 {
+            let at = Tick { ms: ORIGIN_MS + virtual_ms(d.v), dt_us: 0 };
+            while d.keys_next < d.cfg.keys.len() && d.cfg.keys[d.keys_next].0 <= d.v {
+                let key = d.cfg.keys[d.keys_next].1;
+                d.keys_next += 1;
+                plx_base::eventlog::log(&format!("framedump: key {key:?} at virtual frame {}", d.v));
+                app.inputs.push(crate::app::bridge::script_edge(key, plx_machine::machine::Edge::Down, at));
+                d.ups.push((d.v + KEY_UP_AFTER, key));
+            }
+            while let Some(&(due, key)) = d.ups.first() {
+                if due > d.v { break; }
+                d.ups.remove(0);
+                app.inputs.push(crate::app::bridge::script_edge(key, plx_machine::machine::Edge::Up, at));
+            }
+        }
         placeholder::reset();
     });
 }
@@ -425,6 +610,7 @@ pub(crate) fn pre_draw(app: &App) {
             source_busy: !plx_ui::tex::source_idle(),
             page_image: false,
             claims: app.bridge.open_claims(),
+            carried: false,
         };
     });
 }
@@ -454,24 +640,46 @@ pub(crate) fn after_draw(app: &App, vx: c_int, vy: c_int, vw: c_int, vh: c_int) 
                 }
                 c
             },
+            carried: app.pages.work_carried(),
         };
         if !d.cfg.allow_absent && !frame.absent.is_empty() {
             let why = format!("a settled-absent placeholder is on screen (no clearLogo will arrive): {}", describe(&frame.absent));
             d.fail(why);
         }
-        let why = hold_reasons(&post);
-        let action = if d.cfg.no_hold { Action::Write } else { decide(&post) };
-        if action == Action::Advance {
-            if let Err(why) = check_advance(d.v, d.cfg.preroll) {
+        if !d.cfg.allow_absent {
+            if let Some(why) = crate::app::adapters::poster::dump_failure() {
                 d.fail(why);
             }
-            d.sum.advances += 1;
-            *d.sum.hold_reasons.entry("page-image(advance)".into()).or_default() += 1;
-            d.last_why = format!("page-image(advance); entries [{}]", describe(&frame.entries));
-            d.v += 1;
-            d.holds_run = 0;
-            d.last_progress = Instant::now();
-            return false;
+        }
+        if app.pages.overlay_open() {
+            d.fail("a modal or popover is open: its dim field is sampled on a cadence of presented iterations \
+                    and is not yet synchronous in a dump (gfx::field_kick), so the frame would depend on the holds"
+                .to_string());
+        }
+        let mut why = hold_reasons(&post);
+        let mut action = if d.cfg.no_hold { Action::Write } else { decide(&post) };
+        if action == Action::Hold {
+            d.settle = None;
+        } else if !d.cfg.no_hold {
+            // SETTLING: a clean frame is written once a clean iteration at the same `T(v)` reproduces
+            // the picture of the one before it. State that advances per iteration rather than per
+            // millisecond (a layout that needs a second pass, a first draw that only measures) is
+            // therefore run to its fixed point, and the fixed point does not depend on how many
+            // iterations the holds before it happened to take. The cost is one more iteration and
+            // one more read-back per virtual frame.
+            let px = crate::shot::read_flipped(vx, vy, vw, vh, 3);
+            let hash = xxhash_rust::xxh3::xxh3_64(&px);
+            let again = d.settle.as_ref().is_some_and(|(_, h)| *h == hash);
+            d.settle = Some((px, hash));
+            if !again {
+                action = Action::Hold;
+                why.push("settling".to_string());
+            } else if d.extras_run < d.cfg.extra_holds.for_frame(d.v) {
+                // The hold-injection gate: a settled frame is held `extra` more times.
+                d.extras_run += 1;
+                action = Action::Hold;
+                why.push("extra-hold".to_string());
+            }
         }
         if action == Action::Hold {
             d.holds_run += 1;
@@ -480,7 +688,7 @@ pub(crate) fn after_draw(app: &App, vx: c_int, vy: c_int, vw: c_int, vh: c_int) 
                 *d.sum.hold_reasons.entry(r.clone()).or_default() += 1;
             }
             d.last_why = format!("{}; entries [{}]", why.join(","), describe(&frame.entries));
-            let stuck_on_nothing = !post.tex_pending && !post.source_busy && !post.page_image
+            let stuck_on_nothing = !post.tex_pending && !post.source_busy
                 && post.claims.is_empty() && !frame.entries.is_empty() && frame.entries.iter().all(never_resolves);
             if stuck_on_nothing && !d.cfg.allow_absent {
                 let why = format!("a card that can never resolve (empty art key) and nothing else pending: {}", describe(&frame.entries));
@@ -490,16 +698,22 @@ pub(crate) fn after_draw(app: &App, vx: c_int, vy: c_int, vw: c_int, vh: c_int) 
         }
         // The frame is clean: it counts as a virtual frame whether or not it is written.
         // `frames.tsv`'s `t_ms` is `T(n)` of the WRITTEN index, the output timeline, which is what
-        // `tools/site_video.py` gates. After the preroll no advance can happen ([`check_advance`]),
-        // so written frame `n` is virtual frame `preroll + n`.
+        // `tools/site_video.py` gates. Virtual time is never skipped, so written frame `n` is
+        // virtual frame `preroll + n`.
         let t = virtual_ms(d.written as u64);
         if d.v >= d.cfg.preroll as u64 {
             if vw != WIDTH || vh != HEIGHT {
-                let why = format!("the viewport is {vw}x{vh}, the master is {WIDTH}x{HEIGHT} (set PLXNATIVE_WIN=1920x1080)");
+                let why = format!("the viewport is {vw}x{vh}, the master is {WIDTH}x{HEIGHT} (the dump asks for a 1:1 drawable; set PLXNATIVE_WIN=1920x1080 and run on a display that can give one)");
                 d.fail(why);
             }
-            let rgb = crate::shot::read_flipped(vx, vy, vw, vh, 3);
-            let hash = xxhash_rust::xxh3::xxh3_64(&rgb);
+            let (rgb, hash) = match d.settle.take() {
+                Some(settled) => settled,
+                None => {
+                    let rgb = crate::shot::read_flipped(vx, vy, vw, vh, 3);
+                    let hash = xxhash_rust::xxh3::xxh3_64(&rgb);
+                    (rgb, hash)
+                }
+            };
             if let Some(s) = d.sink.as_mut() {
                 if let Err(e) = s.write_all(&rgb) {
                     let why = format!("the frame sink refused frame {}: {e}", d.written);
@@ -515,6 +729,8 @@ pub(crate) fn after_draw(app: &App, vx: c_int, vy: c_int, vw: c_int, vh: c_int) 
         }
         d.v += 1;
         d.holds_run = 0;
+        d.extras_run = 0;
+        d.settle = None;
         d.last_progress = Instant::now();
         if d.written >= d.cfg.frames {
             let unconverted: Vec<(u32, u64)> =
@@ -576,14 +792,15 @@ mod tests {
         assert_eq!(one(Sample { placeholders: 3, ..Default::default() }), ["placeholder"]);
         assert_eq!(one(Sample { tex_pending: true, ..Default::default() }), ["tex-pending"]);
         assert_eq!(one(Sample { source_busy: true, ..Default::default() }), ["source-busy"]);
-        assert_eq!(one(Sample { page_image: true, ..Default::default() }), ["page-image"]);
         assert_eq!(one(Sample { claims: vec!["hubs"], ..Default::default() }), ["claim:hubs"]);
+        assert_eq!(one(Sample { carried: true, ..Default::default() }), ["carried-work"]);
     }
 
     #[test]
     fn reasons_come_in_a_fixed_order_and_accumulate() {
-        let s = Sample { placeholders: 1, tex_pending: true, source_busy: true, page_image: true, claims: vec!["hubs", "browse"] };
-        assert_eq!(hold_reasons(&s), ["placeholder", "tex-pending", "source-busy", "page-image", "claim:hubs", "claim:browse"]);
+        let s = Sample { placeholders: 1, tex_pending: true, source_busy: true, page_image: true,
+            claims: vec!["hubs", "browse"], carried: true };
+        assert_eq!(hold_reasons(&s), ["placeholder", "tex-pending", "source-busy", "claim:hubs", "claim:browse", "carried-work"]);
     }
 
     #[test]
@@ -594,44 +811,62 @@ mod tests {
             Sample { tex_pending: true, ..Default::default() },
             Sample { source_busy: true, ..Default::default() },
             Sample { claims: vec!["hubs"], ..Default::default() },
+            Sample { carried: true, ..Default::default() },
         ] {
             assert_eq!(decide(&s), Action::Hold, "{s:?}");
         }
     }
 
     #[test]
-    fn a_held_page_image_alone_advances_time_because_a_frozen_clock_never_releases_it() {
+    fn a_held_page_image_is_a_reported_fact_and_never_a_hold_reason() {
         let image = Sample { page_image: true, ..Default::default() };
-        assert_eq!(decide(&image), Action::Advance);
-        // Its captured placeholders are the image's own, re-counted on it: still an advance.
-        assert_eq!(decide(&Sample { placeholders: 7, ..image.clone() }), Action::Advance);
-    }
-
-    #[test]
-    fn a_page_image_with_something_still_in_flight_holds_instead() {
-        let image = Sample { page_image: true, ..Default::default() };
+        assert_eq!(decide(&image), Action::Write, "an image with no debt is a frame like any other");
+        assert!(hold_reasons(&image).is_empty());
+        // its debt (re-counted on it by the dispatcher) holds like any other
+        assert_eq!(decide(&Sample { placeholders: 7, ..image.clone() }), Action::Hold);
         assert_eq!(decide(&Sample { tex_pending: true, ..image.clone() }), Action::Hold);
         assert_eq!(decide(&Sample { source_busy: true, ..image.clone() }), Action::Hold);
         assert_eq!(decide(&Sample { claims: vec!["browse"], ..image }), Action::Hold);
     }
 
     #[test]
-    fn an_advance_is_allowed_only_inside_the_preroll() {
-        assert!(check_advance(0, 60).is_ok());
-        assert!(check_advance(59, 60).is_ok());
-        let at = check_advance(60, 60).unwrap_err();
-        assert!(at.contains("virtual frame 60") && at.contains("unsupported until S5b-2"), "{at}");
-        assert!(check_advance(61, 60).is_err());
-        assert!(check_advance(500, 60).is_err());
-        // With no preroll there is no unwritten stretch at all: even a boot-time advance fails.
-        assert!(check_advance(0, 0).is_err());
+    fn extra_holds_parse_and_are_a_pure_function_of_the_frame() {
+        assert_eq!(ExtraHolds::parse("0"), Ok(ExtraHolds::Fixed(0)));
+        assert_eq!(ExtraHolds::parse("3"), Ok(ExtraHolds::Fixed(3)));
+        assert_eq!(ExtraHolds::parse("r17"), Ok(ExtraHolds::Seeded(17)));
+        assert!(ExtraHolds::parse("x").is_err() && ExtraHolds::parse("r").is_err() && ExtraHolds::parse("-1").is_err());
+        assert!((0..500).all(|v| ExtraHolds::Fixed(0).for_frame(v) == 0));
+        assert!((0..500).all(|v| ExtraHolds::Fixed(2).for_frame(v) == 2));
+        let a: Vec<u32> = (0..500).map(|v| ExtraHolds::Seeded(7).for_frame(v)).collect();
+        let b: Vec<u32> = (0..500).map(|v| ExtraHolds::Seeded(7).for_frame(v)).collect();
+        let c: Vec<u32> = (0..500).map(|v| ExtraHolds::Seeded(8).for_frame(v)).collect();
+        assert_eq!(a, b, "a seed names one pattern");
+        assert_ne!(a, c, "another seed names another");
+        assert!(a.iter().all(|&k| k <= 3));
+        for k in 0..=3 {
+            assert!(a.contains(&k), "all of 0..=3 occur in 500 frames (missing {k})");
+        }
     }
 
     #[test]
-    fn the_default_preroll_covers_the_measured_boot_advances_with_room() {
-        // Home's boot spends about 10 advances on its first paint; the default must be well past.
-        assert!(DEFAULT_PREROLL >= 30);
-        assert!(check_advance(10, DEFAULT_PREROLL).is_ok());
+    fn keys_parse_in_frame_order_and_refuse_nonsense() {
+        assert_eq!(parse_keys("200:ok, 100:right,100:down").unwrap(), [(100, Key::Right), (100, Key::Down), (200, Key::Ok)]);
+        assert_eq!(parse_keys("").unwrap(), []);
+        assert!(parse_keys("100").is_err());
+        assert!(parse_keys("x:ok").is_err());
+        assert!(parse_keys("100:menu").is_err());
+    }
+
+    #[test]
+    fn a_key_that_cannot_come_up_inside_the_run_is_refused_at_start() {
+        // 60 preroll + 100 frames: virtual frames 0..=159, so the last down edge is 153 (up on 159).
+        let keys = |v| vec![(v, Key::Ok)];
+        assert!(check_key_schedule(&keys(153), 60, 100).is_ok());
+        assert!(check_key_schedule(&keys(154), 60, 100).unwrap_err().contains("up edge is frame 160"));
+        assert!(check_key_schedule(&keys(159), 60, 100).is_err(), "on the last frame");
+        assert!(check_key_schedule(&keys(160), 60, 100).is_err(), "past the last frame");
+        assert!(check_key_schedule(&[], 60, 100).is_ok());
+        assert!(check_key_schedule(&[(10, Key::Ok), (500, Key::Back)], 0, 100).is_err(), "any key counts, not the first");
     }
 
     #[test]
@@ -667,6 +902,7 @@ mod tests {
     #[test]
     fn the_summary_is_valid_json_with_the_failure_escaped() {
         let mut s = Summary { frames: 3, preroll: 1, width: 1920, height: 1080, ..Summary::default() };
+        assert!(!s.to_json().contains("advances"));
         s.hold_reasons.insert("claim:hubs".into(), 2);
         s.unconverted_takes.push((1, 5));
         s.failed = Some("a \"quoted\"\nline".into());

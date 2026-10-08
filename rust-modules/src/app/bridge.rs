@@ -3376,14 +3376,17 @@ pub(crate) fn release_input(now: Tick) -> InputEvent<u32> {
 
 /// A scripted direction (the dev oscillators), both edges.
 pub(crate) fn script_key(key: Key, now: Tick) -> Vec<InputEvent<u32>> {
-    [Edge::Down, Edge::Up]
-        .into_iter()
-        .map(|edge| InputEvent {
-            at: now,
-            source: Source::Script,
-            kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false },
-        })
-        .collect()
+    [Edge::Down, Edge::Up].into_iter().map(|edge| script_edge(key, edge, now)).collect()
+}
+
+/// One scripted key edge. The frame dump presses a key as a person does, the down edge and then
+/// the up edge some frames later (`dev::framedump`).
+pub(crate) fn script_edge(key: Key, edge: Edge, now: Tick) -> InputEvent<u32> {
+    InputEvent {
+        at: now,
+        source: Source::Script,
+        kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false },
+    }
 }
 
 #[allow(dead_code)]
