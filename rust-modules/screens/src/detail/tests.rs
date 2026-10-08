@@ -3333,6 +3333,45 @@ fn the_focused_card_is_the_related_item_and_the_rect_the_opener_measured_before(
     clear();
 }
 
+/// A season tab, an episode, an Extras card and a Cast card are not catalog items the item menu
+/// acts on through `Screen::focused_card`: none of them names a card, whatever the host asks.
+#[test]
+fn the_focused_card_is_none_for_season_episode_extras_and_cast() {
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.related = vec![Default::default()];
+    d.extras = vec![Default::default()];
+    d.cast.push(plx_data::metadata::Cast {
+        tag: "Actor".into(),
+        role: "Role".into(),
+        thumb: String::new(),
+        id: 1,
+        tag_key: String::new(),
+    });
+    let _guard = install(d);
+    let screen = bare(&_guard, sid, "show");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let key = |elem| FocusKey { entry: EntryId(7), elem };
+    let related = screen.engine_key(related::elem(0).unwrap()).unwrap();
+    let context = cx(&measure, Some(related));
+    assert!(Screen::<TestHost>::focused_card(&screen, &context, Some(key(related)), Some(At::Drawn)).is_some(),
+        "the fixture's Related card is a focused card, so the negatives below are the page's answer");
+    for (name, local) in [
+        ("season", season::elem(0).unwrap()),
+        ("episode still", episodes::elem(0, episodes::Row::Still).unwrap()),
+        ("episode text", episodes::elem(0, episodes::Row::Text).unwrap()),
+        ("extras", extras::elem(0).unwrap()),
+        ("cast", cast::elem(0).unwrap()),
+    ] {
+        let elem = screen.engine_key(local).unwrap_or(local);
+        let context = cx(&measure, Some(elem));
+        for at in [Some(At::Drawn), None] {
+            assert!(Screen::<TestHost>::focused_card(&screen, &context, Some(key(elem)), at).is_none(), "{name}");
+        }
+    }
+    clear();
+}
+
 #[test]
 fn ok_on_the_heading_opens_the_collection_and_ok_on_a_member_opens_its_detail() {
     let sid = ServerId::UNSET;

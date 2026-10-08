@@ -439,7 +439,7 @@ const SETTLE_US_TARGET: u32 = (SETTLE_S * 1_000_000.0) as u32;
 const LIMIT: i64 = 12;
 
 /// Per-shelf item cap, for the same reason `person.rs` carries one: a `CardRow` owns exactly
-/// `ui::card_row::MAX_ROW_ITEMS` focus-scale springs and `scale(i)` clamps past the end,
+/// `ui::cards::MAX_ROW_ITEMS` focus-scale springs and `scale(i)` clamps past the end,
 /// so an item beyond the cap would draw with the last cell's pop and never pop at all when focused.
 /// The data layer cannot name the UI library's constant, so this is [`crate::pms::MAX_SHELF_ITEMS`],
 /// the data layer's own spelling of the same number (`screens::home`'s

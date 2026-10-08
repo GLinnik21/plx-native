@@ -2458,6 +2458,9 @@ impl<H: HomeLike> Screen<H> for HomeScreen {
         let placed = at.and_then(|at| Focusable::<H>::place(self, &key.elem, cx, at));
         Some(plx_ui::screen::FocusedCard::new(item, placed))
     }
+    fn focused_card_rect(&self, cx: &Cx<'_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: At) -> Option<Rect> {
+        HomeScreen::focused_rect::<H>(self, focus, cx, at)
+    }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         HomeScreen::redraw_focused::<H>(self, f, focus)
     }

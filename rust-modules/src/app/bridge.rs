@@ -631,7 +631,8 @@ impl Bridge {
 
     pub(crate) fn search_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
         -> Option<(plx_data::search::Item, plx_ui::popover::Opener)> {
-        let screen = &d.nav.entry(entry)?.inst.as_ref()?.screen;
+        let e = d.nav.entry(entry).filter(|e| e.arg == AppArg::Search)?;
+        let screen = &e.inst.as_ref()?.screen;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
@@ -650,7 +651,8 @@ impl Bridge {
 
     pub(crate) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
         -> Option<(plx_data::pms::PmsMovie, plx_ui::popover::Opener)> {
-        let screen = &d.nav.entry(entry)?.inst.as_ref()?.screen;
+        let e = d.nav.entry(entry).filter(|e| e.arg == AppArg::Library)?;
+        let screen = &e.inst.as_ref()?.screen;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
@@ -732,11 +734,11 @@ impl Bridge {
     pub(crate) fn home_opener(&self, d: &Dispatcher<AppHost>, entry: EntryId,
         focus: Option<FocusKey<u32>>) -> plx_ui::popover::Opener {
         let rect = focus.filter(|key| key.entry == entry).and_then(|key| {
-            let screen = &d.nav.entry(entry)?.inst.as_ref()?.screen;
+            let screen = &d.nav.entry(entry).filter(|e| e.arg == AppArg::Home)?.inst.as_ref()?.screen;
             let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
                 focus: plx_machine::machine::FocusRead { current: Some(key) , ..Default::default() }, owner: InputOwner::Entry(entry) };
             let cx = parts.cx::<AppHost>(self.views(), &self.measure);
-            screen.focused_card(&cx, Some(key), Some(At::Drawn))?.rect
+            screen.focused_card_rect(&cx, Some(key), At::Drawn)
         });
         plx_ui::popover::Opener { rect, ..plx_ui::popover::Opener::NONE }
     }
@@ -941,7 +943,10 @@ impl Bridge {
         }
         // A card page answers its focused card and where it sits: Person, Collection, and Detail's
         // Related shelf — a RELATED tile is a DIFFERENT item standing on the same page, an
-        // ordinary card row, which is exactly what `MenuHost::Related` existed to say.
+        // ordinary card row, which is exactly what `MenuHost::Related` existed to say. Only a
+        // content page's route: Home, Library and Search cards open their menus through their own
+        // requests, which carry the `from_deck` / `from_home` bits this arm would drop.
+        if !matches!(e.arg, AppArg::Content(_)) { return None; }
         let card = real.focused_card(&cx, ret.focus, Some(At::Drawn))?;
         let item = card.item.downcast_ref::<plx_data::pms::PmsMovie>().filter(|m| plx_screens::item_menu::has_actions(m))?;
         Some(card_menu_arg(item, false, false, entry, ret.focus, card.rect))
@@ -3465,6 +3470,10 @@ mod library_host_freeze_tests;
 #[cfg(test)]
 #[path = "library_shelf_action_tests.rs"]
 mod library_shelf_action_tests;
+
+#[cfg(test)]
+#[path = "opener_route_tests.rs"]
+mod opener_route_tests;
 
 #[cfg(test)]
 #[path = "library_tab_arrival_tests.rs"]

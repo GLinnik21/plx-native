@@ -432,7 +432,7 @@ struct HubRow {
     /// Which SERVER this shelf's items came from, as the owner's handle ("friend") — empty
     /// whenever the row came from the signed-in user's own server, which is every row today.
     /// Empty is the ABSENCE of an annotation, not an empty one: the home shelf heading draws no
-    /// separator and no second run at all for it (`ui::card_row::heading_flow`), so the annotation costs
+    /// separator and no second run at all for it (`ui::cards::heading_flow`), so the annotation costs
     /// a single-server library nothing — no gap, no dot, no draw call. (The heading's INK changed in
     /// the same pass, which is a separate, deliberate harmonization; `heading_flow`'s doc has it.)
     /// Populated by the multi-server data layer when it lands.

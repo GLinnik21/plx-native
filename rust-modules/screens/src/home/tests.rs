@@ -1594,7 +1594,7 @@ fn the_home_census_covers_input_motion_and_current_projection() {
 }
 
 /// `person` and `search` cap their shelves at the data layer's `pms::MAX_SHELF_ITEMS`; the card row
-/// that draws them owns `ui::card_row::MAX_ROW_ITEMS` springs. The data layer cannot name `ui` and
+/// that draws them owns `ui::cards::MAX_ROW_ITEMS` springs. The data layer cannot name `ui` and
 /// `ui` cannot name the data layer, so there are two constants for one number and this is the only
 /// place that sees both.
 #[test]
@@ -2246,9 +2246,9 @@ fn addressed_item_menu_uses_the_current_owned_grid_item() {
 }
 
 /// The item-menu opener asks the page for its focused card (`Screen::focused_card`) instead of
-/// downcasting to Home: a grid card names the item `focused_item` does (a Continue Watching press
-/// and its menu are account-affecting) and the rect `focused_rect` measures; the hero, which is
-/// not a card, names none.
+/// downcasting to Home: a grid card names the item the seeded hubs put there (a Continue Watching
+/// press and its menu are account-affecting) and the rect the page places it at; the hero, which is
+/// not a card, names none. Pinned at rest and during the hero-to-grid dive (`snap` <= 0.5).
 #[test]
 fn the_focused_card_is_the_grid_item_and_the_rect_the_opener_measured_before() {
     let _guard = plx_base::testlock::serial();
@@ -2257,19 +2257,22 @@ fn the_focused_card_is_the_grid_item_and_the_rect_the_opener_measured_before() {
     plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
     let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
-    s.snap.jump(1.0);
-    s.layout_grid();
-    for (row, shelf) in s.rows.iter().enumerate().take(2) {
-        for col in 0..shelf.elems.len().min(3) {
-            let key = FocusKey { entry: s.entry, elem: shelf.elems[col] };
+    // The seeded hubs are one shelf of two items, rating keys "1" and "2" on the unset server.
+    assert_eq!(s.rows[0].elems.len(), 2);
+    for snap in [1.0, 0.5, 0.2] {
+        s.snap.jump(snap);
+        s.layout_grid();
+        for (col, rk) in ["1", "2"].into_iter().enumerate() {
+            let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[col] };
             let context = cx(snapshot.view(), Some(key));
             let card = Screen::<TestHost>::focused_card(&s, &context, Some(key), Some(At::Drawn))
-                .unwrap_or_else(|| panic!("row {row} col {col} is a focused card"));
+                .unwrap_or_else(|| panic!("col {col} at snap {snap} is a focused card"));
             let item = card.item.downcast_ref::<PmsMovie>().unwrap();
-            let want = s.focused_item(Some(key), &context).unwrap();
-            assert_eq!((item.sid, item.rk.as_str()), (want.sid, want.rk.as_str()), "row {row} col {col}");
-            assert!(card.rect.is_some());
-            assert_eq!(card.rect, s.focused_rect(Some(key), &context, At::Drawn), "row {row} col {col}");
+            assert_eq!((item.sid, item.rk.as_str()), (plx_plex::plex::ServerId::UNSET, rk), "col {col} at snap {snap}");
+            let placed = Focusable::<TestHost>::place(&s, &key.elem, &context, At::Drawn).unwrap();
+            assert_eq!(card.rect, Some(placed.rect), "col {col} at snap {snap}");
+            assert!(card.rect.is_some() && card.rest_rect.is_some());
+            assert_eq!(Screen::<TestHost>::focused_card_rect(&s, &context, Some(key), At::Drawn), Some(placed.rect));
             assert!(Screen::<TestHost>::focused_card(&s, &context, Some(key), None).unwrap().rect.is_none());
         }
     }
@@ -2278,8 +2281,31 @@ fn the_focused_card_is_the_grid_item_and_the_rect_the_opener_measured_before() {
     assert!(Screen::<TestHost>::focused_card(&s, &cx(snapshot.view(), Some(foreign)), Some(foreign), Some(At::Drawn)).is_none());
     let hero = FocusKey { entry: s.entry, elem: 0 };
     let context = cx(snapshot.view(), Some(hero));
-    assert!(s.focused_rect(Some(hero), &context, At::Drawn).is_none());
+    assert!(Screen::<TestHost>::focused_card_rect(&s, &context, Some(hero), At::Drawn).is_none());
     assert!(Screen::<TestHost>::focused_card(&s, &context, Some(hero), Some(At::Drawn)).is_none());
+}
+
+/// The opener only anchors a menu, so it must not need the item to resolve: a hubs snapshot that
+/// shrank between the hold and the request drain leaves the card where it was drawn, and
+/// `focused_card_rect` still answers its rect (the item-resolving `focused_card` does not).
+#[test]
+fn the_opener_rect_survives_a_hubs_snapshot_that_shrank_after_the_hold() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.jump(1.0);
+    s.layout_grid();
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[1] };
+    let held = Focusable::<TestHost>::place(&s, &key.elem, &cx(snapshot.view(), Some(key)), At::Drawn).unwrap().rect;
+    plx_data::pms::seed_for_test(&mut state, &adapter, 1, plx_data::pms::HubState::Ready);
+    let shrunk = plx_data::pms::hubs_snapshot(&state);
+    let context = cx(shrunk.view(), Some(key));
+    assert!(s.focused_item(Some(key), &context).is_none(), "the second card is gone from the snapshot");
+    assert!(Screen::<TestHost>::focused_card(&s, &context, Some(key), Some(At::Drawn)).is_none());
+    assert_eq!(Screen::<TestHost>::focused_card_rect(&s, &context, Some(key), At::Drawn), Some(held));
 }
 
 #[test]

@@ -1193,17 +1193,6 @@ impl PersonScreen {
     pub fn bio_available(&self, view: plx_data::person::PersonView<'_>) -> bool {
         self.page.bio_available(view)
     }
-
-    pub fn focused_rect<H: ContentLike + PersonLike>(
-        &self,
-        focus: Option<plx_machine::machine::FocusKey<u32>>,
-        cx: &Cx<'_, H>,
-        at: At,
-    ) -> Option<Rect> {
-        let key = focus.filter(|k| k.entry == self.page.entry)?;
-        self.focused_item(Some(key), cx)?;
-        Focusable::<H>::place(self, &key.elem, cx, at).map(|p| p.rect)
-    }
 }
 
 impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {

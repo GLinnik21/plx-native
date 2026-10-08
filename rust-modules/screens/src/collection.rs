@@ -637,12 +637,6 @@ impl CollectionScreen {
             .and_then(|key| self.item_index(collection, key.elem))?;
         collection.items.get(index)
     }
-
-    pub fn focused_rect<H: ContentLike + CollectionLike>(&self,
-        focus: Option<plx_machine::machine::FocusKey<u32>>, cx: &Cx<'_, H>, at: At) -> Option<Rect> {
-        let key = focus.filter(|key| key.entry == self.entry())?;
-        Focusable::<H>::place(self, &key.elem, cx, at).map(|placed| placed.rect)
-    }
 }
 
 impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {

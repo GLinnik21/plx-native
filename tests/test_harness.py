@@ -5786,26 +5786,25 @@ impl PersonOwnerGateFixture {
 
     def test_cards_gate_catches_a_screen_assembling_its_own_strip(self):
         """Shared-card-sections L1: a screen draws card sections with `plx_ui::cards::{Shelf, Grid}`.
-        RED: a file in `screens/` outside ci/allow/cards.txt that names an L0 primitive, qualified
-        or imported by name, must fail `cards`; GREEN: the component itself is fine."""
+        `card_row` / `poster_grid` are `pub(crate)`, so the gate polices what `plx_ui::cards`
+        re-exports. RED: a file in `screens/` outside ci/allow/cards.txt that calls a tile painter
+        through the re-export surface (qualified, or imported by name), names an L0 type, or names
+        `AvatarRow` outside the profile picker must fail `cards`."""
         r = self._plant(
             "_check_deps_selftest_cards_strip.rs",
-            "pub fn draw_row() {\n    plx_ui::card_row::strip();\n}\n"
-            "use plx_ui::card_row::{draw_tile, RowStyle};\n"
-            "pub struct Mine(plx_ui::card_row::CardRow);\n"
-            "use plx_ui::card_row::*;\n"
-            "use plx_ui::card_row as rows;\n"
-            "pub fn cell() { plx_ui::poster_grid::cell(0, 0.0, 0.0, &[]); }\n"
-            "use plx_ui::poster_grid::{visible, COLS};\n",
+            "pub fn draw_row() {\n    plx_ui::cards::paint_visible(p, rect, 1.0, true);\n}\n"
+            "use plx_ui::cards::{paint_visible, RowStyle};\n"
+            "pub struct Mine(CardRow);\n"
+            "pub struct Pop(GridPop);\n"
+            "pub struct Bands(GridBands);\n"
+            "pub fn scale() -> f32 { press::scale() }\n"
+            "pub struct Avatars(plx_ui::cards::AvatarRow);\n",
             crate_dir="screens",
         )
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
         self.assertIn("cards:", out)
-        self.assertIn("_check_deps_selftest_cards_strip.rs:2", out)
-        self.assertIn("_check_deps_selftest_cards_strip.rs:4", out)
-        self.assertIn("_check_deps_selftest_cards_strip.rs:5", out)
-        for line in (6, 7, 8, 9):  # glob and renamed card_row imports, hand-rolled grid geometry
+        for line in (2, 4, 5, 6, 7, 8, 9):
             self.assertIn(f"_check_deps_selftest_cards_strip.rs:{line}", out)
 
     def test_cards_gate_allows_the_shared_component(self):
