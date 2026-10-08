@@ -36,7 +36,6 @@ pub struct Shelf {
     /// out, which lets that tile go over frames. Without one, a focused card that is no longer in
     /// the source left it in a content landing (it joined another section), and nobody lets go.
     left: bool,
-    ahead: usize,
     asked: Option<(usize, usize)>,
     /// How far past the screen edge a card still paints and registers a stop (default 0).
     margin: f32,
@@ -50,7 +49,7 @@ pub struct Shelf {
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
-        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, ahead: LOOK_AHEAD, asked: None,
+        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None,
             margin: 0.0, dormant: false, slept: false, pool: RowPool::new() }
     }
 
@@ -69,12 +68,6 @@ impl Shelf {
     /// dormant tick is still adopted whole). Set it before each [`on`](Self::on).
     pub fn dormant(&mut self, held: bool) {
         self.dormant = held;
-    }
-
-    /// Cards beyond the visible window a [`CardEvent::Want`] asks for (default 6).
-    pub const fn look_ahead(mut self, n: usize) -> Self {
-        self.ahead = n;
-        self
     }
 
     pub fn style(&self) -> &'static RowStyle {
@@ -222,7 +215,7 @@ impl Shelf {
         let pitch = self.style.w + self.style.gap;
         let window = ((self.row.scroll_x() + SCR_W - self.style.margin_x) / pitch).ceil().max(0.0) as usize;
         let focus = super::focused_index(&cx.focus, self.entry, src).map_or(0, |i| i + 1);
-        let end = window.max(focus).saturating_add(self.ahead);
+        let end = window.max(focus).saturating_add(LOOK_AHEAD);
         super::want(&mut self.asked, src.len(), end, src.more()).map(CardEvent::Want)
     }
 

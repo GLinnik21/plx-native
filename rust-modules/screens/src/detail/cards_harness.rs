@@ -210,11 +210,7 @@ impl CardHarness for Harness {
         self.shelf().scale_of(&self.cx(), &src, &elem)
     }
     fn focus_scale(&self) -> f32 { self.style().focus_scale }
-    fn canon(&self) -> u64 {
-        let mut c = Canon::new();
-        LogicalState::write(&self.screen, &mut c);
-        c.finish()
-    }
+    fn canon(&self) -> u64 { LogicalState::hash(&self.screen) }
     fn identity(&self, elem: u32) -> String {
         self.at(elem).map(|i| self.rks[i].clone()).unwrap_or_default()
     }

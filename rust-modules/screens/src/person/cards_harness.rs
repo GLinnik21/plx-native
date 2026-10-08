@@ -143,11 +143,7 @@ impl CardHarness for Harness {
         self.screen.stack.view(&self.screen.page).scale_of(&self.cx(), &elem)
     }
     fn focus_scale(&self) -> f32 { SHELF_STYLE.focus_scale }
-    fn canon(&self) -> u64 {
-        let mut c = Canon::new();
-        LogicalState::write(&self.screen, &mut c);
-        c.finish()
-    }
+    fn canon(&self) -> u64 { LogicalState::hash(&self.screen) }
     fn identity(&self, elem: u32) -> String {
         let Some(p) = self.store.view().current() else { return String::new() };
         self.at(elem).and_then(|(kind, col)| p.shelf(kind).get(col)).map(|m| m.rk.clone()).unwrap_or_default()

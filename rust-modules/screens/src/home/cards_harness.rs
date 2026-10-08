@@ -149,11 +149,7 @@ impl CardHarness for Harness {
         screen.grid.shelves.get(row)?.scale_of(&self.cx(), &screen.cards(self.snap.view(), row), &elem)
     }
     fn focus_scale(&self) -> f32 { RowStyle::HOME.focus_scale }
-    fn canon(&self) -> u64 {
-        let mut c = Canon::new();
-        LogicalState::write(&*self.screen.borrow(), &mut c);
-        c.finish()
-    }
+    fn canon(&self) -> u64 { LogicalState::hash(&*self.screen.borrow()) }
     fn identity(&self, elem: u32) -> String {
         let Some((row, col)) = self.at(elem) else { return String::new() };
         self.screen.borrow().item_at(self.snap.view(), row, col).map(|m| m.rk.clone()).unwrap_or_default()
