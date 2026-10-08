@@ -87,7 +87,7 @@ pub struct Grid {
     target: f32,
     bands: GridBands,
     pop: GridPop,
-    /// Which element the running let-go belongs to: the element-keyed pool (`pool.rs`), idle unless the dev switch is on.
+    /// Which element the running let-go belongs to: the element-keyed pool (`pool.rs`).
     shrink: ShrinkKey,
     seen: Seen,
     landed: Option<Landed>,
@@ -172,10 +172,7 @@ impl Grid {
         let focus = super::focused_index(&cx.focus, self.entry, src);
         self.landed = None;
         self.shift = 0.0;
-        let pooled = super::pool::pop_pool();
-        if pooled {
-            self.shrink.follow(&mut self.pop, src);
-        }
+        self.shrink.follow(&mut self.pop, src);
         let prev = self.pop.cell();
         // where the previously focused cell was on screen, before any band moves
         let was = prev.map(|p| self.cell(p, &self.bands.geometry()).y);
@@ -213,9 +210,7 @@ impl Grid {
         self.reveal = wanted;
         self.bands.tick(self.spec.style.k_scroll, dt);
         self.pop.tick(focus, &self.spec.style, dt);
-        if pooled {
-            self.shrink.note(&self.pop, src);
-        }
+        self.shrink.note(&self.pop, src);
         if self.spec.scroll == ScrollMode::External {
             return;
         }
@@ -264,7 +259,7 @@ impl Grid {
 
     /// A grid whose column count, card style or left edge changes at run time (the Library's
     /// episode listing is four stills across where its posters are six; both fit the same band).
-    /// Only the geometry changes: the pop and the caption bands are per position and carry over.
+    /// Only the geometry changes: the content is untouched, so each card keeps its pop spring and the caption bands carry over.
     pub fn set_columns(&mut self, cols: usize, style: RowStyle, left: f32) {
         self.spec.cols = cols;
         self.spec.style = style;
@@ -314,12 +309,10 @@ impl Grid {
     /// grid was not told about is FULL, the one that lost focus lets go, the rest are at rest).
     fn pop<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, focus: Option<usize>) -> f32 {
         // the element-keyed pool: a source change no tick has seen yet is resolved by element
-        if super::pool::pop_pool() {
-            match self.shrink.drawn(&self.pop, src, i, focus == Some(i)) {
-                Some(Drawn::Cell(c)) => return self.pop.scale(c, false, &self.spec.style),
-                Some(Drawn::Rest) => return 1.0,
-                None => {}
-            }
+        match self.shrink.drawn(&self.pop, src, i, focus == Some(i)) {
+            Some(Drawn::Cell(c)) => return self.pop.scale(c, false, &self.spec.style),
+            Some(Drawn::Rest) => return 1.0,
+            None => {}
         }
         self.pop.scale(i, focus == Some(i), &self.spec.style)
     }

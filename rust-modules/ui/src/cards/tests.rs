@@ -1799,21 +1799,7 @@ fn the_focused_card_paints_apart_from_the_rest() {
     assert_eq!(last, vec![101], "the focused card alone");
 }
 
-// ---- the element-keyed pop pool (dev switch, owner decision 2) ------------------------------
-
-/// Turns the pool on for one test and off again however the test ends.
-struct PoolOn;
-impl PoolOn {
-    fn set(on: bool) -> Self {
-        super::set_pop_pool(on);
-        PoolOn
-    }
-}
-impl Drop for PoolOn {
-    fn drop(&mut self) {
-        super::set_pop_pool(false);
-    }
-}
+// ---- the element-keyed pop pool (owner decision 2) ------------------------------
 
 /// Focus 100 settled, a deliberate move to 101, three frames: 100 is mid-shrink. Then `insert`
 /// cards land ahead of both, so 100 stands `insert` cells further on.
@@ -1833,30 +1819,22 @@ fn mid_shrink_then_a_landing<S: Section>(insert: usize) -> (Rig<S>, f32) {
 }
 
 fn a_mid_shrink_card_keeps_its_scale_across_a_landing<S: Section>(insert: usize) {
-    {
-        let _on = PoolOn::set(true);
-        let (r, before) = mid_shrink_then_a_landing::<S>(insert);
-        let now = r.sect.scale_of(&r.cx(), &r.src, 100).unwrap();
-        assert!(now > 1.01 && now <= before && before - now < 0.03, "pooled: 100 went from {before} to {now}");
-        for k in 0..insert {
-            assert_eq!(r.sect.scale_of(&r.cx(), &r.src, 900 + k as u32), Some(1.0), "pooled: the new card at rest");
-        }
-        let full = S::focus_scale();
-        let focused = r.sect.scale_of(&r.cx(), &r.src, 101).unwrap();
-        assert!(focused > 1.0 && focused < full, "pooled: the focused card is still growing, not {focused}");
+    let (r, before) = mid_shrink_then_a_landing::<S>(insert);
+    let now = r.sect.scale_of(&r.cx(), &r.src, 100).unwrap();
+    assert!(now > 1.01 && now <= before && before - now < 0.03, "100 went from {before} to {now}");
+    for k in 0..insert {
+        assert_eq!(r.sect.scale_of(&r.cx(), &r.src, 900 + k as u32), Some(1.0), "the new card at rest");
     }
-    // the same landing per position: the shrink stays in its cell, the card it left snaps to rest
-    let (r, _) = mid_shrink_then_a_landing::<S>(insert);
-    assert_eq!(r.sect.scale_of(&r.cx(), &r.src, 100), Some(1.0), "per position: 100 snaps to rest");
-    let head = r.src.elems[0];
-    assert!(r.sect.scale_of(&r.cx(), &r.src, head).unwrap() > 1.01, "per position: the card now in its cell inherits the shrink");
+    let full = S::focus_scale();
+    let focused = r.sect.scale_of(&r.cx(), &r.src, 101).unwrap();
+    assert!(focused > 1.0 && focused < full, "the focused card is still growing, not {focused}");
 }
 #[test]
-fn shelf_pool_keeps_a_mid_shrink_scale_across_a_landing() {
+fn shelf_keeps_a_mid_shrink_scale_across_a_landing() {
     a_mid_shrink_card_keeps_its_scale_across_a_landing::<Shelf>(1);
 }
 #[test]
-fn grid_pool_keeps_a_mid_shrink_scale_across_a_landing() {
+fn grid_keeps_a_mid_shrink_scale_across_a_landing() {
     a_mid_shrink_card_keeps_its_scale_across_a_landing::<Grid>(poster_grid::COLS);
 }
 
@@ -1864,7 +1842,6 @@ fn grid_pool_keeps_a_mid_shrink_scale_across_a_landing() {
 /// a card removed mid-shrink takes its let-go with it.
 #[test]
 fn shelf_pool_lets_go_to_rest_and_drops_a_removed_card() {
-    let _on = PoolOn::set(true);
     let (mut r, _) = mid_shrink_then_a_landing::<Shelf>(2);
     r.run(240);
     for &e in &r.src.elems {
@@ -1882,7 +1859,6 @@ fn shelf_pool_lets_go_to_rest_and_drops_a_removed_card() {
 /// A long fast walk back and forth never holds more than the pool's capacity.
 #[test]
 fn shelf_pool_never_exceeds_its_capacity() {
-    let _on = PoolOn::set(true);
     let mut r = settled::<Shelf>(40);
     r.land_focus(100, By::Restore);
     let mut at = 0usize;
@@ -1908,7 +1884,6 @@ fn shelf_pool_never_exceeds_its_capacity() {
 /// A frame drawn after the source changed but before the next tick already shows the shrinking
 /// element at its shrink scale and the card now in its old cell at rest: no frame reverses.
 fn a_draw_between_the_insert_and_the_tick_does_not_reverse<S: Section>(insert: usize) {
-    let _on = PoolOn::set(true);
     let mut r = settled::<S>(40);
     r.land_focus(100, By::Restore);
     r.run(240);
@@ -1942,7 +1917,6 @@ fn grid_pool_draws_no_reversal_between_an_insert_and_the_tick() {
 /// landing rule to carry.
 #[test]
 fn shelf_pool_carries_a_focused_card_pushed_past_the_spring_array() {
-    let _on = PoolOn::set(true);
     let last = crate::card_row::MAX_ROW_ITEMS - 1;
     let mut r = settled::<Shelf>(40);
     let focused = 100 + last as u32;
@@ -1973,7 +1947,6 @@ fn full_pool_walk() -> (Rig<Shelf>, usize) {
 /// The focused card is admitted first: a pool full of let-gos still holds it.
 #[test]
 fn shelf_pool_always_holds_the_focused_card() {
-    let _on = PoolOn::set(true);
     let (_, most) = full_pool_walk();
     assert_eq!(most, super::pool::CAP, "the walk filled the pool");
 }
@@ -1981,7 +1954,6 @@ fn shelf_pool_always_holds_the_focused_card() {
 /// A landing with the pool full keeps the focused card's pop.
 #[test]
 fn shelf_pool_full_and_a_landing_keeps_the_focused_pop() {
-    let _on = PoolOn::set(true);
     let (mut r, _) = full_pool_walk();
     assert_eq!(r.sect.pool_len(), super::pool::CAP);
     let before = r.sect.scale_of(&r.cx(), &r.src, &114).unwrap();
@@ -1997,7 +1969,6 @@ fn shelf_pool_full_and_a_landing_keeps_the_focused_pop() {
 /// moved further than that lets go (a Library of thousands pays no scan).
 #[test]
 fn grid_pool_drops_a_let_go_pushed_beyond_the_search_window() {
-    let _on = PoolOn::set(true);
     let mut r = settled::<Grid>(600);
     r.land_focus(100, By::Restore);
     r.run(240);
@@ -2010,34 +1981,4 @@ fn grid_pool_drops_a_let_go_pushed_beyond_the_search_window() {
     }
     r.run(1);
     assert_eq!(r.sect.scale_of(&r.cx(), &r.src, &100), Some(1.0), "100 is out of the window: its let-go is dropped");
-}
-
-/// With no reorder the two modes are indistinguishable, frame for frame.
-fn a_plain_walk_is_the_same_in_both_modes<S: Section>() {
-    let walk = |on: bool| {
-        let _on = PoolOn::set(on);
-        let mut r = settled::<S>(40);
-        r.land_focus(100, By::Restore);
-        let mut seen = Vec::new();
-        for step in 0..120u32 {
-            if step % 7 == 0 {
-                r.land_focus(100 + (step / 7) % 12, By::Dir);
-            }
-            r.run(1 + step % 3);
-            for &e in &r.src.elems {
-                seen.push(r.sect.scale_of(&r.cx(), &r.src, e).unwrap().to_bits());
-            }
-            seen.push(r.sect.scroll().to_bits());
-        }
-        seen
-    };
-    assert_eq!(walk(true), walk(false));
-}
-#[test]
-fn shelf_pool_agrees_with_per_position_on_a_plain_walk() {
-    a_plain_walk_is_the_same_in_both_modes::<Shelf>();
-}
-#[test]
-fn grid_pool_agrees_with_per_position_on_a_plain_walk() {
-    a_plain_walk_is_the_same_in_both_modes::<Grid>();
 }

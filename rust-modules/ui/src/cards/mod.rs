@@ -18,9 +18,8 @@
 //! - **Elem-keyed.** The section remembers no focus. Each call it reads the ENGINE's focus
 //!   (`cx.focus.current`, filtered to its entry) and resolves the element to an index through
 //!   [`CardSource::index_of`], so a landing that reorders content cannot leave it naming another
-//!   item. Events carry `H::Elem`. (The pop springs are still per position — owner decision 2 is
-//!   open; `pool.rs` is the element-keyed alternative, switched on by the dev trigger
-//!   `plxnative-poppool` for a verdict by feel — so, by default, a tick that finds the focused element at another index with NO `FocusMoved`, a
+//!   item. Events carry `H::Elem`. (The pop springs follow their elements — `pool.rs` — so a tick
+//!   that finds the focused element at another index with NO `FocusMoved`, a
 //!   content landing, MOVES the spring to the new index, snaps the cell it left to rest and shifts
 //!   the scroll by the index delta so the tile does not move on screen — [`Landed`] reports it.
 //!   A non-deliberate `FocusMoved` adopts the new card whole and snaps the old one to rest; only a
@@ -73,9 +72,6 @@ pub use crate::poster_grid::{
     STYLE as GRID_STYLE,
 };
 pub use grid::{Grid, GridSpec, ScrollMode};
-#[cfg(any(test, feature = "devtriggers"))]
-pub use pool::set_pop_pool;
-pub use pool::pop_pool;
 pub use shelf::Shelf;
 pub use stack::{Kind, SectionSpec, Stack, StackEvent, StackMemory, StackPage, StackView};
 
