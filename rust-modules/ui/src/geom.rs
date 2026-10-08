@@ -5,7 +5,7 @@
 //! [`TabRow`] over the shared top strip's drawn pills, [`Grid`] over a column of shelves, and
 //! [`Document`] over a `DocumentReader` — built by the screen for the frame, exactly as it builds
 //! the draw call. The rule that makes these honest is that the DRAW reads the same formula:
-//! `card_row::tile_rect` is what `strip` places tiles by and what `Shelf::place` answers;
+//! `card_row::tile_rect` is what `cards::Shelf` places tiles by and what `Shelf::place` answers;
 //! `TableView::row_frame` is what `row_rect`/`hit_row` walk. A host test per widget pins the two
 //! against each other, so a change to a draw's geometry that forgets `place` fails here.
 //!
@@ -94,8 +94,8 @@ fn clamp_index<K: IndexElem>(entry: EntryId, want: FocusKey<K>, n: usize) -> Foc
     key(entry, clamp_plain_index(i, n))
 }
 
-/// One shelf (`CardRow`) as the draw sees it this frame: the same arguments `card_row::strip`
-/// takes, so `place` and the drawn tile are one formula.
+/// One shelf (`CardRow`) as the draw sees it this frame: the same arguments the tile draw takes,
+/// so `place` and the drawn tile are one formula.
 pub struct Shelf<'a> {
     pub(crate) row: &'a card_row::CardRow,
     pub(crate) n: usize,
@@ -458,7 +458,7 @@ mod tests {
         assert_eq!(Focusable::<FixtureHost>::group_of(&table, &1, &c), Some(GroupId(0)));
     }
 
-    /// The shelf's `place` is the strip's tile formula: the same rect `card_row::strip` draws
+    /// `place` is the shelf's tile formula: the same rect `cards::Shelf` draws
     /// tile `i` at, popped by the same spring.
     #[test]
     fn a_shelf_places_a_tile_where_the_strip_draws_it() {

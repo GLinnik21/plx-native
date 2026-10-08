@@ -9,7 +9,7 @@
 //! `step_focus`, `nearest_col`); this file has neither. Focus is the ENGINE's — this screen
 //! answers the §7.1 query protocol and reacts to `ScreenEvent::FocusMoved`, it never stores
 //! "which avatar is selected" as its own truth. What it DOES keep as ordinary fields is: the
-//! `CardRow` animation cache the avatar row's springs live in (a render cache, not logical state,
+//! `AvatarRow` animation cache the avatar row's springs live in (a render cache, not logical state,
 //! exactly like `RootPage::table`), the footer's `CtlPop` dip, and the PIN pad's own small state
 //! machine (open/target/entry/submitting/error), which is genuinely this screen's own — nothing
 //! else on the tree knows a PIN pad exists.
