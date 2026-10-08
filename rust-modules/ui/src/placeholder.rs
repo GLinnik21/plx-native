@@ -69,9 +69,10 @@
 //! 3. **Zero or non-zero only** (see above); a frame with `count > 0` is a failure naming
 //!    `entries`, deduplicated.
 //! 4. **Reveal springs start after arrival.** Home's art spring starts at 0 when the texture lands,
-//!    and `Xfade` In ramps and the dip alpha ramp likewise: the first frame after a hold shows the
-//!    bare wash with count 0. Wait for them to settle before writing, or accept them as animation
-//!    and say so.
+//!    and the dip alpha ramp likewise: the first frame after a hold shows the bare wash with count
+//!    0. Wait for them to settle before writing, or accept them as animation and say so. (An
+//!    `Xfade` In ramp is not one of them in a dump: `Xfade::tick` takes a ready `Hold` straight to
+//!    `Idle`, an exception `plx_gfx::dump` lists.)
 //! 5. **Content that arrives late with no placeholder drawn** — Home shelves and Continue Watching,
 //!    Detail's related, cast, extras and ratings, Library shelves and the grid header, `Xfade` Hold
 //!    over a search's results — is invisible to both oracles. The landing predicate

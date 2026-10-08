@@ -672,22 +672,31 @@ class EncodeArgv(unittest.TestCase):
             "-map", "0:v:0", "-an", "-fps_mode", "passthrough",
             "-vf", "scale=1920:1080:flags=lanczos+accurate_rnd+full_chroma_int+error_diffusion:in_range=full:"
                    "out_range=tv:out_color_matrix=bt709,format=yuv420p",
-            "-c:v", "libsvtav1", "-preset", "4", "-crf", "28", "-g", "120", "-svtav1-params", "tune=0:film-grain=0",
+            "-c:v", "libsvtav1", "-preset", "4", "-crf", "22", "-g", "480", "-svtav1-params", "tune=0:film-grain=0",
             "-pix_fmt", "yuv420p",
             "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
             "-movflags", "+faststart", "/o/feel-1080p60.av1.mp4"])
 
-    def test_the_phone_av1_keeps_a_longer_gop_and_a_finer_crf_and_nothing_else_differs(self):
+    def test_the_phone_av1_keeps_a_longer_gop_and_nothing_else_differs(self):
         small, big = self.plan()["feel-720p60.av1.mp4"], self.plan()["feel-1080p60.av1.mp4"]
         self.assertEqual(small[small.index("-g") + 1], sv.AV1_720_GOP)
-        self.assertEqual(big[big.index("-g") + 1], "120")
+        self.assertEqual(big[big.index("-g") + 1], "480")
         self.assertEqual(small[small.index("-crf") + 1], sv.AV1_720_CRF)
-        self.assertEqual(big[big.index("-crf") + 1], "28", "the specified CRF")
-        self.assertLess(int(sv.AV1_720_CRF), 28)
-        small[small.index("-g") + 1] = "120"
-        small[small.index("-crf") + 1] = "28"
+        self.assertEqual(big[big.index("-crf") + 1], "22")
+        self.assertGreater(int(sv.AV1_720_GOP), 480, "the phone file's size headroom is bought with its GOP")
+        small[small.index("-g") + 1] = "480"
+        small[small.index("-crf") + 1] = "22"
         self.assertEqual([a for a in small if "1280" not in a and "720" not in a],
                          [a for a in big if "1920" not in a and "1080" not in a])
+
+    def test_the_encodes_are_tuned_for_headroom_and_no_floor_was_moved(self):
+        """The 1080p AV1 failed min VMAF 79.69 < 80.0 on the Linux render at CRF 28; the fix is the encode, never the floor."""
+        self.assertEqual((sv.THRESHOLDS["vmaf_min"], sv.THRESHOLDS["vmaf_mean"]), (80.0, 93.0))
+        self.assertEqual((sv.THRESHOLDS["ssim_min"], sv.THRESHOLDS["ssim_mean"], sv.THRESHOLDS["size_ratio"]),
+                         (0.97, 0.985, 1.25))
+        for name in ("feel-1080p60.av1.mp4", "feel-720p60.av1.mp4"):
+            argv = self.plan()[name]
+            self.assertLessEqual(int(argv[argv.index("-crf") + 1]), 22, name)
 
     def test_h264_is_exactly_the_specified_settings(self):
         argv = self.plan()["feel-720p60.h264.mp4"]
@@ -1008,20 +1017,33 @@ class ManifestAndAdopt(unittest.TestCase):
         sv.make_artifact_zip(out, manifest, again)
         self.assertEqual(sv.sha256_file(zpath), sv.sha256_file(again))
 
-    def test_tree_hashes_come_from_git_trees_of_the_four_crates(self):
+    def test_tree_hashes_come_from_git_trees_of_everything_that_can_change_a_pixel(self):
         calls = []
 
         def run(argv, **kw):
             calls.append(argv)
             if "rev-parse" in argv:
-                return subprocess.CompletedProcess(argv, 0, "tree-" + argv[-1].split("/")[-1] + "\n", "")
-            return subprocess.CompletedProcess(argv, 0, " M rust-modules/ui/src/x.rs\n", "")
+                return subprocess.CompletedProcess(argv, 0, "tree-" + argv[-1].split(":")[-1] + "\n", "")
+            return subprocess.CompletedProcess(argv, 0, " M rust-modules/gfx/src/x.rs\n", "")
 
         trees, dirty = sv.tree_hashes(run, "/repo")
-        self.assertEqual([k for k in trees if k != "combined"], ["ui", "screens", "data", "appkit"])
-        self.assertEqual(trees["ui"], "tree-ui")
+        self.assertEqual([k for k in trees if k != "combined"],
+                         ["rust-modules", "assets", "locales", "src", "tests/video"])
+        self.assertEqual(trees["rust-modules"], "tree-rust-modules")
         self.assertTrue(dirty)
-        self.assertTrue(any("rust-modules/appkit" in " ".join(c) for c in calls))
+        # the dirty check names the same paths as the hash: a change to `gfx`, `machine`, the dump
+        # driver or the storyboard is not missed because only four UI crates were named
+        status = next(c for c in calls if "status" in c)
+        self.assertEqual(status[status.index("--") + 1:], list(sv.TREE_PATHS))
+
+    def test_a_change_under_rust_modules_moves_the_combined_hash(self):
+        def combined(sha):
+            def run(argv, **kw):
+                if "rev-parse" in argv:
+                    return subprocess.CompletedProcess(argv, 0, (sha if argv[-1] == "HEAD:rust-modules" else "same") + "\n", "")
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return sv.tree_hashes(run, "/repo")[0]["combined"]
+        self.assertNotEqual(combined("a"), combined("b"), "a gfx/machine/framedump.rs change must change the tree hash")
 
 
 class RealFfmpeg(unittest.TestCase):

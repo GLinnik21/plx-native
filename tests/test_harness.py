@@ -5965,6 +5965,7 @@ impl PersonOwnerGateFixture {
         "cards-conformance.txt": 0,  # card-screen Tier 2 expected failures (PR 0, 2026-10-07; Home and Detail added; Collection adopted Grid, PR 2b); only shrinks
         "cards.txt": 0,  # screens still assembling card sections from the L0 primitives; empty since the profile picker adopted AvatarRow (2026-10-08)
         "blocking.txt": 2,  # frame-thread allow_blocking sites, 2026-10-06; only shrinks
+        "dump.txt": 9,  # files that may name the frame-dump switch (ci/check-dump-consumers.py); a new file fails the gate
         "layers.txt": 0,
         "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs
         "mutators.txt": 0,

@@ -2931,11 +2931,16 @@ mod tests {
     /// The pure decision behind the thrash guard's cooldown gate: no cooldown ever set is always
     /// due (the ordinary, non-thrashing case), and a set cooldown is due only once its deadline has
     /// actually passed - mirrors [`retry_due`]'s own wrap-safe "has this deadline passed" shape.
+    ///
+    /// Through the pure twin with the dump switch passed as `false`: this test holds no
+    /// `testlock::serial()`, and `an_armed_dump_claims_a_slot_...` arms the process-global switch in
+    /// the same binary, so the global-reading `evict_cooldown_due` could answer `true` here for the
+    /// few statements the switch is up.
     #[test]
     fn evict_cooldown_due_only_after_its_own_deadline() {
-        assert!(evict_cooldown_due(None, 0), "no cooldown was ever set - never gated");
-        assert!(!evict_cooldown_due(Some(1_000), 999), "one millisecond short is still cooling");
-        assert!(evict_cooldown_due(Some(1_000), 1_000), "the deadline itself has cleared");
+        assert!(evict_cooldown_due_in(false, None, 0), "no cooldown was ever set - never gated");
+        assert!(!evict_cooldown_due_in(false, Some(1_000), 999), "one millisecond short is still cooling");
+        assert!(evict_cooldown_due_in(false, Some(1_000), 1_000), "the deadline itself has cleared");
     }
 
     #[test]

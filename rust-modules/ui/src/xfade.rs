@@ -186,8 +186,21 @@ impl Xfade {
                     // A frame dump (`plx_gfx::dump::armed`, a constant `false` outside the
                     // simulator) arrives COMPLETE: a page that mounts hidden and fades in over
                     // 140 ms would otherwise be captured into a push's page image at alpha 0 (a
-                    // placeholder-free, empty page, held for the whole settle), and a held repeat
-                    // has `dt == 0` so the ramp could not be waited out either.
+                    // placeholder-free, empty page, held for the whole settle).
+                    //
+                    // **This is one of the dump's three honest exceptions: it SKIPS the `In`
+                    // state** (`plx_gfx::dump`'s admission rule). It is not a held-repeat problem
+                    // (measured: with the branch removed a push of the Library neither deadlocks
+                    // nor loops; a held repeat has `dt == 0`, so the ramp just waits), it is the
+                    // push image: the capture frame draws the page at its fade's alpha 0, the image
+                    // is held through the dip's whole 140 ms `In` half, and the replacement capture
+                    // then shows the finished page at once, so the film would carry nine flat
+                    // frames and a pop in the Library beat. By reading, the product's warm-data push
+                    // takes that same path (not measured on the television), so the pop is a
+                    // question for the page image
+                    // (`containers::transition::PageImage`), not for this fader; until it is
+                    // settled there, the film shows the page fading in where the product may show
+                    // it appear.
                     if plx_gfx::dump::armed() {
                         self.t = 1.0;
                         self.phase = Phase::Idle;

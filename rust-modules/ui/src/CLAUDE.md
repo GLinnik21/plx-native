@@ -515,7 +515,9 @@ cannot see a placeholder inside a blended image, so the counter alone vouches fo
 (S5b) must do"): `reset` before the frame's first walk and `take` after the last, on the UI thread;
 force a live draw on every written frame; a held page image is not a hold reason, only its captured
 placeholders are; read the count as zero or
-non-zero only; wait out reveal springs, `Xfade` In ramps and the dip alpha after arrival; cover
+non-zero only; wait out reveal springs and the dip alpha after arrival (an `Xfade` In ramp never plays
+in a dump: `Xfade::tick` takes a ready `Hold` straight to `Idle`, one of `plx_gfx::dump`'s listed
+exceptions); cover
 late-arriving sections (Home shelves, Detail's related/cast/extras/ratings, Library shelves, an
 `Xfade` Hold) with the landing predicate, since neither oracle sees an absent section; fail fast on
 `Frame::absent` and on an entry whose key is `""` instead of holding; scan connected components

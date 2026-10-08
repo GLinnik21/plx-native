@@ -44,6 +44,73 @@
 //!
 //! **Tests that arm it** hold `plx_base::testlock::serial()`: the switch is process-global, and
 //! every gfx test that reaches a hooked function holds that lock, so nothing leaks between them.
+//! A test in another binary that arms it (`Armed::new()`) holds the lock too, and every OTHER test
+//! of that binary that reaches a consumer below either holds it or calls the consumer's pure twin
+//! (`evict_cooldown_due_in`, `declines_in`, `Budget::take_in`, `holds_page_image`,
+//! `snapshot_defers_in`, `probe_mode`) with the switch passed as `false`. A test that reads the
+//! global unguarded is not wrong today and flakes the day a neighbour arms it.
+//!
+//! # The admission rule
+//!
+//! A branch on [`armed`] or [`held_repeat`] may do exactly one of two things:
+//!
+//! 1. **replace a TIMING INPUT with a constant** (a wall-clock budget, a measured cadence, a GPU
+//!    fence, a retry or eviction cooldown, a motion verdict computed from `dt`), or
+//! 2. **make a per-iteration stepper idempotent on a held repeat** (so it advances once per written
+//!    virtual frame, not once per loop iteration).
+//!
+//! It may **never skip a state the product passes through, or change what a settled frame shows.**
+//! A frame the film writes must be a frame the app can draw. Anything that cannot be said in those
+//! terms is a defect in the product's own ordering (the dump's landings are synchronous, so data is
+//! present at mount, an order a television rarely has) and is answered there, not patched here one
+//! branch at a time. `ci/check-dump-consumers.py` (in `make check`) holds the list of files that may
+//! name the switch to `ci/allow/dump.txt`; a new file naming it fails the gate until this rule has
+//! been read and the file's branch fits it (and is listed below).
+//!
+//! # Every consumer, and which kind it is
+//!
+//! The list is exact (the gate compares the files; this list says what each does). `T` is rule 1,
+//! `S` is rule 2, `X` is an exception that changes the picture, kept on purpose or for want of a
+//! product answer.
+//!
+//! * `gfx/src/text.rs` `drain_prewarm` (T): the microsecond budget becomes `u64::MAX`.
+//! * `gfx/src/text.rs` `drain_background_prewarm_at` (T): the same; the occupancy ceiling stays.
+//! * `gfx/src/text.rs` `latch_surface_text_pending` (T): the sampled readiness latches `false`.
+//! * `gfx/src/gfx.rs` `snapshot_frame_begin` (T): `glFinish()` then the capture fence is read as
+//!   signalled, so GPU speed is not an input.
+//! * `gfx/src/gfx.rs` `GroundProbe::step` via `probe_mode` (**X**, a small one): the read is
+//!   synchronous per call instead of on a cadence of presented iterations, so a probed tint
+//!   (the top bar's and the Resume pill's ground) settles up to 30 frames earlier than the
+//!   television's cadence would settle it. Kept because the cadence counts presented loop
+//!   iterations, held repeats included, which is a function of how many holds a frame took and
+//!   made two runs differ by 1/255; callers already refuse a read while the probe is unsettled.
+//! * `ui/src/card_motion.rs` `declines_request` (T): the motion verdict, derived from `dt`, which
+//!   is 0 on a repeat, becomes "admit".
+//! * `ui/src/frame/budget.rs` `Budget::take` (T): the elapsed-microsecond term is dropped; the
+//!   quotas stay.
+//! * `ui/src/containers/transition.rs` `PageDip::tick` (S) and `PageImage::plan` (S): the dip's
+//!   one-tick floor and the page image's capture/replacement step stand still on a repeat.
+//! * `ui/src/dispatch.rs` `layout_holds_page_image` (**X**): in a dump the product's "keep the
+//!   frozen page image up while the destination's layout springs move" (up to
+//!   `PAGE_QUIESCENCE_HOLD_MAX_MS`) is off, because the dump hands the page its whole data before
+//!   the dip's floor and the image would hide every spring the page starts at its mount (the
+//!   Library's caption reveal) and show them as one pop. The film shows those springs live; the
+//!   television, by reading, shows the held image. Unsettled in the product (needs a television
+//!   check of a warm Library push), so it is recorded here, not hidden.
+//! * `ui/src/xfade.rs` `Xfade::tick` (**X**): a ready `Hold` goes straight to `Idle` at alpha 1,
+//!   skipping the 140 ms `In` ramp. Measured to be the push image, not a held-repeat deadlock (see
+//!   the comment there): restoring the ramp films nine flat frames and a pop in the Library beat.
+//!   Like `layout_holds_page_image` it breaks the rule's second half (it skips a state the
+//!   product passes through); it stays until the page image's own behaviour for a page that
+//!   mounts hidden is settled in the product.
+//! * `src/app/adapters/poster.rs` `evict_cooldown_due` (T): a cooldown is always over, and a failed
+//!   fetch is recorded (`note_dump_failure`, an observation for the driver, not a drawn change)
+//!   instead of waiting out a retry on a clock that is held still.
+//! * `src/dev/framedump.rs` (the driver): [`arm`], [`set_held_repeat`] and the read in `idle_dt`.
+//!
+//! Two other switches exist and are not this one: the landing gate's own
+//! (`plx_machine::landgate::Gate::arm_dump`, which `machine` keeps because it may not name `gfx`)
+//! and the placeholder counter's (`plx_ui::placeholder`, armed per thread).
 //!
 //! **A runtime switch, off by default.** [`arm`] is called by the dump driver only; nothing in a
 //! shipping loop does. With `hostsim` (and in test builds) it is a runtime switch, and an unarmed

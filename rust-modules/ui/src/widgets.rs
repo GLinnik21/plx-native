@@ -4208,8 +4208,12 @@ impl<'a> StatusOverlay<'a> {
             // A Working read-out is a wait that owns the surface (Home's hub load, a collection's,
             // the Library's, a sign-in): counted where it is drawn. Home's `status_read` and the
             // collection's `status_overlay` only build the value.
-            crate::placeholder::note(p, crate::placeholder::Reason::WorkingReadout,
-                self.caption.to_str().unwrap_or(""));
+            // The caption is only validated as UTF-8 for a count that can be seen: unarmed (every
+            // shipping build) this frame pays the one relaxed load and nothing else.
+            if crate::placeholder::accounting_visible() {
+                crate::placeholder::note(p, crate::placeholder::Reason::WorkingReadout,
+                    self.caption.to_str().unwrap_or(""));
+            }
             Spinner::new(
                 self.frame.cx(),
                 cy - Spinner::R_PAGE - theme::space::XS,

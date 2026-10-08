@@ -309,23 +309,25 @@ def poster_filter(width, height):
             f"format=yuvj420p")
 
 
-AV1_CODEC = ["-c:v", "libsvtav1", "-preset", "4", "-crf", "28", "-g", "120",
+AV1_CODEC = ["-c:v", "libsvtav1", "-preset", "4", "-crf", "22", "-g", "480",
              "-svtav1-params", "tune=0:film-grain=0", "-pix_fmt", "yuv420p"]
 H264_CODEC = ["-c:v", "libx264", "-preset", "veryslow", "-crf", "18", "-tune", "animation",
               "-profile:v", "high", "-pix_fmt", "yuv420p", "-x264-params", "aq-mode=3:deblock=-1,-1"]
 POSTER_QUALITY = ["-q:v", "3"]  # provisional: today's feel-poster.jpg is 278 KB; the size gate bounds it
 
 
-# The phone-sized AV1 encode keeps a keyframe every 4 s, not every 2 s. Every other file passes the
-# 1.25x-of-today size gate at the specified settings; this one measured 1.41x once the film grew to
-# ~27 s with three full-frame backdrops, because a 720p AV1 keyframe of those backdrops is most of the
-# bytes. Doubling the GOP at the SAME CRF 28 brought it to 1.09x with the quality gates unchanged (a
-# coarser CRF reached the size limit only by failing the VMAF floor: 78.8 against 80). The 27 s film's
-# back-from-the-library cross-fade then read SSIM 0.9652 against the 0.97 floor at CRF 28 (0.9672 at
-# 27); CRF 25 reads 0.9709 at 1.15x of today's file, and 24 would be 1.26x, over the size limit. Both
-# limits stay.
-AV1_720_GOP = "240"
-AV1_720_CRF = "25"
+# The AV1 encodes' CRF and GOP were re-tuned for HEADROOM, not to pass: the first Linux (llvmpipe) render of the
+# 27 s film failed `vmaf/feel-1080p60.av1.mp4` at min 79.69 against the 80.0 floor while macOS read 80.10, and the
+# 720p one read SSIM min 0.9709 against 0.97. The floors are untouched. The film's three full-frame backdrops
+# make a keyframe most of the bytes of a short-GOP AV1 file, so a longer GOP buys the size budget a finer CRF
+# spends (measured on the committed film, macOS: CRF 28 / GOP 120, the old 1080p setting, 9,012,205 bytes = 1.16x
+# of today's file, VMAF min 80.10, SSIM min 0.9726; CRF 22 / GOP 480, 8,052,122 bytes = 1.04x, VMAF min 84.52,
+# SSIM min 0.9796). The phone-sized file keeps a still longer GOP (12 s, one keyframe near the loop point and
+# one mid-film) because 1280x720 at CRF 22 / GOP 480 is 1.23x, 0.02 under the 1.25x limit: CRF 22 / GOP 720 is
+# 1.15x, VMAF min 85.25, SSIM min 0.9746 (CRF 25 / GOP 240, the old 720p setting: 1.15x, VMAF min 83.68, SSIM min
+# 0.9709). Seeking is not a feature of a muted looping hero clip. Both limits stay.
+AV1_720_GOP = "720"
+AV1_720_CRF = "22"
 
 
 def video_argv(ffmpeg, master, out, video):
@@ -956,7 +958,12 @@ def scan_stream(stream, width, height, tee=None, min_run=SENTINEL_MIN_RUN):
 
 
 # ------------------------------------------------------------------ the manifest ----------------
-TREE_CRATES = ("ui", "screens", "data", "appkit")
+# Everything that can change a pixel of the film, as git trees at HEAD: every crate (the renderer
+# and type tokens in `gfx`, the springs and the landing gate in `machine`, the dump driver in
+# `src/dev/framedump.rs`, ... all live under `rust-modules`, so no crate list can fall behind a
+# new dependency), the assets and locale strings the app embeds, the C shims (`src/svg.c`) and the
+# storyboard. The demo catalog is covered by `catalog_sha256`, the pinned tools by `tools`.
+TREE_PATHS = ("rust-modules", "assets", "locales", "src", "tests/video")
 
 
 def current_platform(env=None, system=None):
@@ -1039,16 +1046,16 @@ def collect_environment(env=None, run=subprocess.run, root="/"):
 
 
 def tree_hashes(run=subprocess.run, root=ROOT):
-    """Git tree ids of the UI crates at HEAD, and whether the working tree differs from HEAD there."""
+    """Git tree ids of every path in `TREE_PATHS` at HEAD, and whether the working tree differs from HEAD there."""
     out = {}
-    paths = [f"rust-modules/{c}" for c in TREE_CRATES]
-    for c, p in zip(TREE_CRATES, paths):
+    for p in TREE_PATHS:
         done = run(["git", "-C", str(root), "rev-parse", f"HEAD:{p}"], capture_output=True, text=True)
         if done.returncode != 0:
             raise Failure(f"cannot read the git tree of {p}: {done.stderr.strip()}")
-        out[c] = done.stdout.strip()
-    dirty = run(["git", "-C", str(root), "status", "--porcelain", "--"] + paths, capture_output=True, text=True)
-    out["combined"] = hashlib.sha256("".join(out[c] for c in TREE_CRATES).encode()).hexdigest()
+        out[p] = done.stdout.strip()
+    dirty = run(["git", "-C", str(root), "status", "--porcelain", "--"] + list(TREE_PATHS),
+                capture_output=True, text=True)
+    out["combined"] = hashlib.sha256("".join(out[p] for p in TREE_PATHS).encode()).hexdigest()
     return out, bool(dirty.stdout.strip())
 
 
@@ -1162,8 +1169,8 @@ def adopt(zip_path, site_media=SITE_MEDIA, write=False, say=print, run=subproces
         try:
             here, _ = tree_hashes(run)
             same = here["combined"] == manifest["tree_hash"]["combined"]
-            say("tree hash: " + ("matches HEAD" if same else "DIFFERS from HEAD (ui/screens/data/appkit changed "
-                                                           "since the render): regenerate before release"))
+            say("tree hash: " + ("matches HEAD" if same else "DIFFERS from HEAD (" + ", ".join(TREE_PATHS) +
+                                                           " changed since the render): regenerate before release"))
         except Failure as e:
             say(f"tree hash: not compared ({e})")
         for src, dst in plan:
