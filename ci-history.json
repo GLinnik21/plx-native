@@ -1,4 +1,4 @@
-{"updated":"2026-10-08T04:15:57Z",
+{"updated":"2026-10-08T04:17:19Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -1983,7 +1983,8 @@
 {"id":37724600913,"at":"2026-10-08T03:50:12Z","sha":"abef97214","title":"stack tests: one PageRig over the page type replaces the two hand-copied rigs","pr":544,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":16,"macOS simulator build + launch":266,"macOS tests against bundled FFmpeg and ASS":166,"Linux simulator build + launch":169}},
 {"id":37724669107,"at":"2026-10-08T03:51:03Z","sha":"77e0256e0","title":"Demo video: the storyboard, its interpreter, and a complete Library on push (S5c)","pr":545,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":115,"macOS simulator build + launch":323,"Linux simulator build + launch":234,"Windows launcher syntax":15}},
 {"id":37725220738,"at":"2026-10-08T03:58:06Z","sha":"255b9ba79","title":"Cards: simplify what the shared-sections series left behind","pr":544,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":126,"Windows launcher syntax":16,"macOS simulator build + launch":249,"Linux simulator build + launch":235}},
-{"id":37725891808,"at":"2026-10-08T04:06:32Z","sha":"8d558a38a","title":"Site video: a manual Linux CI workflow renders the demo video on llvmpipe (S6)","pr":536,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":273,"Windows launcher syntax":17,"macOS tests against bundled FFmpeg and ASS":145,"Linux simulator build + launch":213}}
+{"id":37725891808,"at":"2026-10-08T04:06:32Z","sha":"8d558a38a","title":"Site video: a manual Linux CI workflow renders the demo video on llvmpipe (S6)","pr":536,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":273,"Windows launcher syntax":17,"macOS tests against bundled FFmpeg and ASS":145,"Linux simulator build + launch":213}},
+{"id":37726155403,"at":"2026-10-08T04:09:54Z","sha":"2481184c5","title":"Docs: card screens are Stack pages and Shelf/Grid own the strips","pr":546,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":246,"macOS simulator build + launch":399,"macOS tests against bundled FFmpeg and ASS":143,"Windows launcher syntax":18}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
