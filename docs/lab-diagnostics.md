@@ -349,7 +349,8 @@ plxnative-lab stop
 
 `start` generates the session (id, secret, cert, pin), binds `0.0.0.0:<ephemeral>`, creates the UPnP
 mapping, writes `~/.plxnative-lab/session.json` + `receiver.pid`, forks to the background and prints
-one JSON object containing the credentials **and the exact `make` line to build the matching ipk**.
+one JSON object with the session, endpoint, the path of the `pkg/lab.json` it wrote (mode 0600; the
+secret goes there and is not echoed) **and the exact `make` line to build the matching ipk**.
 It refuses to start if a session is already live (one session, by design).
 
 `status --json` is the agent's poll:

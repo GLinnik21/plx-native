@@ -409,13 +409,16 @@ def main():
     ap.add_argument("--password", default=None, help="omit to generate one and print it once")
     a = ap.parse_args()
 
+    generated = a.password is None
     pw = a.password or secrets.token_urlsafe(12)
     token = base64.b64encode(f"{a.user}:{pw}".encode()).decode()
     wstoken = secrets.token_urlsafe(16)
 
     print(f"remote-dpad on http://{a.host}:{a.port}/  -> upstream 127.0.0.1:{a.upstream}", file=sys.stderr)
     print(f"  user: {a.user}", file=sys.stderr)
-    print(f"  pass: {pw}", file=sys.stderr)
+    # Print the password only when WE made it up: one the operator typed is already known to them,
+    # and echoing it would put a chosen secret into the terminal scrollback and any log.
+    print(f"  pass: {pw}" if generated else "  pass: (as given with --password)", file=sys.stderr)
     print(f"  allowed keys: {' '.join(DPAD)}", file=sys.stderr)
     if a.runtime_dir or a.fifo:
         print(f"  install: {a.fifo or a.runtime_dir} (as told — the page shows the "

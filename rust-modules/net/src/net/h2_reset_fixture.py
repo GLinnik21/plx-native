@@ -45,6 +45,7 @@ def main():
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                        timeout=15)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(cert, key)
         context.set_alpn_protocols(["h2"])
         with socket.socket() as listener:

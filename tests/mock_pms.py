@@ -2658,6 +2658,7 @@ def _selftest_plaintext_only_lan():
             raw = socket.create_connection(("127.0.0.1", cfg["fail_port"]), timeout=5)
             try:
                 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.minimum_version = ssl.TLSVersion.TLSv1_2
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
                 ctx.wrap_socket(raw, server_hostname="127.0.0.1").close()

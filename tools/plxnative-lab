@@ -688,6 +688,7 @@ def serve(args) -> int:
         print("no session", file=sys.stderr)
         return 1
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(st["cert"], st["key"])
     srv = Receiver(("0.0.0.0", st["local_port"]), Handler, st["secret"], st["session"])
     srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
@@ -788,15 +789,16 @@ def cmd_start(args) -> int:
         "external_ip": st.get("external_ip"),
         "dns_matches": _dns_matches(st),
         "control": st["control"],
-        "lab_json": lab_json(st),
         "next": f"make LAB=1 FLAVOR=debug ipk   # stages pkg/lab.json into the package",
     }
     # The file the .ipk carries. Written for you: this is the whole handoff between the two halves
     # of the feature, and hand-copying four fields is how a lab hour gets spent on a 401.
     lab_path = os.path.join(REPO, "pkg", "lab.json")
     os.makedirs(os.path.dirname(lab_path), exist_ok=True)
-    with open(lab_path, "w") as f:
-        json.dump(json.loads(out["lab_json"]), f, indent=2)
+    # Created 0600 from the first byte; the session secret goes here and is NOT echoed below, so
+    # it never lands in a terminal scrollback or an agent transcript.
+    with os.fdopen(os.open(lab_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        json.dump(json.loads(lab_json(st)), f, indent=2)
     os.chmod(lab_path, 0o600)
     out["lab_json_path"] = lab_path
     print(json.dumps(out, indent=2) if not args.json else json.dumps(out))
@@ -1079,6 +1081,7 @@ def selftest(_args) -> int:
 
         secret = secrets.token_urlsafe(32)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(cert, os.path.join(tmp, "key.pem"))
         global UPLOAD_DIR
         UPLOAD_DIR = os.path.join(tmp, "uploads")
@@ -1088,6 +1091,7 @@ def selftest(_args) -> int:
         threading.Thread(target=srv.serve_forever, daemon=True).start()
 
         cctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        cctx.minimum_version = ssl.TLSVersion.TLSv1_2
         cctx.check_hostname = False
         cctx.verify_mode = ssl.CERT_NONE
 
