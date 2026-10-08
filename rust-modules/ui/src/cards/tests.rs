@@ -783,6 +783,45 @@ fn the_opener_redraw_paints_only_a_known_element() {
     run::<Grid>();
 }
 
+/// **The element a surface lifts is OUT of the page pass and in the lift, in both sections** — the
+/// doubled-title guard. The page pass (a frame carrying `lifted`) paints every card but the lifted
+/// one and says so (`press::lift_owns`, which silences the press spring's page damage); the opener
+/// lift's own frame (no `lifted`) paints exactly that card. Between them the card is drawn ONCE.
+#[test]
+fn the_lifted_card_is_left_out_of_the_page_pass_and_drawn_by_the_lift() {
+    fn run<S: Section>() {
+        let mut r = settled::<S>(8);
+        r.land_focus(101, By::Restore);
+        r.run(200);
+        let cx = r.cx();
+        let ids = |drawn: Vec<(u32, Rect)>| drawn.into_iter().map(|(e, _)| e).collect::<Vec<_>>();
+
+        crate::popover::set_lift_owns(false);
+        let mut page = DrawFrame::new(&cx, Painter::recording());
+        page.lifted = Some(r.key(101));
+        let p = page.painter;
+        r.src.drawn.borrow_mut().clear();
+        r.sect.draw(&mut page, p, &r.src);
+        let page_cards = ids(r.src.drawn.take());
+        assert!(page_cards.len() >= 3 && !page_cards.contains(&101), "page pass left the lifted card out: {page_cards:?}");
+        assert!(crate::popover::lift_owns(), "…and said so");
+
+        let mut lift = DrawFrame::new(&cx, Painter::recording());
+        r.sect.redraw(&mut lift, &r.src, Some(r.key(101)));
+        assert_eq!(ids(r.src.drawn.take()), vec![101], "the lift is the card's only copy");
+
+        // A frame with nothing lifted (every other moment) draws it as ever, and claims nothing.
+        crate::popover::set_lift_owns(false);
+        let mut plain = DrawFrame::new(&cx, Painter::recording());
+        let p = plain.painter;
+        r.sect.draw(&mut plain, p, &r.src);
+        assert!(ids(r.src.drawn.take()).contains(&101));
+        assert!(!crate::popover::lift_owns());
+    }
+    run::<Shelf>();
+    run::<Grid>();
+}
+
 /// With focus out of the grid it scrolls home by default (Collection's header sits above it); a
 /// spec that says otherwise leaves the scroll where it is for a page with other focus zones.
 #[test]
