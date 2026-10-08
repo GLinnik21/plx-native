@@ -97,7 +97,7 @@ def read_ladder():
 
     raster_body = table("raster")
     raster = {}
-    for arm in re.findall(r"((?:\s*\|?\s*Rung::\w+)+)\s*=>\s*\((\d+),\s*(\d+)\)", raster_body):
+    for arm in re.findall(r"\s*(?:\|\s*)?(Rung::\w+(?:\s*\|\s*Rung::\w+)*)\s*=>\s*\((\d+),\s*(\d+)\)", raster_body):
         names, w, h = arm
         for name in re.findall(r"Rung::(\w+)", names):
             raster.setdefault(name, (int(w), int(h)))

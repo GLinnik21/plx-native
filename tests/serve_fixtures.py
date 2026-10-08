@@ -169,7 +169,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
         rel = self._abr_segment_file(seg) if seg else target.lstrip("/")
         if rel is None:
             return None
-        if seg and not os.path.isfile(os.path.join(self.server.root, rel)):
+        if seg and self._contained(rel) is None:
             # A pack built before the per-rung ladder existed has only `pipe_abr_1080p.ts`. Serve
             # it rather than 404: a 404 on a rung reads to the controller as a REJECTED CANDIDATE,
             # which is indistinguishable from a real refusal and would make an out-of-date fixture
@@ -193,8 +193,17 @@ class FixtureHandler(BaseHTTPRequestHandler):
                              f"{seg.group(1)} will NOT deliver its own bitrate. "
                              f"Re-run `make fixtures-pipeline`.")
             rel = ABR_FALLBACK
+        return self._contained(rel)
+
+    def _contained(self, rel):
+        """The real path of `rel` under the root if it names a regular file there, else None.
+
+        Containment is checked on the resolved path BEFORE any filesystem call that touches it, so
+        a request target never reaches `isfile`/`open` unchecked. The root itself is a directory,
+        never a servable file, so only a strict descendant qualifies.
+        """
         full = os.path.realpath(os.path.join(self.server.root, rel))
-        if full != self.server.root and not full.startswith(self.server.root + os.sep):
+        if not full.startswith(self.server.root + os.sep):
             return None
         return full if os.path.isfile(full) else None
 
