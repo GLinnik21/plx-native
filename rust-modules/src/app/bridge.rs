@@ -56,7 +56,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Present;
 use plx_ui::screen::{
-    At, DrawFrame, FocusSource, Focusable, ReturnState, Screen, ScreenEvent,
+    At, DrawFrame, FocusSource, ReturnState, Screen, ScreenEvent,
 };
 
 
@@ -631,13 +631,13 @@ impl Bridge {
 
     pub(crate) fn search_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
         -> Option<(plx_data::search::Item, plx_ui::popover::Opener)> {
-        let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<plx_screens::search::SearchScreen>()?;
+        let screen = &d.nav.entry(entry)?.inst.as_ref()?.screen;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
-        let item = page.selected_item(focus, &cx)?.clone();
-        let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
-        Some((item, plx_ui::popover::Opener { rect: Some(rect), ..plx_ui::popover::Opener::NONE }))
+        let card = screen.focused_card(&cx, focus, Some(At::Drawn))?;
+        let item = card.item.downcast_ref::<plx_data::search::Item>()?.clone();
+        Some((item, plx_ui::popover::Opener { rect: Some(card.rest_rect?), ..plx_ui::popover::Opener::NONE }))
     }
 
     pub(crate) fn search_tab_available(&self, tab: HomeTab) -> bool {
@@ -650,13 +650,13 @@ impl Bridge {
 
     pub(crate) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
         -> Option<(plx_data::pms::PmsMovie, plx_ui::popover::Opener)> {
-        let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<plx_screens::library::LibraryScreen>()?;
+        let screen = &d.nav.entry(entry)?.inst.as_ref()?.screen;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
-        let item = page.focused_item(focus, &cx)?.clone();
-        let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
-        Some((item, plx_ui::popover::Opener { rect: Some(rect), ..plx_ui::popover::Opener::NONE }))
+        let card = screen.focused_card(&cx, focus, Some(At::Drawn))?;
+        let item = card.item.downcast_ref::<plx_data::pms::PmsMovie>()?.clone();
+        Some((item, plx_ui::popover::Opener { rect: Some(card.rest_rect?), ..plx_ui::popover::Opener::NONE }))
     }
 
     pub(crate) fn library_command(d: &mut Dispatcher<AppHost>, command: plx_screens::registry::LibraryCmd) {
@@ -736,8 +736,7 @@ impl Bridge {
             let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
                 focus: plx_machine::machine::FocusRead { current: Some(key) , ..Default::default() }, owner: InputOwner::Entry(entry) };
             let cx = parts.cx::<AppHost>(self.views(), &self.measure);
-            screen.as_any()?.downcast_ref::<plx_screens::home::HomeScreen>()?
-                .focused_rect::<AppHost>(Some(key), &cx, At::Drawn)
+            screen.focused_card(&cx, Some(key), Some(At::Drawn))?.rect
         });
         plx_ui::popover::Opener { rect, ..plx_ui::popover::Opener::NONE }
     }
@@ -933,23 +932,19 @@ impl Bridge {
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             let meta = <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx);
             if let Some((rk, mark)) = page.focused_season(ret.focus, meta) {
-                Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark }, entry, ret.focus, rect))
-            } else if let Some((rk, mark)) = page.focused_episode(ret.focus, meta) {
-                // the ONE entry point whose item is a leaf of the season this page has loaded
-                Some(strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark }, entry, ret.focus, rect))
-            } else {
-                // …a RELATED tile is a DIFFERENT item standing on the same page: an ordinary card
-                // row, which is exactly what `MenuHost::Related` existed to say.
-                let item = page.focused_related(ret.focus, meta).filter(|m| plx_screens::item_menu::has_actions(m))?;
-                Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
+                return Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark }, entry, ret.focus, rect));
             }
-        } else {
-            // A card page — Person or Collection — answers its focused card and where it sits.
-            let card = real.focused_card(&cx, ret.focus, Some(At::Drawn))?;
-            let (item, rect) = (card.item.downcast_ref::<plx_data::pms::PmsMovie>(), card.rect);
-            let item = item.filter(|m| plx_screens::item_menu::has_actions(m))?;
-            Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
+            if let Some((rk, mark)) = page.focused_episode(ret.focus, meta) {
+                // the ONE entry point whose item is a leaf of the season this page has loaded
+                return Some(strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark }, entry, ret.focus, rect));
+            }
         }
+        // A card page answers its focused card and where it sits: Person, Collection, and Detail's
+        // Related shelf — a RELATED tile is a DIFFERENT item standing on the same page, an
+        // ordinary card row, which is exactly what `MenuHost::Related` existed to say.
+        let card = real.focused_card(&cx, ret.focus, Some(At::Drawn))?;
+        let item = card.item.downcast_ref::<plx_data::pms::PmsMovie>().filter(|m| plx_screens::item_menu::has_actions(m))?;
+        Some(card_menu_arg(item, false, false, entry, ret.focus, card.rect))
     }
 
     /// **The opener LIFT: the focused tile repainted above the modal dim.** Render-only, and the

@@ -438,7 +438,17 @@ pub enum At {
 #[derive(Clone, Copy)]
 pub struct FocusedCard<'a> {
     pub item: &'a dyn std::any::Any,
+    /// The live drawn rect ([`Placed::rect`]).
     pub rect: Option<Rect>,
+    /// The settled focus-scaled rect ([`Placed::rest_rect`]) — what an opener anchors to.
+    pub rest_rect: Option<Rect>,
+}
+
+impl<'a> FocusedCard<'a> {
+    /// `item` with the placement the page measured for it (`None` when the caller asked for none).
+    pub fn new(item: &'a dyn std::any::Any, placed: Option<Placed>) -> Self {
+        Self { item, rect: placed.map(|p| p.rect), rest_rect: placed.map(|p| p.rest_rect) }
+    }
 }
 
 /// What was painted / where it rests / what clipped it (§7.6).

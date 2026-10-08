@@ -1,6 +1,7 @@
 //! Library shelf physical-hold engine item capture.
 
 use super::*;
+use plx_ui::screen::Focusable;
 #[allow(unused_imports)]
 use super::test_support::*;
 use super::test_support::{frame};

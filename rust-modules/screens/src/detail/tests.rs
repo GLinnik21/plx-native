@@ -3301,6 +3301,38 @@ fn up_from_a_member_reaches_the_heading_and_down_returns_to_that_member() {
     clear();
 }
 
+/// The item-menu opener asks the page for its focused card (`Screen::focused_card`) instead of
+/// downcasting to it: for a Related or collection card it must name the item `focused_related`
+/// does and the rect `focused_rect` measures, and for anything else (Play, a heading) it names none.
+#[test]
+fn the_focused_card_is_the_related_item_and_the_rect_the_opener_measured_before() {
+    let sid = ServerId::UNSET;
+    let _guard = install(collection_movie(sid));
+    let screen = bare(&_guard, sid, "m1");
+    let meta = test_store().view();
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let key = |elem| FocusKey { entry: EntryId(7), elem };
+    for (elem, rk) in [
+        (screen.engine_key(related::elem(1).unwrap()).unwrap(), "r2"),
+        (screen.engine_key(collection::elem(2).unwrap()).unwrap(), "m3"),
+    ] {
+        let context = cx(&measure, Some(elem));
+        let card = Screen::<TestHost>::focused_card(&screen, &context, Some(key(elem)), Some(At::Drawn))
+            .expect("a related card is a focused card");
+        let item = card.item.downcast_ref::<plx_data::pms::PmsMovie>().unwrap();
+        assert_eq!(item.rk, rk);
+        assert_eq!(item.rk, screen.focused_related(Some(key(elem)), meta).unwrap().rk);
+        assert!(card.rect.is_some());
+        assert_eq!(card.rect, screen.focused_rect::<TestHost>(Some(key(elem)), &context, At::Drawn));
+        assert!(Screen::<TestHost>::focused_card(&screen, &context, Some(key(elem)), None).unwrap().rect.is_none());
+    }
+    for elem in [hero::ELEM_PLAY, collection::HEADING_ELEM] {
+        let context = cx(&measure, Some(elem));
+        assert!(Screen::<TestHost>::focused_card(&screen, &context, Some(key(elem)), Some(At::Drawn)).is_none());
+    }
+    clear();
+}
+
 #[test]
 fn ok_on_the_heading_opens_the_collection_and_ok_on_a_member_opens_its_detail() {
     let sid = ServerId::UNSET;

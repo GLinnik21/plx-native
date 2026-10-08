@@ -2028,6 +2028,12 @@ impl DetailScreen {
 }
 
 impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen {
+    /// The Related / collection shelf card only; a season tab or an episode is not a catalog item.
+    fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<plx_ui::screen::FocusedCard<'a>> {
+        let item = self.focused_related(focus, <H as crate::registry::MetadataLike>::metadata(cx))?;
+        let placed = focus.zip(at).and_then(|(key, at)| Focusable::<H>::place(self, &key.elem, cx, at));
+        Some(plx_ui::screen::FocusedCard::new(item, placed))
+    }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         DetailScreen::redraw_focused::<H>(self, f, focus)
     }

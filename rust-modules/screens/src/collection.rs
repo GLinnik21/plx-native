@@ -740,7 +740,8 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
 impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
     fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<plx_ui::screen::FocusedCard<'a>> {
         let item = self.focused_item(focus, cx)?;
-        Some(plx_ui::screen::FocusedCard { item, rect: at.and_then(|at| self.focused_rect(focus, cx, at)) })
+        let placed = focus.zip(at).and_then(|(key, at)| Focusable::<H>::place(self, &key.elem, cx, at));
+        Some(plx_ui::screen::FocusedCard::new(item, placed))
     }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         self.stack.view(&self.page).redraw_focused(f, focus);

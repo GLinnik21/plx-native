@@ -2450,6 +2450,14 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
 }
 
 impl<H: HomeLike> Screen<H> for HomeScreen {
+    /// A grid card only: the hero and a heading are not a card, so an opener has no rect for them.
+    fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<plx_ui::screen::FocusedCard<'a>> {
+        let key = focus.filter(|k| k.entry == self.entry)?;
+        self.focused_grid(Some(key))?;
+        let item = self.focused_item(Some(key), cx)?;
+        let placed = at.and_then(|at| Focusable::<H>::place(self, &key.elem, cx, at));
+        Some(plx_ui::screen::FocusedCard::new(item, placed))
+    }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         HomeScreen::redraw_focused::<H>(self, f, focus)
     }
