@@ -176,7 +176,7 @@ class Sandbox:
         self._tmp.cleanup()
 
     def run(self, *args, env=None):
-        full = {k: v for k, v in os.environ.items() if k not in ("RELEASE", "CARGO_TARGET_DIR", "MAKEFLAGS")}
+        full = {k: v for k, v in os.environ.items() if k not in ("RELEASE", "CARGO_TARGET_DIR", "MAKEFLAGS", "CARGO_BUILD_RUSTFLAGS", "RUSTFLAGS")}   # a benchmark started by `make build-bench` hands its own -Zthreads down: the fake run must not inherit it
         full.update(HOME=str(self.home), FAKE_LOG=str(self.log), FAKE_STATE=str(self.state))
         full.update(env or {})
         return subprocess.run([sys.executable, str(SCRIPT), "--repo", str(self.repo), *args],
@@ -484,17 +484,28 @@ class SkipTests(unittest.TestCase):
 
 
 DASH = "—"
-# What the real `check-unlocked` prints: the python branch's own output nests a banner of its own, and
-# the two top-level banners come last (tools/check-parallel.py prints a branch when it ends).
+# The gate in the scratch repository is the REAL runner, tools/check-parallel.py, started the way the
+# Makefile's `check-unlocked` starts it: two branches named `cargo` and `python`, the python one itself a
+# step-mode run of a manifest. Nothing here prints a banner by hand: a parser tested against banners a
+# test author typed is how the first green gate on a runner came back "unreadable" (the parser looked for
+# `==== step: cargo`, the runner prints `==== check: cargo`).
 FAKE_CHECK_MAKEFILE = SCRATCH_MAKEFILE + (
     "check-unlocked:\n"
     "\t@echo \"$$PLX_CHECK_LOCK|$$MAKEFLAGS|$$PLXNATIVE_RUNTIME_DIR\" > $(CURDIR)/../check-env.txt\n"
-    "\t@test -z \"$$FAKE_CHECK_FAIL\" || { printf '%s\\n' '==== step: python3 ci/test_x.py \u2014 FAILED, exit 1 (3.0s, cpu 1.0s) ====' 'AssertionError: the gate said no' "
-    "'==== step: python3 ci/test_y.py \u2014 ok (1.0s, cpu 1.0s) ====' 'fine' '==== check: 1 of 2 steps FAILED (4s wall, 3 at once) ====' 'FAILED (exit 1): python3 ci/test_x.py'; exit 1; }\n"
-    f"\t@echo '==== step: rest {DASH} ok (9.0s, cpu 20.0s) ===='\n"
-    f"\t@echo '==== step: cargo {DASH} ok (42.5s, cpu 90.1s) ===='\n"
-    f"\t@echo '==== step: python {DASH} ok (31.2s, cpu 60.0s) ===='\n"
-    "\t@echo '==== check: 2 steps all ok ===='\n")
+    "\t@python3 tools/check-parallel.py \\\n"
+    "\t  cargo='python3 -c \"print(\\\"cargo ran\\\")\"' \\\n"
+    "\t  python='python3 tools/check-parallel.py --steps steps-$(if $(FAKE_CHECK_FAIL),red,ok).txt'\n")
+
+
+def install_gate(sb):
+    """Write the scratch repository's gate: the real step runner, a manifest that passes and one that does not."""
+    shutil.copy(ROOT / "tools" / "check-parallel.py", sb.repo / "tools" / "check-parallel.py")
+    (sb.repo / "ci").mkdir(exist_ok=True)
+    (sb.repo / "ci" / "test_y.py").write_text("print('fine')\n")
+    (sb.repo / "ci" / "test_x.py").write_text("import sys\nprint('AssertionError: the gate said no')\nsys.exit(1)\n")
+    (sb.repo / "steps-ok.txt").write_text("python3 ci/test_y.py\n")
+    (sb.repo / "steps-red.txt").write_text("python3 ci/test_x.py\npython3 ci/test_y.py\n")
+    (sb.repo / "Makefile").write_text(FAKE_CHECK_MAKEFILE, encoding="utf-8")
 
 
 class CheckScenarioTests(unittest.TestCase):
@@ -508,19 +519,20 @@ class CheckScenarioTests(unittest.TestCase):
 
     def test_wall_time_and_branch_times_are_reported(self):
         with Sandbox() as sb:
-            (sb.repo / "Makefile").write_text(FAKE_CHECK_MAKEFILE, encoding="utf-8")
+            install_gate(sb)
             out = sb.repo.parent / "check.json"
             proc = sb.run("--runs", "2", "--only", "check", "--json", str(out),
                           env={"MAKEFLAGS": "-j9", "PLXNATIVE_RUNTIME_DIR": "/should/not/leak"})
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertRegex(proc.stdout, re.escape(f"| {bb.TITLES['check']} | 2 | ") + r"[\d.]+ s \| [\d.]+ s \| [\d.]+ s \|")
-            self.assertIn("cargo branch 42 s, python branch 31 s", proc.stdout)
+            self.assertRegex(proc.stdout, r"cargo branch \d+ s, python branch \d+ s")
             doc = json.loads(out.read_text())
             (sc,) = doc["scenarios"]
             self.assertEqual(sc["id"], "check")
             self.assertEqual(len(sc["samples"]), 2)
-            self.assertEqual(sc["branches"]["cargo"]["median"], 42.5)
-            self.assertEqual(sc["branches"]["python"]["max"], 31.2)
+            for branch in bb.CHECK_BRANCHES:   # the times the REAL runner printed for each branch
+                self.assertGreaterEqual(sc["branches"][branch]["median"], 0)
+                self.assertTrue(all(f"{branch}_seconds" in sample for sample in sc["samples"]), branch)
             # No lock (this process holds it exclusively), and nothing of the bench's environment leaks in.
             lock, makeflags, runtime = (sb.repo.parent / "check-env.txt").read_text().strip().split("|")
             self.assertEqual(lock, "off")
@@ -530,7 +542,7 @@ class CheckScenarioTests(unittest.TestCase):
 
     def test_a_red_gate_is_a_failed_run_and_records_no_number(self):
         with Sandbox() as sb:
-            (sb.repo / "Makefile").write_text(FAKE_CHECK_MAKEFILE, encoding="utf-8")
+            install_gate(sb)
             out = sb.repo.parent / "red.json"
             proc = sb.run("--runs", "1", "--only", "check", "--json", str(out), env={"FAKE_CHECK_FAIL": "1"})
             self.assertEqual(proc.returncode, 1, proc.stderr)
@@ -559,17 +571,58 @@ class CheckScenarioTests(unittest.TestCase):
         # nothing readable: the tail of the output is all there is
         self.assertIn("no failed step or test could be read", bb.check_failure_summary(2, "make: *** [x] Error 2"))
 
-    def test_a_gate_that_prints_no_branch_banner_is_refused(self):
+    def test_a_gate_that_passed_but_printed_no_branch_banner_is_recorded_as_a_total(self):
+        # Exit 0 is the verdict. A banner that cannot be read costs the two branch rows, nothing else.
         with Sandbox() as sb:
             (sb.repo / "Makefile").write_text(SCRATCH_MAKEFILE + "check-unlocked:\n\t@echo nothing useful\n")
-            proc = sb.run("--runs", "1", "--only", "check")
-            self.assertEqual(proc.returncode, 1)
-            self.assertIn("no `==== step: <branch>", proc.stdout)
+            out = sb.repo.parent / "unread.json"
+            proc = sb.run("--runs", "1", "--only", "check", "--json", str(out))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("the gate PASSED but no", proc.stderr)
+            self.assertIn("the gate passed; its branch times could not be read, only the total is recorded", proc.stdout)
+            (sc,) = json.loads(out.read_text())["scenarios"]
+            self.assertEqual(sc["status"], "ok")
+            self.assertIn("median", sc)
+            self.assertEqual(sc["branches"], {b: {} for b in bb.CHECK_BRANCHES})
+
+    def test_the_parser_reads_what_the_real_runner_prints(self):
+        # tools/check-parallel.py itself, branch mode around a nested step-mode run: the shape of `make check`.
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "steps.txt"
+            manifest.write_text(f"{shlex.join([sys.executable, '-c', 'print(1)'])}\n")
+            nested = shlex.join([sys.executable, str(ROOT / "tools" / "check-parallel.py"), "--steps", str(manifest)])
+            green = subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "check-parallel.py"),
+                 "cargo=" + shlex.join([sys.executable, "-c", "import time; time.sleep(1.2); print('c')"]), "python=" + nested],
+                capture_output=True, text=True)
+            self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+            read = bb.parse_check_branches(green.stdout)
+            self.assertEqual(sorted(read), ["cargo", "python"], green.stdout)
+            self.assertGreaterEqual(read["cargo"], 1)       # whole seconds, as the runner prints them
+            # a branch that failed or was stopped has no time to read
+            red = subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "check-parallel.py"),
+                 "cargo=" + shlex.join([sys.executable, "-c", "import time; time.sleep(30)"]),
+                 "python=" + shlex.join([sys.executable, "-c", "import sys; sys.exit(3)"])],
+                capture_output=True, text=True)
+            self.assertNotEqual(red.returncode, 0)
+            self.assertEqual(bb.parse_check_branches(red.stdout), {}, red.stdout)
+
+    def test_the_makefiles_gate_names_the_branches_the_parser_reads(self):
+        recipe = (ROOT / "Makefile").read_text()
+        body = recipe[recipe.index("\ncheck-unlocked:") + 1:]
+        body = body[:body.index("\n\n")]
+        self.assertEqual(re.findall(r"(?m)^\s+(\w+)='\$\(MAKE\)", body), list(bb.CHECK_BRANCHES))
+        self.assertIn("tools/check-parallel.py", body)
 
     def test_the_banner_parser_takes_the_last_banner_of_each_branch(self):
-        text = (f"==== step: cargo {DASH} ok (1.0s) ====\n==== step: python {DASH} ok (2.0s, cpu 3.0s) ====\n"
-                f"==== step: cargo {DASH} FAILED, exit 1 (7.5s, cpu 9.0s) ====\n==== step: other {DASH} ok (99.0s) ====\n")
-        self.assertEqual(bb.parse_check_branches(text), {"cargo": 7.5, "python": 2.0})
+        # the python branch's own output nests the banners of its halves; its own comes after them
+        text = (f"==== check: cargo {DASH} ok (338s) ====\ncheck: still running: rest (120s)\n"
+                f"==== check: rest {DASH} ok (157s) ====\n==== check: 76 steps {DASH} all ok (157s wall) ====\n"
+                f"==== check: harness {DASH} ok (223s) ====\n==== check: python {DASH} ok (224s) ====\n")
+        self.assertEqual(bb.parse_check_branches(text), {"cargo": 338.0, "python": 224.0})
+        failed = f"==== check: cargo {DASH} stopped, a sibling branch failed (254s) ====\n==== check: python {DASH} FAILED, exit 2 (254s) ====\n"
+        self.assertEqual(bb.parse_check_branches(failed), {})
         self.assertEqual(bb.parse_check_branches("no banners"), {})
 
 
