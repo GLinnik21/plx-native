@@ -160,6 +160,12 @@ pub trait StackPage<H: Host> {
     fn fallback(&self, cx: &Cx<'_, H>, out: &mut Vec<Self::Key>);
     /// The cards of a `Shelf` / `Grid` section; `None` while it has no content.
     fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Self::Key) -> Option<Self::Cards<'a>>;
+    /// Whether a held OK on card `elem` of section `k` opens an item menu: the hold hint
+    /// ([`Stack::hold_hint`]) is shown only on a card that answers `true`. A page whose cards can
+    /// open something else on a hold (a collection hit opens its page) says so here.
+    fn card_has_menu(&self, _cx: &Cx<'_, H>, _k: Self::Key, _elem: &H::Elem) -> bool {
+        true
+    }
     /// The one engine element of a focusable `Custom` / `Overlay` section.
     fn elem_of(&self, _k: Self::Key) -> Option<H::Elem> {
         None
@@ -274,6 +280,9 @@ pub struct Stack<K, E = u32> {
     /// The element focus was last on: the last answer of a `seat` nothing else can answer.
     last_elem: u32,
     restore: Option<StackMemory<K>>,
+    /// The standing "Hold OK for options" hint, on the pages that opted in
+    /// ([`Stack::hold_hint`]). Paint-only: never written to the canon.
+    hint: Option<crate::hold_hint::HoldHint>,
     /// How many times `sections` ran (the cost case's counter).
     #[cfg(test)]
     pub(crate) rebuilds: u32,
@@ -298,6 +307,7 @@ impl<K: Copy + Eq, E> Stack<K, E> {
             tops: Vec::new(),
             last_elem: 0,
             restore: None,
+            hint: None,
             #[cfg(test)]
             rebuilds: 0,
             _elem: PhantomData,
@@ -326,6 +336,29 @@ impl<K: Copy + Eq, E> Stack<K, E> {
     pub fn clipped(mut self, clip: Rect) -> Self {
         self.clip = clip;
         self
+    }
+
+    /// Teach the hold on this page: a standing "Hold OK for options" hint over the cards, on the
+    /// rarer cadence of a non-Home screen of `kind` (`HoldHint::once_per_run`). The stack steps it
+    /// on its `Tick`, answers its two screen-specific questions itself ([`hint_input`](Self::hint_input))
+    /// and draws it last in [`StackView::paint`]. For a page whose card holds open the item menu.
+    pub fn hold_hint(mut self, kind: crate::hold_hint::Kind) -> Self {
+        self.hint = Some(crate::hold_hint::HoldHint::once_per_run(kind));
+        self
+    }
+
+    /// Draw the hold hint, if the page opted in: a standing note, never a target (no stop, no hit
+    /// rect), over everything the page painted. [`StackView::paint`] ends with it; a page that
+    /// paints its sections itself calls it last.
+    pub fn draw_hold_hint(&self, p: crate::Painter, measure: &dyn plx_machine::machine::Measure) {
+        if let Some(h) = &self.hint {
+            h.draw(p, measure);
+        }
+    }
+
+    /// Whether the hold hint ([`hold_hint`](Self::hold_hint)) is on screen.
+    pub fn hint_visible(&self) -> bool {
+        self.hint.as_ref().is_some_and(|h| h.visible())
     }
 
     pub fn scroll(&self) -> f32 {
@@ -593,6 +626,12 @@ impl<K: Copy + Eq, E> Stack<K, E> {
         match ev {
             ScreenEvent::Tick(t) => {
                 self.tick(t.dt(), p, cx, fx);
+                if self.hint.is_some() {
+                    let input = self.hint_input(p, cx);
+                    if let Some(h) = &mut self.hint {
+                        h.step(input, t.ms, t.dt(), &mut |ev| fx.note(ev));
+                    }
+                }
                 if reported.is_none() && !self.queue.is_empty() {
                     let (k, r) = self.queue.remove(0);
                     reported = Some(StackEvent::Card(k, CardEvent::Want(r)));
@@ -704,6 +743,23 @@ impl<K: Copy + Eq, E> Stack<K, E> {
             return None;
         }
         Some((self.specs[i].key, self.place_in(p, cx, i, &key.elem, how)?))
+    }
+
+    /// The hold hint's two screen-specific answers for a `Stack` page (`hold_hint`, "Adopting it"):
+    /// the CARD focus rests on (a `Plain` section's control, another page's focus, a menu or modal
+    /// over the page — then focus is not this entry's — all answer `None`), and whether nothing
+    /// under it is still moving: the page scroll at its target, and the card drawn where it comes
+    /// to rest (the shelf's glide and the focus pop). ([`HintInput::for_placed`](crate::hold_hint::HintInput::for_placed)
+    /// owns the rule, pinned clocks included.) The press clock is passed straight through.
+    pub fn hint_input<H: Host<Elem = u32>, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>) -> crate::hold_hint::HintInput {
+        let Some(key) = cx.focus.current.filter(|k| k.entry == self.entry) else {
+            return crate::hold_hint::HintInput::default();
+        };
+        let Some((_, at)) = self.focused_card(p, cx, At::Drawn).filter(|(sec, _)| p.card_has_menu(cx, *sec, &key.elem))
+        else {
+            return crate::hold_hint::HintInput::default();
+        };
+        crate::hold_hint::HintInput::for_placed(key.elem, at, (self.scroll.pos - self.target).abs() < 0.5, cx.press.held_ms)
     }
 
     fn place_in<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize, elem: &H::Elem, how: At) -> Option<Placed> {
@@ -846,6 +902,7 @@ impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
                 _ => {}
             }
         }
+        s.draw_hold_hint(p, f.measure);
     }
 }
 

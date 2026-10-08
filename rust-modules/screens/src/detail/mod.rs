@@ -264,6 +264,10 @@ pub struct DetailScreen {
     /// it can answer without constructing a throwaway empty owner. Derived, not logical state —
     /// deliberately absent from [`SHAPE`].
     spot_facts: SpotFacts,
+    /// The standing "Hold OK for options" hint over a Related or Collection card
+    /// (`plx_ui::hold_hint`, the rarer cadence of a non-Home card screen). Paint-only: not hashed,
+    /// not in [`SHAPE`].
+    hold_hint: plx_ui::hold_hint::HoldHint,
 }
 
 /// Snapshot of every metadata-dependent read [`DetailScreen::spot`] needs, taken while a real
@@ -452,6 +456,7 @@ impl DetailScreen {
             layout: Cell::new(None),
             layout_pinned: Cell::new(false),
             spot_facts: SpotFacts::default(),
+            hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Detail),
         }
     }
 
@@ -2256,6 +2261,8 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
         );
 
         self.record_stops(f);
+        // A standing note, never a target: over the page, records no stop and no hit rect.
+        self.hold_hint.draw(f.painter, f.measure);
         // **This page draws no panel at all any more.** All three of its own — *Also available*,
         // *Track information* and *About* — are `ModalStack` surfaces since phase 10, so the
         // container draws each after this page, with its scrim, on its own appear spring.
@@ -3342,6 +3349,30 @@ impl DetailScreen {
             fx.note(PresentEvent::Motion);
         }
         self.preview_tick(t.ms, dt, focused, fx, meta);
+        let hint = self.hint_input(cx, focused);
+        self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev));
+    }
+
+    /// The two screen-specific answers the hold hint needs (`ui::hold_hint`, "Adopting it"): the
+    /// CARD focus rests on, only on the shelves whose held OK opens an item menu (Related and the
+    /// member Collection — Extras and Cast have no hold action, and neither do the hero, a
+    /// heading or the about rows), never while full-trailer mode has taken the page off screen;
+    /// and whether it has arrived (the page scroll and the card's own glide).
+    fn hint_input<H: ContentLike + crate::registry::MetadataLike>(
+        &self,
+        cx: &Cx<'_, H>,
+        focused: Option<Located>,
+    ) -> plx_ui::hold_hint::HintInput {
+        let none = plx_ui::hold_hint::HintInput::default();
+        let (Some(key), Some(Located::Related(_) | Located::Collection(_))) = (cx.focus.current, focused) else {
+            return none;
+        };
+        if key.entry != self.entry || self.preview_chrome < 0.99 {
+            return none;
+        }
+        let Some(drawn) = <Self as Focusable<H>>::place(self, &key.elem, cx, At::Drawn) else { return none };
+        let still = (self.scroll.pos - self.scroll_target).abs() < 0.5 && self.scroll.vel.abs() < 0.5;
+        plx_ui::hold_hint::HintInput::for_placed(key.elem, drawn, still, cx.press.held_ms)
     }
 
     fn preview_tick<H: ContentLike>(

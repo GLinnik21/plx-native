@@ -187,6 +187,9 @@ pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '
             shelf.draw(f, p, &src, frame);
         }
     }
+    // A standing note, never a target: the page paints through here, not `StackView::paint`, so it
+    // ends the draw itself, over everything the page painted.
+    screen.stack.draw_hold_hint(f.painter.alpha(f.page_alpha), f.measure);
 }
 
 fn field<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p: Painter) {

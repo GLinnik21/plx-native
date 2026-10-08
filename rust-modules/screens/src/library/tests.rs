@@ -1699,3 +1699,44 @@ fn the_pages_focus_groups_keep_their_ids_order_and_first_seat() {
     assert!(links.iter().any(|link| link.from == page.shelves[0].group && link.dir == Dir::Down
         && link.to == page.shelves[1].group), "the document is walked shelf by shelf");
 }
+
+/// The hold hint (`ui::hold_hint`) on a Library shelf card: it stands after the dwell once the
+/// page is opaque and the card at rest, not on a non-card focus, not while a menu owns focus, and
+/// not a second time on a Library page this run.
+#[test]
+fn the_hold_hint_stands_on_a_resting_library_card_once_per_run() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
+    let session = plx_plex::plex::session::TempSession::new("library-hold-hint");
+    session.watching("u-library-hold-hint");
+    let fixture = Fixture::shelves(&["movie.inprogress.1"], 12);
+    let mut page = fixture.screen();
+    page.live = true;
+    page.page_fade.mount();
+    let key = page.key(page.shelves[0].elems[2]);
+    let mut engine = FocusEngine::new();
+    engine.set(OWNER, key, Some(page.shelves[0].group), By::Restore);
+    let mut ms = 0;
+    let mut rest = |page: &mut LibraryScreen, focus: Option<FocusKey<u32>>, secs: f32| {
+        for _ in 0..(secs * 60.0) as u32 {
+            ms += 17;
+            let mut out = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            let mut cx = fixture.cx(focus);
+            cx.tick = Tick { ms, dt_us: 16_667 };
+            page.step(&ScreenEvent::Tick(cx.tick), &cx,
+                &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+        }
+    };
+    rest(&mut page, Some(key), 1.0); // the page dissolves in; the dwell only starts once it is at rest
+    assert!(!page.hold_hint.visible(), "not before the dwell");
+    rest(&mut page, Some(key), 3.0);
+    assert!(page.hold_hint.visible(), "after it, on a settled card of an opaque page");
+    rest(&mut page, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
+    assert!(!page.hold_hint.visible(), "never while a menu owns focus");
+    rest(&mut page, None, 4.0);
+    assert!(!page.hold_hint.visible(), "never without a focused card");
+    rest(&mut page, Some(key), 4.0);
+    assert!(!page.hold_hint.visible(), "and not a second time on a Library page this run");
+}

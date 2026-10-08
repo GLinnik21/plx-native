@@ -484,7 +484,7 @@ impl CollectionScreen {
                 return_pending: false, summary_more: false, links_c: Vec::new(), synced: None,
                 summary_lift: plx_ui::text_lift::TextLift::new() },
             // A page that leaves focus (a menu over it, a pointer gone) rests at the top.
-            stack: Stack::new(entry).home_when_unfocused(true),
+            stack: Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Collection).home_when_unfocused(true),
             teardown_closed: false, ground: PageGround::new(), ground_seeded: false,
         }
     }
@@ -888,6 +888,49 @@ mod tests {
         let out = step(&mut screen, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &cx(store.view(), Some(key)));
         assert!(out.iter().any(|e| matches!(&e.fx, plx_machine::machine::Fx::App(AppFx::Content(
             ContentReq::Push(ContentArg::Detail { rk, .. }))) if rk == "b")));
+    }
+
+    /// The hold hint on a Collection page (`ui::hold_hint`): the first time it teaches like Home's
+    /// (a 1.5 s dwell on a settled member), and a page of this kind never self-teaches again.
+    #[test]
+    fn the_hold_hint_stands_on_a_resting_member_once_per_run() {
+        let _g = plx_base::testlock::serial();
+        plx_ui::hold_hint::reset_learned_for_test();
+        plx_ui::hold_hint::reset_shown_for_test();
+        let (store, mut screen) = seeded();
+        let c = store.view().current().unwrap();
+        let (a, b) = (screen.key_at(c, 0), screen.key_at(c, 1));
+        let mut ms = 100;
+        let mut rest = |screen: &mut CollectionScreen, key, secs: f32| {
+            for _ in 0..(secs * 60.0) as u32 {
+                ms += 17;
+                tick_at(screen, &store, Some(key), ms);
+            }
+        };
+        rest(&mut screen, a, 1.2);
+        assert!(!screen.stack.hint_visible(), "not before the dwell");
+        rest(&mut screen, a, 1.5);
+        assert!(screen.stack.hint_visible(), "after it, on a settled member");
+        // a menu open over the page: focus is the menu's, not this page's
+        let menu = plx_machine::machine::FocusKey { entry: EntryId(77), elem: 0 };
+        rest(&mut screen, menu, 1.0);
+        assert!(!screen.stack.hint_visible(), "never while a menu is open");
+        // nor on the header, which is not a card
+        let header = plx_machine::machine::FocusKey { entry: EntryId(9), elem: HEADER_ELEM };
+        rest(&mut screen, header, 3.0);
+        assert!(!screen.stack.hint_visible(), "never on a non-card focus");
+        // spent for the kind: another member, and a second Collection page, stay quiet
+        rest(&mut screen, b, 3.0);
+        assert!(!screen.stack.hint_visible(), "not twice on the same page");
+        let (store2, mut again) = seeded();
+        let k = again.key_at(store2.view().current().unwrap(), 0);
+        for n in 0..240 { tick_at(&mut again, &store2, Some(k), 100 + n * 17); }
+        assert!(!again.stack.hint_visible(), "not on a second Collection page");
+        // a held OK still shows it, with its fill
+        let mut held = cx(store2.view(), Some(k));
+        held.press.held_ms = Some(300);
+        step(&mut again, ScreenEvent::Tick(Tick { ms: 5000, dt_us: 16_667 }), &held);
+        assert!(again.stack.hint_visible(), "a physical hold shows it regardless");
     }
 
     impl CollectionScreen {

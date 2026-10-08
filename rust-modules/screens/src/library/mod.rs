@@ -207,6 +207,9 @@ pub struct LibraryScreen {
     clock: super::clock_readout::ClockWatch,
     /// The question, asked from the failed read-out's *Connect*.
     plaintext_alert: super::plaintext_question::PlaintextAlert,
+    /// The standing "Hold OK for options" hint over a card (`plx_ui::hold_hint`, the rarer
+    /// cadence of a non-Home card screen). Paint-only: not hashed, not in the shape.
+    hold_hint: plx_ui::hold_hint::HoldHint,
     /// Shelf rows the document draw and the stop recorder looked at, for the windowing test.
     #[cfg(test)]
     shelf_visits: std::cell::Cell<usize>,
@@ -237,6 +240,7 @@ impl LibraryScreen {
             plaintext: Default::default(),
             clock: Default::default(),
             plaintext_alert: super::plaintext_question::PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL, PLAINTEXT_CONNECT),
+            hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Library),
             #[cfg(test)] shelf_visits: std::cell::Cell::new(0),
         }
     }
@@ -600,6 +604,25 @@ impl LibraryScreen {
         let (row, col) = self.shelves.iter().enumerate().find_map(|(row, shelf)|
             shelf.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col)))?;
         H::section_hubs(cx).shelves().get(row)?.items.get(col)
+    }
+
+    /// The two screen-specific answers the hold hint needs (`ui::hold_hint`, "Adopting it"): the
+    /// CARD focus rests on, one whose hold opens an item menu (a grid poster or a shelf card with
+    /// a library item behind it; not a chip, the rail, a heading or a covered page), and whether it
+    /// has arrived (the page scroll, the fade and the card's own glide).
+    fn hint_input<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> plx_ui::hold_hint::HintInput {
+        let none = plx_ui::hold_hint::HintInput::default();
+        let Some(key) = cx.focus.current.filter(|key| key.entry == self.entry) else { return none };
+        if self.plaintext_alert.is_open()
+            || self.focused_item(Some(key), cx).is_none_or(|item| item.rk.is_empty())
+        {
+            return none;
+        }
+        let Some(drawn) = <Self as Focusable<H>>::place(self, &key.elem, cx, At::Drawn) else { return none };
+        let still = (self.scroll.pos - self.scroll_target).abs() < 0.5
+            && self.scroll.vel.abs() < 0.5
+            && self.page_fade.alpha() * self.grid_fade.alpha() > 0.99;
+        plx_ui::hold_hint::HintInput::for_placed(key.elem, drawn, still, cx.press.held_ms)
     }
 
     pub fn grid_position(&self, focus: Option<FocusKey<u32>>) -> Option<(usize, usize)> {
@@ -1043,6 +1066,8 @@ impl LibraryScreen {
                         self.scroll_target = (self.scroll_target + shift).clamp(0.0, max);
                     }
                     self.relayout(focused);
+                    let hint = self.hint_input(cx);
+                    self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev));
                     // A first seat that applies a bookmarked scroll clamps it to the document, so
                     // behind a section reveal it waits for the same shelves the reveal does:
                     // seated on the shelfless interim, a bookmark deep in the grid landed short of
