@@ -40,8 +40,10 @@
 //! - **Idle.** Springs report their own motion; a settled section reports none and parks at exact
 //!   rest. No call allocates except the focused tile's label, as before.
 //!
-//! The L0 primitives (`card_row`, `poster_grid`) stay public until the last migration PR; the
-//! `cards` gate in `ci/check-deps.sh` stops `screens/` growing new direct uses of them.
+//! The L0 primitives (`card_row`, `poster_grid`) are `pub(crate)`: a screen cannot hand-assemble a
+//! shelf or a grid. What a screen legitimately reads from them (the tile style and label types, the
+//! row and band geometry its own layout is built from, the heading painters) is re-exported here;
+//! the `cards` gate in `ci/check-deps.sh` is the backstop.
 //! Tier 1 of the conformance suite (`tests.rs`) runs the same seven cases the real screens run
 //! (`conformance`, Tier 2) against both components on `FixtureHost`.
 
@@ -49,7 +51,6 @@ use std::ops::Range;
 
 use plx_machine::machine::{Cx, EntryId, FocusRead, Host, Measure};
 
-use crate::card_row::TileLabel;
 use crate::widgets::Art;
 use crate::{Painter, Rect};
 
@@ -60,6 +61,17 @@ mod shelf;
 mod stack;
 
 pub use avatars::AvatarRow;
+// Geometry and painters a screen's own layout reads (L0 `card_row` / `poster_grid`, re-exported so
+// those modules can stay `pub(crate)`).
+pub use crate::card_row::{
+    column_near_x, draw_credit_label, draw_heading, focused_caption, heading_flow, heading_lift_max, label_band, paint_visible,
+    poster_label, resume_bar, reveal, scroll_into_view, settled_top, tile_rect, under_band, RowStyle, TileLabel,
+    BAND_OPEN, CREDIT_ROLE_LEADING, LABEL_BAND_COLLAPSED, MAX_ROW_ITEMS, ROW_PITCH_FIXED, UNDER_LABEL_H,
+};
+pub use crate::poster_grid::{
+    growth_before as grid_growth_before, settled as grid_settled, GridBand, COLS as GRID_COLS, MAX_GRID_BANDS,
+    STYLE as GRID_STYLE,
+};
 pub use grid::{Grid, GridSpec, ScrollMode};
 #[cfg(any(test, feature = "devtriggers"))]
 pub use pool::set_pop_pool;

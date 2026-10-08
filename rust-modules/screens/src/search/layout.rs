@@ -1,6 +1,6 @@
 //! Search's document geometry. Both engine placement and rendering use these expressions.
 use plx_data::search::Kind;
-use plx_ui::card_row::{self, RowStyle};
+use plx_ui::cards::{self as ui_cards, RowStyle};
 use plx_ui::consts::{CARD_H, CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W};
 use plx_machine::machine::GroupId;
 use plx_ui::Rect;
@@ -71,11 +71,11 @@ pub(super) fn reveal(scroll: f32, kinds: &[Kind], focused: usize) -> f32 {
     if focused >= kinds.len() {
         return 0.0;
     }
-    let band = |i| card_row::under_band(if i == focused { 1.0 } else { 0.0 });
+    let band = |i| ui_cards::under_band(if i == focused { 1.0 } else { 0.0 });
     let origin = top(kinds, focused, band);
-    let height = block_h(kinds[focused], card_row::under_band(1.0));
+    let height = block_h(kinds[focused], ui_cards::under_band(1.0));
     let content = top(kinds, kinds.len(), band) + MARGIN_Y;
-    card_row::reveal(
+    ui_cards::reveal(
         scroll,
         origin + height - (SCR_H - MARGIN_Y),
         origin - CONTENT_TOP,
@@ -141,16 +141,16 @@ mod tests {
     }
 
     fn open(_: usize) -> f32 {
-        card_row::under_band(1.0)
+        ui_cards::under_band(1.0)
     }
     fn full() -> f32 {
-        card_row::under_band(1.0)
+        ui_cards::under_band(1.0)
     }
     const ALL: [Kind; 5] = plx_data::search::KINDS;
 
     #[test]
     fn the_reserved_caption_band_holds_the_block_the_shared_component_draws() {
-        let drawn = plx_ui::card_row::TileLabel::height(true);
+        let drawn = plx_ui::cards::TileLabel::height(true);
         assert!(
             drawn <= caption_band(full()),
             "the label block draws {drawn}px into a band of {}px",
@@ -218,7 +218,7 @@ mod tests {
             want > 0.0,
             "the third shelf is below the fold and must be revealed"
         );
-        let e = |i| card_row::under_band((i == 2) as i32 as f32);
+        let e = |i| ui_cards::under_band((i == 2) as i32 as f32);
         let shelf_top = top(&ALL, 2, e);
         assert!(
             shelf_top + block_h(ALL[2], full()) - want <= SCR_H,
@@ -230,7 +230,7 @@ mod tests {
         );
         assert_eq!(reveal(want, &ALL, 2), want);
         let one = reveal(0.0, &ALL, 1);
-        let one_top = top(&ALL, 1, |i| card_row::under_band((i == 1) as i32 as f32));
+        let one_top = top(&ALL, 1, |i| ui_cards::under_band((i == 1) as i32 as f32));
         assert!(
             one < one_top - CONTENT_TOP,
             "the reveal must undercut the pin, or it IS the pin"
@@ -238,7 +238,7 @@ mod tests {
         assert_eq!(one, one_top + block_h(ALL[1], full()) - (SCR_H - MARGIN_Y));
         let last = ALL.len() - 1;
         let end = reveal(0.0, &ALL, last);
-        let last_top = top(&ALL, last, |i| card_row::under_band((i == last) as i32 as f32));
+        let last_top = top(&ALL, last, |i| ui_cards::under_band((i == last) as i32 as f32));
         let content = last_top + block_h(ALL[last], full()) + MARGIN_Y;
         assert_eq!(
             content - end,

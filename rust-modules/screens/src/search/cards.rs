@@ -4,7 +4,7 @@ use super::*;
 use crate::registry::tile_facts;
 use plx_data::search::scope::ScopeSource;
 use plx_machine::machine::Measure;
-use plx_ui::card_row::TileLabel;
+use plx_ui::cards::TileLabel;
 use plx_ui::cards::{CardSource, Tile};
 use plx_ui::widgets::Art;
 use plx_ui::Painter;

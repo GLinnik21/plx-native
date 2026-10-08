@@ -38,7 +38,7 @@ use crate::registry::{
 };
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
-use plx_ui::card_row::RowStyle;
+use plx_ui::cards::RowStyle;
 use plx_ui::cards::SectionFrame;
 use plx_ui::consts::{MARGIN_X, SCR_W, SCR_H, K_SCROLL, CARD_DY};
 use plx_ui::frame::Budget;
@@ -1281,9 +1281,9 @@ impl LibraryScreen {
         let style = row_style(row);
         let focused = cx.focus.current.filter(|key| key.entry == self.entry)
             .and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
-        let x = focused.map(|col| plx_ui::card_row::scroll_into_view(row.cards.scroll(), col,
+        let x = focused.map(|col| plx_ui::cards::scroll_into_view(row.cards.scroll(), col,
             row.elems.len(), style.w, style.gap, SCR_W - 2.0 * MARGIN_X)).unwrap_or(row.cards.scroll());
-        plx_ui::card_row::tile_rect(col, MARGIN_X, style.w + style.gap, x,
+        plx_ui::cards::tile_rect(col, MARGIN_X, style.w + style.gap, x,
             self.target_layout.shelf_y(&self.target_run, index, self.scroll_target) + CARD_DY, (style.w, style.h))
             .scaled(if focused == Some(col) { style.focus_scale } else { 1.0 })
     }

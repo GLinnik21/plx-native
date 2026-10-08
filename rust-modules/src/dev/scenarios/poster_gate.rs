@@ -114,7 +114,7 @@ fn eviction_plan(rows: usize, per_screen: usize) -> Result<Vec<Stage>, Unfit> {
 /// Where seating column `col` of an `n`-card Home shelf scrolls it, from rest: the same minimal
 /// reveal the shelf's own spring steers to.
 fn shelf_offset(col: usize, n: usize) -> f32 {
-    use plx_ui::card_row::{scroll_into_view, RowStyle};
+    use plx_ui::cards::{scroll_into_view, RowStyle};
     let s = RowStyle::HOME;
     scroll_into_view(0.0, col, n, s.w, s.gap, plx_ui::consts::SCR_W - 2.0 * s.margin_x)
 }

@@ -2,7 +2,7 @@
 
 use plx_data::metadata::Detail;
 use plx_plex::plex::ServerId;
-use plx_ui::card_row::{self, RowStyle};
+use plx_ui::cards::{self as ui_cards, RowStyle};
 use plx_ui::marquee;
 use plx_machine::machine::{GroupId, Measure};
 use plx_ui::widgets::Art;
@@ -31,7 +31,7 @@ const ROLE_LINES_RESERVED: f32 = 2.0;
 // The name, the role's reserved room and the largest focus drop are reserved by the shelf's layout
 // owner.
 const UNDER_H: f32 = NAME_GAP + theme::size::LABEL as f32 + theme::space::XS
-    + card_row::CREDIT_ROLE_LEADING * ROLE_LINES_RESERVED
+    + ui_cards::CREDIT_ROLE_LEADING * ROLE_LINES_RESERVED
     + RowStyle::CAST.h * (RowStyle::CAST.focus_scale - 1.0) * 0.5;
 /// How far a focused headshot grows past the row box. The fixed cast shelf reserves this
 /// descent with its always-visible caption band, so labels cannot cross the next heading.
@@ -83,7 +83,7 @@ pub fn action(d: &Detail, key: u32) -> Action {
 /// lets them give it back ([`super::related::block_h`]). Measured on the panel first: collapsed,
 /// the cast names printed straight through the Extras heading.
 pub fn block_h() -> f32 {
-    LABEL_H + RowStyle::CAST.h + UNDER_H.max(card_row::UNDER_LABEL_H + FOCUS_POP)
+    LABEL_H + RowStyle::CAST.h + UNDER_H.max(ui_cards::UNDER_LABEL_H + FOCUS_POP)
 }
 
 /// The shelf's heading, `lift` being the row's live label lift (`Shelf::heading_lift`). A shelf
@@ -150,7 +150,7 @@ fn pop_drop(scale: f32) -> f32 {
 fn label_frame(cx: f32, row_y: f32, drop: f32, measure: &dyn Measure) -> Rect {
     let budget = SLOT - theme::space::SM;
     let top = row_y + RowStyle::CAST.h + NAME_GAP + drop;
-    let h = measure.cap_h(theme::size::LABEL) + theme::space::XS + card_row::CREDIT_ROLE_LEADING;
+    let h = measure.cap_h(theme::size::LABEL) + theme::space::XS + ui_cards::CREDIT_ROLE_LEADING;
     Rect::new(cx - budget * 0.5, top, budget, h)
 }
 
@@ -168,7 +168,7 @@ fn label(
     measure: &dyn Measure,
 ) {
     let at = label_frame(cx, row_y, drop, measure);
-    LABEL_CLOCK.with(|clock| card_row::draw_credit_label(p, clock, at, name, role, focused, measure));
+    LABEL_CLOCK.with(|clock| ui_cards::draw_credit_label(p, clock, at, name, role, focused, measure));
 }
 
 #[cfg(test)]
@@ -395,8 +395,8 @@ mod tests {
     #[test]
     fn the_cast_block_covers_its_always_drawn_labels_on_every_frame() {
         let under = block_h() - LABEL_H - RowStyle::CAST.h;
-        assert!(under >= card_row::UNDER_LABEL_H + pop_drop(RowStyle::CAST.focus_scale));
-        assert!(under > card_row::LABEL_BAND_COLLAPSED);
+        assert!(under >= ui_cards::UNDER_LABEL_H + pop_drop(RowStyle::CAST.focus_scale));
+        assert!(under > ui_cards::LABEL_BAND_COLLAPSED);
     }
 
     #[test]

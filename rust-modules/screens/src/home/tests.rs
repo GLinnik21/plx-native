@@ -469,7 +469,7 @@ fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
         let mut s = screen(snapshot.view());
         s.snap.jump(0.9);
         s.snap_target = 1.0;
-        s.grid.shelves[0].restore_scroll(offset, card_row::MAX_ROW_ITEMS);
+        s.grid.shelves[0].restore_scroll(offset, ui_cards::MAX_ROW_ITEMS);
         s.layout_grid();
         let mut h = History::default();
         assert_eq!(observe_card(&mut h, &s, snapshot.view(), 0), Verdict::Unknown);
@@ -1010,7 +1010,7 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
             "offset {} is not in progress",
             m.resume_ms
         );
-        let cap = card_row::focused_caption(&tile_facts::of(&m), true).expect("a Continue Watching episode always captions");
+        let cap = ui_cards::focused_caption(&tile_facts::of(&m), true).expect("a Continue Watching episode always captions");
         assert!(
             !cap.to_str().unwrap().contains("left"),
             "offset {}: no bar, so the caption must not promise time remaining ({cap:?})",
@@ -1023,7 +1023,7 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
         "20 minutes into 45 IS in progress"
     );
     assert_eq!(
-        card_row::focused_caption(&tile_facts::of(&mid), true).unwrap().to_str().unwrap(),
+        ui_cards::focused_caption(&tile_facts::of(&mid), true).unwrap().to_str().unwrap(),
         "Laura \u{00b7} 25 min left"
     );
 }
@@ -1036,7 +1036,7 @@ fn top_band_bottom() -> f32 {
 }
 fn heading_top(row: usize, focus_row: usize, scroll: f32) -> f32 {
     let lift = if row == focus_row {
-        card_row::heading_lift_max(&RowStyle::HOME)
+        ui_cards::heading_lift_max(&RowStyle::HOME)
     } else {
         0.0
     };
@@ -1047,7 +1047,7 @@ fn heading_top(row: usize, focus_row: usize, scroll: f32) -> f32 {
 }
 fn settled_scroll(rows: usize, focus_row: usize, current: f32) -> f32 {
     let (lo, hi) = row_reveal_band(shelf_top_settled(focus_row, focus_row));
-    card_row::reveal(current, lo, hi, grid_max_scroll(rows))
+    ui_cards::reveal(current, lo, hi, grid_max_scroll(rows))
 }
 fn from_below(rows: usize) -> f32 {
     grid_max_scroll(rows) + ROW_PITCH
@@ -1088,7 +1088,7 @@ fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
                 settled_scroll(rows, focus_row, from_below(rows)),
             ] {
                 let row_y = GRID_TOP_Y + shelf_top_settled(focus_row, focus_row) - scroll;
-                assert!(row_y + CARD_DY + CARD_H + card_row::UNDER_LABEL_H <= SCR_H - MARGIN_Y);
+                assert!(row_y + CARD_DY + CARD_H + ui_cards::UNDER_LABEL_H <= SCR_H - MARGIN_Y);
             }
         }
     }
@@ -1116,7 +1116,7 @@ fn width_of(text: &str, size: i32, bold: i32) -> f32 {
 }
 fn heading_flow(title: &str, source: &str) -> (f32, Vec<Run>) {
     let mut runs = Vec::new();
-    let width = card_row::heading_flow(title, source, |text, dx, size, bold, ink| {
+    let width = ui_cards::heading_flow(title, source, |text, dx, size, bold, ink| {
         runs.push(Run {
             text: text.into(),
             dx,
@@ -1590,7 +1590,7 @@ fn the_home_census_covers_input_motion_and_current_projection() {
     assert_ne!(shelf_canon(&popped), rest, "a pop spring is part of the canon");
     // These extents are part of SHAPE, not merely runtime sequence lengths.
     assert_eq!(HERO_NBTN, 2);
-    assert_eq!(plx_ui::card_row::MAX_ROW_ITEMS, 24);
+    assert_eq!(plx_ui::cards::MAX_ROW_ITEMS, 24);
 }
 
 /// `person` and `search` cap their shelves at the data layer's `pms::MAX_SHELF_ITEMS`; the card row
@@ -1599,7 +1599,7 @@ fn the_home_census_covers_input_motion_and_current_projection() {
 /// place that sees both.
 #[test]
 fn the_data_shelf_cap_is_the_card_rows_capacity() {
-    assert_eq!(plx_data::pms::MAX_SHELF_ITEMS, plx_ui::card_row::MAX_ROW_ITEMS);
+    assert_eq!(plx_data::pms::MAX_SHELF_ITEMS, plx_ui::cards::MAX_ROW_ITEMS);
 }
 
 #[test]
@@ -3095,7 +3095,7 @@ fn assert_shelves_laid_out(s: &HomeScreen) {
     for (row, shelf) in s.grid.shelves.iter().enumerate() {
         let want = top + flow - s.grid.scroll_y.pos * s.snap.pos;
         assert_eq!(shelf.base_y(), want, "row {row} is not where the layout puts it");
-        flow += card_row::ROW_PITCH_FIXED + shelf.under_band();
+        flow += ui_cards::ROW_PITCH_FIXED + shelf.under_band();
     }
 }
 

@@ -1,13 +1,13 @@
 //! Pure geometry for the owned Library's single vertical document.
 
 use plx_ui::consts::{CARD_H, CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W};
-use plx_ui::card_row::RowStyle;
+use plx_ui::cards::RowStyle;
 use plx_ui::theme;
 
 pub(super) const COLS: usize = 6;
 const EPISODE_COLS: usize = 4;
 pub(super) const MAX_LIBRARY_PILLS: usize = 8;
-pub(super) use plx_ui::poster_grid::{GridBand, MAX_GRID_BANDS};
+pub(super) use plx_ui::cards::{GridBand, MAX_GRID_BANDS};
 pub(super) const MAX_LETTERS: usize = 64;
 pub(super) const CONTENT_TOP: f32 = plx_ui::consts::GRID_TOP_Y;
 pub(super) const LIBRARY_ROW_H: f32 = plx_ui::widgets::StatusOverlay::CTRL_H + plx_ui::consts::CARD_DY + plx_ui::consts::TITLE_DY;
@@ -17,7 +17,7 @@ pub(super) const GRID_HEAD_H: f32 = plx_ui::consts::TITLE_DY
     + plx_ui::consts::CARD_DY;
 #[cfg(test)]
 pub(super) const GRID_PITCH: f32 = CARD_H
-    + plx_ui::card_row::LABEL_BAND_COLLAPSED
+    + plx_ui::cards::LABEL_BAND_COLLAPSED
     + plx_ui::consts::UNDER_LABEL_AIR;
 pub(super) const RAIL_TRACK_W: f32 = 44.0;
 pub(super) const RAIL_PITCH: f32 = 34.0;
@@ -154,7 +154,7 @@ impl Layout {
 
     pub(super) fn with_grid_focus(mut self, row: Option<usize>) -> Self {
         self.grid_bands = [GridBand::CLOSED; MAX_GRID_BANDS];
-        self.grid_bands[..1].copy_from_slice(&plx_ui::poster_grid::settled(row.filter(|&row| row < self.rows)));
+        self.grid_bands[..1].copy_from_slice(&plx_ui::cards::grid_settled(row.filter(|&row| row < self.rows)));
         self
     }
 
@@ -164,7 +164,7 @@ impl Layout {
     }
 
     fn band_growth_before(&self, row: usize) -> f32 {
-        plx_ui::poster_grid::growth_before(row.min(self.rows), &self.grid_bands)
+        plx_ui::cards::grid_growth_before(row.min(self.rows), &self.grid_bands)
     }
 
     fn row_top(&self, row: usize) -> f32 {
@@ -193,7 +193,7 @@ impl Layout {
     pub(super) fn card_h(&self) -> f32 { self.style().h }
 
     pub(super) fn grid_pitch(&self) -> f32 {
-        self.card_h() + plx_ui::card_row::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR
+        self.card_h() + plx_ui::cards::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR
     }
 
     pub(super) fn cell_x(&self, col: usize) -> f32 {
@@ -328,7 +328,7 @@ pub(super) fn rail_geom(n: usize) -> (f32, f32, f32, f32) {
 pub(super) fn rail_scroll_target(scroll: f32, drive: usize, n: usize) -> f32 {
     let (_, _, height, max) = rail_geom(n);
     let drive = drive.min(n.saturating_sub(1)) as f32;
-    plx_ui::card_row::reveal(scroll, (drive + 2.0) * RAIL_PITCH - height,
+    plx_ui::cards::reveal(scroll, (drive + 2.0) * RAIL_PITCH - height,
         (drive - 1.0) * RAIL_PITCH, max)
 }
 
@@ -355,9 +355,9 @@ pub(super) fn library_window(widths: &[f32], selected: usize, available: f32, ga
 }
 
 pub(super) fn shelf_pitch(landscape: bool, expanded: f32) -> f32 {
-    let art = if landscape { plx_ui::card_row::RowStyle::EPISODE.h } else { CARD_H };
+    let art = if landscape { plx_ui::cards::RowStyle::EPISODE.h } else { CARD_H };
     plx_ui::consts::TITLE_DY + plx_ui::consts::CARD_DY + art
-        + plx_ui::card_row::under_band(expanded)
+        + plx_ui::cards::under_band(expanded)
         + plx_ui::consts::UNDER_LABEL_AIR
 }
 
@@ -369,7 +369,7 @@ mod tests {
     fn all_rows_without_focus_use_the_shared_collapsed_band() {
         for episodes in [false, true] {
             let layout = Layout::new(false, &[], 10_000, true).with_episodes(episodes);
-            let pitch = layout.card_h() + plx_ui::card_row::under_band(0.0)
+            let pitch = layout.card_h() + plx_ui::cards::under_band(0.0)
                 + plx_ui::consts::UNDER_LABEL_AIR;
             assert!((layout.row_y(1, 0.0) - layout.row_y(0, 0.0) - pitch).abs() < 0.001);
         }
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn only_the_focused_all_row_reserves_its_caption_and_the_last_caption_fits() {
-        use plx_ui::card_row::{BAND_OPEN, UNDER_LABEL_H};
+        use plx_ui::cards::{BAND_OPEN, UNDER_LABEL_H};
         for episodes in [false, true] {
             let compact = Layout::new(true, &[shelf_pitch(false, 0.0)], 40, true)
                 .with_episodes(episodes);

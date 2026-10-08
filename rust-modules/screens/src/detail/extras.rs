@@ -5,7 +5,7 @@
 
 use plx_data::metadata::{extra_play_context, Detail, Extra};
 use crate::registry::PlayIntent;
-use plx_ui::card_row::{self, RowStyle, TileLabel};
+use plx_ui::cards::{self as ui_cards, RowStyle, TileLabel};
 use plx_machine::machine::GroupId;
 use plx_ui::widgets::Art;
 use plx_ui::{theme, Painter};
@@ -37,7 +37,7 @@ pub fn len(d: &Detail) -> usize {
 /// fixed `TileLabel::height(true)` is exactly `card_row::under_band(1.0)`, so a FOCUSED extras
 /// shelf is unchanged and only the unfocused one gives its room back.
 pub fn block_h(band: f32) -> f32 {
-    LABEL_H + STYLE.h + card_row::under_band(band)
+    LABEL_H + STYLE.h + ui_cards::under_band(band)
 }
 
 /// Play fields for one extra. `None` when the tile is missing or has no playable file.

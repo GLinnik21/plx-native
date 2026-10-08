@@ -487,12 +487,13 @@ pub fn column_near_x(
 
 /// Where tile `i` of a row is drawn, centre x. The other half of [`column_near_x`], so a caller
 /// never spells the same lattice out twice with the chance of disagreeing about the half-tile.
+#[cfg(test)]
 #[inline]
 pub fn tile_centre_x(i: usize, origin: f32, adv: f32, w: f32, scroll: f32) -> f32 {
     origin + i as f32 * adv - scroll + w * 0.5
 }
 
-/// The SETTLED rect of tile `i` — the one formula [`strip`] draws by and `ui::geom::Shelf::place`
+/// The SETTLED rect of tile `i` — the one formula `cards::Shelf` draws by and `ui::geom::Shelf::place`
 /// answers with (spec §7.1: draw calls place). The focus pop is applied on top by the caller
 /// (`Rect::scaled` by the cell's spring), never here.
 #[inline]
@@ -838,6 +839,7 @@ impl TileLabel {
             }
     }
     /// [`TileLabel::height`] for a block that has whatever THIS one has.
+    #[cfg(test)]
     fn own_height(&self) -> f32 {
         Self::height(self.caption.is_some())
     }
@@ -890,86 +892,6 @@ pub fn draw_focused(
     }
     let p = p.alpha(label.reveal);
     draw_label_block(p, rect, sty, label, ty, measure);
-}
-
-/// THE one-row strip loop: draw a whole horizontal shelf, non-focused tiles first (off-axis
-/// culled) and the focused tile LAST for its z-order — the in-row focused-last rule, which is all
-/// a lone strip needs (home's `Grid` keeps its own CROSS-row pass, which this deliberately does
-/// not try to own).
-///
-/// Nothing in production calls this loop any more: the detail, person and collection shelves draw
-/// through `cards::Shelf` (which shares this module's [`tile_rect`] formula and culling rule), and
-/// Home's `Grid` runs its own cross-row pass. It stays only until the shelf migration's last step
-/// deletes it; the discipline below is the one `Shelf` kept. **Only tiles that pass `on_axis` are
-/// drawn, and therefore only they call `resolve_tex_wh_on`** —
-/// the 64-slot poster LRU must never see an off-screen request, which is exactly what a
-/// hand-rolled per-screen copy of this loop keeps getting wrong.
-///
-/// The caller supplies the per-index content as closures: `art` the tile's [`Art`], `resume` its
-/// amber progress fraction (`None` = not in progress), `label` the FOCUSED tile's [`TileLabel`]
-/// (`TileLabel::default()` for a row that captions every tile through `extra` instead), and `extra`
-/// any per-tile caption drawn for EVERY tile (cast names/roles). `label` is invoked for the focused
-/// index only. `axis_span` widens the cull band where captions should survive slightly off-screen.
-/// `press` is the press dip factor folded into the focused tile's scale (`1.0` idle): the caller
-/// takes it from its frame (`f.press.dip()`), like every other card draw, never from a global.
-#[allow(clippy::too_many_arguments)]
-pub fn strip<'a>(
-    p: Painter,
-    row: &CardRow,
-    n: usize,
-    focus_col: std::os::raw::c_int,
-    row_y: f32,
-    size: (f32, f32),
-    pitch: f32,
-    sty: &RowStyle,
-    axis_span: f32,
-    press: f32,
-    art: impl Fn(usize) -> Art<'a>,
-    resume: impl Fn(usize) -> Option<f32>,
-    label: impl Fn(usize) -> TileLabel,
-    extra: impl Fn(Painter, usize, f32, bool),
-    measure: &dyn plx_machine::machine::Measure,
-) {
-    let sx = row.scroll_x();
-    let pr = p.translate(-sx, 0.0);
-    for i in 0..n {
-        if i as std::os::raw::c_int == focus_col {
-            continue; // focused tile drawn last
-        }
-        // `tile_rect` in the row's own (unscrolled) space: `pr` carries the scroll
-        let x = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).x;
-        if !crate::on_axis(x - sx, size.0, axis_span, 0.0) {
-            continue;
-        }
-        let s = row.scale(i);
-        let rect = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).scaled(s);
-        draw_tile(pr, art(i), rect, s, sty, resume(i));
-        extra(pr, i, x, false);
-    }
-    if focus_col >= 0 && (focus_col as usize) < n {
-        let i = focus_col as usize;
-        let x = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).x;
-        // fold the press click dip into the focused tile's scale (1.0 when idle) — same as home
-        let s = focused_scale(row, i, press);
-        let rect = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).scaled(s);
-        draw_focused(
-            pr,
-            art(i),
-            rect,
-            s,
-            sty,
-            resume(i),
-            &label(i).revealed(row.band_reveal()).settling(row.settle_lag(n, i, sty)),
-            measure,
-        );
-        extra(pr, i, x, true);
-    }
-}
-
-/// The scale [`strip`] draws the focused tile `i` at: its pop spring times the caller's `press` dip.
-#[inline]
-fn focused_scale(row: &CardRow, i: usize, press: f32) -> f32 {
-    row.scale(i) * press
 }
 
 /// **The one trailing FACT under a focused tile** — the caption rung, for every poster shelf in the
@@ -1321,7 +1243,7 @@ pub fn place_label(p: Painter, rect: Rect, sty: &RowStyle, w: f32, lag: f32) -> 
 /// **[`anchor_label`] with the card's edges and the screen's room.** `w` is the block's width
 /// clamped to [`under_budget`], `want` its uncapped one.
 ///
-/// **The panel test is a screen fact and `rect` usually is not.** [`strip`] draws a shelf through
+/// **The panel test is a screen fact and `rect` usually is not.** a shelf is drawn through
 /// `translate(-scroll_x, 0)`, so every rect below it is a CONTENT coordinate; `p.dx()` converts,
 /// so the comparison happens in screen space and the answer comes back in the painter's. An
 /// untranslated caller (`home`, `library`, `profiles`) has `dx == 0`.
@@ -1618,16 +1540,10 @@ pub fn resume_bar(p: Painter, r: Rect, frac: f32, rad: f32) {
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
-    /// `strip`'s press is its parameter: the focused tile's scale is the pop times the dip handed
-    /// in, whatever the process-wide `press::scale()` snapshot says, and an idle `PressRead`
-    /// (scale 0.0 before any press machine read) dips by 1.0, not to nothing.
+    /// A card draw takes its press from the frame: an idle `PressRead` (scale 0.0 before any press
+    /// machine read) dips by 1.0, not to nothing.
     #[test]
-    fn a_strip_takes_its_press_from_the_caller() {
-        let _guard = plx_base::testlock::serial();
-        let row = super::CardRow::new();
-        let rest = row.scale(2);
-        assert_eq!(super::focused_scale(&row, 2, 1.0), rest);
-        assert_eq!(super::focused_scale(&row, 2, 0.9), rest * 0.9);
+    fn an_idle_press_read_dips_by_one() {
         assert_eq!(plx_machine::machine::PressRead::default().dip(), 1.0);
         let moving = plx_machine::machine::PressRead { scale: 0.92, ..Default::default() };
         assert_eq!(moving.dip(), 0.92);

@@ -1,7 +1,7 @@
 //! Library paint consumes the same placement queries as keyboard and pointer navigation.
 use super::*;
 use crate::registry::tile_facts;
-use plx_ui::card_row;
+use plx_ui::cards as ui_cards;
 use plx_ui::cards::{CardSource, Tile};
 use plx_machine::machine::{Host, Measure};
 use plx_ui::screen::{Activate, Hover, Stop};
@@ -159,7 +159,7 @@ impl LibraryScreen {
                         && Some(key.elem) == row.heading_elem());
                     heading.draw(p, MARGIN_X, heading_y, f32::from(focused), &heading.measure(f.measure), f.measure);
                 } else {
-                    card_row::draw_heading(p, &shelf.title, "", MARGIN_X,
+                    ui_cards::draw_heading(p, &shelf.title, "", MARGIN_X,
                         heading_y, layout::GRID_RIGHT - MARGIN_X, f.measure);
                 }
                 row.cards.paint(f, self.shelf_painter(f), &self.hub_src(index, f.cx), self.shelf_frame(index));
@@ -208,7 +208,7 @@ impl LibraryScreen {
                     .focused(f.focus.current.is_some_and(|key| key.elem == elem)).draw(&env, p);
             }
         }
-        card_row::draw_heading(p, plx_platform::i18n::msg::browse_library_all(), "", MARGIN_X,
+        ui_cards::draw_heading(p, plx_platform::i18n::msg::browse_library_all(), "", MARGIN_X,
             y, layout::GRID_RIGHT - MARGIN_X, f.measure);
     }
 
@@ -304,8 +304,8 @@ impl<H: Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
             _ => Art::Poster(None),
         }
     }
-    fn label(&self, i: usize) -> card_row::TileLabel {
-        self.shelf.map_or_else(|| card_row::TileLabel::title(""), |shelf| shelf_label(shelf, i))
+    fn label(&self, i: usize) -> ui_cards::TileLabel {
+        self.shelf.map_or_else(|| ui_cards::TileLabel::title(""), |shelf| shelf_label(shelf, i))
     }
     fn progress(&self, i: usize) -> Option<f32> {
         self.shelf.filter(|shelf| !shelf.landscape).and_then(|_| self.item(i)).and_then(|item| item.resume_frac())
@@ -328,8 +328,8 @@ fn draw_faded_part_at<H: LibraryLike>(part: &mut impl Part<H>, f: &mut DrawFrame
     f.page_alpha = parent;
 }
 
-pub(super) fn shelf_label(shelf: &plx_data::browse::section_hubs::Shelf, col: usize) -> card_row::TileLabel {
-    let Some(item) = shelf.items.get(col) else { return card_row::TileLabel::title("") };
+pub(super) fn shelf_label(shelf: &plx_data::browse::section_hubs::Shelf, col: usize) -> ui_cards::TileLabel {
+    let Some(item) = shelf.items.get(col) else { return ui_cards::TileLabel::title("") };
     if shelf.landscape {
         let name = if item.title.is_empty() || item.title == item.show_title {
             plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64)
@@ -338,11 +338,11 @@ pub(super) fn shelf_label(shelf: &plx_data::browse::section_hubs::Shelf, col: us
             plx_ui::fmt::time_left(item.dur_ns / 1_000_000 - item.resume_ms)
         } else if item.aired.is_empty() && item.year <= 0 { String::new() }
         else { plx_ui::fmt::pretty_date(&item.aired, item.year as i64) };
-        return if fact.is_empty() { card_row::TileLabel::title(&name) }
-        else { card_row::TileLabel::titled(&name, &fact) };
+        return if fact.is_empty() { ui_cards::TileLabel::title(&name) }
+        else { ui_cards::TileLabel::titled(&name, &fact) };
     }
-    let mut label = if shelf.is_continue && plx_media::route::deck_press().press_plays() { card_row::TileLabel::played(&item.title) }
-        else { card_row::TileLabel::title(&item.title) };
-    label.caption = card_row::focused_caption(&tile_facts::of(item), shelf.is_continue);
+    let mut label = if shelf.is_continue && plx_media::route::deck_press().press_plays() { ui_cards::TileLabel::played(&item.title) }
+        else { ui_cards::TileLabel::title(&item.title) };
+    label.caption = ui_cards::focused_caption(&tile_facts::of(item), shelf.is_continue);
     label
 }
