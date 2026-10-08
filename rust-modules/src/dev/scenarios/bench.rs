@@ -566,6 +566,107 @@ impl HeroBench {
     }
 }
 
+// =================================================================================================
+// press bench (`/tmp/plxnative-holdbench`)
+// =================================================================================================
+
+/// Half-period of a HOLD cycle, ms. The open half has to cover the whole gesture: OK down, the
+/// hold fill (`press::LONG_MS`, 500 ms), the item menu opening out of it and its appear spring
+/// settling; the close half covers Back and the dismiss spring. 1500 ms clears the first with
+/// ~0.4 s to spare, and the quiet gap between halves is what lets each half end on a still frame.
+pub(crate) const DEFAULT_HOLD_PERIOD_MS: u32 = 1500;
+/// Half-period of a TAP-and-cancel cycle, ms. It must stay under `press::LONG_MS` (500 ms) or the
+/// "tap" becomes a hold: OK goes down, 350 ms later a direction key arrives and abandons the press,
+/// and the second half lets the spring-back and the focus move settle.
+pub(crate) const DEFAULT_TAP_PERIOD_MS: u32 = 350;
+/// The ceiling a tap's half-period is clamped to: a margin under the hold threshold.
+pub(crate) const MAX_TAP_PERIOD_MS: u32 = 450;
+/// A hold's floor: the hold threshold plus a frame budget for the menu to be requested, so the
+/// close half never fires before the menu could have opened.
+pub(crate) const MIN_HOLD_PERIOD_MS: u32 = 900;
+
+/// What a press bench does with the card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PressKind {
+    /// OK down and KEPT down past `press::LONG_MS`: the hold fill runs, the item menu opens out of
+    /// the hold, and Back dismisses it. The key-up is never sent (the dispatcher abandons the
+    /// press the moment the hold is answered, and an OK edge while a menu is up would land on its
+    /// Play row).
+    Hold,
+    /// OK down, then a direction key before the hold threshold: the real cancel path
+    /// (`input::begin_fresh_press`, "navigation or BACK arrived"). The card dips, springs back
+    /// without activating, and focus moves one card; the next cycle moves it back.
+    Tap,
+}
+
+/// The surface a press bench presses a card of. Named in each `bench:` line's `target=`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PressHost {
+    Home,
+    Library,
+    Collection,
+}
+
+impl PressHost {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Home => "home",
+            Self::Library => "library",
+            Self::Collection => "collection",
+        }
+    }
+}
+
+pub(crate) struct PressBench {
+    pub(crate) kind: PressKind,
+    pub(crate) clock: BenchClock,
+    pub(crate) period_ms: u32,
+    /// Did the cycle in flight actually press? A cycle with no card to press is reported as a
+    /// miss, never papered over.
+    pub(crate) in_flight: bool,
+    /// Did the menu open in the cycle in flight (hold)?
+    pub(crate) menu_opened: bool,
+    /// The host the first press found, for the report lines.
+    pub(crate) host: Option<PressHost>,
+}
+
+impl PressBench {
+    pub(crate) fn new(n: u32, period_ms: u32, kind: PressKind) -> Self {
+        let period_ms = match kind {
+            PressKind::Hold => period_ms.max(MIN_HOLD_PERIOD_MS),
+            PressKind::Tap => period_ms.min(MAX_TAP_PERIOD_MS),
+        };
+        Self {
+            kind,
+            clock: BenchClock::round_trip(n),
+            period_ms,
+            in_flight: false,
+            menu_opened: false,
+            host: None,
+        }
+    }
+}
+
+/// May the press bench send OK-down now? Only onto a focused card with NO menu up: a menu's first
+/// row is Play, so an OK edge while one is open starts playback on a real account. This is the one
+/// place the bench decides to send OK at all.
+pub(crate) fn press_allowed(menu_up: bool, card_focused: bool) -> bool {
+    !menu_up && card_focused
+}
+
+/// The key the close half sends, or `None`. NEVER OK, and never anything while the state is not the
+/// one the half expects:
+/// - hold: Back, and only while the item menu is up (Back with no menu would pop a page);
+/// - tap: a direction key, and only while NO menu is up, right then and left next cycle so focus
+///   walks 0-1-0-1 over two cards and the same card is never pressed past the shelf's end.
+pub(crate) fn press_close_key(kind: PressKind, menu_up: bool, cycle: u32) -> Option<plx_machine::machine::Key> {
+    use plx_machine::machine::Key;
+    match kind {
+        PressKind::Hold => menu_up.then_some(Key::Back),
+        PressKind::Tap => (!menu_up).then_some(if cycle % 2 == 0 { Key::Right } else { Key::Left }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,6 +690,58 @@ mod tests {
     fn the_hero_bench_never_flips_faster_than_the_carousel_accepts() {
         assert_eq!(HeroBench::new(10, 1, PongTarget::Hero).period_ms, MIN_HERO_PERIOD_MS);
         assert_eq!(HeroBench::new(10, 700, PongTarget::Grid).period_ms, 700);
+    }
+
+    #[test]
+    fn a_press_bench_never_sends_ok_onto_an_open_menu_or_an_unfocused_card() {
+        assert!(press_allowed(false, true));
+        assert!(!press_allowed(true, true), "a menu is up: its first row is Play");
+        assert!(!press_allowed(false, false), "no card focused");
+        assert!(!press_allowed(true, false));
+    }
+
+    #[test]
+    fn the_close_key_is_never_ok_and_only_fits_the_state() {
+        use plx_machine::machine::Key;
+        for kind in [PressKind::Hold, PressKind::Tap] {
+            for menu_up in [false, true] {
+                for cycle in 0..4 {
+                    assert_ne!(press_close_key(kind, menu_up, cycle), Some(Key::Ok));
+                }
+            }
+        }
+        assert_eq!(press_close_key(PressKind::Hold, true, 0), Some(Key::Back));
+        assert_eq!(press_close_key(PressKind::Hold, false, 0), None, "Back with no menu would pop a page");
+        assert_eq!(press_close_key(PressKind::Tap, true, 0), None);
+        let walk: Vec<_> = (0..4).map(|c| press_close_key(PressKind::Tap, false, c)).collect();
+        assert_eq!(walk, [Some(Key::Right), Some(Key::Left), Some(Key::Right), Some(Key::Left)]);
+    }
+
+    #[test]
+    fn a_hold_outlasts_the_hold_threshold_and_a_tap_does_not() {
+        let long = plx_ui::press::LONG_MS;
+        assert!(PressBench::new(1, 1, PressKind::Hold).period_ms > long);
+        assert!(PressBench::new(1, 100_000, PressKind::Tap).period_ms < long);
+        assert_eq!(PressBench::new(1, DEFAULT_HOLD_PERIOD_MS, PressKind::Hold).period_ms, DEFAULT_HOLD_PERIOD_MS);
+        assert_eq!(PressBench::new(1, DEFAULT_TAP_PERIOD_MS, PressKind::Tap).period_ms, DEFAULT_TAP_PERIOD_MS);
+    }
+
+    #[test]
+    fn a_press_bench_counts_its_cycles_and_reports_each_one() {
+        let mut b = PressBench::new(3, DEFAULT_HOLD_PERIOD_MS, PressKind::Hold);
+        b.clock.phase = BenchPhase::Waiting;
+        let (mut now, mut starts, mut settles, mut reports) = (0u32, 0, 0, 0);
+        for _ in 0..40_000 {
+            now += 16;
+            match bench_advance(&mut b.clock, now, b.period_ms) {
+                BenchStep::Start(_) => starts += 1,
+                BenchStep::Settle(_) => settles += 1,
+                BenchStep::Report(_) => reports += 1,
+                BenchStep::Done(n) => { assert_eq!(n, 3); break }
+                _ => {}
+            }
+        }
+        assert_eq!((starts, settles, reports), (3, 3, 3));
     }
 
     /// A clock past its boot-settle gate, for the tests that drive the cycle machine itself.

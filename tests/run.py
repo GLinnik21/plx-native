@@ -140,7 +140,7 @@ ALL_TRIGGERS = [
     "plxnative-grid", "plxnative-autoplay", "plxnative-h265", "plxnative-playidx", "plxnative-url",
     "plxnative-play", "plxnative-server", "plxnative-ffprobe", "plxnative-token", "plxnative-servers",
     # UI/FPS scenes (both profiler triggers MUST be cleared; either invalidates production pacing)
-    "plxnative-detailosc", "plxnative-homeosc", "plxnative-heroosc", "plxnative-herobench", "plxnative-homefoldosc",
+    "plxnative-detailosc", "plxnative-homeosc", "plxnative-heroosc", "plxnative-herobench", "plxnative-holdbench", "plxnative-homefoldosc",
     "plxnative-info", "plxnative-chapters", "plxnative-profile",
     "plxnative-hwcnt",
     # the track's material and the instruments that override or narrate it. `flattabs` is the one
@@ -5455,10 +5455,10 @@ def grade_frame_ceilings(scene, lines, route, overlay, warmup):
 BENCH_TAIL = (r"(?: tex=\S+)? first_ms=(?P<first>\d+(?:\.\d+)?) missed=(?P<missed>\d+)"
               r" open=(?P<open>\S+)(?: close=(?P<close>\S+))?")
 BENCH_RE = re.compile(
-    r"^bench: kind=(?P<kind>push|modal|hero) cycle=(?P<cycle>\d+)/(?P<n>\d+) "
+    r"^bench: kind=(?P<kind>push|modal|hero|hold) cycle=(?P<cycle>\d+)/(?P<n>\d+) "
     r"target=(?P<target>[\w-]+) worst_ms=(?P<worst>\d+(?:\.\d+)?) frames=(?P<frames>\d+) "
     r"dur_ms=(?P<dur>\d+) rss_kb=(?P<rss>\d+)(?:" + BENCH_TAIL + r")?")
-BENCH_DONE_RE = re.compile(r"^bench: kind=(?P<kind>push|modal|hero) done cycles=(?P<n>\d+)")
+BENCH_DONE_RE = re.compile(r"^bench: kind=(?P<kind>push|modal|hero|hold) done cycles=(?P<n>\d+)")
 
 
 def _bench_tail(m):
@@ -5570,6 +5570,16 @@ def grade_bench(scene, lines):
     if not done:
         ok = False
         detail += " | FAIL: no `done` line — not every cycle completed"
+
+    if kind == "hold":
+        # A `hold` cycle that pressed nothing or opened no menu graded an idle or wrong window: the
+        # dev trigger names it in `target=` (`<host>-nocard`, `<host>-nomenu`), see
+        # `dev::scenarios::hold_bench_tick`. Fail it rather than count its quiet frames as clean.
+        bad = [c for c in cycles if c["target"].endswith(("-nocard", "-nomenu"))]
+        if bad:
+            ok = False
+            detail += (f" | FAIL: {len(bad)} cycle(s) did not exercise the animation "
+                       f"(first: cycle={bad[0]['cycle']} target={bad[0]['target']})")
 
     missed_ok, missed_detail = _grade_missed(cycles, scene, "cycle")
     ok = ok and missed_ok

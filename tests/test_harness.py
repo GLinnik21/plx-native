@@ -6286,7 +6286,8 @@ class FpsMock(unittest.TestCase):
         self.assertEqual(names, {"home-grid", "home-grid-deep", "home-hint", "library-shelves-deep",
                                  "hero-pong", "grid-pong", "home-idle", "item-menu", "library-scroll",
                                  "library-idle", "collection-page", "person-page", "search-type",
-                                 "show-detail"})
+                                 "show-detail", "home-hold", "collection-hold", "home-tap",
+                                 "collection-tap"})
         self.assertEqual(len(runnable) + len(skipped), len(self.scenes))
         for _, why in skipped:
             self.assertIn("real library content", why)
@@ -6306,6 +6307,51 @@ class FpsMock(unittest.TestCase):
                     self.assertIsInstance(s["mock"].get("rk"), int, s["name"])
                 self.assertNotIn("needs_shared_server", s, s["name"])
                 self.assertEqual(s.get("tier", "ui"), "ui", s["name"])
+
+    def test_the_press_scenes_drive_a_real_press_and_never_a_plain_ok(self):
+        # home-hold/collection-hold/home-tap/collection-tap (`plxnative-holdbench`): counted bench
+        # scenes graded off `bench: kind=hold` lines, mock-runnable, with the same trigger on
+        # a Home card and on the Collection page (a cards::Stack page, mock rk 50002).
+        for name, tap in (("home-hold", False), ("collection-hold", False),
+                          ("home-tap", True), ("collection-tap", True)):
+            s = self.scenes[name]
+            self.assertEqual(s["bench"], "hold", name)
+            self.assertEqual(s["route"], "home" if name.startswith("home") else "collection", name)
+            self.assertEqual(s["bench_missed_max"], 0, name)
+            self.assertIn("UNMEASURED", s["comment"], name)
+            value = s["triggers"]["plxnative-holdbench"]
+            self.assertEqual(value.endswith(",tap"), tap, name)
+            # the press itself is the bench's: no separate press/itemmenu trigger may ride along
+            self.assertNotIn("plxnative-press", s["triggers"], name)
+            self.assertNotIn("plxnative-itemmenu", s["triggers"], name)
+            # the bench ends on its own `done` line, with room to finish its cycles
+            n, period = int(value.split(",")[0]), (350 if tap else 1500)
+            self.assertGreater(s["run_secs"] - s["warmup_s"], n * 2 * period / 1000, name)
+        collection = self.mf.mock_scene(self.scenes["collection-hold"])
+        self.assertEqual(collection["rk"], 50002)
+        self.assertEqual(collection["triggers"]["plxnative-collection"], "$rk")
+        self.assertEqual(self.mf.mock_server_args(self.scenes["collection-hold"]), ["--movies", "240"])
+        self.assertIn("plxnative-grid", self.scenes["home-hold"]["triggers"])
+        with open(os.path.join(TESTS_DIR, "run.py")) as fh:
+            self.assertIn('"plxnative-holdbench"', fh.read(), "run.py clears the trigger between cases")
+
+    def test_a_hold_bench_cycle_that_pressed_nothing_or_opened_no_menu_fails_the_grade(self):
+        scene = {"bench": "hold", "bench_missed_max": 0}
+
+        def line(i, target, missed=0):
+            return (f"bench: kind=hold cycle={i}/2 target={target} worst_ms=18.0 frames=40 dur_ms=3000 "
+                    f"rss_kb=1000 first_ms=17.0 missed={missed} open=first:17.0,worst:18.0@3,iv:17.0,missed:0 "
+                    f"close=first:17.0,worst:18.0@3,iv:17.0,missed:0")
+        done = "bench: kind=hold done cycles=2"
+        ok, detail = run.grade_bench(scene, [line(1, "home"), line(2, "home"), done])
+        self.assertTrue(ok, detail)
+        ok, detail = run.grade_bench(scene, [line(1, "home"), line(2, "home-nomenu"), done])
+        self.assertFalse(ok)
+        self.assertIn("did not exercise the animation", detail)
+        ok, detail = run.grade_bench(scene, [line(1, "collection-nocard"), line(2, "collection"), done])
+        self.assertFalse(ok)
+        ok, detail = run.grade_bench(scene, [line(1, "home", 1), line(2, "home"), done])
+        self.assertFalse(ok, "a missed refresh in the press window fails the zero budget")
 
     def test_mock_server_args(self):
         self.assertEqual(self.mf.mock_server_args(self.scenes["home-grid"]), [])

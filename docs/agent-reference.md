@@ -2198,6 +2198,20 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   became a `ModalStack` surface and `route=itemmenu` stopped existing; the interactive path is a
   real ≥500 ms hold, which no boot trigger can express). Note `/tmp/plxnative-press` is its TAP twin: it now schedules its own release
   ~150 ms in, because a down with no up is past `press::LONG_MS` and is a HOLD, not a tap.
+  `/tmp/plxnative-holdbench[=<n>[,<period_ms>[,tap]]]` is the counted twin of both
+  (`dev::scenarios::bench::PressBench`; default n=100, period 1500 ms hold / 350 ms tap, a tap is capped
+  under `LONG_MS`): a REAL press on the focused card through the remote's key path, so the card's
+  press-in, the hold capsule's fill, the item menu's open and its dismissal are inside the graded
+  halves, which `itemmenu` (a direct `request_home_menu`, graded after a 6 s warmup) never covers.
+  Hold: OK-down and nothing else (never a key-up, and no OK is queued while a menu is up, since a hold
+  menu opens on its Play row), then Back only while the menu is up. `tap`: OK-down, then a direction key
+  before the threshold, which is the app's real press-cancel path (no activation, one-card focus move,
+  right then left). Works on a Home card (pair with `plxnative-grid`), a Library card and a Collection
+  page card (`plxnative-collection=<rk>`; it seats the first card with one Down if the page opened on
+  the header). One `bench: kind=hold ... target=<home|library|collection>` line per cycle, `target`
+  suffixed `-nocard`/`-nomenu` when the cycle pressed nothing or opened no menu, which `grade_bench`
+  fails; fps scenes `home-hold`, `collection-hold`, `home-tap`, `collection-tap`, all `--mock`-runnable
+  and UNMEASURED on the television (their `bench_missed_max 0` is the frame budget, not a baseline).
   Remote-driving: `/tmp/plxnative-remote` is **not** a trigger — the app mkfifos and drains it
   every frame on every boot (so it never affects the picker; its DIAG entry is a permanent
   requirement, not an exception). Write key tokens like `down`/`ok`, or pointer clicks `ck:X,Y`
