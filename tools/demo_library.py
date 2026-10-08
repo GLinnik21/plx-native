@@ -34,13 +34,35 @@ check stale. Titles that fail are listed in `pending.json` under `hero_art`; the
 and the demo-video workflow (stage S6 of the plan; not in the tree yet) is to refuse to run while
 it, or any pending entry, is non-empty.
 
+Per-title flags in `catalog.json`, all checked by `check`:
+
+* `not_hero: true` — the title can never be the home hero: `hero_eligible` leaves it out, so it needs
+  no `art.subject`, and `check` refuses it where the app's hero pool could take it from: the pinned
+  hero, `hero_alternatives`, or one of the first `HERO_MAX` slots of the pool `hero_pool` rebuilds
+  from the catalog the way `data/src/pms.rs` merges it (a test holds that to what the mock's Home
+  answers). The mock refuses `--hero` on it too. Set it on a title whose backdrop does not look
+  right behind the hero.
+* `not_in_video: true` — the title is never opened or featured in the site video (the future
+  storyboard gate reads it; nothing renders yet). A title in `logo_none_approved` (its hero and
+  detail page show the text title, not a clear logo) must carry it; the pinned hero and
+  `hero_alternatives` cannot (the video opens the hero).
+* `poster.still_as_poster: true` — the poster is a film still, not a poster: allowed only for a title
+  listed in the catalog's `still_poster_approved`, and then the asset may be of kind `still` or
+  `backdrop`.
+
+A clear logo is cut from the title's own poster (`logo-from-poster`: asset kind `poster`), or is the
+film's own official title card or a frame of the film: asset kind `logo-title-card`, which records
+`of` (the title id it belongs to) and `origin` (`official-title-card` or `film-frame`). It is a
+source for that title's logo and for nothing else, and takes the same licences as every other asset.
+
 Nothing is committed but the manifests and the two captured detail fixtures: the sources and the derived images live in a cache outside
 the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`, ~390 MB of sources,
 283 MB of it the complete Sintel the player figure plays), so a fresh clone rebuilds them with one
 command. Derivation is ffmpeg with fixed filters and fixed
 encoder settings, so one ffmpeg build derives byte-identical files every time. The clear logos
-(`logo` in the catalog, see `derive_logo`) are cut from each film's own poster with Pillow, the
-one Python package the screenshots need. An episode marked `stand_in` also gets a STAND-IN video
+(`logo` in the catalog, see `derive_logo`) are cut from each film's own poster by a keyed recipe,
+or, for a `logo-title-card` asset, trimmed to the lettering of the film's own title card; both
+are done with Pillow, the one Python package the screenshots need. An episode marked `stand_in` also gets a STAND-IN video
 (`derive_stand_in`): black and silent, the episode's catalog length, so the simulator can play the
 episode (the Up Next figure) without a copy of the work being fetched or shown.
 """
@@ -267,6 +289,15 @@ def derive_logo(paths, dst, recipe):
         from PIL import Image, ImageChops, ImageFilter
     except ImportError:
         sys.exit("demo_library: the clear logos need Pillow: python3 -m pip install Pillow")
+    if not recipe.get("keys"):
+        # A film's own title card (asset kind `logo-title-card`) is lettering on a transparent ground
+        # already: trim it to its ink and keep every pixel as it was.
+        with Image.open(paths[recipe["asset"]]) as src:
+            if src.mode not in ("RGBA", "LA") and "transparency" not in src.info:
+                sys.exit(f"demo_library: {recipe['asset']} has no transparent ground; cut it with `keys`")
+            card = src.convert("RGBA")
+        card.crop(card.getchannel("A").getbbox()).save(dst, format="PNG", optimize=False)
+        return
     x, y, w, h = recipe["box"]
     n = recipe.get("scale", 1)
     rgb = Image.open(paths[recipe["asset"]]).convert("RGB").crop((x, y, x + w, y + h))
@@ -433,6 +464,8 @@ def check(assets, catalog):
             if role in rec:
                 aid = rec[role]["asset"]
                 assert aid in assets, f"{key}: {role} asset {aid!r} is not in assets.json"
+                assert assets[aid].get("kind") != "logo-title-card", \
+                    f"{key}: {role} uses a title card, which is a source for a clear logo only"
                 used.add(aid)
         check_cited_metadata(key, kind, rec)
         if "media" in rec:
@@ -443,11 +476,18 @@ def check(assets, catalog):
             assert kind == "episode" and rec["stand_in"] is True and "media" not in rec, \
                 f"{key}: stand_in is `true` on an episode without media"
         if "logo" in rec:
-            # A clearLogo is the film's own title art, so it is cut from that film's own poster.
-            assert rec["logo"]["asset"] == rec.get("poster", {}).get("asset"), \
-                f"{key}: a logo is cut from the item's own poster"
-            assert rec["logo"]["keys"], f"{key}: a logo needs at least one key"
-            for k in rec["logo"]["keys"]:
+            # A clearLogo is the film's own title art: cut from that film's own poster, or the
+            # film's own official title card / a frame of it (`logo-title-card`, which names its film).
+            lid = rec["logo"]["asset"]
+            assert lid in assets, f"{key}: logo asset {lid!r} is not in assets.json"
+            used.add(lid)
+            if assets[lid].get("kind") == "logo-title-card":
+                assert assets[lid].get("of") == key, \
+                    f"{key}: a title-card logo is the item's own card (asset {lid!r} is of {assets[lid].get('of')!r})"
+            else:
+                assert lid == rec.get("poster", {}).get("asset"), f"{key}: a logo is cut from the item's own poster"
+                assert rec["logo"]["keys"], f"{key}: a logo needs at least one key"
+            for k in rec["logo"].get("keys", []):
                 for sig in (k["signal"], k.get("grow", {}).get("signal", k["signal"])):
                     assert sig in _SIGNALS, f"{key}: logo key {sig!r}"
                 if "fill" in k:
@@ -460,6 +500,11 @@ def check(assets, catalog):
         assert a.get("kind") in ASSET_KINDS, f"asset {aid}: kind {a.get('kind')!r} is not one of {sorted(ASSET_KINDS)}"
         for field in ("width", "height"):
             assert type(a.get(field)) is int and a[field] > 0, f"asset {aid}: {field} is a positive pixel count"
+        if a["kind"] == "logo-title-card":
+            assert a.get("of") in seen, f"asset {aid}: a title card names the item it belongs to in `of`"
+            assert a.get("origin") in TITLE_CARD_ORIGINS, \
+                f"asset {aid}: a title card's `origin` is one of {sorted(TITLE_CARD_ORIGINS)}"
+    check_flags(assets, catalog, seen)
     unused = sorted(set(assets) - used)
     assert not unused, f"assets never used: {unused}"
     for ref in [c["item"] for c in catalog["continue_watching"]] + catalog["watched"] + catalog["added_order"] \
@@ -534,6 +579,11 @@ HERO_PINS = {
 }
 
 
+# The size of the app's rotating hero pool (`hero_pool`), pinned to the Rust constant the same way.
+# Not a zone number, so it is checked with the pins but feeds no zone.
+HERO_POOL_PINS = {"HERO_MAX": ["rust-modules/data/src/pms.rs", "const", "HERO_MAX", 8.0]}
+
+
 def _rust_expr(expr, names):
     """The value of a Rust arithmetic expression (numbers, + - * /, names, `a::b::` paths and
     `as f32` casts) with each name looked up in `names`. Anything else is refused."""
@@ -589,7 +639,7 @@ def _rust_pin_value(root, pin, names):
 def check_hero_pins(pins=None, root=None):
     """Re-read every pinned layout number from the Rust source and fail, naming each constant and
     its file, when a Python copy has drifted or the source no longer says what the zone is built on."""
-    pins = HERO_PINS if pins is None else pins
+    pins = {**HERO_PINS, **HERO_POOL_PINS} if pins is None else pins
     root = ROOT if root is None else pathlib.Path(root)
     names, drift = {}, []
     for name, pin in pins.items():
@@ -724,7 +774,63 @@ def hero_eligible(catalog):
     of all of them can never be a hero, which is the other way to satisfy the check."""
     pool = {catalog.get("hero")} | set(catalog.get("hero_alternatives", [])) | set(catalog.get("added_order", []))
     pool |= {c["item"].split("/")[0] for c in catalog.get("continue_watching", [])}
-    return [t["id"] for t in catalog["movies"] + catalog.get("shows", []) if t["id"] in pool]
+    return [t["id"] for t in catalog["movies"] + catalog.get("shows", [])
+            if t["id"] in pool and not t.get("not_hero")]
+
+
+def hero_pool(catalog, hero=None):
+    """The titles the app's rotating hero holds on the mock's Home, in slot order: `merge` in
+    `data/src/pms.rs` takes Continue Watching first (the hero at its head, as `CatalogLibrary` pins
+    it), then Recently Added (newest first), skips an item with no landscape `art`, drops a repeat
+    and stops at `HERO_MAX`. Only a movie qualifies: the mock's episode rows carry `grandparentArt`,
+    which the app does not read, so an episode (Continue Watching's, Recently Added's) has no art
+    and is skipped, and a show is never on a Home shelf. `not_hero` keeps a title out of the pool by
+    its being outside these slots, which `check_flags` enforces and a test holds to the mock's Home."""
+    movies = {m["id"]: m for m in catalog["movies"]}
+    hero = hero or catalog["hero"]
+    deck = [c["item"] for c in catalog.get("continue_watching", [])]
+    if hero not in deck:
+        deck.insert(0, hero)
+    deck.sort(key=lambda ref: ref != hero)  # stable: the hero first, the rest in order
+    pool = []
+    for ref in deck + catalog.get("added_order", []):
+        if ref in movies and "art" in movies[ref] and ref not in pool:
+            pool.append(ref)
+    return pool[:int(HERO_POOL_PINS["HERO_MAX"][3])]
+
+
+def check_flags(assets, catalog, seen):
+    """The per-title flags and approval lists (module docstring): `not_hero`, `not_in_video`,
+    `poster.still_as_poster` + `still_poster_approved`, `logo_none_approved`."""
+    films = {t["id"]: t for t in catalog["movies"] + catalog.get("shows", [])}
+    pinned = [catalog["hero"], *catalog.get("hero_alternatives", [])]
+    pool = hero_pool(catalog)
+    for key, rec in films.items():
+        for flag in ("not_hero", "not_in_video"):
+            assert rec.get(flag, True) is True, f"{key}: {flag} is `true` or absent"
+        if rec.get("not_hero"):
+            where = [name for name, hit in (("the pinned hero", key == catalog["hero"]),
+                                            ("hero_alternatives", key in catalog.get("hero_alternatives", [])),
+                                            ("the hero pool's slots", key in pool)) if hit]
+            assert not where, f"{key}: not_hero, yet it is in {', '.join(where)}"
+        if rec.get("not_in_video"):
+            assert key not in pinned, f"{key}: not_in_video, yet the video opens the pinned hero and its alternatives"
+        poster = rec.get("poster", {})
+        if "still_as_poster" in poster:
+            assert poster["still_as_poster"] is True, f"{key}: still_as_poster is `true` or absent"
+            assert key in catalog.get("still_poster_approved", []), \
+                f"{key}: a still as the poster needs the owner's approval (`still_poster_approved`)"
+            assert assets[poster["asset"]]["kind"] in ("still", "backdrop"), \
+                f"{key}: still_as_poster names a still or a backdrop, not a {assets[poster['asset']]['kind']}"
+    for name in ("still_poster_approved", "logo_none_approved"):
+        for key in catalog.get(name, []):
+            assert key in films, f"{name}: no title {key!r}"
+    for key in catalog.get("still_poster_approved", []):
+        assert films[key].get("poster", {}).get("still_as_poster") is True, \
+            f"{key}: approved for a still as its poster, so the poster says `still_as_poster`"
+    for key in catalog.get("logo_none_approved", []):
+        assert films[key].get("not_in_video") is True, \
+            f"{key}: it has no clear logo (logo_none_approved), so it is never opened in the video: not_in_video"
 
 
 def hero_gap(assets, catalog, rec):
@@ -769,8 +875,11 @@ def hero_report(assets, catalog):
 
 # What a source file IS (`kind` in assets.json), which decides the roles it may fill: a title's
 # poster is a `poster`, its backdrop a `backdrop` or a `still`, an episode's thumbnail a `still`.
-# `media` is a film itself, `headshot` a photograph of a person (none yet).
-ASSET_KINDS = frozenset({"poster", "backdrop", "still", "headshot", "media"})
+# `media` is a film itself, `headshot` a photograph of a person (none yet), `logo-title-card` a
+# film's own official title card or a frame of the film, the source of its clear logo.
+ASSET_KINDS = frozenset({"poster", "backdrop", "still", "headshot", "media", "logo-title-card"})
+# Where a `logo-title-card` comes from: the studio's own title card, or a frame of the film itself.
+TITLE_CARD_ORIGINS = frozenset({"official-title-card", "film-frame"})
 # The licences the demo library accepts, exactly. Share-alike is not among them: it would put the
 # credits page's whole body under the same terms (owner decision pending).
 LICENCES = frozenset({"CC0 1.0", "CC0", "Public domain", "CC BY 3.0", "CC BY 4.0"})
@@ -819,7 +928,12 @@ def _gaps_of(assets, catalog, kind, rec):
         gaps.add("writers")
     if not rec.get("countries"):
         gaps.add("country")
-    if _asset_kind(assets, rec.get("poster")) != "poster":
+    # A film still may stand in for the poster only where the owner approved it for this title and the
+    # poster says so (`check_flags` ties the two together).
+    poster_kind = _asset_kind(assets, rec.get("poster"))
+    still_ok = (poster_kind in ("still", "backdrop") and rec["poster"].get("still_as_poster") is True
+                and rec["id"] in catalog.get("still_poster_approved", []))
+    if poster_kind != "poster" and not still_ok:
         gaps.add("poster")
     if _asset_kind(assets, rec.get("art")) not in ("backdrop", "still"):
         gaps.add("backdrop")
@@ -830,7 +944,10 @@ def _gaps_of(assets, catalog, kind, rec):
     logo = rec.get("logo")
     cut_from_poster = (isinstance(logo, dict) and logo.get("asset") == rec.get("poster", {}).get("asset")
                        and _asset_kind(assets, logo) == "poster")
-    if not (cut_from_poster or rec["id"] in catalog.get("logo_none_approved", [])):
+    # ...or it is the film's own title card (`check` has already tied its `of` to this title).
+    own_card = (isinstance(logo, dict) and _asset_kind(assets, logo) == "logo-title-card"
+                and assets[logo["asset"]].get("of") == rec["id"])
+    if not (cut_from_poster or own_card or rec["id"] in catalog.get("logo_none_approved", [])):
         gaps.add("logo")
     return gaps
 
@@ -894,9 +1011,12 @@ def credits(assets, catalog, dst=CREDITS):
             if aid:
                 where.setdefault(aid, []).append((key, role))
         if "logo" in rec:
-            recoloured = any("fill" in k for k in rec["logo"]["keys"])
-            where.setdefault(rec["logo"]["asset"], []).append((key, "logo-fill" if recoloured else "logo"))
+            recoloured = any("fill" in k for k in rec["logo"].get("keys", []))
+            card = assets[rec["logo"]["asset"]]["kind"] == "logo-title-card"
+            where.setdefault(rec["logo"]["asset"], []).append(
+                (key, "logo-card" if card else "logo-fill" if recoloured else "logo"))
     label = {"poster": "poster", "art": "backdrop", "thumb": "episode still", "media": "video",
+             "logo-card": "clear logo, the film's own title card",
              "logo": "clear logo, derived from this poster",
              "logo-fill": "clear logo, derived from this poster, lettering recoloured"}
     show_of = {}
@@ -915,6 +1035,8 @@ def credits(assets, catalog, dst=CREDITS):
         "logo (the title art over the home hero) is derived from that film's own poster, under the",
         "poster's licence: its title lettering is cut out onto a transparent ground and nothing is",
         "redrawn; where the table says so, lettering too dark to read over a backdrop is recoloured.",
+        "Where the table says a logo is the film's own title card, it is that card (or a frame of the",
+        "film) trimmed to its lettering, under its own licence.",
         "",
         "Written by `make screenshots` with the images; do not edit by hand.",
         "",
@@ -953,6 +1075,8 @@ def _changes(role, recipe):
     """What was done to a source to make the image the app shows, in the credits page's words."""
     if role == "media":
         return "Played in the app as the film itself; not altered."
+    if role == "logo-card":
+        return "The film's own title card, trimmed to its lettering for the clear logo; nothing redrawn."
     if role == "logo":
         text = "Title lettering cut out of the poster onto a transparent ground for the clear logo"
         return text + ("; dark lettering recoloured to read over a backdrop." if any("fill" in k for k in recipe["keys"])
@@ -983,7 +1107,7 @@ def site_works(assets, catalog):
             def use(aid, role, recipe, episode=None):
                 u = uses.setdefault(aid, {"roles": [], "changes": [], "episodes": []})
                 label = {"poster": "Poster", "art": "Backdrop", "thumb": "Episode still", "media": "Video",
-                         "logo": "Clear logo"}[role]
+                         "logo": "Clear logo", "logo-card": "Clear logo"}[role]
                 if label not in u["roles"]:
                     u["roles"].append(label)
                 change = _changes(role, recipe)
@@ -994,7 +1118,8 @@ def site_works(assets, catalog):
 
             for role in ("poster", "art", "thumb", "logo"):
                 if role in rec:
-                    use(rec[role]["asset"], role, rec[role])
+                    card = role == "logo" and assets[rec[role]["asset"]]["kind"] == "logo-title-card"
+                    use(rec[role]["asset"], "logo-card" if card else role, rec[role])
             if "media" in rec:
                 use(rec["media"], "media", None)
             for season in rec.get("seasons", []):

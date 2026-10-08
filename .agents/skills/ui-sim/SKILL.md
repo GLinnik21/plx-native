@@ -274,9 +274,12 @@ make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero 
   run. Aim `at` between two frames (Sintel is 24 fps), so no PTS rounding picks the neighbour.
 - **The library is openly licensed.** `tests/demo_library/assets.json` pins every source file (URL,
   sha256, licence, author); `catalog.json` is the library. A film's clear logo (the title art
-  the home hero draws) is cut from that film's own CC BY poster by a `logo` recipe in the
-  catalog, so it is a derivative under the poster's licence and CREDITS.md says so; every hero
-  candidate has one. Fetching (it checks pixel sizes) and cutting need Pillow (`python3 -m pip install Pillow`), the one Python
+  the home hero draws) is either cut from that film's own poster by a `logo` recipe with `keys`
+  (a derivative under the poster's licence) or is the film's own title card or a frame of it
+  (asset kind `logo-title-card`, a derivative under its own licence); CREDITS.md says which. A
+  hero candidate has no logo until it carries one: the missing ones are the `logo` entries in
+  `tests/demo_library/pending.json`, and only a title in the catalog's `logo_none_approved` may go
+  without for good. Fetching (it checks pixel sizes) and cutting need Pillow (`python3 -m pip install Pillow`), the one Python
   package the pipeline uses. `make screenshots` is the one command: a run that succeeds also
   rewrites `CREDITS.md` beside the images, so the credits cannot lag them.
   `python3 tools/demo_library.py check` validates both manifests offline, and `check --complete`

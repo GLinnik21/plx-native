@@ -90,8 +90,14 @@
    },
    "art": {
     "asset": "bs-spring-header",
-    "mode": "extend",
-    "anchor": "right"
+    "mode": "cover",
+    "anchor": "center",
+    "subject": [
+     1010,
+     0,
+     1400,
+     415
+    ]
    },
    "collections": [
     "Blender Open Movies"
@@ -415,7 +421,13 @@
    "art": {
     "asset": "bs-charge-header",
     "mode": "cover",
-    "anchor": "right"
+    "anchor": "right",
+    "subject": [
+     1240,
+     170,
+     1830,
+     540
+    ]
    },
    "collections": [
     "Blender Open Movies"
@@ -570,8 +582,14 @@
    "titleSort": "Cosmos Laundromat",
    "art": {
     "asset": "bs-cosmos-laundromat-header",
-    "mode": "extend",
-    "anchor": "right"
+    "mode": "cover",
+    "anchor": "right",
+    "subject": [
+     950,
+     75,
+     1592,
+     560
+    ]
    },
    "collections": [
     "Blender Open Movies"
@@ -644,7 +662,8 @@
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "not_hero": true
   },
   {
    "id": "elephants-dream",
@@ -713,7 +732,8 @@
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "not_hero": true
   },
   {
    "id": "nosferatu",
@@ -787,7 +807,9 @@
    },
    "collections": [
     "Silent Classics"
-   ]
+   ],
+   "not_hero": true,
+   "not_in_video": true
   },
   {
    "id": "metropolis",
@@ -850,7 +872,18 @@
    },
    "collections": [
     "Silent Classics"
-   ]
+   ],
+   "art": {
+    "asset": "metropolis-maschinenmensch-still",
+    "mode": "cover",
+    "anchor": "upper",
+    "subject": [
+     640,
+     105,
+     800,
+     430
+    ]
+   }
   },
   {
    "id": "night-of-the-living-dead",
@@ -916,7 +949,13 @@
    "summary": "Seven strangers barricade themselves in a Pennsylvania farmhouse as the recently dead rise and close in, and discover that the arguments inside may kill them before the things outside do.",
    "poster": {
     "asset": "night-of-the-living-dead-1968-poster"
-   }
+   },
+   "art": {
+    "asset": "night-of-the-living-dead-1968-frame",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "not_hero": true
   },
   {
    "id": "the-general",
@@ -987,7 +1026,18 @@
    "titleSort": "General",
    "collections": [
     "Silent Classics"
-   ]
+   ],
+   "art": {
+    "asset": "the-general-1926-frame",
+    "mode": "cover",
+    "anchor": "upper",
+    "subject": [
+     700,
+     215,
+     910,
+     520
+    ]
+   }
   },
   {
    "id": "sherlock-jr",
@@ -1058,7 +1108,13 @@
    },
    "collections": [
     "Silent Classics"
-   ]
+   ],
+   "art": {
+    "asset": "sherlock-jr-1924-frame",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "not_hero": true
   },
   {
    "id": "his-girl-friday",
@@ -1126,7 +1182,13 @@
    "summary": "A newspaper editor learns that his star reporter, who is also his ex-wife, is about to remarry and quit, and lures her back for one last story: a condemned man, a corrupt city hall, and a deadline.",
    "poster": {
     "asset": "his-girl-friday-1940-poster"
-   }
+   },
+   "art": {
+    "asset": "his-girl-friday-1940-still",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "not_hero": true
   },
   {
    "id": "plan-9-from-outer-space",
@@ -1192,7 +1254,13 @@
    "summary": "Aliens alarmed by humanity's weapons put their ninth plan into action: raise the dead of a small California cemetery. An airline pilot and his wife stand in their way.",
    "poster": {
     "asset": "plan-9-from-outer-space-1957-poster"
-   }
+   },
+   "art": {
+    "asset": "plan-9-from-outer-space-1957-still",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "not_hero": true
   },
   {
    "id": "the-kid",
@@ -1259,7 +1327,13 @@
    "titleSort": "Kid",
    "collections": [
     "Silent Classics"
-   ]
+   ],
+   "art": {
+    "asset": "the-kid-1921-frame",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "not_hero": true
   },
   {
    "id": "safety-last",
@@ -1327,7 +1401,18 @@
    },
    "collections": [
     "Silent Classics"
-   ]
+   ],
+   "art": {
+    "asset": "safety-last-1923-still",
+    "mode": "cover",
+    "anchor": "upper",
+    "subject": [
+     880,
+     250,
+     1140,
+     600
+    ]
+   }
   },
   {
    "id": "the-cabinet-of-dr-caligari",
@@ -1391,7 +1476,13 @@
    "titleSort": "Cabinet of Dr. Caligari",
    "collections": [
     "Silent Classics"
-   ]
+   ],
+   "art": {
+    "asset": "the-cabinet-of-dr-caligari-1920-still",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "not_hero": true
   },
   {
    "id": "a-trip-to-the-moon",
@@ -1447,7 +1538,13 @@
    "titleSort": "Trip to the Moon",
    "collections": [
     "Silent Classics"
-   ]
+   ],
+   "art": {
+    "asset": "a-trip-to-the-moon-1902-still",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "not_hero": true
   },
   {
    "id": "wing-it",
@@ -1501,7 +1598,8 @@
    },
    "summary": "An uptight engineer gets an unwelcome visit from an enthusiastic wannabe-pilot, causing both of them to be launched into the air inside an out-of-control space shuttle.",
    "poster": {
-    "asset": "bs-wing-it-header"
+    "asset": "bs-wing-it-header",
+    "still_as_poster": true
    },
    "art": {
     "asset": "bs-wing-it-header",
@@ -1510,7 +1608,8 @@
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "not_hero": true
   },
   {
    "id": "coffee-run",
@@ -1574,7 +1673,8 @@
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "not_hero": true
   },
   {
    "id": "hero",
@@ -1628,12 +1728,19 @@
    },
    "summary": "A showcase for Grease Pencil in Blender 2.8: 2D animation tools within a full 3D pipeline, and the sixth short film funded by the Blender Cloud.",
    "poster": {
-    "asset": "hero-still-red"
+    "asset": "hero-still-red",
+    "still_as_poster": true
    },
    "art": {
     "asset": "bs-hero-header",
     "mode": "cover",
-    "anchor": "center"
+    "anchor": "left",
+    "subject": [
+     965,
+     160,
+     1290,
+     545
+    ]
    },
    "collections": [
     "Blender Open Movies"
@@ -1699,7 +1806,8 @@
    "summary": "Two amateur art critics meet in a gallery and argue passionately about the pieces they see, causing chaos for everyone else, until finally they find a piece on which they can agree.",
    "poster": {
     "asset": "glass-half-still-style",
-    "crop": "focus-right"
+    "crop": "focus-right",
+    "still_as_poster": true
    },
    "art": {
     "asset": "bs-glass-half-header",
@@ -1708,7 +1816,8 @@
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "not_hero": true
   },
   {
    "id": "the-daily-dweebs",
@@ -1770,7 +1879,18 @@
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "art": {
+    "asset": "bs-dailydweebs-header",
+    "mode": "cover",
+    "anchor": "center",
+    "subject": [
+     1260,
+     150,
+     1500,
+     410
+    ]
+   }
   },
   {
    "id": "singularity",
@@ -1824,12 +1944,19 @@
    },
    "summary": "When an ominous cosmic event swallows the icy home of a small space critter, he must find refuge among a group of luminous creatures watched over by a mysterious celestial being.",
    "poster": {
-    "asset": "bs-singularity-header"
+    "asset": "bs-singularity-header",
+    "still_as_poster": true
    },
    "art": {
     "asset": "bs-singularity-header",
     "mode": "cover",
-    "anchor": "center"
+    "anchor": "center",
+    "subject": [
+     1180,
+     310,
+     1420,
+     545
+    ]
    },
    "collections": [
     "Blender Open Movies"
@@ -1932,7 +2059,8 @@
     "asset": "sita-still-ram-sita-gods",
     "mode": "cover",
     "anchor": "center"
-   }
+   },
+   "not_hero": true
   },
   {
    "id": "seder-masochism",
@@ -1999,7 +2127,8 @@
     "asset": "seder-masochism-still-moses-splits-sea",
     "mode": "cover",
     "anchor": "center"
-   }
+   },
+   "not_hero": true
   }
  ],
  "shows": [
@@ -2068,7 +2197,8 @@
    "summary": "Koro the llama lives in Patagonia and has one talent: finding obstacles between himself and whatever he wants next. Short slapstick episodes about fences, friendship and snacks.",
    "poster": {
     "asset": "caminandes-s01e01",
-    "crop": "focus-right"
+    "crop": "focus-right",
+    "still_as_poster": true
    },
    "art": {
     "asset": "bs-caminandes-3-header",
@@ -2112,7 +2242,8 @@
       }
      ]
     }
-   ]
+   ],
+   "not_hero": true
   },
   {
    "id": "sherlock-holmes",
@@ -2277,7 +2408,8 @@
    ],
    "summary": "ESA/Hubble's video podcast about the discoveries of the NASA/ESA Hubble Space Telescope, and about the telescope itself. The episodes here are those of 2015 to 2020.",
    "poster": {
-    "asset": "esa-hubble-heic1608a"
+    "asset": "esa-hubble-heic1608a",
+    "still_as_poster": true
    },
    "art": {
     "asset": "esa-hubble-heic1509a",
@@ -2670,7 +2802,9 @@
       }
      ]
     }
-   ]
+   ],
+   "not_hero": true,
+   "not_in_video": true
   }
  ],
  "added_order": [
@@ -2706,6 +2840,18 @@
   "hubblecast"
  ],
  "collection_order": {"Blender Open Movies": ["singularity", "charge", "wing-it", "spring", "sprite-fright", "glass-half", "sintel", "tears-of-steel", "cosmos-laundromat", "coffee-run", "hero", "the-daily-dweebs", "big-buck-bunny", "elephants-dream"]},
+ "still_poster_approved": [
+  "wing-it",
+  "hero",
+  "glass-half",
+  "singularity",
+  "caminandes",
+  "hubblecast"
+ ],
+ "logo_none_approved": [
+  "hubblecast",
+  "nosferatu"
+ ],
  "continue_watching": [
   {
    "item": "sintel",
