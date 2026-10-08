@@ -6355,11 +6355,21 @@ class FpsMock(unittest.TestCase):
             s = self.scenes[name]
             self.assertEqual(s["bench"], "hold", name)
             self.assertEqual(s["route"], "home" if name.startswith("home") else "collection", name)
-            # the 21 fps open (~16 missed per cycle) must exceed the provisional limit
-            self.assertEqual(s["bench_missed_max"], 8 if tap else 150, name)
-            self.assertLess(s["bench_missed_max"], (40 if tap else 30) * 16, name)
-            self.assertEqual(s.get("bench_iv_max_ms"), None if tap else 45, name)
-            self.assertIn("PROVISIONAL", s["comment"], name)
+            # limits measured on the television 2026-10-08 (fixed build); the unfixed 21 fps open
+            # (home-hold 525, collection-hold 498, home-tap 12 missed) must fail them
+            limits = {"home-hold": (110, 55, 525), "collection-hold": (60, 50, 498),
+                      "home-tap": (8, 40, 12), "collection-tap": (8, 40, None)}[name]
+            self.assertEqual(s["bench_missed_max"], limits[0], name)
+            self.assertEqual(s["bench_iv_max_ms"], limits[1], name)
+            if limits[2] is not None:
+                self.assertLess(s["bench_missed_max"], limits[2], name)
+            if not tap:
+                self.assertLess(s["bench_missed_max"], 30 * 16, name)
+            self.assertEqual(s.get("bench_drift_ms"), 4.0 if tap else None, name)
+            self.assertNotIn("PROVISIONAL", s["comment"], name)
+            self.assertIn("2026-10-08", s["comment"], name)
+            if not tap:
+                self.assertIn("#561", s["comment"], name)
             value = s["triggers"]["plxnative-holdbench"]
             self.assertEqual(value.endswith(",tap"), tap, name)
             # the press itself is the bench's: no separate press/itemmenu trigger may ride along

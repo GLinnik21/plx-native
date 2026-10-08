@@ -2211,8 +2211,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   the header). One `bench: kind=hold ... target=<home|library|collection>` line per cycle, `target`
   suffixed `-nocard`/`-nomenu` when the cycle pressed nothing or opened no menu, which `grade_bench`
   fails; fps scenes `home-hold`, `collection-hold`, `home-tap`, `collection-tap`, all `--mock`-runnable
-  and not yet measured on the television after the item-menu opener-lift fix: their `bench_missed_max`/
-  `bench_iv_max_ms` limits are PROVISIONAL targets (the 21 fps menu open must fail them), re-measure after the fix.
+  and measured on the television on 2026-10-08 (one run each, debug build with `ARM_PROFILE=release`, mock,
+  panel on): home-hold `bench_missed_max` 110 / `bench_iv_max_ms` 55 (fixed build read 81, iv 46.7),
+  collection-hold 60 / 50 (41, 42.6), home-tap and collection-tap 8 / 40 with `bench_drift_ms` 4.0 (4 and 3
+  missed). A tree WITHOUT the item-menu opener-lift fix (PR #561) reads 525 / 498 / 12 missed on home-hold /
+  collection-hold / home-tap, so the hold scenes FAIL there and depend on #561 being on main.
   Remote-driving: `/tmp/plxnative-remote` is **not** a trigger — the app mkfifos and drains it
   every frame on every boot (so it never affects the picker; its DIAG entry is a permanent
   requirement, not an exception). Write key tokens like `down`/`ok`, or pointer clicks `ck:X,Y`
