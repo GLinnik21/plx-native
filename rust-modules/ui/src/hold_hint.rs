@@ -197,6 +197,18 @@ pub fn reset_shown_for_test() {
     SHOWN.with(|s| s.set(0));
 }
 
+/// Mark the hint as taught for this run, on every screen kind: the viewer-has-opened-a-menu state
+/// ([`mark_learned`]) and every [`Kind`]'s one showing already spent. Called once at boot by the dev
+/// trigger `plxnative-hintoff` (`app::boot`), so the site demo film, which is shot headless with no
+/// viewer to teach, is not the one place a one-time teaching overlay appears. It changes no timing
+/// and no rest clock: it only sets the two latches the hint already honours. Compiled only with
+/// `devtriggers`, so no shipping build carries it.
+#[cfg(feature = "devtriggers")]
+pub fn teach_all_for_dev() {
+    mark_learned();
+    SHOWN.with(|s| s.set(u8::MAX));
+}
+
 /// What the owner tells the hint each frame. Build it with [`HintInput::new`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HintInput {
@@ -688,6 +700,29 @@ mod tests {
         assert_eq!(h.fill(), 0.0);
         run(&mut h, rested(7), secs(5.0));
         assert!(!h.visible(), "retired for good");
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn teaching_the_hint_for_dev_leaves_no_kind_offering_it() {
+        let (_g, _) = fresh();
+        teach_all_for_dev();
+        assert!(learned());
+        let kinds = [Kind::Collection, Kind::Person, Kind::Search, Kind::Library, Kind::Detail];
+        let mut hints: Vec<HoldHint> = kinds.iter().map(|k| HoldHint::once_per_run(*k)).collect();
+        hints.push(HoldHint::new());
+        for h in &mut hints {
+            // a long rest, then an OK held on the card: neither the dwell nor the fill may show it
+            run(h, rested(7), secs(2.5));
+            assert!(!h.visible(), "the dwell shows nothing once taught");
+            tstep(h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
+            assert!(!h.visible() && h.fill() == 0.0, "a held OK shows nothing once taught");
+        }
+        for kind in kinds {
+            assert!(shown_this_run(kind), "{kind:?}'s one showing counts as spent");
+        }
+        reset_learned_for_test();
+        reset_shown_for_test();
     }
 
     #[test]

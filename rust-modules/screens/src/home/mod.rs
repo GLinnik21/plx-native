@@ -875,6 +875,11 @@ impl HomeScreen {
         self.hero_slide.jump(0.0);
         self.hero_flip_cd = HERO_FLIP_CD;
         self.hero_auto = HERO_AUTO_S;
+        // One line per page TURN (a key press or the 8 s advance, never a frame): the demo film
+        // reads the pages it showed from these (`tools/site_video.py`, `hero_pool.logged`, `hero_pool.turns`).
+        if let Some(page) = view.hero(next) {
+            plx_base::eventlog::log(&format!("home: hero page slot {next} rk={}", page.item.rk));
+        }
         true
     }
 
