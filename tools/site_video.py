@@ -529,6 +529,10 @@ def compare_hold_injection(rows_base, rows_injected):
 def gate_hero_pool(record):
     logged = _dig(record, "hero_pool.logged")[0] or []
     eligible = set(_dig(record, "hero_pool.eligible")[0] or [])
+    if not logged and _dig(record, "storyboard.script")[0] == "hold":
+        # The still-Home hold (`run_render`'s record) has no storyboard interpreter (S5c), which is what
+        # logs heroes; the gate stays fail-closed for every other script.
+        return Result("hero-pool", SKIP, "the `hold` script logs no hero (no storyboard interpreter yet): pool NOT proven")
     if not logged:
         return Result("hero-pool", FAIL, "no hero was logged: nothing proves the pool")
     extra = sorted(set(logged) - eligible)
@@ -928,6 +932,76 @@ def current_platform(env=None, system=None):
     if system == "Linux" and env.get("GITHUB_ACTIONS") == "true":
         return "linux-ci"
     return f"{system.lower()}-local"
+
+
+# What the render is a function of besides the tree: "the canonical video is what this pinned software
+# stack renders". Recorded, never gated on: a new runner image is a new fingerprint, not a failure.
+ENV_KEYS = ("LC_ALL", "TZ", "LIBGL_ALWAYS_SOFTWARE", "GALLIUM_DRIVER", "LP_NATIVE_VECTOR_WIDTH", "SDL_VIDEODRIVER")
+ENV_PACKAGES = ("libgl1-mesa-dri", "libglx-mesa0", "libllvm*", "libsdl2-2.0-0", "xvfb", "ffmpeg", "python3-pil")
+
+
+def parse_glx_info(text):
+    """The renderer, the GL version string (which carries the Mesa version) and LLVM's version out of
+    `glxinfo -B`; every field None when the line is absent."""
+    def line(key):
+        m = re.search(rf"^{re.escape(key)}:\s*(.+?)\s*$", text, re.M)
+        return m.group(1) if m else None
+    renderer = line("OpenGL renderer string")
+    version = line("OpenGL version string")
+    llvm = re.search(r"LLVM (\d+(?:\.\d+)*)", renderer or "")
+    mesa = re.search(r"Mesa (\S+)", version or "")
+    return {"renderer": renderer, "version": version, "mesa": mesa.group(1) if mesa else None,
+            "llvm": llvm.group(1) if llvm else None}
+
+
+def collect_environment(env=None, run=subprocess.run, root="/"):
+    """The machine half of the manifest: runner image, OS, CPU, the GL stack, the packages behind it and
+    the variables that steer it. Best effort: a field this host cannot answer is None."""
+    env = os.environ if env is None else env
+    root = pathlib.Path(root)
+
+    def out(argv):
+        try:
+            done = run(argv, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return done.stdout if done.returncode == 0 else ""
+
+    def read(rel):
+        try:
+            return (root / rel).read_text(errors="replace")
+        except OSError:
+            return ""
+
+    def first(text):
+        return text.splitlines()[0] if text.strip() else None
+
+    os_name = re.search(r'^PRETTY_NAME="?(.*?)"?$', read("etc/os-release"), re.M)
+    cpu = re.search(r"^model name\s*:\s*(.+?)\s*$", read("proc/cpuinfo"), re.M)
+    glx = out(["glxinfo", "-B"]) if shutil.which("glxinfo") and env.get("DISPLAY") else ""
+    packages = {}
+    if shutil.which("dpkg-query"):
+        for row in out(["dpkg-query", "-W", "-f", "${Package} ${Version}\\n", *ENV_PACKAGES]).splitlines():
+            name, _, version = row.partition(" ")
+            if name and version:  # `libllvm*` also lists the versions that are known but not installed
+                packages[name] = version
+    try:
+        import PIL
+        pillow = PIL.__version__
+    except ImportError:
+        pillow = None
+    return {
+        "runner_image": {"os": env.get("ImageOS"), "version": env.get("ImageVersion")},
+        "os": os_name.group(1) if os_name else None,
+        "kernel": first(out(["uname", "-sr"])),
+        "cpu": {"model": cpu.group(1) if cpu else None, "logical": os.cpu_count()},
+        "gl": parse_glx_info(glx),
+        "glxinfo": glx.strip() or None,
+        "packages": packages,
+        "derive_ffmpeg": first(out(["ffmpeg", "-hide_banner", "-version"])) if shutil.which("ffmpeg") else None,
+        "pillow": pillow,
+        "env": {k: env.get(k) for k in ENV_KEYS},
+    }
 
 
 def tree_hashes(run=subprocess.run, root=ROOT):
@@ -1360,9 +1434,11 @@ def cmd_encode(args):
 
 def cmd_gates(args):
     ffmpeg, _ = _ffmpeg_from(args)
-    results = run_gates(args.dir, args.master, args.frames_b, ffmpeg, args.site_media,
+    # Absolute: the SSIM and banding probes run ffmpeg from a scratch directory, where a relative path is gone.
+    absolute = lambda p: str(pathlib.Path(p).resolve()) if p else p  # noqa: E731
+    results = run_gates(absolute(args.dir), absolute(args.master), absolute(args.frames_b), ffmpeg, args.site_media,
                         progress=lambda m: print(f"site_video: {m}", file=sys.stderr, flush=True))
-    passed = write_gates_json(args.dir, results)
+    passed = write_gates_json(absolute(args.dir), results)
     print(format_results(results))
     skipped = [r.name for r in results if r.status == SKIP]
     if skipped:
@@ -1418,6 +1494,7 @@ def cmd_manifest(args):
              "python": platform.python_version()}
     manifest = build_manifest(out_dir, record, json.loads(gates_path.read_text()), tools, trees, dirty,
                               sha256_file(CATALOG), label)
+    manifest["environment"] = collect_environment()
     (out_dir / MANIFEST_NAME).write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
     print(f"site_video: wrote {out_dir / MANIFEST_NAME} (platform {label})")
     if args.zip:

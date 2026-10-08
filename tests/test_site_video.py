@@ -273,6 +273,14 @@ class FramesTsvAndRecord(unittest.TestCase):
         self.assertIn("99", bad.detail)
         self.assertEqual(sv.gate_hero_pool(record(hero_pool={"logged": [], "eligible": ["10"]})).status, sv.FAIL)
 
+    def test_the_still_home_hold_skips_the_hero_pool_loudly_and_nothing_else_does(self):
+        empty = {"logged": [], "eligible": []}
+        held = sv.gate_hero_pool(record(hero_pool=empty, storyboard={"script": "hold"}))
+        self.assertEqual(held.status, sv.SKIP)
+        self.assertIn("NOT proven", held.detail)
+        self.assertEqual(sv.gate_hero_pool(record(hero_pool=empty, storyboard={"script": "feel"})).status, sv.FAIL)
+        self.assertEqual(sv.gate_hero_pool(record(hero_pool=empty)).status, sv.FAIL)
+
     def test_the_inline_sentinel_record_must_cover_the_run_and_be_clean(self):
         self.assertEqual(sv.gate_sentinel_record(record()).status, sv.PASS)
         self.assertEqual(sv.gate_sentinel_record(record(sentinel={"scanned_frames": 3, "hits": 1})).status, sv.FAIL)
@@ -303,8 +311,8 @@ class FramesTsvAndRecord(unittest.TestCase):
 
 
 class RenderLauncher(unittest.TestCase):
-    """`render`: the pieces that need no simulator. The run itself is `make site-video-sim` plus a Mac (the
-    only verified host: no CI job builds the dump simulator yet), and its determinism is graded by the
+    """`render`: the pieces that need no simulator. The run itself is `make site-video-sim` plus a Mac (a
+    preview) or `.github/workflows/site-video.yml` (the canonical render), and its determinism is graded by the
     run-twice gate."""
 
     def test_the_ffv1_argv_is_the_input_contract(self):
@@ -564,6 +572,53 @@ class MeasurementHelpers(unittest.TestCase):
         self.assertEqual(sv.current_platform({"GITHUB_ACTIONS": "true"}, "Linux"), "linux-ci")
         self.assertEqual(sv.current_platform({}, "Linux"), "linux-local")
         self.assertEqual(sv.current_platform({"GITHUB_ACTIONS": "true"}, "Darwin"), "darwin-local")
+
+
+class GatesCommand(unittest.TestCase):
+    def test_the_gates_are_handed_absolute_paths_because_ffmpeg_probes_run_in_a_scratch_directory(self):
+        seen = {}
+
+        def fake(d, m, fb, *a, **k):
+            seen.update(dir=d, master=m, frames_b=fb)
+            return [sv.Result("x", sv.PASS, "")]
+        args = type("A", (), {"dir": "out/deliver", "master": "out/a/master.mkv", "frames_b": "out/b/frames.tsv",
+                              "site_media": "site/media", "ffmpeg": None, "cache": None})()
+        with unittest.mock.patch.object(sv, "_ffmpeg_from", return_value=("/t/ffmpeg", True)), \
+                unittest.mock.patch.object(sv, "run_gates", fake), \
+                unittest.mock.patch.object(sv, "write_gates_json", return_value=True) as written:
+            self.assertEqual(sv.cmd_gates(args), 0)
+        self.assertTrue(all(os.path.isabs(v) for v in seen.values()), seen)
+        self.assertTrue(os.path.isabs(written.call_args[0][0]))
+
+
+class Environment(unittest.TestCase):
+    GLX = ("name of display: :99\nOpenGL vendor string: Mesa\n"
+           "OpenGL renderer string: llvmpipe (LLVM 17.0.6, 256 bits)\n"
+           "OpenGL core profile version string: 4.5 (Core Profile) Mesa 24.0.9-0ubuntu0.2\n"
+           "OpenGL version string: 4.5 (Compatibility Profile) Mesa 24.0.9-0ubuntu0.2\n")
+
+    def test_glxinfo_yields_the_renderer_mesa_and_llvm_versions(self):
+        got = sv.parse_glx_info(self.GLX)
+        self.assertEqual((got["mesa"], got["llvm"]), ("24.0.9-0ubuntu0.2", "17.0.6"))
+        self.assertEqual(got["renderer"], "llvmpipe (LLVM 17.0.6, 256 bits)")
+
+    def test_a_missing_glxinfo_leaves_every_field_none_rather_than_failing(self):
+        self.assertEqual(set(sv.parse_glx_info("").values()), {None})
+
+    def test_the_record_names_the_image_the_cpu_and_the_steering_variables(self):
+        with tempfile.TemporaryDirectory() as root:
+            (pathlib.Path(root) / "etc").mkdir()
+            (pathlib.Path(root) / "proc").mkdir()
+            (pathlib.Path(root) / "etc/os-release").write_text('NAME="Ubuntu"\nPRETTY_NAME="Ubuntu 24.04.3 LTS"\n')
+            (pathlib.Path(root) / "proc/cpuinfo").write_text("processor\t: 0\nmodel name\t: AMD EPYC 7763 64-Core Processor\n")
+            env = {"ImageOS": "ubuntu24", "ImageVersion": "20251006.1.0", "LP_NATIVE_VECTOR_WIDTH": "256", "TZ": "UTC"}
+            got = sv.collect_environment(env, run=lambda *a, **k: subprocess.CompletedProcess(a, 1, "", ""), root=root)
+        self.assertEqual(got["runner_image"], {"os": "ubuntu24", "version": "20251006.1.0"})
+        self.assertEqual(got["os"], "Ubuntu 24.04.3 LTS")
+        self.assertEqual(got["cpu"]["model"], "AMD EPYC 7763 64-Core Processor")
+        self.assertEqual(got["env"]["LP_NATIVE_VECTOR_WIDTH"], "256")
+        self.assertIsNone(got["env"]["LC_ALL"])
+        self.assertIsNone(got["gl"]["mesa"])
 
 
 class EncodeArgv(unittest.TestCase):

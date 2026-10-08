@@ -31,8 +31,9 @@ Recently Added) must have its subject on the RIGHT with logo and text off the ce
 frame, or over a text zone. The zones are copied in `HERO_PINS`, each pinned to the Rust constant
 it comes from, and `check --complete` re-reads that source so a layout change cannot leave the
 check stale. Titles that fail are listed in `pending.json` under `hero_art`; the list only shrinks,
-and the demo-video workflow (stage S6 of the plan; not in the tree yet) is to refuse to run while
-it, or any pending entry, is non-empty.
+and the demo-video workflow (`.github/workflows/site-video.yml`, stage S6 of the plan) is to refuse to
+run while it, or any pending entry, is non-empty. It does not yet: it neither runs `check --complete`
+nor reads `pending.json`, so a render can still start with hero art pending.
 
 Per-title flags in `catalog.json`, all checked by `check`:
 
@@ -79,6 +80,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -116,6 +119,33 @@ def source_path(aid, asset):
     return cache_dir() / "src" / f"{aid}.{ext}"
 
 
+# Wikimedia rate-limits cloud IPs (a CI runner got HTTP 429 on the 36th request of a cold fetch), asks
+# bots for a descriptive User-Agent and for a polite rate. So: a pause before each wikimedia download,
+# and a bounded retry with backoff (honouring Retry-After) on 429 and 5xx. Never on a sha256 mismatch.
+POLITE_HOSTS = ("upload.wikimedia.org",)
+POLITE_PAUSE = 1.0
+RETRY_AFTER_CAP = 120
+ATTEMPTS = 6
+
+
+def open_url(req, opener=None, sleep=time.sleep):
+    """`opener(req, timeout=120)` (default `urllib.request.urlopen`, looked up per call), retried on
+    429 and 5xx with exponential backoff."""
+    opener = opener or urllib.request.urlopen
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            return opener(req, timeout=120)
+        except urllib.error.HTTPError as e:
+            if e.code != 429 and e.code < 500 or attempt == ATTEMPTS:
+                raise
+            try:
+                wait = min(int(e.headers.get("Retry-After", "")), RETRY_AFTER_CAP)
+            except (TypeError, ValueError):
+                wait = min(5 * 2 ** (attempt - 1), RETRY_AFTER_CAP)
+            print(f"demo_library: HTTP {e.code} from {req.full_url}; retry {attempt}/{ATTEMPTS - 1} in {wait}s", flush=True)
+            sleep(wait)
+
+
 def fetch(assets, only=None):
     """Download what is missing; verify everything. Returns {asset id: path}."""
     out = {}
@@ -127,10 +157,12 @@ def fetch(assets, only=None):
             dst.parent.mkdir(parents=True, exist_ok=True)
             print(f"demo_library: fetch {aid} ({a['bytes']:,} bytes)", flush=True)
             req = urllib.request.Request(a["url"], headers={"User-Agent": UA})
+            if urllib.parse.urlparse(a["url"]).hostname in POLITE_HOSTS:
+                time.sleep(POLITE_PAUSE)
             with tempfile.NamedTemporaryFile(dir=dst.parent, delete=False) as tmp:
                 pass
             try:  # the partial download never survives: a failed request, a bad hash, a ^C
-                with open(tmp.name, "wb") as f, urllib.request.urlopen(req, timeout=120) as r:
+                with open(tmp.name, "wb") as f, open_url(req) as r:
                     shutil.copyfileobj(r, f)
                 got = sha256(tmp.name)
                 if got != a["sha256"]:
