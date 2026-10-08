@@ -3757,12 +3757,15 @@ fn the_hold_hint_stands_on_a_resting_related_card_once_per_run() {
     let on = |elem| Some(FocusKey { entry: EntryId(7), elem });
     rest(&mut screen, on(card), 1.2);
     assert!(!screen.hold_hint.visible(), "not before the dwell");
-    rest(&mut screen, on(card), 1.6);
-    assert!(screen.hold_hint.visible(), "after it, on a settled Related card");
-    rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
-    assert!(!screen.hold_hint.visible(), "never while a menu owns focus");
+    // negatives first: a stand spends the kind's latch and would make them vacuous
+    rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 4.0);
+    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Detail), "never while a menu owns focus");
     rest(&mut screen, on(hero::ELEM_PLAY), 4.0);
-    assert!(!screen.hold_hint.visible(), "never on a hero control");
+    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Detail), "never on a hero control");
+    rest(&mut screen, on(card), 1.6);
+    assert!(screen.hold_hint.visible(), "after the dwell, on a settled Related card");
+    rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
+    assert!(!screen.hold_hint.visible(), "a menu taking focus hides it");
     rest(&mut screen, on(card), 4.0);
     assert!(!screen.hold_hint.visible(), "and not a second time on a Detail page this run");
     clear();

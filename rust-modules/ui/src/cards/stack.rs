@@ -162,7 +162,9 @@ pub trait StackPage<H: Host> {
     fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Self::Key) -> Option<Self::Cards<'a>>;
     /// Whether a held OK on card `elem` of section `k` opens an item menu: the hold hint
     /// ([`Stack::hold_hint`]) is shown only on a card that answers `true`. A page whose cards can
-    /// open something else on a hold (a collection hit opens its page) says so here.
+    /// open something else on a hold (a collection hit opens its page) says so here; a page whose
+    /// cards are catalog items answers with the app's own predicate, `item_menu::has_actions`,
+    /// the one the bridge declines a menu with.
     fn card_has_menu(&self, _cx: &Cx<'_, H>, _k: Self::Key, _elem: &H::Elem) -> bool {
         true
     }
@@ -626,8 +628,12 @@ impl<K: Copy + Eq, E> Stack<K, E> {
         match ev {
             ScreenEvent::Tick(t) => {
                 self.tick(t.dt(), p, cx, fx);
-                if self.hint.is_some() {
-                    let input = self.hint_input(p, cx);
+                if let Some(h) = &self.hint {
+                    let input = if h.wants_input(cx.press.held_ms.is_some()) {
+                        self.hint_input(p, cx)
+                    } else {
+                        crate::hold_hint::HintInput::default()
+                    };
                     if let Some(h) = &mut self.hint {
                         h.step(input, t.ms, t.dt(), &mut |ev| fx.note(ev));
                     }

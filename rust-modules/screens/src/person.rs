@@ -1127,6 +1127,11 @@ impl<H: ContentLike + PersonLike> StackPage<H> for Page {
         }
     }
 
+    fn card_has_menu(&self, cx: &Cx<'_, H>, _k: Sec, elem: &u32) -> bool {
+        let key = plx_machine::machine::FocusKey { entry: self.entry, elem: *elem };
+        self.focused_item(Some(key), cx).is_some_and(crate::registry::item_has_menu)
+    }
+
     /// The pill is part of the head's block: focusing it reveals the whole band.
     fn reveal_with(&self, k: Sec) -> Option<Sec> {
         (k == Sec::Entry).then_some(Sec::Head)
@@ -1572,12 +1577,15 @@ mod tests {
         };
         rest(&mut s, card, 1.2);
         assert!(!s.stack.hint_visible(), "not before the dwell");
-        rest(&mut s, card, 1.6);
-        assert!(s.stack.hint_visible(), "after it, on a settled card");
-        rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(900), elem: 0 }, 1.0);
-        assert!(!s.stack.hint_visible(), "never while a menu owns focus");
+        // negatives first: a stand spends the kind's latch and would make them vacuous
+        rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(900), elem: 0 }, 4.0);
+        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Person), "never while a menu owns focus");
         rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(0), elem: ENTRY_ELEM }, 4.0);
-        assert!(!s.stack.hint_visible(), "never on the Filmography pill");
+        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Person), "never on the Filmography pill");
+        rest(&mut s, card, 1.6);
+        assert!(s.stack.hint_visible(), "after the dwell, on a settled card");
+        rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(900), elem: 0 }, 1.0);
+        assert!(!s.stack.hint_visible(), "a menu taking focus hides it");
         rest(&mut s, card, 4.0);
         assert!(!s.stack.hint_visible(), "and not a second time on a Person page this run");
     }

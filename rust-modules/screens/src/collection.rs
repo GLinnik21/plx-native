@@ -440,6 +440,13 @@ impl<H: ContentLike + CollectionLike> StackPage<H> for Page {
         match k { Sec::Head => Some(HEADER_ELEM), Sec::Status => Some(RETRY_ELEM), Sec::Items => None }
     }
 
+    fn card_has_menu(&self, cx: &Cx<'_, H>, _k: Sec, elem: &u32) -> bool {
+        let Some(collection) = self.collection(cx) else { return false };
+        self.item_index(collection, *elem)
+            .and_then(|index| collection.items.get(index))
+            .is_some_and(crate::registry::item_has_menu)
+    }
+
     fn focus_rect(&self, _cx: &Cx<'_, H>, k: Sec, section: Rect) -> Rect {
         match k {
             Sec::Head => Self::header_rect(-section.y),
@@ -909,16 +916,20 @@ mod tests {
         };
         rest(&mut screen, a, 1.2);
         assert!(!screen.stack.hint_visible(), "not before the dwell");
-        rest(&mut screen, a, 1.5);
-        assert!(screen.stack.hint_visible(), "after it, on a settled member");
+        // The negatives come BEFORE the first stand: once it has stood the kind's latch is spent
+        // and nothing could stand whatever the wiring.
         // a menu open over the page: focus is the menu's, not this page's
         let menu = plx_machine::machine::FocusKey { entry: EntryId(77), elem: 0 };
-        rest(&mut screen, menu, 1.0);
-        assert!(!screen.stack.hint_visible(), "never while a menu is open");
+        rest(&mut screen, menu, 3.0);
+        assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Collection), "never while a menu is open");
         // nor on the header, which is not a card
         let header = plx_machine::machine::FocusKey { entry: EntryId(9), elem: HEADER_ELEM };
         rest(&mut screen, header, 3.0);
-        assert!(!screen.stack.hint_visible(), "never on a non-card focus");
+        assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Collection), "never on a non-card focus");
+        rest(&mut screen, a, 2.0);
+        assert!(screen.stack.hint_visible(), "after the dwell, on a settled member");
+        rest(&mut screen, menu, 1.0);
+        assert!(!screen.stack.hint_visible(), "a menu taking focus hides it");
         // spent for the kind: another member, and a second Collection page, stay quiet
         rest(&mut screen, b, 3.0);
         assert!(!screen.stack.hint_visible(), "not twice on the same page");

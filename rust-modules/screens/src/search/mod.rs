@@ -637,7 +637,7 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
     /// Only a library item opens an item menu on a hold; a collection hit opens its page.
     fn card_has_menu(&self, cx: &Cx<'_, H>, _k: Sec, elem: &u32) -> bool {
         let key = FocusKey { entry: self.entry, elem: *elem };
-        matches!(self.selected_item(Some(key), cx), Some(Item::Media(media)) if !media.rk.is_empty())
+        matches!(self.selected_item(Some(key), cx), Some(Item::Media(media)) if crate::registry::item_has_menu(media))
     }
     fn elem_of(&self, k: Sec) -> Option<u32> {
         match k { Sec::Head => Some(FIELD), Sec::Clear if !self.recents.is_empty() => Some(CLEAR), _ => None }

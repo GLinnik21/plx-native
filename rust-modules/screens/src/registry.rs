@@ -92,6 +92,11 @@ pub enum PreferenceCmd {
     Language { language: plx_platform::i18n::Preference, reply: std::sync::mpsc::Sender<bool> },
 }
 
+/// Whether an item has a context menu to open (`item_menu::has_actions`): the one predicate the
+/// app declines a menu with and the card screens' hold hint is gated by. The screens reach it
+/// here, never by naming the sibling `item_menu`.
+pub use crate::item_menu::has_actions as item_has_menu;
+
 /// **What the item context menu asks of the loop**, once its own `step` has resolved the pressed
 /// row to an [`crate::item_menu::Action`].
 ///

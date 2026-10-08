@@ -1731,12 +1731,22 @@ fn the_hold_hint_stands_on_a_resting_library_card_once_per_run() {
     };
     rest(&mut page, Some(key), 1.0); // the page dissolves in; the dwell only starts once it is at rest
     assert!(!page.hold_hint.visible(), "not before the dwell");
-    rest(&mut page, Some(key), 3.0);
-    assert!(page.hold_hint.visible(), "after it, on a settled card of an opaque page");
-    rest(&mut page, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
-    assert!(!page.hold_hint.visible(), "never while a menu owns focus");
+    // The negatives come BEFORE the first stand: once it has stood the kind's latch is spent and
+    // nothing could stand whatever the wiring.
+    let plain = Some(page.key(TYPE));
+    rest(&mut page, plain, 4.0);
+    assert!(!page.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Library),
+        "never on a chip of the same entry");
+    rest(&mut page, Some(FocusKey { entry: EntryId(900), elem: 0 }), 4.0);
+    assert!(!page.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Library),
+        "never while a menu owns focus");
     rest(&mut page, None, 4.0);
-    assert!(!page.hold_hint.visible(), "never without a focused card");
+    assert!(!page.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Library),
+        "never without a focused card");
+    rest(&mut page, Some(key), 3.0);
+    assert!(page.hold_hint.visible(), "after the dwell, on a settled card of an opaque page");
+    rest(&mut page, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
+    assert!(!page.hold_hint.visible(), "a menu taking focus hides it");
     rest(&mut page, Some(key), 4.0);
     assert!(!page.hold_hint.visible(), "and not a second time on a Library page this run");
 }

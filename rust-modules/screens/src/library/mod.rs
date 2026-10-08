@@ -608,13 +608,16 @@ impl LibraryScreen {
 
     /// The two screen-specific answers the hold hint needs (`ui::hold_hint`, "Adopting it"): the
     /// CARD focus rests on, one whose hold opens an item menu (a grid poster or a shelf card with
-    /// a library item behind it; not a chip, the rail, a heading or a covered page), and whether it
+    /// a library item behind it that `registry::item_has_menu`, so not a collection; not a chip, the rail, a heading or a covered page), and whether it
     /// has arrived (the page scroll, the fade and the card's own glide).
     fn hint_input<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> plx_ui::hold_hint::HintInput {
         let none = plx_ui::hold_hint::HintInput::default();
+        if !self.hold_hint.wants_input(cx.press.held_ms.is_some()) {
+            return none;
+        }
         let Some(key) = cx.focus.current.filter(|key| key.entry == self.entry) else { return none };
         if self.plaintext_alert.is_open()
-            || self.focused_item(Some(key), cx).is_none_or(|item| item.rk.is_empty())
+            || self.focused_item(Some(key), cx).is_none_or(|item| !crate::registry::item_has_menu(item))
         {
             return none;
         }

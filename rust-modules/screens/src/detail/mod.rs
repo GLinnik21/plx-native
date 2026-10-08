@@ -3356,7 +3356,7 @@ impl DetailScreen {
     /// The two screen-specific answers the hold hint needs (`ui::hold_hint`, "Adopting it"): the
     /// CARD focus rests on, only on the shelves whose held OK opens an item menu (Related and the
     /// member Collection — Extras and Cast have no hold action, and neither do the hero, a
-    /// heading or the about rows), never while full-trailer mode has taken the page off screen;
+    /// heading or the about rows) and whose item `registry::item_has_menu`, never while full-trailer mode has taken the page off screen;
     /// and whether it has arrived (the page scroll and the card's own glide).
     fn hint_input<H: ContentLike + crate::registry::MetadataLike>(
         &self,
@@ -3364,10 +3364,19 @@ impl DetailScreen {
         focused: Option<Located>,
     ) -> plx_ui::hold_hint::HintInput {
         let none = plx_ui::hold_hint::HintInput::default();
+        if !self.hold_hint.wants_input(cx.press.held_ms.is_some()) {
+            return none;
+        }
         let (Some(key), Some(Located::Related(_) | Located::Collection(_))) = (cx.focus.current, focused) else {
             return none;
         };
         if key.entry != self.entry || self.preview_chrome < 0.99 {
+            return none;
+        }
+        let has_menu = self
+            .focused_related(Some(key), <H as crate::registry::MetadataLike>::metadata(cx))
+            .is_some_and(crate::registry::item_has_menu);
+        if !has_menu {
             return none;
         }
         let Some(drawn) = <Self as Focusable<H>>::place(self, &key.elem, cx, At::Drawn) else { return none };

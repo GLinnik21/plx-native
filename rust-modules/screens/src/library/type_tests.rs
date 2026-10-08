@@ -180,6 +180,34 @@ fn ok_on_a_collection_card_requests_its_page() {
         "OK on a collection opens it, never plays it");
 }
 
+/// The hold hint teaches a hold that opens an item menu; a hold on a collection card opens
+/// nothing (`app/content.rs` drops the menu unless `item_menu::has_actions`), so the hint must not
+/// stand there and must not spend the kind's one showing.
+#[test]
+fn the_hold_hint_does_not_stand_on_a_collection_card() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
+    let fixture = collections_fixture(36);
+    let mut page = fixture.screen();
+    page.initial = false;
+    page.live = true;
+    page.page_fade.mount();
+    let key = page.key(page.pair.detail.elems[1]);
+    let mut ms = 0;
+    for _ in 0..(6.0 * 60.0) as u32 {
+        ms += 17;
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut cx = fixture.cx(Some(key));
+        cx.tick = Tick { ms, dt_us: 16_667 };
+        page.step(&ScreenEvent::Tick(cx.tick), &cx,
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    }
+    assert!(!page.hold_hint.visible(), "a hold on a collection opens no menu, so no hint");
+    assert!(!plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Library), "and nothing is spent");
+}
+
 /// The dev/scenario path to a listing type: `SetType` is the menu row's own edit, addressed to the
 /// section on the page.
 #[test]
