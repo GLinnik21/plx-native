@@ -83,8 +83,9 @@ that mixes async content with a live cursor:
   from the restored SCROLL rather than a saved grid index: the server's hubs change subject
   between requests, so a stored shelf index can name a different shelf on return.
 
-`library/` reports whether the focus STOP moved so a press can be cancelled on hover;
-`home/`, `person` and `search` still carry that gap. It is a known hole, not a pattern to copy.
+A press cancels on hover in the engine, not in a screen: `Input` cancels an armed pointer press
+whose `hit` leaves its arm (`input_tests.rs`, `a_pointer_press_is_cancelled_when_the_hit_leaves_its_arm`),
+so a screen reports nothing about its focus stop moving and none keeps a path for it.
 
 A screen that builds a `TableView` ships a `fit_report` test over its REAL builder (extract a pure
 builder that takes its inputs as arguments, as `preferences::field_form` and
@@ -103,6 +104,32 @@ vanished focused row reopens on the safe opening row instead of sliding onto a d
 Every Settings drill-down is a family-stack push through `family::form_activate` (a `Nav` row emits
 `NavOp::Push`); a page never owns a private submenu or a `RoutePush` (grep-gated in
 `settings_nav_structure_tests.rs`). A picker is its own page, `SettingsPage::Picker(PickerKind)`.
+
+## Building a card page
+
+A new screen that shows media cards is a `plx_ui::cards::Stack` page; `collection.rs` is the
+smallest worked example.
+
+- Implement `CardSource<H>` (`len`, `elem`, `index_of`, `art`, `label`; the rest default) once per
+  section's content, over a borrowed view of the store.
+- Implement `StackPage<H>` on the page's content type. Required: `type Key`, `type Cards<'a>`,
+  `revision` (a counter that moves whenever anything the sections read moves), `sections` (the
+  `SectionSpec`s, in order), `fallback` (the order focus falls back through when a section empties)
+  and `cards` (a section's `CardSource`, `None` while it has no content). Optional hooks: `pending`,
+  `recover`, `card_has_menu`, `elem_of`, `plain_len`, `plain_elem`, `plain_step`, `focus_rect`,
+  `element_rect`, `seat_override`, `reveal_margin`, `shelf_foot`, `wide_extent`, `plain_group`,
+  `reveal_with`, `draw_heading`, `custom_draw`.
+- Hold the `Stack` in the screen, feed it every event with `stack.on(&page, ev, cx, fx)` and draw
+  through `stack.view(&page)`. Get `Focusable` from `plx_ui::focusable_via_view!`
+  (`focusable_via_view!(Screen, H: [Bounds], view)` for a screen generic over its host).
+- Opt into the hold hint with `Stack::hold_hint(Kind)`; `card_has_menu` says which cards a hold
+  actually opens a menu on.
+- Register a conformance mount: a `cards_harness.rs` child module of the screen exposing
+  `mount` (see `collection/cards_harness.rs`), and a row for it in `table()` of
+  `cards_conformance_tests.rs`; the shared drivers live in `ui/src/cards/conformance.rs`.
+- A screen never names L0 (`CardRow`, `GridPop`, `GridBands`, `cards::paint_visible`, ...): the
+  `cards` gate in `ci/check-deps.sh` fails it. Everything a layout needs is re-exported from
+  `plx_ui::cards`.
 
 ## Verifying a screen change
 

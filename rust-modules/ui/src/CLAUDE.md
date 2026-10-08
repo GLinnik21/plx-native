@@ -83,18 +83,21 @@ pop and the scroll follow the element, `Shelf::landed` / `Grid::landed` report i
 does not re-seat anything; and read a shelf through `heading_lift()` / `under_band()`, not through
 the L0 `CardRow`.
 
-`GridSpec::new(top, edge)` is the six-column `cards::GRID_STYLE` grid from `MARGIN_X` that
-springs its own scroll (Collection); `.columns(cols, style, left)` sets the column count, card
-style and left edge (a rail-aware or episode grid), and `.external()` selects `ScrollMode::External`
-for a grid inside a document whose page scroll another owner drives (the Library's All grid, the
-later `Stack`): the grid never steps a scroll, the owner calls `set_page(top, scroll)` before each
+`GridSpec::new(top, edge)` is the six-column `cards::GRID_STYLE` grid from `MARGIN_X`;
+`.columns(cols, style, left)` sets the column count, card style and left edge (a rail-aware or
+episode grid), and `.external()` selects `ScrollMode::External`, for a grid inside a document whose page scroll
+another owner drives: the Library's All grid runs under the Library's scroll and every grid section
+of a `cards::Stack` under the stack's. Both shipped grids are external; `ScrollMode::Own` is the
+default a spec is built with and no screen runs it, so a scroll fault on a stack page is in
+`cards/stack.rs`, not in `Grid`. An external grid never steps a scroll: the owner calls
+`set_page(top, scroll)` before each
 `on` / `draw` / `place`, may read the scroll the focused row wants from `reveal_target()` (the
 Library does not: it reveals by its own rule over the settled layout) and applies the document
 shift a content landing needs, `landed_shift()`, to its scroll and scroll target; the grid does
 not home when focus is elsewhere. An owner whose columns, style or document top change at run time
 (the Library's episode listing, its shelf run) hands them over with `set_columns` / `set_page`;
 `settle_band` adopts a restored focus row's caption band before the next tick so a layout built in
-between sizes the document from it. The Library's hub SHELVES are not on the component yet.
+between sizes the document from it.
 
 ## Localization and shared reading layout
 
