@@ -100,7 +100,8 @@ section.chart { background: var(--panel); border: 1px solid var(--rule); border-
 .legend .thin { opacity: 0.8; }
 .swatch { width: 18px; height: 0; border-top: 3px solid; border-radius: 2px; flex: none; }
 .swatch.dash { border-top-style: dashed; }
-.swatch.box { width: 10px; height: 10px; border-top-width: 0; border-radius: 2px; background: currentColor; }
+.swatch-mk { flex: none; overflow: visible; }
+.swatch.box {width: 10px; height: 10px; border-top-width: 0; border-radius: 2px; background: currentColor; }
 .plot { position: relative; width: 100%; min-width: 0; }
 .plot svg { display: block; width: 100%; height: auto; overflow: visible; }
 .plot text { fill: var(--muted); font: 11px var(--font-mono); }
@@ -110,7 +111,8 @@ section.chart { background: var(--panel); border: 1px solid var(--rule); border-
 .tip .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
 .empty { color: var(--muted); margin: 0; padding: 24px 0; }
 .fails { margin: 0; display: grid; gap: 2px; font-size: 13px; color: var(--bad); }
-.fails:empty { display: none; }
+.fails:empty, .latest:empty { display: none; }
+.latest { margin: 0; }
 .fails span { overflow-wrap: anywhere; }
 .plot svg { touch-action: pan-y; }
 .mk { cursor: pointer; outline: none; }
@@ -145,6 +147,8 @@ section.chart { background: var(--panel); border: 1px solid var(--rule); border-
   .nrow { grid-template-columns: minmax(0, 1.3fr) 110px minmax(0, 2fr); gap: 4px 20px; }
   .nc { grid-column: auto; }
 }
+.slowgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px 32px; }
+.slowgrid .hint { margin: 2px 0 4px; }
 .nrow.worse { box-shadow: inset 3px 0 0 var(--bad); padding-left: 10px; }
 .nrow.better .nv { color: var(--good); }
 .group-note { margin: 0; color: var(--muted); font-size: 13px; max-width: 80ch; }
@@ -192,7 +196,7 @@ code { font-family: var(--font-mono); font-size: 0.92em; background: var(--chip)
     <section class="chart" id="wait">
       <div class="chart-head">
         <h2>How long a pull request waits</h2>
-        <p>Per head commit of a pull request, the longest job of its CI, Simulator CI and nightly dry-run runs, which is what the author waits for; a re-run counts the whole time from its first start. The second line is the same for commits pushed to <code>main</code>. Queueing is not in GitHub's job timings, so real waits are a little longer.</p>
+        <p>Per head commit of a pull request, the longest job of its CI, Simulator CI and nightly dry-run runs, which is what the author waits for; a re-run counts the whole time from its first start. The second line is the same for commits pushed to <code>main</code>. The axis fits the lines; a single run above it is an arrow on the top edge, and the tooltip has its time. Queueing is not in GitHub's job timings, so real waits are a little longer.</p>
       </div>
       <div class="legend"></div>
       <div class="plot"></div>
@@ -200,7 +204,7 @@ code { font-family: var(--font-mono); font-size: 0.92em; background: var(--chip)
     </section>
 
     <div class="group" id="bench-wrap" hidden>
-      <p class="group-note"><b>Local builds, measured daily</b> on a GitHub macOS runner (<span id="bench-runner">a shared virtual machine</span>) at the tip of <code>main</code> (<code>make build-bench</code>): for the trend, not for the seconds on your Mac, which has more and faster cores. A point is the median of that day's runs and the band is fastest to slowest. An orange ring round a point marks a row whose runs differed by more than half its median: the runner is shared, so read that point as a guess. A red cross marks a day a step failed on the runner.</p>
+      <p class="group-note"><b>Local builds, measured daily</b> on a GitHub macOS runner (<span id="bench-runner">a shared virtual machine</span>) at the tip of <code>main</code> (<code>make build-bench</code>): for the trend, not for the seconds on your Mac, which has more and faster cores. A point is the median of that day's runs and the band is fastest to slowest (a day with one run has no band). A day without a record breaks the line. The no-op build is a health check, not a wait: it is in the list at the top when it climbs above a few seconds. An orange ring round a point marks a row whose runs differed by more than half its median: the runner is shared, so read that point as a guess. A red cross marks a day a step failed on the runner.</p>
       <p class="status" id="bench-status" role="status" hidden></p>
       <section class="chart" id="b-edit" hidden>
         <div class="chart-head"><h2>Edit one file, then rebuild</h2></div>
@@ -208,13 +212,17 @@ code { font-family: var(--font-mono); font-size: 0.92em; background: var(--chip)
         <div class="plot"></div>
       </section>
       <section class="chart" id="b-check" hidden>
-        <div class="chart-head"><h2>make check, the whole gate</h2></div>
+        <div class="chart-head">
+          <h2>make check, the whole gate</h2>
+          <p>The gate runs its cargo and python branches side by side, so its wall time is the slower branch plus a little set-up and the two lines meet on the days one branch is the long pole. The round dot is the whole gate; a hollow diamond or square round it names the branch that set it.</p>
+        </div>
         <div class="legend"></div>
         <div class="plot"></div>
         <p class="fails"></p>
+        <p class="latest hint"></p>
       </section>
       <section class="chart" id="b-fast" hidden>
-        <div class="chart-head"><h2>No-op build and unit suite</h2></div>
+        <div class="chart-head"><h2>The unit suite</h2></div>
         <div class="legend"></div>
         <div class="plot"></div>
         <p class="fails"></p>
@@ -312,7 +320,7 @@ const median = (a) => { const b = [...a].sort((x, y) => x - y); const m = b.leng
 const isGreen = (r) => !r.conclusion || r.conclusion === "success";   // rows from before conclusions were recorded were green
 const isPr = (r) => r.event === "pull_request";
 
-let range = "30d";
+let range = "recent";
 try { const saved = localStorage.getItem("ci-range"); if (saved in RANGES) range = saved; } catch (e) {}
 
 const axisFrom = () => (range === "all" ? AXIS.start : new Date(AXIS.end.getTime() - RANGES[range] * 864e5));
@@ -386,19 +394,67 @@ function prepare(doc) {
 
 // ---- the daily local-build measurements (build-history.json) ----
 
-const BENCH_FIXED = { "b-check": ["check", "check.cargo", "check.python"], "b-fast": ["noop", "tests"] };
+const BENCH_FIXED = { "b-check": ["check", "check.cargo", "check.python"], "b-fast": ["tests"] };
+const BENCH_HEALTH = ["noop"];       // a health check: it should stay near zero, so it is a row in the top block, not a line
 const BENCH_CHARTS = ["b-edit", "b-check", "b-fast"];
 const BENCH_FAIL_WHAT = { check: "make check", tests: "The unit suite" };
+const BENCH_MARKS = ["circle", "diamond", "square", "triangle"];
+
+// ---- pure rules of the daily charts: no DOM, no page globals ----
+// tools/test_ci_history.py cuts this block out (between the two markers) and runs it in a JS engine.
+// PURE-BEGIN
+const DAY_MS = 864e5;
+const BENCH_MIN_SPAN_DAYS = 4;
+
+// A daily record belongs to its UTC date ("date"; else the day of "at"), not to the minute the run
+// finished: its point sits on that day's tick. Milliseconds of that day's UTC midnight, NaN when unreadable.
+function benchDay(rec) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String((rec && rec.date) || ""));
+  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  const t = Date.parse(rec && rec.at);
+  return isNaN(t) ? NaN : Math.floor(t / DAY_MS) * DAY_MS;
+}
+
+// The x domain of a daily chart: from the first day with a record (or the range's first day, when that
+// is later) to the last day, half a day of room on each side, and never less than `minSpanDays`, so one
+// or two records are not squeezed against an edge of an axis that starts weeks before them.
+function benchAxis(firstDay, lastDay, rangeFrom, minSpanDays = BENCH_MIN_SPAN_DAYS) {
+  const t0 = Math.max(Math.floor(rangeFrom / DAY_MS) * DAY_MS, firstDay) - DAY_MS / 2;
+  return { t0, t1: Math.max(lastDay + DAY_MS / 2, t0 + minSpanDays * DAY_MS) };
+}
+
+// Two daily points are one line only when their days are neighbours; a day without a record is a gap.
+const joinsPrevious = (prevDay, day) => day - prevDay <= 1.5 * DAY_MS;
+
+// Which of `vals` ({id: seconds or null}) is the largest: the branch that set the gate's time. null when none has a value.
+function longPole(vals) {
+  let best = null;
+  for (const [id, v] of Object.entries(vals)) if (typeof v === "number" && (best === null || v > vals[best])) best = id;
+  return best;
+}
+
+// The failure a chart states as its CURRENT status: only a step that failed in the most recent record. An
+// older failed day is already a cross on the axis (and in its tooltip); a later good run retires the sentence.
+// rows: oldest first, {day, fails, notes}. Returns [{step, day, note, lastOk}] (lastOk: the day of the latest earlier record without it).
+function benchStatus(rows, stepIds) {
+  const last = rows[rows.length - 1];
+  if (!last) return [];
+  return stepIds.filter((f) => (last.fails || []).includes(f)).map((f) => {
+    const ok = rows.slice(0, -1).filter((r) => !(r.fails || []).includes(f));
+    return { step: f, day: last.day, note: (last.notes && last.notes[f]) || "", lastOk: ok.length ? ok[ok.length - 1].day : null };
+  });
+}
+// PURE-END
 
 function prepareBench(doc) {
   const recs = (Array.isArray(doc && doc.records) ? doc.records : [])
-    .map((r) => ({ ...r, d: new Date(r.at || (r.date + "T04:30:00Z")) })).filter((r) => !isNaN(r.d) && r.rows && typeof r.rows === "object").sort((a, b) => a.d - b.d);
+    .map((r) => ({ ...r, d: new Date(r.at || (r.date + "T04:30:00Z")), day: benchDay(r) })).filter((r) => !isNaN(r.d) && !isNaN(r.day) && r.rows && typeof r.rows === "object").sort((a, b) => a.d - b.d);
   if (!recs.length) { BENCH = null; return; }
   const ids = [], label = {};
   for (const r of recs) for (const [id, row] of Object.entries(r.rows)) { if (!ids.includes(id)) ids.push(id); label[id] = row.label || label[id] || id; }
   BENCH = {
     ids, label, last: recs[recs.length - 1],
-    rows: recs.map((r) => ({ d: r.d, sha: String(r.commit || ""), rec: r,
+    rows: recs.map((r) => ({ d: r.d, day: r.day, sha: String(r.commit || ""), rec: r,
       fails: Array.isArray(r.failed) ? r.failed : [], notes: r.failure_notes && typeof r.failure_notes === "object" ? r.failure_notes : {},
       title: `Daily run, ${benchRunnerText(r) || "GitHub runner"}` + ((r.failed || []).length ? `; failed on the runner: ${r.failed.join(", ")}` : "") })),
   };
@@ -413,15 +469,20 @@ function benchRunnerText(rec) {
 
 function benchData(id) {
   if (!BENCH) return { rows: [], series: [] };
-  const fixed = Object.values(BENCH_FIXED).flat();
+  const fixed = [...Object.values(BENCH_FIXED).flat(), ...BENCH_HEALTH];
   const want = BENCH_FIXED[id] ? BENCH_FIXED[id].filter((k) => BENCH.ids.includes(k)) : BENCH.ids.filter((k) => !fixed.includes(k));
+  const gate = id === "b-check";
   const series = want.map((k, n) => {
     const col = n, pick = (f) => BENCH.rows.map((r) => (r.rec.rows[k] && typeof r.rec.rows[k][f] === "number" ? r.rec.rows[k][f] : null));
     const flag = BENCH.rows.map((r) => !!(r.rec.rows[k] && r.rec.rows[k].noisy));
-    return mk(k, BENCH.label[k], "--c" + (col % NPAL), pick("median"), { raw: true, sparse: true, w: id === "b-check" && n > 0 ? 1.6 : 2.4, dash: col >= NPAL, band: id !== "b-edit" && (id !== "b-check" || n === 0), lo: pick("min"), hi: pick("max"), noisy: flag });
+    // in the gate chart the whole is the headline and the two branches ride on it: thin lines drawn over it and
+    // hollow marks bigger than its dot, so a branch that IS the total (the long pole) is still seen round it
+    return mk(k, BENCH.label[k], "--c" + (col % NPAL), pick("median"), { raw: true, sparse: true, daily: true, w: gate && n > 0 ? 1.4 : 2.4, z: n, dash: col >= NPAL,
+      band: id !== "b-edit" && (!gate || n === 0), lo: pick("min"), hi: pick("max"), runs: pick("runs"), noisy: flag,
+      shape: BENCH_MARKS[n % BENCH_MARKS.length], hollow: gate && n > 0 });
   });
   const top = Math.max(0, ...series.flatMap((s) => s.vals.filter((v) => v != null)));
-  return { rows: BENCH.rows, series, unit: top >= 300 ? "min" : "s", failIds: BENCH_FIXED[id] || [] };
+  return { rows: BENCH.rows, series, unit: top >= 300 ? "min" : "s", failIds: BENCH_FIXED[id] || [], pole: gate ? want.slice(1) : null };
 }
 
 function chartData(id) {
@@ -452,7 +513,7 @@ function chartData(id) {
 }
 
 function mk(id, label, col, vals, o = {}) {
-  return { id, label, col, vals, sm: o.raw ? vals : medians(vals), w: o.w || 2.2, dots: !!o.dots, dash: !!o.dash, thin: !!o.thin, op: o.op || 1, lo: o.lo, hi: o.hi, band: !!o.band, sparse: !!o.sparse, raw: !!o.raw, noisy: o.noisy || null };
+  return { id, label, col, vals, sm: o.raw ? vals : medians(vals), w: o.w || 2.2, z: o.z == null ? null : o.z, dots: !!o.dots, dash: !!o.dash, thin: !!o.thin, op: o.op || 1, lo: o.lo, hi: o.hi, runs: o.runs || null, band: !!o.band, sparse: !!o.sparse, daily: !!o.daily, raw: !!o.raw, noisy: o.noisy || null, shape: o.shape || null, hollow: !!o.hollow };
 }
 
 // ---- change markers on the wait chart ----
@@ -528,13 +589,14 @@ function niceStep(max) {
   return 10 * p;
 }
 
-function frame(plot, ymaxUnits, yLabel, top = 30) {
-  const last = AXIS.end, from = axisFrom();
+// `dom` ({t0, t1}, ms) fixes the x domain: the daily charts fit their axis to their own records (benchAxis).
+function frame(plot, ymaxUnits, yLabel, top = 30, dom = null) {
+  const last = dom ? new Date(dom.t1) : AXIS.end, from = dom ? new Date(dom.t0) : axisFrom();
   const W = Math.max(300, plot.clientWidth), H = W < 560 ? 270 : 320;
   const m = { l: 40, r: 12, t: top, b: 28 };
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
-  const t0 = from.getTime(), t1 = last.getTime() + Math.max((last - from) * 0.01, 36e5);
-  const x = (d) => m.l + ((d.getTime() - t0) / (t1 - t0)) * iw;
+  const t0 = from.getTime(), t1 = dom ? dom.t1 : last.getTime() + Math.max((last - from) * 0.01, 36e5);
+  const x = (d) => m.l + (((typeof d === "number" ? d : d.getTime()) - t0) / (t1 - t0)) * iw;
   const step = niceStep(ymaxUnits); const ytop = Math.ceil(ymaxUnits / step) * step || step;
   const y = (v) => m.t + ih - (v / ytop) * ih;
   let s = "";
@@ -543,7 +605,7 @@ function frame(plot, ymaxUnits, yLabel, top = 30) {
     s += `<text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${+v.toFixed(1)}</text>`;
   }
   s += `<text x="${m.l - 6}" y="${m.t - 14}" text-anchor="end">${yLabel}</text>`;
-  const span = t1 - t0, nT = Math.max(2, Math.floor(iw / 90)), dayMs = 864e5;
+  const span = t1 - t0, nT = Math.max(2, Math.floor(iw / (dom ? 56 : 90))), dayMs = 864e5;
   const tickDays = Math.max(1, Math.ceil(span / dayMs / nT));
   const start = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate() + 1));
   for (let d = start; d.getTime() <= t1; d = new Date(d.getTime() + tickDays * dayMs)) {
@@ -553,10 +615,23 @@ function frame(plot, ymaxUnits, yLabel, top = 30) {
   return { s, W, H, m, iw, ih, x, y, from, last, ytop };
 }
 
+// A point mark: a filled shape with a ring of the panel colour round it, or (hollow) an outline only, which
+// sits round a filled dot of another series without hiding it. `r` is the half-width.
+function markSvg(shape, cx, cy, r, color, hollow, edge) {
+  const paint = hollow ? `fill="none" stroke="${color}" stroke-width="2"` : `fill="${color}" stroke="${edge}" stroke-width="1.5"`;
+  const f = (n) => n.toFixed(1);
+  if (shape === "diamond") { r *= 1.3; return `<path d="M${f(cx)},${f(cy - r)}L${f(cx + r)},${f(cy)}L${f(cx)},${f(cy + r)}L${f(cx - r)},${f(cy)}Z" ${paint} stroke-linejoin="round"/>`; }
+  if (shape === "square") return `<rect x="${f(cx - r)}" y="${f(cy - r)}" width="${f(2 * r)}" height="${f(2 * r)}" rx="1" ${paint}/>`;
+  if (shape === "triangle") { r *= 1.2; return `<path d="M${f(cx)},${f(cy - r)}L${f(cx + r)},${f(cy + r * 0.8)}L${f(cx - r)},${f(cy + r * 0.8)}Z" ${paint} stroke-linejoin="round"/>`; }
+  return `<circle cx="${f(cx)}" cy="${f(cy)}" r="${f(r)}" ${paint}/>`;
+}
+
 function legendHtml(id, items) {
   return items.map((it) => {
     const on = !HIDDEN[id].has(it.id);
-    const sw = it.box ? `<i class="swatch box" style="color:var(${it.col})"></i>` : `<i class="swatch${it.dash ? " dash" : ""}" style="border-color:var(${it.col})${it.thin ? ";opacity:.6" : ""}"></i>`;
+    const sw = it.box ? `<i class="swatch box" style="color:var(${it.col})"></i>`
+      : it.shape ? `<svg class="swatch-mk" width="26" height="14" viewBox="0 0 26 14" aria-hidden="true" style="color:var(${it.col})"><line x1="0" x2="26" y1="7" y2="7" stroke="currentColor" stroke-width="${it.w > 2 ? 2.4 : 1.4}"${it.dash ? ' stroke-dasharray="6 4"' : ""}/>${markSvg(it.shape, 13, 7, it.hollow ? 5 : 3.6, "currentColor", it.hollow, "var(--panel)")}</svg>`
+      : `<i class="swatch${it.dash ? " dash" : ""}" style="border-color:var(${it.col})${it.thin ? ";opacity:.6" : ""}"></i>`;
     return `<button type="button" data-s="${esc(it.id)}" aria-pressed="${on}">${sw}${esc(it.label)}</button>`;
   }).join("");
 }
@@ -570,30 +645,57 @@ function bindLegend(sec, id) {
   });
 }
 
+const MARK_ALL = 40;      // up to this many points a daily series gets a mark on every day, beyond it on the ends only
+const tOf = (r) => (r.day != null ? r.day : r.d.getTime());      // where a row sits on the time axis: a daily record on its day
+const shortLabel = (l) => String(l).replace(/^.*?:\s*/, "");
+const unitOf = (unit) => (v) => (unit === "min" ? fmtMin(v) : v < 10 ? v.toFixed(1) : String(Math.round(v)));
+
 function drawLines(id) {
   const sec = document.getElementById(id);
   const plot = sec.querySelector(".plot");
   const marksEl = sec.querySelector(".marks-box");
   const data = CHARTS[id] || (CHARTS[id] = chartData(id));
-  const { rows, series } = data, unit = data.unit || "min", div = unit === "min" ? 60 : 1;
+  const { rows } = data, unit = data.unit || "min", div = unit === "min" ? 60 : 1;
+  const unitVal = unitOf(unit);
+  const daily = BENCH_CHARTS.includes(id);
+  // a daily chart fits its axis to its own records; the others share the page's
+  const dom = daily && rows.length ? benchAxis(rows[0].day, Math.max(rows[rows.length - 1].day, Math.floor(AXIS.end.getTime() / DAY_MS) * DAY_MS), axisFrom().getTime()) : null;
+  const from0 = dom ? dom.t0 : axisFrom().getTime();
+  const vis = []; rows.forEach((r, i) => { if (tOf(r) >= from0) vis.push(i); });
+  // a series with no run in the range is neither drawn nor listed: a job that is gone from it must not
+  // keep its colour in the legend or the scale of the axis
+  const series = data.series.filter((se) => vis.some((i) => se.vals[i] != null));
   const legend = sec.querySelector(".legend");
   legend.innerHTML = legendHtml(id, series);
   legend.classList.toggle("many", series.length > 3);
-  // a step that failed on the runner on some day in range: a line under the chart, a cross on its day, and
-  // in place of the chart when there is no number at all ("make check failed on the runner on 7 Oct")
+  // what a daily chart says about NOW, under the chart: a step that failed in the most recent record (with its reason)
+  // and, for the gate, which branch set the latest time. An older failed day is a cross on its day and in its tooltip.
   const failIds = data.failIds || [];
-  const failed = BENCH_CHARTS.includes(id) ? rows.filter((r) => r.d >= axisFrom()).flatMap((r) => r.fails.filter((f) => failIds.includes(f)).map((f) => ({ r, f }))) : [];
-  const failsEl = sec.querySelector(".fails");
-  if (failsEl) failsEl.innerHTML = failed.slice(-3).map(({ r, f }) => `<span>${esc(BENCH_FAIL_WHAT[f] || f)} failed on the runner on ${fmtDate(r.d)}${r.notes[f] ? ": " + esc(r.notes[f]) : ""}.</span>`).join("") + (failed.length > 3 ? `<span>and ${failed.length - 3} earlier days in this range.</span>` : "");
-  if (!rows.length || !series.length) { plot.innerHTML = failed.length ? "" : `<p class="empty">No runs with these jobs yet.</p>`; if (marksEl) marksEl.innerHTML = ""; return; }
+  const failsEl = sec.querySelector(".fails"), latestEl = sec.querySelector(".latest");
+  const status = daily && failIds.length ? benchStatus(rows, failIds) : [];
+  if (failsEl) failsEl.innerHTML = status.map((f) => `<span>${esc(BENCH_FAIL_WHAT[f.step] || f.step)} failed on the runner on ${fmtDate(new Date(f.day))}${f.note ? ": " + esc(f.note) : ""}.${f.lastOk != null ? " Its last good run was on " + fmtDate(new Date(f.lastOk)) + "." : ""}</span>`).join("");
+  if (latestEl) {
+    let text = "";
+    const li = rows.length - 1, total = data.series[0];
+    if (data.pole && li >= 0 && total && total.vals[li] != null) {
+      const parts = data.series.filter((se) => data.pole.includes(se.id) && se.vals[li] != null);
+      const pole = longPole(Object.fromEntries(parts.map((se) => [se.id, se.vals[li]])));
+      text = `${fmtDate(new Date(rows[li].day))}: the gate took ${unitVal(total.vals[li])} ${unit}` +
+        (pole ? `; the long pole was the ${esc(shortLabel(parts.find((se) => se.id === pole).label))} at ${unitVal(parts.find((se) => se.id === pole).vals[li])} ${unit}` +
+          parts.filter((se) => se.id !== pole).map((se) => `, the ${esc(shortLabel(se.label))} ${unitVal(se.vals[li])} ${unit}`).join("") : "") + ".";
+    }
+    latestEl.innerHTML = text;
+  }
+  if (!rows.length || !data.series.length) { plot.innerHTML = status.length ? "" : `<p class="empty">No runs with these jobs yet.</p>`; if (marksEl) marksEl.innerHTML = ""; return; }
   const live = series.filter((s) => !HIDDEN[id].has(s.id));
-  if (!rows.some((r) => r.d >= axisFrom())) { plot.innerHTML = `<p class="empty">No points in this range.</p>`; if (marksEl) marksEl.innerHTML = ""; return; }
-  const last = AXIS.end, from0 = axisFrom();
-  const vis = []; rows.forEach((r, i) => { if (r.d >= from0) vis.push(i); });
-  let ymax = 0; for (const s of live) for (const i of vis) if (s.vals[i] != null) ymax = Math.max(ymax, s.sm[i] / div, s.hi && s.hi[i] != null ? s.hi[i] / div : 0, s.dots && !(plot.clientWidth < 560) ? Math.min(s.vals[i] / div, 1.6 * s.sm[i] / div) : 0);
+  if (!vis.length || !series.length) { plot.innerHTML = `<p class="empty">No points in this range.</p>`; if (marksEl) marksEl.innerHTML = ""; return; }
+  const last = AXIS.end;
+  // the axis fits the LINES (and a daily series' fastest-to-slowest range); a run above it is an arrow on the top edge
+  let ymax = 0; for (const s of live) for (const i of vis) if (s.vals[i] != null) ymax = Math.max(ymax, s.sm[i] / div, s.hi && s.hi[i] != null ? s.hi[i] / div : 0);
   const withMarks = id === "wait";
-  const f = frame(plot, ymax, unit, withMarks ? 36 : 30);
+  const f = frame(plot, ymax, unit, withMarks ? 36 : 30, dom);
   const { W, H, m, iw, ih, x, y, from, ytop } = f;
+  const X = (r) => x(tOf(r));
   const narrow = W < 560;
   let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(sec.querySelector("h2").textContent)}, ${unit === "min" ? "minutes" : "seconds"} per run">` + f.s;
   const cl = withMarks ? placeMarks(x, from, last, 24, narrow ? 6 : 14, m.l + 9, W - m.r - 9) : [];
@@ -604,22 +706,28 @@ function drawLines(id) {
       s += `<line x1="${k.tx}" x2="${k.tx}" y1="${m.t - 4}" y2="${m.t + ih}" stroke="${css(on ? "--focus" : "--marker")}" stroke-width="${on ? 1.5 : 1}"${on ? "" : ' stroke-dasharray="2 3"'} fill="none"/>`;
     }
   }
-  // a min-to-max band behind the lines it belongs to
+  // a min-to-max band behind the lines it belongs to; a day whose runs did not differ (one run) has none
   for (const se of live) {
     if (!se.band) continue;
     const c = css(se.col); let run = [];
     const flushBand = () => {
       if (run.length === 1) {   // a single day has no neighbour to span a band to: draw its range as a whisker
-        const wx = x(rows[run[0]].d), top = y(se.hi[run[0]] / div), bot = y(se.lo[run[0]] / div);
+        const wx = X(rows[run[0]]), top = y(se.hi[run[0]] / div), bot = y(se.lo[run[0]] / div);
         s += `<path d="M${wx.toFixed(1)},${top.toFixed(1)}V${bot.toFixed(1)}M${(wx - 4).toFixed(1)},${top.toFixed(1)}h8M${(wx - 4).toFixed(1)},${bot.toFixed(1)}h8" stroke="${c}" stroke-opacity="0.55" stroke-width="1.5" fill="none"/>`;
       }
-      if (run.length > 1) s += `<polygon points="${run.map((i) => `${x(rows[i].d).toFixed(1)},${y(se.hi[i] / div).toFixed(1)}`).join(" ")} ${[...run].reverse().map((i) => `${x(rows[i].d).toFixed(1)},${y(se.lo[i] / div).toFixed(1)}`).join(" ")}" fill="${c}" fill-opacity="0.16" stroke="none"/>`;
+      if (run.length > 1) s += `<polygon points="${run.map((i) => `${X(rows[i]).toFixed(1)},${y(se.hi[i] / div).toFixed(1)}`).join(" ")} ${[...run].reverse().map((i) => `${X(rows[i]).toFixed(1)},${y(se.lo[i] / div).toFixed(1)}`).join(" ")}" fill="${c}" fill-opacity="0.16" stroke="none"/>`;
       run = [];
     };
-    for (const i of vis) { if (se.vals[i] == null || se.hi[i] == null || se.lo[i] == null) flushBand(); else run.push(i); }
+    for (const i of vis) {
+      if (se.vals[i] == null || se.hi[i] == null || se.lo[i] == null || !(se.hi[i] > se.lo[i])) { flushBand(); continue; }
+      if (run.length && se.daily && !joinsPrevious(tOf(rows[run[run.length - 1]]), tOf(rows[i]))) flushBand();
+      run.push(i);
+    }
     flushBand();
   }
-  for (const se of [...live].sort((a, b) => a.w - b.w)) {   // the thick headline line is drawn last, on top
+  // two points are one line when both have a value and, in a daily chart, their days are neighbours
+  const linked = (se, a, b) => se.vals[a] != null && se.vals[b] != null && (!se.daily || joinsPrevious(tOf(rows[a]), tOf(rows[b])));
+  for (const se of [...live].sort((a, b) => (a.z ?? a.w) - (b.z ?? b.w))) {   // the thick headline line is drawn last, on top (the gate's whole first, its branches over it)
     const c = css(se.col);
     let seg = [];
     const flush = () => {
@@ -627,26 +735,36 @@ function drawLines(id) {
       seg = [];
     };
     const own = se.sparse ? vis.filter((i) => se.vals[i] != null) : vis;
+    let prev = -1;
     for (const i of own) {
       const r = rows[i];
-      if (se.vals[i] == null) { flush(); continue; }
-      // single runs are only drawn where there is room for them; the pointer read-out reaches every run either way
-      if (se.dots && !narrow && se.vals[i] / div <= ytop) s += `<circle cx="${x(r.d).toFixed(1)}" cy="${y(se.vals[i] / div).toFixed(1)}" r="2.2" fill="${c}" fill-opacity="0.22"/>`;
-      seg.push(`${x(r.d).toFixed(1)},${y(se.sm[i] / div).toFixed(1)}`);
+      if (se.vals[i] == null) { flush(); prev = -1; continue; }
+      if (prev >= 0 && !linked(se, prev, i)) flush();
+      // single runs are only drawn where there is room for them; the pointer read-out reaches every run either way.
+      // One above the axis is an arrow on its top edge.
+      if (se.dots && !narrow) {
+        if (se.vals[i] / div <= ytop) s += `<circle cx="${X(r).toFixed(1)}" cy="${y(se.vals[i] / div).toFixed(1)}" r="2.2" fill="${c}" fill-opacity="0.22"/>`;
+        else s += `<path d="M${X(r).toFixed(1)},${(m.t - 2).toFixed(1)}l3.2,6h-6.4z" fill="${c}" fill-opacity="0.5"/>`;
+      }
+      seg.push(`${X(r).toFixed(1)},${y(se.sm[i] / div).toFixed(1)}`);
+      prev = i;
     }
     flush();
-    // the end of every drawn line, and a run that stands alone between two gaps, get a dot
+    // a daily series has a mark of its own shape on its days; any other line gets a dot at its end and on a run that stands alone
+    const every = se.shape && own.length <= MARK_ALL;
     for (let k = 0; k < own.length; k++) {
       const i = own[k]; if (se.vals[i] == null) continue;
-      const prev = k > 0 && se.vals[own[k - 1]] != null, next = k + 1 < own.length && se.vals[own[k + 1]] != null;
-      if (!prev && !next) s += `<circle cx="${x(rows[i].d)}" cy="${y(se.sm[i] / div)}" r="2.6" fill="${c}"/>`;
-      if (!next && !se.thin) s += `<circle cx="${x(rows[i].d)}" cy="${y(se.sm[i] / div)}" r="4" fill="${c}" stroke="${css("--panel")}" stroke-width="2"/>`;
+      const prevL = k > 0 && linked(se, own[k - 1], i), nextL = k + 1 < own.length && linked(se, i, own[k + 1]);
+      const cx = X(rows[i]), cy = y(se.sm[i] / div);
+      if (se.shape) { if (every || !prevL || !nextL) s += markSvg(se.shape, cx, cy, se.hollow ? 5 : 3.8, c, se.hollow, css("--panel")); continue; }
+      if (!prevL && !nextL) s += `<circle cx="${cx}" cy="${cy}" r="2.6" fill="${c}"/>`;
+      if (!nextL && !se.thin) s += `<circle cx="${cx}" cy="${cy}" r="4" fill="${c}" stroke="${css("--panel")}" stroke-width="2"/>`;
     }
   }
   // a ring round the point of a row whose runs disagreed (its own spread, judged by tools/build-history.py)
-  for (const se of live) if (se.noisy) for (const i of vis) if (se.noisy[i] && se.vals[i] != null && se.vals[i] / div <= ytop) s += `<circle cx="${x(rows[i].d).toFixed(1)}" cy="${y(se.sm[i] / div).toFixed(1)}" r="7.5" fill="none" stroke="${css("--warn")}" stroke-width="2"/>`;
-  // a cross on the axis for a day a step failed on the runner
-  for (const i of vis) if (failIds.some((f) => rows[i].fails && rows[i].fails.includes(f))) { const cx = x(rows[i].d), cy = m.t + ih - 8; s += `<path d="M${(cx - 4).toFixed(1)},${(cy - 4).toFixed(1)}l8,8M${(cx + 4).toFixed(1)},${(cy - 4).toFixed(1)}l-8,8" stroke="${css("--bad")}" stroke-width="2.2" stroke-linecap="round" fill="none"/>`; }
+  for (const se of live) if (se.noisy) for (const i of vis) if (se.noisy[i] && se.vals[i] != null && se.vals[i] / div <= ytop) s += `<circle cx="${X(rows[i]).toFixed(1)}" cy="${y(se.sm[i] / div).toFixed(1)}" r="${se.shape ? 9 : 7.5}" fill="none" stroke="${css("--warn")}" stroke-width="2"/>`;
+  // a cross on the axis for a day a step failed on the runner, on that day's tick
+  for (const i of vis) if (failIds.some((f) => rows[i].fails && rows[i].fails.includes(f))) { const cx = X(rows[i]), cy = m.t + ih - 8; s += `<path d="M${(cx - 4).toFixed(1)},${(cy - 4).toFixed(1)}l8,8M${(cx + 4).toFixed(1)},${(cy - 4).toFixed(1)}l-8,8" stroke="${css("--bad")}" stroke-width="2.2" stroke-linecap="round" fill="none"/>`; }
   // numbered markers along the top, each straight above the line it names
   for (const k of cl) {
     const on = isSel(k), cy = m.t - 20;
@@ -661,19 +779,27 @@ function drawLines(id) {
   if (marksEl) marksEl.innerHTML = readoutHtml(cl.find(isSel));
 
   const svg = plot.querySelector("svg"), tip = plot.querySelector(".tip"), cur = plot.querySelector(".cursor");
-  const unitVal = (v) => (unit === "min" ? fmtMin(v) : v < 10 ? v.toFixed(1) : String(Math.round(v)));
   const show = (ev) => {
     if (ev.target.closest && ev.target.closest(".mk")) return;
     const pt = ev.touches ? ev.touches[0] : ev;
     const box = svg.getBoundingClientRect(); const sx = ((pt.clientX - box.left) / box.width) * W;
     let best = vis[0], bd = Infinity;
-    for (const i of vis) { const dd = Math.abs(x(rows[i].d) - sx); if (dd < bd) { bd = dd; best = i; } }
-    const r = rows[best], cx = x(r.d);
+    for (const i of vis) { const dd = Math.abs(X(rows[i]) - sx); if (dd < bd) { bd = dd; best = i; } }
+    const r = rows[best], cx = X(r);
     cur.setAttribute("x1", cx); cur.setAttribute("x2", cx); cur.setAttribute("stroke-opacity", "0.35");
+    const detail = (se) => {
+      if (!se.raw) return ` <span class="t">(median ${unitVal(se.sm[best])})</span>`;
+      const n = se.runs && se.runs[best];
+      const bits = [n ? `${n} run${n === 1 ? "" : "s"}` : "", se.lo && se.lo[best] != null && se.hi[best] > se.lo[best] ? `${unitVal(se.lo[best])} to ${unitVal(se.hi[best])}` : "", se.noisy && se.noisy[best] ? "runs disagree, a guess" : ""].filter(Boolean);
+      return bits.length ? ` <span class="t">(${bits.join("; ")})</span>` : "";
+    };
     const lines = live.filter((se) => se.vals[best] != null)
-      .map((se) => `<div class="mono"><i class="sw" style="background:var(${se.col})"></i><b>${unitVal(se.vals[best])}</b> ${unit} ${esc(se.label)}${se.raw ? (se.lo && se.lo[best] != null ? ` <span class="t">(${unitVal(se.lo[best])} to ${unitVal(se.hi[best])}${se.noisy && se.noisy[best] ? "; runs disagree, a guess" : ""})</span>` : "") : ` <span class="t">(median ${unitVal(se.sm[best])})</span>`}</div>`).join("");
-    const bad = (r.fails || []).filter((f) => failIds.includes(f)).map((f) => `<div class="mono">${esc(BENCH_FAIL_WHAT[f] || f)} failed on the runner${r.notes[f] ? ": " + esc(r.notes[f]) : ""}</div>`).join("");
-    tip.innerHTML = `<div class="t mono">${fmtStamp(r.d)} | ${esc(r.sha)}</div><div>${esc(r.title)}</div>` + (lines || `<div class="t">no data for the visible series</div>`) + bad;
+      .map((se) => `<div class="mono"><i class="sw" style="background:var(${se.col})"></i><b>${unitVal(se.vals[best])}</b> ${unit} ${esc(se.label)}${detail(se)}</div>`).join("");
+    const bad = (r.fails || []).filter((f) => failIds.includes(f)).map((f) => `<div class="mono" style="color:var(--bad)">${esc(BENCH_FAIL_WHAT[f] || f)} failed on the runner${r.notes[f] ? ": " + esc(r.notes[f]) : ""}</div>`).join("");
+    const parts = data.pole ? data.series.filter((se) => data.pole.includes(se.id) && se.vals[best] != null) : [];
+    const pole = parts.length ? longPole(Object.fromEntries(parts.map((se) => [se.id, se.vals[best]]))) : null;
+    tip.innerHTML = `<div class="t mono">${fmtStamp(r.d)} | ${esc(r.sha)}</div><div>${esc(r.title)}</div>` + (lines || (bad ? "" : `<div class="t">no data for the visible series</div>`)) +
+      (pole ? `<div class="t">long pole: ${esc(shortLabel(parts.find((se) => se.id === pole).label))}</div>` : "") + bad;
     tip.hidden = false;
     const px = (cx / W) * box.width; const tw = tip.offsetWidth;
     tip.style.left = Math.min(Math.max(0, px + 12), Math.max(0, box.width - tw)) + "px";
@@ -769,15 +895,29 @@ function draw(id) { if (id === "red") drawRed(); else drawLines(id); }
 // The numbers are computed by tools/ci-summary.py (the same file a later alerting job reads); this only draws them.
 
 const pctText = (p) => (Math.abs(p) < 1 ? "0%" : (p > 0 ? "+" : "-") + Math.round(Math.abs(p)) + "%");
-const STATE_RANK = { worse: 0, flat: 1, better: 2, new: 3 };
-const groupText = (g) => (g === "local" ? "local, on a runner" : "CI");
+const signedDur = (s) => (Math.abs(s) < 0.05 ? "0 s" : (s > 0 ? "+" : "-") + fmtDur(Math.abs(s)));
+const CLASS_OF = { worse: "bad", better: "good" };
+// the benchmark's own runner, in words: its numbers are not a developer's Mac, and not comparable with CI's
+const runnerWords = () => { const r = BENCH && BENCH.last && BENCH.last.runner; return "benchmark runner" + (r && r.cores ? ", " + r.cores + " cores" : ""); };
+const groupText = (g) => (g === "local" ? runnerWords() : "CI");
 
+// One row of "what a developer waits for". The order and the choice of rows come from the summary. A week-on-week
+// change that is within noise ("flat") is read as seconds, not as a percentage: +22% of 12 s is 2 s. The
+// comparison with 30 days ago is its own statement with its own verdict (the summary's state30).
 function nowRow(m) {
-  const cls = m.state === "worse" ? "bad" : m.state === "better" ? "good" : "";
-  const c7 = m.state === "new" || m.change7_pct == null ? `<span class="chg">no earlier week yet</span>`
-    : `<span class="chg ${cls}">${m.state === "flat" ? "flat" : m.state} ${pctText(m.change7_pct)}</span><span class="chg">vs week before ${fmtDur(m.prev7)}</span>`;
-  const c30 = m.change30_pct == null ? "" : `<span class="chg">${pctText(m.change30_pct)} vs 30 days ago</span>`;
-  return `<li class="nrow ${m.state}"><span class="nl">${esc(m.label)}<small>${groupText(m.group)}</small></span><span class="nv mono">${fmtDur(m.now)}</span><span class="nc">${c7}${c30}</span></li>`;
+  const d7 = m.delta7 != null ? m.delta7 : (m.prev7 == null ? null : m.now - m.prev7);
+  const c7 = m.state === "new" || d7 == null ? `<span class="chg">no earlier week yet</span>`
+    : (m.state === "flat" ? `<span class="chg">flat ${signedDur(d7)}</span>` : `<span class="chg ${CLASS_OF[m.state] || ""}">${m.state} ${signedDur(d7)} (${pctText(m.change7_pct)})</span>`) + `<span class="chg">vs week before ${fmtDur(m.prev7)}</span>`;
+  const d30 = m.delta30 != null ? m.delta30 : (m.d30 == null ? null : m.now - m.d30);
+  const c30 = d30 == null ? (m.kind === "wait" && d7 != null ? `<span class="chg">no comparable data 30 days ago</span>` : "")
+    : `<span class="chg ${CLASS_OF[m.state30] || ""}">${m.state30 === "worse" ? "slower" : m.state30 === "better" ? "faster" : "about the same"} ${signedDur(d30)} vs 30 days ago (${fmtDur(m.d30)})</span>`;
+  const parts = m.parts && m.parts.length ? `<span class="chg">long pole: ${esc(shortLabel(m.parts[0].label))} ${fmtDur(m.parts[0].now)}${m.parts.slice(1).map((p) => "; " + esc(shortLabel(p.label)) + " " + fmtDur(p.now)).join("")}</span>` : "";
+  return `<li class="nrow ${m.state}"><span class="nl">${esc(m.label)}<small>${groupText(m.group)}</small></span><span class="nv mono">${fmtDur(m.now)}</span><span class="nc">${c7}${c30}${parts}</span></li>`;
+}
+
+function slowList(title, sub, items) {
+  return items.length ? `<div><h3>${title}</h3><p class="hint">${sub}</p><ol class="slow">` +
+    items.map((m) => `<li><span class="nl">${esc(m.label)}</span><span class="nv mono">${fmtDur(m.now)}</span></li>`).join("") + `</ol></div>` : "";
 }
 
 function renderSummary() {
@@ -796,16 +936,21 @@ function renderSummary() {
     : `<h2>Nothing got slower this week</h2><p class="hint">Every number below is within its noise of the week before${SUMMARY.generated ? "; computed " + esc(fmtStamp(new Date(SUMMARY.generated))) : ""}.</p>`;
   reg.classList.toggle("alert", regs.length > 0);
 
-  const ms = SUMMARY.metrics.filter((m) => typeof m.now === "number")
-    .sort((a, b) => (STATE_RANK[a.state] ?? 4) - (STATE_RANK[b.state] ?? 4) || (b.change7_pct || 0) - (a.change7_pct || 0) || b.now - a.now);
-  const open = ms.filter((m) => m.state === "worse").length, shown = Math.max(8, open);
-  nowEl.innerHTML = `<h2>What a developer waits for</h2><p class="hint">Median of the last 7 days against the 7 days before and 30 days ago. Worse first. CI rows come from the runs on GitHub; local rows are the daily measurement on a GitHub macOS runner${benchRunnerText() ? " (" + esc(benchRunnerText()) + ")" : ""}, good for the trend, not for the seconds on your Mac.</p>` +
-    `<ul class="now">${ms.slice(0, shown).map(nowRow).join("")}</ul>` +
-    (ms.length > shown ? `<details class="more"><summary>Show the other ${ms.length - shown}</summary><ul class="now">${ms.slice(shown).map(nowRow).join("")}</ul></details>` : "");
+  // the summary already orders the rows (worse first, the waits, the local loop, the jobs longest first) and says
+  // which are the default view (`shown`); a summary written before that existed shows its first eight
+  const ms = SUMMARY.metrics.filter((m) => typeof m.now === "number");
+  const flagged = ms.some((m) => "shown" in m);
+  const head = flagged ? ms.filter((m) => m.shown) : ms.slice(0, 8), rest = flagged ? ms.filter((m) => !m.shown) : ms.slice(8);
+  nowEl.innerHTML = `<h2>What a developer waits for</h2><p class="hint">Median of the last 7 days against the 7 days before and 30 days ago. Worse first, then the waits, the local loop and the longest jobs. CI rows come from the runs on GitHub; local rows are the daily measurement on the ${esc(runnerWords())}${benchRunnerText() ? " (" + esc(benchRunnerText()) + ")" : ""}, good for the trend, not for the seconds on your Mac.</p>` +
+    `<ul class="now">${head.map(nowRow).join("")}</ul>` +
+    (rest.length ? `<details class="more"><summary>Show the other ${rest.length} (jobs under a minute, the parts of a whole, health checks)</summary><ul class="now">${rest.map(nowRow).join("")}</ul></details>` : "");
 
-  const top = (SUMMARY.slowest || []).slice(0, 5);
-  slow.innerHTML = top.length ? `<h2>Slowest right now</h2><p class="hint">What to attack next: the longest jobs and local steps today.</p><ol class="slow">` +
-    top.map((m) => `<li><span class="nl">${esc(m.label)}<small>${groupText(m.group)}</small></span><span class="nv mono">${fmtDur(m.now)}</span></li>`).join("") + `</ol>` : "";
+  // CI jobs and the benchmark are two populations (the runner is a 3-core virtual machine, several times slower
+  // than a developer's Mac), so two lists, and a part never beside its whole
+  const ci = (SUMMARY.slowest_ci || (SUMMARY.slowest_local ? [] : (SUMMARY.slowest || []))).slice(0, 5), local = (SUMMARY.slowest_local || []).slice(0, 5);
+  slow.innerHTML = ci.length || local.length ? `<h2>Slowest right now</h2><div class="slowgrid">` +
+    slowList("CI jobs", "the longest jobs of CI, Simulator CI and the nightly", ci) +
+    slowList("Local steps", `measured on the ${esc(runnerWords())}`, local) + `</div>` : "";
 }
 
 function renderBenchShell() {

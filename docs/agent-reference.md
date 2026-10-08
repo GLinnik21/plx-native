@@ -308,12 +308,14 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     as `ci.yml` spells it (add `--binary <path>` to grade a stripped binary); `ci/test_build_budgets.py` covers pass, fail, warn and the json schema.
   - *Live chart.* https://plxnative.com/ci/ (`site/ci/index.html`, noindex, not linked from the
     landing page) is the working instrument for what a developer waits on: a "now" block (each
-    metric's 7-day median, its change against the previous 7 days and 30 days ago, worse ones first),
-    the slowest items right now, any regression of the last week with the commits in it, and the
+    metric's 7-day median, its change against the previous 7 days and 30 days ago: worse ones first,
+    then the waits, the local loop and the longest jobs; a job under a minute, a part of a whole and a
+    healthy no-op build are behind a disclosure), the slowest CI jobs and the slowest local steps
+    right now (two lists: the benchmark runner is not comparable with CI), any regression of the last week with the commits in it, and the
     time series behind them. It reads three files from the orphan `ci-metrics` branch
     (raw.githubusercontent.com): `ci-history.json` (runs), `build-history.json` (the daily
     benchmark, written by the benchmark workflow) and `ci-summary.json` (derived: `tools/ci-summary.py`
-    computes the "now" rows, the slowest list and the regressions as pure functions, so a later
+    computes the "now" rows with their order and selection, the two slowest lists and the regressions as pure functions, so a later
     alerting job can reuse them; per-class thresholds and the noise they were chosen from are in its
     docstring). Nothing names a job: every series is derived from the rows, so a job added or removed
     shows as a new or ended line and a missing job in one run is a gap, not a zero.

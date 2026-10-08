@@ -9,13 +9,22 @@ parsed documents and returns the document; nothing in the core reads a file or t
 page, a test and a later alerting job all get the same answer. The `ci-metrics` workflow runs it
 after tools/ci-history.py and commits the result beside it.
 
-The document is `{"schema": 1, "generated", "thresholds", "metrics", "slowest", "regressions"}`:
+The document is `{"schema": 2, "generated", "thresholds", "metrics", "slowest_ci", "slowest_local",
+"regressions"}`:
 
-  metrics      one entry per series with a sample in the last 14 days (a removed job is not "now"):
-               id, label, group ("ci" or "local"), unit ("s"), now, prev7, d30, change7_pct,
-               change30_pct, state ("worse", "better", "flat", "new"), threshold_pct,
-               threshold_abs, n_now, n_prev.
-  slowest      the five largest `now` among the CI jobs and the local rows.
+  metrics      one entry per series with a sample in the last 14 days (a removed job is not "now"),
+               IN THE ORDER A READER WANTS THEM (see "Order and selection"): id, label, group ("ci" or
+               "local"), kind ("wait", "cost", "local", "job"), shown, unit ("s"), now, prev7, d30,
+               delta7 / delta30 (now minus that window, seconds), change7_pct, change30_pct, state
+               ("worse", "better", "flat", "new") against the week before, state30 (the same verdict
+               against the window 30 days ago, "new" when there is none), threshold_pct, threshold_abs,
+               n_now, n_prev; a local row that is a part of another one (check.cargo of check) has
+               `parent`, and the whole has `parts` (largest first: the first is the long pole).
+  slowest_ci   the five longest CI jobs by `now`. Waits, runner time and local rows are not jobs.
+  slowest_local  the five longest local steps by `now`, a part never listed beside its whole, and the
+               no-op build (a health check, not a wait) left out. CI jobs and the benchmark are two
+               populations: the benchmark runs on a 3-core GitHub macOS runner, several times slower than
+               a developer's Mac, so the two are never ranked against each other.
   regressions  every metric that is "worse", with the day it started and the commits since.
 
 Series (ids). Waits are per COMMIT, not per run:
@@ -62,6 +71,28 @@ job that runs only for the pull requests that touch its inputs), and the daily b
 (a shared GitHub runner is noisier than the Mac its numbers were quoted from; the 5 s floor keeps
 the 2-3 s no-op build quiet).
 
+Labels. A benchmark row is labelled by its id (LOCAL_LABEL: "Rebuild after editing the app crate", "make check,
+the whole gate", ...), not by the text a record stored, so records written before the labels were chosen read the
+same; an id LOCAL_LABEL does not know keeps its record's label ("make check: cargo branch").
+
+Order and selection (`order_metrics`). What a developer waits for goes first, trivia last:
+  1. every row that is "worse", the biggest percentage first;
+  2. the waits (PR CI wait, wait after merge);
+  3. the local loop in the order a developer meets it (LOCAL_ORDER: edit and rebuild the app crate, the
+     screens crate, the UI crate, the base crate, the unit suite, the whole gate), then any other row;
+  4. runner time per push;
+  5. the CI jobs, longest first.
+`shown` is the default view; the rest goes under a disclosure. A CI job is shown from JOB_MIN_SECONDS (a
+minute: nobody waits for a 4 second aggregator); a local part of a whole is not (the whole carries it as
+`parts`); the no-op build is a health check, shown only when it climbs above HEALTH_MAX_SECONDS; a row
+that is "worse" is always shown.
+
+Comparable waits. A pull request's or a push's wait is the slower of its CI and Simulator CI runs, so a
+wait is only compared where both were being recorded: a sample whose first run is earlier than the first
+recorded run of both workflows for that event is left out. Without that, the 30-days-ago figure of the
+pull-request wait was CI alone (a shorter thing) and read +200%. No comparable sample: the window is
+empty and the row says "new".
+
 Regressions. For a metric that is worse, `since` is the first day of the trailing run of samples that
 sit above prev7 * (1 + threshold_pct / 100) (the samples are single runs, so one slow run does not
 start it: the run must hold up to now), and `commits` are the push rows (sha, title, pr) of any
@@ -76,11 +107,29 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-SCHEMA = 1
+SCHEMA = 2
 WEEK = timedelta(days=7)
 MIN_SAMPLES = 3
 STALE = timedelta(days=14)          # a series whose newest sample is older than this is gone, not "now"
 SLOWEST = 5
+JOB_MIN_SECONDS = 60.0              # a CI job shorter than this is not something anyone waits for
+HEALTH_MAX_SECONDS = 5.0            # the no-op build is a health check: listed only above this
+WAITS = ("pr_wait", "push_wait")
+# the benchmark's own row ids (tools/build-history.py), in the order a developer meets them
+LOCAL_ORDER = ("bench.app", "bench.screens", "bench.ui", "bench.leaf", "bench.tests", "bench.check")
+HEALTH_ROW = "bench.noop"
+# What each benchmark row IS, in a developer's words, keyed by the row id (never by the label a record stored: the
+# first records called these "app crate" and "plx_base"). An id not listed keeps the record's own label.
+LOCAL_LABEL = {
+    "app": "Rebuild after editing the app crate",
+    "screens": "Rebuild after editing plx_screens",
+    "ui": "Rebuild after editing plx_ui",
+    "leaf": "Rebuild after editing plx_base",
+    "tests": "Unit suite",
+    "noop": "No-op build",
+    "check": "make check, the whole gate",
+}
+KIND = {"pr_wait": "wait", "push_wait": "wait", "minutes": "cost", "bench": "local"}
 MAX_COMMITS = 10
 WF_LABEL = {"ci": "CI", "sim": "Simulator CI", "nightly": "Nightly"}
 
@@ -120,8 +169,21 @@ def row_seconds(row: dict) -> int | None:
     return max(jobs.values()) if jobs else None
 
 
-def commit_waits(history: dict, event: str, workflows: tuple) -> list:
-    """[(time, seconds, meta)] one per commit of `event`: its slowest run, if none of its runs is red."""
+def comparable_since(history: dict, event: str, workflows: tuple) -> datetime | None:
+    """The first moment every one of `workflows` that has rows for `event` was being recorded, or None
+    when fewer than two do (nothing to line up). A wait from before it measured a shorter thing."""
+    firsts = []
+    for wf in workflows:
+        ats = [parse_time(r["at"]) for r in history.get(wf) or [] if row_event(r) == event and r.get("at")]
+        if ats:
+            firsts.append(min(ats))
+    return max(firsts) if len(firsts) > 1 else None
+
+
+def commit_waits(history: dict, event: str, workflows: tuple, required: tuple = ()) -> list:
+    """[(time, seconds, meta)] one per commit of `event`: its slowest run, if none of its runs is red.
+    With `required`, commits first run before all of those workflows were recorded are left out."""
+    floor = comparable_since(history, event, required) if required else None
     by_sha: dict = {}
     for wf in workflows:
         for row in history.get(wf) or []:
@@ -134,6 +196,8 @@ def commit_waits(history: dict, event: str, workflows: tuple) -> list:
         if not all(is_green(r) and row_seconds(r) is not None for r in latest):
             continue
         first = min(latest, key=lambda r: r["at"])
+        if floor and parse_time(first["at"]) < floor:
+            continue
         out.append((parse_time(first["at"]), max(row_seconds(r) for r in latest),
                     {"sha": sha, "title": first.get("title", ""), "pr": first.get("pr")}))
     return sorted(out, key=lambda s: s[0])
@@ -158,8 +222,8 @@ def all_series(history: dict, bench: dict | None) -> dict:
         if samples:
             series[sid] = {"label": label, "group": group, "cls": cls, "samples": samples}
 
-    add("pr_wait", "PR CI wait", "ci", "pr_wait", commit_waits(history, "pull_request", ("ci", "sim", "nightly")))
-    add("push_wait", "Wait after merge", "ci", "push_wait", commit_waits(history, "push", ("ci", "sim")))
+    add("pr_wait", "PR CI wait", "ci", "pr_wait", commit_waits(history, "pull_request", ("ci", "sim", "nightly"), required=("ci", "sim")))
+    add("push_wait", "Wait after merge", "ci", "push_wait", commit_waits(history, "push", ("ci", "sim"), required=("ci", "sim")))
     for wf, event in (("ci", "push"), ("sim", "push"), ("nightly", "pull_request")):
         for name, samples in job_samples(history, wf, event).items():
             add(f"{wf}|{name}", f"{WF_LABEL[wf]}: {name}", "ci", {"ci": "ci_job", "sim": "sim_job", "nightly": "nightly"}[wf], samples)
@@ -177,7 +241,7 @@ def all_series(history: dict, bench: dict | None) -> dict:
         for rid, r in (rec.get("rows") or {}).items():
             if isinstance(r.get("median"), (int, float)):
                 at = parse_time(rec.get("at") or rec["date"] + "T00:00:00Z")
-                rows.setdefault(rid, {"label": r.get("label") or rid, "samples": []})["samples"].append(
+                rows.setdefault(rid, {"label": LOCAL_LABEL.get(rid) or r.get("label") or rid, "samples": []})["samples"].append(
                     (at, r["median"], {"sha": rec.get("commit", ""), "title": "", "pr": None}))
     for rid, r in rows.items():
         add(f"bench.{rid}", r["label"], "local", "bench", sorted(r["samples"], key=lambda s: s[0]))
@@ -254,11 +318,14 @@ def summarize(history: dict, bench: dict | None, now: datetime) -> dict:
         w = windows(samples, now)
         pct_floor, abs_floor = THRESHOLDS[se["cls"]]
         state = state_of(w["now"], w["prev7"], pct_floor, abs_floor)
-        m = {"id": sid, "label": se["label"], "group": se["group"], "unit": "s",
+        m = {"id": sid, "label": se["label"], "group": se["group"], "kind": KIND.get(se["cls"], "job"), "unit": "s",
              "now": round(w["now"], 1), "prev7": None if w["prev7"] is None else round(w["prev7"], 1),
              "d30": None if w["d30"] is None else round(w["d30"], 1),
+             "delta7": None if w["prev7"] is None else round(w["now"] - w["prev7"], 1),
+             "delta30": None if w["d30"] is None else round(w["now"] - w["d30"], 1),
              "change7_pct": pct(w["now"], w["prev7"]), "change30_pct": pct(w["now"], w["d30"]),
-             "state": state, "threshold_pct": pct_floor, "threshold_abs": abs_floor,
+             "state": state, "state30": state_of(w["now"], w["d30"], pct_floor, abs_floor),
+             "threshold_pct": pct_floor, "threshold_abs": abs_floor,
              "n_now": w["n_now"], "n_prev": w["n_prev"]}
         metrics.append(m)
         if state == "worse":
@@ -266,14 +333,64 @@ def summarize(history: dict, bench: dict | None, now: datetime) -> dict:
             regressions.append({"id": sid, "label": se["label"], "since": since, "from": m["prev7"], "to": m["now"],
                                 "change_pct": m["change7_pct"], "threshold_pct": pct_floor,
                                 "commits": commits_since(history, since, now)})
-    order = {"worse": 0, "better": 2, "flat": 3, "new": 3}
-    metrics.sort(key=lambda m: (order[m["state"]], -(m["change7_pct"] or 0) if m["state"] == "worse" else 0, m["id"]))
-    slowest = sorted((m for m in metrics if m["id"] not in ("pr_wait", "push_wait", "minutes")), key=lambda m: (-m["now"], m["id"]))[:SLOWEST]
+    link_parts(metrics)
+    metrics = order_metrics(metrics)
+    top = lambda ms: [{"id": m["id"], "label": m["label"], "now": m["now"], "group": m["group"]} for m in ms[:SLOWEST]]
+    longest = lambda ms: sorted(ms, key=lambda m: (-m["now"], m["id"]))
     return {"schema": SCHEMA, "generated": iso(now),
             "thresholds": {k: {"percent": p, "seconds": a} for k, (p, a) in sorted(THRESHOLDS.items())},
             "metrics": metrics,
-            "slowest": [{"id": m["id"], "label": m["label"], "now": m["now"], "group": m["group"]} for m in slowest],
+            "slowest_ci": top(longest([m for m in metrics if m["kind"] == "job"])),
+            "slowest_local": top(longest([m for m in metrics if m["kind"] == "local" and "parent" not in m and m["id"] != HEALTH_ROW])),
             "regressions": sorted(regressions, key=lambda r: (-r["change_pct"], r["id"]))}
+
+
+def link_parts(metrics: list) -> None:
+    """A local row `bench.check.cargo` is a part of `bench.check` when that row exists: the part gets
+    `parent`, the whole gets `parts` (largest first). They are one measurement, never two lines of a list."""
+    by_id = {m["id"]: m for m in metrics}
+    for m in metrics:
+        parent = m["id"].rsplit(".", 1)[0] if m["kind"] == "local" and m["id"].count(".") > 1 else None
+        if parent in by_id:
+            m["parent"] = parent
+            by_id[parent].setdefault("parts", []).append({"id": m["id"], "label": m["label"], "now": m["now"]})
+    for m in metrics:
+        if "parts" in m:
+            m["parts"].sort(key=lambda p: (-p["now"], p["id"]))
+
+
+def is_shown(m: dict) -> bool:
+    """The default view: see "Order and selection" in the module docstring."""
+    if m["state"] == "worse":
+        return True
+    if m["kind"] == "job":
+        return m["now"] >= JOB_MIN_SECONDS
+    if m["kind"] == "local":
+        if "parent" in m:
+            return False
+        return m["now"] > HEALTH_MAX_SECONDS if m["id"] == HEALTH_ROW else True
+    return True
+
+
+def order_metrics(metrics: list) -> list:
+    """Worse first, then the waits, the local loop, runner time, the jobs longest first; `shown` says which
+    of them are the default view (they all come before the rest)."""
+    for m in metrics:
+        m["shown"] = is_shown(m)
+
+    def key(m):
+        if not m["shown"]:
+            return (6, 0, -m["now"], m["id"])
+        if m["state"] == "worse":
+            return (0, 0, -(m["change7_pct"] or 0), m["id"])
+        if m["kind"] == "wait":
+            return (1, WAITS.index(m["id"]), 0, m["id"])
+        if m["kind"] == "local":
+            return (2, LOCAL_ORDER.index(m["id"]) if m["id"] in LOCAL_ORDER else len(LOCAL_ORDER), -m["now"], m["id"])
+        if m["kind"] == "cost":
+            return (3, 0, 0, m["id"])
+        return (4, 0, -m["now"], m["id"])
+    return sorted(metrics, key=key)
 
 
 def noise_report(history: dict, bench: dict | None, now: datetime) -> dict:
