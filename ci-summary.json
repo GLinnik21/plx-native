@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-08T19:33:42Z",
+ "generated": "2026-10-08T19:34:19Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -225,17 +225,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -50.6,
+   "change7_pct": -51.1,
    "d30": null,
    "delta30": null,
-   "delta7": -496,
+   "delta7": -500.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 75,
-   "now": 484,
+   "now": 479.5,
    "prev7": 980,
    "shown": true,
    "state": "better",
@@ -288,17 +288,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.7,
+   "change7_pct": 15.4,
    "d30": null,
    "delta30": null,
-   "delta7": 32,
+   "delta7": 31.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 75,
-   "now": 236,
+   "now": 235.5,
    "prev7": 204,
    "shown": true,
    "state": "flat",
@@ -380,9 +380,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 70,
+   "n_now": 71,
    "n_prev": 0,
-   "now": 158.0,
+   "now": 157,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -482,14 +482,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 75,
-   "now": 17,
+   "now": 17.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -575,7 +575,7 @@
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "label": "Simulator CI: macOS simulator build + launch",
-   "now": 484
+   "now": 479.5
   },
   {
    "group": "ci",
@@ -593,7 +593,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 236
+   "now": 235.5
   }
  ],
  "slowest_local": [
