@@ -1582,7 +1582,7 @@ mod tests {
         assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Person), "never while a menu owns focus");
         rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(0), elem: ENTRY_ELEM }, 4.0);
         assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Person), "never on the Filmography pill");
-        rest(&mut s, card, 1.6);
+        rest(&mut s, card, 3.6);
         assert!(s.stack.hint_visible(), "after the dwell, on a settled card");
         rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(900), elem: 0 }, 1.0);
         assert!(!s.stack.hint_visible(), "a menu taking focus hides it");

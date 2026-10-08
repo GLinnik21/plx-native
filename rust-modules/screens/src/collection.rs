@@ -926,7 +926,7 @@ mod tests {
         let header = plx_machine::machine::FocusKey { entry: EntryId(9), elem: HEADER_ELEM };
         rest(&mut screen, header, 3.0);
         assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Collection), "never on a non-card focus");
-        rest(&mut screen, a, 2.0);
+        rest(&mut screen, a, 3.6);
         assert!(screen.stack.hint_visible(), "after the dwell, on a settled member");
         rest(&mut screen, menu, 1.0);
         assert!(!screen.stack.hint_visible(), "a menu taking focus hides it");

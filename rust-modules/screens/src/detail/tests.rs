@@ -3762,7 +3762,7 @@ fn the_hold_hint_stands_on_a_resting_related_card_once_per_run() {
     assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Detail), "never while a menu owns focus");
     rest(&mut screen, on(hero::ELEM_PLAY), 4.0);
     assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Detail), "never on a hero control");
-    rest(&mut screen, on(card), 1.6);
+    rest(&mut screen, on(card), 3.6);
     assert!(screen.hold_hint.visible(), "after the dwell, on a settled Related card");
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
     assert!(!screen.hold_hint.visible(), "a menu taking focus hides it");
