@@ -1666,7 +1666,7 @@ mod stack {
     use crate::screen::{AxisMask, ElemKind, EdgeRule, GroupKind, GroupSpec, Seat};
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    enum Msec { Field, List, Clear, Shelf }
+    enum Msec { Field, List, Clear, Shelf, More(u8) }
 
     const FIELD_ELEM: u32 = 1;
     const CLEAR_ELEM: u32 = 2;
@@ -1684,6 +1684,12 @@ mod stack {
         shelf: Cards,
         revision: u64,
         foot: f32,
+        /// Further shelves after `Shelf`, each at the default reveal margin.
+        more: Vec<Cards>,
+        /// What `recover` answers (`None`: the trait's default).
+        recover_to: Option<u32>,
+        /// `Shelf`'s group extent is its own head tile rather than the page's width.
+        narrow: bool,
     }
 
     impl StackPage<FixtureHost> for Multi {
@@ -1702,16 +1708,21 @@ mod stack {
                     .edges([EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop])
                     .of_kind(ElemKind::Bare),
             );
+            for n in 0..self.more.len() as u8 {
+                out.push(SectionSpec::new(Msec::More(n), Kind::Shelf { style: ROW_STYLE, heading: 60.0 }, GroupId(20 + n as u32)));
+            }
         }
         fn fallback(&self, _cx: &Cx9<'_>, out: &mut Vec<Msec>) { out.extend([Msec::Field]) }
         fn cards<'a>(&'a self, _cx: &'a Cx9<'_>, k: Msec) -> Option<&'a Cards> {
-            (k == Msec::Shelf).then_some(&self.shelf)
+            match k { Msec::Shelf => Some(&self.shelf), Msec::More(n) => self.more.get(n as usize), _ => None }
         }
+        fn recover(&self, _cx: &Cx9<'_>, _want: &u32) -> Option<u32> { self.recover_to }
+        fn wide_extent(&self, k: Msec) -> bool { !(self.narrow && k == Msec::Shelf) }
         fn elem_of(&self, k: Msec) -> Option<u32> {
             match k { Msec::Field => Some(FIELD_ELEM), Msec::Clear => Some(CLEAR_ELEM), _ => None }
         }
         fn plain_len(&self, k: Msec) -> usize {
-            match k { Msec::List => self.rows as usize, Msec::Field | Msec::Clear => 1, Msec::Shelf => 0 }
+            match k { Msec::List => self.rows as usize, Msec::Field | Msec::Clear => 1, Msec::Shelf | Msec::More(_) => 0 }
         }
         fn plain_elem(&self, k: Msec, n: usize) -> Option<u32> {
             match k { Msec::List => (n < self.rows as usize).then_some(LIST_BASE + n as u32), _ => (n == 0).then(|| self.elem_of(k)).flatten() }
@@ -1762,7 +1773,7 @@ mod stack {
     fn mrig(rows: u32, shelf: usize, build: impl FnOnce(Stack<Msec>) -> Stack<Msec>) -> Mrig {
         let mut r = Mrig {
             stack: build(Stack::new(ENTRY)),
-            page: Multi { rows, shelf: Cards::new((0..shelf as u32).map(|i| 100 + i).collect(), false), revision: 1, foot: 0.0 },
+            page: Multi { rows, shelf: Cards::new((0..shelf as u32).map(|i| 100 + i).collect(), false), revision: 1, foot: 0.0, more: Vec::new(), recover_to: None, narrow: false },
             view: FixtureView::default(),
             focus: None,
             ms: 0,
@@ -1903,12 +1914,18 @@ mod stack {
         r.stack.scroll_to(200.0);
         r.run(120);
         assert!((r.stack.scroll() - 200.0).abs() < 0.5, "ticks do not take a scroll the page set: {}", r.stack.scroll());
+        // the field (300) and the shelf's block (heading + tiles + the focused label band) fit one
+        // screen: nothing to scroll to, so the move's own recomputation is 0, not the 200 set
+        assert_eq!(r.stack.max_scroll(&r.page, &r.cx()), 0.0, "setup: a short page does not scroll");
         r.go(100);
+        assert_eq!(r.stack.target(), 0.0, "a move recomputes the target (it was 200)");
         r.run(120);
-        let at_shelf = r.stack.scroll();
-        assert!((at_shelf - 0.0).abs() < 0.5 || at_shelf != 200.0, "a move recomputes it: {at_shelf}");
+        assert!(r.stack.scroll().abs() < 0.01, "and the page comes home: {}", r.stack.scroll());
+        let mut r = mrig(30, 40, |s| s.reveal_on_move(true));
         let max = r.stack.max_scroll(&r.page, &r.cx());
-        assert!(max >= 0.0);
+        let content = FIELD_H + 30.0 * ROW_H + 60.0 + ROW_STYLE.h + card_row::under_band(0.0);
+        assert_eq!(max, content - (SCR_H_F - crate::consts::MARGIN_Y), "the content's end at the screen's foot");
+        assert!(max > 0.0);
         r.stack.jump_to(max);
         assert_eq!((r.stack.scroll(), r.stack.target()), (max, max));
         r.go(FIELD_ELEM);
@@ -1943,9 +1960,86 @@ mod stack {
             r.run(1);
             (r.stack.target(), r.stack.max_scroll(&r.page, &r.cx()))
         };
-        let (_, bare_max) = at(0.0);
-        let (_, footed_max) = at(22.0);
+        let top = FIELD_H + 30.0 * ROW_H;
+        // focus is on the shelf, so its caption band is open in the settled measure
+        let block = |foot: f32| 60.0 + ROW_STYLE.h + card_row::under_band(1.0) + foot;
+        let max = |foot: f32| top + block(foot) - (SCR_H_F - crate::consts::MARGIN_Y);
+        let reveal = |foot: f32| {
+            card_row::reveal(0.0, top + block(foot) - (SCR_H_F - crate::consts::MARGIN_Y), top - SHELF_MARGIN, max(foot))
+        };
+        let (bare_target, bare_max) = at(0.0);
+        let (footed_target, footed_max) = at(22.0);
+        assert_eq!(bare_max, max(0.0), "the content's end at the screen's foot");
+        assert_eq!(footed_max, max(22.0));
         assert_eq!(footed_max - bare_max, 22.0, "the block is that much taller, so the page ends that much lower");
+        assert_eq!(bare_target, reveal(0.0), "the reveal of the bare block");
+        assert_eq!(footed_target, reveal(22.0), "the reveal of the block with its foot");
+        assert!(max(0.0) > 0.0 && reveal(22.0) <= max(22.0), "setup: the page scrolls");
+    }
+
+    /// The settled scroll that shows shelf `k` of [`walk_rig`] (0 = `Shelf`, then `More(k - 1)`)
+    /// from scroll `cur`, worked from the fixture's geometry.
+    fn walk_want(k: usize, cur: f32) -> f32 {
+        let (closed, open) = (60.0 + ROW_STYLE.h + card_row::under_band(0.0), 60.0 + ROW_STYLE.h + card_row::under_band(1.0));
+        let top = FIELD_H + k as f32 * closed;
+        let max = FIELD_H + 5.0 * closed + (open - closed) - (SCR_H_F - crate::consts::MARGIN_Y);
+        let margin = if k == 0 { SHELF_MARGIN } else { crate::consts::MARGIN_Y };
+        card_row::reveal(cur, top + open - (SCR_H_F - crate::consts::MARGIN_Y), top - margin, max)
+    }
+
+    /// A field and five shelves, focus on the field, no tick since.
+    fn walk_rig() -> Mrig {
+        let mut r = mrig(0, 10, |s| s.reveal_on_move(true));
+        r.page.more = (0..4).map(|n| Cards::new((0..10).map(|i| 200 + 100 * n + i).collect(), false)).collect();
+        r.page.revision += 1;
+        r.go(FIELD_ELEM);
+        r
+    }
+
+    #[test]
+    fn a_reveal_on_move_is_measured_from_where_the_page_is_headed_not_where_it_is() {
+        let mut r = walk_rig();
+        let mut target = 0.0;
+        for (k, elem) in [100, 200, 300, 400, 500].into_iter().enumerate() {
+            r.go(elem);
+            target = walk_want(k, target);
+            assert_eq!(r.stack.target(), target, "shelf {k} from the previous target");
+        }
+        assert_eq!(r.stack.scroll(), 0.0, "setup: no tick has run, so the spring has not left home");
+        r.go(400);
+        let from_target = walk_want(3, target);
+        assert_eq!(r.stack.target(), from_target, "Up measures from the target the Down walk left");
+        assert_ne!(from_target, walk_want(3, r.stack.scroll()), "setup: measuring from the live position would differ");
+    }
+
+    #[test]
+    fn a_page_may_name_where_focus_recovers_to_and_otherwise_the_stack_clamps() {
+        let recovered = |to: Option<u32>| {
+            let mut r = mrig(4, 4, |s| s);
+            r.go(LIST_BASE + 3);
+            r.run(2);
+            r.page.rows = 2;
+            r.page.revision += 1;
+            r.page.recover_to = to;
+            r.run(1);
+            r.stack.view(&r.page).reconcile(FocusKey { entry: ENTRY, elem: LIST_BASE + 3 }, &r.cx()).elem
+        };
+        assert_eq!(recovered(None), LIST_BASE + 1, "no override: the same position, clamped");
+        assert_eq!(recovered(Some(FIELD_ELEM)), FIELD_ELEM, "the page's answer decides");
+    }
+
+    #[test]
+    fn a_shelfs_group_spans_the_page_unless_the_page_says_it_is_its_head_tile() {
+        let extent = |narrow: bool| {
+            let mut r = mrig(0, 8, |s| s);
+            r.page.narrow = narrow;
+            r.page.revision += 1;
+            r.run(1);
+            r.groups().into_iter().find(|g| g.id == GroupId(13)).unwrap().extent
+        };
+        let (wide, own) = (extent(false), extent(true));
+        assert_eq!((wide.x, wide.w), (own.x, crate::consts::SCR_W - 2.0 * own.x), "the default spans the page's width");
+        assert!(own.w < wide.w && (own.y, own.h) == (wide.y, wide.h), "the head tile alone: {own:?} vs {wide:?}");
     }
 
     #[test]

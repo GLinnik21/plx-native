@@ -16,7 +16,8 @@ pub const FIELD: Rect = Rect {
 };
 pub(super) const SCOPE_Y: f32 = FIELD.y + FIELD.h + 12.0;
 /// See [`FIELD`]'s doc: also reachable as `crate::search::CONTENT_TOP`. Value pinned at
-/// 300.0 — the overscan audit and `top()`'s own layering both depend on it.
+/// 300.0 — the overscan audit and the page's `Head` section height (`Stack` stacks the shelves
+/// below it) both depend on it.
 pub const CONTENT_TOP: f32 = 300.0;
 pub(super) const HEAD_TO_ROW: f32 = 60.0;
 pub(super) const KEYBOARD_H: f32 = 324.0;

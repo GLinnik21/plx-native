@@ -346,7 +346,11 @@ impl<K: Copy + Eq, E> Stack<K, E> {
 
     /// The furthest the page scrolls: its content's end (settled bands) at the screen's foot.
     pub fn max_scroll<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>) -> f32 {
-        let focus = self.focused(p, cx).map_or(usize::MAX, |(i, _)| i);
+        self.max_with_focus(p, cx, self.focused(p, cx).map_or(usize::MAX, |(i, _)| i))
+    }
+
+    /// [`max_scroll`](Self::max_scroll) with focus on section `focus` (its bands the open ones).
+    fn max_with_focus<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, focus: usize) -> f32 {
         let h = |n: usize| self.settled_height(p, cx, n, focus);
         ((0..self.specs.len()).map(h).sum::<f32>() - (SCR_H - MARGIN_Y)).max(0.0)
     }
@@ -406,7 +410,8 @@ impl<K: Copy + Eq, E> Stack<K, E> {
 
     /// The page's motion state (see the module doc).
     pub fn write(&self, c: &mut Canon) {
-        c.f32(self.scroll.pos).f32(self.scroll.vel).f32(self.target).seq(self.bodies.len());
+        self.write_scroll(c);
+        c.seq(self.bodies.len());
         for b in &self.bodies {
             match b {
                 Body::Shelf(s) => s.write(c),
@@ -677,7 +682,7 @@ impl<K: Copy + Eq, E> Stack<K, E> {
         let j = p.reveal_with(self.specs[i].key).and_then(|k| self.index(k)).unwrap_or(i);
         let h = |n: usize| self.settled_height(p, cx, n, i);
         let (top, height) = ((0..j).map(h).sum::<f32>(), h(j));
-        let max = ((0..self.specs.len()).map(h).sum::<f32>() - (SCR_H - MARGIN_Y)).max(0.0);
+        let max = self.max_with_focus(p, cx, i);
         let hi = if matches!(self.specs[j].kind, Kind::Shelf { .. }) { top - p.reveal_margin(self.specs[j].key) } else { top };
         // a page that sets the target itself reveals from where it is headed, not where it is
         let from = if self.on_move { self.target } else { self.scroll.pos };

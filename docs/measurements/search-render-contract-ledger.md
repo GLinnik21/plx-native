@@ -100,7 +100,7 @@ spinner or loading sentence. Searching draws no statement; Failed draws the exis
 | `terms_are_written_under_the_profile_that_searched_them` | Covered by the same-named test in `search::recents::tests`. |
 | `the_cap_drops_the_oldest_term` | Covered by the same-named test in `search::recents::tests`; `layout::RECENT_CAP` is that module's own `CAP`. |
 | `a_hand_edited_list_is_cleaned_up_on_the_way_in` | Covered by the same-named test in `search::recents::tests`. |
-| `a_full_block_finishes_clear_of_the_raised_keyboard` | Ported in `layout::tests`; `recent_block_bottom` and the real `recents::CAP`/table geometry are used. |
+| `a_full_block_finishes_clear_of_the_raised_keyboard` | Ported in `layout::tests`; `layout::clear` (the control's rect under a full block) and the real `recents::CAP`/table geometry are used. |
 | `the_clear_control_takes_focus_past_the_last_shown_term` | Ported as `screens::search::tests::the_recents_cursor_stops_on_the_clear_control`: ▼ walks every drawn term, caps on Clear, and Clear's own press clears this profile's history, drops the rows and hands focus back to the field. |
 
 ## Screen (`ui/search/mod.rs`)

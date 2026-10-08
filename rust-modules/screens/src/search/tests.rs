@@ -634,7 +634,7 @@ fn a_mount_seats_the_field_and_parks_every_cursor_without_replacing_the_search()
     let generation = fixture.store.query_gen();
     let mut screen = fixture.screen();
     screen.stack.jump_to(400.0);
-        let (_, out, _) = deliver(&mut screen, &fixture, None, ScreenEvent::Mount);
+    let (_, out, _) = deliver(&mut screen, &fixture, None, ScreenEvent::Mount);
     assert_eq!(fixture.store.query(), "wallace", "a mount must not wipe the term still on screen");
     assert_eq!(fixture.store.query_gen(), generation, "…nor supersede the answer under it");
     assert!(out.iter().any(|effect| matches!(&effect.fx, Fx::Deliver(_, Delivery::Screen(
@@ -769,6 +769,43 @@ fn the_shelf_flow_is_frozen_unless_the_shelves_hold_focus_with_the_keyboard_down
             from: Some(deep), to: key, by: By::Dir });
         assert_eq!(screen.stack.target(), 0.0, "elem {elem} is not below the fold");
     }
+}
+
+/// The scroll that shows result row `k` of `kinds` focused, from scroll `cur`, worked from the
+/// layout: blocks measured at their destination (the focused row's caption band open, the others
+/// closed), the page's `CONTENT_TOP` as the margin.
+fn search_reveal_want(kinds: &[Kind], k: usize, cur: f32) -> f32 {
+    use plx_ui::cards::{reveal, under_band};
+    use plx_ui::consts::{MARGIN_Y, SCR_H};
+    let block = |n: usize, open: bool| layout::block_h(kinds[n], under_band(open as i32 as f32));
+    let top = layout::CONTENT_TOP + (0..k).map(|n| block(n, false)).sum::<f32>();
+    let end = layout::CONTENT_TOP + (0..kinds.len()).map(|n| block(n, n == k)).sum::<f32>();
+    reveal(cur, top + block(k, true) - (SCR_H - MARGIN_Y), top - layout::CONTENT_TOP, (end - (SCR_H - MARGIN_Y)).max(0.0))
+}
+
+/// Up to a row already revealed does not move the page when measured from where the page is
+/// headed (the target), which is not where it is (the live position) when keys outrun the glide.
+#[test]
+fn a_step_up_is_revealed_from_the_target_the_walk_down_left_not_from_the_lagging_position() {
+    let _serial = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.query("walk").shelves(vec![shelf(Kind::Movie, "w0", 6), shelf(Kind::Show, "w1", 6),
+        shelf(Kind::Episode, "w2", 6), shelf(Kind::Person, "w3", 6), shelf(Kind::Collection, "w4", 6)]);
+    let mut screen = fixture.screen();
+    let mut engine = seated(&screen, &fixture);
+    let kinds = [Kind::Movie, Kind::Show, Kind::Episode, Kind::Person, Kind::Collection];
+    let want = |k, cur| search_reveal_want(&kinds, k, cur);
+    let mut target = 0.0;
+    for k in 0..5 {
+        step_dir(&mut screen, &fixture, &mut engine, Dir::Down);
+        target = want(k, target);
+        assert_eq!(screen.stack.target(), target, "row {k}, from the previous target");
+    }
+    assert_eq!(screen.stack.scroll(), 0.0, "setup: no frame has run, the page has not left home");
+    step_dir(&mut screen, &fixture, &mut engine, Dir::Up);
+    let from_target = want(3, target);
+    assert_eq!(screen.stack.target(), from_target, "Up measures from the target");
+    assert_ne!(from_target, want(3, screen.stack.scroll()), "setup: from the live position it would differ");
 }
 
 // ---- the borrowed-source annotation -----------------------------------------------------------
@@ -1020,6 +1057,10 @@ fn a_row_that_lands_above_keeps_the_neighbours_scroll_and_pop_with_the_neighbour
     deliver(&mut screen, &fixture, focus, ScreenEvent::StoreChanged(StoreId::Search.ord(), 1));
     deliver(&mut screen, &fixture, focus, ScreenEvent::Tick(tick(100)));
     assert_eq!(screen.rows.iter().map(|row| row.kind).collect::<Vec<_>>(), [Kind::Movie, Kind::Show]);
+    let kinds = [Kind::Movie, Kind::Show];
+    let followed = search_reveal_want(&kinds, 1, 0.0);
+    assert!(followed > 0.0, "setup: the Show row now sits below the fold");
+    assert_eq!(screen.stack.target(), followed, "the page follows the focused row down to where it landed");
     assert_eq!(shelf_of(&screen, 0).scroll(), 0.0, "the new row starts at its own beginning");
     assert_eq!(shelf_of(&screen, 1).scroll(), scrolled, "the Show row keeps the Show row's scroll");
     assert_eq!(pop_of(&screen, &fixture, focus, 1, elem), Some(layout::style(Kind::Show).focus_scale),
