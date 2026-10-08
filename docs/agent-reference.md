@@ -435,23 +435,47 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   workflow above for the full sequence). A macOS render is a preview; only the Linux workflow's
   artifact is adoptable. The film is `tests/video/feel.json`: positions and durations, never titles
   (the demo catalog's order, `tests/demo_library/catalog.json`, decides what is under each position).
-  It is the Home hero held, `right` to the hero's Info button and `ok` for Sintel's Detail held about
-  4.8 s, `back`, `left` to Continue, one shelf move (down onto the Continue Watching row, right once),
-  `up` `up` to the profile chip and on to the Movies tab, `ok` for the Movies library (hub shelves),
-  two `right`s, `back`, then `down` onto Continue: the last frame equals the first. NOT filmed: hero
-  paging (`left` on the Continue button pages the carousel, so `left` is pressed only on Info after
-  Detail), scrolling on Detail, any popover or modal, any title flagged `not_in_video` opened
-  (`gates` checks the mock's request log), and the hold-hint capsule (it appears after 1.5 s of rest
-  on a card, once per resting place on Home and once per run on the other card screens, so every card rest in the film is under 1.4 s). `up` from the hero always
+  It is the Home hero held, `right` to the hero's Info button, `right` again (the carousel turns
+  forward to the second page), `left` to Continue and `left` again (back to the first page), `down`
+  onto the Continue Watching row, `right` twice to its third card and `ok` for that title's Detail
+  held about 4 s (the shelf's `ok` opens details, the default Continue Watching setting; nothing
+  plays), `back` (the shelf, that card focused), `up` `up` to the profile chip and on to the Movies
+  tab, `ok` for the Movies library (hub shelves), two `right`s, `back`, then `down` onto Continue,
+  about 27 s: the last frame equals the first (129 pixels in the tab bar differ by 1/255). Every
+  hero page it shows passes `demo_library.py hero-report` and is not `not_in_video`, and the title
+  whose Detail it opens is not one whose hero page it shows. NOT filmed: scrolling on Detail, any
+  popover or modal, any title flagged `not_in_video` opened (`gates` checks the mock's request log,
+  and that no stream, transcode, timeline, scrobble or play-queue request was made), and the
+  hold-hint capsule: the film is shot with the hint taught. The capsule is a one-time teaching
+  overlay (it stands after 1.5 s of rest on a card, once per resting place on Home and once per run
+  on the other card screens, and for the length of an `ok` held on a card), and a film has no
+  viewer to teach, so `render --storyboard` writes the `plxnative-hintoff` trigger
+  (`HINT_OFF` in `site_video.py`; the app reads it once at boot, in `devtriggers` builds only, and
+  calls `hold_hint::teach_all_for_dev`, which marks the hint learned and shown on every screen
+  kind) and `render.json` records `hold_hint: suppressed`. The hint's own timing is unchanged,
+  and no card rest in the film is capped by it. `up` from the hero always
   lands on the profile chip, so before the film boots the launcher runs a prep boot of the simulator
   with the `plxnative-login` trigger: the app's own QR sign-in completes against the mock (served
   with `authorize_after=2`) and stores a "Demo" account, which is what the chip reads when focus
   passes it (never "Sign in"). Gates specific to the film: `storyboard/rest` (every beat's last 12
   frames differ from the first of them by at most 3/255 in every channel, or by more in at most
-  0.01 % of the pixels; the spring tails), `storyboard/opened` and `hero-pool` (fail closed).
+  0.01 % of the pixels; the spring tails), `storyboard/opened`, `storyboard/no-playback`,
+  `storyboard/loop` (read from `end.match_first_frame` in `feel.json`: the last frame differs from
+  the first by at most 1/255 in every channel; the committed film measures 129 px at 1/255, all in the
+  tab bar) and `hero-pool` (fail closed: every hero page the film SHOWED, read from the app's event log
+  (`home: hero page slot N rk=R`, one line per page turn, plus the pinned page), is in the
+  hero-report pass set and not `not_in_video`; `render.json` records them under `hero_pool`).
   A page push or pop dips through about three flat frames of the backdrop between the outgoing fade
   and the incoming one: that is the app's own page transition, not a hold. The AV1 encodes use CRF 28
-  (30 left the 720p file's cross-fade frames below the 0.97 SSIM floor).
+  (30 left the 720p file's cross-fade frames below the 0.97 SSIM floor); the 720p one also keeps a
+  keyframe every 4 s instead of 2 s (`AV1_720_GOP`), because at 2 s the film's keyframes put it
+  at 1.41x of today's file (limit 1.25x) and a coarser CRF that fixed the size broke the VMAF floor,
+  and uses CRF 25 (`AV1_720_CRF`: the back-from-the-library cross-fade read SSIM 0.9652 at 28; 25 is
+  0.9709 at 1.15x, and 24 is 1.26x). The SSIM and VMAF gates pair frames by index in ONE time base
+  (`BY_INDEX`, `settb=1/60,setpts=N`): pairing in each file's own time base rounded two frames of
+  this film onto their neighbours and read them as SSIM 0.66 and VMAF 0.
+  A page pushed in a dump does not hold its captured image while the destination's layout moves
+  (`dispatch::layout_holds_page_image`), so the Library's focused caption is filmed fading in.
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
 - **`make SYMBOLS=1 symbols`** — build with DWARF and split it into **`pkg/plxnative.debug`**, the

@@ -55,8 +55,12 @@
 //! frame after a clean capture re-counts zero debt (`placeholder::renote`) and is writable. A push
 //! therefore films as the product plays it: 70 ms out over the last clean source page, two
 //! consecutive alpha-0 frames (the out ramp clamps to 0, then `DipPhase::Hold`, the same two the
-//! product shows), 140 ms in over a complete destination, the frozen settle, one replacement-capture frame,
-//! then live. `PageDip::tick` likewise does not leave its one-frame `Hold` on a repeat.
+//! product shows), 140 ms in over a complete destination, one replacement-capture frame, then live.
+//! The product also keeps the image on past the dip while the destination's layout still moves
+//! (`PAGE_QUIESCENCE_HOLD_MAX_MS`); a dump does not (`dispatch::layout_holds_page_image`), because
+//! that image would hide every spring the destination starts at its mount (the Library's focused
+//! caption fades in as the shelf gains focus) and show them as ONE capture, a pop. The destination's
+//! springs are filmed. `PageDip::tick` likewise does not leave its one-frame `Hold` on a repeat.
 //!
 //! **Why a hold cannot change a written frame, and the gate that checks it.** Settling is the
 //! guarantee; the rest keeps the fixed point the one the product reaches. Per-iteration steppers were
@@ -66,16 +70,17 @@
 //! (`frame::Budget::take`), the poster store has no eviction cooldown and records a failed fetch
 //! instead of waiting out a retry on a clock that is held still, and a held repeat judges whether a
 //! spring is at rest (`idle::settled`, which multiplies by `dt`) with the `dt` of the virtual
-//! frame's first pass ([`idle_dt`]), so `page_quiescent` does not flip on `dt == 0`. The settle
-//! after a push therefore runs until the page's springs are at rest or `PAGE_QUIESCENCE_HOLD_MAX_MS`
-//! of VIRTUAL time, never a wall-clock event. The check is `PLXNATIVE_DUMP_EXTRA_HOLDS`:
+//! frame's first pass ([`idle_dt`]), so `page_quiescent` does not flip on `dt == 0`. The springs a
+//! pushed page starts are therefore stepped once per virtual frame and written as they move, never
+//! on a wall-clock event. The check is `PLXNATIVE_DUMP_EXTRA_HOLDS`:
 //! `tools/site_video.py hold-gate` renders the scene with no extra holds and with seeded extra holds
 //! on every frame and requires `frames.tsv` columns 1-4 equal.
 //!
 //! **What is and is not shown (read this before trusting a render).** Determinism is shown for the
 //! scenes the gate was run on: Home held, then `right`, `down`, `ok` (a push to Detail), a four second
 //! hold and `back` (the pop), run twice, under CPU load and with seeded extra holds (columns 1-4 of
-//! `frames.tsv` and the master identical), and a Detail page booted at a rating key; a scene with a modal
+//! `frames.tsv` and the master identical), the site film (`tests/video/feel.json`: hero paging, a
+//! Detail from a shelf card, the Movies library; `hold-gate --storyboard`) and a Detail page booted at a rating key; a scene with a modal
 //! or popover is refused (its dim field is still cadenced: see `after_draw`). `Bridge::open_claims`
 //! covers Hubs and Browse discovery; for the stores and the session adapter see "Claims" below. The Linux
 //! llvmpipe render (`.github/workflows/site-video.yml`: run twice and hold-gated per dispatch) is the canonical one; a
@@ -108,10 +113,14 @@
 //! (after the clock is set, before the loop ingests, as `dev::scenarios` calls `bridge::script_key`) and
 //! knows nothing of beats. There is no `landed` predicate: a rest is a fixed number of frames, and the
 //! launcher decodes the master afterwards and records in `render.json` (`storyboard.rest`) how far each
-//! beat's last 0.2 s still moved. The launcher also records what the film showed: `hero_pool` (the
-//! app's own `home: hero pinned at slot 0` line against the catalog's pinned film) and
-//! `opened_rating_keys` (every title page opened, read from the mock's request log), which `gates`
-//! checks against the catalog's `not_in_video` flag. Nothing here assumes the script is "hold".
+//! beat's last 0.2 s still moved. The launcher also records what the film showed: `hero_pool` (every
+//! hero page the film showed, read from the app's event log: the pinned page's `home: hero pinned at
+//! slot 0` line plus one `home: hero page slot N rk=R` per page turn, checked by `gates` against the
+//! `demo_library.py hero-report` pass set and `not_in_video`) and `opened_rating_keys` (every title page opened, read from the mock's request log), which `gates`
+//! checks against the catalog's `not_in_video` flag. A storyboard render also writes the
+//! `plxnative-hintoff` trigger (`app::boot` teaches the hold hint on every screen kind, a one-time
+//! teaching overlay a film has no viewer for) and records `hold_hint: suppressed`. Nothing here assumes
+//! the script is "hold".
 //!
 //! **What this does NOT do:** the negative tests with mock delays. The script is `PLXNATIVE_DUMP_KEYS` or
 //! "hold the booted scene for N frames".

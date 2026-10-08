@@ -18,7 +18,10 @@
 //!   held while the destination reports layout motion (springs outside `idle::decorative`, read
 //!   through `idle::page_layout_moving`) or first-frame resource work; decorative springs such as
 //!   Home's wash dissolve, hero art reveal and hero focus pop still wake the present gate but do
-//!   not hold the snapshot. At visual quiescence the dispatcher takes one full-alpha replacement capture off-screen, presents that
+//!   not hold the snapshot. That layout-motion hold is the product's: in a frame dump the dispatcher
+//!   lifts the image as soon as the dip is over (`dispatch::layout_holds_page_image`), so the
+//!   destination's own springs are filmed live. At visual quiescence the dispatcher takes one
+//!   full-alpha replacement capture off-screen, presents that
 //!   image, then switches to identical live output on the following frame. No VISIBLE frame draws a live
 //!   page under a full-screen image. [`PAGE_QUIESCENCE_HOLD_MAX_MS`] bounds a page that never
 //!   settles. Screen/input/lifecycle state continues ticking behind the held image.
@@ -26,7 +29,9 @@
 //!   k=200 spring carries the incoming level in from −0.35 and the outgoing one out to +0.22 (in
 //!   fractions of the width).
 //!
-//! Motion and image policy are pure: no static, no clock but the frame tick, no GL. The
+//! Motion and image policy are pure: no static, no clock but the frame tick, no GL. The one fact they
+//! read besides the tick is the frame dump's: `PageDip::tick` and `PageImage::plan` read
+//! `plx_gfx::dump::held_repeat` (a held repeat is not a frame of the film). The
 //! [`PageSnapshot`] backend borrows the modal host's ONE FrameCache; a modal or video plane takes
 //! precedence and capture failure falls back to live rendering. RoutePush still draws both levels
 //! live: it cannot share one image across two simultaneously visible pages.

@@ -1,21 +1,23 @@
 {
   "schema": 1,
-  "comment": "The site demo video's storyboard: positions and durations, never titles. Compiled by tools/site_video.py (`compile_storyboard`) to the dump driver's key schedule. Virtual time only advances on clean frames, so a duration is a duration of the FILM, and `gates` fails any beat whose picture was still visibly moving 0.2 s before the next beat's key (`gate_beats_at_rest`, on decoded frames). Rests under 1.4 s on a card keep the hold-hint capsule (1.5 s of settled rest) out of the film. The profile chip is on the route up to the tab bar (up from the hero lands on it), so the harness signs the simulator in to the mock's Demo account and the chip reads Demo, never Sign in. Loop: the last frame is the first frame's composition (Home, hero, focus on Continue).",
+  "comment": "The site demo video's storyboard: positions and durations, never titles. Compiled by tools/site_video.py (`compile_storyboard`) to the dump driver's key schedule. Virtual time only advances on clean frames, so a duration is a duration of the FILM, and `gates` fails any beat whose picture was still visibly moving 0.2 s before the next beat's key (`gate_beats_at_rest`, on decoded frames). The film is shot with the hold hint taught (`plxnative-hintoff`, armed by `site_video.py render --storyboard`, recorded as `hold_hint: suppressed` in render.json): the capsule is a one-time teaching overlay and a film has no viewer to teach, so a rest on a card is as long as it reads calm. The profile chip is on the route up to the tab bar (up from the hero lands on it), so the harness signs the simulator in to the mock's Demo account and the chip reads Demo, never Sign in. The hero pages: `right` on the Info button turns the carousel forward and `left` on the Continue button turns it back (the app's own edge rule), so the film turns to the second page and back to the first before it goes down to the shelf. OK on the shelf's third card opens that title's Detail (the default Continue Watching press opens details; the no-playback gate proves nothing played). Loop: the last frame is the first frame's composition (Home, hero, focus on Continue); `end.match_first_frame` is read by `gates` (`storyboard/loop`): the last frame may differ from the first by at most 1/255 in a channel.",
   "fps": 60,
   "boot": {"scene": "home", "pin_hero": true, "preroll_ms": 2000},
   "beats": [
-    {"name": "hero", "hold_ms": 3000},
-    {"name": "to-info", "keys": ["right"], "rest_ms": 900},
-    {"name": "detail", "keys": ["ok"], "rest_ms": 4800},
-    {"name": "back-home", "keys": ["back"], "rest_ms": 900},
-    {"name": "to-continue", "keys": ["left"], "rest_ms": 700},
-    {"name": "shelf", "keys": ["down"], "rest_ms": 1200},
-    {"name": "shelf-right", "keys": ["right"], "rest_ms": 1200},
+    {"name": "hero", "hold_ms": 2200},
+    {"name": "to-info", "keys": ["right"], "rest_ms": 700},
+    {"name": "hero-next", "keys": ["right"], "rest_ms": 2000},
+    {"name": "to-continue", "keys": ["left"], "rest_ms": 600},
+    {"name": "hero-back", "keys": ["left"], "rest_ms": 1500},
+    {"name": "shelf", "keys": ["down"], "rest_ms": 1300},
+    {"name": "shelf-right", "keys": ["right", "right"], "gap_ms": 450, "rest_ms": 1200},
+    {"name": "detail", "keys": ["ok"], "rest_ms": 4000},
+    {"name": "back-shelf", "keys": ["back"], "rest_ms": 1500},
     {"name": "to-tab-bar", "keys": ["up", "up", "right", "right"], "gap_ms": 750, "rest_ms": 900},
-    {"name": "library", "keys": ["ok"], "rest_ms": 1380},
-    {"name": "library-move", "keys": ["right", "right"], "gap_ms": 450, "rest_ms": 1100},
+    {"name": "library", "keys": ["ok"], "rest_ms": 1600},
+    {"name": "library-move", "keys": ["right", "right"], "gap_ms": 450, "rest_ms": 1400},
     {"name": "return-home", "keys": ["back"], "rest_ms": 1100},
-    {"name": "to-hero", "keys": ["down"], "rest_ms": 3000}
+    {"name": "to-hero", "keys": ["down"], "rest_ms": 2400}
   ],
   "end": {"match_first_frame": true}
 }

@@ -7,7 +7,7 @@ name: Site video
 # the ui-sim skill ("The frame dump").
 #
 # MANUAL ON PURPOSE: `gh workflow run site-video.yml`. It renders the STORYBOARD, `tests/video/feel.json`
-# (positions and durations, compiled by `site_video.py` to the dump driver's key schedule; about 24
+# (positions and durations, compiled by `site_video.py` to the dump driver's key schedule; about 27
 # seconds), and the sign-in prep boot the render starts with runs under the same virtual display. A render costs
 # runner minutes that no ordinary PR should pay, and nothing here is a gate on code; the run-twice
 # check below proves THIS render deterministic, it does not guard main.

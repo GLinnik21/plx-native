@@ -48,7 +48,7 @@ Per-title flags in `catalog.json`, all checked by `check`:
   log) beside this list in `render.json`, and the `storyboard/opened` gate fails the render if the two
   intersect. Focus at rest leaves no request, so the storyboard's positions keep a flagged title out of frame. A title in `logo_none_approved` (its hero and
   detail page show the text title, not a clear logo) must carry it; the pinned hero and
-  `hero_alternatives` cannot (the video opens the hero).
+  `hero_alternatives` cannot (the video shows the hero pages).
 * `poster.still_as_poster: true` — the poster is a film still, not a poster: allowed only for a title
   listed in the catalog's `still_poster_approved`, and then the asset may be of kind `still` or
   `backdrop`.
@@ -863,7 +863,7 @@ def check_flags(assets, catalog, seen):
                                             ("the hero pool's slots", key in pool)) if hit]
             assert not where, f"{key}: not_hero, yet it is in {', '.join(where)}"
         if rec.get("not_in_video"):
-            assert key not in pinned, f"{key}: not_in_video, yet the video opens the pinned hero and its alternatives"
+            assert key not in pinned, f"{key}: not_in_video, yet the video shows the pinned hero and its alternatives"
         poster = rec.get("poster", {})
         if "still_as_poster" in poster:
             assert poster["still_as_poster"] is True, f"{key}: still_as_poster is `true` or absent"
