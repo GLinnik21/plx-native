@@ -129,6 +129,8 @@ impl LibraryScreen {
                 f.page_alpha = parent;
             }),
         });
+        // A standing note, never a target: over the page, records no stop and no hit rect.
+        self.hold_hint.draw(f.painter.alpha(f.page_alpha), f.measure);
         self.plaintext_alert.draw(f, self.entry);
     }
 

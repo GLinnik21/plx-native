@@ -493,7 +493,7 @@ impl PersonScreen {
         Self {
             page: Page::new(entry, sid, key, guid, name, thumb),
             // A page that leaves focus (a menu over it, a pointer gone) rests at the top.
-            stack: Stack::new(entry).home_when_unfocused(true),
+            stack: Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Person).home_when_unfocused(true),
             teardown_closed: false,
         }
     }
@@ -1127,6 +1127,11 @@ impl<H: ContentLike + PersonLike> StackPage<H> for Page {
         }
     }
 
+    fn card_has_menu(&self, cx: &Cx<'_, H>, _k: Sec, elem: &u32) -> bool {
+        let key = plx_machine::machine::FocusKey { entry: self.entry, elem: *elem };
+        self.focused_item(Some(key), cx).is_some_and(crate::registry::item_has_menu)
+    }
+
     /// The pill is part of the head's block: focusing it reveals the whole band.
     fn reveal_with(&self, k: Sec) -> Option<Sec> {
         (k == Sec::Entry).then_some(Sec::Head)
@@ -1551,6 +1556,38 @@ mod tests {
     /// Put the page's scroll at `scroll`, without gliding there.
     fn jump_to(s: &mut PersonScreen, scroll: f32) {
         s.stack.restore(&StackMemory { scroll, shelves: Vec::new() });
+    }
+
+    /// The hold hint (`ui::hold_hint`) on a Person shelf card: it stands after the dwell on a
+    /// settled card, not on the Filmography pill (not a card), not while a menu owns focus, and
+    /// not a second time on a Person page this run.
+    #[test]
+    fn the_hold_hint_stands_on_a_resting_shelf_card_once_per_run() {
+        let _g = plx_base::testlock::serial();
+        plx_ui::hold_hint::reset_learned_for_test();
+        plx_ui::hold_hint::reset_shown_for_test();
+        let (store, mut s) = seed(6, 0);
+        let card = focus_of(&s, &store, 0, 1);
+        let mut ms = 100;
+        let mut rest = |s: &mut PersonScreen, focus: plx_machine::machine::FocusKey<u32>, secs: f32| {
+            for _ in 0..(secs * 60.0) as u32 {
+                ms += 17;
+                feed(s, &store, &FixtureMeasure, Some(focus), ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+            }
+        };
+        rest(&mut s, card, 1.2);
+        assert!(!s.stack.hint_visible(), "not before the dwell");
+        // negatives first: a stand spends the kind's latch and would make them vacuous
+        rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(900), elem: 0 }, 4.0);
+        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Person), "never while a menu owns focus");
+        rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(0), elem: ENTRY_ELEM }, 4.0);
+        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Person), "never on the Filmography pill");
+        rest(&mut s, card, 1.6);
+        assert!(s.stack.hint_visible(), "after the dwell, on a settled card");
+        rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(900), elem: 0 }, 1.0);
+        assert!(!s.stack.hint_visible(), "a menu taking focus hides it");
+        rest(&mut s, card, 4.0);
+        assert!(!s.stack.hint_visible(), "and not a second time on a Person page this run");
     }
 
     /// The Filmography pill's focus/hit rect where the page now has it.

@@ -160,6 +160,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         layout: std::cell::Cell::new(None),
         layout_pinned: std::cell::Cell::new(false),
         spot_facts: SpotFacts::default(),
+        hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Detail),
     };
     screen.sync_keys(test_store().view());
     screen
@@ -3723,5 +3724,49 @@ fn record_stops_places_nothing_outside_the_visible_walk() {
         assert_eq!(walk(plx_ui::Painter::root()), (0, 0), "a blur source walk placed stops");
     }
     assert_eq!(walk(plx_ui::Painter::recording()), (0, 0), "the text prewarm walk placed stops");
+    clear();
+}
+
+/// The hold hint (`ui::hold_hint`) on a Detail card shelf whose held OK opens an item menu
+/// (Related, Collection): it stands after the dwell on a settled card, not on the hero, not while
+/// a menu owns focus, and not a second time on a Detail page this run.
+#[test]
+fn the_hold_hint_stands_on_a_resting_related_card_once_per_run() {
+    let sid = ServerId::UNSET;
+    let _guard = install(collection_movie(sid));
+    plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
+    let mut screen = bare(&_guard, sid, "m1");
+    screen.sync_keys(test_store().view());
+    let card = screen.engine_key(related::elem(1).unwrap()).unwrap();
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let mut ms = 100;
+    let mut rest = |screen: &mut DetailScreen, focus: Option<FocusKey<u32>>, secs: f32| {
+        for _ in 0..(secs * 60.0) as u32 {
+            ms += 17;
+            let mut context = cx(&measure, None);
+            context.focus.current = focus;
+            context.tick = plx_machine::machine::Tick { ms, dt_us: 16_667 };
+            let mut effects = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            let mut sink = Effects::new(&mut effects,
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
+            Machine::<TestHost>::step(screen, &ScreenEvent::Tick(context.tick), &context, &mut sink);
+        }
+    };
+    let on = |elem| Some(FocusKey { entry: EntryId(7), elem });
+    rest(&mut screen, on(card), 1.2);
+    assert!(!screen.hold_hint.visible(), "not before the dwell");
+    // negatives first: a stand spends the kind's latch and would make them vacuous
+    rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 4.0);
+    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Detail), "never while a menu owns focus");
+    rest(&mut screen, on(hero::ELEM_PLAY), 4.0);
+    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Detail), "never on a hero control");
+    rest(&mut screen, on(card), 1.6);
+    assert!(screen.hold_hint.visible(), "after the dwell, on a settled Related card");
+    rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
+    assert!(!screen.hold_hint.visible(), "a menu taking focus hides it");
+    rest(&mut screen, on(card), 4.0);
+    assert!(!screen.hold_hint.visible(), "and not a second time on a Detail page this run");
     clear();
 }

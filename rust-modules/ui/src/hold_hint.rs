@@ -7,7 +7,8 @@
 //!
 //! 1. Own ONE [`HoldHint`] on the screen instance (paint-only state: leave it out of the canon
 //!    census, like a spinner phase).
-//! 2. From the screen's `Tick`, call [`HoldHint::step`] with a [`HintInput::new`], the tick's `ms` and
+//! 2. From the screen's `Tick`, call [`HoldHint::step`] (with the input built only when
+//!    [`HoldHint::wants_input`] says it can matter) with a [`HintInput::new`], the tick's `ms` and
 //!    its `dt`: `focus` is the
 //!    stable element id of the CARD focus rests on (`None` for anything that is not a card, and for
 //!    a covered page — a menu or modal is open); `settled` is "nothing under that card is still
@@ -18,6 +19,24 @@
 //!    non-interactive: record no focus stop and no hit rect for it.
 //! 4. Nothing else. The item menu's `Mount` already calls [`mark_learned`], so opening a menu from
 //!    any card screen retires the hint everywhere; [`step`](HoldHint::step) reads that itself.
+//!
+//! **Cadence.** Home builds its hint with [`HoldHint::new`] (the schedule below, once per resting
+//! place). Every other card screen builds it with [`HoldHint::once_per_run`]`(`[`Kind`]`)`: the same
+//! schedule and the same during-hold behaviour, but the self-appearing hint stands at most once per
+//! screen kind per run, because a viewer who has seen it on one Collection page has been taught.
+//! A `cards::Stack` page adopts it with ONE builder call ([`Stack::hold_hint`](crate::cards::Stack::hold_hint):
+//! the stack steps it, answers `focus` and `settled` from its own placement, and draws it last);
+//! a page without a stack builds `HintInput` with [`HintInput::for_placed`].
+//!
+//! **Spent means spent.** The latch is taken on the FIRST FRAME the hint stands, not when its life
+//! ends: a viewer who rests 1.6 s on a card and moves on has used the kind's one showing on a few
+//! frames of fade-in. That is accepted (a hint that never stood spends nothing). Pausing on the
+//! same card (the page scrolls under it, a relayout) ends the resting place and with it the
+//! claim, so the hint does not get a second dwell either.
+//!
+//! **Retired cost.** A page asks [`HoldHint::wants_input`] before building its [`HintInput`] (a card
+//! lookup and a placement every `Tick`); when it says no, `HintInput::default()` steps the hint to
+//! the identical state.
 //!
 //! Host-testing an adopter needs no screen: see this module's `a_screenless_owner_…` test, which
 //! drives the widget through exactly those calls.
@@ -117,7 +136,7 @@ const VISIBLE: f32 = 0.004;
 // The hint retires for good once a context menu has been opened — from ANY card screen, since the
 // lesson is the gesture. It is held for the life of the process on the FRAME THREAD (a
 // `thread_local`, the same shape as `idle`'s and `press`'s published snapshots): every writer (the
-// item-menu surface mounting) and every reader (Home's tick) runs there, and a host test gets a
+// item-menu surface mounting) and every reader (a card screen's tick) runs there, and a host test gets a
 // fresh answer per test thread with no lock to forget. It is deliberately NOT persisted: the
 // persisted preference store is the session record, whose format and migration are not this
 // widget's to change, so after a relaunch the hint teaches once more until the next menu opens.
@@ -139,6 +158,37 @@ pub fn mark_learned() {
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_learned_for_test() {
     LEARNED.with(|l| l.set(false));
+}
+
+/// The card screens that teach the hint on the RARER cadence ([`HoldHint::once_per_run`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Collection,
+    Person,
+    Search,
+    Library,
+    Detail,
+}
+
+thread_local! {
+    /// One bit per [`Kind`] the self-appearing hint has already stood on, for the life of the
+    /// process on the frame thread (the same shape and the same reasons as `LEARNED`).
+    static SHOWN: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether the self-appearing hint has already stood on a screen of this kind this run.
+pub fn shown_this_run(kind: Kind) -> bool {
+    SHOWN.with(|s| s.get() & (1 << kind as u8) != 0)
+}
+
+fn mark_shown(kind: Kind) {
+    SHOWN.with(|s| s.set(s.get() | (1 << kind as u8)));
+}
+
+/// Forget every kind's latch — a test's start state, and nothing else.
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_shown_for_test() {
+    SHOWN.with(|s| s.set(0));
 }
 
 /// What the owner tells the hint each frame. Build it with [`HintInput::new`].
@@ -164,6 +214,30 @@ impl HintInput {
     }
 }
 
+impl HintInput {
+    /// The input for a page that can PLACE the card focus rests on: `elem` is that card's stable
+    /// element id and `drawn` its placement at [`At::Drawn`](crate::screen::At). `page_still` is
+    /// "the page's own scroll has reached its target"; the card's own glide and focus pop are read
+    /// off the placement (drawn rect against rest rect). Pinned animation clocks
+    /// (`motion::phase_clocks_held`: documentation figures) never settle, so a figure that rests on
+    /// a card does not grow a hint 1.5 s later; a real hold is input, not a clock, so it is not
+    /// pinned. This is the one definition of "settled" every non-Home adopter shares.
+    pub fn for_placed(elem: u32, drawn: crate::screen::Placed, page_still: bool, held_ms: Option<u32>) -> Self {
+        let near = |a: f32, b: f32| (a - b).abs() < REST_PX;
+        let (d, r) = (drawn.rect, drawn.rest_rect);
+        let settled = page_still
+            && !plx_machine::motion::phase_clocks_held()
+            && near(d.x, r.x)
+            && near(d.y, r.y)
+            && near(d.w, r.w)
+            && near(d.h, r.h);
+        Self::new(Some(elem), settled, held_ms)
+    }
+}
+
+/// Below this many pixels a card counts as having arrived (Home's `HINT_REST_PX`).
+const REST_PX: f32 = 0.5;
+
 /// The hint's state: the schedule, the two springs and the cap's fill. Hold one per page.
 #[derive(Clone, Copy)]
 pub struct HoldHint {
@@ -174,6 +248,13 @@ pub struct HoldHint {
     rest_at: Option<u32>,
     /// This resting place has had its [`LIFE_MS`]; it does not come back until focus moves.
     spent: bool,
+    /// `Some(kind)` on a non-Home card screen: the self-appearing hint then stands at most once per
+    /// kind per run ([`HoldHint::once_per_run`]). `None` is Home's rule, unchanged.
+    once: Option<Kind>,
+    /// This instance is the one that took its kind's single showing, for the resting place it is
+    /// standing on (cleared wherever the rest is: a focus move or a frame that is not settled,
+    /// after which the latch alone answers).
+    claimed: bool,
     fade: Spring,
     rise: Spring,
     /// The cap's fill fraction as drawn: follows the hold exactly while held, drains while not.
@@ -187,8 +268,22 @@ impl Default for HoldHint {
 }
 
 impl HoldHint {
+    /// The rarer cadence for a non-Home card screen of `kind`.
+    ///
+    /// Same schedule as [`new`](Self::new) (dwell, life, a held OK shows it with its fill), except
+    /// that the self-appearing hint stands at most ONCE PER `kind` PER RUN: the first time it
+    /// stands on any page of that kind it takes the kind's latch, and no page of that kind stands
+    /// it on its own again until the process restarts. An opened item menu ([`learned`]) retires
+    /// it as everywhere. Taking the latch is what shows it, so a hint that never stood spends
+    /// nothing.
+    pub const fn once_per_run(kind: Kind) -> Self {
+        let mut h = Self::new();
+        h.once = Some(kind);
+        h
+    }
+
     pub const fn new() -> Self {
-        Self { key: None, rest_at: None, spent: false, fade: Spring::at(0.0), rise: Spring::at(0.0), fill: 0.0 }
+        Self { key: None, rest_at: None, spent: false, once: None, claimed: false, fade: Spring::at(0.0), rise: Spring::at(0.0), fill: 0.0 }
     }
 
     /// Advance one frame — the owner's whole per-`Tick` job. `note` receives [`PresentEvent::Motion`]
@@ -200,10 +295,13 @@ impl HoldHint {
             self.key = focus;
             self.rest_at = None;
             self.spent = false;
+            self.claimed = false;
         }
         let mut rested_ms = 0;
         if focus.is_none() || !input.settled {
             self.rest_at = None;
+            // the resting place is over, so is any showing it took: it is not resumed
+            self.claimed = false;
         } else if !self.spent {
             let at = *self.rest_at.get_or_insert(now_ms);
             rested_ms = now_ms.wrapping_sub(at);
@@ -213,7 +311,12 @@ impl HoldHint {
         }
         // a hold on no card (or under a retired hint) is no hold
         let hold = input.hold.filter(|_| focus.is_some());
-        let standing = focus.is_some() && !self.spent && self.rest_at.is_some() && rested_ms >= DWELL_MS;
+        let may = self.once.is_none_or(|kind| self.claimed || !shown_this_run(kind));
+        let standing = may && focus.is_some() && !self.spent && self.rest_at.is_some() && rested_ms >= DWELL_MS;
+        if let (true, Some(kind)) = (standing, self.once) {
+            self.claimed = true;
+            mark_shown(kind);
+        }
         let show = hold.is_some() || standing;
 
         self.fade.step(if show { 1.0 } else { 0.0 }, K_FADE, dt);
@@ -238,6 +341,21 @@ impl HoldHint {
     }
 
     /// Whether any of it is on screen.
+    /// Whether this frame's [`HintInput`] could change anything — the one question every adopter
+    /// asks before it pays to build the input (a card lookup and a placement). `false` means the
+    /// owner may pass `HintInput::default()` to [`step`](Self::step) instead, with the identical
+    /// result: the hint is retired ([`learned`]), or its kind has had its one showing and this
+    /// instance holds no claim, nothing is on screen or draining, and OK is not held (a physical
+    /// hold shows a spent kind with its fill, so it always needs the card). `ok_held` is
+    /// `cx.press.held_ms.is_some()`.
+    pub fn wants_input(&self, ok_held: bool) -> bool {
+        if learned() {
+            return false;
+        }
+        let Some(kind) = self.once else { return true };
+        ok_held || self.claimed || self.visible() || self.fill > 0.0 || !shown_this_run(kind)
+    }
+
     pub fn visible(&self) -> bool {
         self.fade.pos > VISIBLE
     }
@@ -436,6 +554,7 @@ mod tests {
     fn fresh() -> (plx_base::testlock::Serial, HoldHint) {
         let g = plx_base::testlock::serial();
         reset_learned_for_test();
+        reset_shown_for_test();
         // drain whatever the previous test left on the gate's process-wide damage flag
         frame_asks(&mut HoldHint::new(), HintInput::default());
         (g, HoldHint::new())
@@ -558,6 +677,156 @@ mod tests {
         run(&mut h, rested(7), secs(1.0));
         assert!(!h.visible());
         reset_learned_for_test();
+    }
+
+    // ---- the rarer cadence of every non-Home card screen ----------------------------------------
+
+    #[test]
+    fn a_once_per_run_hint_stands_once_then_never_again_on_its_kind() {
+        let (_g, _) = fresh();
+        let mut h = HoldHint::once_per_run(Kind::Collection);
+        run(&mut h, rested(7), secs(2.5));
+        assert!(h.visible(), "the first time on a Collection page it teaches like Home's");
+        assert!(shown_this_run(Kind::Collection));
+        run(&mut h, rested(7), secs(9.0));
+        assert!(!h.visible(), "and leaves on its own");
+        // another card of the same page: Home would start a new life; this kind does not
+        run(&mut h, rested(8), secs(5.0));
+        assert!(!h.visible(), "a new card on the same page does not bring it back");
+        // leaving and re-entering: a new page instance of the same kind
+        let mut again = HoldHint::once_per_run(Kind::Collection);
+        run(&mut again, rested(7), secs(5.0));
+        assert!(!again.visible(), "nor does a second Collection page");
+    }
+
+    #[test]
+    fn a_once_per_run_hint_is_per_kind() {
+        let (_g, _) = fresh();
+        let mut a = HoldHint::once_per_run(Kind::Collection);
+        run(&mut a, rested(7), secs(2.5));
+        assert!(a.visible());
+        let mut b = HoldHint::once_per_run(Kind::Person);
+        run(&mut b, rested(7), secs(2.5));
+        assert!(b.visible(), "Person has not had its one");
+        assert!(!shown_this_run(Kind::Search));
+        let mut c = HoldHint::once_per_run(Kind::Search);
+        run(&mut c, rested(7), secs(2.5));
+        assert!(c.visible());
+    }
+
+    #[test]
+    fn a_once_per_run_hint_keeps_its_life_through_the_frames_it_stands() {
+        let (_g, _) = fresh();
+        let mut h = HoldHint::once_per_run(Kind::Library);
+        run(&mut h, rested(7), secs(1.5 + 4.0));
+        assert!(h.visible(), "claiming the kind on the first standing frame does not hide it");
+    }
+
+    #[test]
+    fn a_once_per_run_hint_never_stands_after_a_menu_was_opened() {
+        let (_g, _) = fresh();
+        mark_learned();
+        let mut h = HoldHint::once_per_run(Kind::Detail);
+        run(&mut h, rested(7), secs(5.0));
+        assert!(!h.visible());
+        assert!(!shown_this_run(Kind::Detail), "nothing was shown, so nothing is spent");
+        reset_learned_for_test();
+    }
+
+    #[test]
+    fn a_pause_in_rest_on_the_same_card_does_not_give_the_kind_a_second_showing() {
+        let (_g, _) = fresh();
+        let mut h = HoldHint::once_per_run(Kind::Library);
+        run(&mut h, rested(7), secs(2.5));
+        assert!(h.visible(), "control: the first showing");
+        // the page moves under the same focus (wheel scroll, relayout), then rests again
+        run(&mut h, HintInput { settled: false, ..rested(7) }, secs(1.0));
+        assert!(!h.visible());
+        run(&mut h, rested(7), secs(5.0));
+        assert!(!h.visible(), "the claim ends with the rest: once per kind is once");
+    }
+
+    #[test]
+    fn what_the_hint_needs_input_for_is_a_truth_table() {
+        let (_g, _) = fresh();
+        // Home's rule has no latch: it always wants the card.
+        assert!(HoldHint::new().wants_input(false));
+        let fresh_kind = HoldHint::once_per_run(Kind::Person);
+        assert!(fresh_kind.wants_input(false), "its kind has not shown yet: it may need to stand");
+        // A kind that has been shown this run, held by nobody.
+        let mut spent = HoldHint::once_per_run(Kind::Collection);
+        run(&mut spent, rested(7), secs(2.5));
+        assert!(spent.wants_input(false), "it holds the claim and is standing");
+        run(&mut spent, HintInput::default(), secs(2.0));
+        assert!(!spent.visible() && spent.fill() == 0.0);
+        assert!(!spent.wants_input(false), "claim ended with focus, nothing visible: no input can matter");
+        let other = HoldHint::once_per_run(Kind::Collection);
+        assert!(!other.wants_input(false), "another instance of a shown kind holds no claim");
+        assert!(other.wants_input(true), "a held OK shows a spent kind with its fill");
+        // a claim keeps it asking
+        let mut claimed = HoldHint::once_per_run(Kind::Detail);
+        run(&mut claimed, rested(7), secs(2.5));
+        assert!(claimed.wants_input(false));
+        // visible or draining keeps it asking
+        let mut holding = HoldHint::once_per_run(Kind::Search);
+        run(&mut holding, rested(7), secs(10.0));
+        let mut other = HoldHint::once_per_run(Kind::Search);
+        tstep(&mut other, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
+        assert!(other.wants_input(false), "visible: the fade out must be driven");
+        tstep(&mut other, HintInput::default(), &mut |_| {});
+        assert!(other.wants_input(false), "still draining or fading");
+        // a retired hint needs nothing
+        mark_learned();
+        assert!(!HoldHint::new().wants_input(true));
+        assert!(!HoldHint::once_per_run(Kind::Library).wants_input(true));
+        reset_learned_for_test();
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn pinned_animation_clocks_never_settle_but_a_real_hold_still_passes_through() {
+        let (_g, _) = fresh();
+        let r = Rect::new(10.0, 10.0, 100.0, 100.0);
+        let placed = crate::screen::Placed { rect: r, rest_rect: r, clip: r, index: None };
+        assert!(HintInput::for_placed(7, placed, true, None).settled, "control: a card at rest");
+        plx_machine::motion::hold_phase_clocks(Some(4000));
+        let pinned = HintInput::for_placed(7, placed, true, Some(400));
+        plx_machine::motion::hold_phase_clocks(None);
+        assert!(!pinned.settled, "a documentation figure never settles");
+        assert!(pinned.hold.is_some(), "a real hold is input, not a clock");
+    }
+
+    #[test]
+    fn a_physical_hold_still_shows_a_spent_kind_with_its_fill() {
+        let (_g, _) = fresh();
+        let mut first = HoldHint::once_per_run(Kind::Search);
+        run(&mut first, rested(7), secs(10.0));
+        let mut h = HoldHint::once_per_run(Kind::Search);
+        run(&mut h, rested(7), secs(5.0));
+        assert!(!h.visible(), "control: the self-appearing hint is spent");
+        tstep(&mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
+        assert!(h.visible() && (h.fill() - 0.5).abs() < 1e-6, "Home's during-hold behaviour is kept");
+    }
+
+    #[test]
+    fn a_hold_alone_does_not_spend_the_kind() {
+        let (_g, _) = fresh();
+        let mut h = HoldHint::once_per_run(Kind::Person);
+        tstep(&mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
+        assert!(!shown_this_run(Kind::Person));
+    }
+
+    #[test]
+    fn home_keeps_its_own_rule_whatever_the_kinds_have_spent() {
+        let (_g, mut h) = fresh();
+        for k in [Kind::Collection, Kind::Person, Kind::Search, Kind::Library, Kind::Detail] {
+            let mut o = HoldHint::once_per_run(k);
+            run(&mut o, rested(7), secs(2.5));
+        }
+        run(&mut h, rested(7), secs(2.5));
+        assert!(h.visible());
+        run(&mut h, rested(9), secs(2.5));
+        assert!(h.visible(), "a new tile starts a new life on Home");
     }
 
     /// Host half of the animator's two tests (`ui/CLAUDE.md`): it reports while it runs...

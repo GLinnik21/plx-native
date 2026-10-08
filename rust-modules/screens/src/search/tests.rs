@@ -1319,3 +1319,62 @@ mod characterization {
         assert_eq!(out.join("\n"), include_str!("characterization/reconcile.txt").trim_end());
     }
 }
+
+/// A collection hit opens its page on a hold, never an item menu, so it never gets the hint and
+/// never spends the kind's one showing.
+#[test]
+fn the_hold_hint_does_not_stand_on_a_collection_hit() {
+    let _serial = plx_base::testlock::serial();
+    plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
+    let mut fixture = Fixture::new();
+    let hits = (0..5).map(|i| Item::Collection(plx_data::search::CollectionHit {
+        item: plx_data::pms::PmsMovie { rk: format!("c-{i}"), title: format!("Collection {i}"),
+            kind: plx_data::pms::KIND_COLLECTION, ..Default::default() },
+        tag: i,
+    })).collect();
+    fixture.query("hint").shelves(vec![Shelf { kind: Kind::Collection, items: hits }]);
+    let mut screen = fixture.screen();
+    let card = Some(screen.key(screen.rows[0].elems[1]));
+    deliver(&mut screen, &fixture, card, ScreenEvent::FocusMoved { from: None, to: card.unwrap(), by: By::Dir });
+    for at in 100..100 + 6 * 60 {
+        deliver(&mut screen, &fixture, card, ScreenEvent::Tick(tick(at)));
+    }
+    assert!(!screen.stack.hint_visible(), "a hold on a collection hit opens its page, not a menu");
+    assert!(!plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Search), "and nothing is spent");
+}
+
+/// The hold hint (`ui::hold_hint`) on a result card: it stands after the dwell on a settled card,
+/// not on the field (not a card), not while a menu owns focus, and not a second time this run.
+#[test]
+fn the_hold_hint_stands_on_a_resting_result_card_once_per_run() {
+    let _serial = plx_base::testlock::serial();
+    plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
+    let mut fixture = Fixture::new();
+    fixture.query("hint").shelves(vec![shelf(Kind::Movie, "m", 8)]);
+    let mut screen = fixture.screen();
+    let card = Some(screen.key(screen.rows[0].elems[1]));
+    let mut at = 100;
+    let mut rest = |screen: &mut SearchScreen, focus: Option<FocusKey<u32>>, secs: f32| {
+        for _ in 0..(secs * 60.0) as u32 {
+            at += 1;
+            deliver(screen, &fixture, focus, ScreenEvent::Tick(tick(at)));
+        }
+    };
+    deliver(&mut screen, &fixture, card, ScreenEvent::FocusMoved { from: None, to: card.unwrap(), by: By::Dir });
+    rest(&mut screen, card, 1.2);
+    assert!(!screen.stack.hint_visible(), "not before the dwell");
+    // negatives first: a stand spends the kind's latch and would make them vacuous
+    rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 4.0);
+    assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Search), "never while a menu owns focus");
+    let field = Some(screen.key(FIELD));
+    rest(&mut screen, field, 4.0);
+    assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Search), "never on the field");
+    rest(&mut screen, card, 1.6);
+    assert!(screen.stack.hint_visible(), "after the dwell, on a settled card");
+    rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
+    assert!(!screen.stack.hint_visible(), "a menu taking focus hides it");
+    rest(&mut screen, card, 4.0);
+    assert!(!screen.stack.hint_visible(), "and not a second time on Search this run");
+}

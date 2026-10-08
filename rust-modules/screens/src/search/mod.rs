@@ -592,7 +592,7 @@ fn group(id: GroupId, kind: GroupKind, len: usize, extent: Rect, elem: ElemKind,
 /// `render.rs` (the cards fade in with the results).
 fn new_stack(entry: EntryId) -> Stack<Sec> {
     let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
-    Stack::new(entry).reveal_on_move(true).clipped(Rect::new(0.0, floor, SCR_W, SCR_H - floor))
+    Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Search).reveal_on_move(true).clipped(Rect::new(0.0, floor, SCR_W, SCR_H - floor))
 }
 
 impl<H: SearchLike> StackPage<H> for SearchScreen {
@@ -633,6 +633,11 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
         let Sec::Row(kind, _) = k else { return None };
         let row = self.rows.iter().position(|row| row.kind == kind)?;
         self.row_cards(H::search(cx), row)
+    }
+    /// Only a library item opens an item menu on a hold; a collection hit opens its page.
+    fn card_has_menu(&self, cx: &Cx<'_, H>, _k: Sec, elem: &u32) -> bool {
+        let key = FocusKey { entry: self.entry, elem: *elem };
+        matches!(self.selected_item(Some(key), cx), Some(Item::Media(media)) if crate::registry::item_has_menu(media))
     }
     fn elem_of(&self, k: Sec) -> Option<u32> {
         match k { Sec::Head => Some(FIELD), Sec::Clear if !self.recents.is_empty() => Some(CLEAR), _ => None }
