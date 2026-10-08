@@ -163,6 +163,7 @@
       "fps_ceiling": 3,
       "run_secs": 30,
       "warmup_s": 16,
+      "mock": {},
       "triggers": {
         "plxnative-grid": true
       },
@@ -218,6 +219,7 @@
       "run_secs": 22,
       "warmup_s": 6,
       "item": "show_detail",
+      "mock": {"rk": 2001},
       "triggers": {
         "plxnative-detail": "$rk",
         "plxnative-detailosc": true
@@ -235,6 +237,7 @@
       "loop_floor": 45,
       "run_secs": 18,
       "warmup_s": 6,
+      "mock": {},
       "triggers": {
         "plxnative-itemmenu": true
       },
@@ -250,6 +253,7 @@
       "warmup_s": 6,
       "item": "movie_cast0_in_both_libraries",
       "comment": "cast[0] of this movie must be a person with titles in BOTH libraries, so the page draws two poster shelves — that is what the item key asks for. detailsec=1 walks the hero focus down to the credits row (a movie's second section); detailok presses OK on it.",
+      "mock": {"rk": 1001},
       "triggers": {
         "plxnative-detail": "$rk",
         "plxnative-detailsec": 1,
@@ -286,6 +290,7 @@
       "warmup_s": 6,
       "item": "collection",
       "comment": "Direct Collection-page boot on the `collection` item (a MOVIE collection with at least two members that have posters), resolved through manifest.local.json like every other `item`: `$rk` below becomes that collection's ratingKey. The screen loads its header and ordered children through the real collection store and settles after artwork and scroll motion. An installation that maps no collection SKIPS this scene rather than opening a ratingKey its server does not hold, which would settle on the failure read-out and pass the ceiling vacuously. By hand in the simulator against tests/mock_pms.py, the trigger's value is that mock's collection ratingKey, 50001. MEASURED on the dev set 2026-09-28 (main c468aaf8, panel off): loop/s robust_min 61, median 61 (n=13, two runs); fps robust_max 1, median 0 once the page settles.",
+      "mock": {"movies": 240, "rk": 50002},
       "triggers": {
         "plxnative-collection": "$rk"
       },
@@ -315,6 +320,7 @@
       "loop_floor": 50,
       "run_secs": 18,
       "warmup_s": 5,
+      "mock": {},
       "triggers": {
         "plxnative-library": true,
         "plxnative-libosc": true
@@ -362,6 +368,7 @@
       "fps_ceiling": 3,
       "run_secs": 22,
       "warmup_s": 10,
+      "mock": {},
       "triggers": {
         "plxnative-library": true
       },
@@ -374,6 +381,7 @@
       "loop_floor": 45,
       "run_secs": 22,
       "warmup_s": 8,
+      "mock": {"triggers": {"plxnative-search": "sb"}},
       "triggers": {
         "plxnative-search": "th",
         "plxnative-searchosc": true
