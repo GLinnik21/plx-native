@@ -23,7 +23,8 @@
 //! There is deliberately no fade-in behind the text→logo swap: `ui::tex::logo_src` answers `None`
 //! both while the fetch is pending AND when the item simply has no clearLogo. The store can now
 //! say which (`ui::tex::logo_failed`, a settled miss), and the placeholder accounting uses it —
-//! the text of a pending logo is a counted wait, the text of an absent one is not — but no
+//! the text of a pending logo is a counted wait, the text of an absent one is not, and the peek
+//! is only made while that accounting can be seen (`placeholder::accounting_visible`) — but no
 //! cross-fade has been built on it. The swap is a cut, but nothing around it MOVES, which is the
 //! part that used to read as a glitch.
 use crate::label::{HAlign, Label, VAlign};
@@ -206,7 +207,12 @@ impl<'a> HeroLogo<'a> {
         // the text is the answer: not counted, but reported as an absence so a driver whose
         // storyboard promises a logo can fail fast on it. A hero with no key at all has nothing to
         // wait for — its title is the whole answer.
-        let (p, ink) = if self.rk.is_empty() {
+        //
+        // The settled-miss peek is a formatted key, the poster store's lock and a slot scan, and on
+        // a real library most items have no clearLogo, so this branch runs every frame. Its answer
+        // only picks between the two accounting calls below (and, in the sentinel build, the ink):
+        // when nothing can see them, neither call records and both draw TEXT_PRIMARY, so skip it.
+        let (p, ink) = if self.rk.is_empty() || !crate::placeholder::accounting_visible() {
             (p, theme::TEXT_PRIMARY)
         } else if crate::tex::logo_failed(self.sid, self.rk) {
             crate::placeholder::note_absent(p, crate::placeholder::Reason::HeroLogoAbsent, self.rk);
@@ -477,9 +483,12 @@ mod tests {
     // ---- the placeholder count of the text fallback -------------------------------------------
 
     /// A clearLogo source with one scripted answer: never resident (`logo` is `None`), and
-    /// `failed` says whether the store has SETTLED the fetch as a miss.
+    /// `failed` says whether the store has SETTLED the fetch as a miss. `peeks` counts how often
+    /// the settled-miss peek was asked: on the TV it is a formatted key, the poster store's lock and
+    /// a scan of every slot.
     struct LogoStore {
         failed: bool,
+        peeks: &'static std::cell::Cell<u32>,
     }
     impl crate::tex::Source for LogoStore {
         fn probe(&self, _: u16, _: &str, _: i32, _: i32, _: bool) -> Option<plx_machine::machine::PosterKey> {
@@ -495,6 +504,7 @@ mod tests {
             crate::tex::Warm::Known
         }
         fn logo_failed(&self, _: u16, _: &str) -> bool {
+            self.peeks.set(self.peeks.get() + 1);
             self.failed
         }
         fn unresident(&self, _: plx_machine::machine::PosterKey, _: bool) {}
@@ -503,15 +513,44 @@ mod tests {
         }
     }
 
-    /// Draw the fallback with the store in the given state. The source is thread-local and a libtest
-    /// test owns its thread, so installing one here cannot reach another test.
+    /// Install a store in the given state and return its peek counter. The source is thread-local
+    /// and a libtest test owns its thread, so installing one here cannot reach another test.
+    fn install_store(failed: bool) -> &'static std::cell::Cell<u32> {
+        let peeks: &'static std::cell::Cell<u32> = Box::leak(Box::new(std::cell::Cell::new(0)));
+        crate::tex::install(Box::leak(Box::new(LogoStore { failed, peeks })));
+        peeks
+    }
+
+    /// Draw the fallback with the store in the given state, ARMED.
     fn drawn(rk: &str, failed: bool) -> crate::placeholder::Frame {
-        crate::tex::install(Box::leak(Box::new(LogoStore { failed })));
+        install_store(failed);
         let band = Rect::new(0.0, 0.0, 900.0, 120.0);
         crate::placeholder::capture_declared(|| {
             HeroLogo::new(0, rk, "A Title", Hero).draw(Painter::root(), band, &crate::fixture::FixtureMeasure)
         })
         .1
+    }
+
+    /// The settled-miss peek costs a lock and a slot scan per frame, and its answer only chooses
+    /// between two placeholder-accounting calls (and, in the sentinel build, the ink). With nobody
+    /// counting, which is every shipping frame, it is not asked; with a driver armed it is, once.
+    #[test]
+    fn the_settled_miss_peek_is_asked_only_when_placeholder_accounting_can_see_it() {
+        let band = Rect::new(0.0, 0.0, 900.0, 120.0);
+        for failed in [false, true] {
+            let peeks = install_store(failed);
+            crate::placeholder::declared(|| {
+                HeroLogo::new(0, "42", "A Title", Hero).draw(Painter::root(), band, &crate::fixture::FixtureMeasure)
+            });
+            let unarmed = if crate::placeholder::SENTINEL { 1 } else { 0 };
+            assert_eq!(peeks.get(), unarmed, "unarmed, failed={failed}");
+
+            let peeks = install_store(failed);
+            crate::placeholder::capture_declared(|| {
+                HeroLogo::new(0, "42", "A Title", Hero).draw(Painter::root(), band, &crate::fixture::FixtureMeasure)
+            });
+            assert_eq!(peeks.get(), 1, "armed, failed={failed}");
+        }
     }
 
     /// The logo is on its way: the hero shows its title as text in the meantime, and that is a wait.
@@ -544,7 +583,7 @@ mod tests {
     /// A text-prewarm pass draws nothing, so it counts and reports nothing.
     #[test]
     fn a_recording_pass_over_the_hero_logo_counts_nothing() {
-        crate::tex::install(Box::leak(Box::new(LogoStore { failed: false })));
+        install_store(false);
         let band = Rect::new(0.0, 0.0, 900.0, 120.0);
         let f = crate::placeholder::capture_declared(|| {
             HeroLogo::new(0, "42", "A Title", Hero).draw(Painter::recording(), band, &crate::fixture::FixtureMeasure)
