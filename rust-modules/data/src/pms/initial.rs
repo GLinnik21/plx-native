@@ -6,7 +6,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-pub const SHAPE: &str = "HubsInitialV1{version:u32,generation:u32,next_request:u32,seen:u64,seen_facts:u32,sections_generation:u32,catalog_generation:u32,sources:[{sid:u16,client:Option<u32>,token_gen:u32,handle:str,state:u32,fetching:bool,seq:u32,retry_bits:u32,retry_n:u32,last:Option<SourceBuild>}],catalog:{items:[PmsMovie],hubs:[{title:str,hub_id:str,key:str,source:str,total:u64,start:u64,len:u64}],heroes:[{idx:u64,source:str}]}}";
+pub const SHAPE: &str = "HubsInitialV1{version:u32,generation:u32,next_request:u32,seen:u64,seen_facts:u32,sections_generation:u32,catalog_generation:u32,sources:[{sid:u16,client:Option<u32>,token_gen:u32,handle:str,state:u32,fetching:bool,seq:u32,retry_bits:u32,retry_n:u32,page:Option<{id:str,key:str,start:u64}>,last:Option<SourceBuild>}],catalog:{items:[PmsMovie],hubs:[{title:str,hub_id:str,key:str,source:str,total:u64,start:u64,len:u64,offset:u64,more:bool}],heroes:[{idx:u64,source:str}]}}";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +40,8 @@ struct Source {
     retry_n: u32,
     #[serde(deserialize_with = "required_option")]
     last: Option<SourceBuild>,
+    #[serde(default)]
+    page: Option<PageQuery>,
 }
 
 fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
@@ -117,10 +119,10 @@ impl Initial {
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(state: &PmsState, adapter: &PmsAdapter) -> Self {
         let sources = state.srcs.iter().map(|s| {
-            let Src { sid, client, token_gen, handle, state, fetching, seq, retry_s, retry_n, last } = s;
+            let Src { sid, client, token_gen, handle, state, fetching, seq, retry_s, retry_n, last, page } = s;
             Source { sid: *sid, client: client.map(|c| c.instance_gen()), token_gen: *token_gen,
                 handle: handle.clone(), state: match state { HubState::Loading => 0, HubState::Ready => 1, HubState::Failed => 2 },
-                fetching: *fetching, seq: *seq, retry_bits: retry_s.to_bits(), retry_n: *retry_n, last: last.clone() }
+                fetching: *fetching, seq: *seq, retry_bits: retry_s.to_bits(), retry_n: *retry_n, last: last.clone(), page: page.clone() }
         }).collect();
         Self { version: 1, generation: state.hub_gen,
             next_request: adapter.next_request.load(Ordering::Relaxed), seen: state.seen,
@@ -138,11 +140,13 @@ impl Initial {
         for n in [seen_facts, sections_generation, catalog_generation] { w.u32(*n); }
         w.u64(sources.len() as u64);
         for s in sources {
-            let Source { sid, client, token_gen, handle, state, fetching, seq, retry_bits, retry_n, last } = s;
+            let Source { sid, client, token_gen, handle, state, fetching, seq, retry_bits, retry_n, last, page } = s;
             w.u32(sid.raw().into()); w.boolean(client.is_some());
             if let Some(id) = client { w.u32(*id); }
             w.u32(*token_gen); w.text(handle); w.u32(*state); w.boolean(*fetching);
             for n in [seq, retry_bits, retry_n] { w.u32(*n); }
+            w.boolean(page.is_some());
+            if let Some(page) = page { w.text(&page.id); w.text(&page.key); w.u64(page.start as u64); }
             w.boolean(last.is_some());
             if let Some(last) = last { source_build(last, w); }
         }
@@ -150,9 +154,9 @@ impl Initial {
         movies(items, w);
         w.u64(hubs.len() as u64);
         for h in hubs {
-            let HubRow { title, hub_id, key, source, total, start, len } = h;
+            let HubRow { title, hub_id, key, source, total, start, len, offset, more } = h;
             for text in [title, hub_id, key, source] { w.text(text); }
-            w.u64(*total as u64); w.u64(*start as u64); w.u64(*len as u64);
+            w.u64(*total as u64); w.u64(*start as u64); w.u64(*len as u64); w.u64(*offset as u64); w.boolean(*more);
         }
         w.u64(heroes.len() as u64);
         for h in heroes { let HeroSlot { idx, source } = h; w.u64(*idx as u64); w.text(source); }
@@ -165,10 +169,10 @@ fn source_build(b: &SourceBuild, w: &mut impl Sink) {
     for item in cw { let CwItem { last_viewed_at, m } = item; w.u64(*last_viewed_at as u64); movie(m, w); }
     w.u64(shelves.len() as u64);
     for shelf in shelves {
-        let Shelf { title, hub_id, key, items, total } = shelf;
+        let Shelf { title, hub_id, key, items, total, offset, end, more } = shelf;
         for text in [title, hub_id, key] { w.text(text); }
         movies(items, w);
-        w.u64(*total as u64);
+        w.u64(*total as u64); w.u64(*offset as u64); w.u64(*end as u64); w.boolean(*more);
     }
 }
 

@@ -12,6 +12,11 @@ use super::client::{Client, QueryBuilder};
 use super::models::MediaContainer;
 
 impl Client {
+    pub fn hub_items_paged(&self, key: &str, start: i64, size: i64) -> Option<MediaContainer> {
+        if !key.starts_with("/hubs/") && !key.starts_with("/library/sections/") { return None; }
+        self.get_json(&hub_page_path(key, start, size))
+    }
+
     /// GET /hubs?count=…&excludeContinueWatching=1 → `.hub[]`.
     ///
     /// **`excludeContinueWatching` is NOT a no-op**, which this call and its comment asserted for
@@ -150,6 +155,15 @@ impl Client {
     }
 }
 
+fn hub_page_path(key: &str, start: i64, size: i64) -> String {
+    let (path, query) = key.split_once('?').unwrap_or((key, ""));
+    let query = query.split('&').filter(|part| !part.is_empty())
+        .filter(|part| !matches!(part.split('=').next(), Some("X-Plex-Container-Start" | "X-Plex-Container-Size")))
+        .collect::<Vec<_>>().join("&");
+    let key = if query.is_empty() { path.to_owned() } else { format!("{path}?{query}") };
+    QueryBuilder::new(key).int("X-Plex-Container-Start", start).int("X-Plex-Container-Size", size).build()
+}
+
 /// The `/hubs/search` path, split out of [`Client::search`] so the query this app puts on the wire
 /// is host-testable without a server — the transport is what makes the method itself untestable,
 /// and both numbers here have a value (0) that the server rejects with a body this layer reports
@@ -225,5 +239,18 @@ mod tests {
             let path = search_path("wallace", limit, section);
             assert!(path.ends_with("&includeCollections=1"), "{path}");
         }
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use super::hub_page_path;
+
+    #[test]
+    fn paging_preserves_the_provider_filter_and_replaces_its_page_parameters() {
+        assert_eq!(hub_page_path("/hubs/home/recentlyAdded?type=2&sectionID=7", 12, 24),
+            "/hubs/home/recentlyAdded?type=2&sectionID=7&X-Plex-Container-Start=12&X-Plex-Container-Size=24");
+        assert_eq!(hub_page_path("/library/sections/7/all?sort=addedAt%3Adesc&X-Plex-Container-Size=12&X-Plex-Container-Start=0", 36, 24),
+            "/library/sections/7/all?sort=addedAt%3Adesc&X-Plex-Container-Start=36&X-Plex-Container-Size=24");
     }
 }

@@ -1007,10 +1007,25 @@ impl HomeScreen {
         let mut shelves = std::mem::take(&mut self.grid.shelves);
         for (row, shelf) in shelves.iter_mut().enumerate() {
             shelf.dormant(dormant);
-            let src = self.cards(view, row);
+            let top = heading_y(shelf.base_y(), shelf.heading_lift());
+            let bottom = shelf.base_y() + CARD_H + shelf.under_band();
+            let visible = !dormant && on_axis(top, bottom - top, SCR_H, 0.0);
+            let mut src = self.cards(view, row);
+            src.paging = visible && focused.is_some_and(|(r, col)|
+                r == row && col.saturating_add(6) >= self.rows[row].elems.len());
             // The shelf skips a row at exact rest with nothing focused, and parks one that has
             // settled once focus left it.
-            shelf.on(&ScreenEvent::Tick(t), cx, &src, fx);
+            let want = shelf.on(&ScreenEvent::Tick(t), cx, &src, fx);
+            let before = focused.is_some_and(|(r, col)| r == row && col < 6)
+                && self.hub(view, row).is_some_and(|hub| hub.offset > 0);
+            if visible
+                && (before || matches!(want, Some(ui_cards::CardEvent::Want(_)))) {
+                if let Some(HubIdentity::Identifier { sid, id, key }) = self.hub(view, row).and_then(|hub| hub.identity) {
+                    fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page {
+                        sid, id: id.into(), key: key.into(), before,
+                    }))));
+                }
+            }
         }
         self.grid.shelves = shelves;
         let revealed = focused.map(|(row, _)| (row, Some(row)))
@@ -1675,7 +1690,7 @@ impl HomeScreen {
 
     /// Row `row`'s cards as `cards::Shelf` reads them.
     fn cards<'a>(&'a self, view: HubsView<'a>, row: usize) -> HomeCards<'a> {
-        HomeCards { home: self, view, row, hover: Hover::Focus }
+        HomeCards { paging: false, home: self, view, row, hover: Hover::Focus }
     }
 
     fn draw_status(&self, view: HubsView<'_>, env: &Env, p: Painter, focus: Option<Located>) {
@@ -2944,6 +2959,7 @@ struct HomeCards<'a> {
     row: usize,
     /// How the row's stops treat a passing pointer (one answer for the row, it shares one y).
     hover: Hover,
+    paging: bool,
 }
 
 impl<'a> HomeCards<'a> {
@@ -2953,6 +2969,9 @@ impl<'a> HomeCards<'a> {
 }
 
 impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
+    fn more(&self) -> bool {
+        self.paging && self.home.hub(self.view, self.row).is_some_and(|hub| hub.more)
+    }
     fn len(&self) -> usize {
         self.home.rows.get(self.row).map_or(0, |r| r.elems.len())
     }

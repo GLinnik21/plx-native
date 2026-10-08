@@ -87,7 +87,7 @@ fn a_deck_removal_leaves_the_deck_only_and_keeps_the_resume_point() {
             hub_id: "home.movies.recent".into(),
             key: String::new(),
             items: vec![started(0, "7")],
-            total: 0,
+            total: 0, offset: 0, end: 0, more: false,
         }],
     };
 

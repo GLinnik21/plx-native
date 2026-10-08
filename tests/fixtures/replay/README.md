@@ -361,3 +361,12 @@ modes), so nothing could be compared. They were re-recorded with `tests/focusfp.
 1,6,12`, `tools/plxnative-rec check`, then `tools/plxnative-rec rerecord` (shape `(3,
 3109788404986066319)` to `(3, 14333139794472628045)`, anchors preserved) and replayed SAME in
 Targets and Resolve with zero difference counters.
+
+Recently Added paging adds the page cursor and pending request to the recorded Home state.
+The three previous anchors were refused in both replay modes after the shape changed from
+14333139794472628045 to 6411129155501563480. All three were recorded again against the synthetic
+server and installed with `tools/plxnative-rec rerecord`, with their anchor flags retained.
+This macOS display runs at 120 Hz. The recordings use shorter idle intervals and a 350 ms
+key interval to stay within the replay memory budget. A host test checks the committed
+recordings' initial hashes and request validation. Targets and Resolve replay checks also
+verify the recorded behavior.

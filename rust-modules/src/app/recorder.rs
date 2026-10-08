@@ -2368,7 +2368,7 @@ mod tests {
         // **A collection shelf's total moves it to this value.** A Home shelf and a hub row carry
         // the hub's `totalSize` (the linked heading's "· N"), in both the hubs record and the
         // hubs initial state.
-        assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0x30c2_e571_b86e_d7b6);
+        assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0xdfca_e6c0_6f49_7ac5);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result
@@ -2587,6 +2587,7 @@ mod tests {
         const PRE_TOTAL_INITIAL_SHAPE: &str = "HubsInitialV1{version:u32,generation:u32,next_request:u32,seen:u64,seen_facts:u32,sections_generation:u32,catalog_generation:u32,sources:[{sid:u16,client:Option<u32>,token_gen:u32,handle:str,state:u32,fetching:bool,seq:u32,retry_bits:u32,retry_n:u32,last:Option<SourceBuild>}],catalog:{items:[PmsMovie],hubs:[{title:str,hub_id:str,key:str,source:str,start:u64,len:u64}],heroes:[{idx:u64,source:str}]}}";
         let initial = pre_settings.iter().position(|shape| *shape == plx_data::pms::initial::SHAPE).unwrap();
         pre_settings[initial] = PRE_TOTAL_INITIAL_SHAPE;
+        pre_settings[APP_SHAPES.len() - 1] = "HomeAdmissionV1{frame:u64,ordered_request:Home|Discovery,epoch:u32,sid:u16,client:u32,token_gen:u32,admitted:bool}";
         pre_settings[APP_SHAPES.len() - 2] = super::super::bootstrap::PRE_SETTINGS_SHAPE;
         assert_eq!(plx_ui::rec::state_fp(&pre_settings), 0x9f03_9e4f_2ff6_4d19,
             "retain the pre-typed-Settings census");
@@ -2650,5 +2651,26 @@ mod tests {
             .filter(|line| !line.is_empty()).map(|line| serde_json::from_slice(line).unwrap()).collect();
         assert!(rows.iter().any(|row| row["t"] == "stopped" && row["why"] == "unsupported"));
         assert!(!rows.iter().any(|row| row["t"] == "eff"));
+    }
+}
+
+#[cfg(test)]
+mod fixture_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn committed_recordings_keep_valid_page_requests_and_initial_hashes() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/replay");
+        for name in ["1-boot-home-chip-grid", "6-settings-family", "12-filmography-detail-return"] {
+            let dir = root.join(name);
+            let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();
+            let segment = std::fs::read(dir.join("rec-0000.jsonl")).unwrap();
+            let mut recording = Recording::parse(&manifest, &[segment.as_slice()], state_fp()).unwrap();
+            let initial = super::super::bootstrap::Initial::decode(recording.header.init_data.clone(), recording.header.init_hash)
+                .expect("recorded initial state must retain its canonical hash");
+            // Host unit tests omit the simulator feature; this check covers the wire preflight.
+            recording.header.features = features();
+            assert_eq!(validate_controlled(&recording, &initial), Ok(()), "{name}");
+        }
     }
 }

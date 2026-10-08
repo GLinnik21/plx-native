@@ -166,6 +166,8 @@ pub struct SortOption {
 
 #[derive(Deserialize, Default)]
 pub struct Hub {
+    #[serde(default, deserialize_with = "de_bool")]
+    pub more: bool,
     #[serde(rename = "type", default)]
     pub kind: String,
     #[serde(rename = "hubIdentifier", default)]

@@ -256,11 +256,20 @@ Verified hub list (`MediaContainer.Hub[]`), each hub has
 | `custom.collection.*` | collection shelves | `/library/collections/{id}/children` |
 
 **`/hubs` has no paging** (`docs/plex-openapi.json`: its only parameters are `count`, `onlyTransient`
-and `identifier`), so a server that promotes many libraries and collections answers with all of them
-in one response and the client cannot ask for "the next page of hubs". Home therefore takes every
-hub the server sends, 12 cards per hub (`count=12`), and bounds only the merged catalog:
-`pms.rs::HOME_CARDS_MAX` = 2,048 cards (about 170 full rows), whole shelves dropped from the tail of
-a source when it is exceeded, logged as `hubs: card bound 2048 reached`.
+and `identifier`). Home requests all rows, with 12 preview cards per row. Recently Added rows
+load more items through their provider's listing `key`, with both `X-Plex-Container-Start` and
+`X-Plex-Container-Size`. The client preserves the key's type, library, and sort parameters.
+
+Home keeps a moving window of at most 24 cards per Recently Added row, with a 12-item overlap.
+It requests another window near the visible end and fetches an earlier window when the user
+scrolls back. Requests run outside the drawing loop. Failed requests retain the current cards
+and use the existing retry delay. Profile changes and authoritative refreshes reject old results.
+The shared shelf widget draws only visible cards. Paging preserves the banner's current items.
+
+`pms.rs::HOME_CARDS_MAX` is a 2,048-slot preview budget. A Recently Added window spends at most
+12 preview slots. Other rows spend their published card count. Thus published rows hold at most
+4,096 cards, plus at most eight retained banner items. Whole rows beyond the preview budget
+are omitted from the tail of a source and logged as `hubs: card bound 2048 reached`.
 
 Verified Continue Watching item (movie, trimmed):
 
