@@ -94,12 +94,14 @@ class Manifests(unittest.TestCase):
 
     def test_every_hero_candidate_has_a_logo_cut_from_its_own_poster(self):
         # The home hero draws a film's clearLogo; a candidate without one falls back to text.
-        _, catalog = tool.load()
+        assets, catalog = tool.load()
         films = {m["id"]: m for m in catalog["movies"]}
         for film in (catalog["hero"], *catalog["hero_alternatives"]):
             with self.subTest(hero=film):
                 self.assertIn("logo", films[film])
-                self.assertEqual(films[film]["logo"]["asset"], films[film]["poster"]["asset"])
+                logo = films[film]["logo"]["asset"]
+                if logo != films[film]["poster"]["asset"]:  # else the film's own official title card
+                    self.assertEqual((assets[logo]["kind"], assets[logo]["of"]), ("logo-title-card", film))
 
     def test_check_refuses_a_logo_cut_from_another_films_poster(self):
         assets, catalog = tool.load()
@@ -202,8 +204,7 @@ class Completeness(unittest.TestCase):
     # the list's own file: growing the list means editing this table, which a reviewer sees. When a
     # content PR fixes a gap it deletes the entry from `pending.json` AND lowers the number here;
     # a category that reaches zero leaves the table.
-    PENDING_CEILING = {"backdrop": 1, "country": 1, "creators": 1, "hero_art": 1,
-                       "logo": 1, "poster": 1, "writers": 1}
+    PENDING_CEILING = {"country": 1, "creators": 1, "writers": 1}
 
     CITED = {"source": "https://www.wikidata.org/wiki/Q42", "retrieved": "2026-10-07"}
 
@@ -223,11 +224,34 @@ class Completeness(unittest.TestCase):
         gaps = tool.complete_gaps(self.assets, dict(self.catalog, movies=movies)).get(key, [])
         return [g for g in gaps if g != "hero_art"]
 
-    def test_sintel_and_tears_of_steel_are_complete_and_sprite_fright_lacks_a_hero_frame(self):
+    def test_sintel_and_tears_of_steel_are_complete_and_sprite_fright_is_kept_out_of_the_hero_pool(self):
         gaps = tool.complete_gaps(self.assets, self.catalog)
         self.assertNotIn("sintel", gaps)
         self.assertNotIn("tears-of-steel", gaps)
-        self.assertEqual(gaps["sprite-fright"], ["hero_art"])
+        # Sprite Fright has no still that clears the hero zones, so it is `not_hero`, not a gap
+        sprite = next(m for m in self.catalog["movies"] if m["id"] == "sprite-fright")
+        self.assertTrue(sprite["not_hero"])
+        self.assertNotIn("sprite-fright", gaps)
+        self.assertNotIn("sprite-fright", tool.hero_pool(self.catalog))
+
+    def test_home_and_the_movies_tab_never_show_one_poster_in_both_rows_they_stack(self):
+        # Continue Watching sits directly above Recently Added on Home and on the Movies tab. Seven
+        # cards fill the row, so the first seven of each must be different films with real posters.
+        cat = self.catalog
+        movies = {m["id"]: m for m in cat["movies"]}
+        cw = [e["item"] for e in cat["continue_watching"] if e["item"] in movies]
+        ra = [i for i in cat["added_order"] if i in movies]
+        self.assertGreaterEqual(len(cw), 7, "the Movies tab's Continue Watching row must fill the width")
+        first_cw, first_ra = cw[:7], ra[:7]
+        self.assertEqual(first_cw[0], cat["hero"])
+        self.assertIn("Blender Open Movies", movies[first_cw[1]].get("collections", []))
+        self.assertEqual(set(first_cw) & set(first_ra), set())
+        for film in first_cw + first_ra:
+            with self.subTest(film=film):
+                self.assertFalse(movies[film].get("still_as_poster"), "a still is not a poster")
+        # a show's episode is in the row too, but past the seven visible cards
+        episodes = [n for n, e in enumerate(cat["continue_watching"]) if e["item"] not in movies]
+        self.assertTrue(all(n >= 7 for n in episodes))
 
     def test_each_required_field_is_a_gap_when_absent(self):
         # field removed from a complete title -> the category it is reported under
@@ -561,8 +585,11 @@ class HeroGeometry(unittest.TestCase):
         self.assertFalse(self._gap(2048, 872, None, eligible=False, anchor="right"))
 
     def test_a_title_with_no_art_is_a_backdrop_gap_not_a_hero_art_gap(self):
-        gaps = tool.complete_gaps(self.assets, self.catalog)
-        self.assertEqual(gaps["sherlock-holmes"], ["backdrop", "logo", "poster"])
+        movies = copy.deepcopy(self.catalog["movies"])
+        sintel = next(m for m in movies if m["id"] == "sintel")
+        del sintel["art"]
+        gaps = tool.complete_gaps(self.assets, dict(self.catalog, movies=movies))
+        self.assertEqual(gaps["sintel"], ["backdrop"])
 
     def test_a_title_with_art_is_a_hero_art_gap_only_while_it_is_hero_eligible_and_lacks_a_passing_subject(self):
         gaps = tool.complete_gaps(self.assets, self.catalog)
@@ -573,18 +600,20 @@ class HeroGeometry(unittest.TestCase):
             with self.subTest(title=m["id"]):
                 verdict = tool.hero_geometry(self.assets, m)["verdict"]
                 self.assertEqual("hero_art" in gaps.get(m["id"], []), m["id"] in eligible and verdict == "fail")
-        # the one Blender film still waiting for a box (it sits in the app's pool, so cannot be flagged)
-        self.assertEqual(sorted(k for k, g in gaps.items() if "hero_art" in g), ["sprite-fright"])
+        # every title the home hero can show declares a passing box, so none is a gap
+        self.assertEqual(sorted(k for k, g in gaps.items() if "hero_art" in g), [])
 
     def test_a_passing_declared_subject_clears_the_pending_entry(self):
         movies = copy.deepcopy(self.catalog["movies"])
-        sprite = next(m for m in movies if m["id"] == "sprite-fright")
-        self.assertEqual((sprite["art"]["mode"], sprite["art"]["anchor"]), ("cover", "right"))
-        sprite["art"]["subject"] = [1280, 80, 1750, 540]  # 1920x850 source -> frame [1106, 102, 1703, 686]
-        cat = dict(self.catalog, movies=movies)
-        self.assertNotIn("sprite-fright", tool.complete_gaps(self.assets, cat))
-        with self.assertRaises(AssertionError) as e:  # ...and the now-stale pending entry is refused
-            tool.check_complete(self.assets, cat)
+        charge = next(m for m in movies if m["id"] == "charge")
+        self.assertEqual((charge["art"]["mode"], charge["art"]["anchor"]), ("cover", "right"))
+        del charge["art"]["subject"]
+        undeclared = dict(self.catalog, movies=movies)
+        self.assertEqual(tool.complete_gaps(self.assets, undeclared)["charge"], ["hero_art"])
+        pending = dict(tool.load_pending(), charge=["hero_art"])
+        tool.check_complete(self.assets, undeclared, pending=pending)  # listed, so the gate holds
+        with self.assertRaises(AssertionError) as e:  # declared and passing, the entry is stale: refused
+            tool.check_complete(self.assets, self.catalog, pending=pending)
         self.assertIn("hero_art", str(e.exception))
 
     def test_the_subject_does_not_change_the_derive_stamp(self):
@@ -704,12 +733,12 @@ class HeroGeometry(unittest.TestCase):
     def test_hero_report_prints_each_eligible_title_offline(self):
         r = self._run("hero-report")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertRegex(r.stdout, r"(?m)^sprite-fright .*\bfail no-subject\b")
-        for key in ("sintel", "tears-of-steel", "spring", "charge", "cosmos-laundromat", "hero", "singularity", "metropolis", "the-general",
-                    "safety-last", "the-daily-dweebs"):
+        for key in ("sintel", "tears-of-steel", "spring", "charge", "cosmos-laundromat", "hero", "metropolis",
+                    "safety-last", "the-daily-dweebs", "the-general", "singularity"):
             self.assertRegex(r.stdout, rf"(?m)^{key} .*\bpass\b")
-        self.assertRegex(r.stdout, r"(?m)^sherlock-holmes .*\bskip\b")
-        self.assertNotRegex(r.stdout, r"(?m)^wing-it ")  # `not_hero` titles are not in the report
+        for key in ("wing-it", "sprite-fright"):  # `not_hero` titles are not in the report
+            self.assertNotRegex(r.stdout, rf"(?m)^{key} ")
+        self.assertIn("hero art: 11 pass, 0 fail, 0 skip", r.stdout)
         self.assertIn("home text column", r.stdout)  # the zone table, with its pins
         self.assertIn("rust-modules/ui/src/landing_hero.rs", r.stdout)
 
@@ -1599,7 +1628,7 @@ class Catalog(unittest.TestCase):
         self.assertEqual(self.search("in")["movie"], [])
         # Every word of the query must begin a word of the name, in any order.
         self.assertEqual(self.search("st te")["movie"], ["Tears of Steel"])
-        self.assertEqual(self.search("sherlock holmes")["show"], ["Sherlock Holmes"])
+        self.assertEqual(self.search("hubble")["show"], ["Hubblecast"])
         # People and collections match by the same rule.
         self.assertIn("Fritz Lang", self.search("fr")["actor"])
         self.assertEqual(self.search("si")["collection"], ["Silent Classics"])
