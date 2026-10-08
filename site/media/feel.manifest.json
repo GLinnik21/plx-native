@@ -1,8 +1,8 @@
 {
  "artifacts": {
   "contact-sheet.jpg": {
-   "bytes": 838708,
-   "sha256": "e2600134a225eafd082d654290124715c8102bebc47b040b67878d913753d806"
+   "bytes": 838685,
+   "sha256": "e4509b94842a520e99f27dd00c5c09ea37f81e1fd14349995ce1147aa33d99ba"
   },
   "derived.sha256": {
    "bytes": 12832,
@@ -10,27 +10,27 @@
   },
   "dump-a.json": {
    "bytes": 318,
-   "sha256": "ade23d5a8330625b428fe11150f8d1d0fc20340badccf78fc51a056c7fabe169"
+   "sha256": "d98e30c92dbeaa5277fe2188946520426822cf4591fe1a23bfcedf651e964c2b"
   },
   "dump-b.json": {
    "bytes": 302,
-   "sha256": "28af8d3d2b35c55d08ac9084a3d64f9b820f389207ed0317adac9abaf3aa8cc9"
+   "sha256": "32a0d092d7426eef2b22ddcf703c350827c091bd7a416ed5c4e6e46acaec9a88"
   },
   "frames.tsv": {
    "bytes": 50759,
-   "sha256": "a02ed0b77a5a0f5f74b3718be7c6125b64a17ebc902d1609051b3e3c41d183b3"
+   "sha256": "3b52417049374f5c07cd4c89a4072eeed405a21f656f8cf02df87c5c00106014"
   },
   "gates.json": {
-   "bytes": 6269,
-   "sha256": "e921144421e03a048800726af054cacddb0a8082d2c0584e2fc6ab0b57d9b3a8"
+   "bytes": 6267,
+   "sha256": "32c12646bea2a0692e31b53d483f271328b3dd5de85976ae1883989a5890b9e4"
   },
   "master.framemd5": {
    "bytes": 131496,
-   "sha256": "8b36f013d8513ec5138355771a297915022bdf7f395b2c3f3dc44d3f71cc97e0"
+   "sha256": "7c405ca1dc5e35effcacf290c4a85c78cfcec1ce91665a7fd648f39190745eb3"
   },
   "render.json": {
    "bytes": 5811,
-   "sha256": "f0f11c561cb53313b3ba615693b9142f0dd7014bcd6998522f9f75453ec9cf26"
+   "sha256": "fb8a813c4efcc949056b7bd1cf233bbbd2a3be4e21a912abcd4c1695473730dc"
   }
  },
  "catalog_sha256": "60621be5561022e362fab7aeaac116f1646bc508f2192ee5339c522de34f5465",
@@ -54,7 +54,7 @@
    "renderer": "llvmpipe (LLVM 20.1.2, 256 bits)",
    "version": "4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4"
   },
-  "glxinfo": "name of display: :99\ndisplay: :99  screen: 0\ndirect rendering: Yes\nExtended renderer info (GLX_MESA_query_renderer):\n    Vendor: Mesa (0xffffffff)\n    Device: llvmpipe (LLVM 20.1.2, 256 bits) (0xffffffff)\n    Version: 25.2.8\n    Accelerated: no\n    Video memory: 15989MB\n    Unified memory: yes\n    Preferred profile: core (0x1)\n    Max core profile version: 4.5\n    Max compat profile version: 4.5\n    Max GLES1 profile version: 1.1\n    Max GLES[23] profile version: 3.2\nMemory info (GL_ATI_meminfo):\n    VBO free memory - total: 0 MB, largest block: 0 MB\n    VBO free aux. memory - total: 14915 MB, largest block: 14915 MB\n    Texture free memory - total: 0 MB, largest block: 0 MB\n    Texture free aux. memory - total: 14915 MB, largest block: 14915 MB\n    Renderbuffer free memory - total: 0 MB, largest block: 0 MB\n    Renderbuffer free aux. memory - total: 14915 MB, largest block: 14915 MB\nMemory info (GL_NVX_gpu_memory_info):\n    Dedicated video memory: 0 MB\n    Total available memory: 15989 MB\n    Currently available dedicated video memory: 0 MB\nOpenGL vendor string: Mesa\nOpenGL renderer string: llvmpipe (LLVM 20.1.2, 256 bits)\nOpenGL core profile version string: 4.5 (Core Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL core profile shading language version string: 4.50\nOpenGL core profile context flags: (none)\nOpenGL core profile profile mask: core profile\n\nOpenGL version string: 4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL shading language version string: 4.50\nOpenGL context flags: (none)\nOpenGL profile mask: compatibility profile\n\nOpenGL ES profile version string: OpenGL ES 3.2 Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL ES profile shading language version string: OpenGL ES GLSL ES 3.20",
+  "glxinfo": "name of display: :99\ndisplay: :99  screen: 0\ndirect rendering: Yes\nExtended renderer info (GLX_MESA_query_renderer):\n    Vendor: Mesa (0xffffffff)\n    Device: llvmpipe (LLVM 20.1.2, 256 bits) (0xffffffff)\n    Version: 25.2.8\n    Accelerated: no\n    Video memory: 15989MB\n    Unified memory: yes\n    Preferred profile: core (0x1)\n    Max core profile version: 4.5\n    Max compat profile version: 4.5\n    Max GLES1 profile version: 1.1\n    Max GLES[23] profile version: 3.2\nMemory info (GL_ATI_meminfo):\n    VBO free memory - total: 31 MB, largest block: 31 MB\n    VBO free aux. memory - total: 14921 MB, largest block: 14921 MB\n    Texture free memory - total: 31 MB, largest block: 31 MB\n    Texture free aux. memory - total: 14921 MB, largest block: 14921 MB\n    Renderbuffer free memory - total: 31 MB, largest block: 31 MB\n    Renderbuffer free aux. memory - total: 14921 MB, largest block: 14921 MB\nMemory info (GL_NVX_gpu_memory_info):\n    Dedicated video memory: 4293576500 MB\n    Total available memory: 4293592489 MB\n    Currently available dedicated video memory: 31 MB\nOpenGL vendor string: Mesa\nOpenGL renderer string: llvmpipe (LLVM 20.1.2, 256 bits)\nOpenGL core profile version string: 4.5 (Core Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL core profile shading language version string: 4.50\nOpenGL core profile context flags: (none)\nOpenGL core profile profile mask: core profile\n\nOpenGL version string: 4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL shading language version string: 4.50\nOpenGL context flags: (none)\nOpenGL profile mask: compatibility profile\n\nOpenGL ES profile version string: OpenGL ES 3.2 Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL ES profile shading language version string: OpenGL ES GLSL ES 3.20",
   "kernel": "Linux 6.17.0-1022-azure",
   "os": "Ubuntu 24.04.5 LTS",
   "packages": {
@@ -110,7 +110,7 @@
     "status": "pass"
    },
    {
-    "detail": "both renders agree on 1641 frames (n, t_ms, xxh3, debt: 694a024effb2)",
+    "detail": "both renders agree on 1641 frames (n, t_ms, xxh3, debt: e130db5f9c1a)",
     "name": "run-twice",
     "status": "pass"
    },
@@ -140,32 +140,32 @@
     "status": "pass"
    },
    {
-    "detail": "4,402,370 bytes is 1.18x today's 3,720,930 (limit 1.25x)",
+    "detail": "4,445,548 bytes is 1.01x today's 4,402,370 (limit 1.25x)",
     "name": "size/feel-720p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "4,268,004 bytes is 0.72x today's 5,961,659 (limit 1.25x)",
+    "detail": "4,367,090 bytes is 1.02x today's 4,268,004 (limit 1.25x)",
     "name": "size/feel-720p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "8,276,609 bytes is 1.07x today's 7,743,989 (limit 1.25x)",
+    "detail": "8,309,225 bytes is 1.00x today's 8,276,609 (limit 1.25x)",
     "name": "size/feel-1080p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "8,075,130 bytes is 0.68x today's 11,883,745 (limit 1.25x)",
+    "detail": "8,306,628 bytes is 1.03x today's 8,075,130 (limit 1.25x)",
     "name": "size/feel-1080p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "215,941 bytes is 0.78x today's 278,321 (limit 1.25x)",
+    "detail": "215,941 bytes is 1.00x today's 215,941 (limit 1.25x)",
     "name": "size/feel-poster.jpg",
     "status": "pass"
    },
    {
-    "detail": "78,468 bytes is 0.76x today's 102,805 (limit 1.25x)",
+    "detail": "78,468 bytes is 1.00x today's 78,468 (limit 1.25x)",
     "name": "size/feel-poster-narrow.jpg",
     "status": "pass"
    },
@@ -175,17 +175,17 @@
     "status": "pass"
    },
    {
-    "detail": "min 0.9756 (floor 0.97), mean 0.9983 (floor 0.985)",
+    "detail": "min 0.9758 (floor 0.97), mean 0.9983 (floor 0.985)",
     "name": "ssim/feel-720p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "mean 97.65, min 84.59 (provisional floors)",
+    "detail": "mean 97.66, min 84.59 (provisional floors)",
     "name": "vmaf/feel-720p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "flat-pair fraction 0.551 vs master 0.545: excess +0.007 (limit 0.1, provisional ROI (0, 446, 448, 216))",
+    "detail": "flat-pair fraction 0.551 vs master 0.545: excess +0.006 (limit 0.1, provisional ROI (0, 446, 448, 216))",
     "name": "banding/feel-720p60.av1.mp4",
     "status": "pass"
    },
@@ -200,17 +200,17 @@
     "status": "pass"
    },
    {
-    "detail": "min 0.9878 (floor 0.97), mean 0.9953 (floor 0.985)",
+    "detail": "min 0.9877 (floor 0.97), mean 0.9952 (floor 0.985)",
     "name": "ssim/feel-720p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "mean 97.05, min 89.40 (provisional floors)",
+    "detail": "mean 97.07, min 89.40 (provisional floors)",
     "name": "vmaf/feel-720p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "flat-pair fraction 0.571 vs master 0.545: excess +0.027 (limit 0.1, provisional ROI (0, 446, 448, 216))",
+    "detail": "flat-pair fraction 0.571 vs master 0.545: excess +0.026 (limit 0.1, provisional ROI (0, 446, 448, 216))",
     "name": "banding/feel-720p60.h264.mp4",
     "status": "pass"
    },
@@ -225,17 +225,17 @@
     "status": "pass"
    },
    {
-    "detail": "min 0.9801 (floor 0.97), mean 0.9982 (floor 0.985)",
+    "detail": "min 0.9804 (floor 0.97), mean 0.9981 (floor 0.985)",
     "name": "ssim/feel-1080p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "mean 97.63, min 83.40 (provisional floors)",
+    "detail": "mean 97.64, min 83.68 (provisional floors)",
     "name": "vmaf/feel-1080p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "flat-pair fraction 0.630 vs master 0.609: excess +0.021 (limit 0.1, provisional ROI (0, 668, 672, 324))",
+    "detail": "flat-pair fraction 0.629 vs master 0.609: excess +0.021 (limit 0.1, provisional ROI (0, 668, 672, 324))",
     "name": "banding/feel-1080p60.av1.mp4",
     "status": "pass"
    },
@@ -250,17 +250,17 @@
     "status": "pass"
    },
    {
-    "detail": "min 0.9890 (floor 0.97), mean 0.9958 (floor 0.985)",
+    "detail": "min 0.9856 (floor 0.97), mean 0.9958 (floor 0.985)",
     "name": "ssim/feel-1080p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "mean 97.07, min 89.85 (provisional floors)",
+    "detail": "mean 97.09, min 89.78 (provisional floors)",
     "name": "vmaf/feel-1080p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "flat-pair fraction 0.633 vs master 0.609: excess +0.024 (limit 0.1, provisional ROI (0, 668, 672, 324))",
+    "detail": "flat-pair fraction 0.632 vs master 0.609: excess +0.023 (limit 0.1, provisional ROI (0, 668, 672, 324))",
     "name": "banding/feel-1080p60.h264.mp4",
     "status": "pass"
    },
@@ -322,20 +322,20 @@
  ],
  "outputs": {
   "feel-1080p60.av1.mp4": {
-   "bytes": 8276609,
-   "sha256": "51e333d24351916f8310328b8f318d25e35e8e3a874ddc30ae88dbee08bf8b2d"
+   "bytes": 8309225,
+   "sha256": "e66e019630db9aad27747461b4bfbf0f3da85ee5dad4d8c424d1ee39bc64b934"
   },
   "feel-1080p60.h264.mp4": {
-   "bytes": 8075130,
-   "sha256": "2a5e53701bb9fea8625478253f2cb1cd19244c13cb5134f425fd4784cd79eb79"
+   "bytes": 8306628,
+   "sha256": "fe105b26939f5705b378bf6ab2885077a3f701005a9d7721be0b1fd45366f6b4"
   },
   "feel-720p60.av1.mp4": {
-   "bytes": 4402370,
-   "sha256": "470081b094d8405379f1a2f70a4541791ff444c75d206689251a38e21edbb883"
+   "bytes": 4445548,
+   "sha256": "1e86a2bd4c351994c2fd0aedcb1ee865d4416d5a1f1a990a6db4e4e172e89c18"
   },
   "feel-720p60.h264.mp4": {
-   "bytes": 4268004,
-   "sha256": "9b987b95b4c910642192df46780a9b99352e9dddd26c551311e5b544f755bc13"
+   "bytes": 4367090,
+   "sha256": "0f64f10e6ea719a6c7b1896687761c037701f84e33d5cc25a43109921c63d7b7"
   },
   "feel-poster-narrow.jpg": {
    "bytes": 78468,
@@ -353,16 +353,16 @@
    "hold_reasons": {
     "carried-work": 4,
     "claim:browse": 1,
-    "placeholder": 39,
-    "settling": 1765,
-    "source-busy": 241,
-    "tex-pending": 2
+    "placeholder": 35,
+    "settling": 1764,
+    "source-busy": 248,
+    "tex-pending": 1
    },
-   "holds": 2014,
-   "iterations": 3775,
+   "holds": 2020,
+   "iterations": 3781,
    "preroll": 120,
    "unconverted_takes": [],
-   "wall_ms": 160126
+   "wall_ms": 158647
   },
   "frames": {
    "count": 1641,
@@ -643,7 +643,7 @@
       1283,
       1295
      ],
-     "max_delta": 1,
+     "max_delta": 2,
      "moved": 0.0
     },
     {
@@ -678,10 +678,10 @@
    "script": "storyboard",
    "triggers": {}
   },
-  "storyboard_sha256": "7fb67ee2b3d698f5fa3bd5c202e453912ded9c41a4e75a3ac3487b4383c8234a"
+  "storyboard_sha256": "b93f8aa1de936063883ef7fdc578e26facf0eff680b4638a8e1f5f0cae61dbcf"
  },
  "schema": 1,
- "storyboard_sha256": "7fb67ee2b3d698f5fa3bd5c202e453912ded9c41a4e75a3ac3487b4383c8234a",
+ "storyboard_sha256": "b93f8aa1de936063883ef7fdc578e26facf0eff680b4638a8e1f5f0cae61dbcf",
  "tools": {
   "ffmpeg": {
    "archive_sha256": "c03023a986dec781a5ab6bb8821d6544b40eb86e96f34283880a0fae8105da67",
@@ -695,9 +695,9 @@
  "tree_dirty": false,
  "tree_hash": {
   "assets": "d1cad6f4b465b935156793b577f2e743100e4ce0",
-  "combined": "55e00d76d4a089664b7e9a7d9cc1f64022b4326c69bb6c9bd8dbc3b2305ef3f5",
-  "locales": "61e42783503619f6e0166e0711a32dfe29f2f00c",
-  "rust-modules": "4660cc9740a3d6f94bc3bb3f045826c6f366e751",
+  "combined": "268fdff4f841accbf8c7580427f86e44d26924ab4e9e15d0c36fc37a340eddf1",
+  "locales": "b9464e8179cc4debe1e893b4576979d0284fc4d4",
+  "rust-modules": "660b690737c41ff1f5b6cb383b09e2c41798d4c5",
   "src": "ef3ecd2bd458671ce529974f0f9094c4437c8b93",
   "tests/video": "a4c28579d517bbeeda316a98de9196bbfd17cc6f"
  }
