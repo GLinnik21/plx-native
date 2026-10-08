@@ -580,6 +580,22 @@ impl Xfer {
     }
 }
 
+/// What a transfer that died AFTER its headers were validated leaves behind (issue #504): the
+/// libcurl result, how much of the body arrived and how long the transfer had lived. Closed facts
+/// only — no URL, no host — so `ff.rs` can carry them to the event log and, bucketed, to the
+/// handled playback error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BodyFailure {
+    /// The `CURLcode`.
+    pub rc: c_int,
+    /// Body bytes the transfer delivered before it died, buffered ones included.
+    pub bytes: u64,
+    /// Milliseconds from the transfer's start to its end.
+    pub age_ms: u64,
+    /// A reopen (libavformat's `seek_cb` heal, or an app seek) was tried after this and failed.
+    pub reopen_failed: bool,
+}
+
 /// One remote file, pulled over http(s) by byte range.
 ///
 /// Lives on the demux thread for its whole life — created there, read there, dropped there. Only
@@ -634,6 +650,17 @@ pub struct CurlSource {
     failed: bool,
     /// The multi handle itself failed and must be rebuilt before a later seek may retry.
     multi_failed: bool,
+    /// When the CURRENT transfer was started (reset with it): the clock a mid-body failure line
+    /// reports its age against, so a fixed-timeout cut reads as a round number of seconds.
+    started: std::time::Instant,
+    /// Where the current transfer began, so the bytes it delivered are `off - began_off`.
+    began_off: i64,
+    /// Why the last transfer died after its headers were validated, kept until a reopen recovers.
+    /// NOT cleared by [`start`](Self::start): libavformat heals a failed read by calling `seek_cb`,
+    /// which restarts the transfer, and `ff.rs` reads the cause after that.
+    failure: Option<BodyFailure>,
+    /// [`failure`](Self::failure) has not yet been answered by a successful reopen.
+    heal_pending: bool,
     /// Whether the attached transfer has been validated at the byte offset in [`Self::off`].
     /// A failed seek leaves this false: reads fail, but a later seek may still recover.
     readable: bool,
@@ -816,6 +843,10 @@ impl CurlSource {
             rc: 0,
             failed: false,
             multi_failed: false,
+            started: std::time::Instant::now(),
+            began_off: 0,
+            failure: None,
+            heal_pending: false,
             readable: false,
             poisoned: false,
         });
@@ -1000,6 +1031,7 @@ impl CurlSource {
         self.rc = 0;
         self.failed = false;
         self.readable = false;
+        self.started = std::time::Instant::now();
         self.hop_url = hop.url.clone();
         if self.abort.is_set() {
             return Err(OpenErr::Aborted);
@@ -1390,6 +1422,7 @@ impl CurlSource {
             }
         }
         self.off = at;
+        self.began_off = at;
         // Size, in the order of authority: `Content-Range`'s total names the whole resource;
         // otherwise this response's `Content-Length` plus where it started does.
         self.size = if self.xfer.range_total >= 0 {
@@ -1470,6 +1503,12 @@ impl CurlSource {
             }
         }
         self.done = true;
+        // A transfer that died AFTER `validate` passed it is the one nothing used to explain: the
+        // header phase logs its own failure, and a read of a dead source only returns -1. The
+        // header loop and a redirect's body run with `readable` false, so they never land here.
+        if self.failed && self.readable {
+            self.note_body_failure();
+        }
     }
 
     /// Free the resolve list of a handle that is already gone (cleaned up, or never attached).
@@ -1658,13 +1697,28 @@ impl CurlSource {
     /// same invariant `ff.rs`'s `seek_cb` carries for the socket source, and for the same reason.
     pub fn seek(&mut self, to: i64) -> bool {
         if self.abort.is_set() || self.poisoned {
+            if self.poisoned && !self.abort.is_set() {
+                self.note_reopen_refused(to, "the source refuses ranges");
+            }
             return false;
         }
         if to < 0 {
             return false;
         }
+        // A reopen that follows a body failure is libavformat healing it (or the viewer seeking
+        // away from it); the line says so, with the cause, so the log shows whether the heal was
+        // tried and how it ended. Any other seek keeps the one line it always had.
+        let after = self.failure.filter(|_| self.heal_pending).map(|f| f.rc);
         match self.start(to) {
-            Ok(()) => true,
+            Ok(()) => {
+                if let Some(rc) = after {
+                    crate::player::log(&format!(
+                        "curlio: reopened at {to} after body failure rc={rc}"
+                    ));
+                    self.heal_pending = false;
+                }
+                true
+            }
             Err(e) => {
                 // Detach whatever the failed attempt left attached. `start` cleared `readable`, so
                 // reads fail rather than reporting clean EOF, but another seek may recover.
@@ -1674,10 +1728,66 @@ impl CurlSource {
                 if e == OpenErr::RangeIgnored {
                     self.poisoned = true;
                 }
-                crate::player::log(&format!("curlio: seek to {to} failed: {e:?}"));
+                match after {
+                    Some(rc) => {
+                        if let Some(f) = self.failure.as_mut() {
+                            f.reopen_failed = true;
+                        }
+                        crate::player::log(&format!(
+                            "curlio: seek to {to} failed: {e:?} (reopen after body failure rc={rc})"
+                        ));
+                    }
+                    None => crate::player::log(&format!("curlio: seek to {to} failed: {e:?}")),
+                }
                 false
             }
         }
+    }
+
+    /// The reopen of a failed transfer was refused before any request (a source an earlier seek
+    /// found out of range). Silent unless there is a body failure it answers, and then once.
+    fn note_reopen_refused(&mut self, to: i64, why: &str) {
+        let Some(f) = self.failure.as_mut().filter(|_| self.heal_pending) else {
+            return;
+        };
+        f.reopen_failed = true;
+        crate::player::log(&format!(
+            "curlio: seek to {to} refused: {why} (reopen after body failure rc={})",
+            f.rc
+        ));
+    }
+
+    /// Why the transfer died mid-body, while no reopen has answered it. `ff.rs` reads this when a
+    /// frame read fails, to name the cause beside `av_read_frame`'s `-5`; once a reopen recovered,
+    /// a later failure of another kind (a stall abort) must not be pinned on it.
+    pub fn body_failure(&self) -> Option<BodyFailure> {
+        self.failure.filter(|_| self.heal_pending)
+    }
+
+    /// Record, and say once, that the transfer died after its headers were validated. Called from
+    /// [`reap`](Self::reap), which a transfer reaches exactly once, and never for a teardown: an
+    /// abort that races a connection reset is the caller's doing, not the network's.
+    fn note_body_failure(&mut self) {
+        if self.abort.is_set() {
+            return;
+        }
+        let pending = self.xfer.pending() as i64;
+        let bytes = (self.off - self.began_off + pending).max(0) as u64;
+        let age_ms = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        // The offset the TRANSFER reached, not the reader's: bytes still buffered were received.
+        let reached = self.off + pending;
+        crate::player::log(&format!(
+            "curlio: body transfer failed rc={} — {} after {bytes} bytes, {age_ms} ms, off={reached}",
+            self.rc,
+            curl_why(self.rc),
+        ));
+        self.failure = Some(BodyFailure {
+            rc: self.rc,
+            bytes,
+            age_ms,
+            reopen_failed: false,
+        });
+        self.heal_pending = true;
     }
 
     /// Total size of the resource, or -1 when the server never said. What `AVSEEK_SIZE` answers.
@@ -1724,6 +1834,16 @@ impl CurlSource {
     #[cfg(any(test, feature = "test-support"))]
     pub fn fail_multi_for_test(&mut self) {
         self.fail_multi_wait(1);
+    }
+
+    /// End the attached transfer as libcurl would report a mid-body death with `rc`, through the
+    /// same bookkeeping [`reap`](Self::reap) does.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fail_body_for_test(&mut self, rc: c_int) {
+        self.rc = rc;
+        self.failed = true;
+        self.done = true;
+        self.note_body_failure();
     }
 }
 
@@ -2231,10 +2351,17 @@ fn curl_why(rc: c_int) -> &'static str {
     match rc {
         6 => "could not resolve host",
         7 => "could not connect",
+        // The mid-body codes (issue #504): a transfer that died after its headers.
+        16 => "HTTP/2 framing error",
+        18 => "partial file: the connection closed before the whole body arrived",
         28 => "timed out (or stalled below the low-speed floor)",
+        52 => "empty reply: the server closed the connection without answering",
+        55 => "send error: the network refused our data",
+        56 => "receive error: the connection was reset or dropped mid-body",
         35 => "TLS handshake failed (protocol too new for this firmware?)",
         77 => "CA bundle could not be read",
         90 => "the server presented a different public key than the remembered one",
+        92 => "HTTP/2 stream error",
         _ => "transport error",
     }
 }
@@ -2373,9 +2500,18 @@ mod tests {
         /// Answer requests before the numbered one normally; from it on, read the request and
         /// never answer — a server slow to produce headers, held until the test ends.
         WithholdFrom(usize),
+        /// A proxy cut mid-body: the FIRST request promises the whole body and delivers a few
+        /// bytes before the connection closes (libcurl: `CURLE_PARTIAL_FILE`, 18); every later
+        /// request is an ordinary honoured Range.
+        TruncateFirst,
+        /// [`TruncateFirst`](Self::TruncateFirst), and then the reopen is refused with a 503.
+        TruncateFirstThen503,
     }
 
     const BODY: &[u8] = b"ABCDEFGH";
+
+    /// How much of [`BODY`] the truncating modes deliver before they cut the connection.
+    const TRUNCATED_AT: usize = 3;
 
     /// **The offline fix's media half.** A `.invalid` host is opened through the resolve TABLE —
     /// the pin was recorded the way the registry records one, and the source found it by the
@@ -2554,8 +2690,37 @@ mod tests {
                 }
                 continue;
             }
-            if matches!(mode, RangeMode::Honour | RangeMode::FailFirstSeek)
-                && start >= BODY.len() as i64
+            if matches!(mode, RangeMode::TruncateFirst | RangeMode::TruncateFirstThen503)
+                && request_no == 1
+            {
+                let hdr = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", BODY.len());
+                // Headers first and a pause before the body, so the open has returned (headers
+                // validated) by the time the transfer dies: a failure that lands in the SAME
+                // `perform` as the headers is the open's `Transport`, which `validate` logs.
+                let _ = w.write_all(hdr.as_bytes());
+                let _ = w.flush();
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                let _ = w.write_all(&BODY[..TRUNCATED_AT]);
+                let _ = w.flush();
+                let _ = w.shutdown(std::net::Shutdown::Both);
+                return;
+            }
+            if mode == RangeMode::TruncateFirstThen503 && request_no == 2 {
+                if w.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                    .is_err()
+                {
+                    return;
+                }
+                let _ = w.flush();
+                continue;
+            }
+            if matches!(
+                mode,
+                RangeMode::Honour
+                    | RangeMode::FailFirstSeek
+                    | RangeMode::TruncateFirst
+                    | RangeMode::TruncateFirstThen503
+            ) && start >= BODY.len() as i64
             {
                 let hdr = format!(
                     "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{}\r\nContent-Length: 0\r\n\r\n",
@@ -2579,7 +2744,11 @@ mod tests {
             let ranged = start > 0
                 && matches!(
                     mode,
-                    RangeMode::Honour | RangeMode::OmitContentRange | RangeMode::FailFirstSeek
+                    RangeMode::Honour
+                        | RangeMode::OmitContentRange
+                        | RangeMode::FailFirstSeek
+                        | RangeMode::TruncateFirst
+                        | RangeMode::TruncateFirstThen503
                 );
             let hdr = if ranged && mode == RangeMode::OmitContentRange {
                 format!(
@@ -2735,6 +2904,165 @@ mod tests {
                 "a completed body has nothing left to drain"
             );
         });
+    }
+
+    // -- the body failure is NAMED (issue #504) ---------------------------------------------------
+
+    /// Every line the event log holds, read back from this thread's private file.
+    fn log_lines() -> Vec<String> {
+        std::fs::read_to_string(plx_base::eventlog::events_log())
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// **Issue #504, the line that was missing.** A transfer that dies mid-body used to leave
+    /// `ff: media transport failed during av_read_frame r=-5` and nothing about WHY: the libcurl
+    /// result was kept in `rc` and only the header phase ever logged it. The body phase must name
+    /// the code, how far the transfer got and how long it lived — and say it ONCE, however many
+    /// times the demuxer keeps reading a dead source, and never for a deliberate teardown.
+    #[test]
+    fn a_body_that_dies_mid_transfer_is_logged_once_with_its_rc_bytes_and_age() {
+        let Some(_gate) = curl_gate() else { return };
+        plx_base::eventlog::with_private_log(|| {
+            with_server(RangeMode::TruncateFirst, |port, _, _| {
+                let mut src =
+                    CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+                assert_eq!(read_all(&mut src), &BODY[..TRUNCATED_AT]);
+                // The demuxer keeps asking a dead source; the answer stays an error, the line
+                // stays one.
+                let mut b = [0u8; 8];
+                assert_eq!(src.read(&mut b), -1, "a truncated body is an error, not an EOF");
+                assert_eq!(src.read(&mut b), -1);
+                assert_eq!(src.drain_available(&mut b), 0);
+                let lines: Vec<String> = log_lines()
+                    .into_iter()
+                    .filter(|l| l.contains("curlio: body transfer failed"))
+                    .collect();
+                assert_eq!(lines.len(), 1, "exactly one line per failed transfer: {lines:?}");
+                let line = &lines[0];
+                assert!(line.contains("rc=18"), "the libcurl result must be named: {line}");
+                assert!(line.contains("partial"), "and its meaning: {line}");
+                assert!(
+                    line.contains(&format!("after {TRUNCATED_AT} bytes")),
+                    "and how far it got: {line}"
+                );
+                assert!(line.contains(" ms, off="), "and how long it lived, and where: {line}");
+                assert!(
+                    !line.contains("127.0.0.1") && !line.contains("f.mkv"),
+                    "no host and no path in a diagnostic line: {line}"
+                );
+            });
+        });
+    }
+
+    /// The failure outlives the restart: `ff.rs` reads it AFTER a failed `seek_cb` heal has already
+    /// reset the transfer, so a source that forgot at `start` could never name the cause. A reopen
+    /// that recovers answers it.
+    #[test]
+    fn the_body_failure_is_retained_for_the_demuxer_and_a_successful_reopen_is_logged() {
+        let Some(_gate) = curl_gate() else { return };
+        plx_base::eventlog::with_private_log(|| {
+            with_server(RangeMode::TruncateFirst, |port, _, _| {
+                let mut src =
+                    CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+                assert_eq!(src.body_failure(), None, "nothing has failed yet");
+                let _ = read_all(&mut src);
+                let failure = src.body_failure().expect("the failure is kept");
+                assert_eq!(failure.rc, 18);
+                assert_eq!(failure.bytes, TRUNCATED_AT as u64);
+                assert!(!failure.reopen_failed);
+                // libavformat's heal: reopen where the read stopped.
+                assert!(src.seek(TRUNCATED_AT as i64), "the honoured Range recovers");
+                assert_eq!(read_all(&mut src), &BODY[TRUNCATED_AT..]);
+                assert_eq!(
+                    src.body_failure(),
+                    None,
+                    "a recovered reopen answers the failure: a LATER stop is not pinned on it"
+                );
+                let reopen: Vec<String> = log_lines()
+                    .into_iter()
+                    .filter(|l| l.contains("curlio: reopened"))
+                    .collect();
+                assert_eq!(reopen.len(), 1, "one line per reopen attempt: {reopen:?}");
+                assert!(
+                    reopen[0].contains("rc=18") && reopen[0].contains(&format!("at {TRUNCATED_AT}")),
+                    "{}",
+                    reopen[0]
+                );
+            });
+        });
+    }
+
+    /// The reopen that does NOT recover is the other half of the 60-second report: the log must say
+    /// the heal was tried and how it ended, once, and the record must say the reopen failed.
+    #[test]
+    fn a_failed_reopen_after_a_body_failure_is_logged_once_and_marks_the_record() {
+        let Some(_gate) = curl_gate() else { return };
+        plx_base::eventlog::with_private_log(|| {
+            with_server(RangeMode::TruncateFirstThen503, |port, _, _| {
+                let mut src =
+                    CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+                let _ = read_all(&mut src);
+                assert!(!src.seek(TRUNCATED_AT as i64), "the 503 refuses the reopen");
+                let failure = src.body_failure().expect("the failure is kept");
+                assert_eq!(failure.rc, 18);
+                assert!(failure.reopen_failed, "the heal was tried and did not recover");
+                let reopen: Vec<String> = log_lines()
+                    .into_iter()
+                    .filter(|l| l.contains("curlio: seek to") || l.contains("curlio: reopened"))
+                    .collect();
+                assert_eq!(reopen.len(), 1, "one line per reopen attempt: {reopen:?}");
+                assert!(
+                    reopen[0].contains("rc=18") && reopen[0].contains("Status(503)"),
+                    "the line carries both the old cause and the new refusal: {}",
+                    reopen[0]
+                );
+            });
+        });
+    }
+
+    /// A deliberate teardown is not a transport failure and must not read as one in the log.
+    #[test]
+    fn a_teardown_mid_body_is_not_logged_as_a_body_failure() {
+        let Some(_gate) = curl_gate() else { return };
+        plx_base::eventlog::with_private_log(|| {
+            with_server(RangeMode::TruncateFirst, |port, _, _| {
+                let mut src =
+                    CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+                src.abort();
+                let mut b = [0u8; 8];
+                assert_eq!(src.read(&mut b), -1);
+                assert_eq!(src.drain_available(&mut b), -1);
+                assert_eq!(src.body_failure(), None);
+                assert!(
+                    !log_lines().iter().any(|l| l.contains("curlio: body transfer failed")),
+                    "an abort is not a failure"
+                );
+            });
+        });
+    }
+
+    /// The reason words the log line leans on: the codes a mid-body death actually produces.
+    #[test]
+    fn curl_why_names_the_mid_body_codes() {
+        for (rc, word) in [
+            (18, "partial"),
+            (52, "empty reply"),
+            (55, "send"),
+            (56, "receive"),
+            (16, "HTTP/2"),
+            (92, "HTTP/2"),
+            (28, "low-speed"),
+        ] {
+            assert!(
+                curl_why(rc).contains(word),
+                "rc={rc} should be explained with {word:?}, got {:?}",
+                curl_why(rc)
+            );
+        }
+        assert_eq!(curl_why(9999), "transport error", "an unlisted code keeps the generic words");
     }
 
     // -- (b) a Range answered 200 is an ERROR ---------------------------------------------------

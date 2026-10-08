@@ -152,6 +152,8 @@ pub fn event_body(
             "playback.requested_quality": context.requested.code(),
             "playback.declared_rate": context.declared_rate.code(),
             "playback.started": if context.started { "yes" } else { "no" },
+            "playback.transport": context.transport.code(),
+            "playback.transfer_age": context.transfer_age.code(),
         },
         "contexts": {"playback": {
             "type": "playback",
@@ -164,6 +166,8 @@ pub fn event_body(
             "pipeline": context.pipeline.code(),
             "http": context.http.code(),
             "buffer": context.buffer.code(),
+            "transport": context.transport.code(),
+            "transfer_age": context.transfer_age.code(),
             "started": context.started,
         }},
         "breadcrumbs": {"values": breadcrumbs},
@@ -224,9 +228,13 @@ pub fn report_error(kind: FailureClass, context: PlaybackErrorContext, trace: &[
     };
     match super::spool::append_if(&record, super::consent::allows_errors) {
         Some(true) => super::flush_soon(),
-        Some(false) => {
-            plx_base::eventlog::log("telemetry: handled playback error did not fit the durable spool")
-        }
+        // `Some(false)` is a failed write, not a size verdict: no spool path is writable (the app
+        // directory is read-only on that install), or the write itself failed. An oversized
+        // record logs its own cap line, so this wording must not claim "did not fit".
+        Some(false) => plx_base::eventlog::log(
+            "telemetry: handled playback error was not written to the durable spool \
+             (no writable spool path, or the write failed)",
+        ),
         None => {} // consent changed while the event was being shaped
     }
 }
@@ -238,7 +246,7 @@ pub fn preview_event() -> Vec<u8> {
     use crate::telemetry::classes::{
         AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DeliveryReason, HttpClass,
         OriginalProbePhase, PipelineClass, QualityClass, RasterClass, RateClass, RefusalContext,
-        TraceAge, TraceDirection, TraceOutcome, VideoCodecClass,
+        TraceAge, TraceDirection, TraceOutcome, TransferAgeClass, TransportClass, VideoCodecClass,
     };
     let trace = [
         TraceStep {
@@ -310,6 +318,8 @@ pub fn preview_event() -> Vec<u8> {
             pipeline: PipelineClass::Streaming,
             http: HttpClass::ServerError,
             buffer: BufferClass::S3To10,
+            transport: TransportClass::RecvError,
+            transfer_age: TransferAgeClass::S30To90,
             started: true,
             // Representative of a `decision_refused` report's extra block, shown here so the
             // consent screen's sample carries every key a report can; a real report has it only
@@ -343,12 +353,13 @@ pub fn preview_domains() -> String {
         BufferClass as B, DeliveryClass as D, DeliveryReason as W, HttpClass as H,
         OriginalProbePhase as P, PipelineClass as L, QualityClass as Q, RasterClass as X,
         RateClass as R, TraceAge as A, TraceDirection as I, TraceOutcome as O,
+        TransferAgeClass as T, TransportClass as K,
     };
     use crate::telemetry::classes::{AudioCodecClass as Z, DecisionCodeClass as N, VideoCodecClass as V};
     use FailureClass as F;
     use plx_platform::i18n::msg;
     // The labels are the reader's words; the codes after them are the wire values themselves.
-    let domains: [(&str, String); 17] = [
+    let domains: [(&str, String); 19] = [
         (msg::core_preview_domain_failure_kind(), codes(
             &[
                 F::DecisionRefused,
@@ -426,6 +437,8 @@ pub fn preview_domains() -> String {
             ],
             B::code
         )),
+        (msg::core_preview_domain_transport(), codes(&K::ALL, K::code)),
+        (msg::core_preview_domain_transfer_age(), codes(&T::ALL, T::code)),
         (msg::core_preview_domain_elapsed(), codes(
             &[
                 A::Under1s,
@@ -485,7 +498,7 @@ mod tests {
     use crate::telemetry::classes::{
         AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, HttpClass,
         OriginalProbePhase, PipelineClass, QualityClass, RasterClass, RateClass, RefusalContext,
-        TraceAge, TraceOutcome, VideoCodecClass,
+        TraceAge, TraceOutcome, TransferAgeClass, TransportClass, VideoCodecClass,
     };
 
     fn context() -> PlaybackErrorContext {
@@ -499,6 +512,8 @@ mod tests {
             pipeline: PipelineClass::Streaming,
             http: HttpClass::ServerError,
             buffer: BufferClass::S3To10,
+            transport: TransportClass::None,
+            transfer_age: TransferAgeClass::Unknown,
             started: true,
             refusal: None,
         }
@@ -752,6 +767,8 @@ mod tests {
                 "requested_quality",
                 "selected_quality",
                 "started",
+                "transfer_age",
+                "transport",
                 "type",
             ]
         );
@@ -764,6 +781,8 @@ mod tests {
                 "playback.requested_quality",
                 "playback.selected_quality",
                 "playback.started",
+                "playback.transfer_age",
+                "playback.transport",
             ]
         );
         assert_eq!(keys(&v["exception"]), ["values"]);
@@ -860,6 +879,8 @@ mod tests {
                 "playback.source_audio",
                 "playback.source_video",
                 "playback.started",
+                "playback.transfer_age",
+                "playback.transport",
             ]
         );
         assert_eq!(v["tags"]["playback.delivery"], "unknown", "no route was installed");
@@ -920,5 +941,130 @@ mod tests {
             assert!(legend.contains(value), "preview domain omitted {value}");
             assert!(privacy.contains(value), "PRIVACY.md omitted {value}");
         }
+    }
+
+    /// **Issue #504.** A transfer that dies mid-body used to reach Sentry as a bare
+    /// `playback_interrupted`. The libcurl result class and the age of the transfer ride along as
+    /// closed codes, as a searchable tag AND in the playback context, and never as a number.
+    #[test]
+    fn a_transport_failure_is_tagged_and_in_the_context_by_class_and_age_bucket() {
+        let mut ctx = context();
+        ctx.transport = TransportClass::RecvError;
+        ctx.transfer_age = TransferAgeClass::S30To90;
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            FailureClass::PlaybackInterrupted,
+            ctx,
+            &[],
+        ))
+        .expect("handled event JSON");
+        assert_eq!(v["tags"]["playback.transport"], "recv_error");
+        assert_eq!(v["tags"]["playback.transfer_age"], "30-90s");
+        assert_eq!(v["contexts"]["playback"]["transport"], "recv_error");
+        assert_eq!(v["contexts"]["playback"]["transfer_age"], "30-90s");
+        // The fingerprint is unchanged: the new fields explain a group, they do not split it.
+        assert_eq!(
+            v["fingerprint"],
+            serde_json::json!(["playback-error", "playback_interrupted"])
+        );
+        // A report with no transport failure says so in words, rather than omitting the keys.
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            None,
+            FailureClass::PlaybackInterrupted,
+            context(),
+            &[],
+        ))
+        .expect("handled event JSON");
+        assert_eq!(v["tags"]["playback.transport"], "none");
+        assert_eq!(v["tags"]["playback.transfer_age"], "unknown");
+    }
+
+    /// The mapping from the code libcurl returned: every code a mid-body death produces has its
+    /// own class, anything else is `other` (never the number), and success is `none`.
+    #[test]
+    fn transport_class_maps_the_mid_body_curl_codes_and_nothing_leaks() {
+        for (rc, want) in [
+            (0, TransportClass::None),
+            (18, TransportClass::Partial),
+            (56, TransportClass::RecvError),
+            (55, TransportClass::SendError),
+            (52, TransportClass::GotNothing),
+            (28, TransportClass::Timeout),
+            (16, TransportClass::Http2),
+            (92, TransportClass::Http2),
+            (7, TransportClass::Other),
+            (35, TransportClass::Other),
+            (-1, TransportClass::Other),
+            (9_999, TransportClass::Other),
+        ] {
+            assert_eq!(TransportClass::from_curl_rc(rc), want, "rc {rc}");
+        }
+        let mut codes: Vec<&str> = TransportClass::ALL.iter().map(|c| c.code()).collect();
+        let n = codes.len();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), n, "every class has its own code");
+        assert!(
+            codes.iter().all(|c| c.parse::<i64>().is_err()),
+            "a code is a word, never the libcurl number: {codes:?}"
+        );
+    }
+
+    /// The age bucket edges: a fixed-timeout cut (the suspected 60 s proxy) must land in ONE
+    /// bucket whatever the jitter, and the edges must not drift.
+    #[test]
+    fn transfer_age_buckets_hold_a_fixed_timeout_in_one_bucket() {
+        for (ms, want) in [
+            (-1, TransferAgeClass::Unknown),
+            (0, TransferAgeClass::Under5s),
+            (4_999, TransferAgeClass::Under5s),
+            (5_000, TransferAgeClass::S5To30),
+            (29_999, TransferAgeClass::S5To30),
+            (30_000, TransferAgeClass::S30To90),
+            (59_000, TransferAgeClass::S30To90),
+            (60_000, TransferAgeClass::S30To90),
+            (61_500, TransferAgeClass::S30To90),
+            (89_999, TransferAgeClass::S30To90),
+            (90_000, TransferAgeClass::S90To300),
+            (299_999, TransferAgeClass::S90To300),
+            (300_000, TransferAgeClass::Over300s),
+            (86_400_000, TransferAgeClass::Over300s),
+        ] {
+            assert_eq!(TransferAgeClass::from_ms(ms), want, "age {ms} ms");
+        }
+    }
+
+    /// The consent screen shows the person every value the wire can carry, in their own words, and
+    /// `PRIVACY.md` names them too: a value in the payload that neither lists is a payload nobody
+    /// was shown.
+    #[test]
+    fn consent_preview_and_privacy_name_every_transport_and_age_value() {
+        let legend = preview_domains();
+        let privacy = include_str!("../../../../PRIVACY.md");
+        for value in TransportClass::ALL
+            .iter()
+            .map(|c| c.code())
+            .chain(TransferAgeClass::ALL.iter().map(|c| c.code()))
+        {
+            assert!(legend.contains(value), "preview domain omitted {value}");
+            assert!(privacy.contains(value), "PRIVACY.md omitted {value}");
+        }
+        assert!(legend.contains(
+            "none / partial / recv_error / send_error / got_nothing / timeout / http2 / reopen_failed / other"
+        ));
+        assert!(legend.contains("unknown / <5s / 5-30s / 30-90s / 90-300s / 300s+"));
+    }
+
+    #[test]
+    fn the_consent_sample_carries_the_transport_keys() {
+        let v: Value = serde_json::from_slice(&preview_event()).expect("preview JSON");
+        assert!(v["contexts"]["playback"]["transport"].is_string(), "{v}");
+        assert!(v["contexts"]["playback"]["transfer_age"].is_string());
+        assert!(v["tags"]["playback.transport"].is_string());
+        assert!(v["tags"]["playback.transfer_age"].is_string());
     }
 }

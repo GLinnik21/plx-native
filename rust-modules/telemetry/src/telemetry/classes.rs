@@ -553,6 +553,123 @@ impl BufferClass {
     }
 }
 
+/// **Why the media transfer died, as a class — never the libcurl number.** Issue #504: a direct
+/// play over https that stopped exactly a minute in reached Sentry as a bare `playback_interrupted`
+/// and the event log said only that the demuxer's read failed; the `CURLcode` that explains it was
+/// kept and never reported. The classes are the codes a mid-body death actually produces; a code
+/// outside them is `other`, which cannot carry the number it replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportClass {
+    /// No transport failure was recorded (the failure was not a curl transfer's).
+    None,
+    /// `CURLE_PARTIAL_FILE` (18): the connection closed before the whole body arrived.
+    Partial,
+    /// `CURLE_RECV_ERROR` (56): the connection was reset or dropped while receiving.
+    RecvError,
+    /// `CURLE_SEND_ERROR` (55).
+    SendError,
+    /// `CURLE_GOT_NOTHING` (52): the server closed without answering.
+    GotNothing,
+    /// `CURLE_OPERATION_TIMEDOUT` (28), the 30 s low-speed floor included.
+    Timeout,
+    /// `CURLE_HTTP2` (16) or `CURLE_HTTP2_STREAM` (92).
+    Http2,
+    /// The transfer died and the reopen that follows a failed read (libavformat's `seek_cb` heal)
+    /// was refused too: the cause of the first death is in the event log, not here.
+    ReopenFailed,
+    /// Any other `CURLcode`.
+    Other,
+}
+
+impl TransportClass {
+    pub const ALL: [Self; 9] = [
+        Self::None,
+        Self::Partial,
+        Self::RecvError,
+        Self::SendError,
+        Self::GotNothing,
+        Self::Timeout,
+        Self::Http2,
+        Self::ReopenFailed,
+        Self::Other,
+    ];
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Partial => "partial",
+            Self::RecvError => "recv_error",
+            Self::SendError => "send_error",
+            Self::GotNothing => "got_nothing",
+            Self::Timeout => "timeout",
+            Self::Http2 => "http2",
+            Self::ReopenFailed => "reopen_failed",
+            Self::Other => "other",
+        }
+    }
+
+    /// The class of a `CURLcode`; `0` is no failure.
+    pub const fn from_curl_rc(rc: i32) -> Self {
+        match rc {
+            0 => Self::None,
+            18 => Self::Partial,
+            56 => Self::RecvError,
+            55 => Self::SendError,
+            52 => Self::GotNothing,
+            28 => Self::Timeout,
+            16 | 92 => Self::Http2,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// **How long the failed transfer had lived, as a bucket — never the millisecond count.** A proxy
+/// or middlebox that cuts every transfer at a fixed time shows up as one bucket on every report
+/// (30-90 s for a minute), which is the pattern that names it. `Unknown` is "no transport failure
+/// was recorded", so the bucket never claims an age nobody measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferAgeClass {
+    Unknown,
+    Under5s,
+    S5To30,
+    S30To90,
+    S90To300,
+    Over300s,
+}
+
+impl TransferAgeClass {
+    pub const ALL: [Self; 6] = [
+        Self::Unknown,
+        Self::Under5s,
+        Self::S5To30,
+        Self::S30To90,
+        Self::S90To300,
+        Self::Over300s,
+    ];
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Under5s => "<5s",
+            Self::S5To30 => "5-30s",
+            Self::S30To90 => "30-90s",
+            Self::S90To300 => "90-300s",
+            Self::Over300s => "300s+",
+        }
+    }
+
+    pub const fn from_ms(ms: i64) -> Self {
+        match ms {
+            m if m < 0 => Self::Unknown,
+            0..=4_999 => Self::Under5s,
+            5_000..=29_999 => Self::S5To30,
+            30_000..=89_999 => Self::S30To90,
+            90_000..=299_999 => Self::S90To300,
+            _ => Self::Over300s,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackErrorContext {
     pub delivery: DeliveryClass,
@@ -564,6 +681,10 @@ pub struct PlaybackErrorContext {
     pub pipeline: PipelineClass,
     pub http: HttpClass,
     pub buffer: BufferClass,
+    /// Why the media transfer died, when a curl transfer's death was recorded.
+    pub transport: TransportClass,
+    /// How long that transfer had lived.
+    pub transfer_age: TransferAgeClass,
     pub started: bool,
     /// Only for a refusal the server made at `/decision` — see [`RefusalContext`].
     pub refusal: Option<RefusalContext>,

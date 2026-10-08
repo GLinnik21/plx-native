@@ -157,6 +157,14 @@
     "value": "buffer",
     "description": "Field name in the consent preview's list of possible playback-error values: the buffered time class."
   },
+  "core.preview_domain_transport": {
+    "value": "transport failure",
+    "description": "Field name in the consent preview's list of possible playback-error values: the class of network error that ended the media transfer."
+  },
+  "core.preview_domain_transfer_age": {
+    "value": "transfer time before the failure",
+    "description": "Field name in the consent preview's list of possible playback-error values: how long the media transfer had been running when it failed, as a time class."
+  },
   "core.preview_domain_elapsed": {
     "value": "elapsed",
     "description": "Field name in the consent preview's list of possible playback-error values: time since an event."

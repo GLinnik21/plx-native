@@ -42,7 +42,7 @@ pub use plx_telemetry::telemetry::classes::{
     AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DeliveryReason, HttpClass,
     LoadElapsedClass, OriginalProbePhase, PipelineClass, PlaybackErrorContext, QualityClass,
     RasterClass, RateClass, RefusalContext, TraceAge, TraceDirection, TraceEvent, TraceOutcome,
-    TraceStep, VideoCodecClass,
+    TraceStep, TransferAgeClass, TransportClass, VideoCodecClass,
 };
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU8, Ordering::Relaxed};
 
@@ -380,10 +380,32 @@ fn requested_quality(delivery: DeliveryClass, selected: QualityClass) -> Quality
     }
 }
 
+/// The closed classes of what the demuxer published about a dying transfer (issue #504): the
+/// libcurl code, the transfer's age in ms and whether the reopen after it was refused. A refused
+/// reopen is the class on its own — the first death's code is in the event log — and a code of
+/// zero with no refusal is "no transfer failure recorded".
+fn transport_classes(
+    rc: i32,
+    age_ms: i64,
+    reopen_failed: bool,
+) -> (TransportClass, TransferAgeClass) {
+    let class = if reopen_failed {
+        TransportClass::ReopenFailed
+    } else {
+        TransportClass::from_curl_rc(rc)
+    };
+    (class, TransferAgeClass::from_ms(age_ms))
+}
+
 fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
     let delivery = delivery_class(ps);
     let selected = selected_quality_class(crate::route::quality());
     let requested = requested_quality(delivery, selected);
+    let (transport, transfer_age) = transport_classes(
+        super::SHARED.dg_transport_rc.load(Relaxed),
+        super::SHARED.dg_transport_age_ms.load(Relaxed),
+        super::SHARED.dg_transport_reopen_failed.load(Relaxed),
+    );
     PlaybackErrorContext {
         delivery,
         selected,
@@ -394,6 +416,8 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
         pipeline: PipelineClass::from_stage(super::SHARED.dg_stage.load(Relaxed)),
         http: HttpClass::from_status(super::SHARED.dg_http_status.load(Relaxed)),
         buffer: BufferClass::from_ms(super::SHARED.dg_abr_buffer_ms.load(Relaxed)),
+        transport,
+        transfer_age,
         started: SAW_START.load(Relaxed),
         refusal: refusal_context(ps),
     }
@@ -1506,6 +1530,23 @@ mod tests {
             (4, PipelineClass::Loading),
         ] {
             assert_eq!(PipelineClass::from_stage(stage), want, "stage {stage}");
+        }
+        // The transport inputs the demuxer publishes (issue #504): the libcurl code, the age of the
+        // transfer in ms and whether the reopen after it was refused.
+        for (rc, age_ms, reopen_failed, want) in [
+            (0, -1, false, (TransportClass::None, TransferAgeClass::Unknown)),
+            (56, 60_012, false, (TransportClass::RecvError, TransferAgeClass::S30To90)),
+            (18, 4_999, false, (TransportClass::Partial, TransferAgeClass::Under5s)),
+            (28, 300_000, false, (TransportClass::Timeout, TransferAgeClass::Over300s)),
+            (56, 60_012, true, (TransportClass::ReopenFailed, TransferAgeClass::S30To90)),
+            (0, -1, true, (TransportClass::ReopenFailed, TransferAgeClass::Unknown)),
+            (9_999, 12_000, false, (TransportClass::Other, TransferAgeClass::S5To30)),
+        ] {
+            assert_eq!(
+                transport_classes(rc, age_ms, reopen_failed),
+                want,
+                "rc {rc} age {age_ms} reopen_failed {reopen_failed}"
+            );
         }
         for (status, want) in [
             (0, HttpClass::None),
