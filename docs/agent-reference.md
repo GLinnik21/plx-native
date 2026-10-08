@@ -1964,6 +1964,15 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `capture::init` — those are structural surfaces with no path literal, which is also why
   `dev::any_trigger_present` (the whole-`/tmp` scan behind the picker suppression) lives there
   rather than being greppable. The harness is unaffected: `tests/run.py` builds with plain `make`.
+  **`/tmp/plxnative-poppool`** (empty file; read once at boot, dev builds only) is the owner's
+  by-feel comparison for shared-card-sections decision 2: with it, every `cards::Shelf` / `cards::Grid`
+  keys its pop springs by ELEMENT instead of by position. Look for it where content lands while a card
+  is still shrinking: focus moves one card right, and within about a fifth of a second the row
+  republishes with a card inserted or removed ahead (a shelf paging in, a collection refreshing). By
+  position (the default) the shrink plays out on whatever card now sits in that slot and the card
+  that was shrinking snaps to rest; keyed by element, the card keeps shrinking where it moved. A
+  plain walk is identical in both. The mode that loses is DELETED after the verdict
+  (`rust-modules/ui/src/cards/pool.rs` and its call sites).
   Two behaviours bite:
   `make run` clears ONLY the event log (unlike `tests/run.py`, which glob-clears triggers), so a
   by-hand run inherits whatever the last session armed; and any non-DIAG trigger left behind also

@@ -119,6 +119,16 @@ impl GridPop {
         self.pop = (Some(index), Spring::at(1.0));
     }
 
+    /// The cell whose let-go is still running, if one is.
+    pub(crate) fn shrinking(&self) -> Option<usize> {
+        self.shrink.0
+    }
+
+    /// The shrinking tile's element is now at cell `to` (`None`: gone), so its let-go follows it.
+    pub(crate) fn move_shrink(&mut self, to: Option<usize>) {
+        self.shrink.0 = to;
+    }
+
     /// The cell the pop currently belongs to.
     pub fn cell(&self) -> Option<usize> {
         self.pop.0

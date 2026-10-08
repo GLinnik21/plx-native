@@ -314,6 +314,21 @@ impl CardRow {
         }
         self.scroll_x.pos += dx;
     }
+    /// Cell `i`'s own pop spring; `None` for a cell past the array (those share one spring).
+    pub(crate) fn cell_spring(&self, i: usize) -> Option<Spring> {
+        self.scale.get(i).copied()
+    }
+    /// Give cell `i` the pop spring `sp` (state and velocity); a cell past the array is ignored.
+    pub(crate) fn put_cell_spring(&mut self, i: usize, sp: Spring) {
+        if let Some(cell) = self.scale.get_mut(i) {
+            *cell = sp;
+        }
+    }
+    /// The scroll half of a [`relocate`](Self::relocate): shift by `dx` so a tile whose pop was
+    /// carried some other way stays where it was on screen.
+    pub(crate) fn shift_scroll(&mut self, dx: f32) {
+        self.scroll_x.pos += dx;
+    }
     /// **How far the row still has to scroll for `focused` to be where it will rest** — live
     /// scroll minus [`scroll_into_view`]'s target, so a tile's settled screen x is its live x plus
     /// this. `0` once the glide has landed, and `0` for a focus that needs no scroll at all.

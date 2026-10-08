@@ -14,6 +14,7 @@ use super::{CardEvent, CardSource, Landed, Seen, Tile};
 use crate::card_row;
 use crate::consts::{K_SCROLL, MARGIN_X, SCR_H};
 use crate::card_row::RowStyle;
+use super::pool::{Drawn, ShrinkKey};
 use crate::poster_grid::{self, Geom, GridBand, GridBands, GridPop, COLS, STYLE};
 use crate::screen::{
     Activate, At, AxisMask, By, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
@@ -86,6 +87,8 @@ pub struct Grid {
     target: f32,
     bands: GridBands,
     pop: GridPop,
+    /// Which element the running let-go belongs to: the element-keyed pool (`pool.rs`), idle unless the dev switch is on.
+    shrink: ShrinkKey,
     seen: Seen,
     landed: Option<Landed>,
     /// External mode: the document shift the last tick's landing needs (see [`Grid::landed_shift`]).
@@ -105,6 +108,7 @@ impl Grid {
             target: 0.0,
             bands: GridBands::new(),
             pop: GridPop::new(),
+            shrink: ShrinkKey::new(),
             seen: Seen::Nothing,
             landed: None,
             shift: 0.0,
@@ -168,6 +172,10 @@ impl Grid {
         let focus = super::focused_index(&cx.focus, self.entry, src);
         self.landed = None;
         self.shift = 0.0;
+        let pooled = super::pool::pop_pool();
+        if pooled {
+            self.shrink.follow(&mut self.pop, src);
+        }
         let prev = self.pop.cell();
         // where the previously focused cell was on screen, before any band moves
         let was = prev.map(|p| self.cell(p, &self.bands.geometry()).y);
@@ -205,6 +213,9 @@ impl Grid {
         self.reveal = wanted;
         self.bands.tick(self.spec.style.k_scroll, dt);
         self.pop.tick(focus, &self.spec.style, dt);
+        if pooled {
+            self.shrink.note(&self.pop, src);
+        }
         if self.spec.scroll == ScrollMode::External {
             return;
         }
@@ -301,14 +312,22 @@ impl Grid {
 
     /// The pop of card `i` given the engine's focus (`GridPop::scale`'s rule: a focused card the
     /// grid was not told about is FULL, the one that lost focus lets go, the rest are at rest).
-    fn pop(&self, i: usize, focus: Option<usize>) -> f32 {
+    fn pop<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, focus: Option<usize>) -> f32 {
+        // the element-keyed pool: a source change no tick has seen yet is resolved by element
+        if super::pool::pop_pool() {
+            match self.shrink.drawn(&self.pop, src, i, focus == Some(i)) {
+                Some(Drawn::Cell(c)) => return self.pop.scale(c, false, &self.spec.style),
+                Some(Drawn::Rest) => return 1.0,
+                None => {}
+            }
+        }
         self.pop.scale(i, focus == Some(i), &self.spec.style)
     }
 
     /// The live pop of `elem` (no press).
     pub fn scale_of<H: Host, S: CardSource<H>>(&self, cx: &Cx<'_, H>, src: &S, elem: &H::Elem) -> Option<f32> {
         let i = src.index_of(elem)?;
-        Some(self.pop(i, super::focused_index(&cx.focus, self.entry, src)))
+        Some(self.pop(src, i, super::focused_index(&cx.focus, self.entry, src)))
     }
 
     fn cell(&self, i: usize, bands: &[GridBand]) -> Rect {
@@ -328,7 +347,7 @@ impl Grid {
         let focus = super::focused_index(&cx.focus, self.entry, src);
         let cell = self.cell(i, &self.bands.geometry());
         let s = match how {
-            At::Drawn => super::press_scale(self.pop(i, focus), focus == Some(i), cx),
+            At::Drawn => super::press_scale(self.pop(src, i, focus), focus == Some(i), cx),
             At::SpringTarget => if focus == Some(i) { self.spec.style.focus_scale } else { 1.0 },
         };
         Some(Placed { rect: cell.scaled(s), rest_rect: cell.scaled(self.spec.style.focus_scale), clip: Rect::FULL, index: Some(i as u32) })
@@ -343,10 +362,10 @@ impl Grid {
             if focus == Some(i) || self.above_edge(i, &bands) {
                 continue;
             }
-            self.draw_card(f, p, src, i, self.pop(i, focus), false, &bands);
+            self.draw_card(f, p, src, i, self.pop(src, i, focus), false, &bands);
         }
         if let Some(i) = focus.filter(|&i| i < src.len()) {
-            self.draw_card(f, p, src, i, super::press_scale(self.pop(i, focus), true, f.cx), true, &bands);
+            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), true, f.cx), true, &bands);
         }
         self.record_stops(f, p, src);
     }
@@ -359,7 +378,7 @@ impl Grid {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let bands = self.bands.geometry();
         for i in self.window(src.len()) {
-            let s = super::press_scale(self.pop(i, focus), focus == Some(i), f.cx);
+            let s = super::press_scale(self.pop(src, i, focus), focus == Some(i), f.cx);
             let cell = super::to_local(p, self.cell(i, &bands));
             f.stop(p, Stop {
                 key: FocusKey { entry: self.entry, elem: src.elem(i) },
@@ -382,7 +401,7 @@ impl Grid {
         focus: Option<FocusKey<H::Elem>>,
     ) {
         let Some(i) = focus.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem)) else { return };
-        let s = super::press_scale(self.pop(i, Some(i)), true, f.cx);
+        let s = super::press_scale(self.pop(src, i, Some(i)), true, f.cx);
         self.draw_card(f, p, src, i, s, true, &self.bands.geometry());
     }
 

@@ -9,6 +9,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 
+use super::pool::{Drawn, RowPool};
 use super::{CardEvent, CardSource, Landed, SectionFrame, Seen, Tile};
 use crate::card_row::{self, CardRow, RowStyle};
 use crate::consts::SCR_W;
@@ -43,12 +44,14 @@ pub struct Shelf {
     dormant: bool,
     /// The last tick ran dormant, so the next awake one starts the focused card's pop from rest.
     slept: bool,
+    /// The element-keyed pop pool, empty unless the dev switch is on (`pool.rs`).
+    pool: RowPool,
 }
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
         Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, ahead: LOOK_AHEAD, asked: None,
-            margin: 0.0, dormant: false, slept: false }
+            margin: 0.0, dormant: false, slept: false, pool: RowPool::new() }
     }
 
     /// Cards this far past the screen's leading (left) edge still paint (a popped card's shadow
@@ -142,6 +145,7 @@ impl Shelf {
         if self.dormant {
             // nothing is lifted under the fade, and whatever was lets go like an unfocused shelf's
             self.slept = true;
+            self.pool.clear();
             self.seen = Seen::Nothing;
             self.left = false;
             if !self.row.at_exact_rest() {
@@ -157,6 +161,14 @@ impl Shelf {
                 self.seen = Seen::Deliberate(i);
             }
         }
+        // the element-keyed pool: springs follow their elements before anything reads a cell
+        let pooled = super::pool::pop_pool();
+        let carried = if pooled {
+            self.pool.follow(&mut self.row, src, focus)
+        } else {
+            self.pool.clear();
+            false
+        };
         if let Some(i) = focus {
             let prev = self.prev();
             match (self.seen, prev) {
@@ -165,7 +177,11 @@ impl Shelf {
                 // no FocusMoved, another index: the same element, moved by a content landing
                 (Seen::Nothing, Some(p)) if p != i => {
                     let dx = (i as f32 - p as f32) * self.pitch();
-                    self.row.relocate(p, i, dx);
+                    if carried {
+                        self.row.shift_scroll(dx);
+                    } else {
+                        self.row.relocate(p, i, dx);
+                    }
                     self.row.clamp_scroll(src.len(), self.style);
                     self.landed = Some(Landed { from: p, to: i });
                 }
@@ -192,6 +208,21 @@ impl Shelf {
                 self.row.park();
             }
         }
+        if pooled {
+            self.pool.admit(&self.row, src, focus);
+        }
+    }
+
+    /// Is the pop of cell `cell` held in the element-keyed pool?
+    #[cfg(test)]
+    pub(crate) fn pool_holds(&self, cell: usize) -> bool {
+        self.pool.holds(cell)
+    }
+
+    /// Held pops in the element-keyed pool.
+    #[cfg(test)]
+    pub(crate) fn pool_len(&self) -> usize {
+        self.pool.len()
     }
 
     /// The paging rule: the window's last card plus look-ahead (or the focused card's, if further).
@@ -218,7 +249,20 @@ impl Shelf {
     /// been told about (a deliberate move grows from rest, the tile it left lets go), the landed
     /// element's spring at its new index with the old one at rest, FULL for a focused card adopted
     /// whole (never a one-frame collapse) with the one it left at rest.
-    fn pop(&self, i: usize, focus: Option<usize>) -> f32 {
+    fn pop<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, focus: Option<usize>) -> f32 {
+        // the element-keyed pool: a source change no tick has seen yet is resolved by element
+        if super::pool::pop_pool() && focus.is_some_and(|_| !self.dormant) {
+            match self.pool.drawn(src, i, focus == Some(i)) {
+                Some(Drawn::Cell(c)) => return self.row.scale(c),
+                Some(Drawn::Rest) => return 1.0,
+                None => {}
+            }
+        }
+        self.pop_at(i, focus)
+    }
+
+    /// [`pop`](Self::pop) by position alone: what the draw paints when the tick has seen the source.
+    fn pop_at(&self, i: usize, focus: Option<usize>) -> f32 {
         let Some(j) = focus.filter(|_| !self.dormant) else { return self.row.scale(i) };
         let prev = self.prev();
         if prev == Some(j) || self.seen == Seen::Deliberate(j) {
@@ -240,7 +284,7 @@ impl Shelf {
     /// The live pop of `elem` (no press), for tests and the opener's redraw.
     pub fn scale_of<H: Host, S: CardSource<H>>(&self, cx: &Cx<'_, H>, src: &S, elem: &H::Elem) -> Option<f32> {
         let i = src.index_of(elem)?;
-        Some(self.pop(i, super::focused_index(&cx.focus, self.entry, src)))
+        Some(self.pop(src, i, super::focused_index(&cx.focus, self.entry, src)))
     }
 
     fn pitch(&self) -> f32 {
@@ -277,7 +321,7 @@ impl Shelf {
         let focus = super::focused_index(&cx.focus, self.entry, src);
         let slot = self.slot(i, at, self.drawn_scroll(src));
         let s = match how {
-            At::Drawn => super::press_scale(self.pop(i, focus), focus == Some(i), cx),
+            At::Drawn => super::press_scale(self.pop(src, i, focus), focus == Some(i), cx),
             At::SpringTarget => if focus == Some(i) { self.style.focus_scale } else { 1.0 },
         };
         Some(Placed {
@@ -314,7 +358,7 @@ impl Shelf {
         let pr = p.translate(-sx, 0.0);
         let visible = |i: usize| crate::on_axis(self.slot(i, at, sx).x, self.style.w, SCR_W, self.margin);
         for i in (0..n).filter(|&i| focus != Some(i) && visible(i)) {
-            let s = self.pop(i, focus);
+            let s = self.pop(src, i, focus);
             self.draw_card(f, pr, src, i, at, s, false);
         }
     }
@@ -324,7 +368,7 @@ impl Shelf {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let pr = p.translate(-self.drawn_scroll(src), 0.0);
         if let Some(i) = focus.filter(|&i| i < src.len()) {
-            let s = super::press_scale(self.pop(i, focus), true, f.cx);
+            let s = super::press_scale(self.pop(src, i, focus), true, f.cx);
             self.draw_card(f, pr, src, i, at, s, true);
         }
     }
@@ -339,7 +383,7 @@ impl Shelf {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let sx = self.drawn_scroll(src);
         for i in (0..src.len()).filter(|&i| crate::on_axis(self.slot(i, at, sx).x, self.style.w, SCR_W, self.margin)) {
-            let s = super::press_scale(self.pop(i, focus), focus == Some(i), f.cx);
+            let s = super::press_scale(self.pop(src, i, focus), focus == Some(i), f.cx);
             let slot = super::to_local(p, self.slot(i, at, sx));
             f.stop(p, Stop {
                 key: FocusKey { entry: self.entry, elem: src.elem(i) },
@@ -363,7 +407,7 @@ impl Shelf {
         focus: Option<FocusKey<H::Elem>>,
     ) {
         let Some(i) = focus.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem)) else { return };
-        let s = super::press_scale(self.pop(i, Some(i)), true, f.cx);
+        let s = super::press_scale(self.pop(src, i, Some(i)), true, f.cx);
         self.draw_card(f, p.translate(-self.drawn_scroll(src), 0.0), src, i, at, s, true);
     }
 
@@ -442,7 +486,7 @@ impl Shelf {
     /// (the focus rule and [`dormant`](Self::dormant) included): what a probe reads between frames.
     #[cfg(any(test, feature = "test-support"))]
     pub fn drawn_pop(&self, i: usize, focus: Option<usize>) -> f32 {
-        self.pop(i, focus)
+        self.pop_at(i, focus)
     }
 
     /// Every spring is parked exactly at rest: nothing here needs stepping.
