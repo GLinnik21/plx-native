@@ -6283,7 +6283,9 @@ class FpsMock(unittest.TestCase):
         runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), True)
         names = {s["name"] for s in runnable}
         self.assertEqual(names, {"home-grid", "home-grid-deep", "home-hint", "library-shelves-deep",
-                                 "hero-pong", "grid-pong"})
+                                 "hero-pong", "grid-pong", "home-idle", "item-menu", "library-scroll",
+                                 "library-idle", "collection-page", "person-page", "search-type",
+                                 "show-detail"})
         self.assertEqual(len(runnable) + len(skipped), len(self.scenes))
         for _, why in skipped:
             self.assertIn("real library content", why)
@@ -6295,11 +6297,12 @@ class FpsMock(unittest.TestCase):
         self.assertIn("home-grid", {s["name"] for s in runnable})
         self.assertEqual(len(runnable), len(self.scenes) - 2)
 
-    def test_no_scene_runnable_under_mock_names_a_library_item(self):
-        # a scene that needs a ratingKey from the overlay can never run without one
+    def test_a_mock_scene_naming_a_library_item_carries_its_own_rating_key(self):
+        # the overlay's ratingKey is the real server's; under --mock the scene opens `mock.rk`
         for s in self.scenes.values():
             if self.mf.scene_mock(s) is not None:
-                self.assertNotIn("item", s, s["name"])
+                if s.get("item"):
+                    self.assertIsInstance(s["mock"].get("rk"), int, s["name"])
                 self.assertNotIn("needs_shared_server", s, s["name"])
                 self.assertEqual(s.get("tier", "ui"), "ui", s["name"])
 
@@ -6317,6 +6320,76 @@ class FpsMock(unittest.TestCase):
             self.mf.mock_server_args({"name": "x", "mock": {"section_hubs": 3, "section_hubs_linked": 4}})
         with self.assertRaises(ValueError):
             self.mf.mock_server_args({"name": "x", "mock": {"section_hubs": -1}})
+
+    def test_mock_scene_substitutes_rk_and_trigger_values_on_a_copy(self):
+        page = self.scenes["collection-page"]
+        ran = self.mf.mock_scene(page)
+        self.assertEqual(ran["rk"], 50002)
+        self.assertNotIn("rk", page)
+        self.assertEqual(run.fps_trigger_files(ran), [("plxnative-collection", "50002")])
+        self.assertEqual(self.mf.mock_server_args(page), ["--movies", "240"])
+        search = self.mf.mock_scene(self.scenes["search-type"])
+        self.assertEqual(search["triggers"]["plxnative-search"], "sb")
+        self.assertTrue(search["triggers"]["plxnative-searchosc"])  # the rest is kept
+        self.assertEqual(self.scenes["search-type"]["triggers"]["plxnative-search"], "th")
+        with self.assertRaises(ValueError):
+            self.mf.mock_server_args({"name": "x", "mock": {"movies": 1001}})
+
+    def test_an_item_scene_without_mock_rk_is_skipped_under_mock(self):
+        scene = {"name": "x", "item": "movie", "mock": {}}
+        runnable, skipped = self.mf.partition_mock([scene], True)
+        self.assertEqual(runnable, [])
+        self.assertIn("mock.rk", skipped[0][1])
+
+    def test_new_mock_scenes_resolve_to_content_the_mock_serves(self):
+        """Each card-screen scene, as it runs under --mock, points at a ratingKey / query the
+        synthetic library really answers with realistically sized content."""
+        def get(port, path):
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=10) as r:
+                return json.load(r)["MediaContainer"]
+
+        def check(name, fn):
+            scene = self.mf.mock_scene(self.scenes[name])
+            port = self._free_port()
+            with self.mf.MockPms("127.0.0.1", port, self.mf.mock_server_args(scene)):
+                with self.subTest(scene=name):
+                    fn(port, scene, dict(run.fps_trigger_files(scene)))
+
+        def collection(port, scene, trig):
+            rk = trig["plxnative-collection"]
+            head = get(port, f"/library/metadata/{rk}")["Metadata"]
+            self.assertEqual(head[0]["type"], "collection")
+            kids = get(port, f"/library/collections/{rk}/children")["Metadata"]
+            self.assertGreaterEqual(len(kids), 18)  # several poster rows
+            self.assertTrue(all(k.get("thumb") for k in kids))
+
+        def person(port, scene, trig):
+            movie = get(port, f"/library/metadata/{trig['plxnative-detail']}")["Metadata"][0]
+            self.assertEqual(movie["type"], "movie")
+            pid = movie["Role"][0]["id"]  # detailsec=1 + detailok opens cast[0]
+            titles = get(port, f"/library/people/{pid}/media")["Metadata"]
+            self.assertGreaterEqual(len({t["type"] for t in titles}), 2)  # two shelves
+            self.assertGreaterEqual(len(titles), 6)
+
+        def search(port, scene, trig):
+            hubs = get(port, f"/hubs/search?query={trig['plxnative-search']}&limit=8")["Hub"]
+            filled = [h for h in hubs if h["size"] > 0]
+            self.assertGreaterEqual(len(filled), 4)
+            self.assertGreaterEqual(sum(h["size"] for h in filled), 12)
+
+        def show(port, scene, trig):
+            rk = trig["plxnative-detail"]
+            self.assertEqual(get(port, f"/library/metadata/{rk}")["Metadata"][0]["type"], "show")
+            seasons = get(port, f"/library/metadata/{rk}/children")["Metadata"]
+            self.assertGreaterEqual(len(seasons), 2)
+            eps = get(port, f"/library/metadata/{seasons[0]['ratingKey']}/children")["Metadata"]
+            self.assertGreaterEqual(len(eps), 6)
+            self.assertGreaterEqual(len(get(port, f"/library/metadata/{rk}/related")["Hub"]), 1)
+
+        check("collection-page", collection)
+        check("person-page", person)
+        check("search-type", search)
+        check("show-detail", show)
 
     def test_an_exact_scene_name_selects_only_that_scene(self):
         scenes = list(self.scenes.values())

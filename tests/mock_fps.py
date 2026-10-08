@@ -23,6 +23,13 @@ Scene fields (tests/manifest.json, `fps_scenes`):
                                 ... `--section-hubs 170 --section-hubs-linked 40` (#412): the
                                 Library's `/hubs/sections/<id>` answers 170 hubs, 40 of them
                                 promoted collections
+  "mock": {"movies": 240}       ... `--movies 240`: a bigger synthetic library (collections grow with it)
+  "mock": {"rk": 50002}         a scene that names a library `item` on a real server opens THIS
+                                ratingKey of the synthetic library instead (`$rk` in its triggers);
+                                an `item` scene with no `mock.rk` is not runnable under --mock
+  "mock": {"triggers": {"plxnative-search": "sb"}}
+                                trigger values that replace the scene's own under --mock (a query
+                                that the synthetic titles, all `s` + hex, can actually match)
   "mock": {"only": true, ...}   runs ONLY under --mock (the scene is meaningless on a real library)
   "walk": {"key_gap_s": 0.33, "max_rows": 170, ...}
                                 after the Home shelves land, press Down once per landed row at
@@ -74,6 +81,11 @@ def mock_server_args(scene):
     """The extra `tests/mock_pms.py` arguments this scene's `mock` block asks for."""
     block = scene_mock(scene) or {}
     args = []
+    if block.get("movies") is not None:
+        n = int(block["movies"])
+        if not 0 <= n <= 1000:
+            raise ValueError(f"{scene.get('name')}: mock.movies must be between 0 and 1000")
+        args += ["--movies", str(n)]
     if block.get("home_hubs") is not None:
         n = int(block["home_hubs"])
         if n < 0:
@@ -94,6 +106,18 @@ def mock_server_args(scene):
     return args
 
 
+def mock_scene(scene):
+    """The scene as it runs under --mock: `mock.rk` becomes its `rk` and `mock.triggers` replace
+    the same-named triggers. A copy; the manifest's own scene is untouched."""
+    block = scene_mock(scene) or {}
+    out = dict(scene)
+    if block.get("rk") is not None:
+        out["rk"] = int(block["rk"])
+    if block.get("triggers"):
+        out["triggers"] = {**scene.get("triggers", {}), **block["triggers"]}
+    return out
+
+
 def partition_mock(scenes, mock):
     """Split `scenes` into (runnable, [(name, reason), ...]) for this run's server.
 
@@ -104,7 +128,10 @@ def partition_mock(scenes, mock):
     runnable, skipped = [], []
     for s in scenes:
         block = scene_mock(s)
-        if mock and block is None:
+        if mock and block is not None and s.get("item") and block.get("rk") is None:
+            skipped.append((s["name"], "names a library `item` and has no `mock.rk`: "
+                                       "not runnable against the synthetic mock"))
+        elif mock and block is None:
             skipped.append((s["name"], "needs real library content (no `mock` block); "
                                        "not runnable against the synthetic mock"))
         elif not mock and block is not None and block.get("only"):

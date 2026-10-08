@@ -6696,6 +6696,8 @@ def main():
         # Which scenes THIS server can serve: under --mock only the ones that declare a `mock`
         # block, and without it never a `mock.only` scene. Before anything reads a token.
         selected, mock_skipped = mock_fps.partition_mock(selected, args.mock)
+        if args.mock:
+            selected = [mock_fps.mock_scene(s) for s in selected]
         fps_skipped = list(fps_skipped) + mock_skipped
         scenes, _skipped = setup_shared(manifest, cfg, args, selected, "scene")
         # Bail BEFORE read_token() and arm_teardown(): arming commits to driving the television,
