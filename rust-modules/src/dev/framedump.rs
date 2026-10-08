@@ -160,8 +160,8 @@ pub(crate) struct Sample {
     pub tex_pending: bool,
     /// `!tex::source_idle()`: the poster source has work out.
     pub source_busy: bool,
-    /// `Dispatcher::held_page_image()` is `Some`: the page shown is a captured image. A REPORTED FACT
-    /// (it is in the failure message), never a hold reason: see the module doc.
+    /// `Dispatcher::held_page_image()` is `Some`: the page shown is a captured image. A RECORDED FACT,
+    /// never a hold reason: see the module doc.
     pub page_image: bool,
     /// Landing claims still open ([`crate::app::bridge::Bridge::open_claims`]).
     pub claims: Vec<&'static str>,

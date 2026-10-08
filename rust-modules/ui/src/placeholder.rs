@@ -396,7 +396,7 @@ pub fn capture_declared<R>(f: impl FnOnce() -> R) -> (R, Frame) {
 /// paints it. A recording pass paints nothing and so counts nothing.
 #[inline]
 pub fn note(p: Painter, reason: Reason, key: &str) {
-    if ARMED_THREADS.load(Ordering::Relaxed) == 0 || p.is_recording() || !ARMED.with(Cell::get) {
+    if !armed() || p.is_recording() {
         return;
     }
     record(reason, key);
@@ -407,7 +407,7 @@ pub fn note(p: Painter, reason: Reason, key: &str) {
 /// it lands in [`Frame::absent`].
 #[inline]
 pub fn note_absent(p: Painter, reason: Reason, key: &str) {
-    if ARMED_THREADS.load(Ordering::Relaxed) == 0 || p.is_recording() || !ARMED.with(Cell::get) {
+    if !armed() || p.is_recording() {
         return;
     }
     record_absent(reason, key);
