@@ -113,6 +113,10 @@ pub struct DetailScreen {
     // Published identity projections, rebuilt only at mount/landings, never while drawing.
     key_by_local: std::collections::HashMap<u32, u32>,
     local_by_key: std::collections::HashMap<u32, u32>,
+    /// Where each card-shelf card that left the page last stood (engine key to local key), kept so
+    /// `reconcile` can put focus on the same position in that shelf; dropped if the card returns.
+    /// Not logical state: it is a projection of past publications, like the two maps above.
+    gone: std::collections::HashMap<u32, u32>,
     return_pending: bool,
 
     // Logical decisions. None is a focus cursor.
@@ -401,6 +405,7 @@ impl DetailScreen {
             next_elem: FIRST_ITEM_ELEM,
             key_by_local: Default::default(),
             local_by_key: Default::default(),
+            gone: Default::default(),
             return_pending: false,
             pending_season: None,
             season_settle: 0.0,
@@ -535,7 +540,7 @@ impl DetailScreen {
         }
         let mut interned: std::collections::HashMap<DetailIdentity, u32> = self.keys.iter().map(|key| (key.identity.clone(), key.elem)).collect();
         self.key_by_local.clear();
-        self.local_by_key.clear();
+        let before = std::mem::take(&mut self.local_by_key);
         for (local, identity) in identities {
             let identity = match &identity {
                 DetailIdentity::Season { rk, .. } | DetailIdentity::Episode { rk, .. } | DetailIdentity::Related { rk, .. } | DetailIdentity::Extra { rk, .. }
@@ -552,10 +557,40 @@ impl DetailScreen {
             self.key_by_local.insert(local, elem);
             self.local_by_key.insert(elem, local);
         }
+        for (elem, local) in before {
+            if !self.local_by_key.contains_key(&elem) && Self::card_shelf_of(local) {
+                self.gone.insert(elem, local);
+            }
+        }
+        let present = &self.local_by_key;
+        self.gone.retain(|elem, _| !present.contains_key(elem));
         if let Some(key) = pending_key {
             self.pending_season = self.local_by_key.get(&key).and_then(|local| season::locate(*local));
         }
         self.spot_facts = SpotFacts::of(self, meta);
+    }
+
+    /// Whether `local` is a card on one of the four card shelves (Related, Collection, Extras, Cast).
+    fn card_shelf_of(local: u32) -> bool {
+        matches!(
+            Self::locate_local(local, false),
+            Some(Located::Related(_) | Located::Collection(_) | Located::Extras(_) | Located::Cast(_))
+        )
+    }
+
+    /// The shared recovery rule for a card shelf's focused card that is no longer there: the slot it
+    /// held, clamped to the shelf's new length. `None` for any other element, and for a shelf that
+    /// is now empty or gone, which fall to the page's own fallback.
+    fn shelf_recovery(&self, elem: u32, meta: plx_data::metadata::MetadataView<'_>) -> Option<u32> {
+        let d = self.detail(meta)?;
+        let local = match Self::locate_local(*self.gone.get(&elem)?, false)? {
+            Located::Related(i) => related::elem(ui_cards::clamp_slot(i, d.related.len().min(512))?),
+            Located::Collection(i) => collection::elem(ui_cards::clamp_slot(i, collection::len(d))?),
+            Located::Extras(i) => extras::elem(ui_cards::clamp_slot(i, extras::len(d))?),
+            Located::Cast(i) => cast::elem(ui_cards::clamp_slot(i, d.credits_len().min(512))?),
+            _ => None,
+        }?;
+        self.engine_key(local)
     }
 
     pub fn restore(&mut self, spot: &Spot, meta: plx_data::metadata::MetadataView<'_>) {
@@ -1549,6 +1584,9 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
             .is_some_and(|located| self.valid(located, meta))
         {
             return want;
+        }
+        if let Some(elem) = self.shelf_recovery(want.elem, meta) {
+            return FocusKey { entry: want.entry, elem };
         }
         FocusKey {
             entry: want.entry,

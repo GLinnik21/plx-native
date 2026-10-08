@@ -673,8 +673,8 @@ impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
         let k = s.specs[i].key;
         match s.specs[i].kind {
             Kind::Shelf { .. } | Kind::Grid { .. } => {
-                let c = p.cards(cx, k).filter(|c| c.len() > 0)?;
-                Some(c.elem(n.min(c.len() - 1)))
+                let c = p.cards(cx, k)?;
+                Some(c.elem(super::clamp_slot(n, c.len())?))
             }
             Kind::Custom { focusable, .. } | Kind::Overlay { focusable, .. } => p.elem_of(k).filter(|_| focusable),
         }

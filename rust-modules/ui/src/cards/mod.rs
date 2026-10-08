@@ -84,6 +84,13 @@ pub mod conformance;
 #[cfg(test)]
 mod tests;
 
+/// The one recovery position every card screen uses when the focused card is gone from its
+/// section: the slot it held, clamped to the section's new length. `None` when the section is
+/// empty, which is the page's cue to use its fallback.
+pub fn clamp_slot(slot: usize, len: usize) -> Option<usize> {
+    len.checked_sub(1).map(|last| slot.min(last))
+}
+
 /// The read-only content a section draws. The screen implements it over its own store view; the
 /// component never owns or copies content.
 pub trait CardSource<H: Host> {

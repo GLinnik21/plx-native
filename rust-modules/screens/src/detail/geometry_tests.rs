@@ -80,6 +80,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         next_elem: FIRST_ITEM_ELEM,
         key_by_local: Default::default(),
         local_by_key: Default::default(),
+        gone: Default::default(),
         return_pending: false,
         pending_season: None,
         season_settle: 0.0,
