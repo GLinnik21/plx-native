@@ -706,9 +706,37 @@ class EncodeArgv(unittest.TestCase):
             "-vf", "scale=1280:720:flags=lanczos+accurate_rnd+full_chroma_int+error_diffusion:in_range=full:"
                    "out_range=tv:out_color_matrix=bt709,format=yuv420p",
             "-c:v", "libx264", "-preset", "veryslow", "-crf", "18", "-tune", "animation", "-profile:v", "high",
-            "-pix_fmt", "yuv420p", "-x264-params", "aq-mode=3:deblock=-1,-1",
+            "-pix_fmt", "yuv420p", "-x264-params", "aq-mode=3:deblock=-1,-1", "-level", "3.2", "-refs", "5",
             "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
             "-movflags", "+faststart", "/o/feel-720p60.h264.mp4"])
+
+    def test_the_1080p_h264_differs_from_the_720p_one_only_in_size_level_and_refs(self):
+        small, big = self.plan()["feel-720p60.h264.mp4"], self.plan()["feel-1080p60.h264.mp4"]
+        self.assertEqual(big[big.index("-level") + 1], "4.2")
+        self.assertEqual(big[big.index("-refs") + 1], "4")
+        for argv in (small, big):
+            for flag in ("-level", "-refs"):
+                i = argv.index(flag)
+                del argv[i:i + 2]
+        self.assertEqual([a for a in small if "1280" not in a and "720" not in a],
+                         [a for a in big if "1920" not in a and "1080" not in a])
+
+    def test_each_h264_declares_the_lowest_level_its_picture_and_rate_need(self):
+        """Level limits from H.264 Table A-1: MaxMBPS (macroblocks/s), MaxFS (macroblocks/frame), MaxDpbMbs."""
+        table = {"3.1": (108000, 3600, 18000), "3.2": (216000, 5120, 20480), "4.0": (245760, 8192, 32768),
+                 "4.1": (245760, 8192, 32768), "4.2": (522240, 8704, 34816), "5.0": (589824, 22080, 110400)}
+        order = list(table)
+        for v in (v for v in sv.VIDEOS if v.codec == "h264"):
+            level, refs = sv.H264_LEVELS[v.height]
+            mbs = (v.width // 16) * (v.height // 16)
+            rate = mbs * 60
+            fits = lambda lv: rate <= table[lv][0] and mbs <= table[lv][1]
+            self.assertTrue(fits(level), f"{v.name}: {mbs} MB at 60 fps does not fit level {level}")
+            lower = order[order.index(level) - 1]
+            self.assertFalse(fits(lower), f"{v.name}: level {lower} would do; the declared one is not the minimum")
+            self.assertLessEqual(int(refs), table[level][2] // mbs, f"{v.name}: {refs} refs exceed the level's DPB")
+            self.assertGreaterEqual(int(refs), 4)
+        self.assertEqual({h: lv for h, (lv, _) in sv.H264_LEVELS.items()}, {720: "3.2", 1080: "4.2"})
 
     def test_every_encode_drops_audio_and_nothing_names_libaom(self):
         plan = self.plan()
@@ -1046,6 +1074,332 @@ class ManifestAndAdopt(unittest.TestCase):
         self.assertNotEqual(combined("a"), combined("b"), "a gfx/machine/framedump.rs change must change the tree hash")
 
 
+def fake_trees(combined):
+    """A stand-in for `sv.tree_hashes` that names one combined hash for any revision."""
+    return lambda run=None, root=None, rev="HEAD": ({"combined": combined}, False)
+
+
+class ReleaseRefGuard(unittest.TestCase):
+    """The site's film refreshes after a STABLE release and for nothing else. The refs below are the repository's
+    real tag history (`git tag`): stable releases, release candidates, canaries and nightlies."""
+
+    STABLE = ["v0.8.0", "v0.7.1", "v0.7.0", "v0.6.6", "v0.6.5", "refs/tags/v0.8.0", "v10.20.30"]
+    NOT_STABLE = ["rc/v0.8.0-rc.3", "rc/v0.8.0-rc.1", "canary/v0.6.6-rc.2", "nightly/v0.9.0-nightly-20261008",
+                  "nightly/v0.8.0-nightly-20261007", "v0.8.0-rc.1", "v0.8.0-nightly-20261007", "refs/tags/rc/v0.8.0-rc.3",
+                  "main", "refs/heads/main", "release/v0.6", "1eed51447327a3d97c20e840a0743cb547f43623", "", "v0.8", "v0.8.0.1",
+                  "xv0.8.0", "v0.8.0 ", "v0.8.0\nrc"]
+
+    def test_stable_tags_pass_and_come_back_bare(self):
+        for ref in self.STABLE:
+            with self.subTest(ref):
+                self.assertEqual(sv.stable_release_tag(ref), ref.removeprefix("refs/tags/"))
+
+    def test_candidates_canaries_nightlies_branches_and_commits_are_refused(self):
+        for ref in self.NOT_STABLE:
+            with self.subTest(ref):
+                self.assertIsNone(sv.stable_release_tag(ref))
+
+    def test_the_command_exits_zero_for_stable_and_one_with_a_message_otherwise(self):
+        out, err = io.StringIO(), io.StringIO()
+        with unittest.mock.patch("sys.stdout", out), unittest.mock.patch("sys.stderr", err):
+            self.assertEqual(sv.main(["release-ref", "v0.8.0"]), 0)
+            self.assertEqual(sv.main(["release-ref", "rc/v0.8.0-rc.3"]), 1)
+            self.assertEqual(sv.main(["release-ref", "nightly/v0.9.0-nightly-20261008"]), 1)
+        self.assertEqual(out.getvalue(), "v0.8.0\n")
+        self.assertIn("not a stable release tag", err.getvalue())
+
+    def test_every_real_tag_in_this_checkout_is_classified_by_its_shape(self):
+        done = subprocess.run(["git", "-C", str(ROOT), "tag"], capture_output=True, text=True)
+        tags = done.stdout.split() if done.returncode == 0 else []
+        for tag in tags:
+            with self.subTest(tag):
+                stable = re.fullmatch(r"v\d+\.\d+\.\d+", tag) is not None
+                self.assertEqual(sv.stable_release_tag(tag) is not None, stable)
+                if "/" in tag or "-" in tag:
+                    self.assertIsNone(sv.stable_release_tag(tag))
+
+
+class NeedsRender(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.manifest = pathlib.Path(self._tmp.name, "feel.manifest.json")
+        self.manifest.write_text(json.dumps({"tree_hash": {"combined": "a" * 64}}))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def ask(self, here, **kw):
+        with unittest.mock.patch.object(sv, "tree_hashes", fake_trees(here)):
+            return sv.needs_render("v0.9.0", manifest_path=self.manifest, **kw)
+
+    def test_the_same_film_inputs_skip_the_render(self):
+        render, why = self.ask("a" * 64)
+        self.assertFalse(render)
+        self.assertIn("aaaaaaaaaaaa", why)
+
+    def test_changed_inputs_render(self):
+        render, why = self.ask("b" * 64)
+        self.assertTrue(render)
+        self.assertIn("changed", why)
+
+    def test_force_renders_even_when_the_inputs_match_and_without_reading_git(self):
+        with unittest.mock.patch.object(sv, "tree_hashes", side_effect=AssertionError("must not be asked")):
+            self.assertEqual(sv.needs_render("v0.9.0", force=True, manifest_path=self.manifest), (True, "forced"))
+
+    def test_a_missing_or_unreadable_manifest_renders(self):
+        for content in (None, "not json", json.dumps({}), json.dumps({"tree_hash": None})):
+            with self.subTest(content):
+                if content is None:
+                    self.manifest.unlink()
+                else:
+                    self.manifest.write_text(content)
+                render, why = self.ask("a" * 64)
+                self.assertTrue(render)
+                self.assertIn("no readable tree hash", why)
+
+    def test_the_command_prints_workflow_outputs(self):
+        out = io.StringIO()
+        with unittest.mock.patch.object(sv, "tree_hashes", fake_trees("a" * 64)), unittest.mock.patch("sys.stdout", out):
+            self.assertEqual(sv.main(["needs-render", "--rev", "v0.9.0", "--manifest", str(self.manifest)]), 0)
+        lines = out.getvalue().splitlines()
+        self.assertEqual(lines[0], "needs_render=false")
+        self.assertTrue(lines[1].startswith("reason="))
+
+    def test_a_revision_is_hashed_at_that_revision_and_has_no_working_tree(self):
+        seen = []
+
+        def run(argv, **kw):
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "tree\n", "")
+        trees, dirty = sv.tree_hashes(run, "/repo", rev="v0.9.0")
+        self.assertFalse(dirty)
+        self.assertEqual([a[-1] for a in seen], [f"v0.9.0:{p}" for p in sv.TREE_PATHS])
+        self.assertFalse(any("status" in a for a in seen), "a revision is not compared with the working tree")
+        _, head_dirty = sv.tree_hashes(run, "/repo")
+        self.assertTrue(head_dirty)  # for HEAD, `status` is asked, and the stub answers with output
+        self.assertTrue(any("status" in a for a in seen))
+
+
+class AdoptForTheBot(unittest.TestCase):
+    """`adopt` as `site-video.yml`'s publish job uses it: an unpacked directory, the tree it expects, nothing written
+    for an identical film, and the derived files regenerated only for a changed one."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        self.site = pathlib.Path(self.tmp, "site-media")
+        self.site.mkdir()
+        self.out, self.zpath, self.manifest = fake_artifact(self.tmp)
+        self.say = []
+        self.ran = []
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_stub(self, argv, **kw):
+        self.ran.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    def adopt(self, source, **kw):
+        with unittest.mock.patch.object(sv, "tree_hashes", fake_trees("c" * 64)):
+            return sv.adopt(source, self.site, True, self.say.append, run=self.run_stub, **kw)
+
+    def test_a_directory_adopts_exactly_like_its_zip(self):
+        plan = self.adopt(self.out)
+        self.assertEqual(sorted(p.name for p in self.site.iterdir()), sorted(sv.MEDIA_NAMES + (sv.MANIFEST_NAME,)))
+        self.assertEqual(sorted(plan.changed), sorted(sv.MEDIA_NAMES))
+        for name in sv.MEDIA_NAMES:
+            self.assertEqual((self.site / name).read_bytes(), (self.out / name).read_bytes())
+
+    def test_a_directory_is_still_verified(self):
+        (self.out / "feel-poster.jpg").write_bytes(b"tampered")
+        with self.assertRaises(sv.Failure):
+            self.adopt(self.out)
+        self.assertEqual(list(self.site.iterdir()), [])
+        with tempfile.TemporaryDirectory() as other:
+            out2, _, _ = fake_artifact(other, platform="darwin-local")
+            with self.assertRaises(sv.Failure) as cm:
+                self.adopt(out2)
+        self.assertIn("linux-ci", str(cm.exception))
+
+    def test_an_artifact_of_other_film_inputs_than_expected_is_refused(self):
+        with unittest.mock.patch.object(sv, "tree_hashes", fake_trees("d" * 64)):
+            with self.assertRaises(sv.Failure) as cm:
+                sv.adopt(self.out, self.site, True, self.say.append, run=self.run_stub, expect_rev="v0.9.0")
+        self.assertIn("v0.9.0", str(cm.exception))
+        self.assertEqual(list(self.site.iterdir()), [])
+        self.adopt(self.out, expect_rev="v0.9.0")  # the fake manifest's tree hash is "c" * 64
+        self.assertTrue((self.site / sv.MANIFEST_NAME).is_file())
+
+    def test_an_identical_film_writes_nothing_not_even_the_manifest(self):
+        self.adopt(self.out)
+        committed = (self.site / sv.MANIFEST_NAME).read_text()
+        newer = json.loads(committed)
+        newer["tree_hash"] = {"combined": "e" * 64}
+        (self.out / sv.MANIFEST_NAME).write_text(json.dumps(newer))
+        self.ran.clear()
+        plan = self.adopt(self.out, derive=True)
+        self.assertEqual(plan.changed, [])
+        self.assertEqual((self.site / sv.MANIFEST_NAME).read_text(), committed)
+        self.assertEqual(self.ran, [], "an identical film derives nothing")
+        self.assertTrue(any("byte-identical" in line for line in self.say))
+
+    def test_one_changed_file_writes_everything_and_derives(self):
+        self.adopt(self.out)
+        (self.site / "feel-poster.jpg").write_bytes(b"older poster")
+        self.ran.clear()
+        plan = self.adopt(self.out, derive=True)
+        self.assertEqual(plan.changed, ["feel-poster.jpg"])
+        self.assertEqual((self.site / "feel-poster.jpg").read_bytes(), (self.out / "feel-poster.jpg").read_bytes())
+        names = [[os.path.basename(a) for a in argv[1:]] for argv in self.ran]
+        self.assertEqual(names, [["render-site-glows.py", "--only", *sv.FILM_GLOWS], ["demo_library.py", "site-credits"]])
+
+    def test_derive_is_off_unless_asked_and_a_failing_step_fails_the_adoption(self):
+        self.adopt(self.out)
+        self.assertEqual(self.ran, [])
+        (self.site / "feel-poster.jpg").write_bytes(b"older poster")
+        with unittest.mock.patch.object(sv, "tree_hashes", fake_trees("c" * 64)):
+            with self.assertRaises(sv.Failure):
+                sv.adopt(self.out, self.site, True, self.say.append, derive=True,
+                         run=lambda argv, **kw: subprocess.CompletedProcess(argv, 3))
+
+    def test_a_missing_committed_manifest_is_written_even_when_the_media_match(self):
+        self.adopt(self.out)
+        (self.site / sv.MANIFEST_NAME).unlink()
+        self.adopt(self.out)
+        self.assertTrue((self.site / sv.MANIFEST_NAME).is_file())
+
+    def test_the_film_glows_named_by_derive_are_glows_the_site_uses(self):
+        css_and_html = (ROOT / "site" / "index.html").read_text()
+        for name in sv.FILM_GLOWS:
+            self.assertIn(f"media/{name}", css_and_html)
+            self.assertTrue((ROOT / "site" / "media" / name).is_file())
+        glows = (ROOT / "tools" / "render-site-glows.py").read_text()
+        for name in sv.FILM_GLOWS:
+            self.assertIn(f'"{name}"', glows)
+
+
+def fake_mp4(codec, a, b, c=0):
+    """Bytes that carry just the sample-description box the codec string is read from."""
+    if codec == "h264":
+        return b"\x00\x00\x00\x20ftypisom....avcC" + bytes([1, a, b, c]) + b"\x00" * 8
+    return b"\x00\x00\x00\x20ftypisom....av1C" + bytes([0x81, a, b, 0]) + b"\x00" * 8
+
+
+PAGE = """<section id="feel">
+<source media="(max-width: 759px)" src="media/feel-720p60.av1.mp4" type='video/mp4; codecs="av01.0.08M.08"' />
+<source media="(max-width: 759px)" src="media/feel-720p60.h264.mp4" type='video/mp4; codecs="avc1.640032"' />
+<source src="media/feel-1080p60.av1.mp4" type='video/mp4; codecs="av01.0.09M.08"' />
+<source src="media/feel-1080p60.h264.mp4" type='video/mp4; codecs="avc1.640033"' />
+</section>"""
+
+
+class CodecStringsFollowTheFilm(unittest.TestCase):
+    """A re-encode that moves a profile or level must not leave index.html declaring the old one: `adopt --write`
+    (the bot's path) rewrites the `codecs=` strings from the adopted files' own boxes."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = pathlib.Path(self._tmp.name)
+        self.site = self.tmp / "site"
+        self.media = self.site / "media"
+        self.media.mkdir(parents=True)
+        self.index = self.site / "index.html"
+        self.index.write_text(PAGE)
+        self.out, _, _ = fake_artifact(str(self.tmp), platform="linux-ci")
+        self.say = []
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def put_film(self, directory, h264_720=0x20, h264_1080=0x2A):
+        """Overwrite the four videos of `directory` with fake mp4s and return nothing; the manifest is rebuilt."""
+        files = {"feel-720p60.av1.mp4": fake_mp4("av1", 0x08, 0x0C), "feel-1080p60.av1.mp4": fake_mp4("av1", 0x09, 0x0C),
+                 "feel-720p60.h264.mp4": fake_mp4("h264", 0x64, 0, h264_720),
+                 "feel-1080p60.h264.mp4": fake_mp4("h264", 0x64, 0, h264_1080)}
+        for name, data in files.items():
+            (pathlib.Path(directory) / name).write_bytes(data)
+        mpath = pathlib.Path(directory) / sv.MANIFEST_NAME
+        manifest = json.loads(mpath.read_text())
+        for name in files:
+            manifest["outputs"][name] = sv.file_entry(pathlib.Path(directory) / name)
+        mpath.write_text(json.dumps(manifest))
+
+    def adopt(self, **kw):
+        with unittest.mock.patch.object(sv, "tree_hashes", fake_trees("c" * 64)):
+            return sv.adopt(self.out, self.media, True, self.say.append, run=lambda argv, **k: subprocess.CompletedProcess(argv, 0), **kw)
+
+    def test_the_strings_are_read_from_the_boxes(self):
+        self.put_film(self.out)
+        self.assertEqual(sv.film_codec_strings(self.out), {
+            "feel-720p60.av1.mp4": "av01.0.08M.08", "feel-720p60.h264.mp4": "avc1.640020",
+            "feel-1080p60.av1.mp4": "av01.0.09M.08", "feel-1080p60.h264.mp4": "avc1.64002A"})
+
+    def test_a_changed_film_rewrites_the_pages_strings_and_nothing_else_in_it(self):
+        self.put_film(self.out)
+        plan = self.adopt()
+        html = self.index.read_text()
+        self.assertEqual(plan.codecs_rewritten, ["feel-720p60.h264.mp4", "feel-1080p60.h264.mp4"])
+        self.assertIn('src="media/feel-720p60.h264.mp4" type=\'video/mp4; codecs="avc1.640020"\'', html)
+        self.assertIn('src="media/feel-1080p60.h264.mp4" type=\'video/mp4; codecs="avc1.64002A"\'', html)
+        self.assertEqual(html.replace("avc1.640020", "avc1.640032").replace("avc1.64002A", "avc1.640033"), PAGE)
+
+    def test_an_identical_film_leaves_the_page_alone(self):
+        self.put_film(self.out)
+        self.adopt()
+        self.index.write_text(PAGE)  # a hand edit the identical film must not undo
+        plan = self.adopt()
+        self.assertEqual(plan.changed, [])
+        self.assertEqual(self.index.read_text(), PAGE)
+
+    def test_a_page_that_does_not_declare_a_video_once_fails_the_adoption(self):
+        self.put_film(self.out)
+        self.index.write_text(PAGE.replace('<source src="media/feel-1080p60.h264.mp4" type=\'video/mp4; codecs="avc1.640033"\' />', ""))
+        with self.assertRaises(sv.Failure) as cm:
+            self.adopt()
+        self.assertIn("feel-1080p60.h264.mp4", str(cm.exception))
+
+    def test_no_page_beside_the_media_is_skipped_not_invented(self):
+        self.put_film(self.out)
+        self.index.unlink()
+        self.adopt()
+        self.assertFalse(self.index.exists())
+
+    def test_the_committed_page_and_files_already_agree_so_a_republish_changes_only_what_the_film_does(self):
+        html = (ROOT / "site" / "index.html").read_text()
+        again, moved = sv.rewrite_codecs(html, sv.film_codec_strings(ROOT / "site" / "media"))
+        self.assertEqual((again, moved), (html, []))
+
+
+class CommitMessage(unittest.TestCase):
+    def test_it_names_the_tag_the_gates_the_run_and_the_remedy(self):
+        manifest = {"tree_hash": {"combined": "0123456789abcdef" * 4},
+                    "gates": {"passed": True, "results": [{"status": "pass"}] * 41 + [{"status": "skip"}]}}
+        msg = sv.commit_message(manifest, "v0.9.0", "https://github.com/o/r/actions/runs/1", "abc1234")
+        subject, _, body = msg.partition("\n\n")
+        self.assertEqual(subject, "Site: demo video re-rendered for v0.9.0")
+        self.assertLessEqual(len(subject), 72)
+        for needle in ("v0.9.0 (abc1234)", "0123456789ab", "42 gates: 41 pass, 1 skip", "https://github.com/o/r/actions/runs/1",
+                       "not taste", "revert"):
+            self.assertIn(needle, body)
+
+    def test_a_manual_dispatch_on_main_has_no_tag_and_names_the_commit(self):
+        msg = sv.commit_message({"gates": {"results": []}}, "", "https://github.com/o/r/actions/runs/1",
+                                "0123456789abcdef0123456789abcdef01234567")
+        self.assertEqual(msg.split("\n")[0], "Site: demo video re-rendered for main@01234567")
+
+    def test_the_command_reads_the_manifest_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp, "m.json")
+            path.write_text(json.dumps({"gates": {"results": []}}))
+            out = io.StringIO()
+            with unittest.mock.patch("sys.stdout", out):
+                code = sv.main(["commit-message", "--manifest", str(path), "--tag", "v1.0.0", "--run-url", "u", "--source-sha", "s"])
+        self.assertEqual(code, 0)
+        self.assertTrue(out.getvalue().startswith("Site: demo video re-rendered for v1.0.0\n\n"))
+        self.assertIn("no results", out.getvalue())
+
+
 class CommittedSiteMedia(unittest.TestCase):
     """What is committed in `site/media/` is the Linux CI film the manifest says it is, and the page
     declares the codecs the files really carry. These read the repository, not a fixture."""
@@ -1071,23 +1425,9 @@ class CommittedSiteMedia(unittest.TestCase):
             self.assertEqual(path.stat().st_size, entry["bytes"], name)
         self.assertEqual(sv.verify_manifest(m, self.MEDIA, ("outputs",)), [])
 
-    @staticmethod
-    def box_payload(data, fourcc, size):
-        i = data.find(fourcc)
-        assert i > 0, f"no {fourcc!r} box"
-        return data[i + 4:i + 4 + size]
-
     def codec_string(self, video):
         """The RFC 6381 string a player needs for this file, read from its sample-description box."""
-        data = (self.MEDIA / video.name).read_bytes()
-        if video.codec == "h264":
-            _, profile, compat, level = self.box_payload(data, b"avcC", 4)
-            return f"avc1.{profile:02X}{compat:02X}{level:02X}"
-        b1, b2 = self.box_payload(data, b"av1C", 4)[1:3]
-        profile, level = b1 >> 5, b1 & 31
-        tier = "H" if b2 & 0x80 else "M"
-        depth = 12 if b2 & 0x20 else 10 if b2 & 0x40 else 8
-        return f"av01.{profile}.{level:02d}{tier}.{depth:02d}"
+        return sv.mp4_codec_string(self.MEDIA / video.name, video.codec)
 
     def test_index_html_declares_the_codecs_the_files_carry(self):
         html = (ROOT / "site" / "index.html").read_text()

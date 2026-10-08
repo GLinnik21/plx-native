@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Pins the shape of three CI changes whose failure is silent (everything stays green).
+"""Pins the shape of CI changes whose failure is silent (everything stays green).
 
+* the site film refreshes after a stable release only, never blocks one, and holds its one write token in `publish` (`SiteVideoRelease`);
 * `cache-cleanup.yml` runs on `pull_request_target`, which is safe only while it never checks out
   or runs pull request code and holds nothing but `actions: write`;
 * the nightly's and the release candidate's Sentry debug-file upload is skipped on a pull
@@ -574,6 +575,151 @@ class CiPathFilter(unittest.TestCase):
         for wf in sorted(WORKFLOWS.glob("*.yml")):
             catch_all = re.findall(r"(?m)^\s+- ['\"]?\*\*['\"]?\s*$", code(wf.name))
             self.assertEqual(len(catch_all), 1 if wf.name == "ci.yml" else 0, wf.name)
+
+
+class SiteVideoRelease(unittest.TestCase):
+    """The site's film refreshes after a STABLE release and never blocks one (docs/agent-reference.md, "The site
+    demo video"). A hole in any of these stays green: a schedule would render hourly-long jobs for nothing, a
+    write token on the render job would hand it to the code being rendered, a failing hook would turn a published
+    release red, and a push with GITHUB_TOKEN deploys nothing."""
+
+    def jobs(self):
+        lines = code("site-video.yml").splitlines()
+        start = lines.index("jobs:")
+        return [m.group(1) for l in lines[start + 1:] if (m := re.match(r"^  ([A-Za-z0-9_-]+):\s*$", l))]
+
+    def test_it_is_dispatched_only_never_scheduled_nor_started_by_a_push_or_a_pull_request(self):
+        body = code("site-video.yml")
+        on = body[body.index("\non:") + 1:body.index("\npermissions:")]
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):", on), ["workflow_dispatch"])
+        self.assertNotIn("cron", on)
+        # No input names a ref: the run renders its own checkout (CodeQL: cache poisoning via execution of untrusted code)
+        self.assertEqual(re.findall(r"(?m)^      ([a-z_]+):", on), ["force", "publish"])
+        self.assertNotIn("inputs.ref", code("site-video.yml"))
+
+    def test_the_jobs_are_decide_render_publish_pages_in_that_chain(self):
+        self.assertEqual(self.jobs(), ["decide", "render", "publish", "pages"])
+        self.assertIn("needs: decide", job_body("site-video.yml", "render"))
+        self.assertIn("needs.decide.outputs.needs_render == 'true'", job_body("site-video.yml", "render"))
+        publish = job_body("site-video.yml", "publish")
+        self.assertIn("needs: [decide, render]", publish)
+        self.assertIn("needs.render.result == 'success'", publish)
+        self.assertIn("needs.decide.outputs.needs_render == 'true'", publish)
+
+    def test_only_publish_holds_a_write_token_and_the_workflow_default_is_read(self):
+        body = code("site-video.yml")
+        self.assertRegex(body, r"(?m)^permissions:\n  contents: read\n")
+        self.assertEqual(body.count("contents: write"), 1)
+        self.assertIn("contents: write", job_body("site-video.yml", "publish"))
+        for job in ("decide", "render"):
+            self.assertNotIn("write", job_body("site-video.yml", job).replace("--write", ""))
+        # nothing the workflow checks out for rendering keeps the token on disk
+        self.assertIn("persist-credentials: false", job_body("site-video.yml", "render"))
+        self.assertIn("persist-credentials: false", job_body("site-video.yml", "decide"))
+        # a dry run holds no credential either: only the checkout that a publish uses keeps it
+        publish = job_body("site-video.yml", "publish")
+        self.assertEqual(publish.count("persist-credentials: true"), 1)
+        self.assertEqual(publish.count("persist-credentials: false"), 1)
+        self.assertNotIn("secrets.", body)
+
+    def checkouts(self, job):
+        """[(step text)] for each `actions/checkout` step of a job."""
+        body = job_body("site-video.yml", job)
+        steps = re.split(r"(?m)^      - ", body)
+        return [st for st in steps if "actions/checkout@" in st]
+
+    def test_nothing_renders_a_ref_a_job_computed_and_the_write_token_never_runs_the_rendered_code(self):
+        """The CodeQL finding: a checkout whose `ref:` comes from an input or a job output, followed by cache steps that
+        execute what they restored, is cache poisoning from a dispatched ref into main's caches."""
+        for job in ("decide", "render"):
+            for step in self.checkouts(job):
+                self.assertNotRegex(step, r"(?m)^\s+ref:", f"{job}'s checkout names a ref")
+        render = job_body("site-video.yml", "render")
+        self.assertEqual(len(self.checkouts("render")), 1)
+        self.assertNotIn("needs.decide.outputs.sha", "\n".join(self.checkouts("render")))
+        # the publish job checks out MAIN literally (the trusted code that lands the commit) for a publish; its other
+        # checkout is the dispatched ref's own, for a dry run that holds no credential. Neither names an expression.
+        publish_checkouts = self.checkouts("publish")
+        self.assertEqual(len(publish_checkouts), 2)
+        with_main = [c for c in publish_checkouts if re.search(r"(?m)^\s+ref: main\s*$", c)]
+        self.assertEqual(len(with_main), 1)
+        self.assertIn("env.PUBLISH == 'true'", with_main[0])
+        self.assertIn("persist-credentials: true", with_main[0])
+        other = [c for c in publish_checkouts if c not in with_main][0]
+        self.assertIn("env.PUBLISH != 'true'", other)
+        self.assertNotRegex(other, r"(?m)^\s+ref:")
+        self.assertIn("persist-credentials: false", other)
+        self.assertNotIn("${{", "".join(re.findall(r"(?m)^\s+ref:.*$", "\n".join(publish_checkouts))))
+        # caches live in the render job, which holds no write token and no secret; the write job restores nothing
+        publish = job_body("site-video.yml", "publish")
+        for cached in ("actions/cache", "rust-cache", "setup-python", "cache:"):
+            self.assertNotIn(cached, publish)
+            self.assertNotIn(cached, job_body("site-video.yml", "decide"))
+        self.assertIn("actions/cache@", render)
+        # the artifact is named by the commit the render ran on
+        self.assertIn("site-video-${{ github.sha }}", render)
+
+    def test_publishing_is_refused_off_main_and_for_anything_but_a_stable_tag_on_main(self):
+        decide = job_body("site-video.yml", "decide")
+        self.assertIn("refs/heads/main", decide)
+        self.assertIn("release-ref", decide)
+        self.assertIn("github.ref_type", decide)
+        self.assertIn("merge-base --is-ancestor", decide)
+        self.assertIn("merge-base --is-ancestor", job_body("site-video.yml", "publish"))
+        # any other ref renders as a dry run
+        self.assertIn("neither main nor a stable release tag", decide)
+        self.assertIn("--expect-rev", job_body("site-video.yml", "publish"))
+
+    def test_publish_adopts_through_the_tool_and_rebases_before_it_pushes_never_forcing(self):
+        publish = job_body("site-video.yml", "publish")
+        self.assertIn("site_video.py adopt", publish)
+        self.assertIn("--derive", publish)
+        self.assertIn("git pull --rebase", publish)
+        self.assertIn("git push origin HEAD:main", publish)
+        self.assertNotRegex(publish, r"push[^\n]*(--force|-f\b|\+HEAD)")
+        self.assertIn("github-actions[bot]", publish)
+        self.assertIn("commit-message", publish)
+
+    def test_the_deploy_is_a_dispatch_of_pages_on_main_because_a_tag_run_may_not_deploy_pages(self):
+        """The `github-pages` environment admits deployments from `main` only (checked with the API), so a run on a
+        release tag cannot call pages.yml; it dispatches it on main, where the push's own commit is the tip."""
+        pages = job_body("site-video.yml", "pages")
+        self.assertIn("needs.publish.outputs.committed == 'true'", pages)
+        self.assertIn('gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main', pages)
+        self.assertIn("actions: write", pages)
+        self.assertNotIn("uses: ./.github/workflows/pages.yml", pages)
+        self.assertNotIn("pages: write", pages)
+        self.assertRegex(code("pages.yml"), r"(?m)^  workflow_dispatch:\n")
+        # pages.yml gained nothing for this: it deploys main's tip, which holds the bot's commit
+        self.assertNotIn("inputs.ref", code("pages.yml"))
+
+    def test_every_action_is_pinned_to_a_commit(self):
+        for line in code("site-video.yml").splitlines():
+            m = re.search(r"uses:\s*(\S+)", line)
+            if m and not m.group(1).startswith("./"):
+                self.assertRegex(m.group(1), r"@[0-9a-f]{40}$", line)
+
+    def test_a_published_stable_release_dispatches_it_and_nothing_else_does(self):
+        hook = job_body("release.yml", "site-video")
+        self.assertIn("continue-on-error: true", hook)
+        self.assertIn("needs: [guard, publish]", hook)
+        self.assertIn("needs.publish.result == 'success'", hook)
+        self.assertIn("needs.guard.outputs.line == 'main'", hook)
+        self.assertIn("release-ref", hook)
+        # dispatched ON THE TAG: the run renders its own checkout, and its caches are the tag's, never main's
+        self.assertIn('gh workflow run site-video.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG" -f publish=true', hook)
+        self.assertNotIn("--ref main", hook)
+        self.assertIn("actions: write", hook)
+        self.assertNotIn("contents: write", hook)
+        # the release's own jobs gained no new permission, and the new one exists once
+        self.assertEqual(code("release.yml").count("actions: write"), 1)
+        self.assertEqual(code("site-video.yml").count("actions: write"), 1)
+        # candidates and nightlies never refresh the film
+        for name in ("rc.yml", "nightly.yml"):
+            self.assertNotIn("site-video", code(name))
+        # `publish` is the job that creates the release; the hook must come after it, never gate it
+        self.assertNotIn("site-video", job_body("release.yml", "publish"))
+        self.assertNotIn("site-video", job_body("release.yml", "build"))
 
 
 if __name__ == "__main__":

@@ -10,7 +10,18 @@ and adopt them into `site/media/`.
     python3 tools/site_video.py contact-sheet MASTER.mkv --out sheet.jpg [-n 12]
     python3 tools/site_video.py manifest DIR [--zip artifact.zip]   # feel.manifest.json (after `gates`)
     python3 tools/site_video.py verify DIR|feel.manifest.json
-    python3 tools/site_video.py adopt artifact.zip [--write]        # dry run unless --write
+    python3 tools/site_video.py adopt artifact.zip|DIR [--write] [--expect-rev REV] [--derive]   # dry run unless --write
+    python3 tools/site_video.py release-ref REF                      # prints the tag; fails for an rc, a nightly, a branch
+    python3 tools/site_video.py tree-hash [--rev REV]                # the film inputs' tree hash
+    python3 tools/site_video.py needs-render [--rev REV] [--force]   # needs_render=true|false against the committed manifest
+    python3 tools/site_video.py commit-message --manifest M --tag T --run-url U --source-sha S   # the bot commit's text
+
+THE FILM REFRESHES ITSELF after a stable release (docs/agent-reference.md, "The site demo video"): `release.yml`
+dispatches `site-video.yml` ON the new `vX.Y.Z` tag, whose `decide` job asks `release-ref` and `needs-render`, whose
+`render` job runs everything above on its own checkout, and whose `publish` job (main's tools, the artifact as data)
+runs `adopt --write --derive --expect-rev` and commits what changed (the film, its glows, the credits and the
+`codecs=` strings of site/index.html) to main as the bot. The gates prove determinism and quality; a human still decides taste, and the remedy
+is `git revert` of the bot commit. By hand, the same adoption: `adopt artifact.zip --write --derive`.
 
 Plan: the demo-video pipeline's stages S4 (the sentinel), S5b (the writer, `framedump.rs`, which produces the INPUT
 contract below) and S6/S7 (this file). `render` is the launcher: it boots the mock catalog, runs the
@@ -315,6 +326,18 @@ H264_CODEC = ["-c:v", "libx264", "-preset", "veryslow", "-crf", "18", "-tune", "
               "-profile:v", "high", "-pix_fmt", "yuv420p", "-x264-params", "aq-mode=3:deblock=-1,-1"]
 POSTER_QUALITY = ["-q:v", "3"]  # provisional: the size gate bounds it against the poster in site/media
 
+# THE H.264 FILES DECLARE THE LOWEST LEVEL THEIR SIZE AND RATE NEED, so a phone that falls back to H.264 (no AV1
+# decoder) can play them. x264's veryslow preset uses 16 reference frames, which only a level 5.x decoder
+# accepts: left alone, the 720p60 file came out High@5.0 and the 1080p60 one High@5.1, which several mobile
+# decoders refuse (the site's earlier files were High@3.2 and High@4.2, `avc1.640020` and `avc1.64002A`). The
+# level is the minimum for the picture at 60 fps: 1280x720 is 3,600 macroblocks, 216,000 per second = exactly
+# level 3.2's MaxMBPS, and its decoded-picture buffer holds floor(20,480 / 3,600) = 5 frames; 1920x1080 is 8,160
+# macroblocks, 489,600 per second against level 4.2's 522,240, and floor(34,816 / 8,160) = 4 frames. `-refs` is
+# set to what the level's DPB holds (x264 would otherwise lower it with a warning), and `-level` is the field the
+# `avcC` box and the site's `codecs=` string carry. The bitrates (about 1 and 2 Mbit/s) are far under both
+# levels' VBV limits, so no `-maxrate` is needed.
+H264_LEVELS = {720: ("3.2", "5"), 1080: ("4.2", "4")}  # height -> (level, refs)
+
 
 # The AV1 encodes' CRF and GOP were re-tuned for HEADROOM, not to pass: the first Linux (llvmpipe) render of the
 # 27 s film failed `vmaf/feel-1080p60.av1.mp4` at min 79.69 against the 80.0 floor while macOS read 80.10, and the
@@ -335,6 +358,9 @@ def video_argv(ffmpeg, master, out, video):
     if video.codec == "av1" and video.height == 720:
         override = {"-g": AV1_720_GOP, "-crf": AV1_720_CRF}
         codec = [override.get(codec[i - 1], arg) if i else arg for i, arg in enumerate(codec)]
+    if video.codec == "h264":
+        level, refs = H264_LEVELS[video.height]
+        codec = codec + ["-level", level, "-refs", refs]
     return ([str(ffmpeg), "-hide_banner", "-nostdin", "-loglevel", "warning", "-stats", "-y", "-i", str(master),
              "-map", "0:v:0", "-an", "-fps_mode", "passthrough", "-vf", video_filter(video.width, video.height)]
             + codec + COLOR_TAGS + ["-movflags", "+faststart", str(out)])
@@ -1045,18 +1071,120 @@ def collect_environment(env=None, run=subprocess.run, root="/"):
     }
 
 
-def tree_hashes(run=subprocess.run, root=ROOT):
-    """Git tree ids of every path in `TREE_PATHS` at HEAD, and whether the working tree differs from HEAD there."""
+def tree_hashes(run=subprocess.run, root=ROOT, rev="HEAD"):
+    """Git tree ids of every path in `TREE_PATHS` at `rev` (HEAD by default), and whether the working tree
+    differs from HEAD there (always False for any other `rev`: a revision has no working tree)."""
     out = {}
     for p in TREE_PATHS:
-        done = run(["git", "-C", str(root), "rev-parse", f"HEAD:{p}"], capture_output=True, text=True)
+        done = run(["git", "-C", str(root), "rev-parse", f"{rev}:{p}"], capture_output=True, text=True)
         if done.returncode != 0:
-            raise Failure(f"cannot read the git tree of {p}: {done.stderr.strip()}")
+            raise Failure(f"cannot read the git tree of {p} at {rev}: {done.stderr.strip()}")
         out[p] = done.stdout.strip()
+    out["combined"] = hashlib.sha256("".join(out[p] for p in TREE_PATHS).encode()).hexdigest()
+    if rev != "HEAD":
+        return out, False
     dirty = run(["git", "-C", str(root), "status", "--porcelain", "--"] + list(TREE_PATHS),
                 capture_output=True, text=True)
-    out["combined"] = hashlib.sha256("".join(out[p] for p in TREE_PATHS).encode()).hexdigest()
     return out, bool(dirty.stdout.strip())
+
+
+# ------------------------------------------------------------------ the release hook -------------
+# The site's film refreshes after a STABLE release and never for anything else (docs/agent-reference.md,
+# "The site demo video"). These pure functions answer when; the workflow only asks them.
+STABLE_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+
+
+def stable_release_tag(ref):
+    """The bare tag when `ref` names a STABLE release (`vX.Y.Z`, as a tag or as `refs/tags/vX.Y.Z`), else None.
+    Release candidates (`rc/vX.Y.Z-rc.N`, `canary/...`), nightlies (`nightly/vX.Y.Z-nightly-YYYYMMDD`), a bare
+    `vX.Y.Z-rc.1`, a branch and a commit are all refused: only `release.yml`'s own publish makes a `vX.Y.Z` tag."""
+    tag = ref[len("refs/tags/"):] if ref.startswith("refs/tags/") else ref
+    return tag if STABLE_TAG.fullmatch(tag) else None
+
+
+def needs_render(rev="HEAD", force=False, manifest_path=None, run=subprocess.run, root=ROOT):
+    """(render?, why): does the film have to be rendered again for `rev`? Yes when forced, when the committed
+    manifest is absent or unreadable, or when its recorded `tree_hash.combined` (the trees of everything that
+    can change a pixel, `TREE_PATHS`) differs from the one at `rev`. No otherwise: the same inputs render the
+    same film, which two renders and the hold gate prove, so the committed one stands."""
+    if force:
+        return True, "forced"
+    path = pathlib.Path(manifest_path) if manifest_path else SITE_MEDIA / MANIFEST_NAME
+    try:
+        recorded = json.loads(path.read_text())["tree_hash"]["combined"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return True, f"no readable tree hash in {path.name}"
+    here = tree_hashes(run, root, rev)[0]["combined"]
+    if here == recorded:
+        return False, f"the film's inputs at {rev} are the committed film's (tree hash {here[:12]})"
+    return True, f"the film's inputs changed: committed {recorded[:12]}, {rev} {here[:12]}"
+
+
+def commit_message(manifest, tag, run_url, source_sha):
+    """The bot commit that lands a re-rendered film: the gates' summary and the run, so a bad film is one
+    revert away. The gates prove determinism and quality, never taste."""
+    results = manifest.get("gates", {}).get("results", [])
+    counts = collections.Counter(r.get("status") for r in results)
+    summary = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "no results"
+    tree = (manifest.get("tree_hash") or {}).get("combined", "?")[:12]
+    # A maintainer's manual dispatch on main has no tag: the commit names the film's source instead.
+    tag = tag or f"main@{source_sha[:8]}"
+    return (f"Site: demo video re-rendered for {tag}\n\n"
+            f"Rendered by the site-video workflow from {tag} ({source_sha}), film inputs tree hash {tree}, on the\n"
+            f"pinned Linux/llvmpipe stack: two renders agreed frame for frame, the hold-injection gate and the\n"
+            f"sentinel scan passed, and every quality gate passed ({len(results)} gates: {summary}).\n"
+            f"Run: {run_url}\n\n"
+            f"The gates prove determinism and quality, not taste. If this film looks wrong, revert this commit;\n"
+            f"nothing else depends on it.\n")
+
+
+# ------------------------------------------------------------------ the page's codec strings --------
+# site/index.html declares each <source>'s `codecs=` so a browser can skip a file it cannot decode without
+# fetching it. The string is a fact about the FILE (its profile and level), so it is read from the file's own
+# sample-description box and rewritten whenever the film is adopted: a re-encode that moves a level must not
+# leave the page declaring the old one.
+SOURCE_CODECS = re.compile(r"""(src="media/(?P<name>[^"]+)"\s+type='video/mp4; codecs=")(?P<codecs>[^"]*)(")""")
+
+
+def mp4_box_payload(data, fourcc, size):
+    i = data.find(fourcc)
+    if i < 0:
+        raise Failure(f"no {fourcc.decode()} box in the file")
+    return data[i + 4:i + 4 + size]
+
+
+def mp4_codec_string(path, codec):
+    """The RFC 6381 string for an mp4 of `codec` ("h264" or "av1"), from its avcC / av1C box."""
+    data = pathlib.Path(path).read_bytes()
+    if codec == "h264":
+        _, profile, compat, level = mp4_box_payload(data, b"avcC", 4)
+        return f"avc1.{profile:02X}{compat:02X}{level:02X}"
+    b1, b2 = mp4_box_payload(data, b"av1C", 4)[1:3]
+    profile, level = b1 >> 5, b1 & 31
+    tier = "H" if b2 & 0x80 else "M"
+    depth = 12 if b2 & 0x20 else 10 if b2 & 0x40 else 8
+    return f"av01.{profile}.{level:02d}{tier}.{depth:02d}"
+
+
+def film_codec_strings(media_dir):
+    """{video file name: codec string} for the four videos in `media_dir`."""
+    return {v.name: mp4_codec_string(pathlib.Path(media_dir) / v.name, v.codec) for v in VIDEOS}
+
+
+def rewrite_codecs(html, strings):
+    """(html with every video's `codecs=` set to strings[name], [names that changed]). A video the page does not
+    declare exactly once is a Failure: the page and the film must stay in step."""
+    changed = []
+    for name, want in strings.items():
+        found = [m for m in SOURCE_CODECS.finditer(html) if m.group("name") == name]
+        if len(found) != 1:
+            raise Failure(f"index.html declares {name} {len(found)} times; expected exactly one <source>")
+        if found[0].group("codecs") != want:
+            changed.append(name)
+    def swap(m):
+        want = strings.get(m.group("name"))
+        return m.group(0) if want is None else f"{m.group(1)}{want}{m.group(4)}"
+    return SOURCE_CODECS.sub(swap, html), changed
 
 
 def file_entry(path):
@@ -1143,7 +1271,12 @@ def plan_adopt(zip_path, site_media, tmp):
     """Verify an artifact and return [(src, dst)] to copy. Refuses anything not rendered on linux-ci, a
     failed or missing gates record, a dirty tree, or a file whose sha256 differs."""
     extracted = pathlib.Path(tmp)
-    safe_extract(zip_path, extracted)
+    if pathlib.Path(zip_path).is_dir():
+        # What `actions/download-artifact` hands a job: the artifact already unpacked. Every check below
+        # reads this directory exactly as it reads an extracted zip (the manifest's sha256s and sizes pin it).
+        extracted = pathlib.Path(zip_path)
+    else:
+        safe_extract(zip_path, extracted)
     mpath = extracted / MANIFEST_NAME
     if not mpath.is_file():
         raise Failure(f"the artifact has no {MANIFEST_NAME}")
@@ -1163,25 +1296,90 @@ def plan_adopt(zip_path, site_media, tmp):
     return plan, manifest
 
 
-def adopt(zip_path, site_media=SITE_MEDIA, write=False, say=print, run=subprocess.run):
+class Adopted(list):
+    """The (src, dst) copy plan, plus `changed`: the media files whose bytes differ from what is in the site now,
+    and `codecs_rewritten`: the videos whose `codecs=` string in index.html the adoption changed."""
+    changed = ()
+    codecs_rewritten = ()
+
+
+def changed_media(plan):
+    """Names of the six media files (never the manifest) whose destination is absent or differs from the source."""
+    return [dst.name for src, dst in plan if dst.name in MEDIA_NAMES
+            and not (dst.is_file() and sha256_file(dst) == sha256_file(src))]
+
+
+# What `adopt --derive` regenerates from a film that changed: the glows behind the TV (read from the poster) and the
+# credits page (read from the demo catalog). Both are deterministic; the close-up glows are not the film's.
+FILM_GLOWS = ("feel-glow.png", "feel-glow-narrow.png")
+
+
+def derive_argvs(py=None):
+    py = py or sys.executable
+    tools = ROOT / "tools"
+    return [[py, str(tools / "render-site-glows.py"), "--only", *FILM_GLOWS],
+            [py, str(tools / "demo_library.py"), "site-credits"]]
+
+
+def adopt(zip_path, site_media=SITE_MEDIA, write=False, say=print, run=subprocess.run, expect_rev=None, derive=False,
+          site_index=None):
+    """Verify an artifact (a zip, or the directory `download-artifact` unpacked) and copy it into the site.
+    `expect_rev` refuses an artifact whose film-input tree hash is not the one at that revision (the film
+    must be of the tree it is adopted for). When the six media files are byte-identical to the site's, nothing is
+    written, the manifest included: the committed manifest keeps naming the tree the film was last rendered for.
+    `derive` then regenerates what derives from a film that changed (`derive_argvs`). A film that changed also has its
+    `codecs=` strings rewritten in `site_index` (default: index.html beside `site_media`; absent = skipped), read from
+    the adopted files' own boxes, so a re-encode that moves a profile or level never leaves the page declaring the old."""
     with tempfile.TemporaryDirectory() as tmp:
         plan, manifest = plan_adopt(zip_path, site_media, tmp=tmp)
-        try:
-            here, _ = tree_hashes(run)
-            same = here["combined"] == manifest["tree_hash"]["combined"]
-            say("tree hash: " + ("matches HEAD" if same else "DIFFERS from HEAD (" + ", ".join(TREE_PATHS) +
-                                                           " changed since the render): regenerate before release"))
-        except Failure as e:
-            say(f"tree hash: not compared ({e})")
+        plan = Adopted(plan)
+        if expect_rev:
+            want = tree_hashes(run, rev=expect_rev)[0]["combined"]
+            got = manifest["tree_hash"]["combined"]
+            if got != want:
+                raise Failure(f"refusing: the artifact was rendered from film inputs {got[:12]}, "
+                              f"but {expect_rev} has {want[:12]}")
+            say(f"tree hash: matches {expect_rev}")
+        else:
+            try:
+                here, _ = tree_hashes(run)
+                same = here["combined"] == manifest["tree_hash"]["combined"]
+                say("tree hash: " + ("matches HEAD" if same else "DIFFERS from HEAD (" + ", ".join(TREE_PATHS) +
+                                                               " changed since the render): regenerate before release"))
+            except Failure as e:
+                say(f"tree hash: not compared ({e})")
+        plan.changed = changed_media(plan)
+        unchanged = not plan.changed and (pathlib.Path(site_media) / MANIFEST_NAME).is_file()
         for src, dst in plan:
-            say(f"{'copy' if write else 'would copy'} {dst.name}  ({src.stat().st_size:,} bytes)")
+            say(f"{'copy' if write and not unchanged else 'would copy'} {dst.name}  ({src.stat().st_size:,} bytes)")
+        say("film: " + ("byte-identical to the committed one" if unchanged else f"{len(plan.changed)} of {len(MEDIA_NAMES)} media files differ"))
         if not write:
             say("dry run: nothing was written; pass --write to copy")
+            return plan
+        if unchanged:
+            say("nothing written: the committed film and manifest stand")
             return plan
         for src, dst in plan:
             tmp_dst = dst.with_name(dst.name + ".adopt-tmp")
             shutil.copyfile(src, tmp_dst)
             os.replace(tmp_dst, dst)
+        index = pathlib.Path(site_index) if site_index else pathlib.Path(site_media).parent / "index.html"
+        if index.is_file():
+            strings = film_codec_strings(site_media)
+            html, moved = rewrite_codecs(index.read_text(), strings)
+            if moved:
+                index.write_text(html)
+            plan.codecs_rewritten = moved
+            say(f"{index.name}: codecs= " + (", ".join(f"{n} -> {strings[n]}" for n in moved)
+                                              if moved else "already as the files carry them"))
+        else:
+            say(f"no {index.name} beside the media: codec strings not rewritten")
+        if derive:
+            for argv in derive_argvs():
+                say("derive: " + " ".join(os.path.basename(a) if i < 2 else a for i, a in enumerate(argv)))
+                done = run(argv, cwd=str(ROOT))
+                if done.returncode != 0:
+                    raise Failure(f"derive step failed ({done.returncode}): {' '.join(argv)}")
         return plan
 
 
@@ -1857,7 +2055,31 @@ def cmd_verify(args):
 
 
 def cmd_adopt(args):
-    adopt(args.zip, args.site_media, args.write)
+    adopt(args.zip, args.site_media, args.write, expect_rev=args.expect_rev, derive=args.derive,
+          site_index=args.site_index)
+
+
+def cmd_release_ref(args):
+    tag = stable_release_tag(args.ref)
+    if tag is None:
+        raise Failure(f"{args.ref!r} is not a stable release tag (vX.Y.Z): release candidates, nightlies, "
+                      f"branches and commits never refresh the site's film")
+    print(tag)
+
+
+def cmd_tree_hash(args):
+    print(tree_hashes(rev=args.rev)[0]["combined"])
+
+
+def cmd_needs_render(args):
+    render, why = needs_render(args.rev, args.force, args.manifest)
+    print(f"needs_render={'true' if render else 'false'}")
+    print(f"reason={why}")
+
+
+def cmd_commit_message(args):
+    manifest = json.loads(pathlib.Path(args.manifest).read_text())
+    sys.stdout.write(commit_message(manifest, args.tag, args.run_url, args.source_sha))
 
 
 def main(argv=None):
@@ -1942,11 +2164,39 @@ def main(argv=None):
     p.add_argument("target")
     p.add_argument("--outputs-only", action="store_true", help="only the six media files (the copy in site/media)")
     p.set_defaults(fn=cmd_verify)
-    p = sub.add_parser("adopt", help="verify an artifact zip and copy it into site/media (dry run by default)")
-    p.add_argument("zip")
+    p = sub.add_parser("adopt", help="verify an artifact (zip or unpacked directory) and copy it into site/media "
+                                     "(dry run by default)")
+    p.add_argument("zip", metavar="ARTIFACT")
     p.add_argument("--write", action="store_true")
+    p.add_argument("--expect-rev", metavar="REV", help="refuse unless the artifact's film-input tree hash is REV's")
+    p.add_argument("--derive", action="store_true",
+                   help="after a changed film, regenerate the feel glows and the credits page")
     p.add_argument("--site-media", default=str(SITE_MEDIA))
+    p.add_argument("--site-index", help="the page whose codecs= strings follow the film (default: index.html beside --site-media)")
     p.set_defaults(fn=cmd_adopt)
+
+    p = sub.add_parser("release-ref", help="print the tag when REF is a stable release (vX.Y.Z); fail for an rc, "
+                                           "a nightly, a branch or a commit")
+    p.add_argument("ref")
+    p.set_defaults(fn=cmd_release_ref)
+
+    p = sub.add_parser("tree-hash", help="print the combined git tree hash of everything that can change the film")
+    p.add_argument("--rev", default="HEAD")
+    p.set_defaults(fn=cmd_tree_hash)
+
+    p = sub.add_parser("needs-render", help="print needs_render=true|false and reason=...: is the committed film "
+                                            "(site/media/feel.manifest.json) of different film inputs than REV?")
+    p.add_argument("--rev", default="HEAD")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--manifest", help="the committed manifest (default site/media/feel.manifest.json)")
+    p.set_defaults(fn=cmd_needs_render)
+
+    p = sub.add_parser("commit-message", help="print the bot commit message for a re-rendered film")
+    p.add_argument("--manifest", required=True)
+    p.add_argument("--tag", required=True)
+    p.add_argument("--run-url", required=True)
+    p.add_argument("--source-sha", required=True)
+    p.set_defaults(fn=cmd_commit_message)
     args = ap.parse_args(argv)
     try:
         return args.fn(args) or 0

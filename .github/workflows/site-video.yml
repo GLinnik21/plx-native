@@ -6,15 +6,61 @@ name: Site video
 # render on a developer's Mac is a preview. See docs/agent-reference.md ("The site demo video") and
 # the ui-sim skill ("The frame dump").
 #
-# MANUAL ON PURPOSE: `gh workflow run site-video.yml`. It renders the STORYBOARD, `tests/video/feel.json`
-# (positions and durations, compiled by `site_video.py` to the dump driver's key schedule; about 27
-# seconds), and the sign-in prep boot the render starts with runs under the same virtual display. A render costs
-# runner minutes that no ordinary PR should pay, and nothing here is a gate on code; the run-twice
-# check below proves THIS render deterministic, it does not guard main.
+# IT REFRESHES THE SITE'S FILM AFTER A STABLE RELEASE, AND ONLY THEN. `release.yml`'s last job dispatches
+# this workflow ON THE NEW TAG (`gh workflow run site-video.yml --ref vX.Y.Z`) once the release is published (a
+# push or a release made with the workflow token starts no workflow, but a `workflow_dispatch` does). No schedule,
+# no pull request, no release candidate and no nightly ever starts it with intent to publish.
 #
-# PUBLISHES NOTHING. No commit, no release, no site write, no secret: `contents: read`, one artifact
-# that the owner downloads, watches, and adopts locally (`python3 tools/site_video.py adopt <zip>`,
-# which becomes a normal PR).
+# THE RUN RENDERS ITS OWN CHECKOUT, `github.sha`, and nothing else: there is no input that names a ref, and no
+# job renders a ref that a previous job computed. A run dispatched on a tag has its caches scoped to that tag (a
+# cache a run writes can be restored only by runs of the same ref and of the branches below it, never by main's),
+# so the render's `actions/cache` and rust-cache steps, which execute the tree they restored into, cannot poison
+# anything main runs. (CodeQL's "cache poisoning via execution of untrusted code" is why an earlier version that
+# checked out `inputs.ref` on a main-dispatched run was refused.)
+#   decide   (contents: read)   reads `github.ref`: on a tag it must be a stable `vX.Y.Z` (`release-ref`) whose
+#                                commit is on main for a run to publish (any other tag
+#                                fails here at once unless publish=false); on main (a maintainer's manual
+#                                dispatch) a run may publish; a branch renders and never publishes. It asks
+#                                `needs-render`: if the film's inputs (`TREE_PATHS` in tools/site_video.py) are
+#                                the ones the committed site/media/feel.manifest.json records, the run ends GREEN
+#                                here, rendering nothing.
+#   render   (contents: read)   renders this checkout twice and applies every gate below. ANY failure fails the
+#                                run and the site is not touched: the old film stays. Its only output is an artifact.
+#   publish  (contents: write)  checks out MAIN (a literal `ref: main`: the trusted branch, and where the commit
+#                                lands), downloads the artifact (data) and runs MAIN's `site_video.py adopt
+#                                --write --derive --expect-rev` on it: it verifies the artifact (linux-ci, sha256s,
+#                                gates passed, clean tree, the rendered commit's film inputs), copies the film,
+#                                the feel glows, the credits page and the codec strings in site/index.html, and when
+#                                the six media files differ from main's commits them as github-actions[bot]
+#                                ("Site: demo video re-rendered for vX.Y.Z", the gates' summary and this run's URL
+#                                in the body) and pushes to main. No code of the rendered ref runs with the write
+#                                token, and `publish` has no cache step. A film byte-identical to the committed one
+#                                commits nothing. (A dry run, `publish=false`, holds no credential and uses the
+#                                dispatched ref's own tools, which is how a branch proves this workflow.)
+#   pages    (dispatch)         a GITHUB_TOKEN push does not start pages.yml, and the `github-pages` environment
+#                                admits deployments from the `main` branch only (not from a tag's run), so this
+#                                job DISPATCHES pages.yml on main (`gh workflow run pages.yml --ref main`).
+# THIS NEVER BLOCKS A RELEASE: it is a separate run. The release is published before it is dispatched; if this run
+# is red the release stands, the site keeps its old film, and the failed "Site video" run in the Actions tab is
+# the notice. Re-run it with `gh workflow run site-video.yml --ref vX.Y.Z` (or "Re-run failed jobs" on the run).
+#
+# TASTE IS NOT GATED. The gates prove the film is deterministic and encoded well, not that it is beautiful. A
+# person looks at the film on the site after a release; if it is wrong, `git revert` the bot's commit (one
+# commit, nothing else in it) and push, which redeploys the page.
+#
+# TO TURN IT OFF: delete the `site-video` job at the end of release.yml (the dispatch). Dispatch by hand with
+# `gh workflow run site-video.yml --ref main -f force=true` to render although the inputs match the committed
+# film's (this publishes), or with `-f publish=false` for a dry run: everything but the push and the deploy, ending
+# with the `git diff --stat` it would have committed. A branch dispatch (`--ref my-branch`) renders and never
+# publishes whatever `publish` says.
+#
+# It renders the STORYBOARD, `tests/video/feel.json` (positions and durations, compiled by `site_video.py` to the
+# dump driver's key schedule; about 27 seconds), and the sign-in prep boot the render starts with runs under the
+# same virtual display. A render costs runner minutes (about 55 on the runner, measured), which is why a release,
+# not a push, is the trigger, and nothing here is a gate on code; the run-twice check below proves THIS render
+# deterministic, it does not guard main.
+#
+# No secret beyond the run's own GITHUB_TOKEN. `contents: read` at the top; the one write token is `publish`'s.
 #
 # WHAT "CANONICAL" MEANS HERE: the video is what this pinned software stack renders. The image is
 # pinned (`ubuntu-24.04`, never `-latest`), `LP_NATIVE_VECTOR_WIDTH` fixes llvmpipe's vector width so
@@ -24,6 +70,15 @@ name: Site video
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Render even if the film inputs match the committed film'
+        type: boolean
+        default: false
+      publish:
+        description: 'Commit the film to main and deploy the site (false = dry run; a ref other than main or a stable tag never publishes)'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -34,8 +89,10 @@ defaults:
     shell: bash
 
 concurrency:
+  # Two runs of one ref never publish at once; a second waits (GitHub keeps the newest waiting one). Never
+  # cancelled mid-way: a cancelled `publish` could leave a half-pushed state, a cancelled render only wastes time.
   group: site-video-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   # Locale and time zone pinned so nothing in the toolchain (sort order, date formatting, libc
@@ -51,14 +108,94 @@ env:
   PLXNATIVE_DEMO_CACHE: ${{ github.workspace }}/.demo-cache
 
 jobs:
+  decide:
+    name: Decide whether the film must be rendered
+    runs-on: ubuntu-24.04
+    # A checkout and a few git commands: seconds. The convention is the maximum plus margin.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      publish: ${{ steps.resolve.outputs.publish }}
+      needs_render: ${{ steps.needs.outputs.needs_render }}
+    steps:
+      # The dispatched ref's own checkout, full history: the tag's commit must be asked about main.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Decide whether this run may publish
+        id: resolve
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "rendering $REF = $sha"
+
+          tag=""
+          if [ "$REF_TYPE" = tag ]; then
+            tag=$(python3 tools/site_video.py release-ref "$REF_NAME" 2>/dev/null) || tag=""
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          publish=false
+          if [ "$PUBLISH" = true ]; then
+            if [ "$REF_TYPE" = tag ]; then
+              # A tag may publish only if it is a stable release whose commit is on main. Every refusal is an
+              # error, before an hour of rendering is spent.
+              [ -n "$tag" ] \
+                || { echo "::error::$REF_NAME is not a stable release tag (vX.Y.Z): a release candidate, a nightly or any other tag never refreshes the film. Pass -f publish=false to render without publishing"; exit 1; }
+              git merge-base --is-ancestor "$sha" origin/main \
+                || { echo "::error::$REF_NAME ($sha) is not on main: a maintenance-line release never replaces main's film"; exit 1; }
+              publish=true
+            elif [ "$REF" = refs/heads/main ]; then
+              publish=true
+            else
+              echo "::warning::$REF is neither main nor a stable release tag: rendering as a dry run, nothing will be committed"
+            fi
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "publish: $publish"
+      - name: Has the film's input tree changed since the committed film?
+        id: needs
+        env:
+          FORCE: ${{ inputs.force }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          PUBLISH: ${{ steps.resolve.outputs.publish }}
+        run: |
+          set -euo pipefail
+          flags=()
+          [ "$FORCE" = true ] && flags+=(--force)
+          python3 tools/site_video.py needs-render --rev "$SHA" "${flags[@]}" | tee -a "$GITHUB_OUTPUT"
+          {
+            echo "### Site video: decide"
+            echo
+            echo "- ref: \`$GITHUB_REF\` = \`$SHA\`, tag: \`$TAG\`, publish: \`$PUBLISH\`"
+            grep '^reason=' "$GITHUB_OUTPUT" | tail -n 1 | sed 's/^reason=/- /'
+            grep -q '^needs_render=true' "$GITHUB_OUTPUT" || echo "- **nothing to render: the committed film stands**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   render:
     name: Render the demo video (Linux, llvmpipe)
+    needs: decide
+    if: needs.decide.outputs.needs_render == 'true'
     runs-on: ubuntu-24.04
-    # Measured: about 38 minutes cold (build 3, derive 1.5, two renders 3 each, run-twice compare 1.5,
-    # hold-gate 6.5, encodes 6, gates 11.5, on the runner); the maximum plus margin, the convention
+    # Measured on run 37805253785: 54 minutes (build 3, derive 1.5, two renders 5 each, run-twice compare 2,
+    # hold-gate 10.6, encodes 8.3, quality gates 17.2, on the runner); the maximum plus margin, the convention
     # simulators.yml spells out.
     timeout-minutes: 75
     steps:
+      # The dispatched ref's own checkout (no `ref:`): a tag for a release, main or a branch for a manual run. The
+      # job holds `contents: read` and no secret, and its caches are those of the ref it runs on.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
@@ -271,3 +408,136 @@ jobs:
             out/deliver/gates.json
           if-no-files-found: ignore
           retention-days: 7
+
+  publish:
+    name: Publish the film to main
+    # Needs the render's artifact; anything short of a green `render` (a failed gate, a cancelled run) stops here
+    # and the site is untouched.
+    needs: [decide, render]
+    if: needs.decide.outputs.needs_render == 'true' && needs.render.result == 'success'
+    runs-on: ubuntu-24.04
+    # Adopt (seconds), the glows (seconds), one commit and a push with up to five rebase attempts.
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      committed: ${{ steps.commit.outputs.committed }}
+      sha: ${{ steps.commit.outputs.sha }}
+    env:
+      PUBLISH: ${{ needs.decide.outputs.publish }}
+      SHA: ${{ needs.decide.outputs.sha }}
+      TAG: ${{ needs.decide.outputs.tag }}
+    steps:
+      # THE TRUSTED SIDE. A real publish runs MAIN's tools (a literal `ref: main`, never an expression) on the
+      # artifact, which is data, and builds the commit on the TIP of main (the render took an hour, and the audit
+      # commit or a docs push may have landed since; the film's files are the only ones this touches). It has no
+      # cache step. A dry run (`PUBLISH` false) checks out the dispatched ref's own sha and holds no credential: that
+      # is the only way a branch can prove the adopt it carries.
+      - name: Check out main (a publish)
+        if: env.PUBLISH == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Check out the dispatched ref (a dry run)
+        if: env.PUBLISH != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install ffmpeg (the glows are derived from the poster)
+        timeout-minutes: 15
+        uses: ./.github/actions/apt-install
+        with:
+          packages: ffmpeg
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: site-video-${{ needs.decide.outputs.sha }}
+          path: ${{ runner.temp }}/artifact
+      - name: The rendered commit must be on main
+        if: env.PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$SHA" origin/main \
+            || { echo "::error::${TAG:-$SHA} ($SHA) is not an ancestor of main"; exit 1; }
+      - name: Adopt the artifact
+        # `adopt` refuses anything that is not `platform: linux-ci`, a failed gates record, a dirty tree, a file whose
+        # sha256 differs from the manifest, and (--expect-rev) a film rendered from other inputs than $SHA's. A film
+        # byte-identical to the committed one writes nothing. `--derive` regenerates the feel glows and the credits;
+        # a changed film also rewrites the `codecs=` strings of site/index.html from the files' own avcC/av1C boxes.
+        run: |
+          python3 tools/site_video.py adopt "$RUNNER_TEMP/artifact" --write --derive --expect-rev "$SHA" | tee "$RUNNER_TEMP/adopt.log"
+          { echo '### Adopt'; echo; echo '```'; cat "$RUNNER_TEMP/adopt.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Only the film's own files may have changed
+        run: |
+          set -euo pipefail
+          git status --porcelain > "$RUNNER_TEMP/status.txt"
+          cat "$RUNNER_TEMP/status.txt"
+          allowed='^site/media/(feel-(720p60|1080p60)\.(av1|h264)\.mp4|feel-poster(-narrow)?\.jpg|feel-glow(-narrow)?\.png|feel\.manifest\.json)$|^site/(credits|index)\.html$'
+          bad=$(sed -e 's/^...//' "$RUNNER_TEMP/status.txt" | grep -Ev "$allowed" || true)
+          [ -z "$bad" ] || { echo "::error::the adoption touched files that are not the film's: $bad"; exit 1; }
+      - name: Commit and push (a dry run prints what it would commit)
+        id: commit
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          echo "committed=false" >> "$GITHUB_OUTPUT"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "The film is byte-identical to the committed one: nothing to commit." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git add -- site/media site/credits.html site/index.html
+          if [ "$PUBLISH" != true ]; then
+            {
+              echo "### Dry run: this is what would be committed"
+              echo
+              echo '```'
+              git diff --cached --stat
+              echo '```'
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          python3 tools/site_video.py commit-message --manifest site/media/feel.manifest.json \
+            --tag "$TAG" --run-url "$RUN_URL" --source-sha "$SHA" > "$RUNNER_TEMP/message.txt"
+          git commit -F "$RUNNER_TEMP/message.txt"
+          # main may have moved while this ran: rebase and retry, never force.
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase --quiet origin main
+            if git push origin HEAD:main; then
+              echo "committed=true" >> "$GITHUB_OUTPUT"
+              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              git log -1 --stat | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "push attempt $attempt lost a race with main; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::could not push to main after 5 attempts"
+          exit 1
+
+  pages:
+    name: Deploy the site with the new film
+    needs: [decide, publish]
+    if: needs.publish.outputs.committed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # A push made with GITHUB_TOKEN does not start pages.yml, and a run of THIS workflow on a tag cannot deploy: the
+    # `github-pages` environment admits only the main branch. So pages.yml is dispatched on main (a dispatch is the one
+    # event a GITHUB_TOKEN may start), where it deploys main's tip, which is the bot's commit or a later one. That
+    # run is its own: a failed deploy shows there, in the "Deploy landing page" workflow, not as a red "Site video".
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch pages.yml on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ needs.publish.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
+          echo "dispatched pages.yml on main to deploy the film committed in $COMMIT" | tee -a "$GITHUB_STEP_SUMMARY"
