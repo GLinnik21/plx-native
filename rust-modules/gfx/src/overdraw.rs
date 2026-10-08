@@ -318,4 +318,21 @@ mod tests {
         assert_eq!(Class::Field as usize, NCLASS - 1);
         assert_eq!(NAMES[Class::Field as usize], "field");
     }
+
+    /// `gfx::warm_tex` draws its offscreen quad as `Class::Blur`; that class is never refused by a
+    /// mask, so a `drawmask` leg masking `image` still warms the texture. (The ledger's booking is
+    /// private to the dev arm and is not read back here; `gate` returning before `add` for `Blur`
+    /// is what keeps the 16x16 warm out of the panel's `image` total. No GL context on the host,
+    /// so `warm_tex` itself cannot be driven from a test.)
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn the_blur_class_is_never_masked_so_the_offscreen_warm_cannot_be_skipped() {
+        set_ledger(true);
+        set_mask("image");
+        assert!(gate(Class::Image, 0.0, 0.0, 10.0, 10.0));
+        assert!(!masked(Class::Blur));
+        assert!(!gate(Class::Blur, 0.0, 0.0, 1280.0, 720.0));
+        set_mask("");
+        set_ledger(false);
+    }
 }

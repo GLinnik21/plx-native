@@ -114,7 +114,22 @@ struct FramePacing {
     gt50: u64,
     gt100: u64,
     max_ms: f64,
+    /// Poster-upload frames (see [`POSTER_UPLOAD_MAX_PX`]), those whose interval was at least
+    /// [`UPLOAD_LATE_MS`], and the uploads on them.
+    pup_frames: u64,
+    pup_late: u64,
+    pup_uploads: u64,
 }
+
+/// A presented frame is a POSTER-upload frame when it uploaded something and the mean upload was
+/// at most this many pixels (a 250x375 poster is 93 750; a 1280x720 backdrop is 921 600). The
+/// same split the television analysis used, so a backdrop's multi-frame landing never counts as a
+/// poster burst's lateness.
+pub const POSTER_UPLOAD_MAX_PX: u64 = 120_000;
+
+/// A frame interval at or over this many milliseconds is "late" for the poster-upload share
+/// (`pupf_ge22=`): the next refresh slot after a 16.7 ms frame plus a 5 ms hitch.
+pub const UPLOAD_LATE_MS: u64 = 22;
 
 impl Default for FramePacing {
     fn default() -> Self {
@@ -126,6 +141,9 @@ impl Default for FramePacing {
             gt50: 0,
             gt100: 0,
             max_ms: 0.0,
+            pup_frames: 0,
+            pup_late: 0,
+            pup_uploads: 0,
         }
     }
 }
@@ -149,6 +167,17 @@ impl FramePacing {
         self.gt100 += u64::from(ticks * 10 > frequency);
     }
 
+    /// Fold the interval just noted into the poster-upload tally when this frame uploaded posters.
+    fn note_uploads(&mut self, ticks: u64, frequency: u64, c: FrameCounters) {
+        if frequency == 0 || c.uploads == 0 || c.upload_px / u64::from(c.uploads) > POSTER_UPLOAD_MAX_PX {
+            return;
+        }
+        self.pup_frames += 1;
+        self.pup_uploads += u64::from(c.uploads);
+        // `ticks / frequency >= UPLOAD_LATE_MS / 1000`, in integers.
+        self.pup_late += u64::from(u128::from(ticks) * 1000 >= u128::from(frequency) * u128::from(UPLOAD_LATE_MS));
+    }
+
     fn percentile(&self, percent: u64) -> f64 {
         if self.n == 0 {
             return 0.0;
@@ -165,11 +194,20 @@ impl FramePacing {
     }
 
     fn tail(&self) -> String {
-        format!(
+        let mut s = format!(
             " frame_n={} frame_gt16={} frame_gt33={} frame_gt50={} frame_gt100={} frame_max={:.1}ms frame_p95={:.1}ms frame_p99={:.1}ms",
             self.n, self.gt16, self.gt33, self.gt50, self.gt100, self.max_ms,
             self.percentile(95), self.percentile(99),
-        )
+        );
+        // Present only in a second that uploaded posters, so its presence is the event and every
+        // other heartbeat is byte-for-byte what it was.
+        if self.pup_frames > 0 {
+            s.push_str(&format!(
+                " pupf={} pupf_ge22={} pup={}",
+                self.pup_frames, self.pup_late, self.pup_uploads
+            ));
+        }
+        s
     }
 }
 
@@ -370,8 +408,9 @@ impl Instruments {
         }
         let present = self.stamps[Phase::Swap as usize];
         if let Some(previous) = self.previous_present.replace(present) {
-            self.pacing
-                .note(present.wrapping_sub(previous), self.perf_freq as u64);
+            let ticks = present.wrapping_sub(previous);
+            self.pacing.note(ticks, self.perf_freq as u64);
+            self.pacing.note_uploads(ticks, self.perf_freq as u64, self.counters);
         }
         let total = self
             .ms(self.stamps[Phase::Swap as usize].wrapping_sub(self.stamps[Phase::Top as usize]));
@@ -418,7 +457,7 @@ impl Instruments {
     /// The heartbeat's trailing fields, and the per-second reset. The WIRE ORDER is a contract:
     ///
     /// ```text
-    /// … fps=<n> [load= snap= period=] [worstframe= worstprep=] carried= dropped= budget= evicted_hot= [frame_n= frame_gt16= frame_gt33= frame_gt50= frame_gt100= frame_max= frame_p95= frame_p99=] [rec=] [sim=1]
+    /// … fps=<n> [load= snap= period=] [worstframe= worstprep=] carried= dropped= budget= evicted_hot= [frame_n= frame_gt16= frame_gt33= frame_gt50= frame_gt100= frame_max= frame_p95= frame_p99= [pupf= pupf_ge22= pup=]] [rec=] [sim=1]
     /// ```
     ///
     /// * `worstframe=`/`worstprep=` are the ARMED pair (`plxnative-framedrop`) and stay LAST of
@@ -678,6 +717,27 @@ mod tests {
             i.frame_drop_line(&String::new).is_none(),
             "short CPU phases need no FRAMEDROP line"
         );
+    }
+
+    /// The poster-upload tally (`pupf=`/`pupf_ge22=`/`pup=`): only POSTER-sized upload frames
+    /// count, a frame is late at 22 ms exactly, and a second with none prints nothing extra.
+    #[test]
+    fn poster_upload_frames_are_tallied_by_interval_and_a_backdrop_frame_is_not_one() {
+        let c = |uploads, upload_px| FrameCounters { uploads, upload_px, ..FrameCounters::default() };
+        let mut i = Instruments::new(true, 22.0);
+        present_at(&mut i, 100); // first present: no interval yet
+        i.note_frame_counters(c(2, 187_500));
+        present_at(&mut i, 122); // 22 ms, two posters: late (the boundary counts)
+        i.note_frame_counters(c(1, 93_750));
+        present_at(&mut i, 138); // 16 ms, one poster: on time
+        i.note_frame_counters(c(1, 921_600));
+        present_at(&mut i, 188); // a backdrop: not a poster frame whatever its interval
+        i.note_frame_counters(c(0, 0));
+        present_at(&mut i, 238); // no upload at all
+        let tail = i.heartbeat_tail(HeartbeatFields::default(), None);
+        assert!(tail.ends_with(" pupf=2 pupf_ge22=1 pup=3"), "{tail}");
+        let quiet = i.heartbeat_tail(HeartbeatFields::default(), None);
+        assert!(!quiet.contains("pupf="), "reset per second, absent when nothing uploaded: {quiet}");
     }
 
     #[test]

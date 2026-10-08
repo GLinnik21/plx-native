@@ -941,6 +941,7 @@ fn bind_core_profile_vao() {
 
 pub fn init_gl() {
     unsafe {
+        WARM_TARGET = None;
         // Before any buffer or attribute state is touched — in a core profile the calls below are
         // errors without it.
         #[cfg(feature = "hostsim")]
@@ -2257,15 +2258,68 @@ pub fn snapshot_pending() -> bool {
 /// the row that was actually scrolling, took under 1 ms. That is the hitch a headshot shelf shows
 /// while it rolls, and the "freeze" a cold detail page shows as its backdrop, logo and posters
 /// land one after another. Paying it HERE moves the cost into the pump, whose budget already
-/// bounds uploads per frame, and off the draw, which cannot bound anything. One pixel is enough:
-/// residency is per texture, not per texel. The page's `frame_clear` overwrites the pixel.
+/// bounds uploads per frame, and off the draw, which cannot bound anything.
+///
+/// **The sample lands in a tiny offscreen target ([`WARM_PX`] square), never on framebuffer 0.**
+/// The first draw of a frame into framebuffer 0 is where this driver blocks on the back buffer
+/// (5-9 ms in `poll` on the television, 2026-10-08). A warm drawn there took that wait inside
+/// `prepare`, so the prepare clock read a 7-10 ms "upload" and admitted one poster per frame, and
+/// the page's draw work queued behind the wait instead of overlapping it. Drawn offscreen the
+/// wait stays with the frame's `clear`; the warm costs 0.3-0.4 ms. Residency is per texture, not
+/// per texel, so a draw into any target forces it. The target is built on the first warm and
+/// kept; if it cannot be built the warm is skipped, never redirected to framebuffer 0.
+///
+/// Leaves the default framebuffer bound and the viewport at `surface::viewport()`, exactly as
+/// every other offscreen pass in this file does.
 pub fn warm_tex(tex: c_uint) {
     if tex == 0 {
         return;
     }
     const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
-    draw_tex(tex, 0.0, 0.0, 1.0, 1.0, 0.0, WHITE.as_ptr());
+    unsafe {
+        let slot = &mut *std::ptr::addr_of_mut!(WARM_TARGET);
+        let target = *slot.get_or_insert_with(|| fbo_target(WARM_PX, WARM_PX, "warm"));
+        let Some((_, fbo)) = target else { return };
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        // The whole logical screen maps onto the target, so a screen-sized quad fills it and
+        // every texel of it samples `tex`.
+        glViewport(0, 0, WARM_PX, WARM_PX);
+        // `Class::Blur`, like every other offscreen pass: the quad writes a 16x16 target, not the
+        // panel, so the overdraw ledger must not book it as a full-screen `Image` and a
+        // `drawmask` of `image` must not skip it (`overdraw::gate` never books or masks `Blur`).
+        draw_tex_core(
+            Class::Blur,
+            tex,
+            0.0,
+            0.0,
+            SCR_W,
+            SCR_H,
+            UV_FULL,
+            0.0,
+            WHITE.as_ptr(),
+            0.0,
+            NO_RIM.as_ptr(),
+            0.0,
+            0.0,
+            0.0,
+            NO_RIM.as_ptr(),
+            0.0,
+            0.0,
+            None,
+        );
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
+        let (vx, vy, vw, vh) = plx_base::surface::viewport();
+        glViewport(vx, vy, vw, vh);
+    }
 }
+
+/// Side, in pixels, of the offscreen target [`warm_tex`] draws into.
+const WARM_PX: c_int = 16;
+
+/// [`warm_tex`]'s target: unbuilt (`None`), failed (`Some(None)`, latched so a driver that refuses
+/// it is asked once) or ready (texture, framebuffer). Main render thread only, like every cached
+/// target here; `init_gl` clears it, so a fresh GL context never sees a stale name.
+static mut WARM_TARGET: Option<Option<(c_uint, c_uint)>> = None;
 
 /// Delete a texture created by upload_rgba (0 = no-op). Main-thread only.
 ///
