@@ -56,7 +56,7 @@
 //! "hold" is also what shows the hold working.
 //!
 //! **When it shows is a schedule, and the schedule lives here**, advanced by the owner's `Tick`
-//! `dt` — no wall clock, so replay and host tests are deterministic: focus must have RESTED on one
+//! `Tick` (`ms` readings, and a silence over [`GAP_MS`] between two steps is not rest, so the time a covered page is not stepped never counts) — no wall clock, so replay and host tests are deterministic: focus must have RESTED on one
 //! card for [`DWELL_MS`] (any move of `focus`, or any frame that is not `settled`, re-arms the dwell
 //! from zero and hides it), and the hint then stands for [`LIFE_MS`] and leaves on its own, once per
 //! resting place. A held OK shows it regardless of the dwell — that is the fill's moment.
@@ -131,6 +131,10 @@ const K_RISE: f32 = 150.0;
 pub const RELEASE_S: f32 = 0.2;
 /// Below this opacity nothing is drawn and the capsule counts as hidden.
 const VISIBLE: f32 = 0.004;
+/// The longest silence between two [`HoldHint::step`]s that still counts as continuous rest. A
+/// covered page gets no `Tick`, so a longer one means the page was away; a slow real frame is
+/// well under this.
+const GAP_MS: u32 = 250;
 /// The opacity at which the fade-in counts as complete: the point a once-per-run showing is spent.
 const FULL: f32 = 0.98;
 /// How long the capsule must have stood at [`FULL`] opacity, uninterrupted, before a once-per-run
@@ -260,8 +264,12 @@ pub struct HoldHint {
     key: Option<u32>,
     /// The tick clock (`Tick.ms`) at which continuous rest on [`key`](Self::key) began; `None`
     /// while not resting. An absolute reading rather than an accumulated per-frame delta, so a slow
-    /// or skipped tick cannot drift the schedule (the same idiom as `motion::Phase`).
+    /// or skipped tick cannot drift the schedule (the same idiom as `motion::Phase`); a silence
+    /// longer than [`GAP_MS`] between steps is not rest (see `last_ms`).
     rest_at: Option<u32>,
+    /// The tick clock of the previous step. A page that is covered gets no `Tick`, so a step that
+    /// finds the clock more than [`GAP_MS`] past this one starts over: the gap was not rest.
+    last_ms: Option<u32>,
     /// This resting place has had its [`LIFE_MS`]; it does not come back until focus moves.
     spent: bool,
     /// `Some(kind)` on a non-Home card screen: the self-appearing hint then stands at most once per
@@ -304,13 +312,22 @@ impl HoldHint {
     }
 
     pub const fn new() -> Self {
-        Self { key: None, rest_at: None, spent: false, once: None, claimed: false, full_at: None, fade: Spring::at(0.0), rise: Spring::at(0.0), fill: 0.0 }
+        Self { key: None, rest_at: None, last_ms: None, spent: false, once: None, claimed: false, full_at: None, fade: Spring::at(0.0), rise: Spring::at(0.0), fill: 0.0 }
     }
 
     /// Advance one frame — the owner's whole per-`Tick` job. `note` receives [`PresentEvent::Motion`]
     /// on every frame the fill is moving — the fill is steered by a clock the springs cannot see, and an idle gate that never
     /// heard it would freeze the progress mid-hold.
     pub fn step(&mut self, input: HintInput, now_ms: u32, dt: f32, note: &mut dyn FnMut(PresentEvent)) {
+        // A step after a long silence (the page was covered and got no `Tick`) finds the clock far
+        // ahead of the last one: the silence was not rest, so the dwell and the read begin again.
+        let gap = self.last_ms.is_some_and(|last| now_ms.wrapping_sub(last) > GAP_MS);
+        self.last_ms = Some(now_ms);
+        if gap {
+            self.rest_at = None;
+            self.claimed = false;
+            self.full_at = None;
+        }
         let focus = input.focus.filter(|_| !learned());
         if focus != self.key {
             self.key = focus;
@@ -410,7 +427,7 @@ impl HoldHint {
         if !self.visible() {
             return;
         }
-        let lay = Layout::resolve(measure, &sentence());
+        let lay = Layout::cached(measure);
         let lift = (1.0 - self.rise.pos.clamp(0.0, 1.0)) * RISE_PX;
         let r = lay.rect(lift);
         let opacity = self.opacity();
@@ -469,7 +486,7 @@ impl HoldHint {
     /// The capsule's width under `measure` in the current language — for a fit test and for a
     /// caller that must keep clear of it.
     pub fn width(measure: &dyn Measure) -> f32 {
-        Layout::resolve(measure, &sentence()).width
+        Layout::cached(measure).width
     }
 }
 
@@ -506,8 +523,39 @@ struct Layout {
     width: f32,
 }
 
+thread_local! {
+    /// The last resolved layout and what it depended on: the locale context it was resolved under
+    /// (a `&'static`, so its address names the language) and the cap's measured width, a probe that
+    /// changes whenever the measurer or the cap metrics do. The sentence and its measures are
+    /// otherwise rebuilt, with their strings, on every frame the capsule is visible.
+    static LAYOUT: std::cell::RefCell<Option<(usize, f32, std::rc::Rc<Layout>)>> = const { std::cell::RefCell::new(None) };
+    /// Test seam: how many times a layout was actually resolved on this thread.
+    #[cfg(test)]
+    static RESOLVES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 impl Layout {
+    /// The layout for the current language under `measure`, resolved once and reused until the
+    /// language (or the measurer's cap width) changes.
+    fn cached(measure: &dyn Measure) -> std::rc::Rc<Self> {
+        let locale = plx_platform::i18n::current() as *const _ as usize;
+        let probe = widgets::key_cap_w_with(CapFace::Label(KEY), CapMetrics::HINT, measure);
+        LAYOUT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if let Some((l, p, lay)) = &*slot {
+                if *l == locale && *p == probe {
+                    return lay.clone();
+                }
+            }
+            let lay = std::rc::Rc::new(Self::resolve(measure, &sentence()));
+            *slot = Some((locale, probe, lay.clone()));
+            lay
+        })
+    }
+
     fn resolve(measure: &dyn Measure, message: &str) -> Self {
+        #[cfg(test)]
+        RESOLVES.with(|r| r.set(r.get() + 1));
         let (pre, post) = widgets::key_hint_parts(message);
         // The design spaces the runs by its own 16 px gap; the catalog's own spaces would double it.
         let trim = |s: CString| CString::new(s.to_string_lossy().trim()).unwrap_or_default();
@@ -855,6 +903,53 @@ mod tests {
         assert!(!h.visible(), "the claim ends with the rest: once per kind is once");
     }
 
+    /// Skip the tests' tick clock ahead by `s` seconds with no step at all: a page covered by a
+    /// menu or a pushed screen gets no `Tick`, and the owner's clock runs on without it.
+    fn skip_clock(s: f32) {
+        FRAME.with(|f| f.set(f.get() + secs(s) as u32));
+    }
+
+    #[test]
+    fn time_under_a_covered_page_is_not_rest() {
+        let (_g, _) = fresh();
+        let mut h = HoldHint::once_per_run(Kind::Collection);
+        run(&mut h, rested(7), secs(1.0));
+        skip_clock(5.0);
+        run(&mut h, rested(7), 1);
+        assert!(!h.visible(), "the gap is not rest: the dwell has not been served");
+        assert!(!shown_this_run(Kind::Collection), "and nothing was spent unseen");
+        run(&mut h, rested(7), secs(1.5) + secs(0.8));
+        assert!(h.opacity() > 0.9, "after a further full dwell it appears");
+    }
+
+    #[test]
+    fn a_gap_longer_than_the_whole_life_neither_spends_nor_hides_the_offer() {
+        let (_g, _) = fresh();
+        let mut h = HoldHint::once_per_run(Kind::Person);
+        run(&mut h, rested(7), secs(1.0));
+        skip_clock(10.0);
+        run(&mut h, rested(7), 1);
+        assert!(!h.visible() && !shown_this_run(Kind::Person), "the gap spent neither life nor kind");
+        run(&mut h, rested(7), secs(1.5) + secs(0.8));
+        assert!(h.opacity() > 0.9, "it is offered once the dwell has been served");
+    }
+
+    #[test]
+    fn time_under_a_covered_page_does_not_count_toward_the_read() {
+        let (_g, _) = fresh();
+        let mut h = HoldHint::once_per_run(Kind::Search);
+        run(&mut h, rested(7), secs(1.5));
+        let mut n = 0;
+        while h.opacity() < FULL && n < secs(3.0) {
+            run(&mut h, rested(7), 1);
+            n += 1;
+        }
+        assert!(h.opacity() >= FULL, "control: it reached full opacity");
+        skip_clock(5.0);
+        run(&mut h, rested(7), 1);
+        assert!(!shown_this_run(Kind::Search), "a covered page read nothing");
+    }
+
     #[test]
     fn what_the_hint_needs_input_for_is_a_truth_table() {
         let (_g, _) = fresh();
@@ -1050,6 +1145,27 @@ mod tests {
         let sum = 2.0 * PAD_X + lay.pre_w + lay.cap_w + 2.0 * RUN_GAP
             + FixtureMeasure.width(c"for options", theme::size::CAPTION, false);
         assert!((lay.width - sum).abs() < 1e-3);
+    }
+
+    /// **The capsule's layout is resolved once, not once per visible frame**, and again when the
+    /// language changes (the sentence is the catalog's, so a new language is a new layout).
+    #[test]
+    fn the_layout_is_reused_across_frames_and_rebuilt_on_a_language_change() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+        let (_g, _) = fresh();
+        let resolves = || RESOLVES.with(|r| r.get());
+        let en = HoldHint::width(&FixtureMeasure);
+        let base = resolves();
+        for _ in 0..5 {
+            assert_eq!(HoldHint::width(&FixtureMeasure), en);
+        }
+        assert_eq!(resolves(), base, "five more frames resolved nothing");
+        let _be = language_on_this_thread_for_test(Preference::Be);
+        let be = HoldHint::width(&FixtureMeasure);
+        assert_eq!(resolves(), base + 1, "a language change resolves again");
+        assert_ne!(be, en, "to the other language's capsule");
+        assert_eq!(HoldHint::width(&FixtureMeasure), be);
+        assert_eq!(resolves(), base + 1, "and is then reused");
     }
 
     /// **Punctuation that opens the post-cap run sits tight on the cap.** The Belarusian sentence
