@@ -1,4 +1,4 @@
-//! [`Stack`] — the vertical page of card sections (shared-card-sections plan, layer L2).
+//! [`Stack`] — the vertical page of card sections (layer L2: pages built from the L1 sections).
 //!
 //! A page is a header of some kind, then [`Shelf`]s and [`Grid`]s, then a status read-out. The page
 //! implements [`StackPage`] (what its sections are, in order, and what each shows) and feeds
@@ -29,8 +29,6 @@
 //!   section it was in; else the first focusable of [`StackPage::fallback`].
 //! - **Motion canon.** [`Stack::write`] is the page's motion state: the scroll's spring and every
 //!   section's pop, bands and scroll.
-
-use std::marker::PhantomData;
 
 use plx_machine::machine::{Canon, Cx, Effects, EntryId, FocusKey, GroupId, Host, ScreenEvent};
 use plx_machine::present::PresentEvent;
@@ -73,49 +71,42 @@ pub struct SectionSpec<K> {
     /// Where this section's group stands in [`Focusable::groups`] (ascending; ties keep document
     /// order). The engine seats the first non-empty group of that order when nothing is focused.
     pub rank: u32,
-    /// What the page says about this section's group beyond what its kind makes of it.
-    pub tweak: GroupTweak,
+    /// The parts of this section's group a page that owns the vertical model (explicit links
+    /// between rows, a seat projected from where the move came from) replaces; `None` keeps the
+    /// kind's own. Set through [`seated`](Self::seated), [`edges`](Self::edges) and
+    /// [`of_kind`](Self::of_kind).
+    seat: Option<Seat>,
+    edge: Option<[EdgeRule; 4]>,
+    elem: Option<ElemKind>,
 }
 
-/// The parts of a section's [`GroupSpec`] a page may replace: a page that owns the vertical model
-/// (explicit links between rows, a seat projected from where the move came from) says so here
-/// instead of rewriting the group. `None` keeps the kind's own.
-#[derive(Clone, Copy, Default)]
-pub struct GroupTweak {
-    pub seat: Option<Seat>,
-    pub edge: Option<[EdgeRule; 4]>,
-    pub elem: Option<ElemKind>,
-}
-
-impl GroupTweak {
-    fn apply(self, g: &mut GroupSpec) {
+impl<K> SectionSpec<K> {
+    fn apply(&self, g: &mut GroupSpec) {
         g.seat = self.seat.unwrap_or(g.seat);
         g.edge = self.edge.unwrap_or(g.edge);
         g.elem = self.elem.unwrap_or(g.elem);
     }
-}
 
-impl<K> SectionSpec<K> {
     /// A section in document order, its group listed in document order too.
     pub fn new(key: K, kind: Kind, group: GroupId) -> Self {
-        Self { key, kind, group, rank: 0, tweak: GroupTweak::default() }
+        Self { key, kind, group, rank: 0, seat: None, edge: None, elem: None }
     }
 
     /// Seat this section's group by `seat` instead of its kind's rule.
     pub fn seated(mut self, seat: Seat) -> Self {
-        self.tweak.seat = Some(seat);
+        self.seat = Some(seat);
         self
     }
 
     /// Give this section's group `edge` (up, down, left, right) instead of its kind's rules.
     pub fn edges(mut self, edge: [EdgeRule; 4]) -> Self {
-        self.tweak.edge = Some(edge);
+        self.edge = Some(edge);
         self
     }
 
     /// Give this section's elements `elem`'s press behaviour instead of its kind's.
     pub fn of_kind(mut self, elem: ElemKind) -> Self {
-        self.tweak.elem = Some(elem);
+        self.elem = Some(elem);
         self
     }
 
@@ -257,7 +248,7 @@ pub struct StackMemory<K> {
     pub shelves: Vec<(K, f32)>,
 }
 
-pub struct Stack<K, E = u32> {
+pub struct Stack<K> {
     entry: EntryId,
     specs: Vec<SectionSpec<K>>,
     bodies: Vec<Body>,
@@ -288,10 +279,9 @@ pub struct Stack<K, E = u32> {
     /// How many times `sections` ran (the cost case's counter).
     #[cfg(test)]
     pub(crate) rebuilds: u32,
-    _elem: PhantomData<E>,
 }
 
-impl<K: Copy + Eq, E> Stack<K, E> {
+impl<K: Copy + Eq> Stack<K> {
     pub fn new(entry: EntryId) -> Self {
         Self {
             entry,
@@ -312,7 +302,6 @@ impl<K: Copy + Eq, E> Stack<K, E> {
             hint: None,
             #[cfg(test)]
             rebuilds: 0,
-            _elem: PhantomData,
         }
     }
 
@@ -757,7 +746,7 @@ impl<K: Copy + Eq, E> Stack<K, E> {
     /// under it is still moving: the page scroll at its target, and the card drawn where it comes
     /// to rest (the shelf's glide and the focus pop). ([`HintInput::for_placed`](crate::hold_hint::HintInput::for_placed)
     /// owns the rule, pinned clocks included.) The press clock is passed straight through.
-    pub fn hint_input<H: Host<Elem = u32>, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>) -> crate::hold_hint::HintInput {
+    fn hint_input<H: Host<Elem = u32>, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>) -> crate::hold_hint::HintInput {
         let Some(key) = cx.focus.current.filter(|k| k.entry == self.entry) else {
             return crate::hold_hint::HintInput::default();
         };
@@ -782,17 +771,17 @@ impl<K: Copy + Eq, E> Stack<K, E> {
     }
 
     /// The page's view: `Focusable` and `Part`.
-    pub fn view<'a, P>(&'a self, p: &'a P) -> StackView<'a, K, E, P> {
+    pub fn view<'a, P>(&'a self, p: &'a P) -> StackView<'a, K, P> {
         StackView { stack: self, page: p }
     }
 }
 
-pub struct StackView<'a, K, E, P> {
-    stack: &'a Stack<K, E>,
+pub struct StackView<'a, K, P> {
+    stack: &'a Stack<K>,
     page: &'a P,
 }
 
-impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
+impl<K: Copy + Eq, P> StackView<'_, K, P> {
     /// The stops of every section, registered as [`paint`](Self::paint) ends each section with
     /// them (the very rects it draws, in the same z order), without painting: a host test has no
     /// GL context, and a page's harness reads the rects through this. Paint culls a shelf wholly
@@ -912,14 +901,14 @@ impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
     }
 }
 
-impl<K: Copy + Eq, E, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Part<H> for StackView<'_, K, E, P> {
+impl<K: Copy + Eq, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Part<H> for StackView<'_, K, P> {
     fn prepare(&mut self, _b: &mut crate::frame::Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         self.paint(f);
     }
 }
 
-impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
+impl<K: Copy + Eq, P> StackView<'_, K, P> {
     /// Element `n` (clamped) of section `i`, or its one element when it is a focusable plain one.
     fn nth<H: Host>(&self, cx: &Cx<'_, H>, i: usize, n: usize) -> Option<H::Elem>
     where
@@ -955,7 +944,7 @@ impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
     }
 }
 
-impl<K: Copy + Eq, E, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> for StackView<'_, K, E, P> {
+impl<K: Copy + Eq, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> for StackView<'_, K, P> {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         let (s, p) = (self.stack, self.page);
         for &i in &s.order {
@@ -966,20 +955,20 @@ impl<K: Copy + Eq, E, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H
                     let h = sh.head(s.frame(p, cx, i));
                     let extent = if p.wide_extent(k) { Rect::new(h.x, h.y, SCR_W - 2.0 * h.x, h.h) } else { h };
                     let mut g = sh.group_spec(id, src.len(), extent);
-                    s.specs[i].tweak.apply(&mut g);
+                    s.specs[i].apply(&mut g);
                     out.push(g);
                 }
                 (Kind::Grid { .. }, Body::Grid(g)) => {
                     if let Some(src) = p.cards(cx, k).filter(|c| c.len() > 0) {
                         let mut spec = g.group_spec(id, src.len());
-                        s.specs[i].tweak.apply(&mut spec);
+                        s.specs[i].apply(&mut spec);
                         out.push(spec);
                     }
                 }
                 (Kind::Custom { focusable: true, .. } | Kind::Overlay { focusable: true, .. }, _) => {
                     if p.plain_len(k) > 0 {
                         let mut g = p.plain_group(cx, k, id, p.focus_rect(cx, k, s.rect(p, cx, i)));
-                        s.specs[i].tweak.apply(&mut g);
+                        s.specs[i].apply(&mut g);
                         out.push(g);
                     }
                 }

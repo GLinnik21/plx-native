@@ -78,8 +78,7 @@
 //! the source, the occlusion and the damage. Because Home's page layer is not a SHARED band (the
 //! chrome layer is), the walk gives it its OWN source entry rather than merging it into the top
 //! band's: a surface at the bottom of the screen never drags the top band's single grab out toward
-//! full screen (the "glass at the top and another at the bottom is a full-screen blur" law of
-//! `docs/glass-hardware-budget.md` §3.1 belongs to the old one-cache design). Its region is the
+//! full screen. Its region is the
 //! capsule grown `BLUR_MARGIN` and clamped to the panel — about 880 x 204 = 180k px² at the widest
 //! shipped language, inside the 300k a MOVING host holds 60 fps under
 //! (`the_capsules_own_blur_region_fits_the_budget_and_never_meets_the_top_band` holds it, and
@@ -212,9 +211,7 @@ impl HintInput {
         let hold = held_ms.map(|ms| (ms as f32 / crate::press::LONG_MS as f32).clamp(0.0, 1.0));
         Self { focus, settled, hold }
     }
-}
 
-impl HintInput {
     /// The input for a page that can PLACE the card focus rests on: `elem` is that card's stable
     /// element id and `drawn` its placement at [`At::Drawn`](crate::screen::At). `page_still` is
     /// "the page's own scroll has reached its target"; the card's own glide and focus pop are read
@@ -340,7 +337,6 @@ impl HoldHint {
         }
     }
 
-    /// Whether any of it is on screen.
     /// Whether this frame's [`HintInput`] could change anything — the one question every adopter
     /// asks before it pays to build the input (a card lookup and a placement). `false` means the
     /// owner may pass `HintInput::default()` to [`step`](Self::step) instead, with the identical
@@ -356,6 +352,7 @@ impl HoldHint {
         ok_held || self.claimed || self.visible() || self.fill > 0.0 || !shown_this_run(kind)
     }
 
+    /// Whether any of it is on screen.
     pub fn visible(&self) -> bool {
         self.fade.pos > VISIBLE
     }

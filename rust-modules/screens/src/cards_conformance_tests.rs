@@ -1,4 +1,4 @@
-//! Tier 2 card-screen conformance (shared-card-sections plan, section 4), PR 0: the black-box
+//! Tier 2 card-screen conformance (shared-card-sections plan, section 4): the black-box
 //! cases of `plx_ui::cards::conformance` run against today's screens. Every failing case is listed
 //! in `ci/allow/cards-conformance.txt` with its reason; the list only shrinks. A listed case that
 //! now passes fails the suite, as does an unlisted failure. Each screen implements

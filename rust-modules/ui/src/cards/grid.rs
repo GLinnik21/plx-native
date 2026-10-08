@@ -118,12 +118,6 @@ impl Grid {
         }
     }
 
-    /// Cards beyond the focused one a [`CardEvent::Want`] asks for (default two rows).
-    pub fn look_ahead(mut self, n: usize) -> Self {
-        self.ahead = n;
-        self
-    }
-
     /// The one entry: feed it every event the screen receives.
     pub fn on<H: Host, S: CardSource<H>>(
         &mut self,

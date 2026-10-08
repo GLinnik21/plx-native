@@ -1,5 +1,5 @@
 //! [`AvatarRow`] — the profile picker's circular avatar row, the one public wrapper over the L0
-//! `card_row` primitives (shared-card-sections plan, PR 10). It is not a card section: the
+//! `card_row` primitives. It is not a card section: the
 //! roster has no captions, no hold menu and no paging, so it is `Focusable` geometry plus a
 //! spring cache and the two tile bodies, kept here so the picker names no L0 primitive.
 

@@ -205,11 +205,7 @@ impl CardHarness for Harness {
         })
     }
     fn focus_scale(&self) -> f32 { RowStyle::HOME.focus_scale }
-    fn canon(&self) -> u64 {
-        let mut c = Canon::new();
-        LogicalState::write(&self.screen, &mut c);
-        c.finish()
-    }
+    fn canon(&self) -> u64 { LogicalState::hash(&self.screen) }
     fn identity(&self, elem: u32) -> String {
         let Some((row, col)) = self.cell(elem) else { return String::new() };
         match self.set {

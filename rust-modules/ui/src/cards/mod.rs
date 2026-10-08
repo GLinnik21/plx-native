@@ -1,11 +1,11 @@
-//! `plx_ui::cards` — the shared card sections (shared-card-sections plan, layer L1).
+//! `plx_ui::cards` — the shared card sections (layer L1: the sections built on the L0 row and grid primitives).
 //!
 //! [`Shelf`] (one horizontal strip) and [`Grid`] (the six-column poster grid) own everything a card
 //! section does that is not the screen's content: the focus pop, the let-go of the tile that lost
 //! focus, scrolling to keep focus visible, the caption band, drawing the focused tile last, culling,
 //! hit-map stops, `Focusable` placement, paging requests and idle. A screen supplies its content
 //! through [`CardSource`] and reacts to the one [`CardEvent`] [`Shelf::on`] / [`Grid::on`] returns;
-//! it no longer writes pop, press, stop, restore or paging code.
+//! it writes no pop, press, stop, restore or paging code of its own.
 //!
 //! The contract, fixed once for every section:
 //!
@@ -37,7 +37,7 @@
 //!   thread-local. [`Shelf::place`] / [`Grid::place`] answer the live drawn rect and the stop the
 //!   draw registers is the same value; `rest_rect` is the settled focus-scaled rect.
 //! - **Idle.** Springs report their own motion; a settled section reports none and parks at exact
-//!   rest. No call allocates except the focused tile's label, as before.
+//!   rest. No call allocates except the focused tile's label.
 //!
 //! The L0 primitives (`card_row`, `poster_grid`) are `pub(crate)`: a screen cannot hand-assemble a
 //! shelf or a grid. What a screen legitimately reads from them (the tile style and label types, the
