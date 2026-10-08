@@ -52,7 +52,9 @@
 //! it is on screen. `Dispatcher::held_page_image` says whether the page shown is an image and at
 //! what alpha. The sentinel does NOT survive an image: it is blended at the dip alpha, and it never
 //! carried a caption, so the pixel oracle cannot see a placeholder inside an image and the counter
-//! alone vouches for those frames.
+//! alone vouches for those frames. **In a frame dump no image is held** (`plx_gfx::dump`): every frame
+//! of the dip re-captures the page live (`PageImage::step_filmed`), so the capture's own draw is
+//! the frame's debt, counted directly, and the page is live the frame the dip ends.
 //!
 //! **What the dump driver (S5b) must do.** Call [`arm`] once at start; then for each frame
 //! [`reset`] BEFORE the frame's first walk, draw it, and [`take`] after the last walk, on the UI
@@ -62,8 +64,8 @@
 //! 2. **A held page image is a fact, not debt.** The image carries its capture's placeholders,
 //!    re-noted by [`renote`], so a spinner captured into it still holds the frame through the
 //!    counter. The driver does not hold on `Dispatcher::held_page_image` itself: it re-captures on
-//!    each repeat until the count is 0 (`plx_gfx::dump::held_repeat`), then writes the image
-//!    frames, so a push films as the product plays it. Keep a negative test that delays
+//!    each repeat until the count is 0 (`plx_gfx::dump::held_repeat`), then writes the frame. A
+//!    dump holds no image at all, so a push films as a live page under the dip. Keep a negative test that delays
 //!    `/library/metadata/<rk>` by 3 s across a push and asserts no written frame contains the
 //!    spinner or the "Loading" title.
 //! 3. **Zero or non-zero only** (see above); a frame with `count > 0` is a failure naming
@@ -71,8 +73,9 @@
 //! 4. **Reveal springs start after arrival.** Home's art spring starts at 0 when the texture lands,
 //!    and the dip alpha ramp likewise: the first frame after a hold shows the bare wash with count
 //!    0. Wait for them to settle before writing, or accept them as animation and say so. (An
-//!    `Xfade` In ramp is not one of them in a dump: `Xfade::tick` takes a ready `Hold` straight to
-//!    `Idle`, an exception `plx_gfx::dump` lists.)
+//!    `Xfade` In ramp IS one of them in a dump, and plays as the product plays it: the dump films
+//!    the page live under the dip, so a page that mounts hidden fades in over its own 140 ms
+//!    while the dip's In half runs.)
 //! 5. **Content that arrives late with no placeholder drawn** — Home shelves and Continue Watching,
 //!    Detail's related, cast, extras and ratings, Library shelves and the grid header, `Xfade` Hold
 //!    over a search's results — is invisible to both oracles. The landing predicate

@@ -528,8 +528,9 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   the files. The SSIM and VMAF gates pair frames by index in ONE time base
   (`BY_INDEX`, `settb=1/60,setpts=N`): pairing in each file's own time base rounded two frames of
   this film onto their neighbours and read them as SSIM 0.66 and VMAF 0.
-  A page pushed in a dump does not hold its captured image while the destination's layout moves
-  (`dispatch::layout_holds_page_image`), so the Library's focused caption is filmed fading in.
+  A page pushed in a dump is never a held image: the dip re-captures it every frame and it is live the
+  frame the dip ends (`PageImage::step_filmed`), so the Library's cards pop and its focused caption
+  fade in under the dip, with no cut at the end of it.
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
 - **`make SYMBOLS=1 symbols`** — build with DWARF and split it into **`pkg/plxnative.debug`**, the
