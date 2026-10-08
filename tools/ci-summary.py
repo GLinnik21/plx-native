@@ -71,6 +71,10 @@ job that runs only for the pull requests that touch its inputs), and the daily b
 (a shared GitHub runner is noisier than the Mac its numbers were quoted from; the 5 s floor keeps
 the 2-3 s no-op build quiet).
 
+Labels. A benchmark row is labelled by its id (LOCAL_LABEL: "Rebuild after editing the app crate", "make check,
+the whole gate", ...), not by the text a record stored, so records written before the labels were chosen read the
+same; an id LOCAL_LABEL does not know keeps its record's label ("make check: cargo branch").
+
 Order and selection (`order_metrics`). What a developer waits for goes first, trivia last:
   1. every row that is "worse", the biggest percentage first;
   2. the waits (PR CI wait, wait after merge);
@@ -114,6 +118,17 @@ WAITS = ("pr_wait", "push_wait")
 # the benchmark's own row ids (tools/build-history.py), in the order a developer meets them
 LOCAL_ORDER = ("bench.app", "bench.screens", "bench.ui", "bench.leaf", "bench.tests", "bench.check")
 HEALTH_ROW = "bench.noop"
+# What each benchmark row IS, in a developer's words, keyed by the row id (never by the label a record stored: the
+# first records called these "app crate" and "plx_base"). An id not listed keeps the record's own label.
+LOCAL_LABEL = {
+    "app": "Rebuild after editing the app crate",
+    "screens": "Rebuild after editing plx_screens",
+    "ui": "Rebuild after editing plx_ui",
+    "leaf": "Rebuild after editing plx_base",
+    "tests": "Unit suite",
+    "noop": "No-op build",
+    "check": "make check, the whole gate",
+}
 KIND = {"pr_wait": "wait", "push_wait": "wait", "minutes": "cost", "bench": "local"}
 MAX_COMMITS = 10
 WF_LABEL = {"ci": "CI", "sim": "Simulator CI", "nightly": "Nightly"}
@@ -226,7 +241,7 @@ def all_series(history: dict, bench: dict | None) -> dict:
         for rid, r in (rec.get("rows") or {}).items():
             if isinstance(r.get("median"), (int, float)):
                 at = parse_time(rec.get("at") or rec["date"] + "T00:00:00Z")
-                rows.setdefault(rid, {"label": r.get("label") or rid, "samples": []})["samples"].append(
+                rows.setdefault(rid, {"label": LOCAL_LABEL.get(rid) or r.get("label") or rid, "samples": []})["samples"].append(
                     (at, r["median"], {"sha": rec.get("commit", ""), "title": "", "pr": None}))
     for rid, r in rows.items():
         add(f"bench.{rid}", r["label"], "local", "bench", sorted(r["samples"], key=lambda s: s[0]))

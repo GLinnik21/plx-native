@@ -160,7 +160,7 @@ class SeriesTest(unittest.TestCase):
                 for d in range(0, 16)]
         doc = s.summarize({}, {"records": recs}, NOW)
         leaf = metric(doc, "bench.leaf")
-        self.assertEqual((leaf["group"], leaf["label"], leaf["state"], leaf["now"]), ("local", "plx_base", "worse", 70.0))
+        self.assertEqual((leaf["group"], leaf["label"], leaf["state"], leaf["now"]), ("local", "Rebuild after editing plx_base", "worse", 70.0))
         self.assertEqual(metric(doc, "bench.noop")["state"], "flat")
         self.assertEqual(doc["regressions"][0]["id"], "bench.leaf")
         self.assertEqual(doc["slowest_local"][0]["id"], "bench.leaf")
@@ -216,6 +216,15 @@ class OrderTest(unittest.TestCase):
     def test_the_noop_build_is_shown_once_it_is_no_longer_a_no_op(self):
         bench = bench_records({"noop": ("No-op build", 9.0)})
         self.assertTrue(metric(s.summarize({}, bench, NOW), "bench.noop")["shown"])
+
+    def test_a_benchmark_row_is_labelled_by_its_id_whatever_an_old_record_stored(self):
+        old = {"app": ("app crate", 18.0), "leaf": ("plx_base", 100.0), "check": ("make check", 900.0), "check.cargo": ("make check: cargo branch", 890.0)}
+        by = {m["id"]: m["label"] for m in s.summarize({}, bench_records(old), NOW)["metrics"]}
+        self.assertEqual(by["bench.app"], "Rebuild after editing the app crate")
+        self.assertEqual(by["bench.leaf"], "Rebuild after editing plx_base")
+        self.assertEqual(by["bench.check"], "make check, the whole gate")
+        self.assertEqual(by["bench.check.cargo"], "make check: cargo branch")          # not listed: the record's own label
+        self.assertEqual(s.summarize({}, bench_records({"zzz": ("Some new row", 5.0)}), NOW)["metrics"][0]["label"], "Some new row")
 
     def test_a_part_hangs_off_its_whole_and_is_never_listed_beside_it(self):
         doc = self.doc()
