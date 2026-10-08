@@ -769,6 +769,14 @@ pub struct Shared {
     /// a different failure from a connection that answered 401.
     pub dg_http_status: AtomicI32,
     pub dg_net_rx: AtomicI64,
+    /// WHY the media transfer died, when it was a curl transfer dying mid-body (issue #504): the
+    /// libcurl code (0 = none recorded), the transfer's age in ms (-1 = unknown) and whether the
+    /// reopen that follows a failed read was refused as well. Written by the demux thread beside
+    /// `demux_io_failed` (`ff::frame_read_failed`), read by the handled playback error as a
+    /// class and an age bucket — never as these numbers.
+    pub dg_transport_rc: AtomicI32,
+    pub dg_transport_age_ms: AtomicI64,
+    pub dg_transport_reopen_failed: AtomicBool,
     /// SDL ticks when `loadCompleted` landed, and when `frames` last CHANGED. A photograph has no
     /// time axis: "Load completed, 0 frames" is innocent at 2 s and damning at 4 minutes, and the
     /// panel cannot tell the difference without these. Stamped in the pump, never in `app::diagnostics` —
@@ -897,6 +905,9 @@ impl Shared {
             dg_cb_err: AtomicI32::new(0),
             dg_cb_err_at: AtomicU32::new(0),
             dg_http_status: AtomicI32::new(0),
+            dg_transport_rc: AtomicI32::new(0),
+            dg_transport_age_ms: AtomicI64::new(-1),
+            dg_transport_reopen_failed: AtomicBool::new(false),
             dg_net_rx: AtomicI64::new(0),
             side_anchor: Mutex::new(None),
             side_subs_owner: AtomicBool::new(false),
@@ -1487,6 +1498,9 @@ impl Shared {
         self.dg_cb_err.store(0, Ordering::Relaxed);
         self.dg_cb_err_at.store(0, Ordering::Relaxed);
         self.dg_http_status.store(0, Ordering::Relaxed);
+        self.dg_transport_rc.store(0, Ordering::Relaxed);
+        self.dg_transport_age_ms.store(-1, Ordering::Relaxed);
+        self.dg_transport_reopen_failed.store(false, Ordering::Relaxed);
         self.dg_net_rx.store(0, Ordering::Relaxed);
         self.dg_load_at.store(0, Ordering::Relaxed);
         self.dg_frame_at.store(0, Ordering::Relaxed);
@@ -3352,6 +3366,9 @@ mod tests {
         s.seen_frame.store(true, Ordering::Relaxed);
         s.frames.store(9, Ordering::Relaxed);
         s.demux_io_failed.store(true, Ordering::Relaxed);
+        s.dg_transport_rc.store(56, Ordering::Relaxed);
+        s.dg_transport_age_ms.store(60_000, Ordering::Relaxed);
+        s.dg_transport_reopen_failed.store(true, Ordering::Relaxed);
         s.playback_trace
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -3379,6 +3396,15 @@ mod tests {
         assert!(
             !s.demux_io_failed.load(Ordering::Relaxed),
             "a new session must not inherit an I/O failure"
+        );
+        assert_eq!(
+            (
+                s.dg_transport_rc.load(Ordering::Relaxed),
+                s.dg_transport_age_ms.load(Ordering::Relaxed),
+                s.dg_transport_reopen_failed.load(Ordering::Relaxed),
+            ),
+            (0, -1, false),
+            "nor the cause of the last session's transfer failure"
         );
         assert_eq!(
             s.playback_trace

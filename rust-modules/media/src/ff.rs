@@ -2624,9 +2624,32 @@ fn frame_read_failed(state: &mut AvioState, result: c_int) -> bool {
         return false;
     }
     if state.io_failed {
+        // Issue #504: `r=-5` alone could not tell a proxy's cut from a reset from a stall. The
+        // curl source remembers why its transfer died (until a reopen recovers), so the line
+        // names it, and the same facts are published for the handled playback error.
+        let failure = match &state.src {
+            Src::Curl(cs) => cs.body_failure(),
+            _ => None,
+        };
+        let cause = failure.map_or_else(String::new, |f| {
+            format!(
+                " curl_rc={}{}",
+                f.rc,
+                if f.reopen_failed { " reopen=failed" } else { "" }
+            )
+        });
         crate::player::log(&format!(
-            "ff: media transport failed during av_read_frame r={result}"
+            "ff: media transport failed during av_read_frame r={result}{cause}"
         ));
+        if let Some(f) = failure {
+            SHARED.dg_transport_rc.store(f.rc, Ordering::Release);
+            SHARED
+                .dg_transport_age_ms
+                .store(f.age_ms.min(i64::MAX as u64) as i64, Ordering::Release);
+            SHARED
+                .dg_transport_reopen_failed
+                .store(f.reopen_failed, Ordering::Release);
+        }
         SHARED.demux_io_failed.store(true, Ordering::Release);
     }
     true

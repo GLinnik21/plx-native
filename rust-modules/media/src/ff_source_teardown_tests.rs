@@ -701,6 +701,76 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
     });
 }
 
+/// **Issue #504.** `ff: media transport failed during av_read_frame r=-5` was the whole account of
+/// a direct play that died a minute in. The line now carries the libcurl code the transfer died
+/// with, and the same fact is published for the handled playback error (as a class and an age
+/// bucket, never the numbers). A failure that was not a curl transfer's says nothing it does not
+/// know.
+#[test]
+fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
+    let Some(_gate) = curl_gate() else { return };
+    with_counting_listener(|port, _, _| {
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+                SHARED.reset_session();
+            }
+        }
+        let _clear = Clear;
+        SHARED.reset_session();
+
+        fn state(src: Src, aq: *mut crate::aq::AuQueue) -> AvioState {
+            AvioState {
+                src,
+                aq,
+                off: 0,
+                size: 8,
+                io_failed: true,
+                body_active_us: 0,
+                body_bytes: 0,
+                first_byte_at: None,
+                reserve_deadline: ReserveDeadlineState::new(None, false),
+                transport_watchdog: None,
+                acquisition: None,
+                bounce: Vec::new(),
+                bounce_pos: 0,
+            }
+        }
+        let mut aq = crate::aq::aq_new(1 << 20);
+
+        // Not a curl transfer: the old line, and nothing published.
+        let mut idle = state(Src::Idle, &mut *aq);
+        let plain = plx_base::eventlog::with_private_log(|| {
+            assert!(frame_read_failed(&mut idle, -5));
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
+        assert!(plain.contains("media transport failed during av_read_frame r=-5"), "{plain}");
+        assert!(!plain.contains("curl_rc="), "no curl code was known: {plain}");
+        assert_eq!(SHARED.dg_transport_rc.load(Ordering::Acquire), 0);
+        SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+
+        // A curl transfer that died mid-body.
+        let mut cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
+            .expect("fixture: open");
+        cs.fail_body_for_test(56);
+        let mut st = state(Src::Curl(cs), &mut *aq);
+        let line = plx_base::eventlog::with_private_log(|| {
+            assert!(frame_read_failed(&mut st, -5));
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
+        assert!(
+            line.contains("media transport failed during av_read_frame r=-5 curl_rc=56"),
+            "{line}"
+        );
+        assert!(SHARED.demux_io_failed.load(Ordering::Acquire));
+        assert_eq!(SHARED.dg_transport_rc.load(Ordering::Acquire), 56);
+        assert!(SHARED.dg_transport_age_ms.load(Ordering::Acquire) >= 0);
+        assert!(!SHARED.dg_transport_reopen_failed.load(Ordering::Acquire));
+        crate::aq::aq_destroy(&mut *aq);
+    });
+}
+
 /// Issue #266 PR 4's normalize run: a direct-play Part sat inside `avformat_open_input` (the
 /// server was slow to serve it), the viewer turned Normalize Loudness on, and `reload_transcode`
 /// tore that demuxer down. Teardown aborts the lanes, `read_cb` answers the abort with EOF, and

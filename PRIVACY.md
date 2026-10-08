@@ -105,6 +105,14 @@ The closed diagnostic vocabulary includes terminal kinds such as `playback_inter
 Original-check outcomes `started`, `succeeded`, `no_body`, `deadline`, `transport`,
 `inconclusive`, `server_state` and `refused`.
 
+When the media transfer itself died, the report also says how, as two more closed fields and
+never as the network library's own number: `transport` — `none` / `partial` / `recv_error` /
+`send_error` / `got_nothing` / `timeout` / `http2` / `reopen_failed` / `other` (the class of the
+error, and `reopen_failed` when the retry after it was refused as well) — and `transfer_age` —
+`unknown` / `<5s` / `5-30s` / `30-90s` / `90-300s` / `300s+` (how long that transfer had been
+running, so a connection cut at a fixed time is visible as one bucket). Both appear as a tag and
+in the playback context; both are `none` / `unknown` when no transfer failure was recorded.
+
 When the failure is the media server **refusing to play or convert the item** (`decision_refused`),
 that report also carries four closed fields about the refusal — and never the server's own
 explanation, which is free text that can name files, paths and servers and stays on the television:
