@@ -22,8 +22,8 @@ name: Site video
 #                                fails here at once unless publish=false); on main (a maintainer's manual
 #                                dispatch) a run may publish; a branch renders and never publishes. It asks
 #                                `needs-render`: if the film's inputs (`TREE_PATHS` in tools/site_video.py) are
-#                                the ones the committed site/media/feel.manifest.json records, the run ends GREEN
-#                                here, rendering nothing.
+#                                the ones the committed site/media/feel.manifest.json records, (and the stills' inputs, `site_stills.py
+#                                needs-render`, the committed stills') the run ends GREEN here, rendering nothing.
 #   render   (contents: read)   renders this checkout twice and applies every gate below. ANY failure fails the
 #                                run and the site is not touched: the old film stays. Its only output is an artifact.
 #   publish  (contents: write)  checks out MAIN (a literal `ref: main`: the trusted branch, and where the commit
@@ -32,7 +32,7 @@ name: Site video
 #                                gates passed, clean tree, the rendered commit's film inputs), copies the film,
 #                                the feel glows, the credits page and the codec strings in site/index.html, and when
 #                                the six media files differ from main's commits them as github-actions[bot]
-#                                ("Site: demo video re-rendered for vX.Y.Z", the gates' summary and this run's URL
+#                                ("Site: demo video re-rendered for vX.Y.Z", or "demo video and stills" / "stills" for what changed, the gates' summary and this run's URL
 #                                in the body) and pushes to main. No code of the rendered ref runs with the write
 #                                token, and `publish` has no cache step. A film byte-identical to the committed one
 #                                commits nothing. (A dry run, `publish=false`, holds no credential and uses the
@@ -40,13 +40,21 @@ name: Site video
 #   pages    (dispatch)         a GITHUB_TOKEN push does not start pages.yml, and the `github-pages` environment
 #                                admits deployments from the `main` branch only (not from a tag's run), so this
 #                                job DISPATCHES pages.yml on main (`gh workflow run pages.yml --ref main`).
+# THE SAME RUN ALSO REFRESHES THE SIMULATOR-MADE STILLS (`stills` job, `tools/site_stills.py`): the documentation
+# figures, the site's close-ups, their WebP and phone copies and glows. Every scene is captured twice (a third time if
+# the pair disagrees) by `screenshots.py --check-determinism --retry-unstable` and held to its `max_delta` noise bound,
+# not to byte identity: llvmpipe's blur and glass passes round differently from run to run. Every simulator scene is
+# automated, the player scenes included; only the photograph taken on the television (navblur-transition.jpg) is by
+# hand. The job is a sibling of `render` with the same rules (own checkout, no write token, an artifact that is data);
+# `publish` adopts both with main's tools and lands ONE bot commit (docs/agent-reference.md).
 # THIS NEVER BLOCKS A RELEASE: it is a separate run. The release is published before it is dispatched; if this run
-# is red the release stands, the site keeps its old film, and the failed "Site video" run in the Actions tab is
+# is red the release stands, the site keeps what it had (a failed `render` keeps the old film; a failed `stills` with a
+# green `render` lands the film and keeps the old stills), and the failed "Site video" run in the Actions tab is
 # the notice. Re-run it with `gh workflow run site-video.yml --ref vX.Y.Z` (or "Re-run failed jobs" on the run).
 #
 # TASTE IS NOT GATED. The gates prove the film is deterministic and encoded well, not that it is beautiful. A
 # person looks at the film on the site after a release; if it is wrong, `git revert` the bot's commit (one
-# commit, nothing else in it) and push, which redeploys the page.
+# commit, the film's and the stills' files only: a revert takes both) and push, which redeploys the page.
 #
 # TO TURN IT OFF: delete the `site-video` job at the end of release.yml (the dispatch). Dispatch by hand with
 # `gh workflow run site-video.yml --ref main -f force=true` to render although the inputs match the committed
@@ -72,11 +80,11 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: 'Render even if the film inputs match the committed film'
+        description: 'Render even if the film and stills inputs match the committed ones'
         type: boolean
         default: false
       publish:
-        description: 'Commit the film to main and deploy the site (false = dry run; a ref other than main or a stable tag never publishes)'
+        description: 'Commit the film and the stills to main and deploy the site (false = dry run; a ref other than main or a stable tag never publishes)'
         type: boolean
         default: true
 
@@ -120,6 +128,7 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       publish: ${{ steps.resolve.outputs.publish }}
       needs_render: ${{ steps.needs.outputs.needs_render }}
+      needs_stills: ${{ steps.stills.outputs.needs_stills }}
     steps:
       # The dispatched ref's own checkout, full history: the tag's commit must be asked about main.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -182,6 +191,23 @@ jobs:
             echo "- ref: \`$GITHUB_REF\` = \`$SHA\`, tag: \`$TAG\`, publish: \`$PUBLISH\`"
             grep '^reason=' "$GITHUB_OUTPUT" | tail -n 1 | sed 's/^reason=/- /'
             grep -q '^needs_render=true' "$GITHUB_OUTPUT" || echo "- **nothing to render: the committed film stands**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Have the stills' input trees changed since the committed stills?
+        id: stills
+        env:
+          FORCE: ${{ inputs.force }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          flags=()
+          [ "$FORCE" = true ] && flags+=(--force)
+          python3 tools/site_stills.py needs-render --rev "$SHA" "${flags[@]}" | tee -a "$GITHUB_OUTPUT"
+          {
+            echo "### Site stills: decide"
+            echo
+            grep '^stills_reason=' "$GITHUB_OUTPUT" | tail -n 1 | sed 's/^stills_reason=/- /'
+            grep -q '^needs_stills=true' "$GITHUB_OUTPUT" || echo "- **nothing to render: the committed stills stand**"
           } >> "$GITHUB_STEP_SUMMARY"
 
   render:
@@ -409,12 +435,132 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  stills:
+    name: Render the stills (Linux, llvmpipe)
+    needs: decide
+    if: needs.decide.outputs.needs_stills == 'true'
+    runs-on: ubuntu-24.04
+    # Measured on run 37845183222: 23 minutes in all (the host FFmpeg and simulator builds, the library, then two
+    # renders of the scenes); the maximum plus margin, the convention simulators.yml spells out.
+    timeout-minutes: 60
+    env:
+      SHOT_TDIR: rust-modules/target-sim-shots
+      # The card is composed in the runner image's Chrome; a hosted VM forbids its sandbox (a throwaway machine, no secrets).
+      CHROME_ARGS: --no-sandbox
+    steps:
+      # The dispatched ref's own checkout, exactly like `render`: no `ref:`, no credential, the caches of its own ref.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install SDL/OpenGL, the virtual display and the host FFmpeg's assembler
+        timeout-minutes: 15
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev libgl1-mesa-dri xvfb xauth cmake pkg-config mesa-utils nasm
+          recommends: "true"
+      - name: Install ffmpeg and Pillow (the library's derive step)
+        timeout-minutes: 15
+        uses: ./.github/actions/apt-install
+        with:
+          packages: ffmpeg python3-pil
+
+      - id: toolchain
+        name: Identify the host toolchain
+        run: echo "id=$(./ci/host-toolchain-id.sh)" >> "$GITHUB_OUTPUT"
+      - name: Cache the host libass stack
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/libass-prefix-host
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'src/ass.c', 'src/ass_composite.h', 'include/ass.h') }}
+      - name: Cache the libass source tarballs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/libass-sources
+          key: host-libass-sources-${{ hashFiles('ci/libass-dependencies.json') }}
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: rust-modules -> target-sim-shots
+          key: site-stills
+      - name: Build the host FFmpeg
+        # The player scenes demux a real stream, so `ff.rs` needs the bundled FFmpeg's own host build, as on a Mac
+        # (`make sim-macos`). About 30 s; nothing worth a cache.
+        run: HOST=1 ./ci/build-ffmpeg.sh
+      - name: Build the screenshots simulator
+        # `make screenshots-sim` stages `.dylib`s as prerequisites (macOS); the `.so`s are put in place below.
+        run: make screenshots-sim FFMPEG_HOST_STAGED=
+      - name: Put the host FFmpeg beside the simulator
+        # AFTER the make above, not before: on a fresh checkout the Makefile's RUST_CFG stamp differs and it deletes
+        # `pkg/lib*-plx.so.*` while parsing. `ff.rs` opens `libavformat-plx.so.63` and its siblings out of the app
+        # directory (`pkg/`); without them every stream ends at once ("ff: avformat is MISSING from the app
+        # directory ... EOS pushed at true EOF") and the player scenes have no picture.
+        run: |
+          cp -L vendor/ffmpeg-prefix-host/lib/lib*-plx.so.[0-9][0-9] pkg/
+          ls -l pkg/lib*-plx.so.*
+          test -f pkg/libavformat-plx.so.63 -a -f pkg/libavcodec-plx.so.63 -a -f pkg/libavutil-plx.so.61
+
+      - name: Cache the demo library's source images
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.PLXNATIVE_DEMO_CACHE }}/src
+          key: demo-src-${{ hashFiles('tests/demo_library/assets.json') }}
+      - name: Fetch and derive the demo library
+        timeout-minutes: 20
+        run: |
+          python3 tools/demo_library.py fetch
+          python3 tools/demo_library.py derive
+      - name: Fetch the pinned tool ffmpeg and put it first on PATH
+        # Every encoder the stills touch (the scenes' JPEGs, the WebP copies, the glows, the card's JPEG, the player
+        # scene's video child) is `ffmpeg` from PATH: from here on, this one binary and no other.
+        timeout-minutes: 10
+        run: |
+          ffmpeg="$(python3 tools/site_video.py ffmpeg-fetch)"
+          mkdir -p "$RUNNER_TEMP/pinned-bin"
+          ln -sf "$ffmpeg" "$RUNNER_TEMP/pinned-bin/ffmpeg"
+          echo "$RUNNER_TEMP/pinned-bin" >> "$GITHUB_PATH"
+          "$ffmpeg" -hide_banner -version | head -n 1
+
+      - name: Render the stills (every scene captured twice, a third time if they disagree)
+        id: render
+        timeout-minutes: 40
+        run: |
+          start=$(date +%s)
+          xvfb-run -a -s '-screen 0 1920x1080x24' \
+            python3 tools/site_stills.py render --out out/stills --bin "$SHOT_TDIR/debug/plxnative-sim"
+          echo "STILLS_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+      - name: Each scene's pair against its noise bound
+        if: always()
+        run: |
+          {
+            echo "### Stills: stability of every scene (two captures, a third if they disagree)"
+            echo
+            python3 tools/site_stills.py stability-table out/stills || echo "no verdicts were written"
+            echo
+            echo "render wall time: ${STILLS_SECONDS:-?}s"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Manifest
+        run: |
+          xvfb-run -a -s '-screen 0 1920x1080x24' python3 tools/site_stills.py manifest out/stills
+      - name: Upload the stills
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: site-stills-${{ github.sha }}
+          path: out/stills/
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
-    name: Publish the film to main
-    # Needs the render's artifact; anything short of a green `render` (a failed gate, a cancelled run) stops here
-    # and the site is untouched.
-    needs: [decide, render]
-    if: needs.decide.outputs.needs_render == 'true' && needs.render.result == 'success'
+    name: Publish the film and the stills to main
+    # Needs the artifacts of the jobs that ran. A film that failed its gates or was cancelled stops the publish and the
+    # site is untouched. A `stills` job that FAILED (a scene's two captures disagreed by more than its noise bound,
+    # which the measurement showed can happen run to run on llvmpipe) does not take the film down with it: the run stays red, the film
+    # lands, the stills keep their committed versions. A job that did not run because its inputs are the committed
+    # ones (`skipped`) simply has nothing to publish.
+    needs: [decide, render, stills]
+    if: >-
+      always() && needs.decide.result == 'success'
+      && needs.render.result != 'failure' && needs.render.result != 'cancelled' && needs.stills.result != 'cancelled'
+      && (needs.render.result == 'success' || needs.stills.result == 'success')
     runs-on: ubuntu-24.04
     # Adopt (seconds), the glows (seconds), one commit and a push with up to five rebase attempts.
     timeout-minutes: 15
@@ -430,7 +576,7 @@ jobs:
     steps:
       # THE TRUSTED SIDE. A real publish runs MAIN's tools (a literal `ref: main`, never an expression) on the
       # artifact, which is data, and builds the commit on the TIP of main (the render took an hour, and the audit
-      # commit or a docs push may have landed since; the film's files are the only ones this touches). It has no
+      # commit or a docs push may have landed since; the film's and the stills' files are the only ones this touches). It has no
       # cache step. A dry run (`PUBLISH` false) checks out the dispatched ref's own sha and holds no credential: that
       # is the only way a branch can prove the adopt it carries.
       - name: Check out main (a publish)
@@ -451,32 +597,51 @@ jobs:
         uses: ./.github/actions/apt-install
         with:
           packages: ffmpeg
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Download the film (data)
+        if: needs.render.result == 'success'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: site-video-${{ needs.decide.outputs.sha }}
           path: ${{ runner.temp }}/artifact
+      - name: Download the stills (data)
+        if: needs.stills.result == 'success'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: site-stills-${{ needs.decide.outputs.sha }}
+          path: ${{ runner.temp }}/stills
       - name: The rendered commit must be on main
         if: env.PUBLISH == 'true'
         run: |
           set -euo pipefail
           git merge-base --is-ancestor "$SHA" origin/main \
             || { echo "::error::${TAG:-$SHA} ($SHA) is not an ancestor of main"; exit 1; }
-      - name: Adopt the artifact
+      - name: Adopt the film
+        if: needs.render.result == 'success'
         # `adopt` refuses anything that is not `platform: linux-ci`, a failed gates record, a dirty tree, a file whose
         # sha256 differs from the manifest, and (--expect-rev) a film rendered from other inputs than $SHA's. A film
         # byte-identical to the committed one writes nothing. `--derive` regenerates the feel glows and the credits;
         # a changed film also rewrites the `codecs=` strings of site/index.html from the files' own avcC/av1C boxes.
         run: |
           python3 tools/site_video.py adopt "$RUNNER_TEMP/artifact" --write --derive --expect-rev "$SHA" | tee "$RUNNER_TEMP/adopt.log"
-          { echo '### Adopt'; echo; echo '```'; cat "$RUNNER_TEMP/adopt.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Only the film's own files may have changed
+          { echo '### Adopt the film'; echo; echo '```'; cat "$RUNNER_TEMP/adopt.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Adopt the stills
+        # MAIN's `site_stills.py` on the artifact (data): it refuses anything that is not `platform: linux-ci`, a file set
+        # that is not exactly the stills', a sha256 that differs, a scene without a within-bound pair verdict, and (--expect-rev)
+        # stills rendered from other inputs than $SHA's. Stills byte-identical to the committed ones write nothing.
+        if: needs.stills.result == 'success'
+        run: |
+          python3 tools/site_stills.py adopt "$RUNNER_TEMP/stills" --write --expect-rev "$SHA" | tee "$RUNNER_TEMP/adopt-stills.log"
+          { echo '### Adopt the stills'; echo; echo '```'; cat "$RUNNER_TEMP/adopt-stills.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Only the film's and the stills' own files may have changed
         run: |
           set -euo pipefail
           git status --porcelain > "$RUNNER_TEMP/status.txt"
           cat "$RUNNER_TEMP/status.txt"
-          allowed='^site/media/(feel-(720p60|1080p60)\.(av1|h264)\.mp4|feel-poster(-narrow)?\.jpg|feel-glow(-narrow)?\.png|feel\.manifest\.json)$|^site/(credits|index)\.html$'
+          film='^site/media/(feel-(720p60|1080p60)\.(av1|h264)\.mp4|feel-poster(-narrow)?\.jpg|feel-glow(-narrow)?\.png|feel\.manifest\.json)$|^site/(credits|index)\.html$'
+          stills='^docs/screenshots/(CREDITS\.md|(home|library|player|search)\.jpg|ux-[a-z-]+\.jpg)$|^site/media/(closeup-[a-z-]+\.(jpg|webp|png)|og-card\.jpg|stills\.manifest\.json)$'
+          allowed="$film|$stills"
           bad=$(sed -e 's/^...//' "$RUNNER_TEMP/status.txt" | grep -Ev "$allowed" || true)
-          [ -z "$bad" ] || { echo "::error::the adoption touched files that are not the film's: $bad"; exit 1; }
+          [ -z "$bad" ] || { echo "::error::the adoption touched files that are not the film's or the stills': $bad"; exit 1; }
       - name: Commit and push (a dry run prints what it would commit)
         id: commit
         env:
@@ -485,10 +650,10 @@ jobs:
           set -euo pipefail
           echo "committed=false" >> "$GITHUB_OUTPUT"
           if [ -z "$(git status --porcelain)" ]; then
-            echo "The film is byte-identical to the committed one: nothing to commit." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "The film and the stills are byte-identical to the committed ones: nothing to commit." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          git add -- site/media site/credits.html site/index.html
+          git add -- site/media site/credits.html site/index.html docs/screenshots
           if [ "$PUBLISH" != true ]; then
             {
               echo "### Dry run: this is what would be committed"
@@ -501,7 +666,11 @@ jobs:
           fi
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          python3 tools/site_video.py commit-message --manifest site/media/feel.manifest.json \
+          # One commit for whatever this run re-rendered: the manifest of each part that changed names it.
+          parts=()
+          git diff --cached --quiet -- site/media/feel.manifest.json || parts+=(--film-manifest site/media/feel.manifest.json)
+          git diff --cached --quiet -- site/media/stills.manifest.json || parts+=(--stills-manifest site/media/stills.manifest.json)
+          python3 tools/site_stills.py commit-message "${parts[@]}" \
             --tag "$TAG" --run-url "$RUN_URL" --source-sha "$SHA" > "$RUNNER_TEMP/message.txt"
           git commit -F "$RUNNER_TEMP/message.txt"
           # main may have moved while this ran: rebase and retry, never force.

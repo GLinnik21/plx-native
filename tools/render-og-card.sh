@@ -8,8 +8,8 @@
 # `make screenshots` runs the second form with the home figure it has just rendered, so the card
 # always shows the current app (tests/screenshots/scenes.json, the `home` scene's `card` output).
 #
-# Needs any headless Chromium: set CHROME, or have Google Chrome, Chromium, or a Playwright
-# browser cache installed, plus `sips` (macOS) or ImageMagick for the JPEG step. The card is a
+# Needs any headless Chromium: set CHROME (and CHROME_ARGS for extra flags, e.g. --no-sandbox on a CI VM), or have Google Chrome, Chromium, or a Playwright
+# browser cache installed, plus `sips` (macOS), `ffmpeg` (Linux) or ImageMagick for the JPEG step. The card is a
 # JPEG because WhatsApp drops preview images much over 300 KB; a PNG of it is ~700 KB.
 set -euo pipefail
 
@@ -58,12 +58,18 @@ find_chrome() {
 }
 
 chrome="$(find_chrome)"
-"$chrome" --headless --disable-gpu --hide-scrollbars --allow-file-access-from-files \
+# shellcheck disable=SC2086  # CHROME_ARGS is a word list on purpose (a CI runner sets `--no-sandbox`).
+"$chrome" ${CHROME_ARGS:-} --headless --disable-gpu --hide-scrollbars --allow-file-access-from-files \
   --force-device-scale-factor=1 --window-size=1200,630 --virtual-time-budget=3000 \
   --screenshot="$tmp" "file://$page" >/dev/null 2>&1
 [ -s "$tmp" ] || { echo "render-og-card: $chrome wrote no screenshot" >&2; exit 1; }
 if command -v sips >/dev/null 2>&1; then
   sips -s format jpeg -s formatOptions 86 "$tmp" --out "$out" >/dev/null
+elif [ "$(uname -s)" = Linux ] && command -v ffmpeg >/dev/null 2>&1; then
+  # The refresh after a release (site-video.yml's `stills` job) has the one pinned ffmpeg on PATH and
+  # no say over which ImageMagick a runner image carries; -q:v 3 lands near sips' 86 (about 90 KB).
+  ffmpeg -v error -y -threads 1 -i "$tmp" -frames:v 1 -pix_fmt yuvj420p -q:v 3 -bitexact -map_metadata -1 \
+    -f mjpeg "$out"
 else
   magick "$tmp" -quality 86 "$out"
 fi

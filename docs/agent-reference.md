@@ -423,13 +423,13 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   on a tag has caches of its own (a cache is restorable only by runs of the ref that wrote it and the
   branches below it, never by main), so the cache steps that restore into the tree being rendered
   cannot poison anything main runs; an earlier design that checked out `inputs.ref` on a main run was
-  refused by CodeQL ("cache poisoning via execution of untrusted code", 11 alerts). Four jobs.
+  refused by CodeQL ("cache poisoning via execution of untrusted code", 11 alerts). Five jobs (`stills`, the film's sibling, is the next bullet).
   `decide` (`contents: read`) reads `github.ref`: a tag must be a stable `vX.Y.Z` whose commit is an
   ancestor of main for the run to publish, `refs/heads/main` (a maintainer's manual dispatch) may
   publish, and a branch renders as a dry run only (a tag that is not a stable `vX.Y.Z` on main fails `decide`
   at once, before any rendering, unless `-f publish=false` makes it a dry run too); it then asks `needs-render`: if the git trees
   of everything that can change a pixel (`TREE_PATHS`) equal the `tree_hash.combined` recorded in the
-  committed `site/media/feel.manifest.json`, the run ends GREEN without rendering. `render`
+  committed `site/media/feel.manifest.json` AND the stills' inputs equal their own committed manifest, the run ends GREEN without rendering. `render`
   (`contents: read`) renders the checkout and applies every gate below; any failure leaves the site as
   it was and the run red. `publish` (`contents: write`, the only write token in the workflow) checks
   out `main` (a literal `ref: main`; a dry run checks out the dispatched ref instead and keeps no
@@ -440,8 +440,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   regenerates the feel glows and the credits page, REWRITES the `codecs=` strings of
   `site/index.html` from the new files' own `avcC` / `av1C` boxes (a re-encode that moves a profile or
   level must not leave the page declaring the old one, which `CommittedSiteMedia` would catch on main),
-  checks that only those files changed, and commits as github-actions[bot] (`Site: demo video
-  re-rendered for vX.Y.Z`, `main@<sha>` for a manual dispatch; the body carries the gates' summary and
+  checks that only the film's and the stills' files changed, and commits as github-actions[bot] (`Site: demo video
+  re-rendered for vX.Y.Z`, or `demo video and stills` / `stills` for what changed, `main@<sha>` for a manual dispatch; the body carries the gates' summary and
   the run URL), rebasing onto the tip of main and retrying the push (never forcing). A film
   byte-identical to the committed one commits nothing and writes nothing, the manifest included, so the
   manifest keeps naming the tree the film was last rendered for (the next release with changed inputs
@@ -450,16 +450,51 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `github-pages` environment admits deployments from the `main` branch only, so a run on a tag cannot
   call it; the deploy is its own run ("Deploy landing page"), where a failed deploy shows. **It never
   blocks a release**: it is a separate run, dispatched after the release exists; if it fails the
-  release stays, the site keeps its old film, and the red "Site video" run is the notice. **Taste is
+  release stays, the site keeps what it had (a failed `render` keeps the old film; a failed `stills` with a green
+  `render` lands the film and keeps the old stills), and the red "Site video" run is the notice. **Taste is
   not gated**: the gates prove the film is deterministic and well encoded, not that it is good, so look
   at the site after a release. Operate it: re-run for a tag `gh workflow run site-video.yml --ref
   vX.Y.Z`; render anyway (and publish) `gh workflow run site-video.yml --ref main -f force=true`; a
   dry run (everything but the push and the deploy, printing the `git diff --stat` it would commit)
   `-f publish=false`, which is how a change to the workflow is proved from its branch (`--ref
   my-branch`; a branch never publishes whatever `publish` says); a bad film is `git revert <the bot's
-  commit>` and a push to main (the push triggers `pages.yml`). Turn it off by deleting the `site-video`
+  commit>` (it takes the stills with it) and a push to main (the push triggers `pages.yml`). Turn it off by deleting the `site-video`
   job at the end of `release.yml`. A render costs about 55 runner minutes (measured on run
   37805253785).
+- **How the site's stills update themselves** (`site-video.yml`'s `stills` job, `tools/site_stills.py`,
+  `tests/test_site_stills.py`; the same run, workflow and bot commit as the film above, not a second workflow).
+  Every still a SIMULATOR makes, found by reading the generating tools (`site_stills.py files` lists them:
+  `tests/screenshots/scenes.json`'s outputs with their `CREDITS.md`, then the WebP and phone copies of
+  `render-site-variants.py` and the glows of `render-site-glows.py`), refreshes after a stable release when the
+  git objects of their inputs (`TREE_PATHS`, recorded as `tree_hash.combined` in `site/media/stills.manifest.json`)
+  moved, or on `force`; an app whose inputs did not move renders nothing and commits no stills, whatever the
+  renderer's noise. `decide` asks `needs-render`; `stills` (`contents: read`, its own checkout, the pinned
+  `ubuntu-24.04`, Xvfb, llvmpipe, the host FFmpeg built with `HOST=1 ci/build-ffmpeg.sh` and copied into `pkg/`
+  AFTER `make screenshots-sim` (on a fresh checkout the Makefile's `RUST_CFG` stamp deletes `pkg/lib*-plx.so.*`
+  while parsing, and without them `ff.rs` finds no FFmpeg and every stream ends at once: the player scenes'
+  "EOS pushed at true EOF"), the BtbN ffmpeg from `site_video.py ffmpeg-fetch` first on PATH as the ONE encoder,
+  `CHROME_ARGS=--no-sandbox` for the runner's Chrome that composes the link card) renders every scene with
+  `tools/screenshots.py --check-determinism --retry-unstable --report`: each scene is captured TWICE and the second
+  must agree with the first within the scene's noise bound; the first is adopted. **The bound is "stable", not
+  "byte-identical": llvmpipe's blur and glass passes round differently from run to run (a handful of scenes differ on
+  a few to a few hundred pixels, by one level), so demanding identical bytes fails nearly every run.** The bound is the
+  scene manifest's `max_delta` (default 1, `site-up-next` 2, each with its `tolerance_reason`) on the raw PNG captures,
+  where one level of rounding is one level (a JPEG spreads it over a block, up to 6 levels). Measured on the runner
+  (4 full renders, 16 scenes, and 28 isolated pairs of `site-tiles`): every pair within 1 level on 0 to 498 pixels,
+  except that in two of the four full renders ONE 3x scene (`site-tiles`, then `site-glass`) had a capture that
+  settled 2 to 4 s late and differed by 13 levels on 364 thousand of its 18.7 million pixels (a stalled runner, caught
+  mid-fade). So a pair that disagrees takes a THIRD capture and the first capture another agrees with is adopted
+  (`stable_capture`); three that never agree in any pair fail the job. A missing poster, a card that popped late or a
+  different row is tens of levels off in every capture that has it (`tests/test_site_stills.py` proves the bound on
+  synthetic captures). A failed `stills` job names the scene and its files, leaves the run red, does not block
+  the film's `publish` (a failed film blocks everything), and the committed stills stand; re-run it. `publish` runs
+  main's `site_stills.py adopt DIR --write --expect-rev` (refuses a non-`linux-ci` platform, a set that is not
+  exactly `output_files()`, a wrong sha256, a missing or over-bound verdict for any scene (the bound re-read from
+  main's `scenes.json`), other inputs), checks the path allow-list, and makes ONE commit with the film. Identical
+  output commits nothing, the manifest included. Every simulator scene is automated, the two player scenes
+  included. `docs/screenshots/navblur-transition.jpg` is a photograph of the panel and is regenerated by nobody.
+  `MANUAL_SCENES` stays as the place to put a scene the runner cannot make, with its reason. Operate as the
+  film: `gh workflow run site-video.yml --ref my-branch -f publish=false -f force=true` is the dry run.
 - **The site demo video's render** (`.github/workflows/site-video.yml`, `render`; `contents:
   read`, one artifact kept 30 days). It is the CANONICAL render: `ubuntu-24.04` (pinned, never
   `-latest`), the same libass caches and `./.github/actions/apt-install` action as
