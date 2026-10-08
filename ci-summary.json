@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-08T01:49:00Z",
+ "generated": "2026-10-08T01:49:03Z",
  "metrics": [
   {
    "change30_pct": -98.3,
@@ -58,7 +58,55 @@
    "label": "app crate",
    "n_now": 2,
    "n_prev": 0,
-   "now": 16.6,
+   "now": 17.5,
+   "prev7": null,
+   "state": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": null,
+   "d30": null,
+   "group": "local",
+   "id": "bench.check",
+   "label": "make check",
+   "n_now": 1,
+   "n_prev": 0,
+   "now": 962.7,
+   "prev7": null,
+   "state": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": null,
+   "d30": null,
+   "group": "local",
+   "id": "bench.check.cargo",
+   "label": "make check: cargo branch",
+   "n_now": 1,
+   "n_prev": 0,
+   "now": 962.0,
+   "prev7": null,
+   "state": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": null,
+   "d30": null,
+   "group": "local",
+   "id": "bench.check.python",
+   "label": "make check: python branch",
+   "n_now": 1,
+   "n_prev": 0,
+   "now": 704.0,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -74,7 +122,7 @@
    "label": "plx_base",
    "n_now": 2,
    "n_prev": 0,
-   "now": 125.6,
+   "now": 114.0,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -90,7 +138,7 @@
    "label": "No-op build",
    "n_now": 2,
    "n_prev": 0,
-   "now": 0.6,
+   "now": 0.5,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -106,7 +154,7 @@
    "label": "plx_screens",
    "n_now": 2,
    "n_prev": 0,
-   "now": 34.8,
+   "now": 33.8,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -122,7 +170,7 @@
    "label": "Unit suite",
    "n_now": 2,
    "n_prev": 0,
-   "now": 48.7,
+   "now": 52.4,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -138,7 +186,7 @@
    "label": "plx_ui",
    "n_now": 2,
    "n_prev": 0,
-   "now": 48.8,
+   "now": 44.3,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -374,34 +422,34 @@
  "schema": 1,
  "slowest": [
   {
+   "group": "local",
+   "id": "bench.check",
+   "label": "make check",
+   "now": 962.7
+  },
+  {
+   "group": "local",
+   "id": "bench.check.cargo",
+   "label": "make check: cargo branch",
+   "now": 962.0
+  },
+  {
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
    "now": 772.5
   },
   {
+   "group": "local",
+   "id": "bench.check.python",
+   "label": "make check: python branch",
+   "now": 704.0
+  },
+  {
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "label": "Simulator CI: macOS simulator build + launch",
    "now": 621
-  },
-  {
-   "group": "ci",
-   "id": "ci|host unit tests (default features)",
-   "label": "CI: host unit tests (default features)",
-   "now": 278.5
-  },
-  {
-   "group": "ci",
-   "id": "ci|cross-build (armv7) + artifact assertions",
-   "label": "CI: cross-build (armv7) + artifact assertions",
-   "now": 277
-  },
-  {
-   "group": "ci",
-   "id": "sim|Linux simulator build + launch",
-   "label": "Simulator CI: Linux simulator build + launch",
-   "now": 240
   }
  ],
  "thresholds": {
