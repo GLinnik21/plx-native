@@ -1470,8 +1470,8 @@ check-cargo-lint: lint
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
 	  cargo +$(RUST_NIGHTLY) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --features lab-diagnostics
 	@# And the demo-video dump build's pixel oracle, `placeholder-sentinel`: in no default set and
-	@# built by no other target until the dump's own `site-video-sim` build exists, so without this
-	@# line nothing would keep it compiling (its code AND its tests, `--tests`). `plx_ui` is the only
+	@# built only by `make site-video-sim`, which no gate runs and which compiles no `plx_ui` tests, so
+	@# this line is what keeps it compiling (its code AND its tests, `--tests`). `plx_ui` is the only
 	@# crate with a `cfg` on it.
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
 	  cargo +$(RUST_NIGHTLY) check --lib --tests -p plx_ui --features placeholder-sentinel
@@ -2131,6 +2131,21 @@ sim-linux: $(LIBASS_HOST_STAGED)
 	  cargo build --release --manifest-path rust-modules/Cargo.toml --target-dir "$$SIM_LINUX_TDIR_ENV" \
 	  --features hostsim --bin plxnative-sim
 
+# The demo video's frame-dump simulator (`rust-modules/src/dev/framedump.rs`; `tools/site_video.py render`
+# drives it). Release, because a dump is a render of thousands of 1080p frames; its own target dir,
+# because the feature set differs from every other simulator build; `--no-default-features` because
+# `devtools` draws a frame counter into the picture, and `placeholder-sentinel` because the second
+# oracle is the sentinel colour. Like `sim-linux` it needs only libass: the storyboard plays no
+# video, so no host FFmpeg (whose staged names are `.dylib`s, which is what keeps
+# `screenshots-sim` macOS-only). It is meant to build on macOS and on Linux, but no CI job builds it yet,
+# so only macOS is verified.
+SITE_VIDEO_TDIR ?= $(SIM_TDIR)-video
+SITE_VIDEO_BIN   = $(SITE_VIDEO_TDIR)/release/plxnative-sim
+site-video-sim: $(LIBASS_HOST_STAGED)
+	CARGO_INCREMENTAL=0 cargo build --release --manifest-path rust-modules/Cargo.toml \
+	  --target-dir $(SITE_VIDEO_TDIR) --no-default-features \
+	  --features hostsim,devtriggers,placeholder-sentinel --bin plxnative-sim
+
 # Compatibility spelling used by the Windows launcher and existing documentation.
 sim-wsl: sim-linux
 
@@ -2271,5 +2286,5 @@ fetch-profile:
 	-$(SCP) tv:$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: libass libass-host screenshots screenshots-sim demo-library disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check check-unlocked check-ffmpeg lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: libass libass-host screenshots screenshots-sim demo-library disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check check-unlocked check-ffmpeg lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux site-video-sim sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

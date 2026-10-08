@@ -165,35 +165,11 @@ fn numbered(base: &std::path::Path) -> std::path::PathBuf {
     base.with_file_name(format!("{stem}-{n}.{ext}"))
 }
 
-/// Grab the frame about to be presented, if this is the one asked for.
+/// The viewport read back as top-left-origin pixels with `ch` channels (3 RGB, 4 RGBA).
 ///
-/// **Must be called before `SDL_GL_SwapWindow`.** After the swap the back buffer's contents are
-/// undefined by specification, and on a real driver they are whatever the compositor left there —
-/// a screenshot taken after would be intermittently blank, which is worse than never working.
-///
-/// Returns `true` when this was the headless one-shot (`PLXNATIVE_SHOT_EXIT`) and the caller must
-/// now stop the run loop. It used to call `std::process::exit(0)` right here, and that crashed the
-/// Linux simulator in CI on some runners most launches: libc's `exit` runs the process's `atexit`
-/// handlers, among them OpenSSL 3's `OPENSSL_cleanup`, which frees libcrypto's global tables while
-/// the sign-in worker (`auth::mint_pin` -> libcurl) is still mid-handshake on another thread,
-/// loading the CA bundle — SIGSEGV inside libcrypto, captured by `tools/sim-smoke.py --core-dir`.
-/// Ending the run here lets the app's own shutdown run, and the simulator's `main` then leaves
-/// without `atexit` teardown (`src/bin/sim.rs`).
-#[must_use = "a headless one-shot capture asks the caller to end the run"]
-pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool {
-    let n = FRAMES.fetch_add(1, Ordering::Relaxed);
-    let on_demand = ON_DEMAND.swap(false, Ordering::Relaxed);
-    let settled = SETTLED.swap(false, Ordering::Relaxed);
-    let cfg = cfg();
-    if !on_demand && !settled && cfg.frame != Some(n) {
-        return false;
-    }
-    let ends_run = ends_run(cfg.exit, on_demand);
-    if vw <= 0 || vh <= 0 {
-        plx_base::eventlog::log("shot: viewport is empty — nothing to capture");
-        return ends_run;
-    }
-
+/// The one readback the screenshot and the frame dump (`dev::framedump`) share, so a dump frame is
+/// byte for byte what a screenshot of the same frame holds.
+pub(crate) fn read_flipped(vx: c_int, vy: c_int, vw: c_int, vh: c_int, ch: usize) -> Vec<u8> {
     // The viewport rect, not the whole window: `surface::probe` letterboxes the logical canvas
     // into the drawable, so the bars around it are not part of the interface and only make the
     // image harder to compare against a device capture.
@@ -237,7 +213,6 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool 
     // the channels are then exactly what the framebuffer holds, i.e. PREMULTIPLIED, so the
     // composite is `out = shot.rgb + picture * (1 - shot.a)` — not the straight-alpha "over" a
     // viewer applies to a PNG, which is why this file will look wrong opened on its own.
-    let ch = if cfg.alpha { 4 } else { 3 };
     let src_stride = w * 4;
     let dst_stride = w * ch;
     let mut rgb = vec![0u8; dst_stride * h];
@@ -249,6 +224,41 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool 
             rgb[d..d + ch].copy_from_slice(&buf[s..s + ch]);
         }
     }
+    rgb
+}
+
+/// Grab the frame about to be presented, if this is the one asked for.
+///
+/// **Must be called before `SDL_GL_SwapWindow`.** After the swap the back buffer's contents are
+/// undefined by specification, and on a real driver they are whatever the compositor left there —
+/// a screenshot taken after would be intermittently blank, which is worse than never working.
+///
+/// Returns `true` when this was the headless one-shot (`PLXNATIVE_SHOT_EXIT`) and the caller must
+/// now stop the run loop. It used to call `std::process::exit(0)` right here, and that crashed the
+/// Linux simulator in CI on some runners most launches: libc's `exit` runs the process's `atexit`
+/// handlers, among them OpenSSL 3's `OPENSSL_cleanup`, which frees libcrypto's global tables while
+/// the sign-in worker (`auth::mint_pin` -> libcurl) is still mid-handshake on another thread,
+/// loading the CA bundle — SIGSEGV inside libcrypto, captured by `tools/sim-smoke.py --core-dir`.
+/// Ending the run here lets the app's own shutdown run, and the simulator's `main` then leaves
+/// without `atexit` teardown (`src/bin/sim.rs`).
+#[must_use = "a headless one-shot capture asks the caller to end the run"]
+pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool {
+    let n = FRAMES.fetch_add(1, Ordering::Relaxed);
+    let on_demand = ON_DEMAND.swap(false, Ordering::Relaxed);
+    let settled = SETTLED.swap(false, Ordering::Relaxed);
+    let cfg = cfg();
+    if !on_demand && !settled && cfg.frame != Some(n) {
+        return false;
+    }
+    let ends_run = ends_run(cfg.exit, on_demand);
+    if vw <= 0 || vh <= 0 {
+        plx_base::eventlog::log("shot: viewport is empty — nothing to capture");
+        return ends_run;
+    }
+
+    let (w, h) = (vw as usize, vh as usize);
+    let ch = if cfg.alpha { 4 } else { 3 };
+    let rgb = read_flipped(vx, vy, vw, vh, ch);
     let color = if cfg.alpha {
         image::ColorType::Rgba8
     } else {

@@ -9,15 +9,16 @@
 //!   `Open`. In dump mode both prewarm drains (`drain_prewarm` and the background drain) ignore
 //!   the budget they are given and run to empty (the background drain still stops at its
 //!   occupancy ceiling, which is logical, not timed), and
-//!   [`crate::text::latch_surface_text_pending`] latches `false`, on the premise that the dump
-//!   driver drains to empty before the readiness sample (the product loop's order is the reverse:
-//!   it samples before the springs step and drains on the presenting side afterwards). **That is all this module guarantees, and it is per CALL.** Whether a
+//!   [`crate::text::latch_surface_text_pending`] latches `false`, (the dump driver drains
+//!   the full queue every iteration, after the takes and before the draw, so the queue is empty when
+//!   the next iteration samples readiness; the product loop's order is the reverse: it samples
+//!   before the springs step and drains on the presenting side afterwards). **That is all this module guarantees, and it is per CALL.** Whether a
 //!   call happens is still the callers' decision, and the ui callers make it on wall time:
 //!   `ui/src/dispatch.rs`'s held-surface drain runs only while the frame's remaining microsecond
 //!   budget (less what the first drain spent) is positive, and `ui/src/panel_motion.rs`'s
 //!   background drain only if the time left is at least `BACKGROUND_MIN_US`. Until those gates
 //!   are bypassed in dump mode, the dump driver must itself call the FULL drain (both) every
-//!   iteration, before the readiness sample, and must not count on the ui callers having done
+//!   iteration, after the takes and before the draw, and must not count on the ui callers having done
 //!   so; whatever a skipped drain leaves in the queue is still readable through
 //!   `prewarm_pending()` (page-image plan, `track_menu`'s `warm_other_tab`), which the latch does
 //!   not cover.

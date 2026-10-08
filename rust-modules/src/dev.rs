@@ -52,6 +52,10 @@
 
 pub(crate) mod scenarios;
 
+/// The demo video's frame dump (simulator only): see the module doc.
+#[cfg(all(feature = "hostsim", feature = "devtriggers"))]
+pub(crate) mod framedump;
+
 /// Files that are pure diagnostics rather than automation — see [`any_trigger_present`].
 ///
 /// Every log this app writes belongs here, not just its trigger. `plxnative-anim` was listed and

@@ -724,7 +724,13 @@ pub(crate) unsafe fn construct(
     // vsync on → the frame rate locks to the panel refresh. `/tmp/plxnative-novsync` uncaps it so
     // `fps=` reports the true GPU render rate. WSLg's X11/GLX swap accepts interval 1 without
     // blocking, so the software budget in `run` follows the same switch.
-    let vsync_enabled = controlled || !crate::dev::scenarios::novsync_armed();
+    // A frame dump never waits on the display: every iteration is a render, at swap interval 0 and
+    // with the Linux software pacer off (`vsync_enabled` also gates `wslg_frame_pacing`).
+    #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
+    let dumping = crate::dev::framedump::requested();
+    #[cfg(not(all(feature = "hostsim", feature = "devtriggers")))]
+    let dumping = false;
+    let vsync_enabled = !dumping && (controlled || !crate::dev::scenarios::novsync_armed());
     SDL_GL_SetSwapInterval(if vsync_enabled { 1 } else { 0 });
     #[cfg(all(feature = "hostsim", target_os = "linux"))]
     let wslg_frame_pacing = vsync_enabled
