@@ -34,7 +34,7 @@ use plx_plex::plex::ServerId;
 use plx_data::stores::metadata::MetadataCmd;
 use plx_data::stores::viewstate::ViewStateCmd;
 use plx_data::stores::{StoreCmd, StoreId};
-use plx_ui::card_row;
+use plx_ui::cards as ui_cards;
 use plx_ui::cards::{SectionFrame, Shelf};
 use plx_ui::frame::Budget;
 use plx_ui::hero_logo::{HeroLogo, LogoRung};
@@ -827,7 +827,7 @@ impl DetailScreen {
             7 => self.collection.band_expand(),
             _ => return 0.0,
         };
-        card_row::BAND_OPEN * expand.clamp(0.0, 1.0)
+        ui_cards::BAND_OPEN * expand.clamp(0.0, 1.0)
     }
 
     /// Sum of [`DetailScreen::band_open`] over every section that flows ABOVE `section` — the whole
@@ -1576,7 +1576,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                 .map(|d| d.episodes.len())
                 .unwrap_or(0)
                 .min(episodes::MAX_ITEMS);
-            let i = card_row::column_near_x(
+            let i = ui_cards::column_near_x(
                 from.rect.cx(),
                 plx_ui::consts::MARGIN_X,
                 episodes::W + episodes::GAP,
@@ -2028,6 +2028,12 @@ impl DetailScreen {
 }
 
 impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen {
+    /// The Related / collection shelf card only; a season tab or an episode is not a catalog item.
+    fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<plx_ui::screen::FocusedCard<'a>> {
+        let item = self.focused_related(focus, <H as crate::registry::MetadataLike>::metadata(cx))?;
+        let placed = focus.zip(at).and_then(|(key, at)| Focusable::<H>::place(self, &key.elem, cx, at));
+        Some(plx_ui::screen::FocusedCard::new(item, placed))
+    }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         DetailScreen::redraw_focused::<H>(self, f, focus)
     }
@@ -3217,7 +3223,7 @@ impl DetailScreen {
                 Some(Located::Episode(i, _)) => Some(i),
                 _ => None,
             } {
-                let target = card_row::scroll_into_view(
+                let target = ui_cards::scroll_into_view(
                     self.episode_scroll.pos,
                     i,
                     d.episodes.len(),

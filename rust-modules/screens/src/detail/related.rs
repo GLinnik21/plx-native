@@ -2,7 +2,7 @@
 
 use plx_data::metadata::Detail;
 use plx_data::pms::PmsMovie;
-use plx_ui::card_row::{self, RowStyle};
+use plx_ui::cards::{self as ui_cards, RowStyle};
 use plx_machine::machine::GroupId;
 use plx_ui::{theme, Painter};
 
@@ -50,7 +50,7 @@ pub fn item<'a>(d: &'a Detail, key: u32) -> Option<&'a PmsMovie> {
 /// shelf that holds no focus draws no label, so it gives the room back and the next section's
 /// heading rises to the design system's own region gap behind it.
 pub fn block_h(band: f32) -> f32 {
-    LABEL_H + RowStyle::HOME.h + card_row::under_band(band)
+    LABEL_H + RowStyle::HOME.h + ui_cards::under_band(band)
 }
 
 /// The shelf's heading, `lift` being the row's live label lift (`Shelf::heading_lift`).

@@ -2,7 +2,7 @@
 
 use super::*;
 use plx_machine::machine::Chrome;
-use plx_ui::screen::ScreenArg;
+use plx_ui::screen::{Focusable, ScreenArg};
 #[allow(unused_imports)]
 use super::test_support::*;
 use super::test_support::frame;
@@ -622,7 +622,13 @@ fn owned_search_result_keys_are_server_scoped_and_survive_same_query_reordering(
     let entry = d.nav.top_page().unwrap().id;
     let (selected, opener) = rig.search_selection(&d, entry, ret.focus).unwrap();
     assert!(matches!(selected, plx_data::search::Item::Media(item) if item.sid == b));
-    assert!(opener.rect.is_some(), "the menu anchor belongs to the captured selection");
+    let page = d.nav.entry(entry).unwrap().inst.as_ref().unwrap().screen.as_any().unwrap()
+        .downcast_ref::<plx_screens::search::SearchScreen>().unwrap();
+    let parts = CxParts { tick: Tick::default(), press: Default::default(),
+        focus: plx_machine::machine::FocusRead { current: ret.focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
+    let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
+    let placed = page.place(&ret.focus.unwrap().elem, &cx, At::Drawn).unwrap();
+    assert_eq!(opener.rect, Some(placed.rest_rect), "the anchor is the settled rect `place` answers, as the downcast path read it");
     let mut foreign = ret.focus.unwrap();
     foreign.entry = EntryId(entry.0 + 100);
     assert!(rig.search_selection(&d, entry, Some(foreign)).is_none());

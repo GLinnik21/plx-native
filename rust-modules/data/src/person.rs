@@ -79,7 +79,7 @@ use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
 use std::sync::Arc;
 
-/// Per-shelf item cap. A `CardRow` owns exactly `ui::card_row::MAX_ROW_ITEMS` focus-scale
+/// Per-shelf item cap. A `CardRow` owns exactly `ui::cards::MAX_ROW_ITEMS` focus-scale
 /// springs and `scale(i)` clamps past the end, so an item beyond the cap would draw with the last
 /// cell's pop and — worse — never pop at all when focused (`update`'s loop can't reach its index).
 /// It is also the perf ceiling the A53 budget wants: a shelf is a horizontal strip, not a grid.

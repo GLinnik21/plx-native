@@ -93,8 +93,7 @@ pub fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, SessionHost> {
 pub fn bare(pad: Pad) -> ProfilesScreen {
     ProfilesScreen {
         entry: EntryId(0),
-        row: card_row::CardRow::new(),
-        row_sty: card_row::RowStyle::PROFILES,
+        row: AvatarRow::new(),
         footer_pop: CtlPop::new(),
         spin_ms: 0.0,
         spin_phase: plx_machine::motion::Phase::default(),

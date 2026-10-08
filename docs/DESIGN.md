@@ -105,7 +105,7 @@ Improve a component before forking one. If a shared widget almost fits, add a bu
 style variant. A genuinely new widget still lands in `ui/` as a reusable `View` so the next screen
 gets it free.
 
-Card rows come from `ui::card_row` with a named `RowStyle`:
+Card rows come from `plx_ui::cards::Shelf` with a named `RowStyle`:
 
 - `HOME` for poster shelves, and the single source of shelf motion
 - `EPISODE` 420x236, gap 28, `focus_scale` 1.09, the 16:9 landscape still

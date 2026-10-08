@@ -469,7 +469,7 @@ fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
         let mut s = screen(snapshot.view());
         s.snap.jump(0.9);
         s.snap_target = 1.0;
-        s.grid.shelves[0].restore_scroll(offset, card_row::MAX_ROW_ITEMS);
+        s.grid.shelves[0].restore_scroll(offset, ui_cards::MAX_ROW_ITEMS);
         s.layout_grid();
         let mut h = History::default();
         assert_eq!(observe_card(&mut h, &s, snapshot.view(), 0), Verdict::Unknown);
@@ -1010,7 +1010,7 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
             "offset {} is not in progress",
             m.resume_ms
         );
-        let cap = card_row::focused_caption(&tile_facts::of(&m), true).expect("a Continue Watching episode always captions");
+        let cap = ui_cards::focused_caption(&tile_facts::of(&m), true).expect("a Continue Watching episode always captions");
         assert!(
             !cap.to_str().unwrap().contains("left"),
             "offset {}: no bar, so the caption must not promise time remaining ({cap:?})",
@@ -1023,7 +1023,7 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
         "20 minutes into 45 IS in progress"
     );
     assert_eq!(
-        card_row::focused_caption(&tile_facts::of(&mid), true).unwrap().to_str().unwrap(),
+        ui_cards::focused_caption(&tile_facts::of(&mid), true).unwrap().to_str().unwrap(),
         "Laura \u{00b7} 25 min left"
     );
 }
@@ -1036,7 +1036,7 @@ fn top_band_bottom() -> f32 {
 }
 fn heading_top(row: usize, focus_row: usize, scroll: f32) -> f32 {
     let lift = if row == focus_row {
-        card_row::heading_lift_max(&RowStyle::HOME)
+        ui_cards::heading_lift_max(&RowStyle::HOME)
     } else {
         0.0
     };
@@ -1047,7 +1047,7 @@ fn heading_top(row: usize, focus_row: usize, scroll: f32) -> f32 {
 }
 fn settled_scroll(rows: usize, focus_row: usize, current: f32) -> f32 {
     let (lo, hi) = row_reveal_band(shelf_top_settled(focus_row, focus_row));
-    card_row::reveal(current, lo, hi, grid_max_scroll(rows))
+    ui_cards::reveal(current, lo, hi, grid_max_scroll(rows))
 }
 fn from_below(rows: usize) -> f32 {
     grid_max_scroll(rows) + ROW_PITCH
@@ -1088,7 +1088,7 @@ fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
                 settled_scroll(rows, focus_row, from_below(rows)),
             ] {
                 let row_y = GRID_TOP_Y + shelf_top_settled(focus_row, focus_row) - scroll;
-                assert!(row_y + CARD_DY + CARD_H + card_row::UNDER_LABEL_H <= SCR_H - MARGIN_Y);
+                assert!(row_y + CARD_DY + CARD_H + ui_cards::UNDER_LABEL_H <= SCR_H - MARGIN_Y);
             }
         }
     }
@@ -1116,7 +1116,7 @@ fn width_of(text: &str, size: i32, bold: i32) -> f32 {
 }
 fn heading_flow(title: &str, source: &str) -> (f32, Vec<Run>) {
     let mut runs = Vec::new();
-    let width = card_row::heading_flow(title, source, |text, dx, size, bold, ink| {
+    let width = ui_cards::heading_flow(title, source, |text, dx, size, bold, ink| {
         runs.push(Run {
             text: text.into(),
             dx,
@@ -1590,16 +1590,16 @@ fn the_home_census_covers_input_motion_and_current_projection() {
     assert_ne!(shelf_canon(&popped), rest, "a pop spring is part of the canon");
     // These extents are part of SHAPE, not merely runtime sequence lengths.
     assert_eq!(HERO_NBTN, 2);
-    assert_eq!(plx_ui::card_row::MAX_ROW_ITEMS, 24);
+    assert_eq!(plx_ui::cards::MAX_ROW_ITEMS, 24);
 }
 
 /// `person` and `search` cap their shelves at the data layer's `pms::MAX_SHELF_ITEMS`; the card row
-/// that draws them owns `ui::card_row::MAX_ROW_ITEMS` springs. The data layer cannot name `ui` and
+/// that draws them owns `ui::cards::MAX_ROW_ITEMS` springs. The data layer cannot name `ui` and
 /// `ui` cannot name the data layer, so there are two constants for one number and this is the only
 /// place that sees both.
 #[test]
 fn the_data_shelf_cap_is_the_card_rows_capacity() {
-    assert_eq!(plx_data::pms::MAX_SHELF_ITEMS, plx_ui::card_row::MAX_ROW_ITEMS);
+    assert_eq!(plx_data::pms::MAX_SHELF_ITEMS, plx_ui::cards::MAX_ROW_ITEMS);
 }
 
 #[test]
@@ -2243,6 +2243,69 @@ fn addressed_item_menu_uses_the_current_owned_grid_item() {
         &out,
         |req| matches!(req, HomeReq::ItemMenu { rk, .. } if rk == "1")
     ));
+}
+
+/// The item-menu opener asks the page for its focused card (`Screen::focused_card`) instead of
+/// downcasting to Home: a grid card names the item the seeded hubs put there (a Continue Watching
+/// press and its menu are account-affecting) and the rect the page places it at; the hero, which is
+/// not a card, names none. Pinned at rest and during the hero-to-grid dive (`snap` <= 0.5).
+#[test]
+fn the_focused_card_is_the_grid_item_and_the_rect_the_opener_measured_before() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    // The seeded hubs are one shelf of two items, rating keys "1" and "2" on the unset server.
+    assert_eq!(s.rows[0].elems.len(), 2);
+    for snap in [1.0, 0.5, 0.2] {
+        s.snap.jump(snap);
+        s.layout_grid();
+        for (col, rk) in ["1", "2"].into_iter().enumerate() {
+            let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[col] };
+            let context = cx(snapshot.view(), Some(key));
+            let card = Screen::<TestHost>::focused_card(&s, &context, Some(key), Some(At::Drawn))
+                .unwrap_or_else(|| panic!("col {col} at snap {snap} is a focused card"));
+            let item = card.item.downcast_ref::<PmsMovie>().unwrap();
+            assert_eq!((item.sid, item.rk.as_str()), (plx_plex::plex::ServerId::UNSET, rk), "col {col} at snap {snap}");
+            let placed = Focusable::<TestHost>::place(&s, &key.elem, &context, At::Drawn).unwrap();
+            assert_eq!(card.rect, Some(placed.rect), "col {col} at snap {snap}");
+            assert!(card.rect.is_some() && card.rest_rect.is_some());
+            assert_eq!(Screen::<TestHost>::focused_card_rect(&s, &context, Some(key), At::Drawn), Some(placed.rect));
+            assert!(Screen::<TestHost>::focused_card(&s, &context, Some(key), None).unwrap().rect.is_none());
+        }
+    }
+    let first = first_card(&s);
+    let foreign = FocusKey { entry: EntryId(s.entry.0 + 100), elem: first.elem };
+    assert!(Screen::<TestHost>::focused_card(&s, &cx(snapshot.view(), Some(foreign)), Some(foreign), Some(At::Drawn)).is_none());
+    let hero = FocusKey { entry: s.entry, elem: 0 };
+    let context = cx(snapshot.view(), Some(hero));
+    assert!(Screen::<TestHost>::focused_card_rect(&s, &context, Some(hero), At::Drawn).is_none());
+    assert!(Screen::<TestHost>::focused_card(&s, &context, Some(hero), Some(At::Drawn)).is_none());
+}
+
+/// The opener only anchors a menu, so it must not need the item to resolve: a hubs snapshot that
+/// shrank between the hold and the request drain leaves the card where it was drawn, and
+/// `focused_card_rect` still answers its rect (the item-resolving `focused_card` does not).
+#[test]
+fn the_opener_rect_survives_a_hubs_snapshot_that_shrank_after_the_hold() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.jump(1.0);
+    s.layout_grid();
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[1] };
+    let held = Focusable::<TestHost>::place(&s, &key.elem, &cx(snapshot.view(), Some(key)), At::Drawn).unwrap().rect;
+    plx_data::pms::seed_for_test(&mut state, &adapter, 1, plx_data::pms::HubState::Ready);
+    let shrunk = plx_data::pms::hubs_snapshot(&state);
+    let context = cx(shrunk.view(), Some(key));
+    assert!(s.focused_item(Some(key), &context).is_none(), "the second card is gone from the snapshot");
+    assert!(Screen::<TestHost>::focused_card(&s, &context, Some(key), Some(At::Drawn)).is_none());
+    assert_eq!(Screen::<TestHost>::focused_card_rect(&s, &context, Some(key), At::Drawn), Some(held));
 }
 
 #[test]
@@ -3095,7 +3158,7 @@ fn assert_shelves_laid_out(s: &HomeScreen) {
     for (row, shelf) in s.grid.shelves.iter().enumerate() {
         let want = top + flow - s.grid.scroll_y.pos * s.snap.pos;
         assert_eq!(shelf.base_y(), want, "row {row} is not where the layout puts it");
-        flow += card_row::ROW_PITCH_FIXED + shelf.under_band();
+        flow += ui_cards::ROW_PITCH_FIXED + shelf.under_band();
     }
 }
 

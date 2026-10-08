@@ -138,10 +138,10 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         episode_text_lift: [plx_ui::text_lift::TextLift::new(); EP_SCALE_MAX],
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
-        related: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::HOME),
-        collection: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::HOME),
-        extras: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::EPISODE),
-        cast: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::card_row::RowStyle::CAST),
+        related: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::cards::RowStyle::HOME),
+        collection: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::cards::RowStyle::HOME),
+        extras: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::cards::RowStyle::EPISODE),
+        cast: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::cards::RowStyle::CAST),
         tabs: TabStrip::new(),
         season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(),
@@ -3298,6 +3298,77 @@ fn up_from_a_member_reaches_the_heading_and_down_returns_to_that_member() {
     assert!(matches!(screen.locate(up, test_store().view()), Some(Located::Collection(_))));
     assert_eq!(moved_to(collection_move(&screen, &mut engine, Dir::Up), "UP again"),
         collection::HEADING_ELEM);
+    clear();
+}
+
+/// The item-menu opener asks the page for its focused card (`Screen::focused_card`) instead of
+/// downcasting to it: for a Related or collection card it must name the item `focused_related`
+/// does and the rect `focused_rect` measures, and for anything else (Play, a heading) it names none.
+#[test]
+fn the_focused_card_is_the_related_item_and_the_rect_the_opener_measured_before() {
+    let sid = ServerId::UNSET;
+    let _guard = install(collection_movie(sid));
+    let screen = bare(&_guard, sid, "m1");
+    let meta = test_store().view();
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let key = |elem| FocusKey { entry: EntryId(7), elem };
+    for (elem, rk) in [
+        (screen.engine_key(related::elem(1).unwrap()).unwrap(), "r2"),
+        (screen.engine_key(collection::elem(2).unwrap()).unwrap(), "m3"),
+    ] {
+        let context = cx(&measure, Some(elem));
+        let card = Screen::<TestHost>::focused_card(&screen, &context, Some(key(elem)), Some(At::Drawn))
+            .expect("a related card is a focused card");
+        let item = card.item.downcast_ref::<plx_data::pms::PmsMovie>().unwrap();
+        assert_eq!(item.rk, rk);
+        assert_eq!(item.rk, screen.focused_related(Some(key(elem)), meta).unwrap().rk);
+        assert!(card.rect.is_some());
+        assert_eq!(card.rect, screen.focused_rect::<TestHost>(Some(key(elem)), &context, At::Drawn));
+        assert!(Screen::<TestHost>::focused_card(&screen, &context, Some(key(elem)), None).unwrap().rect.is_none());
+    }
+    for elem in [hero::ELEM_PLAY, collection::HEADING_ELEM] {
+        let context = cx(&measure, Some(elem));
+        assert!(Screen::<TestHost>::focused_card(&screen, &context, Some(key(elem)), Some(At::Drawn)).is_none());
+    }
+    clear();
+}
+
+/// A season tab, an episode, an Extras card and a Cast card are not catalog items the item menu
+/// acts on through `Screen::focused_card`: none of them names a card, whatever the host asks.
+#[test]
+fn the_focused_card_is_none_for_season_episode_extras_and_cast() {
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.related = vec![Default::default()];
+    d.extras = vec![Default::default()];
+    d.cast.push(plx_data::metadata::Cast {
+        tag: "Actor".into(),
+        role: "Role".into(),
+        thumb: String::new(),
+        id: 1,
+        tag_key: String::new(),
+    });
+    let _guard = install(d);
+    let screen = bare(&_guard, sid, "show");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let key = |elem| FocusKey { entry: EntryId(7), elem };
+    let related = screen.engine_key(related::elem(0).unwrap()).unwrap();
+    let context = cx(&measure, Some(related));
+    assert!(Screen::<TestHost>::focused_card(&screen, &context, Some(key(related)), Some(At::Drawn)).is_some(),
+        "the fixture's Related card is a focused card, so the negatives below are the page's answer");
+    for (name, local) in [
+        ("season", season::elem(0).unwrap()),
+        ("episode still", episodes::elem(0, episodes::Row::Still).unwrap()),
+        ("episode text", episodes::elem(0, episodes::Row::Text).unwrap()),
+        ("extras", extras::elem(0).unwrap()),
+        ("cast", cast::elem(0).unwrap()),
+    ] {
+        let elem = screen.engine_key(local).unwrap_or(local);
+        let context = cx(&measure, Some(elem));
+        for at in [Some(At::Drawn), None] {
+            assert!(Screen::<TestHost>::focused_card(&screen, &context, Some(key(elem)), at).is_none(), "{name}");
+        }
+    }
     clear();
 }
 

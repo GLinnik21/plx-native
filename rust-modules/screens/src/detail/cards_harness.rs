@@ -8,7 +8,7 @@ use super::tests::{bare_held, test_store, TestHost};
 use super::*;
 use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
 use plx_ui::cards::conformance::{CardHarness, Landing, Nb};
-use plx_ui::card_row::RowStyle;
+use plx_ui::cards::RowStyle;
 use plx_ui::fixture::FixtureMeasure;
 use super::cards::Which;
 
@@ -194,7 +194,7 @@ impl CardHarness for Harness {
         let i = self.at(elem)?;
         let focused = self.focus.map(|k| k.elem) == Some(elem);
         let style = self.style();
-        let base = card_row::tile_rect(
+        let base = ui_cards::tile_rect(
             i,
             plx_ui::consts::MARGIN_X,
             self.pitch(),
@@ -273,7 +273,7 @@ mod real_draw {
             let style = self.style();
             self.cards().into_iter().filter(|&elem| {
                 let i = self.at(elem).unwrap();
-                let slot = card_row::tile_rect(i, style.margin_x, self.pitch(), self.shelf().scroll(), 0.0,
+                let slot = ui_cards::tile_rect(i, style.margin_x, self.pitch(), self.shelf().scroll(), 0.0,
                     (style.w, style.h));
                 plx_ui::on_axis(slot.x, style.w, plx_ui::consts::SCR_W, 0.0)
             }).collect()

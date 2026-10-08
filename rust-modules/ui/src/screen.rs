@@ -251,6 +251,14 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn focused_card<'a>(&self, _cx: &Cx<'a, H>, _focus: Option<FocusKey<H::Elem>>, _at: Option<At>) -> Option<FocusedCard<'a>> {
         None
     }
+    /// **Where the focused card sits, without needing its item to resolve** — the live drawn rect
+    /// of the card `focus` names. An opener that only anchors a menu (the item travels on the
+    /// request, it is not re-read) asks this instead of [`Self::focused_card`], so a page whose
+    /// data moved on between the hold and the request still anchors the menu where the card is.
+    /// `None` for a page with no card, which is the default.
+    fn focused_card_rect(&self, _cx: &Cx<'_, H>, _focus: Option<FocusKey<H::Elem>>, _at: At) -> Option<Rect> {
+        None
+    }
     /// Typed application inspection during migration; the library never names a screen type.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
@@ -438,7 +446,17 @@ pub enum At {
 #[derive(Clone, Copy)]
 pub struct FocusedCard<'a> {
     pub item: &'a dyn std::any::Any,
+    /// The live drawn rect ([`Placed::rect`]).
     pub rect: Option<Rect>,
+    /// The settled focus-scaled rect ([`Placed::rest_rect`]) — what an opener anchors to.
+    pub rest_rect: Option<Rect>,
+}
+
+impl<'a> FocusedCard<'a> {
+    /// `item` with the placement the page measured for it (`None` when the caller asked for none).
+    pub fn new(item: &'a dyn std::any::Any, placed: Option<Placed>) -> Self {
+        Self { item, rect: placed.map(|p| p.rect), rest_rect: placed.map(|p| p.rest_rect) }
+    }
 }
 
 /// What was painted / where it rests / what clipped it (§7.6).

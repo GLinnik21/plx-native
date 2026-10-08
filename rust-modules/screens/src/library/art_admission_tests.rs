@@ -50,7 +50,7 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
         page.pair.detail.set_geometry(layout, scroll, layout, scroll);
         let window = page.pair.detail.window();
         let (lo, hi) = (window.start, window.end);
-        let visible: Vec<_> = (lo..hi).filter(|&i| plx_ui::card_row::paint_visible(
+        let visible: Vec<_> = (lo..hi).filter(|&i| plx_ui::cards::paint_visible(
             painter, page.pair.detail.rect_at(&fixture.cx(None), i), 1.0, false)).collect();
         assert!(lo > 0 && !visible.is_empty() && visible.len() < hi - lo,
             "the fixture needs both actually visible cards and culled buffered cards");

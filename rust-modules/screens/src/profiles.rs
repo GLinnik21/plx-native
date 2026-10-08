@@ -1,5 +1,5 @@
 //! **The who's-watching picker, as an owned `Screen`** (restructure spec §13, phase 6 —
-//! `ui/profiles.rs` moved). The avatar row (`plx_ui::card_row`, a circular `RowStyle::PROFILES`
+//! `ui/profiles.rs` moved). The avatar row (`plx_ui::cards::AvatarRow`, a circular
 //! shelf — the same shelf motion the poster rows use) plus the "Sign out" footer, and the PIN
 //! keypad for a protected profile. With nobody to offer (#132's read-out) the footer gives way to
 //! the read-out's own control row: a focused *Back* whose OK is the BACK key, then *Sign out*.
@@ -9,7 +9,7 @@
 //! `step_focus`, `nearest_col`); this file has neither. Focus is the ENGINE's — this screen
 //! answers the §7.1 query protocol and reacts to `ScreenEvent::FocusMoved`, it never stores
 //! "which avatar is selected" as its own truth. What it DOES keep as ordinary fields is: the
-//! `CardRow` animation cache the avatar row's springs live in (a render cache, not logical state,
+//! `AvatarRow` animation cache the avatar row's springs live in (a render cache, not logical state,
 //! exactly like `RootPage::table`), the footer's `CtlPop` dip, and the PIN pad's own small state
 //! machine (open/target/entry/submitting/error), which is genuinely this screen's own — nothing
 //! else on the tree knows a PIN pad exists.
@@ -92,7 +92,7 @@ use std::ffi::CString;
 use std::sync::Arc;
 
 use plx_session::auth::{self, Phase};
-use plx_ui::card_row;
+use plx_ui::cards::AvatarRow;
 use plx_ui::frame::Budget;
 use plx_ui::geom;
 use plx_ui::icons;
@@ -126,8 +126,8 @@ const ROW_Y: f32 = 384.0;
 /// Name band offset below `ROW_Y` — derived from the SAME numbers the shelf pops by, so raising
 /// the pop can't silently collide the name with the popped circle. Ported verbatim from
 /// `ui/profiles.rs`'s `NAME_DY`.
-const NAME_DY: f32 = card_row::RowStyle::PROFILES.h
-    + card_row::RowStyle::PROFILES.h * (card_row::RowStyle::PROFILES.focus_scale - 1.0) * 0.5
+const NAME_DY: f32 = AvatarRow::STYLE.h
+    + AvatarRow::STYLE.h * (AvatarRow::STYLE.focus_scale - 1.0) * 0.5
     + theme::space::MD;
 const PIN_LEN: usize = 4;
 const FOOTER_Y: f32 = 780.0;
@@ -315,7 +315,7 @@ fn digit_of(sym: u32, wcode: u32) -> Option<u8> {
 /// roster fits, else left-aligned so `CardRow` can scroll it. No `Measure` needed — every input is
 /// a fixed style constant or the roster count. Ported verbatim from `ui/profiles.rs::row_geom`.
 fn row_geom(n: usize) -> (f32, f32) {
-    let sty = card_row::RowStyle::PROFILES;
+    let sty = AvatarRow::STYLE;
     let slot = sty.w + sty.gap;
     let total = (n as f32 * slot - sty.gap).max(0.0);
     (((SCR_W as f32 - total) * 0.5).max(sty.margin_x), slot)
@@ -678,12 +678,9 @@ pub struct ProfilesScreen {
     /// The avatar row's animation cache — focus-scale + scroll springs. A render cache, not
     /// logical state, exactly as `RootPage::table`'s `TableView` is: the engine owns WHICH avatar
     /// is focused, this owns how it gets there on screen.
-    row: card_row::CardRow,
-    /// `RowStyle::PROFILES` with `margin_x` overridden to this frame's centring offset
-    /// (`row_geom`'s `start_x`) — refreshed every `tick` and at construction. `geom::Shelf`
-    /// borrows this by reference, so it has to live as long as `&self`, which is why it is a
-    /// field rather than a local `let` `Shelf::sty` could not outlive.
-    row_sty: card_row::RowStyle,
+    /// Its margin is this frame's centring offset (`row_geom`'s `start_x`), refreshed every
+    /// `tick` and at construction.
+    row: AvatarRow,
     /// The controls' focus pop — slot 0 the footer (or the read-out's primary), slot 1 the
     /// read-out's secondary — owned rather than `ui/profiles.rs`'s `static mut FOOTER_POP`.
     footer_pop: CtlPop<2>,
@@ -727,8 +724,7 @@ impl ProfilesScreen {
         let snapshot = auth.0;
         let mut s = Self {
             entry,
-            row: card_row::CardRow::new(),
-            row_sty: card_row::RowStyle::PROFILES,
+            row: AvatarRow::new(),
             footer_pop: CtlPop::new(),
             spin_ms: 0.0,
             spin_phase: plx_machine::motion::Phase::default(),
@@ -765,32 +761,23 @@ impl ProfilesScreen {
         };
         s.ground.reset();
         let n = s.users.len();
-        s.refresh_row_sty(n);
+        s.row.set_margin_x(row_geom(n).0);
         s.state = s.snapshot_state(n);
         s
     }
 
-    fn refresh_row_sty(&mut self, n: usize) {
-        let (start_x, _) = row_geom(n);
-        self.row_sty = card_row::RowStyle::PROFILES;
-        self.row_sty.margin_x = start_x;
+    /// The avatar row as the frame's `Focusable` view — the tile formula `draw` places by
+    /// (`AvatarRow::focusable`; the first REAL `Card` group on an owned screen).
+    fn shelf(&self, n: usize) -> geom::Shelf<'_> {
+        let extent = Rect::new(0.0, ROW_Y, SCR_W as f32, AvatarRow::STYLE.h);
+        self.row.focusable(n, ROW_Y, ROSTER_GROUP, self.entry, extent)
     }
 
-    /// The avatar row as the frame's `Focusable` view — the same `card_row::tile_rect`/
-    /// `column_near_x` formula `draw` places tiles by, via `ui/geom.rs`'s shared `Shelf` (the
-    /// first REAL `Card` group on an owned screen; every prior use of `Shelf` was a host test).
-    fn shelf(&self, n: usize) -> geom::Shelf<'_> {
-        let pitch = self.row_sty.w + self.row_sty.gap;
-        geom::Shelf {
-            row: &self.row,
-            n,
-            sty: &self.row_sty,
-            row_y: ROW_Y,
-            size: (self.row_sty.w, self.row_sty.h),
-            pitch,
-            group: ROSTER_GROUP,
-            entry: self.entry,
-            extent: Rect::new(0.0, ROW_Y, SCR_W as f32, self.row_sty.h),
+    fn avatar_art(u: &auth::UserTile) -> Art<'_> {
+        Art::Thumb {
+            sid: plx_plex::plex::current_server().raw(),
+            key: &u.thumb,
+            res: (300, 300),
         }
     }
 
@@ -891,7 +878,7 @@ impl ProfilesScreen {
         self.resync(H::auth(cx));
         self.reconcile_selection(fx);
         let n = self.users.len();
-        self.refresh_row_sty(n);
+        self.row.set_margin_x(row_geom(n).0);
 
         let cur = cx.focus.current.map(|k| k.elem);
         let footer_focused = !self.pad.open && cur == Some(FOOTER);
@@ -932,7 +919,7 @@ impl ProfilesScreen {
         } else {
             None
         };
-        self.row.update(n, roster_focus, &self.row_sty, dt);
+        self.row.update(n, roster_focus, dt);
 
         if self.has_spinner(n) {
             self.spin_ms = self.spin_phase.advance(t, &mut fx.present());
@@ -1219,7 +1206,7 @@ impl ProfilesScreen {
         };
         let name = plx_gfx::text::elide_by(
             &u.title,
-            card_row::RowStyle::PROFILES.w + card_row::RowStyle::PROFILES.gap - 12.0,
+            AvatarRow::STYLE.w + AvatarRow::STYLE.gap - 12.0,
             false,
             |t| measure.width_str(t, theme::size::LABEL, focused),
         );
@@ -1732,34 +1719,22 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
         let roster_focus = (!footer_focused)
             .then(|| cur.filter(|&e| (e as usize) < n).map(|e| e as usize))
             .flatten();
-        let extent = Rect::new(0.0, ROW_Y, SCR_W as f32, self.row_sty.h);
+        let extent = Rect::new(0.0, ROW_Y, SCR_W as f32, AvatarRow::STYLE.h);
 
         let mut focused_i = None;
         for (i, u) in users.iter().enumerate() {
-            let cx_ = start_x + i as f32 * slot + self.row_sty.w * 0.5 - scroll;
+            let cx_ = start_x + i as f32 * slot + AvatarRow::STYLE.w * 0.5 - scroll;
             let base = Rect::new(
-                cx_ - self.row_sty.w * 0.5,
+                cx_ - AvatarRow::STYLE.w * 0.5,
                 ROW_Y,
-                self.row_sty.w,
-                self.row_sty.h,
+                AvatarRow::STYLE.w,
+                AvatarRow::STYLE.h,
             );
-            let sc = self.row.scale(i);
             if roster_focus == Some(i) {
                 focused_i = Some(i);
                 continue; // draw the focused tile last (ring over neighbours)
             }
-            card_row::draw_tile(
-                p,
-                Art::Thumb {
-                    sid: plx_plex::plex::current_server().raw(),
-                    key: &u.thumb,
-                    res: (300, 300),
-                },
-                base.scaled(sc),
-                sc,
-                &self.row_sty,
-                None,
-            );
+            let rect = self.row.draw(p, i, base, Self::avatar_art(u), false, f.measure);
             Self::draw_name(p, u, cx_, false, f.measure);
             f.stop(
                 p,
@@ -1768,7 +1743,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
                         entry: self.entry,
                         elem: i as u32,
                     },
-                    rect: base.scaled(sc),
+                    rect,
                     rest_rect: base,
                     clip: extent,
                     hover: Hover::Focus,
@@ -1778,30 +1753,16 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
         }
         if let Some(i) = focused_i {
             let u = &users[i];
-            let cx_ = start_x + i as f32 * slot + self.row_sty.w * 0.5 - scroll;
+            let cx_ = start_x + i as f32 * slot + AvatarRow::STYLE.w * 0.5 - scroll;
             let base = Rect::new(
-                cx_ - self.row_sty.w * 0.5,
+                cx_ - AvatarRow::STYLE.w * 0.5,
                 ROW_Y,
-                self.row_sty.w,
-                self.row_sty.h,
+                AvatarRow::STYLE.w,
+                AvatarRow::STYLE.h,
             );
-            // fold the ui::press click dip into the focused avatar's pop (1.0 when idle)
-            let sc = self.row.scale(i) * plx_ui::press::scale();
             Self::draw_name(p, u, cx_, true, f.measure);
-            card_row::draw_focused(
-                p,
-                Art::Thumb {
-                    sid: plx_plex::plex::current_server().raw(),
-                    key: &u.thumb,
-                    res: (300, 300),
-                },
-                base.scaled(sc),
-                sc,
-                &self.row_sty,
-                None,
-                &card_row::TileLabel::default(),
-                f.measure,
-            );
+            // the click dip folds into the focused avatar's pop (1.0 when idle)
+            let rect = self.row.draw(p, i, base, Self::avatar_art(u), true, f.measure);
             f.stop(
                 p,
                 Stop {
@@ -1809,7 +1770,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
                         entry: self.entry,
                         elem: i as u32,
                     },
-                    rect: base.scaled(sc),
+                    rect,
                     rest_rect: base,
                     clip: extent,
                     hover: Hover::Focus,
@@ -1865,7 +1826,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
                 // roster not here yet (persisted seed empty, refresh in flight) — a spinner, not a
                 // blank page. It always ends: a failed refresh is the read-out above.
                 plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::PageSpinner, "profiles-roster");
-                Spinner::new(SCR_W as f32 * 0.5, ROW_Y + self.row_sty.h * 0.5, 26.0)
+                Spinner::new(SCR_W as f32 * 0.5, ROW_Y + AvatarRow::STYLE.h * 0.5, 26.0)
                     .phase(self.spin_ms as u32)
                     .tint(theme::TEXT_PRIMARY)
                     .draw(&Env::inert(), p);

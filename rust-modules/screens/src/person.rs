@@ -20,7 +20,7 @@ use plx_data::person::{Person, NSHELF};
 use plx_plex::plex::ServerId;
 use plx_data::pms::PmsMovie;
 use plx_data::stores::person::PersonCmd;
-use plx_ui::card_row::{RowStyle, TileLabel};
+use plx_ui::cards::{RowStyle, TileLabel};
 use plx_ui::cards::{CardEvent, CardSource, Kind, SectionSpec, Stack, StackEvent, StackPage};
 use plx_ui::consts::*;
 use plx_ui::label::{Label, VAlign};
@@ -1193,17 +1193,6 @@ impl PersonScreen {
     pub fn bio_available(&self, view: plx_data::person::PersonView<'_>) -> bool {
         self.page.bio_available(view)
     }
-
-    pub fn focused_rect<H: ContentLike + PersonLike>(
-        &self,
-        focus: Option<plx_machine::machine::FocusKey<u32>>,
-        cx: &Cx<'_, H>,
-        at: At,
-    ) -> Option<Rect> {
-        let key = focus.filter(|k| k.entry == self.page.entry)?;
-        self.focused_item(Some(key), cx)?;
-        Focusable::<H>::place(self, &key.elem, cx, at).map(|p| p.rect)
-    }
 }
 
 impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
@@ -1348,7 +1337,8 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
 impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
     fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<FocusedCard<'a>> {
         let item = self.focused_item(focus, cx)?;
-        Some(FocusedCard { item, rect: at.and_then(|at| self.focused_rect(focus, cx, at)) })
+        let placed = focus.zip(at).and_then(|(key, at)| Focusable::<H>::place(self, &key.elem, cx, at));
+        Some(FocusedCard::new(item, placed))
     }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         self.stack.view(&self.page).redraw_focused(f, focus);
@@ -1427,7 +1417,7 @@ impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
 mod tests {
     use super::*;
     use plx_ui::fixture::FixtureMeasure;
-    use plx_ui::card_row;
+    use plx_ui::cards as ui_cards;
     use plx_ui::cards::StackMemory;
     use plx_ui::screen::Step;
     use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
@@ -3088,7 +3078,7 @@ mod tests {
             .unwrap();
         let tile_top = placed.rest_rect.cy() - CARD_H / 2.0;
         let block_top = tile_top - SHELF_LABEL_H;
-        let block_bottom = tile_top + CARD_H + card_row::under_band(1.0);
+        let block_bottom = tile_top + CARD_H + ui_cards::under_band(1.0);
         assert!(block_bottom <= SCR_H, "the block's bottom edge is on screen: {block_bottom}");
         assert!(block_top >= HEADER_TOP - 0.5, "and its top keeps the page margin: {block_top}");
         // and no further: the last shelf rests exactly one page margin above the bottom edge
@@ -3099,7 +3089,7 @@ mod tests {
     #[test]
     fn a_shelf_here_pitches_like_a_shelf_on_home() {
         assert_eq!(
-            SHELF_GAP + SHELF_LABEL_H + CARD_H + card_row::under_band(1.0),
+            SHELF_GAP + SHELF_LABEL_H + CARD_H + ui_cards::under_band(1.0),
             plx_ui::consts::ROW_PITCH
         );
         assert_eq!(SHELF_LABEL_H, TITLE_DY + CARD_DY);

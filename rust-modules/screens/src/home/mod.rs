@@ -17,7 +17,7 @@ use std::sync::Arc;
 use plx_data::pms::{HeroRef, HubIdentity, HubRef, HubsView, PmsMovie};
 use plx_data::stores::hubs::HubsCmd;
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
-use plx_ui::card_row::{self, RowStyle};
+use plx_ui::cards::{self as ui_cards, RowStyle};
 use plx_ui::cards::{CardSource, SectionFrame, Shelf};
 use plx_ui::consts::*;
 use plx_ui::frame::Budget;
@@ -988,7 +988,7 @@ impl HomeScreen {
         let mut flow = 0.0;
         for shelf in &mut self.grid.shelves {
             shelf.set_base_y(top + flow - self.grid.scroll_y.pos * self.snap.pos);
-            flow += card_row::ROW_PITCH_FIXED + shelf.under_band();
+            flow += ui_cards::ROW_PITCH_FIXED + shelf.under_band();
         }
     }
 
@@ -1012,7 +1012,7 @@ impl HomeScreen {
             .or_else(|| self.focused_heading(cx.focus.current).map(|row| (row, None)));
         if let Some((row, band_row)) = revealed.filter(|(r, _)| *r < self.rows.len()) {
             let (lo, hi) = row_reveal_band(shelf_top_banded(row, band_row));
-            self.grid.scroll_target = card_row::reveal(
+            self.grid.scroll_target = ui_cards::reveal(
                 self.grid.scroll_y.pos,
                 lo,
                 hi,
@@ -1638,7 +1638,7 @@ impl HomeScreen {
                     f.measure,
                 );
             } else if env.sp > 0.02 {
-                card_row::draw_heading(
+                ui_cards::draw_heading(
                     p.alpha(env.sp),
                     hub.title,
                     hub.source,
@@ -1995,7 +1995,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     MARGIN_X,
                     top + CARD_DY,
                     SCR_W - 2.0 * MARGIN_X,
-                    CARD_H + card_row::UNDER_LABEL_H,
+                    CARD_H + ui_cards::UNDER_LABEL_H,
                 ),
                 len: projection.elems.len(),
                 elem: ElemKind::Card,
@@ -2194,7 +2194,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                 elem: HERO_PLAY_ELEM,
             };
         };
-        let col = card_row::column_near_x(
+        let col = ui_cards::column_near_x(
             from.rect.cx(),
             MARGIN_X,
             CARD_W + GAP,
@@ -2355,12 +2355,12 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                             (self.grid.shelves.get_mut(row), self.rows.get(row))
                         {
                             let count = hub.elems.len();
-                            let scroll = card_row::scroll_into_view(shelf.scroll(), col, count,
+                            let scroll = ui_cards::scroll_into_view(shelf.scroll(), col, count,
                                 CARD_W, GAP, SCR_W - 2.0 * MARGIN_X);
                             shelf.restore_scroll(scroll, count);
                         }
                         let (lo, hi) = row_reveal_band(shelf_top_settled(row, row));
-                        self.grid.scroll_target = card_row::reveal(self.grid.scroll_y.pos,
+                        self.grid.scroll_target = ui_cards::reveal(self.grid.scroll_y.pos,
                             lo, hi, grid_max_scroll(self.rows.len()));
                         self.grid.scroll_y.jump(self.grid.scroll_target);
                     }
@@ -2450,6 +2450,17 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
 }
 
 impl<H: HomeLike> Screen<H> for HomeScreen {
+    /// A grid card only: the hero and a heading are not a card, so an opener has no rect for them.
+    fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<plx_ui::screen::FocusedCard<'a>> {
+        let key = focus.filter(|k| k.entry == self.entry)?;
+        self.focused_grid(Some(key))?;
+        let item = self.focused_item(Some(key), cx)?;
+        let placed = at.and_then(|at| Focusable::<H>::place(self, &key.elem, cx, at));
+        Some(plx_ui::screen::FocusedCard::new(item, placed))
+    }
+    fn focused_card_rect(&self, cx: &Cx<'_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: At) -> Option<Rect> {
+        HomeScreen::focused_rect::<H>(self, focus, cx, at)
+    }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         HomeScreen::redraw_focused::<H>(self, f, focus)
     }
@@ -2675,7 +2686,7 @@ fn row_reveal_band(top: f32) -> (f32, f32) {
 }
 fn grid_max_scroll(rows: usize) -> f32 {
     let n = rows.max(1);
-    let h = card_row::settled_top(n, Some(n - 1), card_row::ROW_PITCH_FIXED);
+    let h = ui_cards::settled_top(n, Some(n - 1), ui_cards::ROW_PITCH_FIXED);
     (h - (SCR_H - CONTENT_Y) + 60.0).max(0.0)
 }
 fn shelf_top_settled(row: usize, focus_row: usize) -> f32 {
@@ -2684,7 +2695,7 @@ fn shelf_top_settled(row: usize, focus_row: usize) -> f32 {
 /// [`shelf_top_settled`] with the open label band named explicitly: `None` while a linked heading
 /// holds focus, which opens no row's band.
 fn shelf_top_banded(row: usize, band_row: Option<usize>) -> f32 {
-    card_row::settled_top(row, band_row, card_row::ROW_PITCH_FIXED)
+    ui_cards::settled_top(row, band_row, ui_cards::ROW_PITCH_FIXED)
 }
 
 fn wash_corners(hero: Option<&PmsMovie>, grid: [[f32; 4]; 4], snap: f32) -> [[f32; 4]; 4] {
@@ -2911,11 +2922,11 @@ pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_test
 /// A focused tile's title line. The deck's carries the amber ▶ only while OK on a Continue
 /// Watching card plays (`DeckPress::Play`): the triangle promises the press, so when OK opens the
 /// page there is none (`widgets::still_line`'s rule).
-fn deck_label(is_deck: bool, title: &str) -> card_row::TileLabel {
+fn deck_label(is_deck: bool, title: &str) -> ui_cards::TileLabel {
     if is_deck && plx_media::route::deck_press().press_plays() {
-        card_row::TileLabel::played(title)
+        ui_cards::TileLabel::played(title)
     } else {
-        card_row::TileLabel::title(title)
+        ui_cards::TileLabel::title(title)
     }
 }
 
@@ -2962,11 +2973,11 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
         Art::Poster(self.item(i).map(tile_facts::of))
     }
 
-    fn label(&self, i: usize) -> card_row::TileLabel {
-        let Some(item) = self.item(i) else { return card_row::TileLabel::default() };
+    fn label(&self, i: usize) -> ui_cards::TileLabel {
+        let Some(item) = self.item(i) else { return ui_cards::TileLabel::default() };
         let continue_watching = self.home.rows[self.row].identity == HomeHubIdentity::ContinueWatching;
         let mut label = deck_label(continue_watching, &item.title);
-        label.caption = card_row::focused_caption(&tile_facts::of(item), continue_watching);
+        label.caption = ui_cards::focused_caption(&tile_facts::of(item), continue_watching);
         label
     }
 

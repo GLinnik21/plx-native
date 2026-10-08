@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::registry::{tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
-use plx_ui::card_row;
+use plx_ui::cards as ui_cards;
 use plx_ui::cards::{CardSource, Grid, GridSpec, Tile};
 use plx_ui::consts::{MARGIN_X, SCR_H};
 use plx_ui::frame::Budget;
@@ -35,18 +35,18 @@ pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
 }
 
 /// One label construction for the normal and modal-lifted focused grid card.
-pub(super) fn grid_label(item: &plx_data::pms::PmsMovie) -> card_row::TileLabel {
+pub(super) fn grid_label(item: &plx_data::pms::PmsMovie) -> ui_cards::TileLabel {
     if item.kind == 3 {
         let name = if item.title.is_empty() || item.title == item.show_title {
             plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64)
         } else { item.title.clone() };
         // The shared still overlay already names the show and episode address on the artwork.
         // Focus reveals the episode title and release date, as it does on an episode shelf.
-        return if item.aired.is_empty() && item.year <= 0 { card_row::TileLabel::title(&name) }
-        else { card_row::TileLabel::titled(&name,
+        return if item.aired.is_empty() && item.year <= 0 { ui_cards::TileLabel::title(&name) }
+        else { ui_cards::TileLabel::titled(&name,
             &plx_ui::fmt::pretty_date(&item.aired, item.year as i64)) };
     }
-    card_row::poster_label(&tile_facts::of(item))
+    ui_cards::poster_label(&tile_facts::of(item))
 }
 
 #[derive(Default)]
@@ -411,7 +411,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     fn art(&self, i: usize) -> Art<'_> {
         self.view.item(i).map_or(Art::Poster(None), grid_art)
     }
-    fn label(&self, i: usize) -> card_row::TileLabel {
+    fn label(&self, i: usize) -> ui_cards::TileLabel {
         self.view.item(i).map(grid_label).unwrap_or_default()
     }
     fn progress(&self, i: usize) -> Option<f32> {

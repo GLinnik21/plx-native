@@ -563,7 +563,7 @@ mod tests {
         for i in 0..20 {
             assert_eq!(
                 strip_x(i),
-                plx_ui::card_row::tile_rect(
+                plx_ui::cards::tile_rect(
                     i,
                     plx_ui::consts::MARGIN_X,
                     W + GAP,

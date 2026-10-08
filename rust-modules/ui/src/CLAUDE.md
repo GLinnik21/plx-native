@@ -65,9 +65,12 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 ## Card shelves and grids: `cards::Shelf` / `cards::Grid`
 
 A new screen that shows a strip or grid of media tiles uses `plx_ui::cards::{Shelf, Grid}` and
-implements `CardSource` for its content; it does not assemble `card_row::strip`, `CardRow`,
-`GridPop` or `GridBands` itself (the `cards` gate in `ci/check-deps.sh` refuses new uses in
-`screens/`; `ci/allow/cards.txt` lists the screens that have not migrated yet and only shrinks).
+implements `CardSource` for its content; it does not assemble `CardRow`, `GridPop` or `GridBands`
+itself. `card_row` and `poster_grid` are `pub(crate)`: what a screen's own layout reads from them
+(`RowStyle`, `TileLabel`, `under_band`, `reveal`, the heading painters, `GRID_STYLE`...) is
+re-exported from `plx_ui::cards`, and the profile picker's circular avatar row is
+`cards::AvatarRow`. The `cards` gate in `ci/check-deps.sh` is the backstop (`ci/allow/cards.txt` is
+empty).
 The component reads focus from the engine, adopts a focus no deliberate move announced at full pop,
 takes the press from the frame, registers the stops it draws and reports one `CardEvent`
 (Activate / Hold / Want) from `on(ev, cx, src, fx)`, which the screen calls with EVERY event. (Home is the exception: it feeds Tick and FocusMoved only and keeps its own press paths, because a Continue Watching press is account-affecting.) The
@@ -78,10 +81,9 @@ reaching around the component: a `SectionFrame`'s `y` (and a `Grid`'s `top`) is 
 one; a content landing that moves the focused element's index is the component's to absorb (the
 pop and the scroll follow the element, `Shelf::landed` / `Grid::landed` report it) so the screen
 does not re-seat anything; and read a shelf through `heading_lift()` / `under_band()`, not through
-the L0 `CardRow` (the `cards` gate also refuses `card_row::*`, `card_row as x` and the hand-rolled
-`poster_grid::{cell, visible, snap_row}`).
+the L0 `CardRow`.
 
-`GridSpec::new(top, edge)` is the six-column `poster_grid::STYLE` grid from `MARGIN_X` that
+`GridSpec::new(top, edge)` is the six-column `cards::GRID_STYLE` grid from `MARGIN_X` that
 springs its own scroll (Collection); `.columns(cols, style, left)` sets the column count, card
 style and left edge (a rail-aware or episode grid), and `.external()` selects `ScrollMode::External`
 for a grid inside a document whose page scroll another owner drives (the Library's All grid, the

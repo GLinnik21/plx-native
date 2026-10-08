@@ -467,9 +467,9 @@ pub fn still_line(
 ///
 /// The order is `detail.rs`'s and is load-bearing: the bar belongs to the card's own bottom EDGE
 /// rather than to the scrim above it, so it goes LAST or the 78%-black gradient darkens it. That is
-/// also why a caller passes `None` for `card_row::strip`'s own `resume` closure and lets this draw
-/// the bar — `strip` runs the `extra` hook after the tile is complete, so a shelf that let
-/// `card_row` draw the bar and then painted the scrim from the hook had them the wrong way round.
+/// also why a caller passes `None` for `card_row::draw_tile`'s own `resume` and lets this draw the
+/// bar — a shelf that let `card_row` draw the bar and then painted the scrim afterwards had them
+/// the wrong way round.
 ///
 /// **It exists because the composition had already drifted twice, and both times in the same
 /// place**: a screen draws its shelf through one path and re-draws the FOCUSED tile through another

@@ -149,7 +149,7 @@ impl Metrics {
         let lo = r.x + r.w + widgets::STRIP_ADVANCE
             - (plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X);
         let hi = r.x - widgets::STRIP_ADVANCE - plx_ui::consts::MARGIN_X;
-        plx_ui::card_row::reveal(current, lo, hi, f32::MAX)
+        plx_ui::cards::reveal(current, lo, hi, f32::MAX)
     }
 }
 

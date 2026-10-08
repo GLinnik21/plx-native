@@ -680,6 +680,11 @@ impl<H: SearchLike> Focusable<H> for SearchScreen {
 }
 
 impl<H: SearchLike> Screen<H> for SearchScreen {
+    fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<plx_ui::screen::FocusedCard<'a>> {
+        let item = self.selected_item(focus, cx)?;
+        let placed = focus.zip(at).and_then(|(key, at)| Focusable::<H>::place(self, &key.elem, cx, at));
+        Some(plx_ui::screen::FocusedCard::new(item, placed))
+    }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         SearchScreen::redraw_focused::<H>(self, f, focus)
     }

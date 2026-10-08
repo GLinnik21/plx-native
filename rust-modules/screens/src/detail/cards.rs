@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use plx_data::metadata::Detail;
 use plx_data::pms::PmsMovie;
 use plx_machine::machine::{Host, Measure};
-use plx_ui::card_row::{self, RowStyle, TileLabel};
+use plx_ui::cards::{self as ui_cards, RowStyle, TileLabel};
 use plx_ui::cards::{CardSource, Tile};
 use plx_ui::widgets::Art;
 use plx_ui::Painter;
@@ -152,7 +152,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
         }
         // The name sits on the slot's own centre, dropped by the focus pop alone: the tile's scale
         // less the press dip it was drawn with.
-        let slot = card_row::tile_rect(i, plx_ui::consts::MARGIN_X, cast::SLOT, 0.0, 0.0,
+        let slot = ui_cards::tile_rect(i, plx_ui::consts::MARGIN_X, cast::SLOT, 0.0, 0.0,
             (RowStyle::CAST.w, RowStyle::CAST.h));
         let pop = if tile.focused { tile.scale / self.press } else { tile.scale };
         cast::draw_label(p, self.d, i, slot.x + RowStyle::CAST.w * 0.5, self.row_y - p.dy(), tile.focused, pop, measure);

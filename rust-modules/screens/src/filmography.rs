@@ -13,7 +13,7 @@ use std::os::raw::c_int;
 
 use plx_data::person::{Credit, Department};
 use plx_plex::plex::ServerId;
-use plx_ui::card_row;
+use plx_ui::cards as ui_cards;
 use plx_ui::consts::*;
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
@@ -577,7 +577,7 @@ impl FilmographyScreen {
         let x = rect.x + self.tab_hscroll.pos;
         let lo = x + rect.w + TAB_GAP - (content.x + content.w);
         let hi = x - TAB_FADE_W - content.x;
-        card_row::reveal(self.tab_hscroll.pos, lo, hi, f32::MAX)
+        ui_cards::reveal(self.tab_hscroll.pos, lo, hi, f32::MAX)
     }
 
     fn step_preview<H: plx_machine::machine::Host>(

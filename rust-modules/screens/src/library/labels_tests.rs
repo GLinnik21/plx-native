@@ -1,7 +1,7 @@
 //! Meaningful legacy caption and landscape assertions, on the owned production helpers.
 use plx_data::pms::PmsMovie;
 use plx_media::route::DeckPress;
-use plx_ui::card_row::{self, RowStyle};
+use plx_ui::cards::{self as ui_cards, RowStyle};
 use plx_ui::consts::{self, CARD_H, CARD_W, MARGIN_X};
 use plx_ui::fixture::FixtureMeasure;
 use plx_machine::machine::{EntryId, InstanceId};
@@ -58,15 +58,15 @@ fn a_focused_grid_caption_stays_inside_the_rail_reserved_band() {
     };
 
     let style = Layout::new(false, &[], 40, true).style();
-    let (x, w) = card_row::label_band(p, card(COLS - 1), &style);
+    let (x, w) = ui_cards::label_band(p, card(COLS - 1), &style);
     assert!(
         x + w <= GRID_RIGHT + 0.01,
         "the last column's label reaches {} against the content edge {GRID_RIGHT}",
         x + w,
     );
 
-    let (x0, w0) = card_row::label_band(p, card(0), &style);
-    let (home_x0, _) = card_row::label_band(p, card(0), &RowStyle::HOME);
+    let (x0, w0) = ui_cards::label_band(p, card(0), &style);
+    let (home_x0, _) = ui_cards::label_band(p, card(0), &RowStyle::HOME);
     assert_eq!(
         x0, home_x0,
         "the right-edge rail reserve must not move the first-column label: {x0} vs {home_x0}",
@@ -85,7 +85,7 @@ fn episode_grid_art_and_focus_labels_use_the_landscape_card_contract() {
     let layout = Layout::new(false, &[], 40, true).with_episodes(true);
     let rect = Rect::new(layout.cell_x(layout.cols() - 1), layout.row_y(0, 0.0),
         layout.card_w(), layout.card_h());
-    let (x, width) = card_row::label_band(Painter::root(), rect, &layout.style());
+    let (x, width) = ui_cards::label_band(Painter::root(), rect, &layout.style());
     assert!(x + width <= GRID_RIGHT + 0.01, "episode focus label must keep the rail clear");
     let season = PmsMovie { kind: 2, ..item };
     assert!(matches!(super::parts::grid_art(&season), plx_ui::widgets::Art::Poster(Some(_))));
@@ -246,10 +246,10 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
     #[test]
     fn home_and_library_leave_the_same_air_under_a_focused_label() {
         use plx_ui::consts::{CARD_DY, ROW_PITCH, TITLE_DY, UNDER_LABEL_AIR};
-        let home_air = ROW_PITCH - TITLE_DY - CARD_DY - CARD_H - card_row::UNDER_LABEL_H;
+        let home_air = ROW_PITCH - TITLE_DY - CARD_DY - CARD_H - ui_cards::UNDER_LABEL_H;
         let focused = Layout::new(false, &[], 2, true).with_grid_focus(Some(0));
         let library_air = focused.row_y(1, 0.0) - focused.row_y(0, 0.0)
-            - CARD_H - card_row::UNDER_LABEL_H;
+            - CARD_H - ui_cards::UNDER_LABEL_H;
         assert_eq!(home_air, UNDER_LABEL_AIR);
         assert_eq!(library_air, UNDER_LABEL_AIR);
         assert_eq!(
@@ -280,13 +280,13 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         };
 
         // `TileLabel` holds `CString`s for the draw; these read them back as text
-        let title = |l: &card_row::TileLabel| {
+        let title = |l: &ui_cards::TileLabel| {
             l.title
                 .as_ref()
                 .map(|c| c.to_string_lossy().into_owned())
                 .unwrap_or_default()
         };
-        let caption = |l: &card_row::TileLabel| {
+        let caption = |l: &ui_cards::TileLabel| {
             l.caption
                 .as_ref()
                 .map(|c| c.to_string_lossy().into_owned())

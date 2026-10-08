@@ -13,7 +13,7 @@ use plx_data::collection::{Collection, CollectionOrder, CollectionStatus, Collec
 use plx_plex::plex::collections::CollectionRef;
 use plx_data::pms::PmsMovie;
 use plx_data::stores::collection::CollectionCmd;
-use plx_ui::card_row::{self, TileLabel};
+use plx_ui::cards::{self as ui_cards, TileLabel};
 use plx_ui::cards::{CardEvent, CardSource, GridSpec, Kind, SectionSpec, Stack, StackEvent, StackPage, Tile};
 use plx_ui::consts::*;
 use plx_ui::label::{Label, VAlign};
@@ -150,7 +150,7 @@ pub fn member_caption(item: &PmsMovie) -> TileLabel {
         };
         return TileLabel::titled(&item.title, &caption);
     }
-    card_row::poster_label(&tile_facts::of(item))
+    ui_cards::poster_label(&tile_facts::of(item))
 }
 
 /// The grid's content (`CardSource`): the store's members read through the screen's derived index.
@@ -207,7 +207,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for Members<'_> {
         let persistent = self.label_at(i);
         if persistent.is_empty() { return; }
         widgets::poster_label(p, tile.rect, tile.radius, &persistent, measure);
-        if let Some(frac) = self.collection.items.get(i).and_then(PmsMovie::resume_frac) { card_row::resume_bar(p, tile.rect, frac, tile.radius); }
+        if let Some(frac) = self.collection.items.get(i).and_then(PmsMovie::resume_frac) { ui_cards::resume_bar(p, tile.rect, frac, tile.radius); }
     }
     fn more(&self) -> bool { self.collection.more }
 }
@@ -357,7 +357,7 @@ impl Page {
                 fan_name, theme::CARD_RING_RAD, false, 1.0, 0.0);
         }
         if collection.status == CollectionStatus::Ready {
-            card_row::draw_heading(p, plx_platform::i18n::msg::browse_collection_items(), order_note(collection),
+            ui_cards::draw_heading(p, plx_platform::i18n::msg::browse_collection_items(), order_note(collection),
                 MARGIN_X, ITEMS_HEADING_Y + dy, SCR_W - 2.0 * MARGIN_X, measure);
         }
         let title = measure.fit_line(name, TEXT_W, theme::size::DISPLAY, true);
@@ -637,12 +637,6 @@ impl CollectionScreen {
             .and_then(|key| self.item_index(collection, key.elem))?;
         collection.items.get(index)
     }
-
-    pub fn focused_rect<H: ContentLike + CollectionLike>(&self,
-        focus: Option<plx_machine::machine::FocusKey<u32>>, cx: &Cx<'_, H>, at: At) -> Option<Rect> {
-        let key = focus.filter(|key| key.entry == self.entry())?;
-        Focusable::<H>::place(self, &key.elem, cx, at).map(|placed| placed.rect)
-    }
 }
 
 impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
@@ -740,7 +734,8 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
 impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
     fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<plx_ui::screen::FocusedCard<'a>> {
         let item = self.focused_item(focus, cx)?;
-        Some(plx_ui::screen::FocusedCard { item, rect: at.and_then(|at| self.focused_rect(focus, cx, at)) })
+        let placed = focus.zip(at).and_then(|(key, at)| Focusable::<H>::place(self, &key.elem, cx, at));
+        Some(plx_ui::screen::FocusedCard::new(item, placed))
     }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         self.stack.view(&self.page).redraw_focused(f, focus);
@@ -925,7 +920,7 @@ mod tests {
         let (store, mut screen) = seeded();
         let c = store.view().current().unwrap();
         let (a, b) = (screen.key_at(c, 0), screen.key_at(c, 1));
-        let full = plx_ui::poster_grid::STYLE.focus_scale;
+        let full = plx_ui::cards::GRID_STYLE.focus_scale;
         // A landing adopts its first focus at full scale.
         tick_at(&mut screen, &store, Some(a), 16);
         assert_eq!(screen.scale_of(&store, Some(a), a), full, "a seated focus is adopted whole");
@@ -950,7 +945,7 @@ mod tests {
         let (store, mut screen) = seeded();
         let c = store.view().current().unwrap();
         let (a, b) = (screen.key_at(c, 0), screen.key_at(c, 1));
-        let full = plx_ui::poster_grid::STYLE.focus_scale;
+        let full = plx_ui::cards::GRID_STYLE.focus_scale;
         let menu = plx_machine::machine::FocusKey { entry: EntryId(77), elem: 0 };
         tick_at(&mut screen, &store, Some(a), 0);
         step(&mut screen, ScreenEvent::FocusMoved { from: Some(a), to: b, by: By::Pointer }, &cx(store.view(), Some(b)));
@@ -976,7 +971,7 @@ mod tests {
         let (store, mut screen) = seeded();
         let c = store.view().current().unwrap();
         let (a, b) = (screen.key_at(c, 0), screen.key_at(c, 1));
-        let full = plx_ui::poster_grid::STYLE.focus_scale;
+        let full = plx_ui::cards::GRID_STYLE.focus_scale;
         tick_at(&mut screen, &store, Some(a), 0);
         for n in 0..60 { tick_at(&mut screen, &store, Some(a), 16 + n * 16); }
         step(&mut screen, ScreenEvent::Cover, &cx(store.view(), Some(a)));
@@ -1070,7 +1065,7 @@ mod tests {
         let (mut store, mut screen) = seeded();
         store.edit_for_test(|c| c.items = (0..30).map(|i| item(&format!("m{i}"))).collect());
         screen.page.sync(store.view().current().unwrap(), &FixtureMeasure);
-        let cols = plx_ui::poster_grid::COLS;
+        let cols = plx_ui::cards::GRID_COLS;
         let key = screen.key_at(store.view().current().unwrap(), 2 * cols);
         step(&mut screen, ScreenEvent::FocusMoved { from: None, to: key, by: By::Restore }, &cx(store.view(), Some(key)));
         for n in 0..240 { tick_at(&mut screen, &store, Some(key), 16 + n * 16); }
