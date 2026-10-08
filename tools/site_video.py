@@ -3,7 +3,7 @@
 and adopt them into `site/media/`.
 
     python3 tools/site_video.py ffmpeg-fetch                   # the pinned static GPL ffmpeg; prints its path
-    python3 tools/site_video.py render --out DIR [--frames 180]    # needs `make site-video-sim`
+    python3 tools/site_video.py render --out DIR [--storyboard | --frames 180]    # needs `make site-video-sim`
     python3 tools/site_video.py encode MASTER.mkv frames.tsv --out DIR [--render render.json]
     python3 tools/site_video.py gates DIR --master MASTER.mkv --frames-b second-run/frames.tsv
     python3 tools/site_video.py scan-sentinel --size 1920x1080 [--tee] [FILE|-]   # RGB24 stream scanner
@@ -310,7 +310,7 @@ def poster_filter(width, height):
             f"format=yuvj420p")
 
 
-AV1_CODEC = ["-c:v", "libsvtav1", "-preset", "4", "-crf", "30", "-g", "120",
+AV1_CODEC = ["-c:v", "libsvtav1", "-preset", "4", "-crf", "28", "-g", "120",
              "-svtav1-params", "tune=0:film-grain=0", "-pix_fmt", "yuv420p"]
 H264_CODEC = ["-c:v", "libx264", "-preset", "veryslow", "-crf", "18", "-tune", "animation",
               "-profile:v", "high", "-pix_fmt", "yuv420p", "-x264-params", "aq-mode=3:deblock=-1,-1"]
@@ -527,18 +527,15 @@ def compare_hold_injection(rows_base, rows_injected):
 
 
 def gate_hero_pool(record):
+    """The hero the app logged (`home: hero pinned at slot 0`) is the one pinned film, and there was one."""
     logged = _dig(record, "hero_pool.logged")[0] or []
     eligible = set(_dig(record, "hero_pool.eligible")[0] or [])
-    if not logged and _dig(record, "storyboard.script")[0] == "hold":
-        # The still-Home hold (`run_render`'s record) has no storyboard interpreter (S5c), which is what
-        # logs heroes; the gate stays fail-closed for every other script.
-        return Result("hero-pool", SKIP, "the `hold` script logs no hero (no storyboard interpreter yet): pool NOT proven")
     if not logged:
         return Result("hero-pool", FAIL, "no hero was logged: nothing proves the pool")
     extra = sorted(set(logged) - eligible)
     if extra:
         return Result("hero-pool", FAIL, f"hero ratingKeys not in the eligible set: {', '.join(extra)}")
-    return Result("hero-pool", PASS, f"{len(set(logged))} logged heroes, all eligible")
+    return Result("hero-pool", PASS, f"{len(set(logged))} logged hero(es), all the pinned one")
 
 
 def gate_sizes(out_dir, site_media, ratio=None):
@@ -620,11 +617,20 @@ def gate_format(info, name, expect, frames):
     return Result(f"format/{name}", FAIL if problems else PASS, "; ".join(problems) or "format as the site expects")
 
 
+# Frames are paired by INDEX, not by timestamp. The master is Matroska (millisecond timestamps, so frame
+# n sits at round(n*1000/60) ms) and an encode is MP4 (exact 1/60 s): two inputs of the same frames whose
+# timestamps differ by up to half a millisecond still make the pairing filters (`ssim`, `libvmaf`) pair
+# one frame twice and skip another once the rounding crosses a boundary (frame 799 of a 24 s film), which
+# reads as a 0.6 SSIM frame and an extra compared frame. The frame COUNT is still compared.
+BY_INDEX = f"setpts=N/{FPS}/TB,"
+
+
 def ssim_against_master(ffmpeg, dist, master, ref_chain, dist_format, run=subprocess.run, frames=None):
     """Per-frame SSIM of `dist` against the master put through `ref_chain` (the encoder's own input)."""
     with tempfile.TemporaryDirectory() as tmp:
         cut = f"trim=end_frame={frames}," if frames else ""  # a poster is ONE frame: frame 0
-        lavfi = f"[0:v]{cut}format={dist_format}[d];[1:v]{cut}{ref_chain}[r];[d][r]ssim=stats_file=ssim.log"
+        lavfi = (f"[0:v]{BY_INDEX}{cut}format={dist_format}[d];[1:v]{BY_INDEX}{cut}{ref_chain}[r];"
+                 f"[d][r]ssim=stats_file=ssim.log")
         argv = [str(ffmpeg), "-hide_banner", "-nostdin", "-i", str(dist), "-i", str(master), "-lavfi", lavfi,
                 "-f", "null", "-"]
         done = run(argv, cwd=tmp, capture_output=True, text=True, timeout=7200)
@@ -657,7 +663,7 @@ def have_filter(ffmpeg, name, run=subprocess.run):
 
 def vmaf_against_master(ffmpeg, dist, master, ref_chain, run=subprocess.run):
     with tempfile.TemporaryDirectory() as tmp:
-        lavfi = (f"[0:v]format=yuv420p[d];[1:v]{ref_chain}[r];"
+        lavfi = (f"[0:v]{BY_INDEX}format=yuv420p[d];[1:v]{BY_INDEX}{ref_chain}[r];"
                  f"[d][r]libvmaf=log_fmt=json:log_path=vmaf.json:n_threads={os.cpu_count() or 2}")
         done = run([str(ffmpeg), "-hide_banner", "-nostdin", "-i", str(dist), "-i", str(master), "-lavfi", lavfi,
                     "-f", "null", "-"], cwd=tmp, capture_output=True, text=True, timeout=7200)
@@ -791,6 +797,7 @@ def run_gates(out_dir, master, frames_b=None, ffmpeg=None, site_media=SITE_MEDIA
     results.append(gate_sentinel_master(ffmpeg, master, MASTER_SIZE, run))
     results.append(gate_run_twice(tsv_path, frames_b))
     results.append(gate_hero_pool(record))
+    results += gate_storyboard_record(record)
     results += gate_sizes(out_dir, site_media)
     vmaf = have_filter(ffmpeg, "libvmaf", run)
     for v in VIDEOS:
@@ -1236,7 +1243,74 @@ def sim_env(runtime, out_dir, fifo, frames, preroll, allow_absent, max_hold_ms, 
     return env
 
 
-def build_render_record(storyboard, dump, scanned, hits, frames_rows, platform_label):
+SIGN_IN_DONE = "hubs: landed"  # the log line after which the sign-in's session is on disk
+
+
+def sign_in_demo_profile(sim_bin, runtime, port, say=print, timeout=90, base=None):
+    """Sign the simulator in to the mock's Demo account BEFORE the film boots, through the app's own QR
+    sign-in (the mock links its demo code on the second poll). The film boots on `plxnative-token`,
+    which beats the stored session for traffic but not for the profile chip: `Session::account` reads
+    the STORED session, so a mock session with none made the chip read "Sign in" whenever focus passed
+    it (and `up` from the hero always does). The sign-in leaves `state/session.json` in the instance
+    root: the stored Demo account, and the chip reads "Demo". Harness side only: no app change.
+    The prep boot's own event log is removed so the film's log starts clean."""
+    runtime = pathlib.Path(runtime)
+    (runtime / "plxnative-login").write_text("")
+    env = sim_env(runtime, runtime / "prep-dump", runtime / "prep.rgb", 0, 0, False, 1000, base=base)
+    for k in [k for k in env if k.startswith("PLXNATIVE_DUMP")]:
+        del env[k]
+    log = open(runtime / "prep.out", "w")
+    sim = subprocess.Popen([str(sim_bin), "127.0.0.1", str(port)], stdout=log, stderr=subprocess.STDOUT, env=env)
+    events = runtime / "plxnative-events.log"
+    try:
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            if sim.poll() is not None:
+                raise Failure(f"the sign-in boot exited {sim.returncode} before it signed in")
+            if events.exists() and SIGN_IN_DONE in events.read_text(errors="replace"):
+                break
+            time.sleep(0.5)
+        else:
+            raise Failure(f"the demo sign-in did not finish within {timeout}s (see {runtime / 'prep.out'})")
+        time.sleep(1.5)  # the session's last revision is written a moment after the hubs land
+    finally:
+        sim.kill()
+        sim.wait()
+        log.close()
+    if not (runtime / "state" / "session.json").is_file():
+        raise Failure("the demo sign-in left no state/session.json")
+    for name in ("plxnative-login", "plxnative-events.log", "plxnative-diag.log", "plxnative-remote"):
+        (runtime / name).unlink(missing_ok=True)
+    say("site_video: the simulator is signed in to the mock's Demo account (the profile chip reads Demo)")
+
+
+HERO_LOG_LINE = "home: hero pinned at slot 0"
+METADATA_PATH = re.compile(r"^/library/metadata/(\d+)$")
+
+
+def film_facts(pms, hero_slug, catalog, event_log):
+    """What the film showed and opened, from the two witnesses that need no app change: the app's own
+    event log (the hero it pinned) and the mock's request log (a title's page is opened by exactly one
+    `GET /library/metadata/<ratingKey>`). `hero_eligible` is the one pinned film; `not_in_video` is every
+    ratingKey the catalog flags. What a card is FOCUSED on at rest leaves no request and no log line, so
+    focus is judged by the storyboard's positions, not recorded."""
+    by_slug = pms.lib.by_slug
+    films = [f for key in ("movies", "shows") for f in catalog.get(key, ())]
+    flagged = sorted(str(by_slug[f["id"]]) for f in films if f.get("not_in_video") and f.get("id") in by_slug)
+    pinned = by_slug.get(hero_slug or catalog.get("hero"))
+    with pms.lock:
+        paths = [e["path"] for e in pms.request_log if e["method"] == "GET"]
+    opened = []
+    for path in paths:
+        m = METADATA_PATH.match(path)
+        if m and m.group(1) not in opened:
+            opened.append(m.group(1))
+    return {"hero_logged": [str(pinned)] if pinned is not None and HERO_LOG_LINE in event_log else [],
+            "hero_eligible": [str(pinned)] if pinned is not None else [],
+            "opened": opened, "not_in_video": flagged}
+
+
+def build_render_record(storyboard, dump, scanned, hits, frames_rows, platform_label, facts):
     """render.json (schema 1) from what the app reported (`dump.json`) and what this side counted."""
     sb = json.dumps(storyboard, sort_keys=True, separators=(",", ":")).encode()
     return {
@@ -1246,9 +1320,10 @@ def build_render_record(storyboard, dump, scanned, hits, frames_rows, platform_l
         "frames": {"count": frames_rows, "fps": FPS, "width": dump.get("width", FRAME_W), "height": dump.get("height", FRAME_H)},
         "placeholder_debt": {"frames_with_debt": dump["frames_with_debt"]},
         "sentinel": {"scanned_frames": scanned, "hits": hits},
-        # S5c fills these from the storyboard interpreter; the dump core knows neither.
-        "hero_pool": {"logged": [], "eligible": []},
-        "opened_rating_keys": [],
+        # What the launcher read back: the app's own hero line and the mock's request log (`film_facts`).
+        "hero_pool": {"logged": facts["hero_logged"], "eligible": facts["hero_eligible"]},
+        "opened_rating_keys": facts["opened"],
+        "not_in_video": facts["not_in_video"],
         "dump": {k: dump.get(k) for k in ("preroll", "iterations", "holds", "hold_reasons", "unconverted_takes",
                                            "clock_origin_ms", "wall_ms")},
         "platform": platform_label,
@@ -1267,6 +1342,130 @@ def quarantine(out_dir):
             os.replace(out_dir / name, out_dir / partial)
 
 
+STORYBOARD_SCHEMA = 1
+KEY_NAMES = ("up", "down", "left", "right", "ok", "back")
+KEY_DOWN_FRAMES = 6  # `framedump::KEY_UP_AFTER`: a tap is down for six frames
+REST_PROBE_FRAMES = 6
+
+
+def _frames(ms, fps=FPS):
+    return int(round(ms * fps / 1000.0))
+
+
+def load_storyboard(path=STORYBOARD):
+    """Read and validate `tests/video/feel.json`; returns (dict, sha256 of the file's bytes)."""
+    raw = pathlib.Path(path).read_bytes()
+    sb = json.loads(raw)
+    if sb.get("schema") != STORYBOARD_SCHEMA:
+        raise Failure(f"{path}: schema {sb.get('schema')!r}, this tool reads {STORYBOARD_SCHEMA}")
+    if sb.get("fps") != FPS:
+        raise Failure(f"{path}: fps must be {FPS}")
+    for beat in sb.get("beats", ()):
+        for key in beat.get("keys", ()):
+            if key not in KEY_NAMES:
+                raise Failure(f"{path}: beat {beat.get('name')!r}: {key!r} is not one of {KEY_NAMES}")
+        if not beat.get("keys") and not beat.get("hold_ms"):
+            raise Failure(f"{path}: beat {beat.get('name')!r} neither presses a key nor holds")
+    return sb, hashlib.sha256(raw).hexdigest()
+
+
+def compile_storyboard(sb):
+    """The storyboard as the driver's schedule: {preroll, frames, keys: 'v:key,...', beats: [...]}.
+
+    Times are written frames from the start of the film (written frame n is virtual frame preroll+n).
+    A key beat presses its keys `gap_ms` apart and then rests `rest_ms`; a hold beat is `hold_ms` of
+    nothing. Each beat records `start` and `end` (the frame its successor starts on)."""
+    fps = sb["fps"]
+    preroll = _frames(sb["boot"]["preroll_ms"], fps)
+    t = 0
+    keys, beats = [], []
+    for beat in sb["beats"]:
+        start = t
+        for i, key in enumerate(beat.get("keys", ())):
+            keys.append((preroll + t, key))
+            t += KEY_DOWN_FRAMES + (_frames(beat.get("gap_ms", 0), fps) if i + 1 < len(beat["keys"]) else 0)
+        t += _frames(beat.get("rest_ms", 0) + beat.get("hold_ms", 0), fps)
+        beats.append({"name": beat["name"], "start": start, "end": t, "keys": list(beat.get("keys", ()))})
+    return {"preroll": preroll, "frames": t, "keys": ",".join(f"{v}:{k}" for v, k in keys), "beats": beats}
+
+
+REST_WINDOW_FRAMES = 12   # a beat is judged on how far the picture moved over its last 0.2 s
+REST_TOLERANCE = 3        # a channel that moved by more than this many /255 has moved; <= is the spring's tail
+REST_MAX_MOVED = 0.0001   # fraction of the frame that may have moved: 0.01 % (about 200 px, less than one tab pill)
+
+
+def rest_verdict(max_delta, moved_fraction):
+    """The beat is at rest: nothing but a spring's last 1-3/255 changed over the window."""
+    return max_delta <= REST_TOLERANCE or moved_fraction <= REST_MAX_MOVED
+
+
+def rest_metrics(ffmpeg, master, beats, window=REST_WINDOW_FRAMES, run=subprocess.run):
+    """Per beat, on DECODED frames: the largest channel delta and the fraction of pixels that moved by more
+    than `REST_TOLERANCE`, between the beat's last frame and the one `window` frames before it. Byte
+    identity cannot be the test: a critically damped spring's tail changes the picture by 1-3/255 for
+    seconds after it is visibly still. Returns [{beat, frames: (a, b), max_delta, moved}]."""
+    from PIL import Image, ImageChops
+    wanted = {}
+    for beat in beats:
+        last = beat["end"] - 1
+        first = max(beat["start"], last - window)
+        if last > first:
+            wanted[beat["name"]] = (first, last)
+    numbers = sorted({n for pair in wanted.values() for n in pair})
+    if not numbers:
+        return []
+    with tempfile.TemporaryDirectory() as d:
+        select = "+".join(f"eq(n\\,{n})" for n in numbers)
+        run([str(ffmpeg), "-hide_banner", "-nostdin", "-v", "error", "-i", str(master), "-vf", f"select='{select}'",
+             "-fps_mode", "passthrough", f"{d}/%06d.png"], check=True)
+        pngs = sorted(pathlib.Path(d).glob("*.png"))
+        if len(pngs) != len(numbers):
+            raise Failure(f"rest probe decoded {len(pngs)} frames, wanted {len(numbers)}")
+        images = {n: Image.open(p).convert("RGB") for n, p in zip(numbers, pngs)}
+        out = []
+        for beat in beats:
+            if beat["name"] not in wanted:
+                continue
+            a, b = wanted[beat["name"]]
+            diff = ImageChops.difference(images[a], images[b])
+            peak = max(hi for _, hi in diff.getextrema())
+            moved = diff.convert("L").point(lambda v: 255 if v > REST_TOLERANCE else 0)
+            count = moved.histogram()[255]
+            out.append({"beat": beat["name"], "frames": [a, b], "max_delta": peak,
+                        "moved": count / float(diff.size[0] * diff.size[1])})
+        return out
+
+
+def gate_beats_at_rest(metrics):
+    """Every beat ends at rest (`rest_verdict`): a beat still moving when the next beat's first key goes
+    down is a storyboard that presses too soon. Takes `rest_metrics`; returns the names that moved."""
+    return [f"{m['beat']} (frames {m['frames'][0]}..{m['frames'][1]}: max delta {m['max_delta']}/255, "
+            f"{m['moved'] * 100:.2f}% of pixels moved)"
+            for m in metrics if not rest_verdict(m["max_delta"], m["moved"])]
+
+
+def gate_storyboard_record(record):
+    """The storyboard's own promises about what was filmed, from the record: no title flagged
+    `not_in_video` was opened and every beat ended at rest. Returns [Result]."""
+    flagged = {str(k) for k in record.get("not_in_video", ())}
+    opened = [str(k) for k in record.get("opened_rating_keys", ())]
+    hit = sorted(set(opened) & flagged)
+    out = [Result("storyboard/opened", FAIL if hit else PASS,
+                  f"a title flagged not_in_video was opened: {hit}" if hit else
+                  f"{len(opened)} titles opened ({', '.join(opened) or 'none'}), none flagged not_in_video "
+                  f"(of {len(flagged)} flagged); focus at rest is judged by position, not recorded")]
+    beats = _dig(record, "storyboard.rest")[0]
+    if beats is None:
+        out.append(Result("storyboard/rest", SKIP, "the record carries no rest measurement (not a storyboard render)"))
+    else:
+        bad = gate_beats_at_rest(beats)
+        out.append(Result("storyboard/rest", FAIL if bad else PASS,
+                          "still moving when the next key went down: " + "; ".join(bad) if bad else
+                          f"{len(beats)} beats at rest (<= {REST_TOLERANCE}/255, or <= {REST_MAX_MOVED * 100:g}% of "
+                          f"pixels moved, over the last {REST_WINDOW_FRAMES} frames)"))
+    return out
+
+
 def parse_triggers(specs):
     """`NAME=VALUE` strings -> {name: value}: the boot triggers (`plxnative-<name>` files in the
     simulator's instance root, e.g. `detail=102` opens that rating key's page at boot)."""
@@ -1280,7 +1479,8 @@ def parse_triggers(specs):
 
 
 def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=None, allow_absent=False, max_hold_ms=60000,
-               timeout=3600, keep=False, say=print, no_hold=False, keys=None, extra_holds=None, triggers=None):
+               timeout=3600, keep=False, say=print, no_hold=False, keys=None, extra_holds=None, triggers=None,
+               plan=None, storyboard_sha=None):
     """Boot the mock catalog PMS on a free port, run the dump build against it headless, pipe its RGB24
     frames through the sentinel scan into ffmpeg, and leave `master.mkv`, `frames.tsv`, `dump.json` and
     `render.json` in `out_dir`. Returns the render record. Raises Failure on anything not clean."""
@@ -1297,14 +1497,17 @@ def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=N
     runtime = pathlib.Path(tempfile.mkdtemp(prefix="plxnative-render-"))
     fifo = runtime / "frames.rgb"
     os.mkfifo(fifo)
-    srv, pms = mock_pms.serve(0, catalog=CATALOG, hero=hero)
+    srv, pms = mock_pms.serve(0, catalog=CATALOG, hero=hero, authorize_after=2)
     port = srv.server_address[1]
     sim = enc = None
     result = {}
     finished = False
     try:
-        for name, value in {"plextv": f"http://127.0.0.1:{port}", "token": DEMO_TOKEN, "heropin": "0",
-                            **(triggers or {})}.items():
+        (runtime / "plxnative-plextv").write_text(f"http://127.0.0.1:{port}")
+        sign_in_demo_profile(sim_bin, runtime, port, say)
+        with pms.lock:
+            pms.request_log.clear()  # the log below is the film's alone
+        for name, value in {"token": DEMO_TOKEN, "heropin": "0", **(triggers or {})}.items():
             (runtime / f"plxnative-{name}").write_text(value)
         enc = subprocess.Popen(ffv1_argv(ffmpeg, out_dir / "master.mkv"), stdin=subprocess.PIPE)
         log = open(runtime / "sim.out", "w")
@@ -1365,11 +1568,21 @@ def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=N
                 problems.append(f"frames.tsv has {len(rows)} rows and the scanner saw {scanned}, want {frames}")
         if problems:
             raise Failure("render failed: " + "; ".join(problems) + f"\n  instance root: {runtime}\n  sim log tail:\n    {tail}")
-        storyboard = {"scene": "home", "pin_hero": True, "frames": frames, "preroll": preroll,
-                      "script": "keys" if keys else "hold"}
+        trig = {k: v for k, v in (triggers or {}).items()}
+        storyboard = {"scene": "detail" if "detail" in trig else "home", "pin_hero": True, "frames": frames,
+                      "preroll": preroll, "script": "storyboard" if plan else ("keys" if keys else "hold"),
+                      "extra_holds": None if extra_holds is None else str(extra_holds), "triggers": trig}
         if keys:
             storyboard["keys"] = keys
-        record = build_render_record(storyboard, dump, scanned, 0, len(rows), current_platform())
+        if plan:
+            storyboard["file_sha256"] = storyboard_sha
+            storyboard["beats"] = plan["beats"]
+            # Informational here, a gate in `gates`: how far each beat's picture moved over its last 0.2 s.
+            storyboard["rest"] = rest_metrics(ffmpeg, out_dir / "master.mkv", plan["beats"])
+        events = runtime / "plxnative-events.log"
+        facts = film_facts(pms, hero, json.loads(pathlib.Path(CATALOG).read_text()),
+                           events.read_text(errors="replace") if events.exists() else "")
+        record = build_render_record(storyboard, dump, scanned, 0, len(rows), current_platform(), facts)
         bad = validate_render_record(record)
         if bad:
             raise Failure("render.json is malformed: " + "; ".join(bad))
@@ -1395,11 +1608,22 @@ def _ffmpeg_from(args, run=subprocess.run):
     return resolve_ffmpeg(args.ffmpeg, args.cache, run)
 
 
+def storyboard_args(args):
+    """(frames, preroll, keys, plan, sha) for a render: the storyboard's compiled schedule with
+    `--storyboard`, else the plain `--frames/--preroll/--keys`."""
+    if not getattr(args, "storyboard", None):
+        return args.frames, args.preroll, args.keys, None, None
+    sb, sha = load_storyboard(args.storyboard)
+    plan = compile_storyboard(sb)
+    return plan["frames"], plan["preroll"], plan["keys"], plan, sha
+
+
 def cmd_render(args):
     ffmpeg, _ = _ffmpeg_from(args)
-    run_render(args.bin, args.out, ffmpeg, args.frames, args.preroll, args.hero, args.allow_absent,
-               args.max_hold_ms, args.timeout, args.keep_runtime, no_hold=args.no_hold, keys=args.keys,
-               extra_holds=args.extra_holds, triggers=parse_triggers(args.trigger))
+    frames, preroll, keys, plan, sha = storyboard_args(args)
+    run_render(args.bin, args.out, ffmpeg, frames, preroll, args.hero, args.allow_absent,
+               args.max_hold_ms, args.timeout, args.keep_runtime, no_hold=args.no_hold, keys=keys,
+               extra_holds=args.extra_holds, triggers=parse_triggers(args.trigger), plan=plan, storyboard_sha=sha)
 
 
 def cmd_hold_gate(args):
@@ -1410,9 +1634,10 @@ def cmd_hold_gate(args):
     rows = {}
     for label, extra in (("k0", 0), (f"r{args.seed}", f"r{args.seed}")):
         d = out / label
-        run_render(args.bin, d, ffmpeg, args.frames, args.preroll, args.hero, args.allow_absent,
-                   args.max_hold_ms, args.timeout, args.keep_runtime, keys=args.keys, extra_holds=extra,
-                   triggers=parse_triggers(args.trigger))
+        frames, preroll, keys, plan, sha = storyboard_args(args)
+        run_render(args.bin, d, ffmpeg, frames, preroll, args.hero, args.allow_absent,
+                   args.max_hold_ms, args.timeout, args.keep_runtime, keys=keys, extra_holds=extra,
+                   triggers=parse_triggers(args.trigger), plan=plan, storyboard_sha=sha)
         rows[label] = parse_frames_tsv((d / "frames.tsv").read_text())
     result = compare_hold_injection(rows["k0"], rows[f"r{args.seed}"])
     print(format_results([result]))
@@ -1471,6 +1696,16 @@ def cmd_contact_sheet(args):
     print(f"site_video: {args.out}: frames {picks}")
 
 
+def storyboard_file_problem(record, path=STORYBOARD):
+    """A storyboard render says which file it played (`storyboard.file_sha256`, the sha256 of the bytes of
+    `tests/video/feel.json`); the manifest must be of the film the tree describes. `storyboard_sha256` is
+    the hash of the whole compiled record (beats included), a different thing, so it is not compared."""
+    played = _dig(record, "storyboard.file_sha256")[0]
+    if played is not None and pathlib.Path(path).is_file() and sha256_file(path) != played:
+        return f"render.json played a storyboard whose sha256 differs from {pathlib.Path(path).name}"
+    return None
+
+
 def cmd_manifest(args):
     out_dir = pathlib.Path(args.dir)
     ffmpeg, canonical = _ffmpeg_from(args)
@@ -1484,8 +1719,9 @@ def cmd_manifest(args):
     label = current_platform()
     if record.get("platform") not in (None, label):
         raise Failure(f"render.json says platform {record['platform']!r} but this host is {label!r}")
-    if STORYBOARD.is_file() and sha256_file(STORYBOARD) != record["storyboard_sha256"]:
-        raise Failure("render.json's storyboard_sha256 differs from tests/video/feel.json")
+    problem = storyboard_file_problem(record)
+    if problem:
+        raise Failure(problem)
     trees, dirty = tree_hashes()
     pin_hint = next((p.key for p in PINS.values() if ffmpeg.parent.name == f"ffmpeg-{p.sha256[:12]}"), None)
     tools = {"ffmpeg": {"sha256": sha256_file(ffmpeg), "version": ffmpeg_version_line(ffmpeg),
@@ -1541,6 +1777,8 @@ def main(argv=None):
     p.add_argument("--max-hold-ms", type=int, default=60000, help="fail closed after this long without progress")
     p.add_argument("--timeout", type=int, default=3600)
     p.add_argument("--keep-runtime", action="store_true", help="keep the simulator's instance root for inspection")
+    p.add_argument("--storyboard", nargs="?", const=str(STORYBOARD), metavar="FEEL.JSON",
+                   help="play tests/video/feel.json (or FILE): its frames, preroll and keys replace --frames/--preroll/--keys")
     p.add_argument("--trigger", action="append", metavar="NAME=VALUE",
                    help="a boot trigger written into the instance root as plxnative-NAME (repeatable), e.g. detail=102")
     p.add_argument("--keys", help="the scene's script: <virtual frame>:<key>,... (up/down/left/right/ok/back); "
@@ -1560,6 +1798,7 @@ def main(argv=None):
     p.add_argument("--timeout", type=int, default=3600)
     p.add_argument("--keep-runtime", action="store_true")
     p.add_argument("--keys")
+    p.add_argument("--storyboard", nargs="?", const=str(STORYBOARD), metavar="FEEL.JSON")
     p.add_argument("--trigger", action="append", metavar="NAME=VALUE")
     p.add_argument("--seed", type=int, default=1)
     p.set_defaults(fn=cmd_hold_gate)

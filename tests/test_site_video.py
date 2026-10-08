@@ -189,6 +189,9 @@ def record(**over):
     return rec
 
 
+FACTS = {"hero_logged": ["10"], "hero_eligible": ["10"], "opened": ["11"], "not_in_video": ["20"]}
+
+
 class FramesTsvAndRecord(unittest.TestCase):
     def test_a_good_file_parses(self):
         rows = sv.parse_frames_tsv(tsv(GOOD_ROWS))
@@ -273,13 +276,12 @@ class FramesTsvAndRecord(unittest.TestCase):
         self.assertIn("99", bad.detail)
         self.assertEqual(sv.gate_hero_pool(record(hero_pool={"logged": [], "eligible": ["10"]})).status, sv.FAIL)
 
-    def test_the_still_home_hold_skips_the_hero_pool_loudly_and_nothing_else_does(self):
+    def test_the_hero_pool_is_fail_closed_with_no_skip_for_any_script(self):
         empty = {"logged": [], "eligible": []}
-        held = sv.gate_hero_pool(record(hero_pool=empty, storyboard={"script": "hold"}))
-        self.assertEqual(held.status, sv.SKIP)
-        self.assertIn("NOT proven", held.detail)
-        self.assertEqual(sv.gate_hero_pool(record(hero_pool=empty, storyboard={"script": "feel"})).status, sv.FAIL)
-        self.assertEqual(sv.gate_hero_pool(record(hero_pool=empty)).status, sv.FAIL)
+        for over in ({}, {"storyboard": {"script": "hold"}}, {"storyboard": {"script": "feel"}}):
+            got = sv.gate_hero_pool(record(hero_pool=empty, **over))
+            self.assertEqual(got.status, sv.FAIL, over)
+        self.assertEqual(sv.gate_hero_pool(record(hero_pool={"logged": ["10"], "eligible": []})).status, sv.FAIL)
 
     def test_the_inline_sentinel_record_must_cover_the_run_and_be_clean(self):
         self.assertEqual(sv.gate_sentinel_record(record()).status, sv.PASS)
@@ -371,14 +373,21 @@ class RenderLauncher(unittest.TestCase):
         on = sv.sim_env("/rt", "/out", "/rt/fifo", 1, 0, True, 1, base={}, no_hold=True)
         self.assertEqual((on["PLXNATIVE_DUMP_ALLOW_ABSENT"], on["PLXNATIVE_DUMP_NO_HOLD"]), ("1", "1"))
 
+    def test_the_record_it_builds_carries_the_facts(self):
+        dump = {"frames_with_debt": 0, "wall_ms": 9}
+        rec = sv.build_render_record({"scene": "home"}, dump, 180, 0, 180, "darwin-local", FACTS)
+        self.assertEqual(rec["hero_pool"], {"logged": ["10"], "eligible": ["10"]})
+        self.assertEqual(rec["opened_rating_keys"], ["11"])
+        self.assertEqual(rec["not_in_video"], ["20"])
+
     def test_the_record_it_builds_passes_the_validator(self):
         dump = {"frames_with_debt": 0, "width": 1920, "height": 1080, "preroll": 60, "iterations": 5, "holds": 2,
                 "hold_reasons": {}, "unconverted_takes": [], "clock_origin_ms": 1000000, "wall_ms": 9}
-        rec = sv.build_render_record({"scene": "home"}, dump, 180, 0, 180, "darwin-local")
+        rec = sv.build_render_record({"scene": "home"}, dump, 180, 0, 180, "darwin-local", FACTS)
         self.assertEqual(sv.validate_render_record(rec), [])
         self.assertEqual(rec["frames"], {"count": 180, "fps": 60, "width": 1920, "height": 1080})
         self.assertEqual(rec["sentinel"], {"scanned_frames": 180, "hits": 0})
-        again = sv.build_render_record({"scene": "home"}, dump, 180, 0, 180, "darwin-local")
+        again = sv.build_render_record({"scene": "home"}, dump, 180, 0, 180, "darwin-local", FACTS)
         self.assertEqual(rec["storyboard_sha256"], again["storyboard_sha256"], "a pure function of the storyboard")
 
     def test_a_missing_simulator_is_refused_before_anything_starts(self):
@@ -644,7 +653,7 @@ class EncodeArgv(unittest.TestCase):
             "-map", "0:v:0", "-an", "-fps_mode", "passthrough",
             "-vf", "scale=1920:1080:flags=lanczos+accurate_rnd+full_chroma_int+error_diffusion:in_range=full:"
                    "out_range=tv:out_color_matrix=bt709,format=yuv420p",
-            "-c:v", "libsvtav1", "-preset", "4", "-crf", "30", "-g", "120", "-svtav1-params", "tune=0:film-grain=0",
+            "-c:v", "libsvtav1", "-preset", "4", "-crf", "28", "-g", "120", "-svtav1-params", "tune=0:film-grain=0",
             "-pix_fmt", "yuv420p",
             "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
             "-movflags", "+faststart", "/o/feel-1080p60.av1.mp4"])
@@ -1001,6 +1010,161 @@ class RealFfmpeg(unittest.TestCase):
             values = sv.ssim_against_master(REAL_FFMPEG, out / "feel-720p60.h264.mp4", master, sv.video_filter(1280, 720), "yuv420p")
             self.assertEqual(len(values), 4)
             self.assertGreater(min(values), 0.97)
+
+
+class PairingTests(unittest.TestCase):
+    def test_ssim_and_vmaf_pair_frames_by_index_not_by_timestamp(self):
+        seen = []
+
+        def fake_run(argv, **kw):
+            seen.append(argv[argv.index("-lavfi") + 1])
+            raise sv.Failure("stop")
+
+        for fn, args in ((sv.ssim_against_master, ("f", "d.mp4", "m.mkv", "scale=1:1", "yuv420p")),
+                         (sv.vmaf_against_master, ("f", "d.mp4", "m.mkv", "scale=1:1"))):
+            with self.assertRaises(sv.Failure):
+                fn(*args, run=fake_run)
+        for lavfi in seen:
+            self.assertIn("[0:v]setpts=N/60/TB,", lavfi)
+            self.assertIn("[1:v]setpts=N/60/TB,", lavfi)
+        self.assertEqual(len(seen), 2)
+
+
+class ManifestStoryboardTests(unittest.TestCase):
+    def test_the_manifest_compares_the_file_a_render_played_not_the_records_own_hash(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = pathlib.Path(d, "feel.json")
+            path.write_bytes(b'{"schema": 1}')
+            sha = sv.sha256_file(path)
+            self.assertIsNone(sv.storyboard_file_problem({"storyboard_sha256": "x" * 64, "storyboard": {"file_sha256": sha}}, path))
+            self.assertIn("differs", sv.storyboard_file_problem({"storyboard": {"file_sha256": "0" * 64}}, path))
+            self.assertIsNone(sv.storyboard_file_problem({"storyboard": {"script": "hold"}}, path), "a plain render names no file")
+
+
+class StoryboardTests(unittest.TestCase):
+    """`tests/video/feel.json`: positions and durations compiled to the driver's key schedule."""
+
+    def test_the_committed_storyboard_loads_and_compiles_keys_in_order_inside_the_run(self):
+        sb, sha = sv.load_storyboard()
+        self.assertRegex(sha, r"^[0-9a-f]{64}$")
+        plan = sv.compile_storyboard(sb)
+        keys = [(int(v), k) for v, k in (part.split(":") for part in plan["keys"].split(","))]
+        self.assertEqual([k for _, k in keys], ["right", "ok", "back", "left", "down", "right", "up", "up", "right", "right", "ok", "right", "right",
+                          "back", "down"])
+        self.assertEqual([v for v, _ in keys], sorted(v for v, _ in keys))
+        self.assertLess(keys[-1][0] + sv.KEY_DOWN_FRAMES, plan["preroll"] + plan["frames"])
+        self.assertTrue(22 * 60 <= plan["frames"] <= 28 * 60, plan["frames"])
+
+    def test_a_beat_that_does_nothing_or_names_a_title_key_is_refused(self):
+        import tempfile
+        for beat in ({"name": "x"}, {"name": "x", "keys": ["menu"]}):
+            with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+                json.dump({"schema": 1, "fps": 60, "boot": {"preroll_ms": 0}, "beats": [beat]}, f)
+                f.flush()
+                with self.assertRaises(sv.Failure):
+                    sv.load_storyboard(f.name)
+
+    def test_durations_compile_to_frames_and_a_gap_separates_keys(self):
+        sb = {"fps": 60, "boot": {"preroll_ms": 1000}, "beats": [
+            {"name": "hold", "hold_ms": 500}, {"name": "two", "keys": ["up", "right"], "gap_ms": 100, "rest_ms": 200}]}
+        plan = sv.compile_storyboard(sb)
+        self.assertEqual(plan["preroll"], 60)
+        self.assertEqual(plan["keys"], "90:up,102:right")
+        self.assertEqual([(b["start"], b["end"]) for b in plan["beats"]], [(0, 30), (30, 30 + 6 + 6 + 6 + 12)])
+
+    def test_the_storyboard_never_pages_the_hero_or_rests_long_on_a_card(self):
+        sb, _ = sv.load_storyboard()
+        names = [b["name"] for b in sb["beats"]]
+        self.assertEqual(names[0], "hero")
+        self.assertEqual(names[-1], "to-hero")
+        by = {b["name"]: b for b in sb["beats"]}
+        # `left` on the Continue card pages the carousel: it is only ever pressed after Back from Detail,
+        # where focus is on Info.
+        for i, b in enumerate(sb["beats"]):
+            if "left" in b.get("keys", ()):
+                self.assertEqual(sb["beats"][i - 1]["name"], "back-home")
+        # The hold-hint capsule appears after 1.5 s of rest on a card: the card beats stay under 1.4 s.
+        for name in ("shelf", "shelf-right", "library", "library-move"):
+            self.assertLess(by[name]["rest_ms"], 1400, name)
+
+    def test_a_rest_verdict_tolerates_a_springs_tail_and_a_sliver(self):
+        self.assertTrue(sv.rest_verdict(0, 0.0))
+        self.assertTrue(sv.rest_verdict(sv.REST_TOLERANCE, 0.5), "a 3/255 tail over the whole frame is still rest")
+        self.assertTrue(sv.rest_verdict(80, sv.REST_MAX_MOVED), "a few hundred pixels is not motion")
+        self.assertFalse(sv.rest_verdict(sv.REST_TOLERANCE + 1, sv.REST_MAX_MOVED * 2))
+
+    def test_the_rest_gate_names_a_beat_whose_last_frames_still_move(self):
+        metrics = [{"beat": "still", "frames": [8, 20], "max_delta": 2, "moved": 0.0},
+                   {"beat": "tail", "frames": [30, 42], "max_delta": 3, "moved": 0.4},
+                   {"beat": "moving", "frames": [50, 62], "max_delta": 90, "moved": 0.02}]
+        bad = sv.gate_beats_at_rest(metrics)
+        self.assertEqual(len(bad), 1)
+        self.assertIn("moving", bad[0])
+        self.assertIn("2.00%", bad[0])
+        self.assertEqual(sv.gate_beats_at_rest(metrics[:2]), [])
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow absent (`python3 -m pip install Pillow`)")
+    def test_rest_metrics_measures_decoded_frames_not_bytes(self):
+        from PIL import Image
+        beats = [{"name": "moving", "start": 0, "end": 20}, {"name": "still", "start": 20, "end": 40},
+                 {"name": "tail", "start": 40, "end": 60}, {"name": "one-frame", "start": 60, "end": 61}]
+        asked = []
+
+        def fake_run(argv, check=False):
+            asked.append(argv)
+            out = pathlib.Path(argv[-1]).parent
+            wanted = re.findall(r"eq\(n\\,(\d+)\)", argv[argv.index("-vf") + 1])
+            for i, n in enumerate(sorted(int(x) for x in wanted)):
+                img = Image.new("RGB", (100, 100), (10, 10, 10))
+                if n == 19:
+                    img.paste((200, 10, 10), (0, 0, 50, 50))
+                if n == 59:
+                    img.paste((13, 10, 10), (0, 0, 100, 100))
+                img.save(out / f"{i + 1:06d}.png")
+
+        got = {m["beat"]: m for m in sv.rest_metrics("ffmpeg", "m.mkv", beats, window=12, run=fake_run)}
+        self.assertNotIn("one-frame", got, "a one-frame beat has nothing to compare")
+        self.assertEqual((got["moving"]["frames"], got["moving"]["max_delta"]), ([7, 19], 190))
+        self.assertAlmostEqual(got["moving"]["moved"], 0.25)
+        self.assertEqual((got["still"]["max_delta"], got["still"]["moved"]), (0, 0.0))
+        self.assertEqual((got["tail"]["max_delta"], got["tail"]["moved"]), (3, 0.0))
+        self.assertEqual(sv.gate_beats_at_rest(list(got.values()))[0].split(" ")[0], "moving")
+        self.assertEqual(len(asked), 1, "one decode for every probe frame")
+
+    def test_the_storyboard_gate_refuses_an_opened_not_in_video_title_and_a_moving_beat(self):
+        ok = sv.gate_storyboard_record(record(not_in_video=["20", "21"], storyboard={"rest": [
+            {"beat": "a", "frames": [0, 12], "max_delta": 1, "moved": 0.0}]}))
+        self.assertEqual([r.status for r in ok], [sv.PASS, sv.PASS])
+        self.assertEqual([r.name for r in ok], ["storyboard/opened", "storyboard/rest"])
+        opened = sv.gate_storyboard_record(record(not_in_video=["11"], storyboard={"rest": []}))
+        self.assertEqual(opened[0].status, sv.FAIL)
+        self.assertIn("11", opened[0].detail)
+        moving = sv.gate_storyboard_record(record(not_in_video=[], storyboard={"rest": [
+            {"beat": "library", "frames": [0, 12], "max_delta": 90, "moved": 0.1}]}))
+        self.assertEqual(moving[1].status, sv.FAIL)
+        self.assertIn("library", moving[1].detail)
+        plain = sv.gate_storyboard_record(record(not_in_video=[]))
+        self.assertEqual(plain[1].status, sv.SKIP)
+
+    def test_film_facts_reads_the_hero_and_the_titles_the_mock_served(self):
+        import threading
+        import types
+        pms = types.SimpleNamespace(
+            lib=types.SimpleNamespace(by_slug={"sintel": 10, "tears": 11, "cosmos": 20}),
+            lock=threading.Lock(),
+            request_log=[{"method": "GET", "path": "/library/metadata/11"},
+                         {"method": "GET", "path": "/library/metadata/11"},
+                         {"method": "GET", "path": "/library/metadata/10/children"},
+                         {"method": "PUT", "path": "/library/metadata/12"},
+                         {"method": "GET", "path": "/library/metadata/10"}])
+        catalog = {"hero": "sintel", "movies": [{"id": "cosmos", "not_in_video": True}, {"id": "tears"}, {"id": "gone", "not_in_video": True}]}
+        facts = sv.film_facts(pms, None, catalog, "...home: hero pinned at slot 0...")
+        self.assertEqual(facts["hero_logged"], ["10"])
+        self.assertEqual(facts["opened"], ["11", "10"], "a page is one GET of the title; a repeat or a child path is not another")
+        self.assertEqual(facts["not_in_video"], ["20"])
+        quiet = sv.film_facts(pms, "tears", catalog, "no hero line here")
+        self.assertEqual((quiet["hero_logged"], quiet["hero_eligible"]), ([], ["11"]))
 
 
 if __name__ == "__main__":

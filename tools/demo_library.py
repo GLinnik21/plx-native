@@ -43,8 +43,10 @@ Per-title flags in `catalog.json`, all checked by `check`:
   from the catalog the way `data/src/pms.rs` merges it (a test holds that to what the mock's Home
   answers). The mock refuses `--hero` on it too. Set it on a title whose backdrop does not look
   right behind the hero.
-* `not_in_video: true` — the title is never opened or featured in the site video (the future
-  storyboard gate reads it; nothing renders yet). A title in `logo_none_approved` (its hero and
+* `not_in_video: true` — the title is never opened in the site video. `site_video.py render
+  --storyboard` records every title page the film opened (the mock's `GET /library/metadata/<ratingKey>`
+  log) beside this list in `render.json`, and the `storyboard/opened` gate fails the render if the two
+  intersect. Focus at rest leaves no request, so the storyboard's positions keep a flagged title out of frame. A title in `logo_none_approved` (its hero and
   detail page show the text title, not a clear logo) must carry it; the pinned hero and
   `hero_alternatives` cannot (the video opens the hero).
 * `poster.still_as_poster: true` — the poster is a film still, not a poster: allowed only for a title

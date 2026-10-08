@@ -6,7 +6,9 @@ name: Site video
 # render on a developer's Mac is a preview. See docs/agent-reference.md ("The site demo video") and
 # the ui-sim skill ("The frame dump").
 #
-# MANUAL ON PURPOSE: `gh workflow run site-video.yml` (optionally `-f frames=N`). A render costs
+# MANUAL ON PURPOSE: `gh workflow run site-video.yml`. It renders the STORYBOARD, `tests/video/feel.json`
+# (positions and durations, compiled by `site_video.py` to the dump driver's key schedule; about 24
+# seconds), and the sign-in prep boot the render starts with runs under the same virtual display. A render costs
 # runner minutes that no ordinary PR should pay, and nothing here is a gate on code; the run-twice
 # check below proves THIS render deterministic, it does not guard main.
 #
@@ -22,11 +24,6 @@ name: Site video
 
 on:
   workflow_dispatch:
-    inputs:
-      frames:
-        description: Written frames per render (60 fps; 180 is three seconds)
-        required: false
-        default: "180"
 
 permissions:
   contents: read
@@ -57,11 +54,10 @@ jobs:
   render:
     name: Render the demo video (Linux, llvmpipe)
     runs-on: ubuntu-24.04
-    # Measured: about 9 minutes cold (build, fetch, two renders, encodes); the maximum plus margin,
-    # the convention simulators.yml spells out.
-    timeout-minutes: 25
-    env:
-      FRAMES: ${{ inputs.frames || '180' }}
+    # Measured: about 38 minutes cold (build 3, derive 1.5, two renders 3 each, run-twice compare 1.5,
+    # hold-gate 6.5, encodes 6, gates 11.5, on the runner); the maximum plus margin, the convention
+    # simulators.yml spells out.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -139,14 +135,14 @@ jobs:
         run: |
           start=$(date +%s)
           xvfb-run -a -s '-screen 0 1920x1080x24' \
-            python3 tools/site_video.py render --out out/render-a --frames "$FRAMES"
+            python3 tools/site_video.py render --out out/render-a --storyboard
           echo "RENDER_A_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
       - name: Render, second process
         timeout-minutes: 25
         run: |
           start=$(date +%s)
           xvfb-run -a -s '-screen 0 1920x1080x24' \
-            python3 tools/site_video.py render --out out/render-b --frames "$FRAMES"
+            python3 tools/site_video.py render --out out/render-b --storyboard
           echo "RENDER_B_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
 
       - name: Two renders must agree
@@ -193,7 +189,7 @@ jobs:
         run: |
           start=$(date +%s)
           xvfb-run -a -s '-screen 0 1920x1080x24' \
-            python3 tools/site_video.py hold-gate --out out/hold-gate --frames "$FRAMES" | tee out/hold-gate.txt
+            python3 tools/site_video.py hold-gate --out out/hold-gate --storyboard | tee out/hold-gate.txt
           {
             echo "### Hold-injection gate"
             echo
@@ -202,6 +198,9 @@ jobs:
             echo '```'
             echo "wall time, both renders: $(( $(date +%s) - start ))s"
           } >> "$GITHUB_STEP_SUMMARY"
+          # Each master is about 2 GB lossless: the gate has reported, so free the disk before the encodes.
+          rm -f out/hold-gate/*/master.mkv
+          df -h . | tail -n 1
 
       - name: Scan the second master for the placeholder sentinel
         # `render` already scans every frame it pipes; this rescans what the second master DECODES to,
@@ -216,7 +215,7 @@ jobs:
           python3 tools/site_video.py encode out/render-a/master.mkv out/render-a/frames.tsv \
             --out out/deliver --render out/render-a/render.json
       - name: Contact sheet
-        run: python3 tools/site_video.py contact-sheet out/render-a/master.mkv --out out/deliver/contact-sheet.jpg
+        run: python3 tools/site_video.py contact-sheet out/render-a/master.mkv --out out/deliver/contact-sheet.jpg -n 24 --columns 6
       - name: Gather the audit trail
         # Everything in the deliver directory but the six media files is listed (and hashed) in the
         # manifest as an artifact, so this is the last moment to add to it.

@@ -183,7 +183,17 @@ impl Xfade {
             Phase::Hold => {
                 self.t = 0.0;
                 if ready {
-                    self.phase = Phase::In;
+                    // A frame dump (`plx_gfx::dump::armed`, a constant `false` outside the
+                    // simulator) arrives COMPLETE: a page that mounts hidden and fades in over
+                    // 140 ms would otherwise be captured into a push's page image at alpha 0 (a
+                    // placeholder-free, empty page, held for the whole settle), and a held repeat
+                    // has `dt == 0` so the ramp could not be waited out either.
+                    if plx_gfx::dump::armed() {
+                        self.t = 1.0;
+                        self.phase = Phase::Idle;
+                    } else {
+                        self.phase = Phase::In;
+                    }
                 }
                 false
             }

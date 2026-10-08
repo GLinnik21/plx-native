@@ -380,7 +380,7 @@ device-verified" is a useful, honest status. "Verified" without a TV is not.
 
 `make site-video-sim` builds the simulator for the demo-video pipeline (`--no-default-features
 --features hostsim,devtriggers,placeholder-sentinel`, release, its own target dir, libass only), and
-`python3 tools/site_video.py render --out DIR` runs it headless against the mock catalog and leaves
+`python3 tools/site_video.py render --out DIR --storyboard` plays `tests/video/feel.json` (positions and durations, compiled to the driver's key schedule: Home hero, one shelf move, Sintel's Detail, the Movies library, back to Home, about 24 s; no paging, no scrolling on Detail, no modal; every rest on a card stays under 1.4 s so the hold-hint capsule (1.5 s of rest; once per resting place on Home) never appears) and records its sha256, `--extra-holds`, `--trigger`, how far each beat still moved at its end (`storyboard.rest`) and which titles it opened in `render.json`. Before the film boots the launcher signs the simulator in to the mock's Demo account through the app's own QR sign-in (a prep boot with the `plxnative-login` trigger), because `up` from the hero always lands on the profile chip and an account-less session would read "Sign in" there. A page that mounts hidden and fades in (an `Xfade` mount, the Library's) arrives COMPLETE in a dump, so a push dips into a finished page. Either way `render` runs the simulator headless against the mock catalog (without `--storyboard` it holds Home for `--frames`, 180 by default) and leaves
 `master.mkv`, `frames.tsv`, `dump.json` and `render.json`. The simulator side is
 `rust-modules/src/dev/framedump.rs`, armed by `PLXNATIVE_DUMP=<dir>` (its module doc lists the
 variables). It drives the app from VIRTUAL time (`clock::set_replay`, 60 fps), forces a present every
@@ -396,8 +396,8 @@ reason: a capture with debt is re-captured on each repeat until clean (`plx_gfx:
 (`site_video.py gates --frames-b`): the xxh3 column must match. The stronger check is
 `site_video.py hold-gate --out DIR [--keys 120:right,...]`, which renders the scene with no extra
 holds and with seeded extra held repeats on every frame (`PLXNATIVE_DUMP_EXTRA_HOLDS`) and requires
-columns 1-4 of `frames.tsv` equal. `--keys <virtual frame>:<key>,...` (`PLXNATIVE_DUMP_KEYS`) is the
-interim script until the storyboard interpreter (the down edge on that frame, the up edge six frames
+columns 1-4 of `frames.tsv` equal. `--keys <virtual frame>:<key>,...` (`PLXNATIVE_DUMP_KEYS`) is
+the key schedule a storyboard compiles to (the down edge on that frame, the up edge six frames
 later); virtual frames count from the start of the preroll. `--trigger NAME=VALUE` writes a boot
 trigger (`--trigger detail=102` boots on that rating key's page). Each virtual frame is also run to a
 fixed point (a clean iteration must reproduce the previous one's picture; hold reason `settling`), so
