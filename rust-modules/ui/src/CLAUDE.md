@@ -495,7 +495,8 @@ arrived". Every site that paints one calls `placeholder::note` (or one of its wr
 not a placeholder: a person the server has no headshot of and a collection with no artwork wear
 `theme::CARD_ABSENT` (declared with a `placeholder-exempt:` reason), a profile with no picture keeps
 its ordinary `CONTROL_IDLE_FILL` disc, and a hero whose clearLogo has settled as a miss
-(`tex::logo_failed`) types its title as plain ink and is reported in `Frame::absent`; none is counted
+(`tex::logo_failed`, asked only when `placeholder::accounting_visible()`: armed, or the sentinel build)
+types its title as plain ink and is reported in `Frame::absent`; none is counted
 (a profile whose picture path has not resolved, and a logo still on its way, ARE counted). The
 feature `placeholder-sentinel` (off in every default, shipping and TV build; `make check` compiles
 it) additionally paints the FILLED placeholders (skeletons, grounds, spinner dots, the stale-strip

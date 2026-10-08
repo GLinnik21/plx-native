@@ -383,13 +383,21 @@ pub fn capture<R>(f: impl FnOnce() -> R) -> (R, Frame) {
 /// real draw code runs end to end and the counter sees what it would on a frame.
 #[cfg(any(test, feature = "test-support"))]
 pub fn capture_declared<R>(f: impl FnOnce() -> R) -> (R, Frame) {
+    declared(|| capture(f))
+}
+
+/// [`capture_declared`]'s walk without the arming: `f` runs inside a discovery walk and the counter
+/// stays as the caller left it (unarmed, the shipping state), for a test of what a draw does when
+/// nothing is listening.
+#[cfg(any(test, feature = "test-support"))]
+pub fn declared<R>(f: impl FnOnce() -> R) -> R {
     use crate::frame::backdrop::{self, Sources, Z};
     use std::{cell::RefCell, rc::Rc};
     let sources = Rc::new(RefCell::new(Sources::default()));
     sources.borrow_mut().begin(vec![]);
     let _walk = backdrop::discover(sources);
     let _page = backdrop::layer(Z::page(1), false);
-    capture(f)
+    f()
 }
 
 /// **Count one placeholder DRAW.** Call it where the placeholder is painted, with the painter that
@@ -453,6 +461,17 @@ pub fn painter(p: Painter) -> Painter {
 
 /// True in a build whose placeholders are sentinel-painted.
 pub const SENTINEL: bool = cfg!(feature = "placeholder-sentinel");
+
+/// **Can this draw's placeholder accounting be seen at all?** `note`, `note_absent` and `ink` record
+/// only when armed, and `ink` changes the colour only in the sentinel build, so these are the only
+/// two ways a caller's choice between them is observable. A caller that must do real work to choose
+/// (the hero logo's settled-miss peek is a lock and a slot scan) asks this first and skips the work
+/// otherwise. In a shipping build [`SENTINEL`] is a `const false`, so this is [`armed`]'s one
+/// relaxed atomic load (the thread-local read behind it only when some thread is armed).
+#[inline]
+pub fn accounting_visible() -> bool {
+    SENTINEL || armed()
+}
 
 /// The sentinel's alpha is 1: the guarantee that blending leaves the exact value.
 pub const fn sentinel_alpha_is_one() -> bool {
