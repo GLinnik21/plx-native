@@ -109,7 +109,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         sid,
         rk: rk.into(),
         keys: vec![], next_elem: FIRST_ITEM_ELEM, key_by_local: Default::default(),
-        local_by_key: Default::default(), return_pending: false,
+        local_by_key: Default::default(), gone: Default::default(), return_pending: false,
         pending_season: None,
         season_settle: 0.0,
         preview_dwell: 0.0,
@@ -859,6 +859,74 @@ fn a_crew_only_item_still_gets_the_cast_and_crew_shelf() {
     let screen = bare(&_guard, ServerId::UNSET, "show");
     let (sections, n) = screen.sections(Some(&d));
     assert!(sections[..n].contains(&4));
+}
+
+/// A card shelf's focused card vanishing lands on the same place in THAT shelf, not on the hero.
+/// `fill` writes the shelf's cards (one per name) into a Detail; `elem` is the shelf's local key.
+fn shelf_recovery(fill: fn(&mut Detail, &[&str]), elem: fn(usize) -> Option<u32>) {
+    let sid = ServerId::UNSET;
+    let names = ["a", "b", "c", "d", "e"];
+    let shelf = |names: &[&str]| {
+        let mut d = detail(sid, "show");
+        fill(&mut d, names);
+        d
+    };
+    let _guard = install(shelf(&names));
+    let mut screen = bare(&_guard, sid, "show");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let at = |screen: &DetailScreen, i: usize| screen.engine_key(elem(i).unwrap()).unwrap();
+    let want = FocusKey { entry: EntryId(7), elem: at(&screen, 3) };
+    let publish = |screen: &mut DetailScreen, d: Detail| {
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+        screen.sync_keys(test_store().view());
+    };
+    let recovered = |screen: &DetailScreen| Focusable::<TestHost>::reconcile(screen, want, &cx(&measure, None)).elem;
+
+    // the card moved: still there, so still focused
+    publish(&mut screen, shelf(&["d", "a"]));
+    assert_eq!(recovered(&screen), want.elem, "a card still on the shelf keeps focus when its index moves");
+    // the card is gone and the shelf shrank past its index: the last card of the shelf
+    publish(&mut screen, shelf(&names));
+    publish(&mut screen, shelf(&["a", "b", "c"]));
+    assert_eq!(recovered(&screen), at(&screen, 2), "the same index clamped to the shelf's new length");
+    // the card is gone but its index survives: whoever now stands there
+    publish(&mut screen, shelf(&names));
+    publish(&mut screen, shelf(&["a", "b", "c", "x", "e"]));
+    assert_eq!(recovered(&screen), at(&screen, 3), "the same index in the shelf");
+    // the shelf emptied: the page's fallback
+    publish(&mut screen, shelf(&names));
+    publish(&mut screen, shelf(&[]));
+    assert_eq!(recovered(&screen), hero::ELEM_PLAY, "an emptied shelf falls to the hero");
+    clear();
+}
+
+#[test]
+fn a_vanished_related_card_falls_to_the_same_place_in_the_shelf() {
+    shelf_recovery(
+        |d, names| d.related = names.iter().map(|rk| plx_data::metadata::Related { rk: (*rk).into(), ..Default::default() }).collect(),
+        related::elem,
+    );
+}
+
+#[test]
+fn a_vanished_extra_falls_to_the_same_place_in_the_shelf() {
+    shelf_recovery(
+        |d, names| d.extras = names.iter().map(|rk| plx_data::metadata::Extra { rk: (*rk).into(), ..Default::default() }).collect(),
+        extras::elem,
+    );
+}
+
+#[test]
+fn a_vanished_credit_falls_to_the_same_place_in_the_shelf() {
+    shelf_recovery(
+        |d, names| {
+            d.cast = names
+                .iter()
+                .map(|key| plx_data::metadata::Cast { tag: (*key).into(), role: String::new(), thumb: String::new(), id: 0, tag_key: (*key).into() })
+                .collect()
+        },
+        cast::elem,
+    );
 }
 
 #[test]

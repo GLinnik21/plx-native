@@ -661,7 +661,7 @@ impl<H: SearchLike> Focusable<H> for SearchScreen {
             let len = if old.group == RECENTS_GROUP { self.recents.len() } else {
                 self.rows.iter().find(|row| row.group == old.group).map_or(0, |row| row.elems.len())
             };
-            if let Some(elem) = self.elem_at(old.group, old.slot.min(len.saturating_sub(1))) { return self.key(elem); }
+            if let Some(elem) = plx_ui::cards::clamp_slot(old.slot, len).and_then(|slot| self.elem_at(old.group, slot)) { return self.key(elem); }
         }
         self.key(FIELD)
     }
