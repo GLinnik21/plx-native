@@ -193,7 +193,7 @@ impl Seen {
 /// before it), not because focus moved: the section carried its pop to `to`, snapped the tile it
 /// left to rest and shifted its scroll so the tile stayed where it was on screen. Readable through
 /// [`Shelf::landed`] / [`Grid::landed`] for the tick that did it, so an owner that scrolls a page
-/// around the section (a later `Stack`) can shift by the same amount.
+/// around the section (a `Stack`) can shift by the same amount.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Landed {
     pub from: usize,

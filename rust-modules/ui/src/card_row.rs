@@ -1,17 +1,15 @@
 //! `CardRow` — the shared animated poster-shelf component.
 //!
-//! Extracts the home shelf's per-row animation state (a focus-scale [`Spring`] per cell + a
-//! horizontal scroll spring) and its tile rendering (poster + big glow focus ring + resume bar +
-//! centered title) into ONE reusable widget, so the home `Grid` and the detail Related row are
-//! literally the same component — [`RowStyle::HOME`] is the single source of the shelf's motion and
-//! geometry that both screens read.
+//! The spring-and-tile primitive under [`cards::Shelf`](crate::cards::Shelf), `pub(crate)` L0: a
+//! focus-scale [`Spring`] per cell and a horizontal scroll spring, with the tile rendering (poster,
+//! big glow focus ring, resume bar, centered title). [`RowStyle::HOME`] is the single source of
+//! the shelf's motion and geometry.
 //!
-//! What stays per-caller is only the x/`base_y` positioning loop, because home threads `env.sp` and
-//! splits the loop across the `Grid`'s two-pass **cross-row** focused-last z-order (invariant #3 in
-//! `ui/CLAUDE.md`) — which a lone detail row doesn't have. So `CardRow` deliberately owns spring
-//! state + the leaf tile draws, and NEVER draws a whole row or applies an in-row focused-last pass
-//! on a caller's behalf. It's decoupled from any focus globals / catalog: focus is a plain
-//! `Option<usize>`, the item art is a [`Art`] the caller supplies.
+//! The x/`base_y` positioning loop, the cull and the stops are the Shelf's; `CardRow` owns spring state and
+//! the leaf tile draws and never draws a whole row itself. A screen never names it: it implements
+//! `CardSource` and hands the content to `cards::Shelf` / `cards::Grid`. It is decoupled from any
+//! focus globals / catalog: focus is a plain `Option<usize>`, the item art is a [`Art`] the caller
+//! supplies.
 use crate::consts::*;
 use crate::theme;
 use crate::tile::{TileFacts, TileKind};

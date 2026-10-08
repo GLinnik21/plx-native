@@ -25,10 +25,11 @@ use crate::{Painter, Rect, Spring};
 /// Who owns the grid's vertical scroll.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScrollMode {
-    /// The grid springs its own scroll toward the row it snaps to (the Collection page).
+    /// The grid springs its own scroll toward the row it snaps to. No screen runs it: every
+    /// shipped grid is [`ScrollMode::External`], under the Library's scroll or a `Stack`'s.
     Own,
-    /// The grid sits in a document whose page scroll another owner drives (the Library's All grid, a later
-    /// `Stack`): the grid never steps or snaps a scroll of its own. The owner hands it the page
+    /// The grid sits in a document whose page scroll another owner drives (the Library's All grid, every grid
+    /// section of a `Stack`): the grid never steps or snaps a scroll of its own. The owner hands it the page
     /// with [`Grid::set_page`] before every `on` / `draw` / `place` call, reads the scroll the grid
     /// WANTS for its focused row from [`Grid::reveal_target`], and the document shift a content
     /// landing needs from [`Grid::landed_shift`]. `top` is then the first row's top in DOCUMENT
