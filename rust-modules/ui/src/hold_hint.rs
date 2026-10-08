@@ -28,10 +28,12 @@
 //! the stack steps it, answers `focus` and `settled` from its own placement, and draws it last);
 //! a page without a stack builds `HintInput` with [`HintInput::for_placed`].
 //!
-//! **Spent means spent.** The latch is taken on the FIRST FRAME the hint stands, not when its life
-//! ends: a viewer who rests 1.6 s on a card and moves on has used the kind's one showing on a few
-//! frames of fade-in. That is accepted (a hint that never stood spends nothing). Pausing on the
-//! same card (the page scrolls under it, a relayout) ends the resting place and with it the
+//! **Spent means read.** The latch is taken once the hint has stood at full opacity ([`FULL`])
+//! for [`READ_MS`] without interruption, not when it starts to appear and not when its life ends:
+//! a viewer who rests 1.6 s on a card and moves on mid-fade, or a beat after it landed, saw a
+//! flicker rather than read it, so the kind stays unspent and the hint returns the next time its
+//! conditions hold (after the same dwell). Once a showing has been read, pausing
+//! on the same card (the page scrolls under it, a relayout) ends the resting place and with it the
 //! claim, so the hint does not get a second dwell either.
 //!
 //! **Retired cost.** A page asks [`HoldHint::wants_input`] before building its [`HintInput`] (a card
@@ -129,6 +131,11 @@ const K_RISE: f32 = 150.0;
 pub const RELEASE_S: f32 = 0.2;
 /// Below this opacity nothing is drawn and the capsule counts as hidden.
 const VISIBLE: f32 = 0.004;
+/// The opacity at which the fade-in counts as complete: the point a once-per-run showing is spent.
+const FULL: f32 = 0.98;
+/// How long the capsule must have stood at [`FULL`] opacity, uninterrupted, before a once-per-run
+/// showing counts as read and is spent (a viewer who moves a beat after it lands has not read it).
+pub const READ_MS: u32 = 1000;
 
 // ---- "has the viewer learned it" -----------------------------------------------------------------
 //
@@ -248,10 +255,15 @@ pub struct HoldHint {
     /// `Some(kind)` on a non-Home card screen: the self-appearing hint then stands at most once per
     /// kind per run ([`HoldHint::once_per_run`]). `None` is Home's rule, unchanged.
     once: Option<Kind>,
-    /// This instance is the one that took its kind's single showing, for the resting place it is
-    /// standing on (cleared wherever the rest is: a focus move or a frame that is not settled,
-    /// after which the latch alone answers).
+    /// This instance is standing for its kind's single showing, for the resting place it is on
+    /// (cleared wherever the rest is: a focus move or a frame that is not settled). The latch is
+    /// only taken once the hint has stood in full ([`FULL`]) for [`READ_MS`]; a claim cleared
+    /// before that spends nothing.
     claimed: bool,
+    /// The tick clock at which this instance's fade-in completed ([`FULL`]) while it held the
+    /// claim; `None` before that, and cleared with the claim. The kind is spent once it has stood
+    /// in full for [`READ_MS`].
+    full_at: Option<u32>,
     fade: Spring,
     rise: Spring,
     /// The cap's fill fraction as drawn: follows the hold exactly while held, drains while not.
@@ -268,11 +280,11 @@ impl HoldHint {
     /// The rarer cadence for a non-Home card screen of `kind`.
     ///
     /// Same schedule as [`new`](Self::new) (dwell, life, a held OK shows it with its fill), except
-    /// that the self-appearing hint stands at most ONCE PER `kind` PER RUN: the first time it
-    /// stands on any page of that kind it takes the kind's latch, and no page of that kind stands
-    /// it on its own again until the process restarts. An opened item menu ([`learned`]) retires
-    /// it as everywhere. Taking the latch is what shows it, so a hint that never stood spends
-    /// nothing.
+    /// that the self-appearing hint stands at most ONCE PER `kind` PER RUN: the first time its
+    /// hint has stood in full for [`READ_MS`] on any page of that kind it takes the kind's latch, and no page of that
+    /// kind stands it on its own again until the process restarts. An opened item menu
+    /// ([`learned`]) retires it as everywhere. A hint that never stood, or whose showing was cut
+    /// short by a focus move before it had been readable, spends nothing and is offered again after the dwell.
     pub const fn once_per_run(kind: Kind) -> Self {
         let mut h = Self::new();
         h.once = Some(kind);
@@ -280,7 +292,7 @@ impl HoldHint {
     }
 
     pub const fn new() -> Self {
-        Self { key: None, rest_at: None, spent: false, once: None, claimed: false, fade: Spring::at(0.0), rise: Spring::at(0.0), fill: 0.0 }
+        Self { key: None, rest_at: None, spent: false, once: None, claimed: false, full_at: None, fade: Spring::at(0.0), rise: Spring::at(0.0), fill: 0.0 }
     }
 
     /// Advance one frame — the owner's whole per-`Tick` job. `note` receives [`PresentEvent::Motion`]
@@ -293,12 +305,14 @@ impl HoldHint {
             self.rest_at = None;
             self.spent = false;
             self.claimed = false;
+            self.full_at = None;
         }
         let mut rested_ms = 0;
         if focus.is_none() || !input.settled {
             self.rest_at = None;
             // the resting place is over, so is any showing it took: it is not resumed
             self.claimed = false;
+            self.full_at = None;
         } else if !self.spent {
             let at = *self.rest_at.get_or_insert(now_ms);
             rested_ms = now_ms.wrapping_sub(at);
@@ -310,13 +324,24 @@ impl HoldHint {
         let hold = input.hold.filter(|_| focus.is_some());
         let may = self.once.is_none_or(|kind| self.claimed || !shown_this_run(kind));
         let standing = may && focus.is_some() && !self.spent && self.rest_at.is_some() && rested_ms >= DWELL_MS;
-        if let (true, Some(kind)) = (standing, self.once) {
+        if let (true, Some(_)) = (standing, self.once) {
             self.claimed = true;
-            mark_shown(kind);
         }
         let show = hold.is_some() || standing;
 
         self.fade.step(if show { 1.0 } else { 0.0 }, K_FADE, dt);
+        // the kind's one showing is spent only once it could be read: the fade-in has completed
+        // while this instance holds the claim (an interrupted fade-in clears the claim and spends
+        // nothing, so the kind is offered again)
+        match (self.claimed && self.fade.pos >= FULL, self.once) {
+            (true, Some(kind)) => {
+                let at = *self.full_at.get_or_insert(now_ms);
+                if now_ms.wrapping_sub(at) >= READ_MS {
+                    mark_shown(kind);
+                }
+            }
+            _ => self.full_at = None,
+        }
         if show {
             self.rise.step(1.0, K_RISE, dt);
         } else if self.fade.pos <= VISIBLE {
@@ -682,7 +707,7 @@ mod tests {
     fn a_once_per_run_hint_stands_once_then_never_again_on_its_kind() {
         let (_g, _) = fresh();
         let mut h = HoldHint::once_per_run(Kind::Collection);
-        run(&mut h, rested(7), secs(2.5));
+        run(&mut h, rested(7), secs(3.5));
         assert!(h.visible(), "the first time on a Collection page it teaches like Home's");
         assert!(shown_this_run(Kind::Collection));
         run(&mut h, rested(7), secs(9.0));
@@ -694,6 +719,58 @@ mod tests {
         let mut again = HoldHint::once_per_run(Kind::Collection);
         run(&mut again, rested(7), secs(5.0));
         assert!(!again.visible(), "nor does a second Collection page");
+    }
+
+    #[test]
+    fn a_fade_in_cut_short_leaves_the_kind_unspent_and_the_hint_comes_back() {
+        let (_g, _) = fresh();
+        let mut h = HoldHint::once_per_run(Kind::Collection);
+        // just past the dwell: the capsule is part-way through its fade-in
+        run(&mut h, rested(7), secs(1.5) + 6);
+        assert!(h.visible() && h.opacity() < 0.9, "control: it is mid-fade, opacity {}", h.opacity());
+        // focus moves before it ever reached full opacity
+        run(&mut h, rested(8), secs(1.0));
+        assert!(!h.visible());
+        assert!(!shown_this_run(Kind::Collection), "a showing nobody could read is not spent");
+        // the same kind, rested again for the same settle delay: offered again, and now fully
+        run(&mut h, rested(8), secs(0.4));
+        assert!(!h.visible(), "1.4 s into the new rest it is still waiting out the dwell");
+        run(&mut h, rested(8), secs(2.0));
+        assert!(h.opacity() > 0.9, "and stands in full");
+        assert!(shown_this_run(Kind::Collection), "a complete showing is spent");
+    }
+
+    #[test]
+    fn a_move_a_beat_after_full_opacity_leaves_the_kind_unspent() {
+        let (_g, _) = fresh();
+        let mut h = HoldHint::once_per_run(Kind::Person);
+        // step to full opacity, then keep it there for 0.3 s only
+        run(&mut h, rested(7), secs(1.5));
+        let mut n = 0;
+        while h.opacity() < FULL && n < secs(3.0) {
+            run(&mut h, rested(7), 1);
+            n += 1;
+        }
+        assert!(h.opacity() >= FULL, "control: it reached full opacity");
+        run(&mut h, rested(7), secs(0.3));
+        assert!(!shown_this_run(Kind::Person), "0.3 s at full is a glimpse, not a reading");
+        run(&mut h, rested(8), secs(1.0));
+        assert!(!h.visible());
+        run(&mut h, rested(8), secs(3.0));
+        assert!(h.opacity() > 0.9, "it is offered again");
+        assert!(shown_this_run(Kind::Person), "and a full reading spends the kind");
+    }
+
+    #[test]
+    fn a_complete_showing_is_not_offered_again_after_a_move() {
+        let (_g, _) = fresh();
+        let mut h = HoldHint::once_per_run(Kind::Search);
+        run(&mut h, rested(7), secs(3.5));
+        assert!(h.opacity() > 0.9 && shown_this_run(Kind::Search));
+        run(&mut h, rested(8), secs(1.0));
+        assert!(!h.visible());
+        run(&mut h, rested(8), secs(5.0));
+        assert!(!h.visible(), "one full showing is the kind's one");
     }
 
     #[test]
@@ -734,7 +811,7 @@ mod tests {
     fn a_pause_in_rest_on_the_same_card_does_not_give_the_kind_a_second_showing() {
         let (_g, _) = fresh();
         let mut h = HoldHint::once_per_run(Kind::Library);
-        run(&mut h, rested(7), secs(2.5));
+        run(&mut h, rested(7), secs(3.5));
         assert!(h.visible(), "control: the first showing");
         // the page moves under the same focus (wheel scroll, relayout), then rests again
         run(&mut h, HintInput { settled: false, ..rested(7) }, secs(1.0));
@@ -752,7 +829,7 @@ mod tests {
         assert!(fresh_kind.wants_input(false), "its kind has not shown yet: it may need to stand");
         // A kind that has been shown this run, held by nobody.
         let mut spent = HoldHint::once_per_run(Kind::Collection);
-        run(&mut spent, rested(7), secs(2.5));
+        run(&mut spent, rested(7), secs(3.5));
         assert!(spent.wants_input(false), "it holds the claim and is standing");
         run(&mut spent, HintInput::default(), secs(2.0));
         assert!(!spent.visible() && spent.fill() == 0.0);

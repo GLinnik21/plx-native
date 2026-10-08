@@ -1371,7 +1371,7 @@ fn the_hold_hint_stands_on_a_resting_result_card_once_per_run() {
     let field = Some(screen.key(FIELD));
     rest(&mut screen, field, 4.0);
     assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Search), "never on the field");
-    rest(&mut screen, card, 1.6);
+    rest(&mut screen, card, 3.6);
     assert!(screen.stack.hint_visible(), "after the dwell, on a settled card");
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
     assert!(!screen.stack.hint_visible(), "a menu taking focus hides it");
