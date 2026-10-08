@@ -1,0 +1,6 @@
+r1c2 shrunk -> r1c0
+r1c2 dropped -> r0c2
+r3c11 shrunk -> r3c3
+r3c11 dropped -> field
+r0c8 shrunk -> r0c4
+r0c8 dropped -> field

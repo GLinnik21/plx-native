@@ -1034,3 +1034,221 @@ fn dismissing_a_hold_menu_and_moving_leaves_no_stale_lift() {
     assert!(old < full - 0.001 && old >= 1.0, "the old opener is letting go, not held at full pop: {old}");
     assert!(new < full - 0.001, "the new card grows from rest: {new}");
 }
+
+// ---- characterization: the page's focus model, pinned before it moves under `Stack` -----------
+
+/// What the hand-written page does today, as text: the focus groups and their policies, the
+/// neighbour of every element on every edge, the seats, where each element is placed at rest, the
+/// scroll after walking the shelves down and back, what a return from Detail restores and how a
+/// replaced result set reconciles. The expectations are the behaviour of the page before it was a
+/// `Stack` page; they change only when Search's behaviour is meant to.
+mod characterization {
+    use super::*;
+
+    /// The page's elements in document order, by whatever the page keeps them in.
+    fn content(screen: &SearchScreen) -> (Vec<u32>, Vec<Vec<u32>>) {
+        (screen.recents.clone(), screen.rows.iter().map(|row| row.elems.clone()).collect())
+    }
+
+    fn f(v: f32) -> String { format!("{:.1}", if v == 0.0 { 0.0 } else { v }) }
+    fn r(rect: Rect) -> String { format!("[{} {} {} {}]", f(rect.x), f(rect.y), f(rect.w), f(rect.h)) }
+
+    fn groups(screen: &SearchScreen, fixture: &Fixture, focus: Option<FocusKey<u32>>) -> String {
+        let mut out = Vec::new();
+        <SearchScreen as Focusable<HostFixture>>::groups(screen, &fixture.cx(focus), &mut out);
+        out.iter()
+            .map(|g| format!("{:#x} {:?} seat={:?} edge={:?} len={} elem={:?} extent={}", g.id.0, g.kind, g.seat, g.edge, g.len, g.elem, r(g.extent)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn name(elem: u32, screen: &SearchScreen) -> String {
+        let (recents, rows) = content(screen);
+        if elem == FIELD { return "field".into(); }
+        if elem == CLEAR { return "clear".into(); }
+        if let Some(i) = recents.iter().position(|e| *e == elem) { return format!("recent{i}"); }
+        for (row, elems) in rows.iter().enumerate() {
+            if let Some(i) = elems.iter().position(|e| *e == elem) { return format!("r{row}c{i}"); }
+        }
+        format!("?{elem}")
+    }
+
+    fn neighbours(screen: &SearchScreen, fixture: &Fixture, elems: &[u32]) -> String {
+        let mut lines = Vec::new();
+        for &elem in elems {
+            let key = screen.key(elem);
+            let cx = fixture.cx(Some(key));
+            let at = |dir| match <SearchScreen as Focusable<HostFixture>>::neighbour(screen, key, dir, &cx) {
+                Step::Move(k) => name(k.elem, screen),
+                Step::Edge => "-".into(),
+                #[allow(unreachable_patterns)]
+                _ => "other".into(),
+            };
+            lines.push(format!("{}: up={} down={} left={} right={}", name(elem, screen),
+                at(Dir::Up), at(Dir::Down), at(Dir::Left), at(Dir::Right)));
+        }
+        lines.join("\n")
+    }
+
+    fn all_elems(screen: &SearchScreen) -> Vec<u32> {
+        let (recents, rows) = content(screen);
+        let mut v = vec![FIELD];
+        v.extend(recents.iter().copied());
+        if !recents.is_empty() { v.push(CLEAR); }
+        v.extend(rows.into_iter().flatten());
+        v
+    }
+
+    fn placed(screen: &SearchScreen, fixture: &Fixture, focus: Option<FocusKey<u32>>, elems: &[u32], at: At) -> String {
+        elems.iter().map(|&e| {
+            match <SearchScreen as Focusable<HostFixture>>::place(screen, &e, &fixture.cx(focus), at) {
+                Some(p) => format!("{}: rect={} rest={} clip={} index={:?}", name(e, screen), r(p.rect), r(p.rest_rect), r(p.clip), p.index),
+                None => format!("{}: none", name(e, screen)),
+            }
+        }).collect::<Vec<_>>().join("\n")
+    }
+
+    fn seats(screen: &SearchScreen, fixture: &Fixture, focus: Option<FocusKey<u32>>, gs: &[GroupId], from: Placed) -> String {
+        gs.iter().map(|&g| {
+            let k = <SearchScreen as Focusable<HostFixture>>::seat(screen, g, from, &fixture.cx(focus));
+            format!("{:#x} -> {}", g.0, name(k.elem, screen))
+        }).collect::<Vec<_>>().join("\n")
+    }
+
+    fn settle(screen: &mut SearchScreen, fixture: &Fixture, engine: &FocusEngine<u32>) {
+        for i in 0..180 { frame(screen, fixture, engine, 1000 + i); }
+    }
+
+    fn recents_fixture() -> (plx_plex::plex::session::TempSession, Fixture) {
+        (remembering("characterization-recents", &["gromit", "wallace", "preston", "feathers"]), Fixture::new())
+    }
+
+    fn shelves_fixture() -> Fixture {
+        let mut fixture = Fixture::new();
+        fixture.query("many").shelves(vec![shelf(Kind::Movie, "m", 9), shelf(Kind::Show, "s", 3),
+            shelf(Kind::Episode, "e", 7), shelf(Kind::Person, "p", 12), shelf(Kind::Collection, "c", 4)]);
+        fixture
+    }
+
+    #[test]
+    fn the_recents_page_groups_neighbours_and_places() {
+        let _serial = plx_base::testlock::serial();
+        let (_session, fixture) = recents_fixture();
+        let screen = fixture.screen();
+        let field = Some(screen.key(FIELD));
+        let elems = all_elems(&screen);
+        let from = <SearchScreen as Focusable<HostFixture>>::place(&screen, &FIELD, &fixture.cx(field), At::Drawn).unwrap();
+        let got = [groups(&screen, &fixture, field), neighbours(&screen, &fixture, &elems),
+            placed(&screen, &fixture, field, &elems, At::Drawn), placed(&screen, &fixture, field, &elems, At::SpringTarget),
+            seats(&screen, &fixture, field, &[FIELD_GROUP, RECENTS_GROUP, CLEAR_GROUP], from)].join("\n--\n");
+        assert_eq!(got, include_str!("characterization/recents.txt").trim_end());
+        let mut links = links(&screen).iter().map(|l| format!("{:#x} {:?} {:#x}", l.from.0, l.dir, l.to.0)).collect::<Vec<_>>();
+        links.sort();
+        assert_eq!(links.join("\n"), include_str!("characterization/recents_links.txt").trim_end());
+        // a seat from a card-less place (anywhere but the field) enters at the first element
+        let down = <SearchScreen as Focusable<HostFixture>>::seat(&screen, RECENTS_GROUP, from, &fixture.cx(Some(screen.key(CLEAR))));
+        assert_eq!(name(down.elem, &screen), "recent0");
+    }
+
+    #[test]
+    fn the_results_page_groups_neighbours_and_places() {
+        let _serial = plx_base::testlock::serial();
+        let fixture = shelves_fixture();
+        let screen = fixture.screen();
+        let field = Some(screen.key(FIELD));
+        let elems = all_elems(&screen);
+        let from = <SearchScreen as Focusable<HostFixture>>::place(&screen, &FIELD, &fixture.cx(field), At::Drawn).unwrap();
+        let gids: Vec<GroupId> = [FIELD_GROUP].into_iter().chain((0..5).map(|i| GroupId(0x5345_4200 + i))).collect();
+        let got = [groups(&screen, &fixture, field), neighbours(&screen, &fixture, &elems),
+            placed(&screen, &fixture, field, &elems, At::Drawn), seats(&screen, &fixture, field, &gids, from)].join("\n--\n");
+        assert_eq!(got, include_str!("characterization/results.txt").trim_end());
+        let mut links = links(&screen).iter().map(|l| format!("{:#x} {:?} {:#x}", l.from.0, l.dir, l.to.0)).collect::<Vec<_>>();
+        links.sort();
+        assert_eq!(links.join("\n"), include_str!("characterization/results_links.txt").trim_end());
+    }
+
+    /// Walk ▼ through every shelf (settling each stop) and back ▲: the scroll at rest, where the
+    /// focused tile is placed, and that the field and the first shelf come back where they were.
+    #[test]
+    fn walking_down_through_every_shelf_and_back_scrolls_and_places_as_it_did() {
+        let _serial = plx_base::testlock::serial();
+        let fixture = shelves_fixture();
+        let mut screen = fixture.screen();
+        let mut engine = seated(&screen, &fixture);
+        let mut lines = Vec::new();
+        let mut record = |screen: &mut SearchScreen, engine: &FocusEngine<u32>, what: &str| {
+            settle(screen, &fixture, engine);
+            let focus = engine.current(OWNER);
+            let elem = focus.unwrap().elem;
+            let p = <SearchScreen as Focusable<HostFixture>>::place(screen, &elem, &fixture.cx(focus), At::Drawn).unwrap();
+            let field = <SearchScreen as Focusable<HostFixture>>::place(screen, &FIELD, &fixture.cx(focus), At::Drawn).unwrap();
+            lines.push(format!("{what}: {} scroll={} rect={} rest={} field_y={}", name(elem, screen), f(screen.scroll.pos), r(p.rect), r(p.rest_rect), f(field.rect.y)));
+        };
+        record(&mut screen, &engine, "start");
+        for _ in 0..5 {
+            step_dir(&mut screen, &fixture, &mut engine, Dir::Down);
+            record(&mut screen, &engine, "down");
+        }
+        step_dir(&mut screen, &fixture, &mut engine, Dir::Right);
+        record(&mut screen, &engine, "right");
+        for _ in 0..5 {
+            step_dir(&mut screen, &fixture, &mut engine, Dir::Up);
+            record(&mut screen, &engine, "up");
+        }
+        assert_eq!(lines.join("\n"), include_str!("characterization/walk.txt").trim_end());
+    }
+
+    #[test]
+    fn a_return_from_detail_restores_the_scroll_the_shelves_and_the_focus() {
+        let _serial = plx_base::testlock::serial();
+        let fixture = shelves_fixture();
+        let mut screen = fixture.screen();
+        let mut engine = seated(&screen, &fixture);
+        for _ in 0..3 { step_dir(&mut screen, &fixture, &mut engine, Dir::Down); }
+        let deep = engine.current(OWNER).unwrap();
+        for _ in 0..3 { step_dir(&mut screen, &fixture, &mut engine, Dir::Right); }
+        let focus = engine.current(OWNER).unwrap();
+        settle(&mut screen, &fixture, &engine);
+        let before = placed(&screen, &fixture, Some(focus), &[focus.elem], At::Drawn);
+        let memory = Screen::<HostFixture>::memory_at(&screen, Some(focus));
+
+        let mut fresh = SearchScreen::new(ENTRY, INSTANCE);
+        deliver(&mut fresh, &fixture, None, ScreenEvent::RestoreMemory(memory));
+        deliver(&mut fresh, &fixture, Some(focus), ScreenEvent::Mount);
+        let reconciled = <SearchScreen as Focusable<HostFixture>>::reconcile(&fresh, focus, &fixture.cx(Some(focus)));
+        assert_eq!(reconciled, focus, "the tile that was focused is the tile that comes back");
+        let mut engine = FocusEngine::new();
+        engine.set(OWNER, focus, None, By::Restore);
+        for i in 0..4 { frame(&mut fresh, &fixture, &engine, i); }
+        assert_eq!(name(deep.elem, &fresh), name(deep.elem, &screen));
+        let got = format!("scroll={} target={}\n{}", f(fresh.scroll.pos), f(fresh.scroll_target),
+            placed(&fresh, &fixture, Some(focus), &[focus.elem], At::Drawn));
+        assert_eq!(got.lines().last().unwrap(), before, "the restored page puts the tile where it stood");
+        assert_eq!(got.lines().next().unwrap(), include_str!("characterization/restore.txt").trim_end());
+    }
+
+    #[test]
+    fn replacing_the_results_under_focus_reconciles_to_the_same_slot_else_the_field() {
+        let _serial = plx_base::testlock::serial();
+        let mut fixture = shelves_fixture();
+        let mut screen = fixture.screen();
+        let mut out = Vec::new();
+        for (elem_of, label) in [((1usize, 2usize), "r1c2"), ((3, 11), "r3c11"), ((0, 8), "r0c8")] {
+            let want = screen.key(content(&screen).1[elem_of.0][elem_of.1]);
+            // the same query with fewer items in every shelf, then with a shelf gone
+            fixture.shelves(vec![shelf(Kind::Movie, "m", 5), shelf(Kind::Show, "s", 1),
+                shelf(Kind::Episode, "e", 7), shelf(Kind::Person, "p", 4), shelf(Kind::Collection, "c", 4)]);
+            deliver(&mut screen, &fixture, Some(want), ScreenEvent::StoreChanged(StoreId::Search.ord(), 0));
+            let shrunk = <SearchScreen as Focusable<HostFixture>>::reconcile(&screen, want, &fixture.cx(Some(want)));
+            out.push(format!("{label} shrunk -> {}", name(shrunk.elem, &screen)));
+            fixture.shelves(vec![shelf(Kind::Show, "s", 3), shelf(Kind::Episode, "e", 7)]);
+            deliver(&mut screen, &fixture, Some(want), ScreenEvent::StoreChanged(StoreId::Search.ord(), 0));
+            let gone = <SearchScreen as Focusable<HostFixture>>::reconcile(&screen, want, &fixture.cx(Some(want)));
+            out.push(format!("{label} dropped -> {}", name(gone.elem, &screen)));
+            fixture.shelves(vec![shelf(Kind::Movie, "m", 9), shelf(Kind::Show, "s", 3),
+                shelf(Kind::Episode, "e", 7), shelf(Kind::Person, "p", 12), shelf(Kind::Collection, "c", 4)]);
+            deliver(&mut screen, &fixture, None, ScreenEvent::StoreChanged(StoreId::Search.ord(), 0));
+        }
+        assert_eq!(out.join("\n"), include_str!("characterization/reconcile.txt").trim_end());
+    }
+}
