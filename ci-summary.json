@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-08T01:09:30Z",
+ "generated": "2026-10-08T01:14:05Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -24,10 +24,10 @@
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 116,
-   "n_prev": 74,
-   "now": 4.0,
-   "prev7": 959.0,
+   "n_now": 115,
+   "n_prev": 75,
+   "now": 4,
+   "prev7": 960,
    "state": "better",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
@@ -162,16 +162,16 @@
    "unit": "s"
   },
   {
-   "change30_pct": 114.1,
-   "change7_pct": -7.9,
+   "change30_pct": 115.6,
+   "change7_pct": -7.1,
    "d30": 128,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 116,
-   "n_prev": 74,
-   "now": 274.0,
-   "prev7": 297.5,
+   "n_now": 115,
+   "n_prev": 75,
+   "now": 276,
+   "prev7": 297,
    "state": "flat",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
@@ -322,16 +322,16 @@
    "unit": "s"
   },
   {
-   "change30_pct": 267.2,
-   "change7_pct": -9.4,
+   "change30_pct": 266.4,
+   "change7_pct": -9.7,
    "d30": 235,
    "group": "ci",
    "id": "pr_wait",
    "label": "PR CI wait",
-   "n_now": 202,
-   "n_prev": 177,
-   "now": 863.0,
-   "prev7": 953,
+   "n_now": 201,
+   "n_prev": 178,
+   "now": 861,
+   "prev7": 953.5,
    "state": "flat",
    "threshold_abs": 90.0,
    "threshold_pct": 25.0,
@@ -457,7 +457,7 @@
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "now": 274.0
+   "now": 276
   },
   {
    "group": "ci",
