@@ -180,7 +180,10 @@ class MockPms:
         return [sys.executable, os.path.join(TESTS_DIR, "mock_pms.py"),
                 "--host", self.host, "--port", str(self.port), *self.extra]
 
-    def start(self, timeout=30):
+    def start(self, timeout=120):
+        # A hang guard, not a budget: the poll below returns the moment the mock answers, and 30 s was
+        # not enough for a python interpreter to start on a 3-core runner that was also compiling
+        # (build-bench run 37703389591: "mock_pms did not answer ... within 30s").
         if not _port_free(self.host, self.port):
             raise SystemExit(f"refusing to run: something already answers on the configured PMS "
                              f"address ({self.host}:{self.port}); stop it so the harness can start "

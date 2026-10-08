@@ -442,6 +442,22 @@ class PageTest(unittest.TestCase):
         for needle in ("r.conclusion", "attempt", "pull_request", "r.wall", "ci-history.json", "ci-summary.json", "build-history.json"):
             self.assertIn(needle, script)
 
+    def test_the_local_build_charts_judge_noise_per_row_and_show_failures_and_the_runner(self):
+        page = (SITE_CI / "index.html").read_text(encoding="ascii")
+        script = page[page.index("<script>"):]
+        # per row (the record's own `noisy`), never the day-level flag the first record carried
+        self.assertIn("rec.rows[k].noisy", script)
+        self.assertNotIn("r.noisy", script)
+        self.assertNotIn("reported load", page)
+        # a failed step is named on its day, with the recorder's reason
+        for needle in ("failure_notes", "failed on the runner", "BENCH_FAIL_WHAT"):
+            self.assertIn(needle, script)
+        # the runner is described from the record next to the statement that the numbers come from one
+        self.assertIn("benchRunnerText", script)
+        self.assertIn('id="bench-runner"', page)
+        # a lone day still shows its range
+        self.assertIn("a single day has no neighbour", script)
+
     def test_the_hand_entered_milestones_are_gone_from_the_page_and_the_tree(self):
         self.assertNotIn("milestone", (SITE_CI / "index.html").read_text(encoding="ascii").lower())
         self.assertFalse((SITE_CI / "milestones.json").exists())

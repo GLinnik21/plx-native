@@ -3,8 +3,9 @@
 
 Hermetic: synthetic `build-bench --json` documents, files in a temp dir, a fixed clock. Pins what the
 daily job relies on: one record per day (a same-day re-run replaces that day's), a failed benchmark
-writes nothing, a red or unrunnable `check` costs only its own rows, a noisy day is recorded and
-marked rather than dropped, and nothing identifying reaches the file.
+writes nothing, a red or unrunnable `check` (or a red unit suite) costs only its own rows and is named in
+the record, noise is judged per row from the row's own runs (the load warnings are only counted), and
+nothing identifying reaches the file.
 """
 from __future__ import annotations
 
@@ -94,7 +95,8 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(rec["at"], "2026-10-08T04:30:00Z")
         self.assertEqual(rec["commit"], "0123456789ab")
         self.assertEqual(rec["runs"], 3)
-        self.assertEqual((rec["warnings"], rec["noisy"], rec["failed"], rec["workflow_run"]), (0, False, [], 77))
+        self.assertEqual((rec["warnings"], rec["failed"], rec["failure_notes"], rec["workflow_run"]), (0, [], {}, 77))
+        self.assertNotIn("noisy", rec)   # noise is a property of a row, not of a day
         self.assertEqual(list(rec["rows"]), ["noop", "leaf", "screens", "app", "hub", "tests", "check", "check.cargo", "check.python"])
         self.assertEqual({k: v["label"] for k, v in rec["rows"].items()},
                          {"noop": "No-op build", "leaf": "plx_base", "screens": "plx_screens", "app": "app crate",
@@ -102,6 +104,7 @@ class RecordTests(unittest.TestCase):
                           "check.cargo": "make check: cargo branch", "check.python": "make check: python branch"})
         leaf = rec["rows"]["leaf"]
         self.assertEqual((leaf["median"], leaf["min"], leaf["max"], leaf["runs"]), (61.0, 54.9, 73.2, 3))
+        self.assertEqual((leaf["spread"], leaf["noisy"]), (0.3, False))
         self.assertEqual(leaf["title"], "Edit leaf (plx_base cbuf.rs), non-incremental")
         self.assertEqual(rec["rows"]["check"]["runs"], 1)
         self.assertEqual(rec["rows"]["check.cargo"]["median"], 250.0)
@@ -128,12 +131,43 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(bh.row_label("hub-inc", "Edit hub (plx_ui lib.rs), incremental"), "plx_ui hub (incremental)")
         self.assertEqual(bh.row_label("odd", "Something else"), "Something else")
 
-    def test_a_noisy_day_is_recorded_and_marked(self):
-        rec = bh.build_record([main_doc(warnings=["noop run 1: load 9.00 > 3 cores", "leaf run 2: swap 95% used"]), check_doc()],
-                              date="2026-10-08", now=NOW)
-        self.assertTrue(rec["noisy"])
-        self.assertEqual(rec["warnings"], 2)
-        self.assertIn("leaf", rec["rows"])
+    def test_load_warnings_are_counted_and_decide_nothing(self):
+        # On a 3-core runner running a parallel build the load always exceeds the core count (the first
+        # real record carried 18 such warnings), so a day that "was loaded" says nothing about a row.
+        warnings = [f"{sid} run {n}: load 33.00 > 3 cores" for n in (1, 2, 3) for sid in ("noop", "leaf", "app")]
+        rec = bh.build_record([main_doc(warnings=warnings), check_doc()], date="2026-10-08", now=NOW)
+        self.assertEqual(rec["warnings"], 9)
+        self.assertNotIn("noisy", rec)
+        self.assertFalse([k for k, row in rec["rows"].items() if row["noisy"]])
+
+    def test_a_row_is_noisy_when_its_own_runs_disagree(self):
+        def row(median, lo, hi, runs=3):
+            return bh.annotate({"median": median, "min": lo, "max": hi, "runs": runs})
+        self.assertEqual(bh.NOISY_SPREAD, 0.5)
+        self.assertEqual((row(40.0, 20.0, 60.0)["spread"], row(40.0, 20.0, 60.0)["noisy"]), (1.0, True))
+        self.assertFalse(row(40.0, 30.0, 50.0)["noisy"])                 # 50% exactly is not above it
+        self.assertTrue(row(40.0, 30.0, 50.5)["noisy"])
+        self.assertFalse(row(0.33, 0.30, 1.21)["noisy"], "0.9 s on a no-op build is timer granularity")
+        self.assertGreater(row(0.33, 0.30, 1.21)["spread"], 2.0)          # ...though the ratio is huge, and recorded
+        one = row(116.0, 116.0, 116.0, runs=1)
+        self.assertEqual((one["spread"], one["noisy"]), (0.0, False))     # one run has no spread
+        self.assertEqual(bh.annotate({"label": "no numbers"}), {"label": "no numbers"})
+
+    def test_the_first_real_record_classifies_as_documented(self):
+        # run 37694891086 on a 3-core M1 runner: every row's first round ran 40-55% slower than the others
+        def timed(sid, name, med, lo, hi):
+            return scenario(sid, name, med, min=lo, max=hi)
+        doc = main_doc(warnings=["w"] * 18, scenarios=[
+            timed("noop", "No-op host test build", 0.33, 0.3, 1.21),
+            timed("leaf", "Edit leaf (plx_base cbuf.rs), non-incremental", 115.75, 99.7, 139.9),
+            timed("ui", "Edit leaf (plx_ui dwell.rs), non-incremental", 46.97, 46.4, 65.88),
+            timed("screens", "Edit leaf (plx_screens clock_readout.rs), non-incremental", 37.76, 32.52, 52.45),
+            timed("app", "Edit leaf (app coldstart.rs), non-incremental", 18.06, 17.77, 28.0),
+            timed("tests", "Unit suite run (default features)", 53.8, 48.5, 62.61)])
+        rows = bh.build_record([doc], date="2026-10-07", now=NOW)["rows"]
+        self.assertEqual({k: v["spread"] for k, v in rows.items()},
+                         {"noop": 2.758, "leaf": 0.347, "ui": 0.415, "screens": 0.528, "app": 0.566, "tests": 0.262})
+        self.assertEqual(sorted(k for k, v in rows.items() if v["noisy"]), ["app", "screens"])
 
     def test_the_commit_can_be_given_and_documents_must_agree(self):
         rec = bh.build_record([main_doc()], commit="feedfacefeedface0000", date="2026-10-08", now=NOW)
@@ -160,6 +194,34 @@ class FailureTests(unittest.TestCase):
             self.assertIn("leaf", rec["rows"])
             self.assertFalse([k for k in rec["rows"] if k.startswith("check")])
 
+    def test_the_record_says_why_the_gate_was_red_and_nothing_private(self):
+        doc = check_doc(status="failed", failure="check: the gate exited 2: 2 step(s) failed: python3 ci/test_check_elf.py; "
+                                                  "python3 tools/test_check_parallel.py | see /Users/somebody/work/x\nand more " + "x" * 400)
+        rec = bh.build_record([main_doc(), doc], date="2026-10-08", now=NOW)
+        note = rec["failure_notes"]["check"]
+        self.assertTrue(note.startswith("check: the gate exited 2: 2 step(s) failed: python3 ci/test_check_elf.py"))
+        self.assertNotIn("somebody", note)
+        self.assertIn("/Users/~", note)
+        self.assertNotIn("\n", note)
+        self.assertLessEqual(len(note), bh.NOTE_MAX)
+
+    def test_a_red_unit_suite_costs_only_its_own_row(self):
+        red = scenario("tests", "Unit suite run (default features)", 40.0, status="failed",
+                       note="3 unit test(s) failed: a::b, c::d, e::f")
+        red.update(median=40.0, min=36.0, max=48.0)   # a red suite still has times; they are not kept
+        doc = main_doc(scenarios=[s for s in main_doc()["scenarios"] if s["id"] != "tests"] + [red])
+        rec = bh.build_record([doc, check_doc()], date="2026-10-08", now=NOW)
+        self.assertEqual(rec["failed"], ["tests"])
+        self.assertEqual(rec["failure_notes"], {"tests": "3 unit test(s) failed: a::b, c::d, e::f"})
+        self.assertNotIn("tests", rec["rows"])
+        self.assertIn("leaf", rec["rows"])
+        self.assertIn("check", rec["rows"])
+
+    def test_a_run_level_failure_in_a_document_with_build_rows_still_costs_the_day(self):
+        # the exemption is for scenarios that are optional, not for whatever else was in the document
+        with self.assertRaises(bh.Failed):
+            bh.build_record([main_doc(failure="tests: unit suite: no `test result:` line")], date="2026-10-08", now=NOW)
+
     def test_a_check_document_alone_is_not_a_day(self):
         with self.assertRaises(bh.Unusable):
             bh.build_record([check_doc(status="failed")], date="2026-10-08", now=NOW)
@@ -168,6 +230,18 @@ class FailureTests(unittest.TestCase):
 
 
 class MergeTests(unittest.TestCase):
+    def test_every_stored_row_is_judged_again_on_each_write(self):
+        legacy = {"date": "2026-10-07", "at": "2026-10-07T22:44:43Z", "commit": "e494cea2fbec", "runs": 3, "warnings": 18,
+                  "noisy": True, "failed": ["check"], "rows": {
+                      "screens": {"label": "plx_screens", "median": 37.76, "min": 32.52, "max": 52.45, "runs": 3},
+                      "leaf": {"label": "plx_base", "median": 115.75, "min": 99.7, "max": 139.9, "runs": 3}}}
+        doc = bh.merge({"updated": "x", "records": [legacy]}, self.record("2026-10-08"), NOW)
+        old = doc["records"][0]
+        self.assertNotIn("noisy", old)    # the day-level flag of the first record is gone
+        self.assertEqual(old["warnings"], 18)     # ...the raw count stays
+        self.assertEqual((old["rows"]["screens"]["spread"], old["rows"]["screens"]["noisy"]), (0.528, True))
+        self.assertEqual((old["rows"]["leaf"]["spread"], old["rows"]["leaf"]["noisy"]), (0.347, False))
+
     def record(self, date, leaf=61.0):
         doc = main_doc()
         doc["scenarios"][1] = scenario("leaf", "Edit leaf (plx_base cbuf.rs), non-incremental", leaf)

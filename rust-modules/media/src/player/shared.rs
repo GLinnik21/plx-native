@@ -2317,6 +2317,49 @@ pub struct Transport {
     pub seek_reqs: AtomicU32,
 }
 
+/// The instant the user-pause clock reads for a transition or a sample. `Instant::now()`, except
+/// that a host test may pin it for its own thread (`pinned_pause_clock`) so a Pause->Resume
+/// cycle can be given an exact length instead of being slept through.
+fn pause_clock_now() -> Instant {
+    #[cfg(test)]
+    if let Some(pinned) = pinned_pause_clock::read() {
+        return pinned;
+    }
+    Instant::now()
+}
+
+/// A per-thread virtual reading for `pause_clock_now`: time moves only when `advance` is called.
+/// Dropping the guard restores the real clock for the thread.
+#[cfg(test)]
+pub(crate) mod pinned_pause_clock {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        static PINNED: Cell<Option<Instant>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn read() -> Option<Instant> { PINNED.with(Cell::get) }
+
+    pub(crate) struct Pinned;
+
+    impl Pinned {
+        /// Pin this thread's pause clock at the real time now.
+        pub(crate) fn now() -> Self {
+            PINNED.with(|pinned| pinned.set(Some(Instant::now())));
+            Pinned
+        }
+
+        pub(crate) fn advance(&self, by: Duration) {
+            PINNED.with(|pinned| pinned.set(pinned.get().map(|at| at + by)));
+        }
+    }
+
+    impl Drop for Pinned {
+        fn drop(&mut self) { PINNED.with(|pinned| pinned.set(None)); }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct UserPauseClock {
     completed: Duration,
@@ -2400,7 +2443,7 @@ impl Transport {
         // The timestamp belongs to the mutex-order transition. Sampling it before `lock` lets a
         // concurrent clock snapshot linearize first while this transition carries an earlier
         // time, manufacturing paused duration before the transaction's own W0.
-        let now = Instant::now();
+        let now = pause_clock_now();
         match (clock.active_since, paused) {
             (None, true) => {
                 clock.active_since = Some(now);
@@ -2434,7 +2477,7 @@ impl Transport {
 
     pub fn pause_state_sample(&self) -> UserPauseSnapshot {
         let clock = self.pause_clock.lock().unwrap_or_else(|e| e.into_inner());
-        let now = Instant::now();
+        let now = pause_clock_now();
         UserPauseSnapshot {
             now,
             elapsed: clock.elapsed_at(now),

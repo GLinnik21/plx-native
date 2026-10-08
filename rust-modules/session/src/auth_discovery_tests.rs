@@ -589,24 +589,57 @@ fn an_on_time_result_queued_before_the_deadline_survives_coordinator_delay() {
     assert!(matches!(reach, Reach::At(..)));
 }
 
+/// A local answer that lands after the local deadline is ignored while the remote candidate's own
+/// deadline is still live: the remote route wins and is the only one ever activated.
+///
+/// Ordered by events, not by sleeps. The local dial holds on until it has run PAST its deadline (a
+/// lower bound, so an oversleep only makes it later, which is the point); the remote dial holds
+/// until the local job has returned, so the late local outcome is always settled (or already
+/// expired) BEFORE the remote answer exists. The remote deadline and grace are far beyond anything
+/// a scheduler stall can eat, so the remote answer is always on time.
 #[test]
 fn a_late_local_result_is_ignored_while_a_remote_deadline_remains_live() {
+    const LOCAL_DEADLINE: Duration = Duration::from_millis(5);
     let plan = race_plan();
-    let dial: ProbeDial = status_dial(|origin, _, _| {
+    let local_index = plan
+        .candidates
+        .iter()
+        .position(|c| c.location == probe::Location::Local)
+        .expect("the race plan has a local candidate");
+    let (local_returned, remote_may_answer) = std::sync::mpsc::channel::<()>();
+    let remote_may_answer = Mutex::new(remote_may_answer);
+    let dial: ProbeDial = status_dial(move |origin, _, _| {
         if origin.host().starts_with("192-") {
-            std::thread::sleep(Duration::from_millis(25));
+            let began = Instant::now();
+            while began.elapsed() <= LOCAL_DEADLINE {
+                std::thread::sleep(Duration::from_millis(1));
+            }
         } else {
-            std::thread::sleep(Duration::from_millis(35));
+            remote_may_answer
+                .lock()
+                .unwrap()
+                .recv()
+                .expect("the local job reports that it returned");
         }
         (200, identity_json("race-machine"))
     });
+    let spawn = move |index: usize, job: ProbeJob| {
+        let returned = local_returned.clone();
+        std::thread::spawn(move || {
+            job();
+            if index == local_index {
+                let _ = returned.send(());
+            }
+        });
+        true
+    };
     let policy = ProbeDeadlines {
-        local: Duration::from_millis(5),
-        remote: Duration::from_millis(100),
-        grace: Duration::from_millis(100),
+        local: LOCAL_DEADLINE,
+        remote: Duration::from_secs(30),
+        grace: Duration::from_secs(30),
     };
     let mut activated = Vec::new();
-    let reach = probe_server_racing(&plan, dial, &threaded_spawn, policy, &mut |_, c, _| {
+    let reach = probe_server_racing(&plan, dial, &spawn, policy, &mut |_, c, _| {
         activated.push(c.location)
     });
     assert!(matches!(reach, Reach::At(ref c, _) if c.location == probe::Location::Remote));
