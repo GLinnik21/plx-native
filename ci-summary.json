@@ -1,16 +1,16 @@
 {
- "generated": "2026-10-08T01:08:58Z",
+ "generated": "2026-10-08T01:09:30Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 21.1,
+   "change7_pct": 20.9,
    "d30": null,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 63,
-   "now": 243.5,
+   "now": 243,
    "prev7": 201,
    "state": "worse",
    "threshold_abs": 30.0,
@@ -51,14 +51,14 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -29.0,
+   "change7_pct": -29.8,
    "d30": null,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 63,
-   "now": 644.0,
+   "now": 637,
    "prev7": 907,
    "state": "better",
    "threshold_abs": 30.0,
@@ -259,14 +259,14 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -5.7,
+   "change7_pct": -5.8,
    "d30": null,
    "group": "ci",
    "id": "minutes",
    "label": "Runner time per push",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 54,
-   "now": 2373.0,
+   "now": 2372,
    "prev7": 2517.0,
    "state": "flat",
    "threshold_abs": 240.0,
@@ -344,9 +344,9 @@
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 63,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17,
    "state": "flat",
    "threshold_abs": 30.0,
@@ -360,9 +360,9 @@
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 52,
+   "n_now": 53,
    "n_prev": 0,
-   "now": 196.0,
+   "now": 192,
    "prev7": null,
    "state": "new",
    "threshold_abs": 30.0,
@@ -372,7 +372,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 21.1,
+   "change_pct": 20.9,
    "commits": [
     {
      "pr": 523,
@@ -430,7 +430,7 @@
    "label": "Simulator CI: Linux simulator build + launch",
    "since": "2026-10-08",
    "threshold_pct": 20.0,
-   "to": 243.5
+   "to": 243
   }
  ],
  "schema": 1,
@@ -445,7 +445,7 @@
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "label": "Simulator CI: macOS simulator build + launch",
-   "now": 644.0
+   "now": 637
   },
   {
    "group": "ci",
@@ -463,7 +463,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 243.5
+   "now": 243
   }
  ],
  "thresholds": {
