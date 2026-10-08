@@ -28,7 +28,7 @@
 # cargo see it as changed, so every edit row was followed by a rebuild of the crates it had just timed
 # before the next row could start. The benchmark now puts the file back with its original mtime (see
 # EditGuard in tools/build-bench.py), which removes those 11 minutes from every leg, and the legs split
-# what remains: the base leg takes ~9 minutes and the top leg ~10 (a rehearsal of this workflow on the same runner image, run 37703389591: 9.4 and 9.7 minutes of job time), in parallel. Every row still has 3 runs.
+# what remains: the base leg takes 9-14 minutes and the top leg 9-10, in parallel (a rehearsal on this runner image, run 37703389591: 9.4 and 9.7 minutes of job time; the first real dispatch, 37707989110: 14.0 and 9.1, because that runner was about 1.5x slower on every row, plx_base 135 s against 89 s). Every row still has 3 runs.
 #
 # A RED STEP IS A RED RUN. The gate job is not `continue-on-error`: when `make check` fails on the
 # runner the job, and so the run in the Actions list, is red, and the log carries the failing steps'
@@ -97,8 +97,8 @@ jobs:
             daily: screens,app,tests
     permissions:
       contents: read
-    # Expected 9-10 minutes: setup under 1, the untimed warm-up build 2-4 (more on a dependency cache
-    # miss), the timed rows 5-6. 30 is three times that: it bounds a hung step and leaves a slow day
+    # Expected 9-14 minutes, by how fast the day's runner is: setup under 1, the untimed warm-up build 2-4
+    # (more on a dependency cache miss), the timed rows 5-9. 30 bounds a hung step and leaves a slow day
     # room (unset = 360).
     timeout-minutes: 30
     steps:
@@ -178,9 +178,9 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: read
-    # Expected ~16 minutes: setup ~1, then the gate once, its cargo branch (lint, unit suites, hostsim, 14.6 min),
-    # its harness (11.2) and its python steps (4.8) side by side on 3 cores (a rehearsal on this runner image, run
-    # 37704884914, green). 40 leaves a slow day or a cache miss room.
+    # Expected 15-21 minutes, by how fast the day's runner is (14.6 and 21.1 in two rehearsals, 15.0 in the first real
+    # dispatch, 37707989110): setup ~1, then the gate once, its cargo branch (lint, unit suites, hostsim), harness and python
+    # steps side by side on 3 cores. 40 leaves a slower day or a cache miss room.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -210,7 +210,7 @@ jobs:
         # turns this job and the run red in the Actions list. The failing steps' own output is in this
         # step's log (build-bench prints it), and the publish job still records the day's other rows
         # and names the failure in the record. Bounded on its own.
-        timeout-minutes: 30
+        timeout-minutes: 35
         run: make build-bench ARGS="--runs 1 --only check --json $RUNNER_TEMP/check.json"
 
       - name: Keep the document for the publish job

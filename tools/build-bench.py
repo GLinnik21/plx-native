@@ -74,7 +74,7 @@ comparable), and is selected only by name:
             `make check` runs, minus its lock: this script already holds the machine-wide lock
             exclusively, so taking it again would wait on itself). The sample is the gate's wall
             time; the times of its two top-level branches, `cargo` and `python`, are read from the
-            `==== step: cargo -- ok (123.4s ...) ====` banners tools/check-parallel.py prints and
+            `==== check: cargo -- ok (123s) ====` banners tools/check-parallel.py prints and
             reported beside it. A red gate is a failed run: nothing is recorded for it, and the report
             names the steps that failed and prints their own output (the gate's whole output would
             otherwise be lost: this script captures it). It is the slowest row by far, so the daily
@@ -393,18 +393,24 @@ def summarize_artifacts(stdout: str) -> dict:
             "plex_rebuilt": plex_rebuilt, "telemetry_rebuilt": telemetry_rebuilt, "data_rebuilt": data_rebuilt, "session_rebuilt": session_rebuilt, "media_rebuilt": media_rebuilt, "appkit_rebuilt": appkit_rebuilt, "screens_rebuilt": screens_rebuilt}
 
 
-CHECK_BANNER = re.compile(r"^==== step: (cargo|python) \u2014 (\w+).*?\(([\d.]+)s", re.M)
+# The line tools/check-parallel.py's BRANCH mode prints for a branch that passed: `banner()` there, the
+# two names are the ones the Makefile's `check-unlocked` gives its branches. (An earlier version of this
+# pattern looked for the STEP mode's `==== step: cargo ...` line, which no branch ever prints: the first
+# green gate on a runner was recorded as unreadable. ci/test_build_bench.py runs the real runner to keep
+# the two from drifting apart again.)
+CHECK_BANNER = re.compile(r"^==== check: (cargo|python) \u2014 ok \((\d+)s\) ====$", re.M)
 
 
 def parse_check_branches(text: str) -> dict[str, float]:
     """The wall seconds of `check-unlocked`'s two top-level branches, from tools/check-parallel.py's banners.
 
-    The last banner of each name wins: the python branch's own output nests more banners, and the
-    top-level ones are printed after everything the branch said.
+    The last banner of each name wins: the python branch's own output nests more banners (its two
+    halves, `rest` and `harness`), and the top-level ones are printed after everything the branch said.
+    Only a branch that PASSED has a time here: a failed or stopped one prints a different verdict.
     """
     out: dict[str, float] = {}
     for m in CHECK_BANNER.finditer(text):
-        out[m.group(1)] = float(m.group(3))
+        out[m.group(1)] = float(m.group(2))
     return out
 
 
@@ -612,11 +618,14 @@ class Bench:
                 output = proc.stdout + proc.stderr
                 log_check_failure(output)
                 raise BenchError(check_failure_summary(proc.returncode, output))
+            # The gate PASSED (exit 0). Its wall time is a result whether or not its branch times can
+            # be read back, so an unreadable banner costs the two branch rows, never the verdict or the total.
             branches = parse_check_branches(proc.stdout)
             missing = [b for b in CHECK_BRANCHES if b not in branches]
             if missing:
-                raise BenchError("check: no `==== step: <branch> ... ====` banner for " + ", ".join(missing))
-            sample.update(seconds=secs, **{f"{b}_seconds": branches[b] for b in CHECK_BRANCHES})
+                log("the gate PASSED but no `==== check: <branch> \u2014 ok (Ns) ====` banner could be read for "
+                    + ", ".join(missing) + ": recording its wall time without those branch times")
+            sample.update(seconds=secs, **{f"{b}_seconds": branches[b] for b in CHECK_BRANCHES if b in branches})
         elif sid == "arm":
             sample.update(self.run_arm())
         else:
@@ -737,6 +746,8 @@ def row_info(sid: str, res: dict) -> str:
         return text + (" **FAILURES**" if last["failed"] else "")
     if sid == "check":
         parts = [f"{b} branch {last[b + '_seconds']:.0f} s" for b in CHECK_BRANCHES if b + "_seconds" in last]
+        if not parts:
+            return "the gate passed; its branch times could not be read, only the total is recorded"
         return "last run: " + ", ".join(parts) + " (the branches run side by side)"
     if sid == "arm":
         return f"archive {last['archive_bytes'] / 1048576:.1f} MiB, sha256 {last['archive_sha256'][:16]}"
