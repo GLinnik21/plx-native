@@ -15,7 +15,7 @@
 //! | `PLXNATIVE_DUMP_MAX_HOLD_MS=<ms>` | the fail-closed wall-clock bound on a stretch without progress (default 60000) |
 //! | `PLXNATIVE_DUMP_NO_HOLD=1` | write every frame whatever the debt (a negative-test switch, never a render) |
 //! | `PLXNATIVE_DUMP_ALLOW_ABSENT=1` | do not fail on a settled-absent hero logo, a never-resolving card or a failed art request (a proof switch) |
-//! | `PLXNATIVE_DUMP_KEYS=<v>:<key>,...` | press `up`/`down`/`left`/`right`/`ok`/`back`: the down edge at the first iteration of virtual frame `<v>`, the up edge [`KEY_UP_AFTER`] frames later (an interim script; S5c's storyboard interpreter takes this seam) |
+//! | `PLXNATIVE_DUMP_KEYS=<v>:<key>,...` | press `up`/`down`/`left`/`right`/`ok`/`back`: the down edge at the first iteration of virtual frame `<v>`, the up edge [`KEY_UP_AFTER`] frames later (the storyboard's compiled key schedule, `tests/video/feel.json`, arrives through this variable) |
 //! | `PLXNATIVE_DUMP_EXTRA_HOLDS=<k>` or `r<seed>` | force `k` (or a seeded 0..=3) EXTRA held repeats on every clean virtual frame: the hold-injection gate's switch |
 //!
 //! **The clock.** `clock::set_replay(ORIGIN_MS + T(v))`, `T(v) = round(v * 1000 / 60)`, where `v` is
@@ -85,8 +85,9 @@
 //! of the frame that requested them and they need no hold. Session-adapter drains and stores outside
 //! `open_claims` cannot change what is drawn without a placeholder or a claim: every request-driven
 //! landing either paints a placeholder until it lands (card art, spinners, logos, the Detail
-//! spinner), or is a `Fetch` store taken inline. Anything that does not is a gap the storyboard
-//! interpreter's `landed` predicate (S5c) owns.
+//! spinner), or is a `Fetch` store taken inline. Anything that does not is a gap no predicate covers:
+//! the storyboard fixes its rests in frames, and `site_video.py gates` measures whether each beat had
+//! come to rest by the next key (`storyboard/rest`).
 //!
 //! **Fail closed, never fail soft.** A stretch of `PLXNATIVE_DUMP_MAX_HOLD_MS` without a virtual
 //! frame completing ends the process (exit 3, after writing `dump.json`) naming the debt reasons,
@@ -101,14 +102,19 @@
 //! asserts `Gate::unconverted_takes()` is empty. The exit is `_exit`, not `exit`: libc's `atexit`
 //! handlers race the sign-in worker (`shot::maybe_capture`'s account of the same crash).
 //!
-//! **The seam S5c uses.** The storyboard interpreter belongs in [`iteration_begin`], after the clock is
-//! set and before the loop ingests: it injects keys at a virtual frame (as `dev::scenarios` calls
-//! `bridge::script_key`) and reads `after: "landed"` off [`Dump`]'s state (`holds_run == 0`, the last
-//! sample clean, no open claim). It also owns `hero_pool.logged` and `opened_rating_keys`, which
-//! `render.json` carries empty until then. Nothing here assumes the script is "hold".
+//! **The storyboard** is `tests/video/feel.json` (positions and durations, never titles), compiled by
+//! `tools/site_video.py` (`compile_storyboard`) to `PLXNATIVE_DUMP_KEYS` and a frame count. The key
+//! schedule is the driver's whole seam: this file injects a key at a virtual frame in [`iteration_begin`]
+//! (after the clock is set, before the loop ingests, as `dev::scenarios` calls `bridge::script_key`) and
+//! knows nothing of beats. There is no `landed` predicate: a rest is a fixed number of frames, and the
+//! launcher decodes the master afterwards and records in `render.json` (`storyboard.rest`) how far each
+//! beat's last 0.2 s still moved. The launcher also records what the film showed: `hero_pool` (the
+//! app's own `home: hero pinned at slot 0` line against the catalog's pinned film) and
+//! `opened_rating_keys` (every title page opened, read from the mock's request log), which `gates`
+//! checks against the catalog's `not_in_video` flag. Nothing here assumes the script is "hold".
 //!
-//! **What this does NOT do:** the negative tests with mock delays, and the storyboard itself (S5c).
-//! The script is `PLXNATIVE_DUMP_KEYS` or "hold the booted scene for N frames".
+//! **What this does NOT do:** the negative tests with mock delays. The script is `PLXNATIVE_DUMP_KEYS` or
+//! "hold the booted scene for N frames".
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -568,12 +574,12 @@ pub(crate) fn iteration_begin(app: &mut App) {
         // A repeat of the same virtual frame: the per-iteration steppers stand still (`held_repeat`).
         plx_gfx::dump::set_held_repeat(d.holds_run > 0);
         crate::app::clock::set_replay(ORIGIN_MS + virtual_ms(d.v));
-        // The interim script: a key goes down at the FIRST iteration of its virtual frame, so a
+        // The storyboard's compiled key schedule (`site_video.py compile_storyboard`): a key goes down at the FIRST iteration of its virtual frame, so a
         // repeat never presses it twice, and comes up [`KEY_UP_AFTER`] virtual frames later, as a
         // finger leaves a remote. Both edges at one instant would make the press machine's commit
         // (`ui::press`: the release is read only once the press has armed, which happens in the
         // iteration AFTER the pre-pass sees the up edge) depend on how many iterations a virtual
-        // frame took. (S5c's storyboard interpreter replaces this.)
+        // frame took.
         if d.holds_run == 0 {
             let at = Tick { ms: ORIGIN_MS + virtual_ms(d.v), dt_us: 0 };
             while d.keys_next < d.cfg.keys.len() && d.cfg.keys[d.keys_next].0 <= d.v {

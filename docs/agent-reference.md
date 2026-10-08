@@ -409,7 +409,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `ci/test_ci_workflows.py` the workflow's triggers (no pull-request trigger), guards, permissions,
   legs and timeouts.
 - **The site demo video** (`.github/workflows/site-video.yml`). Manual only: `gh workflow run
-  site-video.yml [-f frames=N]`; no PR or push starts it, and it publishes nothing (`contents:
+  site-video.yml`; no PR or push starts it, and it publishes nothing (`contents:
   read`, one artifact kept 30 days). It is the CANONICAL render: `ubuntu-24.04` (pinned, never
   `-latest`), the same libass caches and `./.github/actions/apt-install` action as
   `simulators.yml`'s Linux job, with that job's SDL/GL/Xvfb package list plus `mesa-utils` (`glxinfo`,
@@ -417,15 +417,39 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   (`LIBGL_ALWAYS_SOFTWARE=1`, `GALLIUM_DRIVER=llvmpipe`, `LP_NATIVE_VECTOR_WIDTH=256`, `LC_ALL=C`, `TZ=UTC`). It builds `make
   site-video-sim`, fetches and derives the demo library (`tools/demo_library.py fetch` + `derive`,
   the sources cached on the hash of `assets.json`, `derive` run cold every time; `fetch` backs
-  off on a wikimedia 429), fetches the pinned tool ffmpeg, runs `site_video.py render` TWICE in separate
-  processes, fails unless the two `frames.tsv` agree in columns 1-4 AND the two masters decode to the
+  off on a wikimedia 429), fetches the pinned tool ffmpeg, runs `site_video.py render --storyboard`
+  (the film below) TWICE in separate processes, fails unless the two `frames.tsv` agree in columns 1-4 AND the two masters decode to the
   same frames (a `framemd5` list; container byte equality is reported beside it), runs
-  `site_video.py hold-gate` (the scene with and without seeded extra held repeats, two more renders),
-  rescans for the sentinel, then `encode`, `contact-sheet`, `gates` and `manifest`. The manifest's `environment`
+  `site_video.py hold-gate --storyboard` (the film with and without seeded extra held repeats, two more
+  renders, their masters deleted at once), rescans for the sentinel, then `encode`, `contact-sheet`,
+  `gates` and `manifest`. The manifest's `environment`
   records the runner image version, OS, CPU model, Mesa and LLVM versions (`glxinfo -B`), the
   packages behind them and the variables above, because the video is defined as what this pinned
   stack renders; a new image is a new fingerprint, not a failure. `adopt` takes the artifact. It
   reads no private file and holds no secret.
+- **What the site demo video films, and how to make it.** One command, after `make site-video-sim`
+  and `python3 tools/demo_library.py fetch derive`:
+  `python3 tools/site_video.py render --out DIR --storyboard`, then `encode`, `gates` (see the
+  workflow above for the full sequence). A macOS render is a preview; only the Linux workflow's
+  artifact is adoptable. The film is `tests/video/feel.json`: positions and durations, never titles
+  (the demo catalog's order, `tests/demo_library/catalog.json`, decides what is under each position).
+  It is the Home hero held, `right` to the hero's Info button and `ok` for Sintel's Detail held about
+  4.8 s, `back`, `left` to Continue, one shelf move (down onto the Continue Watching row, right once),
+  `up` `up` to the profile chip and on to the Movies tab, `ok` for the Movies library (hub shelves),
+  two `right`s, `back`, then `down` onto Continue: the last frame equals the first. NOT filmed: hero
+  paging (`left` on the Continue button pages the carousel, so `left` is pressed only on Info after
+  Detail), scrolling on Detail, any popover or modal, any title flagged `not_in_video` opened
+  (`gates` checks the mock's request log), and the hold-hint capsule (it appears after 1.5 s of rest
+  on a card, once per resting place on Home and once per run on the other card screens, so every card rest in the film is under 1.4 s). `up` from the hero always
+  lands on the profile chip, so before the film boots the launcher runs a prep boot of the simulator
+  with the `plxnative-login` trigger: the app's own QR sign-in completes against the mock (served
+  with `authorize_after=2`) and stores a "Demo" account, which is what the chip reads when focus
+  passes it (never "Sign in"). Gates specific to the film: `storyboard/rest` (every beat's last 12
+  frames differ from the first of them by at most 3/255 in every channel, or by more in at most
+  0.01 % of the pixels; the spring tails), `storyboard/opened` and `hero-pool` (fail closed).
+  A page push or pop dips through about three flat frames of the backdrop between the outgoing fade
+  and the incoming one: that is the app's own page transition, not a hold. The AV1 encodes use CRF 28
+  (30 left the 720p file's cross-fade frames below the 0.97 SSIM floor).
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
 - **`make SYMBOLS=1 symbols`** — build with DWARF and split it into **`pkg/plxnative.debug`**, the
