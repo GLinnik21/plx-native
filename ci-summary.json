@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-08T11:27:44Z",
+ "generated": "2026-10-08T11:43:01Z",
  "metrics": [
   {
    "change30_pct": -98.8,
@@ -58,7 +58,7 @@
    "label": "app crate",
    "n_now": 2,
    "n_prev": 0,
-   "now": 17.5,
+   "now": 18.0,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -74,7 +74,7 @@
    "label": "make check",
    "n_now": 1,
    "n_prev": 0,
-   "now": 962.7,
+   "now": 1026.6,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -90,7 +90,7 @@
    "label": "make check: cargo branch",
    "n_now": 1,
    "n_prev": 0,
-   "now": 962.0,
+   "now": 1025.0,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -106,7 +106,7 @@
    "label": "make check: python branch",
    "n_now": 1,
    "n_prev": 0,
-   "now": 704.0,
+   "now": 906.0,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -122,7 +122,7 @@
    "label": "plx_base",
    "n_now": 2,
    "n_prev": 0,
-   "now": 114.0,
+   "now": 115.1,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -154,7 +154,7 @@
    "label": "plx_screens",
    "n_now": 2,
    "n_prev": 0,
-   "now": 33.8,
+   "now": 34.2,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -170,7 +170,7 @@
    "label": "Unit suite",
    "n_now": 2,
    "n_prev": 0,
-   "now": 52.4,
+   "now": 49.3,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -186,7 +186,7 @@
    "label": "plx_ui",
    "n_now": 2,
    "n_prev": 0,
-   "now": 44.3,
+   "now": 49.1,
    "prev7": null,
    "state": "new",
    "threshold_abs": 5.0,
@@ -425,25 +425,25 @@
    "group": "local",
    "id": "bench.check",
    "label": "make check",
-   "now": 962.7
+   "now": 1026.6
   },
   {
    "group": "local",
    "id": "bench.check.cargo",
    "label": "make check: cargo branch",
-   "now": 962.0
+   "now": 1025.0
+  },
+  {
+   "group": "local",
+   "id": "bench.check.python",
+   "label": "make check: python branch",
+   "now": 906.0
   },
   {
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
    "now": 889
-  },
-  {
-   "group": "local",
-   "id": "bench.check.python",
-   "label": "make check: python branch",
-   "now": 704.0
   },
   {
    "group": "ci",
