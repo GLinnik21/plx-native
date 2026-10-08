@@ -376,6 +376,9 @@ pub struct Dispatcher<H: Host> {
     pending_back: bool,
     /// The tick of the last `frame_with`, for a `draw` the caller runs later in its own frame.
     last_tick: Tick,
+    /// The page element the surface pass lifted out of the dim on the previous drawn frame
+    /// ([`Self::lifted_opener`]); a change re-takes the host snapshot (`draw_with`).
+    lifted_last: Option<FocusKey<H::Elem>>,
     /// This frame's prepare pass ran (a `draw` after a non-presenting frame runs it itself).
     prepared: bool,
     /// The previous frame's page-owned motion/resource verdict, retained past `Present::take` so
@@ -427,6 +430,7 @@ where
             render_breach_logged: false,
             pending_back: false,
             last_tick: Tick::default(),
+            lifted_last: None,
             prepared: false,
             page_quiescent: false,
         }
@@ -645,6 +649,29 @@ where
     pub fn focus(&self) -> Option<FocusKey<H::Elem>> {
         self.owner_entry()
             .and_then(|e| self.input.engine.current(InputOwner::Entry(e)))
+    }
+
+    /// **Which page element, if any, the opener lift repaints this frame** — the ONE decision the
+    /// lift and the page pass share (`(host page, element)`; the application's `opener_lift` is
+    /// this). The lift is the opener tile drawn again above the dim *because it is the focused
+    /// one*. That stops being true the moment the menu is dismissed: `ModalStack::dismiss` hands
+    /// input back to the page on the same frame, but the surface stays in the stack until its fade
+    /// settles, so a D-pad press during the fade moves the page's focus to a neighbour while the
+    /// lift would still paint the OLD tile fully popped and captioned. So while the surface is
+    /// `Closing`, the lift is painted only if the engine's focus on the host page is still the
+    /// opener element (or there is none to compare); once focus has moved, the page draws the tiles
+    /// itself and the lift stands down. While the menu is open the engine's focus is on the menu's
+    /// own rows, so the lift always paints then.
+    pub fn lifted_opener(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>)> {
+        use super::containers::modal::Phase;
+        let (surface, (entry, opener)) = self.nav.modals.surfaces.iter()
+            .find_map(|s| Some((s, s.entry.inst.as_ref()?.screen.opener()?)))?;
+        if self.nav.top_page().map(|e| e.id) != Some(entry) { return None; }
+        if surface.phase == Phase::Closing {
+            let live = self.focus().filter(|k| k.entry == entry);
+            if live.is_some() && live != opener { return None; }
+        }
+        Some((entry, opener))
     }
 
     /// Feed the owner's focus from outside a step: a test's premise (no group is remembered).
@@ -1319,6 +1346,18 @@ where
         use super::frame::backdrop::{self, Z};
         let strip_owner = self.owner_entry();
         let navigation = rig.navigation_presentation();
+        // The element the opener lift draws live above the host snapshot is NOT part of the page
+        // pass (`DrawFrame::lifted`). When it changes (the menu mounts, or the lift stands down
+        // because focus moved off the opener while the menu fades) the snapshot no longer matches
+        // what the page should show, so it is re-taken and the card sections say again whether
+        // they left a card out (`popover::set_lift_owns`). Source and discovery walks neither
+        // decide nor re-take: they redraw the page the visible pass is about to show.
+        let lifted = self.lifted_opener().and_then(|(_, key)| key);
+        if !backdrop::source_walk() && !plx_gfx::gfx::blur_source_pass() && lifted != self.lifted_last {
+            self.lifted_last = lifted;
+            super::popover::set_lift_owns(false);
+            super::popover::host::invalidate();
+        }
         let (_, host_render) = self.nav.modals.host_policy();
         // §9: armed for the LENGTH OF THE DRAW, and restored rather than cleared, exactly as the
         // page freeze is. Every framebuffer-sampling door is refused while it is up.
@@ -1459,6 +1498,7 @@ where
                         let mut page_navigation = navigation;
                         if full_alpha { page_navigation.page_alpha = 1.0; }
                         let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), page_navigation);
+                        f.lifted = lifted;
                         if !full_alpha { f.page_alpha *= nav.tabs.stack.transition.page_alpha(); }
                         let drawn_from = super::placeholder::mark();
                         backdrop::draw_span("page", || inst.screen.draw(&mut f));

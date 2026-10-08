@@ -407,6 +407,9 @@ impl Grid {
         if !src.loaded(i) {
             return;
         }
+        if super::lifted_out(f, self.entry, src, i) {
+            return;
+        }
         let rect = super::to_local(p, self.cell(i, bands)).scaled(s);
         if !card_row::paint_visible(p, rect, s, focused) {
             return;

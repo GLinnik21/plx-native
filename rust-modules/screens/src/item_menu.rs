@@ -747,6 +747,9 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
 }
 
 impl<H: AppLike + crate::registry::MetadataLike> Screen<H> for ItemMenuScreen {
+    fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
+        Some(ItemMenuScreen::opener(self))
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

@@ -2420,11 +2420,14 @@ fn strip_menu_arg(
 }
 
 /// **What the opener lift reads of the press: the dispatcher's own, live.** The lift is the page's
-/// focused card drawn a second time above the dim, and the page draws it at the press scale
-/// (`DrawFrame.press`, from `Dispatcher::parts`), so the lift must be handed the SAME number or the
-/// two disagree on every frame the press is moving. They did, while this was a constant `1.0`: a
-/// taken hold's card was drawn at its pop by the lift and at its dip by the page and the host
-/// snapshot, and the owner saw a poster that popped in one frame with its title doubled.
+/// focused card drawn a second time above the dim. A card a card section left out of the page pass
+/// (`DrawFrame::lifted`) is drawn by the lift ALONE, at this scale. An opener no card section draws
+/// (the Detail episode strip, season tabs, hero buttons, the Home hero) is still drawn by the page
+/// at the press scale (`DrawFrame.press`, from `Dispatcher::parts`), so there the lift must be
+/// handed the SAME number or the two disagree on every frame the press is moving. They did, while
+/// this was a constant `1.0`: a taken hold's card was drawn at its pop by the lift and at its dip
+/// by the page and the host snapshot, and the owner saw a poster that popped in one frame with its
+/// title doubled.
 ///
 /// Only the scale is the lift's business; a hold in flight or the hint's elapsed time is not (the
 /// lift draws one card, not the page's hold hint).
@@ -2445,14 +2448,7 @@ pub(crate) fn opener_press(d: &Dispatcher<AppHost>) -> plx_machine::machine::Pre
 /// moved, the page draws the tiles itself and the lift stands down. While the menu is open the
 /// engine's focus is on the menu's own rows, so the lift always paints then.
 pub(crate) fn opener_lift(d: &Dispatcher<AppHost>) -> Option<(EntryId, Option<FocusKey<u32>>)> {
-    let surface = d.nav.modals.surfaces.iter().find(|s| matches!(s.entry.arg, AppArg::ItemMenu(_)))?;
-    let (entry, opener) = item_menu(d)?.opener();
-    if d.nav.top_page().map(|e| e.id) != Some(entry) { return None; }
-    if surface.phase == Phase::Closing {
-        let live = d.focus().filter(|k| k.entry == entry);
-        if live.is_some() && live != opener { return None; }
-    }
-    Some((entry, opener))
+    d.lifted_opener()
 }
 
 /// **The context the opener lift draws with**: the page's own pieces for `entry`'s focused element,
@@ -2477,10 +2473,12 @@ pub(crate) fn opener_parts(
 ///
 /// **It does not touch the press.** A hold the screen answered was already abandoned onto its
 /// release spring by the dispatcher (`InputMachine::cancel_press`), so the card springs from its dip
-/// up to its pop as the menu opens, and the press is the ONE owner of that motion: the page and
-/// the opener lift ([`opener_press`]) both draw its scale, and `Press::tick` reports the frames a
-/// cancelled long hold visibly moves the card as page damage (a tap's spring is not) so the host snapshot below is re-taken until the card rests (see
-/// the style paragraph). Ending the press at rest here instead (`Press::settle`, rc.3) made the
+/// up to its pop as the menu opens, and the press is the ONE owner of that motion: the opener
+/// lift ([`opener_press`]) draws it live above the frozen page (and, for an opener no card section
+/// draws, the page draws it too). The page pass leaves
+/// the lifted card out (`DrawFrame::lifted`), so the snapshot holds no copy of it to go stale and
+/// the spring is not page damage (`Press::tick`); only an opener no card section draws keeps the
+/// per-frame re-take. Ending the press at rest here instead (`Press::settle`, rc.3) made the
 /// card jump to its pop in one frame, the lost animation the owner reported.
 ///
 /// The style is `Compact`, whose host policy is `(Frozen, Cached)`: the page under the panel is

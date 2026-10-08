@@ -243,6 +243,14 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// has focused (`app::bridge::opener_lift`), so an implementer may draw `focus` as focused
     /// without checking that the page has not moved on.
     fn redraw_focused(&self, _f: &mut DrawFrame<'_, '_, H>, _focus: Option<FocusKey<H::Elem>>) {}
+    /// **The page element this surface lifts back out of the dim** (`(host page, element)`), for a
+    /// surface that has one: the item menu's captured opener. The dispatcher folds it with the
+    /// surface's phase and the engine's focus into [`Dispatcher::lifted_opener`] and keeps that
+    /// element OUT of the frozen page pass (`DrawFrame::lifted`), so the lift is its only copy.
+    /// `None` (the default) for every other screen.
+    fn opener(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>)> {
+        None
+    }
     /// **The card the page has focused, and where it sits** — the host's question for an item menu
     /// and for the focus probe, asked of whichever card page is on screen so the host names no
     /// screen type. `focus` is the engine key to answer for (a page answers only its own entry's
@@ -780,6 +788,13 @@ pub struct DrawFrame<'a, 'views, H: Host> {
     /// container owns no field; a panel reads `None`, or a field not latched yet, as "draw the flat
     /// sheet". Set by the dispatcher's surface pass, never by a screen.
     pub underlay: Option<&'a crate::underlay::UnderlayField>,
+    /// **The page element a surface lifts back out of the dim this frame** (item menu opener,
+    /// [`Screen::opener`]). A card section leaves that card OUT of the page pass
+    /// (`cards::Shelf` / `Grid::draw_card`): the lift ([`Screen::redraw_focused`], drawn live above
+    /// the host snapshot at the press's own scale) is its only copy, so the frozen page never holds
+    /// a stale (dipped) copy under the growing one and the release spring of a taken hold is not
+    /// page damage. `None` on every frame the lift does not run, and on the lift's own frame.
+    pub lifted: Option<FocusKey<H::Elem>>,
     stops: Vec<Stop<H::Elem>>,
 }
 
@@ -830,6 +845,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
             nav_page_alpha: nav.page_alpha,
             press: cx.press,
             underlay: None,
+            lifted: None,
             stops: Vec::new(),
         }
     }

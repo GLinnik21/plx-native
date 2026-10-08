@@ -37,15 +37,35 @@
 //!   was the bio panel's private `OWN_DAMAGE` ledger and is now [`own_motion`] / [`host::live`] /
 //!   [`host::input_scope`] / [`host::page_pass`], shared — attributed at the source and counted
 //!   (`idle::take_page_damage`), with [`host_refresh`] as the decision.
-//! - **The opener's card may still be moving when the panel opens, and the snapshot follows it.**
-//!   A hold the app takes leaves the card springing from its press dip up to its pop beneath the
-//!   item menu. That motion is the HOST's (`Press::tick` raises page damage on every frame a
-//!   cancelled long hold visibly moves the card; a tap's spring raises none), so the snapshot is
-//!   re-taken per frame until the card rests while the
-//!   [`Opener`] lift draws the same live press scale above it: one owner, no frame on which the
-//!   page, the snapshot and the lift disagree.
+//! - **The opener's card is not in the snapshot at all.** A hold the app takes leaves the card
+//!   springing from its press dip up to its pop beneath the item menu. The card sections leave the
+//!   lifted element out of the page pass (`DrawFrame::lifted`) and the [`Opener`] lift draws the
+//!   one copy live above the snapshot at the press's own scale, so that spring is not page damage
+//!   (`Press::tick` raises none while the lift owns the card) and the snapshot is taken ONCE: no
+//!   frame on which the page, the snapshot and the lift disagree, and no capture per frame of the
+//!   spring. The dispatcher re-takes it when the lifted element itself changes.
 use crate::{theme, Painter, Rect, Spring};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+
+thread_local! {
+    /// Does the opener lift own the card the press is moving? Set by a card section that left the
+    /// lifted element out of the page pass, cleared when the dispatcher sees the lifted element
+    /// change. Per thread: the loop draws and ticks on one thread, and a test must not see another
+    /// test's lift.
+    static LIFT_OWNS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A card section left the lifted element out of the page pass (`true`), or the dispatcher saw the
+/// lifted element change or go away (`false`). While it is set, `Press::tick` reports no page
+/// damage, because the snapshot does not hold the card the press is moving.
+pub fn set_lift_owns(owns: bool) {
+    LIFT_OWNS.with(|c| c.set(owns));
+}
+
+/// See [`set_lift_owns`].
+pub fn lift_owns() -> bool {
+    LIFT_OWNS.with(|c| c.get())
+}
 
 /// Stiffness of the appear spring — the panels' shared open-motion constant, and the stiffness every
 /// other fade-into-place in the UI matches (the tab capsules' alpha, [`crate::widgets::TabStrip`]).
@@ -196,10 +216,9 @@ pub fn own_motion() -> OwnMotion {
 /// snapshot holds that frame and the page finishes its last few pixels when the panel lets go.
 /// Accepted — it is the account menu's behaviour since the cache existed.
 ///
-/// The one motion that IS a reason with a panel open arrives as `page_dirty`, not `page_moving`:
-/// the release spring of a cancelled long hold (`Press::tick` reports it as page damage while it
-/// visibly moves), whose card the opener lift draws live above the snapshot at the press's own
-/// scale, so the snapshot is re-taken per frame until the card rests. A tap's spring is not one.
+/// The release spring of a cancelled long hold is NOT such a reason: its card is the opener lift's
+/// (drawn live above the snapshot at the press's own scale; the page pass leaves it out), so
+/// `Press::tick` raises no page damage for it while a card section has taken it out of the page.
 ///
 /// The panel's own motion and damage never reach either term: they are attributed at the source
 /// (`own_motion`, `host::live`, `host::input_scope`, `host::page_pass`). Earlier shapes subtracted a merged per-frame
@@ -845,6 +864,12 @@ pub mod host {
     fn fading_only() -> bool {
         let n = users();
         n > 0 && super::HOST_CLOSING.load(Relaxed) == n
+    }
+
+    /// How many times [`invalidate`] ran on this thread (host-test stand-in cache only).
+    #[cfg(test)]
+    pub fn invalidations() -> u32 {
+        mock::INVALIDATIONS.with(|c| c.get())
     }
 
     /// Throw the snapshot away; the next page pass will draw the real page and take a new one.

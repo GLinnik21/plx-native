@@ -327,6 +327,9 @@ pub struct FixtureScreen {
     pub recorded_at: usize,
     /// Recording draws made inside a [`crate::rec::speculative`] pass.
     pub speculative_draws: u32,
+    /// `DrawFrame::lifted` as the page pass last handed it to this page's visible or captured draw
+    /// (the element the opener lift owns); `None` when none was. Render bookkeeping, not state.
+    pub lifted: Option<FocusKey<u32>>,
 }
 
 crate::focusable_via_composed!(FixtureScreen, FixtureHost);
@@ -505,6 +508,7 @@ impl Screen<FixtureHost> for FixtureScreen {
             self.speculative_draws += u32::from(crate::rec::speculating());
         } else {
             self.draw_at = draw_order();
+            self.lifted = f.lifted;
         }
         composed_draw(self, f);
         if matches!(self.arg, FixtureArg::Page(_)) {
@@ -566,6 +570,9 @@ pub struct FixtureModal {
     /// [`RenderReport::NONE`] like every product surface today — a test SETS it, because a rule
     /// nothing can breach is a rule nothing tests (`the_render_set_is_checked_over_the_whole_frame`).
     pub render: RenderReport,
+    /// What this surface names as its opener (`Screen::opener`): the host page and the element
+    /// whose card the opener lift owns. `None` like every surface that opens from nothing.
+    pub opener: Option<(plx_machine::machine::EntryId, Option<FocusKey<u32>>)>,
 }
 
 thread_local! {
@@ -605,6 +612,7 @@ impl FixtureModal {
             scrim_at: std::cell::Cell::new(0),
             draw_at: 0,
             render: RenderReport::NONE,
+            opener: None,
         }
     }
 
@@ -630,7 +638,7 @@ impl FixtureModal {
                                     kind: ElemKind::Card,
                                 },
                                 draw_at: 0,
-                                recorded_draws: 0, recorded_at: 0, speculative_draws: 0,
+                                recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
                             }),
                             inflight: Vec::new(),
                             staged: false,
@@ -787,6 +795,9 @@ impl Screen<FixtureHost> for FixtureModal {
         Some(Cow::Borrowed("Settings"))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
+    fn opener(&self) -> Option<(plx_machine::machine::EntryId, Option<FocusKey<u32>>)> {
+        self.opener
+    }
     fn scrim(&self) -> super::screen::Scrim {
         self.scrim_at.set(draw_order());
         if let Some(c) = self.scrim_corners {
@@ -911,7 +922,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 kind,
             },
             draw_at: 0,
-            recorded_draws: 0, recorded_at: 0, speculative_draws: 0,
+            recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
         })
     }
 }

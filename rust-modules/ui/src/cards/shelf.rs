@@ -412,6 +412,9 @@ impl Shelf {
         if !src.loaded(i) {
             return;
         }
+        if super::lifted_out(f, self.entry, src, i) {
+            return;
+        }
         let unscrolled = card_row::tile_rect(i, self.style.margin_x, self.pitch(), 0.0, at.y - pr.dy(),
             (self.style.w, self.style.h));
         let rect = unscrolled.scaled(s);
