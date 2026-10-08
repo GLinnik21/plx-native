@@ -1547,6 +1547,9 @@ video::-webkit-media-controls-start-playback-button {
   gap: 12px;
   max-width: 820px;
 }
+.press-item + .press-item {
+  margin-top: clamp(32px, 4.5vh, 48px);
+}
 .press-outlet {
   font-size: clamp(17px, 1.6vw, 20px);
   font-weight: 700;
