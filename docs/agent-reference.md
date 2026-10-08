@@ -410,8 +410,57 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   the rule and the merge, `ci/test_build_bench.py` the restore and the failure reports, and
   `ci/test_ci_workflows.py` the workflow's triggers (no pull-request trigger), guards, permissions,
   legs and timeouts.
-- **The site demo video** (`.github/workflows/site-video.yml`). Manual only: `gh workflow run
-  site-video.yml`; no PR or push starts it, and it publishes nothing (`contents:
+- **How the site demo video updates itself** (`.github/workflows/site-video.yml`, the last job of
+  `release.yml`, `site_video.py`'s `release-ref` / `needs-render` / `adopt` / `commit-message`). The
+  film refreshes AFTER A STABLE RELEASE and after nothing else: `release.yml`'s final job
+  (`site-video`, `continue-on-error`, `actions: write` as its only write scope) dispatches
+  `site-video.yml` ON THE NEW TAG (`gh workflow run site-video.yml --ref vX.Y.Z`) once the release is
+  published (a `workflow_dispatch` is the one event a `GITHUB_TOKEN` may start a run with). There is
+  no schedule and no pull-request or push trigger; a release candidate, a nightly, a branch or a
+  commit are refused by `release-ref` (`tests/test_site_video.py`, `ReleaseRefGuard`, holds the
+  repository's real tags), and a maintenance-line patch (not on main) is skipped by the hook and
+  refused by the workflow. **The workflow renders its own checkout and no input names a ref**: a run
+  on a tag has caches of its own (a cache is restorable only by runs of the ref that wrote it and the
+  branches below it, never by main), so the cache steps that restore into the tree being rendered
+  cannot poison anything main runs; an earlier design that checked out `inputs.ref` on a main run was
+  refused by CodeQL ("cache poisoning via execution of untrusted code", 11 alerts). Four jobs.
+  `decide` (`contents: read`) reads `github.ref`: a tag must be a stable `vX.Y.Z` whose commit is an
+  ancestor of main for the run to publish, `refs/heads/main` (a maintainer's manual dispatch) may
+  publish, and a branch renders as a dry run only (a tag that is not a stable `vX.Y.Z` on main fails `decide`
+  at once, before any rendering, unless `-f publish=false` makes it a dry run too); it then asks `needs-render`: if the git trees
+  of everything that can change a pixel (`TREE_PATHS`) equal the `tree_hash.combined` recorded in the
+  committed `site/media/feel.manifest.json`, the run ends GREEN without rendering. `render`
+  (`contents: read`) renders the checkout and applies every gate below; any failure leaves the site as
+  it was and the run red. `publish` (`contents: write`, the only write token in the workflow) checks
+  out `main` (a literal `ref: main`; a dry run checks out the dispatched ref instead and keeps no
+  credential), downloads the artifact (data) and runs MAIN's tool, never the rendered ref's code:
+  `site_video.py adopt <artifact dir> --write --derive --expect-rev <sha>`. It verifies the artifact
+  (`linux-ci`, sha256s, gates passed, clean tree, and that it was rendered from that commit's
+  inputs), and when the six media files differ from main's it copies them with the manifest,
+  regenerates the feel glows and the credits page, REWRITES the `codecs=` strings of
+  `site/index.html` from the new files' own `avcC` / `av1C` boxes (a re-encode that moves a profile or
+  level must not leave the page declaring the old one, which `CommittedSiteMedia` would catch on main),
+  checks that only those files changed, and commits as github-actions[bot] (`Site: demo video
+  re-rendered for vX.Y.Z`, `main@<sha>` for a manual dispatch; the body carries the gates' summary and
+  the run URL), rebasing onto the tip of main and retrying the push (never forcing). A film
+  byte-identical to the committed one commits nothing and writes nothing, the manifest included, so the
+  manifest keeps naming the tree the film was last rendered for (the next release with changed inputs
+  renders again; a release rarely comes twice a week). `pages` DISPATCHES `pages.yml` on main (`gh
+  workflow run pages.yml --ref main`): a push with `GITHUB_TOKEN` does not start it, and the
+  `github-pages` environment admits deployments from the `main` branch only, so a run on a tag cannot
+  call it; the deploy is its own run ("Deploy landing page"), where a failed deploy shows. **It never
+  blocks a release**: it is a separate run, dispatched after the release exists; if it fails the
+  release stays, the site keeps its old film, and the red "Site video" run is the notice. **Taste is
+  not gated**: the gates prove the film is deterministic and well encoded, not that it is good, so look
+  at the site after a release. Operate it: re-run for a tag `gh workflow run site-video.yml --ref
+  vX.Y.Z`; render anyway (and publish) `gh workflow run site-video.yml --ref main -f force=true`; a
+  dry run (everything but the push and the deploy, printing the `git diff --stat` it would commit)
+  `-f publish=false`, which is how a change to the workflow is proved from its branch (`--ref
+  my-branch`; a branch never publishes whatever `publish` says); a bad film is `git revert <the bot's
+  commit>` and a push to main (the push triggers `pages.yml`). Turn it off by deleting the `site-video`
+  job at the end of `release.yml`. A render costs about 55 runner minutes (measured on run
+  37805253785).
+- **The site demo video's render** (`.github/workflows/site-video.yml`, `render`; `contents:
   read`, one artifact kept 30 days). It is the CANONICAL render: `ubuntu-24.04` (pinned, never
   `-latest`), the same libass caches and `./.github/actions/apt-install` action as
   `simulators.yml`'s Linux job, with that job's SDL/GL/Xvfb package list plus `mesa-utils` (`glxinfo`,
@@ -427,8 +476,9 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `gates` and `manifest`. The manifest's `environment`
   records the runner image version, OS, CPU model, Mesa and LLVM versions (`glxinfo -B`), the
   packages behind them and the variables above, because the video is defined as what this pinned
-  stack renders; a new image is a new fingerprint, not a failure. `adopt` takes the artifact. It
-  reads no private file and holds no secret.
+  stack renders; a new image is a new fingerprint, not a failure. `adopt` takes the artifact (a zip,
+  or the directory `download-artifact` unpacked; `--derive` also regenerates the feel glows and the
+  credits page). It reads no private file and holds no secret beyond the run's `GITHUB_TOKEN`.
 - **What the site demo video films, and how to make it.** One command, after `make site-video-sim`
   and `python3 tools/demo_library.py fetch derive`:
   `python3 tools/site_video.py render --out DIR --storyboard`, then `encode`, `gates` (see the
@@ -469,7 +519,13 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `AV1_720_GOP`, to stay under the 1.25x size limit). They were re-tuned for HEADROOM
   after the first Linux render read min VMAF 79.69 against the 80.0 floor on the 1080p one (macOS 80.10, at CRF 28 / 2 s; the 720p one, at CRF 25 / 4 s, read SSIM min 0.9709
   against 0.97): the macOS preview then read VMAF min 84.5 and 85.3, SSIM min 0.9796
-  and 0.9746; the committed Linux film's own numbers are the `vmaf/*` and `ssim/*` gates in `site/media/feel.manifest.json`. The floors did not move; a lower CRF is paid for by the longer GOP, never by a looser gate. The SSIM and VMAF gates pair frames by index in ONE time base
+  and 0.9746; the committed Linux film's own numbers are the `vmaf/*` and `ssim/*` gates in `site/media/feel.manifest.json`. The floors did not move; a lower CRF is paid for by the longer GOP, never by a looser gate. The H.264 encodes declare the lowest level
+  their picture needs (`H264_LEVELS`: 720p60 High@3.2 with 5 refs, 1080p60 High@4.2 with 4), because x264's veryslow preset
+  uses 16 reference frames and left to itself writes High@5.0 / High@5.1, which several phone decoders refuse and which is the
+  fallback path where AV1 is missing. Measured on the macOS master: the capped files are 1.2 % and 0.8 % larger and read the
+  same quality (VMAF mean 97.10 / 97.10, min 89.34 / 89.96 against the floors 93 / 80; SSIM min 0.9857 / 0.9853 against 0.97).
+  `adopt --write` rewrites the `codecs=` strings of `site/index.html` from the adopted files' boxes, so the page follows
+  the files. The SSIM and VMAF gates pair frames by index in ONE time base
   (`BY_INDEX`, `settb=1/60,setpts=N`): pairing in each file's own time base rounded two frames of
   this film onto their neighbours and read them as SSIM 0.66 and VMAF 0.
   A page pushed in a dump does not hold its captured image while the destination's layout moves

@@ -15,7 +15,8 @@ name: Release
 #     resolving the PREVIOUS release's manifest — an update that silently never arrives.
 #     Hence: no draft, no prerelease (enforced below, in `publish`).
 #
-# Separate from ci.yml because this is the only workflow that needs `contents: write`. Merging them
+# Separate from ci.yml because a release needs `contents: write` (as do rc.yml, nightly.yml and site-video.yml's
+# `publish` job). Merging them
 # would put a write token on every pull-request run.
 
 # HOW TO CUT A RELEASE: Actions -> Release -> Run workflow, pick a bump level, done. The `prepare`
@@ -600,3 +601,40 @@ jobs:
             echo "The Channel compares versions by plain **string equality**, not semver — any"
             echo "change to the version string reads as an update."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # THE SITE'S DEMO FILM REFRESHES AFTER A STABLE RELEASE (and after nothing else: rc.yml and nightly.yml have no
+  # such job). This job only DISPATCHES `site-video.yml`, which is its own run: it renders the release's tree for
+  # about an hour, and if anything in it fails the release stays published, this run stays green, and the failed
+  # "Site video" run in the Actions tab is the notice (re-run: `gh workflow run site-video.yml --ref vX.Y.Z`).
+  # `continue-on-error` so not even a failure to dispatch can turn a published release red. A dispatch is the one
+  # event a GITHUB_TOKEN may start a workflow with (a push or a release it made would not), hence `actions: write`;
+  # the video's own write token lives in site-video.yml's `publish` job, not here. The workflow is dispatched ON
+  # THE TAG (`--ref "$TAG"`): it renders the tag's own checkout, and a run on a tag has caches of its own that
+  # main's runs can never restore. The guard is asked HERE too (`release-ref`), and a maintenance-line patch
+  # (line != main) is skipped: main's film is never replaced by an older line's. See docs/agent-reference.md,
+  # "The site demo video".
+  site-video:
+    name: refresh the site's demo film (separate run, never blocks the release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    needs: [guard, publish]
+    if: always() && needs.publish.result == 'success' && needs.guard.outputs.line == 'main'
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Dispatch the site-video workflow for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.guard.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 tools/site_video.py release-ref "$TAG" > /dev/null \
+            || { echo "::notice::$TAG is not a stable release tag: the site's film is not refreshed"; exit 0; }
+          gh workflow run site-video.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG" -f publish=true
+          echo "dispatched site-video.yml for $TAG: it renders on its own and never blocks this release" >> "$GITHUB_STEP_SUMMARY"
