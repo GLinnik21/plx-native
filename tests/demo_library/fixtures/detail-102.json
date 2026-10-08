@@ -188,7 +188,7 @@
       "tagKey": "demo-person-4"
      }
     ],
-    "addedAt": 1788531200,
+    "addedAt": 1788012800,
     "art": "/library/metadata/102/art/1790000000",
     "duration": 888064,
     "guid": "plex://movie/demo-sintel",
@@ -206,7 +206,7 @@
     "title": "Sintel",
     "titleSort": "Sintel",
     "type": "movie",
-    "updatedAt": 1788531200,
+    "updatedAt": 1788012800,
     "viewOffset": 435000,
     "year": 2010
    }

@@ -1,15 +1,12 @@
 {
- "comment": "The demo library for the documentation screenshots. Every asset is openly licensed or public domain; tests/demo_library/assets.json records where each came from. Times are PINNED (now = 1790000000) so every run of the mock answers byte-identically. `collection_order` pins a collection's custom order (a real server's Custom sort for a collection); a collection without one lists newest addition first. Blender Open Movies is pinned so the website's glass close-up (tests/screenshots/scenes.json, site-glass) has the brightest posters of the collection under the tab bar: Wing It! behind Home and Movies, then Spring and Sprite Fright.",
+ "comment": "The demo library for the documentation screenshots. Every asset is openly licensed or public domain; tests/demo_library/assets.json records where each came from. Times are PINNED (now = 1790000000) so every run of the mock answers byte-identically. `collection_order` pins a collection's custom order (a real server's Custom sort for a collection); a collection without one lists newest addition first. Blender Open Movies is pinned so the website's glass close-up (tests/screenshots/scenes.json, site-glass) has the brightest posters of the collection under the tab bar: Wing It! behind Home and Movies, then Spring and Sprite Fright. `added_order` and `continue_watching` put the strongest posters first and keep the titles whose art is weak out of the app's hero pool (the first HERO_MAX movies of Continue Watching, then Recently Added): Continue Watching's first seven movies and Recently Added's first seven are two different sets of real posters, so Home and the Movies tab never show the same poster twice in the visible part of two rows. Sprite Fright, which has no still that clears the hero zones, stays out of the pool as Recently Added's third card, between Big Buck Bunny and Coffee Run, because the site's tiles close-up (tests/screenshots/scenes.json, site-tiles) is focused on that card.",
  "now": 1790000000,
  "server": {
   "friendlyName": "Demo Library",
   "machineIdentifier": "demo0000library0000plxnative"
  },
  "hero": "sintel",
- "hero_alternatives": [
-  "spring",
-  "sprite-fright"
- ],
+ "hero_alternatives": ["spring", "cosmos-laundromat"],
  "sections": [
   {
    "key": "1",
@@ -346,6 +343,7 @@
     "mode": "cover",
     "anchor": "right"
    },
+   "not_hero": true,
    "collections": [
     "Blender Open Movies"
    ],
@@ -2457,125 +2455,6 @@
    }
   },
   {
-   "id": "sherlock-holmes",
-   "title": "Sherlock Holmes",
-   "year": 1954,
-   "studio": "Sheldon Reynolds Productions",
-   "genres": [
-    "Mystery",
-    "Crime"
-   ],
-   "directors": [],
-   "creators": [
-    "Sheldon Reynolds"
-   ],
-   "tagline": "Thirty-nine half-hour cases, delivered to Baker Street.",
-   "demo_values": [
-    "tagline"
-   ],
-   "countries": [
-    "United States"
-   ],
-   "sources": [
-    {
-     "fields": [
-      "countries"
-     ],
-     "url": "https://www.wikidata.org/wiki/Q2570112",
-     "note": "Wikidata, CC0 1.0",
-     "retrieved": "2026-10-07"
-    },
-    {
-     "fields": [
-      "creators"
-     ],
-     "url": "https://en.wikipedia.org/wiki/Sherlock_Holmes_(1954_TV_series)",
-     "note": "Wikipedia infobox; names and credits only, no prose copied",
-     "retrieved": "2026-10-07"
-    }
-   ],
-   "cast": [
-    {
-     "name": "Ronald Howard",
-     "role": "Sherlock Holmes"
-    },
-    {
-     "name": "Howard Marion-Crawford",
-     "role": "Dr. John H. Watson"
-    },
-    {
-     "name": "Archie Duncan",
-     "role": "Inspector Lestrade"
-    }
-   ],
-   "summary": "A young, dry-witted Sherlock Holmes and a steady Dr. Watson take the cases that walk in off Baker Street, in thirty-nine half-hour mysteries shot in France for American television.",
-   "poster": {
-    "asset": "sherlock-holmes-1954-s01e01"
-   },
-   "seasons": [
-    {
-     "index": 1,
-     "episodes": [
-      {
-       "index": 1,
-       "title": "The Case of the Cunningham Heritage",
-       "date": "1954-10-18",
-       "minutes": 26,
-       "summary": "Holmes and Watson investigate the suspicious death of a wealthy patriarch, entangled with a disputed inheritance and a household full of people who each stood to gain from his death.",
-       "thumb": {
-        "asset": "sherlock-holmes-1954-s01e01",
-        "crop": "upper"
-       }
-      },
-      {
-       "index": 2,
-       "title": "The Case of the Pennsylvania Gun",
-       "date": "1954-10-25",
-       "minutes": 26,
-       "summary": "A rare antique firearm becomes the center of a theft and murder investigation that Holmes must untangle from a web of collectors and forgers.",
-       "thumb": {
-        "asset": "sherlock-holmes-1954-s01e02",
-        "crop": "upper"
-       }
-      },
-      {
-       "index": 3,
-       "title": "The Case of Lady Beryl",
-       "date": "1954-11-01",
-       "minutes": 26,
-       "summary": "A noblewoman seeks Holmes's help after a string of threats against her household, which turns out to connect to an old secret she's been keeping.",
-       "thumb": {
-        "asset": "sherlock-holmes-1954-s01e03",
-        "crop": "upper"
-       }
-      },
-      {
-       "index": 4,
-       "title": "The Belligerent Ghost",
-       "date": "1954-11-08",
-       "minutes": 26,
-       "summary": "A supposedly haunted house is terrorising its new tenants, and Holmes sets out to prove -- as usual -- that the 'ghost' has a very physical explanation.",
-       "thumb": {
-        "asset": "sherlock-holmes-1954-s01e04",
-        "crop": "upper"
-       }
-      },
-      {
-       "index": 5,
-       "title": "The Case of the Shy Ballerina",
-       "date": "1954-11-15",
-       "minutes": 26,
-       "summary": "A prima ballerina's stage fright turns out to be tangled up with a threat against her life, and Holmes has to work out who in the company wants her gone.",
-       "thumb": {
-        "asset": "sherlock-holmes-1954-s01e05",
-        "crop": "upper"
-       }
-      }
-     ]
-    }
-   ]
-  },
-  {
    "id": "hubblecast",
    "title": "Hubblecast",
    "note": "Episodes 84-133 (2015-2020), numbered as ESA/Hubble numbers them. Left out: 100, 105 and 129, whose preview frames show an ESA/Hubble wordmark or logo, which the CC BY licence does not cover (https://esahubble.org/copyright/); 90, whose presenter wears one; and 85, 89, 94, 95, 101, 104, 113 and 116, whose frames show a private person or third-party material. Titles, dates and runtimes are from each episode's esahubble.org page; summaries open its text.",
@@ -3019,35 +2898,34 @@
   }
  ],
  "added_order": [
-  "singularity",
   "charge",
+  "big-buck-bunny",
   "sprite-fright",
-  "caminandes",
-  "spring",
+  "coffee-run",
+  "elephants-dream",
+  "seder-masochism",
+  "the-kid",
   "sintel",
+  "spring",
   "tears-of-steel",
   "cosmos-laundromat",
-  "wing-it",
-  "coffee-run",
-  "hero",
-  "glass-half",
   "the-daily-dweebs",
-  "seder-masochism",
-  "sita-sings-the-blues",
-  "sherlock-holmes",
-  "nosferatu",
-  "metropolis",
-  "big-buck-bunny",
-  "elephants-dream",
-  "the-general",
-  "sherlock-jr",
+  "caminandes",
   "his-girl-friday",
-  "the-kid",
   "safety-last",
+  "the-general",
+  "metropolis",
   "night-of-the-living-dead",
+  "nosferatu",
   "the-cabinet-of-dr-caligari",
-  "plan-9-from-outer-space",
   "a-trip-to-the-moon",
+  "plan-9-from-outer-space",
+  "sherlock-jr",
+  "hero",
+  "singularity",
+  "glass-half",
+  "wing-it",
+  "sita-sings-the-blues",
   "hubblecast"
  ],
  "collection_order": {"Blender Open Movies": ["singularity", "charge", "wing-it", "spring", "sprite-fright", "glass-half", "sintel", "tears-of-steel", "cosmos-laundromat", "coffee-run", "hero", "the-daily-dweebs", "big-buck-bunny", "elephants-dream"]},
@@ -3082,20 +2960,24 @@
    "progress": 0.63
   },
   {
-   "item": "caminandes/1/3",
-   "progress": 0.35
-  },
-  {
-   "item": "sherlock-holmes/1/2",
-   "progress": 0.48
-  },
-  {
    "item": "metropolis",
    "progress": 0.21
   },
   {
-   "item": "the-general",
-   "progress": 0.7
+   "item": "safety-last",
+   "progress": 0.55
+  },
+  {
+   "item": "the-daily-dweebs",
+   "progress": 0.3
+  },
+  {
+   "item": "cosmos-laundromat",
+   "progress": 0.38
+  },
+  {
+   "item": "caminandes/1/3",
+   "progress": 0.35
   }
  ],
  "watched": [
@@ -3103,8 +2985,7 @@
   "nosferatu",
   "the-kid",
   "caminandes/1/1",
-  "caminandes/1/2",
-  "sherlock-holmes/1/1"
+  "caminandes/1/2"
  ],
  "hubs": [
   {

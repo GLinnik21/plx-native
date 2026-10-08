@@ -1,14 +1,6 @@
 {
  "comment": "What the completeness gate (`python3 tools/demo_library.py check --complete`) still finds missing, per item key (`slug` or `slug/season/episode`), by category. This list may only SHRINK: a content change that fills a gap deletes its entry here, and the check refuses an entry that is already complete as well as a gap that is not listed. Never add an entry to silence a failure; tests/test_demo_library.py pins the per-category counts (PENDING_CEILING) so growth cannot pass review unnoticed. `hero_art` is the geometric hero check (`python3 tools/demo_library.py hero-report` prints each title's verdict): a title the home hero can show needs `art.subject` = [x0, y0, x1, y1] in SOURCE pixels, read off the image by a person, and a `cover` backdrop whose mapped box clears the text zones; an entry goes when its subject is declared and passes, or when the title is declared `not_hero` in the catalog (allowed only for a title outside the app's hero pool: the pinned hero, `hero_alternatives` and the first `HERO_MAX` movies with art of Continue Watching then Recently Added). The demo-video workflow (stage S6 of the plan; not in the tree yet) is to refuse to run while this list is non-empty.",
  "pending": {
-  "sprite-fright": [
-   "hero_art"
-  ],
-  "sherlock-holmes": [
-   "backdrop",
-   "logo",
-   "poster"
-  ],
   "hubblecast": [
    "country",
    "creators",

@@ -112,7 +112,7 @@
     },
     {
       "name": "site-tiles",
-      "state": "The website's tiles close-up, supersampled 3x. The Movies library with focus on the third card of Recently Added Movies (Sprite Fright, captioned with its year, between Charge and Spring). Crop in canvas pixels: the three shelf cards with the caption under the focused one (matched on the hand cut's card edges to 0-1 px). Resampled to 0.75x: the page shows it at most 698 CSS px wide through the phone crop, which needs 1866 px at DPR 2, not 2540.",
+      "state": "The website's tiles close-up, supersampled 3x. The Movies library with focus on the third card of Recently Added Movies (Sprite Fright, captioned with its year, between Big Buck Bunny and Coffee Run). Crop in canvas pixels: the three shelf cards with the caption under the focused one (matched on the hand cut's card edges to 0-1 px). Resampled to 0.75x: the page shows it at most 698 CSS px wide through the phone crop, which needs 1866 px at DPR 2, not 2540.",
       "triggers": {"library": "0", "libshelf": "1,2"},
       "render_scale": 3,
       "expect": ["libshelf: focus seated on shelf 1 col 2", "libhubs: section 0 landed 4 shelves"],
