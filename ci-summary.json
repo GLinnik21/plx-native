@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-08T00:02:15Z",
+ "generated": "2026-10-08T00:21:03Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -24,10 +24,10 @@
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 113,
-   "n_prev": 73,
-   "now": 4,
-   "prev7": 958,
+   "n_now": 112,
+   "n_prev": 74,
+   "now": 4.0,
+   "prev7": 959.0,
    "state": "better",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
@@ -163,15 +163,15 @@
   },
   {
    "change30_pct": 112.5,
-   "change7_pct": -8.7,
+   "change7_pct": -8.6,
    "d30": 128,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 113,
-   "n_prev": 73,
-   "now": 272,
-   "prev7": 298,
+   "n_now": 112,
+   "n_prev": 74,
+   "now": 272.0,
+   "prev7": 297.5,
    "state": "flat",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
@@ -322,15 +322,15 @@
    "unit": "s"
   },
   {
-   "change30_pct": 274.7,
+   "change30_pct": 274.5,
    "change7_pct": -7.6,
    "d30": 235,
    "group": "ci",
    "id": "pr_wait",
    "label": "PR CI wait",
-   "n_now": 196,
+   "n_now": 197,
    "n_prev": 176,
-   "now": 880.5,
+   "now": 880,
    "prev7": 952.5,
    "state": "flat",
    "threshold_abs": 90.0,
@@ -457,7 +457,7 @@
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "now": 272
+   "now": 272.0
   },
   {
    "group": "ci",
