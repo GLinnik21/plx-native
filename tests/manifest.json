@@ -497,14 +497,15 @@
       "bench": "hold",
       "run_secs": 150,
       "warmup_s": 8,
-      "bench_missed_max": 0,
+      "bench_missed_max": 150,
+      "bench_iv_max_ms": 45,
       "mock": {},
       "triggers": {
         "plxnative-holdbench": "30",
         "plxnative-grid": true,
         "plxnative-framedrop": true
       },
-      "comment": "A REAL press-and-hold on a card, 30 cycles, through the key path a remote uses (dev::scenarios::bench::PressBench, `plxnative-holdbench`): OK down and KEPT down so the press-in dip and the hold capsule's fill run past press::LONG_MS, the item menu opens out of the hold, then Back dismisses it. The key-up is never sent and no OK is queued while the menu is up (its first row is Play). One `bench: kind=hold` line per cycle; the open half covers OK-down through the menu's open spring, the close half Back through the dismiss. grade_bench fails a cycle whose target is `<host>-nomenu`/`-nocard` (it graded an idle window). Home, first shelf card (plxnative-grid seats it). UNMEASURED on the television: no TV run has produced a baseline for this scene yet, so bench_missed_max 0 is the frame budget (as hero-pong/grid-pong's is), not a measured limit; a first TV run reports the real count and the limit is set from it, not guessed here."
+      "comment": "A REAL press-and-hold on a card, 30 cycles, through the key path a remote uses (dev::scenarios::bench::PressBench, `plxnative-holdbench`): OK down and KEPT down so the press-in dip and the hold capsule's fill run past press::LONG_MS, the item menu opens out of the hold, then Back dismisses it. The key-up is never sent and no OK is queued while the menu is up (its first row is Play). One `bench: kind=hold` line per cycle; the open half covers OK-down through the menu's open spring, the close half Back through the dismiss. grade_bench fails a cycle whose target is `<host>-nomenu`/`-nocard` (it graded an idle window). Home, first shelf card (plxnative-grid seats it). PROVISIONAL limits, to be re-measured on the television after the item-menu opener-lift fix lands: `missed` counts refreshes across capture-fence deferrals too (a deferral keeps the present-to-present interval), so today's build, whose menu opens at ~21 fps (frames 47 ms apart), reads ~16 missed per cycle (~480 over 30) and must FAIL; this scene is the regression test for that fix. bench_missed_max 150 (~5 per cycle) is the estimated 3-6 per cycle after the fix, and bench_iv_max_ms 45 sits above the ~41 ms single hitches that remain (mount capture, landing, first frame after Back) and below a 47 ms open. `defer_first` (fence holds before a half's first frame) is reported, never graded."
     },
     {
       "name": "collection-hold",
@@ -514,14 +515,15 @@
       "bench": "hold",
       "run_secs": 150,
       "warmup_s": 8,
-      "bench_missed_max": 0,
+      "bench_missed_max": 150,
+      "bench_iv_max_ms": 45,
       "mock": {"movies": 240, "rk": 50002},
       "triggers": {
         "plxnative-collection": "$rk",
         "plxnative-holdbench": "30",
         "plxnative-framedrop": true
       },
-      "comment": "A REAL press-and-hold on a card, 30 cycles, through the key path a remote uses (dev::scenarios::bench::PressBench, `plxnative-holdbench`): OK down and KEPT down so the press-in dip and the hold capsule's fill run past press::LONG_MS, the item menu opens out of the hold, then Back dismisses it. The key-up is never sent and no OK is queued while the menu is up (its first row is Play). One `bench: kind=hold` line per cycle; the open half covers OK-down through the menu's open spring, the close half Back through the dismiss. grade_bench fails a cycle whose target is `<host>-nomenu`/`-nocard` (it graded an idle window). Collection page (a cards::Stack page, the mock collection rk 50002; the bench seats the first member card with one Down if the page opened on its header). UNMEASURED on the television: no TV run has produced a baseline for this scene yet, so bench_missed_max 0 is the frame budget (as hero-pong/grid-pong's is), not a measured limit; a first TV run reports the real count and the limit is set from it, not guessed here."
+      "comment": "A REAL press-and-hold on a card, 30 cycles, through the key path a remote uses (dev::scenarios::bench::PressBench, `plxnative-holdbench`): OK down and KEPT down so the press-in dip and the hold capsule's fill run past press::LONG_MS, the item menu opens out of the hold, then Back dismisses it. The key-up is never sent and no OK is queued while the menu is up (its first row is Play). One `bench: kind=hold` line per cycle; the open half covers OK-down through the menu's open spring, the close half Back through the dismiss. grade_bench fails a cycle whose target is `<host>-nomenu`/`-nocard` (it graded an idle window). Collection page (a cards::Stack page, the mock collection rk 50002; the bench seats the first member card with one Down if the page opened on its header). PROVISIONAL limits, to be re-measured on the television after the item-menu opener-lift fix lands: `missed` counts refreshes across capture-fence deferrals too (a deferral keeps the present-to-present interval), so today's build, whose menu opens at ~21 fps (frames 47 ms apart), reads ~16 missed per cycle (~480 over 30) and must FAIL; this scene is the regression test for that fix. bench_missed_max 150 (~5 per cycle) is the estimated 3-6 per cycle after the fix, and bench_iv_max_ms 45 sits above the ~41 ms single hitches that remain (mount capture, landing, first frame after Back) and below a 47 ms open. `defer_first` (fence holds before a half's first frame) is reported, never graded."
     },
     {
       "name": "home-tap",
@@ -530,14 +532,14 @@
       "bench": "hold",
       "run_secs": 90,
       "warmup_s": 8,
-      "bench_missed_max": 0,
+      "bench_missed_max": 8,
       "mock": {},
       "triggers": {
         "plxnative-holdbench": "40,350,tap",
         "plxnative-grid": true,
         "plxnative-framedrop": true
       },
-      "comment": "OK down, then a direction key 350 ms later (under press::LONG_MS), 40 cycles: the press-in dip and the cancel spring-back without activating, plus the one-card focus move (right, then left, so focus walks 0-1-0-1). The cancel is the app's real one (a fresh direction key abandons an armed press), not invented input; no OK key-up is sent. Home, first shelf. UNMEASURED on the television: no TV run has produced a baseline for this scene yet, so bench_missed_max 0 is the frame budget (as hero-pong/grid-pong's is), not a measured limit; a first TV run reports the real count and the limit is set from it, not guessed here."
+      "comment": "OK down, then a direction key 350 ms later (under press::LONG_MS), 40 cycles: the press-in dip and the cancel spring-back without activating, plus the one-card focus move (right, then left, so focus walks 0-1-0-1). The cancel is the app's real one (a fresh direction key abandons an armed press), not invented input; no OK key-up is sent. Home, first shelf. PROVISIONAL limit: bench_missed_max 8 is the old present-interval-less count (2-6 missed in total over 40 cycles on the television) with headroom; `missed` now also counts capture-fence deferrals, so re-measure on the television and tighten from the first run."
     },
     {
       "name": "collection-tap",
@@ -547,14 +549,14 @@
       "bench": "hold",
       "run_secs": 90,
       "warmup_s": 8,
-      "bench_missed_max": 0,
+      "bench_missed_max": 8,
       "mock": {"movies": 240, "rk": 50002},
       "triggers": {
         "plxnative-collection": "$rk",
         "plxnative-holdbench": "40,350,tap",
         "plxnative-framedrop": true
       },
-      "comment": "OK down, then a direction key 350 ms later (under press::LONG_MS), 40 cycles: the press-in dip and the cancel spring-back without activating, plus the one-card focus move (right, then left, so focus walks 0-1-0-1). The cancel is the app's real one (a fresh direction key abandons an armed press), not invented input; no OK key-up is sent. Collection page (rk 50002). UNMEASURED on the television: no TV run has produced a baseline for this scene yet, so bench_missed_max 0 is the frame budget (as hero-pong/grid-pong's is), not a measured limit; a first TV run reports the real count and the limit is set from it, not guessed here."
+      "comment": "OK down, then a direction key 350 ms later (under press::LONG_MS), 40 cycles: the press-in dip and the cancel spring-back without activating, plus the one-card focus move (right, then left, so focus walks 0-1-0-1). The cancel is the app's real one (a fresh direction key abandons an armed press), not invented input; no OK key-up is sent. Collection page (rk 50002). PROVISIONAL limit: bench_missed_max 8 is the old present-interval-less count (2-6 missed in total over 40 cycles on the television) with headroom; `missed` now also counts capture-fence deferrals, so re-measure on the television and tighten from the first run."
     },
     {
       "name": "onboard-sources",

@@ -5451,7 +5451,11 @@ def grade_frame_ceilings(scene, lines, route, overlay, warmup):
 # refreshes on which the panel repeated a picture, counted from present-to-present intervals
 # (`dev::scenarios::bench::HalfStats`). `worst_ms` is the largest Top->Swap, which on this driver
 # includes the frame's own vsync wait, so it is reported but not graded. Each `<half>` is
-# `first:<ms>,worst:<ms>@<i>,iv:<ms>,missed:<k>` — the open (press) and close (back) halves.
+# `first:<ms>,worst:<ms>@<i>,iv:<ms>,missed:<k>[,defer_first:<n>]` — the open (press) and close
+# (back) halves. `iv` is the half's worst present-to-present interval (graded by the optional
+# `bench_iv_max_ms`); `defer_first` counts loop iterations the capture fence held BEFORE the
+# half's first presented frame (input-to-first-frame latency: reported, never in `missed`). A
+# deferral AFTER the first present is inside `iv`/`missed`. Older lines lack `defer_first`.
 BENCH_TAIL = (r"(?: tex=\S+)? first_ms=(?P<first>\d+(?:\.\d+)?) missed=(?P<missed>\d+)"
               r" open=(?P<open>\S+)(?: close=(?P<close>\S+))?")
 BENCH_RE = re.compile(
@@ -5459,6 +5463,15 @@ BENCH_RE = re.compile(
     r"target=(?P<target>[\w-]+) worst_ms=(?P<worst>\d+(?:\.\d+)?) frames=(?P<frames>\d+) "
     r"dur_ms=(?P<dur>\d+) rss_kb=(?P<rss>\d+)(?:" + BENCH_TAIL + r")?")
 BENCH_DONE_RE = re.compile(r"^bench: kind=(?P<kind>push|modal|hero|hold) done cycles=(?P<n>\d+)")
+
+
+def _half_field(half, name):
+    """`name:<number>` out of a `<half>` string, or `None` when absent (an older binary) or `half`
+    is `None` (a one-way bench has no close half)."""
+    if not half:
+        return None
+    m = re.search(r"(?:^|,)" + name + r":(\d+(?:\.\d+)?)", half)
+    return float(m.group(1)) if m else None
 
 
 def _bench_tail(m):
@@ -5470,7 +5483,18 @@ def _bench_tail(m):
         "missed": int(missed) if missed is not None else None,
         "open": m.group("open"),
         "close": m.group("close"),
+        **_half_extras(m.group("open"), m.group("close")),
     }
+
+
+def _half_extras(open_half, close_half):
+    """`iv_max_ms` (worst present-to-present interval over both halves) and `defer_first` (summed),
+    each `None` when no half carries it."""
+    def worst(name):
+        v = [x for x in (_half_field(open_half, name), _half_field(close_half, name)) if x is not None]
+        return v
+    iv, df = worst("iv"), worst("defer_first")
+    return {"iv_max_ms": max(iv) if iv else None, "defer_first": int(sum(df)) if df else None}
 
 
 def parse_bench(lines, kind):
@@ -5525,6 +5549,18 @@ def _grade_missed(samples, scene, unit):
             for c in worst)
         detail += f" | most missed: {named}"
     ok = total <= ceiling
+    deferred = [c["defer_first"] for c in samples if c.get("defer_first") is not None]
+    if deferred:
+        detail += f" | defer_first={sum(deferred)} (latency, not missed)"
+    iv_ceiling = scene.get("bench_iv_max_ms")
+    if iv_ceiling is not None:
+        ivs = [c["iv_max_ms"] for c in samples if c.get("iv_max_ms") is not None]
+        if not ivs:
+            return False, (f" | FAIL: bench_iv_max_ms is set but no {unit} line carries an `iv:` "
+                           f"interval")
+        worst_iv = max(ivs)
+        detail += f" | worst present interval={worst_iv:.1f}ms vs bench_iv_max_ms {iv_ceiling}"
+        ok = ok and worst_iv <= iv_ceiling
     if not ok:
         detail = " | FAIL:" + detail[2:]
     return ok, detail

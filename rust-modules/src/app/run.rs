@@ -73,6 +73,10 @@ pub(crate) struct Frame {
     pub(crate) player: bool,
     /// This iteration draws and swaps (the present decision, spec §3.3 step 8).
     pub(crate) present: bool,
+    /// This iteration did NOT present only because a page capture is still in flight on the GPU
+    /// (`gfx::snapshot_pending`): the window was active, so the fence was the one reason. Pure
+    /// bookkeeping for the present-interval stamps and the bench; it never feeds a decision.
+    pub(crate) deferred: bool,
     /// The heartbeat's route word for this frame (`route_word`).
     pub(crate) rn: &'static str,
 }
@@ -86,6 +90,7 @@ impl Frame {
             underlay_moving: false,
             player: false,
             present: false,
+            deferred: false,
             rn: "",
         }
     }
@@ -433,6 +438,10 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         && app.window_activity.allow_present(
             plx_machine::idle::should_present(fr.now) || app.pages.budget.has_queued_work(),
         );
+    // Read-only: was the fence the only thing standing between this iteration and a present? An
+    // inactive window would not have presented either way. (`should_present` is deliberately not
+    // asked: it takes-and-clears the damage the deferred frame still needs.)
+    fr.deferred = !fr.present && plx_gfx::gfx::snapshot_pending() && app.window_activity.allow_present(true);
     // A dump draws every iteration: a held repeat and a written frame alike are a draw.
     #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
     if crate::dev::framedump::active() {
@@ -616,7 +625,14 @@ unsafe fn present_and_swap(
             budget.finish();
         }
     } else {
-        app.instr.skip_present_phases();
+        if fr.deferred {
+            // The fence held a present back: the panel kept the old picture for this iteration, so
+            // the next presented frame's interval must span it. An idle gap breaks the cadence; a
+            // deferral is part of it.
+            app.instr.defer_present_phases();
+        } else {
+            app.instr.skip_present_phases();
+        }
         // The one stretch of main-thread time nothing is waiting on: spend a bounded slice of it
         // opening the theme faces and loading their glyph metrics (`text::warm_fonts_idle`), so
         // a page's first layout does not pay for them inside a transition. A no-op once warm.
@@ -2569,7 +2585,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
         // dev: the stress-bench oscillators' own frame-time accumulator — right after Swap is
         // stamped (`present_and_swap`, just above this call in `run()`), the earliest point this
         // iteration's total is known. See `crate::dev::scenarios::bench_frame_tick`'s doc.
-        crate::dev::scenarios::bench_frame_tick(app, fr.present, fr.now);
+        crate::dev::scenarios::bench_frame_tick(app, fr.present, fr.deferred, fr.now);
         fr.rn = super::words::route_word(&app.route());
     let rn = fr.rn;
     if plx_gfx::text::take_measure_fault() && !app.measure_fault_logged {

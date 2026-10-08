@@ -84,6 +84,22 @@ pub(crate) struct HalfStats {
     pub(crate) iv_max_ms: f64,
     /// Refreshes that repeated a picture or arrived late (see the type's doc).
     pub(crate) missed: u32,
+    /// Loop iterations the capture fence deferred BEFORE this half's first presented frame: the
+    /// input-to-first-frame latency (one capture per modal open, by design), reported here and
+    /// kept out of `missed`. A deferral AFTER the first present is not counted here: the
+    /// heartbeat keeps the present-to-present interval across it, so it is in `iv_max_ms` and
+    /// `missed` already.
+    pub(crate) defer_first: u32,
+}
+
+/// A deferral is a loop iteration that wanted to present but was held by the capture fence
+/// (`run.rs`'s `Frame::deferred`), unlike an idle skip, which had nothing to show.
+impl HalfStats {
+    pub(crate) fn note_defer(&mut self) {
+        if self.frames == 0 {
+            self.defer_first += 1;
+        }
+    }
 }
 
 /// Refreshes beyond the first that `span_ms` covered: 0 up to 1.5 refreshes, 1 up to 2.5, …
@@ -103,17 +119,21 @@ impl HalfStats {
             self.worst_ms = total_ms;
             self.worst_at = self.frames;
         }
+        // A first frame that followed a deferral measured its wait as latency (`defer_first`); its
+        // interval, if the heartbeat carried one, is not a drop.
+        let interval_ms = if self.frames == 1 && self.defer_first > 0 { None } else { interval_ms };
         if let Some(iv) = interval_ms {
             self.iv_max_ms = self.iv_max_ms.max(iv);
         }
         self.missed += missed_refreshes(interval_ms.unwrap_or(total_ms));
     }
 
-/// `first:<ms>,worst:<ms>@<i>,iv:<ms>,missed:<n>` — one half's attribution on a `bench:` line.
+/// `first:<ms>,worst:<ms>@<i>,iv:<ms>,missed:<n>,defer_first:<n>` — one half's attribution on a `bench:` line.
     pub(crate) fn field(&self) -> String {
         format!(
-            "first:{:.1},worst:{:.1}@{},iv:{:.1},missed:{}",
-            self.first_ms, self.worst_ms, self.worst_at, self.iv_max_ms, self.missed
+            "first:{:.1},worst:{:.1}@{},iv:{:.1},missed:{},defer_first:{}",
+            self.first_ms, self.worst_ms, self.worst_at, self.iv_max_ms, self.missed,
+            self.defer_first
         )
     }
 }
@@ -225,6 +245,17 @@ pub(crate) fn bench_note_frame(clock: &mut BenchClock, now: u32, total_ms: f64, 
     match clock.phase {
         BenchPhase::Measuring => clock.open.note(total_ms, interval_ms),
         BenchPhase::Closing => clock.close.note(total_ms, interval_ms),
+        BenchPhase::Settling | BenchPhase::Waiting => {}
+    }
+}
+
+/// Fold one DEFERRED iteration (the capture fence held a present the loop wanted) into the half in
+/// flight. Only deferrals before the half's first present need recording; later ones are in the
+/// next present's interval.
+pub(crate) fn bench_note_defer(clock: &mut BenchClock) {
+    match clock.phase {
+        BenchPhase::Measuring => clock.open.note_defer(),
+        BenchPhase::Closing => clock.close.note_defer(),
         BenchPhase::Settling | BenchPhase::Waiting => {}
     }
 }
@@ -858,6 +889,56 @@ mod tests {
         assert_eq!(h.first_ms, 6.0);
     }
 
+    /// A clock mid-open-half, the way `bench_frame_tick` / `bench_defer_tick` feed it.
+    fn measuring() -> BenchClock {
+        let mut c = settled(BenchClock::round_trip(1));
+        c.phase = BenchPhase::Measuring;
+        c
+    }
+
+    #[test]
+    fn a_fence_deferral_after_the_first_present_is_missed_refreshes() {
+        // The 21 fps menu open: 14 ms of work, 47 ms between presents because the capture fence
+        // held two loop iterations back. The heartbeat keeps the interval across a deferral, so
+        // the frame reads Some(47).
+        let mut c = measuring();
+        bench_note_frame(&mut c, 1000, 6.0, None);
+        bench_note_defer(&mut c);
+        bench_note_defer(&mut c);
+        bench_note_frame(&mut c, 1047, 14.0, Some(47.0));
+        assert_eq!(c.open.missed, 2);
+        assert_eq!(c.open.iv_max_ms, 47.0);
+        assert_eq!(c.open.defer_first, 0, "a deferral after the first present is not latency");
+    }
+
+    #[test]
+    fn a_deferral_before_the_first_present_is_latency_not_missed() {
+        let mut c = measuring();
+        bench_note_defer(&mut c);
+        bench_note_defer(&mut c);
+        bench_note_frame(&mut c, 1047, 14.0, Some(47.0));
+        bench_note_frame(&mut c, 1064, 14.0, Some(17.0));
+        assert_eq!(c.open.defer_first, 2);
+        assert_eq!(c.open.missed, 0);
+        assert!(c.open.field().contains("defer_first:2"), "{}", c.open.field());
+        // the other half is untouched, and a deferral between halves counts for neither
+        assert_eq!(c.close.defer_first, 0);
+        let mut w = settled(BenchClock::round_trip(1));
+        bench_note_defer(&mut w);
+        assert_eq!((w.open.defer_first, w.close.defer_first), (0, 0));
+    }
+
+    #[test]
+    fn an_idle_skip_still_resets_the_interval_so_nothing_is_missed() {
+        // An idle skip clears the heartbeat's interval: the next present reads None and grades by
+        // its own Top->Swap, however long the gap was.
+        let mut c = measuring();
+        bench_note_frame(&mut c, 1000, 6.0, None);
+        bench_note_frame(&mut c, 3000, 6.0, None);
+        assert_eq!(c.open.missed, 0);
+        assert_eq!(c.open.iv_max_ms, 0.0);
+    }
+
     #[test]
     fn a_frame_spanning_two_refreshes_is_one_missed_refresh_wherever_its_time_went() {
         let mut frames = vec![(6.0, None)];
@@ -910,14 +991,14 @@ mod tests {
         rt.close = half(&[(8.0, None), (40.0, Some(2.0 * REFRESH_MS))]);
         assert_eq!(
             rt.fields(),
-            "first_ms=8.0 missed=1 open=first:6.0,worst:16.7@2,iv:16.7,missed:0 \
-             close=first:8.0,worst:40.0@2,iv:33.3,missed:1"
+            "first_ms=8.0 missed=1 open=first:6.0,worst:16.7@2,iv:16.7,missed:0,defer_first:0 \
+             close=first:8.0,worst:40.0@2,iv:33.3,missed:1,defer_first:0"
         );
         assert_eq!(rt.worst_ms(), 40.0);
         assert_eq!(rt.frames(), 4);
         let mut one = settled(BenchClock::new(1));
         one.open = half(&[(6.0, None)]);
-        assert_eq!(one.fields(), "first_ms=6.0 missed=0 open=first:6.0,worst:6.0@1,iv:0.0,missed:0");
+        assert_eq!(one.fields(), "first_ms=6.0 missed=0 open=first:6.0,worst:6.0@1,iv:0.0,missed:0,defer_first:0");
     }
 
     /// Drives a `BenchClock` with a fake, hand-stepped clock and returns every non-`Nothing` step

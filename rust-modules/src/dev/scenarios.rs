@@ -2178,7 +2178,21 @@ fn tex_field() -> String {
 /// frame's total. Gated on `presented`: an iteration the idle gate skipped drew nothing, so
 /// counting it toward `frames` or `worst_ms` would grade an absent frame as a fast one, exactly
 /// the reasoning `Instruments::frame_drop_line`'s own `worst` peak already uses.
-pub(crate) fn bench_frame_tick(app: &mut App, presented: bool, now: u32) {
+pub(crate) fn bench_frame_tick(app: &mut App, presented: bool, deferred: bool, now: u32) {
+    if deferred {
+        for clock in [
+            app.scenarios.push_bench.as_mut().map(|b| &mut b.clock),
+            app.scenarios.modal_bench.as_mut().map(|b| &mut b.clock),
+            app.scenarios.deep_bench.as_mut().map(|b| &mut b.clock),
+            app.scenarios.hero_bench.as_mut().map(|b| &mut b.clock),
+            app.scenarios.hold_bench.as_mut().map(|b| &mut b.clock),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            bench::bench_note_defer(clock);
+        }
+    }
     if !presented {
         return;
     }
