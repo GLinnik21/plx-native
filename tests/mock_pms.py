@@ -998,6 +998,21 @@ def demo_cache_dir():
     return pathlib.Path(env) if env else pathlib.Path.home() / ".cache" / "plxnative-demo"
 
 
+_DEMO_TOOL = []
+
+
+def demo_derived_file(assets, cache, key, rec, role):
+    """Where `tools/demo_library.py derive` put one derived file (`derived_file` there decides: the
+    name carries a hash of the recipe, so checkouts sharing a cache never overwrite each other)."""
+    if not _DEMO_TOOL:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "demo_library_tool", pathlib.Path(__file__).resolve().parent.parent / "tools" / "demo_library.py")
+        _DEMO_TOOL.append(importlib.util.module_from_spec(spec))
+        spec.loader.exec_module(_DEMO_TOOL[0])
+    return _DEMO_TOOL[0].derived_file(assets, cache, key, rec, role)
+
+
 class CatalogLibrary(Library):
     """The demo library (`--catalog`): the same wire shapes and the same queries as the generated
     library, built from `tests/demo_library/catalog.json` instead of a seed. Keys are dense and
@@ -1092,17 +1107,19 @@ class CatalogLibrary(Library):
                 it["year"] = rec["year"]
             images = {}
             for role, name in (("thumb", "poster"), ("art", "art"), ("thumb", "thumb")):
-                path = self.derived / key / f"{name}.jpg"
-                if name in rec and path.is_file():
+                if name not in rec:
+                    continue
+                path = demo_derived_file(assets, self.cache, slug, rec, name)
+                if path.is_file():
                     images[role] = path
                     it[role] = f"/library/metadata/{rk}/{role}/{self.now}"
-                elif name in rec:
+                else:
                     raise ValueError(f"{slug}: derived {name} is missing ({path}); rerun "
                                      "`python3 tools/demo_library.py derive`")
             if "logo" in rec:
                 # The item's clearLogo, which the app asks for by path
                 # (`/library/metadata/<rk>/clearLogo`), as it does of a real server.
-                path = self.derived / key / "logo.png"
+                path = demo_derived_file(assets, self.cache, slug, rec, "logo")
                 if not path.is_file():
                     raise ValueError(f"{slug}: derived logo is missing ({path}); rerun "
                                      "`python3 tools/demo_library.py derive`")
@@ -1167,7 +1184,7 @@ class CatalogLibrary(Library):
                         ep["contentRating"] = show["contentRating"]
                     if e.get("stand_in"):
                         slug = f"{s['id']}/{season['index']}/{e['index']}"
-                        path = self.derived / slug.replace("/", "_") / "stand-in.mp4"
+                        path = demo_derived_file(assets, self.cache, slug, e, "stand-in")
                         if not path.is_file():
                             raise ValueError(f"{slug}: derived stand-in is missing ({path}); rerun "
                                              "`python3 tools/demo_library.py derive`")
