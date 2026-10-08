@@ -5,7 +5,8 @@
 //! focus, scrolling to keep focus visible, the caption band, drawing the focused tile last, culling,
 //! hit-map stops, `Focusable` placement, paging requests and idle. A screen supplies its content
 //! through [`CardSource`] and reacts to the one [`CardEvent`] [`Shelf::on`] / [`Grid::on`] returns;
-//! it writes no pop, press, stop, restore or paging code of its own.
+//! it writes no pop, stop, restore or paging code of its own (and, for the stack pages, no press
+//! code either — see the exceptions under "One entry").
 //!
 //! The contract, fixed once for every section:
 //!
@@ -13,8 +14,12 @@
 //!   consumes Tick and FocusMoved and reports Activate / Hold / Want; a screen that skips the call
 //!   gets no motion at all, which is visible, not subtle. It never says "handled": a screen still
 //!   observes `FocusMoved` itself for whatever else it keeps.
-//!   Home is the one exception: it feeds `Tick` and `FocusMoved` only and keeps its own press
-//!   paths, because a Continue Watching press is account-affecting.
+//!   Three screens are exceptions to "reports Activate / Hold / Want": Home feeds `Tick` and
+//!   `FocusMoved` only and keeps its own press paths, because a Continue Watching press is
+//!   account-affecting; Library and Detail do feed every event but discard the returned
+//!   [`CardEvent`] and keep their own `Activate` / `PressCommit` / `PressHold` handling (Library's
+//!   item menu and review flow, Detail's section-aware activation). The `cards::Stack` pages
+//!   (Collection, Person, Search) act on the event.
 //! - **Elem-keyed.** The section remembers no focus. Each call it reads the ENGINE's focus
 //!   (`cx.focus.current`, filtered to its entry) and resolves the element to an index through
 //!   [`CardSource::index_of`], so a landing that reorders content cannot leave it naming another

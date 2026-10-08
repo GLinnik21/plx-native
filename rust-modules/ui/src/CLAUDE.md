@@ -73,7 +73,7 @@ re-exported from `plx_ui::cards`, and the profile picker's circular avatar row i
 empty).
 The component reads focus from the engine, adopts a focus no deliberate move announced at full pop,
 takes the press from the frame, registers the stops it draws and reports one `CardEvent`
-(Activate / Hold / Want) from `on(ev, cx, src, fx)`, which the screen calls with EVERY event. (Home is the exception: it feeds Tick and FocusMoved only and keeps its own press paths, because a Continue Watching press is account-affecting.) The
+(Activate / Hold / Want) from `on(ev, cx, src, fx)`, which the screen calls with EVERY event. (Three screens are exceptions: Home feeds Tick and FocusMoved only and keeps its own press paths, because a Continue Watching press is account-affecting; Library and Detail feed every event but discard the returned `CardEvent` and handle Activate / PressCommit / PressHold themselves.) The
 contract is the `//!` of `cards/mod.rs`; `cards/tests.rs` is its Tier 1 conformance, and
 `cards/conformance.rs` the Tier 2 drivers each real screen runs. Three rules a screen can break by
 reaching around the component: a `SectionFrame`'s `y` (and a `Grid`'s `top`) is SCREEN space and
