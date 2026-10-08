@@ -145,12 +145,11 @@ pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '
         empty(screen, f, p);
     }
     for (i, row) in screen.rows.iter().enumerate() {
-        let (kinds, n) = screen.kinds();
-        let top = layout::top(&kinds[..n], i, |j| screen.rows[j].shelf.under_band())
-            - screen.scroll.pos;
+        let Some((frame, shelf)) = screen.row_frame(f.cx, i) else { continue };
+        let top = frame.y - layout::HEAD_TO_ROW;
         if !plx_ui::on_axis(
             top,
-            layout::block_h(row.kind, row.shelf.under_band()),
+            layout::block_h(row.kind, shelf.under_band()),
             SCR_H,
             0.0,
         ) {
@@ -179,13 +178,13 @@ pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '
                     } else {
                         p
                     },
-                    Rect::new(MARGIN_X + dx, top - row.shelf.heading_lift(), 0.0, cap),
+                    Rect::new(MARGIN_X + dx, top - shelf.heading_lift(), 0.0, cap),
                 );
                 f.cx.measure.width(run, size, bold != 0)
             },
         );
-        if let Some(src) = screen.cards(H::search(f.cx), i) {
-            row.shelf.draw(f, p, &src, screen.frame(i, At::Drawn));
+        if let Some(src) = screen.row_cards(H::search(f.cx), i) {
+            shelf.draw(f, p, &src, frame);
         }
     }
 }
@@ -194,7 +193,7 @@ fn field<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p: 
     let data = &screen.render;
     let rect = Rect::new(
         layout::FIELD.x,
-        layout::FIELD.y - screen.scroll.pos,
+        layout::FIELD.y - screen.stack.scroll(),
         layout::FIELD.w,
         layout::FIELD.h,
     );
@@ -256,7 +255,7 @@ fn field<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p: 
             p,
             Rect::new(
                 rect.x,
-                layout::SCOPE_Y - screen.scroll.pos,
+                layout::SCOPE_Y - screen.stack.scroll(),
                 rect.w,
                 layout::SCOPE_H,
             ),
@@ -276,7 +275,7 @@ fn recents<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p
         p,
         Rect::new(
             MARGIN_X + plx_ui::table::CONTENT_X,
-            layout::CONTENT_TOP - screen.scroll.pos,
+            layout::CONTENT_TOP - screen.stack.scroll(),
             0.0,
             plx_ui::table::HDR_H,
         ),
@@ -289,7 +288,7 @@ fn recents<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p
         let Identity::Recent(_) = &key.identity else {
             continue;
         };
-        let rect = layout::recent(index, screen.scroll.pos);
+        let rect = layout::recent(index, screen.stack.scroll());
         let focused = f.cx.focus.current == Some(screen.key(*elem));
         if focused {
             p.rrect(
@@ -323,7 +322,7 @@ fn recents<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p
         );
         stop(screen, *elem, ElemKind::Bare, f, p);
     }
-    let rect = layout::clear(shown, screen.scroll.pos, f.cx.measure);
+    let rect = layout::clear(shown, screen.stack.scroll(), f.cx.measure);
     Button::new(plx_platform::i18n::msg::browse_search_clear_c().as_ptr(), theme::size::BODY, rect)
         .focused(f.cx.focus.current == Some(screen.key(CLEAR)))
         .draw(&env, p);
@@ -339,7 +338,7 @@ fn empty<H: SearchLike>(screen: &SearchScreen, f: &DrawFrame<'_, '_, H>, p: Pain
         return;
     };
     let mut rect = layout::empty_band(screen.editing);
-    rect.y -= screen.scroll.pos;
+    rect.y -= screen.stack.scroll();
     if empty == EmptyState::Fault {
         StatusOverlay::new(rect, plx_platform::i18n::msg::browse_search_failed_c(), StatusKind::Failed)
             .reason(plx_platform::i18n::msg::browse_search_failed_detail_c())
@@ -414,7 +413,7 @@ fn stop<H: SearchLike>(
         return;
     }
     use plx_ui::screen::{Activate, Hover, Stop};
-    let Some(placed) = <SearchScreen as Focusable<H>>::place(screen, &elem, f.cx, At::Drawn) else {
+    let Some(placed) = <SearchScreen as plx_ui::screen::Focusable<H>>::place(screen, &elem, f.cx, plx_ui::screen::At::Drawn) else {
         return;
     };
     f.stop(

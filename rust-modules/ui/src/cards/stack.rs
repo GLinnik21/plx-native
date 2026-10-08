@@ -149,6 +149,12 @@ pub trait StackPage<H: Host> {
     fn pending(&self, _cx: &Cx<'_, H>, _want: &H::Elem) -> bool {
         false
     }
+    /// Where focus goes when `want` is no longer shown, where the page keeps its own record of
+    /// where each element was (a slot in its group) and the position the `Stack` last saw focus at
+    /// is not it. `None` leaves it to the `Stack`.
+    fn recover(&self, _cx: &Cx<'_, H>, _want: &H::Elem) -> Option<H::Elem> {
+        None
+    }
     fn sections(&self, cx: &Cx<'_, H>, out: &mut Vec<SectionSpec<Self::Key>>);
     /// The page-level order focus falls back through when its section empties.
     fn fallback(&self, cx: &Cx<'_, H>, out: &mut Vec<Self::Key>);
@@ -194,6 +200,16 @@ pub trait StackPage<H: Host> {
     /// below (the margin its block is brought up to).
     fn reveal_margin(&self, _k: Self::Key) -> f32 {
         MARGIN_Y
+    }
+    /// Air the page keeps under a shelf's block, counted in the block's height (the scroll reveals
+    /// it with the block): a page whose shelves are stacked with the label band's air under each.
+    fn shelf_foot(&self, _k: Self::Key) -> f32 {
+        0.0
+    }
+    /// Whether a shelf's group extent spans the page's width (the default) or is the shelf's own
+    /// head tile.
+    fn wide_extent(&self, _k: Self::Key) -> bool {
+        true
     }
     /// The focus group of a focusable `Custom` / `Overlay` section.
     fn plain_group(&self, _cx: &Cx<'_, H>, _k: Self::Key, id: GroupId, extent: Rect) -> GroupSpec {
@@ -339,6 +355,24 @@ impl<K: Copy + Eq, E> Stack<K, E> {
         self.target
     }
 
+    /// The scroll spring and its target, for a page that writes its own canon around them.
+    pub fn write_scroll(&self, c: &mut Canon) {
+        c.f32(self.scroll.pos).f32(self.scroll.vel).f32(self.target);
+    }
+
+    /// Shelf `k`'s state (`None` while the layout has no such shelf).
+    pub fn shelf(&self, k: K) -> Option<&Shelf> {
+        match self.bodies.get(self.index(k)?) {
+            Some(Body::Shelf(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Where shelf `k`'s tiles sit now.
+    pub fn shelf_frame<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, k: K) -> Option<SectionFrame> {
+        Some(self.frame(p, cx, self.index(k)?))
+    }
+
     /// The focus group the page named section `k` (`None` while the layout has no such section).
     pub fn group(&self, k: K) -> Option<GroupId> {
         self.index(k).map(|i| self.specs[i].group)
@@ -431,7 +465,7 @@ impl<K: Copy + Eq, E> Stack<K, E> {
     fn height<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize) -> f32 {
         match (&self.specs[i].kind, &self.bodies[i]) {
             (Kind::Shelf { style, heading }, Body::Shelf(s)) => {
-                if self.len_of(p, cx, i) == 0 { 0.0 } else { heading + style.h + s.under_band() }
+                if self.len_of(p, cx, i) == 0 { 0.0 } else { heading + style.h + s.under_band() + p.shelf_foot(self.specs[i].key) }
             }
             (Kind::Grid { .. }, Body::Grid(g)) => g.height(self.len_of(p, cx, i)),
             (Kind::Custom { height, .. }, _) => *height,
@@ -559,9 +593,7 @@ impl<K: Copy + Eq, E> Stack<K, E> {
                     reported = Some(StackEvent::Card(k, CardEvent::Want(r)));
                 }
             }
-            ScreenEvent::FocusMoved { to, .. } if self.on_move => {
-                self.target = self.owner(p, cx, &to.elem).filter(|_| to.entry == self.entry).map_or(0.0, |i| self.wanted(p, cx, i));
-            }
+            ScreenEvent::FocusMoved { to, .. } if self.on_move => self.reveal_on(p, cx, *to),
             ScreenEvent::Activate(e) => {
                 reported = reported.or_else(|| {
                     let i = self.owner(p, cx, e)?;
@@ -574,6 +606,19 @@ impl<K: Copy + Eq, E> Stack<K, E> {
             self.sync_pages(p, cx);
         }
         reported
+    }
+
+    /// Under [`reveal_on_move`](Self::reveal_on_move): bring the focused element's block into view
+    /// now, as a `FocusMoved` to it would (a page whose sections changed under a standing focus).
+    pub fn reveal<H: Host<Elem = u32>, P: StackPage<H, Key = K>>(&mut self, p: &P, cx: &Cx<'_, H>) {
+        if let Some(key) = cx.focus.current {
+            self.reveal_on(p, cx, key);
+        }
+    }
+
+    fn reveal_on<H: Host, P: StackPage<H, Key = K>>(&mut self, p: &P, cx: &Cx<'_, H>, to: FocusKey<H::Elem>) {
+        self.refresh(p, cx);
+        self.target = self.owner(p, cx, &to.elem).filter(|_| to.entry == self.entry).map_or(0.0, |i| self.wanted(p, cx, i));
     }
 
     fn tick<H: Host<Elem = u32>, P: StackPage<H, Key = K>>(&mut self, dt: f32, p: &P, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
@@ -609,7 +654,11 @@ impl<K: Copy + Eq, E> Stack<K, E> {
     fn settled_height<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, n: usize, focus: usize) -> f32 {
         match &self.specs[n].kind {
             Kind::Shelf { style, heading } => {
-                if self.len_of(p, cx, n) == 0 { 0.0 } else { heading + style.h + card_row::under_band((n == focus) as i32 as f32) }
+                if self.len_of(p, cx, n) == 0 {
+                    0.0
+                } else {
+                    heading + style.h + card_row::under_band((n == focus) as i32 as f32) + p.shelf_foot(self.specs[n].key)
+                }
             }
             _ => self.height(p, cx, n),
         }
@@ -630,7 +679,9 @@ impl<K: Copy + Eq, E> Stack<K, E> {
         let (top, height) = ((0..j).map(h).sum::<f32>(), h(j));
         let max = ((0..self.specs.len()).map(h).sum::<f32>() - (SCR_H - MARGIN_Y)).max(0.0);
         let hi = if matches!(self.specs[j].kind, Kind::Shelf { .. }) { top - p.reveal_margin(self.specs[j].key) } else { top };
-        card_row::reveal(self.scroll.pos, top + height - (SCR_H - MARGIN_Y), hi, max)
+        // a page that sets the target itself reveals from where it is headed, not where it is
+        let from = if self.on_move { self.target } else { self.scroll.pos };
+        card_row::reveal(from, top + height - (SCR_H - MARGIN_Y), hi, max)
     }
 
     // ---- placement -------------------------------------------------------------------------
@@ -846,7 +897,8 @@ impl<K: Copy + Eq, E, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H
                 (Kind::Shelf { .. }, Body::Shelf(sh)) => {
                     let Some(src) = p.cards(cx, k).filter(|c| c.len() > 0) else { continue };
                     let h = sh.head(s.frame(p, cx, i));
-                    let mut g = sh.group_spec(id, src.len(), Rect::new(h.x, h.y, SCR_W - 2.0 * h.x, h.h));
+                    let extent = if p.wide_extent(k) { Rect::new(h.x, h.y, SCR_W - 2.0 * h.x, h.h) } else { h };
+                    let mut g = sh.group_spec(id, src.len(), extent);
                     s.specs[i].tweak.apply(&mut g);
                     out.push(g);
                 }
@@ -907,6 +959,9 @@ impl<K: Copy + Eq, E, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H
         }
         if p.pending(cx, &want.elem) {
             return want;
+        }
+        if let Some(elem) = p.recover(cx, &want.elem) {
+            return at(elem);
         }
         if let Some(elem) = s.last.and_then(|(k, n)| s.index(k).and_then(|i| self.nth(cx, i, n))) {
             return at(elem);

@@ -33,7 +33,8 @@ impl SearchScreen {
     }
     pub(super) fn page_memory(&self) -> Memory {
         Memory { profile: self.draft.profile(), query: self.query_gen, next_elem: self.next_elem,
-            keys: self.keys.clone(), scroll: self.scroll.pos,
-            rows: self.rows.iter().map(|row| (row.kind, row.shelf.scroll())).collect() }
+            keys: self.keys.clone(), scroll: self.stack.scroll(),
+            rows: self.stack.memory().shelves.into_iter()
+                .filter_map(|(sec, x)| if let Sec::Row(kind, _) = sec { Some((kind, x)) } else { None }).collect() }
     }
 }

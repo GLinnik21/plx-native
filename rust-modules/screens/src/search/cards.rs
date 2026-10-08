@@ -12,7 +12,7 @@ use plx_ui::Painter;
 /// Row `kind`'s cards. `items[i]` is shown as `elems[i]`; the two are built together by
 /// [`SearchScreen::sync`], and a view that has since moved on shows as fewer cards, never as a
 /// card with no item.
-pub(super) struct RowCards<'a> {
+pub struct RowCards<'a> {
     pub(super) kind: Kind,
     pub(super) elems: &'a [u32],
     pub(super) items: &'a [Item],

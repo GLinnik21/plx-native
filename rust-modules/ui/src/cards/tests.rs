@@ -1683,6 +1683,7 @@ mod stack {
         rows: u32,
         shelf: Cards,
         revision: u64,
+        foot: f32,
     }
 
     impl StackPage<FixtureHost> for Multi {
@@ -1747,6 +1748,7 @@ mod stack {
         }
         fn reveal_with(&self, k: Msec) -> Option<Msec> { matches!(k, Msec::List | Msec::Clear).then_some(Msec::Field) }
         fn reveal_margin(&self, k: Msec) -> f32 { if k == Msec::Shelf { SHELF_MARGIN } else { crate::consts::MARGIN_Y } }
+        fn shelf_foot(&self, k: Msec) -> f32 { if k == Msec::Shelf { self.foot } else { 0.0 } }
     }
 
     struct Mrig {
@@ -1760,7 +1762,7 @@ mod stack {
     fn mrig(rows: u32, shelf: usize, build: impl FnOnce(Stack<Msec>) -> Stack<Msec>) -> Mrig {
         let mut r = Mrig {
             stack: build(Stack::new(ENTRY)),
-            page: Multi { rows, shelf: Cards::new((0..shelf as u32).map(|i| 100 + i).collect(), false), revision: 1 },
+            page: Multi { rows, shelf: Cards::new((0..shelf as u32).map(|i| 100 + i).collect(), false), revision: 1, foot: 0.0 },
             view: FixtureView::default(),
             focus: None,
             ms: 0,
@@ -1927,6 +1929,23 @@ mod stack {
         r.go(100);
         r.run(1);
         assert_eq!(r.stack.target(), top - SHELF_MARGIN, "the page's margin, not the default {}", crate::consts::MARGIN_Y);
+    }
+
+    #[test]
+    fn a_shelfs_foot_is_part_of_its_block_and_of_the_reveal() {
+        let at = |foot: f32| {
+            let mut r = mrig(30, 40, |s| s);
+            r.page.foot = foot;
+            r.page.revision += 1;
+            r.go(FIELD_ELEM);
+            r.run(1);
+            r.go(100);
+            r.run(1);
+            (r.stack.target(), r.stack.max_scroll(&r.page, &r.cx()))
+        };
+        let (_, bare_max) = at(0.0);
+        let (_, footed_max) = at(22.0);
+        assert_eq!(footed_max - bare_max, 22.0, "the block is that much taller, so the page ends that much lower");
     }
 
     #[test]
