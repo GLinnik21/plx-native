@@ -865,8 +865,7 @@ impl<K: Copy + Eq, E, P> StackView<'_, K, E, P> {
                 Some(c.elem(super::clamp_slot(n, c.len())?))
             }
             Kind::Custom { focusable, .. } | Kind::Overlay { focusable, .. } => {
-                let last = p.plain_len(k).checked_sub(1)?;
-                p.plain_elem(k, n.min(last)).filter(|_| focusable)
+                p.plain_elem(k, super::clamp_slot(n, p.plain_len(k))?).filter(|_| focusable)
             }
         }
     }
