@@ -1,4 +1,4 @@
-{"updated":"2026-10-08T06:58:26Z",
+{"updated":"2026-10-08T06:59:00Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -1995,7 +1995,8 @@
 {"id":37729495763,"at":"2026-10-08T04:51:32Z","sha":"9c7615c0c","title":"wip3","pr":545,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":251,"macOS tests against bundled FFmpeg and ASS":158,"Windows launcher syntax":17,"macOS simulator build + launch":264}},
 {"id":37731290513,"at":"2026-10-08T05:13:22Z","sha":"4dd946384","title":"wip4","pr":545,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":222,"macOS tests against bundled FFmpeg and ASS":116,"macOS simulator build + launch":318,"Windows launcher syntax":17}},
 {"id":37735156111,"at":"2026-10-08T05:59:13Z","sha":"ebc279a89","title":"wip5","pr":545,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":209,"macOS simulator build + launch":271,"macOS tests against bundled FFmpeg and ASS":150,"Windows launcher syntax":16}},
-{"id":37739347315,"at":"2026-10-08T06:45:06Z","sha":"c0020702a","title":"Demo video: the storyboard film, filmed by the simulator and gated (S5c)","pr":545,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":153,"macOS simulator build + launch":318,"Linux simulator build + launch":212,"Windows launcher syntax":16}}
+{"id":37739347315,"at":"2026-10-08T06:45:06Z","sha":"c0020702a","title":"Demo video: the storyboard film, filmed by the simulator and gated (S5c)","pr":545,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":153,"macOS simulator build + launch":318,"Linux simulator build + launch":212,"Windows launcher syntax":16}},
+{"id":37740134191,"at":"2026-10-08T06:53:23Z","sha":"20b7a053f","title":"Demo video: the storyboard film, filmed by the simulator and gated (S5c)","pr":545,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":318,"Windows launcher syntax":15,"macOS tests against bundled FFmpeg and ASS":115,"Linux simulator build + launch":243}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
