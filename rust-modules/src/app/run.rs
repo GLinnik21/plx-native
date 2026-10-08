@@ -315,7 +315,13 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
     // phase below re-steps every spring, so the flag it leaves describes THIS frame, and
     // stamp `dt` so a spring's velocity can be judged as travel-this-frame rather than as
     // a bare units-per-second. The decision itself is taken just above `glViewport`.
-    plx_machine::idle::frame_begin(fr.dt);
+    // A dump's held repeat judges rest with its first pass's `dt` (`framedump::idle_dt`); the
+    // clock `now_ms` reads still advances by `fr.dt` alone.
+    #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
+    let rest_dt = if crate::dev::framedump::active() { crate::dev::framedump::idle_dt(fr.dt) } else { fr.dt };
+    #[cfg(not(all(feature = "hostsim", feature = "devtriggers")))]
+    let rest_dt = fr.dt;
+    plx_machine::idle::frame_begin_judging_rest_with(fr.dt, rest_dt);
     // Is a page capture still in flight on the GPU, and is recorded text still warming? Latched
     // once, before the springs step, so the held appear spring and the present gate below read
     // the same answer — and, being the machine's speed rather than the inputs, recorded or

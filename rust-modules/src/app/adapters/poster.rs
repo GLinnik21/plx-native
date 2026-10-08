@@ -318,7 +318,22 @@ fn evict_backoff(evict_attempts: u8) -> Duration {
 
 /// Has a P_EVICTED slot's cooldown cleared? Wrap-safe like [`retry_due`]; `None` (no cooldown was
 /// ever set) is always due.
+///
+/// **In a frame dump (`plx_gfx::dump`) every cooldown is over.** The dump holds the app clock still
+/// while it waits for debt to clear, so a cooldown armed from that clock never expires and the
+/// re-arm it paces would never come (a hold with no way out); and a cooldown that did expire would
+/// make the frame it expires on a function of how long the host took. The dump's own residency is
+/// bounded and logical, so the thrash this guard paces does not arise there.
 fn evict_cooldown_due(cooldown_until: Option<u32>, now: u32) -> bool {
+    evict_cooldown_due_in(plx_gfx::dump::armed(), cooldown_until, now)
+}
+
+/// [`evict_cooldown_due`] with the dump switch passed in, for a host test.
+#[inline]
+fn evict_cooldown_due_in(dump: bool, cooldown_until: Option<u32>, now: u32) -> bool {
+    if dump {
+        return true;
+    }
     match cooldown_until {
         None => true,
         Some(t) => now.wrapping_sub(t) < u32::MAX / 2,
@@ -441,6 +456,31 @@ impl Store {
 }
 
 static STORE: Mutex<Store> = Mutex::new(Store::new());
+
+/// **Frame dump only: the first art fetch that failed.** A failed fetch (a 404, bytes that do not
+/// decode, a refused connect) leaves its card on a placeholder forever, and a dump holds on a
+/// placeholder, so without this the run would sit to its wall-clock timeout and name a hold
+/// reason instead of the request. The driver reads it after every draw ([`dump_failure`]) and ends
+/// the run naming the key. A transient failure is recorded too: its retry waits on the app clock,
+/// which a dump holds still, so it could never come. Never written outside a dump.
+static DUMP_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+
+fn note_dump_failure(key: &[u8], transient: bool) {
+    let mut g = DUMP_FAILURE.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() {
+        let key = String::from_utf8_lossy(sans_token(key)).into_owned();
+        *g = Some(format!(
+            "an art request failed ({}): {key}",
+            if transient { "transient: no answer or a retryable status" } else { "final: an HTTP error or bytes that do not decode" }
+        ));
+    }
+}
+
+/// The first art-request failure since the dump was armed, if any. See [`DUMP_FAILURE`].
+#[cfg(all(feature = "hostsim", feature = "devtriggers"))]
+pub(crate) fn dump_failure() -> Option<String> {
+    DUMP_FAILURE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
 static CV: Condvar = Condvar::new();
 
 fn store() -> MutexGuard<'static, Store> {
@@ -891,6 +931,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // would never see if it only guarded the miss. A HIT is deliberately untouched: art that is
     // already resident still draws and still takes its LRU touch, so declining never blanks a
     // tile that had its picture.
+    // (`declines_request` is always false in a frame dump: a frozen clock never leaves `Unknown`.)
     let decline = touch == Touch::Draw && plx_ui::card_motion::declines_request();
     let mut g = store();
     let cache_gen = plx_platform::imgcache::generation();
@@ -1758,6 +1799,7 @@ fn poster_worker() {
                     trace::decoded(idx, gen);
                     true
                 } else {
+                    if plx_gfx::dump::armed() { note_dump_failure(key_bytes(s), transient); }
                     if transient && cache_gen == plx_platform::imgcache::generation() { park_retry(s); }
                     else { s.state = P_FAILED; }
                     trace::lost(idx, gen, "failed");
@@ -2568,6 +2610,27 @@ mod tests {
         store().slots = [Pslot::ZERO; PT_CAP];
     }
 
+    /// The wiring `declines_in` is a pure function of: in a frame dump the SAME fast-moving draw
+    /// claims a slot, because a dump never declines for motion (`card_motion::declines_request`).
+    #[test]
+    fn an_armed_dump_claims_a_slot_for_the_miss_a_fast_scroll_would_decline() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/4243/thumb", 2, 2, 0);
+        store().slots = [Pslot::ZERO; PT_CAP];
+
+        let _motion = plx_ui::card_motion::Scope::moving_for_test();
+        assert!(plx_ui::card_motion::declines_request(), "the fixture is a fast scroll");
+        {
+            let _dump = plx_gfx::dump::Armed::new();
+            assert!(!plx_ui::card_motion::declines_request(), "armed, motion declines nothing");
+            let (_, warm) = lookup(sid, &path, Touch::Draw);
+            assert_eq!(warm, Warm::Claimed, "the draw claims the slot a fast scroll would have declined");
+            assert_eq!(store().slots[0].state, P_WANT);
+        }
+        assert!(plx_ui::card_motion::declines_request(), "disarmed, the same scope declines again");
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
     /// Exercise the source-facing half of the product card primitive, not a
     /// hand-entered admission scope. GPU composition is the real-TV obligation.
     /// A future position term in any screen reaches this same transformed centre.
@@ -2873,6 +2936,21 @@ mod tests {
         assert!(evict_cooldown_due(None, 0), "no cooldown was ever set - never gated");
         assert!(!evict_cooldown_due(Some(1_000), 999), "one millisecond short is still cooling");
         assert!(evict_cooldown_due(Some(1_000), 1_000), "the deadline itself has cleared");
+    }
+
+    #[test]
+    fn a_frame_dump_has_no_eviction_cooldown_and_names_the_first_failed_request() {
+        assert!(!evict_cooldown_due_in(false, Some(1_000), 999));
+        assert!(evict_cooldown_due_in(true, Some(1_000), 999), "a frozen clock would never clear it");
+        let mut g = DUMP_FAILURE.lock().unwrap_or_else(|e| e.into_inner());
+        *g = None;
+        drop(g);
+        note_dump_failure(b"/photo/:/transcode?url=%2Flibrary%2Fmetadata%2F9%2Fthumb&X-Plex-Token=SECRET", false);
+        note_dump_failure(b"/second&X-Plex-Token=SECRET", true);
+        let g = DUMP_FAILURE.lock().unwrap_or_else(|e| e.into_inner());
+        let why = g.as_deref().expect("the first failure is kept");
+        assert!(why.contains("final") && why.contains("metadata%2F9%2Fthumb") && !why.contains("SECRET"), "{why}");
+        assert!(!why.contains("/second"), "only the first is kept");
     }
 
     /// A second half of the same PR #182 P1: [`evict_cooldown_due_only_after_its_own_deadline`]

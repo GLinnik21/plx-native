@@ -51,15 +51,19 @@
 //! "Loading" title or a skeleton captured into the image keeps the count above zero for as long as
 //! it is on screen. `Dispatcher::held_page_image` says whether the page shown is an image and at
 //! what alpha. The sentinel does NOT survive an image: it is blended at the dip alpha, and it never
-//! carried a caption, so a held image is debt for the pixel oracle whatever the counter says.
+//! carried a caption, so the pixel oracle cannot see a placeholder inside an image and the counter
+//! alone vouches for those frames.
 //!
 //! **What the dump driver (S5b) must do.** Call [`arm`] once at start; then for each frame
 //! [`reset`] BEFORE the frame's first walk, draw it, and [`take`] after the last walk, on the UI
 //! thread (the counter is per thread). That is the contract, in full:
 //!
 //! 1. **Force a live draw on every written frame.** A frame the app did not draw reads count 0.
-//! 2. **A held page image is debt.** Treat any frame where `Dispatcher::held_page_image` is `Some`
-//!    as not written, whatever the count; add a negative test that delays
+//! 2. **A held page image is a fact, not debt.** The image carries its capture's placeholders,
+//!    re-noted by [`renote`], so a spinner captured into it still holds the frame through the
+//!    counter. The driver does not hold on `Dispatcher::held_page_image` itself: it re-captures on
+//!    each repeat until the count is 0 (`plx_gfx::dump::held_repeat`), then writes the image
+//!    frames, so a push films as the product plays it. Keep a negative test that delays
 //!    `/library/metadata/<rk>` by 3 s across a push and asserts no written frame contains the
 //!    spinner or the "Loading" title.
 //! 3. **Zero or non-zero only** (see above); a frame with `count > 0` is a failure naming

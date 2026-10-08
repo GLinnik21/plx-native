@@ -746,12 +746,25 @@ where
 
     /// **Is the page on screen a held image?** `Some(alpha)` when the last visible pass painted the
     /// top page as its captured snapshot instead of drawing it (a `PageDip` push's IN half and the
-    /// hold after it), `None` when it drew the page live. Such a frame shows whatever the page
-    /// looked like when it was captured; the placeholders it contained are re-counted on it
-    /// (`placeholder::renote`), but the pixel sentinel sees them only at alpha 1 and never sees a
-    /// caption, so the demo-video driver treats an image frame as debt rather than as clean.
+    /// hold after it), `None` when it drew the page live. The placeholders such an image contained
+    /// are re-counted on it (`placeholder::renote`); the demo-video driver reports this as a fact
+    /// and holds only on that debt, since a capture with debt is re-captured until it is clean.
     pub fn held_page_image(&self) -> Option<f32> {
         self.page_image_alpha
+    }
+
+    /// Is a modal surface or a popover's held image up? The frame dump fails closed on it: the dim
+    /// field behind a modal is sampled on a cadence of presented iterations.
+    pub fn overlay_open(&self) -> bool {
+        !self.nav.modals.surfaces.is_empty() || crate::popover::host::held_ceiling().is_some()
+    }
+
+    /// Does the dispatcher carry work into its next iteration: a queued step, a parked structural
+    /// op or lifecycle step (one nav commit per iteration), a pending back? The frame dump holds a
+    /// virtual frame on it, so an input's whole effect lands within the frame it was pressed in
+    /// rather than on whichever later iteration the holds happened to leave.
+    pub fn work_carried(&self) -> bool {
+        !self.queue.is_empty() || !self.parked.is_empty() || !self.parked_life.is_empty() || self.pending_back
     }
 
     /// Whether this frame may show the page as a frozen image at all: a freezing transition, a

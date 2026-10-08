@@ -213,6 +213,13 @@ impl Budget {
     /// 3. **Forward progress** for the classes that fit: the FIRST take of a frame is always
     ///    admitted, so a queue cannot stall behind a ceiling it can never satisfy.
     pub fn take(&mut self, class: Class, now_us: u64) -> bool {
+        self.take_in(plx_gfx::dump::armed(), class, now_us)
+    }
+
+    /// [`Budget::take`] with the dump switch passed in (the half a host test can reach without
+    /// arming the process-wide switch under its neighbours).
+    #[inline]
+    fn take_in(&mut self, dump: bool, class: Class, now_us: u64) -> bool {
         if self.relaxed {
             // pre-phase-11: one pool of three, no clock at all.
             if self.poster_left == 0 {
@@ -229,7 +236,12 @@ impl Budget {
         if *self.left(class) == 0 {
             return self.refuse();
         }
-        let elapsed = now_us.saturating_sub(self.frame_start_us);
+        // A frame dump admits on the QUOTAS and the classes' own worst cases alone: the microseconds
+        // already spent this frame are CPU speed, and how many frames an upload queue takes to
+        // drain decides which frame the page is quiescent on (`Dispatcher::page_quiescent`, which
+        // reads `has_queued_work`) and so which frame a page image is replaced on. `armed()` is a
+        // constant `false` outside the simulator.
+        let elapsed = if dump { 0 } else { now_us.saturating_sub(self.frame_start_us) };
         if class.is_solo() {
             if self.window_admitted != 0 || elapsed + class.worst_us() > SOLO_MAX_US {
                 return self.refuse();
@@ -310,6 +322,21 @@ impl Default for Budget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dump_admits_on_the_quota_alone_whatever_the_clock_says() {
+        let late = 5000 + 10 * PREPARE_MAX_US;
+        let mut b = Budget::new();
+        b.begin_frame(5000);
+        assert!(b.take_in(false, Class::Poster, late), "the first take always fits");
+        assert!(!b.take_in(false, Class::Poster, late), "outside a dump a second take past the ceiling is refused");
+        let mut b = Budget::new();
+        b.begin_frame(5000);
+        for i in 0..Class::Poster.quota() {
+            assert!(b.take_in(true, Class::Poster, late), "in a dump take {i} is admitted whatever the clock says");
+        }
+        assert!(!b.take_in(true, Class::Poster, late), "the quota still bounds a frame");
+    }
 
     #[test]
     fn the_poster_quota_is_three_per_frame_and_the_ceiling_refuses_late_work() {

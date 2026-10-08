@@ -710,7 +710,14 @@ pub(crate) unsafe fn construct(
     let title = c"PlxNative";
     #[cfg(not(feature = "hostsim"))]
     let title = c"plxnative";
-    let win = SDL_CreateWindow(title.as_ptr(), wx, wy, ww_req, wh_req, SDL_WINDOW_FLAGS);
+    // A frame dump's drawable is exactly the window's size in points: ALLOW_HIGHDPI (0x2000) would
+    // make a Retina display's drawable 3840x2160 for a 1920x1080 window, which the master cannot
+    // be, and which differs from the canonical Linux host. (Absent from every shipping build.)
+    #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
+    let window_flags = if crate::dev::framedump::requested() { SDL_WINDOW_FLAGS & !0x2000 } else { SDL_WINDOW_FLAGS };
+    #[cfg(not(all(feature = "hostsim", feature = "devtriggers")))]
+    let window_flags = SDL_WINDOW_FLAGS;
+    let win = SDL_CreateWindow(title.as_ptr(), wx, wy, ww_req, wh_req, window_flags);
     if win.is_null() {
         log("CreateWindow failed");
         return Err(1);

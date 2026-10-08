@@ -4519,6 +4519,26 @@ impl ProbeCadence {
     }
 }
 
+/// How a ground sampler answers a call: see [`probe_mode`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ProbeMode {
+    /// The product: queue a fenced copy on a cadence, collect it a frame later ([`ProbeCadence`]).
+    Cadenced,
+    /// Dump mode: copy and read inside the call, every call, so the answer is a function of the
+    /// frame being drawn and not of how many loop iterations went by (`crate::dump`).
+    Sync,
+}
+
+/// The mode, as a pure function of the dump switch (the half a host test can reach).
+#[inline(always)]
+pub fn probe_mode(dump_armed: bool) -> ProbeMode {
+    if dump_armed {
+        ProbeMode::Sync
+    } else {
+        ProbeMode::Cadenced
+    }
+}
+
 /// **A ground sampler's asynchronous read-back**: `N` boxes of `px` square, copied side by side
 /// into one `N*px x px` target, fenced, and read once finished. See [`ProbeCadence`] for why.
 ///
@@ -4580,12 +4600,39 @@ impl<const N: usize> GroundProbe<N> {
         self.ready = Some(buf);
     }
 
+    /// Dump mode's answer: build the target if needed, copy the boxes, read them back now.
+    #[cold]
+    unsafe fn read_now(&mut self, origins: &[(c_int, c_int); N], who: &str) -> Option<Vec<u8>> {
+        if self.target.is_none() {
+            self.target = fbo_target(self.px * N as c_int, self.px, who);
+            if self.target.is_none() {
+                self.off = true;
+                return None;
+            }
+        }
+        let (tex, fbo) = self.target?;
+        let px = self.px;
+        glBindTexture(GL_TEXTURE_2D, tex);
+        for (i, &(x, y)) in origins.iter().enumerate() {
+            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, i as c_int * px, 0, x, y, px, px);
+        }
+        let (w, h) = (px * N as c_int, px);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf.as_mut_ptr() as *mut c_void);
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
+        Some(buf)
+    }
+
     /// One sampler call. `origins` are the boxes' lower-left corners in framebuffer pixels, already
     /// clamped — used only on a kick. Returns the collected `N*px x px` RGBA row-major buffer on a
     /// collect, `None` otherwise.
     unsafe fn step(&mut self, have: bool, origins: &[(c_int, c_int); N], who: &str) -> Option<Vec<u8>> {
         if self.off {
             return None;
+        }
+        if probe_mode(crate::dump::armed()) == ProbeMode::Sync {
+            return self.read_now(origins, who);
         }
         match self.cadence.step(have, drawn_frames(), self.ready.is_some()) {
             ProbeStep::Keep => None,
