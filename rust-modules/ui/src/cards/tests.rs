@@ -1312,17 +1312,21 @@ mod stack {
         }
     }
 
-    struct Rig {
-        stack: Stack<Sec>,
-        page: Page,
+    /// A `Stack` over a page `P`, fed events and ticks with the engine's focus kept in step.
+    struct PageRig<K, P> {
+        stack: Stack<K>,
+        page: P,
         view: FixtureView,
         focus: Option<FocusKey<u32>>,
         ms: u32,
     }
 
+    type Rig = PageRig<Sec, Page>;
+    type Mrig = PageRig<Msec, Multi>;
+
     fn rig(row: usize, items: usize) -> Rig {
         let ids = |base: u32, n: usize| (0..n as u32).map(|i| base + i).collect::<Vec<_>>();
-        let mut r = Rig {
+        let mut r = PageRig {
             stack: Stack::new(ENTRY),
             page: Page { row: Cards::new(ids(100, row), false), items: Cards::new(ids(1000, items), false), revision: 1, status: false, pending: false, aside: false, tall: false },
             view: FixtureView::default(),
@@ -1333,11 +1337,11 @@ mod stack {
         r
     }
 
-    impl Rig {
+    impl<K: Copy + Eq, P: StackPage<FixtureHost, Key = K>> PageRig<K, P> {
         fn cx(&self) -> Cx9<'_> {
             cx9(&self.view, self.ms, 1.0, self.focus)
         }
-        fn feed(&mut self, ev: ScreenEvent<FixtureHost>) -> (Option<StackEvent<Sec, u32>>, bool) {
+        fn feed(&mut self, ev: ScreenEvent<FixtureHost>) -> (Option<StackEvent<K, u32>>, bool) {
             let mut present = Present::new();
             let mut out = Vec::new();
             let mut got = None;
@@ -1368,6 +1372,14 @@ mod stack {
         fn reconcile(&self, want: u32) -> u32 {
             let key = FocusKey { entry: ENTRY, elem: want };
             self.stack.view(&self.page).reconcile(key, &self.cx()).elem
+        }
+        fn groups(&self) -> Vec<GroupSpec> {
+            let mut out = Vec::new();
+            self.stack.view(&self.page).groups(&self.cx(), &mut out);
+            out
+        }
+        fn step(&self, elem: u32, dir: Dir) -> Step<u32> {
+            self.stack.view(&self.page).neighbour(FocusKey { entry: ENTRY, elem }, dir, &self.cx())
         }
     }
 
@@ -1740,16 +1752,8 @@ mod stack {
         fn shelf_foot(&self, k: Msec) -> f32 { if k == Msec::Shelf { self.foot } else { 0.0 } }
     }
 
-    struct Mrig {
-        stack: Stack<Msec>,
-        page: Multi,
-        view: FixtureView,
-        focus: Option<FocusKey<u32>>,
-        ms: u32,
-    }
-
     fn mrig(rows: u32, shelf: usize, build: impl FnOnce(Stack<Msec>) -> Stack<Msec>) -> Mrig {
-        let mut r = Mrig {
+        let mut r = PageRig {
             stack: build(Stack::new(ENTRY)),
             page: Multi { rows, shelf: Cards::new((0..shelf as u32).map(|i| 100 + i).collect(), false), revision: 1, foot: 0.0, more: Vec::new(), recover_to: None, narrow: false },
             view: FixtureView::default(),
@@ -1759,42 +1763,6 @@ mod stack {
         r.feed(ScreenEvent::Mount);
         r.run(1);
         r
-    }
-
-    impl Mrig {
-        fn cx(&self) -> Cx9<'_> {
-            cx9(&self.view, self.ms, 1.0, self.focus)
-        }
-        fn feed(&mut self, ev: ScreenEvent<FixtureHost>) {
-            let mut present = Present::new();
-            let mut out = Vec::new();
-            let cx = cx9(&self.view, self.ms, 1.0, self.focus);
-            let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
-            let _ = self.stack.on(&self.page, &ev, &cx, &mut fx);
-        }
-        fn go(&mut self, elem: u32) {
-            let from = self.focus;
-            let to = FocusKey { entry: ENTRY, elem };
-            self.focus = Some(to);
-            self.feed(ScreenEvent::FocusMoved { from, to, by: By::Dir });
-        }
-        fn run(&mut self, frames: u32) {
-            for _ in 0..frames {
-                self.ms += MS;
-                self.feed(ScreenEvent::Tick(Tick { ms: self.ms, dt_us: 16_667 }));
-            }
-        }
-        fn groups(&self) -> Vec<GroupSpec> {
-            let mut out = Vec::new();
-            self.stack.view(&self.page).groups(&self.cx(), &mut out);
-            out
-        }
-        fn step(&self, elem: u32, dir: Dir) -> Step<u32> {
-            self.stack.view(&self.page).neighbour(FocusKey { entry: ENTRY, elem }, dir, &self.cx())
-        }
-        fn place(&self, elem: u32) -> Option<Placed> {
-            self.stack.view(&self.page).place(&elem, &self.cx(), At::Drawn)
-        }
     }
 
     fn moved(s: Step<u32>) -> Option<u32> {
@@ -1838,7 +1806,7 @@ mod stack {
     #[test]
     fn a_page_reconciles_a_vanished_list_row_to_the_same_position_clamped() {
         let mut r = mrig(4, 4, |s| s);
-        r.go(LIST_BASE + 3);
+        r.go(LIST_BASE + 3, By::Dir);
         r.run(2);
         r.page.rows = 2;
         r.page.revision += 1;
@@ -1872,7 +1840,7 @@ mod stack {
     #[test]
     fn a_page_that_reveals_on_move_keeps_a_scroll_it_set_itself_until_focus_moves() {
         let mut r = mrig(0, 40, |s| s.reveal_on_move(true));
-        r.go(FIELD_ELEM);
+        r.go(FIELD_ELEM, By::Dir);
         r.run(60);
         assert_eq!(r.stack.scroll(), 0.0);
         r.stack.scroll_to(200.0);
@@ -1881,7 +1849,7 @@ mod stack {
         // the field (300) and the shelf's block (heading + tiles + the focused label band) fit one
         // screen: nothing to scroll to, so the move's own recomputation is 0, not the 200 set
         assert_eq!(r.stack.max_scroll(&r.page, &r.cx()), 0.0, "setup: a short page does not scroll");
-        r.go(100);
+        r.go(100, By::Dir);
         assert_eq!(r.stack.target(), 0.0, "a move recomputes the target (it was 200)");
         r.run(120);
         assert!(r.stack.scroll().abs() < 0.01, "and the page comes home: {}", r.stack.scroll());
@@ -1892,7 +1860,7 @@ mod stack {
         assert!(max > 0.0);
         r.stack.jump_to(max);
         assert_eq!((r.stack.scroll(), r.stack.target()), (max, max));
-        r.go(FIELD_ELEM);
+        r.go(FIELD_ELEM, By::Dir);
         assert_eq!(r.stack.target(), 0.0, "the field's block is the page's top");
         r.focus = Some(FocusKey { entry: EntryId(77), elem: 5 });
         r.stack.scroll_to(50.0);
@@ -1907,7 +1875,7 @@ mod stack {
         let max = r.stack.max_scroll(&r.page, &r.cx());
         assert!(max > top - SHELF_MARGIN && max < top - crate::consts::MARGIN_Y, "setup: only the page's margin pulls the page up: {max}");
         r.stack.jump_to(max);
-        r.go(100);
+        r.go(100, By::Dir);
         r.run(1);
         assert_eq!(r.stack.target(), top - SHELF_MARGIN, "the page's margin, not the default {}", crate::consts::MARGIN_Y);
     }
@@ -1918,9 +1886,9 @@ mod stack {
             let mut r = mrig(30, 40, |s| s);
             r.page.foot = foot;
             r.page.revision += 1;
-            r.go(FIELD_ELEM);
+            r.go(FIELD_ELEM, By::Dir);
             r.run(1);
-            r.go(100);
+            r.go(100, By::Dir);
             r.run(1);
             (r.stack.target(), r.stack.max_scroll(&r.page, &r.cx()))
         };
@@ -1956,7 +1924,7 @@ mod stack {
         let mut r = mrig(0, 10, |s| s.reveal_on_move(true));
         r.page.more = (0..4).map(|n| Cards::new((0..10).map(|i| 200 + 100 * n + i).collect(), false)).collect();
         r.page.revision += 1;
-        r.go(FIELD_ELEM);
+        r.go(FIELD_ELEM, By::Dir);
         r
     }
 
@@ -1965,12 +1933,12 @@ mod stack {
         let mut r = walk_rig();
         let mut target = 0.0;
         for (k, elem) in [100, 200, 300, 400, 500].into_iter().enumerate() {
-            r.go(elem);
+            r.go(elem, By::Dir);
             target = walk_want(k, target);
             assert_eq!(r.stack.target(), target, "shelf {k} from the previous target");
         }
         assert_eq!(r.stack.scroll(), 0.0, "setup: no tick has run, so the spring has not left home");
-        r.go(400);
+        r.go(400, By::Dir);
         let from_target = walk_want(3, target);
         assert_eq!(r.stack.target(), from_target, "Up measures from the target the Down walk left");
         assert_ne!(from_target, walk_want(3, r.stack.scroll()), "setup: measuring from the live position would differ");
@@ -1980,7 +1948,7 @@ mod stack {
     fn a_page_may_name_where_focus_recovers_to_and_otherwise_the_stack_clamps() {
         let recovered = |to: Option<u32>| {
             let mut r = mrig(4, 4, |s| s);
-            r.go(LIST_BASE + 3);
+            r.go(LIST_BASE + 3, By::Dir);
             r.run(2);
             r.page.rows = 2;
             r.page.revision += 1;
