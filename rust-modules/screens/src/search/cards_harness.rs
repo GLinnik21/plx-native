@@ -8,7 +8,7 @@ use plx_machine::machine::{FocusRead, Host, PressRead, Tick};
 use plx_machine::present::Present;
 use plx_ui::cards::conformance::{CardHarness, Landing, Nb};
 use plx_ui::fixture::FixtureMeasure;
-use plx_ui::screen::By;
+use plx_ui::screen::{By, Focusable, Step};
 
 #[derive(Clone)]
 struct Arg;
@@ -137,15 +137,15 @@ impl CardHarness for Harness {
         let (row, _) = self.at(elem)?;
         let cx = self.cx();
         let mut frame = DrawFrame::new(&cx, plx_ui::Painter::root());
-        let src = self.screen.cards(self.snap.view(), row)?;
+        let src = self.screen.row_cards(self.snap.view(), row)?;
         let root = frame.painter;
-        self.screen.rows[row].shelf.record_stops(&mut frame, root, &src, self.screen.frame(row, At::Drawn));
+        if let Some((at, shelf)) = self.screen.row_frame(&self.cx(), row) { shelf.record_stops(&mut frame, root, &src, at); }
         frame.stops().iter().find(|s| s.key.elem == elem).map(|s| s.rect)
     }
     fn scale(&self, elem: u32) -> Option<f32> {
         let (row, _) = self.at(elem)?;
-        let src = self.screen.cards(self.snap.view(), row)?;
-        self.screen.rows[row].shelf.scale_of(&self.cx(), &src, &elem)
+        let src = self.screen.row_cards(self.snap.view(), row)?;
+        self.screen.row_frame(&self.cx(), row)?.1.scale_of(&self.cx(), &src, &elem)
     }
     fn focus_scale(&self) -> f32 { layout::style(Kind::Movie).focus_scale }
     fn canon(&self) -> u64 {
@@ -160,8 +160,8 @@ impl CardHarness for Harness {
             _ => String::new(),
         }
     }
-    fn scroll(&self) -> Option<f32> { self.screen.rows.first().map(|r| r.shelf.scroll()) }
-    fn scroll_max(&self) -> Option<f32> { self.screen.rows.first().map(|r| r.shelf.style().max_scroll(self.cards().len())) }
+    fn scroll(&self) -> Option<f32> { self.screen.row_frame(&self.cx(), 0).map(|(_, shelf)| shelf.scroll()) }
+    fn scroll_max(&self) -> Option<f32> { self.screen.row_frame(&self.cx(), 0).map(|(_, shelf)| shelf.style().max_scroll(self.cards().len())) }
     fn landing(&mut self, l: Landing) -> Result<(), &'static str> {
         let (_, col) = self.focus.and_then(|k| self.at(k.elem)).ok_or("nothing focused")?;
         match l {

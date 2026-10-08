@@ -1,0 +1,87 @@
+0x53454100 Row { wrap: false } seat=First edge=[Geometric, Geometric, Stop, Stop] len=1 elem=Bare extent=[96.0 138.0 1728.0 80.0]
+0x53454200 Row { wrap: false } seat=Projected edge=[Geometric, Geometric, Stop, Stop] len=9 elem=Card extent=[96.0 360.0 250.0 375.0]
+0x53454201 Row { wrap: false } seat=Projected edge=[Geometric, Geometric, Stop, Stop] len=3 elem=Card extent=[96.0 835.0 250.0 375.0]
+0x53454202 Row { wrap: false } seat=Projected edge=[Geometric, Geometric, Stop, Stop] len=7 elem=Card extent=[96.0 1310.0 420.0 236.0]
+0x53454203 Row { wrap: false } seat=Projected edge=[Geometric, Geometric, Stop, Stop] len=12 elem=Bare extent=[96.0 1646.0 250.0 250.0]
+0x53454204 Row { wrap: false } seat=Projected edge=[Geometric, Geometric, Stop, Stop] len=4 elem=Bare extent=[96.0 1996.0 250.0 375.0]
+--
+field: up=- down=- left=- right=-
+r0c0: up=- down=- left=- right=r0c1
+r0c1: up=- down=- left=r0c0 right=r0c2
+r0c2: up=- down=- left=r0c1 right=r0c3
+r0c3: up=- down=- left=r0c2 right=r0c4
+r0c4: up=- down=- left=r0c3 right=r0c5
+r0c5: up=- down=- left=r0c4 right=r0c6
+r0c6: up=- down=- left=r0c5 right=r0c7
+r0c7: up=- down=- left=r0c6 right=r0c8
+r0c8: up=- down=- left=r0c7 right=-
+r1c0: up=- down=- left=- right=r1c1
+r1c1: up=- down=- left=r1c0 right=r1c2
+r1c2: up=- down=- left=r1c1 right=-
+r2c0: up=- down=- left=- right=r2c1
+r2c1: up=- down=- left=r2c0 right=r2c2
+r2c2: up=- down=- left=r2c1 right=r2c3
+r2c3: up=- down=- left=r2c2 right=r2c4
+r2c4: up=- down=- left=r2c3 right=r2c5
+r2c5: up=- down=- left=r2c4 right=r2c6
+r2c6: up=- down=- left=r2c5 right=-
+r3c0: up=- down=- left=- right=r3c1
+r3c1: up=- down=- left=r3c0 right=r3c2
+r3c2: up=- down=- left=r3c1 right=r3c3
+r3c3: up=- down=- left=r3c2 right=r3c4
+r3c4: up=- down=- left=r3c3 right=r3c5
+r3c5: up=- down=- left=r3c4 right=r3c6
+r3c6: up=- down=- left=r3c5 right=r3c7
+r3c7: up=- down=- left=r3c6 right=r3c8
+r3c8: up=- down=- left=r3c7 right=r3c9
+r3c9: up=- down=- left=r3c8 right=r3c10
+r3c10: up=- down=- left=r3c9 right=r3c11
+r3c11: up=- down=- left=r3c10 right=-
+r4c0: up=- down=- left=- right=r4c1
+r4c1: up=- down=- left=r4c0 right=r4c2
+r4c2: up=- down=- left=r4c1 right=r4c3
+r4c3: up=- down=- left=r4c2 right=-
+--
+field: rect=[96.0 138.0 1728.0 80.0] rest=[96.0 138.0 1728.0 80.0] clip=[0.0 130.0 1920.0 950.0] index=Some(0)
+r0c0: rect=[96.0 360.0 250.0 375.0] rest=[84.8 343.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(0)
+r0c1: rect=[376.0 360.0 250.0 375.0] rest=[364.8 343.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(1)
+r0c2: rect=[656.0 360.0 250.0 375.0] rest=[644.8 343.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(2)
+r0c3: rect=[936.0 360.0 250.0 375.0] rest=[924.8 343.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(3)
+r0c4: rect=[1216.0 360.0 250.0 375.0] rest=[1204.8 343.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(4)
+r0c5: rect=[1496.0 360.0 250.0 375.0] rest=[1484.8 343.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(5)
+r0c6: rect=[1776.0 360.0 250.0 375.0] rest=[1764.8 343.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(6)
+r0c7: rect=[2056.0 360.0 250.0 375.0] rest=[2044.8 343.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(7)
+r0c8: rect=[2336.0 360.0 250.0 375.0] rest=[2324.8 343.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(8)
+r1c0: rect=[96.0 835.0 250.0 375.0] rest=[84.8 818.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(0)
+r1c1: rect=[376.0 835.0 250.0 375.0] rest=[364.8 818.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(1)
+r1c2: rect=[656.0 835.0 250.0 375.0] rest=[644.8 818.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(2)
+r2c0: rect=[96.0 1310.0 420.0 236.0] rest=[77.1 1299.4 457.8 257.2] clip=[0.0 130.0 1920.0 950.0] index=Some(0)
+r2c1: rect=[546.0 1310.0 420.0 236.0] rest=[527.1 1299.4 457.8 257.2] clip=[0.0 130.0 1920.0 950.0] index=Some(1)
+r2c2: rect=[996.0 1310.0 420.0 236.0] rest=[977.1 1299.4 457.8 257.2] clip=[0.0 130.0 1920.0 950.0] index=Some(2)
+r2c3: rect=[1446.0 1310.0 420.0 236.0] rest=[1427.1 1299.4 457.8 257.2] clip=[0.0 130.0 1920.0 950.0] index=Some(3)
+r2c4: rect=[1896.0 1310.0 420.0 236.0] rest=[1877.1 1299.4 457.8 257.2] clip=[0.0 130.0 1920.0 950.0] index=Some(4)
+r2c5: rect=[2346.0 1310.0 420.0 236.0] rest=[2327.1 1299.4 457.8 257.2] clip=[0.0 130.0 1920.0 950.0] index=Some(5)
+r2c6: rect=[2796.0 1310.0 420.0 236.0] rest=[2777.1 1299.4 457.8 257.2] clip=[0.0 130.0 1920.0 950.0] index=Some(6)
+r3c0: rect=[96.0 1646.0 250.0 250.0] rest=[84.8 1634.8 272.5 272.5] clip=[0.0 130.0 1920.0 950.0] index=Some(0)
+r3c1: rect=[376.0 1646.0 250.0 250.0] rest=[364.8 1634.8 272.5 272.5] clip=[0.0 130.0 1920.0 950.0] index=Some(1)
+r3c2: rect=[656.0 1646.0 250.0 250.0] rest=[644.8 1634.8 272.5 272.5] clip=[0.0 130.0 1920.0 950.0] index=Some(2)
+r3c3: rect=[936.0 1646.0 250.0 250.0] rest=[924.8 1634.8 272.5 272.5] clip=[0.0 130.0 1920.0 950.0] index=Some(3)
+r3c4: rect=[1216.0 1646.0 250.0 250.0] rest=[1204.8 1634.8 272.5 272.5] clip=[0.0 130.0 1920.0 950.0] index=Some(4)
+r3c5: rect=[1496.0 1646.0 250.0 250.0] rest=[1484.8 1634.8 272.5 272.5] clip=[0.0 130.0 1920.0 950.0] index=Some(5)
+r3c6: rect=[1776.0 1646.0 250.0 250.0] rest=[1764.8 1634.8 272.5 272.5] clip=[0.0 130.0 1920.0 950.0] index=Some(6)
+r3c7: rect=[2056.0 1646.0 250.0 250.0] rest=[2044.8 1634.8 272.5 272.5] clip=[0.0 130.0 1920.0 950.0] index=Some(7)
+r3c8: rect=[2336.0 1646.0 250.0 250.0] rest=[2324.8 1634.8 272.5 272.5] clip=[0.0 130.0 1920.0 950.0] index=Some(8)
+r3c9: rect=[2616.0 1646.0 250.0 250.0] rest=[2604.8 1634.8 272.5 272.5] clip=[0.0 130.0 1920.0 950.0] index=Some(9)
+r3c10: rect=[2896.0 1646.0 250.0 250.0] rest=[2884.8 1634.8 272.5 272.5] clip=[0.0 130.0 1920.0 950.0] index=Some(10)
+r3c11: rect=[3176.0 1646.0 250.0 250.0] rest=[3164.8 1634.8 272.5 272.5] clip=[0.0 130.0 1920.0 950.0] index=Some(11)
+r4c0: rect=[96.0 1996.0 250.0 375.0] rest=[84.8 1979.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(0)
+r4c1: rect=[376.0 1996.0 250.0 375.0] rest=[364.8 1979.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(1)
+r4c2: rect=[656.0 1996.0 250.0 375.0] rest=[644.8 1979.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(2)
+r4c3: rect=[936.0 1996.0 250.0 375.0] rest=[924.8 1979.1 272.5 408.8] clip=[0.0 130.0 1920.0 950.0] index=Some(3)
+--
+0x53454100 -> field
+0x53454200 -> r0c0
+0x53454201 -> r1c0
+0x53454202 -> r2c0
+0x53454203 -> r3c0
+0x53454204 -> r4c0
