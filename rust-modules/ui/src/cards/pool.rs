@@ -1,5 +1,5 @@
 //! The element-keyed pop pool: a card's focus-pop spring belongs to its ELEMENT, not to the cell it
-//! happens to stand in (shared-card-sections plan, owner decision 2).
+//! happens to stand in.
 //!
 //! Were the spring the cell's, a card still shrinking (the one focus just left) would stay in its
 //! cell, so after an insert or reorder ahead of it the shrink would play out on whichever card now

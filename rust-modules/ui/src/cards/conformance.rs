@@ -1,5 +1,4 @@
-//! Tier 2 of the card conformance suite (shared-card-sections plan, section 4): black-box cases
-//! run against every real card screen.
+//! Tier 2 of the card conformance suite: black-box cases run against every real card screen.
 //!
 //! `ui` may not name a screen, so this module owns only the DRIVERS: the [`CardHarness`] a screen
 //! implements (mount with N cards, a focus, events, ticks, `Focusable::place`, the drawn rect and
@@ -101,7 +100,7 @@ pub trait CardHarness {
 /// How a case builds its screen: `n` cards, mounted and ticked once, nothing focused.
 pub type Mount = fn(n: usize) -> Box<dyn CardHarness>;
 
-/// The cases, in the order of the plan's table. The name is the key of the expected-failure list.
+/// The cases, in the order the suite runs them. The name is the key of the expected-failure list.
 pub const CASES: [(&str, fn(Mount) -> Outcome); 7] = [
     ("walk", walk),
     ("hold_then_move", hold_then_move),
@@ -244,7 +243,7 @@ pub fn pop_rule(mount: Mount) -> Outcome {
 }
 
 /// Geometry: the placed rect equals the drawn rect at press 1.0 and at a mid press, and
-/// `rest_rect` is the settled focus-scaled rect (the plan's L1 rule).
+/// `rest_rect` is the settled focus-scaled rect (the L1 contract in the [`super`] doc).
 pub fn geometry(mount: Mount) -> Outcome {
     let (mut h, cards) = match settled_first(mount) {
         Ok(v) => v,
