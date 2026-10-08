@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-08T00:28:36Z",
+ "generated": "2026-10-08T00:32:33Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -275,14 +275,14 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -2.2,
+   "change7_pct": -1.9,
    "d30": null,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 67,
+   "n_now": 68,
    "n_prev": 44,
-   "now": 765,
+   "now": 768.0,
    "prev7": 782.5,
    "state": "flat",
    "threshold_abs": 120.0,
@@ -296,9 +296,9 @@
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "label": "Nightly: plan today's nightly",
-   "n_now": 67,
+   "n_now": 68,
    "n_prev": 44,
-   "now": 14,
+   "now": 14.0,
    "prev7": 11.0,
    "state": "flat",
    "threshold_abs": 120.0,
@@ -312,9 +312,9 @@
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 67,
+   "n_now": 68,
    "n_prev": 44,
-   "now": 18,
+   "now": 18.0,
    "prev7": 15.0,
    "state": "flat",
    "threshold_abs": 120.0,
@@ -322,15 +322,15 @@
    "unit": "s"
   },
   {
-   "change30_pct": 274.3,
-   "change7_pct": -7.7,
+   "change30_pct": 274.7,
+   "change7_pct": -7.6,
    "d30": 235,
    "group": "ci",
    "id": "pr_wait",
    "label": "PR CI wait",
    "n_now": 198,
    "n_prev": 176,
-   "now": 879.5,
+   "now": 880.5,
    "prev7": 952.5,
    "state": "flat",
    "threshold_abs": 90.0,
@@ -439,7 +439,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 765
+   "now": 768.0
   },
   {
    "group": "ci",
