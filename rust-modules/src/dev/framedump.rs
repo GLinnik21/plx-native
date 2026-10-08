@@ -39,28 +39,27 @@
 //! **Settling.** A frame with none of that debt is still not written until a clean iteration at the
 //! same `T(v)` reproduces the picture of the clean one before it (the hash of the read-back; hold
 //! reason `settling`). Some state advances per ITERATION and not per millisecond (a first draw that
-//! only measures, a layout that needs a second pass, a held page image captured before a late
+//! only measures, a layout that needs a second pass, an underlay latched before a late
 //! landing), and no stepper audit finds all of it; running each frame to its fixed point makes what
 //! is written independent of how many iterations came before it. The cost is one more iteration and
 //! one more read-back per virtual frame. The product itself shows such a state for a few frames
 //! first (measured: a cast headshot that appears 40 frames late behind a held page image); the dump
 //! shows the settled picture of every frame.
 //!
-//! **A held page image is a FACT, not a hold reason** ([`Sample::page_image`]). A `PageDip` paints
-//! the page as a captured image for the whole transition, so "an image frame is never written" could
-//! only ever produce a jump cut. Instead the image never carries debt: a capture frame whose draw
-//! showed a placeholder is a debt frame like any other, so the iteration holds and
-//! [`plx_gfx::dump::held_repeat`] makes `PageImage::plan` return the SAME paint on every repeat, which
-//! re-captures the page live until the capture is clean, and only then is it written. Every `Held`
-//! frame after a clean capture re-counts zero debt (`placeholder::renote`) and is writable. A push
-//! therefore films as the product plays it: 70 ms out over the last clean source page, two
-//! consecutive alpha-0 frames (the out ramp clamps to 0, then `DipPhase::Hold`, the same two the
-//! product shows), 140 ms in over a complete destination, one replacement-capture frame, then live.
-//! The product also keeps the image on past the dip while the destination's layout still moves
-//! (`PAGE_QUIESCENCE_HOLD_MAX_MS`); a dump does not (`dispatch::layout_holds_page_image`), because
-//! that image would hide every spring the destination starts at its mount (the Library's focused
-//! caption fades in as the shelf gains focus) and show them as ONE capture, a pop. The destination's
-//! springs are filmed. `PageDip::tick` likewise does not leave its one-frame `Hold` on a repeat.
+//! **A pushed page is filmed LIVE under the dip, never as a held image** (`plx_gfx::dump`'s one page
+//! rule). The product paints a `PageDip` page as a captured image for the whole transition, and
+//! keeps that image up past the dip while the destination's layout moves; a dump with that image
+//! could only film a cut (the destination's springs start at its mount and run unseen under an image
+//! captured at the floor, and the image is then replaced by the page already mid-flight), so in a
+//! dump `PageImage::plan` re-captures the page on EVERY frame of the dip (`step_filmed`) and the
+//! page is simply live when the dip ends. The capture is a live draw, so its placeholders are the
+//! frame's debt like any other draw's ([`Sample::page_image`] is a recorded fact that stays false in
+//! a dump): a capture frame with debt holds, and [`plx_gfx::dump::held_repeat`] makes `plan` return
+//! the SAME paint on every repeat, so the page is re-captured until it is clean and only then
+//! written. A push therefore films as 70 ms out over the live source page, two consecutive alpha-0
+//! frames (the out ramp clamps to 0, then `DipPhase::Hold`, the same two the product shows), then
+//! 140 ms in over the live destination, its entrance springs and its `Xfade` fade-in playing, then
+//! the same page live. `PageDip::tick` likewise does not leave its one-frame `Hold` on a repeat.
 //!
 //! **Why a hold cannot change a written frame, and the gate that checks it.** Settling is the
 //! guarantee; the rest keeps the fixed point the one the product reaches. Per-iteration steppers were
@@ -432,9 +431,10 @@ thread_local! {
 ///
 /// A spring is "at rest" when its position is near its target AND `velocity * dt` is under the
 /// rest threshold (`idle::settled`), so a held repeat at `dt == 0` reads every spring that is
-/// still creeping toward its target as settled and flips `page_quiescent`, whose answer picks what
-/// the page draws (a frozen page image, or the live page with its cards). Left alone, the frame a
-/// run writes would depend on whether a repeat followed the first pass of its virtual frame. A
+/// still creeping toward its target as settled and flips `page_quiescent`, whose answer decides the
+/// `at_rest` latch of the page's underlay (a dump never holds a page image, so it no longer picks
+/// between an image and the live page). Left alone, the frame a run writes would depend on whether
+/// a repeat followed the first pass of its virtual frame. A
 /// repeat therefore judges rest with the `dt` of the first pass: the springs themselves still
 /// stand still (`fr.dt == 0`), only the verdict on them is repeated, so it is the same on every
 /// iteration of a virtual frame. Outside a dump this is not called.

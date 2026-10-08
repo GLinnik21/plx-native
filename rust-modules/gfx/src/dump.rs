@@ -33,7 +33,7 @@
 //!   it is SYNCHRONOUS and PER CALL (`gfx::probe_mode`): copy the tap boxes, `glReadPixels`, return;
 //!   no cadence, no fence. The refusal paths (`may_read == false`, a blur-source pass, a frozen
 //!   page) still answer with the last latched value.
-//! * **Held repeats** ([`held_repeat`]). A page image's capture/replacement steps and a page dip's
+//! * **Held repeats** ([`held_repeat`]). A page image's capture step (its replacement step is the product's; a dump never reaches it) and a page dip's
 //!   floor frame advance once per virtual frame, not once per held iteration.
 //!
 //! The order within one iteration is: landing takes, then the busy/debt sample, then the draw.
@@ -46,7 +46,7 @@
 //! every gfx test that reaches a hooked function holds that lock, so nothing leaks between them.
 //! A test in another binary that arms it (`Armed::new()`) holds the lock too, and every OTHER test
 //! of that binary that reaches a consumer below either holds it or calls the consumer's pure twin
-//! (`evict_cooldown_due_in`, `declines_in`, `Budget::take_in`, `holds_page_image`,
+//! (`evict_cooldown_due_in`, `declines_in`, `Budget::take_in`, `PageImage::step_filmed`,
 //! `snapshot_defers_in`, `probe_mode`) with the switch passed as `false`. A test that reads the
 //! global unguarded is not wrong today and flakes the day a neighbour arms it.
 //!
@@ -89,20 +89,22 @@
 //! * `ui/src/frame/budget.rs` `Budget::take` (T): the elapsed-microsecond term is dropped; the
 //!   quotas stay.
 //! * `ui/src/containers/transition.rs` `PageDip::tick` (S) and `PageImage::plan` (S): the dip's
-//!   one-tick floor and the page image's capture/replacement step stand still on a repeat.
-//! * `ui/src/dispatch.rs` `layout_holds_page_image` (**X**): in a dump the product's "keep the
-//!   frozen page image up while the destination's layout springs move" (up to
-//!   `PAGE_QUIESCENCE_HOLD_MAX_MS`) is off, because the dump hands the page its whole data before
-//!   the dip's floor and the image would hide every spring the page starts at its mount (the
-//!   Library's caption reveal) and show them as one pop. The film shows those springs live; the
-//!   television, by reading, shows the held image. Unsettled in the product (needs a television
-//!   check of a warm Library push), so it is recorded here, not hidden.
-//! * `ui/src/xfade.rs` `Xfade::tick` (**X**): a ready `Hold` goes straight to `Idle` at alpha 1,
-//!   skipping the 140 ms `In` ramp. Measured to be the push image, not a held-repeat deadlock (see
-//!   the comment there): restoring the ramp films nine flat frames and a pop in the Library beat.
-//!   Like `layout_holds_page_image` it breaks the rule's second half (it skips a state the
-//!   product passes through); it stays until the page image's own behaviour for a page that
-//!   mounts hidden is settled in the product.
+//!   one-tick floor and the page image's capture step stand still on a repeat.
+//! * `ui/src/containers/transition.rs` `PageImage::plan` under `armed()` (**X**, the one
+//!   picture-changing exception besides the tint): **in a dump a pushed page is filmed live under
+//!   the dip, never as a held image.** Every frame the dip is in flight re-captures the top page
+//!   (`PageImage::step_filmed`: a live draw at full alpha into the snapshot, composed at the
+//!   dip's alpha, exactly what the product's two capture frames do), and the frame the dip ends
+//!   the page is live; there is no `Held` frame and no replacement capture. The product freezes
+//!   the image captured at the floor through the whole In half and on past it while the
+//!   destination's layout moves (`PAGE_QUIESCENCE_HOLD_MAX_MS`), so a page that starts springs
+//!   at its mount (a card shelf's label band, the focus pop, the caption, an `Xfade` fade-in)
+//!   runs them unseen under the image and the image is then replaced by the page mid-flight (or
+//!   finished): a cut in the film. A dump has the whole page's data at mount and is not bound by
+//!   frame cost, so it can film the layout as it is each frame. This replaces two earlier
+//!   exceptions (a `layout_holds_page_image` that lifted the image at the dip's end, and an
+//!   `Xfade::tick` that skipped the fader's In ramp), both of which patched the same seam from
+//!   the wrong side. The product's own behaviour at that seam is unmeasured on the television.
 //! * `src/app/adapters/poster.rs` `evict_cooldown_due` (T): a cooldown is always over, and a failed
 //!   fetch is recorded (`note_dump_failure`, an observation for the driver, not a drawn change)
 //!   instead of waiting out a retry on a clock that is held still.
@@ -161,7 +163,7 @@ pub fn armed() -> bool {
 /// **The driver's "this iteration repeats a virtual frame" fact.** The dump driver sets it at the
 /// top of every iteration that is a held repeat (`holds_run > 0`: the same virtual frame, the same
 /// clock, `dt == 0`) and clears it on the first iteration of a virtual frame. Per-iteration
-/// steppers that would otherwise advance once per ITERATION (a page image's capture / replacement
+/// steppers that would otherwise advance once per ITERATION (a page image's capture
 /// state, a page dip's one-tick floor) read it and stand still on a repeat, so how many holds a
 /// frame took cannot decide which state a written frame shows. Constant `false` wherever
 /// [`armed`] is.
