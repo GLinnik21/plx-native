@@ -6,7 +6,10 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import re
+import shutil
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -427,6 +430,18 @@ class HistoryTest(unittest.TestCase):
 SITE_CI = Path(__file__).resolve().parents[1] / "site" / "ci"
 
 
+def js_engine():
+    """A command that runs a script file and prints with `print` or console.log: node, else macOS's own
+    JavaScriptCore shell; None when neither is there (the pure-rules test then skips, loudly)."""
+    node = shutil.which("node")
+    if node:
+        return [node]
+    for jsc in (shutil.which("jsc"), "/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc"):
+        if jsc and os.access(jsc, os.X_OK):
+            return [jsc]
+    return None
+
+
 class PageTest(unittest.TestCase):
     def test_the_page_and_its_data_are_ascii_for_the_site_font_subset(self):
         (SITE_CI / "index.html").read_bytes().decode("ascii")
@@ -457,6 +472,77 @@ class PageTest(unittest.TestCase):
         self.assertIn('id="bench-runner"', page)
         # a lone day still shows its range
         self.assertIn("a single day has no neighbour", script)
+
+    def test_the_daily_charts_fit_their_own_days_and_say_nothing_stale(self):
+        page = (SITE_CI / "index.html").read_text(encoding="ascii")
+        script = page[page.index("<script>"):]
+        # the axis, the day mapping and the caption rule are the pure block the engine test below runs
+        for needle in ("PURE-BEGIN", "PURE-END", "benchAxis(", "benchDay(", "benchStatus(", "joinsPrevious(", "longPole("):
+            self.assertIn(needle, script)
+        # the no-op build is a health check in the top block, not a line on the unit suite's axis
+        self.assertIn('BENCH_HEALTH = ["noop"]', script)
+        self.assertNotIn('"b-fast": ["noop"', script)
+        # the outliers of the wait chart no longer set its axis: nothing but the lines and bands does
+        self.assertNotIn("1.6 * s.sm", script)
+        # one range on every width, and the old combined "slowest" list is only a fallback for an older summary file
+        self.assertIn('let range = "recent";', script)
+        self.assertIn("slowest_ci", script)
+        self.assertIn("slowest_local", script)
+
+    def test_the_pure_rules_of_the_daily_charts_in_a_js_engine(self):
+        engine = js_engine()
+        if engine is None:
+            self.skipTest("no JavaScript engine (node, or JavaScriptCore's jsc) on this machine")
+        page = (SITE_CI / "index.html").read_text(encoding="ascii")
+        pure = page[page.index("// PURE-BEGIN"):page.index("// PURE-END")]
+        probe = """
+const D = (y, m, d, h = 0) => Date.UTC(y, m - 1, d, h);
+const real = [{ day: D(2026, 10, 7), fails: ["check"], notes: {} }, { day: D(2026, 10, 8), fails: [], notes: {} }];   // the benchmark's first two days
+const out = {
+  day_by_date: benchDay({ date: "2026-10-07", at: "2026-10-07T22:44:43Z" }) === D(2026, 10, 7),
+  day_ignores_time_of_day: benchDay({ at: "2026-10-07T22:44:43Z" }) === D(2026, 10, 7) && benchDay({ date: "2026-10-07", at: "2026-10-08T00:30:00Z" }) === D(2026, 10, 7),
+  day_unreadable: String(benchDay({ date: "x", at: "nope" })),
+  // two days of history on an axis that starts 29 Sep: the axis starts at the first day, with half a day of room
+  two_days: benchAxis(D(2026, 10, 7), D(2026, 10, 8), D(2026, 9, 29)),
+  // enough history and a range that starts later: the range wins; the end is the last day plus half a day
+  long_range: benchAxis(D(2026, 9, 1), D(2026, 10, 8), D(2026, 9, 28, 13)),
+  long_all: benchAxis(D(2026, 9, 1), D(2026, 10, 8), D(2026, 8, 1)),
+  one_day: benchAxis(D(2026, 10, 8), D(2026, 10, 8), D(2026, 9, 29), 4),
+  join_next_day: joinsPrevious(D(2026, 10, 7), D(2026, 10, 8)),
+  join_gap_day: joinsPrevious(D(2026, 10, 7), D(2026, 10, 9)),
+  pole: [longPole({ a: 1025, b: 906 }), longPole({ a: null, b: 906 }), longPole({ a: null, b: null }), longPole({}), longPole({ a: 5, b: 5 })],
+  // the first day failed and the second passed: nothing to say now (the cross on the axis stays)
+  stale: benchStatus(real, ["check"]),
+  // the latest record failed: say it, with its reason and the last day it was fine
+  current: benchStatus([{ day: D(2026, 10, 7), fails: [], notes: {} }, { day: D(2026, 10, 8), fails: ["check"], notes: { check: "lint exited 2" } }], ["check"]),
+  current_first_run: benchStatus([{ day: D(2026, 10, 7), fails: ["check"], notes: {} }], ["check"]),
+  other_step: benchStatus([{ day: D(2026, 10, 8), fails: ["tests"], notes: {} }], ["check"]),
+  empty: benchStatus([], ["check"]),
+};
+(typeof print === "function" ? print : console.log)(JSON.stringify(out));
+"""
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d, "probe.js")
+            src.write_text(pure + probe)
+            done = subprocess.run([*engine, str(src)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
+        got = json.loads(done.stdout.strip().splitlines()[-1])
+        day = 86400000
+        ms = lambda y, m, dd: int(datetime(y, m, dd, tzinfo=timezone.utc).timestamp() * 1000)
+        self.assertTrue(got["day_by_date"] and got["day_ignores_time_of_day"])
+        self.assertEqual(got["day_unreadable"], "NaN")
+        t7 = ms(2026, 10, 7)
+        self.assertEqual(got["two_days"], {"t0": t7 - day // 2, "t1": t7 - day // 2 + 4 * day})     # not 29 Sep, and not squeezed to the edge
+        self.assertEqual(got["long_range"], {"t0": ms(2026, 9, 28) - day // 2, "t1": ms(2026, 10, 8) + day // 2})
+        self.assertEqual(got["long_all"], {"t0": ms(2026, 9, 1) - day // 2, "t1": ms(2026, 10, 8) + day // 2})
+        self.assertEqual(got["one_day"], {"t0": ms(2026, 10, 8) - day // 2, "t1": ms(2026, 10, 8) - day // 2 + 4 * day})
+        self.assertTrue(got["join_next_day"])
+        self.assertFalse(got["join_gap_day"])
+        self.assertEqual(got["pole"], ["a", "b", None, None, "a"])
+        self.assertEqual(got["stale"], [])
+        self.assertEqual(got["current"], [{"step": "check", "day": ms(2026, 10, 8), "note": "lint exited 2", "lastOk": t7}])
+        self.assertEqual(got["current_first_run"], [{"step": "check", "day": t7, "note": "", "lastOk": None}])
+        self.assertEqual((got["other_step"], got["empty"]), ([], []))
 
     def test_the_hand_entered_milestones_are_gone_from_the_page_and_the_tree(self):
         self.assertNotIn("milestone", (SITE_CI / "index.html").read_text(encoding="ascii").lower())

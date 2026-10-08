@@ -68,7 +68,7 @@ class WindowTest(unittest.TestCase):
         self.assertEqual((reg["id"], reg["since"], reg["from"], reg["to"]), ("ci|build", (NOW - timedelta(days=4)).strftime("%Y-%m-%d"), 300, 500))
         self.assertLessEqual(len(reg["commits"]), 10)
         self.assertTrue(reg["commits"] and all(set(c) == {"sha", "title", "pr"} for c in reg["commits"]))
-        self.assertEqual(doc["slowest"][0]["id"], "ci|build")
+        self.assertEqual(doc["slowest_ci"][0]["id"], "ci|build")
 
     def test_a_step_down_is_better_and_no_regression_is_reported(self):
         doc = s.summarize(series("ci", weeks(500, 300)), None, NOW)
@@ -163,12 +163,95 @@ class SeriesTest(unittest.TestCase):
         self.assertEqual((leaf["group"], leaf["label"], leaf["state"], leaf["now"]), ("local", "plx_base", "worse", 70.0))
         self.assertEqual(metric(doc, "bench.noop")["state"], "flat")
         self.assertEqual(doc["regressions"][0]["id"], "bench.leaf")
-        self.assertEqual(doc["slowest"][0]["id"], "bench.leaf")
+        self.assertEqual(doc["slowest_local"][0]["id"], "bench.leaf")
+        self.assertNotIn("bench.noop", [m["id"] for m in doc["slowest_local"]])      # a health check is not a wait
 
     def test_a_benchmark_row_with_one_record_is_new(self):
         recs = [{"date": "2026-10-07", "at": "2026-10-07T04:00:00Z", "commit": "abc", "rows": {"tests": {"label": "Unit suite", "median": 30.0}}}]
         m = metric(s.summarize({}, {"records": recs}, NOW), "bench.tests")
         self.assertEqual((m["state"], m["n_now"]), ("new", 1))
+
+
+def bench_records(rows_by_id, days=3):
+    return {"records": [{"date": (NOW - timedelta(days=d)).strftime("%Y-%m-%d"), "at": stamp(NOW - timedelta(days=d)), "commit": f"c{d}",
+                         "rows": {rid: {"label": label, "median": med} for rid, (label, med) in rows_by_id.items()}} for d in range(days)]}
+
+
+class OrderTest(unittest.TestCase):
+    """The top block: waits and the local loop before jobs, a job under a minute out of the default view,
+    a part never beside its whole, and CI and the benchmark in two lists."""
+
+    def doc(self, regress=False):
+        hist = {"ci": [], "sim": []}
+        for d in range(0, 15):
+            sha = f"c{d}"
+            hist["ci"].append(row(d, {"host checks": 4, "cross-build": 600, "tiny": 40, "small": 25 if d > 7 else 50}, sha=sha))
+            hist["sim"].append(row(d, {"macOS simulator": 300}, sha=sha))
+        bench = bench_records({"noop": ("No-op build", 0.7), "tests": ("Unit suite", 50.0), "app": ("app crate", 18.0),
+                               "screens": ("plx_screens", 30.0), "check": ("make check", 1000.0),
+                               "check.cargo": ("make check: cargo branch", 990.0), "check.python": ("make check: python branch", 900.0)})
+        return s.summarize(hist, bench, NOW)
+
+    def test_the_default_view_leads_with_what_a_developer_waits_for(self):
+        shown = [m["id"] for m in self.doc()["metrics"] if m["shown"]]
+        # waits, then the local loop in LOCAL_ORDER, then runner time, then jobs longest first
+        want = ["push_wait", "bench.app", "bench.screens", "bench.tests", "bench.check", "minutes",
+                "ci|cross-build", "sim|macOS simulator"]
+        self.assertEqual([i for i in shown if i in want], want)
+
+    def test_a_job_under_a_minute_and_a_health_check_are_out_of_the_default_view_unless_they_regressed(self):
+        by = {m["id"]: m for m in self.doc()["metrics"]}
+        self.assertFalse(by["ci|host checks"]["shown"])         # 4 s: an aggregator nobody waits for
+        self.assertFalse(by["ci|tiny"]["shown"])
+        self.assertFalse(by["bench.noop"]["shown"])             # a health check that is healthy
+        self.assertTrue(by["ci|cross-build"]["shown"])
+        # a sub-minute job that got worse is shown, and first
+        self.assertEqual(by["ci|small"]["state"], "worse")
+        self.assertTrue(by["ci|small"]["shown"])
+        self.assertEqual(self.doc()["metrics"][0]["id"], "ci|small")
+        # every shown row comes before every hidden one
+        flags = [m["shown"] for m in self.doc()["metrics"]]
+        self.assertEqual(flags, sorted(flags, reverse=True))
+
+    def test_the_noop_build_is_shown_once_it_is_no_longer_a_no_op(self):
+        bench = bench_records({"noop": ("No-op build", 9.0)})
+        self.assertTrue(metric(s.summarize({}, bench, NOW), "bench.noop")["shown"])
+
+    def test_a_part_hangs_off_its_whole_and_is_never_listed_beside_it(self):
+        doc = self.doc()
+        by = {m["id"]: m for m in doc["metrics"]}
+        self.assertEqual(by["bench.check.cargo"]["parent"], "bench.check")
+        self.assertFalse(by["bench.check.cargo"]["shown"])
+        self.assertEqual([p["id"] for p in by["bench.check"]["parts"]], ["bench.check.cargo", "bench.check.python"])      # the long pole first
+        self.assertNotIn("parent", by["bench.check"])
+        self.assertEqual([m["id"] for m in doc["slowest_local"]], ["bench.check", "bench.tests", "bench.screens", "bench.app"])
+
+    def test_ci_jobs_and_the_benchmark_are_ranked_in_two_lists_never_together(self):
+        doc = self.doc()
+        self.assertEqual([m["id"] for m in doc["slowest_ci"]], ["ci|cross-build", "sim|macOS simulator", "ci|small", "ci|tiny", "ci|host checks"])
+        self.assertTrue(all(m["group"] == "ci" for m in doc["slowest_ci"]))
+        self.assertTrue(all(m["group"] == "local" for m in doc["slowest_local"]))
+        self.assertNotIn("slowest", doc)
+
+    def test_a_row_carries_the_absolute_change_and_a_verdict_for_each_comparison(self):
+        m = metric(s.summarize(series("ci", weeks(100, 130)), None, NOW), "ci|job")
+        self.assertEqual((m["delta7"], m["state"], m["state30"], m["delta30"]), (30, "worse", "new", None))
+        flat = metric(s.summarize(series("ci", weeks(12, 14)), None, NOW), "ci|job")
+        self.assertEqual((flat["state"], flat["delta7"]), ("flat", 2))      # +17% of 12 s is 2 s: news for nobody
+        days = {d: [300, 300] for d in range(0, 7)}
+        days.update({d: [100, 100] for d in list(range(8, 15)) + list(range(31, 38))})      # the week before, and 30 days ago
+        m =metric(s.summarize(series("ci", days), None, NOW), "ci|job")
+        self.assertEqual((m["state"], m["state30"], m["delta30"]), ("worse", "worse", 200))
+
+    def test_a_wait_is_compared_only_with_waits_that_measured_the_same_thing(self):
+        # pull requests were recorded for CI alone 40 days ago; Simulator CI joined 20 days ago: a wait before
+        # that is not what a wait is now, so the window of 30 days ago is empty (and the row says so)
+        hist = {"ci": [row(d, {"a": 100}, sha=f"p{d}", pr=7, wf_event="pull_request") for d in list(range(0, 15)) + list(range(30, 40))],
+                "sim": [row(d, {"b": 400}, sha=f"p{d}", pr=7, wf_event="pull_request") for d in range(0, 20)]}
+        m = metric(s.summarize(hist, None, NOW), "pr_wait")
+        self.assertEqual((m["now"], m["d30"], m["state30"]), (400, None, "new"))
+        # and the samples before the joint start are gone from the series, not averaged in
+        self.assertEqual(metric(s.summarize(hist, None, NOW), "pr_wait")["n_prev"], 7)
 
 
 class DocumentTest(unittest.TestCase):
@@ -177,8 +260,8 @@ class DocumentTest(unittest.TestCase):
         hist["ci"] += series("ci", weeks(300, 300), name="same")["ci"] + series("ci", weeks(300, 200), name="fast")["ci"]
         a, b = s.summarize(hist, None, NOW), s.summarize(json.loads(json.dumps(hist)), None, NOW)
         self.assertEqual(json.dumps(a, sort_keys=True), json.dumps(b, sort_keys=True))
-        self.assertEqual([m["state"] for m in a["metrics"] if m["id"].startswith("ci|")], ["worse", "better", "flat"])
-        self.assertEqual(a["schema"], 1)
+        self.assertEqual([m["state"] for m in a["metrics"] if m["id"].startswith("ci|")], ["worse", "flat", "better"])     # then longest first
+        self.assertEqual(a["schema"], 2)
         self.assertEqual(set(a["thresholds"]), set(s.THRESHOLDS))
 
     def test_main_writes_the_file_and_a_second_run_writes_the_same_bytes(self):

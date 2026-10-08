@@ -180,9 +180,9 @@ python3 ci/test_build_budgets.py
 # tools/ci-durations.py (CI duration trends) against canned `gh api` output; no network.
 python3 tools/test_ci_durations.py
 # tools/ci-history.py (the live page's data: incremental merge, filtering, pull-request and nightly rows, re-runs,
-# cancelled counts, retention fold, paging stop) against a fake `gh api`, and the shape of site/ci/index.html; no network.
+# cancelled counts, retention fold, paging stop) against a fake `gh api`, and the shape of site/ci/index.html plus its pure daily-chart rules run in node or macOS jsc (skipped when neither exists); no network.
 python3 tools/test_ci_history.py
-# tools/ci-summary.py (the page's "now" block, slowest list and regressions) against synthetic series: step up and down,
+# tools/ci-summary.py (the page's "now" block with its order and selection, the two slowest lists and regressions) against synthetic series: step up and down,
 # noisy flat, missing days, the re-run wall rule, PR/push separation; no network.
 python3 tools/test_ci_summary.py
 # `make test-crate` (the crate-only loop: it must carry the full suite's feature set) and the parallel
