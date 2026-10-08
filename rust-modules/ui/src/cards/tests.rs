@@ -25,6 +25,19 @@ const EXT: GridSpec = GridSpec::new(520.0, 96.0).columns(4, EXT_STYLE, 160.0).ex
 
 type Cx9<'a> = Cx<'a, FixtureHost>;
 
+/// The frame context every rig hands a section: `view` as the store, the tick at `ms`, press
+/// `press`, the engine's focus on `focus`, entry `ENTRY` the owner.
+fn cx9(view: &FixtureView, ms: u32, press: f32, focus: Option<FocusKey<u32>>) -> Cx9<'_> {
+    Cx {
+        views: FixtureViews { store: view },
+        tick: Tick { ms, dt_us: 16_667 },
+        measure: &FixtureMeasure,
+        press: PressRead { scale: press, ..Default::default() },
+        focus: FocusRead { current: focus, ..Default::default() },
+        owner: InputOwner::Entry(ENTRY),
+    }
+}
+
 struct Cards {
     elems: Vec<u32>,
     more: bool,
@@ -263,14 +276,7 @@ impl<S: Section> Rig<S> {
     }
 
     fn cx_with(&self, press: f32) -> Cx9<'_> {
-        Cx {
-            views: FixtureViews { store: &self.view },
-            tick: Tick { ms: self.ms, dt_us: 16_667 },
-            measure: &FixtureMeasure,
-            press: PressRead { scale: press, ..Default::default() },
-            focus: FocusRead { current: self.focus, ..Default::default() },
-            owner: InputOwner::Entry(ENTRY),
-        }
+        cx9(&self.view, self.ms, press, self.focus)
     }
 
     /// Step one event through the section: the event it reported and whether the step moved.
@@ -279,14 +285,7 @@ impl<S: Section> Rig<S> {
         let mut out = Vec::new();
         let mut reported = None;
         let (_, moving) = plx_machine::idle::scoped_motion(|| {
-            let cx = Cx {
-                views: FixtureViews { store: &self.view },
-                tick: Tick { ms: self.ms, dt_us: 16_667 },
-                measure: &FixtureMeasure,
-                press: PressRead { scale: self.press, ..Default::default() },
-                focus: FocusRead { current: self.focus, ..Default::default() },
-                owner: InputOwner::Entry(ENTRY),
-            };
+            let cx = cx9(&self.view, self.ms, self.press, self.focus);
             let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
             reported = self.sect.on(&ev, &cx, &self.src, &mut fx);
         });
@@ -905,14 +904,7 @@ fn grid_goes_quiet_at_rest() {
 /// Tick the grid alone (no owner half), one frame.
 fn tick_grid_alone(r: &mut Rig<ExtGrid>) {
     r.ms += MS;
-    let cx = Cx {
-        views: FixtureViews { store: &r.view },
-        tick: Tick { ms: r.ms, dt_us: 16_667 },
-        measure: &FixtureMeasure,
-        press: PressRead { scale: r.press, ..Default::default() },
-        focus: FocusRead { current: r.focus, ..Default::default() },
-        owner: InputOwner::Entry(ENTRY),
-    };
+    let cx = cx9(&r.view, r.ms, r.press, r.focus);
     let mut out = Vec::new();
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
@@ -1343,28 +1335,14 @@ mod stack {
 
     impl Rig {
         fn cx(&self) -> Cx9<'_> {
-            Cx {
-                views: FixtureViews { store: &self.view },
-                tick: Tick { ms: self.ms, dt_us: 16_667 },
-                measure: &FixtureMeasure,
-                press: PressRead { scale: 1.0, ..Default::default() },
-                focus: FocusRead { current: self.focus, ..Default::default() },
-                owner: InputOwner::Entry(ENTRY),
-            }
+            cx9(&self.view, self.ms, 1.0, self.focus)
         }
         fn feed(&mut self, ev: ScreenEvent<FixtureHost>) -> (Option<StackEvent<Sec, u32>>, bool) {
             let mut present = Present::new();
             let mut out = Vec::new();
             let mut got = None;
             let (_, moving) = plx_machine::idle::scoped_motion(|| {
-                let cx = Cx {
-                    views: FixtureViews { store: &self.view },
-                    tick: Tick { ms: self.ms, dt_us: 16_667 },
-                    measure: &FixtureMeasure,
-                    press: PressRead { scale: 1.0, ..Default::default() },
-                    focus: FocusRead { current: self.focus, ..Default::default() },
-                    owner: InputOwner::Entry(ENTRY),
-                };
+                let cx = cx9(&self.view, self.ms, 1.0, self.focus);
                 let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
                 got = self.stack.on(&self.page, &ev, &cx, &mut fx);
             });
@@ -1785,26 +1763,12 @@ mod stack {
 
     impl Mrig {
         fn cx(&self) -> Cx9<'_> {
-            Cx {
-                views: FixtureViews { store: &self.view },
-                tick: Tick { ms: self.ms, dt_us: 16_667 },
-                measure: &FixtureMeasure,
-                press: PressRead { scale: 1.0, ..Default::default() },
-                focus: FocusRead { current: self.focus, ..Default::default() },
-                owner: InputOwner::Entry(ENTRY),
-            }
+            cx9(&self.view, self.ms, 1.0, self.focus)
         }
         fn feed(&mut self, ev: ScreenEvent<FixtureHost>) {
             let mut present = Present::new();
             let mut out = Vec::new();
-            let cx = Cx {
-                views: FixtureViews { store: &self.view },
-                tick: Tick { ms: self.ms, dt_us: 16_667 },
-                measure: &FixtureMeasure,
-                press: PressRead { scale: 1.0, ..Default::default() },
-                focus: FocusRead { current: self.focus, ..Default::default() },
-                owner: InputOwner::Entry(ENTRY),
-            };
+            let cx = cx9(&self.view, self.ms, 1.0, self.focus);
             let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
             let _ = self.stack.on(&self.page, &ev, &cx, &mut fx);
         }
@@ -2093,14 +2057,7 @@ fn a_source_can_answer_which_card_the_picture_shows_focused() {
     let mut out = Vec::new();
     for _ in 0..120 {
         r.ms += MS;
-        let cx = Cx {
-            views: FixtureViews { store: &r.view },
-            tick: Tick { ms: r.ms, dt_us: 16_667 },
-            measure: &FixtureMeasure,
-            press: PressRead { scale: r.press, ..Default::default() },
-            focus: FocusRead { current: r.focus, ..Default::default() },
-            owner: InputOwner::Entry(ENTRY),
-        };
+        let cx = cx9(&r.view, r.ms, r.press, r.focus);
         let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
         r.sect.on(&ScreenEvent::Tick(cx.tick), &cx, &veiled, &mut fx);
     }
