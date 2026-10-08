@@ -936,7 +936,7 @@ impl Bridge {
         let real = &e.inst.as_ref()?.screen;
         let screen = real.as_any()?;
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
-            press: plx_machine::machine::PressRead { scale: 1.0, is_long: false, held_ms: None },
+            press: plx_machine::machine::PressRead { scale: 1.0, is_long: false, held_ms: None, owner: None },
             focus: plx_machine::machine::FocusRead { current: None , ..Default::default() },
             owner: plx_machine::machine::InputOwner::Entry(entry) };
         parts.owner = plx_machine::machine::InputOwner::Entry(entry);
@@ -2125,7 +2125,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     let Some(instance) = d.nav.entry(owner).and_then(|e| e.inst.as_ref()) else { return String::new() };
     let focus = d.focus();
     let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
-        press: plx_machine::machine::PressRead { scale: 1.0, is_long: false, held_ms: None },
+        press: plx_machine::machine::PressRead { scale: 1.0, is_long: false, held_ms: None, owner: None },
         focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(owner) };
     let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
     let mut groups = Vec::new();
@@ -2444,8 +2444,8 @@ fn strip_menu_arg(
 ///
 /// Only the scale is the lift's business; a hold in flight or the hint's elapsed time is not (the
 /// lift draws one card, not the page's hold hint).
-pub(crate) fn opener_press(d: &Dispatcher<AppHost>) -> plx_machine::machine::PressRead {
-    plx_machine::machine::PressRead { scale: d.input.press.scale(), is_long: false, held_ms: None }
+pub(crate) fn opener_press(d: &Dispatcher<AppHost>) -> plx_machine::machine::PressRead<u32> {
+    plx_machine::machine::PressRead { scale: d.input.press.scale(), is_long: false, held_ms: None, owner: d.input.dip_owner }
 }
 
 /// **Which element, if any, the opener lift repaints this frame** — the ONE decision every page

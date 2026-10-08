@@ -624,9 +624,10 @@ pub(crate) enum PressKind {
     /// press the moment the hold is answered, and an OK edge while a menu is up would land on its
     /// Play row).
     Hold,
-    /// OK down, then a direction key before the hold threshold: the real cancel path
-    /// (`input::begin_fresh_press`, "navigation or BACK arrived"). The card dips, springs back
-    /// without activating, and focus moves one card; the next cycle moves it back.
+    /// OK down, then a direction key before the hold threshold: the dispatcher abandons the press
+    /// when that key moves focus (`InputMachine::abandon_if_off`). The card dips and, as focus moves
+    /// one card, springs back WITHOUT activating, on the card that was pressed (the dip follows the
+    /// press's owner, not focus); the next cycle moves focus back.
     Tap,
 }
 

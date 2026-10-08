@@ -7,9 +7,14 @@
 //! edges, so we use them. That long press is what opens the **item context menu** on a home shelf
 //! card and on the detail page's episode still (`screens/item_menu.rs`) — see [`LONG_MS`].
 //!
-//! ONE control is pressed at a time (always the currently focused one), so one value suffices — `App.input.press`, the only owner (restructure spec §2.2); draw code reads its published snapshot —
-//! the renderer multiplies the focused tile's scale by [`scale`] while [`is_active`]. Focus can't move
-//! mid-press (navigation [`cancel`]s the press), so "the focused tile" is unambiguous the whole time.
+//! ONE control is pressed at a time, so one value suffices — `App.input.press`, the only owner (restructure spec §2.2); draw code reads its published snapshot —
+//! the renderer multiplies the PRESSED element's scale by [`scale`] while [`is_active`]. Pressed is
+//! not always focused: navigation [`cancel`]s the press, and the spring-back then plays on the card
+//! that was pressed while focus (and its pop) has already moved on. The machine does not know which
+//! element that is; the dispatcher's `InputMachine::dip_owner` does, and hands it to draw code as
+//! `PressRead::owner` for as long as the press is active, so a card dips only if it is the owner.
+//! The control-face consumers that read [`scale`] directly (`CtlPop`, `AvatarRow`) still apply it to
+//! the focused one — see their docs.
 //!
 //! **Two things take this press, not one.** A CARD ([`begin`]) and a CONTROL FACE ([`begin_ctl`]) —
 //! the design system's `Button` / `CircleButton` / `TransportButton`, whose dip arrives through their
@@ -147,6 +152,11 @@ impl Press {
     }
 
     fn arm(&mut self, now: u32, holdable: bool) {
+        SNAP.with(|c| {
+            let mut snap = c.get();
+            snap.arm = snap.arm.wrapping_add(1);
+            c.set(snap);
+        });
         let s = &mut *self;
         s.phase = Phase::Down;
         s.down_at = now;
@@ -373,6 +383,7 @@ impl Press {
                 scale: self.sp.pos,
                 live: self.phase != Phase::Idle && !self.cancelled,
                 active: self.phase != Phase::Idle,
+                arm: c.get().arm,
             })
         });
     }
@@ -428,10 +439,19 @@ struct Snap {
     scale: f32,
     live: bool,
     active: bool,
+    arm: u32,
 }
 
 thread_local! {
-    static SNAP: std::cell::Cell<Snap> = const { std::cell::Cell::new(Snap { scale: REST, live: false, active: false }) };
+    static SNAP: std::cell::Cell<Snap> = const { std::cell::Cell::new(Snap { scale: REST, live: false, active: false, arm: 0 }) };
+}
+
+/// Which press is in flight (or springing back): changes with every `begin` / `begin_ctl`. The
+/// identity of THIS press for a draw-side cache that must not mistake the next press for the last
+/// one (`widgets::DipLatch`); part of the snapshot, never of the machine's canon.
+#[inline]
+pub fn arm_id() -> u32 {
+    SNAP.with(|c| c.get().arm)
 }
 
 /// The dip factor the renderer multiplies the focus scale by (published snapshot).
@@ -698,12 +718,13 @@ mod tests {
         assert_eq!(p.held_ms(3200), None, "a control face has no hold gesture");
     }
     /// Tick a spring-back to rest, one frame at a time, reporting per frame whether it raised
-    /// damage, whether the spring was still visibly moving (or changed phase) on that frame, and
-    /// whether the PAGE-damage take (`idle::take_page_damage`, what `host_refresh` reads) saw it.
-    fn spring_back_frames(p: &mut Press, now: &mut u32) -> Vec<(bool, bool, bool)> {
+    /// damage and whether the spring was still visibly moving (or changed phase) on that frame
+    /// (no `OwnScope` is open in these tests, so damage raised on this thread IS page damage). Read
+    /// from `idle::take_local_damage`, never the process-wide `take_page_damage`: another test's
+    /// thread landing a spring bumps or steals that one, and a press test then fails at random.
+    fn spring_back_frames(p: &mut Press, now: &mut u32) -> Vec<(bool, bool)> {
         let mut out = Vec::new();
         let _ = plx_machine::idle::take_local_damage();
-        let _ = plx_machine::idle::take_page_damage();
         while p.is_active() && out.len() < 120 {
             let phase = p.phase;
             *now = now.wrapping_add(16);
@@ -711,7 +732,7 @@ mod tests {
             let target = if p.phase == Phase::Down { DIP } else { REST };
             let moving = p.phase != phase || !plx_machine::idle::settled(p.sp.pos, target, p.sp.vel);
             let raised = plx_machine::idle::take_local_damage() > 0;
-            out.push((raised, moving, plx_machine::idle::take_page_damage()));
+            out.push((raised, moving));
         }
         assert!(!p.is_active(), "the spring-back ends");
         out
@@ -742,9 +763,9 @@ mod tests {
         }
         p.cancel(); // the hold was answered: spring back
         let frames = spring_back_frames(&mut p, &mut now);
-        for (n, (raised, moving, page)) in frames.iter().enumerate() {
+        for (n, (raised, moving)) in frames.iter().enumerate() {
             assert_eq!(raised, moving, "frame {}: damage must track visible motion", n + 1);
-            assert!(!moving || *page, "frame {}: a moving frame is PAGE damage", n + 1);
+            assert!(!moving || *raised, "frame {}: a moving frame is PAGE damage", n + 1);
         }
         assert!(frames.iter().filter(|f| f.1).count() > 5, "the spring really moved the card");
         assert!(frames.iter().any(|f| !f.1), "…and its invisible tail raised nothing");
@@ -769,7 +790,12 @@ mod tests {
         let frames = spring_back_frames(&mut p, &mut now);
         crate::popover::set_lift_owns(false);
         assert!(frames.iter().filter(|f| f.1).count() > 5, "the spring really moved the card");
-        assert!(frames.iter().all(|f| !f.2), "no frame of it is page damage: {frames:?}");
+        // Graded on THIS thread's damage (`idle::take_local_damage`), not on `take_page_damage`:
+        // that one reads the process-wide `DAMAGE_GEN`, which any test on another thread that
+        // lands a spring (this module's own unlocked press tests among them) bumps, and "no
+        // damage at all" then fails at random. No `OwnScope` is open here, so nothing raised on
+        // this thread is exactly "no page damage from this press".
+        assert!(frames.iter().all(|f| !f.0), "no frame of it is page damage: {frames:?}");
     }
 
     /// **A TAP's release spring is NOT page damage.** A tap that opens a cached surface (the
@@ -789,7 +815,7 @@ mod tests {
             p.release(now);
             let frames = spring_back_frames(&mut p, &mut now);
             assert!(frames.len() > 10, "the release spring really ran");
-            let (loud, quiet): (Vec<&(bool, bool, bool)>, Vec<&(bool, bool, bool)>) =
+            let (loud, quiet): (Vec<&(bool, bool)>, Vec<&(bool, bool)>) =
                 frames.iter().partition(|f| f.0);
             assert!(loud.len() <= 1, "ctl={ctl}: only the closing jump may report, got {}", loud.len());
             assert!(quiet.len() > 10, "ctl={ctl}");

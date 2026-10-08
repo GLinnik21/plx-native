@@ -69,7 +69,7 @@ impl Harness {
 
     fn cx(&self) -> Cx<'_, PersonHost> {
         Cx { views: self.store.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
-            press: PressRead { scale: self.press, ..Default::default() },
+            press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
             focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) }
     }
 
@@ -78,7 +78,7 @@ impl Harness {
         let mut out = Vec::new();
         let (_, moving) = plx_machine::idle::scoped_motion(|| {
             let cx = Cx { views: self.store.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
-                press: PressRead { scale: self.press, ..Default::default() },
+                press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let mut fx = Effects::new(&mut out,
                 plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)), &mut present);

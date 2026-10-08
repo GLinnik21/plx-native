@@ -53,7 +53,7 @@ impl Harness {
 
     fn cx(&self) -> Cx<'_, CollectionHost> {
         Cx { views: self.store.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
-            press: PressRead { scale: self.press, ..Default::default() },
+            press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
             focus: FocusRead { current: self.focus, ..Default::default() },
             owner: InputOwner::Entry(ENTRY) }
     }
@@ -64,7 +64,7 @@ impl Harness {
         let mut out = Vec::new();
         let (_, moving) = plx_machine::idle::scoped_motion(|| {
             let cx = Cx { views: self.store.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
-                press: PressRead { scale: self.press, ..Default::default() },
+                press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let mut fx = Effects::new(&mut out,
                 plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(9)), &mut present);
@@ -114,7 +114,7 @@ impl CardHarness for Harness {
     /// ends with and which uses the very rect `draw` paints; painting itself needs the GL context
     /// a host test does not have).
     fn drawn_rect(&self, elem: u32, press: f32) -> Option<Rect> {
-        let cx = Cx { press: PressRead { scale: press, ..Default::default() }, ..self.cx() };
+        let cx = Cx { press: PressRead { scale: press, owner: self.focus, ..Default::default() }, ..self.cx() };
         let painter = plx_ui::Painter::root();
         let mut f = plx_ui::screen::DrawFrame::new(&cx, painter);
         self.screen.stack.view(&self.screen.page).record_stops(&mut f);

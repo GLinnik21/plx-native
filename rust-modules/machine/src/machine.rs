@@ -269,8 +269,13 @@ pub fn fit_line_by<M: Measure + ?Sized>(
 }
 
 /// What a machine may read about the press machine (§7.4): the renderer's numbers.
-#[derive(Clone, Copy, Default, Debug)]
-pub struct PressRead {
+///
+/// `K` is the host's element key. It names WHO the dip belongs to ([`owner`](Self::owner)): the
+/// pressed element, not whichever one has focus this frame. The two part the moment a direction key
+/// abandons a press, because the spring-back then plays on the card that was pressed while focus
+/// (and the ordinary focus pop) is already on its neighbour.
+#[derive(Clone, Copy, Debug)]
+pub struct PressRead<K = ()> {
     pub scale: f32,
     pub is_long: bool,
     /// Milliseconds a HOLDABLE (card) press has been held down right now, still undecided: `None`
@@ -278,15 +283,35 @@ pub struct PressRead {
     /// The reader divides by the hold threshold (`ui::press::LONG_MS`, which this layer cannot
     /// name) — it is what the hold hint's cap fills from.
     pub held_ms: Option<u32>,
+    /// The element the dip belongs to, for as long as the press machine is moving it: from the
+    /// key-down until the spring-back has settled, INCLUDING after the press was abandoned and the
+    /// arm is gone. `None` when no press is in flight (and for a reader built without a dispatcher,
+    /// which then has no dip to apply to anyone).
+    pub owner: Option<FocusKey<K>>,
 }
 
-impl PressRead {
+impl<K> Default for PressRead<K> {
+    fn default() -> Self {
+        Self { scale: 0.0, is_long: false, held_ms: None, owner: None }
+    }
+}
+
+impl<K> PressRead<K> {
     /// The dip factor a card multiplies its focus scale by: [`scale`](Self::scale) while a press is
     /// visibly moving it, `1.0` otherwise. `PressRead::default()` (no press machine read yet) has
     /// scale `0.0`, which as a factor would draw the tile at nothing; this is the one guard.
     #[inline]
     pub fn dip(&self) -> f32 {
         if self.scale > 0.0 { self.scale } else { 1.0 }
+    }
+}
+
+impl<K: PartialEq> PressRead<K> {
+    /// The dip factor for the element `key`: [`dip`](Self::dip) when `key` is the pressed element,
+    /// `1.0` for every other, FOCUSED OR NOT.
+    #[inline]
+    pub fn dip_of(&self, key: &FocusKey<K>) -> f32 {
+        if self.owner.as_ref() == Some(key) { self.dip() } else { 1.0 }
     }
 }
 
@@ -323,7 +348,7 @@ pub struct Cx<'a, H: Host> {
     pub views: H::Views<'a>,
     pub tick: Tick,
     pub measure: &'a dyn Measure,
-    pub press: PressRead,
+    pub press: PressRead<H::Elem>,
     pub focus: FocusRead<H::Elem>,
     pub owner: InputOwner,
 }

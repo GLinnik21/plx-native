@@ -2591,7 +2591,7 @@ fn press_host(app: &App) -> Option<(bench::PressHost, bool)> {
 /// Open half (`Start` -> `Settle`): hold sends OK-DOWN and nothing else — no key-up, ever (the
 /// dispatcher abandons the press when it answers the hold, and an OK edge while the menu is up
 /// would land on its Play row). Close half (`Settle` -> `Report`): hold sends Back, only while the
-/// item menu is up ([`bench::press_close_key`]); tap sends a direction key, which cancels the press.
+/// item menu is up ([`bench::press_close_key`]); tap sends a direction key, which abandons the press (the pressed card springs back while focus moves).
 /// OK is only ever sent by [`bench::press_allowed`]: no menu up, a card focused.
 ///
 /// Reported as `bench: kind=hold ... target=<host>` (`<host>-nomenu` when a hold did not open the

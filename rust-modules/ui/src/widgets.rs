@@ -1057,19 +1057,56 @@ pub const CONTROL_GAP: f32 = 20.0;
 /// same event at the same rate, which is the thing that was actually worth sharing. What still
 /// belongs to `press` is the click, and that is folded in by [`scale`](Self::scale) below.
 ///
-/// [`scale`](Self::scale) folds in [`press::scale`](crate::press::scale) for the focused control
-/// only. The dip is a FACTOR on top of the focus scale — that is what makes a press read the same on
-/// a 1.07 capsule as on a 1.09 poster — and it belongs to the control being pressed, which is always
-/// the focused one.
+/// [`scale`](Self::scale) folds in [`press::scale`](crate::press::scale) for the PRESSED control. The
+/// dip is a FACTOR on top of the focus scale — that is what makes a press read the same on a 1.07
+/// capsule as on a 1.09 poster. Unlike a card's dip (`cards::press_scale`, which matches
+/// `PressRead::owner`) a row of controls has no element keys, so the pressed control is LATCHED
+/// ([`DipLatch`]): the focused control when the press first reads off rest, kept until the press is
+/// back at rest. A direction key that moves focus abandons the press, and the spring-back then
+/// plays on the control that was pressed while its neighbour takes the ordinary focus pop.
 pub struct CtlPop<const N: usize> {
     sp: [Spring; N],
     focused: Option<usize>,
+    dip: DipLatch,
+}
+
+/// Which control of a row (or avatar of a picker) the press dip belongs to. A row has no element
+/// keys to match `PressRead::owner` against, so the dip latches the FOCUSED index the first time
+/// the press reads off rest and holds it until the press is back at exactly rest: focus moving
+/// away (a direction key abandons the press) then leaves the spring-back on the pressed control.
+/// The latch also remembers WHICH press it was taken for ([`press::arm_id`](crate::press::arm_id)),
+/// so a row that was not drawn when the last press returned to rest (the press committed a page or
+/// a popover) or a press armed inside the previous one's spring-back re-latches to the control
+/// holding focus when the new press arms, instead of dipping the old one. A draw-side cache, not
+/// logical state: derived from the press and focus every frame and part of no canon.
+#[derive(Default)]
+pub struct DipLatch(std::cell::Cell<Option<(u32, usize)>>);
+impl DipLatch {
+    /// The dip factor for control `i` given the press scale `press` (`0.0` = no press read) and
+    /// the control holding focus (`None` for none).
+    pub fn factor(&self, i: usize, focused: Option<usize>, press: f32) -> f32 {
+        let press = if press > 0.0 { press } else { 1.0 };
+        if press == 1.0 {
+            self.0.set(None);
+            return 1.0;
+        }
+        let arm = crate::press::arm_id();
+        match self.0.get() {
+            Some((a, _)) if a == arm => {}
+            _ => self.0.set(focused.map(|f| (arm, f))),
+        }
+        if self.0.get().is_some_and(|(_, l)| l == i) { press } else { 1.0 }
+    }
+    /// Forget the latch (a page torn down or re-mounted).
+    pub fn reset(&self) {
+        self.0.set(None);
+    }
 }
 impl<const N: usize> CtlPop<N> {
     /// Captured geometry needs the spring velocity as well as its current scale: the next
     /// input may land after another Tick. GPU resources and paint palettes are not encoded.
     pub fn write_motion(&self, c: &mut plx_machine::machine::Canon) {
-        let Self { sp, focused } = self;
+        let Self { sp, focused, dip: _ } = self;
         c.seq(sp.len());
         for spring in sp { c.f32(spring.pos).f32(spring.vel); }
         c.option(*focused, |c, i| { c.u32(i as u32); });
@@ -1079,6 +1116,7 @@ impl<const N: usize> CtlPop<N> {
         Self {
             sp: [Spring::at(1.0); N],
             focused: None,
+            dip: DipLatch(std::cell::Cell::new(None)),
         }
     }
     /// Advance every control's spring toward its target for this frame. `focused` is the index of
@@ -1105,16 +1143,13 @@ impl<const N: usize> CtlPop<N> {
     /// press value, without consulting the legacy global press machine. Zero means no press read.
     pub fn scale_with(&self, i: usize, press_scale: f32) -> f32 {
         let s = self.sp.get(i).map(|sp| sp.pos).unwrap_or(1.0);
-        if self.focused == Some(i) {
-            s * if press_scale > 0.0 { press_scale } else { 1.0 }
-        } else {
-            s
-        }
+        s * self.dip.factor(i, self.focused, press_scale)
     }
     /// Drop every pop to rest with no motion in between — for a page being torn down or re-mounted,
     /// so the next mount does not open on a control already popped (`detail::reset_view_state`).
     pub fn reset(&mut self) {
         self.focused = None;
+        self.dip.reset();
         for sp in self.sp.iter_mut() {
             sp.jump(1.0);
         }

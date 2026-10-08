@@ -781,7 +781,7 @@ pub struct DrawFrame<'a, 'views, H: Host> {
     /// reads this field instead, so it survives that overwrite. Never mutated after
     /// construction — the one write is `with_navigation`.
     pub nav_page_alpha: f32,
-    pub press: PressRead,
+    pub press: PressRead<H::Elem>,
     /// **The page under this surface, as the container latched it** — the `ModalStack`'s one
     /// underlay field (`containers::modal::ModalUnderlay`), which a popover panel's ground is drawn
     /// from (`widgets::panel_ground`). `None` on a page's own frame and on any frame whose

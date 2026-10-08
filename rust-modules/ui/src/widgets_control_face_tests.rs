@@ -617,3 +617,118 @@ fn a_selected_player_tab_keeps_a_quiet_face_until_it_owns_focus() {
     let focused = pill().focused(true).face();
     assert_eq!(focused, (Some(crate::ACCENT), crate::ACCENT_INK, 1.0));
 }
+
+// ---- a press abandoned by a direction key --------------------------------------------------
+
+/// OK goes down on control 0 and is held 350 ms, then a direction key moves focus to control 1 and
+/// abandons the press (`Press::cancel`). The spring-back must play on control 0, the one pressed,
+/// while control 1 takes the ordinary focus pop: no control's scale may change by more than the
+/// ordinary per-frame step (3 %; the bug was -8 % / +9 % in ONE frame) and each ends where the focus
+/// look puts it. Real `Press`, real `CtlPop`, one 16 ms frame at a time.
+#[test]
+fn an_abandoned_press_springs_back_on_the_control_that_was_pressed() {
+    let mut pop: CtlPop<2> = CtlPop::new();
+    let mut press = crate::press::Press::new();
+    let mut focus = Some(0);
+    for _ in 0..60 { pop.step(focus, 0.016); }
+    let mut ms = 0;
+    press.begin(ms);
+    let mut prev = [pop.scale_with(0, press.scale()), pop.scale_with(1, press.scale())];
+    let mut worst = 0.0f32;
+    let mut dipped_after_move = 0.0f32;
+    for n in 1..=60 {
+        if n == 22 {
+            press.cancel();
+            focus = Some(1);
+        }
+        ms += 16;
+        press.tick(ms, 0.016);
+        pop.step(focus, 0.016);
+        let now = [pop.scale_with(0, press.scale()), pop.scale_with(1, press.scale())];
+        for c in 0..2 {
+            worst = worst.max((now[c] / prev[c] - 1.0).abs());
+        }
+        if n == 22 { dipped_after_move = now[0]; }
+        prev = now;
+    }
+    assert!(worst < 0.03, "a control's scale jumped {:.1} % in one frame", worst * 100.0);
+    assert!(dipped_after_move < CTRL_FOCUS_SCALE * 0.95, "the pressed control is still dipped on the frame focus moved: {dipped_after_move}");
+    assert!((prev[0] - 1.0).abs() < 0.01, "the pressed control settles at rest: {}", prev[0]);
+    assert!((prev[1] - CTRL_FOCUS_SCALE).abs() < 0.01, "the control focus moved to settles at the focus pop: {}", prev[1]);
+}
+
+/// The avatar picker's call shape: `focused` is per call, the latch holds the pressed avatar.
+#[test]
+fn the_dip_latch_follows_the_pressed_index_not_focus() {
+    let l = DipLatch::default();
+    assert_eq!(l.factor(0, Some(0), 1.0), 1.0, "at rest nothing dips");
+    assert_eq!(l.factor(1, None, 0.9), 1.0, "an unfocused avatar painted first does not latch");
+    assert_eq!(l.factor(0, Some(0), 0.9), 0.9, "the focused avatar latches");
+    assert_eq!(l.factor(0, None, 0.92), 0.92, "focus moved on: the pressed avatar keeps the dip");
+    assert_eq!(l.factor(1, Some(1), 0.92), 1.0, "and the new focus does not take it");
+    assert_eq!(l.factor(0, None, 1.0), 1.0, "back at rest releases");
+    assert_eq!(l.factor(1, Some(1), 0.95), 0.95, "the next press latches afresh");
+}
+
+/// Frames of a control row under a real press: `reads` says whether the row is drawn (scale read)
+/// on a given frame. Returns the final scales.
+fn row_frames(pop: &mut CtlPop<2>, press: &mut crate::press::Press, ms: &mut u32, focus: Option<usize>, n: usize, draws: bool) -> [f32; 2] {
+    let mut out = [1.0; 2];
+    for _ in 0..n {
+        *ms += 16;
+        press.tick(*ms, 0.016);
+        pop.step(focus, 0.016);
+        if draws { out = [pop.scale_with(0, press.scale()), pop.scale_with(1, press.scale())]; }
+    }
+    out
+}
+
+/// A press that commits a page or popover leaves the row undrawn while its spring settles. The
+/// latch must not survive into the next press: pressing control 1 dips control 1, not control 0.
+#[test]
+fn a_press_after_an_undrawn_spring_dips_the_control_pressed_now() {
+    let mut pop: CtlPop<2> = CtlPop::new();
+    let mut press = crate::press::Press::new();
+    let mut ms = 0;
+    for _ in 0..60 { pop.step(Some(0), 0.016); }
+    press.begin_ctl(ms);
+    row_frames(&mut pop, &mut press, &mut ms, Some(0), 10, true);
+    press.release(ms);
+    // the row stops drawing (a pushed page) until the spring has settled
+    row_frames(&mut pop, &mut press, &mut ms, Some(0), 80, false);
+    assert!(!press.is_active(), "the spring settled while the row was undrawn");
+    for _ in 0..60 { pop.step(Some(1), 0.016); }
+    press.begin_ctl(ms);
+    let s = row_frames(&mut pop, &mut press, &mut ms, Some(1), 10, true);
+    assert!(s[1] < CTRL_FOCUS_SCALE * 0.97, "control 1 dips: {}", s[1]);
+    assert!((s[0] - 1.0).abs() < 0.01, "control 0 does not: {}", s[0]);
+}
+
+/// OK on 0, Right at 350 ms, OK on 1 inside the spring-back: from the frame the new press arms the
+/// dip belongs to control 1, and nothing jumps by more than the residual of the old spring-back.
+#[test]
+fn a_press_armed_inside_the_previous_springback_dips_the_new_control() {
+    let mut pop: CtlPop<2> = CtlPop::new();
+    let mut press = crate::press::Press::new();
+    let mut ms = 0;
+    for _ in 0..60 { pop.step(Some(0), 0.016); }
+    press.begin_ctl(ms);
+    row_frames(&mut pop, &mut press, &mut ms, Some(0), 21, true);
+    press.cancel();
+    let mut prev = row_frames(&mut pop, &mut press, &mut ms, Some(1), 3, true);
+    assert!(press.is_active() && prev[0] < CTRL_FOCUS_SCALE * 0.99, "control 0 is springing back: {prev:?}");
+    let residual = (1.0 - press.scale()).abs();
+    press.begin_ctl(ms);
+    for n in 0..20 {
+        let now = row_frames(&mut pop, &mut press, &mut ms, Some(1), 1, true);
+        for c in 0..2 {
+            let step = (now[c] / prev[c] - 1.0).abs();
+            assert!(step < 0.03 + residual, "frame {n}: control {c} jumped {:.1} %", step * 100.0);
+        }
+        if n >= 4 {
+            assert!(now[1] < CTRL_FOCUS_SCALE * 0.98, "frame {n}: the dip belongs to control 1: {now:?}");
+            assert!(now[0] > 0.995, "frame {n}: control 0 only unpops, it no longer dips: {now:?}");
+        }
+        prev = now;
+    }
+}

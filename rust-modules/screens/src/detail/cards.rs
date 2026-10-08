@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use plx_data::metadata::Detail;
 use plx_data::pms::PmsMovie;
-use plx_machine::machine::{Host, Measure};
+use plx_machine::machine::{EntryId, FocusKey, Host, Measure, PressRead};
 use plx_ui::cards::{self as ui_cards, RowStyle, TileLabel};
 use plx_ui::cards::{CardSource, Tile};
 use plx_ui::widgets::Art;
@@ -46,7 +46,8 @@ pub(super) struct Cards<'a> {
     len: usize,
     /// The top of the tiles and the live press dip, which the cast names under them need.
     row_y: f32,
-    press: f32,
+    entry: EntryId,
+    press: PressRead<u32>,
 }
 
 impl<'a> Cards<'a> {
@@ -56,7 +57,7 @@ impl<'a> Cards<'a> {
         key_by_local: &'a HashMap<u32, u32>,
         local_by_key: &'a HashMap<u32, u32>,
     ) -> Self {
-        let mut cards = Self { which, d, key_by_local, local_by_key, len: 0, row_y: 0.0, press: 1.0 };
+        let mut cards = Self { which, d, key_by_local, local_by_key, len: 0, row_y: 0.0, entry: EntryId(0), press: PressRead::default() };
         let n = match which {
             Which::Related => d.related.len().min(512),
             Which::Collection => collection::len(d),
@@ -73,9 +74,11 @@ impl<'a> Cards<'a> {
         cards
     }
 
-    /// Where the shelf's tiles are drawn (`row_y`, in the painter's space) and the live press dip.
-    pub(super) fn drawn_at(mut self, row_y: f32, press: f32) -> Self {
+    /// Where the shelf's tiles are drawn (`row_y`, in the painter's space) and the frame's press,
+    /// whose dip lands on one tile only: the pressed one, focused or not.
+    pub(super) fn drawn_at(mut self, row_y: f32, entry: EntryId, press: PressRead<u32>) -> Self {
         self.row_y = row_y;
+        self.entry = entry;
         self.press = press;
         self
     }
@@ -151,10 +154,11 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
             return;
         }
         // The name sits on the slot's own centre, dropped by the focus pop alone: the tile's scale
-        // less the press dip it was drawn with.
+        // less the press dip it was drawn with (only the pressed tile carries one).
         let slot = ui_cards::tile_rect(i, plx_ui::consts::MARGIN_X, cast::SLOT, 0.0, 0.0,
             (RowStyle::CAST.w, RowStyle::CAST.h));
-        let pop = if tile.focused { tile.scale / self.press } else { tile.scale };
+        let key = FocusKey { entry: self.entry, elem: CardSource::<H>::elem(self, i) };
+        let pop = tile.scale / self.press.dip_of(&key);
         cast::draw_label(p, self.d, i, slot.x + RowStyle::CAST.w * 0.5, self.row_y - p.dy(), tile.focused, pop, measure);
     }
 }
