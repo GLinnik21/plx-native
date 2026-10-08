@@ -1,17 +1,14 @@
-//! The element-keyed pop pool: the alternative to per-position pop springs (shared-card-sections
-//! plan, owner decision 2), behind the dev switch `/tmp/plxnative-poppool` for a verdict by feel on
-//! the television. **Whichever mode loses is deleted** — this whole file, its call sites in
-//! `shelf.rs` / `grid.rs` and the two `card_row` / `poster_grid` accessors go with it.
+//! The element-keyed pop pool: a card's focus-pop spring belongs to its ELEMENT, not to the cell it
+//! happens to stand in (shared-card-sections plan, owner decision 2).
 //!
-//! Per position (the default): a pop spring belongs to a CELL. The landing rule already carries
-//! the FOCUSED card's spring to its new cell when content reorders, but a card still shrinking
-//! (the one focus just left) stays in its cell, so after an insert or reorder ahead of it the
-//! shrink plays out on whichever card now sits there while the real one snaps to rest.
+//! Were the spring the cell's, a card still shrinking (the one focus just left) would stay in its
+//! cell, so after an insert or reorder ahead of it the shrink would play out on whichever card now
+//! sits there while the real one snapped to rest. The FOCUSED card's spring is carried to its new
+//! cell by the landing rule regardless; the pool does the same for the cards letting go.
 //!
-//! Element-keyed: the pool remembers which ELEMENT each moving spring belongs to, and each tick
-//! moves a spring after its element to wherever the source now shows it. Nothing else changes: a
-//! walk with no reorder is bit-for-bit the per-position walk, and with the switch off none of
-//! this runs.
+//! The pool remembers which ELEMENT each moving spring belongs to, and each tick moves a spring
+//! after its element to wherever the source now shows it. A walk with no reorder is bit-for-bit
+//! the walk by position.
 //!
 //! Bounded and allocation-free: [`CAP`] entries in fixed arrays, only cards whose spring is off
 //! rest are held (an entry settles out), a lookup hashes at most [`MAX_ROW_ITEMS`] elements (the
@@ -20,41 +17,8 @@
 //! The DRAW path is element-keyed too ([`RowPool::drawn`], [`ShrinkKey::drawn`]): a frame drawn
 //! after the source changed and before the next tick already shows each element at its own
 //! spring's scale, one hash per card, so no frame reverses what the tick then corrects.
-//!
-//! Without the dev switch's feature ([`pop_pool`] is the constant `false`) [`RowPool`] and
-//! [`ShrinkKey`] are zero-sized and do nothing, so a shipping `Shelf` and `Grid` carry no pool.
-
-#[cfg(any(test, feature = "devtriggers"))]
-thread_local! {
-    /// `/tmp/plxnative-poppool` ([`set_pop_pool`]). Thread-local like the other UI-thread dev
-    /// switches (`motion::hold_phase_clocks`): the one writer and every reader are the UI thread,
-    /// and a process global would leak between tests.
-    static POOL_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Key the pop springs of every [`Shelf`](super::Shelf) and [`Grid`](super::Grid) by element
-/// (`true`) or by position (`false`, the default). Dev builds only; the shipping feature set has
-/// no switch to flip and [`pop_pool`] is the constant `false`.
-#[cfg(any(test, feature = "devtriggers"))]
-pub fn set_pop_pool(on: bool) {
-    POOL_ON.with(|p| p.set(on));
-}
-
-/// Is the element-keyed pool on? Always `false` without `devtriggers`.
-#[inline]
-pub fn pop_pool() -> bool {
-    #[cfg(any(test, feature = "devtriggers"))]
-    {
-        POOL_ON.with(|p| p.get())
-    }
-    #[cfg(not(any(test, feature = "devtriggers")))]
-    {
-        false
-    }
-}
 
 /// What a card's pop spring is, drawn before the tick has seen a source change.
-#[cfg_attr(not(any(test, feature = "devtriggers")), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Drawn {
     /// The spring of this cell: the element is the one that was there.
@@ -63,56 +27,12 @@ pub(crate) enum Drawn {
     Rest,
 }
 
-#[cfg(any(test, feature = "devtriggers"))]
-pub(crate) use live::{RowPool, ShrinkKey};
 #[cfg(test)]
 pub(crate) use live::{CAP, SEARCH};
-#[cfg(not(any(test, feature = "devtriggers")))]
-pub(crate) use off::{RowPool, ShrinkKey};
-
-/// Shipping builds: nothing is held, nothing runs.
-#[cfg(not(any(test, feature = "devtriggers")))]
-mod off {
-    use plx_machine::machine::Host;
-
-    use super::{CardSource, Drawn};
-    use crate::card_row::CardRow;
-
-    #[derive(Clone, Copy)]
-    pub(crate) struct RowPool;
-
-    impl RowPool {
-        pub(crate) const fn new() -> Self {
-            Self
-        }
-        pub(crate) fn clear(&mut self) {}
-        pub(crate) fn follow<H: Host, S: CardSource<H>>(&mut self, _: &mut CardRow, _: &S, _: Option<usize>) -> bool {
-            false
-        }
-        pub(crate) fn admit<H: Host, S: CardSource<H>>(&mut self, _: &CardRow, _: &S, _: Option<usize>) {}
-        pub(crate) fn drawn<H: Host, S: CardSource<H>>(&self, _: &S, _: usize, _: bool) -> Option<Drawn> {
-            None
-        }
-    }
-
-    #[derive(Clone, Copy)]
-    pub(crate) struct ShrinkKey;
-
-    impl ShrinkKey {
-        pub(crate) const fn new() -> Self {
-            Self
-        }
-        pub(crate) fn follow<H: Host, S: CardSource<H>>(&mut self, _: &mut crate::poster_grid::GridPop, _: &S) {}
-        pub(crate) fn note<H: Host, S: CardSource<H>>(&mut self, _: &crate::poster_grid::GridPop, _: &S) {}
-        pub(crate) fn drawn<H: Host, S: CardSource<H>>(&self, _: &crate::poster_grid::GridPop, _: &S, _: usize, _: bool) -> Option<Drawn> {
-            None
-        }
-    }
-}
+pub(crate) use live::{RowPool, ShrinkKey};
 
 use super::CardSource;
 
-#[cfg(any(test, feature = "devtriggers"))]
 mod live {
     use std::hash::{Hash, Hasher};
 
@@ -132,7 +52,7 @@ mod live {
 
     /// `e`'s identity as a plain number: sections are not generic over the host, so the pool
     /// cannot store an `H::Elem`. `DefaultHasher::new()` is unkeyed, so the number is stable
-    /// within a run; a collision could only mis-route one pop spring of a dev build.
+    /// within a run; a collision could only mis-route one pop spring for a frame.
     fn key<E: Hash>(e: &E) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         e.hash(&mut h);

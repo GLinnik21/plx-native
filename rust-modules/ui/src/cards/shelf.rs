@@ -44,7 +44,7 @@ pub struct Shelf {
     dormant: bool,
     /// The last tick ran dormant, so the next awake one starts the focused card's pop from rest.
     slept: bool,
-    /// The element-keyed pop pool, empty unless the dev switch is on (`pool.rs`).
+    /// The element-keyed pop pool (`pool.rs`).
     pool: RowPool,
 }
 
@@ -162,13 +162,7 @@ impl Shelf {
             }
         }
         // the element-keyed pool: springs follow their elements before anything reads a cell
-        let pooled = super::pool::pop_pool();
-        let carried = if pooled {
-            self.pool.follow(&mut self.row, src, focus)
-        } else {
-            self.pool.clear();
-            false
-        };
+        let carried = self.pool.follow(&mut self.row, src, focus);
         if let Some(i) = focus {
             let prev = self.prev();
             match (self.seen, prev) {
@@ -208,9 +202,7 @@ impl Shelf {
                 self.row.park();
             }
         }
-        if pooled {
-            self.pool.admit(&self.row, src, focus);
-        }
+        self.pool.admit(&self.row, src, focus);
     }
 
     /// Is the pop of cell `cell` held in the element-keyed pool?
@@ -251,7 +243,7 @@ impl Shelf {
     /// whole (never a one-frame collapse) with the one it left at rest.
     fn pop<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, focus: Option<usize>) -> f32 {
         // the element-keyed pool: a source change no tick has seen yet is resolved by element
-        if super::pool::pop_pool() && focus.is_some_and(|_| !self.dormant) {
+        if focus.is_some_and(|_| !self.dormant) {
             match self.pool.drawn(src, i, focus == Some(i)) {
                 Some(Drawn::Cell(c)) => return self.row.scale(c),
                 Some(Drawn::Rest) => return 1.0,
